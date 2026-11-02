@@ -100,7 +100,9 @@ pub(crate) fn release_session(tx: &Transaction<'_>, sid: &str, now: &str) -> Res
 /// Where a send's rows go (spec §10, "Data flow").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SendTarget<'a> {
-    /// This live owner or watcher only (a session ID); it becomes the thread's target.
+    /// This live owner or watcher only (a session ID), or a known agent
+    /// that is not live there, whose rows wait for it ([`queueable_in`]);
+    /// it becomes the thread's target.
     Agent(&'a str),
     /// Every live owner and watcher, or untargeted when none is live; clears the thread's target.
     Everyone,
@@ -123,7 +125,8 @@ fn targets_for(
     let live = live_targets(tx, aid, owner, routed)?;
     match target {
         SendTarget::Agent(sid) => {
-            if !live.iter().any(|s| s == sid) {
+            // A known agent that is not live here waits for it (queued).
+            if !live.iter().any(|s| s == sid) && !queueable_in(tx, aid, sid)? {
                 return Err(CoreError::invalid(
                     "unknown_agent",
                     "no live agent on this artifact has that handle",
@@ -165,6 +168,66 @@ pub(crate) fn live_targets_of(c: &Connection, aid: &str, routed: bool) -> Result
         |r| r.get(0),
     )?;
     live_targets(c, aid, owner.as_deref(), routed)
+}
+
+/// Whether a send to session `sid` on artifact `aid` may wait for it,
+/// though it is no live owner or watcher there (a queued send): Clax knows
+/// the agent on the artifact (it owns or owned it, watches it or watched
+/// it when it ended idle, published a version of it, replied on one of
+/// its threads, or was sent one of them), and it can take the rows: it is
+/// live, or it ended idle with a harness session ID, so that harness
+/// session's next registration takes what waits for it
+/// ([`hand_over_queued_in`]). Rows targeted to it are handed over on its
+/// next tool call (`take_feedback` keys on the target session alone).
+pub(crate) fn queueable_in(c: &Connection, aid: &str, sid: &str) -> Result<bool> {
+    Ok(c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sessions s WHERE s.id = ?2
+           AND (s.ended_at IS NULL OR (s.ended_reason = 'idle' AND s.harness_session_id IS NOT NULL))
+           AND (EXISTS (SELECT 1 FROM artifacts a WHERE a.id = ?1 AND a.owner_session_id = s.id)
+                OR EXISTS (SELECT 1 FROM watches w WHERE w.artifact_id = ?1 AND w.session_id = s.id)
+                OR EXISTS (SELECT 1 FROM json_each(COALESCE(s.ended_watches_json, '[]')) j
+                            WHERE json_extract(j.value, '$.artifact_id') = ?1)
+                OR EXISTS (SELECT 1 FROM versions v WHERE v.artifact_id = ?1 AND v.session_id = s.id)
+                OR EXISTS (SELECT 1 FROM threads t JOIN comments c ON c.thread_id = t.id
+                            WHERE t.artifact_id = ?1 AND c.via_session_id = s.id)
+                OR EXISTS (SELECT 1 FROM threads t JOIN feedback f ON f.thread_id = t.id
+                            WHERE t.artifact_id = ?1 AND f.target_session_id = s.id)))",
+        params![aid, sid],
+        |r| r.get(0),
+    )?)
+}
+
+/// Gives session `new` what was queued, undelivered, for the ended
+/// sessions of its harness session (same harness, harness session ID and
+/// grant) after they ended idle: their rows and the threads they were
+/// the target of. A row whose comment `new` has a row for already is
+/// dropped (one row per comment and session). Returns how many rows it
+/// handed over.
+pub(crate) fn hand_over_queued_in(tx: &Transaction<'_>, new: &str) -> Result<usize> {
+    const OLD: &str = "SELECT o.id FROM sessions me JOIN sessions o
+           ON o.harness = me.harness AND o.harness_session_id = me.harness_session_id
+          AND o.grant_id IS me.grant_id AND o.id <> me.id
+          AND o.ended_at IS NOT NULL AND o.ended_reason = 'idle'
+        WHERE me.id = ?1";
+    tx.execute(
+        &format!(
+            "DELETE FROM feedback WHERE delivered_at IS NULL AND target_session_id IN ({OLD})
+               AND comment_id IN (SELECT comment_id FROM feedback WHERE target_session_id = ?1)"
+        ),
+        params![new],
+    )?;
+    let n = tx.execute(
+        &format!(
+            "UPDATE feedback SET target_session_id = ?1, push_failed_at = NULL, notified_at = NULL
+              WHERE delivered_at IS NULL AND target_session_id IN ({OLD})"
+        ),
+        params![new],
+    )?;
+    tx.execute(
+        &format!("UPDATE threads SET target_session_id = ?1 WHERE target_session_id IN ({OLD})"),
+        params![new],
+    )?;
+    Ok(n)
 }
 
 /// What [`send_in`] wrote: the feedback rows it inserted, the one session
@@ -282,12 +345,27 @@ pub(crate) fn send_in(
         params![t.artifact_id],
         |r| r.get(0),
     )?;
+    let routed = st.routed(&t.artifact_id);
+    // On a routed artifact a send naming a known agent goes as one naming
+    // none: its rows reach no session, and the router (the chitin adapter,
+    // told of the send by the caller) delivers it. An unknown one is refused.
+    let target = match target {
+        SendTarget::Agent(sid) if routed => {
+            if !queueable_in(tx, &t.artifact_id, sid)? {
+                return Err(CoreError::invalid(
+                    "unknown_agent",
+                    "no live agent on this artifact has that handle",
+                ));
+            }
+            SendTarget::Everyone
+        }
+        other => other,
+    };
     tx.execute(
         "UPDATE threads SET sent_to_agent = 1 WHERE id = ?1",
         params![thread_id],
     )?;
     let target_before = stored_target(tx, thread_id)?;
-    let routed = st.routed(&t.artifact_id);
     let (targets, to) = targets_for(
         tx,
         thread_id,
@@ -1901,6 +1979,24 @@ impl Store {
             RoutedArtifacts::All => true,
             RoutedArtifacts::Listed(ids) => ids.iter().any(|i| i.as_str() == aid),
         }
+    }
+
+    /// The session whose agent handle is `handle`, when a send naming it on
+    /// artifact `aid` reaches it ([`queueable_in`]), routed or not.
+    pub fn queueable_agent(&self, aid: &ArtifactId, handle: &str) -> Result<Option<String>> {
+        self.with_read(|c| {
+            let sid: Option<String> = c
+                .query_row(
+                    "SELECT id FROM sessions WHERE agent_handle = ?1 ORDER BY ended_at IS NOT NULL, started_at DESC LIMIT 1",
+                    params![handle],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            match sid {
+                Some(s) if queueable_in(c, aid.as_str(), &s)? => Ok(Some(s)),
+                _ => Ok(None),
+            }
+        })
     }
 
     /// Gives every untargeted, undelivered row on artifact `id` to `session_id`
@@ -5308,8 +5404,16 @@ mod ownership {
         st.add_agent_reply(DAEMON, &tid, reply(&a, "also seen"), None)
             .unwrap();
         assert_eq!(st.thread_owner(&tid).unwrap(), None);
-        // No agent can be named or handed the thread.
-        assert!(st.send_to(DAEMON, &tid, SendTarget::Agent(&a)).is_err());
+        // A send naming a known agent goes as one naming none: nobody is
+        // its target or owner, and no row reaches a session (the router
+        // delivers it). No agent can be handed the thread.
+        st.send_to(DAEMON, &tid, SendTarget::Agent(&a)).unwrap();
+        assert!(take(&st, &a).items.is_empty());
+        let stranger = session(&st, "codex", "never-here");
+        assert!(
+            st.send_to(DAEMON, &tid, SendTarget::Agent(&stranger))
+                .is_err()
+        );
         assert!(
             st.send_to_named(DAEMON, &tid, std::slice::from_ref(&a))
                 .is_err()

@@ -16,7 +16,7 @@ import { APPROVE_FAILED, LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REO
 import { nav } from "../nav";
 import { type SiteHosts, artifactOrigin, frameOrigin, isPathFrame, pageSrc, startSrc } from "../origin";
 import { appQuery, inspectQuery, parseShellPath, shellPath } from "../route";
-import { type Thread, type Viewer, addComment, createThread, currentViewer, fetchThread, getViewer, listThreads, onViewer, reopenThread, resolveThread, seedViewer, sendBatch, sendToAgent, upsert } from "../threads";
+import { type Thread, type Viewer, addComment, createThread, currentViewer, fetchThread, getViewer, listThreads, onViewer, reopenThread, resolveThread, seedViewer, sendBatch, sendToAgentSaying, sentText, upsert } from "../threads";
 import { after } from "../clock";
 import { afterPaint, nextFrame } from "./after-paint";
 import { EMPTY_SELECTION, type Selection, prune, toggle, unsent } from "./batch-model";
@@ -695,6 +695,9 @@ export class ArtifactController {
     const text = PART_FAILED[part];
     this.noticeFor(text)(`${text}.`);
   }
+
+  /** Says `text` politely for a while (the stage's status line). */
+  say(text: string): void { this.showHint(text); }
 
   private showHint(text: string): void {
     this.set({ hint: text });
@@ -1695,6 +1698,8 @@ export class ArtifactController {
     if (r) {
       this.changeThreads(ts => r.threads.reduce((all, t) => upsert(all, t), ts));
       this.set({ selection: EMPTY_SELECTION, batchNote: "" });
+      const said = sentText(r.to);
+      if (said) this.showHint(said);
     }
     this.set({ batchBusy: false });
   }
@@ -1957,7 +1962,12 @@ export class ArtifactController {
     this.openPage(t.anchor.file);
   }
 
-  sendThread(t: Thread): void { const to = this.s.sendTo; this.saveThread(this.sendTracked(sendToAgent(this.id, t.id, to), to), SEND_FAILED); }
+  /** Sends `t` to `sendTo`; a send that waits for its agent, or goes over
+   * chitin, says so ([`sentText`]). */
+  sendThread(t: Thread): void {
+    const to = this.s.sendTo;
+    this.saveThread(this.sendTracked(sendToAgentSaying(this.id, t.id, to), to).then(r => { if (r.said) this.showHint(r.said); return r.thread; }), SEND_FAILED);
+  }
   /** Ticks or unticks `t`; with `shift`, every card between the last one
    * ticked and `t` in `order`, the sidebar's order of its cards (the
    * threads' order without it). */

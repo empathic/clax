@@ -2462,3 +2462,75 @@ async fn a_thread_reads_as_web_annotations() {
         .await;
     assert_eq!(missing.status(), 404);
 }
+
+/// "Send to <agent>" naming an agent Clax knows on the artifact that is not
+/// live there now (2026-11-02): the send waits for it, says so, and tells
+/// the chitin adapter (`agent_sent`); its harness session's next
+/// registration takes the thread. A handle Clax never saw is refused.
+#[tokio::test]
+async fn a_send_to_an_agent_that_ended_idle_waits_for_it_and_tells_chitin() {
+    let ts = TestServer::spawn().await;
+    let (_web, api, aid, tid) = two_agents_one_thread(&ts).await;
+    let was = ts.store.get_session(&api).unwrap().unwrap();
+    // Both end idle, as an agent with no follower does.
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let reaped = ts
+        .store
+        .reap_sessions(std::time::Duration::ZERO, &|_| false)
+        .unwrap();
+    assert!(reaped.ended.contains(&api), "{reaped:?}");
+    let mut bus = ts.state.events.subscribe();
+    let path = format!("/api/artifacts/{aid}/threads/{tid}/send");
+    let res = ts.post_json(&path, json!({ "to": was.agent_handle })).await;
+    assert_eq!(res.status(), 200);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["queued"], true, "{v}");
+    assert_eq!(
+        v["to"],
+        json!({"name": was.name, "chitin_title": null, "queued": true}),
+        "{v}"
+    );
+    // The chitin adapter hears of it: the thread and the session.
+    let mut sent = None;
+    while let Ok(Ok(e)) = tokio::time::timeout(std::time::Duration::from_secs(2), bus.recv()).await
+    {
+        if let clax_core::Event::AgentSent {
+            thread_id,
+            session_id,
+            queued,
+            ..
+        } = &e.event
+        {
+            sent = Some((thread_id.clone(), session_id.clone(), *queued));
+            break;
+        }
+    }
+    assert_eq!(sent, Some((tid.clone(), api.clone(), true)));
+    // A handle Clax never saw on the artifact is refused.
+    let res = ts
+        .post_json(&path, json!({ "to": format!("a_{}", "9".repeat(22)) }))
+        .await;
+    assert_eq!(res.status(), 400);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["error"]["code"], "unknown_agent", "{v}");
+    // Its harness session comes back naming its chitin title: it takes what
+    // waited, and its session carries the title.
+    let res = ts
+        .post_json(
+            "/api/sessions",
+            json!({"harness": "codex", "harness_session_id": "h2", "cwd": "/w", "repo": "api",
+                   "branch": "main", "chitin_title": "scratch.main-api"}),
+        )
+        .await;
+    assert_eq!(res.status(), 201);
+    let s: Value = res.json().await.unwrap();
+    assert_eq!(s["session"]["chitin_title"], "scratch.main-api", "{s}");
+    let back = s["session"]["id"].as_str().unwrap().to_string();
+    assert_ne!(back, api);
+    let bodies: Vec<String> = take(&ts, &back)
+        .await
+        .iter()
+        .filter_map(|i| i["body"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(bodies, ["fix the chart"]);
+}

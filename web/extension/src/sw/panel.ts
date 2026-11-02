@@ -10,6 +10,8 @@
 // questions and inbox act on no tab (spec 2026-10-06-agent-questions-and-inbox
 // §9.6): each is a request, answered by its result.
 import { MAX_SITES, type PanelToWorker, RETRYABLE, type WorkerToPanel } from "../messages";
+import type { Thread } from "../../../shell/src/threads";
+import { type SentTo, sentText } from "../../../shell/src/view/sent-text";
 import type { Api } from "./api";
 import type { WorkerInbox } from "./inbox";
 import { originOf } from "./origins";
@@ -55,6 +57,12 @@ const changed = () => new PanelFailure("page_changed", "The tab shows another pa
 const failed = (e: unknown): Extract<WorkerToPanel, { t: "failed" }> => {
   const err = e as { code?: unknown; message?: unknown };
   return { t: "failed", code: typeof err?.code === "string" ? err.code : "failed", message: typeof err?.message === "string" ? err.message : String(e) };
+};
+
+/** Tells the panel what a send naming an agent reached, when it says anything ([`sentText`]). */
+const say = (reply: (r: WorkerToPanel) => void, to: SentTo | null | undefined) => {
+  const text = sentText(to);
+  if (text) reply({ t: "notice", text });
 };
 
 /** The thread `id` of the listing of the site Clax is on for at `on`. */
@@ -264,9 +272,10 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: 
     const t = siteThread(d, on, m.threadId);
     if (t) {
       const aid = t.artifact_id;
-      const r = m.t === "send" ? await d.api.sendThread(aid, t.id, m.to) : m.t === "reply" ? await d.api.comment(aid, t.id, m.body)
+      const r: { thread: Thread; to?: SentTo | null } = m.t === "send" ? await d.api.sendThread(aid, t.id, m.to) : m.t === "reply" ? await d.api.comment(aid, t.id, m.body)
         : m.t === "resolve" ? await d.api.resolve(aid, t.id) : await d.api.reopen(aid, t.id);
       d.sites.applied(on, r.thread);
+      say(reply, r.to);
       return;
     }
   }
@@ -282,8 +291,8 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: 
       await d.navigate(tabId, base + (m.route ?? ""));
       return;
     }
-    case "send": d.tabs.applied(tabId, (await d.api.sendThread(aid, m.threadId, m.to)).thread); return;
-    case "send-batch": for (const t of (await d.api.sendBatch(aid, m.threadIds, m.note, m.to)).threads) d.tabs.applied(tabId, t); return;
+    case "send": { const r = await d.api.sendThread(aid, m.threadId, m.to); d.tabs.applied(tabId, r.thread); say(reply, r.to); return; }
+    case "send-batch": { const r = await d.api.sendBatch(aid, m.threadIds, m.note, m.to); for (const t of r.threads) d.tabs.applied(tabId, t); say(reply, r.to); return; }
     case "reply": d.tabs.applied(tabId, (await d.api.comment(aid, m.threadId, m.body)).thread); return;
     case "resolve": d.tabs.applied(tabId, (await d.api.resolve(aid, m.threadId)).thread); return;
     case "reopen": d.tabs.applied(tabId, (await d.api.reopen(aid, m.threadId)).thread); return;

@@ -1273,6 +1273,48 @@ pub async fn comment(
     Ok(respond(o, StatusCode::CREATED))
 }
 
+/// Whom a send names ([`send_target`]): the session, whether the send gives
+/// it a watch, and whether the send waits for it (`queued`: it is not live
+/// on the artifact now).
+struct SendTo {
+    sid: String,
+    watch: bool,
+    queued: bool,
+}
+
+/// What a send naming agent `to` answers of it, and the event that tells
+/// the chitin adapter of the send of `tids` ([`Event::AgentSent`]): `{name,
+/// chitin_title, queued}`, the name being the agent's (else its handle).
+fn sent_to(
+    st: &Store,
+    id: &ArtifactId,
+    tids: &[String],
+    to: &SendTo,
+) -> clax_core::Result<(Value, Vec<Event>)> {
+    let Some(s) = st.get_session(&to.sid)? else {
+        return Ok((Value::Null, Vec::new()));
+    };
+    let title = st.get_artifact(id)?.map(|a| a.title).unwrap_or_default();
+    let name = s.name.clone().unwrap_or_else(|| s.agent_handle.clone());
+    let events = tids
+        .iter()
+        .map(|tid| Event::AgentSent {
+            artifact_id: id.as_str().to_string(),
+            thread_id: tid.clone(),
+            session_id: s.id.clone(),
+            agent_handle: s.agent_handle.clone(),
+            name: s.name.clone(),
+            chitin_title: s.chitin_title.clone(),
+            queued: to.queued,
+            title: title.clone(),
+        })
+        .collect();
+    Ok((
+        json!({"name": name, "chitin_title": s.chitin_title, "queued": to.queued}),
+        events,
+    ))
+}
+
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct SendBody {
@@ -1280,42 +1322,78 @@ struct SendBody {
     to: Option<String>,
 }
 
-/// The live session a send's `to` names on artifact `id`, if any, and
-/// whether it needs a watch there: a live owner or watcher by its handle;
-/// 400 `unknown_agent` when it names none, and 400 `agent_cannot_read` when
-/// it names an agent that may not read the artifact (spec §10). For a
-/// person (`person`: the owner, or a connected person, in a browser or by
-/// hand) `to` may also name, by handle or name, any live agent that may
-/// read and watch the artifact, as an `@name` in their comment may
+/// The session a send's `to` names on artifact `id`, if any, with what the
+/// send does for it: a live owner or watcher by its handle. For a person
+/// (`person`: the owner, or a connected person, in a browser or by hand)
+/// `to` may also name, by handle or name, any live agent that may read and
+/// watch the artifact, as an `@name` in their comment may
 /// ([`handoff_target`]); the send gives it its watch, in the send's own
-/// transaction ([`Store::send_routed_watching`]).
+/// transaction ([`Store::send_routed_watching`]). Failing those, a handle
+/// Clax knows on the artifact whose agent is not live there now (it ended
+/// idle, unseen for a while, or it does not watch the page) gets the send
+/// queued: the rows wait for it, and it takes them on its next tool call
+/// ([`Store::queueable_agent`]). 400 `unknown_agent` when `to` names none
+/// of these, and 400 `agent_cannot_read` when it names an agent that may
+/// not read the artifact (spec §10).
 fn send_target(
     st: &Store,
     id: &ArtifactId,
     to: Option<&str>,
     live_page: bool,
     person: bool,
-) -> clax_core::Result<Option<(String, bool)>> {
+) -> clax_core::Result<Option<SendTo>> {
     let Some(h) = to else {
         return Ok(None);
     };
-    let watching = if clax_core::is_agent_handle(h) {
-        st.live_agent(id, h)?
-    } else {
-        None
-    };
-    if let Some(sid) = watching {
-        if named_agent_reaches(st, &sid, id, live_page)? == Reach::CannotRead {
+    let handle = clax_core::is_agent_handle(h);
+    let reads = |sid: &str| -> clax_core::Result<()> {
+        if named_agent_reaches(st, sid, id, live_page)? == Reach::CannotRead {
             let name = st
-                .get_session(&sid)?
+                .get_session(sid)?
                 .map(|s| s.name.unwrap_or_else(|| h.to_string()))
                 .unwrap_or_default();
             return Err(cannot_read(&name));
         }
-        return Ok(Some((sid, false)));
+        Ok(())
+    };
+    if let Some(sid) = if handle { st.live_agent(id, h)? } else { None } {
+        reads(&sid)?;
+        return Ok(Some(SendTo {
+            sid,
+            watch: false,
+            queued: false,
+        }));
     }
-    if person {
-        return Ok(Some((handoff_target(st, id, h, live_page)?, true)));
+    let live_elsewhere = !handle || st.live_session_by_handle(h)?.is_some();
+    if person && live_elsewhere {
+        if let Ok(sid) = handoff_target(st, id, h, live_page) {
+            return Ok(Some(SendTo {
+                sid,
+                watch: true,
+                queued: false,
+            }));
+        }
+    }
+    if let Some(sid) = if handle {
+        st.queueable_agent(id, h)?
+    } else {
+        None
+    } {
+        reads(&sid)?;
+        // On a routed artifact the router delivers it; nothing waits here.
+        let queued = !st.routed(id.as_str());
+        return Ok(Some(SendTo {
+            sid,
+            watch: false,
+            queued,
+        }));
+    }
+    if person && live_elsewhere {
+        return Ok(Some(SendTo {
+            sid: handoff_target(st, id, h, live_page)?,
+            watch: true,
+            queued: false,
+        }));
     }
     Err(if clax_core::is_agent_handle(h) {
         CoreError::invalid(
@@ -1328,10 +1406,13 @@ fn send_target(
 }
 
 /// Sets `sent_to_agent` and creates feedback rows; idempotent. An optional
-/// body `{"to": <agent handle>}` sends to that live agent only, and it becomes
-/// the thread's target (400 `unknown_agent` when it names no live owner or
-/// watcher, 400 `agent_cannot_read` when it names one that may not read the
-/// artifact). From a person (the owner, or a connected person; not a guest
+/// body `{"to": <agent handle>}` sends to that agent only, and it becomes
+/// the thread's target: a live owner or watcher, or a known agent that is
+/// not live there now, for which the send waits (`queued: true` in the
+/// answer: it gets the thread on its next tool call; [`send_target`]).
+/// 400 `unknown_agent` when it names none of them, 400
+/// `agent_cannot_read` when it names one that may not read the
+/// artifact. From a person (the owner, or a connected person; not a guest
 /// and not an agent) `to` may name any live agent, by handle or name, that
 /// may read and watch the artifact: it is given a watch, as an `@name` in
 /// their comment gives one ([`send_target`]). Without `to` the send goes to
@@ -1385,12 +1466,12 @@ pub async fn send(
             }
             let audit = audit.resolve(st)?;
             let to = send_target(st, &id, b.to.as_deref(), live_page, person)?;
-            let watch = to.as_ref().filter(|(_, w)| *w).map(|(sid, _)| sid.as_str());
+            let watch = to.as_ref().filter(|t| t.watch).map(|t| t.sid.as_str());
             let (t, touched, _) = st.send_routed_watching(
                 &audit,
                 &tid,
                 to.as_ref()
-                    .map_or(SendTarget::Everyone, |(sid, _)| SendTarget::Agent(sid)),
+                    .map_or(SendTarget::Everyone, |t| SendTarget::Agent(&t.sid)),
                 clax_store::approvals::Route::Send,
                 page,
                 watch,
@@ -1403,10 +1484,26 @@ pub async fn send(
             }
             apply(&ctx, st, &touched);
             publish_thread(&ctx, st, &t)?;
-            vis.filter_thread(st, &t, ctx.codex_push(), with_path)
+            let sent = match &to {
+                Some(to) => {
+                    let (v, events) = sent_to(st, &id, std::slice::from_ref(&tid), to)?;
+                    for e in events {
+                        ctx.events.publish(e);
+                    }
+                    v
+                }
+                None => Value::Null,
+            };
+            Ok((
+                vis.filter_thread(st, &t, ctx.codex_push(), with_path)?,
+                sent,
+            ))
         })
         .await?;
-    Ok(Json(json!({"thread": view})))
+    let (view, to) = view;
+    Ok(Json(
+        json!({"thread": view, "queued": to["queued"] == true, "to": to}),
+    ))
 }
 
 /// A send of threads `tids` of artifact `id` to ClaxBot (`to: "claxbot"`,
@@ -1631,8 +1728,10 @@ pub async fn send_batch(
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
             refuse_send_comments_off(st, &id, may_resolve)?;
             let audit = audit.resolve(st)?;
-            // A batch names only an agent that owns or watches the artifact.
-            let to = send_target(st, &id, b.to.as_deref(), live_page, false)?.map(|(sid, _)| sid);
+            // A batch names an agent that owns or watches the artifact, or
+            // one Clax knows there that it waits for (queued).
+            let target = send_target(st, &id, b.to.as_deref(), live_page, false)?;
+            let to = target.as_ref().map(|t| t.sid.clone());
             let (sent_by, viewer) = author(st, &who)?;
             // The sender as an author of the note (spec §8.2).
             let sender = match agent_person {
@@ -1655,7 +1754,17 @@ pub async fn send_batch(
                 });
             }
             let views = vis.filter_threads(st, &sent, ctx.codex_push(), with_path)?;
-            Ok(json!({"batch": r.batch, "sent": r.sent, "unchanged": r.unchanged, "threads": views}))
+            let to = match &target {
+                Some(t) => {
+                    let (v, events) = sent_to(st, &id, &r.sent, t)?;
+                    for e in events {
+                        ctx.events.publish(e);
+                    }
+                    v
+                }
+                None => Value::Null,
+            };
+            Ok(json!({"batch": r.batch, "sent": r.sent, "unchanged": r.unchanged, "threads": views, "queued": to["queued"] == true, "to": to}))
         })
         .await?;
     Ok(Json(v))

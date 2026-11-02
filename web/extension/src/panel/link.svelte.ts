@@ -53,6 +53,8 @@ export class PanelLink {
   /** How many of the panel's actions have failed: a failure the panel was
    * told to hide shows again when an action fails again, even the same way. */
   failures = $state(0);
+  /** What the last action that went through said (a send naming an agent), as the worker told it. */
+  notice = $state<string | null>(null);
   /** Whether the daemon takes the extension as the owner (null until it answered), and the unread count. */
   inbox = $state<{ owner: boolean | null; unread: number }>({ owner: null, unread: 0 });
   /** The open questions, and those closing here for a moment. */
@@ -114,6 +116,7 @@ export class PanelLink {
         this.failures++;
       }
       else if (m.t === "stream-status") this.up = m.up;
+      else if (m.t === "notice") this.notice = m.text;
       else if (m.t === "inbox") { this.inbox = { owner: m.owner, unread: m.unread }; this.questions.list(m.questions); }
       else if (m.t === "q-event") this.questions.upsert(m.question);
       else if (m.t === "inbox-event") {

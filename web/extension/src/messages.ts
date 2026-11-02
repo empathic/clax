@@ -166,6 +166,8 @@ export type WorkerToPanel =
   | { t: "failed"; code: string; message: string; req?: number }
   /** Whether the worker's event stream is up (told on `watch-tab` and on every change). */
   | { t: "stream-status"; up: boolean }
+  /** What an action that went through says ("Sent over chitin to …"), shown as text in the panel's notices. */
+  | { t: "notice"; text: string }
   /** Every thread of the tab's site (told on `watch-tab` and on every change); null until it is loaded. */
   | { t: "site"; site: SiteView | null }
   /** One batch of a rule's merge or un-merge (`rule`, `unrule`), a join or a split is done: `remaining` threads are left. */
@@ -409,6 +411,7 @@ export function isToPanel(m: unknown): m is WorkerToPanel {
     case "tab": return has("state") && obj(m.state);
     case "failed": return shape(m, ["t", "code", "message"], ["req"]) && str(m.code, 64) && str(m.message, MAX_BODY) && (m.req === undefined || count(m.req));
     case "stream-status": return has("up") && bool(m.up);
+    case "notice": return has("text") && str(m.text, 300);
     case "site": return has("site") && (m.site === null || obj(m.site));
     case "step": return has("req", "moved", "remaining") && count(m.req) && count(m.moved) && count(m.remaining);
     case "suggestion": return has("origin", "suggestion") && origin(m.origin) && (m.suggestion === null || suggestion(m.suggestion));

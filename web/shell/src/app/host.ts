@@ -168,7 +168,7 @@ import { hostArrival } from "../caps/gesture";
 import { visibility } from "../visibility";
 import { now } from "../clock";
 import { SEND_FAILED, failureText, report, scopedNotice } from "../failure";
-import { type Thread, sendToAgent, upsert } from "../threads";
+import { type Thread, sendToAgentSaying, upsert } from "../threads";
 import { type Anchor, type Box, INDEX_FILE, type InspectError, type PickDesc } from "../../../bridge/src/protocol";
 import type { ArtifactController, ViewState } from "../view/artifact-controller";
 import { anchorLabel, anchorQuote } from "./label";
@@ -562,8 +562,9 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   const sendThread = (id: string) => {
     const to = s().sendTo;
     const notice = scopedNotice(ctl.setNotice, SEND_FAILED);
-    void ctl.whileBusy(ctl.sendTracked(sendToAgent(ctl.id, id, to), to)).then(sent => {
+    void ctl.whileBusy(ctl.sendTracked(sendToAgentSaying(ctl.id, id, to), to)).then(({ thread: sent, said }) => {
       notice(null);
+      if (said) ctl.say(said);
       ctl.changeThreads(ts => upsert(ts, sent));
       post({ type: "sent", thread: id });
     }, (e: unknown) => {

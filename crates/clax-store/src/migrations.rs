@@ -1896,6 +1896,10 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX inbox_by_question ON inbox_items(question_id) WHERE question_id IS NOT NULL;
     CREATE INDEX inbox_by_request ON inbox_items(request_id) WHERE request_id IS NOT NULL;"
     ),
+    // 62: the chitin title an agent's session registered with (its
+    // `CHITIN_TITLE`; `crate::sessions`), the one channel a send to it is
+    // said on. `NULL` for a session that named none.
+    "ALTER TABLE sessions ADD COLUMN chitin_title TEXT;",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -1943,9 +1947,12 @@ pub const QUEUES_MIGRATION: u32 = CAPABILITY_APPROVALS_MIGRATION + 1;
 /// The migration that adds `viewers.tailscale_login`, as a schema version.
 pub const TAILSCALE_LOGIN_MIGRATION: u32 = QUEUES_MIGRATION + 1;
 
-/// The migration that adds the inbox's `queue` kind, as a schema version,
-/// and this build's last.
+/// The migration that adds the inbox's `queue` kind, as a schema version.
 pub const INBOX_QUEUE_MIGRATION: u32 = TAILSCALE_LOGIN_MIGRATION + 1;
+
+/// The migration that adds `sessions.chitin_title`, as a schema version,
+/// and this build's last.
+pub const CHITIN_TITLE_MIGRATION: u32 = INBOX_QUEUE_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -2105,11 +2112,11 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 
 /// What each migration after the app's leaves in the schema, in order:
 /// ClaxBot's ([`CLAXBOT_MIGRATION`]), then [`LEGACY_PATHS_MIGRATION`] to
-/// [`INBOX_QUEUE_MIGRATION`]. They follow the app's in every
+/// [`CHITIN_TITLE_MIGRATION`]. They follow the app's in every
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 12] = [
+const MARKS_AFTER_APP: [Mark<'static>; 13] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
@@ -2122,6 +2129,7 @@ const MARKS_AFTER_APP: [Mark<'static>; 12] = [
     Mark::Table("queues"),
     Mark::Column("viewers", "tailscale_login"),
     Mark::Marker("inbox_queue_kind"),
+    Mark::Column("sessions", "chitin_title"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -5140,8 +5148,13 @@ mod tests {
             super::QUEUES_MIGRATION + 1
         );
         assert!(MIGRATIONS[first + 18].contains("ADD COLUMN tailscale_login"));
+        assert_eq!(
+            super::CHITIN_TITLE_MIGRATION,
+            super::INBOX_QUEUE_MIGRATION + 1
+        );
         assert!(MIGRATIONS[first + 19].contains("'inbox_queue_kind'"));
-        assert_eq!(MIGRATIONS.len() as u32, super::INBOX_QUEUE_MIGRATION);
+        assert!(MIGRATIONS[first + 20].contains("ADD COLUMN chitin_title"));
+        assert_eq!(MIGRATIONS.len() as u32, super::CHITIN_TITLE_MIGRATION);
     }
 
     #[test]
@@ -5230,7 +5243,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_database_reaches_60() {
+    fn a_fresh_database_reaches_61() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         drop(Store::open(&home).unwrap());
@@ -5250,7 +5263,8 @@ mod tests {
         assert_eq!(super::QUEUES_MIGRATION, 59);
         assert_eq!(super::TAILSCALE_LOGIN_MIGRATION, 60);
         assert_eq!(super::INBOX_QUEUE_MIGRATION, 61);
-        assert_eq!(user_version(&c), super::INBOX_QUEUE_MIGRATION);
+        assert_eq!(super::CHITIN_TITLE_MIGRATION, 62);
+        assert_eq!(user_version(&c), super::CHITIN_TITLE_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
@@ -5992,7 +6006,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::INBOX_QUEUE_MIGRATION);
+        assert_eq!(user_version(&c), super::CHITIN_TITLE_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -6486,15 +6500,15 @@ mod tests {
         // remote kind migration to 49, ClaxBot's to 50, the site
         // migrations to 54, the return-to migration to 55, the version
         // declarations' to 56, the quickstart's to 57 and the capability
-        // approvals' to 58, the queues' to 59, the tailnet login's to 60
-        // and the inbox's queue kind to 61.
+        // approvals' to 58, the queues' to 59, the tailnet login's to 60,
+        // the inbox's queue kind to 61 and the chitin title's to 62.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::INBOX_QUEUE_MIGRATION);
+            assert_eq!(user_version(&c), super::CHITIN_TITLE_MIGRATION);
             (columns_of(&c), every_row(&c))
         };
 
@@ -6502,7 +6516,7 @@ mod tests {
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(
             user_version(&c),
-            super::INBOX_QUEUE_MIGRATION + 1,
+            super::CHITIN_TITLE_MIGRATION + 1,
             "ClaxBot's 50 and the migrations 51 to 61 after it are one later now"
         );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
@@ -6522,7 +6536,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), super::INBOX_QUEUE_MIGRATION);
+        assert_eq!(user_version(&copied), super::CHITIN_TITLE_MIGRATION);
         assert_eq!(
             every_row(&copied),
             before,
@@ -6536,7 +6550,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (super::INBOX_QUEUE_MIGRATION + 1, schema, rows)
+            (super::CHITIN_TITLE_MIGRATION + 1, schema, rows)
         );
     }
 
@@ -6810,7 +6824,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, super::INBOX_QUEUE_MIGRATION);
+        assert_eq!(last, super::CHITIN_TITLE_MIGRATION);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));
@@ -7183,7 +7197,7 @@ mod tests {
         drop(st);
         {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::INBOX_QUEUE_MIGRATION);
+            assert_eq!(user_version(&c), super::CHITIN_TITLE_MIGRATION);
             assert_eq!(table_count(&c, "briefs"), 1);
         }
         // Another wip database already holding that viewer and its login.
@@ -7219,7 +7233,7 @@ mod tests {
         );
         drop(st);
         let c = Connection::open(home2.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::INBOX_QUEUE_MIGRATION);
+        assert_eq!(user_version(&c), super::CHITIN_TITLE_MIGRATION);
         assert_eq!(table_count(&c, "briefs"), 1, "main's 40 ran");
         assert_eq!(table_count(&c, "tags"), 1);
     }
@@ -7262,7 +7276,7 @@ mod tests {
         );
         drop(st);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::INBOX_QUEUE_MIGRATION);
+        assert_eq!(user_version(&c), super::CHITIN_TITLE_MIGRATION);
         assert!(super::has_column(&c, "device_codes", "return_to").unwrap());
         assert_eq!(table_count(&c, "queues"), 1, "main's 59 ran");
     }

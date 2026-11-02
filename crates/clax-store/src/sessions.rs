@@ -108,7 +108,7 @@ pub struct EndedSession {
 
 pub(super) const SELECT: &str =
     "SELECT id, harness, harness_session_id, cwd, pid, parent_pid, started_at,
-    last_seen_at, ended_at, agent_handle, grant_id, person, name, name_source FROM sessions";
+    last_seen_at, ended_at, agent_handle, grant_id, person, name, name_source, chitin_title FROM sessions";
 
 pub(super) fn row_to_session(r: &Row<'_>) -> rusqlite::Result<Session> {
     Ok(Session {
@@ -126,6 +126,7 @@ pub(super) fn row_to_session(r: &Row<'_>) -> rusqlite::Result<Session> {
         person: r.get("person")?,
         name: r.get("name")?,
         name_source: r.get("name_source")?,
+        chitin_title: r.get("chitin_title")?,
     })
 }
 
@@ -558,6 +559,35 @@ impl Store {
     /// As [`Store::register_session`], and [`invalid_session_proof`] when a
     /// grant's registration matches a live row it did not prove.
     pub fn register_session_proved(
+        &self,
+        ctx: &AuditCtx,
+        mut r: RegisterSession,
+        proved: Proved<'_>,
+    ) -> Result<Registered> {
+        // A registration that names a chitin title records it; one that
+        // names none (or no valid one) keeps the session's.
+        let title = r
+            .chitin_title
+            .take()
+            .filter(|t| clax_core::model::is_chitin_title(t));
+        let mut reg = self.register_session_untitled(ctx, r, proved)?;
+        if let Some(t) = title
+            && reg.session.chitin_title.as_deref() != Some(t.as_str())
+        {
+            let id = reg.session.id.clone();
+            reg.session = self.with_tx(|tx| {
+                tx.execute(
+                    "UPDATE sessions SET chitin_title = ?2 WHERE id = ?1",
+                    params![id, t],
+                )?;
+                fetch(tx, &id)
+            })?;
+        }
+        Ok(reg)
+    }
+
+    /// [`Store::register_session_proved`] but for the chitin title.
+    fn register_session_untitled(
         &self,
         ctx: &AuditCtx,
         mut r: RegisterSession,
@@ -1372,6 +1402,9 @@ impl Store {
         ctx: &AuditCtx,
         id: &str,
     ) -> Result<Option<Restored>> {
+        // What was sent to its harness session's idle-ended rows after they
+        // ended waits for this one, however long ago they ended.
+        super::feedback::hand_over_queued_in(tx, id)?;
         let prev: Option<(String, Option<String>, String, Option<String>)> = tx
             .query_row(
                 "SELECT o.id, o.ended_reason, o.ended_at, o.ended_watches_json
@@ -3560,6 +3593,103 @@ mod tests {
                 restored.note
             );
             assert!(restored.note.ends_with("your watches were restored."));
+        }
+
+        /// The rows of thread `t` that wait, undelivered, for each session.
+        fn waiting(w: &World, t: &str) -> Vec<String> {
+            w.st.with_read(|c| {
+                let mut s = c.prepare(
+                    "SELECT target_session_id FROM feedback WHERE thread_id = ?1 AND delivered_at IS NULL ORDER BY id",
+                )?;
+                Ok(s.query_map(params![t], |r| r.get::<_, Option<String>>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect())
+            })
+            .unwrap()
+        }
+
+        #[test]
+        fn a_send_to_an_agent_that_ended_idle_waits_for_its_next_session() {
+            let w = world();
+            w.clock.advance(Store::REMOTE_SESSION_IDLE_SECS as i64 + 1);
+            let r =
+                w.st.reap_sessions(Duration::from_secs(Store::SESSION_IDLE_SECS), &|_| false)
+                    .unwrap();
+            assert_eq!(r.ended, vec![w.sid.clone()]);
+            // Known on the artifact (it watched it when it ended), it is sent
+            // the thread, not refused: the rows wait for it, and it is the
+            // thread's target.
+            let t = thread_by(&w.st, &w.aid, &w.sam);
+            w.st.send_routed(
+                DAEMON,
+                &t,
+                crate::SendTarget::Agent(&w.sid),
+                Route::Send,
+                false,
+            )
+            .unwrap();
+            assert_eq!(waiting(&w, &t), vec![w.sid.clone()]);
+            // A session Clax never saw on the artifact is still refused.
+            let (stranger_grant, _, _) = approved(&w.st, "Ola", [9; 32]);
+            let stranger =
+                w.st.register_session(DAEMON, reg_in(&stranger_grant, "hs-9"))
+                    .unwrap()
+                    .id;
+            let err =
+                w.st.send_routed(
+                    DAEMON,
+                    &t,
+                    crate::SendTarget::Agent(&stranger),
+                    Route::Send,
+                    false,
+                )
+                .unwrap_err();
+            assert!(matches!(
+                err,
+                CoreError::Invalid {
+                    code: "unknown_agent",
+                    ..
+                }
+            ));
+            // Its harness session's next registration, however late, takes
+            // what waits, and names its chitin title.
+            w.clock.advance(Store::RESTORE_WINDOW_SECS as i64 + 60);
+            let s =
+                w.st.register_session(
+                    DAEMON,
+                    RegisterSession {
+                        chitin_title: Some("sam-notes".into()),
+                        ..reg_in(&w.grant, "hs-1")
+                    },
+                )
+                .unwrap();
+            assert_ne!(s.id, w.sid);
+            assert_eq!(s.chitin_title.as_deref(), Some("sam-notes"));
+            assert_eq!(waiting(&w, &t), vec![s.id.clone()]);
+            let target: Option<String> =
+                w.st.with_read(|c| {
+                    Ok(c.query_row(
+                        "SELECT target_session_id FROM threads WHERE id = ?1",
+                        params![t],
+                        |r| r.get(0),
+                    )?)
+                })
+                .unwrap();
+            assert_eq!(target, Some(s.id.clone()));
+            // A registration naming no title keeps it; an invalid one is ignored.
+            let again =
+                w.st.register_session(
+                    DAEMON,
+                    RegisterSession {
+                        chitin_title: Some("not a title".into()),
+                        ..reg_in(&w.grant, "hs-1")
+                    },
+                )
+                .unwrap();
+            assert_eq!(again.id, s.id);
+            assert_eq!(again.chitin_title.as_deref(), Some("sam-notes"));
         }
 
         #[test]

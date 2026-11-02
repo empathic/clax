@@ -203,6 +203,7 @@ fn registration(client: &serde_json::Value) -> clax_core::RegisterSession {
         grant_id: None,
         repo: (!name.is_empty()).then(|| name.chars().take(64).collect()),
         branch: None,
+        chitin_title: None,
     }
 }
 

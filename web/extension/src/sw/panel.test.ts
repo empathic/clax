@@ -17,7 +17,9 @@ const Q = "01J9QQQQQQQQQQQQQQQQQQQQQQ";
 const SITE = { key: "http://localhost:5173", name: "http://localhost:5174", joined: true, origins: [{ origin: "http://localhost:5174", joined_at: "t", last_used_at: "t2" }, { origin: "http://localhost:5173", joined_at: "t", last_used_at: "t1" }] };
 function setup(over: { closed?: boolean; remaining?: number; page?: typeof page | null; admits?: boolean; allUrls?: boolean; fail?: string; failCode?: string; error?: string; site?: string[]; down?: string[]; denied?: string[]; loading?: boolean; restoring?: Promise<void>;
   /** The threads of another page of the tab's site, in its listing. */
-  far?: { id: string; artifact_id: string; clip_url: string | null }[] } = {}) {
+  far?: { id: string; artifact_id: string; clip_url: string | null }[];
+  /** Whom a send naming an agent reached, as the daemon answers. */
+  sentTo?: { name: string; chitin_title: string | null; queued: boolean } } = {}) {
   const calls: string[] = [];
   const out: WorkerToPanel[] = [];
   let waited = 0;
@@ -31,7 +33,7 @@ function setup(over: { closed?: boolean; remaining?: number; page?: typeof page 
   };
   const d: PanelDeps = {
     api: {
-      sendThread: api("sendThread", { thread: thread(T1) }), sendBatch: api("sendBatch", { threads: [thread(T1), thread(T2)] }),
+      sendThread: api("sendThread", { thread: thread(T1), to: over.sentTo ?? null }), sendBatch: api("sendBatch", { threads: [thread(T1), thread(T2)], to: over.sentTo ?? null }),
       comment: api("comment", { thread: thread(T1) }), resolve: api("resolve", { thread: thread(T1, "resolved") }),
       reopen: api("reopen", { thread: thread(T1) }), looked: api("looked", {}),
       setName: api("setName", { viewer: { public_id: "u_o", display_name: "Mia", created_at: "t" } }),
@@ -301,6 +303,18 @@ describe("panelAction", () => {
       `looked "${AID}" ["${T1}"]`,
     ]);
     expect(s.out).toEqual([]);
+  });
+
+  it("tells the panel when a send waits for its agent, or went over chitin", async () => {
+    const queued = setup({ sentTo: { name: "scratch.main-ax-rebuild-spike", chitin_title: null, queued: true } });
+    await queued.run({ t: "send", threadId: T1, to: "a_0123456789abcdef012345" });
+    expect(queued.out).toEqual([{ t: "notice", text: "Sent; scratch.main-ax-rebuild-spike will get it the next time it works." }]);
+    const chitin = setup({ sentTo: { name: "ax", chitin_title: "scratch.main-ax-rebuild-spike", queued: true } });
+    await chitin.run({ t: "send-batch", threadIds: [T1, T2], note: null, to: "a_0123456789abcdef012345" });
+    expect(chitin.out).toEqual([{ t: "notice", text: "Sent over chitin to scratch.main-ax-rebuild-spike." }]);
+    const live = setup({ sentTo: { name: "ax", chitin_title: null, queued: false } });
+    await live.run({ t: "send", threadId: T1, to: "a_0123456789abcdef012345" });
+    expect(live.out).toEqual([]);
   });
 
   it("tells the panel why an action failed", async () => {

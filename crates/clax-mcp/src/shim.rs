@@ -46,7 +46,8 @@ impl Harness {
 /// `CLAUDE_PROJECT_DIR` under Claude Code, else `current_dir`; under Codex it
 /// is `parent_cwd`, else empty, because Codex starts the shim in the plugin's
 /// own directory; under Grok it is `current_dir`, because Grok starts servers
-/// in its own working directory. Empty variables count as unset. The
+/// in its own working directory. `CHITIN_TITLE`, when it is a chitin title,
+/// is the agent's chitin title. Empty variables count as unset. The
 /// repository and branch that working directory is in name the agent
 /// (spec 2026-10-08 §11), read from the files with no `git` process.
 pub fn registration(
@@ -84,6 +85,8 @@ pub fn registration(
         parent_pid: Some(parent_pid),
         repo,
         branch,
+        // The agent's one chitin channel, which a send to it is said on.
+        chitin_title: var("CHITIN_TITLE").filter(|t| clax_core::model::is_chitin_title(t)),
         ..Default::default()
     }
 }
@@ -399,6 +402,28 @@ mod tests {
         );
         assert_eq!(r.harness_session_id.as_deref(), Some("ax-1"));
         assert_eq!(r.cwd, "");
+    }
+
+    #[test]
+    fn the_agent_s_chitin_title_is_registered_when_it_is_one() {
+        let r = registration(
+            Harness::Claude,
+            env(&[("CHITIN_TITLE", "scratch.main-ax-1")]),
+            None,
+            None,
+            10,
+            9,
+        );
+        assert_eq!(r.chitin_title.as_deref(), Some("scratch.main-ax-1"));
+        let r = registration(
+            Harness::Claude,
+            env(&[("CHITIN_TITLE", "not a title")]),
+            None,
+            None,
+            10,
+            9,
+        );
+        assert_eq!(r.chitin_title, None);
     }
 
     #[test]

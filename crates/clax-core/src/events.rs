@@ -258,6 +258,25 @@ pub enum Event {
         #[serde(skip)]
         carriers: Vec<String>,
     },
+    /// A person sent thread `thread_id` of `artifact_id` to one named
+    /// agent (`Send to <agent>`): its session, handle and name, the chitin
+    /// title it registered with (`None`: it named none), and whether the
+    /// send waits for it (`queued`: it is not live on the artifact now).
+    /// A pointer, never a comment: the chitin adapter says it to
+    /// `chitin_title`, and the agent reads the thread with its clax tools.
+    /// Only `/api/events` carries it, and only to a subscriber holding the
+    /// daemon token.
+    AgentSent {
+        artifact_id: String,
+        thread_id: String,
+        session_id: String,
+        agent_handle: String,
+        name: Option<String>,
+        chitin_title: Option<String>,
+        queued: bool,
+        /// The artifact's title, for the say.
+        title: String,
+    },
 }
 
 impl Event {
@@ -277,6 +296,7 @@ impl Event {
             | Event::Presence { artifact_id, .. }
             | Event::Comments { artifact_id, .. }
             | Event::Permissions { artifact_id }
+            | Event::AgentSent { artifact_id, .. }
             | Event::Doc { artifact_id, .. } => artifact_id,
             Event::Site { .. } => "",
             // Owner-only; it belongs to no artifact's routing.
@@ -324,6 +344,7 @@ impl Event {
             Event::Comments { .. } => "comments",
             Event::Permissions { .. } => "permissions",
             Event::Tags { .. } => "tags",
+            Event::AgentSent { .. } => "agent_sent",
         }
     }
 }
