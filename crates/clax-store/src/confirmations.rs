@@ -235,6 +235,24 @@ impl Store {
         id: &str,
         approve: bool,
     ) -> Result<Confirmation> {
+        self.answer_confirmation_with(ctx, id, approve, &[])
+    }
+
+    /// [`Store::answer_confirmation`], the audit record also carrying
+    /// `how` (where the answer came from, such as a chitin item approved
+    /// with a passkey). The first answer wins: the same transaction reads it
+    /// open and answers it, so two paths answering one confirmation answer
+    /// it once, and the second is `confirmation_answered`.
+    ///
+    /// # Errors
+    /// As [`Store::answer_confirmation`].
+    pub fn answer_confirmation_with(
+        &self,
+        ctx: &AuditCtx,
+        id: &str,
+        approve: bool,
+        how: &[(&str, serde_json::Value)],
+    ) -> Result<Confirmation> {
         self.with_tx(|tx| {
             self.expire_confirmations(tx)?;
             let c = tx
@@ -263,10 +281,13 @@ impl Store {
                 "UPDATE confirmations SET status = ?2, answered_at = ?3 WHERE id = ?1",
                 params![id, status, self.now()],
             )?;
-            let rec = AuditRecord::new(AuditKind::ConfirmationAnswer, self.now())
-                .with("confirmation_id", id)
-                .with("decision", c.decision["kind"].clone())
-                .with("answer", if approve { "approve" } else { "decline" });
+            let rec = how.iter().fold(
+                AuditRecord::new(AuditKind::ConfirmationAnswer, self.now())
+                    .with("confirmation_id", id)
+                    .with("decision", c.decision["kind"].clone())
+                    .with("answer", if approve { "approve" } else { "decline" }),
+                |r, (k, v)| r.with(k, v.clone()),
+            );
             self.record_audit(tx, ctx, rec)?;
             tx.query_row(&format!("{SELECT} WHERE id = ?1"), params![id], |r| {
                 self.confirmation_of(r)

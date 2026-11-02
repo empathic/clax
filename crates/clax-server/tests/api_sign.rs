@@ -42,6 +42,7 @@ async fn signing(dir: Option<&Path>) -> TestServer {
             chitin: bin.to_string_lossy().into_owned(),
             as_title: "bobby".into(),
             state_dir: Some("/state/chitin".into()),
+            confirm_to: None,
         })
     });
     TestServer::spawn_with(move |s| {

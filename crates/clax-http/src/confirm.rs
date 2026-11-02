@@ -364,6 +364,39 @@ pub fn view(s: &AppState, st: &Store, c: &Confirmation) -> clax_core::Result<Val
     }))
 }
 
+/// Answers open confirmation `id` (approve or decline) under `ctx`, the
+/// audit record also carrying `how`: the confirmation's [`view`] after. The
+/// one way every path answers one (the owner's browser,
+/// `POST /api/confirmations/<id>`, and a chitin item approved or declined
+/// with the owner's passkey), so a confirmation is answered once whichever
+/// comes first ([`Store::answer_confirmation_with`]). The caller publishes
+/// [`clax_core::Event::Confirmation`] with the view.
+///
+/// # Errors
+/// The store's: `NotFound`, `confirmation_expired`,
+/// `confirmation_answered`.
+pub fn answer(
+    s: &AppState,
+    st: &Store,
+    ctx: &clax_core::audit::AuditCtx,
+    id: &str,
+    approve: bool,
+    how: &[(&str, Value)],
+) -> clax_core::Result<Value> {
+    let c = st.answer_confirmation_with(ctx, id, approve, how)?;
+    view(s, st, &c)
+}
+
+/// What binds a confirmation outside Clax (a chitin item for the owner's
+/// passkey): the first 16 hex of the SHA-256 of
+/// `clax-confirm.v1\n<id>\n<decision as recorded>`. An answer naming this
+/// binding answers confirmation `id` for that decision and no other.
+pub fn binding(id: &str, decision: &Value) -> String {
+    let mut h = clax_core::secret::sha256_hex(&format!("clax-confirm.v1\n{id}\n{decision}"));
+    h.truncate(16);
+    h
+}
+
 /// The decision recorded as `d`, in words: what the card asks to confirm
 /// ("Confirm: <words>").
 ///

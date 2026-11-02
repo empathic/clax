@@ -45,6 +45,8 @@ mod api_claxbot;
 mod api_claxbot_run;
 #[cfg(any(not(clax_split), clax_split = "api_client_imports"))]
 mod api_client_imports;
+#[cfg(any(not(clax_split), clax_split = "api_confirm_chitin"))]
+mod api_confirm_chitin;
 #[cfg(any(not(clax_split), clax_split = "api_confirmations"))]
 mod api_confirmations;
 #[cfg(any(not(clax_split), clax_split = "api_content"))]

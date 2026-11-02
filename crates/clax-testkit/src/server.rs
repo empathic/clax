@@ -769,6 +769,7 @@ impl TestServer {
         clax_http::git_remotes::listen(&state);
         clax_server::linked::listen(&state);
         clax_server::routes::remote_requests::resume(&state);
+        clax_server::confirm_chitin::listen(&state);
         let events = state.events.clone();
         let store = state.store.clone();
         let working = state.working.clone();
