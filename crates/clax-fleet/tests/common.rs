@@ -79,6 +79,7 @@ pub async fn process(
         shard,
         kek: Some([7; 32]),
         peer_key: PEER_KEY.to_string(),
+        secrets_dir: None,
         port: addr.port(),
         clock: clock.clone(),
     })

@@ -514,9 +514,20 @@ impl Hosted {
     /// Hosted mode as `[hosted]` sets it, the setup secret read from the
     /// environment variable it names.
     pub fn from_config(c: &clax_core::config::HostedConfig) -> Option<Hosted> {
-        let secret = std::env::var(&c.setup_secret_env).ok();
+        Hosted::from_config_with(c, &|var| std::env::var(var).ok())
+    }
+
+    /// [`Hosted::from_config`], each secret (the setup secret, the GitHub
+    /// client secret) read by `secret` from the name of the variable
+    /// `[hosted]` gives it.
+    pub fn from_config_with(
+        c: &clax_core::config::HostedConfig,
+        secret: &dyn Fn(&str) -> Option<String>,
+    ) -> Option<Hosted> {
+        let github_secret = |var: &str| secret(var).unwrap_or_default();
+        let secret = secret(&c.setup_secret_env);
         let github = c.github.as_ref().and_then(|g| {
-            let secret = std::env::var(&g.client_secret_env).unwrap_or_default();
+            let secret = github_secret(&g.client_secret_env);
             crate::github::GitHub::new(
                 &g.client_id,
                 &secret,
