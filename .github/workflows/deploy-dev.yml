@@ -1,0 +1,134 @@
+name: Deploy dev
+
+# Deploys the dev environment (docs/environments.md) from main: after every
+# push to main whose ci run passes, and by hand (Actions, Deploy dev, Run
+# workflow), which redeploys main's tip. dev is its own Worker with its own
+# bucket, queue and Artifacts namespace, its own GitHub OAuth App and its
+# own Cloudflare token (the `dev` environment, deployable from main only).
+# A deploy runs scripts/cloudflare-setup.sh --env dev in CI mode as Deploy
+# prod does: it builds in a step without the deploy's secrets, then
+# deploys, waits for /healthz to report the build, checks a site host and
+# runs the smoke as dev's agent token. A failure fails the run; nothing is
+# rolled back. dev's first deploy, which makes its secrets, runs from a
+# laptop (`just env-deploy dev`).
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  deploy:
+    # A passing ci run of a push to main (not of a pull request whose
+    # branch is named main), or a run by hand on main.
+    if: >-
+      github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+      || github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # Its branch policy admits main only; its variables and secrets are what
+    # scripts/setup-env-github.sh sets and docs/environments.md describes.
+    environment: dev
+    permissions: { contents: read }
+    # One deploy at a time, and a running one is never cancelled. GitHub
+    # keeps at most one waiting run per group, the newest.
+    concurrency: { group: deploy-dev, cancel-in-progress: false }
+    env:
+      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+      PUBLIC_HOST: ${{ vars.PUBLIC_HOST }}
+      SITE_DOMAIN: ${{ vars.SITE_DOMAIN }}
+      SITE_ZONE: ${{ vars.SITE_ZONE }}
+      STORE: ${{ vars.STORE }}
+      # dev's GitHub OAuth App's client ID (GitHub refuses a variable named
+      # GITHUB_*).
+      OAUTH_CLIENT_ID: ${{ vars.OAUTH_CLIENT_ID }}
+      OWNER_GITHUB: ${{ vars.OWNER_GITHUB }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ env.SHA }}", fetch-depth: 0, persist-credentials: false }
+
+      # A run that waited behind another may hold a commit main has moved
+      # past: the run of the newer push deploys that one.
+      - name: Check the commit is main's tip
+        run: |
+          set -euo pipefail
+          tip="$(git ls-remote origin refs/heads/main | cut -f1)"
+          if [ "$tip" != "$SHA" ]; then
+            echo "::notice::$SHA is not main's tip ($tip): the newer push's run deploys that one"
+            echo "skip=1" >> "$GITHUB_ENV"
+          fi
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: ${{ env.skip != '1' }}
+        with: { package_json_file: web/package.json }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: ${{ env.skip != '1' }}
+        with: { node-version: 26 }
+      # rust-toolchain.toml's version and targets; the Worker builds for
+      # wasm32-unknown-unknown.
+      - name: Install Rust toolchain
+        if: ${{ env.skip != '1' }}
+        run: rustup toolchain install && rustup target add wasm32-unknown-unknown
+      # A clang that targets wasm32, and its linker and archiver.
+      - name: Install clang, lld and llvm
+        if: ${{ env.skip != '1' }}
+        run: sudo apt-get update -q && sudo apt-get install -y -q clang lld llvm
+
+      # Installs and builds with no secret in the environment (a dry run of
+      # the deploy below), as Deploy prod does.
+      - name: Build (scripts/cloudflare-setup.sh --env dev --ci, a dry run; no secrets)
+        if: ${{ env.skip != '1' }}
+        env:
+          CLAX_DEPLOY_HOME: ${{ runner.temp }}/clax-deploy
+        run: |
+          set -euo pipefail
+          args=(--env dev --legal bundled --public "$PUBLIC_HOST" --site-domain "$SITE_DOMAIN" --store "${STORE:-artifacts}")
+          if [ -n "$SITE_ZONE" ]; then args+=(--site-zone "$SITE_ZONE"); fi
+          if [ -n "$OAUTH_CLIENT_ID" ]; then args+=(--github-client-id "$OAUTH_CLIENT_ID" --owner-github "$OWNER_GITHUB"); fi
+          scripts/cloudflare-setup.sh "${args[@]}" --account "$CLOUDFLARE_ACCOUNT_ID" --ci
+
+      # Deploys what the step above built; only this step has the secrets.
+      - name: Deploy (scripts/cloudflare-setup.sh --env dev --ci --no-build [--smoke])
+        if: ${{ env.skip != '1' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLAX_SMOKE_TOKEN: ${{ secrets.CLAX_SMOKE_TOKEN }}
+          GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
+          CLAX_DEPLOY_HOME: ${{ runner.temp }}/clax-deploy
+        run: |
+          set -euo pipefail
+          args=(--env dev --legal bundled --public "$PUBLIC_HOST" --site-domain "$SITE_DOMAIN" --store "${STORE:-artifacts}")
+          if [ -n "$SITE_ZONE" ]; then args+=(--site-zone "$SITE_ZONE"); fi
+          if [ -n "$OAUTH_CLIENT_ID" ]; then args+=(--github-client-id "$OAUTH_CLIENT_ID" --owner-github "$OWNER_GITHUB"); fi
+          # The smoke runs as dev's agent token, which dev's owner makes
+          # after its first deploy (docs/environments.md); until it is set
+          # the deploy goes on without the smoke and says so.
+          if [ -n "$CLAX_SMOKE_TOKEN" ]; then args+=(--smoke); else echo "::warning::no CLAX_SMOKE_TOKEN in the dev environment: deploying without the smoke"; fi
+          scripts/cloudflare-setup.sh "${args[@]}" --account "$CLOUDFLARE_ACCOUNT_ID" \
+            --ci --no-build --i-know-what-i-am-doing
+
+      - name: Summary
+        if: ${{ always() && env.skip != '1' }}
+        env:
+          RECORD: ${{ runner.temp }}/clax-deploy/${{ vars.PUBLIC_HOST }}.json
+        run: |
+          field() { node -e 'try { console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]] ?? "") } catch { console.log("") }' "$RECORD" "$1"; }
+          health="$(curl -fsS --max-time 20 "https://$PUBLIC_HOST/healthz" 2>&1 || true)"
+          {
+            echo "**Deploy of dev, https://$PUBLIC_HOST**"
+            echo
+            echo "- commit: \`$SHA\`"
+            echo "- build: \`$(field build)\`"
+            echo "- Cloudflare version: \`$(field version_id)\`"
+            echo "- /healthz:"
+            echo
+            echo '```'
+            echo "$health"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

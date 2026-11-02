@@ -310,6 +310,15 @@ hosted-deploy *ARGS:
 clax-dev-deploy *ARGS:
     ./scripts/cloudflare-setup.sh --legal bundled --production "$@"
 
+# Deploy the environment NAME other than clax.dev (docs/environments.md): dev, which GitHub Actions deploys from every green push to main, or a preview such as pr-12, which it deploys for each pull request; each is a Worker with resources of its own, its settings kept in ~/.config/clax/deploy/setup.NAME.env (scripts/cloudflare-setup.sh --env NAME --legal bundled). A dry run unless given --i-know-what-i-am-doing; dev's first deploy, which makes its secrets, runs from here. prod is just clax-dev-deploy
+env-deploy NAME *ARGS:
+    if [ "$1" = prod ]; then echo "just env-deploy deploys dev or a preview; clax.dev is just clax-dev-deploy" >&2; exit 2; fi
+    ./scripts/cloudflare-setup.sh --legal bundled --env "$@"
+
+# Tear down the preview NAME: its Worker with every artifact and person in it, its custom domain, route and DNS record (crates/clax-worker/teardown.mjs; needs CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID; args: --site-zone <zone>, required, and --dry-run). Never dev or prod
+env-teardown NAME *ARGS:
+    cd crates/clax-worker && node teardown.mjs "$@"
+
 # Release Clax VERSION and every plugin: Claude Code, Codex and Grok through the repo's marketplaces, Pi through npm (scripts/release.sh); a dry run unless --i-know-what-i-am-doing
 release VERSION *ARGS:
     ./scripts/release.sh "$@"

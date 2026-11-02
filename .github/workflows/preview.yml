@@ -1,0 +1,136 @@
+name: Preview
+
+# Each pull request from a branch of this repository gets a preview
+# (docs/environments.md): the Worker clax-pr-<N> at https://pr-<N>.<preview
+# host zone>, its sites at <ID>.pr-<N>.<preview site zone>, its versions in
+# memory, fresh at its first deploy, with GitHub sign-in through the
+# preview OAuth App (whose callback URL matches every pr-<N> host) and
+# OWNER_GITHUB as its owner. Every push redeploys it; closing the pull
+# request tears it down (crates/clax-worker/teardown.mjs), and the
+# reaper (preview-reaper.yml) catches the closes GitHub sends no event for.
+#
+# Pull requests from forks get no preview: the `preview` environment's
+# secrets are not given to their runs. A same-repository pull request's
+# run executes its own scripts with the preview's Cloudflare token, so
+# that token reaches whatever it can edit: docs/environments.md,
+# "Credentials", says what to scope it to.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+permissions: {}
+
+# One run per pull request at a time, a newer one cancelling the older, so
+# a deploy queued before the close cannot recreate a torn-down preview.
+concurrency:
+  group: preview-${{ github.event.number }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    if: >-
+      github.event.action != 'closed'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: preview
+    permissions: { contents: read, pull-requests: write }
+    env:
+      NAME: pr-${{ github.event.number }}
+      SHA: ${{ github.event.pull_request.head.sha }}
+      PREVIEW_HOST_ZONE: ${{ vars.PREVIEW_HOST_ZONE }}
+      PREVIEW_SITE_ZONE: ${{ vars.PREVIEW_SITE_ZONE }}
+      # The preview OAuth App's client ID (GitHub refuses a variable named
+      # GITHUB_*).
+      OAUTH_CLIENT_ID: ${{ vars.OAUTH_CLIENT_ID }}
+      OWNER_GITHUB: ${{ vars.OWNER_GITHUB }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLAX_DEPLOY_HOME: ${{ runner.temp }}/clax-deploy
+    steps:
+      # The pull request's head commit, not the merge commit GitHub makes
+      # for the run, so /healthz names a commit someone pushed.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ env.SHA }}", persist-credentials: false }
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with: { package_json_file: web/package.json }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: 26 }
+      - name: Install Rust toolchain
+        run: rustup toolchain install && rustup target add wasm32-unknown-unknown
+      - name: Install clang, lld and llvm
+        run: sudo apt-get update -q && sudo apt-get install -y -q clang lld llvm
+
+      - name: Build (scripts/cloudflare-setup.sh --env pr-<N> --ci, a dry run; no secrets)
+        run: |
+          set -euo pipefail
+          scripts/cloudflare-setup.sh --env "$NAME" --legal bundled \
+            --public "$NAME.$PREVIEW_HOST_ZONE" --site-domain "$NAME.$PREVIEW_SITE_ZONE" --site-zone "$PREVIEW_SITE_ZONE" \
+            --github-client-id "$OAUTH_CLIENT_ID" --owner-github "$OWNER_GITHUB" --account "$CLOUDFLARE_ACCOUNT_ID" --ci
+
+      # The closed event's run normally cancels this one, but a push and a
+      # close in the same second can start the runs the other way round:
+      # a closed pull request is torn down here instead, and the job fails.
+      - name: Tear down instead if the pull request closed while this run waited
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          state="$(gh api "repos/$GITHUB_REPOSITORY/pulls/${{ github.event.number }}" --jq .state)"
+          if [ "$state" != open ]; then
+            echo "::error::#${{ github.event.number }} is $state: tearing its preview down instead of deploying"
+            (cd crates/clax-worker && node teardown.mjs "$NAME" --site-zone "$PREVIEW_SITE_ZONE")
+            exit 1
+          fi
+
+      # Deploys what the build step built. A preview's first deploy makes
+      # no SETUP_SECRET or CLAX_TOKEN (deploy.mjs --env): its owner signs in
+      # with GitHub. The health wait and the site host check fail the run;
+      # previews run no smoke.
+      - name: Deploy (scripts/cloudflare-setup.sh --env pr-<N> --ci --no-build)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          scripts/cloudflare-setup.sh --env "$NAME" --legal bundled \
+            --public "$NAME.$PREVIEW_HOST_ZONE" --site-domain "$NAME.$PREVIEW_SITE_ZONE" --site-zone "$PREVIEW_SITE_ZONE" \
+            --github-client-id "$OAUTH_CLIENT_ID" --owner-github "$OWNER_GITHUB" --account "$CLOUDFLARE_ACCOUNT_ID" \
+            --ci --no-build --i-know-what-i-am-doing
+
+      # One comment per pull request, updated on every deploy.
+      - name: Comment the preview's address
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const url = `https://${process.env.NAME}.${process.env.PREVIEW_HOST_ZONE}`;
+            const body = `**Preview:** ${url} (commit ${process.env.SHA.slice(0, 12)}; sign in with GitHub as @${process.env.OWNER_GITHUB} to be its owner)`;
+            const { data: comments } = await github.rest.issues.listComments({ ...context.repo, issue_number: context.issue.number, per_page: 100 });
+            const mine = comments.find((c) => c.user?.type === "Bot" && c.body.startsWith("**Preview:**"));
+            if (mine) await github.rest.issues.updateComment({ ...context.repo, comment_id: mine.id, body });
+            else await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
+
+  teardown:
+    if: >-
+      github.event.action == 'closed'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: preview
+    permissions: { contents: read }
+    steps:
+      # The base branch's teardown.mjs, not the closed branch's: it needs
+      # no build, and what it runs with the token is code already merged.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ github.event.pull_request.base.sha }}", persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: 26 }
+      - name: Tear down (crates/clax-worker/teardown.mjs pr-<N>)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIEW_SITE_ZONE: ${{ vars.PREVIEW_SITE_ZONE }}
+        run: cd crates/clax-worker && node teardown.mjs "pr-${{ github.event.number }}" --site-zone "$PREVIEW_SITE_ZONE"

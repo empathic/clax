@@ -5,7 +5,9 @@ the branch `prod`. Every change to `prod` is a release that arrives by pull
 request, and every push to `prod` deploys clax.dev from GitHub Actions.
 The design, and the calls it made, are in
 [`docs/superpowers/specs/2026-10-27-prod-releases-design.md`](superpowers/specs/2026-10-27-prod-releases-design.md);
-cutting a release is `docs/usage.md`, "Releasing".
+cutting a release is `docs/usage.md`, "Releasing". The `dev` environment
+(from `main`) and the pull requests' previews are
+[docs/environments.md](environments.md).
 
 ## How it fits together
 

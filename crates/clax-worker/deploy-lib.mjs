@@ -107,15 +107,62 @@ export function productionGate({ production, fromLaptop, githubActions, clean, h
   return { refuse: `refusing to deploy the production instance: ${why.join("; ")}` };
 }
 
+/** The R2 bucket every preview's assets share (`envOf`): a preview's
+ * objects expire after `PREVIEW_ASSET_DAYS` days, so a torn-down preview
+ * leaves nothing behind for longer. */
+export const PREVIEW_BUCKET = "clax-assets-preview";
+export const PREVIEW_ASSET_DAYS = 30;
+
+/** The Cloudflare resources the environment `name` deploys to
+ * (docs/environments.md): `prod` (the default; clax.dev's own names),
+ * `dev`, or a preview's name (`pr-<N>`, or any other lowercase name of
+ * letters, digits and inner hyphens, at most 40 characters). Answers
+ * `{ env, worker, bucket, queue, namespace, ephemeral }`: each persistent
+ * environment has a bucket, queue and Artifacts namespace of its own (a
+ * queue takes one consumer Worker, and asset keys and repository names
+ * carry no instance); a preview is ephemeral, keeps its versions in the
+ * RepoDO stand-in (no queue, no namespace) and shares `PREVIEW_BUCKET`.
+ * Throws on any other name. */
+export function envOf(name = "prod") {
+  if (name === "prod") return { env: "prod", worker: "clax", bucket: "clax-assets", queue: "clax-artifacts-events", namespace: "clax", ephemeral: false };
+  if (name === "dev") return { env: "dev", worker: "clax-dev", bucket: "clax-assets-dev", queue: "clax-artifacts-events-dev", namespace: "clax-dev", ephemeral: false };
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(String(name))) {
+    throw new Error(`--env takes prod, dev or a preview's name (lowercase letters, digits and inner hyphens, at most 40; e.g. pr-12), not ${name}`);
+  }
+  return { env: name, worker: `clax-${name}`, bucket: PREVIEW_BUCKET, queue: null, namespace: null, ephemeral: true };
+}
+
+/** The zone a site domain's wildcard route is on: `zone` when given (the
+ * site domain itself, or a domain it is under, as a preview's
+ * `pr-12.<zone>` is), else the site domain. Throws when the site domain is
+ * not in `zone`. */
+export function siteZoneOf(site, zone) {
+  if (zone === undefined || zone === null || zone === "") return site;
+  const z = String(zone).toLowerCase().replace(/\.$/, "");
+  if (site === z || site.endsWith(`.${z}`)) return z;
+  throw new Error(`the site domain ${site} is not in the zone ${z} (--site-zone names the zone the site domain is, or is under)`);
+}
+
+/** The DNS name of the proxied wildcard record a site domain below its
+ * zone needs (`*.pr-12.<zone>`), or null when the site domain is the zone
+ * (whose `*` record the account keeps: README.md, "DNS for the public host
+ * and the site domain"). */
+export function wildcardRecordOf(site, zone) {
+  return site === zone ? null : `*.${site}`;
+}
+
 /** What `--ci` requires of the options before anything runs: every
  * setting given as a flag (a CI run has no record and asks nothing), and
  * none of the options that need a person. Throws naming each flag
- * missing or refused. `env` is the environment (CLOUDFLARE_ACCOUNT_ID). */
+ * missing or refused. `env` is the environment (CLOUDFLARE_ACCOUNT_ID).
+ * A preview (`o.ephemeral`) keeps its versions in memory, so needs no
+ * --store, and needs GitHub sign-in: nobody can sign in to it otherwise. */
 export function checkCiOptions(o, env = {}) {
   const missing = [];
   if (!o.public && !o.zone) missing.push("--public <host>");
   if (!o["site-domain"]) missing.push("--site-domain <domain>");
-  if (!o.storeGiven) missing.push("--store artifacts|memory");
+  if (!o.storeGiven && !o.ephemeral) missing.push("--store artifacts|memory");
+  if (o.ephemeral && !o["github-client-id"]) missing.push("--github-client-id <ID> (a preview's only sign-in is GitHub's)");
   if (o.legal === undefined && !o["terms-url"] && !o["privacy-url"] && !o["legal-version"]) {
     missing.push("--legal bundled (or --terms-url, --privacy-url and --legal-version)");
   }
@@ -137,9 +184,14 @@ export function checkCiOptions(o, env = {}) {
  * CLAX_KEK is refused; so is a GitHub sign-in that would turn off (the
  * Worker has GITHUB_CLIENT_SECRET but no --github-client-id was given) or
  * stay off (--github-client-id, and neither the Worker nor
- * GITHUB_CLIENT_SECRET has its secret). Answers the reason, or null. */
-export function ciSecretsRefusal(have, { githubClientId, githubSecretGiven }) {
-  const missing = ["SETUP_SECRET", "CLAX_TOKEN", "CLAX_KEK"].filter((n) => !have.includes(n));
+ * GITHUB_CLIENT_SECRET has its secret). Answers the reason, or null.
+ *
+ * A preview (`ephemeral`) is first deployed by CI: it is given no
+ * SETUP_SECRET (setup stays closed) and no CLAX_TOKEN (the instance makes
+ * its own), the owner signs in with GitHub, and a missing CLAX_KEK is
+ * generated with no backup kept, since its data is thrown away with it. */
+export function ciSecretsRefusal(have, { githubClientId, githubSecretGiven, ephemeral = false }) {
+  const missing = ephemeral ? [] : ["SETUP_SECRET", "CLAX_TOKEN", "CLAX_KEK"].filter((n) => !have.includes(n));
   if (missing.length) {
     return `the Worker has no ${missing.join(", ")} (or wrangler secret list failed): its first deploy, which generates them, runs from a laptop (scripts/cloudflare-setup.sh), not --ci`;
   }

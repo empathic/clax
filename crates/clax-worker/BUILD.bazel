@@ -55,6 +55,17 @@ js_test(
     patch_node_fs = False,
 )
 
+# A preview's teardown and the reaper (teardown.mjs), and the Cloudflare API
+# calls deploy.mjs makes (cloudflare-api.mjs), against a fake Cloudflare
+# and GitHub API on a loopback port.
+js_test(
+    name = "teardown_test",
+    data = [":scripts"],
+    entry_point = "test-teardown.mjs",
+    node_options = ["--test"],
+    patch_node_fs = False,
+)
+
 # wrangler, from pnpm-lock.yaml.
 npm_link_all_packages(name = "node_modules")
 
@@ -76,6 +87,7 @@ copy_to_bin(
             "test-deploy-config.mjs",
             "test-feedback.mjs",
             "test-sandbox.mjs",
+            "test-teardown.mjs",
             "test-wasm.mjs",
         ],
     ) + ["wrangler.jsonc"],

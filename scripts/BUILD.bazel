@@ -177,6 +177,13 @@ sh_test(
     data = [":all"],
 )
 
+# scripts/setup-env-github.sh against a fake gh: dev and preview, dry run, act and again.
+sh_test(
+    name = "setup_env_github",
+    srcs = ["test-setup-env-github.sh"],
+    data = [":all"],
+)
+
 sh_test(
     name = "installer",
     srcs = ["test-install.sh"],

@@ -5,20 +5,24 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import {
+  PREVIEW_BUCKET,
   SMOKE_CANNOT,
   buildId,
   builtFromRefusal,
   checkCiOptions,
   ciSecretsRefusal,
   doneText,
+  envOf,
   healthOf,
   partialTriggerUpdate,
   prodTipOf,
   productionGate,
   reelVars,
+  siteZoneOf,
   smokeCannot,
   smokeCredential,
   versionIdOf,
+  wildcardRecordOf,
 } from "./deploy-lib.mjs";
 
 // What `wrangler deploy` printed when the custom-domains call failed after
@@ -178,6 +182,48 @@ test("--ci refuses a first deploy: the Worker lacks a secret, or the list failed
 test("--ci refuses to turn GitHub sign-in off, or to leave it without its secret", () => {
   assert.match(ciSecretsRefusal([...ALL, "GITHUB_CLIENT_SECRET"], {}), /would turn GitHub sign-in off/);
   assert.match(ciSecretsRefusal(ALL, { githubClientId: "Iv1" }), /neither the Worker nor GITHUB_CLIENT_SECRET/);
+});
+
+test("prod keeps clax.dev's names, and dev has a bucket, queue and namespace of its own", () => {
+  const prod = { env: "prod", worker: "clax", bucket: "clax-assets", queue: "clax-artifacts-events", namespace: "clax", ephemeral: false };
+  assert.deepEqual(envOf(), prod);
+  assert.deepEqual(envOf("prod"), prod);
+  assert.deepEqual(envOf("dev"), { env: "dev", worker: "clax-dev", bucket: "clax-assets-dev", queue: "clax-artifacts-events-dev", namespace: "clax-dev", ephemeral: false });
+});
+
+test("a preview is its own Worker, in memory, on the shared preview bucket", () => {
+  assert.deepEqual(envOf("pr-12"), { env: "pr-12", worker: "clax-pr-12", bucket: PREVIEW_BUCKET, queue: null, namespace: null, ephemeral: true });
+  assert.equal(envOf("x").worker, "clax-x");
+  assert.equal(envOf("a".repeat(40)).worker, `clax-${"a".repeat(40)}`);
+  for (const bad of ["", "PR-12", "pr_12", "-pr", "pr-", "pr.12", "a".repeat(41), "pr 12"]) {
+    assert.throws(() => envOf(bad), /--env takes prod, dev or a preview's name/, JSON.stringify(bad));
+  }
+});
+
+test("the site route's zone is the site domain, or a zone it is under", () => {
+  assert.equal(siteZoneOf("example.run"), "example.run");
+  assert.equal(siteZoneOf("example.run", ""), "example.run");
+  assert.equal(siteZoneOf("pr-12.preview.run", "preview.run"), "preview.run");
+  assert.equal(siteZoneOf("pr-12.preview.run", "Preview.run."), "preview.run");
+  assert.equal(siteZoneOf("preview.run", "preview.run"), "preview.run");
+  assert.throws(() => siteZoneOf("pr-12.preview.run", "other.run"), /not in the zone other\.run/);
+  assert.throws(() => siteZoneOf("pr-12.xpreview.run", "preview.run"), /not in the zone/);
+  assert.equal(wildcardRecordOf("example.run", "example.run"), null);
+  assert.equal(wildcardRecordOf("pr-12.preview.run", "preview.run"), "*.pr-12.preview.run");
+});
+
+test("a preview's --ci deploy needs GitHub sign-in, and no --store", () => {
+  const preview = { ...CI, store: "memory", storeGiven: false, ephemeral: true, "github-client-id": "Iv1", "owner-github": "someone" };
+  assert.doesNotThrow(() => checkCiOptions(preview));
+  assert.throws(() => checkCiOptions({ ...preview, "github-client-id": undefined, "owner-github": undefined }), /--github-client-id <ID> \(a preview's only sign-in is GitHub's\)/);
+});
+
+test("a preview's first --ci deploy makes no first-time secrets, and still needs GitHub's", () => {
+  const e = { ephemeral: true };
+  assert.equal(ciSecretsRefusal([], { ...e, githubClientId: "Iv1", githubSecretGiven: true }), null);
+  assert.equal(ciSecretsRefusal(["CLAX_KEK", "GITHUB_CLIENT_SECRET"], { ...e, githubClientId: "Iv1" }), null);
+  assert.match(ciSecretsRefusal([], { ...e, githubClientId: "Iv1" }), /neither the Worker nor GITHUB_CLIENT_SECRET/);
+  assert.match(ciSecretsRefusal(["GITHUB_CLIENT_SECRET"], e), /would turn GitHub sign-in off/);
 });
 
 const DONE = { pub: "clax.example.com", name: "clax", diag: false, record: "/r/clax.example.com.json", kek: "/r/clax.example.com.kek", smoke: "node smoke-remote.mjs --deploy /r/clax.example.com.json" };
