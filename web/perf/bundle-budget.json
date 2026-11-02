@@ -1,7 +1,7 @@
 {
   "bridgeBaseline": 32861,
   "gallery": 32796,
-  "artifact": 70000,
+  "artifact": 70656,
   "host": 9088,
   "questions": 18300,
   "bridge": 6288,
@@ -20,5 +20,5 @@
   "queues": 24996,
   "partLive": 4616,
   "overlay": 78082,
-  "sdkOverlay": 81920
+  "sdkOverlay": 110848
 }
