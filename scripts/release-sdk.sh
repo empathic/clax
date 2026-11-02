@@ -38,15 +38,19 @@
 #      commit (target/release-sdk/X.Y.Z/publish), pnpm install
 #      --frozen-lockfile, pnpm run build:sdk and pnpm run test:sdk in web/,
 #      as publish-sdk.yml runs them, then npm publish --access public from
-#      web/dist-sdk on this terminal, for npm's prompts; then the one-time
-#      trusted-publisher setup is printed. Done once npm has the version.
+#      web/dist-sdk on this terminal, for npm's prompts. Done once npm has
+#      the version. After a first publish from here, every run ends with
+#      the one-time trusted-publisher setup (and says it when step 4
+#      fails), until a version publishes through publish-sdk.yml.
 #
 # A run that fails stops at that step, says which, and changes nothing after
 # it. Run the same command again: each step's state is read from git,
 # GitHub and npm (the tag here and on origin, the publish workflow's runs,
 # the versions npm has), so the run resumes at the first step not done; a
-# run of publish-sdk.yml under way is waited for, and a failed one is
-# dispatched anew. A version npm has is refused, but for this command's own
+# run of publish-sdk.yml under way is waited for, one that succeeded is
+# taken as done (npm's view of a publish can lag it, so step 4 waits for
+# npm to list the version), and a failed one is dispatched anew. A version
+# npm has is refused, but for this command's own
 # finished publish (npm has it, and origin has its tag), which reports every
 # step done. It never force-pushes and never deletes a tag.
 #
@@ -75,6 +79,10 @@ WORKFLOW=publish-sdk.yml
 RUN_TITLE="Publish SDK package"
 # The file that holds the package's name and version.
 SDK_MANIFEST=web/sdk/package.json
+# Kept from a first publish from here (it holds that version) until a
+# version publishes through publish-sdk.yml: while it exists, the
+# trusted-publisher setup that workflow needs is said again.
+FIRST_MARK="$ROOT/target/release-sdk/first-publish"
 LAST=4
 
 usage() {
@@ -107,15 +115,17 @@ NOTES=()
 
 # --- state, read from git, GitHub and npm -----------------------------------------
 
-# The package's npm name, from the checkout's web/sdk/package.json.
-PKG="$(sed -n 's/^  "name": "\(.*\)",$/\1/p' "$ROOT/$SDK_MANIFEST")"
-# The SDK version commit $1 carries (its web/sdk/package.json), or nothing.
-sdk_version_at() {
-    g show "$1:$SDK_MANIFEST" 2>/dev/null | sed -n 's/^  "version": "\(.*\)",$/\1/p'
+# sdk_field_at COMMIT FIELD: the top-level string FIELD (name, version) of
+# COMMIT's web/sdk/package.json, or nothing. It reads the manifest's
+# two-space, comma-ended lines, which web/sdk/package.test.ts pins.
+sdk_field_at() {
+    g show "$1:$SDK_MANIFEST" 2>/dev/null | sed -n "s/^  \"$2\": \"\(.*\)\",\$/\1/p"
 }
-is_signed_tag() { g cat-file tag "$TAG" | grep -E -- '^-----BEGIN [A-Z ]*SIGNATURE-----$' >/dev/null; }
+sdk_version_at() { sdk_field_at "$1" version; }
+is_signed_tag() { g cat-file tag "$TAG" 2>/dev/null | grep -E -- '^-----BEGIN [A-Z ]*SIGNATURE-----$' >/dev/null; }
 
-PROD_TIP="" LOCAL_TAG="" REMOTE_TAG="" COMMIT="" ON_NPM=""
+# PKG is the package's npm name, from the commit published.
+PROD_TIP="" LOCAL_TAG="" REMOTE_TAG="" COMMIT="" PKG="" ON_NPM=""
 # Reads the state the steps are judged by; fails, saying why in
 # REFRESH_ERR, when origin cannot be read.
 refresh() {
@@ -127,6 +137,8 @@ refresh() {
     REMOTE_TAG="$(awk -v t="refs/tags/$TAG" '$2 == t "^{}" { p = $1 } $2 == t { q = $1 } END { print (p != "" ? p : q) }' <<< "$out")"
     # The tag's commit once there is a tag; prod's tip until then.
     COMMIT="${LOCAL_TAG:-${REMOTE_TAG:-$PROD_TIP}}"
+    PKG=""
+    if [ -n "$COMMIT" ]; then PKG="$(sdk_field_at "$COMMIT" name)"; fi
 }
 
 # --- step 1: preflight ------------------------------------------------------------
@@ -145,6 +157,11 @@ check_version() {
         problem "$V is not a version (X.Y.Z)"
         return 0
     fi
+    # Step 3 pushes only a signed tag, and this never deletes one.
+    if [ -n "$LOCAL_TAG" ] && [ -z "$REMOTE_TAG" ] && ! is_signed_tag; then
+        problem "the tag $TAG here is not a signed tag: delete it (git tag -d $TAG) and run again"
+        return 0
+    fi
     [ -n "$PROD_TIP" ] || return 0
     if [ -n "$LOCAL_TAG" ] && [ -n "$REMOTE_TAG" ] && [ "$LOCAL_TAG" != "$REMOTE_TAG" ]; then
         problem "the tag $TAG tags $LOCAL_TAG here and $REMOTE_TAG on origin"
@@ -156,7 +173,14 @@ check_version() {
     fi
     at="$(sdk_version_at "$COMMIT")"
     [ "$at" != "$V" ] || return 0
-    if [ "$COMMIT" = "$PROD_TIP" ] && [ -z "$LOCAL_TAG$REMOTE_TAG" ]; then what="origin/$PROD's tip ($COMMIT)"
+    if [ "$COMMIT" = "$PROD_TIP" ] && [ -z "$LOCAL_TAG$REMOTE_TAG" ]; then
+        what="origin/$PROD's tip ($COMMIT)"
+        # Prod has moved past V: V is published, if at all, from the
+        # older commit on prod that carries it, which a tag names.
+        if semver_ok "$at" && [ "$(ver_cmp "$at" "$V")" = 1 ]; then
+            problem "$what carries SDK version $at, past $V: publish $at, or tag the commit on $PROD that carries $V (git tag -s $TAG -m \"Clax SDK $V\" <commit>) and run again"
+            return 0
+        fi
     else what="the tag $TAG's commit ($COMMIT)"; fi
     problem "$what carries SDK version ${at:-none}, not $V (the version in $SDK_MANIFEST): raise it on main by a pull request; prod gets it with the next Clax release (just release)"
 }
@@ -166,8 +190,12 @@ check_version() {
 # a package that exists, so while it does not, step 4 publishes the first
 # version from here, which needs npm signed in and pnpm.
 check_npm() {
-    local err latest
+    local err highest
     command -v "$NPM" >/dev/null 2>&1 && semver_ok "$V" || return 0
+    if [ -z "$PKG" ]; then
+        if [ -n "$COMMIT" ]; then problem "cannot read the package name from $COMMIT:$SDK_MANIFEST"; fi
+        return 0
+    fi
     err="$(mktemp)"
     if ! ON_NPM="$(on_npm "$PKG" 2>"$err")"; then
         problem "cannot ask npm about $PKG: $(cat "$err")"
@@ -188,10 +216,23 @@ check_npm() {
         else problem "npm has $PKG@$V already, and origin has no tag $TAG: a version npm has is not published again"; fi
         return 0
     fi
-    latest="$("$NPM" view "$PKG" version 2>/dev/null)" || latest=""
-    if [ -n "$latest" ] && [ "$(ver_cmp "$latest" "$V")" != -1 ]; then
-        problem "npm has $PKG at $latest, not older than $V"
+    if ! highest="$(highest_on_npm "$PKG")"; then
+        problem "cannot read the versions npm has of $PKG ($NPM view $PKG versions)"
+    elif [ -n "$highest" ] && [ "$(ver_cmp "$highest" "$V")" != -1 ]; then
+        problem "npm has $PKG at $highest, not older than $V"
     fi
+}
+# The highest X.Y.Z of every version npm has of package $1, whatever its
+# dist-tags say, or nothing. npm prints the versions as a JSON array, or as
+# one string for a package with one version.
+highest_on_npm() {
+    local out v top=""
+    out="$("$NPM" view "$1" versions --json 2>/dev/null)" || return 1
+    for v in $(grep -oE '"[^"]*"' <<< "$out" | tr -d '"'); do
+        semver_ok "${v%%-*}" || continue
+        if [ -z "$top" ] || [ "$(ver_cmp "$v" "$top")" = 1 ]; then top="$v"; fi
+    done
+    echo "$top"
 }
 
 # CI's gate on the commit, as publish-sdk.yml checks it.
@@ -267,6 +308,9 @@ step_4() {
     on="$(on_npm "$PKG")" || { say "  cannot ask npm about $PKG"; return 1; }
     if [ "$on" = no ]; then first_publish; return; fi
     publish_through "$WORKFLOW" "$RUN_TITLE" "$COMMIT"
+    await_output npm_version >/dev/null || { say "  npm does not list $PKG@$V after the publish run"; return 1; }
+    # The workflow published: its trusted publisher is set up.
+    rm -f "$FIRST_MARK"
 }
 
 # The package's first version, published from here: from a temporary
@@ -301,15 +345,27 @@ publish_from() {
     cd dist-sdk
     say "  $NPM publish --access public (web/dist-sdk built at $COMMIT)"
     "$NPM" publish --access public
-    # Said as soon as npm took the package: the next run finds it on npm.
-    say "  $PKG@$V is on npm. Later versions publish through $WORKFLOW, which uses npm"
-    say "  trusted publishing; set it up once, now: on npmjs.com, the package's Settings, Trusted"
-    say "  Publisher, GitHub Actions: organization ${GH_REPO%%/*}, repository ${GH_REPO#*/}, workflow"
-    say "  $WORKFLOW, environment $NPM_ENV."
+    # Kept as soon as npm took the package, so that the setup is said
+    # again even if the wait below gives up, and on every later run.
+    echo "$V" > "$FIRST_MARK"
+    say "  $PKG@$V is on npm; the trusted-publisher setup later versions need is said at the end"
     await_output npm_version >/dev/null || { say "  npm does not list $PKG@$V after the publish"; return 1; }
 }
 # Prints the version once npm lists it.
 npm_version() { if has_version "$PKG" "$V"; then echo "$V"; fi; }
+
+# The one-time setup publish-sdk.yml needs once a first version was
+# published from here (FIRST_MARK).
+trusted_publisher_setup() {
+    [ -e "$FIRST_MARK" ] || return 0
+    say ""
+    say "Once: $PKG's first version ($(cat "$FIRST_MARK")) was published from this machine, and later"
+    say "versions publish through $WORKFLOW, which uses npm trusted publishing. On npmjs.com,"
+    say "the package's Settings, Trusted Publisher, GitHub Actions: organization ${GH_REPO%%/*},"
+    say "repository ${GH_REPO#*/}, workflow $WORKFLOW, environment $NPM_ENV; then Settings,"
+    say "Publishing access: Require two-factor authentication and disallow tokens. (Said until a"
+    say "version publishes through $WORKFLOW.)"
+}
 
 # --- main -------------------------------------------------------------------------
 
@@ -355,6 +411,7 @@ if [ "$ACT" = 0 ]; then
     fi
     if [ -z "$NEXT" ]; then say "Every step is done. Nothing was changed."
     else say "A run with $ACT_FLAG starts at step $NEXT. Nothing was changed."; fi
+    trusted_publisher_setup
     exit 0
 fi
 
@@ -379,8 +436,11 @@ for n in $(seq 2 "$LAST"); do
         say ""
         say "release-sdk.sh: step $n (${TITLES[n]}) failed."
         say "Fix the cause, then run \`$RESUME\` again: it resumes at the first step not done."
+        # A workflow run fails without the trusted publisher.
+        if [ "$n" = 4 ]; then trusted_publisher_setup; fi
         exit 1
     fi
 done
 say ""
 say "$PKG $V is on npm, published from $COMMIT (the tag $TAG)."
+trusted_publisher_setup

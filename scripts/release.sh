@@ -860,6 +860,7 @@ step_20() {
     on="$(pi_on_npm)" || { say "  cannot ask npm about $(pi_package)"; return 1; }
     if [ "$on" = no ]; then pi_first_publish; return; fi
     publish_through publish-pi.yml "Publish Pi package" "$PIN_COMMIT"
+    await_output pi_npm_version "$V" >/dev/null || { say "  npm does not list $(pi_package)@$V after the publish run"; return 1; }
 }
 
 # The Pi package's first version, published from here: from a temporary

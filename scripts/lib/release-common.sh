@@ -238,15 +238,19 @@ new_publish_run() {
 }
 # publish_through WORKFLOW TITLE COMMIT: publishes from COMMIT through
 # WORKFLOW (dispatched on PROD with dry_run off), whose runs are titled
-# "TITLE <commit>": a run already under way for COMMIT is waited for; none,
-# or a finished one (a failure: a success leaves the version on npm, which
-# the caller checks first), is dispatched anew.
+# "TITLE <commit>": a run already under way for COMMIT is waited for; one
+# that succeeded is done (it published, though npm's view may not list the
+# version yet: the caller, which found npm without it, waits for npm); none,
+# or one that failed, is dispatched anew.
 publish_through() {
     local workflow="$1" title="$2" commit="$3" id state
     id="$(gh_retry publish_run "$workflow" "$title" "$commit")" || return 1
     state=""
     if [ -n "$id" ]; then state="$(gh_retry run_state "$id")" || return 1; fi
     case "$state" in
+        "completed success")
+            say "  $title: run $id succeeded already"
+            return 0 ;;
         "" | completed\ *)
             gh workflow run "$workflow" --ref "$PROD" -f dry_run=false -f "sha=$commit"
             detail "dispatched; waiting for the run to start"

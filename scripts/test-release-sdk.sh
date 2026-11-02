@@ -18,7 +18,8 @@
 # means "completed success"); one seen to succeed puts the version its
 # commit carries on npm. The fake npm has the package at the versions
 # $FAKE_STATE/npm-versions lists (0.1.0 at first; the last is its latest),
-# none while $FAKE_STATE/npm-absent exists.
+# none while $FAKE_STATE/npm-absent exists; `npm view PKG versions --json`
+# lists them as npm does, one as a string, more as an array.
 # The cases and their helpers run through $CASES, out of shellcheck's sight.
 # shellcheck disable=SC2329
 set -uo pipefail
@@ -124,7 +125,10 @@ case "$1" in
         fi
         case "$2" in
             @empathic/clax-client-sdk@*) grep -x "${2##*@}" "$S/npm-versions" 2>/dev/null || true ;;
-            @empathic/clax-client-sdk) tail -n 1 "$S/npm-versions" ;;
+            @empathic/clax-client-sdk)
+                if [ "${3:-}" != versions ]; then tail -n 1 "$S/npm-versions"
+                elif [ "$(wc -l < "$S/npm-versions")" -eq 1 ]; then printf '"%s"\n' "$(cat "$S/npm-versions")"
+                else echo "["; sed 's/.*/  "&",/; $ s/,$//' "$S/npm-versions"; echo "]"; fi ;;
             *) echo "fake npm: unexpected: $*" >&2; exit 2 ;;
         esac ;;
     whoami)
@@ -282,8 +286,10 @@ case_3() {
         && [ "$(count "pnpm install --frozen-lockfile (in publish/web)")" = 1 ] \
         && [ "$(count "pnpm run build:sdk (in publish/web)")" = 1 ] && [ "$(count "pnpm run test:sdk (in publish/web)")" = 1 ] \
         && ! grep '^gh workflow run' "$FAKE_STATE/calls" >/dev/null \
-        && has "@empathic/clax-client-sdk@0.2.0 is on npm. Later versions publish through publish-sdk.yml" \
-        && has "Publisher, GitHub Actions: organization empathic, repository clax-test, workflow" \
+        && has "@empathic/clax-client-sdk@0.2.0 is on npm; the trusted-publisher setup later versions need is said at the end" \
+        && has "the package's Settings, Trusted Publisher, GitHub Actions: organization empathic," \
+        && has "repository clax-test, workflow publish-sdk.yml, environment npm; then Settings," \
+        && has "Publishing access: Require two-factor authentication and disallow tokens." \
         && [ ! -e "$C/repo/target/release-sdk/0.2.0/publish" ]; then
         pass "a package not on npm is built, tested and published from here, with the trusted-publisher setup"
     else fail "the first publish (rc=$rc: $(actions); $(cat "$C/out"))"; fi
@@ -330,6 +336,9 @@ case_6() {
     refuse "a version prod does not carry" "origin/prod's tip ($PROD0) carries SDK version 0.2.0, not 0.3.0" \
         0.3.0 --i-know-what-i-am-doing
     refuse "a version prod does not carry, in a dry run too" "carries SDK version 0.2.0, not 0.3.0" 0.3.0
+    refuse "a version prod has moved past, naming the tag that publishes it" \
+        "origin/prod's tip ($PROD0) carries SDK version 0.2.0, past 0.1.5: publish 0.2.0, or tag the commit on prod that carries 0.1.5 (git tag -s sdk-v0.1.5 -m \"Clax SDK 0.1.5\" <commit>) and run again" \
+        0.1.5 --i-know-what-i-am-doing
 }
 case_7() {
     new_case
@@ -338,6 +347,10 @@ case_7() {
     new_case
     echo 0.3.0 >> "$FAKE_STATE/npm-versions"
     refuse "a version older than npm's" "npm has @empathic/clax-client-sdk at 0.3.0, not older than 0.2.0"
+    # npm's latest dist-tag moved back below a version it has.
+    new_case
+    printf '0.3.0\n0.1.0\n' >> "$FAKE_STATE/npm-versions"
+    refuse "a version older than one npm has, whatever its latest" "npm has @empathic/clax-client-sdk at 0.3.0, not older than 0.2.0"
 }
 case_8() {
     new_case
@@ -378,11 +391,66 @@ case_11() {
     git -C "$C/repo" -c commit.gpgsign=false commit -q --allow-empty -m "Not on prod"
     git -C "$C/repo" tag -s sdk-v0.2.0 -m "Clax SDK 0.2.0"
     refuse "a tag of a commit prod lacks" "the tag sdk-v0.2.0 tags $(git -C "$C/repo" rev-parse HEAD), which is not on origin/prod"
+    # A tag here with no signature, which step 3 would not push.
+    new_case
+    git -C "$C/repo" tag sdk-v0.2.0 "$PROD0"
+    refuse "a lightweight tag here" "the tag sdk-v0.2.0 here is not a signed tag: delete it (git tag -d sdk-v0.2.0) and run again"
+    new_case
+    git -C "$C/repo" -c tag.gpgsign=false tag -a sdk-v0.2.0 -m "Clax SDK 0.2.0" "$PROD0"
+    refuse "an unsigned annotated tag here" "the tag sdk-v0.2.0 here is not a signed tag"
+}
+case_12() {
+    # A publish run that succeeded is not dispatched again, though npm does
+    # not list the version yet: step 4 waits for npm.
+    new_case
+    printf '401\tPublish SDK package %s\n' "$PROD0" > "$FAKE_STATE/publish-runs"
+    act; rc=$?
+    if [ "$rc" = 0 ] && published && ! grep '^gh workflow run' "$FAKE_STATE/calls" >/dev/null \
+        && has "Publish SDK package: run 401 succeeded already" && has "@empathic/clax-client-sdk 0.2.0 is on npm, published from $PROD0"; then
+        pass "a publish run that succeeded is waited on through npm, not dispatched again"
+    else fail "a publish run that succeeded (rc=$rc: $(actions); $(cat "$C/out"))"; fi
+}
+case_13() {
+    # The package's name is the published commit's, not the checkout's.
+    new_case
+    printf '{\n  "version": "0.2.0",\n  "name": "@empathic/renamed"\n}\n' > "$C/repo/web/sdk/package.json"
+    release 0.2.0; rc=$?
+    if [ "$rc" = 0 ] && has "ok: @empathic/clax-client-sdk 0.2.0 from $PROD0 on origin/prod" \
+        && ! grep renamed "$FAKE_STATE/calls" >/dev/null; then
+        pass "the package's name is read from the commit published, not the work tree"
+    else fail "the name from the commit (rc=$rc: $(cat "$C/out"))"; fi
+}
+case_14() {
+    # After a first publish from here, the trusted-publisher setup is said
+    # on every run, and when the workflow's publish fails, until a version
+    # publishes through the workflow.
+    new_case
+    : > "$FAKE_STATE/npm-absent"
+    act
+    act; rc=$?
+    if [ "$rc" = 0 ] && has "step 4/4 Publish the SDK package: done already" \
+        && has "Once: @empathic/clax-client-sdk's first version (0.2.0) was published from this machine" \
+        && has "Publishing access: Require two-factor authentication and disallow tokens."; then
+        pass "a run after a first publish says the trusted-publisher setup again"
+    else fail "the setup after a first publish (rc=$rc: $(cat "$C/out"))"; fi
+    sdk_file 0.3.0
+    git -C "$C/repo" -c commit.gpgsign=false commit -q -am "SDK 0.3.0"
+    git -C "$C/repo" push -q origin HEAD:prod
+    echo "completed failure" > "$FAKE_STATE/401"
+    act 0.3.0; rc=$?
+    if [ "$rc" = 1 ] && has "step 4 (Publish the SDK package) failed" && has "Trusted Publisher, GitHub Actions"; then
+        pass "a failed publish run after a first publish says the trusted-publisher setup"
+    else fail "a failed publish run after a first publish (rc=$rc: $(cat "$C/out"))"; fi
+    act 0.3.0; rc=$?
+    if [ "$rc" = 0 ] && has "Publish SDK package: run 402" && ! has "Trusted Publisher" \
+        && [ ! -e "$C/repo/target/release-sdk/first-publish" ]; then
+        pass "a publish through the workflow ends the trusted-publisher reminders"
+    else fail "the reminders after a publish through the workflow (rc=$rc: $(cat "$C/out"))"; fi
 }
 
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 [ "$JOBS" -le 8 ] || JOBS=8
-CASES="case_1 case_2 case_3 case_4 case_5 case_6 case_7 case_8 case_9 case_10 case_11"
+CASES="case_1 case_2 case_3 case_4 case_5 case_6 case_7 case_8 case_9 case_10 case_11 case_12 case_13 case_14"
 # A case's subshell exits 0 once its last check has run; one that dies on
 # the way exits otherwise, and fails the gate whatever it printed before.
 batch=""
