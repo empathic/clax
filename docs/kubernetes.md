@@ -190,9 +190,8 @@ another tenant. The fleet records the public origin each instance's data
 was made for, and refuses to start a name whose origin changed
 (`instance_reused` in the log).
 
-**Instances' secrets.** An instance reads two secrets from the
-environment, both from the `clax-secrets` Secret, which pods read when
-they start and every instance sees whole:
+**Instances' secrets.** An instance reads two secrets, both from the
+`clax-secrets` Secret, which every instance of a pod sees whole:
 
 | `[hosted]` setting | the secret | default variable |
 |---|---|---|
@@ -206,9 +205,26 @@ setup secret would open the other's `/setup`, and each instance's OAuth
 app has a secret of its own. It is refused too when an instance reads
 `CLAX_KEK` or `CLAX_FLEET_PEER_KEY`. A hosted instance reads no `[bot]`
 or `[sample]` key variable: ClaxBot's model keys are each instance's own,
-stored sealed in its home (CLAX_KEK). After adding an instance's secret, or rotating one, run `kubectl rollout
-restart sts clax`. An instance whose setup secret is missing logs that
-`/setup` stays closed.
+stored sealed in its home (CLAX_KEK).
+
+The StatefulSet mounts the Secret at `/etc/clax-secrets`
+(`CLAX_FLEET_SECRETS_DIR`), one file per key, which the kubelet updates in
+place within a minute or two of a change. An instance reads its secrets
+from those files when it starts, and from the environment when there is no
+such file. So **adding a tenant restarts nothing**: add its keys to the
+Secret, then its entry to the catalog:
+
+```
+kubectl patch secret clax-secrets --type merge \
+  -p '{"stringData":{"CLAX_SETUP_SECRET_GLOBEX":"'"$(openssl rand -hex 16)"'"}}'
+```
+
+To **rotate** an instance's secret, change it in the Secret, wait for the
+pod to see it, then pause and unpause the instance, which reads it again as
+it starts. An instance whose setup secret is missing logs that `/setup`
+stays closed. `CLAX_FLEET_PEER_KEY` and `CLAX_KEK` are the process's own,
+read from the environment as the pod starts: changing either needs
+`kubectl rollout restart sts clax`.
 
 ## Deploying
 
@@ -254,10 +270,22 @@ a pod can tell a real forward from a client's request. A shard without it
 does not start, and says why; the StatefulSet requires the `clax-secrets`
 Secret.
 
-**Scaling out:** raise `shards` in the catalog first (every pod reloads it,
-so nothing restarts), then `kubectl scale sts clax --replicas=N`, and give
-new instances the new shards with `create = true`. A pod whose ordinal is
-past `shards` serves nothing of its own and logs so.
+**Scaling out:** raise `shards` in `my-clax/fleet.toml` and `count` under
+`replicas` in `my-clax/kustomization.yaml` together, to the same number,
+and apply. Give new instances the new shards with `create = true`. Change
+the replicas there, not with `kubectl scale`: the next apply (or a GitOps
+controller) would put them back, taking the new shards' instances down. A
+pod whose ordinal is past `shards` serves nothing of its own and logs so.
+
+**Scaling in** to N shards:
+
+1. Move every instance on shard N or above to a lower one (Moving an
+   instance). The catalog refuses an instance on a shard past `shards`, so
+   this comes first.
+2. Lower `shards` and the replicas' `count` to N together, and apply.
+3. The removed pods' volumes stay (`data-clax-N`, …, kept by the
+   StatefulSet's default retention). Delete each with
+   `kubectl delete pvc data-clax-<ordinal>` once nothing on it is needed.
 
 **Moving an instance** to another shard means moving its home with it.
 The new shard never makes an empty instance in its place, because without
@@ -317,13 +345,20 @@ its volume keeps. With it:
 - **NetworkPolicy.** `base/networkpolicy.yaml` admits port 7480 only from
   the fleet's pods and from namespaces labelled
   `clax.empathic.dev/ingress=true` (label your Ingress controller's). It
-  assumes clients come through an in-cluster Ingress controller. A
-  `LoadBalancer` or `NodePort` Service in front instead delivers traffic
-  from outside addresses (the clients' with `externalTrafficPolicy: Local`,
-  else the nodes'), which no selector matches, so on a CNI that enforces
-  policies every request times out: add a rule for 7480 with an `ipBlock`
-  of those addresses (the comment in the policy shows one). It
-  admits 7481 only from the fleet's pods and namespaces labelled
+  assumes clients come through an in-cluster Ingress controller on the pod
+  network. **If every request times out**, they come from addresses no
+  selector matches, and on a CNI that enforces policies they are dropped.
+  Add a rule for 7480 with an `ipBlock` of those addresses (the comment in
+  the policy shows one):
+  - a `LoadBalancer` or `NodePort` Service in front: the clients'
+    addresses with `externalTrafficPolicy: Local`, else the nodes';
+  - an Ingress controller with `hostNetwork: true` (common for
+    ingress-nginx on bare metal): the nodes' addresses;
+  - a cloud load balancer that sends straight to pod IPs: for GKE's
+    container-native Ingress, `130.211.0.0/22` and `35.191.0.0/16`; for
+    the AWS Load Balancer Controller in IP mode, its subnets.
+
+  It admits 7481 only from the fleet's pods and namespaces labelled
   `clax.empathic.dev/metrics=true`; kubelet probes pass on common CNIs.
 - **The peer key.** A forward carries `x-clax-fleet-key`, and without it
   the forwarding headers are a client's and ignored. Every shard needs the
@@ -345,7 +380,13 @@ its volume keeps. With it:
   (ingress-nginx: the `nginx.ingress.kubernetes.io/whitelist-source-range`
   annotation), or Authenticated Origin Pulls. Without Cloudflare, the peer
   address counts, and behind an Ingress that is the controller's address
-  for every client.
+  for every client (and, for a request another pod forwarded, that pod's).
+  All of an instance's users then share one address's limits: one person's
+  failed sign-ins (429 `rate_limited`) lock everyone out for a while, and
+  128 event streams and WebSockets in all are open at once (429
+  `too_many_streams` past them). For an instance with more than a few
+  users, put Cloudflare in front. Hosted mode does not yet believe a
+  forwarded-for header from a trusted proxy.
 
 ## Ingress, DNS and TLS
 
@@ -361,14 +402,74 @@ limit to above the 16 MB that a publish may send.
 An instance's footprint is its store's (WAL, reader pool, page cache) and
 its realtime state. `CLAX_FLEET_SQLITE_HEAP_MIB` (1024) bounds every SQLite
 database of a pod together: past it, page caches give memory back. Keep it
-under the pod's limit. Each pod requests 512 Mi and is limited to 2 Gi, and
-its volume is 10 Gi; raise them with the instances a shard keeps.
+under the pod's limit. Each pod requests 512 Mi and is limited to 2 Gi;
+raise them with the instances a shard keeps, with a patch to the
+StatefulSet's container in your overlay. A full volume takes every
+instance of its shard down, so alert on it
+(`kubelet_volume_stats_used_bytes` over `kubelet_volume_stats_capacity_bytes`).
+
+**The volume** is 10 Gi, of the cluster's default StorageClass. A
+StatefulSet's volume claims cannot be changed once it exists, so before
+the first apply choose a class that can grow (`allowVolumeExpansion:
+true`), and a size, in your overlay:
+
+```yaml
+patches:
+  - target:
+      kind: StatefulSet
+      name: clax
+    patch: |-
+      - op: add
+        path: /spec/volumeClaimTemplates/0/spec/storageClassName
+        value: <a class with allowVolumeExpansion>
+      - op: replace
+        path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
+        value: 20Gi
+```
+
+To grow a shard's volume later, patch its claim, which the class then
+expands while the pod runs:
+`kubectl patch pvc data-clax-0 -p '{"spec":{"resources":{"requests":{"storage":"40Gi"}}}}'`.
+To give new shards that size too, change it in the overlay, delete the
+StatefulSet but not its pods (`kubectl delete sts clax --cascade=orphan`),
+and apply: the new StatefulSet adopts the running pods.
 
 ## Upgrading
 
 The StatefulSet restarts one shard at a time. Each shard's instances are
-down while its pod restarts, and migrate when they start. `clax serve`'s
-copy of a database before a migration is kept in each home.
+down while its pod restarts, and migrate when they start. A pod is ready
+before any of its instances starts, so the rollout goes on through every
+shard even when a release's migration fails. **Upgrade one shard first:**
+
+1. Hold the rollout at the highest shard (here, of 3):
+   `kubectl patch sts clax -p '{"spec":{"updateStrategy":{"rollingUpdate":{"partition":2}}}}'`.
+2. Apply the new release (its version in your overlay's URL, The image)
+   or image. Only `clax-2` restarts.
+3. Start each of its instances (`curl https://<origin>/healthz`), and check
+   that `kubectl exec clax-2 -- clax-fleet status` shows none `failing`.
+4. Release the rest:
+   `kubectl patch sts clax -p '{"spec":{"updateStrategy":{"rollingUpdate":{"partition":0}}}}'`.
+
+**Rolling back.** An older image refuses a database a newer one migrated,
+so setting the image back is not enough for an instance that already
+started on the new one. Before migrating, each home keeps a copy of its
+database as it was, in `backups/clax-<schema version>-<UTC time>.db` (the
+newest three). For each such instance:
+
+1. Pause it, apply, and wait until it no longer runs (Moving an instance).
+2. Set its database aside, and put the newest copy in its place:
+
+   ```
+   kubectl exec clax-0 -- sh -c 'cd /var/lib/clax/instances \
+     && mkdir acme.rolled-back \
+     && for f in clax.db clax.db-wal clax.db-shm; do [ ! -e acme/$f ] || mv acme/$f acme.rolled-back/; done \
+     && cp "acme/backups/$(ls acme/backups | grep "^clax-.*\.db$" | sort -t- -k3,3 | tail -n 1)" acme/clax.db'
+   ```
+
+3. Once every such instance is done, set the release (or image) back,
+   apply, and unpause them.
+
+What an instance stored after its migration is lost.
 
 ## Backups and restore
 
@@ -447,10 +548,11 @@ sets the filter (`info`).
 | `CLAX_FLEET_LISTEN` | `--listen` | the instances' address (`0.0.0.0:7480`) |
 | `CLAX_FLEET_ADMIN_LISTEN` | `--admin-listen` | health, status (with the peer key) and metrics (`0.0.0.0:7481`) |
 | `CLAX_FLEET_LOCAL_ADMIN_LISTEN` | `--local-admin-listen` | the same, `/status` without the key, on a loopback address (`127.0.0.1:7482`) |
+| `CLAX_FLEET_SECRETS_DIR` | `--secrets-dir` | where instances' secrets are read first, a file per variable (the StatefulSet: `/etc/clax-secrets`; none by default) |
 | `POD_NAME` | `--pod` | this pod's name in the fleet |
 | `POD_IP`, `CLAX_FLEET_ADVERTISE` | `--pod-ip`, `--advertise` | where other pods reach this one (`$POD_IP:<listen port>`) |
 | `CLAX_FLEET_ORDINAL` | `--ordinal` | this process's shard, outside a StatefulSet (by default, its name's suffix; one that disagrees with it is refused) |
-| `CLAX_FLEET_PEER` | `--peer` | where shard `{shard}` is reached |
+| `CLAX_FLEET_PEER` | `--peer` | where shard `{shard}` is reached: refused without `{shard}` when there are several shards, and a warning at start when this shard's host does not begin with the pod's name (a kustomize `namePrefix` renames the pods, not this value) |
 | `CLAX_FLEET_PEER_KEY` | `--peer-key` | the key forwards carry (required, the same on every shard) |
 | `CLAX_FLEET_SQLITE_HEAP_MIB` | `--sqlite-heap-mib` | the memory all of a pod's SQLite databases aim to stay under (1024; 0 for none) |
 | `CLAX_KEK` | | the key secrets are sealed under (64 hex digits; optional) |

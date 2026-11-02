@@ -29,10 +29,17 @@ spec:
         - namespaceSelector:
             matchLabels:
               clax.empathic.dev/ingress: "true"
-        # Behind a LoadBalancer or NodePort Service rather than an Ingress
-        # controller, requests come from outside the cluster (the clients'
-        # addresses with externalTrafficPolicy: Local, else the nodes'),
-        # which no selector above matches: admit those addresses.
+        # Requests that come from no pod on the pod network match no
+        # selector above, and time out on a CNI that enforces policies;
+        # admit their addresses with an ipBlock:
+        # - a LoadBalancer or NodePort Service rather than an Ingress
+        #   controller: the clients' addresses with
+        #   externalTrafficPolicy: Local, else the nodes';
+        # - an Ingress controller with hostNetwork: true (common for
+        #   ingress-nginx on bare metal): the nodes' addresses;
+        # - a cloud load balancer that sends to pod IPs: GKE's
+        #   container-native Ingress, 130.211.0.0/22 and 35.191.0.0/16;
+        #   the AWS Load Balancer Controller in IP mode, its subnets.
         # - ipBlock:
         #     cidr: 203.0.113.0/24
       ports:
