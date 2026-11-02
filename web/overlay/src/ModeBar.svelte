@@ -8,7 +8,7 @@
   // Right move focus between its buttons (wrapping), Home and End to the
   // first and last. `mode` is null when none is on yet (a "Still broken"
   // note, before its new capture).
-  import type { Mode } from "./capture";
+  import type { Mode } from "./options";
 
   type Props = { mode: Mode | null; outlined?: string | null; onMode(m: Mode): void; onCancel(): void };
   let { mode, outlined = null, onMode, onCancel }: Props = $props();

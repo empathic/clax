@@ -1,7 +1,16 @@
-// `Clax.overlay`'s options, in a module of their own: the overlay's public
-// types (main.ts) reach the SDK's reporter types and nothing of the bridge.
+// `Clax.overlay`'s options, and the other names of its public interface
+// that main.ts does not define, in a module of their own: the overlay's
+// public types (main.ts) reach this module and the SDK's reporter types,
+// and nothing of the bridge or of the overlay's model.
 import type { ReporterAuth } from "../../sdk/src/reporter";
 import type { ReportContext } from "../../sdk/src/types";
+
+/** What the reporter captures: a pick, a drawn area, or the visible viewport. */
+export type Mode = "element" | "area" | "screen";
+
+/** How long the host's `context` and `metadata` functions may take before
+ * the capture goes on without them. */
+export const CONTEXT_TIMEOUT_MS = 2000;
 
 /** What the host says about the moment of a capture. Only `release`,
  * `flags` and `app` are taken; the time, environment and capture are the

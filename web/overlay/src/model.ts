@@ -13,17 +13,15 @@ import { scrub, wellFormed } from "../../sdk/src/scrub";
 import type { Badge, CaptureInfo, DiagLine, FixAttempt, FixOutcome, FlagValue, Release, Report, ReportComment, ReportContext, ReportPage, ResolveReason } from "../../sdk/src/types";
 import { type Placement, type Shape, remapShapes } from "./annotate";
 import type { Captured } from "./capture";
-import type { Given, HostContext } from "./options";
+import { CONTEXT_TIMEOUT_MS, type Given, type HostContext } from "./options";
 
 export type { Given, HostContext, OverlayOptions } from "./options";
+export { CONTEXT_TIMEOUT_MS };
 
 /** How often "Your reports" asks for new replies while it is open. */
 export const POLL_MS = 15_000;
 /** How often the badge is asked for while the page is visible. */
 export const BADGE_POLL_MS = 60_000;
-/** How long the host's `context` and `metadata` functions may take before
- * the capture goes on without them. */
-export const CONTEXT_TIMEOUT_MS = 2000;
 /** The largest context Clax takes, as compact JSON. */
 export const MAX_CONTEXT_BYTES = 16 * 1024;
 /** The longest title a report carries (the page's title, cut). */
