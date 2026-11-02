@@ -135,14 +135,14 @@ pick_dir(
 
 # pnpm run build:sdk: the SDK package, @empathic/clax-sdk
 # (scripts/build-sdk.mjs), an action of its own so that no web build the
-# binaries embed runs it. It reads the workspace version from Cargo.toml and
-# carries the license text of web/bridge, web/overlay and web/sdk.
+# binaries embed runs it. Its version is its own (PACKAGE_VERSION in
+# scripts/build-sdk.mjs), and it carries the license text of web/bridge,
+# web/overlay and web/sdk.
 npm_script_build(
     name = "dist_sdk",
     srcs = [
         ":files_app",
         ":node_modules",
-        "//:cargo_toml",
         "//:lgpl_license",
     ],
     out_dirs = ["dist-sdk"],

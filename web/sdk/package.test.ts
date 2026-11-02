@@ -11,6 +11,8 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+// @ts-expect-error plain .mjs without declarations
+import { PACKAGE_VERSION } from "../scripts/build-sdk.mjs";
 
 const web = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const pkgDir = join(web, "dist-sdk");
@@ -67,7 +69,8 @@ const files = (dir: string): string[] =>
 describe("the SDK package", () => {
   it("names itself, its license and its entries, and depends on nothing", () => {
     expect(manifest.name).toBe("@empathic/clax-sdk");
-    expect(manifest.version).toMatch(/^\d+\.\d+\.\d+/);
+    expect(manifest.version).toBe(PACKAGE_VERSION);
+    expect(manifest.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(manifest.license).toBe("LGPL-2.1-only");
     expect(manifest.publishConfig).toEqual({ access: "public" });
     expect(manifest.author).toEqual({ name: "Empathic, Inc.", email: "alex@empathic.dev" });

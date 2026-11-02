@@ -38,6 +38,13 @@ import { componentCssIntoScript } from "./overlay-component-css.mjs";
 
 /** The package's name on npm. */
 export const PACKAGE_NAME = "@empathic/clax-sdk";
+/**
+ * The package's version: a semver line of its own, not Clax's, since the
+ * package only calls an instance's report-queue routes. A pull request to
+ * main raises it; `just release-sdk` publishes it once prod carries it
+ * (scripts/release-sdk.sh, which reads this line).
+ */
+export const PACKAGE_VERSION = "0.1.0";
 /** The package's license: web/bridge's, web/overlay's and web/sdk's in LICENSE. */
 const LICENSE = "LGPL-2.1-only";
 /** The directories, under web/, of the Clax sources the package may bundle: those LICENSE puts under `LICENSE`. */
@@ -57,11 +64,9 @@ const ts = createRequire(join(web, "package.json"))("typescript");
 const types = src => `types/${src.replace(/\.ts$/, ".d.ts")}`;
 
 function packageJson() {
-  const version = readFileSync(join(repo, "Cargo.toml"), "utf8").match(/^\[workspace\.package\][^[]*?^version\s*=\s*"([^"]+)"/m)?.[1];
-  if (!version) throw new Error("no [workspace.package] version in Cargo.toml");
   return {
     name: PACKAGE_NAME,
-    version,
+    version: PACKAGE_VERSION,
     description: "Clax's report queue SDK: the reporter client, the embeddable overlay and the service client",
     keywords: ["clax", "reports", "feedback", "overlay", "sdk"],
     license: LICENSE,
