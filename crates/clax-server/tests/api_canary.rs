@@ -108,11 +108,10 @@ async fn denied_routes_with_others_text_refuse_owner_agents() {
         );
     }
     // Denied routes that build no such view serve the owner's agents as
-    // before.
+    // before (`GET /api/token` serves an owner browser session alone).
     for path in [
         "/api/push".to_string(),
         "/healthz".into(),
-        "/api/token".into(),
         format!("/api/live/pages?url={}", enc("http://localhost:5173/")),
     ] {
         let r = ts

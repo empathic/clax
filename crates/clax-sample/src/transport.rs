@@ -59,9 +59,33 @@ impl Transport {
         }
     }
 
+    /// [`Transport::new`] connecting only to public addresses: a name is
+    /// resolved here, and its answers that are not
+    /// [`clax_core::config::public_address`]es (loopback, private,
+    /// link-local, unique-local among them) are never connected to; a name
+    /// with none left fails as unresolved. A hosted daemon's client, which
+    /// sends the instance's key.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn public_only() -> Transport {
+        Transport {
+            client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .redirect(reqwest::redirect::Policy::none())
+                .dns_resolver(std::sync::Arc::new(PublicOnly))
+                .build()
+                .expect("a reqwest client with default TLS"),
+        }
+    }
+
     /// The Worker's `fetch`, which has no connect timeout to set.
     #[cfg(target_arch = "wasm32")]
     pub fn new() -> Transport {
+        Transport {}
+    }
+
+    /// The Worker's `fetch`: its platform reaches no private network.
+    #[cfg(target_arch = "wasm32")]
+    pub fn public_only() -> Transport {
         Transport {}
     }
 
@@ -175,5 +199,70 @@ struct AbortOnDrop(web_sys::AbortController);
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         self.0.abort();
+    }
+}
+
+/// A resolver that answers only a name's public addresses
+/// ([`Transport::public_only`]).
+#[cfg(not(target_arch = "wasm32"))]
+struct PublicOnly;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl reqwest::dns::Resolve for PublicOnly {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let host = name.as_str().to_string();
+            let addrs = public_addrs(tokio::net::lookup_host((host.as_str(), 0)).await?);
+            if addrs.is_empty() {
+                return Err(format!("{host} resolves to no public address").into());
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+/// The public ones of `addrs` ([`clax_core::config::public_address`]).
+#[cfg(not(target_arch = "wasm32"))]
+fn public_addrs(addrs: impl Iterator<Item = std::net::SocketAddr>) -> Vec<std::net::SocketAddr> {
+    addrs
+        .filter(|a| clax_core::config::public_address(a.ip()))
+        .collect()
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    /// A public-only client never connects to a name that resolves to a
+    /// loopback address, where the plain client does.
+    #[tokio::test]
+    async fn a_public_only_client_connects_to_no_private_address() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            while let Ok((mut s, _)) = listener.accept().await {
+                let _ = s
+                    .write_all(b"HTTP/1.1 204 No Content\r\nconnection: close\r\n\r\n")
+                    .await;
+            }
+        });
+        let url = format!("http://localhost:{port}/v1/models");
+        let plain = Transport::new().send("GET", &url, &[], None).await;
+        assert_eq!(plain.map(|r| r.status).ok(), Some(204));
+        let Err(e) = Transport::public_only().send("GET", &url, &[], None).await else {
+            panic!("connected to localhost");
+        };
+        assert!(e.contains("error sending request"), "{e}");
+    }
+
+    #[test]
+    fn only_public_answers_are_kept() {
+        let addrs = ["10.0.0.5:443", "1.1.1.1:443", "[::1]:443", "[fd00::1]:443"]
+            .map(|a| a.parse::<std::net::SocketAddr>().unwrap());
+        assert_eq!(
+            public_addrs(addrs.into_iter()),
+            ["1.1.1.1:443".parse::<std::net::SocketAddr>().unwrap()]
+        );
     }
 }

@@ -72,6 +72,12 @@ Decisions on the open questions (2026-10-27, binding; §14):
   landing artifact is published from it. `reel-upload` attaches the reel
   to that artifact. Which clax.dev artifact it is gets fixed when it is
   first published (§9.3, `[upload]`).
+  *Amended 2026-10-28 (owner):* the landing page is not a published
+  artifact. It is the quickstart the release carries, which a hosted Clax
+  serves at `/start/` and sends a signed-out visitor to from `/`
+  (`clax_http::hosted::LANDING`, `clax_server::hosted`'s `landing`).
+  Where the reel goes on that page, now that no clax.dev artifact holds
+  it, is open (the record on `web/reel/reel.toml`'s `[upload]`).
 - D9. **The encoder is x264**, through fframes' `h264` and
   `libav-agree-gpl` features. The GPL is acceptable because the composer
   is a developer tool that is never shipped; it does not reach Clax's

@@ -15,6 +15,7 @@ import {
   partialTriggerUpdate,
   prodTipOf,
   productionGate,
+  reelVars,
   smokeCannot,
   smokeCredential,
   versionIdOf,
@@ -275,4 +276,15 @@ test("--no-build deploys only a Worker built from the checked-out commit", () =>
   assert.match(builtFromRefusal(null, record(head), head), /no index_bg\.wasm/);
   // No commit to compare (not a git checkout): nothing to refuse on.
   assert.equal(builtFromRefusal(wasm, null, ""), null);
+});
+
+test("the reel's addresses become the Worker's REEL_URL and REEL_POSTER_URL, https:// alone", () => {
+  assert.deepEqual(reelVars({}), {});
+  const video = "https://customer-x.cloudflarestream.com/u/downloads/default.mp4";
+  const poster = "https://customer-x.cloudflarestream.com/u/thumbnails/thumbnail.jpg";
+  assert.deepEqual(reelVars({ "reel-url": video }), { REEL_URL: video });
+  assert.deepEqual(reelVars({ "reel-url": video, "reel-poster-url": poster }), { REEL_URL: video, REEL_POSTER_URL: poster });
+  assert.throws(() => reelVars({ "reel-poster-url": poster }), /--reel-poster-url needs --reel-url/);
+  assert.throws(() => reelVars({ "reel-url": "http://videos.example/r.mp4" }), /--reel-url takes an https:\/\/ URL/);
+  assert.throws(() => reelVars({ "reel-url": video, "reel-poster-url": "nope" }), /--reel-poster-url takes an https:\/\/ URL/);
 });

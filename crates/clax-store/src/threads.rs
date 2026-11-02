@@ -706,6 +706,23 @@ pub(crate) fn threads_of_many(c: &Connection, ids: &[String]) -> Result<Vec<Thre
 }
 
 /// The thread `thread_id` of a live artifact, with its comments.
+/// Whose reopen `ctx` makes, as `threads.reopened_by_person` keeps it:
+/// `*owner` for the owner and the owner's agents, a person's public ID for
+/// a person, their agents and ClaxBot acting for them, `-` for anyone else,
+/// `None` for Clax itself.
+fn reopener(ctx: &AuditCtx) -> Option<String> {
+    use clax_core::audit::Actor;
+    let owner = || clax_core::visibility::OWNER.to_string();
+    match &ctx.actor {
+        Actor::Owner { .. } => Some(owner()),
+        Actor::Agent(a) => Some(a.person.clone().unwrap_or_else(owner)),
+        Actor::Viewer { public_id, .. } => Some(public_id.clone()),
+        Actor::Bot { on_behalf_of } => Some(on_behalf_of.clone()),
+        Actor::System { .. } => None,
+        _ => Some("-".to_string()),
+    }
+}
+
 pub(crate) fn thread_in(c: &Connection, thread_id: &str) -> Result<Option<Thread>> {
     let row = c
         .prepare_cached(&format!("{THREAD_SELECT} AND t.id = ?1"))?
@@ -742,9 +759,75 @@ fn refuse_comments_off_in(c: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Refuses new thread `t` on `id` as its transaction would: `NotFound` for
+/// an artifact not live, `comments_off`, `invalid_anchor` (a route on a
+/// page that is not live, a file version `t.version_n` lacks or that is
+/// in `hidden`), `unknown_version`. Run again in the thread's
+/// transaction; run first, outside it, so a refused clipped thread writes
+/// no clip.
+fn admit_thread_in(
+    c: &Connection,
+    id: &ArtifactId,
+    t: &NewThread,
+    hidden: &[String],
+) -> Result<()> {
+    if !artifact_live(c, id.as_str())? {
+        return Err(CoreError::NotFound);
+    }
+    refuse_comments_off_in(c, id.as_str())?;
+    if t.anchor.route.is_some() {
+        let kind: String = c.query_row(
+            "SELECT kind FROM artifacts WHERE id = ?1",
+            params![id.as_str()],
+            |r| r.get(0),
+        )?;
+        if kind != clax_core::live::KIND_LIVE {
+            return Err(CoreError::invalid(
+                "invalid_anchor",
+                "route is only for live pages",
+            ));
+        }
+    }
+    let files: Option<String> = c
+        .query_row(
+            "SELECT files_json FROM versions WHERE artifact_id = ?1 AND n = ?2",
+            params![id.as_str(), t.version_n],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(files) = files else {
+        return Err(CoreError::invalid(
+            "unknown_version",
+            format!("artifact {id} has no version {}", t.version_n),
+        ));
+    };
+    let files: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_str(&files)
+        .map_err(|_| CoreError::Corrupt {
+            artifact_id: id.to_string(),
+            column: "files_json",
+            version: Some(t.version_n),
+        })?;
+    // An `artifact` anchor is on no page; any version holds it.
+    if !t.anchor.is_whole()
+        && (!files.contains_key(&t.anchor.file) || hidden.contains(&t.anchor.file))
+    {
+        return Err(CoreError::invalid(
+            "invalid_anchor",
+            format!(
+                "version {} of artifact {id} has no file {}",
+                t.version_n, t.anchor.file
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Whether `id` takes threads, comments and watches: not deleted, and with
+/// a version, or a followed remote artifact's mirror (which has none).
 pub(crate) fn artifact_live(c: &Connection, id: &str) -> Result<bool> {
     Ok(c.query_row(
-        "SELECT EXISTS(SELECT 1 FROM artifacts WHERE id = ?1 AND deleted_at IS NULL AND current_version > 0)",
+        "SELECT EXISTS(SELECT 1 FROM artifacts WHERE id = ?1 AND deleted_at IS NULL
+                         AND (current_version > 0 OR remote_mirror = 1))",
         params![id],
         |r| r.get(0),
     )?)
@@ -899,13 +982,29 @@ impl Store {
         let now = self.now();
         let anchor_json = serde_json::to_string(&t.anchor).expect("anchors serialise");
         // The clip goes first, under the lock a delete holds across its
-        // transaction and the content's removal.
+        // transaction and the content's removal, once the thread is known
+        // to be admitted (and not a key's repeat), so a refused request
+        // writes none.
         let _lock = match &t.clip {
             Some(bytes) => {
                 let lock = self.lock_content(id).await?;
-                if !self.with_read(|c| artifact_live(c, id.as_str()))? {
-                    return Err(CoreError::NotFound);
+                let repeat = self.with_read(|c| {
+                    if let Some(k) = key
+                        && let Some(found) = super::linked::comment_key_in(c, k)?
+                    {
+                        return Ok(Some(found));
+                    }
+                    admit_thread_in(c, id, &t, hidden)?;
+                    Ok(None)
+                })?;
+                if let Some((thread_id, comment_id)) = repeat {
+                    return Ok(Keyed::Before {
+                        thread_id,
+                        comment_id,
+                    });
                 }
+                #[cfg(test)]
+                self.point("thread.clip.put");
                 self.content.put_clip(id, &tid, bytes).await?;
                 Some(lock)
             }
@@ -919,55 +1018,7 @@ impl Store {
                 before = Some(found);
                 return Ok(());
             }
-            if !artifact_live(tx, id.as_str())? {
-                return Err(CoreError::NotFound);
-            }
-            refuse_comments_off_in(tx, id.as_str())?;
-            if t.anchor.route.is_some() {
-                let kind: String = tx.query_row(
-                    "SELECT kind FROM artifacts WHERE id = ?1",
-                    params![id.as_str()],
-                    |r| r.get(0),
-                )?;
-                if kind != clax_core::live::KIND_LIVE {
-                    return Err(CoreError::invalid(
-                        "invalid_anchor",
-                        "route is only for live pages",
-                    ));
-                }
-            }
-            let files: Option<String> = tx
-                .query_row(
-                    "SELECT files_json FROM versions WHERE artifact_id = ?1 AND n = ?2",
-                    params![id.as_str(), t.version_n],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            let Some(files) = files else {
-                return Err(CoreError::invalid(
-                    "unknown_version",
-                    format!("artifact {id} has no version {}", t.version_n),
-                ));
-            };
-            let files: std::collections::BTreeMap<String, serde_json::Value> =
-                serde_json::from_str(&files).map_err(|_| CoreError::Corrupt {
-                    artifact_id: id.to_string(),
-                    column: "files_json",
-                    version: Some(t.version_n),
-                })?;
-
-            // An `artifact` anchor is on no page; any version holds it.
-            if !t.anchor.is_whole()
-                && (!files.contains_key(&t.anchor.file) || hidden.contains(&t.anchor.file))
-            {
-                return Err(CoreError::invalid(
-                    "invalid_anchor",
-                    format!(
-                        "version {} of artifact {id} has no file {}",
-                        t.version_n, t.anchor.file
-                    ),
-                ));
-            }
+            admit_thread_in(tx, id, &t, hidden)?;
 
             tx.execute(
                 "INSERT INTO threads (id, artifact_id, version_n, anchor_json, status, sent_to_agent, has_clip, created_at)
@@ -1098,8 +1149,9 @@ impl Store {
             .or_else(|| self.cached_remote_clip(tid))
     }
 
-    /// Adds a comment. A viewer comment on a resolved thread reopens it; an
-    /// agent comment never changes the thread's status. Records `comment.add`
+    /// Adds a comment. A viewer comment on a resolved thread reopens it,
+    /// unless the thread is a queue's report; an agent comment never
+    /// changes the thread's status. Records `comment.add`
     /// under `ctx`, and `thread.reopen` after it when the comment reopened
     /// the thread, in the comment's transaction.
     ///
@@ -1524,6 +1576,20 @@ impl Store {
             self.record_audit(tx, ctx, comment_record(&t.artifact_id, &comment))?;
             if comment.author_kind == AUTHOR_VIEWER {
                 insert_mentions(tx, &comment.id, &comment.body)?;
+            }
+            // A queue's report is reopened by its reopen alone
+            // (`Store::reopen_report`), never by a comment.
+            if comment.author_kind == AUTHOR_VIEWER && t.queue_id.is_none() {
+                // A comment that reopens the thread: its author reopened it.
+                if t.status == "resolved" {
+                    tx.execute(
+                        "UPDATE threads SET reopened_by_person = ?2 WHERE id = ?1",
+                        params![
+                            thread_id,
+                            comment.author_public_id.as_deref().unwrap_or("-")
+                        ],
+                    )?;
+                }
                 tx.execute(
                     "UPDATE threads SET status = 'open', resolved_at = NULL, resolved_by = NULL,
                         resolved_by_person = NULL WHERE id = ?1",
@@ -1904,6 +1970,26 @@ impl Store {
         person: Option<&str>,
         then: impl FnOnce(&rusqlite::Transaction<'_>, &Thread) -> Result<Option<u32>>,
     ) -> Result<clax_core::feedback::Touched> {
+        self.resolve_thread_reason_in(tx, ctx, thread_id, by, person, None, then)
+    }
+
+    /// [`Store::resolve_thread_in`] of a report closed for `reason`
+    /// ([`clax_core::report::ResolveReason`]'s name), which the thread
+    /// keeps (`resolve_reason`) and its `thread.resolve` names. Resolving
+    /// an open thread also ends a fix's wait for a verdict
+    /// (`report_phase` `fix_proposed`; a `pending` attempt is `closed`);
+    /// resolving a resolved one changes neither.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn resolve_thread_reason_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        ctx: &AuditCtx,
+        thread_id: &str,
+        by: &str,
+        person: Option<&str>,
+        reason: Option<&str>,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, &Thread) -> Result<Option<u32>>,
+    ) -> Result<clax_core::feedback::Touched> {
         {
             let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
             let now = self.now();
@@ -1912,9 +1998,21 @@ impl Store {
             tx.execute(
                 "UPDATE threads SET status = 'resolved', resolved_at = COALESCE(resolved_at, ?2),
                     resolved_by_person = CASE WHEN resolved_by IS NULL THEN ?4 ELSE resolved_by_person END,
-                    resolved_by = COALESCE(resolved_by, ?3) WHERE id = ?1",
-                params![thread_id, now, by, person],
+                    resolved_by = COALESCE(resolved_by, ?3),
+                    report_phase = CASE WHEN status = 'open' THEN NULLIF(report_phase, 'fix_proposed')
+                        ELSE report_phase END,
+                    resolve_reason = CASE WHEN status = 'open' THEN ?5 ELSE resolve_reason END
+                 WHERE id = ?1",
+                params![thread_id, now, by, person, reason],
             )?;
+            // A fix still waiting for a verdict gets none now.
+            if t.status != "resolved" {
+                tx.execute(
+                    "UPDATE report_fixes SET outcome = 'closed' WHERE thread_id = ?1
+                       AND outcome = 'pending'",
+                    params![thread_id],
+                )?;
+            }
             // Who read a row before the undelivered ones go: told, alone,
             // when none is left.
             let readers = deliveries_in(tx, &[thread_id.to_string()], false)?
@@ -1929,7 +2027,10 @@ impl Store {
             // Nothing on it waits on anyone now: its replies are read.
             super::inbox::read_by_resolve(tx, thread_id, &now)?;
             if t.status != "resolved" {
-                let rec = resolve_record(&now, &t.artifact_id, thread_id, Some(by), linked);
+                let mut rec = resolve_record(&now, &t.artifact_id, thread_id, Some(by), linked);
+                if let Some(r) = reason {
+                    rec = rec.with("reason", r);
+                }
                 self.record_audit(tx, ctx, rec)?;
             }
             // Its open approval requests go with its held rows (spec
@@ -1958,31 +2059,47 @@ impl Store {
     }
 
     /// Reopens a thread: status `open`, `resolved_at` and `resolved_by`
-    /// cleared, recorded as `thread.reopen` under `ctx` in the same
-    /// transaction. Reopening an open thread changes and records nothing.
+    /// cleared (and a report's `verified` phase and resolve reason),
+    /// recorded as `thread.reopen` under `ctx` in the same transaction.
+    /// Reopening an open thread records nothing.
     ///
     /// # Errors
     /// `NotFound` when the thread or its artifact is gone.
     pub fn reopen_thread(&self, ctx: &AuditCtx, thread_id: &str) -> Result<Thread> {
-        self.with_tx(|tx| {
-            let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
-            tx.execute(
-                "UPDATE threads SET status = 'open', resolved_at = NULL, resolved_by = NULL,
-                        resolved_by_person = NULL WHERE id = ?1",
-                params![thread_id],
-            )?;
-            if t.status == "resolved" {
-                let rec = thread_record(
-                    AuditKind::ThreadReopen,
-                    &self.now(),
-                    &t.artifact_id,
-                    thread_id,
-                );
-                self.record_audit(tx, ctx, rec)?;
-            }
-            Ok(())
-        })?;
+        self.with_tx(|tx| self.reopen_thread_in(tx, ctx, thread_id))?;
         self.get_thread(thread_id)?.ok_or(CoreError::NotFound)
+    }
+
+    /// [`Store::reopen_thread`] inside the caller's transaction.
+    pub(crate) fn reopen_thread_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        ctx: &AuditCtx,
+        thread_id: &str,
+    ) -> Result<()> {
+        let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
+        if t.status == "resolved" {
+            tx.execute(
+                "UPDATE threads SET reopened_by_person = ?2 WHERE id = ?1",
+                params![thread_id, reopener(ctx)],
+            )?;
+        }
+        tx.execute(
+            "UPDATE threads SET status = 'open', resolved_at = NULL, resolved_by = NULL,
+                    resolved_by_person = NULL, report_phase = NULLIF(report_phase, 'verified'),
+                    resolve_reason = NULL WHERE id = ?1",
+            params![thread_id],
+        )?;
+        if t.status == "resolved" {
+            let rec = thread_record(
+                AuditKind::ThreadReopen,
+                &self.now(),
+                &t.artifact_id,
+                thread_id,
+            );
+            self.record_audit(tx, ctx, rec)?;
+        }
+        Ok(())
     }
 
     /// Deletes a thread with its comments and feedback rows in one
@@ -2002,7 +2119,28 @@ impl Store {
         ctx: &AuditCtx,
         thread_id: &str,
     ) -> Result<(Thread, clax_core::Touched)> {
+        // A queue report's reopen comments keep clips of their own.
+        let comment_clips: Vec<String> = self.with_read(|c| {
+            Ok(c.prepare_cached(
+                "SELECT clip_key FROM comments WHERE thread_id = ?1 AND clip_key IS NOT NULL",
+            )?
+            .query_map(params![thread_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?)
+        })?;
         let (t, targets) = self.delete_thread_rows(ctx, thread_id)?;
+        if !comment_clips.is_empty() {
+            let id = ArtifactId::parse(&t.artifact_id)?;
+            for key in &comment_clips {
+                if let Err(e) = self.content.delete_clip(&id, key).await {
+                    tracing::warn!(
+                        artifact = id.as_str(),
+                        thread = t.id,
+                        error = %e,
+                        "could not remove a deleted thread's comment clip"
+                    );
+                }
+            }
+        }
         if t.has_clip {
             let id = ArtifactId::parse(&t.artifact_id)?;
             if let Err(e) = self.content.delete_clip(&id, &t.id).await {
@@ -2325,6 +2463,42 @@ mod tests {
                     .unwrap()
                     .next()
                     .is_none()
+        );
+    }
+
+    /// A clipped thread the store refuses (no such version, no such file,
+    /// comments off, a key already used) never writes its clip.
+    #[test]
+    fn a_refused_clipped_thread_never_writes_its_clip() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None);
+        let put = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watch = |st: &Store| {
+            let put = put.clone();
+            st.at_point("thread.clip.put", move |_| {
+                put.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+        };
+        let mut unknown = new_thread("x", Some(PNG.to_vec()));
+        unknown.version_n = 9;
+        let mut no_file = new_thread("x", Some(PNG.to_vec()));
+        no_file.anchor.file = "missing.html".into();
+        for (nt, code) in [(unknown, "unknown_version"), (no_file, "invalid_anchor")] {
+            watch(&st);
+            let e = st.create_thread(DAEMON, &aid, nt).unwrap_err();
+            assert!(
+                matches!(e, CoreError::Invalid { code: c, .. } if c == code),
+                "{e:?}"
+            );
+            assert!(!put.load(std::sync::atomic::Ordering::SeqCst), "{code}");
+        }
+        st.set_comments(DAEMON, &aid, false).unwrap();
+        watch(&st);
+        st.create_thread(DAEMON, &aid, new_thread("x", Some(PNG.to_vec())))
+            .unwrap_err();
+        assert!(
+            !put.load(std::sync::atomic::Ordering::SeqCst),
+            "comments off"
         );
     }
 

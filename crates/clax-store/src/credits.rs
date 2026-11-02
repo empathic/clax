@@ -32,9 +32,21 @@
 //! ([`Store::free_weekly_milli`]) plus their lift; a row's `free_milli` is
 //! the part of its credits that fell within the allowance when it was
 //! charged, the rest being paid (revenue).
+//!
+//! # Where a token rate comes from
+//!
+//! A model's token rate for a unit resolves to the first of
+//! ([`Store::model_rate`]): its cost line ([`token_line`]); the cached
+//! catalog's listing of the model by the provider the `api` and
+//! `base_url` settings name ([`crate::price_catalog`]), at
+//! [`TOKEN_MARGIN_BP`]; the instance's default rates (`default_rates.*`,
+//! fixed milli-credits per million tokens). With `require_explicit_price`
+//! only the cost line counts. Each charge records which
+//! ([`RateSource`]). Other lines resolve only as lines.
 
 use super::Store;
-use super::bot_settings::{Overrides, Setting, int_setting_in};
+use super::bot_settings::{Overrides, Setting, bool_setting_in, int_setting_in, setting_in};
+use super::price_catalog::{CatalogListing, listing_in};
 use super::roles::{check_live_person, set_by};
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
@@ -350,6 +362,61 @@ pub struct Rate {
     pub fixed_credits_milli: Option<i64>,
     pub applies: Applies,
     pub credit_price_micro_usd: i64,
+    /// Where the rates come from; a snapshot without it is a line's.
+    #[serde(default)]
+    pub source: RateSource,
+}
+
+/// Where a rate comes from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RateSource {
+    /// A cost line, set by an admin, seeded or priced from the catalog.
+    #[default]
+    Line,
+    /// The cached catalog's listing of the model, at [`TOKEN_MARGIN_BP`].
+    Catalog,
+    /// The instance's default rates (`default_rates.*`).
+    Default,
+    /// The cost the provider billed for the call.
+    Provider,
+}
+
+impl RateSource {
+    /// `line`, `catalog`, `default` or `provider`, as stored.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RateSource::Line => "line",
+            RateSource::Catalog => "catalog",
+            RateSource::Default => "default",
+            RateSource::Provider => "provider",
+        }
+    }
+
+    /// The source named `s` ([`RateSource::as_str`]).
+    pub fn parse(s: &str) -> Option<RateSource> {
+        match s {
+            "line" => Some(RateSource::Line),
+            "catalog" => Some(RateSource::Catalog),
+            "default" => Some(RateSource::Default),
+            "provider" => Some(RateSource::Provider),
+            _ => None,
+        }
+    }
+
+    /// Whether a charge at it is an estimate of the price rather than one
+    /// an admin or the provider set: `catalog` and `default`.
+    pub fn is_estimated(self) -> bool {
+        matches!(self, RateSource::Catalog | RateSource::Default)
+    }
+}
+
+/// A model's token rate for one unit and where it came from
+/// ([`Store::model_rate`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct ResolvedRate {
+    pub rate: Rate,
+    pub source: RateSource,
 }
 
 impl Metered {
@@ -401,6 +468,8 @@ pub struct UsageRow {
     pub absorbed: bool,
     /// `qty` is an estimate ([`Metered::estimated`]).
     pub estimated: bool,
+    /// Where the rates it was charged at came from.
+    pub rate_source: RateSource,
     /// The week's key ([`week_key`]).
     pub week: String,
     pub at: String,
@@ -415,7 +484,7 @@ impl UsageRow {
 
 const USAGE_COLS: &str = "id, person, run_id, step_n, line, unit, qty, rate_cost_micro_usd,
     margin_bp, fixed_credits_milli, credit_price_micro_usd, cost_micro_usd, credits_milli,
-    free_milli, key_source, week, at, base_qty, absorbed, estimated";
+    free_milli, key_source, week, at, base_qty, absorbed, estimated, rate_source";
 
 fn row_to_usage(r: &Row<'_>) -> rusqlite::Result<UsageRow> {
     let unit: String = r.get(5)?;
@@ -441,6 +510,7 @@ fn row_to_usage(r: &Row<'_>) -> rusqlite::Result<UsageRow> {
         at: r.get(16)?,
         absorbed: r.get(18)?,
         estimated: r.get(19)?,
+        rate_source: RateSource::parse(&r.get::<_, String>(20)?).unwrap_or_default(),
     })
 }
 
@@ -498,14 +568,154 @@ pub fn token_line(model: &str, unit: Unit) -> String {
     format!("{model}.{part}")
 }
 
-/// `model_not_priced` unless `model` has a cost line for each of
-/// [`TOKEN_UNITS`] on `c`, so a run on it can charge every turn.
-pub(crate) fn check_model_priced(c: &Connection, model: &str) -> Result<()> {
-    let missing: Vec<String> = TOKEN_UNITS
-        .iter()
-        .map(|u| token_line(model, *u))
-        .filter(|id| !matches!(line_in(c, id), Ok(Some(_))))
-        .collect();
+/// The model and token unit of token line ID `id` ([`token_line`]), or
+/// `None` for an ID that is not one.
+pub fn parse_token_line(id: &str) -> Option<(&str, Unit)> {
+    let (model, part) = id.rsplit_once('.')?;
+    let unit = match part {
+        "input" => Unit::MtokInput,
+        "cached_input" => Unit::MtokCachedInput,
+        "cache_write" => Unit::MtokCacheWrite,
+        "output" => Unit::MtokOutput,
+        _ => return None,
+    };
+    (!model.is_empty()).then_some((model, unit))
+}
+
+/// `line`'s rates at `price` a credit, sourced from the line.
+fn line_rate(line: &CostLine, price: i64) -> Rate {
+    Rate {
+        unit: line.unit,
+        cost_micro_usd: line.cost_micro_usd,
+        margin_bp: line.margin_bp,
+        fixed_credits_milli: line.fixed_credits_milli,
+        applies: line.applies,
+        credit_price_micro_usd: price,
+        source: RateSource::Line,
+    }
+}
+
+/// The catalog provider of the `api` and `base_url` in effect on `c`
+/// ([`clax_core::config::ModelApi::catalog_provider`]), or `None` for a
+/// host the catalog does not know.
+pub(crate) fn catalog_provider_in(c: &Connection, ov: &Overrides) -> Result<Option<&'static str>> {
+    let api = setting_in(c, ov, Setting::Api)?;
+    let base = setting_in(c, ov, Setting::BaseUrl)?;
+    Ok(api
+        .as_str()
+        .and_then(clax_core::config::ModelApi::parse)
+        .zip(base.as_str())
+        .and_then(|(api, base)| api.catalog_provider(base)))
+}
+
+/// `listing`'s cost of a million tokens of `unit`: a missing cache rate is
+/// the input rate.
+fn listing_cost(listing: &CatalogListing, unit: Unit) -> i64 {
+    match unit {
+        Unit::MtokCachedInput => listing
+            .cache_read_micro_usd
+            .unwrap_or(listing.input_micro_usd),
+        Unit::MtokCacheWrite => listing
+            .cache_write_micro_usd
+            .unwrap_or(listing.input_micro_usd),
+        Unit::MtokOutput => listing.output_micro_usd,
+        _ => listing.input_micro_usd,
+    }
+}
+
+/// The default-rates setting of token unit `unit`.
+fn default_rate_setting(unit: Unit) -> Setting {
+    match unit {
+        Unit::MtokCachedInput => Setting::DefaultRateCachedInput,
+        Unit::MtokCacheWrite => Setting::DefaultRateCacheWrite,
+        Unit::MtokOutput => Setting::DefaultRateOutput,
+        _ => Setting::DefaultRateInput,
+    }
+}
+
+/// [`Store::model_rate`] on `c` under `ov`.
+pub(crate) fn model_rate_in(
+    c: &Connection,
+    ov: &Overrides,
+    model: &str,
+    unit: Unit,
+) -> Result<Option<ResolvedRate>> {
+    if !unit.is_tokens() {
+        return Ok(None);
+    }
+    let price = int_setting_in(c, ov, Setting::CreditPriceMicroUsd)?;
+    let resolved = |rate: Rate| {
+        Some(ResolvedRate {
+            rate,
+            source: rate.source,
+        })
+    };
+    if let Some(line) = line_in(c, &token_line(model, unit))? {
+        return Ok(resolved(line_rate(&line, price)));
+    }
+    if bool_setting_in(c, ov, Setting::RequireExplicitPrice)? {
+        return Ok(None);
+    }
+    if let Some(provider) = catalog_provider_in(c, ov)?
+        && let Some(listing) = listing_in(c, provider, model)?
+    {
+        return Ok(resolved(Rate {
+            unit,
+            cost_micro_usd: listing_cost(&listing, unit),
+            margin_bp: TOKEN_MARGIN_BP,
+            fixed_credits_milli: None,
+            applies: Applies::InstanceKey,
+            credit_price_micro_usd: price,
+            source: RateSource::Catalog,
+        }));
+    }
+    let fixed = int_setting_in(c, ov, default_rate_setting(unit))?;
+    Ok(resolved(Rate {
+        unit,
+        cost_micro_usd: 0,
+        margin_bp: 0,
+        fixed_credits_milli: Some(fixed),
+        applies: Applies::InstanceKey,
+        credit_price_micro_usd: price,
+        source: RateSource::Default,
+    }))
+}
+
+/// The rates line `id` charges at on `c` under `ov`: the line's when it
+/// exists, else for a token line ID ([`parse_token_line`]) its model's
+/// rate for its unit ([`model_rate_in`]); `None` otherwise.
+pub(crate) fn rate_in(c: &Connection, ov: &Overrides, id: &str) -> Result<Option<Rate>> {
+    if let Some(line) = line_in(c, id)? {
+        let price = int_setting_in(c, ov, Setting::CreditPriceMicroUsd)?;
+        return Ok(Some(line_rate(&line, price)));
+    }
+    match parse_token_line(id) {
+        Some((model, unit)) => Ok(model_rate_in(c, ov, model, unit)?.map(|r| r.rate)),
+        None => Ok(None),
+    }
+}
+
+/// `model_not_priced` unless each of [`TOKEN_UNITS`] of `model` resolves
+/// to a rate on `c` under `ov` ([`model_rate_in`]), so a run on it can
+/// charge every turn. Only `require_explicit_price` makes a model without
+/// cost lines unpriced. A run on the person's own key (`key_source`
+/// [`KeySource::Own`]) is never refused: token rates apply only to the
+/// instance key, so its token rows are not charged.
+pub(crate) fn check_model_priced(
+    c: &Connection,
+    ov: &Overrides,
+    model: &str,
+    key_source: KeySource,
+) -> Result<()> {
+    if key_source == KeySource::Own {
+        return Ok(());
+    }
+    let mut missing = Vec::new();
+    for u in TOKEN_UNITS {
+        if model_rate_in(c, ov, model, u)?.is_none() {
+            missing.push(token_line(model, u));
+        }
+    }
     if missing.is_empty() {
         Ok(())
     } else {
@@ -531,6 +741,62 @@ pub struct ModelPrices {
     pub output: i64,
     pub margin_bp: i64,
     pub source: String,
+}
+
+/// One token unit's line of a rate card ([`ModelRates`]): cost-based
+/// (`cost_micro_usd` per million tokens at `margin_bp`) when
+/// `fixed_credits_milli` is `None`, else credit-based
+/// (`fixed_credits_milli` per million tokens, the cost for information).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct UnitRate {
+    pub cost_micro_usd: i64,
+    pub margin_bp: i64,
+    pub fixed_credits_milli: Option<i64>,
+}
+
+/// A model's rate card, its four token lines, for
+/// [`Store::set_model_rates`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct ModelRates {
+    /// Shown in the lines' labels (`Claude Sonnet 5.5`).
+    pub name: String,
+    pub input: UnitRate,
+    pub cached_input: UnitRate,
+    pub cache_write: UnitRate,
+    pub output: UnitRate,
+    pub source: String,
+}
+
+/// One token unit of a model's pricing ([`Store::model_pricing`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UnitPricing {
+    pub unit: Unit,
+    /// The rate it resolves to now, `None` when it resolves to none.
+    pub resolved: Option<ResolvedRate>,
+    /// The catalog listing's cost for the unit, when it lists one (a
+    /// missing cache rate is `None` here, not the input rate).
+    pub catalog_micro_usd: Option<i64>,
+    /// The unit is priced by a cost-based line whose cost differs from the
+    /// catalog's by more than 1 %.
+    pub drift: bool,
+}
+
+/// A model's pricing as the admin pages show it ([`Store::model_pricing`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ModelPricing {
+    pub model: String,
+    /// Each of [`TOKEN_UNITS`], in order.
+    pub units: Vec<UnitPricing>,
+    /// The catalog's listing of the model by the provider in effect.
+    pub listing: Option<CatalogListing>,
+    /// Any unit drifted.
+    pub drift: bool,
+}
+
+/// Whether a line cost of `line` drifted from the catalog's `catalog`: they
+/// differ by more than 1 % of the catalog's.
+fn drifted(line: i64, catalog: i64) -> bool {
+    i128::from(line.abs_diff(catalog)) * 100 > i128::from(catalog.max(0))
 }
 
 /// The infrastructure lines' IDs.
@@ -736,12 +1002,15 @@ pub(crate) fn week_usage_in(
 }
 
 /// Charges `items` to `person` at `at`, for step `step` of run `run` when
-/// given, on `tx`: one usage row each, in order, its rates read from its
-/// cost line and snapshotted, its free part what the person's allowance
-/// had left. Returns the rows.
+/// given, on `tx`: one usage row each, in order, at its snapshotted rates
+/// or else its line's rates now ([`rate_in`]: a token line that does not
+/// exist resolves through [`model_rate_in`]), recording their source, its
+/// free part what the person's allowance had left. Returns the rows.
 ///
 /// # Errors
-/// `unknown_cost_line` for an item whose line does not exist;
+/// `unknown_cost_line` for an item whose rate resolves to none ([`rate_in`]:
+/// a line that does not exist and is not a token line, or a token line
+/// without its line under `require_explicit_price`);
 /// `invalid_usage` for a negative quantity; the store's.
 pub(crate) fn charge_in(
     tx: &Transaction<'_>,
@@ -751,7 +1020,6 @@ pub(crate) fn charge_in(
     items: &[Metered],
     at: DateTime<Utc>,
 ) -> Result<Vec<UsageRow>> {
-    let price = int_setting_in(tx, ov, Setting::CreditPriceMicroUsd)?;
     let week = week_key(at);
     let stamp = clax_core::time::stamp(at);
     let usage = week_usage_in(tx, ov, person, at)?;
@@ -766,22 +1034,12 @@ pub(crate) fn charge_in(
         }
         let r = match m.rate {
             Some(r) => r,
-            None => {
-                let line = line_in(tx, &m.line)?.ok_or_else(|| {
-                    CoreError::invalid(
-                        "unknown_cost_line",
-                        format!("no cost line is named '{}'", m.line),
-                    )
-                })?;
-                Rate {
-                    unit: line.unit,
-                    cost_micro_usd: line.cost_micro_usd,
-                    margin_bp: line.margin_bp,
-                    fixed_credits_milli: line.fixed_credits_milli,
-                    applies: line.applies,
-                    credit_price_micro_usd: price,
-                }
-            }
+            None => rate_in(tx, ov, &m.line)?.ok_or_else(|| {
+                CoreError::invalid(
+                    "unknown_cost_line",
+                    format!("no cost line is named '{}'", m.line),
+                )
+            })?,
         };
         let base = r.unit.base();
         let waived = r.applies == Applies::InstanceKey && m.key_source == KeySource::Own;
@@ -807,8 +1065,9 @@ pub(crate) fn charge_in(
         tx.prepare_cached(
             "INSERT INTO usage_rows (person, run_id, step_n, line, unit, qty, rate_cost_micro_usd,
                 margin_bp, fixed_credits_milli, credit_price_micro_usd, base_qty, cost_micro_usd,
-                credits_milli, free_milli, key_source, week, at, absorbed, estimated)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                credits_milli, free_milli, key_source, week, at, absorbed, estimated, rate_source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
+                     ?20)",
         )?
         .execute(params![
             person,
@@ -830,6 +1089,7 @@ pub(crate) fn charge_in(
             stamp,
             m.absorbed,
             m.estimated,
+            r.source.as_str(),
         ])?;
         out.push(UsageRow {
             id: tx.last_insert_rowid(),
@@ -850,6 +1110,7 @@ pub(crate) fn charge_in(
             key_source: m.key_source,
             absorbed: m.absorbed,
             estimated: m.estimated,
+            rate_source: r.source,
             week: week.clone(),
             at: stamp.clone(),
         });
@@ -872,22 +1133,35 @@ pub struct CostLinePatch {
     pub model: Option<Option<String>>,
 }
 
-/// `id` checked as a cost line ID: 1 to 160 of `[A-Za-z0-9._:-]` (a
+/// `id` checked as a cost line ID: 1 to 160 of `[A-Za-z0-9._:/-]` (a
 /// model's token lines are its ID and a suffix).
 fn check_line_id(id: &str) -> Result<()> {
     let ok = !id.is_empty()
         && id.len() <= 160
         && id
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-'));
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'/' | b'-'));
     if ok {
         Ok(())
     } else {
         Err(CoreError::invalid(
             "invalid_cost_line",
-            "a cost line ID is 1 to 160 letters, digits, '.', '_', ':' or '-'",
+            "a cost line ID is 1 to 160 letters, digits, '.', '_', ':', '/' or '-'",
         ))
     }
+}
+
+/// `model` checked as a model ID, as the model settings take it.
+fn check_model_id(model: &str) -> Result<()> {
+    Setting::ModelDefault
+        .check(&serde_json::Value::from(model))
+        .map(|_| ())
+        .map_err(|_| {
+            CoreError::invalid(
+                "invalid_cost_line",
+                "a model ID is 1 to 128 letters, digits, '.', '_', ':', '/' and '-'",
+            )
+        })
 }
 
 /// `text` trimmed, 1 to `max` characters, for the field `what`.
@@ -992,24 +1266,43 @@ fn ratio_bp(n: i64, d: i64) -> Option<i64> {
 }
 
 impl Store {
-    /// Line `id`'s rates now with the credit price, to snapshot ([`Rate`]),
-    /// or `None` for no such line.
+    /// Line `id`'s rates now with the credit price, to snapshot ([`Rate`]):
+    /// the line's, or for a token line ID with no line its model's rate
+    /// for the unit ([`Store::model_rate`]); `None` for neither.
     ///
     /// # Errors
     /// The store's.
     pub fn rate_of(&self, id: &str) -> Result<Option<Rate>> {
         let ov = self.bot_overrides();
-        self.with_read(|c| {
-            let price = int_setting_in(c, &ov, Setting::CreditPriceMicroUsd)?;
-            Ok(line_in(c, id)?.map(|line| Rate {
-                unit: line.unit,
-                cost_micro_usd: line.cost_micro_usd,
-                margin_bp: line.margin_bp,
-                fixed_credits_milli: line.fixed_credits_milli,
-                applies: line.applies,
-                credit_price_micro_usd: price,
-            }))
-        })
+        self.with_read(|c| rate_in(c, &ov, id))
+    }
+
+    /// `model`'s rate for token unit `unit` now and where it comes from:
+    /// its cost line; else, unless `require_explicit_price` is set, the
+    /// catalog's listing of it by the provider the `api` and `base_url` in
+    /// effect name (model IDs compared ignoring case; a missing cache rate
+    /// at the input rate), at [`TOKEN_MARGIN_BP`] on the instance key; else
+    /// the default rates (`default_rates.*`, fixed milli-credits per
+    /// million tokens, on the instance key). `None` with
+    /// `require_explicit_price` and no line, and for a unit that is not
+    /// tokens.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn model_rate(&self, model: &str, unit: Unit) -> Result<Option<ResolvedRate>> {
+        let ov = self.bot_overrides();
+        self.with_read(|c| model_rate_in(c, &ov, model, unit))
+    }
+
+    /// The catalog provider the `api` and `base_url` in effect name, by
+    /// the rule [`Store::model_rate`] and [`Store::model_pricing`] use;
+    /// `None` for a host the catalog does not name.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn catalog_provider(&self) -> Result<Option<&'static str>> {
+        let ov = self.bot_overrides();
+        self.with_read(|c| catalog_provider_in(c, &ov))
     }
 
     /// Every cost line, by ID.
@@ -1225,40 +1518,146 @@ impl Store {
         model: &str,
         prices: ModelPrices,
     ) -> Result<Vec<CostLine>> {
-        super::bot_settings::Setting::ModelDefault
-            .check(&serde_json::Value::from(model))
-            .map_err(|_| {
-                CoreError::invalid(
-                    "invalid_cost_line",
-                    "a model ID is 1 to 128 letters, digits, '.', '_', ':' and '-'",
-                )
-            })?;
+        let at = |cost| UnitRate {
+            cost_micro_usd: cost,
+            margin_bp: prices.margin_bp,
+            fixed_credits_milli: None,
+        };
+        self.set_model_rates(
+            ctx,
+            model,
+            ModelRates {
+                input: at(prices.input),
+                cached_input: at(prices.cached_input),
+                cache_write: at(prices.cache_write),
+                output: at(prices.output),
+                name: prices.name,
+                source: prices.source,
+            },
+        )
+    }
+
+    /// Sets `model`'s rate card to `rates`: makes or changes its input,
+    /// cached input, cache-write and output lines (instance key only), each
+    /// cost-based or credit-based as its [`UnitRate`] says, in one
+    /// transaction, each change recorded as `admin.cost_line`. Returns the
+    /// four lines.
+    ///
+    /// # Errors
+    /// `invalid_cost_line` for a model ID or a value; the store's.
+    pub fn set_model_rates(
+        &self,
+        ctx: &AuditCtx,
+        model: &str,
+        rates: ModelRates,
+    ) -> Result<Vec<CostLine>> {
+        check_model_id(model)?;
         self.with_tx(|tx| {
             [
-                (Unit::MtokInput, "input", prices.input),
-                (Unit::MtokCachedInput, "cached input", prices.cached_input),
-                (Unit::MtokCacheWrite, "cache write", prices.cache_write),
-                (Unit::MtokOutput, "output", prices.output),
+                (Unit::MtokInput, "input", rates.input),
+                (Unit::MtokCachedInput, "cached input", rates.cached_input),
+                (Unit::MtokCacheWrite, "cache write", rates.cache_write),
+                (Unit::MtokOutput, "output", rates.output),
             ]
             .into_iter()
-            .map(|(unit, what, cost)| {
+            .map(|(unit, what, r)| {
                 self.put_line_in(
                     tx,
                     ctx,
                     &token_line(model, unit),
                     CostLinePatch {
-                        label: Some(format!("{} {what} tokens", prices.name)),
+                        label: Some(format!("{} {what} tokens", rates.name)),
                         unit: Some(unit),
-                        cost_micro_usd: Some(cost),
-                        margin_bp: Some(prices.margin_bp),
-                        fixed_credits_milli: Some(None),
+                        cost_micro_usd: Some(r.cost_micro_usd),
+                        margin_bp: Some(r.margin_bp),
+                        fixed_credits_milli: Some(r.fixed_credits_milli),
                         applies: Some(Applies::InstanceKey),
-                        source: Some(prices.source.clone()),
+                        source: Some(rates.source.clone()),
                         model: Some(Some(model.to_string())),
                     },
                 )
             })
             .collect()
+        })
+    }
+
+    /// Deletes `model`'s token lines (those of [`TOKEN_UNITS`] it has) in
+    /// one transaction, each recorded as `admin.cost_line {line, op:
+    /// delete}`; its tokens then resolve past the lines
+    /// ([`Store::model_rate`]). Returns the IDs deleted.
+    ///
+    /// # Errors
+    /// `NotFound` when the model has none; `cost_line_in_use` while a run
+    /// on the model has not ended (and nothing is deleted); the store's.
+    pub fn delete_model_rates(&self, ctx: &AuditCtx, model: &str) -> Result<Vec<String>> {
+        self.with_tx(|tx| {
+            let mut deleted = Vec::new();
+            for unit in TOKEN_UNITS {
+                let id = token_line(model, unit);
+                if line_in(tx, &id)?.is_some() {
+                    self.delete_line_in(tx, ctx, &id)?;
+                    deleted.push(id);
+                }
+            }
+            if deleted.is_empty() {
+                return Err(CoreError::NotFound);
+            }
+            Ok(deleted)
+        })
+    }
+
+    /// Each of `models`' pricing now: each token unit's resolved rate and
+    /// its source ([`Store::model_rate`]), the catalog's listing of the
+    /// model by the provider in effect when there is one, and whether a
+    /// cost-based line's cost drifted from the listing's by more than 1 %
+    /// (cache rates compared only where the catalog lists them).
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn model_pricing(&self, models: &[String]) -> Result<Vec<ModelPricing>> {
+        let ov = self.bot_overrides();
+        self.with_read(|c| {
+            let provider = catalog_provider_in(c, &ov)?;
+            models
+                .iter()
+                .map(|model| {
+                    let listing = match provider {
+                        Some(p) => listing_in(c, p, model)?,
+                        None => None,
+                    };
+                    let units = TOKEN_UNITS
+                        .iter()
+                        .map(|&unit| {
+                            let resolved = model_rate_in(c, &ov, model, unit)?;
+                            let catalog_micro_usd = listing.as_ref().and_then(|l| match unit {
+                                Unit::MtokCachedInput => l.cache_read_micro_usd,
+                                Unit::MtokCacheWrite => l.cache_write_micro_usd,
+                                _ => Some(listing_cost(l, unit)),
+                            });
+                            let drift = match (resolved, catalog_micro_usd) {
+                                (Some(r), Some(cat)) => {
+                                    r.source == RateSource::Line
+                                        && r.rate.fixed_credits_milli.is_none()
+                                        && drifted(r.rate.cost_micro_usd, cat)
+                                }
+                                _ => false,
+                            };
+                            Ok(UnitPricing {
+                                unit,
+                                resolved,
+                                catalog_micro_usd,
+                                drift,
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    Ok(ModelPricing {
+                        model: model.clone(),
+                        drift: units.iter().any(|u| u.drift),
+                        units,
+                        listing,
+                    })
+                })
+                .collect()
         })
     }
 
@@ -1275,16 +1674,19 @@ impl Store {
     }
 
     /// Replaces the whole pricing, as the admin pages' `PUT
-    /// /api/admin/pricing` sends it, in one transaction: the credit price
-    /// and free tier (`settings`, as [`Store::set_bot_settings`] takes
-    /// them), each of `lines` made or changed ([`Store::put_cost_line`]),
-    /// and every other line deleted ([`Store::delete_cost_line`]). Every
-    /// value is checked before anything is written, and a refusal of any
-    /// line writes nothing.
+    /// /api/admin/pricing` sends it, in one transaction: the credit price,
+    /// free tier and other pricing settings (`settings`, as
+    /// [`Store::set_bot_settings`] takes them), each of `lines` made or
+    /// changed ([`Store::put_cost_line`]), and every other line deleted
+    /// ([`Store::delete_cost_line`]), but the token lines (an ID
+    /// [`parse_token_line`] reads): those belong to the models' rate cards
+    /// ([`Store::set_model_rates`]), so one in `lines` is refused and every
+    /// one is kept as it is. Every value is checked before anything is
+    /// written, and a refusal of any line writes nothing.
     ///
     /// # Errors
-    /// `setting_overridden`, `invalid_setting`, `invalid_cost_line`,
-    /// `cost_line_in_use`; the store's.
+    /// `setting_overridden`, `invalid_setting`, `invalid_cost_line` (a
+    /// token line among `lines` too), `cost_line_in_use`; the store's.
     pub fn replace_pricing(
         &self,
         ctx: &AuditCtx,
@@ -1294,6 +1696,12 @@ impl Store {
         let checked = self.checked_settings(settings)?;
         for (id, _) in &lines {
             check_line_id(id)?;
+            if parse_token_line(id).is_some() {
+                return Err(CoreError::invalid(
+                    "invalid_cost_line",
+                    "token lines are set per model: POST /api/admin/pricing/models",
+                ));
+            }
         }
         self.with_tx(|tx| {
             self.apply_settings_in(tx, ctx, &checked)?;
@@ -1307,8 +1715,10 @@ impl Store {
                 let rows = q.query_map([], |r| r.get(0))?;
                 rows.collect::<rusqlite::Result<_>>()?
             };
-            for id in all.iter().filter(|id| !kept.contains(*id)) {
-                self.delete_line_in(tx, ctx, id)?;
+            for id in &all {
+                if parse_token_line(id).is_none() && !kept.contains(id) {
+                    self.delete_line_in(tx, ctx, id)?;
+                }
             }
             Ok(())
         })
@@ -1570,6 +1980,569 @@ mod tests {
         DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
     }
 
+    /// [`check_model_priced`] of `model` on `st` now.
+    fn priced(st: &Store, model: &str) -> Result<()> {
+        let ov = st.bot_overrides();
+        st.with_read(|c| check_model_priced(c, &ov, model, KeySource::Instance))
+    }
+
+    /// Sets `require_explicit_price` on `st`.
+    fn explicit_prices(st: &Store) {
+        st.set_bot_settings(
+            DAEMON,
+            &[(Setting::RequireExplicitPrice, Some(json!(true)))],
+        )
+        .unwrap();
+    }
+
+    /// Points `st` at OpenAI's API, whose catalog provider is `openai`, and
+    /// caches a catalog listing `gpt-5` there (cache read listed, cache
+    /// write not) and `GPT-Mini` (no cache rates).
+    fn openai_with_catalog(st: &Store) {
+        st.set_bot_settings(
+            DAEMON,
+            &[
+                (Setting::Api, Some(json!("openai"))),
+                (Setting::BaseUrl, Some(json!("https://api.openai.com/v1"))),
+            ],
+        )
+        .unwrap();
+        let mut gpt5 =
+            crate::price_catalog::tests::listing("openai", "gpt-5", 1_250_000, 10_000_000);
+        gpt5.cache_read_micro_usd = Some(125_000);
+        st.replace_price_catalog(
+            &[
+                gpt5,
+                crate::price_catalog::tests::listing("openai", "GPT-Mini", 250_000, 2_000_000),
+                // Another provider's listing of the same model is not used.
+                crate::price_catalog::tests::listing("anthropic", "gpt-5", 9, 9),
+            ],
+            t("2026-10-30T00:00:00Z"),
+        )
+        .unwrap();
+    }
+
+    fn resolved(
+        st: &Store,
+        model: &str,
+        unit: Unit,
+    ) -> Option<(RateSource, i64, i64, Option<i64>)> {
+        st.model_rate(model, unit).unwrap().map(|r| {
+            assert_eq!(r.source, r.rate.source);
+            assert_eq!(r.rate.unit, unit);
+            assert_eq!(r.rate.applies, Applies::InstanceKey);
+            (
+                r.source,
+                r.rate.cost_micro_usd,
+                r.rate.margin_bp,
+                r.rate.fixed_credits_milli,
+            )
+        })
+    }
+
+    #[test]
+    fn replacing_the_pricing_keeps_every_token_line_and_refuses_one() {
+        let (_d, st) = store();
+        let before = st.cost_lines().unwrap();
+        let tokens = |ls: &[CostLine]| -> Vec<CostLine> {
+            ls.iter()
+                .filter(|l| parse_token_line(&l.id).is_some())
+                .cloned()
+                .collect()
+        };
+        let patch = |l: &CostLine| CostLinePatch {
+            label: Some(l.label.clone()),
+            unit: Some(l.unit),
+            cost_micro_usd: Some(l.cost_micro_usd),
+            margin_bp: Some(l.margin_bp),
+            fixed_credits_milli: Some(l.fixed_credits_milli),
+            applies: Some(l.applies),
+            source: Some(l.source.clone()),
+            model: Some(l.model.clone()),
+        };
+        let others: Vec<(String, CostLinePatch)> = before
+            .iter()
+            .filter(|l| parse_token_line(&l.id).is_none() && l.id != LINE_TOOLPATH_STORAGE)
+            .map(|l| (l.id.clone(), patch(l)))
+            .collect();
+        // A token line given is refused and nothing is written.
+        let sonnet = before
+            .iter()
+            .find(|l| l.id == "claude-sonnet-5-5.input")
+            .unwrap();
+        let mut lines = others.clone();
+        lines.push((sonnet.id.clone(), patch(sonnet)));
+        let e = st
+            .replace_pricing(
+                DAEMON,
+                &[(Setting::FreeWeeklyMilli, Some(serde_json::json!(5)))],
+                lines,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                &e,
+                CoreError::Invalid {
+                    code: "invalid_cost_line",
+                    ..
+                }
+            ),
+            "{e:?}"
+        );
+        assert_eq!(st.cost_lines().unwrap(), before);
+        assert_eq!(st.free_weekly_milli().unwrap(), 2_000_000);
+        // A line of a token unit whose ID is no token line's is an ordinary
+        // line: made by one replace, deleted by the next.
+        let mut odd = patch(sonnet);
+        odd.model = Some(None);
+        let mut lines = others.clone();
+        lines.push(("custom.tokens".to_string(), odd));
+        st.replace_pricing(DAEMON, &[], lines).unwrap();
+        assert!(st.cost_line("custom.tokens").unwrap().is_some());
+        // Without them, every token line is kept as it was; another line
+        // left out goes.
+        st.replace_pricing(DAEMON, &[], others).unwrap();
+        let after = st.cost_lines().unwrap();
+        assert_eq!(tokens(&after), tokens(&before));
+        assert!(!after.iter().any(|l| l.id == LINE_TOOLPATH_STORAGE));
+        assert!(st.cost_line("custom.tokens").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_line_wins_over_the_catalog_which_wins_over_the_defaults() {
+        let (_d, st) = store();
+        openai_with_catalog(&st);
+        // The catalog: input and output as listed, the listed cache read,
+        // and the missing cache write at the input rate, at the token margin.
+        assert_eq!(
+            resolved(&st, "gpt-5", Unit::MtokInput),
+            Some((RateSource::Catalog, 1_250_000, TOKEN_MARGIN_BP, None))
+        );
+        assert_eq!(
+            resolved(&st, "gpt-5", Unit::MtokCachedInput),
+            Some((RateSource::Catalog, 125_000, TOKEN_MARGIN_BP, None))
+        );
+        assert_eq!(
+            resolved(&st, "gpt-5", Unit::MtokCacheWrite),
+            Some((RateSource::Catalog, 1_250_000, TOKEN_MARGIN_BP, None))
+        );
+        assert_eq!(
+            resolved(&st, "gpt-5", Unit::MtokOutput),
+            Some((RateSource::Catalog, 10_000_000, TOKEN_MARGIN_BP, None))
+        );
+        // Matched ignoring case; both missing cache rates at input.
+        assert_eq!(
+            resolved(&st, "gpt-mini", Unit::MtokCachedInput),
+            Some((RateSource::Catalog, 250_000, TOKEN_MARGIN_BP, None))
+        );
+        // Unlisted: the default rates, fixed credits at no cost.
+        for (unit, fixed) in [
+            (Unit::MtokInput, 560_000),
+            (Unit::MtokCachedInput, 28_000),
+            (Unit::MtokCacheWrite, 700_000),
+            (Unit::MtokOutput, 2_800_000),
+        ] {
+            assert_eq!(
+                resolved(&st, "unlisted", unit),
+                Some((RateSource::Default, 0, 0, Some(fixed)))
+            );
+        }
+        st.set_bot_settings(
+            DAEMON,
+            &[(Setting::DefaultRateOutput, Some(json!(1_000_000)))],
+        )
+        .unwrap();
+        // The highest default a setting takes charges a billion tokens
+        // without leaving the integers.
+        st.set_bot_settings(
+            DAEMON,
+            &[(
+                Setting::DefaultRateInput,
+                Some(json!(MAX_FIXED_CREDITS_MILLI)),
+            )],
+        )
+        .unwrap();
+        let row = &st
+            .charge(
+                OWNER,
+                None,
+                &[Metered::new(
+                    "unlisted.input",
+                    1_000_000_000,
+                    KeySource::Instance,
+                )],
+            )
+            .unwrap()[0];
+        assert_eq!(row.credits_milli, 1_000 * MAX_FIXED_CREDITS_MILLI);
+        assert_eq!(
+            resolved(&st, "unlisted", Unit::MtokOutput),
+            Some((RateSource::Default, 0, 0, Some(1_000_000)))
+        );
+        // A line wins over the catalog.
+        st.put_cost_line(
+            DAEMON,
+            &token_line("gpt-5", Unit::MtokInput),
+            CostLinePatch {
+                label: Some("GPT-5 input tokens".into()),
+                unit: Some(Unit::MtokInput),
+                cost_micro_usd: Some(2_000_000),
+                margin_bp: Some(1_000),
+                applies: Some(Applies::InstanceKey),
+                source: Some("a quote".into()),
+                model: Some(Some("gpt-5".into())),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            resolved(&st, "gpt-5", Unit::MtokInput),
+            Some((RateSource::Line, 2_000_000, 1_000, None))
+        );
+        assert_eq!(
+            resolved(&st, "gpt-5", Unit::MtokOutput).unwrap().0,
+            RateSource::Catalog
+        );
+        // A host the catalog does not know: its listings are not used.
+        st.set_bot_settings(
+            DAEMON,
+            &[(Setting::BaseUrl, Some(json!("https://proxy.example/v1")))],
+        )
+        .unwrap();
+        assert_eq!(
+            resolved(&st, "gpt-5", Unit::MtokOutput).unwrap().0,
+            RateSource::Default
+        );
+        // Only tokens resolve so.
+        assert_eq!(st.model_rate("gpt-5", Unit::Run).unwrap(), None);
+        // rate_of follows the same chain for a token line ID, and a line's
+        // own ID alone otherwise.
+        assert_eq!(
+            st.rate_of("unlisted.output").unwrap().unwrap().source,
+            RateSource::Default
+        );
+        assert_eq!(st.rate_of("nope").unwrap(), None);
+        assert_eq!(
+            st.rate_of(LINE_HARNESS_FEE).unwrap().unwrap().source,
+            RateSource::Line
+        );
+        priced(&st, "unlisted").unwrap();
+    }
+
+    #[test]
+    fn with_explicit_prices_required_only_a_line_counts() {
+        let (_d, st) = store();
+        openai_with_catalog(&st);
+        explicit_prices(&st);
+        assert_eq!(resolved(&st, "gpt-5", Unit::MtokInput), None);
+        assert_eq!(resolved(&st, "unlisted", Unit::MtokInput), None);
+        assert_eq!(
+            resolved(&st, "claude-opus-5-5", Unit::MtokInput).unwrap().0,
+            RateSource::Line
+        );
+        assert_eq!(st.rate_of("gpt-5.input").unwrap(), None);
+        assert!(matches!(
+            priced(&st, "gpt-5"),
+            Err(CoreError::Invalid {
+                code: "model_not_priced",
+                ..
+            })
+        ));
+        // On the person's own key the tokens are not charged: not refused.
+        let ov = st.bot_overrides();
+        st.with_read(|c| check_model_priced(c, &ov, "gpt-5", KeySource::Own))
+            .unwrap();
+        assert!(matches!(
+            st.charge(
+                OWNER,
+                None,
+                &[Metered::new("gpt-5.input", 1, KeySource::Instance)]
+            ),
+            Err(CoreError::Invalid {
+                code: "unknown_cost_line",
+                ..
+            })
+        ));
+        assert!(Setting::RequireExplicitPrice.check(&json!(1)).is_err());
+        assert_eq!(
+            st.bot_setting(Setting::RequireExplicitPrice).unwrap(),
+            json!(true)
+        );
+    }
+
+    #[test]
+    fn a_charge_records_where_its_rates_came_from() {
+        let (_d, st) = store();
+        openai_with_catalog(&st);
+        let rows = st
+            .charge(
+                OWNER,
+                Some(("r1", 1)),
+                &[
+                    Metered::new("claude-opus-5-5.output", 1_000_000, KeySource::Instance),
+                    Metered::new("gpt-5.input", 1_000_000, KeySource::Instance),
+                    Metered::new("unlisted.output", 1_000_000, KeySource::Instance),
+                    Metered::new(LINE_HARNESS_FEE, 1, KeySource::Instance),
+                    // On the person's own key, catalog and default rates
+                    // are waived as a line's are.
+                    Metered::new("gpt-5.input", 1_000_000, KeySource::Own),
+                    Metered::new("unlisted.output", 1_000_000, KeySource::Own),
+                ],
+            )
+            .unwrap();
+        let got: Vec<(RateSource, i64, i64)> = rows
+            .iter()
+            .map(|r| (r.rate_source, r.cost_micro_usd, r.credits_milli))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (RateSource::Line, 20_000_000, 2_800_000),
+                // $1.25 at 40 % at $0.01: 175 credits.
+                (RateSource::Catalog, 1_250_000, 175_000),
+                (RateSource::Default, 0, 2_800_000),
+                (RateSource::Line, 0, 1_000),
+                (RateSource::Catalog, 0, 0),
+                (RateSource::Default, 0, 0),
+            ]
+        );
+        assert_eq!(rows[4].qty, 1_000_000, "visible, not charged");
+        assert_eq!(rows[4].rate_cost_micro_usd, 1_250_000);
+        assert_eq!(rows[5].fixed_credits_milli, Some(2_800_000));
+        assert_eq!(st.usage_rows(OWNER, st.now_utc()).unwrap(), rows);
+        // A snapshot keeps its source; one without (an older payload) is a
+        // line's.
+        let mut snap = st.rate_of("unlisted.input").unwrap().unwrap();
+        assert_eq!(snap.source, RateSource::Default);
+        let mut m = Metered::new("unlisted.input", 1_000_000, KeySource::Instance);
+        m.rate = Some(snap);
+        snap.source = RateSource::Provider;
+        let mut p = Metered::new("unlisted.input", 1_000_000, KeySource::Instance);
+        p.rate = Some(snap);
+        let rows = st.charge(OWNER, None, &[m, p]).unwrap();
+        assert_eq!(rows[0].rate_source, RateSource::Default);
+        assert_eq!(rows[1].rate_source, RateSource::Provider);
+        let mut old = serde_json::to_value(snap).unwrap();
+        old.as_object_mut().unwrap().remove("source");
+        let old: Rate = serde_json::from_value(old).unwrap();
+        assert_eq!(old.source, RateSource::Line);
+        assert!(RateSource::Default.is_estimated() && !RateSource::Line.is_estimated());
+    }
+
+    #[test]
+    fn a_rate_card_is_set_credit_or_cost_based_and_deleted() {
+        let (_d, st) = store();
+        let card = ModelRates {
+            name: "GLM 5.3".into(),
+            input: UnitRate {
+                cost_micro_usd: 1_400_000,
+                margin_bp: TOKEN_MARGIN_BP,
+                fixed_credits_milli: None,
+            },
+            cached_input: UnitRate {
+                cost_micro_usd: 260_000,
+                margin_bp: TOKEN_MARGIN_BP,
+                fixed_credits_milli: None,
+            },
+            // Credit-based: 100 credits a million, the cost for information.
+            cache_write: UnitRate {
+                cost_micro_usd: 1_400_000,
+                margin_bp: 0,
+                fixed_credits_milli: Some(100_000),
+            },
+            output: UnitRate {
+                cost_micro_usd: 0,
+                margin_bp: 0,
+                fixed_credits_milli: Some(500_000),
+            },
+            source: "zai's price list".into(),
+        };
+        let lines = st
+            .set_model_rates(DAEMON, "zai/glm-5.3", card.clone())
+            .unwrap();
+        assert_eq!(lines.len(), 4);
+        assert_eq!(lines[0].id, "zai/glm-5.3.input");
+        assert_eq!(lines[0].label, "GLM 5.3 input tokens");
+        assert_eq!(lines[3].fixed_credits_milli, Some(500_000));
+        assert!(lines.iter().all(
+            |l| l.applies == Applies::InstanceKey && l.model.as_deref() == Some("zai/glm-5.3")
+        ));
+        let rows = st
+            .charge(
+                OWNER,
+                None,
+                &[
+                    Metered::new("zai/glm-5.3.input", 1_000_000, KeySource::Instance),
+                    Metered::new("zai/glm-5.3.cache_write", 1_000_000, KeySource::Instance),
+                ],
+            )
+            .unwrap();
+        assert_eq!(rows[0].credits_milli, 196_000, "$1.40 at 40 % at $0.01");
+        assert_eq!(
+            (rows[1].credits_milli, rows[1].cost_micro_usd),
+            (100_000, 1_400_000)
+        );
+        // From credit-based to cost-based: the fixed credits clear.
+        let mut cost_based = card.clone();
+        cost_based.output = UnitRate {
+            cost_micro_usd: 4_400_000,
+            margin_bp: TOKEN_MARGIN_BP,
+            fixed_credits_milli: None,
+        };
+        st.set_model_rates(DAEMON, "zai/glm-5.3", cost_based)
+            .unwrap();
+        let out = st.cost_line("zai/glm-5.3.output").unwrap().unwrap();
+        assert_eq!(
+            (out.cost_micro_usd, out.fixed_credits_milli),
+            (4_400_000, None)
+        );
+        // A bad value writes none of the four.
+        let mut bad = card.clone();
+        bad.output.margin_bp = MAX_MARGIN_BP + 1;
+        bad.input.cost_micro_usd = 1;
+        assert!(st.set_model_rates(DAEMON, "zai/glm-5.3", bad).is_err());
+        assert_eq!(
+            st.cost_line("zai/glm-5.3.input")
+                .unwrap()
+                .unwrap()
+                .cost_micro_usd,
+            1_400_000
+        );
+        assert!(
+            st.set_model_rates(DAEMON, "bad model", card.clone())
+                .is_err()
+        );
+
+        let deleted = st.delete_model_rates(DAEMON, "zai/glm-5.3").unwrap();
+        assert_eq!(deleted.len(), 4);
+        assert_eq!(
+            resolved(&st, "zai/glm-5.3", Unit::MtokInput).unwrap().0,
+            RateSource::Default
+        );
+        assert!(matches!(
+            st.delete_model_rates(DAEMON, "zai/glm-5.3"),
+            Err(CoreError::NotFound)
+        ));
+        let bodies: Vec<serde_json::Value> = st
+            .events_after(0, 100)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "admin.cost_line")
+            .map(|e| serde_json::from_str(&e.body).unwrap())
+            .collect();
+        let ops: Vec<&str> = bodies.iter().map(|b| b["op"].as_str().unwrap()).collect();
+        // Four creates, one update (the output line), four deletes.
+        assert_eq!(
+            ops,
+            [
+                "create", "create", "create", "create", "update", "delete", "delete", "delete",
+                "delete"
+            ]
+        );
+        assert_eq!(bodies[1]["line"], "zai/glm-5.3.cached_input");
+        assert_eq!(
+            bodies[4]["fields"],
+            json!({"cost_micro_usd": 4_400_000, "margin_bp": 4_000, "fixed_credits_milli": null})
+        );
+    }
+
+    #[test]
+    fn a_rate_card_in_use_is_kept_whole() {
+        let (_d, st) = store();
+        let aid = crate::test_util::artifact(&st, None).to_string();
+        st.create_run(
+            DAEMON,
+            crate::bot_runs::NewRun {
+                artifact_id: aid,
+                person: OWNER.into(),
+                request: crate::bot_runs::RequestKind::Thread,
+                thread_ids: vec![],
+                model: "claude-opus-5-5".into(),
+                key_source: KeySource::Instance,
+                base_version: 1,
+                agent_grant: None,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            st.delete_model_rates(DAEMON, "claude-opus-5-5"),
+            Err(CoreError::Invalid {
+                code: "cost_line_in_use",
+                ..
+            })
+        ));
+        assert!(st.cost_line("claude-opus-5-5.input").unwrap().is_some());
+        st.delete_model_rates(DAEMON, "claude-haiku-5-5").unwrap();
+    }
+
+    #[test]
+    fn pricing_shows_each_units_source_and_drift_beyond_one_percent() {
+        let (_d, st) = store();
+        openai_with_catalog(&st);
+        let line = |unit: Unit, cost: i64, fixed: Option<i64>| {
+            st.put_cost_line(
+                DAEMON,
+                &token_line("gpt-5", unit),
+                CostLinePatch {
+                    label: Some("GPT-5 tokens".into()),
+                    unit: Some(unit),
+                    cost_micro_usd: Some(cost),
+                    margin_bp: Some(TOKEN_MARGIN_BP),
+                    fixed_credits_milli: Some(fixed),
+                    applies: Some(Applies::InstanceKey),
+                    source: Some("by hand".into()),
+                    model: Some(Some("gpt-5".into())),
+                },
+            )
+            .unwrap();
+        };
+        // Input 1 % above the catalog's 1.25 $: not drift.
+        line(Unit::MtokInput, 1_262_500, None);
+        // Output 2 % below the catalog's 10 $: drift.
+        line(Unit::MtokOutput, 9_800_000, None);
+        // A credit-based cache read far from the catalog's: not drift.
+        line(Unit::MtokCachedInput, 1, Some(1_000));
+        let p = st
+            .model_pricing(&["gpt-5".into(), "unlisted".into()])
+            .unwrap();
+        let gpt = &p[0];
+        assert_eq!(gpt.listing.as_ref().unwrap().model_id, "gpt-5");
+        let sources: Vec<Option<RateSource>> = gpt
+            .units
+            .iter()
+            .map(|u| u.resolved.map(|r| r.source))
+            .collect();
+        assert_eq!(
+            sources,
+            [
+                Some(RateSource::Line),
+                Some(RateSource::Line),
+                Some(RateSource::Catalog),
+                Some(RateSource::Line)
+            ]
+        );
+        let drift: Vec<bool> = gpt.units.iter().map(|u| u.drift).collect();
+        assert_eq!(drift, [false, false, false, true]);
+        assert!(gpt.drift);
+        assert_eq!(
+            gpt.units[2].catalog_micro_usd, None,
+            "no cache write listed"
+        );
+        assert_eq!(gpt.units[1].catalog_micro_usd, Some(125_000));
+        line(Unit::MtokInput, 1_262_501, None);
+        let p = st.model_pricing(&["gpt-5".into()]).unwrap();
+        assert!(p[0].units[0].drift, "just over 1 %");
+        let unlisted = &st.model_pricing(&["unlisted".into()]).unwrap()[0];
+        assert_eq!(unlisted.listing, None);
+        assert!(!unlisted.drift);
+        assert!(
+            unlisted
+                .units
+                .iter()
+                .all(|u| u.resolved.unwrap().source == RateSource::Default)
+        );
+        assert!(drifted(1, 0) && !drifted(0, 0) && !drifted(101, 100) && drifted(102, 100));
+    }
+
     #[test]
     fn weeks_start_on_monday_at_midnight_utc() {
         // 2026-10-25 is a Sunday, 2026-10-26 a Monday.
@@ -1696,9 +2669,10 @@ mod tests {
     #[test]
     fn a_custom_model_is_priced_and_a_line_in_use_is_kept() {
         let (_d, st) = store();
+        explicit_prices(&st);
         let model = "my-proxy:Sonnet-X";
         assert!(matches!(
-            st.with_read(|c| check_model_priced(c, model)),
+            priced(&st, model),
             Err(CoreError::Invalid {
                 code: "model_not_priced",
                 ..
@@ -1720,7 +2694,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(lines.len(), 4);
-        st.with_read(|c| check_model_priced(c, model)).unwrap();
+        priced(&st, model).unwrap();
         assert!(
             st.price_model(
                 DAEMON,
@@ -1810,8 +2784,9 @@ mod tests {
             2_500_000,
             "1.25 times input"
         );
+        explicit_prices(&st);
         for (model, ..) in SEED_MODELS {
-            st.with_read(|c| check_model_priced(c, model)).unwrap();
+            priced(&st, model).unwrap();
         }
     }
 

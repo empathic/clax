@@ -415,6 +415,7 @@ pub async fn serve(
             port,
             embed: cfg.embed,
             quickstart: cfg.quickstart,
+            catalog_url: None,
         },
         &mut |p| starting.progress(p),
     )

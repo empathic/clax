@@ -29,6 +29,9 @@ changes), then
   Worker Loader sandbox (below), on the instance's object;
 - `node test-bot.mjs`: a ClaxBot run driven by the instance's alarm
   against a scripted Messages API on 127.0.0.1 (below), across a restart;
+- `node test-feedback.mjs`: clax.dev's own feedback path over HTTP on a
+  hosted instance, from the config and token routes to the overlay's
+  same-origin reporter reads (`docs/feedback.md`, "What is clax.dev's own");
 - `node test-repos.mjs`: the repository hosts (`CLAX_TEST_JJ` names a `jj`
   for the jj clone check);
 - `node e2e.mjs`: the instance in two browsers with the owner token;
@@ -40,6 +43,22 @@ changes), then
   against a fresh hosted `wrangler dev --local` with `REPO_STORE=memory`.
 
 Each takes `--no-build` to skip `build.sh`.
+
+To try clax.dev itself on this machine (its signed-out pages, setup,
+GitHub sign-up and sign-in against real GitHub, invites, the Terms and the
+quickstart a new person gets), `just clax-dev-local` (from the repository's
+root, `demo/clax-dev-local.ts`) runs this Worker on the first free port of
+8788–8797 with a production deploy's vars, nothing seeded and its data
+kept between runs. Its owner is one of its own (each run prints a sign-in
+link for them), so your GitHub sign-in is a new person's sign-up, with the
+Terms and the quickstart, as on clax.dev; `--owner` makes your GitHub
+account the owner instead. It needs no configuration: the first run
+on a machine registers a GitHub App from a manifest (a page with one
+button, then GitHub's confirmation), whose callbacks name those ports and
+whose client ID, secret and owner are kept in
+`~/.config/clax/local/github.env` for every worktree. `--fresh` starts
+over and `--setup` leaves setup open to try it. `just hosted-demo` is the
+other local instance: seeded people and artifacts, and demo agents.
 
 ### ClaxBot's sandbox
 
@@ -305,6 +324,7 @@ npx wrangler queues subscription create clax-artifacts-events --source artifacts
 | `HOSTED` | `1` | A hosted Clax: browser sign-in, people's rights, guests, agent tokens |
 | `PUBLIC_ORIGIN` | `https://clax.example.com` | Where people reach Clax; every link the server writes names it |
 | `SITE_DOMAIN` | `clax.run` (`deploy.mjs --site-domain`) | Each artifact's site is served at `<artifact ID>.<SITE_DOMAIN>`; empty serves sites at `<artifact ID>.localhost` |
+| `INSTANCE_NAME` | `Studio Clax` | The name `/.well-known/clax` gives this Clax; empty names it by its host |
 | `RETIRED_CONTENT_ORIGIN` | the deploy record's old `content_origin`, if any (`https://content.clax.example.com`) | The content origin of before sites: kept as a custom domain, where an asset's old address (`/_blob/<id>?k=…`) answers 301 to its artifact's site and anything else 404; empty when there was none |
 | `REPO_STORE` | `artifacts` (or `memory`) | Where versions are kept |
 | `GIT_SMART_HTTP` | `0` with `artifacts` | `1` serves the stand-in over git smart HTTP at `/git/*` |
@@ -318,7 +338,7 @@ npx wrangler queues subscription create clax-artifacts-events --source artifacts
 | `GITHUB_OAUTH_BASE`, `GITHUB_API_BASE` | empty | Tests only: a fake GitHub's bases |
 | `LEGAL` | `bundled` on Empathic's service (`deploy.mjs --legal bundled`), else empty | Serve `docs/legal`'s Terms of Service and Privacy Policy and ask people to agree ([below](#terms-of-service-and-privacy-policy)) |
 | `TERMS_URL`, `PRIVACY_URL`, `LEGAL_VERSION` | empty, or a deployment's own (`--terms-url`, `--privacy-url`, `--legal-version`) | Link your own documents instead; all three or none |
-| `APPLE_TEAM_ID` | the team that signs the Clax app, on clax.dev | Serve `/.well-known/apple-app-site-association` for `<team>.dev.empathic.clax`, so `/a/<id>/get` opens the iOS and macOS app; empty serves none |
+| `APPLE_TEAM_ID` | the team that signs the Clax app, on clax.dev | Serve `/.well-known/apple-app-site-association` for `<team>.dev.empathic.clax`, so `/a/<id>/get` opens the iOS app (the Mac app takes `clax:` links only); empty serves none |
 | `ANDROID_PACKAGE`, `ANDROID_SHA256` | `dev.empathic.clax` and the signing certificate's SHA-256 fingerprint, on clax.dev | Serve `/.well-known/assetlinks.json`, so `/a/<id>/get` opens the Android app; both or neither |
 | `IOS_STORE_URL`, `ANDROID_STORE_URL` | the app's store pages, once listed | Offered on `/a/<id>/get`; empty offers none |
 

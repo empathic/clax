@@ -53,9 +53,25 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 /// The by-hand harness ([`crate::routes::sessions::BY_HAND_HARNESS`]).
 const BY_HAND: &str = crate::routes::sessions::BY_HAND_HARNESS;
 
-/// How long one request to a remote may take.
+/// How long one request to a remote may take unless the client was given
+/// a shorter deadline ([`Client::with_deadline`]): a push's version or
+/// asset, a bundle, and the linked threads' sync, whose long polls wait
+/// [`crate::linked::WAIT_S`] there. An agent's call waiting on a remote
+/// takes [`clax_http::state::REMOTE_DEADLINE`] instead.
 #[cfg(not(target_arch = "wasm32"))]
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// How long a connection to a remote may take to open, within any
+/// request's deadline: 5 s. A remote that drops the connection's packets
+/// fails here rather than at the request's deadline; a reachable one,
+/// even across an ocean, connects in well under a second.
+#[cfg(not(target_arch = "wasm32"))]
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How long a discovery request ([`Client::discovery`]) may take: an agent
+/// waits on it to learn what a URL names.
+#[cfg(not(target_arch = "wasm32"))]
+const DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// How a push treats the public copy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,17 +136,23 @@ impl Mode {
 /// 400 `invalid_args` otherwise.
 pub fn origin_of(raw: &str) -> Result<String, ApiError> {
     let raw = raw.trim();
-    let with_scheme = if raw.contains("://") {
-        raw.to_string()
-    } else {
-        format!("https://{raw}")
-    };
+    let with_scheme = with_scheme(raw);
     clax_core::config::hosted_origin(with_scheme.trim_end_matches('/')).ok_or_else(|| {
         ApiError::bad_request(
             "invalid_args",
             format!("'{raw}' is not a public Clax: give its https:// origin"),
         )
     })
+}
+
+/// `raw` (trimmed) with `https://` before it when it names no scheme, as
+/// an origin or URL a person or an agent typed is read.
+pub fn with_scheme(raw: &str) -> String {
+    if raw.contains("://") {
+        raw.to_string()
+    } else {
+        format!("https://{raw}")
+    }
 }
 
 /// A remote's default name: its origin's host (and port).
@@ -176,9 +198,10 @@ pub fn own_agent_name() -> String {
 
 /// A refusal or failure of a remote's, as this daemon answers it: 502
 /// `remote_unreachable` when it could not be reached, 502
-/// `remote_signed_out` when it refused the token (revoked there), else 502
-/// `remote_refused` naming the remote's own code and message
-/// (`remote_code`, `remote_status`).
+/// `remote_signed_out` when it refused the token itself
+/// ([`RemoteFail::token_refused`]), else 502 `remote_refused` naming the
+/// remote's own code and message (`remote_code`, `remote_status`). What
+/// the failure changes here is [`note_failure`]'s.
 #[derive(Debug)]
 pub struct RemoteFail {
     pub origin: String,
@@ -191,30 +214,76 @@ pub struct RemoteFail {
 
 impl From<RemoteFail> for ApiError {
     fn from(f: RemoteFail) -> ApiError {
-        let (code, message) = match f.status {
-            None => (
+        let mut e = match f.status {
+            None => ApiError::new(
+                StatusCode::BAD_GATEWAY,
                 "remote_unreachable",
                 format!("cannot reach {}: {}", f.origin, f.message),
             ),
-            Some(401) => (
-                "remote_signed_out",
-                format!(
-                    "{} refused this Clax's agent token (revoked there?): remove the remote and add it again",
-                    f.origin
-                ),
-            ),
-            Some(_) => (
+            Some(_) if f.token_refused() => signed_out(&f.origin),
+            Some(_) => ApiError::new(
+                StatusCode::BAD_GATEWAY,
                 "remote_refused",
                 format!("{} refused: {}: {}", f.origin, f.code, f.message),
             ),
         };
-        let mut e = ApiError::new(StatusCode::BAD_GATEWAY, code, message);
         e.extra.insert("remote_code".into(), json!(f.code));
         if let Some(s) = f.status {
             e.extra.insert("remote_status".into(), json!(s));
         }
         e
     }
+}
+
+/// 502 `remote_signed_out`: the remote at `origin` refused this Clax's
+/// token itself, now or before ([`note_failure`] marked it signed out).
+pub fn signed_out(origin: &str) -> ApiError {
+    ApiError::new(
+        StatusCode::BAD_GATEWAY,
+        "remote_signed_out",
+        format!(
+            "{origin} refused this Clax's agent token (revoked there?): remove the remote and add it again"
+        ),
+    )
+}
+
+impl RemoteFail {
+    /// Whether the remote refused the token itself (401 `invalid_token`,
+    /// `grant_revoked` or `token_expired`: revoked, expired or unknown
+    /// there), rather than one request (a session proof or a replay).
+    pub fn token_refused(&self) -> bool {
+        self.status == Some(401)
+            && matches!(
+                self.code.as_str(),
+                "invalid_token" | "grant_revoked" | "token_expired"
+            )
+    }
+}
+
+/// What failure `f` of a request to remote `r` changes here, whoever made
+/// the request (an agent's read or write, a push, the Clax app's routes or
+/// the linked threads' sync): a remote not reached has its discovery
+/// answer forgotten; one that refused the token itself
+/// ([`RemoteFail::token_refused`]) is marked `signed_out`, its token
+/// forgotten, its discovery answer too, and its linked threads' sync
+/// stops until a new sign-in connects it again.
+pub async fn note_failure(s: &AppState, r: &Remote, f: &RemoteFail) {
+    if f.status.is_none() {
+        s.discovery.forget(&r.origin);
+    } else if f.token_refused() {
+        sign_out(s, r).await;
+    }
+}
+
+/// Marks remote `r` signed out, as [`note_failure`] does for a refused
+/// token.
+pub(crate) async fn sign_out(s: &AppState, r: &Remote) {
+    let id = r.id.clone();
+    if let Err(e) = s.store_call(move |st| st.sign_out_remote(&id)).await {
+        tracing::warn!(error = %e.message, "marking a remote signed out failed");
+    }
+    s.discovery.forget(&r.origin);
+    s.linked.links_changed();
 }
 
 /// 502 `remote_too_old`: the public Clax at `origin` runs a release from
@@ -246,6 +315,24 @@ pub struct Forwarded {
     pub body: Vec<u8>,
 }
 
+impl Forwarded {
+    /// This answer of the remote at `origin` as a refusal: its status and
+    /// the error code and message its JSON body names.
+    pub fn refusal(&self, origin: &str) -> RemoteFail {
+        let v = serde_json::from_slice::<Value>(&self.body).unwrap_or_default();
+        RemoteFail {
+            origin: origin.to_string(),
+            status: Some(self.status),
+            code: v["error"]["code"].as_str().unwrap_or("refused").to_string(),
+            message: v["error"]["message"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("HTTP {}", self.status)),
+            body: Value::Null,
+        }
+    }
+}
+
 /// Header [`crate::routes::artifacts::IDEMPOTENCY_HEADER`] names on the
 /// wire.
 const IDEMPOTENCY: &str = "idempotency-key";
@@ -262,6 +349,10 @@ pub struct Client {
     token: Option<Secret>,
     /// The remote session requests speak for: its ID and secret.
     session: Option<(String, Secret)>,
+    /// How long each request may take ([`REQUEST_TIMEOUT`] unless given,
+    /// [`Client::with_deadline`]); not applied on wasm32, where the
+    /// Worker's own limits apply.
+    deadline: std::time::Duration,
 }
 
 /// The body of `res` while it is at most `max` bytes; `None` as soon as
@@ -284,33 +375,58 @@ async fn read_capped(
     Ok(Some(out))
 }
 
-fn timeout(r: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+/// `r` with deadline `d` (none on wasm32).
+fn timeout(r: reqwest::RequestBuilder, d: std::time::Duration) -> reqwest::RequestBuilder {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        r.timeout(REQUEST_TIMEOUT)
+        r.timeout(d)
     }
     #[cfg(target_arch = "wasm32")]
     {
+        let _ = d;
         r
     }
 }
 
 impl Client {
-    /// A client of `origin`, holding `token` when signed in.
+    /// A client of `origin`, holding `token` when signed in, its
+    /// connections opened within [`CONNECT_TIMEOUT`] and each request
+    /// given [`REQUEST_TIMEOUT`].
     pub fn new(origin: &str, token: Option<Secret>) -> Client {
         #[cfg(not(target_arch = "wasm32"))]
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(CONNECT_TIMEOUT)
             .build()
             .unwrap_or_default();
         #[cfg(target_arch = "wasm32")]
         let http = reqwest::Client::new();
+        #[cfg(not(target_arch = "wasm32"))]
+        let deadline = REQUEST_TIMEOUT;
+        #[cfg(target_arch = "wasm32")]
+        let deadline = std::time::Duration::ZERO;
         Client {
             origin: origin.to_string(),
             http,
             token,
             session: None,
+            deadline,
         }
+    }
+
+    /// A client of `origin` for an agent's call that waits on it: each
+    /// request given `s`'s [`AppState::remote_deadline`], so a remote that
+    /// never answers fails as unreachable before the agent's own call to
+    /// this daemon times out.
+    pub fn for_agent(s: &AppState, origin: &str, token: Option<Secret>) -> Client {
+        Client::new(origin, token).with_deadline(s.remote_deadline)
+    }
+
+    /// This client, each of its requests given `d` from now on.
+    #[must_use]
+    pub fn with_deadline(mut self, d: std::time::Duration) -> Client {
+        self.deadline = d;
+        self
     }
 
     /// `method` `path` with `body`, answered as JSON; a 2xx answer's body,
@@ -348,7 +464,8 @@ impl Client {
                 .header("x-clax-session", sid)
                 .header(clax_core::remote::SESSION_SECRET_HEADER, secret.expose());
         }
-        r = with(r);
+        // The deadline first, so that `with` may narrow it.
+        r = with(timeout(r, self.deadline));
         let fail = |status, code: &str, message: String, body| RemoteFail {
             origin: self.origin.clone(),
             status,
@@ -356,7 +473,7 @@ impl Client {
             message,
             body,
         };
-        let res = timeout(r)
+        let res = r
             .send()
             .await
             .map_err(|e| fail(None, "unreachable", e.to_string(), Value::Null))?;
@@ -477,6 +594,23 @@ impl Client {
         self.call(reqwest::Method::GET, path, None).await
     }
 
+    /// `GET /.well-known/clax` with no credential, within
+    /// [`DISCOVERY_TIMEOUT`]: what this origin says it is
+    /// ([`crate::resolve`]).
+    pub(crate) async fn discovery(&self) -> Result<Value, RemoteFail> {
+        self.send(reqwest::Method::GET, "/.well-known/clax", |r| {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                r.timeout(DISCOVERY_TIMEOUT)
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                r
+            }
+        })
+        .await
+    }
+
     /// The address of `segs` at this remote, each segment percent-encoded
     /// (a `/`, `?`, `#` or `%` in one stays inside it), with `query`.
     fn url_of(&self, segs: &[&str], query: &[(&str, String)]) -> Result<url::Url, RemoteFail> {
@@ -567,7 +701,7 @@ impl Client {
             message,
             body: Value::Null,
         };
-        let res = timeout(r)
+        let res = timeout(r, self.deadline)
             .send()
             .await
             .map_err(|e| fail(None, "unreachable", e.to_string()))?;
@@ -628,7 +762,7 @@ impl Client {
             message,
             body: Value::Null,
         };
-        let res = timeout(r)
+        let res = timeout(r, self.deadline)
             .send()
             .await
             .map_err(|e| fail(None, "unreachable", e.to_string()))?;
@@ -694,9 +828,22 @@ impl Client {
             }
             v => v?,
         };
-        let sid = v["session"]["id"].as_str().unwrap_or_default().to_string();
-        let secret = Secret::new(v["session_secret"].as_str().unwrap_or_default().to_string());
-        self.session = Some((sid.clone(), secret));
+        // A session answered without its ID or secret is not one to speak
+        // for: refused, rather than kept empty.
+        let (Some(sid), Some(secret)) = (
+            v["session"]["id"].as_str().filter(|x| !x.is_empty()),
+            v["session_secret"].as_str().filter(|x| !x.is_empty()),
+        ) else {
+            return Err(RemoteFail {
+                origin: self.origin.clone(),
+                status: Some(502),
+                code: "bad_answer".into(),
+                message: "the remote's new session names no ID or secret".into(),
+                body: v,
+            });
+        };
+        let sid = sid.to_string();
+        self.session = Some((sid.clone(), Secret::new(secret.to_string())));
         let _ = self
             .call(
                 reqwest::Method::PATCH,
@@ -705,6 +852,12 @@ impl Client {
             )
             .await;
         Ok(())
+    }
+
+    /// Speaks in remote session `sid` (its secret `secret`) from now on:
+    /// one another client registered, which ends it.
+    pub(crate) fn speak_in(&mut self, sid: String, secret: Secret) {
+        self.session = Some((sid, secret));
     }
 
     /// Speaks for the owner by hand from now on: a remote session of the
@@ -734,8 +887,8 @@ impl Client {
 /// marks the token it issues as the person's own device, which may manage
 /// the sharing of their artifacts there), naming `return_to` when given (a
 /// loopback page its approval page sends the person back to once they
-/// decide). Without a kind the body names none, as a remote that knows no
-/// kinds expects. The sign-in, and whether the remote took `return_to`: a
+/// decide), each request within `deadline`. Without a kind the body names
+/// none, as a remote that knows no kinds expects. The sign-in, and whether the remote took `return_to`: a
 /// remote that refuses it as a field it does not know is asked again
 /// without it.
 ///
@@ -749,8 +902,9 @@ pub async fn start_sign_in(
     name: &str,
     kind: Option<&str>,
     return_to: Option<&str>,
+    deadline: std::time::Duration,
 ) -> Result<(PendingSignIn, bool), ApiError> {
-    let c = Client::new(origin, None);
+    let c = Client::new(origin, None).with_deadline(deadline);
     let mut body = json!({"client_name": name});
     if let Some(k) = kind {
         body["client_kind"] = json!(k);
@@ -810,14 +964,17 @@ pub async fn start_sign_in(
 pub enum SignIn {
     /// Still waiting (`authorization_pending` or `slow_down`).
     Waiting,
-    /// Denied there, or expired: the remote is forgotten.
+    /// Denied there, or expired: a remote that was signed out before is
+    /// signed out again, with its links; a new one is forgotten
+    /// ([`clax_store::Store::abandon_sign_in`]).
     Refused(&'static str),
     /// Approved: the remote is connected.
     Connected(Box<Remote>),
 }
 
-/// Polls remote `r`'s sign-in once, connecting it when approved and
-/// forgetting it when denied or expired.
+/// Polls remote `r`'s sign-in once, connecting it when approved and, when
+/// denied or expired, leaving it signed out again (one that was before)
+/// or forgetting it (a new one).
 ///
 /// # Errors
 /// The store's; the remote's for anything but the device flow's own
@@ -830,18 +987,24 @@ pub async fn poll_sign_in(s: &AppState, r: &Remote) -> Result<SignIn, ApiError> 
             "this remote is not waiting for a sign-in",
         ));
     };
-    let c = Client::new(&r.origin, None);
+    let c = Client::for_agent(s, &r.origin, None);
     let out = c
         .post(
             "/api/hosted/device/token",
             &json!({"device_code": code.expose()}),
         )
         .await;
+    // A sign-in another poll finished meanwhile (the remote answers a used
+    // code as expired) is that poll's: connected, not forgotten.
     let forget = |why: &'static str| async move {
         let id = r.id.clone();
-        s.store_call(move |st| st.remove_remote(&id).map(|_| ()))
+        let now = s
+            .store_call(move |st| Ok(st.abandon_sign_in(&id)?.filter(|x| x.status == "connected")))
             .await?;
-        Ok::<_, ApiError>(SignIn::Refused(why))
+        Ok::<_, ApiError>(match now {
+            Some(x) => SignIn::Connected(Box::new(x)),
+            None => SignIn::Refused(why),
+        })
     };
     match out {
         Ok(v) => {
@@ -854,11 +1017,7 @@ pub async fn poll_sign_in(s: &AppState, r: &Remote) -> Result<SignIn, ApiError> 
                 person_name: v["person"]["display_name"].as_str().map(str::to_string),
                 grant_id: v["grant_id"].as_str().unwrap_or_default().to_string(),
             };
-            let id = r.id.clone();
-            let r = s
-                .store_call(move |st| st.connect_remote(&id, &signed))
-                .await?;
-            Ok(SignIn::Connected(Box::new(r)))
+            finish_sign_in(s, r, signed).await
         }
         Err(f) if f.status == Some(400) => match f.code.as_str() {
             "authorization_pending" | "slow_down" => Ok(SignIn::Waiting),
@@ -867,6 +1026,38 @@ pub async fn poll_sign_in(s: &AppState, r: &Remote) -> Result<SignIn, ApiError> 
             _ => Err(f.into()),
         },
         Err(f) => Err(f.into()),
+    }
+}
+
+/// Connects remote `r` with the token its approved sign-in was given
+/// (`signed`). A remote removed while the poll was out (no longer
+/// pending here) leaves that token held by no one: it is revoked there
+/// (a failure to is logged) and the answer is `not_found`.
+///
+/// # Errors
+/// The store's; `not_found` when the remote is no longer pending.
+pub async fn finish_sign_in(
+    s: &AppState,
+    r: &Remote,
+    signed: SignedInAs,
+) -> Result<SignIn, ApiError> {
+    let (id, token) = (r.id.clone(), signed.token.clone());
+    match s
+        .store_call(move |st| st.connect_remote(&id, &signed))
+        .await
+    {
+        Ok(r) => Ok(SignIn::Connected(Box::new(r))),
+        Err(e) if e.code == "not_found" => {
+            if let Err(why) = revoke(r, token).await {
+                tracing::warn!(
+                    remote = r.origin.as_str(),
+                    error = why.message.as_str(),
+                    "could not revoke the token of a sign-in whose remote was removed"
+                );
+            }
+            Err(e)
+        }
+        Err(e) => Err(e),
     }
 }
 
@@ -1067,11 +1258,25 @@ pub fn rewrite_assets(
 
 /// The idempotency key of local version `n` of `aid` published onto
 /// `target`: a public artifact's ID, or for a new public artifact `new:`
-/// and the artifact the link moves from (`-` for none), so a push sent
-/// again names the same key and a push as new again (`mode: new`) a fresh
-/// one.
+/// and the artifact the link moves from (for a push with no link,
+/// [`new_key_target`]), so a push sent again names the same key and a push
+/// as new again (`mode: new`) a fresh one.
 pub fn version_key(aid: &str, n: u32, target: &str) -> String {
     format!("clax-push:{aid}:{n}:{target}")
+}
+
+/// The target [`version_key`] names for a new public artifact made by a
+/// push with no link, after `made` public copies of the artifact on the
+/// remote ([`clax_store::Store::remote_copies`]): `new:-` for the first, so
+/// keys made before the count was named stay the same, and `new:-:<made>`
+/// after. A push after an unlink then makes a new public copy rather than
+/// replaying the first one, while a push sent again before its answer was
+/// recorded counts the same copies and replays its own.
+pub fn new_key_target(made: u32) -> String {
+    match made {
+        0 => "new:-".to_string(),
+        n => format!("new:-:{n}"),
+    }
 }
 
 /// The idempotency key of local version `n` of `aid` published in app mode
@@ -1424,8 +1629,34 @@ pub struct NewCopy {
 /// [`push`], whose app-mode push ([`Mode::App`]) that makes a new public
 /// copy records it as made from public artifact `new.forked_from` there
 /// and names it `new.title`. 400 `invalid_args` for either with another
-/// mode, or for an app already linked to a public copy there.
+/// mode, or for an app already linked to a public copy there. A remote
+/// that refuses the token (502 `remote_signed_out`) is marked signed out,
+/// as [`note_failure`] says.
 pub async fn push_from(
+    s: &AppState,
+    aid: &ArtifactId,
+    remote: &Remote,
+    mode: Mode,
+    auto: Option<bool>,
+    upto: Option<u32>,
+    new: NewCopy,
+) -> Result<Pushed, ApiError> {
+    let out = push_once(s, aid, remote, mode, auto, upto, new).await;
+    // A refusal converted by `From<RemoteFail>` (its `?`s) keeps the
+    // remote's status: `remote_signed_out` with `remote_status` 401 is a
+    // RemoteFail that `token_refused`, never `signed_out`'s own answer for
+    // a remote signed out before, which carries no `remote_status`.
+    if let Err(e) = &out
+        && e.code == "remote_signed_out"
+        && e.extra.get("remote_status") == Some(&json!(401))
+    {
+        sign_out(s, remote).await;
+    }
+    out
+}
+
+/// [`push_from`]'s push, its refusals as they come.
+async fn push_once(
     s: &AppState,
     aid: &ArtifactId,
     remote: &Remote,
@@ -1547,10 +1778,15 @@ pub async fn push_from(
             l.pushed_n + 1
         }
     };
-    // A new public artifact's key names the one the link moves from.
+    // A new public artifact's key names the one the link moves from, or
+    // with no link the public copies made before it ([`new_key_target`]).
     let new_target = match (mode, &link) {
         (Mode::New, Some(l)) => format!("new:{}", l.remote_artifact_id),
-        _ => "new:-".to_string(),
+        _ => {
+            let (rid, a2) = (rid.clone(), aid.as_str().to_string());
+            let made = s.store_call(move |st| st.remote_copies(&rid, &a2)).await?;
+            new_key_target(made)
+        }
     };
     let (id, last_n) = (aid.clone(), end);
     let versions = if from <= last_n {

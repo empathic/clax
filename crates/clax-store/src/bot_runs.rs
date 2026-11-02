@@ -441,8 +441,9 @@ impl Store {
     ///
     /// # Errors
     /// `NotFound` for an artifact that does not exist; `model_not_priced`
-    /// for a model without its token cost lines (an admin prices it with
-    /// [`Store::price_model`]); the store's.
+    /// for a model whose tokens resolve to no rate ([`Store::model_rate`]:
+    /// with `require_explicit_price`, one without its token cost lines,
+    /// which an admin sets with [`Store::set_model_rates`]); the store's.
     pub fn create_run(&self, ctx: &AuditCtx, new: NewRun) -> Result<Run> {
         self.with_tx(|tx| self.create_run_in(tx, ctx, new))
     }
@@ -598,7 +599,7 @@ impl Store {
                 )
                 .optional()?;
             exists.ok_or(CoreError::NotFound)?;
-            check_model_priced(tx, &new.model)?;
+            check_model_priced(tx, &self.bot_overrides(), &new.model, new.key_source)?;
             let id = clax_core::new_ulid();
             let now = self.now();
             tx.execute(
@@ -866,16 +867,39 @@ impl Store {
     /// `NotFound`; `run_not_claimed` when `driver` does not hold the run;
     /// `step_mismatch` when the run is at another step; `run_invalid` for a
     /// run that is not running or stopping, or a `stopping` run's step that
-    /// is not `stopped`; `model_not_priced` for a turn whose model lost its
-    /// cost lines; the store's.
+    /// is not `stopped`; `model_not_priced` for a turn whose model no longer
+    /// resolves to a token rate (`Store::model_rate`); the store's.
     pub fn begin_step(&self, id: &str, driver: &DriverId, n: i64, kind: StepKind) -> Result<Step> {
+        self.begin_step_on(id, driver, n, kind, KeySource::Instance)
+    }
+
+    /// [`Store::begin_step`] for a step whose turn runs on `turn_key`, the
+    /// source of the key the caller chose for the call: a turn on
+    /// [`KeySource::Own`] is not refused for its model's price (its token
+    /// rows are waived), a turn on the instance key is. `turn_key` is read
+    /// only when `kind` is [`StepKind::Turn`]; no other step is checked for
+    /// a price, since none charges tokens. [`Store::begin_step`] passes
+    /// [`KeySource::Instance`], the stricter check.
+    ///
+    /// # Errors
+    /// As [`Store::begin_step`].
+    pub fn begin_step_on(
+        &self,
+        id: &str,
+        driver: &DriverId,
+        n: i64,
+        kind: StepKind,
+        turn_key: KeySource,
+    ) -> Result<Step> {
         let driver = driver.as_str();
         self.with_tx(|tx| {
             let run = run_in(tx, id)?.ok_or(CoreError::NotFound)?;
             check_claim(&run, driver)?;
             check_step(tx, id, n)?;
             if kind == StepKind::Turn {
-                check_model_priced(tx, &run.model)?;
+                // The key the caller chose for the call, which its token
+                // rows are charged on.
+                check_model_priced(tx, &self.bot_overrides(), &run.model, turn_key)?;
             }
             match run.status {
                 RunStatus::Running => {}
@@ -1318,6 +1342,58 @@ impl Store {
             Ok(rows.collect::<rusqlite::Result<_>>()?)
         })
     }
+
+    /// Removes what ended runs no longer need, by the store's clock: the
+    /// call journal (`bot_calls`) of each run that ended over
+    /// [`BOT_JOURNAL_KEEP`] ago, and the draft overlay (`bot_draft_files`)
+    /// of each that ended over [`BOT_DRAFT_KEEP`] ago. The runs, their
+    /// steps, usage and audit events stay. How many rows of each it
+    /// removed.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn prune_ended_runs(&self) -> Result<Pruned> {
+        let now = self.now_utc();
+        let before = |keep: std::time::Duration| {
+            clax_core::time::stamp(
+                now - chrono::Duration::from_std(keep).unwrap_or(chrono::Duration::MAX),
+            )
+        };
+        let (journal, draft) = (before(BOT_JOURNAL_KEEP), before(BOT_DRAFT_KEEP));
+        self.with_tx(|tx| {
+            let calls = tx.execute(
+                "DELETE FROM bot_calls WHERE run_id IN
+                   (SELECT id FROM bot_runs WHERE ended_at IS NOT NULL AND ended_at < ?1)",
+                params![journal],
+            )?;
+            let draft_files = tx.execute(
+                "DELETE FROM bot_draft_files WHERE run_id IN
+                   (SELECT id FROM bot_runs WHERE ended_at IS NOT NULL AND ended_at < ?1)",
+                params![draft],
+            )?;
+            Ok(Pruned { calls, draft_files })
+        })
+    }
+}
+
+/// How long an ended run's call journal is kept: the journal answers a
+/// step's calls made again, so it outlives any driver that lost the run
+/// and may still be running one of its steps (a run's wall time is capped
+/// far below this).
+pub const BOT_JOURNAL_KEEP: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// How long an ended run's draft is kept, viewable from its run (spec
+/// 2026-10-21-claxbot-design §6.3: a run stopped on its limits keeps its
+/// draft).
+pub const BOT_DRAFT_KEEP: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 3600);
+
+/// What [`Store::prune_ended_runs`] removed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Pruned {
+    /// Call journal rows.
+    pub calls: usize,
+    /// Draft overlay rows.
+    pub draft_files: usize,
 }
 
 /// A store transaction a journaled write runs on ([`Store::with_bot_journal`]);
@@ -1692,6 +1768,62 @@ mod tests {
         );
     }
 
+    /// An ended run's call journal goes a day after it ended and its draft
+    /// thirty days after; a run still going keeps both.
+    #[test]
+    fn ended_runs_lose_their_journal_then_their_draft() {
+        let clock = Arc::new(ManualClock::at("2026-10-21T10:00:00Z"));
+        let (_d, st) = store_with_clock(clock.clone());
+        let d = DriverId::named("d1");
+        let work = |run: &Run, kind: StepKind| {
+            st.claim_run(&run.id, &d, 60).unwrap().unwrap();
+            let n = st.next_step_n(&run.id).unwrap();
+            st.begin_step(&run.id, &d, n, kind).unwrap();
+            let entry = st
+                .call_entry(&run.id, &d, n, 1, 0, "threads.read", "h")
+                .unwrap();
+            st.record_bot_call(&entry).unwrap();
+            st.commit_bot_step(
+                &bot(),
+                &run.id,
+                &d,
+                n,
+                StepCommit {
+                    draft: vec![DraftChange::Write {
+                        path: "index.html".into(),
+                        content: b"<p>".to_vec(),
+                        content_type: None,
+                    }],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        };
+        let (ended, going) = (new_run(&st), new_run(&st));
+        work(&ended, StepKind::Turn);
+        work(&ended, StepKind::GiveUp);
+        work(&going, StepKind::Turn);
+        let calls = |run: &Run| st.bot_calls(&run.id, 1).unwrap().len();
+        let drafts = |run: &Run| st.draft_files(&run.id).unwrap().len();
+        assert_eq!(st.prune_ended_runs().unwrap(), Pruned::default());
+
+        clock.advance(BOT_JOURNAL_KEEP.as_secs() as i64 + 1);
+        let p = st.prune_ended_runs().unwrap();
+        assert_eq!((p.calls, p.draft_files), (2, 0));
+        assert_eq!((calls(&ended), drafts(&ended)), (0, 1));
+        assert_eq!((calls(&going), drafts(&going)), (1, 1));
+
+        clock.advance(BOT_DRAFT_KEEP.as_secs() as i64);
+        let p = st.prune_ended_runs().unwrap();
+        assert_eq!((p.calls, p.draft_files), (0, 1));
+        assert_eq!(drafts(&ended), 0);
+        assert_eq!((calls(&going), drafts(&going)), (1, 1));
+        assert_eq!(
+            st.run(&ended.id).unwrap().unwrap().status,
+            RunStatus::GaveUp
+        );
+    }
+
     #[test]
     fn a_driver_whose_lease_lapsed_cannot_commit_over_the_one_that_took_over() {
         let clock = Arc::new(ManualClock::at("2026-10-21T10:00:00Z"));
@@ -1764,7 +1896,18 @@ mod tests {
     #[test]
     fn a_model_without_prices_cannot_run() {
         let (_d, st) = store();
-        assert_eq!(code(new_run_on(&st, "custom-model")), "model_not_priced");
+        // At the default rates any model runs; with explicit prices
+        // required, only one with its cost lines.
+        new_run_on(&st, "custom-model").unwrap();
+        st.set_bot_settings(
+            DAEMON,
+            &[(
+                crate::bot_settings::Setting::RequireExplicitPrice,
+                Some(json!(true)),
+            )],
+        )
+        .unwrap();
+        assert_eq!(code(new_run_on(&st, "other-model")), "model_not_priced");
         // A model whose lines go away while a run waits is refused at its
         // next turn, before anything is asked of the provider.
         let run = new_run_on(&st, "claude-opus-5-5").unwrap();
@@ -1784,6 +1927,70 @@ mod tests {
         // Its stop is still possible.
         st.cancel_run(DAEMON, &run.id).unwrap();
         st.begin_step(&run.id, &DriverId::named("d"), 1, StepKind::Stopped)
+            .unwrap();
+    }
+
+    #[test]
+    fn an_own_key_run_is_never_refused_for_a_missing_price() {
+        use crate::secrets::{Kek, SecretSlot};
+        let (_d, st) = store();
+        st.set_bot_settings(
+            DAEMON,
+            &[(
+                crate::bot_settings::Setting::RequireExplicitPrice,
+                Some(json!(true)),
+            )],
+        )
+        .unwrap();
+        let aid = artifact(&st, None).to_string();
+        let new = |key_source| NewRun {
+            artifact_id: aid.clone(),
+            person: OWNER.into(),
+            request: RequestKind::Thread,
+            thread_ids: vec!["t1".into()],
+            model: "custom-model".into(),
+            key_source,
+            base_version: 1,
+            agent_grant: None,
+        };
+        assert_eq!(
+            code(st.create_run(&bot(), new(KeySource::Instance))),
+            "model_not_priced"
+        );
+        // On the person's own key its token rows are waived: it runs.
+        let run = st.create_run(&bot(), new(KeySource::Own)).unwrap();
+        let d = DriverId::named("d");
+        st.claim_run(&run.id, &d, 60).unwrap();
+        // A turn is checked on the key its caller chose, whatever the
+        // person's stored key says: with their own key in use, a turn the
+        // caller runs on the instance key (its own key could not be
+        // opened) is refused, as is one begun without a key.
+        st.set_secret(
+            DAEMON,
+            &Kek::from_bytes([7; 32]),
+            &SecretSlot::Own(OWNER.into()),
+            "sk-ant-api03-OWNKEYOWNKEYOWN-wxyz",
+        )
+        .unwrap();
+        assert!(
+            st.secret_meta(&SecretSlot::Own(OWNER.into()))
+                .unwrap()
+                .unwrap()
+                .use_own
+        );
+        assert_eq!(
+            code(st.begin_step_on(&run.id, &d, 1, StepKind::Turn, KeySource::Instance)),
+            "model_not_priced"
+        );
+        assert_eq!(
+            code(st.begin_step(&run.id, &d, 1, StepKind::Turn)),
+            "model_not_priced"
+        );
+        st.begin_step_on(&run.id, &d, 1, StepKind::Turn, KeySource::Own)
+            .unwrap();
+        // Another step is not checked for a price.
+        st.cancel_run(DAEMON, &run.id).unwrap();
+        st.begin_step_on(&run.id, &d, 1, StepKind::Stopped, KeySource::Instance)
             .unwrap();
     }
 

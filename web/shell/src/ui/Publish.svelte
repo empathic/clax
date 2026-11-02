@@ -15,7 +15,9 @@
   // the button polls the sign-in once and asks to publish, or says it was
   // declined. When the daemon could not pass this page on, the dialog shows
   // the code and a link to the approval page and polls until it is
-  // approved. Anywhere else (a
+  // approved. A link whose remote signed this Clax out (it refused the
+  // token) says so, its button marked, and offers to sign in there again,
+  // which keeps the link. Anywhere else (a
   // hosted daemon, another viewer) it shows nothing. At phone width the buttons are
   // hidden and the more menu lists Publish (`setPublishOpener`). Loaded after
   // the first paint (`more-menu.svelte.ts`).
@@ -45,9 +47,14 @@
   let run = 0;
 
   const link = $derived<Link | null>(info?.links[0] ?? null);
+  // A link's own remote, only while it is connected; else the first connected one.
   const remote = $derived<Remote | null>(
-    (link && info?.remotes.find(r => r.id === link.remote_id)) || info?.remotes[0] || null,
+    link ? info?.remotes.find(r => r.id === link.remote_id) ?? null : info?.remotes[0] ?? null,
   );
+  // The link's remote refused this Clax's token: pushes and comments wait.
+  const signedOut = $derived(link?.remote_status === "signed_out");
+  // Where Sign in goes: the link's remote, else the default public Clax.
+  const signInOrigin = $derived(link?.origin ?? DEFAULT_ORIGIN);
   const host = $derived(hostOf(remote?.origin ?? link?.origin ?? DEFAULT_ORIGIN));
   const behind = $derived(link ? Math.max(0, latest - link.pushed_n) : 0);
   const action = $derived(link ? `Push v${latest}` : `Publish to ${host}`);
@@ -58,7 +65,7 @@
   const failed = $derived(link?.failed ?? 0);
   const failedQuestions = $derived(link?.failed_questions ?? 0);
   const since = $derived(link?.sync?.unreachable_since ?? null);
-  const warn = $derived(!!since || failed > 0 || failedQuestions > 0);
+  const warn = $derived(signedOut || !!since || failed > 0 || failedQuestions > 0);
 
   async function refresh() {
     const t = await getToken();
@@ -97,8 +104,9 @@
     }
   }
 
-  /** Signs this Clax in to the default public Clax: this tab goes to its
-   * approval page, which sends it back to this page with `publish=1`; when
+  /** Signs this Clax in to the link's public Clax, else the default one:
+   * this tab goes to its approval page, which sends it back to this page
+   * with `publish=1`; when
    * the daemon could not pass the page on, the dialog waits for the approval
    * here, then reads the remotes again. */
   async function signIn() {
@@ -108,7 +116,7 @@
     try {
       const q = new URLSearchParams(location.search);
       q.set("publish", "1");
-      const s = await startSignIn(DEFAULT_ORIGIN, `${location.pathname}?${q}`);
+      const s = await startSignIn(signInOrigin, `${location.pathname}?${q}`);
       if (mine !== run) return;
       if (s.return_to_kept) { nav.assign(s.verification_url); return; }
       signing = { code: s.user_code, url: s.verification_url };
@@ -131,11 +139,11 @@
     await refresh();
     if (!info) return;
     err = null; moved = false; done = null; confirm = null; follow = link?.auto ?? false; open = true;
-    if (info.remotes.length) return;
+    if (remote) return;
     const mine = ++run;
     busy = true;
     try {
-      const waiting = (await listRemotes()).find(r => r.status === "pending" && r.origin === DEFAULT_ORIGIN);
+      const waiting = (await listRemotes()).find(r => r.status === "pending" && r.origin === signInOrigin);
       if (mine !== run) return;
       if (how === "denied") {
         err = declined();
@@ -199,7 +207,7 @@
       <button type="button" class="publish hide-sm" data-shell-control="publish" aria-haspopup="dialog" aria-expanded={open} onclick={() => (open ? close() : show())}>{action}</button>
     {/if}
     {#if link && behind === 0}
-      <button type="button" class="linked hide-sm" data-shell-control="publish" data-warn={warn ? "" : undefined} aria-haspopup="dialog" aria-expanded={open} title={`Its link to ${host}: versions and comments`} onclick={() => (open ? close() : show())}>Linked{#if warn}<span class="warn-dot" aria-label={since ? `${host} unreachable` : `${notSentLabel(failed, failedQuestions)} not sent`}></span>{/if}</button>
+      <button type="button" class="linked hide-sm" data-shell-control="publish" data-warn={warn ? "" : undefined} aria-haspopup="dialog" aria-expanded={open} title={`Its link to ${host}: versions and comments`} onclick={() => (open ? close() : show())}>Linked{#if warn}<span class="warn-dot" aria-label={signedOut ? `Signed out of ${host}` : since ? `${host} unreachable` : `${notSentLabel(failed, failedQuestions)} not sent`}></span>{/if}</button>
     {/if}
     {#if link}
       <a class="public hide-sm" href={link.url} target="_blank" rel="noopener noreferrer" title={`Its public copy on ${host}`}>Public ↗</a>
@@ -222,10 +230,14 @@
             <p class="muted small">Waiting for your approval… <a href={signing.url} target="_blank" rel="noopener noreferrer">Open the approval page</a></p>
             <div class="pub-acts"><button type="button" onclick={close}>Cancel</button></div>
           {:else}
-            <p>Publish “{title}” on {host}. First sign this Clax in to {host} with your account there: its approval page brings you back here.</p>
+            {#if signedOut}
+              <p class="signed-out" role="status">{host} signed this Clax out: pushes and comments with {host} wait until you sign in there again. The link stays.</p>
+            {:else}
+              <p>Publish “{title}” on {host}. First sign this Clax in to {host} with your account there: its approval page brings you back here.</p>
+            {/if}
             {#if err}<p class="err" role="alert">{err}</p>{/if}
             <div class="pub-acts">
-              <button type="button" class="primary" disabled={busy} onclick={signIn}>Sign in to {host}</button>
+              <button type="button" class="primary" disabled={busy} onclick={signIn}>{signedOut ? `Sign in to ${host} again` : `Sign in to ${host}`}</button>
               <button type="button" onclick={close}>Cancel</button>
             </div>
           {/if}
@@ -306,6 +318,7 @@
   .pub-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .pub-acts .go { font: 600 14px var(--font); color: var(--accent-ink); margin-right: auto; }
   .err { color: var(--danger); }
+  .signed-out { color: var(--danger); }
   .linked { position: relative; white-space: nowrap; }
   .warn-dot { display: inline-block; width: 7px; height: 7px; margin-left: 6px; border-radius: 50%; background: var(--danger); vertical-align: 1px; }
   .pub-link { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); }

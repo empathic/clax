@@ -6,6 +6,9 @@
 //!   /api/me/bot {use_own}`, `PUT /api/me/bot/key {key}` and `DELETE
 //!   /api/me/bot/key` change their own key and answer the same. A key is
 //!   write-only: no answer carries it.
+//! - `GET /api/me/flags` → `{flags: {claxbot, claxbot_unenforced}}`:
+//!   the caller's own flags, each person's defaults filled in (spec
+//!   2026-10-29-feedback-loop-design §10.3).
 //! - `GET /api/me/usage?week=<time>` → their runs and line totals of the
 //!   week the time falls in (this week without it); on a hosted daemon a
 //!   run's `artifact_title` only while its artifact is in their reach.
@@ -206,6 +209,17 @@ pub async fn me_get(
         .store_call(move |st| me_view(st, &bot, &who, &caller, &person))
         .await?;
     Ok(Json(v))
+}
+
+/// `GET /api/me/flags` (see the module documentation).
+pub async fn me_flags(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    let (_, person) = me(&s, &d).await?;
+    let flags = s.store_call(move |st| st.flags_of(&person)).await?;
+    Ok(Json(json!({ "flags": flags })))
 }
 
 #[derive(Deserialize)]
@@ -1510,13 +1524,17 @@ pub fn panel_event(
 /// ([`RunAccess::Overseer`], 404), and a reader of the artifact
 /// alone sees what [`for_reader`] leaves; access is checked again at
 /// every step's end and every [`RECHECK_EVERY`] of quiet, and the stream
-/// ends once it is gone. Opening it records `view.run` (at most once in
-/// five minutes per viewer and run).
+/// ends once it is gone. A stream opened with an owner browser session
+/// ends when that session does (`clax logout`,
+/// [`clax_http::local_trust::session_ended`]), as the event streams
+/// and sockets do. Opening it records `view.run` (at most once in five
+/// minutes per viewer and run).
 pub async fn events(
     State(s): State<AppState>,
     d: DeniedToGrants,
     who: Identity,
     headers: axum::http::HeaderMap,
+    extensions: axum::http::Extensions,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
     d.refuse_agents()?;
@@ -1628,6 +1646,8 @@ pub async fn events(
             }
         }
     });
+    let ended = clax_http::local_trust::session_ended(&s.owner_sessions, &extensions);
+    let chunks = futures::StreamExt::take_until(chunks, ended);
     let mut res = axum::body::Body::from_stream(chunks).into_response();
     let h = res.headers_mut();
     h.insert(

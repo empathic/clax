@@ -45,10 +45,14 @@ mod api_claxbot;
 mod api_claxbot_run;
 #[cfg(any(not(clax_split), clax_split = "api_client_imports"))]
 mod api_client_imports;
+#[cfg(any(not(clax_split), clax_split = "api_confirmations"))]
+mod api_confirmations;
 #[cfg(any(not(clax_split), clax_split = "api_content"))]
 mod api_content;
 #[cfg(any(not(clax_split), clax_split = "api_db_read"))]
 mod api_db_read;
+#[cfg(any(not(clax_split), clax_split = "api_discovery"))]
+mod api_discovery;
 #[cfg(any(not(clax_split), clax_split = "api_docs"))]
 mod api_docs;
 #[cfg(any(not(clax_split), clax_split = "api_drafts"))]
@@ -59,6 +63,8 @@ mod api_events;
 mod api_extension;
 #[cfg(any(not(clax_split), clax_split = "api_feedback"))]
 mod api_feedback;
+#[cfg(any(not(clax_split), clax_split = "api_feedback_integration"))]
+mod api_feedback_integration;
 #[cfg(any(not(clax_split), clax_split = "api_forks"))]
 mod api_forks;
 #[cfg(any(not(clax_split), clax_split = "api_gateway"))]
@@ -91,6 +97,8 @@ mod api_live_site;
 mod api_live_sites;
 #[cfg(any(not(clax_split), clax_split = "api_live_watch"))]
 mod api_live_watch;
+#[cfg(any(not(clax_split), clax_split = "api_local_trust"))]
+mod api_local_trust;
 #[cfg(any(not(clax_split), clax_split = "api_locked"))]
 mod api_locked;
 #[cfg(any(not(clax_split), clax_split = "api_mcp"))]
@@ -125,10 +133,18 @@ mod api_queue_reporter;
 mod api_queues;
 #[cfg(any(not(clax_split), clax_split = "api_quickstart"))]
 mod api_quickstart;
+#[cfg(any(not(clax_split), clax_split = "api_remote_artifacts"))]
+mod api_remote_artifacts;
+#[cfg(any(not(clax_split), clax_split = "api_remote_requests"))]
+mod api_remote_requests;
+#[cfg(any(not(clax_split), clax_split = "api_remote_watch"))]
+mod api_remote_watch;
 #[cfg(any(not(clax_split), clax_split = "api_remotes"))]
 mod api_remotes;
 #[cfg(any(not(clax_split), clax_split = "api_remotes_app"))]
 mod api_remotes_app;
+#[cfg(any(not(clax_split), clax_split = "api_resolve"))]
+mod api_resolve;
 #[cfg(any(not(clax_split), clax_split = "api_restore"))]
 mod api_restore;
 #[cfg(any(not(clax_split), clax_split = "api_room"))]
@@ -195,6 +211,8 @@ mod golden_single_owner;
 mod harness_ids;
 #[cfg(any(not(clax_split), clax_split = "hosted_pages"))]
 mod hosted_pages;
+#[cfg(any(not(clax_split), clax_split = "overlay_files"))]
+mod overlay_files;
 #[cfg(any(not(clax_split), clax_split = "sample_anthropic"))]
 mod sample_anthropic;
 #[cfg(any(not(clax_split), clax_split = "shell_boot"))]

@@ -1,5 +1,5 @@
 import { type Frame, type Page } from "@playwright/test";
-import { test, expect, type Daemon, api, commentModeIn, contentFrame, openArtifact, record, registerSession, nameField, reach } from "./fixtures";
+import { test, expect, type Daemon, api, commentModeIn, contentFrame, openArtifact, proofHeaders, record, registerSession, nameField, reach } from "./fixtures";
 import { activationLapsed, advance, quietEval, settle } from "./time";
 
 /** The shell's rules (web/shell/src/caps/gesture.ts): no strict gesture within
@@ -975,7 +975,7 @@ async function expectRefused(page: Page, f: Frame | null, id: string, verb: "sen
         let release!: () => void;
         const held = new Promise<void>(r => { release = r; });
         // The module script the artifact page's HTML itself names.
-        const html = await (await page.request.get(`${d.base}/a/${id}`)).text();
+        const html = await (await page.request.get(`${d.base}/a/${id}`, { headers: proofHeaders(d.base) })).text();
         const entry = /<script type="module"[^>]*\ssrc="([^"]+)"/.exec(html)?.[1];
         expect(entry, "the artifact entry's module script").toMatch(/^\/_clax\/shell\/.+\.js$/);
         let heldHits = 0;

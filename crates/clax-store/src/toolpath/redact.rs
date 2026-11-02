@@ -239,7 +239,7 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("comment.add", "body") => Text,
         ("comment.add", "author_name") => Name,
         ("comment.add", "comment_id" | "author_kind" | "via_harness" | "via_page") => Safe,
-        ("thread.resolve", "resolved_by" | "addressed_version") => Safe,
+        ("thread.resolve", "resolved_by" | "addressed_version" | "reason") => Safe,
         ("thread.delete", "moved") => Safe,
         (
             "thread.send",
@@ -313,6 +313,11 @@ fn body_class(kind: &str, field: &str) -> Class {
         ) => Safe,
         ("approval.decide", "request_id" | "scope") => Safe,
         ("approval.withdraw", "request_id" | "reason") => Safe,
+        // A connection request (`crate::remote_requests`): its instance's
+        // origin, never the asking agent's URL or reason.
+        ("remote_request.ask", "request_id" | "origin" | "opened") => Safe,
+        ("remote_request.answer", "request_id" | "origin" | "answer" | "remote_id") => Safe,
+        ("remote_request.close", "request_id" | "origin" | "status" | "remote_id") => Safe,
         ("thread.take", "thread_id" | "session" | "cause") => Safe,
         ("thread.release", "thread_id" | "session" | "reason") => Safe,
         ("backfill.skip", "reason") => Text,
@@ -390,6 +395,15 @@ fn body_class(kind: &str, field: &str) -> Class {
             "queue.claim" | "queue.release",
             "queue_id" | "thread_id" | "session" | "lease_id" | "fence" | "expires_at" | "reason",
         ) => Safe,
+        ("queue.fix", "url") => Path,
+        (
+            "queue.fix" | "queue.verify" | "queue.reopen",
+            "queue_id" | "thread_id" | "n" | "commit" | "reopen_count" | "reason",
+        ) => Safe,
+        ("confirmation.answer", "confirmation_id" | "decision" | "answer") => Safe,
+        ("passkey.add", "credential_id" | "alg") => Safe,
+        ("passkey.remove", "credential_id" | "reason") => Safe,
+        ("passkey.require", "required") => Safe,
         _ => Class::Unclassified,
     }
 }

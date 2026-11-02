@@ -824,7 +824,7 @@ pub async fn commit(
                                     },
                                     |tid| {
                                         if let Some(t) = st.get_thread(tid)? {
-                                            crate::routes::threads::publish_thread(&ctx, st, &t)?;
+                                            crate::routes::threads::publish_thread(&ctx, st, &t);
                                         }
                                         Ok(())
                                     },
@@ -905,7 +905,7 @@ pub async fn commit(
                                     &ctx.working,
                                     &changed,
                                 );
-                                crate::routes::threads::publish_thread(&ctx, st, &t)?;
+                                crate::routes::threads::publish_thread(&ctx, st, &t);
                             }
                             clax_realtime::feedback::apply(&ctx, st, &made.touched);
                         }

@@ -188,6 +188,7 @@ async fn share_lets_the_declared_reader_read() {
     let got = send(
         ts.client
             .get(format!("{}/api/artifacts/{b}/docs/runs/r1", ts.base))
+            .header("cookie", format!("clax_viewer={}", ts.local_browser()))
             .header(READER, &a),
     )
     .await;

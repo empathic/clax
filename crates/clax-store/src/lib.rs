@@ -106,8 +106,10 @@ pub mod batches;
 pub mod bot_runs;
 pub mod bot_settings;
 pub mod briefs;
+pub mod browser_login;
 pub mod capability_approvals;
 pub mod changelog;
+pub mod confirmations;
 pub mod credits;
 pub mod device;
 pub mod docs;
@@ -132,14 +134,17 @@ pub mod linked;
 pub mod live;
 pub mod migrations;
 pub mod net_grants;
+pub mod passkeys;
 pub mod people;
 #[cfg(test)]
 mod plans;
+pub mod price_catalog;
 pub mod pushes;
 pub mod questions;
 pub mod queues;
 pub mod quickstart;
 pub mod reach;
+pub mod remote_requests;
 pub mod remotes;
 pub mod roles;
 pub mod sample_grants;
@@ -912,7 +917,7 @@ fn migrate_steps(
         if migrations::adopt_wip_tailscale(&tx)? {
             tx.commit()?;
             tracing::warn!(
-                "renumbered a database from a wip/bdelanghe build (tailnet logins at 40 or 55)"
+                "renumbered a database from a wip/bdelanghe build (tailnet logins at 40, 55 or 60)"
             );
         }
     }

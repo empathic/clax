@@ -25,9 +25,11 @@ async fn token_is_refused_to_non_loopback_peers() {
         .send()
         .await
         .unwrap();
-    assert_eq!(res.status(), 403);
+    // This machine at its own LAN address, with no credential: refused
+    // as a loopback caller without one is.
+    assert_eq!(res.status(), 401);
     let body: serde_json::Value = res.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "not_loopback");
+    assert_eq!(body["error"]["code"], "no_credential");
 }
 
 #[tokio::test]
@@ -63,16 +65,33 @@ async fn healthz_reports_version_and_allows_any_origin() {
 }
 
 #[tokio::test]
-async fn token_is_served_to_loopback_peers() {
+async fn token_is_served_to_an_owner_browser_session() {
     let ts = TestServer::spawn().await;
-    let body: serde_json::Value = ts.get("/api/token").await.json().await.unwrap();
+    let get = |cookie: Option<String>| {
+        let req = ts.client.get(format!("{}/api/token", ts.base));
+        let req = match cookie {
+            Some(c) => req.header("cookie", c),
+            None => req,
+        };
+        async move { req.send().await.unwrap() }
+    };
+    let body: serde_json::Value = get(Some(ts.owner_cookie())).await.json().await.unwrap();
     assert_eq!(body["token"], "test-token");
+    // A viewer of this machine's, or no one, is not served it.
+    assert_eq!(ts.get("/api/token").await.status(), 401);
+    assert_eq!(get(None).await.status(), 401);
 }
 
 #[tokio::test]
 async fn token_response_is_uncached_and_not_cors_enabled() {
     let ts = TestServer::spawn().await;
-    let res = ts.get("/api/token").await;
+    let res = ts
+        .client
+        .get(format!("{}/api/token", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.headers()["cache-control"], "no-store");
     assert!(res.headers().get("access-control-allow-origin").is_none());
 }
@@ -101,6 +120,18 @@ async fn write_routes_require_bearer_token() {
     let res = ts
         .client
         .post(format!("{}/api/artifacts", ts.base))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 401);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "no_credential");
+    // A viewer of this machine's is no owner either.
+    let res = ts
+        .client
+        .post(format!("{}/api/artifacts", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .json(&serde_json::json!({}))
         .send()
         .await

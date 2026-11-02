@@ -4,7 +4,10 @@
   // The `?` sheet (spec §8, "Keys"), loaded on first use. A modal dialog:
   // everything else in the document is inert while it is open, focus moves
   // to its Close button and Tab stays inside it; Escape, Close or a click
-  // outside the panel closes it, and focus returns to where it was.
+  // outside the panel closes it, and focus returns to where it was. For a
+  // person who may report problems with Clax it lists the report shortcut
+  // too (`feedback/slot.svelte.ts`).
+  import { feedbackKeyRows } from "../feedback/slot.svelte";
   import { KEY_ROWS } from "../view/keys";
   import { inertOutside, trapTab } from "./modal";
 
@@ -36,7 +39,7 @@
     <h2 id="keys-title">Keyboard shortcuts</h2>
     <p class="sub">Keys work while the page does not have focus.</p>
     <dl>
-      {#each KEY_ROWS as r (r.keys.join("+"))}
+      {#each [...KEY_ROWS, ...feedbackKeyRows()] as r (r.keys.join("+"))}
         <dt>{#each r.keys as key (key)}<kbd>{key}</kbd>{/each}</dt><dd>{r.what}</dd>
       {/each}
     </dl>

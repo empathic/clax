@@ -26,7 +26,7 @@ async fn mcp_requires_the_bearer_token(path: &str) {
     let res = mcp_post(&ts, path, &initialize()).send().await.unwrap();
     assert_eq!(res.status(), 401);
     let body: Value = res.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "unauthorized");
+    assert_eq!(body["error"]["code"], "no_credential");
 
     let res = mcp_post(&ts, path, &initialize())
         .bearer_auth("wrong")
@@ -110,6 +110,7 @@ async fn mcp_lists_the_tools(path: &str) {
             "comments_read",
             "comments_reply",
             "comments_resolve",
+            "connect_instance",
             "db_batch",
             "db_delete",
             "db_get",
@@ -128,11 +129,14 @@ async fn mcp_lists_the_tools(path: &str) {
             "publish",
             "publish_public",
             "queue_claim",
+            "queue_fix",
+            "queue_get",
             "queue_list",
             "queue_release",
             "queue_renew",
             "queue_reply",
             "queue_resolve",
+            "queue_watch",
             "read",
             "status",
             "tag",

@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Browser, BrowserContext, Page } from "@playwright/test";
-import type { Daemon } from "./fixtures";
+import { type Daemon, proofHeaders } from "./fixtures";
 import { ownerCookie } from "./questions-helpers";
 
 /**
@@ -134,7 +134,7 @@ export class Agent {
 /** A new thread on `aid` v1, on its `h2`, written by the browser of `page` at `origin`. */
 export async function threadFrom(page: Page, origin: string, aid: string, body: string): Promise<string> {
   const anchor = { kind: "element", selector: "body > main > h2", quote: "Quarterly goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
-  const r = await page.request.post(`${origin}/api/artifacts/${aid}/threads`, { headers: { origin }, multipart: { anchor: JSON.stringify(anchor), body, version: "1" } });
+  const r = await page.request.post(`${origin}/api/artifacts/${aid}/threads`, { headers: { origin, ...proofHeaders(origin) }, multipart: { anchor: JSON.stringify(anchor), body, version: "1" } });
   if (r.status() !== 201) throw new Error(`thread: ${r.status()} ${await r.text()}`);
   return (await r.json()).thread.id as string;
 }
@@ -153,7 +153,7 @@ export async function ownerThread(d: Daemon, aid: string, body: string): Promise
 
 /** Sends thread `tid` of `aid` to the agent `handle` from the browser of `page` at `origin`. */
 export async function sendFrom(page: Page, origin: string, aid: string, tid: string, handle: string) {
-  const r = await page.request.post(`${origin}/api/artifacts/${aid}/threads/${tid}/send`, { headers: { origin }, data: { to: handle } });
+  const r = await page.request.post(`${origin}/api/artifacts/${aid}/threads/${tid}/send`, { headers: { origin, ...proofHeaders(origin) }, data: { to: handle } });
   if (r.status() !== 200) throw new Error(`send: ${r.status()} ${await r.text()}`);
 }
 

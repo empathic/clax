@@ -3,23 +3,10 @@
 // change is the browser's (M20): the page's cookie, never the token. A
 // refusal throws `Refused` with the daemon's own message, which the page
 // shows as it is.
+import { browserCall as call, Refused } from "../held";
 import type { InboxApproval, NewInvite, PeopleApproval, PeopleGrant, PeopleInvite, PeopleList, PeopleMe, PeopleRequest, Rights } from "../api";
 
-/** A route's refusal: its status, the daemon's message and code. */
-export class Refused extends Error {
-  constructor(public status: number, message: string, public code: string | null) {
-    super(message);
-    this.name = "Refused";
-  }
-}
-
-async function call<T>(path: string, method = "GET", body?: unknown): Promise<T> {
-  const res = await fetch(path, method === "GET" ? undefined : { method, ...body !== undefined && { headers: { "content-type": "application/json" }, body: JSON.stringify(body) } });
-  if (res.ok) return (res.status === 204 ? {} : await res.json()) as T;
-  let b: { error?: { code?: string; message?: string } } = {};
-  try { b = await res.json(); } catch { /* not json */ }
-  throw new Refused(res.status, b.error?.message ?? (res.statusText || `HTTP ${res.status}`), b.error?.code ?? null);
-}
+export { Refused };
 const e = encodeURIComponent;
 
 export const me = () => call<PeopleMe>("/api/people/me");

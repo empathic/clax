@@ -1843,10 +1843,246 @@ pub const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (thread_id, session_id)
     ) WITHOUT ROWID;
     CREATE INDEX queue_claims_by_session ON queue_claims(session_id);",
-    // 60: the tailnet login that names a viewer coming through `tailscale
+    // 60: a local daemon's browser login (`crate::browser_login`). A login
+    // code, made by a holder of the daemon token, is redeemed once by the
+    // browser it was opened in; an owner browser session is the value of
+    // that browser's owner and events cookies. Both are kept by their
+    // SHA-256 alone, and name no viewer row: a session is the owner's
+    // whatever row the owner is. A hosted daemon writes neither.
+    //
+    // It also adds connection requests (`crate::remote_requests`): an
+    // agent's ask that the owner connect this home to a Clax instance, at
+    // most one open per origin (`remote_requests_open`), each asking
+    // session with the URL it wanted; the origins the owner muted ("Never
+    // for this instance") and those held off a day by "Not now". The
+    // inbox gains their kind, `remote_request`, rebuilt as migration 30
+    // rebuilt it, keeping every `seq`. And it adds what following a remote
+    // artifact keeps: `remote_links.followed`, a link that mirrors a
+    // remote artifact's threads rather than pushes one, with
+    // `remote_links.unwatched_at`, since when no local session has watched
+    // it (the sync leaves it alone then, and drops it a week on), and
+    // `artifacts.remote_mirror`, the local artifact holding those threads
+    // (a column, as `artifacts.kind`'s CHECK cannot be altered without
+    // rebuilding the table every other table names). And a remote may be
+    // `signed_out`: its token was refused there (revoked), so it is kept,
+    // with its links, until the person connects it again; `remotes` is
+    // rebuilt for the status's CHECK, as no table names it, and gains
+    // `reconnecting`, set while a signed-out remote's new sign-in waits, so
+    // one that does not finish leaves it signed out rather than forgotten.
+    // `threads.reopened_by_person` is whose reopen left a thread open
+    // (`*owner`, a person's public ID, or `-` for anyone else; NULL for
+    // Clax itself and reopens before it): a linked thread's reopen goes up
+    // to its remote only when it is the owner's (`crate::linked`).
+    "CREATE TABLE login_codes (
+        sha256 TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        used_at TEXT
+    ) WITHOUT ROWID;
+    CREATE TABLE owner_browser_sessions (
+        sha256 TEXT PRIMARY KEY,
+        proof_sha256 TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        ended_at TEXT
+    ) WITHOUT ROWID;
+    CREATE TABLE remote_requests (
+        id TEXT PRIMARY KEY,
+        origin TEXT NOT NULL,
+        name TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('open', 'connected', 'dismissed', 'muted', 'expired')),
+        opened_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        answered_at TEXT,
+        remote_id TEXT
+    );
+    CREATE UNIQUE INDEX remote_requests_open ON remote_requests(origin) WHERE status = 'open';
+    CREATE INDEX remote_requests_by_opener ON remote_requests(opened_by, created_at);
+    CREATE TABLE remote_request_askers (
+        request_id TEXT NOT NULL REFERENCES remote_requests(id) ON DELETE CASCADE,
+        session_id TEXT NOT NULL,
+        url TEXT,
+        reason TEXT,
+        asked_at TEXT NOT NULL,
+        PRIMARY KEY (request_id, session_id)
+    ) WITHOUT ROWID;
+    CREATE TABLE remote_mutes (
+        origin TEXT PRIMARY KEY,
+        muted_at TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE TABLE remote_dismissals (
+        origin TEXT PRIMARY KEY,
+        until TEXT NOT NULL
+    ) WITHOUT ROWID;
+    ALTER TABLE remote_links ADD COLUMN followed INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE remote_links ADD COLUMN unwatched_at TEXT;
+    ALTER TABLE artifacts ADD COLUMN remote_mirror INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE threads ADD COLUMN reopened_by_person TEXT;
+    CREATE TABLE remotes_60 (
+        id TEXT PRIMARY KEY,
+        origin TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'connected', 'signed_out')),
+        token TEXT,
+        device_code TEXT,
+        user_code TEXT,
+        verification_url TEXT,
+        sign_in_expires_at TEXT,
+        poll_interval_s INTEGER,
+        person_public_id TEXT,
+        person_name TEXT,
+        grant_id TEXT,
+        created_at TEXT NOT NULL,
+        connected_at TEXT,
+        client_kind TEXT,
+        reconnecting INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO remotes_60 SELECT id, origin, name, status, token, device_code, user_code,
+        verification_url, sign_in_expires_at, poll_interval_s, person_public_id, person_name,
+        grant_id, created_at, connected_at, client_kind, 0 FROM remotes;
+    DROP TABLE remotes;
+    ALTER TABLE remotes_60 RENAME TO remotes;
+    CREATE TABLE inbox_items_60 (
+        seq INTEGER PRIMARY KEY,
+        id TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL CHECK (kind IN ('reply', 'version', 'published', 'question', 'finished',
+                                           'approval', 'connection', 'ended', 'push', 'remote_request')),
+        key TEXT NOT NULL UNIQUE,
+        recipient TEXT,
+        artifact_id TEXT,
+        thread_id TEXT,
+        comment_id TEXT,
+        version_n INTEGER,
+        question_id TEXT,
+        session_id TEXT,
+        harness TEXT,
+        request_id TEXT,
+        grant_id TEXT,
+        detail_json TEXT,
+        created_at TEXT NOT NULL,
+        read_at TEXT
+    );
+    INSERT INTO inbox_items_60 SELECT seq, id, kind, key, recipient, artifact_id, thread_id,
+        comment_id, version_n, question_id, session_id, harness, request_id, grant_id, detail_json,
+        created_at, read_at FROM inbox_items;
+    DROP TABLE inbox_items;
+    ALTER TABLE inbox_items_60 RENAME TO inbox_items;
+    CREATE INDEX inbox_unread ON inbox_items(COALESCE(recipient, ''), seq) WHERE read_at IS NULL;
+    CREATE INDEX inbox_by_recipient ON inbox_items(COALESCE(recipient, ''), seq);
+    CREATE INDEX inbox_by_artifact ON inbox_items(COALESCE(recipient, ''), artifact_id, seq);
+    CREATE INDEX inbox_by_kind ON inbox_items(COALESCE(recipient, ''), kind, seq);
+    CREATE INDEX inbox_by_harness ON inbox_items(COALESCE(recipient, ''), harness, seq);
+    CREATE INDEX inbox_by_session ON inbox_items(COALESCE(recipient, ''), session_id, seq);
+    CREATE INDEX inbox_by_created ON inbox_items(created_at, seq);
+    CREATE INDEX inbox_by_thread ON inbox_items(thread_id) WHERE thread_id IS NOT NULL;
+    CREATE INDEX inbox_by_question ON inbox_items(question_id) WHERE question_id IS NOT NULL;
+    CREATE INDEX inbox_by_request ON inbox_items(request_id) WHERE request_id IS NOT NULL;
+    -- Browser confirmation (`crate::confirmations`): a decision made with
+    -- the daemon token while an agent of the owner's is live waits for a
+    -- click in the owner's browser. `decision_json` is the decision a
+    -- confirmation is bound to; `used_at` marks the one call it let
+    -- through. The owner may also require a passkey (WebAuthn with user
+    -- verification) to confirm: `passkeys` holds each one registered
+    -- (its SPKI public key, COSE algorithm and signature counter, and how
+    -- it was added: from which browser, the owner's agents live then),
+    -- `passkey_challenges` each challenge handed out (single use, bound to
+    -- its purpose: a confirmation, a registration, turning the
+    -- requirement off, a removal), and `confirm_prefs` whether passkeys are
+    -- required and whether the first-use offer was put off.
+    CREATE TABLE confirmations (
+        id TEXT PRIMARY KEY,
+        decision_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('open','approved','declined','expired')),
+        created_at TEXT NOT NULL,
+        answered_at TEXT,
+        used_at TEXT
+    ) WITHOUT ROWID;
+    CREATE TABLE passkeys (
+        credential_id TEXT PRIMARY KEY,
+        public_key BLOB NOT NULL,
+        alg INTEGER NOT NULL,
+        sign_count INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        added_by_json TEXT NOT NULL DEFAULT '{}'
+    ) WITHOUT ROWID;
+    CREATE TABLE passkey_challenges (
+        challenge TEXT PRIMARY KEY,
+        purpose TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE TABLE confirm_prefs (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        require_passkey INTEGER NOT NULL DEFAULT 0,
+        offer_dismissed INTEGER NOT NULL DEFAULT 0
+    );
+    -- End of browser confirmation.",
+    // 61: the feedback loop (spec 2026-10-29-feedback-loop-design §5, §6,
+    // §7.3): a report's context, server stamp, reporter profile, phase,
+    // resolve reason, reopen count and the reporter's last read; the
+    // profile a reporter token carries; a reopen comment's capture number
+    // and clip; each capture's diagnostics (the filing's is capture 0); its
+    // fix attempts, the session of each agent's (NULL: a person's), and
+    // their verdicts; which comments are notes for the queue's members
+    // alone (`triage_only`); the sessions watching a queue; and which
+    // feedback rows are a queue's wake (`filed`, `reopened`, and
+    // `released`: a person ended the session's claim); and the instance's
+    // own feedback queue and service grant, kept when a hosted instance
+    // makes them for itself (`instance_feedback`, one row).
+    "ALTER TABLE threads ADD COLUMN report_context_json TEXT CHECK (report_context_json IS NULL OR json_valid(report_context_json));
+    ALTER TABLE threads ADD COLUMN report_server_json TEXT;
+    ALTER TABLE threads ADD COLUMN reporter_profile_json TEXT;
+    ALTER TABLE threads ADD COLUMN report_phase TEXT CHECK (report_phase IN ('fix_proposed', 'verified'));
+    ALTER TABLE threads ADD COLUMN resolve_reason TEXT;
+    ALTER TABLE threads ADD COLUMN reopen_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE threads ADD COLUMN reporter_seen_at TEXT;
+    ALTER TABLE queue_reporter_tokens ADD COLUMN profile_json TEXT;
+    ALTER TABLE comments ADD COLUMN report_capture INTEGER;
+    ALTER TABLE comments ADD COLUMN clip_key TEXT;
+    ALTER TABLE comments ADD COLUMN triage_only INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE report_diagnostics (
+      thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+      capture INTEGER NOT NULL, lines_json TEXT NOT NULL, n INTEGER NOT NULL,
+      PRIMARY KEY (thread_id, capture)) WITHOUT ROWID;
+    CREATE TABLE report_fixes (
+      thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+      n INTEGER NOT NULL, fix_json TEXT NOT NULL, proposer_name TEXT NOT NULL,
+      proposer_session_id TEXT, created_at TEXT NOT NULL,
+      outcome TEXT NOT NULL DEFAULT 'pending'
+        CHECK (outcome IN ('pending', 'verified', 'rejected', 'superseded', 'closed')),
+      verdict_note TEXT, verdict_context_json TEXT, verdict_at TEXT,
+      PRIMARY KEY (thread_id, n)) WITHOUT ROWID;
+    CREATE TABLE queue_watches (queue_id TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE, session_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (queue_id, session_id)) WITHOUT ROWID;
+    ALTER TABLE feedback ADD COLUMN queue_event TEXT CHECK (queue_event IS NULL OR queue_event IN ('filed', 'reopened', 'released'));
+    CREATE TABLE instance_feedback (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      queue_id TEXT NOT NULL, grant_id TEXT NOT NULL,
+      grant_token TEXT NOT NULL, grant_key BLOB NOT NULL,
+      created_at TEXT NOT NULL);",
+    // 62: the cached price catalog (tokenulator.dev's listings,
+    // `crate::price_catalog::CatalogListing`), one row per provider and model, in
+    // micro-USD per million tokens (a missing cache rate is NULL), replaced
+    // whole on each fetch; and the source of the rates each usage row was
+    // charged at (`crate::credits::RateSource`), every earlier row's a cost
+    // line's.
+    "CREATE TABLE price_catalog (
+        provider_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        input_micro_usd INTEGER NOT NULL,
+        output_micro_usd INTEGER NOT NULL,
+        cache_read_micro_usd INTEGER,
+        cache_write_micro_usd INTEGER,
+        source TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        fetched_at TEXT NOT NULL,
+        PRIMARY KEY (provider_id, model_id)
+    ) WITHOUT ROWID;
+    ALTER TABLE usage_rows ADD COLUMN rate_source TEXT NOT NULL DEFAULT 'line'
+        CHECK (rate_source IN ('line', 'catalog', 'default', 'provider'));",
+    // 63: the tailnet login that names a viewer coming through `tailscale
     // serve` (`[serve] tailscale_identity`; `crate::viewers`), one viewer
     // per login. `NULL` for every other viewer. (wip/bdelanghe builds made
-    // it as their 40, then as their 55; `crate::migrations::adopt_wip_tailscale`
+    // it as their 40, then 55, then 60; `crate::migrations::adopt_wip_tailscale`
     // renumbers such a database.)
     "ALTER TABLE viewers ADD COLUMN tailscale_login TEXT;
     CREATE UNIQUE INDEX viewers_tailscale_login ON viewers(tailscale_login)
@@ -1895,9 +2131,25 @@ pub const CAPABILITY_APPROVALS_MIGRATION: u32 = QUICKSTART_MIGRATION + 1;
 /// of threads and comments), as a schema version.
 pub const QUEUES_MIGRATION: u32 = CAPABILITY_APPROVALS_MIGRATION + 1;
 
+/// The migration that adds a local daemon's browser login (`login_codes`,
+/// `owner_browser_sessions`), connection requests (`remote_requests` and
+/// the tables beside it, the inbox's `remote_request` kind) and followed
+/// remote links (`remote_links.followed`, `artifacts.remote_mirror`), as a
+/// schema version.
+pub const BROWSER_LOGIN_MIGRATION: u32 = QUEUES_MIGRATION + 1;
+
+/// The feedback loop's migration (`report_fixes`, `report_diagnostics`,
+/// `queue_watches`, `instance_feedback`, the report columns of threads and
+/// the profile of reporter tokens), as a schema version.
+pub const FEEDBACK_LOOP_MIGRATION: u32 = BROWSER_LOGIN_MIGRATION + 1;
+
+/// The migration that adds the cached price catalog (`price_catalog`) and
+/// `usage_rows.rate_source`, as a schema version.
+pub const PRICE_CATALOG_MIGRATION: u32 = FEEDBACK_LOOP_MIGRATION + 1;
+
 /// The migration that adds `viewers.tailscale_login`, as a schema version,
 /// and this build's last.
-pub const TAILSCALE_LOGIN_MIGRATION: u32 = QUEUES_MIGRATION + 1;
+pub const TAILSCALE_LOGIN_MIGRATION: u32 = PRICE_CATALOG_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -2061,7 +2313,7 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 11] = [
+const MARKS_AFTER_APP: [Mark<'static>; 14] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
@@ -2072,6 +2324,9 @@ const MARKS_AFTER_APP: [Mark<'static>; 11] = [
     Mark::Table("quickstarts"),
     Mark::Table("capability_approvals"),
     Mark::Table("queues"),
+    Mark::Table("owner_browser_sessions"),
+    Mark::Table("report_fixes"),
+    Mark::Table("price_catalog"),
     Mark::Column("viewers", "tailscale_login"),
 ];
 
@@ -2689,8 +2944,15 @@ const WIP_TAILSCALE_VERSION: u32 = WHERE_TO_ASK_MIGRATION + 2;
 /// column and without `return_to`.
 const WIP_TAILSCALE_VERSION_55: u32 = RETURN_TO_MIGRATION;
 
+/// Where a still later wip/bdelanghe build's database stands: those builds
+/// numbered the column 60, where main's 60 makes `owner_browser_sessions`
+/// ([`BROWSER_LOGIN_MIGRATION`]), so such a database is at 60 with the
+/// login column and without that table.
+const WIP_TAILSCALE_VERSION_60: u32 = BROWSER_LOGIN_MIGRATION;
+
 /// Brings a database a wip/bdelanghe build migrated (see
-/// [`WIP_TAILSCALE_VERSION`], [`WIP_TAILSCALE_VERSION_55`]) back onto this
+/// [`WIP_TAILSCALE_VERSION`], [`WIP_TAILSCALE_VERSION_55`],
+/// [`WIP_TAILSCALE_VERSION_60`]) back onto this
 /// numbering, in `tx`: its logins are kept in the TEMP table
 /// `wip_tailscale_logins` of `tx`'s connection, the column and its index
 /// dropped, and its version set to the one before, so main's migrations
@@ -2702,6 +2964,7 @@ pub(crate) fn adopt_wip_tailscale(tx: &rusqlite::Transaction<'_>) -> clax_core::
     let wip = match version {
         WIP_TAILSCALE_VERSION => !has_table(tx, "briefs")?,
         WIP_TAILSCALE_VERSION_55 => !has_column(tx, "device_codes", "return_to")?,
+        WIP_TAILSCALE_VERSION_60 => !has_table(tx, "owner_browser_sessions")?,
         _ => false,
     };
     if !wip || !has_column(tx, "viewers", "tailscale_login")? {
@@ -5086,11 +5349,23 @@ mod tests {
             super::CAPABILITY_APPROVALS_MIGRATION + 1
         );
         assert!(MIGRATIONS[first + 17].contains("CREATE TABLE queues ("));
+        assert_eq!(super::BROWSER_LOGIN_MIGRATION, super::QUEUES_MIGRATION + 1);
+        assert!(MIGRATIONS[first + 18].contains("CREATE TABLE owner_browser_sessions ("));
+        assert_eq!(
+            super::FEEDBACK_LOOP_MIGRATION,
+            super::BROWSER_LOGIN_MIGRATION + 1
+        );
+        assert!(MIGRATIONS[first + 19].contains("CREATE TABLE report_fixes ("));
+        assert_eq!(
+            super::PRICE_CATALOG_MIGRATION,
+            super::FEEDBACK_LOOP_MIGRATION + 1
+        );
+        assert!(MIGRATIONS[first + 20].contains("CREATE TABLE price_catalog ("));
         assert_eq!(
             super::TAILSCALE_LOGIN_MIGRATION,
-            super::QUEUES_MIGRATION + 1
+            super::PRICE_CATALOG_MIGRATION + 1
         );
-        assert!(MIGRATIONS[first + 18].contains("ADD COLUMN tailscale_login"));
+        assert!(MIGRATIONS[first + 21].contains("ADD COLUMN tailscale_login"));
         assert_eq!(MIGRATIONS.len() as u32, super::TAILSCALE_LOGIN_MIGRATION);
     }
 
@@ -5180,7 +5455,46 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_database_reaches_60() {
+    fn migration_62_adds_the_catalog_and_marks_every_earlier_charge_a_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        drop(Store::open(&home).unwrap());
+        let c = Connection::open(home.db_path()).unwrap();
+        // The schema as it was before 62, with a usage row.
+        c.execute_batch(
+            "DROP TABLE price_catalog; ALTER TABLE usage_rows DROP COLUMN rate_source;
+             INSERT INTO usage_rows (person, line, unit, qty, rate_cost_micro_usd, margin_bp,
+                credit_price_micro_usd, base_qty, cost_micro_usd, credits_milli, free_milli,
+                key_source, week, at)
+             VALUES ('*owner', 'harness.run', 'run', 1, 0, 9000, 10000, 1, 0, 1000, 1000,
+                'instance', '2026-10-26T00:00:00Z', 'x');",
+        )
+        .unwrap();
+        c.execute_batch(MIGRATIONS[super::PRICE_CATALOG_MIGRATION as usize - 1])
+            .unwrap();
+        let source: String = c
+            .query_row("SELECT rate_source FROM usage_rows", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(source, "line");
+        assert!(
+            c.execute("UPDATE usage_rows SET rate_source = 'guess'", [])
+                .is_err(),
+            "the source is one of four"
+        );
+        c.execute("UPDATE usage_rows SET rate_source = 'catalog'", [])
+            .unwrap();
+        assert_eq!(table_count(&c, "price_catalog"), 1);
+        c.execute(
+            "INSERT INTO price_catalog (provider_id, model_id, name, input_micro_usd,
+                output_micro_usd, source, observed_at, fetched_at)
+             VALUES ('openai', 'gpt-5', 'GPT-5', 1, 2, 's', 'o', 'f')",
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_fresh_database_reaches_63() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         drop(Store::open(&home).unwrap());
@@ -5198,10 +5512,51 @@ mod tests {
         assert_eq!(super::QUICKSTART_MIGRATION, 57);
         assert_eq!(super::CAPABILITY_APPROVALS_MIGRATION, 58);
         assert_eq!(super::QUEUES_MIGRATION, 59);
-        assert_eq!(super::TAILSCALE_LOGIN_MIGRATION, 60);
+        assert_eq!(super::BROWSER_LOGIN_MIGRATION, 60);
+        assert_eq!(super::FEEDBACK_LOOP_MIGRATION, 61);
+        assert_eq!(super::PRICE_CATALOG_MIGRATION, 62);
+        assert_eq!(super::TAILSCALE_LOGIN_MIGRATION, 63);
         assert_eq!(user_version(&c), super::TAILSCALE_LOGIN_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
+            assert_eq!(table_count(&c, table), 1, "{table}");
+        }
+        for table in [
+            "report_fixes",
+            "report_diagnostics",
+            "queue_watches",
+            "instance_feedback",
+        ] {
+            assert_eq!(table_count(&c, table), 1, "{table}");
+        }
+        for column in [
+            "report_context_json",
+            "report_server_json",
+            "reporter_profile_json",
+            "report_phase",
+            "resolve_reason",
+            "reopen_count",
+            "reporter_seen_at",
+        ] {
+            assert!(
+                super::has_column(&c, "threads", column).unwrap(),
+                "{column}"
+            );
+        }
+        assert!(super::has_column(&c, "queue_reporter_tokens", "profile_json").unwrap());
+        assert!(super::has_column(&c, "feedback", "queue_event").unwrap());
+        for column in ["report_capture", "clip_key"] {
+            assert!(
+                super::has_column(&c, "comments", column).unwrap(),
+                "{column}"
+            );
+        }
+        for table in [
+            "confirmations",
+            "passkeys",
+            "passkey_challenges",
+            "confirm_prefs",
+        ] {
             assert_eq!(table_count(&c, table), 1, "{table}");
         }
     }
@@ -6434,8 +6789,10 @@ mod tests {
         // then the jobs migration to 47, the app push migration to 48, the
         // remote kind migration to 49, ClaxBot's to 50, the site
         // migrations to 54, the return-to migration to 55, the version
-        // declarations' to 56, the quickstart's to 57 and the capability
-        // approvals' to 58, the queues' to 59 and the tailnet login's to 60.
+        // declarations' to 56, the quickstart's to 57, the capability
+        // approvals' to 58, the queues' to 59, the browser login's to 60,
+        // the feedback loop's to 61, the price catalog's to 62 and the
+        // tailnet login's to 63.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
@@ -6451,7 +6808,7 @@ mod tests {
         assert_eq!(
             user_version(&c),
             super::TAILSCALE_LOGIN_MIGRATION + 1,
-            "ClaxBot's 50 and the migrations 51 to 60 after it are one later now"
+            "ClaxBot's 50 and the migrations 51 to 63 after it are one later now"
         );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
@@ -7213,5 +7570,49 @@ mod tests {
         assert_eq!(user_version(&c), super::TAILSCALE_LOGIN_MIGRATION);
         assert!(super::has_column(&c, "device_codes", "return_to").unwrap());
         assert_eq!(table_count(&c, "queues"), 1, "main's 59 ran");
+    }
+
+    /// A database a wip/bdelanghe build of 2026-11 left: main's 1 to 59,
+    /// then `viewers.tailscale_login` as its 60. Opened, it gets main's 60
+    /// on (the browser login, the feedback loop, the price catalog) and
+    /// keeps each viewer's login.
+    #[test]
+    fn a_wip_tailscale_database_at_60_is_renumbered_and_keeps_its_logins() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        {
+            let mut c = Connection::open(home.db_path()).unwrap();
+            for v in 0..super::WIP_TAILSCALE_VERSION_60 - 1 {
+                let tx = c.transaction().unwrap();
+                tx.execute_batch(MIGRATIONS[v as usize]).unwrap();
+                super::rust_step(&tx, v + 1).unwrap();
+                tx.pragma_update(None, "user_version", v + 1).unwrap();
+                tx.commit().unwrap();
+            }
+            c.execute_batch(MIGRATIONS[super::TAILSCALE_LOGIN_MIGRATION as usize - 1])
+                .unwrap();
+            c.execute(
+                "INSERT INTO viewers (id, public_id, created_at, minted_local, tailscale_login)
+                 VALUES ('v1', 'p1', '2026-11-01T00:00:00Z', 0, 'alex@github')",
+                [],
+            )
+            .unwrap();
+            c.pragma_update(None, "user_version", super::WIP_TAILSCALE_VERSION_60)
+                .unwrap();
+        }
+        let st = Store::open(&home).unwrap();
+        let again = st.tailscale_viewer("alex@github", Some("Alex")).unwrap();
+        assert_eq!(
+            (again.id.as_str(), again.public_id.as_str()),
+            ("v1", "p1"),
+            "the login names the same viewer"
+        );
+        drop(st);
+        let c = Connection::open(home.db_path()).unwrap();
+        assert_eq!(user_version(&c), super::TAILSCALE_LOGIN_MIGRATION);
+        for table in ["owner_browser_sessions", "report_fixes", "price_catalog"] {
+            assert_eq!(table_count(&c, table), 1, "main's 60 to 62 ran: {table}");
+        }
     }
 }

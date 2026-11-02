@@ -3,19 +3,19 @@
 //! them all ([`build_router`]). The debug builds' test routes and the
 //! testkit's delay middleware are here too.
 
+use crate::integrations::feedback as feedback_integration;
 use crate::routes::{
     admin, app_bundles, app_drafts, approvals, artifacts, assets, audit_trail, bot, client_imports,
-    connect, content, discovery, docs, drafts, extension, feedback, git_token, grants, health,
-    inbox, jobs, live, live_layers, mcp_http, people, perf, permissions, questions, queue_agent,
-    queue_reporter, queues, remote_apps, remotes, room, sample, sessions, settings, site_signin,
-    sites, snapshot, stream, surface, tags, threads, token, toolpath, viewers, watches, working,
+    confirmations, connect, content, discovery, docs, drafts, extension, feedback, git_token,
+    grants, health, inbox, jobs, live, live_layers, login, mcp_http, passkeys, people, perf,
+    permissions, questions, queue_agent, queue_reporter, queues, remote_apps, remote_artifacts,
+    remote_requests, remotes, resolve, room, sample, sessions, settings, site_signin, sites,
+    snapshot, stream, surface, tags, threads, token, toolpath, viewers, watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::routes::{events, mcp, net, sign, web_push};
 use crate::shell;
 use crate::shell::get_page;
-#[cfg(not(target_arch = "wasm32"))]
-use axum::error_handling::HandleErrorLayer;
 use axum::{
     Router,
     extract::DefaultBodyLimit,
@@ -25,50 +25,31 @@ use axum::{
 };
 use clax_http::agent::{self, DeniedToGrants};
 use clax_http::auth::RequireToken;
-#[cfg(any(debug_assertions, not(target_arch = "wasm32")))]
 use clax_http::error::ApiError;
 use clax_http::limits;
 use clax_http::state::AppState;
 use clax_http::{auth, host};
 use std::time::Duration;
-#[cfg(not(target_arch = "wasm32"))]
-use tower::ServiceBuilder;
-#[cfg(not(target_arch = "wasm32"))]
-use tower::timeout::TimeoutLayer;
 use tower_http::cors::{Any, CorsLayer};
 
-#[cfg(not(target_arch = "wasm32"))]
-async fn timeout_error(err: tower::BoxError, limit: Duration) -> ApiError {
-    if err.is::<tower::timeout::error::Elapsed>() {
-        ApiError::new(
-            StatusCode::REQUEST_TIMEOUT,
-            "timeout",
-            format!("request exceeded {limit:?}"),
-        )
-    } else {
-        tracing::error!(error = %err, "request middleware failed");
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            "internal error",
-        )
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
+/// `router` with every request bounded by `d`: one that runs longer is
+/// dropped and answered 408 `timeout`. On the clock of the runtime it
+/// runs on (tokio's natively, the Worker's timers on wasm32).
 fn with_timeout(router: Router<AppState>, d: Duration) -> Router<AppState> {
-    router.layer(
-        ServiceBuilder::new()
-            .layer(HandleErrorLayer::new(move |e| timeout_error(e, d)))
-            .layer(TimeoutLayer::new(d)),
-    )
-}
-
-/// No deadline layer on wasm32: tower's timeout sleeps on tokio's timer, and
-/// a Worker's request is bounded by the platform.
-#[cfg(target_arch = "wasm32")]
-fn with_timeout(router: Router<AppState>, _d: Duration) -> Router<AppState> {
-    router
+    router.layer(axum::middleware::from_fn(
+        move |req: axum::extract::Request, next: axum::middleware::Next| {
+            clax_rt::sendable(async move {
+                match clax_rt::time::timeout(d, next.run(req)).await {
+                    Ok(res) => res,
+                    Err(_) => axum::response::IntoResponse::into_response(ApiError::new(
+                        StatusCode::REQUEST_TIMEOUT,
+                        "timeout",
+                        format!("request exceeded {d:?}"),
+                    )),
+                }
+            })
+        },
+    ))
 }
 
 /// Every route, unwrapped; `shutdown`, when given, mounts `/api/admin/shutdown`.
@@ -80,8 +61,25 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     let asset_limit = DefaultBodyLimit::max(clax_http::limits::UPLOAD_BODY_LIMIT);
     let ask_limit = DefaultBodyLimit::max(clax_http::limits::ASK_BODY_LIMIT);
     let draft_limit = DefaultBodyLimit::max(drafts::DRAFT_BODY_LIMIT);
+    let thread_limit = DefaultBodyLimit::max(limits::THREAD_BODY_LIMIT);
     let api_fast = Router::new()
         .route("/api/token", get(token::token))
+        .route(
+            "/api/browser-login",
+            post(login::create).delete(login::end_all),
+        )
+        .route("/api/browser-login/retire", post(login::retire))
+        .route("/api/confirmations", get(confirmations::list))
+        .route(
+            "/api/passkeys",
+            get(passkeys::list).post(passkeys::register),
+        )
+        .route("/api/passkeys/challenge", post(passkeys::challenge))
+        .route(
+            "/api/passkeys/settings",
+            axum::routing::put(passkeys::settings),
+        )
+        .route("/api/passkeys/{id}/remove", post(passkeys::remove))
         .route("/api/artifacts", get(artifacts::list))
         .route(
             "/api/sessions",
@@ -173,6 +171,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         )
         .route("/api/queues/{qid}/reports", get(queue_agent::list))
         .route(
+            "/api/queues/{qid}/watch",
+            post(queue_agent::watch).delete(queue_agent::unwatch),
+        )
+        .route(
             "/api/queues/{qid}/reports/{tid}",
             get(queue_agent::get).patch(queue_agent::patch),
         )
@@ -203,6 +205,26 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route(
             "/api/queues/{qid}/reports/{tid}/clip",
             get(queue_agent::clip),
+        )
+        .route(
+            "/api/queues/{qid}/reports/{tid}/fix",
+            post(queue_agent::fix),
+        )
+        .route(
+            "/api/queues/{qid}/reports/{tid}/verify",
+            post(queue_agent::verify),
+        )
+        .route(
+            "/api/queues/{qid}/reports/{tid}/reopen",
+            post(queue_agent::reopen),
+        )
+        .route(
+            "/api/queues/{qid}/reports/{tid}/diagnostics",
+            get(queue_agent::diagnostics),
+        )
+        .route(
+            "/api/queues/{qid}/reports/{tid}/comments/{cid}/clip",
+            get(queue_agent::comment_clip),
         )
         .route("/api/artifacts/{aid}/assets", get(assets::list))
         .route(
@@ -249,6 +271,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             post(threads::reopen),
         )
         .route("/api/viewers", get(viewers::lookup))
+        .route("/api/resolve", get(resolve::get))
         .route("/api/live/pages", get(live::page))
         .route("/api/live/site", get(live::site))
         .route("/api/live/rules", get(live::rules))
@@ -282,6 +305,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route(
             "/api/sessions/{id}/live-watches",
             axum::routing::put(watches::live_put).delete(watches::live_delete),
+        )
+        .route(
+            "/api/sessions/{id}/remote-watches",
+            axum::routing::put(watches::remote_put).delete(watches::remote_delete),
         )
         .route(
             "/api/sessions/{id}/watches/{aid}",
@@ -513,6 +540,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/api/_test/feedback/{id}/expire", post(feedback::expire))
         .route("/api/_test/feedback/{id}/hold", post(feedback::hold))
         .route("/api/_test/grants/sweep", post(grants::test_sweep))
+        .route("/api/_test/viewers", post(login::test_viewer))
         .route("/api/_test/agent/gate", get(agent::test_gate))
         .route("/api/_test/caller", get(agent::test_caller))
         .route("/api/_test/sessions/{id}/caller", get(agent::test_caller))
@@ -532,6 +560,9 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     let api_fast = api_fast.layer(axum::middleware::from_fn(clax_http::http_cache::api_etag));
     let api_fast =
         with_timeout(api_fast, state.request_timeout).layer(clax_http::http_cache::compression());
+    // The instance the feedback integration mints through, its whole
+    // router built at the first mint.
+    let feedback_instance = crate::integrations::instance::Instance::new(state.clone());
     let api_slow = Router::new()
         .route(
             "/api/artifacts",
@@ -549,6 +580,17 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/api/me/bot", get(bot::me_get).put(bot::me_put))
         .route("/api/me/bot/key", put(bot::key_put).delete(bot::key_delete))
         .route("/api/me/usage", get(bot::usage))
+        .route("/api/me/flags", get(bot::me_flags))
+        // The instance's own feedback integration, as a product's backend
+        // routes behind its sign-in (`crate::integrations::feedback`).
+        .route(
+            "/_app/feedback/token",
+            post(feedback_integration::token).layer(axum::Extension(feedback_instance.clone())),
+        )
+        .route(
+            "/_app/feedback/config",
+            get(feedback_integration::config).layer(axum::Extension(feedback_instance)),
+        )
         .route("/api/bot/runs", get(bot::list).post(bot::create))
         .route("/api/bot/runs/{id}", get(bot::get))
         .route("/api/bot/runs/{id}/cancel", post(bot::cancel))
@@ -575,12 +617,34 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             "/api/admin/pricing",
             get(admin::pricing).put(admin::set_pricing),
         )
+        .route(
+            "/api/admin/pricing/tokenulator",
+            post(admin::price_from_tokenulator),
+        )
+        .route(
+            "/api/admin/pricing/models",
+            post(admin::set_model_rates).delete(admin::delete_model_rates),
+        )
+        .route(
+            "/api/admin/pricing/catalog/refresh",
+            post(admin::refresh_catalog),
+        )
         .route("/api/admin/usage", get(admin::usage))
         .route("/api/audit", get(audit_trail::list))
         .route("/api/audit/{seq}", get(audit_trail::get))
         .route("/api/remotes", get(remotes::list).post(remotes::add))
         .route("/api/remotes/{id}", delete(remotes::remove))
         .route("/api/remotes/{id}/poll", post(remotes::poll))
+        .route("/api/remotes/requests", post(remote_requests::ask))
+        .route(
+            "/api/remotes/requests/{id}/answer",
+            post(remote_requests::answer),
+        )
+        .route("/api/remotes/mutes", get(remote_requests::mutes))
+        .route(
+            "/api/remotes/mutes/{origin}",
+            delete(remote_requests::unmute),
+        )
         .route("/api/artifacts/{aid}/remotes", get(remotes::for_artifact))
         .route(
             "/api/artifacts/{aid}/remotes/{rid}",
@@ -605,7 +669,31 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/api/remotes/{id}/apps", get(remote_apps::apps))
         .route(
             "/api/remotes/{id}/artifacts/{raid}",
-            delete(remote_apps::unpublish),
+            get(remote_artifacts::get).delete(remote_apps::unpublish),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/threads",
+            get(remote_artifacts::threads),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/threads/{tid}",
+            get(remote_artifacts::thread),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/threads/{tid}/comments",
+            post(remote_artifacts::comment),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/threads/{tid}/resolve",
+            post(remote_artifacts::resolve),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/threads/{tid}/reopen",
+            post(remote_artifacts::reopen),
+        )
+        .route(
+            "/api/remotes/{id}/artifacts/{raid}/threads/{tid}/handoff",
+            post(remote_artifacts::handoff),
         )
         .route(
             "/api/remotes/{id}/artifacts/{raid}/git-token",
@@ -633,7 +721,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         )
         .route(
             "/api/remotes/{id}/artifacts/{raid}/versions/{n}/files/{*path}",
-            get(remote_apps::version_file),
+            get(remote_artifacts::file),
         )
         .route(
             "/api/remotes/{id}/artifacts/{raid}/sharing",
@@ -684,6 +772,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             post(threads::create.layer(DefaultBodyLimit::max(limits::THREAD_BODY_LIMIT))),
         )
         .route(
+            "/api/remotes/{id}/artifacts/{raid}/threads",
+            post(remote_artifacts::create_thread.layer(thread_limit)),
+        )
+        .route(
             "/api/live/threads",
             post(live::thread.layer(DefaultBodyLimit::max(live::LIVE_THREAD_LIMIT))),
         )
@@ -709,6 +801,8 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/inbox", get(shell::gallery_page))
         .route("/people", get(shell::gallery_page))
         .route("/queues", get(shell::gallery_page))
+        .route("/queues/{qid}", get(shell::gallery_page))
+        .route("/queues/{qid}/{tid}", get(shell::gallery_page))
         .route("/tags", get(shell::gallery_page))
         .route("/admin", get(shell::gallery_page))
         .route("/settings", get(shell::gallery_page))
@@ -750,6 +844,12 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         // A long-poll: outside the request timeout, as the feedback poll.
         .route("/api/sessions/{id}/questions/{qid}", get(questions::poll))
         .route("/api/sessions/{id}/approvals/{rid}", get(approvals::poll))
+        // A long-poll while it is open, and the owner's browser's answer.
+        .route(
+            "/api/confirmations/{id}",
+            get(confirmations::get_one).post(confirmations::answer),
+        )
+        .route("/api/remotes/requests/{id}", get(remote_requests::poll))
         .merge(api_fast)
         .merge(api_slow)
         .merge(shell_routes)
@@ -757,6 +857,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/_blob/{asset_id}", get(assets::blob))
         .route("/_clax/blob/{asset_id}", get(assets::blob))
         .route("/connect/b/{code}", get(connect::browser_link))
+        .route("/login", get(login::redeem))
         .route("/_blob/{aid}/{asset_id}", get(assets::scoped_blob))
         .route("/site-signin", get(site_signin::page))
         .route(
@@ -865,7 +966,13 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     // The extension gateway runs first (the last layer is outermost): only
     // what it admits from the extension's origin reaches the rest (spec
     // 2026-10-05-chrome-overlay-design L5).
+    // A followed remote artifact's mirror answers 404 to every caller but
+    // the owner and the owner's agents (`live_access::hide_mirrors`).
     r.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        clax_http::live_access::hide_mirrors,
+    ))
+    .layer(axum::middleware::from_fn_with_state(
         state.clone(),
         clax_http::live_access::hide_live_pages,
     ))
@@ -1109,6 +1216,12 @@ fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::require_credential,
+        ))
+        // A local daemon serves a request with no credential only what
+        // anyone may reach (`local_trust::gate`).
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            clax_http::local_trust::gate,
         ));
     let r = if hosted {
         r.layer(axum::middleware::from_fn_with_state(
@@ -1121,6 +1234,8 @@ fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
             get_page::refusals,
         ))
     } else {
+        // The `/api` host check takes the state: it reads the home's
+        // `[serve]` trusted hosts and tailnet identity.
         r.layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::require_api_host,
@@ -1128,6 +1243,12 @@ fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             clax_http::identity::local_peers,
+        ))
+        // Outermost: every layer and route after it sees whether the
+        // request carries an owner browser session.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            clax_http::local_trust::sessions,
         ))
     };
     // A queue's reporter and service routes carry their own credentials

@@ -918,7 +918,8 @@ impl HomeConfig {
     /// `Invalid { code: "bad_config" }` naming the file (or the variable)
     /// and `[bot]` when it is not a table, has an unknown key or a
     /// mistyped value, leaves `api_key_env` or a model ID empty, sets a
-    /// `base_url` that [`base_url_ok`] refuses, or sets a count, cap or
+    /// `base_url` or a `price_catalog_url` (other than empty or `off`) that
+    /// [`base_url_ok`] refuses, or sets a count, cap or
     /// price outside its range ([`BotConfig`]). The caller turns ClaxBot
     /// off; it never stops the daemon.
     pub fn bot(&self) -> Result<BotConfig> {
@@ -934,6 +935,24 @@ impl HomeConfig {
                     "base_url must be https://, or http:// on localhost, 127.0.0.1 or [::1], not \"{}\"",
                     b.base_url
                 ),
+            ));
+        }
+        let off = |v: &str| v.trim().is_empty() || v.trim().eq_ignore_ascii_case("off");
+        if !off(&b.price_catalog_url) && !base_url_ok(b.price_catalog_url.trim()) {
+            return Err(bad(
+                "price_catalog_url",
+                format!(
+                    "price_catalog_url must be empty, off, https://, or http:// on localhost, 127.0.0.1 or [::1], not \"{}\"",
+                    b.price_catalog_url
+                ),
+            ));
+        }
+        // The default base URL is Anthropic's: another API's key must not
+        // be sent there.
+        if b.api != ModelApi::Anthropic && self.source("bot.base_url") == Source::Default {
+            return Err(bad(
+                "api",
+                format!("api = \"{}\" needs base_url set too", b.api.as_str()),
             ));
         }
         for (tier, id) in [
@@ -1187,6 +1206,10 @@ impl HomeConfig {
             public_gallery: t.public_gallery.unwrap_or(false),
             legal,
             site_domain,
+            name: t
+                .name
+                .map(|n| n.trim().to_string())
+                .filter(|n| !n.is_empty()),
             clax_app,
         }))
     }
@@ -1235,6 +1258,78 @@ impl HomeConfig {
         }
         Ok(t)
     }
+
+    /// `[feedback]`: the instance's own feedback integration (spec
+    /// 2026-10-29-feedback-loop-design §10.2), `None` when absent. A
+    /// relative `service_grant_file` is the home's (beside
+    /// `config.toml`).
+    ///
+    /// # Errors
+    /// `Invalid { code: "bad_config" }` naming the file and `[feedback]`
+    /// when it is not a table, has an unknown key or a mistyped value,
+    /// lacks `queue` or `service_grant_file`, either is empty, or `origin`
+    /// is not an https origin (http on localhost).
+    pub fn feedback(&self) -> Result<Option<FeedbackConfig>> {
+        if self.value("feedback").is_none() {
+            return Ok(None);
+        }
+        let t: FeedbackTable = self.table("feedback")?;
+        let bad = |key: &str, what: &str| self.bad(&format!("feedback.{key}"), "[feedback]", what);
+        let queue = t.queue.trim().to_string();
+        if queue.is_empty() {
+            return Err(bad("queue", "queue is empty"));
+        }
+        if t.service_grant_file.trim().is_empty() {
+            return Err(bad("service_grant_file", "service_grant_file is empty"));
+        }
+        let origin = match t.origin {
+            None => None,
+            Some(o) => Some(hosted_origin(&o).ok_or_else(|| {
+                bad(
+                    "origin",
+                    "origin must be an https:// origin with no path, or http:// on localhost, 127.0.0.1 or [::1]",
+                )
+            })?),
+        };
+        let file = PathBuf::from(t.service_grant_file.trim());
+        let service_grant_file = if file.is_absolute() {
+            file
+        } else {
+            self.path
+                .parent()
+                .map_or_else(|| file.clone(), |home| home.join(&file))
+        };
+        Ok(Some(FeedbackConfig {
+            queue,
+            service_grant_file,
+            origin,
+        }))
+    }
+}
+
+/// `[feedback]` as written.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FeedbackTable {
+    queue: String,
+    service_grant_file: String,
+    origin: Option<String>,
+}
+
+/// `[feedback]`: the queue the instance's people report problems with Clax
+/// into, and its service grant ([`HomeConfig::feedback`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FeedbackConfig {
+    /// `queue`: the queue's ID.
+    pub queue: String,
+    /// `service_grant_file`: a JSON file `{token, private_key}` (the
+    /// service grant's token and its key's PKCS#8, unpadded base64url, as
+    /// `POST /api/queues/<qid>/service-grants` answers them), resolved
+    /// against the home.
+    pub service_grant_file: PathBuf,
+    /// `origin`: the origin reporter tokens are minted for; by default a
+    /// hosted daemon's public origin, else the daemon's browser address.
+    pub origin: Option<String>,
 }
 
 /// Logs `message` as a warning the first time this process sees it: the
@@ -1449,12 +1544,14 @@ impl Default for ToolpathConfig {
 pub struct BotConfig {
     /// The instance may run ClaxBot at all (default true).
     pub enabled: bool,
+    /// The API `base_url` speaks ([`ModelApi`], default `anthropic`). Any
+    /// other needs `base_url` set too.
+    pub api: ModelApi,
     /// The environment variable the daemon reads the instance's API key
     /// from (`ANTHROPIC_API_KEY`); not empty. A key there takes precedence
     /// over a stored instance key (spec §8.1).
     pub api_key_env: String,
-    /// Where the Messages API is; the key is sent nowhere else
-    /// ([`base_url_ok`]).
+    /// Where the API is; the key is sent nowhere else ([`base_url_ok`]).
     pub base_url: String,
     /// `max_tokens` of each model turn: 1 to 1,000,000 (default 32,000).
     pub max_tokens: u32,
@@ -1477,12 +1574,39 @@ pub struct BotConfig {
     pub credit_price_micro_usd: u64,
     pub models: BotModels,
     pub script: BotScript,
+    /// Where the daemon fetches the price catalog from
+    /// ([`PRICE_CATALOG_URL`] by default): `https://`, or `http://` on
+    /// localhost, 127.0.0.1 or [::1] ([`base_url_ok`]); empty or `off`,
+    /// never (`off` for the environment, where an empty variable is unset:
+    /// `CLAX_BOT__PRICE_CATALOG_URL=off`). Read from the file and the
+    /// environment alone, never from the admin pages ([`BotConfig::catalog_url`]).
+    pub price_catalog_url: String,
+}
+
+/// tokenulator.dev's price catalog, `[bot] price_catalog_url`'s default.
+pub const PRICE_CATALOG_URL: &str = "https://tokenulator.dev/data/site.json";
+
+impl BotConfig {
+    /// The price catalog URL `price_catalog_url` names: `None` when it is
+    /// empty or `off` (never fetched), or not a URL [`base_url_ok`] takes.
+    #[must_use]
+    pub fn catalog_url(&self) -> Option<&str> {
+        catalog_url_of(&self.price_catalog_url)
+    }
+}
+
+/// [`BotConfig::catalog_url`] of the value `v`.
+#[must_use]
+pub fn catalog_url_of(v: &str) -> Option<&str> {
+    let v = v.trim();
+    (!v.is_empty() && !v.eq_ignore_ascii_case("off") && base_url_ok(v)).then_some(v)
 }
 
 impl Default for BotConfig {
     fn default() -> Self {
         BotConfig {
             enabled: true,
+            api: ModelApi::Anthropic,
             api_key_env: "ANTHROPIC_API_KEY".into(),
             base_url: "https://api.anthropic.com".into(),
             max_tokens: 32000,
@@ -1495,8 +1619,84 @@ impl Default for BotConfig {
             credit_price_micro_usd: 10_000,
             models: BotModels::default(),
             script: BotScript::default(),
+            price_catalog_url: PRICE_CATALOG_URL.into(),
         }
     }
+}
+
+/// The wire API a model provider speaks at its base URL. ClaxBot's turns are
+/// kept as Messages API blocks whatever it is; the client translates each
+/// call to and from the others.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelApi {
+    /// Anthropic's Messages API: `POST {base_url}/v1/messages`, `x-api-key`.
+    #[default]
+    Anthropic,
+    /// OpenAI's Chat Completions API, as Mistral, Subconscious and most
+    /// other hosts serve it: `POST {base_url}/chat/completions`, `Authorization:
+    /// Bearer`. The base URL names the version (`https://api.mistral.ai/v1`).
+    #[serde(rename = "openai")]
+    OpenAi,
+    /// Google's Gemini API: `POST {base_url}/models/{model}:streamGenerateContent`,
+    /// `x-goog-api-key`. The base URL names the version
+    /// (`https://generativelanguage.googleapis.com/v1beta`).
+    Gemini,
+}
+
+impl ModelApi {
+    /// Every API, in the order the admin page offers them.
+    pub const ALL: [ModelApi; 3] = [ModelApi::Anthropic, ModelApi::OpenAi, ModelApi::Gemini];
+
+    /// `anthropic`, `openai` or `gemini`, as configured and stored.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ModelApi::Anthropic => "anthropic",
+            ModelApi::OpenAi => "openai",
+            ModelApi::Gemini => "gemini",
+        }
+    }
+
+    /// The API named `s` ([`ModelApi::as_str`]).
+    pub fn parse(s: &str) -> Option<ModelApi> {
+        ModelApi::ALL.into_iter().find(|a| a.as_str() == s)
+    }
+
+    /// The price catalog's (tokenulator.dev's) provider ID for a provider
+    /// at `base_url` speaking this API, when the host is one it knows.
+    pub fn catalog_provider(self, base_url: &str) -> Option<&'static str> {
+        let host = url_host(base_url);
+        match (self, host.as_str()) {
+            (ModelApi::Anthropic, "api.anthropic.com") => Some("anthropic"),
+            (ModelApi::Gemini | ModelApi::OpenAi, "generativelanguage.googleapis.com") => {
+                Some("google")
+            }
+            (ModelApi::OpenAi, "api.openai.com") => Some("openai"),
+            (ModelApi::OpenAi, "api.mistral.ai") => Some("mistral"),
+            (ModelApi::OpenAi, "api.deepseek.com") => Some("deepseek"),
+            (ModelApi::OpenAi, "api.x.ai") => Some("xai"),
+            (ModelApi::OpenAi, "api.z.ai") => Some("zai"),
+            (ModelApi::OpenAi, "api.groq.com") => Some("groq"),
+            (ModelApi::OpenAi, "api.together.xyz") => Some("together"),
+            (ModelApi::OpenAi, "api.fireworks.ai") => Some("fireworks"),
+            (ModelApi::OpenAi, "openrouter.ai") => Some("openrouter"),
+            _ => None,
+        }
+    }
+}
+
+/// The host `url` names, lowercase, without its port, brackets or a
+/// trailing dot; empty when it names none.
+pub fn url_host(url: &str) -> String {
+    let lower = url.to_ascii_lowercase();
+    let rest = lower.split_once("://").map_or(lower.as_str(), |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let authority = authority.rsplit('@').next().unwrap_or("");
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or(""),
+        None => authority.split(':').next().unwrap_or(""),
+    };
+    host.trim_end_matches('.').to_string()
 }
 
 /// `[bot.models]`: the model ID of each tier; none empty.
@@ -1578,6 +1778,9 @@ pub struct HostedConfig {
     /// `<id>.<site_domain>` (`site_domain`, normalized by [`site_domain`]);
     /// `None` serves sites at `<id>.localhost` alone.
     pub site_domain: Option<String>,
+    /// The name discovery gives the instance (`name`, trimmed); `None`
+    /// names it by its host.
+    pub name: Option<String>,
     /// What the instance says about the Clax app (`app_links` and
     /// `stores`): none of it when absent.
     pub clax_app: ClaxApp,
@@ -1817,6 +2020,7 @@ struct HostedTable {
     privacy_url: Option<String>,
     legal_version: Option<String>,
     site_domain: Option<String>,
+    name: Option<String>,
     app_links: Option<AppLinksTable>,
     stores: Option<StoresTable>,
 }
@@ -2071,8 +2275,9 @@ const PRIVATE_SUFFIXES: &[&str] = &[
 /// unique-local addresses among them, and the instance's own metadata
 /// endpoints), not `localhost`, not a single label, and not under a suffix
 /// that names a private network ([`PRIVATE_SUFFIXES`]). A name can still
-/// resolve to a private address; the platform's own egress rules are the
-/// last word there. With `loopback_for_tests`, `http://` on a loopback
+/// resolve to a private address: a hosted native daemon's model client
+/// connects only to the [`public_address`]es a name resolves to, and on
+/// the Worker the platform's egress rules (no private networks) decide. With `loopback_for_tests`, `http://` on a loopback
 /// host is taken as on a local daemon, for a test's scripted provider; it
 /// is never a setting an admin can change.
 pub fn hosted_base_url_ok(url: &str, loopback_for_tests: bool) -> bool {
@@ -2110,9 +2315,82 @@ pub fn hosted_base_url_ok(url: &str, loopback_for_tests: bool) -> bool {
     host != "localhost" && !PRIVATE_SUFFIXES.iter().any(|s| host.ends_with(s))
 }
 
+/// Whether `ip` is an address on the public internet, where a hosted Clax
+/// may send a model key once a name passed [`hosted_base_url_ok`]: not
+/// unspecified, loopback, private (RFC 1918), shared (100.64/10),
+/// link-local, benchmarking (198.18/15), documentation, multicast,
+/// broadcast or reserved (240/4) for IPv4; not unspecified, loopback,
+/// unique-local (fc00::/7), link-local (fe80::/10), multicast or
+/// documentation (2001:db8::/32) for IPv6, and an IPv4-mapped or
+/// IPv4-compatible IPv6 address by its IPv4 rule.
+pub fn public_address(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, c, _] = v4.octets();
+            !(v4.is_unspecified()
+                || v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_multicast()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || a == 0
+                || a >= 240
+                || (a == 100 && (64..128).contains(&b))
+                || (a == 198 && (b == 18 || b == 19))
+                || (a == 192 && b == 0 && c == 0))
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4() {
+                return public_address(IpAddr::V4(v4));
+            }
+            let s = v6.segments();
+            !(v6.is_unspecified()
+                || v6.is_loopback()
+                || v6.is_multicast()
+                || (s[0] & 0xfe00) == 0xfc00
+                || (s[0] & 0xffc0) == 0xfe80
+                || (s[0] == 0x2001 && s[1] == 0x0db8))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_public_addresses_take_a_hosted_key() {
+        for ok in ["1.1.1.1", "8.8.8.8", "2606:4700::1111", "100.128.0.1"] {
+            assert!(public_address(ok.parse().unwrap()), "{ok}");
+        }
+        for bad in [
+            "0.0.0.0",
+            "127.0.0.1",
+            "10.0.0.5",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "198.18.0.1",
+            "192.0.0.1",
+            "192.0.2.1",
+            "224.0.0.1",
+            "240.0.0.1",
+            "255.255.255.255",
+            "::",
+            "::1",
+            "fd00::1",
+            "fe80::1",
+            "ff02::1",
+            "2001:db8::1",
+            "::ffff:10.0.0.5",
+            "::ffff:127.0.0.1",
+        ] {
+            assert!(!public_address(bad.parse().unwrap()), "{bad}");
+        }
+    }
 
     #[test]
     fn a_key_is_bound_to_its_urls_scheme_host_and_port() {
@@ -2301,6 +2579,38 @@ mod tests {
     }
 
     #[test]
+    fn the_price_catalog_url_is_tokenulators_a_url_or_off() {
+        let b = under("", &[]).bot().unwrap();
+        assert_eq!(b.catalog_url(), Some(PRICE_CATALOG_URL));
+        let b = under("", &[("CLAX_BOT__PRICE_CATALOG_URL", "off")])
+            .bot()
+            .unwrap();
+        assert_eq!(b.catalog_url(), None);
+        let b = under("[bot]\nprice_catalog_url = \"\"\n", &[])
+            .bot()
+            .unwrap();
+        assert_eq!(b.catalog_url(), None);
+        let b = under(
+            "",
+            &[(
+                "CLAX_BOT__PRICE_CATALOG_URL",
+                "http://127.0.0.1:9/site.json",
+            )],
+        )
+        .bot()
+        .unwrap();
+        assert_eq!(b.catalog_url(), Some("http://127.0.0.1:9/site.json"));
+        let e = under(
+            "[bot]\nprice_catalog_url = \"http://evil.example/x\"\n",
+            &[],
+        )
+        .bot()
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("price_catalog_url"), "{e}");
+    }
+
+    #[test]
     fn an_environment_value_takes_its_settings_type() {
         let c = under(
             "",
@@ -2452,6 +2762,49 @@ mod tests {
             (5, 10, "m")
         );
         assert_eq!(b.base_url, "http://127.0.0.1:9");
+        assert_eq!(b.api, ModelApi::Anthropic);
+        let b = under(
+            "[bot]\napi = \"openai\"\nbase_url = \"https://api.mistral.ai/v1\"\n",
+            &[],
+        )
+        .bot()
+        .unwrap();
+        assert_eq!(b.api, ModelApi::OpenAi);
+        let b = under(
+            "[bot]\nbase_url = \"https://generativelanguage.googleapis.com/v1beta\"\n",
+            &[("CLAX_BOT__API", "gemini")],
+        )
+        .bot()
+        .unwrap();
+        assert_eq!(b.api, ModelApi::Gemini);
+        for a in ModelApi::ALL {
+            assert_eq!(ModelApi::parse(a.as_str()), Some(a));
+        }
+        assert_eq!(ModelApi::parse("OpenAI"), None);
+    }
+
+    #[test]
+    fn known_hosts_name_their_catalog_provider() {
+        let g = "https://generativelanguage.googleapis.com/v1beta";
+        assert_eq!(ModelApi::Gemini.catalog_provider(g), Some("google"));
+        assert_eq!(
+            ModelApi::OpenAi.catalog_provider("https://API.mistral.ai./v1"),
+            Some("mistral")
+        );
+        assert_eq!(
+            ModelApi::Anthropic.catalog_provider("https://api.anthropic.com"),
+            Some("anthropic")
+        );
+        assert_eq!(
+            ModelApi::OpenAi.catalog_provider("https://api.subconscious.dev/v1"),
+            None
+        );
+        assert_eq!(
+            ModelApi::Anthropic.catalog_provider("https://api.mistral.ai/v1"),
+            None
+        );
+        assert_eq!(url_host("http://[::1]:8080/x"), "::1");
+        assert_eq!(url_host("https://u@Example.com:443/"), "example.com");
     }
 
     #[test]
@@ -2462,6 +2815,8 @@ mod tests {
             "[bot]\nenabled = \"yes\"\n",
             "[bot]\napi_key_env = \" \"\n",
             "[bot]\nbase_url = \"http://api.anthropic.com\"\n",
+            "[bot]\napi = \"gemini\"\n",
+            "[bot]\napi = \"cohere\"\nbase_url = \"https://api.cohere.com\"\n",
             "[bot]\nmax_tokens = 0\n",
             "[bot]\nmax_steps = 0\n",
             "[bot]\nconcurrency = 65\n",
@@ -3288,6 +3643,42 @@ mod tests {
         ] {
             let e = with(bad).toolpath().unwrap_err().to_string();
             assert!(e.contains("[toolpath]"), "{bad}: {e}");
+        }
+    }
+
+    #[test]
+    fn feedback_names_a_queue_and_a_grant_file_beside_the_config() {
+        assert_eq!(with("").feedback().unwrap(), None);
+        let c = under(
+            "[feedback]\nqueue = \"q1\"\nservice_grant_file = \"feedback-grant.json\"\n",
+            &[],
+        );
+        assert_eq!(
+            c.feedback().unwrap(),
+            Some(FeedbackConfig {
+                queue: "q1".into(),
+                service_grant_file: PathBuf::from("/h/feedback-grant.json"),
+                origin: None,
+            })
+        );
+        let c = under(
+            "[feedback]\nqueue = \"q1\"\nservice_grant_file = \"/etc/g.json\"\norigin = \"http://localhost:7481/\"\n",
+            &[],
+        );
+        let f = c.feedback().unwrap().unwrap();
+        assert_eq!(f.service_grant_file, PathBuf::from("/etc/g.json"));
+        assert_eq!(f.origin.as_deref(), Some("http://localhost:7481"));
+        for bad in [
+            "feedback = 1\n",
+            "[feedback]\nqueue = \"q1\"\n",
+            "[feedback]\nservice_grant_file = \"g.json\"\n",
+            "[feedback]\nqueue = \" \"\nservice_grant_file = \"g.json\"\n",
+            "[feedback]\nqueue = \"q1\"\nservice_grant_file = \"\"\n",
+            "[feedback]\nqueue = \"q1\"\nservice_grant_file = \"g.json\"\nother = 1\n",
+            "[feedback]\nqueue = \"q1\"\nservice_grant_file = \"g.json\"\norigin = \"http://example.com\"\n",
+        ] {
+            let e = under(bad, &[]).feedback().unwrap_err().to_string();
+            assert!(e.contains("[feedback]"), "{bad}: {e}");
         }
     }
 }

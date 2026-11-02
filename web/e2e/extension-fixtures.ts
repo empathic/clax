@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer, type ViteDevServer } from "vite";
-import { type Daemon, NO_KEY_CONFIG, startDaemon, v6Taken } from "./fixtures";
+import { type Daemon, NO_KEY_CONFIG, startDaemon, trustContext, v6Taken } from "./fixtures";
 
 const web = fileURLToPath(new URL("..", import.meta.url));
 export const EXT_DIR = join(web, "dist-extension-test");
@@ -61,6 +61,8 @@ async function launch(profile: string, extDir: string, gesture: boolean): Promis
     args: [`--disable-extensions-except=${extDir}`, `--load-extension=${extDir}`, ...(gesture ? GESTURE_ARGS : [])],
   });
   const sw = ctx.serviceWorkers()[0] ?? (await ctx.waitForEvent("serviceworker"));
+  // The browser is the owner's on the daemons the worker runs.
+  await trustContext(ctx);
   return { ctx, sw };
 }
 

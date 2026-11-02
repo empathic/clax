@@ -957,6 +957,7 @@ dependencies = [
  "clax-store",
  "futures",
  "reqwest 0.12.28",
+ "ring",
  "rusqlite",
  "serde_json",
  "sha2",

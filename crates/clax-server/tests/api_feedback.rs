@@ -209,6 +209,7 @@ async fn ack_by_comment_ids_leaves_later_comments_pending() {
             "{}/api/artifacts/{aid}/threads/{tid}/comments",
             ts.base
         ))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .json(&serde_json::json!({"body": "and the footer"}))
         .send()
         .await

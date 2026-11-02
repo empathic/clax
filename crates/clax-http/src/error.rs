@@ -1,9 +1,19 @@
-//! JSON error responses: `{"error": {"code", "message", ...}}`.
+//! JSON error responses: `{"error": {"code", "message", ...}}`; and the
+//! one answer a handler gives up on before it changes anything without
+//! failing, 202 (`ApiError::accepted`): `{"status": <code>, ...}`.
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use clax_core::CoreError;
 use serde_json::json;
+
+/// The hint on every 404 of an artifact on the hosted instance at
+/// `origin` ([`ApiError::not_found_artifact`]).
+pub fn not_found_hint(origin: &str) -> String {
+    format!(
+        "This may be a private page. If it is yours, sign in at {origin}/signin. Agents: connect this Clax instance with the connect_instance tool or `clax remote request <url>`."
+    )
+}
 
 #[derive(Debug)]
 pub struct ApiError {
@@ -35,8 +45,42 @@ impl ApiError {
     pub fn not_found() -> Self {
         Self::new(StatusCode::NOT_FOUND, "not_found", "not found")
     }
+    /// The 404 of an artifact on a hosted instance whose public origin is
+    /// `origin`: [`ApiError::not_found`] with the one hint every such 404
+    /// carries, so it tells nothing of whether the artifact exists. It
+    /// names where to sign in (`sign_in`) and the instance's discovery
+    /// document (`instance`).
+    pub fn not_found_artifact(origin: &str) -> Self {
+        let mut err = Self::not_found();
+        err.extra
+            .insert("hint".into(), json!(not_found_hint(origin)));
+        err.extra
+            .insert("sign_in".into(), json!(format!("{origin}/signin")));
+        err.extra.insert(
+            "instance".into(),
+            json!(format!("{origin}/.well-known/clax")),
+        );
+        err
+    }
     pub fn bad_request(code: &'static str, msg: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_REQUEST, code, msg)
+    }
+    /// 202 `{"status": status, ...fields}`: the call changed nothing yet
+    /// and waits on something else (a browser confirmation,
+    /// [`crate::confirm`]). It travels as an error so a handler returns it
+    /// with `?` before it acts; it is answered as no error is. A
+    /// `confirmation_id` among `fields` is also sent as the
+    /// [`crate::confirm::CONFIRMATION_HEADER`] response header.
+    pub fn accepted(
+        status: &'static str,
+        fields: serde_json::Map<String, serde_json::Value>,
+    ) -> Self {
+        ApiError {
+            status: StatusCode::ACCEPTED,
+            code: status,
+            message: String::new(),
+            extra: fields,
+        }
     }
 }
 
@@ -146,6 +190,11 @@ impl From<CoreError> for ApiError {
                 code: "nothing_to_send",
                 message,
             } => ApiError::new(StatusCode::CONFLICT, "nothing_to_send", message),
+            // A cost line a ClaxBot run that has not ended may charge.
+            CoreError::Invalid {
+                code: "cost_line_in_use",
+                message,
+            } => ApiError::new(StatusCode::CONFLICT, "cost_line_in_use", message),
             // A joined site's unfinished join or un-merge (spec §7.2): finish it first.
             CoreError::Invalid {
                 code: code @ ("joining" | "unmerging"),
@@ -235,6 +284,22 @@ impl From<CoreError> for ApiError {
             }
             e @ CoreError::ClaimRequired => {
                 ApiError::new(StatusCode::CONFLICT, "claim_required", e.to_string())
+            }
+            // The feedback loop (spec 2026-10-29-feedback-loop-design §5, §6).
+            e @ CoreError::InvalidContext(_) => {
+                ApiError::bad_request("invalid_context", e.to_string())
+            }
+            e @ CoreError::InvalidDiagnostics(_) => {
+                ApiError::bad_request("invalid_diagnostics", e.to_string())
+            }
+            e @ CoreError::InvalidProfile(_) => {
+                ApiError::bad_request("invalid_profile", e.to_string())
+            }
+            e @ CoreError::NotFixProposed => {
+                ApiError::new(StatusCode::CONFLICT, "not_fix_proposed", e.to_string())
+            }
+            e @ CoreError::NotClaimable => {
+                ApiError::new(StatusCode::CONFLICT, "not_claimable", e.to_string())
             }
             e @ CoreError::ExternalArtifact => {
                 ApiError::bad_request("external_artifact", e.to_string())
@@ -328,6 +393,22 @@ impl From<CoreError> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        if self.status == StatusCode::ACCEPTED {
+            let id = self
+                .extra
+                .get("confirmation_id")
+                .and_then(|v| v.as_str())
+                .and_then(|v| axum::http::HeaderValue::from_str(v).ok());
+            let mut body = serde_json::Map::new();
+            body.insert("status".into(), json!(self.code));
+            body.extend(self.extra);
+            let mut res = (self.status, axum::Json(body)).into_response();
+            if let Some(id) = id {
+                res.headers_mut()
+                    .insert(crate::confirm::CONFIRMATION_HEADER, id);
+            }
+            return res;
+        }
         let mut err = serde_json::Map::new();
         err.insert("code".into(), json!(self.code));
         err.insert("message".into(), json!(self.message));
@@ -365,6 +446,31 @@ mod tests {
                 "token_expired",
             ),
             (CoreError::NotAMember, StatusCode::NOT_FOUND, "not_a_member"),
+            (
+                CoreError::InvalidContext("x".into()),
+                StatusCode::BAD_REQUEST,
+                "invalid_context",
+            ),
+            (
+                CoreError::InvalidDiagnostics("x".into()),
+                StatusCode::BAD_REQUEST,
+                "invalid_diagnostics",
+            ),
+            (
+                CoreError::InvalidProfile("x".into()),
+                StatusCode::BAD_REQUEST,
+                "invalid_profile",
+            ),
+            (
+                CoreError::NotFixProposed,
+                StatusCode::CONFLICT,
+                "not_fix_proposed",
+            ),
+            (
+                CoreError::NotClaimable,
+                StatusCode::CONFLICT,
+                "not_claimable",
+            ),
             (
                 CoreError::QueueReport {
                     queue_id: "q1".into(),

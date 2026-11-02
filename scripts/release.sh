@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Cuts a Clax release from the prod branch, from the release branch to the
-# Pi package on npm: the procedure docs/usage.md ("Releasing") describes, in
+# Pi and SDK packages on npm: the procedure docs/usage.md ("Releasing") describes, in
 # one command run twice, before and after the release's pull request into
 # prod is merged.
 #
@@ -16,11 +16,11 @@
 #
 # Which phase a run is in follows from origin's prod: until prod's version
 # is X.Y.Z, the release is prepared (steps 2-9) and its pull request waits
-# for the owner (step 10); once it is, the release is cut (steps 11-21).
+# for the owner (step 10); once it is, the release is cut (steps 11-22).
 #
 #    1  preflight. Always: gh signed in; X.Y.Z newer than every v* tag;
 #       commit signing works; the tools present; npm reachable (and signed
-#       in, for a first Pi publish); the npm environment limited to prod (a
+#       in, for a first Pi or SDK publish); the npm environment limited to prod (a
 #       dry run only warns). Preparing: origin/prod older than X.Y.Z; a clean
 #       checkout on any branch, or on release/X.Y.Z ahead of origin/prod only
 #       by merges of origin/main and the release commit; the release's pull
@@ -66,9 +66,14 @@
 #       published from here instead: npm publish, from a temporary worktree
 #       of the pin commit, after the checks publish-pi.yml makes; then the
 #       trusted-publisher setup is printed. Done once npm has the version.
-#   21  print what is left by hand (the deploy's runs to check, crates.io,
-#       and after a first Pi publish its trusted-publisher setup and the
-#       README switch)
+#   21  the same for the SDK package, @empathic/clax-sdk: gh workflow run
+#       publish-sdk.yml --ref prod on the pin commit, and wait for it; its
+#       first version is published from here: web/dist-sdk built and tested
+#       (pnpm run build:sdk, test:sdk) in a temporary worktree of the pin
+#       commit, then npm publish from it.
+#   22  print what is left by hand (the deploy's runs to check, crates.io,
+#       after a first Pi publish its trusted-publisher setup and the README
+#       switch, and after a first SDK publish its trusted-publisher setup)
 #
 # A run that fails stops at that step, says which, and changes nothing after
 # it. Run the same command again: each step's state is read from git and
@@ -86,7 +91,7 @@
 # estimate of the time in all and still to run: the steps' durations in
 # earlier runs' logs (target/release/*.log), averaged, or else typical
 # ones (just ci 7m30s, the Release workflow 11m30s, CI on prod 9m, the Pi
-# publish 2m); the pull request's review is not counted. Each step then
+# publish 2m, the SDK publish 3m); the pull request's review is not counted. Each step then
 # prints one line, with the share of the estimate done ([42%]; steps found
 # done count in full), and a step that runs longer prints a heartbeat about
 # every 30 seconds: the time it has taken, the time left, and what is cheap
@@ -95,8 +100,8 @@
 # only; a failed step's last 50 lines are printed with the log's path. With
 # --verbose the steps' output streams to the terminal too, as well as to
 # the log, and there is no heartbeat. The pull request's URL, the npm
-# publish of a first Pi version and what is left by hand always reach the
-# terminal.
+# publish of a first Pi or SDK version and what is left by hand always
+# reach the terminal.
 #
 # It works from any directory: the checkout is the one holding this script.
 #
@@ -118,13 +123,13 @@ POLL="${CLAX_RELEASE_POLL_SECONDS:-20}"
 MAX_POLLS="${CLAX_RELEASE_MAX_POLLS:-270}"
 ACT_FLAG="--i-know-what-i-am-doing"
 NPM="${CLAX_RELEASE_NPM:-npm}"
-# The GitHub environment publish-pi.yml's job runs in, which npm's trusted
-# publisher names and the repository limits to prod.
+# The GitHub environment publish-pi.yml's and publish-sdk.yml's jobs run in,
+# which npm's trusted publishers name and the repository limits to prod.
 NPM_ENV=npm
 PNPM="${CLAX_RELEASE_PNPM:-pnpm}"
 # The branch releases come from, and the last step.
 PROD=prod
-LAST=21
+LAST=22
 
 usage() {
     echo "usage: scripts/release.sh X.Y.Z [$ACT_FLAG] [--verbose]" >&2
@@ -190,10 +195,11 @@ about() {
     if [ "$1" -ge 60 ]; then printf 'about %dm' $((($1 + 30) / 60)); else printf 'under a minute'; fi
 }
 # Each step's expected seconds: typical durations, replaced by the average
-# of the durations earlier runs' logs recorded ("== step N of 21 ran Ss";
-# logs of the earlier numbering, "== step N ran Ss", are not read).
+# of the durations earlier runs' logs recorded ("== step N of 22 ran Ss";
+# logs of an earlier numbering, "== step N of 21 ran Ss" or "== step N ran
+# Ss", are not read).
 WEIGHTS=([1]=10 [2]=5 [3]=5 [4]=5 [5]=30 [6]=450 [7]=5 [8]=10 [9]=5 [10]=5 [11]=5 [12]=10
-    [13]=690 [14]=5 [15]=450 [16]=5 [17]=10 [18]=20 [19]=540 [20]=120 [21]=5)
+    [13]=690 [14]=5 [15]=450 [16]=5 [17]=10 [18]=20 [19]=540 [20]=120 [21]=180 [22]=5)
 LEARNED_FROM=0
 learn_weights() {
     local f n s
@@ -242,7 +248,7 @@ step_detail() {
     fi
     printf '%s' "$d"
 }
-# One heartbeat line: "[42%] step 6/21 Run the gates: 40/56 tests, 3m12s
+# One heartbeat line: "[42%] step 6/22 Run the gates: 40/56 tests, 3m12s
 # (about 18m left)". The step counts for no more than its weight.
 heartbeat() {
     local e cur d left p
@@ -338,22 +344,27 @@ pr_state() {
 }
 # The Pi package's npm name, from plugins/pi/package.json.
 pi_package() { sed -n 's/^  "name": "\(.*\)",$/\1/p' "$ROOT/plugins/pi/package.json"; }
-# Whether the Pi package exists on npm: prints yes or no; fails, saying
-# npm's error, when npm cannot tell.
-pi_on_npm() {
+# The SDK package's npm name, from web/scripts/build-sdk.mjs, which builds it.
+sdk_package() { sed -n 's/^export const PACKAGE_NAME = "\(.*\)";$/\1/p' "$ROOT/web/scripts/build-sdk.mjs"; }
+# Whether package $1 exists on npm: prints yes or no; fails, saying npm's
+# error, when npm cannot tell.
+on_npm() {
     local out
-    if out="$("$NPM" view "$(pi_package)" version 2>&1)"; then echo yes; return 0; fi
+    if out="$("$NPM" view "$1" version 2>&1)"; then echo yes; return 0; fi
     case "$out" in
         *E404* | *"404 Not Found"*) echo no ;;
         *) echo "$out" | tr '\n' ' ' >&2; return 1 ;;
     esac
 }
-# Whether npm has the Pi package at version $1 (default: this release's).
-pi_has_version() {
+# Whether npm has package $1 at version $2 (default: this release's).
+has_version() {
     local out
-    out="$("$NPM" view "$(pi_package)@${1:-$V}" version 2>/dev/null)" || return 1
-    [ "$out" = "${1:-$V}" ]
+    out="$("$NPM" view "$1@${2:-$V}" version 2>/dev/null)" || return 1
+    [ "$out" = "${2:-$V}" ]
 }
+pi_on_npm() { on_npm "$(pi_package)"; }
+pi_has_version() { has_version "$(pi_package)" "$@"; }
+sdk_has_version() { has_version "$(sdk_package)"; }
 # The tree the release was built from, by the rule the Release workflow
 # also uses (scripts/release-exists-check.sh): its SOURCE_TREE asset, or for
 # an older release the run that uploaded it. Nothing when there is none.
@@ -614,7 +625,7 @@ check_npm_environment() {
     local err policy branches why=""
     semver_ok "$V" || return 0
     command -v gh >/dev/null 2>&1 && [ -n "${GH_REPO:-}" ] || return 0
-    if command -v "$NPM" >/dev/null 2>&1 && pi_has_version; then return 0; fi
+    if command -v "$NPM" >/dev/null 2>&1 && pi_has_version && sdk_has_version; then return 0; fi
     err="$(mktemp)"
     if ! policy="$(gh api "repos/$GH_REPO/environments/$NPM_ENV" \
         --jq '.deployment_branch_policy | if . == null then "none" else "\(.protected_branches) \(.custom_branch_policies)" end' 2>"$err")"; then
@@ -632,36 +643,43 @@ check_npm_environment() {
     fi
     rm -f "$err"
     [ -n "$why" ] || return 0
-    why="$why. publish-pi.yml runs in it; in GitHub, the repository's Settings, Environments, New environment (or $NPM_ENV), name $NPM_ENV; Deployment branches and tags: Selected branches and tags; Add deployment branch or tag rule: branch $PROD"
+    why="$why. publish-pi.yml and publish-sdk.yml run in it; in GitHub, the repository's Settings, Environments, New environment (or $NPM_ENV), name $NPM_ENV; Deployment branches and tags: Selected branches and tags; Add deployment branch or tag rule: branch $PROD"
     if [ "$ACT" = 1 ]; then problem "$why"; else NOTES+=("WARN: $why"); fi
 }
 
-# The Pi package on npm. Trusted publishing (publish-pi.yml) needs a package
-# that exists, so while it does not, step 20 publishes the first version
-# from here, which needs npm signed in and pnpm for the typecheck.
+# The Pi and SDK packages on npm. Trusted publishing (publish-pi.yml,
+# publish-sdk.yml) needs a package that exists, so while one does not, its
+# step publishes the first version from here, which needs npm signed in and
+# pnpm for the checks.
 check_npm() {
-    local on err
     if ! command -v "$NPM" >/dev/null 2>&1; then problem "npm is not on PATH"; return 0; fi
     semver_ok "$V" || return 0
+    check_npm_package "$(pi_package)" 20 "the first Pi publish typechecks the package"
+    check_npm_package "$(sdk_package)" 21 "the first SDK publish builds and tests the package"
+}
+# check_npm_package NAME STEP WHY: package NAME, which step STEP publishes;
+# WHY says what pnpm is for.
+check_npm_package() {
+    local on err
     err="$(mktemp)"
-    if ! on="$(pi_on_npm 2>"$err")"; then
-        problem "cannot ask npm about $(pi_package): $(cat "$err")"
+    if ! on="$(on_npm "$1" 2>"$err")"; then
+        problem "cannot ask npm about $1: $(cat "$err")"
         rm -f "$err"
         return 0
     fi
     rm -f "$err"
     if [ "$on" = no ]; then
         if ! "$NPM" whoami >/dev/null 2>&1; then
-            problem "$(pi_package) is not on npm yet, so step 20 publishes its first version from here: sign in first (npm login; npm whoami fails)"
+            problem "$1 is not on npm yet, so step $2 publishes its first version from here: sign in first (npm login; npm whoami fails)"
         fi
-        command -v "$PNPM" >/dev/null 2>&1 || problem "pnpm is not on PATH (the first Pi publish typechecks the package)"
-        NOTES+=("$(pi_package) is not on npm yet: step 20 publishes its first version from this machine (npm publish, with npm's own prompts), then prints the trusted-publisher setup")
-    elif pi_has_version; then
-        NOTES+=("$(pi_package)@$V is on npm already: step 20 is done")
+        command -v "$PNPM" >/dev/null 2>&1 || problem "pnpm is not on PATH ($3)"
+        NOTES+=("$1 is not on npm yet: step $2 publishes its first version from this machine (npm publish, with npm's own prompts), then prints the trusted-publisher setup")
+    elif has_version "$1"; then
+        NOTES+=("$1@$V is on npm already: step $2 is done")
     fi
 }
 
-# --- steps 2-21 -------------------------------------------------------------------
+# --- steps 2-22 -------------------------------------------------------------------
 
 TITLES=(
     [2]="Cut the release branch"
@@ -683,7 +701,8 @@ TITLES=(
     [18]="Carry the release to main"
     [19]="Wait for CI on $PROD"
     [20]="Publish the Pi package"
-    [21]="What is left"
+    [21]="Publish the SDK package"
+    [22]="What is left"
 )
 COMMANDS=(
     [2]="git switch -c $RB origin/$PROD"
@@ -705,7 +724,8 @@ COMMANDS=(
     [18]="git cherry-pick -S -x <the release commit> <the pin commit> onto origin/main; git push origin main"
     [19]="gh run list --workflow ci.yml (the push run on the pin commit), wait for its bazel job"
     [20]="gh workflow run publish-pi.yml --ref $PROD -f dry_run=false -f sha=<the pin commit>, wait (the first version: npm publish from here)"
-    [21]="print the steps left by hand"
+    [21]="gh workflow run publish-sdk.yml --ref $PROD -f dry_run=false -f sha=<the pin commit>, wait (the first version: npm publish from here)"
+    [22]="print the steps left by hand"
 )
 
 # done_N: whether step N is done, from the state refresh read. Once origin's
@@ -744,7 +764,8 @@ done_19() {
     [ -n "$id" ] && [ "$(ci_gate_state "$id")" = "completed success" ]
 }
 done_20() { pi_has_version; }
-done_21() { false; }
+done_21() { sdk_has_version; }
+done_22() { false; }
 
 # A poll's gh call may fail this many times in a row (a network or API
 # hiccup) before the wait gives up.
@@ -1033,61 +1054,74 @@ step_19() {
     id="$(await_output find_run ci.yml push "$PIN_COMMIT")" || { say "  no CI run on $PIN_COMMIT appeared"; return 1; }
     await_run "$id" "CI on $PROD (bazel)" ci_gate_state
 }
-# The newest publish-pi.yml run that publishes (not a dry run) from commit
-# $1, by the title the workflow gives it, or nothing.
+# The newest run of publish workflow $1, whose runs are titled "$2 <commit>",
+# that publishes (not a dry run) from commit $3, or nothing.
 publish_run() {
-    gh run list --workflow publish-pi.yml --event workflow_dispatch --limit 50 \
+    gh run list --workflow "$1" --event workflow_dispatch --limit 50 \
         --json databaseId,displayTitle --jq '.[] | "\(.databaseId)\t\(.displayTitle)"' \
-        | awk -F '\t' -v t="Publish Pi package $1" '$2 == t { print $1 }' | sed -n 1p
+        | awk -F '\t' -v t="$2 $3" '$2 == t { print $1 }' | sed -n 1p
 }
-# That run, when it is not run $2 (the newest before a dispatch).
+# That run, when it is not run $4 (the newest before a dispatch).
 new_publish_run() {
     local id
-    id="$(publish_run "$1")" || return 1
-    if [ "$id" != "$2" ]; then echo "$id"; fi
+    id="$(publish_run "$1" "$2" "$3")" || return 1
+    if [ "$id" != "$4" ]; then echo "$id"; fi
 }
-# Publishes from the pin commit: a run already under way for it is waited
-# for; none, or a failed one, is dispatched anew.
-step_20() {
-    local id state on
-    on="$(pi_on_npm)" || { say "  cannot ask npm about $(pi_package)"; return 1; }
-    if [ "$on" = no ]; then pi_first_publish; return; fi
-    id="$(gh_retry publish_run "$PIN_COMMIT")" || return 1
+# Publishes from the pin commit through workflow $1, whose runs are titled
+# "$2 <commit>": a run already under way for it is waited for; none, or a
+# failed one, is dispatched anew.
+publish_through() {
+    local workflow="$1" title="$2" id state
+    id="$(gh_retry publish_run "$workflow" "$title" "$PIN_COMMIT")" || return 1
     state=""
     if [ -n "$id" ]; then state="$(gh_retry run_state "$id")" || return 1; fi
     case "$state" in
         "" | completed\ *)
-            gh workflow run publish-pi.yml --ref "$PROD" -f dry_run=false -f "sha=$PIN_COMMIT"
+            gh workflow run "$workflow" --ref "$PROD" -f dry_run=false -f "sha=$PIN_COMMIT"
             detail "dispatched; waiting for the run to start"
-            id="$(await_output new_publish_run "$PIN_COMMIT" "$id")" \
-                || { say "  no Publish Pi package run for $PIN_COMMIT appeared"; return 1; } ;;
+            id="$(await_output new_publish_run "$workflow" "$title" "$PIN_COMMIT" "$id")" \
+                || { say "  no $title run for $PIN_COMMIT appeared"; return 1; } ;;
     esac
-    await_run "$id" "Publish Pi package"
+    await_run "$id" "$title"
+}
+step_20() {
+    local on
+    on="$(pi_on_npm)" || { say "  cannot ask npm about $(pi_package)"; return 1; }
+    if [ "$on" = no ]; then first_publish "$(pi_package)" pi plugins/pi pi_publish_from publish-pi.yml; return; fi
+    publish_through publish-pi.yml "Publish Pi package"
+}
+step_21() {
+    local on
+    on="$(on_npm "$(sdk_package)")" || { say "  cannot ask npm about $(sdk_package)"; return 1; }
+    if [ "$on" = no ]; then first_publish "$(sdk_package)" sdk web sdk_publish_from publish-sdk.yml; return; fi
+    publish_through publish-sdk.yml "Publish SDK package"
 }
 
-# The Pi package's first version, published from here: from a temporary
-# worktree of PIN_COMMIT, after the checks publish-pi.yml makes (the
-# wrapper pins the package's version, npm lacks it, the typecheck passes);
-# npm publish runs on this terminal, so npm's sign-in and one-time-password
-# prompts reach the person.
-pi_first_publish() {
-    local dir="$ROOT/target/release/$V/pi-publish" rc=0
-    say "  $(pi_package) is not on npm yet: publishing its first version from here"
+# first_publish NAME KIND DIR FROM WORKFLOW: package NAME's first version,
+# published from here: FROM runs in DIR of a temporary worktree of
+# PIN_COMMIT (target/release/X.Y.Z/KIND-publish), makes the checks WORKFLOW
+# makes, and runs npm publish on this terminal, so npm's sign-in and
+# one-time-password prompts reach the person.
+first_publish() {
+    local name="$1" dir="$ROOT/target/release/$V/$2-publish" rc=0
+    say "  $name is not on npm yet: publishing its first version from here"
     if [ -e "$dir" ]; then g worktree remove --force "$dir" 2>/dev/null || rm -rf "$dir"; fi
     g worktree prune
     mkdir -p "$(dirname "$dir")"
     g worktree add --quiet --detach "$dir" "$PIN_COMMIT"
     set +e
-    (set -e; pi_publish_from "$dir/plugins/pi")
+    (set -e; "$4" "$dir/$3")
     rc=$?
     set -e
     g worktree remove --force "$dir"
     [ "$rc" = 0 ] || return "$rc"
-    tell "  $(pi_package)@$V is on npm. Later releases publish through publish-pi.yml, which uses npm"
+    tell "  $name@$V is on npm. Later releases publish through $5, which uses npm"
     tell "  trusted publishing; set it up once, now: on npmjs.com, the package's Settings, Trusted"
     tell "  Publisher, GitHub Actions: organization ${GH_REPO%%/*}, repository ${GH_REPO#*/}, workflow"
-    tell "  publish-pi.yml, environment $NPM_ENV."
+    tell "  $5, environment $NPM_ENV."
 }
+# The Pi package's checks (publish-pi.yml's: the wrapper pins the package's
+# version, npm lacks it, the typecheck passes), then npm publish.
 pi_publish_from() {
     local pkg="$1" version pinned
     cd "$pkg"
@@ -1099,21 +1133,42 @@ pi_publish_from() {
     say "  typecheck: $PNPM install --frozen-lockfile && $PNPM run typecheck"
     logged "$PNPM" install --frozen-lockfile
     logged "$PNPM" run typecheck
-    # On the terminal, for npm's prompts, with no heartbeat meanwhile.
-    tell "  $NPM publish --access public (plugins/pi at $PIN_COMMIT)"
+    npm_publish "plugins/pi at $PIN_COMMIT" "$(pi_package)" "$version" pi
+}
+# The SDK package's checks (publish-sdk.yml's: it builds and passes its
+# test, at the release's version, which npm lacks), then npm publish of
+# web/dist-sdk. $1 is the worktree's web/.
+sdk_publish_from() {
+    local version
+    cd "$1"
+    if sdk_has_version; then say "  $(sdk_package)@$V is on npm already"; return 1; fi
+    say "  build and test: $PNPM install --frozen-lockfile && $PNPM run build:sdk && $PNPM run test:sdk"
+    logged "$PNPM" install --frozen-lockfile
+    logged "$PNPM" run build:sdk
+    logged "$PNPM" run test:sdk
+    version="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' dist-sdk/package.json)"
+    [ "$version" = "$V" ] || { say "  web/dist-sdk/package.json is at $version, not $V"; return 1; }
+    cd dist-sdk
+    npm_publish "web/dist-sdk built at $PIN_COMMIT" "$(sdk_package)" "$version" sdk
+}
+# npm_publish WHAT NAME VERSION KIND: npm publish here, on the terminal for
+# npm's prompts, with no heartbeat meanwhile; then waits for npm to list
+# NAME@VERSION.
+npm_publish() {
+    tell "  $NPM publish --access public ($1)"
     if [ -n "$HB_DIR" ]; then : > "$HB_DIR/pause"; fi
     "$NPM" publish --access public >&3 2>&4
     if [ -n "$HB_DIR" ]; then rm -f "$HB_DIR/pause"; fi
-    # Kept as soon as npm took the package, so step 21 prints the
+    # Kept as soon as npm took the package, so step 22 prints the
     # trusted-publisher setup even if the wait below gives up.
-    : > "$ROOT/target/release/$V/pi-first-publish"
+    : > "$ROOT/target/release/$V/$4-first-publish"
     POLL_FAILS=0
-    await_output pi_npm_version "$version" >/dev/null \
-        || { say "  npm does not list $(pi_package)@$version after the publish"; return 1; }
+    await_output npm_version "$2" "$3" >/dev/null \
+        || { say "  npm does not list $2@$3 after the publish"; return 1; }
 }
-# Prints version $1 once npm lists it.
-pi_npm_version() { if pi_has_version "$1"; then echo "$1"; fi; }
-step_21() {
+# Prints version $2 of package $1 once npm lists it.
+npm_version() { if has_version "$1" "$2"; then echo "$2"; fi; }
+step_22() {
     tell "Left by hand:"
     tell "  - check that clax.dev deployed: each push to $PROD deploys it from GitHub Actions (the"
     tell "    merge, then the pin; docs/prod.md): gh run list --workflow deploy-prod.yml --repo ${GH_REPO:-empathic/clax}"
@@ -1124,13 +1179,18 @@ step_21() {
         tell "  - switch README.md and plugins/pi/README.md to lead their Pi install with"
         tell "    \`pi install npm:$(pi_package)\`"
     fi
+    if [ -e "$ROOT/target/release/$V/sdk-first-publish" ]; then
+        tell "  - once: set up npm trusted publishing for $(sdk_package) (npmjs.com, the package's Settings,"
+        tell "    Trusted Publisher, GitHub Actions: organization ${GH_REPO%%/*}, repository ${GH_REPO#*/},"
+        tell "    workflow publish-sdk.yml, environment $NPM_ENV), so later releases publish through the workflow"
+    fi
     tell "  - crates.io is not published by this script (docs/usage.md, \"The crates.io package\")"
     tell "  - the release: https://github.com/${GH_REPO:-empathic/clax}/releases/tag/$TAG"
 }
 
 # --- main -------------------------------------------------------------------------
 
-# Lists steps 2-21, done or to do, with the estimate of the time they take;
+# Lists steps 2-22, done or to do, with the estimate of the time they take;
 # NEXT is the first step to do.
 overview() {
     local n left=0 from
@@ -1165,7 +1225,7 @@ prepared() {
     say "squash or rebase); the push to $PROD deploys clax.dev. Then, on a $PROD checkout at"
     say "origin/$PROD's tip (git switch $PROD; git pull --ff-only), run \`$RESUME\`"
     say "again: it tags the release, pins the plugins, carries both commits to main and publishes"
-    say "the Pi package."
+    say "the Pi and SDK packages."
 }
 
 learn_weights

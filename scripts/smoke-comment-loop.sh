@@ -45,7 +45,7 @@ if [ -z "${CLAX_TEST_BIN:-}" ]; then
 fi
 
 python3 - "$BIN" "$SCRATCH" "$REPO" <<'PY'
-import hashlib, json, os, struct, subprocess, sys, threading, time, urllib.request, uuid, zlib
+import json, os, struct, subprocess, sys, threading, time, urllib.request, uuid, zlib
 
 BIN, SCRATCH, REPO = sys.argv[1], sys.argv[2], sys.argv[3]
 HOME = os.environ["CLAX_HOME"]
@@ -113,6 +113,31 @@ def daemon():
     info = json.load(open(os.path.join(HOME, "daemon.json")))
     return f"http://127.0.0.1:{info['port']}", info["token"]
 
+OWNER_COOKIE = {}
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None
+
+def owner_cookie(base, tok):
+    """The owner cookie of a browser login (`clax open`'s), made once with the
+    token, and the proof its page writes into the origin's storage, which the
+    shell sends as `X-Clax-Owner-Proof`."""
+    if base not in OWNER_COOKIE:
+        req = urllib.request.Request(base + "/api/browser-login", data=b'{"next": "/"}', method="POST")
+        req.add_header("authorization", f"Bearer {tok}")
+        req.add_header("content-type", "application/json")
+        with OPENER.open(req, timeout=20) as r:
+            path = json.loads(r.read())["path"]
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+        with opener.open(base + path, timeout=20) as r:
+            page = r.read().decode()
+            port = base.rsplit(":", 1)[1]
+            cookie = next(c.split(";")[0] for c in r.headers.get_all("set-cookie") if c.startswith(f"clax_owner_{port}="))
+        proof = page.split('data-proof="', 1)[1].split('"', 1)[0]
+        OWNER_COOKIE[base] = (cookie, proof)
+    return OWNER_COOKIE[base]
+
 def http(method, path, body=None, ctype="application/json", token=False, session=None):
     base, tok = daemon()
     data = body if isinstance(body, bytes) or body is None else json.dumps(body).encode()
@@ -124,9 +149,9 @@ def http(method, path, body=None, ctype="application/json", token=False, session
     else:
         # The owner's browser: a visitor reads no delivery state (spec
         # 2026-10-08-multi-agent-multi-person §19 item 9).
-        port = base.rsplit(":", 1)[1]
-        cookie = hashlib.sha256(b"clax owner cookie\n" + tok.encode()).hexdigest()
-        req.add_header("cookie", f"clax_owner_{port}={cookie}")
+        cookie, proof = owner_cookie(base, tok)
+        req.add_header("cookie", cookie)
+        req.add_header("x-clax-owner-proof", proof)
         req.add_header("origin", base)
     if session:
         req.add_header("x-clax-session", session)

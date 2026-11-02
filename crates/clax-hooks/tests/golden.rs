@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(
@@ -46,36 +46,44 @@ fn clax(home: &Path) -> Command {
 struct Ran {
     stdout: String,
     code: Option<i32>,
-    elapsed: Duration,
+}
+
+/// That no run `log` (hooks.log) records gave up on a timeout: its
+/// deadline (`timed out after …`) or a request's.
+fn never_timed_out(log: &str) {
+    assert!(!log.contains("timed out"), "{log}");
 }
 
 fn hook(home: &Path, agent: &str, event: &str, stdin: &[u8]) -> Ran {
     hook_env(home, agent, event, stdin, &[])
 }
 
+/// Runs the hook with `stdin` read from a file, so the whole input is
+/// there when it starts: its deadline never runs while this test waits to
+/// be scheduled to write it.
 fn hook_env(home: &Path, agent: &str, event: &str, stdin: &[u8], env: &[(&str, &str)]) -> Ran {
+    let mut input = tempfile::tempfile().unwrap();
+    input.write_all(stdin).unwrap();
+    std::io::Seek::rewind(&mut input).unwrap();
     let mut cmd = clax(home);
     cmd.args(["hook", "--agent", agent, event])
-        .stdin(Stdio::piped())
+        .stdin(Stdio::from(input))
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let mut child = cmd.spawn().unwrap();
-    let start = Instant::now();
-    child.stdin.take().unwrap().write_all(stdin).unwrap();
-    let out = child.wait_with_output().unwrap();
+    let out = cmd.spawn().unwrap().wait_with_output().unwrap();
     Ran {
         stdout: String::from_utf8(out.stdout).unwrap(),
         code: out.status.code(),
-        elapsed: start.elapsed(),
     }
 }
 
 /// A daemon in a temp home; stopped on drop.
 struct Daemon {
     dir: tempfile::TempDir,
+    viewer: std::sync::OnceLock<String>,
 }
 
 impl Daemon {
@@ -87,7 +95,10 @@ impl Daemon {
             .status()
             .unwrap();
         assert!(st.success());
-        Daemon { dir }
+        Daemon {
+            dir,
+            viewer: std::sync::OnceLock::new(),
+        }
     }
     fn home(&self) -> PathBuf {
         self.dir.path().join("ax")
@@ -129,9 +140,31 @@ impl Daemon {
     fn base(&self) -> String {
         format!("http://127.0.0.1:{}", self.info()["port"])
     }
+    /// A client that speaks as a browser of this machine's: an unnamed
+    /// viewer the daemon minted for the tests (its debug-build route), as a
+    /// request with no credential at all is refused before any route.
     fn http(&self) -> reqwest::blocking::Client {
+        let cookie = self.viewer.get_or_init(|| {
+            let v: Value = reqwest::blocking::Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap()
+                .post(format!("{}/api/_test/viewers", self.base()))
+                .bearer_auth(self.token())
+                .send()
+                .unwrap()
+                .json()
+                .unwrap();
+            v["cookie"].as_str().unwrap().to_string()
+        });
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::COOKIE,
+            format!("clax_viewer={cookie}").parse().unwrap(),
+        );
         reqwest::blocking::Client::builder()
             .no_proxy()
+            .default_headers(headers)
             .build()
             .unwrap()
     }
@@ -286,9 +319,12 @@ fn unusable_stdin_prints_nothing() {
             let r = hook(&d.home(), "claude", event, &fixture(name));
             assert_eq!(r.code, Some(0), "{name} {event}");
             assert_eq!(r.stdout, "", "{name} {event}");
-            assert!(r.elapsed < Duration::from_secs(5), "{name} {event}");
         }
     }
+    // Every run ended on its own, none on its deadline.
+    let log = d.hooks_log();
+    assert_eq!(log.lines().count(), 10, "{log}");
+    never_timed_out(&log);
     assert!(d.sessions(false).is_empty());
 }
 
@@ -322,7 +358,9 @@ fn no_daemon_prints_nothing_and_starts_none() {
             "{line}"
         );
     }
-    std::thread::sleep(Duration::from_millis(500));
+    // Starting a daemon takes the home's start lock before it spawns one,
+    // so a run that tried would have left daemon.lock behind it.
+    assert!(!home.join("daemon.lock").exists());
     assert!(!home.join("daemon.json").exists());
 }
 
@@ -427,43 +465,50 @@ fn stalled_daemon() -> tempfile::TempDir {
     dir
 }
 
+/// Shortens each daemon request's timeout (debug builds of `clax hook` read
+/// it), so a run against [`stalled_daemon`] gives up on that timeout at once
+/// rather than after its budget of seconds.
+const SHORT_REQUESTS: [(&str, &str); 1] = [("CLAX_TEST_HOOK_REQUEST_TIMEOUT_MS", "100")];
+
 #[test]
-fn session_end_gives_up_within_codexs_three_second_cap() {
+fn session_hooks_give_up_on_their_request_timeout_against_a_stalled_daemon() {
     let dir = stalled_daemon();
     let home = dir.path().join("ax");
-    // The first run of a freshly built binary can be slow to start (macOS
-    // checks it); keep that out of the timing.
-    assert!(
-        clax(&home)
-            .arg("--version")
-            .output()
-            .unwrap()
-            .status
-            .success()
-    );
-    let r = hook(
+    let r = hook_env(
         &home,
         "codex",
         "session-end",
         &fixture("codex-session-end.json"),
+        &SHORT_REQUESTS,
     );
     assert_eq!(r.code, Some(0));
     assert_eq!(r.stdout, "");
-    assert!(r.elapsed < Duration::from_millis(2900), "{:?}", r.elapsed);
 
-    // Session start keeps its longer budget.
-    let r = hook(
+    // Session start, whose own budget is longer, gives up the same way.
+    let r = hook_env(
         &home,
         "codex",
         "session-start",
         &fixture("codex-session-start.json"),
+        &SHORT_REQUESTS,
     );
     assert_eq!(r.code, Some(0));
-    assert!(
-        r.elapsed >= Duration::from_millis(2900) && r.elapsed < Duration::from_millis(4500),
-        "{:?}",
-        r.elapsed
-    );
+
+    // Each run gave up on its own bound, which hooks.log names: a request
+    // timeout, within the run's deadline. That the end hook's budget fits
+    // Codex's 3 s cap and session start's is longer is checked on the
+    // budgets themselves (crates/clax-commands/src/commands/hook.rs
+    // end_hooks_give_up_inside_their_harnesses_caps), not by timing runs.
+    let log = std::fs::read_to_string(home.join("logs/hooks.log")).unwrap();
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(lines.len(), 2, "{log}");
+    for (line, event) in lines.iter().zip(["session-end", "session-start"]) {
+        assert!(line.contains(&format!("event={event} ")), "{log}");
+        assert!(
+            line.ends_with("timed out\"") || line.contains("stderr=\"timed out after "),
+            "{log}"
+        );
+    }
 }
 
 /// Runs `agent`'s Stop hook with `input` once for a session that watches
@@ -534,7 +579,7 @@ fn stop_loop(agent: &str, hsid: &str) {
         reason.contains("Viewer (not connected): \"@agent make it two columns\""),
         "{reason}"
     );
-    assert!(r.elapsed < Duration::from_secs(5));
+    never_timed_out(&d.hooks_log());
 
     let r = hook(&d.home(), agent, "stop", &active);
     assert_eq!(r.stdout, "", "stop_hook_active with nothing new: allow");
@@ -906,14 +951,22 @@ fn grok_session_end_ends_the_row_within_its_budget() {
     let end = fixture("grok-session-end.json");
     let r = hook(&d.home(), "grok", "session-end", &end);
     assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
-    assert!(r.elapsed < Duration::from_millis(1500), "{:?}", r.elapsed);
     assert!(d.sessions(true).is_empty());
     assert!(d.session(&sid)["ended_at"].is_string());
+    // It ended the row before its deadline gave up on it. That the deadline
+    // fits Grok Build's 1.5 s is checked on the budget itself
+    // (crates/clax-commands/src/commands/hook.rs
+    // end_hooks_give_up_inside_their_harnesses_caps).
+    never_timed_out(&d.hooks_log());
 
+    // With no daemon it says so rather than waiting.
     let dir = tempfile::tempdir().unwrap();
-    let r = hook(&dir.path().join("ax"), "grok", "session-end", &end);
+    let home = dir.path().join("ax");
+    let r = hook(&home, "grok", "session-end", &end);
     assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
-    assert!(r.elapsed < Duration::from_millis(1500), "{:?}", r.elapsed);
+    let log = std::fs::read_to_string(home.join("logs/hooks.log")).unwrap();
+    assert!(log.contains("no clax daemon is running"), "{log}");
+    never_timed_out(&log);
 }
 
 #[test]
@@ -1022,8 +1075,12 @@ impl Surface {
         });
         let s = Surface { rx };
         let id = s.next("ready")["stream"].as_str().unwrap().to_string();
-        let res = d
-            .http()
+        // The stream is the token's alone (opened above without a viewer
+        // cookie), so its subscription goes without one too.
+        let res = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
             .post(format!("{}/api/stream/{id}", d.base()))
             .bearer_auth(d.token())
             .json(&serde_json::json!({"subscribe": ["questions"]}))
@@ -1068,6 +1125,53 @@ impl Daemon {
             .send()
             .unwrap();
         assert!(res.status().is_success(), "{path}: {}", res.status());
+        res.json().unwrap()
+    }
+    /// `POST path` with `body` from a browser of the owner's, as a person
+    /// answering in Clax: an owner browser session opened as `clax open`
+    /// opens one (a login code made with the token, redeemed at `GET
+    /// /login`, whose page carries the session's proof). While an agent session is live the token alone would get
+    /// 202 `confirmation_pending` for a decision such as an answer.
+    fn post_as_owner_browser(&self, path: &str, body: Value) -> Value {
+        let plain = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let made: Value = plain
+            .post(format!("{}/api/browser-login", self.base()))
+            .bearer_auth(self.token())
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        let login = made["path"].as_str().expect("a login path");
+        let res = plain.get(format!("{}{login}", self.base())).send().unwrap();
+        assert_eq!(res.status(), 200, "the login code is redeemed");
+        let name = format!("clax_owner_{}=", self.info()["port"]);
+        let cookie = res
+            .headers()
+            .get_all(reqwest::header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .filter_map(|v| v.split(';').next())
+            .find(|kv| kv.starts_with(&name))
+            .expect("an owner cookie")
+            .to_string();
+        let page = res.text().unwrap();
+        let proof = page
+            .split_once("data-proof=\"")
+            .and_then(|(_, rest)| rest.split('"').next())
+            .expect("a login page with a proof")
+            .to_string();
+        let res = plain
+            .post(format!("{}{path}", self.base()))
+            .header(reqwest::header::COOKIE, cookie)
+            .header("x-clax-owner-proof", proof)
+            .json(&body)
+            .send()
+            .unwrap();
+        assert_eq!(res.status(), 200, "{path}");
         res.json().unwrap()
     }
     fn get_authed(&self, path: &str) -> Value {
@@ -1141,7 +1245,9 @@ fn asking(d: &Daemon) -> (Surface, std::thread::JoinHandle<Ran>, String) {
 fn ask_answered_in_clax_answers_the_tool_call() {
     let d = Daemon::start();
     let (_s, run, qid) = asking(&d);
-    d.post_authed(
+    // The person answers in their browser: with the agent's session live,
+    // the token alone would wait for a browser confirmation.
+    d.post_as_owner_browser(
         &format!("/api/questions/{qid}/answer"),
         serde_json::json!({"answers": [{"selected": ["Cards"]}]}),
     );
@@ -1251,7 +1357,7 @@ fn ask_without_a_surface_goes_to_the_terminal_at_once() {
         &fixture("claude-pre-tool-use-ask.json"),
     );
     assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
-    assert!(r.elapsed < Duration::from_secs(2), "{:?}", r.elapsed);
+    never_timed_out(&d.hooks_log());
     assert!(
         d.hooks_log()
             .contains(" ask mode=terminal outcome=terminal waited_s=0")

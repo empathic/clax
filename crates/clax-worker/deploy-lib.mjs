@@ -239,3 +239,23 @@ export const SMOKE_CANNOT = {
 export function smokeCannot(as, name) {
   return SMOKE_CANNOT[as]?.[name] ?? null;
 }
+
+/** The Worker vars that serve the landing page's reel from elsewhere
+ * (src/instance.rs: REEL_URL, REEL_POSTER_URL), from `--reel-url` and
+ * `--reel-poster-url`: none without `--reel-url`, so the page shows no
+ * player. Throws when an address is not https://, or a poster comes
+ * without a video. */
+export function reelVars(o) {
+  const video = o["reel-url"], poster = o["reel-poster-url"];
+  if (video === undefined) {
+    if (poster !== undefined) throw new Error("--reel-poster-url needs --reel-url");
+    return {};
+  }
+  for (const [flag, v] of [["--reel-url", video], ["--reel-poster-url", poster]]) {
+    if (v === undefined) continue;
+    let ok = false;
+    try { ok = new URL(v).protocol === "https:"; } catch { /* not a URL */ }
+    if (!ok) throw new Error(`${flag} takes an https:// URL, not ${v}`);
+  }
+  return { REEL_URL: video, ...(poster ? { REEL_POSTER_URL: poster } : {}) };
+}

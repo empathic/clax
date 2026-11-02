@@ -77,12 +77,18 @@ mod l10 {
     /// The handlers of the routes the path rule does not cover.
     const GUARDS: &[(&str, Guard)] = &[
         ("token::token", NoArtifact),
+        ("login::redeem", NoArtifact),
         ("get_page::apple_app_site_association", NoArtifact),
         ("get_page::assetlinks", NoArtifact),
         ("remotes::list", Owner),
         ("remotes::add", Owner),
         ("remotes::poll", Owner),
         ("remotes::remove", Owner),
+        ("remote_requests::ask", NoArtifact),
+        ("remote_requests::poll", NoArtifact),
+        ("remote_requests::answer", NoArtifact),
+        ("remote_requests::mutes", Owner),
+        ("remote_requests::unmute", NoArtifact),
         ("remote_apps::link", Owner),
         ("remote_apps::apps", Owner),
         ("remote_apps::unpublish", Owner),
@@ -90,7 +96,15 @@ mod l10 {
         ("remote_apps::head", Owner),
         ("remote_apps::bundle", Owner),
         ("remote_apps::version_files", Owner),
-        ("remote_apps::version_file", Owner),
+        ("remote_artifacts::get", Owner),
+        ("remote_artifacts::file", Owner),
+        ("remote_artifacts::threads", Owner),
+        ("remote_artifacts::thread", Owner),
+        ("remote_artifacts::create_thread", Owner),
+        ("remote_artifacts::comment", Owner),
+        ("remote_artifacts::resolve", Owner),
+        ("remote_artifacts::reopen", Owner),
+        ("remote_artifacts::handoff", Owner),
         ("remote_apps::get_sharing", Owner),
         ("remote_apps::put_link", Owner),
         ("remote_apps::put_share", Owner),
@@ -105,6 +119,9 @@ mod l10 {
         ("bot::key_put", Bot),
         ("bot::key_delete", Bot),
         ("bot::usage", Bot),
+        ("bot::me_flags", Bot),
+        ("feedback_integration::token", NoArtifact),
+        ("feedback_integration::config", NoArtifact),
         ("bot::list", Bot),
         ("bot::create", Bot),
         ("bot::get", Bot),
@@ -124,6 +141,10 @@ mod l10 {
         ("admin::models", Bot),
         ("admin::pricing", Bot),
         ("admin::set_pricing", Bot),
+        ("admin::price_from_tokenulator", Bot),
+        ("admin::set_model_rates", Bot),
+        ("admin::delete_model_rates", Bot),
+        ("admin::refresh_catalog", Bot),
         ("admin::usage", Bot),
         ("audit_trail::list", Bot),
         ("audit_trail::get", Bot),
@@ -183,6 +204,17 @@ mod l10 {
         ("viewers::set_presence", SeesLive),
         ("extension::status", Token),
         ("extension::mint", Token),
+        ("login::create", Token),
+        ("login::end_all", Token),
+        ("login::retire", NoArtifact),
+        ("confirmations::get_one", Token),
+        ("confirmations::list", Owner),
+        ("confirmations::answer", NoArtifact),
+        ("passkeys::list", Owner),
+        ("passkeys::challenge", NoArtifact),
+        ("passkeys::register", NoArtifact),
+        ("passkeys::settings", NoArtifact),
+        ("passkeys::remove", NoArtifact),
         ("extension::revoke", Token),
         ("stream::open", Filtered),
         ("stream::open_socket", Filtered),
@@ -195,6 +227,8 @@ mod l10 {
         ("watches::delete", AgentPath),
         ("watches::live_put", Token),
         ("watches::live_delete", Token),
+        ("watches::remote_put", Owner),
+        ("watches::remote_delete", Owner),
         ("feedback::ack", AgentPath),
         ("toolpath::session_tool_call", AgentPath),
         ("toolpath::tool_call", Token),
@@ -264,6 +298,8 @@ mod l10 {
         ("queues::create_grant", NoArtifact),
         ("queues::revoke_grant", NoArtifact),
         ("queue_agent::list", NoArtifact),
+        ("queue_agent::watch", NoArtifact),
+        ("queue_agent::unwatch", NoArtifact),
         ("queue_agent::get", NoArtifact),
         ("queue_agent::patch", NoArtifact),
         ("queue_agent::claim", NoArtifact),
@@ -273,6 +309,11 @@ mod l10 {
         ("queue_agent::resolve", NoArtifact),
         ("queue_agent::patch_artifact", NoArtifact),
         ("queue_agent::clip", NoArtifact),
+        ("queue_agent::fix", NoArtifact),
+        ("queue_agent::verify", NoArtifact),
+        ("queue_agent::reopen", NoArtifact),
+        ("queue_agent::diagnostics", NoArtifact),
+        ("queue_agent::comment_clip", NoArtifact),
         ("discovery::get", NoArtifact),
         ("grants::revoke", NoArtifact),
         ("grants::poll", NoArtifact),
@@ -284,6 +325,7 @@ mod l10 {
         ("grants::create_invite", NoArtifact),
         ("grants::revoke_invite", NoArtifact),
         ("grants::test_sweep", Token),
+        ("login::test_viewer", Token),
         ("grants::test_index", Token),
         ("grants::test_fail_index", Token),
         ("connect::browser_link", NoArtifact),
@@ -300,6 +342,9 @@ mod l10 {
         ("people::reinstate_person", NoArtifact),
         ("people::set_rights", NoArtifact),
         ("people::list_agents", Filtered),
+        // Reads no artifact: a local answer is the URL's own ID, unlooked-up,
+        // and the pushed links it reads are the owner's and owner agents' alone.
+        ("resolve::get", NoArtifact),
         ("agent::test_gate", Token),
         ("agent::test_caller", NoArtifact),
     ];
@@ -353,9 +398,15 @@ mod l10 {
             "perf" => include_str!("perf.rs"),
             "questions" => include_str!("questions.rs"),
             "remotes" => include_str!("remotes.rs"),
+            "remote_requests" => include_str!("remote_requests.rs"),
+            "resolve" => include_str!("resolve.rs"),
             "remote_apps" => include_str!("remote_apps.rs"),
+            "remote_artifacts" => include_str!("remote_artifacts.rs"),
             "room" => include_str!("room.rs"),
             "live_layers" => include_str!("live_layers.rs"),
+            "login" => include_str!("login.rs"),
+            "confirmations" => include_str!("confirmations.rs"),
+            "passkeys" => include_str!("passkeys.rs"),
             "sample" => include_str!("sample.rs"),
             "sessions" => include_str!("sessions.rs"),
             "settings" => include_str!("settings.rs"),
@@ -382,6 +433,7 @@ mod l10 {
             "mcp" => include_str!("mcp.rs"),
             "people" => include_str!("people.rs"),
             "permissions" => include_str!("permissions.rs"),
+            "feedback_integration" => include_str!("../integrations/feedback.rs"),
             _ => return None,
         })
     }
@@ -546,8 +598,32 @@ mod l10 {
             "a heartbeat on the caller's own lease (spec 2026-10-27-clax-sdk-design §7.4)",
         ),
         (
+            "queue_agent::watch",
+            "the caller's own session's subscription to a queue's wakes, which ends with the session; it changes no content (spec 2026-10-29-feedback-loop-design §7.3)",
+        ),
+        (
+            "queue_agent::unwatch",
+            "ends the caller's own session's subscription to a queue's wakes; it changes no content",
+        ),
+        (
             "site_signin::site_code",
             "mints a one-use code for the caller's own browser to read a site it may read; changes nothing",
+        ),
+        (
+            "login::create",
+            "mints a one-use login code a browser of this machine redeems at GET /login; changes no one's content",
+        ),
+        (
+            "login::end_all",
+            "ends the owner's own browser sessions; changes no one's content",
+        ),
+        (
+            "login::retire",
+            "ends the sessions the calling browser's own earlier logins opened; changes no one's content",
+        ),
+        (
+            "passkeys::challenge",
+            "hands out a one-use WebAuthn challenge; changes no one's content",
         ),
         (
             "app_bundles::record_install",
@@ -556,6 +632,10 @@ mod l10 {
         (
             "admin::test",
             "a read of the provider's model list, recorded as the view view.admin {page: provider.test}",
+        ),
+        (
+            "admin::refresh_catalog",
+            "replaces the cached public price catalog (as the daemon's daily refresh does, unaudited); changes no setting or cost line",
         ),
         (
             "settings::put",
@@ -574,6 +654,10 @@ mod l10 {
             "queues an unsigned chitin message through the chitin CLI, not the store",
         ),
         (
+            "feedback_integration::token",
+            "mints a reporter token through the public reporter-tokens route, and minting is unaudited by design: that route records nothing for any backend's mint, this one's included (spec 2026-10-29-feedback-loop-design §10.2)",
+        ),
+        (
             "remotes::add",
             "a sign-in to a public Clax, which audits the token it mints",
         ),
@@ -584,6 +668,10 @@ mod l10 {
         (
             "remotes::remove",
             "forgets a public Clax's token here; its revocation there is audited there",
+        ),
+        (
+            "remote_requests::unmute",
+            "lets agents ask again to connect a Clax instance; no content changes",
         ),
         (
             "remotes::patch_link",
@@ -636,6 +724,26 @@ mod l10 {
         (
             "remote_apps::record_install",
             "forwards an install count to a public Clax, which records it",
+        ),
+        (
+            "remote_artifacts::create_thread",
+            "forwards a new thread to a connected Clax, which records it",
+        ),
+        (
+            "remote_artifacts::comment",
+            "forwards a comment to a connected Clax, which records it",
+        ),
+        (
+            "remote_artifacts::resolve",
+            "forwards a resolve to a connected Clax, which records it",
+        ),
+        (
+            "remote_artifacts::reopen",
+            "forwards a reopen to a connected Clax, which records it",
+        ),
+        (
+            "remote_artifacts::handoff",
+            "forwards a handoff to a connected Clax, which records it",
         ),
         (
             "remotes::drop_unsent",
@@ -760,6 +868,10 @@ mod l10 {
         (
             "grants::test_sweep",
             "debug builds only; runs the daemon's grant sweep, which records its lapses as system:expiry",
+        ),
+        (
+            "login::test_viewer",
+            "debug builds only; mints a viewer for the browser tests, of no one's content",
         ),
     ];
 
@@ -1610,6 +1722,7 @@ mod agents {
             ("GET", "/api/approvals", Own, None),
             ("GET", "/api/approvals/requests", Own, None),
             ("GET", "/api/agents", Own, None),
+            ("GET", "/api/resolve", Own, None),
             ("POST", "/api/sessions/{id}/tool-calls", Own, None),
             ("POST", "/api/sessions/{id}/tool-call-ids", Own, None),
             // Report queues (spec 2026-10-27-clax-sdk-design §7).
@@ -1619,6 +1732,18 @@ mod agents {
                 "/api/queues/{qid}/reports",
                 Own,
                 Some((Comments, "read")),
+            ),
+            (
+                "POST",
+                "/api/queues/{qid}/watch",
+                Own,
+                Some((Comments, "watch")),
+            ),
+            (
+                "DELETE",
+                "/api/queues/{qid}/watch",
+                Own,
+                Some((Comments, "watch")),
             ),
             (
                 "GET",
@@ -1673,6 +1798,24 @@ mod agents {
                 "/api/queues/{qid}/reports/{tid}/artifact",
                 Own,
                 Some((Artifacts, "update")),
+            ),
+            (
+                "POST",
+                "/api/queues/{qid}/reports/{tid}/fix",
+                Own,
+                Some((Comments, "reply")),
+            ),
+            (
+                "GET",
+                "/api/queues/{qid}/reports/{tid}/diagnostics",
+                Own,
+                Some((Comments, "read")),
+            ),
+            (
+                "GET",
+                "/api/queues/{qid}/reports/{tid}/comments/{cid}/clip",
+                Own,
+                Some((Comments, "read")),
             ),
         ]
     };
@@ -1753,6 +1896,13 @@ mod agents {
         "questions::decline",
         "questions::release_owner",
         "questions::pull",
+        "confirmations::list",
+        "confirmations::answer",
+        "passkeys::list",
+        "passkeys::challenge",
+        "passkeys::register",
+        "passkeys::settings",
+        "passkeys::remove",
         "live::site",
         "events::events",
         "stream::open",

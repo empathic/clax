@@ -107,7 +107,11 @@
 //! ending, a live seat going idle, a question's grace ending: graces run
 //! on no timer here, `questions::SweptGraces`), the grant expiry by
 //! `Store::grants_next_due`, and the store's planner refresh an hour after
-//! the last one once a request that may write was served. After every
+//! the last one once a request that may write was served. An alarm that
+//! fires for any of them also refreshes the price catalog once its cache
+//! is a day old (`clax_server::catalog::refresh_if_stale`, tried at most
+//! once an hour, within 45 s), last, after ClaxBot's drive and the next
+//! alarm set; none is set for the catalog alone. After every
 //! request, socket event and alarm the object works that time out again and
 //! moves the alarm earlier when it must; with nothing due it holds no
 //! alarm, so an idle object, open sockets or not, sleeps until a request or
@@ -131,6 +135,7 @@
 //! reconnects with its `Last-Event-ID` and the new server replays the
 //! committed steps.
 
+use clax_http::state::InstanceFeedback;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
@@ -193,6 +198,11 @@ const MIN_ALARM_MS: f64 = clax_realtime::working::SWEEP_INTERVAL.as_millis() as 
 /// How long after the last planner refresh the next is due, once a request
 /// that may write was served.
 const OPTIMIZE_MS: f64 = clax_store::OPTIMIZE_INTERVAL.as_millis() as f64;
+/// How long after one try of a price catalog refresh the alarm tries
+/// again, while the cache is stale.
+const CATALOG_RETRY_MS: f64 = 3_600_000.0;
+/// The longest an alarm spends on a price catalog refresh.
+const CATALOG_DEADLINE: std::time::Duration = std::time::Duration::from_secs(45);
 /// The most bytes of one room socket message (as the daemon's room route).
 const MAX_ROOM_MESSAGE: usize = 64 * 1024;
 
@@ -286,6 +296,10 @@ pub struct InstanceDo {
     /// refresh.
     wrote: Cell<bool>,
     last_optimize: Cell<f64>,
+    /// When the alarm last tried a price catalog refresh (ms), so a
+    /// catalog that cannot be read is tried at most once in
+    /// [`CATALOG_RETRY_MS`].
+    last_catalog_try: Cell<f64>,
     /// The request bodies the object holds.
     bodies: BodyBudget,
 }
@@ -464,10 +478,19 @@ fn hosted(env: &Env) -> Result<Option<Arc<clax_http::hosted::Hosted>>> {
         opt("LEGAL_VERSION").as_deref(),
     )
     .map_err(rust_err)?;
+    // The landing page's reel, served from elsewhere: `REEL_URL` (the
+    // video) and `REEL_POSTER_URL` (its poster frame); none serves only
+    // what the quickstart release carries.
+    let reel = opt("REEL_URL")
+        .map(|v| clax_http::hosted::Reel::new(&v, opt("REEL_POSTER_URL").as_deref()))
+        .transpose()
+        .map_err(rust_err)?;
     let h = h
         .with_github(github, max_artifacts)
         .with_public_gallery(public_gallery)
-        .with_legal(legal);
+        .with_legal(legal)
+        .with_name(opt("INSTANCE_NAME"))
+        .with_reel(reel);
     Ok(Some(Arc::new(h)))
 }
 
@@ -510,6 +533,45 @@ fn sites_of(
     SiteHosts::new(&domain)
         .map(Some)
         .ok_or_else(|| format!("SITE_DOMAIN {domain:?} is not a site domain"))
+}
+
+/// The instance's own feedback integration
+/// (`clax_server::integrations::feedback`): the queue `CLAX_FEEDBACK_QUEUE`
+/// names and the service grant in `CLAX_FEEDBACK_SERVICE_GRANT` (JSON
+/// `{token, private_key}`), minting for the hosted public origin.
+/// Each is read as a secret, else a var of the name (a deploy rewrites the
+/// Worker's vars from its config, and keeps its secrets). With neither,
+/// it is the instance's own ([`InstanceFeedback::Own`]: a hosted instance
+/// makes its queue and grant itself, on the daemon's code path); with one
+/// alone, on an instance that is not hosted, or with a grant that does not
+/// check, it is off (logged when given), and the instance serves on.
+fn feedback_of(env: &Env, app: &AppState) -> InstanceFeedback {
+    let queue = secret(env, "CLAX_FEEDBACK_QUEUE");
+    let grant = secret(env, "CLAX_FEEDBACK_SERVICE_GRANT");
+    let (queue_set, grant_set) = (!queue.trim().is_empty(), !grant.trim().is_empty());
+    if !queue_set && !grant_set {
+        return InstanceFeedback::Own;
+    }
+    let Some(origin) = app.hosted.as_ref().map(|h| h.origin.clone()) else {
+        return InstanceFeedback::Off;
+    };
+    if !queue_set || !grant_set {
+        worker::console_error!(
+            "CLAX_FEEDBACK_QUEUE and CLAX_FEEDBACK_SERVICE_GRANT are set together or not at all; the feedback integration is off"
+        );
+        return InstanceFeedback::Off;
+    }
+    match clax_server::integrations::feedback::integration(&queue, &origin, &origin, &grant) {
+        Ok(i) => InstanceFeedback::Configured(Arc::new(i)),
+        Err(e) => {
+            let name = match e.input {
+                clax_server::integrations::feedback::Input::Queue => "CLAX_FEEDBACK_QUEUE",
+                clax_server::integrations::feedback::Input::Grant => "CLAX_FEEDBACK_SERVICE_GRANT",
+            };
+            worker::console_error!("{name}: {e}; the feedback integration is off");
+            InstanceFeedback::Off
+        }
+    }
 }
 
 /// What the instance says about the Clax app: its app links
@@ -559,8 +621,11 @@ fn worker_bot(env: &Env, app: &mut AppState) -> crate::bot::WorkerBot {
     });
     let enabled = sandbox.is_ok();
     let sandbox = sandbox.unwrap_or_else(|()| Arc::new(clax_server::bot::UnavailableSandbox));
-    let first = crate::bot::routes_bot(kek, enabled, Arc::new(clax_http::bot::NoRuns));
+    let mut first = crate::bot::routes_bot(kek, enabled, Arc::new(clax_http::bot::NoRuns));
+    first.catalog_url = catalog_url(env);
     let (events, views, keys) = (first.events.clone(), first.views.clone(), first.keys());
+    let (first_catalog_url, catalog_flight) =
+        (first.catalog_url.clone(), first.catalog_flight.clone());
     app.bot = Arc::new(first);
     // The server's own host, over the state the routes see.
     let server_host = Arc::new(clax_server::bot::ServerHost::new(app.clone()));
@@ -584,6 +649,8 @@ fn worker_bot(env: &Env, app: &mut AppState) -> crate::bot::WorkerBot {
         views,
         runs: kicks,
         events,
+        catalog_url: first_catalog_url,
+        catalog_flight,
     });
     bot
 }
@@ -598,6 +665,20 @@ fn resume_after(env: &Env) -> std::time::Duration {
         .flatten()
         .filter(|ms| *ms >= 1_000);
     set.map_or(crate::bot::RESUME_AFTER, std::time::Duration::from_millis)
+}
+
+/// Where the alarm and the pricing routes fetch the price catalog:
+/// tokenulator.dev's ([`clax_core::config::PRICE_CATALOG_URL`]); with the
+/// test routes on (`CLAX_TEST_ROUTES` = `1`), the var
+/// `CLAX_BOT__PRICE_CATALOG_URL` (none when it is unset, empty or `off`), so no
+/// test instance reaches tokenulator.dev.
+fn catalog_url(env: &Env) -> Option<String> {
+    if var(env, "CLAX_TEST_ROUTES") == "1" {
+        clax_core::config::catalog_url_of(&var(env, "CLAX_BOT__PRICE_CATALOG_URL"))
+            .map(String::from)
+    } else {
+        Some(clax_core::config::PRICE_CATALOG_URL.to_string())
+    }
 }
 
 /// The seats and presence the object keeps across a wake.
@@ -688,6 +769,7 @@ impl Instance {
         // the deploy's build identity (the `CLAX_BUILD` var).
         clax_core::set_build_commit(build_commit(&var(env, "CLAX_BUILD_COMMIT")));
         app.build = Some(var(env, "CLAX_BUILD")).filter(|b| !b.is_empty());
+        app.feedback = feedback_of(env, &app);
         let bot = worker_bot(env, &mut app);
         app.seats
             .set_limits(clax_core::seats::SeatLimits::from_env(|k| {
@@ -1510,6 +1592,7 @@ impl DurableObject for InstanceDo {
             alarm: Cell::new(None),
             wrote: Cell::new(false),
             last_optimize: Cell::new(now_ms()),
+            last_catalog_try: Cell::new(f64::NEG_INFINITY),
             bodies: BodyBudget::default(),
         }
     }
@@ -1654,13 +1737,40 @@ impl DurableObject for InstanceDo {
         }
         inst.settle().await;
         self.schedule(&inst).await;
+        // Last: after the runs and with the next alarm already set, so a
+        // slow catalog delays neither.
+        self.refresh_catalog(&inst).await;
         Response::ok("")
     }
 }
 
 impl InstanceDo {
+    /// The price catalog, once its cache is a day old by the store's clock
+    /// (`clax_server::catalog::refresh_if_stale`), tried at most once in
+    /// [`CATALOG_RETRY_MS`] and for at most [`CATALOG_DEADLINE`]; a failure
+    /// keeps the cache.
+    async fn refresh_catalog(&self, inst: &Instance) {
+        let now = now_ms();
+        if now - self.last_catalog_try.get() < CATALOG_RETRY_MS {
+            return;
+        }
+        self.last_catalog_try.set(now);
+        let r = clax_rt::time::timeout(
+            CATALOG_DEADLINE,
+            clax_server::catalog::refresh_if_stale(&inst.app),
+        )
+        .await;
+        let why = match r {
+            Ok(Some(Err(e))) => e.message,
+            Err(_) => format!("not done within {} s", CATALOG_DEADLINE.as_secs()),
+            Ok(_) => return,
+        };
+        worker::console_warn!("price catalog refresh failed; kept the cache: {why}");
+    }
+
     /// The instance's timed work that is due (the module docs' Alarm):
-    /// the sweep, grants expired, sessions unseen, the planner refresh.
+    /// the sweep, grants expired, sessions unseen, the planner refresh and
+    /// the prune of ended ClaxBot runs.
     async fn timed_work(&self, inst: &Instance) {
         inst.app.sweep().await;
         let now = now_ms();
@@ -1691,6 +1801,9 @@ impl InstanceDo {
             self.last_optimize.set(now);
             self.wrote.set(false);
             let _ = inst.app.store.call(|st| st.optimize()).await;
+            // Ended ClaxBot runs' journals and drafts past their keep, at
+            // the planner refresh's pace (a run's end is a write).
+            let _ = inst.app.store.call(|st| st.prune_ended_runs()).await;
         }
     }
 }

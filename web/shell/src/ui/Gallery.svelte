@@ -13,8 +13,9 @@
   // wait in Clax and are answered there; anyone else at `/inbox` is told
   // the browser has no inbox, and nothing more of it is fetched. At `/people` the
   // page is People (its own chunk, through the lazy module, with the page's
-  // stream), and no artifacts are fetched; so is `/queues`, the report
-  // queues. **People** and **Queues** are in the header for the owner and
+  // stream), and no artifacts are fetched; so is `/queues`, the report queues
+  // (with a queue's view at `/queues/<qid>` and a report's at
+  // `/queues/<qid>/<tid>`). **People** and **Queues** are in the header for the owner and
   // for a connected person, once the lazy module has loaded.
   // Every one of these pages ends with a link to Clax's source on GitHub,
   // and, on a hosted Clax that shows Terms of Service and a Privacy Policy,
@@ -30,7 +31,9 @@
   // fetched; so are ClaxBot's pages, `/admin`, `/settings`, `/me` and
   // `/audit` (`bot/`). Once the lazy module loads, the New artifact tile
   // (`NewTile`) leads the first section's grid (searched or filtered
-  // too), and the empty gallery.
+  // too), and the empty gallery. For a person who may report problems with
+  // Clax, the header carries the feedback menu (`feedback/`), whatever the
+  // artifact list answers.
   import { onDestroy, onMount } from "svelte";
   import { ApiError, type Artifact, type AttentionSummary, type TagRef, deleteArtifact, getAttention, getToken, listArtifacts, patchArtifact } from "../api";
   import { REQUEST_STUCK, connTrouble } from "../conn-notice";
@@ -41,6 +44,7 @@
   import GalleryCard from "./GalleryCard.svelte";
   import Mark from "./Mark.svelte";
   import ThemeSwitch from "./ThemeSwitch.svelte";
+  import { feedbackMenu } from "../feedback/slot.svelte";
 
   let artifacts = $state<Artifact[] | null>(null);
   let error = $state<string | null>(null);
@@ -66,9 +70,12 @@
   let gw = $state<typeof import("./gallery-working") | null>(null);
   let feed = $state<import("./working-feed.svelte").WorkingFeed | null>(null);
   let sync: import("./card-sync").CardSync | null = null;
-  const inbox = location.pathname === "/inbox";
+  // The page's path, with a queue's and a report's view (`/queues/<qid>`,
+  // `/queues/<qid>/<tid>`) read as the Queues page: the only sub-paths a page has.
+  const top = location.pathname.replace(/^\/queues\/.+/, "/queues");
+  const inbox = top === "/inbox";
   // The pages beside the gallery and the inbox, each its own chunk (`gallery-working` `page`).
-  const sub = /^\/(people|tags|queues|admin|settings|me|audit)$/.exec(location.pathname)?.[1] as import("./gallery-working").Page | undefined;
+  const sub = /^\/(people|tags|queues|admin|settings|me|audit)$/.exec(top)?.[1] as import("./gallery-working").Page | undefined;
   // The tag filter: the artifacts shown carry every one. It holds tag IDs
   // once the tags are known (`canonical`), and the address (`?tag=`) names
   // each tag by its name, so a rename follows in place and a deleted tag
@@ -160,6 +167,7 @@
   {#if !inbox && !sub}<input type="search" class="search" placeholder="Search artifacts" aria-label="Search artifacts" value={query} oninput={e => { query = e.currentTarget.value; }} />{/if}
   {#if Q}<Q.InboxLink current={inbox} />{/if}
   {#if lm}<lm.Links current={sub} owner={!!token} {viewer} />{/if}
+  {#if feedbackMenu.current}<feedbackMenu.current />{/if}
   <ThemeSwitch />
 </header>
 <main class="gal">

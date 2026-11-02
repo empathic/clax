@@ -3,7 +3,8 @@ use clax_core::{ArtifactId, Home};
 
 #[derive(clap::Args)]
 pub struct Args {
-    pub target: String,
+    /// The artifact (its ID or URL); the gallery when absent.
+    pub target: Option<String>,
 }
 
 /// Accepts a bare artifact ID or any URL whose path contains `/a/<id>`.
@@ -18,16 +19,26 @@ pub fn id_from(s: &str) -> anyhow::Result<String> {
         .to_string())
 }
 
-/// Opens the artifact in a browser (text mode) or prints its URL (`--json`,
-/// which never opens). Text mode fails when the opener fails, by the rule of
+/// Opens the artifact (the gallery without one) in a browser (text mode)
+/// or prints its URL (`--json`, which never opens). Text mode opens it
+/// through a one-use login link
+/// ([`Client::login_url`]), so a browser that is not yet one of the
+/// owner's becomes one, and prints the artifact's own URL, never the link;
+/// it fails when the opener fails, by the rule of
 /// [`clax_mcp::tools::open_in_browser`].
 pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
-    let id = id_from(&a.target)?;
+    let id = a.target.as_deref().map(id_from).transpose()?;
     let c = Client::connect(home, cli.port_for(home)?)?;
-    c.get(&format!("/api/artifacts/{id}"))?;
-    let url = c.browser_url(&format!("/a/{id}"));
-    if !cli.json && !clax_mcp::tools::open_in_browser(&url) {
-        anyhow::bail!("could not open a browser; open {url} yourself");
+    let path = match &id {
+        Some(id) => {
+            c.get(&format!("/api/artifacts/{id}"))?;
+            format!("/a/{id}")
+        }
+        None => "/".to_string(),
+    };
+    let url = c.browser_url(&path);
+    if !cli.json && !clax_mcp::tools::open_in_browser(&c.login_url(&path)?) {
+        anyhow::bail!("could not open a browser; run `clax login {path}` for a link to open");
     }
     super::print(cli, serde_json::json!({"url": url}), |j| {
         j["url"].as_str().unwrap().to_string()

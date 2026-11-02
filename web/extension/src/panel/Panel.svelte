@@ -180,6 +180,14 @@
   const suggestion = $derived(link.suggestion && link.suggestion.origin === tabOrigin ? link.suggestion.suggestion : null);
   const people = $derived(roster(s?.participants?.people ?? [], s?.presence ?? []));
   const viewUrl = $derived(s?.page && /^https?:\/\//.test(s.page.url) ? s.page.url : null);
+  /** "Open in Clax": the worker opens the page's view through a login link, so the tab is the owner's browser there.
+   * A button, not a link: a link's middle-click, modifier click or "Open in new tab" would follow its plain
+   * address past the login link. */
+  const openInClax = () => {
+    if (!viewUrl) return;
+    const u = new URL(viewUrl);
+    link.post({ t: "open-clax", path: u.pathname + u.search });
+  };
   /** The batch send's bound (spec §8). */
   const BATCH = 20;
   /** How the panel words a failure code: text, and a command to run with its copy button. */
@@ -187,6 +195,8 @@
   const help = $derived(new Map<string, Help>([
     ["host_missing", { before: "Clax is not set up for Chrome yet. Run", command: "clax init", after: "(or /clax:extension in Claude Code), then click Retry." }],
     ["daemon_unavailable", { before: "Clax could not start. See ~/.clax/logs/daemon.log, then click Retry." }],
+    ["pairing_declined", { before: "Pairing was declined in your browser. Click Retry to ask again." }],
+    ["pairing_expired", { before: "The pairing confirmation expired. Click Retry to try again." }],
     ["no_capture_permission", { before: panelHint(keys) }],
   ]));
   const shownHelp = $derived(s?.error ? (help.get(s.error.code) ?? { before: s.error.message }) : null);
@@ -365,7 +375,7 @@
     {/if}
     {#if s.enabled}
       <footer class="foot">
-        {#if viewUrl}<a href={viewUrl} target="_blank" rel="noopener noreferrer">Open in Clax</a>{/if}
+        {#if viewUrl}<button type="button" class="open" onclick={openInClax}>Open in Clax</button>{/if}
         {#if s.tabId !== null}
           {@const tabId = s.tabId}
           <button type="button" class="ghost" onclick={() => link.post({ t: "turn-off", tabId })}>Turn off in this tab</button>
@@ -408,8 +418,8 @@
   .picked { margin: 10px var(--gutter) 0; }
   .picked > button { width: 100%; min-height: 28px; font-size: 12.5px; color: var(--muted); border: 1px dashed var(--border-hover); }
   .foot { margin-top: auto; display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px var(--gutter); border-top: 1px solid var(--border); font-size: 13px; }
-  .foot a { color: var(--agent-ink); }
   .foot button { margin-left: auto; }
+  .foot .open { margin-left: 0; padding: 0; color: var(--agent-ink); border: 0; background: none; font: inherit; text-decoration: underline; cursor: pointer; }
   .tabs { display: flex; gap: 2px; padding: 0 var(--gutter); border-bottom: 1px solid var(--border); background: var(--card); }
   .tabs button { flex: none; min-height: 34px; padding: 0 10px; gap: 6px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--muted); font-weight: 500; }
   .tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--fg); }

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # `just watch`: runs the daemon and the web bundlers with auto-reload. By
-# default it serves its own home ($CLAX_HOME, else ~/.clax-dev) on port
-# $CLAX_DEV_PORT, else 7481, so rebuilding never takes the agents' daemon
-# down; `--shared` serves the agents' home (~/.clax) on 7480 (stop the
+# default it serves this checkout's dev home (scripts/dev-home.sh,
+# watch_settings: ~/.clax-dev on 7481, a linked worktree's own
+# ~/.clax-dev-<name>, or $CLAX_HOME and $CLAX_DEV_PORT), so rebuilding never
+# takes the agents' daemon down; `--shared` serves the agents' home (~/.clax) on 7480 (stop the
 # installed daemon first). Other arguments go to `clax serve`. Outside
 # --shared, a daemon an earlier `just dev` left in the dev home, whose
 # temporary binary is gone, is stopped first; ~/.clax and port 7480 are never
@@ -12,7 +13,9 @@
 # native) ibazel rebuilds the debug clax, which embeds the web UI, and
 # restarts it on any Rust or web change: no target/, no node_modules. Without
 # it, cargo-watch restarts the daemon on Rust changes and Vite rebuilds
-# web/dist, which the debug build serves from disk.
+# web/dist, which the debug build serves from disk, and the SDK package,
+# web/dist-sdk, for an app that links it. With Bazel the SDK package is not
+# watched: `just web` builds it into web/dist-sdk.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 . scripts/dev-home.sh
@@ -76,6 +79,7 @@ if [ "$BUILD_SYSTEM" = native ]; then
     for cfg in bridge transport shell; do
         (cd web && pnpm exec vite build -c "vite.$cfg.config.ts" --watch 2>&1 | sed -u "s/^/[web:$cfg] /") &
     done
+    (cd web && node scripts/build-sdk.mjs --watch 2>&1 | sed -u "s/^/[web:sdk] /") &
     reload="backend restarts on Rust changes; reload the browser for frontend changes"
 else
     stop_bin="$(scripts/run.sh bin)"
@@ -85,7 +89,10 @@ fi
 (
     for _ in $(seq 1 600); do
         if curl -fsS "http://localhost:$PORT/healthz" >/dev/null 2>&1; then
-            echo "Clax watch: http://localhost:$PORT ($reload)"
+            # A one-use login link (two minutes): it signs the browser
+            # opening it in as the owner's. `clax login` prints a new one.
+            link="$("$stop_bin" login 2>/dev/null || true)"
+            echo "Clax watch: ${link:-http://localhost:$PORT} ($reload; \`CLAX_HOME=$CLAX_HOME $stop_bin login\` prints a new sign-in link)"
             exit 0
         fi
         sleep 1

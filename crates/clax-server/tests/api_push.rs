@@ -662,6 +662,7 @@ async fn a_batch_reaches_codex_as_one_queued_message_led_by_its_note() {
     let res = ts
         .client
         .post(format!("{}/api/artifacts/{aid}/threads:send", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .json(&json!({"thread_ids": [a, b], "note": "Both, please"}))
         .send()
         .await

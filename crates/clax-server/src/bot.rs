@@ -572,9 +572,7 @@ fn announce_thread(ctx: &clax_realtime::feedback::FeedbackCtx, st: &Store, tid: 
                 comment: json!(c),
             });
         }
-        if let Err(e) = crate::routes::threads::publish_thread(ctx, st, &t) {
-            tracing::warn!(error = %e, "a ClaxBot thread change was not announced");
-        }
+        crate::routes::threads::publish_thread(ctx, st, &t);
     }
 }
 
@@ -1153,7 +1151,7 @@ pub fn driver(state: &mut AppState) -> Arc<clax_bot::Driver> {
     let host: Arc<dyn BotHost> = Arc::new(host);
     let deps = clax_bot::Deps::new(
         state.store.clone(),
-        clax_sample::messages::MessagesClient::new(),
+        crate::routes::admin::messages_client(&state.store),
         sandbox(),
         host.clone(),
         Arc::new(clax_http::bot::Settings {
@@ -1180,6 +1178,8 @@ pub fn driver(state: &mut AppState) -> Arc<clax_bot::Driver> {
         views: bot.views.clone(),
         runs,
         events: bot.events.clone(),
+        catalog_url: bot.catalog_url.clone(),
+        catalog_flight: bot.catalog_flight.clone(),
     });
     driver
 }

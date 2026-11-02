@@ -130,7 +130,9 @@ server cannot run `clax` at all, its one tool, `status`, says why, and
 
 ```
 clax publish index.html --dir site   # publish a directory; prints the artifact URL (--json gives the ID)
-clax open <ID>                       # open an artifact in the browser
+clax open <ID>                       # open an artifact in the browser, signing it in
+clax login [path]                    # print a one-use sign-in link for a browser
+clax logout                          # end every browser's owner session (each needs clax open again)
 clax list                            # list artifacts (--tag <tag>, repeatable: only those carrying every tag)
 clax tags                            # list the tags; the owner makes them: clax tags create|edit|delete
 clax tag <ID> --add draft --remove x # add or remove an artifact's tags (existing tags only)
@@ -143,10 +145,15 @@ clax comments reply <ID>#2 "Thanks"  # reply as you (- reads stdin); also resolv
 clax comments name "Alex"            # your name, in the CLI and every browser of yours
 clax versions <ID>                   # versions: label, publisher, time, threads addressed
 clax db get <ID> tasks t1            # the page database: get, list, query, set, update, delete, str-replace, batch
+clax queue ls --queue <QID>          # a report queue's active reports (CLAX_QUEUE sets the queue; --state all for every state)
+clax queue show <report>             # one report: context, conversation, fixes; also clip, diagnostics
+clax queue claim <report> --session <SID>  # also renew, release, reply, fix --summary …, resolve --reason …
+clax queue follow <QID> --session <SID>    # one JSON line per report filed into the queue or reopened
 clax status                          # show whether the daemon is running and which agents are working on what
 clax doctor                          # check the home directory, daemon, database, and stored files
 clax doctor --fix                    # also remove stray temp files and stale rows (never live artifacts' rows)
 clax doctor --agent codex            # also check each layer of a harness's plugin: claude, codex, pi or grok
+clax passkeys reset                  # with the daemon stopped: remove every confirmation passkey and stop requiring one
 clax stop                            # stop the daemon
 clax serve --bind 0.0.0.0            # serve connected people on the LAN (stop a running daemon first)
 clax connect <invite URL>            # connect this machine to someone else's Clax as a person (--status, --off)
@@ -173,7 +180,7 @@ Only your own browser spends the key: the page asks you to allow it once each ti
 
 A page that declares a capability reaching past itself (the internet, Claude, Clax's controls, notifications, sharing, files, the camera or your location) gets it only once the person who answers for the artifact approves it in Clax: on your own Clax, you as its owner; on a hosted Clax, the page's maker. Never an agent or the page. When a version declares something new, or a new `net` host, the artifact's view shows an approval bar to those who may approve: Review opens a dialog naming what the version asks for and what approving lets the page do, with Approve and Not now. Until it is approved the page's `use()` resolves `null` for it and the version before keeps what was approved. The Permissions panel (More › Permissions…) lists what the page declares and what is in force, with the network hosts, the Claude grant and the reads of other artifacts' documents, each with its revoke, and a Withdraw for an approved capability. Your approval also grants the network hosts and the Claude use that waited; a hosted maker's approval leaves those to your answer the first time the page uses them. The routes are in `docs/contract.md` ("Approving capabilities").
 
-Every setting in `config.toml` can also come from the environment: `CLAX_<TABLE>__<KEY>`, a double underscore for each level (`CLAX_SERVE__PORT=7481`, `CLAX_SAMPLE__MAX_TOKENS=8000`, `CLAX_BOT__MODELS__DEFAULT=claude-opus-5-5`), which overrides the file, which overrides the defaults (`[hosted]` alone is read from the file only). An invalid table turns off only what it configures; `clax doctor` warns about it. The `[bot]` table configures ClaxBot (its provider, models, caps and credits; `docs/contract.md`, "`config.toml`"). The local daemon's `GET /api/settings` lists every setting with the value in effect and where it came from (`default`, `file` or `env:<NAME>`), and the value pending the next start when the file now differs, and `PUT /api/settings` writes the ones the file holds back into `config.toml`, keeping its comments; the owner and the admins the owner names may use either, and a change takes effect when the daemon next starts. ClaxBot runs in the daemon once a model key is set: `[bot] api_key_env` names the variable it reads the instance key from (`ANTHROPIC_API_KEY`), or an admin sets one at `/admin` (Provider); its runs, credits and audit are under `/me`, `/admin` and `/audit` (`docs/contract.md`, "ClaxBot routes"). A `[bot]` value set in the file or the environment overrides the admin pages' one and shows read-only there.
+Every setting in `config.toml` can also come from the environment: `CLAX_<TABLE>__<KEY>`, a double underscore for each level (`CLAX_SERVE__PORT=7481`, `CLAX_SAMPLE__MAX_TOKENS=8000`, `CLAX_BOT__MODELS__DEFAULT=claude-opus-5-5`), which overrides the file, which overrides the defaults (`[hosted]` alone is read from the file only). An invalid table turns off only what it configures; `clax doctor` warns about it. The `[bot]` table configures ClaxBot (its provider, models, caps and credits; `docs/contract.md`, "`config.toml`"). The local daemon's `GET /api/settings` lists every setting with the value in effect and where it came from (`default`, `file` or `env:<NAME>`), and the value pending the next start when the file now differs, and `PUT /api/settings` writes the ones the file holds back into `config.toml`, keeping its comments; the owner and the admins the owner names may use either, and a change takes effect when the daemon next starts. ClaxBot runs in the daemon once a model key is set: `[bot] api_key_env` names the variable it reads the instance key from (`ANTHROPIC_API_KEY`), or an admin sets one at `/admin` (Provider); its runs, credits and audit are under `/me`, `/admin` and `/audit` (`docs/contract.md`, "ClaxBot routes"). ClaxBot speaks Anthropic's Messages API by default; `[bot] api = "openai"` (Chat Completions, as Mistral and Subconscious serve it, `base_url = "https://api.mistral.ai/v1"`) or `api = "gemini"` (`base_url = "https://generativelanguage.googleapis.com/v1beta"`) points it at another provider, as does the API picker under Provider. A model a run uses is priced, unit by unit, by its rate card (its four token lines, each at cost plus margin or at fixed credits per million tokens), else by tokenulator.dev's price catalog for the provider in effect (which the daemon fetches once a day from `[bot] price_catalog_url`, tokenulator.dev's by default; `off` turns it off), else by the instance's default rates; a price no admin set is an estimate (with "Require an explicit price" set, a model without a rate card is refused instead). Admin › Pricing shows each model's credits per million tokens and where each rate comes from, flags a rate card whose cost drifted from the catalog's, and edits, adds (by hand or from tokenulator.dev) and removes rate cards, the default rates and the catalog's refresh; the model pickers under Provider show each listed model's price, and say when one is only estimated. A `[bot]` value set in the file or the environment overrides the admin pages' one and shows read-only there.
 
 A new artifact needs a title: `--title`, or else the page's `<title>`. Updates keep the current title unless `--title` is given.
 
@@ -289,6 +296,8 @@ An agent connects to a hosted Clax (clax.dev among them) as its person, with an 
 
 A new person's gallery on a hosted Clax starts with the Clax Quickstart, a pinned page of theirs that walks from sign-in to a first comment round trip. The site seeds it at the person's first sign-in (GitHub or a sign-in link) or when they accept an invite, into a gallery that never held an artifact. A local home is not seeded: its gallery starts empty, and a quickstart an earlier build seeded there stays. While nobody has touched a quickstart, each later sign-in (on a hosted Clax) and each start (for one a local home holds) moves it to the release this Clax ships, as a new version labelled `Quickstart <release>`; the first comment thread on it, a version or a change of its capabilities by anyone else, or an approval or withdrawal by a person stops its updates for good. `[gallery] quickstart = false` in `config.toml` (or `CLAX_GALLERY__QUICKSTART=false`) turns seeding and updates off.
 
+The same page is a hosted Clax's landing page: a visitor who is not signed in and opens the site's root (`https://clax.dev/`) is sent to `/start/`, where the site shows the shell's minimal chrome (its header, with Sign in, or Your gallery once signed in; no threads or comments) around the quickstart this release carries, served as it ships at `/start/index.html`. Its Sign in with GitHub signs in on that site, in the same window. The page's reel (`/start/reel.mp4` and `reel-poster.jpg`) is served from wherever the Worker's `REEL_URL` and `REEL_POSTER_URL` name: Cloudflare Stream on clax.dev, the dev server itself under `just clax-dev-local`; without them the page shows no player. The quickstart seeded into a person's gallery plays the same reel: its site sends a request for `reel.mp4` or `reel-poster.jpg`, which the shipped copy does not carry, to the same place. The gallery's other pages (`/inbox`, `/people`, …) still send such a visitor to `/signin`. A build without the quickstart, or a daemon with `[gallery] quickstart = false`, has no landing page: the root sends a signed-out visitor to `/signin`, and `/start/` is 404.
+
 `app_links` and `stores` concern the Clax app, and every key is optional. `apple_team_id` (10 uppercase letters and digits, the team that signs the app) serves `/.well-known/apple-app-site-association` for `<team>.dev.empathic.clax`; `android_package` and `android_sha256` (the signing certificate's SHA-256 fingerprint, 32 hex bytes joined by `:`), given together, serve `/.well-known/assetlinks.json`. With them, a Get in Clax link (`/a/<id>/get`) opens in the Clax app on iPhone, iPad and Android; without them those files are 404 and the link opens the get page in the browser. `stores.ios` and `stores.android`, `https://` URLs, are offered on that page to someone without the app. App links work only for the domains the app's build declares, clax.dev alone; any other hosted Clax's get page offers Open in Clax (`clax:get?url=…`, on every platform) and Download .clax. The Cloudflare Worker reads the same settings from `APPLE_TEAM_ID`, `ANDROID_PACKAGE`, `ANDROID_SHA256`, `IOS_STORE_URL` and `ANDROID_STORE_URL` (`crates/clax-worker/README.md`).
 
 ### People
@@ -361,6 +370,60 @@ prints a code and opens its approval page. Signed in there as the person to
 publish as, check the code and approve: this Clax receives an agent token of
 yours, which your People page there lists (named `Clax on <host name>`) and
 revokes. Codes last ten minutes and work once.
+
+An agent cannot add a remote (`clax remote add` under a harness answers
+"This is for people, not agents: open … in a browser; agents: use `clax
+remote request <url>`."). It asks instead:
+
+```bash
+clax remote request https://clax.example/a/7q3k9mzx2b4t --reason "to read the launch plan"
+```
+
+The person sees one card in the inbox (and in the agent's thread when it
+was working in one): "<agent> wants to connect to <name> (<origin>) to
+read <url>", with **Connect** (this Clax's device sign-in, approved on the
+other instance in a new tab), **Not now** (no new request for a day) and
+**Never for this instance** (muted until unmuted in Settings, Remotes).
+The command asks as the agent's own Clax session, which it finds from the
+harness (its session variable, else its process), or `--session`; it waits
+(600 s, 50 s under Codex, or `--wait`) and prints the answer: `connected`,
+`dismissed`, `muted`, `not_now` or `expired`, or `open` while the person
+has not answered. Agents with the MCP tools use
+`connect_instance` instead.
+
+### Reading another Clax from an agent
+
+Give an agent a page's URL on another Clax instance (clax.dev, a team's
+own, or a colleague's) and its tools work on it there. Before this Clax is
+connected to that instance, `read`, `comments_read` and `watch` answer
+`remote_sign_in_required`, naming the instance and the `connect_instance`
+tool; a private page there answers anyone else not found, with a hint to
+sign in or to connect. The agent then calls `connect_instance` with the
+URL and a reason, and waits:
+
+1. The connection request appears as a card in your inbox, naming the
+   agent, the instance and the page.
+2. You press **Connect** in your browser. While any agent of yours is
+   live, the daemon token alone cannot answer it: it is your browser's
+   decision (and, with passkeys turned on in Settings, your passkey's).
+3. A tab opens on the other instance's device sign-in. Signed in there as
+   the person to read as, check the code and approve.
+4. `connect_instance` answers `connected`.
+
+From then on the agent reads that instance's pages through your Clax, as
+the person who approved: `read`, `open` and the comment tools answer as
+for a local artifact, with the page's address there and the instance's
+name, and anything that would change a page there (`publish`, `db_*`,
+`delete`, …) answers `not_on_remote`. `watch` follows the page: the agent
+appears there by its name, so a person there can send it a thread, and
+what they send reaches it here as a local comment does (`wait_for_feedback`,
+the `follow_command` the watch answers, channel notifications). Revoking
+this machine's token on your People page there signs it out; the next
+call answers `remote_sign_in_required` again.
+
+Nothing of this needs the other instance to be on the internet: one on
+this machine (`just clax-dev-local`) connects over `http`, as loopback is
+allowed; any other is `https`.
 
 A push publishes every version the public copy has not had, in order, with
 its label, note and files. The public versions are yours there: each names
@@ -468,7 +531,7 @@ published from the app, is not an app: its get page says so.
 
 ## Use from an agent
 
-Each harness gets the same thirty-eight tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `tag`, `tags`, `fork`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `where_to_ask`, `publish_public`, `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`, `db_batch`, `queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`, `queue_resolve`) and the `clax` skill. Install the plugin for each harness (see Install); plugin details: [plugins/claude-code/README.md](../plugins/claude-code/README.md), [plugins/clax/README.md](../plugins/clax/README.md), [plugins/pi/README.md](../plugins/pi/README.md), [plugins/clax-grok/README.md](../plugins/clax-grok/README.md).
+Each harness gets the same forty-two tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `tag`, `tags`, `fork`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `where_to_ask`, `connect_instance`, `publish_public`, `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`, `db_batch`, `queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`, `queue_resolve`, `queue_get`, `queue_fix`, `queue_watch`) and the `clax` skill. Install the plugin for each harness (see Install); plugin details: [plugins/claude-code/README.md](../plugins/claude-code/README.md), [plugins/clax/README.md](../plugins/clax/README.md), [plugins/pi/README.md](../plugins/pi/README.md), [plugins/clax-grok/README.md](../plugins/clax-grok/README.md).
 
 The plugins run `CLAX_BIN`, else the `bin` setting, else the release they
 pin (see "Which clax the plugins run"). `status` and `clax doctor --agent`
@@ -490,6 +553,8 @@ path a session uses.
 ## Documentation
 
 [docs/contract.md](contract.md) is the contract for agents and integrators: every tool's arguments, results and error codes, how sessions are identified per harness, the page contract, the security model, and what is not yet available.
+
+[docs/feedback.md](feedback.md) is the guide to report queues for a product of your own: its users report problems from inside the app with a screenshot and what their browser knew, and your agents work them through `clax queue` and the `queue_*` tools until the reporter says the fix works.
 
 [docs/kubernetes.md](kubernetes.md) deploys hosted Clax instances on Kubernetes, each on its shard pod's volume and scaled across pods (`clax-fleet`, `deploy/k8s`).
 
@@ -551,11 +616,16 @@ sits beside `clax-cli`, over `clax-server` and `clax-embedded`. `scripts/check-c
 gate, holds the rule crate by crate (its `ALLOWED` map) and fails a
 dependency out of order.
 
-Two loops, both on a home of their own, `~/.clax-dev`, whose daemon listens on
-port 7481 (its `config.toml` says `[serve] port = 7481`, or the port in
-`CLAX_DEV_PORT`, written by whichever of `just watch` and `just dev` runs
-first). Your agents' home, `~/.clax`, their daemon on 7480, and the `clax`
-they have installed are never touched.
+Two loops, both on the checkout's dev home (`scripts/dev-home.sh`). The
+repository's main checkout uses `~/.clax-dev`, whose daemon listens on port
+7481. Each linked git worktree uses a home of its own,
+`~/.clax-dev-<worktree directory name>`, on the first port of 7482-7499 that
+no other dev home records when the home is made, so one branch's migrations
+never upgrade the database another branch's build opens. A home's
+`config.toml` records its port (`[serve] port = …`), written by whichever of
+`just watch` and `just dev` runs first; `CLAX_HOME` and `CLAX_DEV_PORT` name
+another home or port. Your agents' home, `~/.clax`, their daemon on 7480,
+and the `clax` they have installed are never touched.
 
 **The daemon and the web UI: `just watch`.** An auto-reloading server at
 http://localhost:7481, which can be left running. A Rust change rebuilds and
@@ -567,12 +637,16 @@ agents' home, `~/.clax`, on 7480 instead: stop their daemon first with
 `clax stop`, and expect an agent to start its own daemon there while a Rust
 change rebuilds. `just dev` with no harness, or with an option first
 (`just dev --shared`), runs `just watch`. `just serve`, `just stop` and
-`just doctor` run the checkout's build on `~/.clax-dev` (`just serve` on
-7481). `just watch` needs `cargo-watch` (`cargo install cargo-watch`).
+`just doctor` run the checkout's build on the dev home and its port, and
+`just clax <arguments>` runs any other `clax` command there (`just clax
+remote list`). `just watch` needs `cargo-watch` (`cargo install cargo-watch`).
 
 **An agent on your working tree: `just dev claude|codex|grok|pi`.** It builds
 `clax`, copies it into a temporary directory put first on `PATH` (removed
-when the session ends), and starts the harness on `~/.clax-dev`:
+when the session ends), starts the dev home's daemon, and starts the harness
+on that home. A home whose database the build cannot open (upgraded by a
+build with other migrations) stops it before the harness, with the error and
+what to do:
 
 ```
 just dev claude
@@ -590,10 +664,10 @@ just dev claude --resume  # extra arguments go to the harness
   off your other Pi extensions for that session too.
 - Codex cannot load a plugin from a directory, so `just dev codex` runs your
   installed Clax plugin, with your own `~/.codex` as it is, on the fresh
-  build and `~/.clax-dev`. To try plugin, skill or hook changes in Codex, run
+  build and the dev home. To try plugin, skill or hook changes in Codex, run
   `just install`.
 - Grok works like Codex: `just dev grok` runs your installed clax-grok
-  plugin, with your own `~/.grok`, on the fresh build and `~/.clax-dev`. To
+  plugin, with your own `~/.grok`, on the fresh build and the dev home. To
   try plugin, skill or hook changes in Grok, run `just install`.
 
 **A second person: `scripts/dev-second-person.sh <invite>`.** To try People
@@ -606,6 +680,18 @@ that makes a browser that person (open it at the LAN address: there the
 pages themselves do not open, as an artifact's site, `<ID>.localhost`, is
 this machine's), and registers one agent of theirs. `scripts/dev-second-person.sh --off <home>`
 disconnects it and removes the home.
+
+**Connecting to a dev clax.dev: `just remote-e2e`.** The end-to-end check of
+reading another Clax (`demo/remote-e2e.ts`): it builds the web UI, the
+Worker and the daemon, starts the Worker with `just clax-dev-local`'s
+settings and a daemon on a scratch home under `target/remote-e2e/`, each on
+a free port, and walks the path above with a scripted agent (`clax mcp`):
+`connect_instance`, Connect from an owner browser session, the device
+approval there, a `read` of a private page, a `watch`, and a comment there
+reaching `clax feedback follow --once`. Each step prints a line; it exits 0
+when all pass, and stops everything it started. A passing run removes its
+run directory (`--keep` keeps it), a failing one keeps it with its logs, and
+each run prunes all but the last two (`--no-build` reuses the last builds).
 
 Edit the plugin, skill or hooks, then start a new `just dev` session to pick
 them up. A dev-home daemon left by an earlier `just dev`, whose temporary
@@ -699,6 +785,45 @@ or a fresh `cargo build`, never your installed `clax`; it refuses to run when
 a scratch directory would fall inside your home, never reads or copies an
 auth file, and runs Clax on a scratch port. The Pi session check, which needs
 a model, runs only with `VERIFY_PI_SESSION=1` and a provider key you export.
+
+### The SDK package
+
+The reporter client, the embeddable overlay and the service client are
+also built as an npm package, `@empathic/clax-sdk`, into `web/dist-sdk`
+(`web/scripts/build-sdk.mjs`): ES modules with Svelte and the overlay's
+other dependencies bundled, and declarations under `types/`. It has three
+entries: `@empathic/clax-sdk` (`ReporterClient`, `ClaxError` and the queue
+routes' types), `@empathic/clax-sdk/overlay` (`overlay`, the same overlay
+as `/_clax/overlay.js`) and `@empathic/clax-sdk/service` (`ServiceClient`,
+for a backend only). Its license is LGPL-2.1-only, that of `web/sdk`,
+`web/overlay` and `web/bridge`.
+
+- `just web` builds it beside the web build (`//web:dist_sdk` under Bazel,
+  copied into `web/dist-sdk`); `pnpm run build:sdk` in `web/` builds it
+  alone. `pnpm run build`, the web UI the binary embeds, does not build it,
+  so a failure of the package's build fails no build of `clax`.
+- `node scripts/build-sdk.mjs --watch`, in `web/`, rebuilds it on every
+  change to its sources. `just watch` runs it natively; with Bazel it does
+  not, so run `just web` again after a change (or the watch command, with
+  `web/node_modules` installed).
+- `//web:sdk_package` (`pnpm run test:sdk` after a build) checks the
+  package as an app gets it, and `//web:bundle_size` holds its overlay
+  entry to the `sdkOverlay` ceiling.
+- A release publishes it to npm at the release's version
+  (`.github/workflows/publish-sdk.yml`, step 21 of `just release`;
+  "Releasing" below).
+
+To use the checkout's build from another app while developing, link the
+directory, which keeps the package's own name:
+
+```
+"@empathic/clax-sdk": "link:/path/to/clax/web/dist-sdk"
+```
+
+in that app's `package.json` `dependencies` (pnpm and bun both read
+`link:`), then install. A link is a symlink to the directory, so a rebuild
+reaches the app without reinstalling; reload it, or restart its dev server
+if that server cached the package.
 
 ### The Clax app
 
@@ -1451,14 +1576,15 @@ just release 0.6.0                              # a dry run: the checks, and eve
 just release 0.6.0 --i-know-what-i-am-doing     # prepare: the release branch and its pull request into prod
 # review the pull request; once CI passes, merge it on GitHub with a merge commit (this deploys clax.dev)
 git switch prod && git pull --ff-only
-just release 0.6.0 --i-know-what-i-am-doing     # cut: tag, release, pin, carry to main, Pi package
+just release 0.6.0 --i-know-what-i-am-doing     # cut: tag, release, pin, carry to main, Pi and SDK packages
 ```
 
 `just release` runs `scripts/release.sh` as it is (no build system in
 between), and releases Clax and all four plugins: the Claude Code, Codex
 and Grok plugins update through this repository's marketplaces once
 `main` carries the new version and its pin, and the Pi package is
-published to npm from the pin commit on `prod`.
+published to npm from the pin commit on `prod`, as is the SDK package,
+`@empathic/clax-sdk`, at the same version.
 
 Which half a run does follows from `origin/prod`. Until `prod`'s version
 is the release's, it **prepares** (steps 2-9), from any branch with a clean
@@ -1478,7 +1604,7 @@ clax.dev. The bump lives on the release branch, never on `main`, until its
 release exists: harnesses update a plugin when its version changes, so
 `main` must get the version and the pin to its release in one push.
 
-Once `prod` is at the release's version, a run **cuts** (steps 11-21),
+Once `prod` is at the release's version, a run **cuts** (steps 11-22),
 from a `prod` checkout at `origin/prod`'s tip: it signs the tag
 `v<version>` on `prod`'s tip and pushes the tag alone; waits for the
 Release workflow on it and checks that the release lists `SHA256SUMS` and
@@ -1494,7 +1620,8 @@ cherry-pick -S -x`) onto `origin/main`'s tip in a temporary worktree under
 merge commits. Last it waits for CI's gate (ci.yml's `bazel` job, not the
 perf-log job, which is cancelled when pushes pile up) on the pin commit on
 `prod`, runs Publish Pi package from that commit with `dry_run` off and
-waits for it, and prints what is left by hand: checking that the deploys
+waits for it, then Publish SDK package the same way, and prints what is
+left by hand: checking that the deploys
 of `prod` succeeded (`gh run list --workflow deploy-prod.yml`), and the
 crates.io package, which it does not publish. It deploys nothing itself.
 
@@ -1512,7 +1639,7 @@ behind `origin/prod` and ahead of it only by the pin commit, and
 pull request is refused). It also needs `gh` signed in (`gh auth status`);
 commit signing working (a signed commit written to a scratch object
 directory); `just`, Bazelisk or Bazel, `python3`, `curl` and `npm` on
-`PATH`; npm reachable (and signed in, with `pnpm`, for a first Pi
+`PATH`; npm reachable (and signed in, with `pnpm`, for a first Pi or SDK
 publish); and the `npm` environment set up (below). It signs every commit
 and the tag with your signing key, never force-pushes, never deletes a
 tag, and checks that each commit and the tag it pushes carries a
@@ -1553,8 +1680,8 @@ bazel-sync` there and amend the pin copy (`git commit -S -a --amend
 tip by the next run. A commit amended unsigned is refused with how to sign
 it (`git commit --amend -S --no-edit`). A failed workflow run is rerun on
 GitHub (`gh run rerun <ID> --failed`), then the command again picks it up;
-a failed Publish Pi package run is dispatched anew. Publish Pi package
-takes the pin commit as its `sha` input and titles its run after it,
+a failed Publish Pi package or Publish SDK package run is dispatched anew.
+Each takes the pin commit as its `sha` input and titles its run after it,
 which is how the script finds the run again. A wait gives up after
 `CLAX_RELEASE_MAX_POLLS` polls (270) `CLAX_RELEASE_POLL_SECONDS` apart
 (20), 90 minutes. The cut is known by its tag and its pin commit on
@@ -1587,6 +1714,7 @@ git push origin HEAD:refs/heads/main
 # once CI passes on the pin commit on prod: Actions, Publish Pi package, Run workflow
 # (on prod, dry_run off, sha the pin commit), or:
 gh workflow run publish-pi.yml --ref prod -f dry_run=false -f sha=<pin commit>
+gh workflow run publish-sdk.yml --ref prod -f dry_run=false -f sha=<pin commit>
 ```
 
 `scripts/test-release-script.sh` (gate "release command") runs the script
@@ -1602,12 +1730,12 @@ the version from another build; a refused push of `prod` and an unsigned
 pin commit; a refused push of `main`; a carry that conflicts, carried by
 hand; versions that disagree after the carry, bumped by hand; a failed
 CI run on the pin commit, also once `main` has moved on;
-and a failed Publish Pi package run. It also checks `bazel-sync` that
+and a failed Publish Pi package or Publish SDK package run. It also checks `bazel-sync` that
 never settles, `gh` failing during a wait, `main` moving during the
 Release wait, a release of the version from an earlier build of the same
-tree or of another tree, the Pi package's first version published from
-here (a fake `npm`), a package on npm published through the workflow, a
-version npm has already, and each preflight refusal but a missing Bazel,
+tree or of another tree, the Pi package's and the SDK package's first
+versions published from here (fakes of `npm` and `pnpm`), packages on npm
+published through their workflows, versions npm has already, and each preflight refusal but a missing Bazel,
 `python3`, `curl`, `npm` or `pnpm`: among them a cut from another branch
 than `prod` or behind `origin/prod`, a squashed pull request, and a
 release branch that `origin/prod` has moved past.
@@ -1645,13 +1773,29 @@ repos/empathic/clax/environments/npm`) and, until npm has the version,
 warns in a dry run and refuses to start a release when it is missing or
 allows more than `prod`; it never changes it.
 Step 20 is done whenever npm has the version. After that first publish,
-step 21 lists the trusted-publisher setup and switching `README.md` and
+step 22 lists the trusted-publisher setup and switching `README.md` and
 `plugins/pi/README.md` to lead their Pi install with `pi install
 npm:@empathic/clax-pi`; until the package exists they keep their current
 install instructions. `scripts/test-plugins.sh` keeps the package
 publishable: public, tagged `pi-package` for Pi's gallery, Pi's own
 modules as optional `"*"` peers (Pi provides them; installed, they would
 add a second Pi of about 200 MB), no `.qual` files, and a `LICENSE`.
+
+The SDK package, `@empathic/clax-sdk` ("The SDK package" above), is
+published by step 21 the same way, through
+`.github/workflows/publish-sdk.yml`: from the pin commit on `prod` with
+CI's `bazel` job passed on it, it builds `web/dist-sdk` (`pnpm run
+build:sdk`, at `Cargo.toml`'s version), runs its test (`pnpm run
+test:sdk`), refuses a version npm has already, and publishes
+`web/dist-sdk` with provenance through npm trusted publishing, in the same
+`npm` environment. While `npm view @empathic/clax-sdk` finds nothing, step
+21 publishes the first version from your machine instead: in a temporary
+worktree of the pin commit under `target/release/`, `pnpm install
+--frozen-lockfile`, `pnpm run build:sdk` and `pnpm run test:sdk` in
+`web/`, then `npm publish --access public` from `web/dist-sdk` on your
+terminal; step 22 then lists its trusted-publisher setup (workflow
+`publish-sdk.yml`, environment `npm`). The preflight's `npm` environment
+check stands until npm has both packages at the version.
 
 A plugin pins the release its wrapper names (`PINNED_VERSION` and one
 `SHA256_*` per target in `scripts/ensure-clax.sh`; `scripts/pin-release.sh`
@@ -1700,8 +1844,10 @@ become modules of it under `crates/<name>/src/`, their `crate::` and
 `clax-embedded` include are copied at their repository paths; the
 dependencies are the union of the crates' own, with the workspace's
 `Cargo.lock`; and `scripts/crate-package/build.rs` stands in for the
-crates' build scripts. Its license is `GPL-2.0-only AND AGPL-3.0-only`:
-GPL-2.0 Rust code with the AGPL-3.0 web UI embedded.
+crates' build scripts. Its license is `GPL-2.0-only AND AGPL-3.0-only AND
+LGPL-2.1-only`: GPL-2.0 Rust code with the AGPL-3.0 web UI embedded, whose
+bridge and overlay scripts are built from the LGPL-2.1 `web/bridge` and
+`web/overlay`.
 
 ```
 just crate-package                            # build the web UI, assemble, pack, and check the packed crate (uploads nothing)
@@ -1718,6 +1864,8 @@ assembled from in `BUILD_COMMIT`, so `clax --version` names it.
 
 Clax traffic on the LAN is not encrypted: serve on the LAN (`clax serve --bind 0.0.0.0`) only on a network you trust. A local daemon answers another machine only for a connected person (a signed request of their machine, or their browser's cookie); anyone else is refused with 403 `forbidden_host`.
 
-Writes, and reads of the session list (working directories, process IDs, harness session IDs), need the token in `~/.clax/daemon.json` (mode 0600, served only to localhost browsers), or a connected person's machine key. A connected person's agents publish, reply, resolve and write page data with that person's rights, as the owner set them. They sign every request with their machine's key, which never leaves that machine, so a request seen on the network cannot be replayed. Connecting machines, approvals, rights and raises change only in the owner's or the person's own browser: no agent, tool or CLI command can change them. What another person wrote reaches an agent only once that agent's person approves its author. An agent of the owner's that has a shell runs as the owner's OS user, and is trusted as the owner. Every `/api` route answers only to a `Host` of `localhost`, `127.0.0.1`, `[::1]`, the exact IP and port the connection arrived on, or a name the home's `[serve] trusted_hosts` lists exactly (403 `forbidden_host` otherwise; empty by default), which defeats DNS rebinding for every name you have not listed. With `[serve] tailscale_identity` on, the Tailscale identity headers name a viewer only on a request that came through `tailscale serve` on a trusted name, and never grant anything. The comment routes need no token but refuse requests from another origin, including published pages. The viewer cookie never leaves the daemon; viewers are named by a public ID, comment threads carry no session IDs, and the daemon's `codex` path is served only with the token. Each artifact's content is served on a site of its own, `<id>.localhost`, never on the daemon's own host: a page runs on that origin alone, and only the owner's shell and the artifact's own pages may frame it. The site answers only a site session (made through the shell, `/_clax/session/start` and a one-use code), so a page reached under any other name, a rebound one among them, reads nothing.
+Writes, and reads of the session list (working directories, process IDs, harness session IDs), need the token in `~/.clax/daemon.json` (mode 0600, served only to a browser holding an owner browser session, which only a one-use login link opens, or to the browser of the home's `[serve] owner_tailscale_login` through `tailscale serve`), or a connected person's machine key. A connected person's agents publish, reply, resolve and write page data with that person's rights, as the owner set them. They sign every request with their machine's key, which never leaves that machine, so a request seen on the network cannot be replayed. Connecting machines, approvals, rights and raises change only in the owner's or the person's own browser: no agent, tool or CLI command can change them. What another person wrote reaches an agent only once that agent's person approves its author. An agent of the owner's that has a shell runs as the owner's OS user, and is trusted as the owner. Every `/api` route answers only to a `Host` of `localhost`, `127.0.0.1`, `[::1]`, the exact IP and port the connection arrived on, or a name the home's `[serve] trusted_hosts` lists exactly (403 `forbidden_host` otherwise; empty by default), which defeats DNS rebinding for every name you have not listed. With `[serve] tailscale_identity` on, the Tailscale identity headers name a viewer only on a request that came through `tailscale serve` on a trusted name, and never grant anything; the owner's tailnet login (`[serve] owner_tailscale_login`) is a browser of the owner's that answers no confirmation. The comment routes need no token, but they need a credential (an owner browser session, a viewer cookie the daemon minted, or a tailnet user `tailscale serve` named) and refuse requests from another origin, including published pages: a request with no credential is refused before any route. The viewer cookie never leaves the daemon; viewers are named by a public ID, comment threads carry no session IDs, and the daemon's `codex` path is served only with the token. Each artifact's content is served on a site of its own, `<id>.localhost`, never on the daemon's own host: a page runs on that origin alone, and only the owner's shell and the artifact's own pages may frame it. The site answers only a site session (made through the shell, `/_clax/session/start` and a one-use code), so a page reached under any other name, a rebound one among them, reads nothing.
 
+
+While an agent of yours is running, the decisions that matter made with the daemon token (answering an agent's question, pushing, connecting a public Clax, widening who may open a page, pairing the extension) wait for your click in a browser of yours; `docs/contract.md`, "Browser confirmations", lists them. Any of your browser sessions may confirm. An agent running as you can open a browser session too, so you may also require Touch ID or another passkey to confirm (offered on the first confirmation, and in Settings, Confirmations); each passkey shows when it was added, from which browser, and which agents were running then. A passkey you did not add, or one you can no longer use (a lost authenticator, Clax now served at a LAN address, where passkeys do not work), can lock you out of confirming. To recover, stop Clax (`clax stop`) and run `clax passkeys reset`: it refuses while the daemon for the home runs, then removes every passkey, stops requiring one, and prints what it removed. An agent that runs as you could do the same, as it could stop Clax; the passkey keeps a running Clax's confirmations to your presence.
 Runtime capabilities arrive in a later phase.

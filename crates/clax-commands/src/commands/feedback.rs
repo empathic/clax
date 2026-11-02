@@ -53,9 +53,11 @@ impl FollowAgent {
     }
 }
 
-#[derive(clap::Args)]
-pub struct FollowArgs {
-    /// The Clax session to follow (`status` reports it as session.id).
+/// The flags that name the agent session a command acts in: a Clax
+/// session ID, or a harness and the harness's own session ID.
+#[derive(clap::Args, Clone, Debug, Default)]
+pub struct SessionArgs {
+    /// The Clax session (`status` reports it as session.id).
     #[arg(long, conflicts_with_all = ["agent", "harness_session"])]
     pub session: Option<String>,
     /// The harness whose session --harness-session names.
@@ -65,6 +67,12 @@ pub struct FollowArgs {
     /// session.harness_session_id).
     #[arg(long, requires = "agent")]
     pub harness_session: Option<String>,
+}
+
+#[derive(clap::Args)]
+pub struct FollowArgs {
+    #[command(flatten)]
+    pub who: SessionArgs,
     /// Seconds each daemon long-poll waits.
     #[arg(long, hide = true, default_value_t = 50)]
     pub poll_secs: u64,
@@ -81,9 +89,9 @@ pub struct FollowArgs {
     pub once: bool,
 }
 
-/// What to follow.
+/// The session a command names.
 #[derive(Debug, PartialEq)]
-enum Target {
+pub(crate) enum Target {
     /// A Clax session ID: following ends when it ends.
     Session(String),
     /// A harness session, resolved to its live Clax session on each poll,
@@ -91,7 +99,10 @@ enum Target {
     Harness(&'static str, String),
 }
 
-fn target(a: &FollowArgs, env: impl Fn(&str) -> Option<String>) -> Option<Target> {
+/// The session `a` names: --session, else --agent with
+/// --harness-session, else, inside Grok Build, `GROK_SESSION_ID` (read
+/// through `env`).
+pub(crate) fn target(a: &SessionArgs, env: impl Fn(&str) -> Option<String>) -> Option<Target> {
     if let Some(s) = &a.session {
         return Some(Target::Session(s.clone()));
     }
@@ -115,12 +126,14 @@ fn proof(c: Option<&SessionCredential>) -> Vec<(&str, &str)> {
     .unwrap_or_default()
 }
 
-/// What a follower of a remote daemon proves its session with: the
-/// credential in the session's file (spec 2026-10-08 §6.8). `Ok(None)` on
-/// the local daemon. A follower of a harness session whose file is not
-/// there yet waits for it as for the session; one of a Clax session must
-/// have it.
-fn credential(client: &Client, target: &Target) -> anyhow::Result<Option<SessionCredential>> {
+/// What a command acting in a session on a remote daemon proves it with:
+/// the credential in the session's file (spec 2026-10-08 §6.8). `Ok(None)`
+/// on the local daemon. A harness session whose file is not there yet is
+/// waited for as the session is; a Clax session must have it.
+pub(crate) fn credential(
+    client: &Client,
+    target: &Target,
+) -> anyhow::Result<Option<SessionCredential>> {
     let Some(remote) = client.remote() else {
         return Ok(None);
     };
@@ -138,7 +151,7 @@ fn credential(client: &Client, target: &Target) -> anyhow::Result<Option<Session
 
 /// The live Clax session of `(harness, id)`, if any, asked as `cred`'s
 /// session on a remote daemon.
-fn live_session(
+pub(crate) fn live_session(
     c: &Client,
     harness: &str,
     id: &str,
@@ -162,11 +175,16 @@ fn live_session(
 
 /// Whether a daemon error says the session is gone: on a remote daemon,
 /// a proof refused because its session ended too.
-fn session_gone(e: &anyhow::Error) -> bool {
-    let m = e.to_string();
-    m.starts_with("unknown_session:")
-        || m.starts_with("not_found:")
-        || m.starts_with("invalid_session_proof:")
+pub(crate) fn session_gone(e: &anyhow::Error) -> bool {
+    gone_code(&e.to_string())
+}
+
+/// Whether a refusal's `<code>: <message>` text (or its code alone) says
+/// the session is gone.
+pub(crate) fn gone_code(m: &str) -> bool {
+    ["unknown_session", "not_found", "invalid_session_proof"]
+        .iter()
+        .any(|c| m == *c || m.starts_with(&format!("{c}:")))
 }
 
 /// The shortest time between the starts of two notices polls when the
@@ -179,34 +197,54 @@ fn back_off(backoff: &mut Duration) {
     *backoff = (*backoff * 2).min(Duration::from_secs(30));
 }
 
-pub fn run(_cli: &crate::Cli, home: &Home, cmd: &Cmd) -> anyhow::Result<()> {
-    let Cmd::Follow(a) = cmd;
-    let Some(target) = target(a, |k| std::env::var(k).ok()) else {
-        eprintln!(
-            "clax feedback follow: no session: pass --session, or --agent with --harness-session, or run it inside Grok Build (GROK_SESSION_ID)"
-        );
-        std::process::exit(2);
-    };
-    let poll = Duration::from_secs(a.poll_secs.max(1));
-    let grace = Duration::from_secs(a.grace_secs);
+/// What a follower's preparation of a session (the `ready` of [`follow`])
+/// found.
+pub(crate) enum Ready {
+    /// The session is ready to follow.
+    Yes,
+    /// The daemon could not be asked: try again after a pause.
+    Retry,
+    /// The session is gone, as [`session_gone`] says.
+    Gone,
+}
+
+/// How long a follower's polls wait, and how long a harness session may
+/// have no live Clax session before following ends.
+pub(crate) struct Pace {
+    pub poll: Duration,
+    pub grace: Duration,
+}
+
+/// Follows `target`'s notices: finds the daemon (never starting one) and
+/// the session, across daemon restarts and re-registrations, calls
+/// `ready` for each session it finds before its first poll (and again
+/// after a failed poll, as the daemon may have restarted), and hands each
+/// answer of `GET /api/sessions/<sid>/notices` to `on_poll`, which says
+/// whether to stop. Returns once `on_poll` says stop, or the session has
+/// ended (a Clax session at once; a harness session after `pace.grace`
+/// with no live Clax session). An error of `ready` or `on_poll` ends it.
+pub(crate) fn follow(
+    home: &Home,
+    target: &Target,
+    pace: &Pace,
+    mut ready: impl FnMut(&Client, &str, Option<&SessionCredential>) -> anyhow::Result<Ready>,
+    mut on_poll: impl FnMut(&Value) -> anyhow::Result<bool>,
+) -> anyhow::Result<()> {
+    let (poll, grace) = (pace.poll, pace.grace);
     let mut backoff = Duration::from_secs(1);
     let mut missing_since: Option<Instant> = None;
-    let mut stdout = std::io::stdout();
+    // The session `ready` last said yes for.
+    let mut prepared: Option<String> = None;
     loop {
         let Some(client) = Client::discover(home).map(Client::agent_channel) else {
             // No daemon: wait for one; another client starts it.
+            prepared = None;
             back_off(&mut backoff);
             continue;
         };
-        let cred = match credential(&client, &target) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("clax feedback follow: {e:#}");
-                std::process::exit(1);
-            }
-        };
+        let cred = credential(&client, target)?;
         let remote_without_file = client.remote().is_some() && cred.is_none();
-        let sid = match &target {
+        let sid = match target {
             Target::Session(s) => s.clone(),
             Target::Harness(h, id) => {
                 let found = match live_session(&client, h, id, cred.as_ref()) {
@@ -234,6 +272,23 @@ pub fn run(_cli: &crate::Cli, home: &Home, cmd: &Cmd) -> anyhow::Result<()> {
                 s
             }
         };
+        if prepared.as_deref() != Some(sid.as_str()) {
+            match ready(&client, &sid, cred.as_ref())? {
+                Ready::Yes => prepared = Some(sid.clone()),
+                Ready::Retry => {
+                    back_off(&mut backoff);
+                    continue;
+                }
+                Ready::Gone => {
+                    if let Target::Session(_) = target {
+                        return Ok(());
+                    }
+                    // A harness session may be registered again; resolve it anew.
+                    std::thread::sleep(Duration::from_secs(1).min(grace));
+                    continue;
+                }
+            }
+        }
         let path = format!("/api/sessions/{sid}/notices?wait={}", poll.as_secs());
         let polled = Instant::now();
         match client.request_with(
@@ -251,16 +306,7 @@ pub fn run(_cli: &crate::Cli, home: &Home, cmd: &Cmd) -> anyhow::Result<()> {
                 if v["lines"].as_array().is_none_or(|l| l.is_empty()) {
                     std::thread::sleep(EARLY_PACE.saturating_sub(polled.elapsed()));
                 }
-                for line in v["lines"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_str)
-                {
-                    writeln!(stdout, "{line}")?;
-                }
-                stdout.flush()?;
-                if a.once && v["lines"].as_array().is_some_and(|l| !l.is_empty()) {
+                if on_poll(&v)? {
                     return Ok(());
                 }
             }
@@ -269,10 +315,53 @@ pub fn run(_cli: &crate::Cli, home: &Home, cmd: &Cmd) -> anyhow::Result<()> {
                     return Ok(());
                 }
                 // A harness session may be registered again; resolve it anew.
+                prepared = None;
             }
-            Err(_) => back_off(&mut backoff),
+            Err(_) => {
+                prepared = None;
+                back_off(&mut backoff);
+            }
         }
     }
+}
+
+pub fn run(_cli: &crate::Cli, home: &Home, cmd: &Cmd) -> anyhow::Result<()> {
+    let Cmd::Follow(a) = cmd;
+    let Some(target) = target(&a.who, |k| std::env::var(k).ok()) else {
+        eprintln!(
+            "clax feedback follow: no session: pass --session, or --agent with --harness-session, or run it inside Grok Build (GROK_SESSION_ID)"
+        );
+        std::process::exit(2);
+    };
+    let pace = Pace {
+        poll: Duration::from_secs(a.poll_secs.max(1)),
+        grace: Duration::from_secs(a.grace_secs),
+    };
+    let mut stdout = std::io::stdout();
+    let followed = follow(
+        home,
+        &target,
+        &pace,
+        |_, _, _| Ok(Ready::Yes),
+        |v| {
+            let lines: Vec<&str> = v["lines"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            for line in &lines {
+                writeln!(stdout, "{line}")?;
+            }
+            stdout.flush()?;
+            Ok(a.once && !lines.is_empty())
+        },
+    );
+    if let Err(e) = followed {
+        eprintln!("clax feedback follow: {e:#}");
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -286,11 +375,11 @@ mod tests {
         cmd: Cmd,
     }
 
-    fn args(argv: &[&str]) -> FollowArgs {
+    fn args(argv: &[&str]) -> SessionArgs {
         let mut full = vec!["t", "follow"];
         full.extend_from_slice(argv);
         let Cmd::Follow(a) = T::try_parse_from(full).unwrap().cmd;
-        a
+        a.who
     }
 
     fn env(v: Option<&str>) -> impl Fn(&str) -> Option<String> {

@@ -12,6 +12,18 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
 
+/// A viewer cookie of a browser of this machine's with no name, its viewer
+/// minted in the store of the home at `home` (reaching the daemon's port
+/// alone mints none).
+fn browser_cookie(home: &std::path::Path) -> String {
+    let cookie = clax_core::secret::viewer_cookie().expose().to_string();
+    clax_store::Store::open(&clax_core::Home::at(home.to_path_buf()))
+        .unwrap()
+        .mint_viewer(&cookie, true)
+        .unwrap();
+    format!("clax_viewer={cookie}")
+}
+
 const HARNESS_VARS: &[&str] = &[
     "GROK_SESSION_ID",
     "GROK_HOOK_EVENT",
@@ -133,6 +145,7 @@ impl World {
         let res = self
             .http()
             .post(format!("{base}/api/artifacts/{aid}/threads"))
+            .header("cookie", browser_cookie(&self.clax_home()))
             .multipart(form)
             .send()
             .unwrap();

@@ -1100,3 +1100,70 @@ async fn a_runs_clax_json_that_changes_the_declaration_is_its_makers() {
         "planned"
     );
 }
+
+/// A run's event stream opened by an owner browser session ends when
+/// `clax logout` ends the session, as the event streams and sockets do.
+#[tokio::test]
+async fn a_runs_events_end_when_the_owner_logs_out() {
+    use clax_bot::{Event, EventSink};
+    let fake = FakeMessages::start(vec![]).await;
+    let ts = daemon(&fake).await;
+    let aid = ts.publish("Notes", &[("index.html", "<p>hi</p>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let run = ts
+        .store
+        .create_run(
+            &clax_bot::run::bot_ctx("*owner"),
+            clax_store::bot_runs::NewRun {
+                artifact_id: aid,
+                person: "*owner".into(),
+                request: clax_store::bot_runs::RequestKind::Thread,
+                thread_ids: vec![],
+                model: "claude-sonnet-5-5".into(),
+                key_source: clax_store::credits::KeySource::Instance,
+                base_version: 1,
+                agent_grant: None,
+            },
+        )
+        .unwrap();
+    let res = reqwest::Client::new()
+        .get(format!("{}/api/bot/runs/{}/events", ts.base, run.id))
+        .header("cookie", ts.owner_cookie())
+        .header(clax_http::local_trust::PROOF_HEADER, ts.owner_proof())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let mut body = res.bytes_stream();
+    ts.state.bot.events.emit(
+        &run.id,
+        1,
+        1,
+        Event::StepStarted {
+            kind: clax_store::bot_runs::StepKind::Turn,
+        },
+    );
+    let first = tokio::time::timeout(clax_testkit::HANG, body.next())
+        .await
+        .expect("the first event")
+        .expect("open")
+        .unwrap();
+    assert!(String::from_utf8_lossy(&first).contains("step_started"));
+    let res = ts
+        .authed(ts.client.delete(format!("{}/api/browser-login", ts.base)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let ended = tokio::time::timeout(clax_testkit::HANG, async {
+        while let Some(chunk) = body.next().await {
+            if chunk.is_err() {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "the run's events end at logout");
+}

@@ -146,7 +146,9 @@ async fn a_queue_is_made_listed_changed_and_deleted_in_the_browser() {
             .unwrap(),
     )
     .await;
-    assert_eq!((s, code(&v)), (403, "forbidden_origin"), "{v}");
+    // The owner's session with another origin is no credential at all
+    // (`local_trust::session_counts`): the gate refuses it before any route.
+    assert_eq!((s, code(&v)), (401, "no_credential"), "{v}");
 
     let (s, v) = browser(
         &w.ts,
@@ -414,6 +416,7 @@ async fn a_service_grant_is_shown_once_and_its_revocation_ends_its_reporter_toke
                 "user-1",
                 "https://app.example.com",
                 &clax_core::sig::encode_public(&reporter_key.public()),
+                None,
             )
             .unwrap();
     assert!(

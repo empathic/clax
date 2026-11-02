@@ -44,7 +44,7 @@
 // app mode (`confirmDrag` false) the host attests the finger, and the release
 // picks at once.
 
-import { OVERLAY_TAG } from "./anchor";
+import { OVERLAY_TAG, UNRENDERED } from "./anchor";
 import { nextFrame } from "./frame";
 import { type AreaRect, REPLACED, Widen, dragRect, isClickSized, nonTextAt, widenedTarget } from "./area";
 import { LongPress, type Timers, windowTimers } from "./long-press";
@@ -150,6 +150,8 @@ export class CommentMode {
   /** The inline `cursor` the page had on <html> before the mode's crosshair,
    * given back when the mode ends. */
   private cursorBefore: { value: string; priority: string } | null = null;
+  /** Only areas are picked (`setAreasOnly`). */
+  private areasOnly = false;
 
   /** `opts.trustedOnly` (default true) ignores events the page dispatched
    * itself; tests that synthesise input turn it off. `opts.shadow`
@@ -242,6 +244,25 @@ export class CommentMode {
       this.endDrag();
       this.captured();
     }
+  }
+
+  /** With `on`, every drag draws an area, from text too, and nothing is
+   * outlined or picked by a click, a tap or a selection: the overlay's Area
+   * mode. Off (the default), comment mode picks all three as ever. */
+  setAreasOnly(on: boolean): void {
+    if (on === this.areasOnly) return;
+    this.areasOnly = on;
+    if (on) this.unhover();
+  }
+
+  /** Outlines `t` as a hover does (none hides the outline), for a pick the
+   * host leads itself, such as from the keyboard; the next pointer move
+   * outlines what is under it again. */
+  outlineTarget(t: Element | null): void {
+    if (!this.on) return;
+    this.hovered = t;
+    if (t) this.place(t);
+    else this.outline.style.display = "none";
   }
 
   /** Adds or removes the callout guard; `selection` (a colour) also tints
@@ -400,7 +421,7 @@ export class CommentMode {
   private target(e: Event): Element | null {
     const el = e.target as Element | null;
     if (!el || el === this.host || el === this.doc.documentElement || el === this.doc.body) return null;
-    return el.closest?.(OVERLAY_TAG) ? null : el;
+    return el.closest?.(UNRENDERED) ? null : el;
   }
 
   /** The comment target for the pointer at (`x`, `y`) over `el`. */
@@ -453,7 +474,7 @@ export class CommentMode {
   /** Outlines and reports the target for a pointer or finger at (`x`, `y`)
    * over `el`, unless it is the one already reported. */
   private hoverAt(el: Element | null, x: number, y: number): void {
-    if (!this.on) return;
+    if (!this.on || this.areasOnly) return;
     this.base = this.choose(el, x, y);
     const t = this.widened(this.base);
     if (sameTarget(t, this.hovered)) return;
@@ -478,7 +499,7 @@ export class CommentMode {
   private elementAt(x: number, y: number): Element | null {
     const el = this.doc.elementFromPoint?.(x, y) ?? null;
     if (!el || el === this.host || el === this.doc.documentElement || el === this.doc.body) return null;
-    return el.closest?.(OVERLAY_TAG) ? null : el;
+    return el.closest?.(UNRENDERED) ? null : el;
   }
 
   /** A long-press released at (`x`, `y`): the browser's click, if it comes
@@ -509,7 +530,7 @@ export class CommentMode {
     this.dropOffer();
     if (this.capturing) { this.touchDrag = { kind: "none" }; return; }
     const el = this.elementAt(x, y);
-    const from = nonTextAt(this.doc, el, x, y) ? null : caretAt(this.doc, x, y);
+    const from = this.areasOnly || nonTextAt(this.doc, el, x, y) ? null : caretAt(this.doc, x, y);
     this.unhover();
     if (from) {
       this.touchDrag = { kind: "text", x, y, from, to: from };
@@ -683,11 +704,11 @@ export class CommentMode {
     const el = this.target(e);
     // With Option held a press widens (a click, or a drag selection picks the
     // widened element); it never starts a native drag of an image.
-    if (this.widen.active || e.altKey) {
+    if (!this.areasOnly && (this.widen.active || e.altKey)) {
       if (el?.closest(REPLACED)) { e.preventDefault(); this.focusPage(); }
       return;
     }
-    if (!e.shiftKey && !nonTextAt(this.doc, el, e.clientX, e.clientY)) return;
+    if (!e.shiftKey && !this.areasOnly && !nonTextAt(this.doc, el, e.clientX, e.clientY)) return;
     e.preventDefault();
     this.focusPage();
     // One area at a time: none starts while the last one's clip is taken.
@@ -763,8 +784,8 @@ export class CommentMode {
    * while Option is held, or once for `alt`), unless another pick's clip is
    * being taken. */
   private pickAt(el: Element | null, x: number, y: number, alt: boolean): void {
-    // No other pick while an area's clip is being taken.
-    if (this.capturing) return;
+    // No other pick while an area's clip is being taken; none but areas in Area mode.
+    if (this.capturing || this.areasOnly) return;
     let t = this.choose(el, x, y);
     if (t && (this.widen.active || alt)) t = widenedTarget(t, this.widen.active ? this.widen.level : 1).target;
     if (t) this.hooks.live?.picked(t);

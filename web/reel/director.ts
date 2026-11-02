@@ -17,6 +17,9 @@ export interface Camera {
   frameMs: number;
   roll(ms: number): Promise<void>;
   still(): Promise<void>;
+  /** Runs the page's clock one animation frame off camera (deterministic;
+   * nothing in the fast camera, where real time runs). */
+  idle(): Promise<void>;
   frame(): number;
   beats: { name: string; frame: number }[];
 }
@@ -191,6 +194,21 @@ export class Director {
     for (let i = 0; ; i++) {
       if (await cond()) return;
       if (this.clock.now() >= deadline) throw new Error(`until: ${what} (not within ${UNTIL_MS / 1000} s)`);
+      await this.clock.wait(POLL_INTERVALS[Math.min(i, POLL_INTERVALS.length - 1)]!);
+    }
+  }
+
+  /** Waits off camera, as `until`, for state a page load reaches: the
+   * page's clock runs an animation frame between polls (`Camera.idle`), as
+   * a shell that loads without its first-load data starts its requests
+   * after its first paint. No frame is filmed. */
+  async settle(cond: () => Promise<boolean>, what: string): Promise<void> {
+    await this.camera.still();
+    const deadline = this.clock.now() + UNTIL_MS;
+    for (let i = 0; ; i++) {
+      if (await cond()) return;
+      if (this.clock.now() >= deadline) throw new Error(`settle: ${what} (not within ${UNTIL_MS / 1000} s)`);
+      await this.camera.idle();
       await this.clock.wait(POLL_INTERVALS[Math.min(i, POLL_INTERVALS.length - 1)]!);
     }
   }

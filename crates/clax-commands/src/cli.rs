@@ -81,8 +81,25 @@ pub enum Cmd {
     /// Read and write an artifact's page database, as the db_* tools do.
     #[command(subcommand)]
     Db(commands::db::Cmd),
-    /// Open an artifact in the browser.
+    /// Work a report queue's reports, as the queue_* tools do: list, show,
+    /// save a clip, print diagnostics, claim, renew, release, reply,
+    /// propose a fix, resolve, and follow new and reopened reports.
+    ///
+    /// Every subcommand takes --queue <ID>, else CLAX_QUEUE. Claims,
+    /// replies, fixes, resolves and following act in an agent session:
+    /// --session, or --agent with --harness-session, or, inside Grok
+    /// Build, GROK_SESSION_ID.
+    #[command(subcommand)]
+    Queue(commands::queue::Cmd),
+    /// Open an artifact (or, with none, the gallery) in the browser, signing
+    /// the browser in first.
     Open(commands::open::Args),
+    /// Print a one-use link (two minutes) that signs a browser on this
+    /// machine in as the owner's and opens a path, the gallery by default.
+    Login(commands::login::Args),
+    /// End every browser session of the owner's on this machine: each
+    /// browser needs `clax open` (or `clax login`) to sign in again.
+    Logout,
     /// Delete an artifact.
     Delete(commands::delete::Args),
     /// Pin an artifact to the top of the gallery.
@@ -95,6 +112,11 @@ pub enum Cmd {
     Tags(commands::tags::TagsArgs),
     /// Check the installation and storage.
     Doctor(commands::doctor::Args),
+    /// The passkeys that browser confirmations may require: `reset` removes
+    /// them all and stops requiring one, with this home's daemon stopped
+    /// (the recovery when a passkey cannot be used).
+    #[command(subcommand)]
+    Passkeys(commands::passkeys::Cmd),
     /// Serve the MCP tools over stdin/stdout for one harness session.
     Mcp(commands::mcp::Args),
     /// Handle a harness lifecycle hook (reads the hook input from stdin).
@@ -254,7 +276,7 @@ pub fn env_port(env: Option<std::ffi::OsString>) -> Option<anyhow::Result<u16>> 
 /// Whether `cmd` runs while this home is connected to another machine's
 /// Clax (spec §6.7): the commands that list, read and act through the
 /// remote daemon as the person (`list`, `read`, `open`, `versions`, `db`,
-/// `comments`, `agents`, `approvals`, `status`, `connect`; `agents` and
+/// `queue`, `comments`, `agents`, `approvals`, `status`, `connect`; `agents` and
 /// `approvals` changes print the remote People link), the agent
 /// sides that run over it (`mcp`, `hook`, `feedback`), and this machine's
 /// own (its local daemon with `serve` and `stop`, installing, `doctor`,
@@ -267,6 +289,7 @@ fn remote_ok(cmd: &Cmd) -> bool {
         | Cmd::Open(_)
         | Cmd::Versions(_)
         | Cmd::Db(_)
+        | Cmd::Queue(_)
         | Cmd::Comments(_)
         | Cmd::Agents { .. }
         | Cmd::Approvals { .. }
@@ -276,6 +299,7 @@ fn remote_ok(cmd: &Cmd) -> bool {
         Cmd::Serve(_)
         | Cmd::Stop
         | Cmd::Doctor(_)
+        | Cmd::Passkeys(_)
         | Cmd::Init(_)
         | Cmd::Uninit(_)
         | Cmd::Bin { .. }
@@ -294,7 +318,9 @@ fn remote_ok(cmd: &Cmd) -> bool {
         | Cmd::Extension(_)
         | Cmd::Toolpath(_)
         | Cmd::People { .. }
-        | Cmd::NativeHost(_) => false,
+        | Cmd::NativeHost(_)
+        | Cmd::Login(_)
+        | Cmd::Logout => false,
     }
 }
 
@@ -388,13 +414,17 @@ pub(crate) fn main() {
         Cmd::Inbox(a) => commands::inbox::run(&cli, &home, a),
         Cmd::Versions(a) => commands::versions::run(&cli, &home, a),
         Cmd::Db(c) => commands::db::run(&cli, &home, c),
+        Cmd::Queue(c) => commands::queue::run(&cli, &home, c),
         Cmd::Open(a) => commands::open::run(&cli, &home, a),
+        Cmd::Login(a) => commands::login::run(&cli, &home, a),
+        Cmd::Logout => commands::logout::run(&cli, &home),
         Cmd::Delete(a) => commands::delete::run(&cli, &home, a),
         Cmd::Pin(a) => commands::pin::run(&cli, &home, a, true),
         Cmd::Unpin(a) => commands::pin::run(&cli, &home, a, false),
         Cmd::Tag(a) => commands::tags::run_tag(&cli, &home, a),
         Cmd::Tags(a) => commands::tags::run_tags(&cli, &home, a),
         Cmd::Doctor(a) => commands::doctor::run(&cli, &home, a),
+        Cmd::Passkeys(c) => commands::passkeys::run(&cli, &home, c),
         Cmd::Mcp(a) => commands::mcp::run(&cli, &home, a),
         Cmd::Hook(a) => commands::hook::run(&cli, &home, a),
         Cmd::Feedback(c) => commands::feedback::run(&cli, &home, c),

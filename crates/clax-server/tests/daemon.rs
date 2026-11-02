@@ -356,6 +356,7 @@ async fn shutdown_completes_while_an_sse_client_stays_connected() {
     let client = reqwest::Client::new();
     let mut sse = client
         .get(format!("http://127.0.0.1:{}/api/events", info.port))
+        .bearer_auth(&info.token)
         .send()
         .await
         .unwrap();
@@ -692,6 +693,7 @@ async fn a_serve_that_fails_after_its_core_started_stops_the_core() {
             port: 0,
             embed: None,
             quickstart: false,
+            catalog_url: None,
         },
         &mut |_| {},
     )
@@ -773,6 +775,7 @@ async fn a_stopped_core_leaves_no_task_of_its_linked_sync() {
             port: 0,
             embed: None,
             quickstart: false,
+            catalog_url: None,
         },
         &mut |_| {},
     )

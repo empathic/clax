@@ -4,9 +4,9 @@
 # Bazel"). In order: pnpm install, test-deploy-config.mjs (the config deploy.mjs generates,
 # without wrangler), then test-wasm.mjs, which builds the wasm Worker and
 # checks it under `wrangler dev --local`, test-sandbox.mjs, ClaxBot's
-# sandbox conformance suite on that build, and test-bot.mjs, a ClaxBot run
+# sandbox conformance suite on that build, test-bot.mjs, a ClaxBot run
 # driven by the instance's alarm against a scripted Messages API, across a
-# restart.
+# restart, and test-feedback.mjs, clax.dev's own feedback path over HTTP.
 #
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -16,3 +16,4 @@ node test-deploy-config.mjs
 node test-wasm.mjs
 node test-sandbox.mjs --no-build
 node test-bot.mjs --no-build
+node test-feedback.mjs --no-build

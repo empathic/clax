@@ -556,7 +556,14 @@ pub async fn summary(
                 .collect::<clax_core::Result<Vec<_>>>()?;
             let (rows, _) = db.inbox_list(&InboxQuery {
                 recipient: me.clone(),
-                kinds: vec![Kind::Reply, Kind::Connection, Kind::Approval],
+                // What waits on the reader: replies, and approval,
+                // connection and remote connection requests.
+                kinds: vec![
+                    Kind::Reply,
+                    Kind::Connection,
+                    Kind::Approval,
+                    Kind::RemoteRequest,
+                ],
                 read: ReadFilter::Unread,
                 limit: SUMMARY_LATEST,
                 tags: tag_ids,

@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CONNECT_MS, Hub, type HubMsg, LINGER_MS, PING_MS, SOCKET_PING_MS } from "./stream-hub";
+import { CONNECT_MS, Hub, type HubMsg, LINGER_MS, PING_MS, RETRY_LABEL, SOCKET_PING_MS } from "./stream-hub";
 import { Net } from "./test/fake-net";
+
+/** Longer than any backoff wait (lifecycle.ts: 30 s, spread up by 20%). */
+const BACKOFF_CAP = 36_000;
 
 const A = "7q3k9mzx2b4t";
 const B = "8r4m0nzy3c5v";
@@ -99,6 +102,40 @@ describe("the stream hub", () => {
     await tick();
     expect(of("t1", "status")).toEqual([{ t: "status", up: false }, { t: "status", up: true }]);
     expect(of("t1", "live")).toHaveLength(1);
+  });
+
+  it("waits out its backoff on the shell's clock, re-armed after each failure and cancelled once no tab wants a topic", async () => {
+    const clock = (globalThis as unknown as { claxTestClock: { advance(ms: number): number; dueIn(label: string): number | null } }).claxTestClock;
+    const due = () => clock.dueIn(RETRY_LABEL);
+    hub.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
+    await tick();
+    net.ready(net.conns[0], S1);
+    await tick();
+    expect(due()).toBeNull();
+    // The daemon goes away: the hub waits the first backoff (500 ms, ±20%) on the clock.
+    net.conns[0].end();
+    await tick();
+    const first = due();
+    expect(first).not.toBeNull();
+    expect(first!).toBeLessThanOrEqual(600);
+    const opened = net.conns.length;
+    // Advancing the clock past it reconnects now, with no timer advanced.
+    clock.advance(first!);
+    await tick();
+    expect(net.conns.length).toBe(opened + 1);
+    expect(due()).toBeNull();
+    // That stream fails too: the wait is armed again, for the next backoff (1 s, ±20%).
+    net.conns.at(-1)!.end();
+    await tick();
+    expect(due()).not.toBeNull();
+    expect(due()!).toBeLessThanOrEqual(1200);
+    // No tab wants a topic: the wait is cancelled, and nothing reconnects.
+    hub.receive("t1", { t: "topics", topics: [] });
+    await tick();
+    expect(due()).toBeNull();
+    clock.advance(BACKOFF_CAP);
+    await tick();
+    expect(net.conns.length).toBe(opened + 1);
   });
 
   it("tells a tab that joined during an outage that its topics are live once the stream resumes with them", async () => {
@@ -202,6 +239,24 @@ describe("the stream hub", () => {
     await tick();
     expect(net.conns).toHaveLength(2);
     net.ready(net.conns[1], S2, false, [], { level: "interact", viewer: "u_1" });
+    await tick();
+    expect(net.conns).toHaveLength(2);
+  });
+
+  it("lets a stream request in flight answer before reopening for a reconnect that names no caller", async () => {
+    hub.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
+    await tick();
+    hub.receive("t1", { t: "reconnect" });
+    await tick();
+    // Not aborted before it answers: a browser would keep its socket open.
+    expect(net.conns).toHaveLength(1);
+    expect(net.conns[0].aborted).toBe(false);
+    net.ready(net.conns[0], S1);
+    await tick();
+    expect(net.conns).toHaveLength(2);
+    expect(net.conns[0].aborted).toBe(true);
+    expect(net.conns[1].headers["Last-Event-ID"]).toBeUndefined();
+    net.ready(net.conns[1], S2);
     await tick();
     expect(net.conns).toHaveLength(2);
   });
@@ -535,11 +590,13 @@ describe("the stream hub", () => {
       },
     });
     const say = (s: Sock, text: string) => s.onmessage?.({ data: text } as MessageEvent);
+    hub.receive("t1", { t: "hello", proof: "cxp_s" });
     hub.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
     await tick();
     expect(plain).toHaveLength(1);
     expect(socks).toHaveLength(1);
-    expect(socks[0].url).toMatch(/^(ws:\/\/[^/]+)?\/api\/stream$/);
+    // A WebSocket sends no header: the proof rides its address.
+    expect(socks[0].url).toMatch(/^(ws:\/\/[^/]+)?\/api\/stream\?owner_proof=cxp_s$/);
     say(socks[0], `event: ready\ndata: ${JSON.stringify({ stream: S1, seq: 0, resumed: false, topics: [] })}\n\n`);
     await tick();
     expect(net.posts[0].url).toBe(`/api/stream/${S1}`);
@@ -556,7 +613,33 @@ describe("the stream hub", () => {
     expect(of("t1", "status")).toEqual([{ t: "status", up: false }]);
     expect(socks).toHaveLength(2);
     expect(plain).toHaveLength(1);
-    expect(socks[1].url).toMatch(new RegExp(`/api/stream\\?last_event_id=${S1}%3A4$`));
+    expect(socks[1].url).toMatch(new RegExp(`/api/stream\\?last_event_id=${S1}%3A4&owner_proof=cxp_s$`));
+  });
+
+  it("sends the owner browser session proof its tabs say on every request, and opens the stream again with a new one", async () => {
+    hub.receive("t1", { t: "hello", proof: "cxp_one" });
+    hub.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
+    await tick();
+    expect(net.conns[0].headers["x-clax-owner-proof"]).toBe("cxp_one");
+    net.ready(net.conns[0], S1);
+    await tick();
+    expect(net.posts[0].headers["x-clax-owner-proof"]).toBe("cxp_one");
+    // The same proof again (another tab's hello) changes nothing.
+    hub.receive("t2", { t: "hello", proof: "cxp_one" });
+    await tick();
+    expect(net.conns).toHaveLength(1);
+    // A login in another tab: its new proof reopens the stream with it.
+    hub.receive("t2", { t: "hello", proof: "cxp_two" });
+    await tick();
+    expect(net.conns[0].aborted).toBe(true);
+    expect(net.conns.at(-1)!.headers["x-clax-owner-proof"]).toBe("cxp_two");
+  });
+
+  it("sends no proof header when no tab has one", async () => {
+    hub.receive("t1", { t: "hello" });
+    hub.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
+    await tick();
+    expect(net.conns[0].headers["x-clax-owner-proof"]).toBeUndefined();
   });
 });
 
@@ -728,14 +811,14 @@ describe("the stream hub on the app's host (`host: true`)", () => {
     expect(net.conns).toHaveLength(2);
   });
 
-  it("opens the stream again after a backoff, not at once, when a subscription answers 503", async () => {
+  it("opens the stream again after growing waits when a subscription answers 503 every time", async () => {
     const asked = asking();
     net.refuse.set("gallery", [503, "internal"]);
     host.receive("t1", { t: "topics", topics: ["gallery"] });
     await tick();
-    // Each new stream says ready, which resets the backoff: one short wait each.
-    for (const n of [1, 2, 3]) {
-      const floor = 400;
+    // Each new stream says ready, but its subscription fails: ready does not
+    // reset the backoff, so each wait is longer than the one before.
+    for (const [n, floor] of [[1, 400], [2, 800], [3, 1600]]) {
       net.ready(net.conns.at(-1)!, S1);
       await tick();
       expect(net.posts).toHaveLength(n);
@@ -746,5 +829,43 @@ describe("the stream hub on the app's host (`host: true`)", () => {
     }
     expect(of("t1", "status")).toEqual([]);
     expect(asked.filter(u => u === "/api/token")).toEqual([]);
+  });
+
+  it("starts the backoff over once a stream's subscriptions go through", async () => {
+    net.refuse.set("gallery", [503, "internal"]);
+    host.receive("t1", { t: "topics", topics: ["gallery"] });
+    await tick();
+    for (const floor of [400, 800]) {
+      net.ready(net.conns.at(-1)!, S1);
+      await tick();
+      await vi.advanceTimersByTimeAsync(floor * 1.5 + 1);
+    }
+    net.refuse.delete("gallery");
+    net.ready(net.conns.at(-1)!, S1);
+    await tick();
+    expect(of("t1", "live")).toEqual([{ t: "live", topics: ["gallery"] }]);
+    // The stream ends after it carried every topic: one short wait.
+    const n = net.conns.length;
+    net.conns.at(-1)!.end();
+    await vi.advanceTimersByTimeAsync(601);
+    expect(net.conns).toHaveLength(n + 1);
+  });
+
+  it("opens a stream the core keeps answering unknown_stream for again after growing waits", async () => {
+    host.receive("t1", { t: "topics", topics: ["gallery"] });
+    await tick();
+    net.refuse.set("gallery", [404, "unknown_stream"]);
+    net.ready(net.conns[0], S1);
+    await tick();
+    // The first time at once.
+    expect(net.conns).toHaveLength(2);
+    for (const [n, floor] of [[2, 800], [3, 1600]]) {
+      net.ready(net.conns.at(-1)!, S1);
+      await tick();
+      await vi.advanceTimersByTimeAsync(floor - 1);
+      expect(net.conns).toHaveLength(n);
+      await vi.advanceTimersByTimeAsync(floor * 1.5 + 1);
+      expect(net.conns).toHaveLength(n + 1);
+    }
   });
 });

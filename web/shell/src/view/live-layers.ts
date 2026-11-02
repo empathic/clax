@@ -8,6 +8,7 @@
 
 import type { FramePeer, LivePoint, LiveSelection } from "../../../bridge/src/protocol";
 import { after } from "../clock";
+import { ownerProof, withProof } from "../owner-proof";
 import { socketUrl } from "../socket-url";
 import { onHost } from "../transport";
 
@@ -308,8 +309,10 @@ export type LiveHandlers = {
  * seat that frees between the socket's request and the stream's leaves the
  * view live. What is sent while it is not open is dropped; `opened` lets the
  * owner send its state again. `pause` closes it until `resume` (a spectator
- * holds no live socket). Without a URL (`liveUrl`: the Clax app) it never
- * opens.
+ * holds no live socket). `url` is asked again at every open, so a reopen
+ * after a login in another tab carries the proof that login wrote, not the
+ * one the view began with (`liveUrl`). Without a URL (`liveUrl`: the Clax
+ * app) it never opens.
  */
 export class LiveSocket {
   private ws: SocketLike | null = null;
@@ -319,15 +322,21 @@ export class LiveSocket {
   private open = false;
 
   constructor(
-    private readonly url: string | null,
+    url: string | null | (() => string | null),
     private readonly on: LiveHandlers,
     private readonly make: (url: string) => SocketLike = u => new WebSocket(u) as unknown as SocketLike,
     private readonly timers: Timers = realTimers,
-  ) {}
+  ) {
+    this.url = typeof url === "function" ? url : () => url;
+  }
+
+  private readonly url: () => string | null;
 
   start(): void {
-    if (this.ws || this.stopped || this.paused || this.url === null) return;
-    const s = this.make(this.url);
+    if (this.ws || this.stopped || this.paused) return;
+    const url = this.url();
+    if (url === null) return;
+    const s = this.make(url);
     this.ws = s;
     s.onopen = () => {
       if (this.ws !== s) return;
@@ -383,6 +392,11 @@ export class LiveSocket {
 
 /** The live socket's URL for artifact `id` on this shell's origin, or null
  * where the shell opens no WebSocket (`socketUrl`: in the Clax app, or on
- * an origin neither `https:` nor `http:`). */
-export const liveUrl = (id: string, loc: { protocol: string; host: string } = location, app = onHost()): string | null =>
-  socketUrl(`${loc.protocol}//${loc.host}`, `/api/artifacts/${encodeURIComponent(id)}/live`, app);
+ * an origin neither `https:` nor `http:`). It carries the origin's owner
+ * browser session proofs, when there are any (`owner-proof.ts`), as read at
+ * the call: a WebSocket sends no header of the page's, so `LiveSocket`
+ * calls this again at every open. */
+export const liveUrl = (id: string, loc: { protocol: string; host: string } = location, app = onHost(), proof: string | null = ownerProof()): string | null => {
+  const url = socketUrl(`${loc.protocol}//${loc.host}`, `/api/artifacts/${encodeURIComponent(id)}/live`, app);
+  return url === null ? null : withProof(url, proof);
+};

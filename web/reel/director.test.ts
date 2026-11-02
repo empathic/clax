@@ -11,6 +11,7 @@ function fakeCamera() {
     beats: [],
     roll: async ms => { calls.push(`roll ${ms}`); frames += Math.ceil(ms / (1000 / 30)); },
     still: async () => { calls.push("still"); },
+    idle: async () => { calls.push("idle"); },
     frame: () => frames,
   };
   return { camera, calls };
@@ -70,6 +71,16 @@ describe("Director", () => {
     await new Director(fakePage().page, camera, "realtime", clock).until(async () => ++n === 3, "the third check");
     expect(waits).toEqual([10, 20]);
     expect(calls).toEqual(["still"]);
+  });
+
+  it("settle runs the page's clock a frame off camera between checks, rolling nothing", async () => {
+    const { camera, calls } = fakeCamera();
+    const { clock, waits } = fakeClock();
+    let n = 0;
+    await new Director(fakePage().page, camera, "history", clock).settle(async () => ++n === 3, "the shell loaded");
+    expect(calls).toEqual(["still", "idle", "idle"]);
+    expect(waits).toEqual([10, 20]);
+    await expect(new Director(fakePage().page, camera, "history", clock).settle(async () => false, "the frame showed v4")).rejects.toThrow(/settle: the frame showed v4/);
   });
 
   it("a missing control fails the vignette, naming it", async () => {

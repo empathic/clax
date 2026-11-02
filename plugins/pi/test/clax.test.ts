@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { artifactRef, claxExtension, handedOver, handoverOf, htmlTitle, INJECT_RETRY_MS, isText, RENEW_EVERY_MS, START_BUDGET_MS, target, textPrefix, ToolError, waitingLine } from "../src/clax.ts";
+import { artifactRef, claxExtension, handedOver, handoverOf, htmlTitle, INJECT_RETRY_MS, isText, REMOTE_REQUEST_MAX_WAIT_S, RENEW_EVERY_MS, START_BUDGET_MS, target, textPrefix, ToolError, waitingLine } from "../src/clax.ts";
+import { CLIP_FETCHES_AT_ONCE } from "../src/remote.ts";
 import { ClientError, DaemonClient, END_TIMEOUT_MS, MAX_ACK_IDS } from "../src/client.ts";
 import { discover, endpointOf, ensure } from "../src/daemon.ts";
 
@@ -41,7 +42,7 @@ async function siteBytes(url: URL, d: TestDaemon): Promise<Buffer> {
   const { cookie } = await siteGet(new URL((await code.json()).src), { cookie: start.cookie });
   return (await siteGet(url, { cookie })).body;
 }
-import { api, claxBin, startDaemon, type TestDaemon } from "./daemon-fixture.ts";
+import { api, claxBin, ownerBrowser, startDaemon, type TestDaemon, viewerCookie } from "./daemon-fixture.ts";
 import { FakePi, fakeContext, json } from "./fake-api.ts";
 import { fakeExe } from "./fake-exe.ts";
 
@@ -51,9 +52,12 @@ const TOOLS: string[] = FIXTURE.tools.map((t: { name: string }) => `clax_${t.nam
 
 let daemon: TestDaemon;
 let scratch: string;
+/** The owner's browser's headers, logged in before any agent session. */
+let owner: Record<string, string>;
 
 beforeAll(async () => {
   daemon = await startDaemon();
+  owner = await ownerBrowser(daemon);
   scratch = mkdtempSync(join(tmpdir(), "clax-pi-scratch-"));
 }, 320_000);
 
@@ -461,7 +465,7 @@ describe("clax Pi extension", () => {
     // loaded machine; one that lingers is given up on after `openWaitMs`.
     const openWith = async (script: string, openWaitMs = 30_000, extra: NodeJS.ProcessEnv = {}) => {
       const bin = mkdtempSync(join(scratch, "opener-"));
-      for (const name of ["open", "xdg-open"]) {
+      for (const name of ["osascript", "xdg-open"]) {
         fakeExe(join(bin, name), `#!/bin/sh\n${script}\n`);
       }
       const env: NodeJS.ProcessEnv = { ...process.env, ...extra, CLAX_BIN: claxBin, PATH: `${bin}:${process.env.PATH}` };
@@ -472,6 +476,20 @@ describe("clax Pi extension", () => {
     };
     expect(await openWith("exit 1")).toMatchObject({ url: p.url, opened: false });
     expect(await openWith("exit 0")).toMatchObject({ url: p.url, opened: true });
+    // The browser is handed a one-use login link to the artifact, which the
+    // result never names. On macOS it reaches `osascript` on its standard
+    // input, never in its arguments, which every user of the machine can
+    // read; elsewhere `xdg-open` takes it as its one argument.
+    const opened = join(scratch, `opened-${Math.random().toString(36).slice(2)}.txt`);
+    expect(await openWith('printf "%s:%s|" "$#" "$1" > "$OPENED_FILE"; cat >> "$OPENED_FILE"', 30_000, { OPENED_FILE: opened })).toMatchObject({ url: p.url, opened: true });
+    const link = readFileSync(opened, "utf8");
+    if (process.platform === "darwin") {
+      expect(link.startsWith("0:|open location \"")).toBe(true);
+    } else {
+      expect(link.startsWith("1:")).toBe(true);
+    }
+    expect(link).toContain("/login?code=cxi_");
+    expect(link).toContain(`next=${encodeURIComponent(`/a/${p.artifact_id}`)}`);
     // This opener never exits on its own, so `opened: true` comes from giving
     // up on it. It names its PID file in the environment, so its text, and
     // the executable fakeExe makes of it, is the same on every run.
@@ -626,6 +644,7 @@ describe("clax Pi extension", () => {
         { approval_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" },
       ],
       clax_where_to_ask: [{}],
+      clax_connect_instance: [{ url_or_origin: "https://clax.example/a/7q3k9mzx2b4t", reason: "to read it" }, { request_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W", timeout_s: 50 }],
       clax_db_get: [{ url_or_id: id, collection: "tasks", doc_id: "t1" }, { url_or_id: id, collection: "tasks", doc_id: "t1", as_level: "view" }],
       clax_db_list: [{ url_or_id: id, collection: "tasks" }, { url_or_id: id, collection: "tasks", query: { limit: 10, cursor: "t1" } }],
       clax_db_query: [{ url_or_id: id, collection: "tasks", query: { where: [["n", ">", 1]], order_by: { field: "n", direction: "desc" }, limit: 5 } }],
@@ -644,12 +663,18 @@ describe("clax Pi extension", () => {
         { url_or_id: id, scope: "read" },
         { url_or_id: id, scope: "write" },
       ],
-      clax_queue_list: [{}, { queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", state: "claimed", cursor: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
+      clax_queue_list: [{}, { queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", state: "claimed", cursor: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }, ...["open", "fix_proposed", "verified", "resolved", "active", "all"].map(state => ({ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", state }))],
       clax_queue_claim: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
       clax_queue_renew: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
       clax_queue_release: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
       clax_queue_reply: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W", body: "Fixed in r2" }],
-      clax_queue_resolve: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
+      clax_queue_resolve: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }, { queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W", reason: "cannot_reproduce" }],
+      clax_queue_get: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
+      clax_queue_fix: [
+        { queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W", summary: "Fixed" },
+        { queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W", summary: "Fixed", url: "https://x", commit: "c", release: "r", verify_url: "https://y", verify_after: "release:1" },
+      ],
+      clax_queue_watch: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }, { queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", stop: true }],
     };
     const invalid: Record<string, Record<string, unknown>[]> = {
       clax_publish: [{ html: "x", bogus: 1 }, { html: "x", files: { "a.css": { content: "x", nope: 1 } } }, { html: "x", files: { "a.css": { content: "x", encoding: "hex" } } }],
@@ -673,6 +698,7 @@ describe("clax Pi extension", () => {
       clax_wait_for_feedback: [{ timeout_s: -1 }, { bogus: 1 }],
       clax_ask: [{ bogus: 1 }, { questions: [] }, { questions: [{ question: "Q" }] }, { questions: [{ question: "Q", header: "H", nope: 1 }] }, { questions: [{ question: "Q", header: "H", options: [{ label: "A", nope: 1 }] }] }, { approval: { thread_id: "x", nope: 1 } }],
       clax_where_to_ask: [{ bogus: 1 }],
+      clax_connect_instance: [{ bogus: 1 }, { timeout_s: -1 }],
       clax_working: [{ url_or_id: id, done: "yes" }, { url_or_id: id, bogus: 1 }],
       clax_git_remote: [{ url_or_id: id }, { url_or_id: id, scope: "admin" }, { url_or_id: id, scope: "read", bogus: 1 }],
       clax_draft: [{ html: "<p>x</p>" }, { url_or_id: id, bogus: 1 }, { url_or_id: id, done: "yes" }, { url_or_id: id, files: { "a.css": { content: "x", nope: 1 } } }],
@@ -683,6 +709,10 @@ describe("clax Pi extension", () => {
       clax_queue_list: [{ state: "taken" }, { bogus: 1 }],
       clax_queue_claim: [{ queue: "q" }, { report_id: "r" }, { queue: "q", report_id: "r", bogus: 1 }],
       clax_queue_reply: [{ queue: "q", report_id: "r" }],
+      clax_queue_resolve: [{ queue: "q", report_id: "r", reason: "fixed_it" }],
+      clax_queue_get: [{ queue: "q" }, { queue: "q", report_id: "r", capture: 1 }],
+      clax_queue_fix: [{ queue: "q", report_id: "r" }, { queue: "q", report_id: "r", summary: "s", fence: 3 }],
+      clax_queue_watch: [{}, { queue: "q", stop: "yes" }],
     };
     expect(Object.keys(valid).sort()).toEqual([...TOOLS].sort());
     const check = (name: string, args: Record<string, unknown>) =>
@@ -705,13 +735,21 @@ describe("clax Pi extension", () => {
   });
 });
 
-/** Creates a thread on version 1 as a browser does; `@agent` in `body` sends it. */
-async function browserThread(aid: string, body: string, base = daemon.base, anchor: object = { kind: "element", selector: "body > h2", quote: "Goals" }): Promise<string> {
+/** The cookie of a browser of this machine's with no name, one per daemon. */
+const browsers = new Map<string, Promise<string>>();
+const browserCookie = (d: { base: string; token: string } = daemon) => {
+  const c = browsers.get(d.base) ?? viewerCookie(d);
+  browsers.set(d.base, c);
+  return c;
+};
+
+/** Creates a thread on version 1 as a browser of this machine's does; `@agent` in `body` sends it. */
+async function browserThread(aid: string, body: string, d: { base: string; token: string } = daemon, anchor: object = { kind: "element", selector: "body > h2", quote: "Goals" }): Promise<string> {
   const form = new FormData();
   form.set("anchor", JSON.stringify(anchor));
   form.set("body", body);
   form.set("version", "1");
-  const res = await fetch(`${base}/api/artifacts/${aid}/threads`, { method: "POST", body: form });
+  const res = await fetch(`${d.base}/api/artifacts/${aid}/threads`, { method: "POST", headers: { cookie: await browserCookie(d) }, body: form });
   expect(res.status).toBe(201);
   return (await res.json()).thread.id;
 }
@@ -720,8 +758,7 @@ async function browserThread(aid: string, body: string, base = daemon.base, anch
  * clip, as the Chrome extension posts it; the live page's artifact ID and the
  * thread ID. */
 async function liveThread(url: string, body: string): Promise<{ aid: string; tid: string }> {
-  const me = await fetch(`${daemon.base}/api/viewers/me`);
-  const cookie = (me.headers.get("set-cookie") ?? "").split(";")[0];
+  const cookie = await viewerCookie(daemon);
   const named = await fetch(`${daemon.base}/api/viewers/me`, {
     method: "PUT", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ display_name: "Alex" }),
   });
@@ -776,9 +813,16 @@ function askBody(header: string) {
   return { source: "ask", questions: [{ question: "Which?", header, options: [{ label: "A" }, { label: "B" }] }] };
 }
 
-/** Answers question `qid` with `label` as the owner (the token). */
+/** Answers question `qid` with `label` as the owner, in their browser: the
+ * token alone would wait for the browser's confirmation while the asking
+ * agent is live. */
 async function answer(qid: string, label: string): Promise<void> {
-  await api(daemon, `/api/questions/${qid}/answer`, { method: "POST", body: JSON.stringify({ answers: [{ selected: [label] }] }) });
+  const res = await fetch(`${daemon.base}/api/questions/${qid}/answer`, {
+    method: "POST",
+    headers: { ...owner, "content-type": "application/json" },
+    body: JSON.stringify({ answers: [{ selected: [label] }] }),
+  });
+  if (res.status !== 200) throw new Error(`answer: HTTP ${res.status} ${await res.text()}`);
 }
 
 /** Session `sid` asks a question headed `header`, which the owner answers
@@ -834,13 +878,13 @@ describe("comments", () => {
     expect(read.note).toContain("people viewing the page");
     expect(read.feedback).toEqual([]);
     const area = { x: 0.1, y: 0.2, w: 0.4213, h: 0.18 };
-    await browserThread(aid, "what is this gap?", daemon.base, { kind: "area", selector: "body > h2", area, file: "index.html" });
+    await browserThread(aid, "what is this gap?", daemon, { kind: "area", selector: "body > h2", area, file: "index.html" });
     const drawn = parts(await pi.callToolAsPi("clax_comments_read", { url_or_id: aid }, ctx)).json.threads.at(-1);
     expect(drawn.anchor).toMatchObject({ kind: "area", area, summary: "area in body > h2 (42% × 18%)" });
-    await browserThread(aid, "this thin line", daemon.base, { kind: "area", selector: "body > h2", area: { x: 0, y: 0.5, w: 0.4213, h: 0.003 }, file: "index.html" });
+    await browserThread(aid, "this thin line", daemon, { kind: "area", selector: "body > h2", area: { x: 0, y: 0.5, w: 0.4213, h: 0.003 }, file: "index.html" });
     const thin = parts(await pi.callToolAsPi("clax_comments_read", { url_or_id: aid }, ctx)).json.threads.at(-1);
     expect(thin.anchor.summary).toBe("area in body > h2 (42% × <1%)");
-    await browserThread(aid, "warmer colours", daemon.base, { kind: "artifact" });
+    await browserThread(aid, "warmer colours", daemon, { kind: "artifact" });
     const whole = parts(await pi.callToolAsPi("clax_comments_read", { url_or_id: aid }, ctx)).json.threads.at(-1);
     expect(whole.anchor).toEqual({ kind: "artifact", selector: null, quote: null, custom_name: null, file: "", area: null, summary: "the whole artifact" });
     expect(parts(await pi.callToolAsPi("clax_comments_reply", { url_or_id: aid, thread_id: plain, text: "ok" }, ctx)).json).toMatchObject({ replied: false });
@@ -1446,7 +1490,7 @@ describe("comments", () => {
       const sid = (await live()).id;
       const aid = (await api(d, "/api/artifacts", { method: "POST", body: JSON.stringify({ title: "Back", files: { "index.html": { content: "<h2>Goals</h2>", encoding: "utf8" } } }) })).artifact.id;
       await api(d, `/api/sessions/${sid}/watches/${aid}`, { method: "PUT", body: JSON.stringify({ replies_armed: true }) });
-      await browserThread(aid, "@agent welcome back", d.base);
+      await browserThread(aid, "@agent welcome back", d);
       await expect.poll(() => pi.sent.length, { timeout: 15_000 }).toBe(1);
     } finally {
       stop();
@@ -1557,7 +1601,7 @@ describe("comments", () => {
     const set = await pi.callTool("clax_working", { url_or_id: pub.artifact_id, message: "Two columns" }, ctx);
     expect(set.isError).toBe(false);
     expect(JSON.parse(set.content[0].text!)).toMatchObject({ working: true, message: "Two columns", expires_in_s: 120, message_truncated: false });
-    const seen = await (await fetch(`${daemon.base}/api/artifacts/${pub.artifact_id}/working`)).json();
+    const seen = await (await fetch(`${daemon.base}/api/artifacts/${pub.artifact_id}/working`, { headers: { cookie: await browserCookie() } })).json();
     expect(seen.working[0]).toMatchObject({ harness: "pi", message: "Two columns" });
     expect(JSON.stringify(seen)).not.toContain("session_id");
     const done = await pi.callTool("clax_working", { url_or_id: pub.artifact_id, done: true }, ctx);
@@ -1616,7 +1660,7 @@ describe("comments", () => {
       spy.mockRestore();
     }
     await pi.emit("agent_end", { type: "agent_end", messages: [] }, ctx);
-    const seen = await (await fetch(`${daemon.base}/api/artifacts/${pub.artifact_id}/working`)).json();
+    const seen = await (await fetch(`${daemon.base}/api/artifacts/${pub.artifact_id}/working`, { headers: { cookie: await browserCookie() } })).json();
     expect(seen.working).toEqual([]);
   });
 
@@ -1628,7 +1672,7 @@ describe("comments", () => {
     form.set("anchor", JSON.stringify({ kind: "element", selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null }));
     form.set("body", "plain");
     form.set("version", "1");
-    const tid = (await (await fetch(`${daemon.base}/api/artifacts/${v1.artifact_id}/threads`, { method: "POST", body: form })).json()).thread.id;
+    const tid = (await (await fetch(`${daemon.base}/api/artifacts/${v1.artifact_id}/threads`, { method: "POST", headers: { cookie: await browserCookie() }, body: form })).json()).thread.id;
     const v2 = JSON.parse((await pi.callTool("clax_publish", { id: v1.artifact_id, html: "<h2>Goals</h2>", note: "Done", addresses: [tid] }, ctx)).content[0].text!);
     expect(v2).toMatchObject({ version: 2, note: "Done", note_truncated: false, addressed: [tid] });
   });
@@ -1638,7 +1682,7 @@ describe("comments", () => {
     await pi.emit("session_start", {}, ctx);
     const aid = parts(await pi.callTool("clax_publish", { html: "<h2>Goals</h2>", title: "Pi batch" }, ctx)).json.artifact_id;
     const ids = [await browserThread(aid, "one"), await browserThread(aid, "two")];
-    const res = await fetch(`${daemon.base}/api/artifacts/${aid}/threads:send`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ thread_ids: ids, note: "Together" }) });
+    const res = await fetch(`${daemon.base}/api/artifacts/${aid}/threads:send`, { method: "POST", headers: { "content-type": "application/json", cookie: await browserCookie() }, body: JSON.stringify({ thread_ids: ids, note: "Together" }) });
     expect(res.status).toBe(200);
     await expect.poll(() => pi.sent.length, { timeout: 15_000 }).toBe(1);
     expect(String(pi.sent[0].content)).toMatch(/^\[clax\] 2 comments sent to you:\n\[clax\] 2 comments on "Pi batch", sent together by Viewer \(not connected\)\. Note: "Together"\n/);
@@ -1709,7 +1753,7 @@ function trackTimers(ms: number) {
  * `s1` and ends it, records its tool-call and call-ID reports, and passes
  * other requests to `handle`, which answers through `reply` or returns false
  * to leave the request unanswered. */
-async function fakeDaemonHome(handle: (req: import("node:http").IncomingMessage, reply: (body: unknown) => void) => unknown) {
+async function fakeDaemonHome(handle: (req: import("node:http").IncomingMessage, reply: (body: unknown) => void, res: import("node:http").ServerResponse) => unknown) {
   const home = join(scratch, `fake-${Math.random().toString(36).slice(2)}`);
   mkdirSync(home, { recursive: true });
   const server = createHttpServer((req, res) => {
@@ -1730,7 +1774,7 @@ async function fakeDaemonHome(handle: (req: import("node:http").IncomingMessage,
       res.statusCode = 204;
       return res.end();
     }
-    handle(req, reply);
+    handle(req, reply, res);
   });
   await new Promise<void>(r => server.listen(0, "127.0.0.1", () => r()));
   const port = (server.address() as { port: number }).port;
@@ -1775,6 +1819,121 @@ describe("report queues", () => {
     expect(json(bad).error).toMatchObject({ code: "invalid_args", message: "'q' is not a queue ID" });
     const loose = await pi.callToolAsPi("clax_queue_list", { state: "open" }, ctx);
     expect(json(loose).error.code).toBe("invalid_args");
+  });
+
+  const Q = "01K6AB3Q9X7N2M4P5R6S8T0V1W";
+  const R = "01K6AB3Q9X7N2M4P5R6S8T0V1X";
+  const C = "01K6AB3Q9X7N2M4P5R6S8T0V1Y";
+  const R2 = "01K6AB3Q9X7N2M4P5R6S8T0V1Z";
+  /** A fake daemon answering the report routes from `routes` (`METHOD
+   * path` to a JSON body, or a Buffer served as a PNG), every feedback
+   * poll with nothing, and recording each body POSTed in `posted`. */
+  async function queueDaemon(routes: Record<string, unknown>) {
+    const posted: Record<string, unknown> = {};
+    const asked: string[] = [];
+    const fake = await fakeDaemonHome((req, reply, res) => {
+      const line = `${req.method} ${req.url}`;
+      asked.push(line);
+      if (req.url?.startsWith("/api/sessions/s1/feedback")) return reply({ feedback: [], answers: [], text: null, waited_s: 0 });
+      let raw = "";
+      req.on("data", c => { raw += c; });
+      req.on("end", () => {
+        if (raw) posted[line] = JSON.parse(raw);
+        const body = routes[line];
+        if (body === undefined) {
+          res.statusCode = 404;
+          return reply({ error: { code: "not_found", message: line } });
+        }
+        if (Buffer.isBuffer(body)) {
+          res.setHeader("content-type", "image/png");
+          return res.end(body);
+        }
+        if (body === null) {
+          res.statusCode = 204;
+          return res.end();
+        }
+        reply(body);
+      });
+    });
+    return { ...fake, posted, asked };
+  }
+  const WIDE = Buffer.concat([Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"), Buffer.from([0, 0, 0x13, 0x88, 0, 0, 0, 10, 8, 6, 0, 0, 0])]);
+  const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
+
+  it("queue_fix posts summary and links", async () => {
+    const fake = await queueDaemon({ [`POST /api/queues/${Q}/reports/${R}/fix`]: { report: { id: R, state: "fix_proposed" } } });
+    try {
+      const { pi, ctx } = load(fake.home, "pi-queue-fix");
+      const fix = { summary: "Drew the axis again", url: "https://github.com/acme/app/pull/7", commit: "abc123", release: "0.6.1", verify_url: "https://app.example.com/i/7", verify_after: "release:0.6.1" };
+      const v = parts(await pi.callToolAsPi("clax_queue_fix", { queue: Q, report_id: R, ...fix }, ctx)).json;
+      expect(v.report.state).toBe("fix_proposed");
+      // The fence is the session's lease's: none is sent.
+      expect(fake.posted[`POST /api/queues/${Q}/reports/${R}/fix`]).toEqual(fix);
+      const blank = await pi.callToolAsPi("clax_queue_fix", { queue: Q, report_id: R, summary: "  " }, ctx);
+      expect(json(blank).error.code).toBe("invalid_args");
+    } finally {
+      fake.close();
+    }
+  });
+
+  it("queue_get returns diagnostics", async () => {
+    const report = {
+      id: R, queue_id: Q, state: "open", has_clip: true, diagnostics_lines: 1, reopen_count: 1,
+      context: { v: 1, captured_at: "2026-10-27T11:58:00Z", release: { version: "0.6.0" }, capture: { mode: "screen", method: "dom" } },
+      comments: [
+        { id: R, author_kind: "viewer", author_name: "emp-1", body: "Blank", created_at: "2026-10-27T11:58:01Z" },
+        { id: C, author_kind: "viewer", author_name: "emp-1", body: "Still blank", created_at: "2026-10-27T12:30:00Z", capture: 1, has_clip: true, diagnostics_lines: 1 },
+      ],
+      fixes: [{ n: 1, summary: "Drew it", outcome: "rejected" }],
+    };
+    const fake = await queueDaemon({
+      [`GET /api/queues/${Q}/reports/${R}`]: { report },
+      [`GET /api/queues/${Q}/reports/${R}/diagnostics?capture=1`]: { lines: [{ at: "2026-10-27T12:29:59Z", level: "error", kind: "error", text: "again" }] },
+      [`GET /api/queues/${Q}/reports/${R}/comments/${C}/clip`]: PNG,
+      [`GET /api/queues/${Q}/reports?state=active`]: { reports: [report], next: null },
+      [`GET /api/queues/${Q}/reports`]: { reports: [], next: null },
+      // A report whose clip is too wide to attach and whose filing's diagnostics cannot be read.
+      [`GET /api/queues/${Q}/reports/${R2}`]: { report: { id: R2, queue_id: Q, state: "open", has_clip: true, diagnostics_lines: 2, filing_diagnostics_lines: 2, comments: [] } },
+      [`GET /api/queues/${Q}/reports/${R2}/clip`]: WIDE,
+      [`POST /api/queues/${Q}/watch`]: null,
+      [`DELETE /api/queues/${Q}/watch`]: null,
+    });
+    try {
+      const { pi, ctx } = load(fake.home, "pi-queue-get");
+      const r = await pi.callToolAsPi("clax_queue_get", { queue: Q, report_id: R }, ctx);
+      const v = parts(r).json;
+      const base = `${v.report.clip_url.split("/api/")[0]}/api/queues/${Q}/reports/${R}`;
+      expect(v.report.clip_url).toBe(`${base}/clip`);
+      // The filing has none (no filing_diagnostics_lines): no link, and no
+      // request to find that out.
+      expect(v.report.diagnostics_url).toBeNull();
+      expect(fake.asked.filter(l => l.includes("capture=0"))).toEqual([]);
+      expect(v.report.comments[0].clip_url).toBeUndefined();
+      expect(v.report.comments[1]).toMatchObject({ clip_url: `${base}/comments/${C}/clip`, diagnostics_url: `${base}/diagnostics?capture=1` });
+      expect(v.diagnostics).toEqual({ capture: 1, lines: [{ at: "2026-10-27T12:29:59Z", level: "error", kind: "error", text: "again" }] });
+      expect(v.clip.capture).toBe(1);
+      expect(v.note).toContain("data");
+      expect(r.content.find(b => b.type === "image")).toMatchObject({ type: "image", mimeType: "image/png", data: PNG.toString("base64") });
+
+      // Without a state the listing is the active reports; `all` sends no filter.
+      const l = parts(await pi.callToolAsPi("clax_queue_list", { queue: Q }, ctx)).json;
+      expect(l.reports[0].context).toBeUndefined();
+      expect(l.reports[0].context_summary).toEqual({ release: { version: "0.6.0" }, captured_at: "2026-10-27T11:58:00Z", mode: "screen" });
+      expect(parts(await pi.callToolAsPi("clax_queue_list", { queue: Q, state: "all" }, ctx)).json.reports).toEqual([]);
+
+      const r2 = await pi.callToolAsPi("clax_queue_get", { queue: Q, report_id: R2 }, ctx);
+      const v2 = parts(r2).json;
+      expect(v2.clip.note).toContain("not attached (5000x10 pixels");
+      expect(r2.content.some(b => b.type === "image")).toBe(false);
+      expect(v2.diagnostics).toMatchObject({ capture: 0, lines: [] });
+      expect(v2.diagnostics.note).toMatch(/^not read \(not_found\)/);
+      expect(v2.report.diagnostics_url).toBe(`${base.replace(R, R2)}/diagnostics?capture=0`);
+
+      expect(parts(await pi.callToolAsPi("clax_queue_watch", { queue: Q }, ctx)).json).toMatchObject({ queue: Q, watching: true });
+      expect(parts(await pi.callToolAsPi("clax_queue_watch", { queue: Q, stop: true }, ctx)).json).toMatchObject({ queue: Q, watching: false });
+    } finally {
+      fake.close();
+    }
   });
 });
 
@@ -1866,6 +2025,11 @@ describe("waitingLine", () => {
 });
 
 describe("helpers match the shared contract fixture", () => {
+  it("constants", () => {
+    expect(CLIP_FETCHES_AT_ONCE).toBe(FIXTURE.constants.clip_fetches_at_once);
+    expect(REMOTE_REQUEST_MAX_WAIT_S).toBe(FIXTURE.constants.remote_request_max_wait_s);
+  });
+
   it("artifactRef", () => {
     for (const c of FIXTURE.artifact_ref) {
       if (c.error) expect(() => artifactRef(c.input), c.input).toThrow(new RegExp(c.error));

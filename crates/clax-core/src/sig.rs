@@ -334,17 +334,19 @@ pub struct SigHeader {
 impl fmt::Display for SigHeader {
     /// The header's value: `t=…, n=…, s=…`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "t={}, n={}, s={}", self.t, self.nonce, b64(&self.sig))
+        write!(
+            f,
+            "t={}, n={}, s={}",
+            self.t,
+            self.nonce,
+            crate::secret::base64url(&self.sig)
+        )
     }
 }
 
 /// A fresh nonce: [`NONCE_LEN`] base64url characters (16 random bytes).
 pub fn new_nonce() -> String {
-    b64(&random_bytes::<16>())
-}
-
-fn b64(bytes: &[u8]) -> String {
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    crate::secret::base64url(&random_bytes::<16>())
 }
 
 /// `s` decoded from canonical unpadded base64url into exactly `N` bytes.
@@ -423,7 +425,7 @@ pub fn verify(public: &[u8], input: &SignInput<'_>, sig: &[u8]) -> bool {
 
 /// A public key in unpadded base64url, as the store keeps it.
 pub fn encode_public(public: &[u8; PUBLIC_LEN]) -> String {
-    b64(public)
+    crate::secret::base64url(public)
 }
 
 /// The public key in unpadded base64url `s`.
@@ -884,7 +886,7 @@ mod tests {
 
     /// The `i`th test nonce: 22 base64url characters.
     fn nn(i: u32) -> String {
-        b64(&u128::from(i).to_be_bytes())
+        crate::secret::base64url(&u128::from(i).to_be_bytes())
     }
 
     #[test]
@@ -1221,7 +1223,7 @@ mod tests {
         let k = KeyPair::from_pkcs8(&doc).unwrap();
         assert_eq!(k.public(), public);
         assert_eq!(
-            b64(&doc),
+            crate::secret::base64url(&doc),
             "MFMCAQEwBQYDK2VwBCIEIEJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCoSMDIQAhUvjRm3kdJEUyQuFfLqtst8_6e2pe0wCXlg4GmIHbEg"
         );
         let i = input(

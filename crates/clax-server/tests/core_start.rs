@@ -25,6 +25,7 @@ fn cfg(
         port: 0,
         embed: None,
         quickstart,
+        catalog_url: None,
     }
 }
 
@@ -73,6 +74,33 @@ async fn stopping_a_core_closes_its_store_and_ends_its_streams() {
     let again = Core::start(cfg(dir.path(), clax_testkit::web_ui(), false), &mut |_| {})
         .await
         .unwrap();
+    again.stop().await;
+}
+
+/// A core's start makes a new daemon token, and an owner browser session
+/// survives it: only `clax logout` (`DELETE /api/browser-login`) ends one.
+#[tokio::test]
+async fn an_owner_browser_session_survives_a_new_daemon_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::start(cfg(dir.path(), clax_testkit::web_ui(), false), &mut |_| {})
+        .await
+        .unwrap();
+    let st = core.state().clone();
+    let first = st.token.clone();
+    let opened = st.owner_sessions.open(&st.store).unwrap();
+    let hash = opened.cookie.sha256_hex();
+    let proof = opened.proof.expose().to_string();
+    assert!(st.owner_sessions.proves(&hash, &proof));
+    drop(st);
+    core.stop().await;
+    let again = Core::start(cfg(dir.path(), clax_testkit::web_ui(), false), &mut |_| {})
+        .await
+        .unwrap();
+    assert_ne!(again.state().token, first, "a new token");
+    assert!(
+        again.state().owner_sessions.proves(&hash, &proof),
+        "the session survives, with its proof"
+    );
     again.stop().await;
 }
 
@@ -232,5 +260,54 @@ async fn a_hosted_start_seeds_no_one() {
     let store = &core.state().store;
     assert!(store.list_artifacts().unwrap().is_empty());
     assert!(store.quickstart_of(None).unwrap().is_none());
+    core.stop().await;
+}
+
+#[tokio::test]
+async fn a_core_takes_its_price_catalog_url_from_bot_and_fetches_it_at_start() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    // A catalog that tells of each request it is asked.
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/data/site.json", l.local_addr().unwrap());
+    let (tx, mut hits) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = l.accept().await {
+            let _ = tx.send(());
+            let mut buf = vec![0u8; 8192];
+            let _ = sock.read(&mut buf).await;
+            let _ = sock
+                .write_all(
+                    b"HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                )
+                .await;
+        }
+    });
+    // Left to the configuration, the core takes `[bot] price_catalog_url`
+    // in effect (the file's, unless the environment sets another, as the
+    // Bazel tests' `off` does).
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config.toml"),
+        format!("[bot]\nprice_catalog_url = \"{url}\"\n"),
+    )
+    .unwrap();
+    let want = clax_server::catalog::url_of(Some(
+        &clax_core::config::HomeConfig::load(dir.path()).unwrap(),
+    ));
+    let core = Core::start(cfg(dir.path(), clax_testkit::web_ui(), false), &mut |_| {})
+        .await
+        .unwrap();
+    assert_eq!(core.state().bot.catalog_url, want);
+    core.stop().await;
+    // Given one, it fetches the empty cache's catalog at start.
+    let dir = tempfile::tempdir().unwrap();
+    let mut given = cfg(dir.path(), clax_testkit::web_ui(), false);
+    given.catalog_url = Some(Some(url.clone()));
+    let core = Core::start(given, &mut |_| {}).await.unwrap();
+    assert_eq!(core.state().bot.catalog_url.as_deref(), Some(url.as_str()));
+    tokio::time::timeout(std::time::Duration::from_secs(30), hits.recv())
+        .await
+        .expect("a catalog request at start")
+        .unwrap();
     core.stop().await;
 }

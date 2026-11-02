@@ -65,8 +65,12 @@
 // --no-build, --wait <s> (default 600), --out <path>, --config-only,
 // --dry-run, --yes (no questions; fails on what it would ask),
 // --retired-content-origin <https origin> (the content host an instance
-// served assets on before site hosts; else the record's). --content is
-// gone: artifacts are served on the site domain's hosts.
+// served assets on before site hosts; else the record's), --reel-url
+// <https URL> and --reel-poster-url <https URL> (where the landing page's
+// reel and its poster are served from, REEL_URL and REEL_POSTER_URL: the
+// production deploy's upload to Cloudflare Stream, scripts/reel-stream.mjs;
+// without them the page shows no player). --content is gone: artifacts are
+// served on the site domain's hosts.
 //
 // --ci: a deploy from a CI runner (scripts/cloudflare-setup.sh --ci): it
 // asks nothing, and fails naming each setting not given as a flag (the
@@ -109,7 +113,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { dirname, join, resolve } from "node:path";
-import { buildId, builtFromRefusal, checkCiOptions, ciSecretsRefusal, doneText, healthOf, partialTriggerUpdate, prodTipOf, productionGate, versionIdOf } from "./deploy-lib.mjs";
+import { buildId, builtFromRefusal, checkCiOptions, ciSecretsRefusal, doneText, healthOf, partialTriggerUpdate, prodTipOf, productionGate, reelVars, versionIdOf } from "./deploy-lib.mjs";
 import { BUILD, BUILT_FROM, HERE, baseConfig, embedsWebUi } from "./harness.mjs";
 
 const WRANGLER = join(HERE, "node_modules/.bin/wrangler");
@@ -142,7 +146,7 @@ const PAID_LIMIT_KIB = 10 * 1024;
 
 export function parseArgs(argv) {
   const o = { store: "artifacts", storeGiven: false, name: "clax", wait: 600, diag: false, build: true, dryRun: false, yes: false, rotate: false, configOnly: false, ci: false, production: false, fromLaptop: false };
-  const takes = new Set(["--public", "--site-domain", "--zone", "--store", "--name", "--account", "--wait", "--out", "--github-client-id", "--owner-github", "--legal", "--terms-url", "--privacy-url", "--legal-version", "--retired-content-origin"]);
+  const takes = new Set(["--public", "--site-domain", "--zone", "--store", "--name", "--account", "--wait", "--out", "--github-client-id", "--owner-github", "--legal", "--terms-url", "--privacy-url", "--legal-version", "--retired-content-origin", "--reel-url", "--reel-poster-url"]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const [flag, inline] = a.includes("=") ? a.split(/=(.*)/s) : [a, undefined];
@@ -172,6 +176,7 @@ export function parseArgs(argv) {
   if (o["retired-content-origin"] !== undefined && !retiredContentOrigin({ retired_content_origin: o["retired-content-origin"] })) {
     throw new Error(`--retired-content-origin takes an https:// origin (e.g. https://content.example.com), not ${o["retired-content-origin"]}`);
   }
+  reelVars(o);
   return o;
 }
 
@@ -530,6 +535,7 @@ function deployConfig(o, pub, site, account, github, legal, out, retired, build,
     ...(github.owner ? { OWNER_GITHUB: github.owner } : {}),
     ...(legal.legal ? { LEGAL: legal.legal } : {}),
     ...(legal.terms_url ? { TERMS_URL: legal.terms_url, PRIVACY_URL: legal.privacy_url, LEGAL_VERSION: legal.legal_version } : {}),
+    ...reelVars(o),
   };
   if (o.store === "memory") {
     // No Artifacts: neither its binding nor its events' queue.

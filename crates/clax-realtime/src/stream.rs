@@ -70,7 +70,10 @@ pub const MAX_DETACHED: usize = 4096;
 /// bare `agents` ping whenever the agents roster may have changed, for the
 /// owner and connected people; §13), and `docs:<B>?reader=<A>` (B's `doc`
 /// events as app A reads them),
-/// and `jobs` (the app's jobs and their queue owner, for the owner alone).
+/// and `jobs` (the app's jobs and their queue owner, for the owner alone),
+/// and `queue:<qid>` (a `report` delta, IDs and state, whenever a report of
+/// report queue `qid` changes, to the queue's members alone; spec
+/// 2026-10-29-feedback-loop-design §8).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Topic {
     Gallery,
@@ -109,6 +112,8 @@ pub enum Topic {
     People,
     Agents,
     Jobs,
+    /// A report queue's changes, by queue ID.
+    Queue(String),
 }
 
 impl Topic {
@@ -136,6 +141,12 @@ impl Topic {
         }
         if s == "jobs" {
             return Ok(Topic::Jobs);
+        }
+        if let Some(qid) = s.strip_prefix("queue:") {
+            if !clax_core::ids::is_ulid(qid) {
+                return Err(format!("'{qid}' is not a queue ID"));
+            }
+            return Ok(Topic::Queue(qid.to_string()));
         }
         if let Some(origin) = s.strip_prefix("site:") {
             let normal = clax_core::live::parse_page_url(origin)
@@ -194,12 +205,13 @@ impl Topic {
             Topic::People => "people".into(),
             Topic::Agents => "agents".into(),
             Topic::Jobs => "jobs".into(),
+            Topic::Queue(q) => format!("queue:{q}"),
         }
     }
 
     /// The artifact the topic is about (the source of a reader's topic);
-    /// `None` for the gallery, a site, `questions`, `inbox`, `people` and
-    /// `agents`.
+    /// `None` for the gallery, a site, `questions`, `inbox`, `people`,
+    /// `agents`, `jobs` and a queue.
     pub fn artifact(&self) -> Option<&str> {
         match self {
             Topic::Gallery
@@ -209,7 +221,8 @@ impl Topic {
             | Topic::Inbox
             | Topic::People
             | Topic::Agents
-            | Topic::Jobs => None,
+            | Topic::Jobs
+            | Topic::Queue(_) => None,
             Topic::Artifact(a)
             | Topic::ArtifactQuiet(a)
             | Topic::Presence(a)
@@ -304,6 +317,8 @@ impl Topic {
                 .collect(),
             Topic::People => vec![Chan::People],
             Topic::Jobs => vec![Chan::Jobs],
+            // Each event is gated to the members' person keys.
+            Topic::Queue(q) => vec![Chan::Queue(q.clone())],
             // Every person sees every agent's name and state (§13, §18).
             Topic::Agents => person.map(|_| Chan::Agents).into_iter().collect(),
             Topic::DocsRead { source, reader } => {
@@ -365,6 +380,9 @@ enum Chan {
     Agents,
     /// The app's jobs and their queue owners; only owner streams subscribe.
     Jobs,
+    /// A report queue's report changes, by queue ID; each item reaches the
+    /// streams of the queue's members at the change alone.
+    Queue(String),
 }
 
 impl Chan {
@@ -377,6 +395,7 @@ impl Chan {
             Chan::People => "people".into(),
             Chan::Agents => "agents".into(),
             Chan::Jobs => "jobs".into(),
+            Chan::Queue(q) => format!("queue:{q}"),
             Chan::Artifact(a) | Chan::ArtifactQuiet(a) => format!("artifact:{a}"),
             Chan::Presence(a) => format!("presence:{a}"),
             Chan::Working(a) | Chan::Drafts(a) => format!("working:{a}"),
@@ -405,6 +424,9 @@ enum Gate {
     /// owner) a stream was opened for (a delivery state as that person
     /// reads it, spec 2026-10-08 §10).
     Person(String),
+    /// Only the streams of these people, by recipient key (empty: the
+    /// owner): a queue's members at the change.
+    People(Arc<[String]>),
     /// Only subscribers on this machine or holding the token (a live page's
     /// gallery event; see the HTTP layer's `live_access::sees_live_pages`).
     Local,
@@ -421,6 +443,7 @@ impl Gate {
         match self {
             Gate::Any => true,
             Gate::Person(p) => person == Some(p.as_str()),
+            Gate::People(ps) => person.is_some_and(|p| ps.iter().any(|k| k == p)),
             Gate::Local => local,
             Gate::Level { min, unless } => level >= *min && unless.is_none_or(|u| level < u),
         }
@@ -608,7 +631,8 @@ pub fn live_only_admits(live: &crate::live::LiveIds, t: &Topic) -> bool {
         | Topic::DocsRead { .. }
         | Topic::People
         | Topic::Agents
-        | Topic::Jobs => false,
+        | Topic::Jobs
+        | Topic::Queue(_) => false,
         Topic::Site(_) | Topic::Questions | Topic::Inbox => true,
         Topic::Artifact(a) | Topic::ArtifactQuiet(a) | Topic::Presence(a) | Topic::Working(a) => {
             live.contains(a)
@@ -859,12 +883,22 @@ fn routes_loud(ev: &Event) -> Vec<(Chan, Gate)> {
             v
         }
         Event::People { .. } => vec![(Chan::People, Gate::Any)],
+        // The owner's alone: the owner's inbox topic.
+        Event::Confirmation { .. } => vec![(Chan::Inbox(String::new()), Gate::Any)],
         // The switch, and what of the declaration is in force, are shown
         // to everyone who may open the artifact.
         Event::Comments { .. } | Event::Permissions { .. } => {
             vec![(Chan::Artifact(a), Gate::Any)]
         }
         Event::Job { .. } | Event::JobsOwner { .. } => vec![(Chan::Jobs, Gate::Any)],
+        // Each member's streams, the person the stream was opened for
+        // checked as it is dispatched; no one else's, whoever subscribed.
+        Event::Report {
+            queue_id, members, ..
+        } => vec![(
+            Chan::Queue(queue_id.clone()),
+            Gate::People(members.clone().into()),
+        )],
         // Tag names are the owner's, shown with every artifact anyone sees;
         // the event carries no name, only what to refetch.
         Event::Tags {
@@ -1965,6 +1999,8 @@ pub struct Conn {
     shutdown_live: bool,
     /// Whether the stream may still deliver (see [`Conn::checking`]).
     check: Option<Box<dyn Fn() -> bool + Send + Sync>>,
+    /// What ends the stream besides shutdown (see [`Conn::ending_on`]).
+    ending: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
     /// Its place in its client's cap (the HTTP layer's `socket_caps`),
     /// given back when the connection drops.
     _slot: Option<Box<dyn std::any::Any + Send + Sync>>,
@@ -1998,8 +2034,20 @@ impl Conn {
             shutdown,
             shutdown_live: true,
             check: None,
+            ending: None,
             _slot: None,
         }
+    }
+
+    /// This connection, ending once `end` resolves (the owner browser
+    /// session the stream was opened with ended), before anything more is
+    /// delivered.
+    pub fn ending_on(
+        mut self,
+        end: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> Conn {
+        self.ending = Some(Box::pin(end));
+        self
     }
 
     /// This connection, holding `slot` (its client's place under the cap)
@@ -2037,23 +2085,32 @@ impl Conn {
             }
             enum Wake {
                 Stop,
+                Ended,
                 NoShutdown,
                 Lagged,
                 Item(Option<Arc<Item>>),
                 KeepAlive,
             }
             let shutdown_live = self.shutdown_live;
+            let ending = self.ending.is_some();
             let wake = tokio::select! {
                 biased;
                 r = self.shutdown.wait_for(|v| *v), if shutdown_live => {
                     if r.is_ok() { Wake::Stop } else { Wake::NoShutdown }
                 }
+                () = async { if let Some(e) = self.ending.as_mut() { e.await } }, if ending => Wake::Ended,
                 () = self.shared.notify.notified() => Wake::Lagged,
                 item = self.rx.recv() => Wake::Item(item),
                 _ = self.keep_alive.tick() => Wake::KeepAlive,
             };
             match wake {
                 Wake::Stop | Wake::Item(None) => return None,
+                Wake::Ended => {
+                    self.ending = None;
+                    self.out.clear();
+                    self.hub.end(&self.id, self.epoch);
+                    return None;
+                }
                 // No shutdown source: never end on it.
                 Wake::NoShutdown => self.shutdown_live = false,
                 Wake::Lagged => {
@@ -3635,6 +3692,60 @@ mod tests {
             hub.update(&s.id, &sam, &[], &[]),
             Err(SubError::UnknownStream)
         );
+    }
+
+    #[test]
+    fn a_queue_topic_carries_its_reports_changes_to_its_members_alone() {
+        const Q: &str = "01JQ0000000000000000000000";
+        let hub = Hub::new(Default::default());
+        let owner = viewer(Level::Owner, Some("u_o"));
+        let sam = viewer(Level::Interact, Some("u_sam"));
+        let mia = viewer(Level::Interact, Some("u_mia"));
+        let topic = Topic::parse(&format!("queue:{Q}")).unwrap();
+        assert_eq!(topic, Topic::Queue(Q.into()));
+        assert_eq!(topic.name(), format!("queue:{Q}"));
+        assert_eq!(topic.artifact(), None);
+        assert!(!live_only_admits(&Default::default(), &topic));
+        let mut o = hub.open_for(owner.clone(), true, None, None, Some(String::new()));
+        hub.update(&o.id, &owner, std::slice::from_ref(&topic), &[])
+            .unwrap();
+        let mut s = hub.open_for(sam.clone(), false, None, None, Some("u_sam".into()));
+        hub.update(&s.id, &sam, std::slice::from_ref(&topic), &[])
+            .unwrap();
+        // Mia left the queue after subscribing: she is not a member now.
+        let mut m = hub.open_for(mia.clone(), false, None, None, Some("u_mia".into()));
+        hub.update(&m.id, &mia, std::slice::from_ref(&topic), &[])
+            .unwrap();
+        hub.dispatch(&Event::Report {
+            queue_id: Q.into(),
+            report_id: "01JT0000000000000000000000".into(),
+            state: clax_core::queue::State::Claimed,
+            members: vec![String::new(), "u_sam".into()],
+        });
+        // Another queue's report reaches none of them.
+        hub.dispatch(&Event::Report {
+            queue_id: "01JQ0000000000000000000001".into(),
+            report_id: "01JT0000000000000000000001".into(),
+            state: clax_core::queue::State::Open,
+            members: vec![String::new(), "u_sam".into(), "u_mia".into()],
+        });
+        for got in [drain(&mut o), drain(&mut s)] {
+            assert_eq!(got.len(), 1, "{got:?}");
+            let f = &got[0].1;
+            assert!(f.starts_with("event: report\n"), "{f}");
+            let data: Value =
+                serde_json::from_str(f.lines().find_map(|l| l.strip_prefix("data: ")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                data,
+                json!({"topic": format!("queue:{Q}"), "queue_id": Q,
+                       "report_id": "01JT0000000000000000000000", "state": "claimed"})
+            );
+        }
+        assert!(drain(&mut m).is_empty());
+        for bad in ["queue:", "queue:nope", "queue:01jq0000000000000000000000x"] {
+            assert!(Topic::parse(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

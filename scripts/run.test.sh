@@ -106,7 +106,7 @@ summary="with the native tools, not Bazel. CI gates on Bazel"
 _stubs bazelisk "${native[@]}"
 _try -- web-test --test_output=errors
 _expect "bazelisk: Bazel runs web-test" 0 "0x$notice" "0x$summary" "0xInstall"
-_called "^bazelisk test --lockfile_mode=error //web:lint //web:typecheck //web:unit //web:bundle_size --test_output=errors$" \
+_called "^bazelisk test --lockfile_mode=error //web:lint //web:typecheck //web:unit //web:bundle_size //web:sdk_package --test_output=errors$" \
     || _fail "bazelisk: called as expected"
 if _called "^pnpm\|^cargo"; then _fail "bazelisk: no native tool runs"; fi
 _try STUB_EXIT=3 -- web-test
@@ -252,9 +252,10 @@ _try -- --dry-run web-test
 _expect "an unpinned pnpm: one note" 0 \
     "1xnote: pnpm 8.1.0 is installed; web/package.json pins pnpm" "1x$summary"
 
-# 11. `web` with Bazel: the built files land in web/dist and
-#     web/dist-extension as writable regular files with one link each, never
-#     links to Bazel's read-only outputs; .gitkeep stays.
+# 11. `web` with Bazel: the built files land in web/dist,
+#     web/dist-extension and web/dist-sdk (which the checkout need not have)
+#     as writable regular files with one link each, never links to Bazel's
+#     read-only outputs; .gitkeep stays.
 _stubs bazelisk
 cat > "$tmp/bin/bazelisk" <<STUB
 #!$tmp/sys/bash
@@ -263,13 +264,14 @@ echo "bazelisk \$*" >> "$tmp/calls"
 exit 0
 STUB
 chmod +x "$tmp/bin/bazelisk"
-mkdir -p "$tmp/bazel-bin/web/dist/_clax" "$tmp/bazel-bin/web/dist-extension"
+mkdir -p "$tmp/bazel-bin/web/dist/_clax" "$tmp/bazel-bin/web/dist-extension" "$tmp/bazel-bin/web/dist-sdk"
 echo built > "$tmp/bazel-bin/web/dist/_clax/bridge.js"
 echo built > "$tmp/bazel-bin/web/dist-extension/manifest.json"
+echo built > "$tmp/bazel-bin/web/dist-sdk/package.json"
 chmod -R a-w "$tmp/bazel-bin"
 _try -- web
 ok=1
-for f in "$repo/web/dist/_clax/bridge.js" "$repo/web/dist-extension/manifest.json"; do
+for f in "$repo/web/dist/_clax/bridge.js" "$repo/web/dist-extension/manifest.json" "$repo/web/dist-sdk/package.json"; do
     # find's -links reads the same on GNU and BSD; stat's flags do not (GNU
     # stat takes BSD's `-f %l` as a file-system query and prints 255).
     single="$(find "$f" -links 1)"

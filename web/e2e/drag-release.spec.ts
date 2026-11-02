@@ -10,7 +10,7 @@
 import { type Browser, type BrowserType, type Frame, type Page, chromium, webkit } from "@playwright/test";
 import { existsSync } from "node:fs";
 import { hostChannel, NONCE } from "./app-host";
-import { test, expect, type Daemon, contentFrame, publishAs, record, registerSession } from "./fixtures";
+import { test, expect, type Daemon, contentFrame, publishAs, record, registerSession, trustBrowser } from "./fixtures";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -52,7 +52,7 @@ async function arrive(page: Page, at: { x: number; y: number }) {
  * in comment mode. */
 async function inApp(engine: BrowserType, title: string, body: (page: Page, frame: Frame) => Promise<void>) {
   test.skip(!existsSync(engine.executablePath()), `${engine.name()} is not installed`);
-  const browser: Browser = await engine.launch();
+  const browser: Browser = trustBrowser(await engine.launch());
   try {
     const page = await browser.newPage({ viewport: VIEWPORT });
     const s = await registerSession(d.base, d.token, "app");

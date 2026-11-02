@@ -200,6 +200,14 @@ pub enum Event {
     People {
         change: serde_json::Value,
     },
+    /// A browser confirmation was asked for or answered (a decision made
+    /// with the daemon token while an agent session is live, which waits
+    /// for a click in the owner's browser): `confirmation` is its view.
+    /// Only the owner's `inbox` stream topic carries it; `/api/events`
+    /// never does.
+    Confirmation {
+        confirmation: serde_json::Value,
+    },
     /// An agent session started, ended or was renamed (spec 2026-10-08-
     /// multi-agent-multi-person §13): clients refetch `GET /api/agents`.
     /// It names no agent. Only the `agents` stream topic carries it (with
@@ -244,6 +252,22 @@ pub enum Event {
     Permissions {
         artifact_id: String,
     },
+    /// Report `report_id` of queue `queue_id` changed: filed, claimed,
+    /// released, given a fix or a verdict, reopened, resolved or commented
+    /// on; `state` is its state after (`crate::queue::State`). It carries
+    /// IDs and the state alone: views refetch the report. Only the
+    /// `queue:<queue_id>` stream topic carries it, to the streams of the
+    /// queue's members at the change (`members`, by recipient key: empty
+    /// for the owner, a connected person's public ID); `/api/events` never
+    /// does.
+    Report {
+        queue_id: String,
+        report_id: String,
+        state: crate::queue::State,
+        /// The recipient keys of the queue's members; never serialised.
+        #[serde(skip)]
+        members: Vec<String>,
+    },
     /// Tags changed (`crate::tags`): the tags artifact `artifact_id` carries
     /// (`Some`), or the list itself (`None`: a tag made, renamed,
     /// recoloured or deleted, which every artifact carrying it shows).
@@ -285,9 +309,13 @@ impl Event {
             | Event::InboxRead { .. }
             | Event::ApprovalRequest { .. }
             | Event::People { .. }
+            | Event::Confirmation { .. }
             | Event::Agents { .. }
             | Event::Job { .. }
             | Event::JobsOwner { .. } => "",
+            // A report's artifact is its queue maker's: the event goes to
+            // the queue's topic alone.
+            Event::Report { .. } => "",
             // A change to the list itself belongs to no artifact.
             Event::Tags { artifact_id, .. } => artifact_id.as_deref().unwrap_or(""),
             // A change at every artifact belongs to none.
@@ -318,9 +346,11 @@ impl Event {
             Event::InboxRead { .. } => "inbox_read",
             Event::ApprovalRequest { .. } => "approval_request",
             Event::People { .. } => "people",
+            Event::Confirmation { .. } => "confirmation",
             Event::Agents { .. } => "agents",
             Event::Job { .. } => "job",
             Event::JobsOwner { .. } => "jobs_owner",
+            Event::Report { .. } => "report",
             Event::Comments { .. } => "comments",
             Event::Permissions { .. } => "permissions",
             Event::Tags { .. } => "tags",
@@ -598,6 +628,9 @@ mod tests {
             },
             Event::People {
                 change: serde_json::json!({"what": "grant_requested"}),
+            },
+            Event::Confirmation {
+                confirmation: serde_json::json!({"id": "cf_x"}),
             },
             Event::Tags {
                 artifact_id: None,

@@ -88,10 +88,11 @@
     box.checked = data.comments;
   }
   const remove = (s: api.Share) => act(() => api.unshare(id, s.id));
-  const setGeneral = (g: api.GeneralAccess, a: api.LinkAccess) => {
+  /** Sets general access from a change of `sel`; a change refused (or one while another is in flight) puts `sel` back to `held()`, the access the dialog last loaded. */
+  async function setGeneral(sel: HTMLSelectElement, g: api.GeneralAccess, a: api.LinkAccess, held: () => string) {
     const r = linkRequest(g, a);
-    return act(() => api.setLink(id, r.access, r.listed));
-  };
+    if (!(await act(() => api.setLink(id, r.access, r.listed)))) sel.value = held();
+  }
 
   /** Opens the site to the world or closes it as `box` says; a change refused (or one while another is in flight) puts the box back. */
   async function setWorld(box: HTMLInputElement) {
@@ -166,11 +167,11 @@
 
     <h3>General access</h3>
     <div class="general">
-      <select aria-label="General access" onchange={e => { void setGeneral(e.currentTarget.value as api.GeneralAccess, linkAccess); }}>
+      <select aria-label="General access" disabled={busy} onchange={e => { void setGeneral(e.currentTarget, e.currentTarget.value as api.GeneralAccess, linkAccess, () => data.general); }}>
         {#each GENERALS.filter(g => g !== "public" || data.public_gallery || data.general === "public") as g (g)}<option value={g} selected={g === data.general}>{GENERAL_LABEL[g]}</option>{/each}
       </select>
       {#if data.general !== "restricted"}
-        <select aria-label="What anyone with the link may do" onchange={e => { void setGeneral(data.general, e.currentTarget.value as api.LinkAccess); }}>
+        <select aria-label="What anyone with the link may do" disabled={busy} onchange={e => { void setGeneral(e.currentTarget, data.general, e.currentTarget.value as api.LinkAccess, () => linkAccess); }}>
           {#each LINK_ACCESSES as a (a)}<option value={a} selected={a === linkAccess}>{ACCESS_LABEL[a]}</option>{/each}
         </select>
       {/if}

@@ -12,6 +12,7 @@ web/dist/*
 !web/dist/.gitkeep
 web/dist-extension/*
 !web/dist-extension/.gitkeep
+web/dist-sdk
 web/test-results
 web/playwright-report
 web/e2e

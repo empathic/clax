@@ -6,6 +6,7 @@
 
 use clax_core::Home;
 use clax_http::state::AppState;
+use clax_http::state::InstanceFeedback;
 use clax_store::Store;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -14,7 +15,8 @@ use tokio::sync::watch;
 /// A session unseen for this long, with no live process, is ended by the reaper.
 const SESSION_IDLE: Duration = Duration::from_secs(Store::SESSION_IDLE_SECS);
 /// How often the core deletes drafts older than
-/// [`clax_store::drafts::DRAFT_MAX_AGE`] (and once at start).
+/// [`clax_store::drafts::DRAFT_MAX_AGE`] and prunes ended ClaxBot runs
+/// ([`Store::prune_ended_runs`]), and once at start.
 const DRAFT_SWEEP_INTERVAL: Duration = Duration::from_secs(3600);
 /// How long shutdown waits for the journal appender to close its segment.
 /// The appender stops as shutdown begins, beside the connection drain, and
@@ -86,6 +88,11 @@ pub struct CoreConfig {
     /// one to the web UI's release at start (`[gallery] quickstart`); a
     /// hosted core never does.
     pub quickstart: bool,
+    /// Where the price catalog is fetched from: `None` (`clax serve`'s),
+    /// as `[bot] price_catalog_url` in effect says
+    /// ([`crate::catalog::url_of`]); `Some(url)`, that (`Some(None)`:
+    /// never), for an embedder or a test that sets it itself.
+    pub catalog_url: Option<Option<String>>,
 }
 
 /// A started core: its state, its router, and the tasks it runs until
@@ -105,7 +112,8 @@ impl Core {
     /// `progress` hears the audit backfill's progress) and starts the
     /// state, the journal, the listeners and the background tasks: the
     /// session reaper, the grant sweeper, the planner statistics refresh,
-    /// the drafts sweeper and the working sweeper. Runs on the caller's
+    /// the drafts sweeper, the working sweeper and the price catalog's
+    /// refresh. Runs on the caller's
     /// Tokio runtime.
     ///
     /// # Errors
@@ -174,6 +182,10 @@ impl Core {
             embed: cfg.embed,
         })?;
         state.clax_app = Arc::new(clax_app);
+        state.feedback = match config.as_ref() {
+            Ok(c) => feedback_of(c, &state),
+            Err(_) => clax_http::state::InstanceFeedback::Off,
+        };
         if cfg.quickstart {
             state.quickstart = clax_core::quickstart::Release::from_tree(&*state.web).map(Arc::new);
         }
@@ -202,7 +214,7 @@ impl Core {
         };
         // The core's `net` keeps a shared disk cache in the home.
         state.net = Arc::new(clax_http::net_cache::daemon_net(cfg.home.root()));
-        state.bot = Arc::new(local_bot(&state));
+        state.bot = Arc::new(local_bot(&state, cfg.catalog_url));
         // ClaxBot's driver: the runs a previous process left, then every new one.
         let bot_driver = crate::bot::driver(&mut state);
         state.audit_wake.install(&state.store);
@@ -329,9 +341,20 @@ impl Core {
         }
         self.bot_driver.release_all();
         // The journal has closed its segment (it began to as shutdown
-        // began) before the store stops.
-        if let Some(stopped) = self.journal_stopped {
-            let _ = tokio::time::timeout(JOURNAL_STOP_TIMEOUT, stopped).await;
+        // began) before the store stops; meanwhile the followers' sessions
+        // the linked sync held on remotes are ended there, within the same
+        // wait.
+        let journal = async {
+            if let Some(stopped) = self.journal_stopped {
+                let _ = tokio::time::timeout(JOURNAL_STOP_TIMEOUT, stopped).await;
+            }
+        };
+        let followers = crate::linked::end_followers(&self.state, JOURNAL_STOP_TIMEOUT);
+        let ((), ended) = futures::future::join(journal, followers).await;
+        if !ended {
+            tracing::warn!(
+                "followers' sessions on remotes did not end in time; the remotes reap them"
+            );
         }
         let store = self.state.store.clone();
         #[cfg(test)]
@@ -356,6 +379,76 @@ impl Core {
     }
 }
 
+/// The instance's own feedback integration from `config`'s `[feedback]`
+/// ([`crate::integrations::feedback`]): its queue, the service grant in
+/// its `service_grant_file`, and its `origin` (by default a hosted core's
+/// public origin, else the daemon's browser address). Without `[feedback]`
+/// it is the instance's own ([`InstanceFeedback::Own`]: on for a hosted
+/// core, off for any other). Off, and logged, when `[feedback]` does not
+/// check or its grant file does not read; the core then serves on.
+fn feedback_of(config: &clax_core::config::HomeConfig, s: &AppState) -> InstanceFeedback {
+    let f = match config.feedback() {
+        Ok(Some(f)) => f,
+        Ok(None) => return InstanceFeedback::Own,
+        Err(e) => {
+            tracing::warn!(error = %e, "[feedback] is off");
+            return InstanceFeedback::Off;
+        }
+    };
+    let instance = s
+        .hosted
+        .as_ref()
+        .map_or_else(|| s.browser_base.clone(), |h| h.origin.clone());
+    let origin = f.origin.clone().unwrap_or_else(|| instance.clone());
+    let grant = match std::fs::read_to_string(&f.service_grant_file) {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::warn!(file = %f.service_grant_file.display(), error = %e, "[feedback] is off: its service_grant_file does not read");
+            return InstanceFeedback::Off;
+        }
+    };
+    if let Some(mode) = loose_mode(&f.service_grant_file) {
+        tracing::warn!(
+            file = %f.service_grant_file.display(),
+            mode = format!("{mode:o}"),
+            "[feedback] service_grant_file is readable by others: chmod 600 it"
+        );
+    }
+    match crate::integrations::feedback::integration(&f.queue, &instance, &origin, &grant) {
+        Ok(i) => {
+            tracing::info!(queue = %i.queue_id, origin = %i.origin, "feedback integration on");
+            InstanceFeedback::Configured(Arc::new(i))
+        }
+        Err(e) => {
+            let input = match e.input {
+                crate::integrations::feedback::Input::Queue => "[feedback] queue".to_string(),
+                crate::integrations::feedback::Input::Grant => {
+                    f.service_grant_file.display().to_string()
+                }
+            };
+            tracing::warn!(input, error = %e, "[feedback] is off");
+            InstanceFeedback::Off
+        }
+    }
+}
+
+/// The permission bits of the file at `path` when its group or others may
+/// read or write it; `None` when they may not, or on a platform without
+/// such bits.
+fn loose_mode(path: &std::path::Path) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(path).ok()?.permissions().mode() & 0o777;
+        (mode & 0o066 != 0).then_some(mode)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 /// ClaxBot's state for a core starting on `s` (spec
 /// 2026-10-21-claxbot-design §8): the `[bot]` settings the configuration
 /// in effect sets, laid over the stored ones (an invalid `[bot]` turns
@@ -363,9 +456,23 @@ impl Core {
 /// made on first use; none when it cannot be read, so no key is stored),
 /// and the instance key in `[bot] api_key_env`'s variable, which takes
 /// precedence over a stored one. A hosted core reads no `[bot]` and no
-/// variable.
-fn local_bot(s: &AppState) -> clax_http::bot::Bot {
-    let mut bot = clax_http::bot::Bot::default();
+/// such variable. Either takes its price catalog's URL from `catalog_url`
+/// when given, else from `[bot] price_catalog_url`
+/// ([`crate::catalog::url_of`]).
+fn local_bot(s: &AppState, catalog_url: Option<Option<String>>) -> clax_http::bot::Bot {
+    let catalog_url = catalog_url.unwrap_or_else(|| {
+        // A hosted core reads it from the file and the environment too,
+        // though no other `[bot]` key.
+        let read = match &s.settings.running {
+            Some(c) => Some(c.clone()),
+            None => clax_core::config::HomeConfig::load(s.home.root()).ok(),
+        };
+        crate::catalog::url_of(read.as_ref())
+    });
+    let mut bot = clax_http::bot::Bot {
+        catalog_url,
+        ..Default::default()
+    };
     clax_store::secrets::sweep_leftovers(&s.home, s.store.now_utc());
     bot.kek = match clax_store::secrets::Kek::load_or_create(&s.home) {
         Ok(k) => Some(k),
@@ -415,8 +522,8 @@ pub(crate) async fn stop_store(store: Arc<Store>, within: Duration) -> bool {
 }
 
 /// The background tasks a core runs: the session reaper, the grant
-/// sweeper, the planner statistics refresh, the drafts sweeper and the
-/// working sweeper.
+/// sweeper, the planner statistics refresh, the drafts sweeper, the
+/// working sweeper and the price catalog's refresh.
 fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::task::JoinHandle<()>> {
     let fctx = state.feedback_ctx();
     let reap_state = state.clone();
@@ -452,7 +559,12 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
                 .await;
             match reaped {
                 Ok(r) if r.ended.is_empty() => {}
-                Ok(r) => tracing::info!(count = r.ended.len(), "ended idle sessions"),
+                Ok(r) => {
+                    tracing::info!(count = r.ended.len(), "ended idle sessions");
+                    // A followed remote artifact's session there ends with
+                    // its local session.
+                    reap_state.linked.kick(None);
+                }
                 Err(e) => tracing::warn!(error = %e, "session reaper failed"),
             }
         }
@@ -501,6 +613,15 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
                 Ok(n) => tracing::info!(count = n, "removed old drafts"),
                 Err(e) => tracing::warn!(error = %e, "draft sweep failed"),
             }
+            match drafts_store.call(|st| st.prune_ended_runs()).await {
+                Ok(p) if p == clax_store::bot_runs::Pruned::default() => {}
+                Ok(p) => tracing::info!(
+                    calls = p.calls,
+                    draft_files = p.draft_files,
+                    "pruned ended ClaxBot runs"
+                ),
+                Err(e) => tracing::warn!(error = %e, "ClaxBot run prune failed"),
+            }
         }
     });
 
@@ -513,7 +634,41 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
         }
     });
 
-    vec![reaper, grant_sweeper, optimizer, drafts_sweeper, sweeper]
+    // The price catalog, once its cache is a day old: looked at on start
+    // and every hour after.
+    let catalog = crate::catalog::spawn_refresher(state.clone(), crate::catalog::CHECK_EVERY);
+
+    vec![
+        reaper,
+        grant_sweeper,
+        optimizer,
+        drafts_sweeper,
+        sweeper,
+        catalog,
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn a_grant_file_others_may_read_is_loose() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("g.json");
+        std::fs::write(&p, "{}").unwrap();
+        for (mode, loose) in [
+            (0o600, false),
+            (0o400, false),
+            (0o640, true),
+            (0o604, true),
+            (0o620, true),
+        ] {
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(super::loose_mode(&p).is_some(), loose, "{mode:o}");
+        }
+        assert_eq!(super::loose_mode(&dir.path().join("none")), None);
+    }
 }
 
 /// The owner's tailnet devices (`[serve] owner_tailscale_nodes`), named by

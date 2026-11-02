@@ -35,6 +35,7 @@
   import { onMount, tick } from "svelte";
   import ThemeSwitch from "../ui/ThemeSwitch.svelte";
   import * as api from "./api";
+  import { forgetThenSignOut } from "./signout";
   import { refusal } from "../people/refusal";
   import { nextOfPage, loopbackReturn } from "./next";
   import { nav } from "../nav";
@@ -110,7 +111,7 @@
   const legal = $derived(me?.legal ?? null);
   async function signOut() {
     busy = true;
-    try { await api.signOut(); me = await api.me(); } catch (x) { err = msg(x); } finally { busy = false; }
+    try { await forgetThenSignOut(api.signOut); me = await api.me(); } catch (x) { err = msg(x); } finally { busy = false; }
   }
 
   onMount(async () => {

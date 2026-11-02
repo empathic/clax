@@ -16,14 +16,17 @@ pub async fn healthz(
     let pid = Some(std::process::id());
     #[cfg(target_arch = "wasm32")]
     let pid: Option<u32> = None;
+    let (commit, build) = stamped(&s);
+    Json(report(s.version, pid, &s.started_at, commit, build))
+}
+
+/// The commit the binary was built from ([`clax_core::build_commit`]) and
+/// the build identity its host was given ([`AppState::build`]), each
+/// `None` when the build was not stamped with it: what `/healthz` reports,
+/// and what a filed report's server stamp names.
+pub fn stamped(s: &AppState) -> (Option<&'static str>, Option<&str>) {
     let commit = Some(clax_core::build_commit()).filter(|c| !c.is_empty() && *c != "unknown");
-    Json(report(
-        s.version,
-        pid,
-        &s.started_at,
-        commit,
-        s.build.as_deref(),
-    ))
+    (commit, s.build.as_deref())
 }
 
 /// The body of `/healthz`.

@@ -1,6 +1,7 @@
 //! What every route of the daemon shares: its state (`AppState`) and the
 //! store calls off the async runtime (`blocking`), the error answer
-//! (`ApiError`), who a request speaks for (`auth`, `identity`, `agent`,
+//! (`ApiError`), the browser confirmation of the decisions that matter
+//! (`confirm`), who a request speaks for (`auth`, `identity`, `agent`,
 //! `grant_auth`, `db_caller`, `viewer`, `extension`), the middleware
 //! (`host`, `http_cache`, `live_access`, the audit context and journal),
 //! the body limits and shared headers, the listener's socket options
@@ -15,10 +16,12 @@ pub mod audit;
 pub mod auth;
 pub mod blocking;
 pub mod bot;
+pub mod confirm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod conn;
 pub mod content_policy;
 pub mod db_caller;
+pub mod discovery_cache;
 pub mod error;
 pub mod exports;
 pub mod extension;
@@ -33,13 +36,16 @@ pub mod identity;
 pub mod jobs_owner;
 pub mod limits;
 pub mod live_access;
+pub mod local_trust;
 pub mod loopback;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod net;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod net_cache;
+pub mod peer_user;
 pub mod perf;
 pub mod pushes;
+pub mod remote_drivers;
 pub mod reporter;
 pub mod seats;
 pub mod settings;

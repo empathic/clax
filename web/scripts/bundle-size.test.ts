@@ -18,8 +18,8 @@ const ENTRY = "<head><script id=\"clax-early\"></script><!--clax:boot--></head><
 /** The extension's release manifest as the build writes it. */
 const EXT_MANIFEST = { manifest_version: 3, name: "Clax", version: "1.0.0", optional_host_permissions: ["http://*/*", "https://*/*"] };
 
-/** `fonts` are font files put in dist (none by default); `index` is the gallery entry; `extFiles` are extra files put in dist-extension; `extBodies` are files written there with the given content. */
-function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] = [], { fonts = [] as string[], index = "<p>gallery</p>", extManifest = EXT_MANIFEST as Record<string, unknown>, extFiles = [] as string[], extBodies = {} as Record<string, string> } = {}) {
+/** `fonts` are font files put in dist (none by default); `index` is the gallery entry; `overlayMjs` is the overlay's ES module; `extFiles` are extra files put in dist-extension; `extBodies` are files written there with the given content. */
+function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] = [], { fonts = [] as string[], index = "<p>gallery</p>", extManifest = EXT_MANIFEST as Record<string, unknown>, extFiles = [] as string[], extBodies = {} as Record<string, string>, overlayMjs = "var o=1;export{o as overlay};" } = {}) {
   root = mkdtempSync(join(tmpdir(), "clax-bundle-size-"));
   const web = join(root, "web");
   mkdirSync(join(web, "scripts"), { recursive: true });
@@ -36,6 +36,9 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
   dist("artifact.html", artifact);
   dist("_clax/bridge.js", "bridge");
   dist("_clax/transport.js", "transport");
+  dist("_clax/overlay.js", "overlay".repeat(100));
+  dist("_clax/overlay.mjs", overlayMjs);
+  dist("_clax/overlay.d.ts", "export declare function overlay(): void;");
   dist("_clax/shell/a.js", "a");
   // The question module imports the gallery's entry chunk, the gallery's
   // lazy module's own import (which the artifact view has not loaded), and
@@ -84,12 +87,19 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
   ext("composer.html", `<script type="module" src="./assets/composer.js"></script>`);
   for (const f of extFiles) ext(f, "x");
   for (const [f, body] of Object.entries(extBodies)) ext(f, body);
+  // The SDK package: its overlay entry imports the main entry, which imports a
+  // chunk; the service entry is no part of the overlay's size.
+  const sdk = (p: string, s: string) => { mkdirSync(join(web, "dist-sdk", p, ".."), { recursive: true }); writeFileSync(join(web, "dist-sdk", p), s); };
+  sdk("overlay.js", `import { R } from "./index.js";\n${"overlay ".repeat(200)}`);
+  sdk("index.js", `import { C } from "./chunks/client.js";\nexport { R };\n${"index ".repeat(100)}`);
+  sdk("chunks/client.js", `export { C };\n${"client ".repeat(100)}`);
+  sdk("service.js", `import { C } from "./chunks/client.js";\n${"service ".repeat(100)}`);
   writeFileSync(join(web, "perf/bundle-budget.json"), JSON.stringify(budget));
   return spawnSync(process.execPath, [join(web, "scripts/bundle-size.mjs"), ...args], { encoding: "utf8" });
 }
 
 describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
-  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, transport: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partOrigin: 10_000, partRoom: 10_000, partSample: 10_000, partLive: 10_000, extOverlay: 10_000, extWorker: 10_000, extComposer: 10_000, extPanel: 10_000, questions: 10_000, people: 10_000, queues: 10_000, host: 10_000 };
+  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, transport: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partOrigin: 10_000, partRoom: 10_000, partSample: 10_000, partLive: 10_000, extOverlay: 10_000, extWorker: 10_000, extComposer: 10_000, extPanel: 10_000, questions: 10_000, people: 10_000, queues: 10_000, host: 10_000, overlay: 10_000, sdkOverlay: 10_000 };
 
   it("passes within budget", () => {
     expect(run(full).status).toBe(0);
@@ -192,6 +202,22 @@ describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
     expect(r.stderr).toContain("transport");
   });
 
+  it("counts the embeddable overlay against its own budget, and refuses an ES twin that imports a file", () => {
+    const r0 = run(full);
+    const size = Number(/\bembed (\d+)/.exec(r0.stdout)?.[1]);
+    expect(size).toBe(pako.gzip("overlay".repeat(100), { level: 9 }).length);
+    rmSync(root, { recursive: true, force: true });
+    const over = run({ ...full, overlay: size - 1 });
+    expect(over.status).toBe(1);
+    expect(over.stderr).toContain("overlay:");
+    for (const overlayMjs of ['import{a}from"./chunk-1.js";export{a as overlay};', 'const m=import("./lazy.js");export{m as overlay};', "var o=1;export{o as other};"]) {
+      rmSync(root, { recursive: true, force: true });
+      const r = run(full, ENTRY, [], { overlayMjs });
+      expect(r.status, overlayMjs).toBe(1);
+      expect(r.stderr).toContain("overlay.mjs");
+    }
+  });
+
   it("adds a missing part budget when recording, never a missing baseline", () => {
     const { partCaps: _, ...noCaps } = full;
     expect(run(noCaps).status).toBe(1);
@@ -277,10 +303,21 @@ describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
     expect(r.stderr).toContain("queues");
   });
 
+  it("counts the SDK package's overlay entry with the files it imports, against its own budget", () => {
+    const r0 = run(full);
+    const size = Number(/\bsdk package: overlay entry (\d+)/.exec(r0.stdout)?.[1]);
+    const file = (f: string) => pako.gzip(readFileSync(join(root, "web/dist-sdk", f), "utf8"), { level: 9 }).length;
+    expect(size).toBe(file("overlay.js") + file("index.js") + file("chunks/client.js"));
+    rmSync(root, { recursive: true, force: true });
+    const r = run({ ...full, sdkOverlay: size - 1 });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("sdkOverlay");
+  });
+
   it("never records the extension's ceilings or the question module's, nor adds a missing one", () => {
     expect(run(full, ENTRY, ["--record"]).status).toBe(0);
     const recorded = JSON.parse(readFileSync(join(root, "web/perf/bundle-budget.json"), "utf8"));
-    for (const k of ["extOverlay", "extWorker", "extComposer", "extPanel", "questions", "people", "queues"]) expect(recorded[k], k).toBe(10_000);
+    for (const k of ["extOverlay", "extWorker", "extComposer", "extPanel", "questions", "people", "queues", "sdkOverlay"]) expect(recorded[k], k).toBe(10_000);
     expect(recorded.gallery).toBeLessThan(10_000);
     rmSync(root, { recursive: true, force: true });
     const { extPanel: _, ...noPanel } = full;
@@ -289,7 +326,7 @@ describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
     expect(r.stderr).toContain("extPanel");
   });
 
-  it.each(["gallery", "artifact", "bridge", "transport", "bridgeBaseline", "partComment", "partClip", "partCaps", "partOrigin", "partRoom", "partSample", "partLive", "extOverlay", "extWorker", "extComposer", "extPanel"])("fails when the %s budget is missing or not a number", k => {
+  it.each(["gallery", "artifact", "bridge", "transport", "bridgeBaseline", "partComment", "partClip", "partCaps", "partOrigin", "partRoom", "partSample", "partLive", "extOverlay", "extWorker", "extComposer", "extPanel", "overlay", "sdkOverlay"])("fails when the %s budget is missing or not a number", k => {
     for (const budget of [Object.fromEntries(Object.entries(full).filter(([key]) => key !== k)), { ...full, [k]: "10000" }]) {
       const r = run(budget);
       expect(r.status).toBe(1);
