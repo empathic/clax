@@ -186,7 +186,10 @@ async fn ignored(ts: &TestServer, base: &str, aid: &str, host: &str, origin: &st
         .await
         .unwrap();
     assert_eq!(res.status(), 401, "{host}");
-    assert!(res.headers().get("set-cookie").is_none(), "{host}: no viewer");
+    assert!(
+        res.headers().get("set-cookie").is_none(),
+        "{host}: no viewer"
+    );
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["error"]["code"], "no_credential", "{host}");
     let form = reqwest::multipart::Form::new()

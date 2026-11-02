@@ -246,9 +246,7 @@ pub async fn require_confirmation(
                 Browser::Session
                 | Browser::Extension
                 | Browser::HostedOwner
-                | Browser::TailnetOwner => {
-                    always || db.passkeys_required()?
-                }
+                | Browser::TailnetOwner => always || db.passkeys_required()?,
                 Browser::InProcess => false,
             };
             if !needs || !db.agent_session_live()? {
