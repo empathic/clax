@@ -724,8 +724,9 @@ left to the next call, and the result
 is `{status: "answered", question_id, url, call_again: true, note}`: call
 again with `question_id` to publish what they approved. Errors: `not_approved` (the owner chose not to publish,
 skipped the question, or answered outside the browser), `approval_used`,
-`no_remote` (none added: `clax remote add`), `remote_required` (several:
-name one), `not_connected` (its sign-in is not finished), `remote_moved`
+`no_remote` (none added: `clax remote add`), `remote_required` (several
+connected, or several added and none connected: name one), `not_connected`
+(its sign-in is not finished), `remote_moved`
 (someone published on the public copy since this Clax pushed:
 `remote_version` and `pushed_version` say where each is; pass `mode`
 `fork` or `new`), `remote_unreachable`, `remote_signed_out` (its token was
