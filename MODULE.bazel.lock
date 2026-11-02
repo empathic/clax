@@ -10443,7 +10443,7 @@
           "FILE:@@//crates/clax-commands/Cargo.toml 1ce7f334d317d0a446a98deceb56b497bf0ae65f2aea26cbdc67b50f1c18c52e",
           "FILE:@@//crates/clax-embedded/Cargo.toml 31e53db9a03c4b152084b37f633fde9415b77e0fdf476195e48484e59b80b533",
           "FILE:@@//crates/clax-embed/Cargo.toml 8d9eeaa8319b0a4b5053044a07d523a79237784f9cee11a4c9404988b00bfa80",
-          "FILE:@@//crates/clax-fleet/Cargo.toml 73bd374b4356c729589175a2915f2741f2c633fbff7dca58f1720d181fe14c4b",
+          "FILE:@@//crates/clax-fleet/Cargo.toml c9edd60779a1d606f00ccb10cdcc1882ab8104da8ab74cc4a6eade95e1f66293",
           "FILE:@@//crates/clax-worker/Cargo.toml cea17a0f81319af9469579bf8117b2ff8d3b496ce510ccd61adedc67c89227d4",
           "FILE:@@//crates/clax-worker/vfs/Cargo.toml 37778405dd64d6417cbb2c373386c83099be67eaebc5df1887b0681b0ffeceb2",
           "FILE:@@//bazel/wasm/Cargo.lock 0c445a1924e7c53d34c8e538b3fdf9cc00d1b51f1ca6ea27d8a4eaa58ce853cf"
