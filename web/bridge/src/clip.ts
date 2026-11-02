@@ -189,13 +189,29 @@ export const CROP_SLACK = 32;
 
 const boxedDisplay = (d: string) => d !== "" && d !== "contents" && !d.startsWith("inline") && !d.startsWith("ruby");
 
+/** Whether no descendant's margin collapses through `cs`'s box: it is a new
+ * block formatting context (or a flex or grid container), or it has a border
+ * or padding at both its top and its bottom. Emptying a box whose children's
+ * margins collapse through it would drop those margins and move what follows. */
+function keepsMarginsIn(cs: CSSStyleDeclaration): boolean {
+  if (cs.display !== "block" && cs.display !== "list-item") return true;
+  if (cs.float !== "" && cs.float !== "none") return true;
+  if (cs.position === "absolute" || cs.position === "fixed") return true;
+  if (!["", "visible", "clip"].includes(cs.overflow)) return true;
+  const top = parseFloat(cs.borderTopWidth) || parseFloat(cs.paddingTop);
+  const bottom = parseFloat(cs.borderBottomWidth) || parseFloat(cs.paddingBottom);
+  return !!top && !!bottom;
+}
+
 /** A clone filter that keeps every element whose box reaches `crop` (client
  * coordinates, grown by `CROP_SLACK`) and, of an element wholly outside it,
  * keeps the element and drops its content. modern-screenshot inlines each
  * element's computed width and height, so the emptied box keeps its size and
  * nothing in the crop moves; rendering then walks only what the crop shows,
  * not a whole long page. Only boxes are emptied (never an inline element, whose
- * size is its content), and never `root`; content that paints far outside its
+ * size is its content), never one above or beside the crop through which a
+ * child's margin collapses (`keepsMarginsIn`; its children are judged one by
+ * one instead), and never `root`; content that paints far outside its
  * own element's box (an absolutely placed popover) is left out with it. */
 export function cropFilter(root: Element, crop: { left: number; top: number; width: number; height: number }, win: Window): (n: Node) => boolean {
   const l = crop.left - CROP_SLACK, t = crop.top - CROP_SLACK, r = crop.left + crop.width + CROP_SLACK, b = crop.top + crop.height + CROP_SLACK;
@@ -204,8 +220,11 @@ export function cropFilter(root: Element, crop: { left: number; top: number; wid
     let v = emptied.get(el);
     if (v === undefined) {
       const box = el.getBoundingClientRect();
-      v = el !== root && el.namespaceURI === XHTML && boxedDisplay(win.getComputedStyle(el).display)
-        && (box.right < l || box.left > r || box.bottom < t || box.top > b);
+      const out = box.right < l || box.left > r || box.bottom < t || box.top > b;
+      // A box below the crop is emptied whatever its margins: only what
+      // follows it could move. Elsewhere its margins must stay inside it.
+      const cs = out && el !== root && el.namespaceURI === XHTML ? win.getComputedStyle(el) : null;
+      v = !!cs && boxedDisplay(cs.display) && (box.top > b || keepsMarginsIn(cs));
       emptied.set(el, v);
     }
     return v;

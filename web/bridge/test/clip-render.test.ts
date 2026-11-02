@@ -84,6 +84,21 @@ describe("crop filter", () => {
     expect(keep(q("#inl").firstChild!)).toBe(true);
   });
 
+  it("keeps the content of a box above the crop through whose edges a child's margin collapses", () => {
+    document.body.innerHTML = `<main id="m"><section id="open"><p id="op" style="margin-top: 40px">a</p></section><section id="padded" style="padding: 1px 0"><p id="pp" style="margin-top: 40px">b</p></section><section id="below"><p id="bp" style="margin-top: 40px">c</p></section></main>`;
+    const q = (s: string) => document.querySelector(s)!;
+    sized(q("#m"), 0, 0, 800, 5000);
+    sized(q("#open"), 0, 0, 800, 100);
+    sized(q("#padded"), 0, 200, 800, 100);
+    sized(q("#below"), 0, 4000, 800, 100);
+    const keep = cropFilter(q("#m"), { left: 0, top: 1000, width: 800, height: 100 }, window);
+    // The margin of #op sits above #open on the page: emptying #open would drop it.
+    expect(keep(q("#op"))).toBe(true);
+    expect(keep(q("#pp"))).toBe(false);
+    // Below the crop, nothing that moves can be in it.
+    expect(keep(q("#bp"))).toBe(false);
+  });
+
   it("never empties the rendered root, even when the crop misses its box", () => {
     document.body.innerHTML = `<div id="r"><p id="p">x</p></div>`;
     const r = document.querySelector("#r")!;
