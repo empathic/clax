@@ -5737,6 +5737,8 @@ router), and a test fails when it differs:
 | `GET /me` | Denied | no |
 | `GET /people` | Denied | no |
 | `GET /queues` | Denied | no |
+| `GET /queues/{qid}` | Denied | no |
+| `GET /queues/{qid}/{tid}` | Denied | no |
 | `GET /settings` | Denied | no |
 | `GET /sign` | Denied | no |
 | `GET /site-signin` | Denied | yes: 403 `not_for_agents` |

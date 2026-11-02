@@ -709,6 +709,9 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/inbox", get(shell::gallery_page))
         .route("/people", get(shell::gallery_page))
         .route("/queues", get(shell::gallery_page))
+        // A queue's own page and a report's own page; the shell reads the IDs from the path.
+        .route("/queues/{qid}", get(shell::gallery_page))
+        .route("/queues/{qid}/{tid}", get(shell::gallery_page))
         .route("/tags", get(shell::gallery_page))
         .route("/admin", get(shell::gallery_page))
         .route("/settings", get(shell::gallery_page))
