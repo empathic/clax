@@ -77,6 +77,16 @@ export function selectorOf(r: Report): string | null {
   return a && a.kind !== "artifact" && typeof a.selector === "string" && a.selector ? a.selector : null;
 }
 
+/** What the site filed with a report (its `metadata`, such as `{"build": "1"}`), as text pairs: flat scalars only, at most 20, each cut at 200 characters. */
+export function metaOf(r: Report): [string, string][] {
+  const m = r.metadata;
+  if (!m || typeof m !== "object" || Array.isArray(m)) return [];
+  return Object.entries(m as Record<string, unknown>)
+    .filter(([, v]) => typeof v === "string" || typeof v === "number" || typeof v === "boolean")
+    .slice(0, 20)
+    .map(([k, v]) => [k.slice(0, 60), String(v).slice(0, 200)]);
+}
+
 /** The address of the page a report was filed on, its route kept: what "Open on the page" opens. */
 export function pageOf(r: Report): string | null {
   const a = asAnchor(r.anchor);

@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it, vi } from "vitest";
 import QueueView from "./QueueView.svelte";
 import ReportView from "./ReportView.svelte";
-import { type Queue, type Report, type TriageApi, aboutOf, arrange, changes, claimText, pageOf, readAll, routeOf, selectorOf, serial, titleOf } from "./triage";
+import { type Queue, type Report, type TriageApi, aboutOf, arrange, changes, claimText, metaOf, pageOf, readAll, routeOf, selectorOf, serial, titleOf } from "./triage";
 
 const QID = "01M66XHDKTMTCVB95FE9BQN04V";
 const queue: Queue = { id: QID, name: "Changeling feedback", origins: ["http://127.0.0.1:7700"], reporters_see: "own", created_at: "2026-11-01T00:00:00Z", role: "admin" };
@@ -77,6 +77,12 @@ describe("the triage model", () => {
     expect(changes([a], [a, b])).toBe("1 new report.");
     expect(changes([a, b], [{ ...a, state: "claimed" }, { ...b, comments: [...b.comments, b.comments[0]] }])).toBe("1 report claimed. New reply on 1 report.");
     expect(changes([a], [a])).toBe("");
+  });
+
+  it("reads a report's metadata as flat text pairs only", () => {
+    expect(metaOf(report({ metadata: { build: "1", n: 2, ok: true, nested: { x: 1 }, list: [1] } }))).toEqual([["build", "1"], ["n", "2"], ["ok", "true"]]);
+    expect(metaOf(report({ metadata: ["x"] }))).toEqual([]);
+    expect(metaOf(report())).toEqual([]);
   });
 
   it("says who holds a claim and for how long", () => {

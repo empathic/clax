@@ -23,6 +23,12 @@ export function isReport(v: unknown): v is Report {
     && Array.isArray(v.comments) && v.comments.every(c => obj(c) && str(c.id) && str(c.body) && str(c.author_name) && str(c.author_kind) && str(c.created_at));
 }
 
+/** A daemon older than this extension refuses it the queue routes (its gateway's allowlist predates them): said as such. */
+export function older(e: unknown): unknown {
+  const m = e instanceof Error ? e.message : "";
+  return /may not use this route/.test(m) ? new Error("This Clax is older than the extension and does not show queues here yet: update Clax.") : e;
+}
+
 const report = (d: unknown): Report => { if (obj(d) && isReport(d.report)) return d.report; throw off(); };
 
 /** The panel's TriageApi, and `base`: the paired daemon's origin, once the queues were read (null before, or when not http(s)). */
@@ -30,7 +36,7 @@ export function panelTriage(link: QueueLink): TriageApi & { base: string | null 
   const api: TriageApi & { base: string | null } = {
     base: null,
     queues: async () => {
-      const d = await link.queue({ t: "queue-list" });
+      const d = await link.queue({ t: "queue-list" }).catch(e => { throw older(e); });
       if (!obj(d) || !Array.isArray(d.queues)) throw off();
       api.base = str(d.base) && /^https?:\/\/[^/]+\/?$/.test(d.base) ? d.base.replace(/\/$/, "") : null;
       return d.queues.filter(isQueue);

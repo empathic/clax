@@ -9,7 +9,7 @@
   // opens the same pages in Clax. Live through the worker's `queue-ping`.
   import QueueView from "../../../overlay/src/triage/QueueView.svelte";
   import ReportView from "../../../overlay/src/triage/ReportView.svelte";
-  import { type Queue, type Report, type TriageApi, failureOf, queuePath, queuesFor, reportPath, selectorOf } from "../../../overlay/src/triage/triage";
+  import { type Queue, type Report, type TriageApi, failureOf, queuePath, queuesFor, reportPath, samePage, selectorOf } from "../../../overlay/src/triage/triage";
 
   let { api, origin, page, show, say }: {
     api: TriageApi & { base: string | null };
@@ -59,7 +59,7 @@
       {#key queue.id}
         {#if open}
           <ReportView {api} qid={queue.id} tid={open} back={{ label: queue.name, href: inClax(queuePath(queue.id)) ?? "#", onclick: () => (open = null) }}
-            onShow={showOn} openIn={inClax(reportPath(queue.id, open))} />
+            onShow={showOn} canShow={r => !!page && samePage(r.artifact.url, page)} openIn={inClax(reportPath(queue.id, open))} />
         {:else}
           <QueueView {api} {queue} {page} href={r => inClax(reportPath(queue.id, r.id)) ?? "#"} onOpen={r => (open = r.id)} openIn={inClax(queuePath(queue.id))} />
         {/if}

@@ -132,6 +132,21 @@ describe("QueuesView", () => {
     views({});
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Could not read your queues: No.");
   });
+
+  it("says a daemon older than the extension needs updating, when its gateway refuses the queue routes", async () => {
+    const l = link({});
+    l.queue.mockRejectedValue(new Error("the extension may not use this route"));
+    render(QueuesView, { props: { api: panelTriage(l as never), origin: null, page: null, show: async () => true, say: () => {} } });
+    expect((await screen.findByRole("alert")).textContent).toBe("Could not read your queues: This Clax is older than the extension and does not show queues here yet: update Clax.");
+  });
+
+  it("offers Show on the page only for a report about the inspected page; another page's opens there", async () => {
+    const elsewhere = report({ artifact: { ...report().artifact, url: "http://127.0.0.1:7700/y" } });
+    views({ "queue-list": { queues: [queue()], base: null }, "queue-reports": { reports: [elsewhere], next: null }, "queue-report": { report: elsewhere } });
+    await fireEvent.click(await screen.findByRole("link", { name: /^Save does nothing/ }));
+    expect(await screen.findByRole("link", { name: "Open on the page" })).toHaveProperty("href", "http://127.0.0.1:7700/y");
+    expect(screen.queryByRole("button", { name: "Show on the page" })).toBeNull();
+  });
 });
 
 describe("the worker's queues", () => {

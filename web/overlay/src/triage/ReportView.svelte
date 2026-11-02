@@ -12,7 +12,7 @@
   // reads it again (one read at a time), said politely, focus left where it
   // is. Everything shown is text.
   import { onMount } from "svelte";
-  import { type Report, type TriageApi, STATE_TEXT, aboutOf, claimText, failureOf, pageOf, repliesOf, selectorOf, serial, titleOf } from "./triage";
+  import { type Report, type TriageApi, STATE_TEXT, aboutOf, claimText, failureOf, metaOf, pageOf, repliesOf, selectorOf, serial, titleOf } from "./triage";
 
   type Props = {
     api: TriageApi;
@@ -22,10 +22,12 @@
     back?: { label: string; href: string; onclick?(): void } | null;
     /** Shows the report's element in the inspected page (the DevTools panel); without it, "Open on the page" is a link. */
     onShow?(r: Report): void;
+    /** Whether `onShow` can show this report (it is about the page the host shows); default yes. */
+    canShow?(r: Report): boolean;
     /** A link to this report's own page in Clax (the DevTools panel's "Open in Clax"). */
     openIn?: string | null;
   };
-  let { api, qid, tid, back = null, onShow, openIn = null }: Props = $props();
+  let { api, qid, tid, back = null, onShow, canShow = () => true, openIn = null }: Props = $props();
   let report = $state<Report | null>(null);
   let error = $state<string | null>(null);
   let said = $state("");
@@ -101,7 +103,7 @@
     {@const at = pageOf(r)}
     <section class="zone" aria-label="What it is about">
       <p>{aboutOf(r)}, on <span class="page">{r.artifact.title || r.artifact.url}</span></p>
-      {#if onShow && selectorOf(r)}
+      {#if onShow && selectorOf(r) && canShow(r)}
         <button type="button" onclick={() => onShow(r)}>Show on the page</button>
       {:else if at}
         <a href={at} target="_blank" rel="noopener noreferrer">Open on the page</a>
@@ -130,6 +132,7 @@
         <dt>Page</dt><dd>{r.artifact.url}</dd>
         {#if r.artifact.revision}<dt>Revision</dt><dd>{r.artifact.revision}</dd>{/if}
         <dt>Report</dt><dd class="mono">{r.id}</dd>
+        {#each metaOf(r) as [k, v] (k)}<dt>{k}</dt><dd>{v}</dd>{/each}
       </dl>
     </section>
     <section class="zone acts" aria-label="Actions">
