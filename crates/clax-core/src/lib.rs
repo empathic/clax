@@ -14,6 +14,7 @@ pub mod clips;
 pub mod config;
 pub mod confirm;
 pub mod content;
+pub mod contract;
 /// The daemon's discovery files and start lock: a native process's, never a
 /// Worker's.
 #[cfg(not(target_arch = "wasm32"))]

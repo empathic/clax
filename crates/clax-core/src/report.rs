@@ -33,10 +33,11 @@ pub const MAX_STAMP_BYTES: usize = 64;
 /// and the host app, checked by [`parse_context`], stored with the report
 /// and never changed. Its top level admits no other key; the objects inside
 /// it ignore keys they do not know.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReportContext {
     /// The shape's version: 1.
+    #[schemars(extend("const" = 1))]
     pub v: u8,
     /// When the capture was made, RFC 3339.
     pub captured_at: String,
@@ -55,7 +56,7 @@ pub struct ReportContext {
 }
 
 /// The release of the host app the reporter ran, as the host names it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Release {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -68,7 +69,7 @@ pub struct Release {
 }
 
 /// A feature flag's value: a boolean, a number or a string.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum FlagValue {
     Bool(bool),
@@ -79,7 +80,7 @@ pub enum FlagValue {
 /// The page and browser the capture was made in. `url` keeps its query
 /// keys, never their values ([`scrub_url`]); `route` and `title` are
 /// [`scrub`]bed.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Environment {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -101,11 +102,12 @@ pub struct Environment {
     pub time_zone: Option<String>,
     /// `light` or `dark`, as the page's `prefers-color-scheme` matched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("enum" = ["light", "dark"]))]
     pub color_scheme: Option<String>,
 }
 
 /// The viewport in CSS pixels, and its device pixel ratio.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Viewport {
     pub w: f64,
     pub h: f64,
@@ -113,14 +115,14 @@ pub struct Viewport {
 }
 
 /// The page's scroll offsets in CSS pixels.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Scroll {
     pub x: f64,
     pub y: f64,
 }
 
 /// How the report's clip was captured (§4.1).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct CaptureInfo {
     pub mode: CaptureMode,
     pub method: CaptureMethod,
@@ -130,7 +132,7 @@ pub struct CaptureInfo {
 }
 
 /// What the reporter captured (§4.1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum CaptureMode {
     Element,
@@ -141,7 +143,7 @@ pub enum CaptureMode {
 
 /// How the clip was made (§4.1): `dom`, a render of the page's DOM, or
 /// `display`, the browser's screen capture.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum CaptureMethod {
     Dom,
@@ -150,14 +152,14 @@ pub enum CaptureMethod {
 
 /// A part of the page a DOM render left out (§4.2): its kind (`iframe`,
 /// `canvas`, `video`, a masked element, …) and its box.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Omitted {
     pub kind: String,
     pub rect: Rect,
 }
 
 /// A box in CSS pixels.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Rect {
     pub x: f64,
     pub y: f64,
@@ -167,7 +169,7 @@ pub struct Rect {
 
 /// What the server that received a report says about itself (§5.1), as
 /// its `/healthz` reports it, and when it received the report.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ServerStamp {
     pub version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -260,16 +262,18 @@ fn scrub_strings(v: &mut serde_json::Value) {
 }
 
 /// A line of a report's diagnostics (§5.2).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DiagLine {
     /// When it happened, as the browser stamped it.
     pub at: String,
     /// One of [`DIAG_LEVELS`].
+    #[schemars(extend("enum" = ["debug", "info", "warn", "error"]))]
     pub level: String,
     /// One of [`DIAG_KINDS`]: `console`, `error` (an uncaught error),
     /// `rejection` (an unhandled promise rejection) or `request` (a failed
     /// request).
+    #[schemars(extend("enum" = ["console", "error", "rejection", "request"]))]
     pub kind: String,
     /// What was logged, scrubbed.
     pub text: String,
@@ -356,7 +360,7 @@ fn diag_line(raw: &[u8]) -> Option<DiagLine> {
 /// Who a reporter is, as the integrator's backend asserts it when minting
 /// the reporter token (§5.4). Shown to triage members, never to
 /// reporters.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ReporterProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -413,7 +417,7 @@ fn is_http_url(s: &str) -> bool {
 }
 
 /// A proposed fix (§6.2): what was done, and where to see and check it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct NewFix {
     /// Plain text, posted to the report as a comment the reporter sees.
     pub summary: String,
@@ -477,7 +481,7 @@ impl NewFix {
 }
 
 /// What became of a fix attempt (§6.3).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FixOutcome {
     /// Waiting for the reporter's verdict.
@@ -519,7 +523,7 @@ impl FixOutcome {
 
 /// Who proposed a fix: an agent, through its session under its lease, or
 /// a person (a triage member, in their browser).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ProposerKind {
     Agent,
@@ -529,7 +533,7 @@ pub enum ProposerKind {
 /// A fix proposed on a report (§6.2), numbered from 1 in the order
 /// proposed, with its verdict once given (§6.3): the verdict's note, the
 /// context of whoever gave it, and when.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct FixAttempt {
     pub n: u32,
     #[serde(flatten)]
@@ -552,7 +556,7 @@ pub struct FixAttempt {
 /// Why a report was closed (§6.1): `fixed` when a fix was verified or
 /// triage closed it as fixed; the others when triage closed it without a
 /// verdict.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ResolveReason {
     Fixed,

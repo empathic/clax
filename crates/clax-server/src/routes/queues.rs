@@ -29,7 +29,8 @@ use axum::http::StatusCode;
 use base64::Engine as _;
 use clax_core::CoreError;
 use clax_core::audit::AuditCtx;
-use clax_core::queue::{ReportersSee, Role};
+use clax_core::contract::{Body, Channel, Method, Op, Rights, schema};
+use clax_core::queue::{QueueList, ReportersSee, Role, ServiceGrantCreated, ServiceGrantInfo};
 use clax_http::agent::{Agent, DeniedToGrants, QueuesList};
 use clax_http::auth::Caller;
 use clax_http::error::ApiError;
@@ -97,7 +98,7 @@ async fn admin_of(s: &AppState, qid: &str, person: Option<String>) -> Result<(),
 pub async fn list(
     State(s): State<AppState>,
     a: Agent<QueuesList>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<QueueList>, ApiError> {
     let person = match &a.caller {
         Caller::Owner { .. }
         | Caller::OwnerAgent { .. }
@@ -106,14 +107,32 @@ pub async fn list(
         Caller::PersonAgent {
             person: Some(p), ..
         } => Some(p.clone()),
-        Caller::Viewer { .. } => return Ok(Json(json!({"queues": []}))),
+        Caller::Viewer { .. } => return Ok(Json(QueueList { queues: Vec::new() })),
         Caller::Anonymous => return Err(ApiError::unauthorized()),
     };
     let queues = s
         .store_call(move |st| st.queues_of(person.as_deref()))
         .await?;
-    Ok(Json(json!({ "queues": queues })))
+    Ok(Json(QueueList { queues }))
 }
+
+/// [`list`]'s operation.
+pub const LIST: Op = Op {
+    id: "list_queues",
+    handler: "queues::list",
+    method: Method::Get,
+    path: "/api/queues",
+    summary: "The live queues the caller made or is a member of, with its role on each.",
+    query: None,
+    request: Body::Empty,
+    status: 200,
+    response: Body::Json(schema::<QueueList>),
+    errors: &[],
+    retry: true,
+    channel: &[Channel::Session, Channel::Token, Channel::Grant],
+    rights: Rights::Credential,
+    stream: false,
+};
 
 /// `POST /api/queues` body.
 #[derive(Deserialize)]
@@ -328,9 +347,14 @@ pub async fn grants(
 }
 
 /// `POST /api/queues/<qid>/service-grants` body.
-#[derive(Deserialize)]
+#[derive(Deserialize, clax_core::contract::schemars::JsonSchema)]
+#[schemars(
+    crate = "clax_core::contract::schemars",
+    rename = "ServiceGrantRequest"
+)]
 #[serde(deny_unknown_fields)]
 pub struct GrantBody {
+    /// What the grant is called: 1 to 120 characters.
     name: String,
 }
 
@@ -347,7 +371,7 @@ pub async fn create_grant(
     ctx: AuditCtx,
     qid: Result<Path<String>, PathRejection>,
     req: Result<Json<GrantBody>, JsonRejection>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+) -> Result<(StatusCode, Json<ServiceGrantCreated>), ApiError> {
     d.refuse_agents()?;
     let person = admin_person(&s, &d).await?;
     let qid = path(qid)?;
@@ -359,13 +383,42 @@ pub async fn create_grant(
     let private_key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.pkcs8().expose());
     Ok((
         StatusCode::CREATED,
-        Json(json!({
-            "grant": grant,
-            "token": token.expose(),
-            "private_key": private_key,
-        })),
+        Json(ServiceGrantCreated {
+            grant: ServiceGrantInfo {
+                id: grant.id,
+                name: grant.name,
+                created_at: grant.created_at,
+            },
+            token: token.expose().to_string(),
+            private_key,
+        }),
     ))
 }
+
+/// [`create_grant`]'s operation.
+pub const CREATE_GRANT: Op = Op {
+    id: "create_service_grant",
+    handler: "queues::create_grant",
+    method: Method::Post,
+    path: "/api/queues/{qid}/service-grants",
+    summary: "An admin makes a service grant; its token and key are in this answer alone.",
+    query: None,
+    request: Body::Json(schema::<GrantBody>),
+    status: 201,
+    response: Body::Json(schema::<ServiceGrantCreated>),
+    errors: &[
+        (400, "invalid_args"),
+        (400, "invalid_name"),
+        (403, "not_for_agents"),
+        (403, "not_a_person"),
+        (403, "not_queue_admin"),
+        (404, "not_a_member"),
+    ],
+    retry: false,
+    channel: &[Channel::Session, Channel::Token],
+    rights: Rights::QueueRole("admin"),
+    stream: false,
+};
 
 /// `DELETE /api/queues/<qid>/service-grants/<gid>` → 204: an admin revokes
 /// a service grant, which ends every reporter token it minted. 404

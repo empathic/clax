@@ -146,6 +146,7 @@ pub mod bot;
 pub mod catalog;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod chitin;
+pub mod contract;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod core;
 pub mod github;

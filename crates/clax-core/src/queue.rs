@@ -5,7 +5,9 @@
 //! `clax_store::external`).
 
 use crate::anchor::Anchor;
-use crate::report::{FixAttempt, ReportContext, ReporterProfile, ResolveReason, ServerStamp};
+use crate::report::{
+    DiagLine, FixAttempt, ReportContext, ReporterProfile, ResolveReason, ServerStamp,
+};
 use crate::{CoreError, Result};
 use serde::{Deserialize, Serialize};
 
@@ -37,7 +39,7 @@ pub const REPORTER_TOKEN_PREFIX: &str = "cxr_";
 pub const AUTHOR_REPORTER: &str = "reporter";
 
 /// Whose reports a reporter token reads (§7.2).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ReportersSee {
     /// Only its own reporter's (the default, D8).
@@ -68,8 +70,11 @@ impl ReportersSee {
 /// A member's right on a queue (§7.1): `admin` changes the queue and makes
 /// service grants, and holds triage too; `triage` reads every report,
 /// claims, replies, resolves and writes thread metadata.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
+#[schemars(rename = "QueueRole")]
 pub enum Role {
     Triage,
     Admin,
@@ -100,8 +105,9 @@ impl Role {
 /// `verified`, once the reporter said it is fixed; `resolved`, once triage
 /// closed it without a verdict. `verified` and `resolved` resolve the
 /// report's thread.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[schemars(rename = "ReportState")]
 pub enum State {
     Open,
     Claimed,
@@ -223,7 +229,7 @@ impl<'de> Deserialize<'de> for StateFilter {
 }
 
 /// A queue as a member reads it, with the reader's own role.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Queue {
     pub id: String,
     pub name: String,
@@ -237,7 +243,7 @@ pub struct Queue {
 
 /// The external artifact a report is on, as a report carries it (§6.1).
 /// Its fields are shared by every queue whose reports it holds.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ReportArtifact {
     pub id: String,
     pub external_id: String,
@@ -253,9 +259,10 @@ pub struct ReportArtifact {
 /// [`AUTHOR_REPORTER`]. A reopen's comment (feedback-loop §6.3) carries
 /// its capture: the reopen's number, whether a clip came with it, and how
 /// many diagnostics lines.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ReportComment {
     pub id: String,
+    #[schemars(extend("enum" = ["viewer", "agent", "reporter"]))]
     pub author_kind: String,
     pub author_name: String,
     pub body: String,
@@ -279,14 +286,15 @@ fn is_false(b: &bool) -> bool {
 }
 
 /// A live claim on a report: who holds it, until when.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[schemars(rename = "ReportClaim")]
 pub struct Claim {
     pub holder_name: String,
     pub expires_at: String,
 }
 
 /// A report: a thread filed through a queue (§7).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Report {
     /// The thread's ID.
     pub id: String,
@@ -294,6 +302,7 @@ pub struct Report {
     pub artifact: ReportArtifact,
     pub anchor: Anchor,
     /// The thread's status: `open` or `resolved`.
+    #[schemars(extend("enum" = ["open", "resolved"]))]
     pub status: String,
     pub state: State,
     /// The reporter that filed it, from its reporter token; `None` for a
@@ -361,12 +370,131 @@ fn is_zero(n: &u32) -> bool {
 
 /// A claim's answer (§7.4): the lease, its expiry, its fence (larger for
 /// each new lease on the report), and the report.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Lease {
     pub lease_id: String,
     pub expires_at: String,
     pub fence: u64,
     pub report: Report,
+}
+
+// The bodies of the queue routes in the API contract (`crate::contract`):
+// the handlers read and answer these types, so the contract's schemas are
+// theirs.
+
+/// `{report}`: the answer of a route that changes or files one report.
+#[derive(Clone, Debug, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct ReportAnswer {
+    pub report: Report,
+}
+
+/// A page of reports; `next` is the cursor of the following page, `null`
+/// on the last.
+#[derive(Clone, Debug, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct ReportPage {
+    pub reports: Vec<Report>,
+    pub next: Option<String>,
+}
+
+/// `{lines}`: a capture's diagnostics, `[]` when it has none.
+#[derive(Clone, Debug, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct DiagnosticsAnswer {
+    pub lines: Vec<DiagLine>,
+}
+
+/// What waits for a reporter: its reports with a fix waiting for its
+/// verdict, or with a reply it has not read (`…/seen`), oldest first.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub struct Badge {
+    /// How many reports wait (`report_ids.len()`).
+    pub waiting: u32,
+    pub report_ids: Vec<String>,
+}
+
+/// `{queues}`: the caller's queues with its role on each.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub struct QueueList {
+    pub queues: Vec<Queue>,
+}
+
+/// A service grant as its queue's admins see it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub struct ServiceGrantInfo {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+}
+
+/// A new service grant: its token (`cxq_…`) and its Ed25519 key, shown in
+/// this answer alone.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub struct ServiceGrantCreated {
+    pub grant: ServiceGrantInfo,
+    pub token: String,
+    /// The key's PKCS#8 v2 document, unpadded base64url.
+    pub private_key: String,
+}
+
+/// A service grant's request for a reporter token.
+#[derive(Clone, Debug, PartialEq, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReporterTokenRequest {
+    pub reporter_id: String,
+    /// One of the queue's origins.
+    pub origin: String,
+    /// The reporter key's 32 public bytes in unpadded base64url.
+    pub public_key: String,
+    /// Who the backend says the reporter is; each report filed under the
+    /// token keeps it. Read as JSON first, so a bad one is 400
+    /// `invalid_profile` rather than `invalid_args`.
+    #[serde(default)]
+    #[schemars(with = "Option<ReporterProfile>")]
+    pub profile: Option<serde_json::Value>,
+}
+
+/// A reporter token (`cxr_…`), bound to a key, an origin and a reporter ID.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub struct ReporterToken {
+    pub token: String,
+    pub expires_at: String,
+}
+
+/// A comment's body.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CommentRequest {
+    pub body: String,
+}
+
+/// A reporter's verdict that a fix works: a note, and its browser's
+/// context at the verdict (checked and scrubbed as a filing's). An empty
+/// body is `{}`.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VerifyRequest {
+    #[serde(default)]
+    pub note: Option<String>,
+    /// Read as JSON first, so a bad one is 400 `invalid_context`.
+    #[serde(default)]
+    #[schemars(with = "Option<ReportContext>")]
+    pub context: Option<serde_json::Value>,
+}
+
+/// A listing's query: the cursor a page's `next` gave.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PageQuery {
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+/// A diagnostics query: capture `capture`'s (0 the filing's, `n` the
+/// `n`th reopen's), or without it the latest capture's that has any.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureQuery {
+    #[serde(default)]
+    pub capture: Option<u32>,
 }
 
 /// `Ok` for an `external_id` Clax keeps: 1 to [`MAX_EXTERNAL_ID_BYTES`]

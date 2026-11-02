@@ -244,15 +244,8 @@ impl Verdict<'_> {
     }
 }
 
-/// What waits for a reporter ([`Store::reporter_badge`]): its reports with
-/// a fix waiting for its verdict, or with a reply it has not read, oldest
-/// first.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
-pub struct Badge {
-    /// How many reports wait (`report_ids.len()`).
-    pub waiting: u32,
-    pub report_ids: Vec<String>,
-}
+/// What waits for a reporter ([`Store::reporter_badge`]).
+pub use clax_core::queue::Badge;
 
 /// Whose external IDs a filed report's ID is among (spec §6.1): one
 /// deployer's. On a local or self-hosted Clax the deployer is the

@@ -1,0 +1,3201 @@
+{
+  "components": {
+    "schemas": {
+      "Anchor": {
+        "additionalProperties": false,
+        "description": "Spec §9 \"Anchors\". Every field but `kind` and `file` may be null. `file` is\nthe published path of the page the anchor is on, `index.html` when absent;\nan `artifact` anchor is on no page, and its `file` is empty.\nAn `area` anchor is a rectangle the viewer drew: `selector` names the\nsmallest element containing it, `area` places it within that element, and\n`rect` holds it in viewport pixels at draw time; `area` is serialized only\nwhen present.",
+        "properties": {
+          "area": {
+            "$ref": "#/components/schemas/AnchorArea"
+          },
+          "custom_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "file": {
+            "default": "index.html",
+            "type": "string"
+          },
+          "html_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AnchorKind"
+          },
+          "label": {
+            "description": "The quote as a person reads it: its text with a space where it runs\nfrom one element into another, which the quote (kept as the page's\ntext nodes join, for re-anchoring) lacks. Shown in place of the quote;\nabsent on anchors made without one, which show the quote.",
+            "type": "string"
+          },
+          "name": {
+            "description": "What the element is called, as the bridge read it when it was picked:\nits accessible name, else the start of its text, else its kind with\nthe nearest heading (\"Chart under ‘p95 by four-hour window’\"). Shown\nas a thread's title where the anchor quotes nothing; absent on\nanchors made without one.",
+            "type": "string"
+          },
+          "prefix": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quote": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rect": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnchorRect"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "route": {
+            "description": "The route a live page's thread was made at (spec 2026-10-05 §5.2):\nthe query and hash route, set by the daemon; absent elsewhere.",
+            "type": "string"
+          },
+          "selector": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "suffix": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "selector",
+          "quote",
+          "prefix",
+          "suffix",
+          "html_hash",
+          "rect",
+          "custom_name",
+          "file"
+        ],
+        "type": "object"
+      },
+      "AnchorArea": {
+        "additionalProperties": false,
+        "description": "A drawn rectangle as fractions (0 to 1) of its element's border box: `x`\nand `y` from its top left corner, `w` and `h` of its width and height.\n`tag`, `text`, and `children` fingerprint that element at draw time (its\nlocal name, the first characters of its text with whitespace collapsed,\nits child element count), so re-anchoring by selector alone can tell\nanother element at the same path; each is optional and serialized only\nwhen present.",
+        "properties": {
+          "children": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "h": {
+            "format": "double",
+            "type": "number"
+          },
+          "tag": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "w": {
+            "format": "double",
+            "type": "number"
+          },
+          "x": {
+            "format": "double",
+            "type": "number"
+          },
+          "y": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y",
+          "w",
+          "h"
+        ],
+        "type": "object"
+      },
+      "AnchorInput": {
+        "additionalProperties": false,
+        "description": "Spec §9 \"Anchors\". Every field but `kind` and `file` may be null. `file` is\nthe published path of the page the anchor is on, `index.html` when absent;\nan `artifact` anchor is on no page, and its `file` is empty.\nAn `area` anchor is a rectangle the viewer drew: `selector` names the\nsmallest element containing it, `area` places it within that element, and\n`rect` holds it in viewport pixels at draw time; `area` is serialized only\nwhen present.",
+        "properties": {
+          "area": {
+            "$ref": "#/components/schemas/AnchorArea"
+          },
+          "custom_name": {
+            "type": "string"
+          },
+          "file": {
+            "default": "index.html",
+            "type": "string"
+          },
+          "html_hash": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AnchorKind"
+          },
+          "label": {
+            "description": "The quote as a person reads it: its text with a space where it runs\nfrom one element into another, which the quote (kept as the page's\ntext nodes join, for re-anchoring) lacks. Shown in place of the quote;\nabsent on anchors made without one, which show the quote.",
+            "type": "string"
+          },
+          "name": {
+            "description": "What the element is called, as the bridge read it when it was picked:\nits accessible name, else the start of its text, else its kind with\nthe nearest heading (\"Chart under ‘p95 by four-hour window’\"). Shown\nas a thread's title where the anchor quotes nothing; absent on\nanchors made without one.",
+            "type": "string"
+          },
+          "prefix": {
+            "type": "string"
+          },
+          "quote": {
+            "type": "string"
+          },
+          "rect": {
+            "$ref": "#/components/schemas/AnchorRect"
+          },
+          "route": {
+            "description": "The route a live page's thread was made at (spec 2026-10-05 §5.2):\nthe query and hash route, set by the daemon; absent elsewhere.",
+            "type": "string"
+          },
+          "selector": {
+            "type": "string"
+          },
+          "suffix": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "AnchorKind": {
+        "oneOf": [
+          {
+            "enum": [
+              "element",
+              "range",
+              "custom",
+              "area"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "artifact",
+            "description": "The whole artifact: no page, element, text, or area. Every target\nfield is null and `file` is empty ([`WHOLE_FILE`]).",
+            "type": "string"
+          }
+        ]
+      },
+      "AnchorRect": {
+        "additionalProperties": false,
+        "description": "The anchored region at pick time, in viewport pixels, with the page's\nscroll offsets and viewport width.",
+        "properties": {
+          "h": {
+            "format": "double",
+            "type": "number"
+          },
+          "scrollX": {
+            "format": "double",
+            "type": "number"
+          },
+          "scrollY": {
+            "format": "double",
+            "type": "number"
+          },
+          "viewportW": {
+            "format": "double",
+            "type": "number"
+          },
+          "w": {
+            "format": "double",
+            "type": "number"
+          },
+          "x": {
+            "format": "double",
+            "type": "number"
+          },
+          "y": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y",
+          "w",
+          "h",
+          "scrollX",
+          "scrollY",
+          "viewportW"
+        ],
+        "type": "object"
+      },
+      "ApiErrorBody": {
+        "description": "Every error answer's body (`clax_http::error::ApiError`).",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ApiErrorDetail"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "ApiErrorDetail": {
+        "description": "An error answer's `error`.",
+        "properties": {
+          "code": {
+            "description": "What went wrong, for code to branch on: one of the operation's\n`x-clax-codes` for its status.",
+            "type": "string"
+          },
+          "message": {
+            "description": "What went wrong, for a person.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "type": "object"
+      },
+      "Badge": {
+        "description": "What waits for a reporter: its reports with a fix waiting for its\nverdict, or with a reply it has not read (`…/seen`), oldest first.",
+        "properties": {
+          "report_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "waiting": {
+            "description": "How many reports wait (`report_ids.len()`).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "waiting",
+          "report_ids"
+        ],
+        "type": "object"
+      },
+      "CaptureInfo": {
+        "description": "How the report's clip was captured (§4.1).",
+        "properties": {
+          "method": {
+            "$ref": "#/components/schemas/CaptureMethod"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/CaptureMode"
+          },
+          "omitted": {
+            "description": "What the render left out, and where (§4.2).",
+            "items": {
+              "$ref": "#/components/schemas/Omitted"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "mode",
+          "method"
+        ],
+        "type": "object"
+      },
+      "CaptureMethod": {
+        "description": "How the clip was made (§4.1): `dom`, a render of the page's DOM, or\n`display`, the browser's screen capture.",
+        "enum": [
+          "dom",
+          "display"
+        ],
+        "type": "string"
+      },
+      "CaptureMode": {
+        "description": "What the reporter captured (§4.1).",
+        "enum": [
+          "element",
+          "range",
+          "area",
+          "screen"
+        ],
+        "type": "string"
+      },
+      "CommentRequest": {
+        "additionalProperties": false,
+        "description": "A comment's body.",
+        "properties": {
+          "body": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "type": "object"
+      },
+      "DevicePaths": {
+        "description": "The paths of a device sign-in.",
+        "properties": {
+          "approve": {
+            "default": "",
+            "type": "string"
+          },
+          "code": {
+            "default": "",
+            "type": "string"
+          },
+          "token": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "approve",
+          "token"
+        ],
+        "type": "object"
+      },
+      "DiagLine": {
+        "additionalProperties": false,
+        "description": "A line of a report's diagnostics (§5.2).",
+        "properties": {
+          "at": {
+            "description": "When it happened, as the browser stamped it.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "One of [`DIAG_KINDS`]: `console`, `error` (an uncaught error),\n`rejection` (an unhandled promise rejection) or `request` (a failed\nrequest).",
+            "enum": [
+              "console",
+              "error",
+              "rejection",
+              "request"
+            ],
+            "type": "string"
+          },
+          "level": {
+            "description": "One of [`DIAG_LEVELS`].",
+            "enum": [
+              "debug",
+              "info",
+              "warn",
+              "error"
+            ],
+            "type": "string"
+          },
+          "text": {
+            "description": "What was logged, scrubbed.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "level",
+          "kind",
+          "text"
+        ],
+        "type": "object"
+      },
+      "DiagnosticsAnswer": {
+        "description": "`{lines}`: a capture's diagnostics, `[]` when it has none.",
+        "properties": {
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/DiagLine"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "lines"
+        ],
+        "type": "object"
+      },
+      "Discovery": {
+        "description": "The answer of `GET /.well-known/clax`.",
+        "properties": {
+          "api": {
+            "default": "",
+            "description": "Its API root: `/api`.",
+            "type": "string"
+          },
+          "capabilities": {
+            "default": [],
+            "description": "What it offers beyond the core.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "contract_version": {
+            "default": "",
+            "description": "The major version of the contract it serves\n(`clax_core::contract::MAJOR`).",
+            "type": "string"
+          },
+          "device": {
+            "$ref": "#/components/schemas/DevicePaths",
+            "description": "The paths of its device sign-in, when it has one."
+          },
+          "kind": {
+            "default": "",
+            "description": "`hosted` or `local` (`worker` for the hosted Worker).",
+            "enum": [
+              "local",
+              "hosted",
+              "worker"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "description": "Its name.",
+            "type": "string"
+          },
+          "origin": {
+            "default": "",
+            "description": "Where it says it is reached.",
+            "type": "string"
+          },
+          "sign_in": {
+            "default": [],
+            "description": "How a client obtains a credential there.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "site_domain": {
+            "description": "The domain its artifacts' sites are served under, when it has one.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "contract_version",
+          "name",
+          "origin",
+          "api",
+          "sign_in",
+          "capabilities"
+        ],
+        "type": "object"
+      },
+      "Environment": {
+        "description": "The page and browser the capture was made in. `url` keeps its query\nkeys, never their values ([`scrub_url`]); `route` and `title` are\n[`scrub`]bed.",
+        "properties": {
+          "color_scheme": {
+            "description": "`light` or `dark`, as the page's `prefers-color-scheme` matched.",
+            "enum": [
+              "light",
+              "dark"
+            ],
+            "type": "string"
+          },
+          "locale": {
+            "type": "string"
+          },
+          "platform": {
+            "type": "string"
+          },
+          "route": {
+            "type": "string"
+          },
+          "scroll": {
+            "$ref": "#/components/schemas/Scroll"
+          },
+          "time_zone": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "user_agent": {
+            "type": "string"
+          },
+          "viewport": {
+            "$ref": "#/components/schemas/Viewport"
+          }
+        },
+        "type": "object"
+      },
+      "FixAttempt": {
+        "description": "A fix proposed on a report (§6.2), numbered from 1 in the order\nproposed, with its verdict once given (§6.3): the verdict's note, the\ncontext of whoever gave it, and when.",
+        "properties": {
+          "commit": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "n": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/FixOutcome"
+          },
+          "proposer_kind": {
+            "$ref": "#/components/schemas/ProposerKind",
+            "description": "Whether an agent or a person proposed it. While it waits, the\nagent's session hears the reporter's replies and may answer them;\na person's fix is answered from the triage views."
+          },
+          "proposer_name": {
+            "type": "string"
+          },
+          "release": {
+            "description": "The release the fix ships in.",
+            "type": "string"
+          },
+          "summary": {
+            "description": "Plain text, posted to the report as a comment the reporter sees.",
+            "type": "string"
+          },
+          "url": {
+            "description": "The change: a pull request, a commit page, a ticket.",
+            "type": "string"
+          },
+          "verdict_at": {
+            "type": "string"
+          },
+          "verdict_context": {
+            "$ref": "#/components/schemas/ReportContext"
+          },
+          "verdict_note": {
+            "type": "string"
+          },
+          "verify_after": {
+            "description": "When the reporter can check it, such as `release:0.6.1`.",
+            "type": "string"
+          },
+          "verify_url": {
+            "description": "Where the reporter checks the fix.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "n",
+          "summary",
+          "proposer_name",
+          "proposer_kind",
+          "created_at",
+          "outcome"
+        ],
+        "type": "object"
+      },
+      "FixOutcome": {
+        "description": "What became of a fix attempt (§6.3).",
+        "oneOf": [
+          {
+            "const": "pending",
+            "description": "Waiting for the reporter's verdict.",
+            "type": "string"
+          },
+          {
+            "const": "verified",
+            "description": "The reporter said it is fixed.",
+            "type": "string"
+          },
+          {
+            "const": "rejected",
+            "description": "The reporter said it is still broken.",
+            "type": "string"
+          },
+          {
+            "const": "superseded",
+            "description": "A triage person proposed another fix before a verdict on this one.",
+            "type": "string"
+          },
+          {
+            "const": "closed",
+            "description": "The report was resolved before a verdict on this fix.",
+            "type": "string"
+          }
+        ]
+      },
+      "FlagValue": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "format": "double",
+            "type": "number"
+          },
+          {
+            "type": "string"
+          }
+        ],
+        "description": "A feature flag's value: a boolean, a number or a string."
+      },
+      "Lease": {
+        "description": "A claim's answer (§7.4): the lease, its expiry, its fence (larger for\neach new lease on the report), and the report.",
+        "properties": {
+          "expires_at": {
+            "type": "string"
+          },
+          "fence": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "lease_id": {
+            "type": "string"
+          },
+          "report": {
+            "$ref": "#/components/schemas/Report"
+          }
+        },
+        "required": [
+          "lease_id",
+          "expires_at",
+          "fence",
+          "report"
+        ],
+        "type": "object"
+      },
+      "Omitted": {
+        "description": "A part of the page a DOM render left out (§4.2): its kind (`iframe`,\n`canvas`, `video`, a masked element, …) and its box.",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "rect": {
+            "$ref": "#/components/schemas/Rect"
+          }
+        },
+        "required": [
+          "kind",
+          "rect"
+        ],
+        "type": "object"
+      },
+      "ProposerKind": {
+        "description": "Who proposed a fix: an agent, through its session under its lease, or\na person (a triage member, in their browser).",
+        "enum": [
+          "agent",
+          "person"
+        ],
+        "type": "string"
+      },
+      "Queue": {
+        "description": "A queue as a member reads it, with the reader's own role.",
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "origins": {
+            "description": "The deployer's app's origins (normalized by [`normalize_origin`]):\na reporter token is minted only for one of them.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "reporters_see": {
+            "$ref": "#/components/schemas/ReportersSee"
+          },
+          "role": {
+            "$ref": "#/components/schemas/QueueRole"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "origins",
+          "reporters_see",
+          "created_at",
+          "role"
+        ],
+        "type": "object"
+      },
+      "QueueList": {
+        "description": "`{queues}`: the caller's queues with its role on each.",
+        "properties": {
+          "queues": {
+            "items": {
+              "$ref": "#/components/schemas/Queue"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "queues"
+        ],
+        "type": "object"
+      },
+      "QueueRole": {
+        "description": "A member's right on a queue (§7.1): `admin` changes the queue and makes\nservice grants, and holds triage too; `triage` reads every report,\nclaims, replies, resolves and writes thread metadata.",
+        "enum": [
+          "triage",
+          "admin"
+        ],
+        "type": "string"
+      },
+      "Rect": {
+        "description": "A box in CSS pixels.",
+        "properties": {
+          "h": {
+            "format": "double",
+            "type": "number"
+          },
+          "w": {
+            "format": "double",
+            "type": "number"
+          },
+          "x": {
+            "format": "double",
+            "type": "number"
+          },
+          "y": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y",
+          "w",
+          "h"
+        ],
+        "type": "object"
+      },
+      "Release": {
+        "description": "The release of the host app the reporter ran, as the host names it.",
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "commit": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "Report": {
+        "description": "A report: a thread filed through a queue (§7).",
+        "properties": {
+          "anchor": {
+            "$ref": "#/components/schemas/Anchor"
+          },
+          "artifact": {
+            "$ref": "#/components/schemas/ReportArtifact"
+          },
+          "claim": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReportClaim"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "comments": {
+            "items": {
+              "$ref": "#/components/schemas/ReportComment"
+            },
+            "type": "array"
+          },
+          "context": {
+            "$ref": "#/components/schemas/ReportContext",
+            "description": "What the reporter's browser said at capture (feedback-loop §5.1);\nabsent on a report filed without one, and on a report served to a\nreporter that did not file it (`reporters_see: all`)."
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "diagnostics_lines": {
+            "description": "How many diagnostics lines its latest capture holding any has: the\nfiling's, or a later reopen's (feedback-loop §5.2); 0 when none\nhas.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "filing_diagnostics_lines": {
+            "description": "How many diagnostics lines the filing itself (capture 0) has; 0\nwhen it came with none.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "fixes": {
+            "description": "The fixes proposed on it, oldest first (feedback-loop §6.2).",
+            "items": {
+              "$ref": "#/components/schemas/FixAttempt"
+            },
+            "type": "array"
+          },
+          "has_clip": {
+            "type": "boolean"
+          },
+          "id": {
+            "description": "The thread's ID.",
+            "type": "string"
+          },
+          "metadata": {
+            "description": "Opaque JSON the app wrote with the report; `null` when none."
+          },
+          "metadata_version": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "queue_id": {
+            "type": "string"
+          },
+          "reopen_count": {
+            "description": "How many times the reporter (or triage on their behalf) reopened\nit (feedback-loop §6.3).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reporter_id": {
+            "description": "The reporter that filed it, from its reporter token; `None` for a\nreport filed otherwise.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reporter_profile": {
+            "$ref": "#/components/schemas/ReporterProfile",
+            "description": "The reporter's profile (feedback-loop §5.4), served to triage\nmembers only."
+          },
+          "resolve_reason": {
+            "$ref": "#/components/schemas/ResolveReason",
+            "description": "Why a `verified` or `resolved` report was closed (feedback-loop\n§6.1)."
+          },
+          "server": {
+            "$ref": "#/components/schemas/ServerStamp",
+            "description": "The receiving server's stamp (feedback-loop §5.1); absent on a\nreport filed without one."
+          },
+          "state": {
+            "$ref": "#/components/schemas/ReportState"
+          },
+          "status": {
+            "description": "The thread's status: `open` or `resolved`.",
+            "enum": [
+              "open",
+              "resolved"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "queue_id",
+          "artifact",
+          "anchor",
+          "status",
+          "state",
+          "reporter_id",
+          "metadata",
+          "metadata_version",
+          "has_clip",
+          "comments",
+          "claim",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "ReportAnswer": {
+        "description": "`{report}`: the answer of a route that changes or files one report.",
+        "properties": {
+          "report": {
+            "$ref": "#/components/schemas/Report"
+          }
+        },
+        "required": [
+          "report"
+        ],
+        "type": "object"
+      },
+      "ReportArtifact": {
+        "description": "The external artifact a report is on, as a report carries it (§6.1).\nIts fields are shared by every queue whose reports it holds.",
+        "properties": {
+          "external_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "metadata": {
+            "description": "Opaque JSON the app wrote; `null` when it wrote none."
+          },
+          "metadata_version": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "revision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "external_id",
+          "title",
+          "url",
+          "metadata",
+          "metadata_version",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "ReportClaim": {
+        "description": "A live claim on a report: who holds it, until when.",
+        "properties": {
+          "expires_at": {
+            "type": "string"
+          },
+          "holder_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "holder_name",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "ReportComment": {
+        "description": "A comment of a report: `author_kind` is `viewer`, `agent` or\n[`AUTHOR_REPORTER`]. A reopen's comment (feedback-loop §6.3) carries\nits capture: the reopen's number, whether a clip came with it, and how\nmany diagnostics lines.",
+        "properties": {
+          "author_kind": {
+            "enum": [
+              "viewer",
+              "agent",
+              "reporter"
+            ],
+            "type": "string"
+          },
+          "author_name": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "capture": {
+            "description": "The reopen this comment was posted with (1 for the first); absent\non any other comment.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "diagnostics_lines": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "has_clip": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "triage_only": {
+            "description": "A note for the queue's members alone (a person's release of a\nclaim): a reporter's view of the report leaves it out.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "author_kind",
+          "author_name",
+          "body",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "ReportContext": {
+        "additionalProperties": false,
+        "description": "What the reporter's browser said at capture (§5.1): filled by the SDK\nand the host app, checked by [`parse_context`], stored with the report\nand never changed. Its top level admits no other key; the objects inside\nit ignore keys they do not know.",
+        "properties": {
+          "app": {
+            "description": "Opaque JSON the host app adds; every string in it is scrubbed."
+          },
+          "capture": {
+            "$ref": "#/components/schemas/CaptureInfo"
+          },
+          "captured_at": {
+            "description": "When the capture was made, RFC 3339.",
+            "type": "string"
+          },
+          "environment": {
+            "$ref": "#/components/schemas/Environment"
+          },
+          "flags": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/FlagValue"
+            },
+            "description": "The host app's feature flags at capture.",
+            "type": "object"
+          },
+          "release": {
+            "$ref": "#/components/schemas/Release"
+          },
+          "v": {
+            "const": 1,
+            "description": "The shape's version: 1.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "v",
+          "captured_at"
+        ],
+        "type": "object"
+      },
+      "ReportPage": {
+        "description": "A page of reports; `next` is the cursor of the following page, `null`\non the last.",
+        "properties": {
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reports": {
+            "items": {
+              "$ref": "#/components/schemas/Report"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "reports",
+          "next"
+        ],
+        "type": "object"
+      },
+      "ReportState": {
+        "description": "Where a report stands (spec 2026-10-29-feedback-loop-design §6.1):\n`open`, waiting for someone; `claimed`, while a live lease holds it;\n`fix_proposed`, while a fix waits for the reporter's verdict;\n`verified`, once the reporter said it is fixed; `resolved`, once triage\nclosed it without a verdict. `verified` and `resolved` resolve the\nreport's thread.",
+        "enum": [
+          "open",
+          "claimed",
+          "fix_proposed",
+          "verified",
+          "resolved"
+        ],
+        "type": "string"
+      },
+      "ReporterProfile": {
+        "description": "Who a reporter is, as the integrator's backend asserts it when minting\nthe reporter token (§5.4). Shown to triage members, never to\nreporters.",
+        "properties": {
+          "avatar_url": {
+            "description": "An `https:` or `http:` image URL.",
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "github": {
+            "description": "A GitHub login, for asking the reporter to review a fix.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ReporterToken": {
+        "description": "A reporter token (`cxr_…`), bound to a key, an origin and a reporter ID.",
+        "properties": {
+          "expires_at": {
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "expires_at"
+        ],
+        "type": "object"
+      },
+      "ReporterTokenRequest": {
+        "additionalProperties": false,
+        "description": "A service grant's request for a reporter token.",
+        "properties": {
+          "origin": {
+            "description": "One of the queue's origins.",
+            "type": "string"
+          },
+          "profile": {
+            "$ref": "#/components/schemas/ReporterProfile",
+            "description": "Who the backend says the reporter is; each report filed under the\ntoken keeps it. Read as JSON first, so a bad one is 400\n`invalid_profile` rather than `invalid_args`."
+          },
+          "public_key": {
+            "description": "The reporter key's 32 public bytes in unpadded base64url.",
+            "type": "string"
+          },
+          "reporter_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reporter_id",
+          "origin",
+          "public_key"
+        ],
+        "type": "object"
+      },
+      "ReportersSee": {
+        "description": "Whose reports a reporter token reads (§7.2).",
+        "oneOf": [
+          {
+            "const": "own",
+            "description": "Only its own reporter's (the default, D8).",
+            "type": "string"
+          },
+          {
+            "const": "all",
+            "description": "Every report in the queue.",
+            "type": "string"
+          }
+        ]
+      },
+      "ResolveReason": {
+        "description": "Why a report was closed (§6.1): `fixed` when a fix was verified or\ntriage closed it as fixed; the others when triage closed it without a\nverdict.",
+        "enum": [
+          "fixed",
+          "duplicate",
+          "wontfix",
+          "cannot_reproduce",
+          "other"
+        ],
+        "type": "string"
+      },
+      "Scroll": {
+        "description": "The page's scroll offsets in CSS pixels.",
+        "properties": {
+          "x": {
+            "format": "double",
+            "type": "number"
+          },
+          "y": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ],
+        "type": "object"
+      },
+      "ServerStamp": {
+        "description": "What the server that received a report says about itself (§5.1), as\nits `/healthz` reports it, and when it received the report.",
+        "properties": {
+          "build": {
+            "type": "string"
+          },
+          "commit": {
+            "type": "string"
+          },
+          "received_at": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "received_at"
+        ],
+        "type": "object"
+      },
+      "ServiceGrantCreated": {
+        "description": "A new service grant: its token (`cxq_…`) and its Ed25519 key, shown in\nthis answer alone.",
+        "properties": {
+          "grant": {
+            "$ref": "#/components/schemas/ServiceGrantInfo"
+          },
+          "private_key": {
+            "description": "The key's PKCS#8 v2 document, unpadded base64url.",
+            "type": "string"
+          },
+          "token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "grant",
+          "token",
+          "private_key"
+        ],
+        "type": "object"
+      },
+      "ServiceGrantInfo": {
+        "description": "A service grant as its queue's admins see it.",
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "ServiceGrantRequest": {
+        "additionalProperties": false,
+        "description": "`POST /api/queues/<qid>/service-grants` body.",
+        "properties": {
+          "name": {
+            "description": "What the grant is called: 1 to 120 characters.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "VerifyRequest": {
+        "additionalProperties": false,
+        "description": "A reporter's verdict that a fix works: a note, and its browser's\ncontext at the verdict (checked and scrubbed as a filing's). An empty\nbody is `{}`.",
+        "properties": {
+          "context": {
+            "$ref": "#/components/schemas/ReportContext",
+            "description": "Read as JSON first, so a bad one is 400 `invalid_context`."
+          },
+          "note": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "Viewport": {
+        "description": "The viewport in CSS pixels, and its device pixel ratio.",
+        "properties": {
+          "dpr": {
+            "format": "double",
+            "type": "number"
+          },
+          "h": {
+            "format": "double",
+            "type": "number"
+          },
+          "w": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "w",
+          "h",
+          "dpr"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "The public API of a Clax instance (spec 2026-10-27-clax-sdk-design §4.1), generated from the routes by clax_core::contract. Do not edit: regenerate with `just contract`.",
+    "title": "Clax",
+    "version": "1.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/.well-known/clax": {
+      "get": {
+        "operationId": "discover",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Discovery"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "summary": "What this Clax is, for any caller.",
+        "x-clax-channel": [
+          "anonymous"
+        ],
+        "x-clax-retry": true,
+        "x-clax-rights": null,
+        "x-clax-stream": false
+      }
+    },
+    "/api/queues": {
+      "get": {
+        "operationId": "list_queues",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueueList"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized",
+            "x-clax-codes": [
+              "unauthorized"
+            ]
+          }
+        },
+        "summary": "The live queues the caller made or is a member of, with its role on each.",
+        "x-clax-channel": [
+          "session",
+          "token",
+          "grant"
+        ],
+        "x-clax-retry": true,
+        "x-clax-rights": null,
+        "x-clax-stream": false
+      }
+    },
+    "/api/queues/{qid}/reporter-tokens": {
+      "post": {
+        "operationId": "mint_reporter_token",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "qid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReporterTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReporterToken"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "x-clax-codes": [
+              "invalid_args",
+              "invalid_key",
+              "invalid_origin",
+              "invalid_profile",
+              "invalid_reporter_id"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized",
+            "x-clax-codes": [
+              "invalid_signature",
+              "invalid_token",
+              "replayed_request",
+              "stale_request"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-clax-codes": [
+              "forbidden_origin",
+              "wrong_origin"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large",
+            "x-clax-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-clax-codes": [
+              "limit_reached"
+            ]
+          }
+        },
+        "summary": "A service grant mints a reporter token for one reporter, origin and key.",
+        "x-clax-channel": [
+          "service"
+        ],
+        "x-clax-retry": true,
+        "x-clax-rights": null,
+        "x-clax-stream": false
+      }
+    },
+    "/api/queues/{qid}/reporter/badge": {
+      "get": {
+        "operationId": "reporter_badge",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "qid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Badge"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized",
+            "x-clax-codes": [
+              "invalid_signature",
+              "invalid_token",
+              "replayed_request",
+              "stale_request",
+              "token_expired"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-clax-codes": [
+              "wrong_origin"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large",
+            "x-clax-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-clax-codes": [
+              "limit_reached"
+            ]
+          }
+        },
+        "summary": "What waits for the token's reporter.",
+        "x-clax-channel": [
+          "reporter"
+        ],
+        "x-clax-retry": true,
+        "x-clax-rights": null,
+        "x-clax-stream": false
+      }
+    },
+    "/api/queues/{qid}/reporter/reports": {
+      "get": {
+        "operationId": "my_reports",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "qid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportPage"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "x-clax-codes": [
+              "invalid_query"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized",
+            "x-clax-codes": [
+              "invalid_signature",
+              "invalid_token",
+              "replayed_request",
+              "stale_request",
+              "token_expired"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-clax-codes": [
+              "wrong_origin"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large",
+            "x-clax-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-clax-codes": [
+              "limit_reached"
+            ]
+          }
+        },
+        "summary": "A page of the reports the token's reporter sees, in order of arrival.",
+        "x-clax-channel": [
+          "reporter"
+        ],
+        "x-clax-retry": true,
+        "x-clax-rights": null,
+        "x-clax-stream": false
+      },
+      "post": {
+        "operationId": "file_report",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "qid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "encoding": {
+                "anchor": {
+                  "contentType": "application/json"
+                },
+                "body": {
+                  "contentType": "text/plain"
+                },
+                "clip": {
+                  "contentType": "image/png"
+                },
+                "context": {
+                  "contentType": "application/json"
+                },
+                "diagnostics": {
+                  "contentType": "application/jsonl"
+                },
+                "external_id": {
+                  "contentType": "text/plain"
+                },
+                "metadata": {
+                  "contentType": "application/json"
+                },
+                "revision": {
+                  "contentType": "text/plain"
+                },
+                "title": {
+                  "contentType": "text/plain"
+                },
+                "url": {
+                  "contentType": "text/plain"
+                }
+              },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "anchor": {
+                    "contentMediaType": "application/json",
+                    "contentSchema": {
+                      "$ref": "#/components/schemas/AnchorInput"
+                    },
+                    "description": "What on the page the report points at.",
+                    "type": "string"
+                  },
+                  "body": {
+                    "description": "The report's first comment.",
+                    "type": "string"
+                  },
+                  "clip": {
+                    "contentMediaType": "image/png",
+                    "description": "The capture's PNG.",
+                    "type": "string"
+                  },
+                  "context": {
+                    "contentMediaType": "application/json",
+                    "contentSchema": {
+                      "$ref": "#/components/schemas/ReportContext"
+                    },
+                    "description": "What the reporter's browser said at capture: at most 16 KiB as compact JSON.",
+                    "type": "string"
+                  },
+                  "diagnostics": {
+                    "contentMediaType": "application/jsonl",
+                    "contentSchema": {
+                      "$ref": "#/components/schemas/DiagLine"
+                    },
+                    "description": "The page's recent errors: a DiagLine of JSON on each line.",
+                    "type": "string"
+                  },
+                  "external_id": {
+                    "description": "The external artifact's ID (1 to 512 bytes).",
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "contentMediaType": "application/json",
+                    "description": "Opaque JSON the host app keeps with the report.",
+                    "type": "string"
+                  },
+                  "revision": {
+                    "description": "The external artifact's revision, as the host app names it.",
+                    "type": "string"
+                  },
+                  "title": {
+                    "description": "The page's title.",
+                    "type": "string"
+                  },
+                  "url": {
+                    "description": "The page the report is on.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "url",
+                  "title",
+                  "anchor",
+                  "body"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportAnswer"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "x-clax-codes": [
+              "external_artifact",
+              "invalid_anchor",
+              "invalid_args",
+              "invalid_clip",
+              "invalid_context",
+              "invalid_diagnostics",
+              "invalid_external_id",
+              "invalid_metadata",
+              "invalid_multipart",
+              "metadata_too_large"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized",
+            "x-clax-codes": [
+              "invalid_signature",
+              "invalid_token",
+              "replayed_request",
+              "stale_request",
+              "token_expired"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-clax-codes": [
+              "wrong_origin"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large",
+            "x-clax-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-clax-codes": [
+              "limit_reached"
+            ]
+          }
+        },
+        "summary": "The token's reporter files a report on an external artifact.",
+        "x-clax-channel": [
+          "reporter"
+        ],
+        "x-clax-retry": false,
+        "x-clax-rights": null,
+        "x-clax-stream": false
+      }
+    },
+    "/api/queues/{qid}/reporter/reports/{tid}/clip": {
+      "get": {
+        "operationId": "reporter_clip",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "qid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "tid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {
+                "schema": {
+                  "contentMediaType": "image/png",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized",
+            "x-clax-codes": [
+              "invalid_signature",
+              "invalid_token",
+              "replayed_request",
+              "stale_request",
+              "token_expired"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-clax-codes": [
+              "wrong_origin"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-clax-codes": [
+              "not_found"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large",
+            "x-clax-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-clax-codes": [
+              "limit_reached"
+            ]
+          }
+        },
+        "summary": "The clip of a report the token's reporter sees.",
+        "x-clax-channel": [
+          "reporter"
+        ],
+        "x-clax-retry": true,
+        "x-clax-rights": null,
+        "x-clax-stream": false
+      }
+    },
+    "/api/queues/{qid}/reporter/reports/{tid}/comments": {
+      "post": {
+        "operationId": "reporter_comment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "qid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "tid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportAnswer"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "x-clax-codes": [
+              "invalid_args",
+              "invalid_comment"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized",
+            "x-clax-codes": [
+              "invalid_signature",
+              "invalid_token",
+              "replayed_request",
+              "stale_request",
+              "token_expired"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-clax-codes": [
+              "wrong_origin"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-clax-codes": [
+              "not_found"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large",
+            "x-clax-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-clax-codes": [
+              "limit_reached"
+            ]
+          }
+        },
+        "summary": "The token's reporter comments on a report it sees.",
+        "x-clax-channel": [
+          "reporter"
+        ],
+        "x-clax-retry": false,
+        "x-clax-rights": null,
+        "x-clax-stream": false
+      }
+    },
+    "/api/queues/{qid}/reporter/reports/{tid}/comments/{cid}/clip": {
+      "get": {
+        "operationId": "reporter_comment_clip",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "qid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "tid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "cid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "image/png": {
+                "schema": {
+                  "contentMediaType": "image/png",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized",
+            "x-clax-codes": [
+              "invalid_signature",
+              "invalid_token",
+              "replayed_request",
+              "stale_request",
+              "token_expired"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-clax-codes": [
+              "wrong_origin"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-clax-codes": [
+              "not_found"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large",
+            "x-clax-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-clax-codes": [
+              "limit_reached"
+            ]
+          }
+        },
+        "summary": "The clip a reopen's comment carries, on a report the token's reporter sees.",
+        "x-clax-channel": [
+          "reporter"
+        ],
+        "x-clax-retry": true,
+        "x-clax-rights": null,
+        "x-clax-stream": false
+      }
+    },
+    "/api/queues/{qid}/reporter/reports/{tid}/diagnostics": {
+      "get": {
+        "operationId": "reporter_diagnostics",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "qid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "tid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "capture",
+            "required": false,
+            "schema": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiagnosticsAnswer"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "x-clax-codes": [
+              "invalid_query"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized",
+            "x-clax-codes": [
+              "invalid_signature",
+              "invalid_token",
+              "replayed_request",
+              "stale_request",
+              "token_expired"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-clax-codes": [
+              "wrong_origin"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-clax-codes": [
+              "not_found"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large",
+            "x-clax-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-clax-codes": [
+              "limit_reached"
+            ]
+          }
+        },
+        "summary": "The diagnostics of one capture of a report the token's reporter filed.",
+        "x-clax-channel": [
+          "reporter"
+        ],
+        "x-clax-retry": true,
+        "x-clax-rights": null,
+        "x-clax-stream": false
+      }
+    },
+    "/api/queues/{qid}/reporter/reports/{tid}/reopen": {
+      "post": {
+        "operationId": "reporter_reopen",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "qid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "tid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "encoding": {
+                "body": {
+                  "contentType": "text/plain"
+                },
+                "clip": {
+                  "contentType": "image/png"
+                },
+                "context": {
+                  "contentType": "application/json"
+                },
+                "diagnostics": {
+                  "contentType": "application/jsonl"
+                }
+              },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "body": {
+                    "description": "The reopen's comment.",
+                    "type": "string"
+                  },
+                  "clip": {
+                    "contentMediaType": "image/png",
+                    "description": "The capture's PNG.",
+                    "type": "string"
+                  },
+                  "context": {
+                    "contentMediaType": "application/json",
+                    "contentSchema": {
+                      "$ref": "#/components/schemas/ReportContext"
+                    },
+                    "description": "What the reporter's browser said at capture: at most 16 KiB as compact JSON.",
+                    "type": "string"
+                  },
+                  "diagnostics": {
+                    "contentMediaType": "application/jsonl",
+                    "contentSchema": {
+                      "$ref": "#/components/schemas/DiagLine"
+                    },
+                    "description": "The page's recent errors: a DiagLine of JSON on each line.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "body"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportAnswer"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "x-clax-codes": [
+              "invalid_args",
+              "invalid_clip",
+              "invalid_comment",
+              "invalid_context",
+              "invalid_diagnostics",
+              "invalid_multipart"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized",
+            "x-clax-codes": [
+              "invalid_signature",
+              "invalid_token",
+              "replayed_request",
+              "stale_request",
+              "token_expired"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-clax-codes": [
+              "wrong_origin"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-clax-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Conflict",
+            "x-clax-codes": [
+              "not_fix_proposed"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large",
+            "x-clax-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-clax-codes": [
+              "limit_reached"
+            ]
+          }
+        },
+        "summary": "The token's reporter says a report it filed is still broken: a new capture.",
+        "x-clax-channel": [
+          "reporter"
+        ],
+        "x-clax-retry": false,
+        "x-clax-rights": null,
+        "x-clax-stream": false
+      }
+    },
+    "/api/queues/{qid}/reporter/reports/{tid}/seen": {
+      "post": {
+        "operationId": "reporter_seen",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "qid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "tid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized",
+            "x-clax-codes": [
+              "invalid_signature",
+              "invalid_token",
+              "replayed_request",
+              "stale_request",
+              "token_expired"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-clax-codes": [
+              "wrong_origin"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-clax-codes": [
+              "not_found"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large",
+            "x-clax-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-clax-codes": [
+              "limit_reached"
+            ]
+          }
+        },
+        "summary": "The token's reporter has read a report it sees.",
+        "x-clax-channel": [
+          "reporter"
+        ],
+        "x-clax-retry": true,
+        "x-clax-rights": null,
+        "x-clax-stream": false
+      }
+    },
+    "/api/queues/{qid}/reporter/reports/{tid}/verify": {
+      "post": {
+        "operationId": "reporter_verify",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "qid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "tid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportAnswer"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "x-clax-codes": [
+              "invalid_args",
+              "invalid_comment",
+              "invalid_context"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized",
+            "x-clax-codes": [
+              "invalid_signature",
+              "invalid_token",
+              "replayed_request",
+              "stale_request",
+              "token_expired"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-clax-codes": [
+              "wrong_origin"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-clax-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Conflict",
+            "x-clax-codes": [
+              "not_fix_proposed"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large",
+            "x-clax-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-clax-codes": [
+              "limit_reached"
+            ]
+          }
+        },
+        "summary": "The token's reporter says the fix waiting on a report it filed works.",
+        "x-clax-channel": [
+          "reporter"
+        ],
+        "x-clax-retry": false,
+        "x-clax-rights": null,
+        "x-clax-stream": false
+      }
+    },
+    "/api/queues/{qid}/reports/{tid}/claim": {
+      "post": {
+        "operationId": "claim_report",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "qid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "tid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Lease"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "x-clax-codes": [
+              "no_session"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized",
+            "x-clax-codes": [
+              "unauthorized"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-clax-codes": [
+              "not_a_member",
+              "not_found"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Conflict",
+            "x-clax-codes": [
+              "not_claimable",
+              "thread_taken"
+            ]
+          }
+        },
+        "summary": "An agent's session claims a report under a lease and owns its thread.",
+        "x-clax-channel": [
+          "token",
+          "grant"
+        ],
+        "x-clax-retry": true,
+        "x-clax-rights": {
+          "action": "comments.reply"
+        },
+        "x-clax-stream": false
+      }
+    },
+    "/api/queues/{qid}/reports/{tid}/renew": {
+      "post": {
+        "operationId": "renew_lease",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "qid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "tid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Lease"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "x-clax-codes": [
+              "no_session"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized",
+            "x-clax-codes": [
+              "unauthorized"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-clax-codes": [
+              "not_a_member",
+              "not_found"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Conflict",
+            "x-clax-codes": [
+              "claim_required",
+              "lease_lost",
+              "thread_taken"
+            ]
+          }
+        },
+        "summary": "The lease's session extends its claim.",
+        "x-clax-channel": [
+          "token",
+          "grant"
+        ],
+        "x-clax-retry": true,
+        "x-clax-rights": {
+          "action": "comments.reply"
+        },
+        "x-clax-stream": false
+      }
+    },
+    "/api/queues/{qid}/service-grants": {
+      "post": {
+        "operationId": "create_service_grant",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "qid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServiceGrantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceGrantCreated"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "x-clax-codes": [
+              "invalid_args",
+              "invalid_name"
+            ]
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Unauthorized",
+            "x-clax-codes": [
+              "unauthorized"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-clax-codes": [
+              "not_a_person",
+              "not_for_agents",
+              "not_queue_admin"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-clax-codes": [
+              "not_a_member"
+            ]
+          }
+        },
+        "summary": "An admin makes a service grant; its token and key are in this answer alone.",
+        "x-clax-channel": [
+          "session",
+          "token"
+        ],
+        "x-clax-retry": false,
+        "x-clax-rights": {
+          "queue_role": "admin"
+        },
+        "x-clax-stream": false
+      }
+    }
+  }
+}

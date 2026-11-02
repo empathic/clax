@@ -9,12 +9,14 @@
 use serde::{Deserialize, Serialize};
 
 /// The answer of `GET /.well-known/clax`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Discovery {
-    /// `hosted` or `local`.
+    /// `hosted` or `local` (`worker` for the hosted Worker).
     #[serde(default)]
+    #[schemars(extend("enum" = ["local", "hosted", "worker"]))]
     pub kind: String,
-    /// The version of the contract it serves.
+    /// The major version of the contract it serves
+    /// (`clax_core::contract::MAJOR`).
     #[serde(default)]
     pub contract_version: String,
     /// Its name.
@@ -41,7 +43,7 @@ pub struct Discovery {
 }
 
 /// The paths of a device sign-in.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct DevicePaths {
     #[serde(default)]
     pub code: String,

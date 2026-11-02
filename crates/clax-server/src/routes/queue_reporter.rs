@@ -37,7 +37,12 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use axum::routing::{get, post};
 use clax_core::audit::{Actor, AuditCtx, Via};
+use clax_core::contract::{Body, Channel, Method, Op, Part, Rights, schema};
 use clax_core::gitctx::GitField;
+use clax_core::queue::{
+    Badge, CommentRequest, DiagnosticsAnswer, PageQuery, ReportAnswer, ReportPage, ReporterToken,
+    ReporterTokenRequest, VerifyRequest,
+};
 use clax_core::report::{
     DiagLine, ReportContext, ReporterProfile, ServerStamp, parse_context, parse_diagnostics,
 };
@@ -47,9 +52,29 @@ use clax_http::reporter::{self, REPORT_BODY_LIMIT, ReporterCaller, ServiceCaller
 use clax_http::state::AppState;
 use clax_store::queues::{ExternalScope, NewReport, Verdict, Visibility};
 use clax_store::threads::clip_problem;
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::BTreeMap;
+
+/// The routes' operations in the API contract (`clax_core::contract`), in
+/// the router's order: every route here is public.
+pub const CONTRACT: &[&Op] = &[
+    &MINT_TOKEN,
+    &MY_REPORTS,
+    &FILE_REPORT,
+    &COMMENT,
+    &CLIP,
+    &COMMENT_CLIP,
+    &VERIFY,
+    &REOPEN,
+    &DIAGNOSTICS,
+    &SEEN,
+    &BADGE,
+];
+
+const REPORTER: &[Channel] = &[Channel::Reporter];
+
+/// A report the token's reporter does not see, or none: 404 `not_found`.
+const UNSEEN: (u16, &str) = (404, "not_found");
 
 /// The service and reporter routes, with `state`.
 pub fn router(state: AppState) -> Router {
@@ -124,16 +149,6 @@ fn json_body<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, ApiError
     serde_json::from_slice(bytes).map_err(|e| ApiError::bad_request("invalid_args", e.to_string()))
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MintBody {
-    reporter_id: String,
-    origin: String,
-    public_key: String,
-    #[serde(default)]
-    profile: Option<Value>,
-}
-
 /// The profile `v` names: an object of `name`, `email`, `github` and
 /// `avatar_url`, each a string or null; `null` is none.
 ///
@@ -181,8 +196,8 @@ fn profile_of(v: Option<Value>) -> Result<Option<ReporterProfile>, CoreError> {
 pub async fn mint_token(
     State(s): State<AppState>,
     c: ServiceCaller,
-) -> Result<Json<Value>, ApiError> {
-    let b: MintBody = json_body(&c.body)?;
+) -> Result<Json<ReporterToken>, ApiError> {
+    let b: ReporterTokenRequest = json_body(&c.body)?;
     let profile = profile_of(b.profile)?;
     let grant = c.grant;
     let (token, expires_at) = s
@@ -196,10 +211,37 @@ pub async fn mint_token(
             )
         })
         .await?;
-    Ok(Json(
-        json!({"token": token.expose(), "expires_at": expires_at}),
-    ))
+    Ok(Json(ReporterToken {
+        token: token.expose().to_string(),
+        expires_at,
+    }))
 }
+
+/// [`mint_token`]'s operation.
+pub const MINT_TOKEN: Op = Op {
+    id: "mint_reporter_token",
+    handler: "mint_token",
+    method: Method::Post,
+    path: "/api/queues/{qid}/reporter-tokens",
+    summary: "A service grant mints a reporter token for one reporter, origin and key.",
+    query: None,
+    request: Body::Json(schema::<ReporterTokenRequest>),
+    status: 200,
+    response: Body::Json(schema::<ReporterToken>),
+    errors: &[
+        (400, "invalid_args"),
+        (400, "invalid_origin"),
+        (400, "invalid_reporter_id"),
+        (400, "invalid_key"),
+        (400, "invalid_profile"),
+        (403, "wrong_origin"),
+    ],
+    // A second token for the same key is as good as the first.
+    retry: true,
+    channel: &[Channel::Service],
+    rights: Rights::Credential,
+    stream: false,
+};
 
 /// A multipart body's parts by name, each at most once.
 struct Parts(BTreeMap<String, Vec<u8>>);
@@ -207,7 +249,8 @@ struct Parts(BTreeMap<String, Vec<u8>>);
 /// Reads the parts of `mp`, each named in `allowed`; a part of another
 /// name, or one given twice, is 400 `invalid_args`, its message naming
 /// what `what` takes.
-async fn read_parts(mut mp: Multipart, allowed: &[&str], what: &str) -> Result<Parts, ApiError> {
+async fn read_parts(mut mp: Multipart, form: &[Part], what: &str) -> Result<Parts, ApiError> {
+    let allowed: Vec<&str> = form.iter().map(|p| p.name).collect();
     let mut parts = BTreeMap::new();
     while let Some(field) = mp
         .next_field()
@@ -291,22 +334,79 @@ impl Parts {
     }
 }
 
+const fn text(name: &'static str, required: bool, description: &'static str) -> Part {
+    Part {
+        name,
+        required,
+        media_type: "text/plain",
+        json: None,
+        description,
+    }
+}
+
+const CLIP_PART: Part = Part {
+    name: "clip",
+    required: false,
+    media_type: "image/png",
+    json: None,
+    description: "The capture's PNG.",
+};
+const CONTEXT_PART: Part = Part {
+    name: "context",
+    required: false,
+    media_type: "application/json",
+    json: Some(schema::<ReportContext>),
+    description: "What the reporter's browser said at capture: at most 16 KiB as compact JSON.",
+};
+const DIAGNOSTICS_PART: Part = Part {
+    name: "diagnostics",
+    required: false,
+    media_type: "application/jsonl",
+    json: Some(schema::<DiagLine>),
+    description: "The page's recent errors: a DiagLine of JSON on each line.",
+};
+
 /// The parts a filing takes.
-const REPORT_PARTS: &[&str] = &[
-    "external_id",
-    "url",
-    "title",
-    "anchor",
-    "body",
-    "metadata",
-    "revision",
-    "clip",
-    "context",
-    "diagnostics",
+const REPORT_PARTS: &[Part] = &[
+    text(
+        "external_id",
+        false,
+        "The external artifact's ID (1 to 512 bytes).",
+    ),
+    text("url", true, "The page the report is on."),
+    text("title", true, "The page's title."),
+    Part {
+        name: "anchor",
+        required: true,
+        media_type: "application/json",
+        json: Some(schema::<Anchor>),
+        description: "What on the page the report points at.",
+    },
+    text("body", true, "The report's first comment."),
+    Part {
+        name: "metadata",
+        required: false,
+        media_type: "application/json",
+        json: None,
+        description: "Opaque JSON the host app keeps with the report.",
+    },
+    text(
+        "revision",
+        false,
+        "The external artifact's revision, as the host app names it.",
+    ),
+    CLIP_PART,
+    CONTEXT_PART,
+    DIAGNOSTICS_PART,
 ];
 
 /// The parts a reopen takes.
-const REOPEN_PARTS: &[&str] = &["body", "clip", "diagnostics", "context"];
+const REOPEN_PARTS: &[Part] = &[
+    text("body", true, "The reopen's comment."),
+    CLIP_PART,
+    DIAGNOSTICS_PART,
+    CONTEXT_PART,
+];
 
 /// What this server says about itself on a report it receives: its
 /// version, and the commit and build `/healthz` reports
@@ -406,7 +506,7 @@ pub async fn file_report(
     State(s): State<AppState>,
     Path(qid): Path<String>,
     r: ReporterCaller<REPORT_BODY_LIMIT>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
+) -> Result<(StatusCode, Json<ReportAnswer>), ApiError> {
     let mp = Multipart::from_request(r.request(), &())
         .await
         .map_err(|e| multipart_error(e.status(), e.body_text()))?;
@@ -430,15 +530,40 @@ pub async fn file_report(
     wake_watchers(&s, woken).await;
     Ok((
         StatusCode::CREATED,
-        Json(json!({ "report": report.for_reporter() })),
+        Json(ReportAnswer {
+            report: report.for_reporter(),
+        }),
     ))
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PageQuery {
-    cursor: Option<String>,
-}
+/// [`file_report`]'s operation.
+pub const FILE_REPORT: Op = Op {
+    id: "file_report",
+    handler: "file_report",
+    method: Method::Post,
+    path: "/api/queues/{qid}/reporter/reports",
+    summary: "The token's reporter files a report on an external artifact.",
+    query: None,
+    request: Body::Multipart(REPORT_PARTS),
+    status: 201,
+    response: Body::Json(schema::<ReportAnswer>),
+    errors: &[
+        (400, "invalid_args"),
+        (400, "invalid_multipart"),
+        (400, "invalid_anchor"),
+        (400, "invalid_metadata"),
+        (400, "metadata_too_large"),
+        (400, "invalid_clip"),
+        (400, "invalid_context"),
+        (400, "invalid_diagnostics"),
+        (400, "invalid_external_id"),
+        (400, "external_artifact"),
+    ],
+    retry: false,
+    channel: REPORTER,
+    rights: Rights::Credential,
+    stream: false,
+};
 
 /// `GET /api/queues/<qid>/reporter/reports?cursor=`: a page of the reports
 /// the token's reporter sees, in order of arrival. Answers `{reports,
@@ -451,7 +576,7 @@ pub async fn my_reports(
     Path(qid): Path<String>,
     q: Result<Query<PageQuery>, axum::extract::rejection::QueryRejection>,
     r: ReporterCaller,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<ReportPage>, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let rid = r.token.reporter_id;
     let (reports, next) = s
@@ -463,14 +588,26 @@ pub async fn my_reports(
         .into_iter()
         .map(clax_core::queue::Report::for_reporter)
         .collect();
-    Ok(Json(json!({ "reports": reports, "next": next })))
+    Ok(Json(ReportPage { reports, next }))
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CommentBody {
-    body: String,
-}
+/// [`my_reports`]'s operation.
+pub const MY_REPORTS: Op = Op {
+    id: "my_reports",
+    handler: "my_reports",
+    method: Method::Get,
+    path: "/api/queues/{qid}/reporter/reports",
+    summary: "A page of the reports the token's reporter sees, in order of arrival.",
+    query: Some(schema::<PageQuery>),
+    request: Body::Empty,
+    status: 200,
+    response: Body::Json(schema::<ReportPage>),
+    errors: &[(400, "invalid_query")],
+    retry: true,
+    channel: REPORTER,
+    rights: Rights::Credential,
+    stream: false,
+};
 
 /// `POST /api/queues/<qid>/reporter/reports/<tid>/comments {body}`: the
 /// token's reporter comments on a report it sees; the report's state is
@@ -484,8 +621,8 @@ pub async fn comment(
     State(s): State<AppState>,
     Path((qid, tid)): Path<(String, String)>,
     r: ReporterCaller,
-) -> Result<Json<Value>, ApiError> {
-    let b: CommentBody = json_body(&r.body)?;
+) -> Result<Json<ReportAnswer>, ApiError> {
+    let b: CommentRequest = json_body(&r.body)?;
     let rid = r.token.reporter_id;
     let t = tid.clone();
     let (report, woken) = s
@@ -495,8 +632,28 @@ pub async fn comment(
         .await?;
     announce(&s, tid).await;
     wake_watchers(&s, woken).await;
-    Ok(Json(json!({ "report": report.for_reporter() })))
+    Ok(Json(ReportAnswer {
+        report: report.for_reporter(),
+    }))
 }
+
+/// [`comment`]'s operation.
+pub const COMMENT: Op = Op {
+    id: "reporter_comment",
+    handler: "comment",
+    method: Method::Post,
+    path: "/api/queues/{qid}/reporter/reports/{tid}/comments",
+    summary: "The token's reporter comments on a report it sees.",
+    query: None,
+    request: Body::Json(schema::<CommentRequest>),
+    status: 200,
+    response: Body::Json(schema::<ReportAnswer>),
+    errors: &[UNSEEN, (400, "invalid_args"), (400, "invalid_comment")],
+    retry: false,
+    channel: REPORTER,
+    rights: Rights::Credential,
+    stream: false,
+};
 
 /// A reporter's page keeps no clip: its token is short-lived and its
 /// browser may be shared.
@@ -524,6 +681,24 @@ pub async fn clip(
     Ok(png(bytes, REPORTER_CLIP_CACHE))
 }
 
+/// [`clip`]'s operation.
+pub const CLIP: Op = Op {
+    id: "reporter_clip",
+    handler: "clip",
+    method: Method::Get,
+    path: "/api/queues/{qid}/reporter/reports/{tid}/clip",
+    summary: "The clip of a report the token's reporter sees.",
+    query: None,
+    request: Body::Empty,
+    status: 200,
+    response: Body::Png,
+    errors: &[UNSEEN],
+    retry: true,
+    channel: REPORTER,
+    rights: Rights::Credential,
+    stream: false,
+};
+
 /// `GET /api/queues/<qid>/reporter/reports/<tid>/comments/<cid>/clip`: the
 /// clip a reopen's comment carries, on a report the token's reporter sees,
 /// as `image/png`.
@@ -547,14 +722,23 @@ pub async fn comment_clip(
     Ok(png(bytes, REPORTER_CLIP_CACHE))
 }
 
-#[derive(Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-struct VerifyBody {
-    #[serde(default)]
-    note: Option<String>,
-    #[serde(default)]
-    context: Option<Value>,
-}
+/// [`comment_clip`]'s operation.
+pub const COMMENT_CLIP: Op = Op {
+    id: "reporter_comment_clip",
+    handler: "comment_clip",
+    method: Method::Get,
+    path: "/api/queues/{qid}/reporter/reports/{tid}/comments/{cid}/clip",
+    summary: "The clip a reopen's comment carries, on a report the token's reporter sees.",
+    query: None,
+    request: Body::Empty,
+    status: 200,
+    response: Body::Png,
+    errors: &[UNSEEN],
+    retry: true,
+    channel: REPORTER,
+    rights: Rights::Credential,
+    stream: false,
+};
 
 /// `POST /api/queues/<qid>/reporter/reports/<tid>/verify {note?,
 /// context?}` (an empty body is `{}`): the token's reporter says the fix waiting on a report it
@@ -571,10 +755,10 @@ pub async fn verify(
     State(s): State<AppState>,
     Path((qid, tid)): Path<(String, String)>,
     r: ReporterCaller,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<ReportAnswer>, ApiError> {
     // An empty body names nothing, as `{}` does.
-    let b: VerifyBody = if r.body.iter().all(u8::is_ascii_whitespace) {
-        VerifyBody::default()
+    let b: VerifyRequest = if r.body.iter().all(u8::is_ascii_whitespace) {
+        VerifyRequest::default()
     } else {
         json_body(&r.body)?
     };
@@ -600,8 +784,35 @@ pub async fn verify(
             Ok(report)
         })
         .await?;
-    Ok(Json(json!({ "report": report.for_reporter() })))
+    Ok(Json(ReportAnswer {
+        report: report.for_reporter(),
+    }))
 }
+
+/// [`verify`]'s operation.
+pub const VERIFY: Op = Op {
+    id: "reporter_verify",
+    handler: "verify",
+    method: Method::Post,
+    path: "/api/queues/{qid}/reporter/reports/{tid}/verify",
+    summary: "The token's reporter says the fix waiting on a report it filed works.",
+    query: None,
+    request: Body::Json(schema::<VerifyRequest>),
+    status: 200,
+    response: Body::Json(schema::<ReportAnswer>),
+    errors: &[
+        UNSEEN,
+        (409, "not_fix_proposed"),
+        (400, "invalid_args"),
+        (400, "invalid_comment"),
+        (400, "invalid_context"),
+    ],
+    // Sent again after it took, it is 409 `not_fix_proposed`.
+    retry: false,
+    channel: REPORTER,
+    rights: Rights::Credential,
+    stream: false,
+};
 
 /// `POST /api/queues/<qid>/reporter/reports/<tid>/reopen` (multipart
 /// `body`, `clip?` (PNG), `diagnostics?` (JSON lines), `context?` (JSON)):
@@ -624,7 +835,7 @@ pub async fn reopen(
     State(s): State<AppState>,
     Path((qid, tid)): Path<(String, String)>,
     r: ReporterCaller<REPORT_BODY_LIMIT>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<ReportAnswer>, ApiError> {
     let mp = Multipart::from_request(r.request(), &())
         .await
         .map_err(|e| multipart_error(e.status(), e.body_text()))?;
@@ -659,8 +870,37 @@ pub async fn reopen(
     if let Err(e) = done {
         tracing::warn!(error = ?e, "announcing a reopened report failed");
     }
-    Ok(Json(json!({ "report": report.for_reporter() })))
+    Ok(Json(ReportAnswer {
+        report: report.for_reporter(),
+    }))
 }
+
+/// [`reopen`]'s operation.
+pub const REOPEN: Op = Op {
+    id: "reporter_reopen",
+    handler: "reopen",
+    method: Method::Post,
+    path: "/api/queues/{qid}/reporter/reports/{tid}/reopen",
+    summary: "The token's reporter says a report it filed is still broken: a new capture.",
+    query: None,
+    request: Body::Multipart(REOPEN_PARTS),
+    status: 200,
+    response: Body::Json(schema::<ReportAnswer>),
+    errors: &[
+        UNSEEN,
+        (409, "not_fix_proposed"),
+        (400, "invalid_args"),
+        (400, "invalid_multipart"),
+        (400, "invalid_comment"),
+        (400, "invalid_clip"),
+        (400, "invalid_diagnostics"),
+        (400, "invalid_context"),
+    ],
+    retry: false,
+    channel: REPORTER,
+    rights: Rights::Credential,
+    stream: false,
+};
 
 /// `GET /api/queues/<qid>/reporter/reports/<tid>/diagnostics?capture=`:
 /// the diagnostics of a report the token's reporter filed: capture
@@ -677,7 +917,7 @@ pub async fn diagnostics(
     Path((qid, tid)): Path<(String, String)>,
     q: Result<Query<CaptureQuery>, axum::extract::rejection::QueryRejection>,
     r: ReporterCaller,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<DiagnosticsAnswer>, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let rid = r.token.reporter_id;
     let lines = s
@@ -685,8 +925,28 @@ pub async fn diagnostics(
             st.report_diagnostics(&qid, &tid, Visibility::Reporter(&rid), q.capture)
         })
         .await?;
-    Ok(Json(json!({ "lines": lines.unwrap_or_default() })))
+    Ok(Json(DiagnosticsAnswer {
+        lines: lines.unwrap_or_default(),
+    }))
 }
+
+/// [`diagnostics`]'s operation.
+pub const DIAGNOSTICS: Op = Op {
+    id: "reporter_diagnostics",
+    handler: "diagnostics",
+    method: Method::Get,
+    path: "/api/queues/{qid}/reporter/reports/{tid}/diagnostics",
+    summary: "The diagnostics of one capture of a report the token's reporter filed.",
+    query: Some(schema::<CaptureQuery>),
+    request: Body::Empty,
+    status: 200,
+    response: Body::Json(schema::<DiagnosticsAnswer>),
+    errors: &[UNSEEN, (400, "invalid_query")],
+    retry: true,
+    channel: REPORTER,
+    rights: Rights::Credential,
+    stream: false,
+};
 
 /// `POST /api/queues/<qid>/reporter/reports/<tid>/seen`: the token's
 /// reporter has read a report it sees; a comment before now no longer
@@ -706,6 +966,24 @@ pub async fn seen(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// [`seen`]'s operation.
+pub const SEEN: Op = Op {
+    id: "reporter_seen",
+    handler: "seen",
+    method: Method::Post,
+    path: "/api/queues/{qid}/reporter/reports/{tid}/seen",
+    summary: "The token's reporter has read a report it sees.",
+    query: None,
+    request: Body::Empty,
+    status: 204,
+    response: Body::Empty,
+    errors: &[UNSEEN],
+    retry: true,
+    channel: REPORTER,
+    rights: Rights::Credential,
+    stream: false,
+};
+
 /// `GET /api/queues/<qid>/reporter/badge`: what waits for the token's
 /// reporter: the reports it filed whose fix waits for its verdict, or that
 /// hold a comment not its own since it last read them (`…/seen`), oldest
@@ -717,13 +995,31 @@ pub async fn badge(
     State(s): State<AppState>,
     Path(qid): Path<String>,
     r: ReporterCaller,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<Badge>, ApiError> {
     let rid = r.token.reporter_id;
     let badge = s
         .store_call(move |st| st.reporter_badge(&qid, &rid))
         .await?;
-    Ok(Json(json!(badge)))
+    Ok(Json(badge))
 }
+
+/// [`badge`]'s operation.
+pub const BADGE: Op = Op {
+    id: "reporter_badge",
+    handler: "badge",
+    method: Method::Get,
+    path: "/api/queues/{qid}/reporter/badge",
+    summary: "What waits for the token's reporter.",
+    query: None,
+    request: Body::Empty,
+    status: 200,
+    response: Body::Json(schema::<Badge>),
+    errors: &[],
+    retry: true,
+    channel: REPORTER,
+    rights: Rights::Credential,
+    stream: false,
+};
 
 /// `OPTIONS` on each reporter route: the CORS preflight, `204`, whose
 /// headers [`reporter::cors`] adds for the queue's origins.
@@ -733,6 +1029,8 @@ pub async fn preflight() -> StatusCode {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     /// These routes run before every credential layer of the daemon, so
     /// each handler but the preflight takes the credential extractor that
     /// authenticates it, and every reporter route has its CORS layer.
@@ -757,5 +1055,74 @@ mod tests {
         assert_eq!(routes.matches(".route(").count(), 10);
         assert_eq!(routes.matches(".route_layer(").count(), 1);
         assert!(routes.find("reporter::cors").unwrap() < routes.find("reporter-tokens").unwrap());
+    }
+
+    /// Every route of this router is public: each method of each route is
+    /// one of [`CONTRACT`]'s operations, by path, method and handler, and
+    /// each operation's channel is the credential its handler takes.
+    #[test]
+    fn every_route_is_in_the_contract() {
+        let src = include_str!("queue_reporter.rs");
+        let src = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        let routes = &src[src.find("pub fn router").unwrap()..];
+        let routes = &routes[..routes.find("\n}\n").unwrap()];
+        let routed = crate::contract::routed(routes);
+        let mut declared: Vec<_> = CONTRACT
+            .iter()
+            .map(|op| {
+                (
+                    op.path.to_string(),
+                    op.method.as_str(),
+                    op.handler.to_string(),
+                )
+            })
+            .collect();
+        declared.sort();
+        let mut routed: Vec<_> = routed
+            .into_iter()
+            .filter(|(_, _, h)| h != "preflight")
+            .collect();
+        routed.sort();
+        assert_eq!(routed, declared);
+        for op in CONTRACT {
+            let at = src
+                .find(&format!("\npub async fn {}(", op.handler))
+                .unwrap_or_else(|| panic!("no handler {}", op.handler));
+            let sig = &src[at..at + src[at..].find('{').unwrap()];
+            let want = match op.channel {
+                [Channel::Reporter] => "ReporterCaller",
+                [Channel::Service] => "ServiceCaller",
+                other => panic!("{}: a reporter route's channel is one: {other:?}", op.id),
+            };
+            assert!(sig.contains(want), "{} takes {want}", op.handler);
+        }
+    }
+
+    /// A multipart body's required parts are the ones its reader requires.
+    #[test]
+    fn the_forms_parts_are_the_readers() {
+        let src = include_str!("queue_reporter.rs");
+        let read = |f: &str| {
+            let at = src.find(&format!("fn {f}(")).unwrap();
+            let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+            let mut names: Vec<String> = body
+                .split("p.required(\"")
+                .skip(1)
+                .map(|s| s[..s.find('"').unwrap()].to_string())
+                .collect();
+            names.sort();
+            names
+        };
+        let required = |form: &[Part]| {
+            let mut names: Vec<String> = form
+                .iter()
+                .filter(|p| p.required)
+                .map(|p| p.name.to_string())
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(required(REPORT_PARTS), read("new_report"));
+        assert_eq!(required(REOPEN_PARTS), read("reopen"));
     }
 }

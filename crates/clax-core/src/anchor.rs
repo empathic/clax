@@ -27,7 +27,7 @@ fn index_file() -> String {
     INDEX_FILE.to_string()
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum AnchorKind {
     Element,
@@ -51,7 +51,7 @@ pub const WHOLE_SUMMARY: &str = "the whole artifact";
 /// its child element count), so re-anchoring by selector alone can tell
 /// another element at the same path; each is optional and serialized only
 /// when present.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AnchorArea {
     pub x: f64,
@@ -97,7 +97,7 @@ impl AnchorArea {
 
 /// The anchored region at pick time, in viewport pixels, with the page's
 /// scroll offsets and viewport width.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AnchorRect {
     pub x: f64,
@@ -119,7 +119,7 @@ pub struct AnchorRect {
 /// smallest element containing it, `area` places it within that element, and
 /// `rect` holds it in viewport pixels at draw time; `area` is serialized only
 /// when present.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Anchor {
     pub kind: AnchorKind,

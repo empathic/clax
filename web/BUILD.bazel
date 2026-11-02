@@ -193,6 +193,14 @@ filegroup(
     visibility = ["//crates:__subpackages__"],
 )
 
+# The API contract the routes generate (crates/clax-server/src/contract.rs),
+# which clax-server's tests compare with what they generate.
+filegroup(
+    name = "sdk_contract",
+    srcs = ["sdk/openapi.json"],
+    visibility = ["//crates:__subpackages__"],
+)
+
 # The SDK's request signing, which the Worker's feedback check signs a
 # reporter's calls with (crates/clax-worker/test-feedback.mjs).
 copy_to_bin(

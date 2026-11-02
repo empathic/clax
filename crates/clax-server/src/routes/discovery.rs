@@ -5,13 +5,15 @@
 
 use axum::Json;
 use axum::extract::State;
+use clax_core::contract::{Body, Channel, Method, Op, Rights, schema};
 use clax_core::discovery::{DevicePaths, Discovery};
 use clax_http::agent::DeniedToGrants;
 use clax_http::error::ApiError;
 use clax_http::state::AppState;
 
-/// The version of the contract (`docs/contract.md`) this Clax serves.
-pub const CONTRACT_VERSION: &str = "1";
+/// The version of the contract (`docs/contract.md`, `web/sdk/openapi.json`)
+/// this Clax serves: its major.
+pub const CONTRACT_VERSION: &str = clax_core::contract::MAJOR;
 
 /// `GET /.well-known/clax` → `{kind, contract_version, name, origin, api,
 /// site_domain?, sign_in, device?, capabilities}`, whatever the credential:
@@ -74,3 +76,21 @@ pub async fn get(
         },
     }))
 }
+
+/// [`get`]'s operation.
+pub const GET: Op = Op {
+    id: "discover",
+    handler: "discovery::get",
+    method: Method::Get,
+    path: "/.well-known/clax",
+    summary: "What this Clax is, for any caller.",
+    query: None,
+    request: Body::Empty,
+    status: 200,
+    response: Body::Json(schema::<Discovery>),
+    errors: &[],
+    retry: true,
+    channel: &[Channel::Anonymous],
+    rights: Rights::Credential,
+    stream: false,
+};

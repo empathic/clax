@@ -49,8 +49,9 @@ use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::audit::AuditCtx;
+use clax_core::contract::{Body as OpBody, Channel, Method, Op, Rights, schema};
 use clax_core::model::Session;
-use clax_core::queue::{ReportOrder, StateFilter};
+use clax_core::queue::{Lease, ReportOrder, StateFilter};
 use clax_core::report::{NewFix, ResolveReason};
 use clax_core::working::StopReason;
 use clax_core::{CoreError, Event};
@@ -239,7 +240,7 @@ pub async fn claim(
     _o: SameOrigin,
     ctx: AuditCtx,
     p: Result<Path<(String, String)>, PathRejection>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<Lease>, ApiError> {
     let (qid, tid) = path(p)?;
     member(&s, &a, &qid).await?;
     let caller = a.caller.clone();
@@ -250,8 +251,33 @@ pub async fn claim(
         })
         .await?;
     announce_report(&s, &lease.report.queue_id, &lease.report.id).await;
-    Ok(Json(json!(lease)))
+    Ok(Json(lease))
 }
+
+/// [`claim`]'s operation.
+pub const CLAIM: Op = Op {
+    id: "claim_report",
+    handler: "queue_agent::claim",
+    method: Method::Post,
+    path: "/api/queues/{qid}/reports/{tid}/claim",
+    summary: "An agent's session claims a report under a lease and owns its thread.",
+    query: None,
+    request: OpBody::Empty,
+    status: 200,
+    response: OpBody::Json(schema::<Lease>),
+    errors: &[
+        (400, "no_session"),
+        (404, "not_a_member"),
+        (404, "not_found"),
+        (409, "thread_taken"),
+        (409, "not_claimable"),
+    ],
+    // The session holding the live lease gets it again, renewed.
+    retry: true,
+    channel: &[Channel::Token, Channel::Grant],
+    rights: Rights::Action("comments.reply"),
+    stream: false,
+};
 
 /// `POST /api/queues/<qid>/watch` → 204: the agent's session watches the
 /// queue (spec 2026-10-29-feedback-loop-design §7.3) until it unwatches it,
@@ -307,7 +333,7 @@ pub async fn renew(
     a: Agent<QueueRenew>,
     _o: SameOrigin,
     p: Result<Path<(String, String)>, PathRejection>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<Lease>, ApiError> {
     let (qid, tid) = path(p)?;
     member(&s, &a, &qid).await?;
     let caller = a.caller.clone();
@@ -319,8 +345,33 @@ pub async fn renew(
         })
         .await?;
     announce_report(&s, &qid, &tid).await;
-    Ok(Json(json!(lease)))
+    Ok(Json(lease))
 }
+
+/// [`renew`]'s operation.
+pub const RENEW: Op = Op {
+    id: "renew_lease",
+    handler: "queue_agent::renew",
+    method: Method::Post,
+    path: "/api/queues/{qid}/reports/{tid}/renew",
+    summary: "The lease's session extends its claim.",
+    query: None,
+    request: OpBody::Empty,
+    status: 200,
+    response: OpBody::Json(schema::<Lease>),
+    errors: &[
+        (400, "no_session"),
+        (404, "not_a_member"),
+        (404, "not_found"),
+        (409, "claim_required"),
+        (409, "lease_lost"),
+        (409, "thread_taken"),
+    ],
+    retry: true,
+    channel: &[Channel::Token, Channel::Grant],
+    rights: Rights::Action("comments.reply"),
+    stream: false,
+};
 
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -892,12 +943,7 @@ pub async fn reopen(
 
 /// A diagnostics read's query, on the triage and reporter routes alike.
 /// Public as [`ListQuery`] is: a public handler's signature names it.
-#[derive(Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct CaptureQuery {
-    #[serde(default)]
-    pub(crate) capture: Option<u32>,
-}
+pub use clax_core::queue::CaptureQuery;
 
 /// `GET /api/queues/<qid>/reports/<tid>/diagnostics?capture=` →
 /// `{lines}`: the diagnostics of capture `capture` (0 the filing's, `n`
