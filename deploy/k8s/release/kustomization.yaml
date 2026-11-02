@@ -1,0 +1,16 @@
+# What each release attaches as clax-fleet.yaml: the sqlite overlay without
+# the example catalog, so applying it can never start the placeholder
+# instance. A deployment's own overlay generates the catalog
+# (docs/kubernetes.md, Deploying). scripts/render-fleet-manifests.sh builds
+# it with the image pinned by digest.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../sqlite
+patches:
+  - patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: clax-fleet-catalog

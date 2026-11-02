@@ -20,10 +20,11 @@ if not re.fullmatch(r'\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?', new):
 # of them have matched, so a pattern that fails to match changes nothing.
 pending = {}
 
+# count=None: every match, of which there must be one or more.
 def sub(path, pattern, count=1):
     text = pending[path] if path in pending else pathlib.Path(path).read_text()
-    out, n = re.subn(pattern, lambda m: m.group(1) + new + m.group(3), text, count=count, flags=re.M)
-    if n != count:
+    out, n = re.subn(pattern, lambda m: m.group(1) + new + m.group(3), text, count=count or 0, flags=re.M)
+    if (n < 1) if count is None else (n != count):
         sys.exit(f"{path}: expected {count} version(s) matching {pattern!r}, found {n}; no file was changed")
     pending[path] = out
 
@@ -52,8 +53,8 @@ for f in ("scripts/ensure-clax.sh", "plugins/claude-code/scripts/ensure-clax.sh"
 # The clax-fleet image the Kubernetes overlay runs, which the release tag's
 # fleet-image workflow publishes, and the docs' examples of it.
 sub("deploy/k8s/sqlite/kustomization.yaml", r'(^    newTag: ")([^"]+)(")')
-sub("docs/kubernetes.md", r'(/deploy/k8s/sqlite\?ref=v)([0-9][0-9A-Za-z.-]*)()')
-sub("docs/kubernetes.md", r'(ghcr\.io/empathic/clax-fleet:)([0-9][0-9A-Za-z.-]*)()')
+sub("docs/kubernetes.md", r'(/releases/download/v)([0-9][0-9A-Za-z.-]*)(/clax-fleet\.yaml)')
+sub("docs/kubernetes.md", r'(ghcr\.io/empathic/clax-fleet:)([0-9][0-9A-Za-z.-]*)()', count=None)
 for path, text in pending.items():
     pathlib.Path(path).write_text(text)
 PY

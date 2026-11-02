@@ -37,15 +37,19 @@ per team, customer or project) on more shards.
 
 ## The image
 
-Each release tag publishes `ghcr.io/empathic/clax-fleet:<version>` (and
-`:sha-<commit>`) for linux/amd64 and linux/arm64, each built on a runner of
-its own architecture. The overlay names it through kustomize's `images`
-(`newTag`), which `scripts/bump-version.sh` writes with every other
-version, so the manifests at a release's tag name the image that tag
-publishes, and anyone can pull it. **No release publishes the image or
-ships `deploy/k8s` yet**: the first to do both is the first release after
-0.6.0, whose tag predates them. Until then, and for your own changes,
-build the image and push it to a registry your cluster can pull from:
+Each release tag publishes `ghcr.io/empathic/clax-fleet:<version>` for
+linux/amd64 and linux/arm64, each built on a runner of its own
+architecture, and tags it `:<major>.<minor>` (the newest patch of that
+series) and `:sha-<commit>` too. There is no `:latest`. Before any tag
+names it, the image is deployed to a kind cluster and has to serve
+(`scripts/fleet-kind-smoke.sh`, below). The overlay names it through
+kustomize's `images` (`newTag`), which `scripts/bump-version.sh` writes
+with every other version, so the manifests at a release's tag name the
+image that tag publishes, and anyone can pull it. **No release publishes
+the image or ships `deploy/k8s` yet**: the first to do both is the first
+release after 0.6.0, whose tag predates them. Until then, and for your own
+changes, build the image and push it to a registry your cluster can pull
+from:
 
 ```
 docker build -f deploy/Dockerfile \
@@ -59,22 +63,26 @@ target platform, so later builds rebuild only what changed), then a slim
 Debian runtime that runs as UID 10001. Base images are pinned by digest.
 `CLAX_BUILD_COMMIT` is the commit `/status` reports; without it, `unknown`.
 
-In a cluster of your own, deploy from an overlay that names your image and
-your catalog, so upgrading the repository never conflicts with local
-edits:
+In a cluster of your own, deploy from an overlay that names a release's
+manifests and your catalog, so upgrading never conflicts with local edits.
+Each release attaches them as `clax-fleet.yaml`: `deploy/k8s/release` (the
+sqlite overlay without the example catalog) with the image pinned by
+digest, so it runs the bytes that were tested and signed even if a tag
+moves (`scripts/render-fleet-manifests.sh` makes it). Nothing to clone:
 
 ```yaml
 # my-clax/kustomization.yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  # The release this checkout is at. Before the first release that ships
-  # deploy/k8s, a commit of main instead: ?ref=<commit>.
-  - github.com/empathic/clax//deploy/k8s/sqlite?ref=v0.6.0
+  # The release's manifests. Before the first release that attaches them,
+  # deploy/k8s/release at a commit of main instead:
+  # github.com/empathic/clax//deploy/k8s/release?ref=<commit>
+  - https://github.com/empathic/clax/releases/download/v0.6.0/clax-fleet.yaml
 images:
-  # The name the sqlite/ overlay gives the image, not its `clax-fleet`:
-  # kustomize matches what it has already rewritten, so `name: clax-fleet`
-  # here would match nothing and the overlay's image would stay.
+  # The name the manifests give the image, not `clax-fleet`: kustomize
+  # matches what it has already rewritten, so `name: clax-fleet` here
+  # would match nothing and the release's image would stay.
   - name: ghcr.io/empathic/clax-fleet
     newName: <registry>/clax-fleet
     newTag: <tag>
@@ -84,20 +92,39 @@ replicas:
     count: 2
 configMapGenerator:
   - name: clax-fleet-catalog
-    behavior: replace
     files:
       - fleet.toml
     options:
+      # Pods reload the catalog in place, so its name never changes.
       disableNameSuffixHash: true
 ```
 
-Leave out `images` to run the published image of the release in `?ref`.
-To try it on kind with a local build, load the image and give the overlay
-`newName: clax-fleet` and `newTag: dev`:
+Leave out `images` to run the release's own image, by its digest. To
+upgrade, change the version in the URL and apply again.
+
+**Checking an image.** Each image is signed with cosign, keylessly, as
+the `fleet-image` workflow of `empathic/clax`, and carries an SBOM and
+build provenance:
 
 ```
-docker build -f deploy/Dockerfile -t clax-fleet:dev .
-kind load docker-image clax-fleet:dev
+cosign verify ghcr.io/empathic/clax-fleet:0.6.0 \
+  --certificate-identity-regexp '^https://github\.com/empathic/clax/\.github/workflows/fleet-image\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+docker buildx imagetools inspect ghcr.io/empathic/clax-fleet:0.6.0 --format '{{json .SBOM}}'
+```
+
+A cluster that admits only signed images (Kyverno's `verifyImages`, or
+Sigstore's policy-controller) takes the same identity and issuer.
+
+**Trying it on kind.** `scripts/fleet-kind-smoke.sh` deploys a local image
+to a kind cluster of its own as the Deploying steps do, with two instances
+on two shards. It checks that each instance answers through either pod,
+which tests the forward between them, and then deletes the cluster
+(`CLAX_SMOKE_KEEP=1` keeps it):
+
+```
+docker build -f deploy/Dockerfile --build-arg CLAX_BUILD_COMMIT="$(git rev-parse HEAD)" -t clax-fleet:dev .
+scripts/fleet-kind-smoke.sh clax-fleet:dev
 ```
 
 ## The catalog
@@ -185,7 +212,8 @@ restart sts clax`. An instance whose setup secret is missing logs that
 
 ## Deploying
 
-1. **The image.** Use a release's, or build and push your own (The image).
+1. **The image.** Use a release's (Checking an image, under The image),
+   or build and push your own (The image).
 2. **Your overlay.** Make `my-clax/` with the `kustomization.yaml` of The
    image and a `fleet.toml` of your own instances (The catalog), each
    with its own origin and its own `setup_secret_env` (and
@@ -459,3 +487,8 @@ sets the filter (`info`).
 - the proxy (WebSockets, streaming, hop limits, the peer key);
 - checks that the manifests set only variables the binary reads, and read
   only Secrets that the docs say to create or a kustomization generates.
+
+The image and the manifests are tested together on a cluster by
+`scripts/fleet-kind-smoke.sh` ([The image](#the-image)). The `fleet-image`
+workflow runs it on every image before tagging it, and on pull requests
+that change the Dockerfile, its context or the manifests.
