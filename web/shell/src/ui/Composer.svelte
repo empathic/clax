@@ -11,10 +11,11 @@
   import { nextFrame } from "../view/after-paint";
   import { guardedAction } from "../view/trail";
 
-  type Props = { draft: Draft; onCancel(): void; onSubmit(body: string): Promise<void>; onText?(text: string): void; onFocused?(): void; onDropped?(): void; send?: boolean };
-  let { draft, onCancel, onSubmit, onText, onFocused, onDropped, send }: Props = $props();
+  /** `text`: what the composer starts with (a draft carried over from one that was lost). */
+  type Props = { draft: Draft; onCancel(): void; onSubmit(body: string): Promise<void>; onText?(text: string): void; onFocused?(): void; onDropped?(): void; send?: boolean; text?: string };
+  let { draft, onCancel, onSubmit, onText, onFocused, onDropped, send, text = "" }: Props = $props();
   const uid = $props.id();
-  let body = $state("");
+  let body = $state(untrack(() => text));
   let busy = $state(false);
   // A composer the page opened posts only on a pointer's click
   // (`guardedAction`); `hint` says so when a key asked.

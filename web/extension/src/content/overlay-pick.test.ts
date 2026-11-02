@@ -246,7 +246,7 @@ describe("a pick", () => {
     expect(mode.on).toBe(false);
     tell({ t: "pick-lost", pickId: PICK });
     expect(mode.on).toBe(true);
-    expect(frames()).toEqual([f]); // the person's text stays to copy
+    expect(frames()).toEqual([f]); // the person's text stays
     tell(state);
     expect(mode.on).toBe(true);
     nextId = PICK2;
@@ -254,7 +254,8 @@ describe("a pick", () => {
     await run();
     tell({ t: "open-composer", pickId: PICK2, rect: RECT });
     expect(frames()).toHaveLength(1);
-    expect(frames()[0].src).toContain(`#${PICK2}`);
+    // The new composer is told the lost pick, whose kept text it takes.
+    expect(frames()[0].src).toBe(`chrome-extension://test-extension/composer.html#${PICK2}.${PICK}`);
   });
 
   it("closes a lost pick's composer when the worker relays the person's close, and comment mode stays", async () => {

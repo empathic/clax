@@ -342,9 +342,12 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
   }
 
   function openComposer(pickId: string, rect: Rect): void {
+    // A composer the worker let go of hands its kept text to this one: the
+    // new composer page reads it by the lost pick's ID (never the page).
+    const kept = composer?.lost ? composer.pickId : null;
     closeComposer();
     const f = doc.createElement("iframe");
-    f.src = `${runtime.getURL("composer.html")}#${pickId}`;
+    f.src = `${runtime.getURL("composer.html")}#${pickId}${kept ? `.${kept}` : ""}`;
     // The frame stays hidden, and so cannot take focus, until the worker
     // confirms the composer page connected (`composer-ready`): a page may
     // navigate a child frame, even before the composer first loads, and
