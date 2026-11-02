@@ -534,6 +534,7 @@ pub enum ProposerKind {
 /// proposed, with its verdict once given (§6.3): the verdict's note, the
 /// context of whoever gave it, and when.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[schemars(transform = proposer_kind_optional)]
 pub struct FixAttempt {
     pub n: u32,
     #[serde(flatten)]
@@ -551,6 +552,15 @@ pub struct FixAttempt {
     pub verdict_context: Option<ReportContext>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict_at: Option<String>,
+}
+
+/// The contract leaves [`FixAttempt::proposer_kind`] optional although this
+/// server always sends it: one older than the field leaves it out, and a
+/// client reads its absence as `agent`.
+fn proposer_kind_optional(s: &mut schemars::Schema) {
+    if let Some(serde_json::Value::Array(r)) = s.get_mut("required") {
+        r.retain(|v| v != "proposer_kind");
+    }
 }
 
 /// Why a report was closed (§6.1): `fixed` when a fix was verified or

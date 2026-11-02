@@ -142,11 +142,31 @@ export interface FixAttempt {
 }
 
 /** A report filed into a queue, as Clax answers it. */
+/** What on the page a report points at. Every field but `kind` and `file`
+ * may be null. */
+export interface Anchor {
+  kind: "element" | "range" | "custom" | "area" | "artifact";
+  selector: string | null;
+  quote: string | null;
+  prefix: string | null;
+  suffix: string | null;
+  html_hash: string | null;
+  /** The anchored region at pick time, in viewport pixels. */
+  rect: { x: number; y: number; w: number; h: number; scrollX: number; scrollY: number; viewportW: number } | null;
+  custom_name: string | null;
+  /** A drawn rectangle as fractions (0 to 1) of its element's border box. */
+  area?: { x: number; y: number; w: number; h: number; tag?: string; text?: string; children?: number };
+  file: string;
+  route?: string;
+  label?: string;
+  name?: string;
+}
+
 export interface Report {
   id: string;
   queue_id: string;
   artifact: ReportArtifact;
-  anchor: unknown;
+  anchor: Anchor;
   status: ReportStatus;
   state: ReportState;
   reporter_id: string | null;

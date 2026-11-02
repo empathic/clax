@@ -275,6 +275,11 @@ perf-native:
 bazel-sync:
     ./scripts/bazel-sync.sh
 
+# Write the API contract again from the routes (web/sdk/openapi.json) and the SDK's types from it (web/sdk/src/contract.gen.ts); commit both
+contract:
+    CLAX_CONTRACT_WRITE=1 cargo test -p clax-server --lib contract::tests::the_committed_contract_is_what_the_routes_generate
+    cd web && node scripts/contract-types.mjs
+
 # Free what Bazel leaves behind: output bases of removed worktrees, and the shared cache beyond its bound (--dry-run, --report)
 bazel-gc *ARGS:
     ./scripts/bazel-gc.sh "$@"

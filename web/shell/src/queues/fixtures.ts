@@ -22,7 +22,11 @@ export const CONTEXT: ReportContext = {
 export const report = (n: number, o: Partial<Report> = {}): Report => ({
   id: `t${n}`, queue_id: "q1",
   artifact: { id: "a1", external_id: "e1", title: "Invoice 4821", url: "https://app.example/invoices/4821", metadata: null, metadata_version: 1, revision: null },
-  anchor: { kind: "element", name: "Total", selector: "#total" }, status: "open", state: "open", reporter_id: "emp-1",
+  anchor: {
+    kind: "element", name: "Total", selector: "#total", quote: null, prefix: null, suffix: null,
+    html_hash: null, rect: null, custom_name: null, file: "index.html",
+  },
+  status: "open", state: "open", reporter_id: "emp-1",
   metadata: null, metadata_version: 1, has_clip: true,
   comments: [{ id: `c${n}`, author_kind: "reporter", author_name: "emp-1", body: `Report ${n}: the total is wrong`, created_at: "2026-10-29T07:12:04Z" }],
   claim: null, created_at: "2026-10-29T07:12:04Z", context: CONTEXT, ...o,

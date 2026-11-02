@@ -595,7 +595,6 @@
           "n",
           "summary",
           "proposer_name",
-          "proposer_kind",
           "created_at",
           "outcome"
         ],
