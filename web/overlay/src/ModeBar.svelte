@@ -1,17 +1,3 @@
-<script lang="ts" module>
-  /** How close, in CSS px, the pointer may come to the chip before it moves to the other edge. */
-  export const KEEP_CLEAR_PX = 96;
-
-  /** The edge the chip docks to: the one the pointer is farther from, so the
-   * chip is never over what the reporter is pointing at. It stays where it is
-   * until the pointer comes within `KEEP_CLEAR_PX` of it. */
-  export function edgeFor(current: "top" | "bottom", pointerY: number, viewportH: number, chipH: number): "top" | "bottom" {
-    const near = current === "top" ? pointerY <= chipH + KEEP_CLEAR_PX : pointerY >= viewportH - chipH - KEEP_CLEAR_PX;
-    if (!near) return current;
-    return current === "top" ? "bottom" : "top";
-  }
-</script>
-
 <script lang="ts">
   // The capture modes (spec 2026-10-29-feedback-loop §4.1): Element (click,
   // Option widens, selecting text gives a range), Area (drag) and Screen
@@ -29,6 +15,7 @@
   // comes near; the full instructions are said in its live region, and only
   // a short hint shows.
   import type { Mode } from "./capture";
+  import { edgeFor } from "./keep-clear";
 
   type Props = { mode: Mode | null; outlined?: string | null; modes?: { mode: Mode; label: string; key: string }[]; onMode(m: Mode): void; onCancel(): void };
   const ALL: { mode: Mode; label: string; key: string }[] = [

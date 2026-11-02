@@ -16,6 +16,8 @@ export interface Picked {
   mode: "element" | "range" | "area";
   rect(): Rect;
   render(): Promise<RenderResult>;
+  /** What was picked (an element, or a text range), for the picker plugins' refinements. */
+  target?: Element | Range;
 }
 
 /** Comment mode as the overlay drives it. */
@@ -51,13 +53,13 @@ export function describe(t: Element | Range | null): string | null {
  * outlined (`describe`). */
 export function commentPicker(doc: Document, onPick: (p: Picked) => void, onCancel: () => void, onHover: (what: string | null) => void = () => {}): Picker {
   const win = doc.defaultView ?? window;
-  const pickElement = (el: Element) => onPick({ anchor: buildElementAnchor(doc, el), mode: "element", rect: () => boxRect(el.getBoundingClientRect()), render: () => renderTargetClipWithReport(el, win) });
+  const pickElement = (el: Element) => onPick({ anchor: buildElementAnchor(doc, el), mode: "element", target: el, rect: () => boxRect(el.getBoundingClientRect()), render: () => renderTargetClipWithReport(el, win) });
   const mode = new CommentMode(doc, {
     hover: t => { keys.follow(t); onHover(describe(t)); },
     pickElement,
     pickRange: r => {
       const range = r.cloneRange();
-      onPick({ anchor: buildRangeAnchor(doc, range), mode: "range", rect: () => boxRect(range.getBoundingClientRect()), render: () => renderTargetClipWithReport(range, win) });
+      onPick({ anchor: buildRangeAnchor(doc, range), mode: "range", target: range, rect: () => boxRect(range.getBoundingClientRect()), render: () => renderTargetClipWithReport(range, win) });
     },
     // As the bridge does: the clip is the drawn rectangle placed on its
     // element at release, cropped out of a render of that element.
@@ -65,7 +67,7 @@ export function commentPicker(doc: Document, onPick: (p: Picked) => void, onCanc
       const el = containingElement(doc, r);
       const anchor = buildAreaAnchor(doc, r, undefined, el);
       const at = areaBox(anchor.area!, boxOf(el));
-      onPick({ anchor, mode: "area", rect: () => areaBox(anchor.area!, boxOf(el)), render: () => renderAreaClipWithReport(el, at, win) });
+      onPick({ anchor, mode: "area", target: el, rect: () => areaBox(anchor.area!, boxOf(el)), render: () => renderAreaClipWithReport(el, at, win) });
     },
     cancel: onCancel,
   });

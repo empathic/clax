@@ -4,7 +4,8 @@
 import { render } from "@testing-library/svelte";
 import { flushSync } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
-import ModeBar, { KEEP_CLEAR_PX, edgeFor } from "./ModeBar.svelte";
+import { KEEP_CLEAR_PX, edgeFor } from "./keep-clear";
+import ModeBar from "./ModeBar.svelte";
 
 describe("edgeFor", () => {
   it("stays put until the pointer comes near, then takes the other edge", () => {

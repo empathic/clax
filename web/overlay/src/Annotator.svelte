@@ -1,3 +1,13 @@
+<script lang="ts" module>
+  /** The tools the Annotator offers when it is given none. */
+  export const DEFAULT_TOOLS: { id: string; label: string }[] = [
+    { id: "box", label: "Box" },
+    { id: "arrow", label: "Arrow" },
+    { id: "redact", label: "Redact" },
+    { id: "text", label: "Text" },
+  ];
+</script>
+
 <script lang="ts">
   // The capture with the reporter's marks (spec 2026-10-29-feedback-loop
   // §4.3): Box, Arrow, Redact (an opaque block) and Text, drawn with the
@@ -11,8 +21,8 @@
   // The image and its drawing share one box (`.canvas`) that scrolls inside
   // the stage as a whole, so a point on the drawing is the same point of the
   // image however tall the image is and however far it is scrolled.
-  import { tick } from "svelte";
-  import { ACCENT, type KeyDraw, MAX_TEXT, ON_ACCENT, REDACT_FILL, STROKE_PX, TEXT_PX, type Pt, type Shape, type Tool, barbs, keyStep, plateOf, spanOf, textWidth } from "./annotate";
+  import { tick, untrack } from "svelte";
+  import { ACCENT, HIGHLIGHT_FILL, type KeyDraw, MAX_TEXT, ON_ACCENT, REDACT_FILL, STROKE_PX, TEXT_PX, type Pt, type Shape, type Tool, barbs, keyStep, plateOf, spanOf, textWidth } from "./annotate";
 
   type Props = {
     src: string;
@@ -21,13 +31,17 @@
     scale: number;
     /** The pick in the image's pixels, for "Redact the pick"; none hides it. */
     pick?: { x: number; y: number; w: number; h: number } | null;
+    /** The tools offered, in order (the annotate plugins'); default Box, Arrow, Redact, Text. */
+    tools?: { id: string; label: string }[];
     onChange(shapes: Shape[]): void;
   };
-  let { src, alt, shapes, scale, pick = null, onChange }: Props = $props();
+  let { src, alt, shapes, scale, pick = null, tools = DEFAULT_TOOLS, onChange }: Props = $props();
 
-  let tool = $state<Tool>("box");
+  const KNOWN: readonly Tool[] = ["box", "arrow", "highlight", "redact", "text"];
+  const TOOLS = $derived(tools.filter(t => (KNOWN as readonly string[]).includes(t.id)).map(t => ({ tool: t.id as Tool, label: t.label })));
+  let tool = $state<Tool>(untrack(() => (tools.find(t => (KNOWN as readonly string[]).includes(t.id))?.id as Tool | undefined) ?? "box"));
   let size = $state({ w: 0, h: 0 });
-  let drawing = $state<{ kind: "box" | "arrow" | "redact"; from: Pt; to: Pt } | null>(null);
+  let drawing = $state<{ kind: "box" | "arrow" | "highlight" | "redact"; from: Pt; to: Pt } | null>(null);
   /** Where a text mark is being typed, and what has been typed. */
   let typing = $state<Pt | null>(null);
   let typed = $state("");
@@ -36,12 +50,6 @@
   let svg = $state<SVGSVGElement | null>(null);
   let stage = $state<HTMLElement | null>(null);
 
-  const TOOLS: { tool: Tool; label: string }[] = [
-    { tool: "box", label: "Box" },
-    { tool: "arrow", label: "Arrow" },
-    { tool: "redact", label: "Redact" },
-    { tool: "text", label: "Text" },
-  ];
 
   const s = $derived(Number.isFinite(scale) && scale > 0 ? scale : 1);
   /** The image's size, or before it has loaded what the marks reach. */
@@ -173,6 +181,9 @@
           {#if sh.kind === "redact"}
             {@const r = spanOf(sh.from, sh.to)}
             <rect data-kind="redact" x={r.x} y={r.y} width={r.w} height={r.h} fill={REDACT_FILL} />
+          {:else if sh.kind === "highlight"}
+            {@const r = spanOf(sh.from, sh.to)}
+            <rect data-kind="highlight" x={r.x} y={r.y} width={r.w} height={r.h} fill={HIGHLIGHT_FILL} />
           {:else if sh.kind === "box"}
             {@const r = spanOf(sh.from, sh.to)}
             <rect data-kind="box" x={r.x} y={r.y} width={r.w} height={r.h} fill="none" stroke={ACCENT} stroke-width={STROKE_PX * s} stroke-linejoin="round" />

@@ -10,6 +10,8 @@ import type { FlattenDeps, Surface } from "./annotate";
 import type { CaptureDeps } from "./capture";
 import { PAGE_ANCHOR, POLL_MS, type ReporterApi, Session, type Timers } from "./model";
 import Overlay from "./Overlay.svelte";
+import { PluginHost } from "../../sdk/src/plugin";
+import { classic } from "./plugins";
 import type { Picked, Picker } from "./picker";
 
 const anchor: Anchor = { kind: "element", selector: "#total", quote: "Total: $12", prefix: "Items: 3", suffix: null, html_hash: "h:4f2a", rect: { x: 10, y: 20, w: 100, h: 20, scrollX: 0, scrollY: 40, viewportW: 1024 }, custom_name: null, file: "index.html", label: "Total: $12", name: "Total" };
@@ -89,7 +91,7 @@ const capture: CaptureDeps = {
   renderViewport: async (): Promise<RenderResult> => { screens++; return { png: new Uint8Array([137, 80, 78, 71]).buffer, omitted: [], at: { x: 0, y: 0, w: 800, h: 600 }, scale: 1 }; },
 };
 const session = () => new Session({ context: () => { contexts++; return { release: { version: "0.6.0", commit: "f7e862ab0" }, flags: { claxbot: true }, app: { view: "cart" } }; }, metadata: () => ({ build: "7" }), recorder: { lines: () => lines, count: () => 1, stop: () => {} }, now: () => when }, window);
-const props = (over: Record<string, unknown> = {}) => ({ client, doc: document, host, picker: pickerOf(), externalId: "shop-cart", session: session(), capture, flatten, timers, ...over });
+const props = (over: Record<string, unknown> = {}) => ({ client, doc: document, host, picker: pickerOf(), externalId: "shop-cart", session: session(), capture, flatten, timers, plugins: new PluginHost(classic()), ...over });
 
 beforeEach(() => {
   urls.createObjectURL = () => "blob:clip";

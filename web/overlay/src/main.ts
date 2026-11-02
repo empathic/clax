@@ -24,6 +24,8 @@ import type { Mode } from "./capture";
 import { CONTEXT_TIMEOUT_MS, Session, externalIdOf } from "./model";
 import type { Given, HostContext, OverlayOptions } from "./options";
 import Overlay from "./Overlay.svelte";
+import { PluginHost } from "../../sdk/src/plugin";
+import { classic } from "./plugins";
 import { commentPicker, type Picked } from "./picker";
 import TOKENS from "./tokens.css?inline";
 
@@ -45,9 +47,11 @@ export interface OverlayHandle {
   /** Starts a report: the mode bar, in `mode` (default `"element"`;
    * `"screen"` captures the visible page at once). Does nothing when
    * `canFile` is false. */
-  report(opts?: { mode?: Mode }): void;
+  report(opts?: { mode?: Mode | "note" }): void;
   /** Opens "Your reports". */
   showReports(): void;
+  /** What the host's command palette may offer: Send feedback, and Your reports. */
+  actions(): { id: string; label: string; run(): void }[];
   /** Listens for `event`; the result stops listening. */
   on(event: "badge", fn: (n: number) => void): () => void;
   on(event: "filed", fn: (r: Report) => void): () => void;
@@ -78,7 +82,7 @@ export async function forgetReporter(r: ReporterRef): Promise<void> {
 
 /** The overlay's mounted component: what `Overlay.svelte` exports. */
 interface Mounted {
-  report(opts?: { mode?: Mode }): void;
+  report(opts?: { mode?: Mode | "note" }): void;
   showReports(): void;
 }
 
@@ -101,6 +105,13 @@ export const diagnostics = {
     return installDiagnostics(win);
   },
 };
+
+/** `theme`'s `--clax-*` entries; anything else is left out. */
+function themeOf(theme: Record<string, string> | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(theme ?? {})) if (/^--clax-[a-z0-9-]+$/.test(k) && typeof v === "string") out[k] = v;
+  return out;
+}
 
 /** Starts the overlay on `doc` (default this page's), with the launcher in
  * the page's bottom right corner unless `opts.launcher` is false. */
@@ -126,10 +137,17 @@ export function overlay(opts: OverlayOptions, doc: Document = document): Overlay
     }
   };
 
+  if (opts.plugins !== undefined && !Array.isArray(opts.plugins)) throw new TypeError("Clax.overlay: plugins must be a list of plugins");
+  const plugins = new PluginHost(opts.plugins ?? classic());
+  for (const r of plugins.refused) console.warn(`Clax.overlay: plugin ${r.name} refused: ${r.reason}`);
+
   const host = doc.createElement(OVERLAY_TAG);
   host.style.cssText = HOST_CSS;
+  // The site's look: --clax-* custom properties on the host reach into its shadow root (tokens.css).
+  for (const [k, v] of Object.entries({ ...plugins.theme(), ...themeOf(opts.theme) })) host.style.setProperty(k, v);
   const root = host.attachShadow({ mode: "open" });
-  addSheet(root, [TOKENS, COMPONENT_CSS].join("\n"));
+  const css = [TOKENS, COMPONENT_CSS].join("\n");
+  addSheet(root, css);
   const target = doc.createElement("div");
   root.append(target);
   for (const k of ["keydown", "keyup", "keypress"]) root.addEventListener(k, e => e.stopPropagation());
@@ -145,12 +163,17 @@ export function overlay(opts: OverlayOptions, doc: Document = document): Overlay
       canFile: opts.canFile ?? true,
       onBadge: (n: number) => { lastBadge = n; emit("badge", n); },
       onFiled: (r: Report) => emit("filed", r),
+      plugins, presentation: opts.presentation, css, defaults: opts.defaults ?? {},
     },
   }) as unknown as Mounted;
   let open = true;
   return {
     report(o) { if (open) app.report(o); },
     showReports() { if (open) app.showReports(); },
+    actions: () => [
+      ...(opts.canFile ?? true ? [{ id: "clax.report", label: "Send feedback", run: () => { if (open) app.report(); } }] : []),
+      { id: "clax.reports", label: "Your reports", run: () => { if (open) app.showReports(); } },
+    ],
     on(event: keyof OverlayEvents, fn: ((n: number) => void) | ((r: Report) => void)) {
       if (event !== "badge" && event !== "filed") throw new TypeError(`Clax.overlay: no event ${String(event)}`);
       const set = listeners[event] as Set<typeof fn>;
@@ -165,6 +188,7 @@ export function overlay(opts: OverlayOptions, doc: Document = document): Overlay
       listeners.badge.clear();
       listeners.filed.clear();
       void unmount(app as never);
+      plugins.destroy();
       host.remove();
     },
   };

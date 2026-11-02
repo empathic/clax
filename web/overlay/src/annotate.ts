@@ -1,5 +1,5 @@
 // The reporter's marks on a capture (spec 2026-10-29-feedback-loop §4.3):
-// boxes, arrows, redactions and text, in the image's own pixels, drawn into
+// boxes, arrows, highlights, redactions and text, in the image's own pixels, drawn into
 // the PNG that is sent. A redaction is an opaque fill painted over the
 // pixels, so no reader of the sent image can undo it.
 
@@ -8,7 +8,7 @@ export interface Pt { x: number; y: number }
 
 /** One mark: a box, an arrow (its head at `to`) or a redaction between two
  * corners, or a line of text whose top left is `at`. */
-export type Shape = { kind: "box" | "arrow" | "redact"; from: Pt; to: Pt } | { kind: "text"; at: Pt; text: string };
+export type Shape = { kind: "box" | "arrow" | "highlight" | "redact"; from: Pt; to: Pt } | { kind: "text"; at: Pt; text: string };
 
 /** A drawing tool: the kind of mark it makes. */
 export type Tool = Shape["kind"];
@@ -21,6 +21,8 @@ export const TEXT_PX = 14;
 export const ACCENT = "#e0532f";
 /** Text on its accent plate (tokens.css `--on-you`). */
 export const ON_ACCENT = "#141413";
+/** What a highlight paints: a translucent marker over what it covers, which stays readable. */
+export const HIGHLIGHT_FILL = "rgba(255, 214, 10, 0.35)";
 /** What a redaction paints: opaque, whatever was under it. */
 export const REDACT_FILL = "#000000";
 /** The longest text mark, in characters. */
@@ -79,6 +81,10 @@ export function paint(ctx: Ink, shapes: readonly Shape[], scale: number): void {
     if (sh.kind === "redact") {
       const r = spanOf(sh.from, sh.to);
       ctx.fillStyle = REDACT_FILL;
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+    } else if (sh.kind === "highlight") {
+      const r = spanOf(sh.from, sh.to);
+      ctx.fillStyle = HIGHLIGHT_FILL;
       ctx.fillRect(r.x, r.y, r.w, r.h);
     } else if (sh.kind === "box") {
       const r = spanOf(sh.from, sh.to);
@@ -192,7 +198,7 @@ export interface KeyDraw { cursor: Pt; corner: Pt | null }
  * the key was used. */
 export interface KeyStep { state: KeyDraw; add?: Shape; askText?: Pt; say?: string; used: boolean }
 
-const NAMES: Record<Tool, string> = { box: "Box", arrow: "Arrow", redact: "Redaction", text: "Text" };
+const NAMES: Record<Tool, string> = { box: "Box", arrow: "Arrow", highlight: "Highlight", redact: "Redaction", text: "Text" };
 
 /** The keyboard's way to draw on an image `size` image pixels big with
  * `tool`: the arrow keys move the crosshair (by a fortieth of the image,

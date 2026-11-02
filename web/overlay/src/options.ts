@@ -1,5 +1,6 @@
 // `Clax.overlay`'s options, in a module of their own: the overlay's public
 // types (main.ts) reach the SDK's reporter types and nothing of the bridge.
+import type { ClaxPlugin } from "../../sdk/src/plugin";
 import type { ReporterAuth } from "../../sdk/src/reporter";
 import type { ReportContext } from "../../sdk/src/types";
 
@@ -67,4 +68,17 @@ export interface OverlayOptions {
    * minutes per user rather than on every page load. Without it, every
    * page load asks `auth` for a token. */
   user?: string;
+  /** The plugins (`@empathic/clax-sdk/plugins`): every feature the overlay
+   * shows comes from one. Default: `classic()`, the overlay as it was before
+   * plugins (the DOM render and the exact screenshot, Box/Arrow/Redact/Text,
+   * Element, Area and Screen, the corner dock). */
+  plugins?: ClaxPlugin[];
+  /** How the composer is shown: a presentation plugin's id (`floating`,
+   * `dialog`, `drawer`, `sheet`, `window`, `extension`). Default: the first
+   * one the plugins give. */
+  presentation?: string;
+  /** `--clax-*` custom properties: the site's look, over the plugins' themes. */
+  theme?: Record<string, string>;
+  /** Filters and attachments turned on or off (by id), over each plugin's own default. */
+  defaults?: Record<string, boolean>;
 }

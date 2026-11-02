@@ -216,6 +216,64 @@ export interface OverlayOptions {
    * minutes per user rather than on every page load. Without it, every
    * page load asks `auth` for a token. */
   user?: string;
+  /** The plugins (`@empathic/clax-sdk/plugins`); default the classic set. */
+  plugins?: ClaxPlugin[];
+  /** How the composer is shown: a presentation plugin's id. */
+  presentation?: string;
+  /** `--clax-*` custom properties: the site's look. */
+  theme?: Record<string, string>;
+  /** Filters and attachments turned on or off (by id), over each plugin's own default. */
+  defaults?: Record<string, boolean>;
+}
+
+/** The plugin contract (web/sdk/src/plugin.ts), version 1. */
+export type Capability = "dom:read" | "dom:render" | "media:display" | "storage:local" | "net:host";
+export interface SentRow { id: string; label: string; preview: string; bytes?: number; optIn: boolean; default: boolean; privacyNote?: string }
+export interface Box { x: number; y: number; w: number; h: number }
+export interface CaptureContribution { id: string; label: string; method: "dom" | "display"; supported?(win: Window): boolean; take(req: unknown): Promise<unknown> }
+export interface AnnotateTool { id: string; label: string; key?: string }
+export interface AnnotateContribution { tools: AnnotateTool[]; ui?: unknown }
+export interface FilterInput { png: Blob; at: Box; scale: number; doc: Document }
+export interface FilterOutput { png: Blob; note: string | null }
+export interface FilterContribution { id: string; label: string; default: boolean; apply(input: FilterInput): Promise<FilterOutput> }
+export interface AttachmentData { diagnostics?: DiagLine[]; release?: Release; environment?: Partial<Environment>; app?: Record<string, unknown> }
+export interface Collected { data: AttachmentData; row: SentRow | null }
+export interface AttachmentContribution { id: string; label: string; default: boolean; collect(ctx: { doc: Document }): Promise<Collected> | Collected }
+export interface PickerContribution { id: string; label: string; key?: string; mode?: "element" | "area" | "screen"; refine?(target: Element | Range | null, doc: Document): Record<string, unknown> | null }
+export type Layout = "dock" | "dialog" | "drawer" | "sheet" | "window";
+export interface HandoffRequest { mode: "element" | "area" | "screen" | "note"; url: string; title: string }
+export interface PresentationContribution { id: string; label: string; layout: Layout; available?(win: Window): boolean; fallback?: string; handoff?(req: HandoffRequest, win: Window): boolean }
+export interface Contributions {
+  capture?: CaptureContribution[];
+  annotate?: AnnotateContribution;
+  filters?: FilterContribution[];
+  attachments?: AttachmentContribution[];
+  pickers?: PickerContribution[];
+  presentations?: PresentationContribution[];
+  theme?: { tokens: Record<string, string> };
+  adapter?: { name: string };
+  self?: { instance: string; queue: string };
+}
+export interface BusEvents {
+  pick: { mode: string; target: Element | Range | null };
+  compose: { body: string };
+  "before-send": { body: string; rows: SentRow[] };
+  sent: { id: string };
+  reply: { id: string };
+  error: { message: string };
+}
+export type BusMessage<E extends keyof BusEvents> = BusEvents[E] & { readonly event: E; cancel(reason: string): void };
+export interface PluginContext {
+  on<E extends keyof BusEvents>(event: E, fn: (m: BusMessage<E>) => void): () => void;
+  granted: readonly Capability[];
+}
+export interface ClaxPlugin {
+  name: string;
+  version: string;
+  apiVersion: number;
+  capabilities: Capability[];
+  contributes: Contributions;
+  setup?(ctx: PluginContext): void | (() => void);
 }
 
 /** What a running overlay tells its host. */
@@ -226,8 +284,10 @@ export interface OverlayEvents {
 
 /** A running overlay. */
 export interface OverlayHandle {
-  report(opts?: { mode?: Mode }): void;
+  report(opts?: { mode?: Mode | "note" }): void;
   showReports(): void;
+  /** What the host's command palette may offer: Send feedback, and Your reports. */
+  actions(): { id: string; label: string; run(): void }[];
   on(event: "badge", fn: (n: number) => void): () => void;
   on(event: "filed", fn: (r: Report) => void): () => void;
   close(): void;
