@@ -68,7 +68,6 @@ shards = 2
 name = "alpha"
 shard = 0
 create = true
-default = true
 config = '''
 [hosted]
 public_origin = "https://alpha.clax.test"
