@@ -24,6 +24,15 @@ import { ask, waitAnswer } from "./questions-helpers";
 // push, an outage and many reloads; each wait is on its condition, bounded
 // only by the suite's hang guards.
 
+/** Runs `sql` on a running daemon's database. The daemon writes to it as
+ * the test runs (its linked sync retries an unreachable remote, say), so
+ * sqlite3 waits for the daemon's lock rather than failing on it at once,
+ * up to the 60 s an expectation waits. */
+function onDatabase(db: string, sql: string): void {
+  const r = spawnSync("sqlite3", ["-cmd", ".timeout 60000", db, sql]);
+  expect(r.status, String(r.stderr)).toBe(0);
+}
+
 const SECRET = "e2e setup secret";
 const SHOTS = !!process.env.CLAX_E2E_SHOTS;
 const out = fileURLToPath(new URL("../../target/linked-shots/", import.meta.url));
@@ -160,9 +169,7 @@ test("a public comment comes down tagged, a local reply goes up, and an outage s
 
     // Past the backoff's cap its row is marked not sent (here, on the scratch
     // home's database, rather than waiting five minutes): Retry shows.
-    const db = join(local.home, "clax.db");
-    const r = spawnSync("sqlite3", [db, "UPDATE linked_outbox SET failed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), last_error = 'Not sent: unreachable'"]);
-    expect(r.status, String(r.stderr)).toBe(0);
+    onDatabase(join(local.home, "clax.db"), "UPDATE linked_outbox SET failed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), last_error = 'Not sent: unreachable'");
     await page.reload();
     await threads(page);
     // Said once, under the comment not sent, with Retry beside it.
@@ -323,8 +330,7 @@ test("a local agent's question is asked on the hosted copy, answered there, and 
       const v = await api(local.base, local.token, `/api/questions/${late.question.id}`) as { question: { linked: { state: string | null } | null } };
       return v.question.linked?.state === "pending";
     });
-    const r = spawnSync("sqlite3", [join(local.home, "clax.db"), `UPDATE linked_questions SET failed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), last_error = 'Not sent: unreachable' WHERE question_id = '${late.question.id}'`]);
-    expect(r.status, String(r.stderr)).toBe(0);
+    onDatabase(join(local.home, "clax.db"), `UPDATE linked_questions SET failed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), last_error = 'Not sent: unreachable' WHERE question_id = '${late.question.id}'`);
     const openLink = async (phone: boolean) => {
       await page.goto(`${local.base}/a/${artifact.id}`);
       if (phone) {
