@@ -156,8 +156,12 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
   };
   // Each move into or out of a dialog watches the host's new parent.
   let rewatch = () => {};
-  const top = keepOnTop(doc, host, () => rewatch());
-  const intact = () => host.parentNode === top.parent() && host.attributes.length === 2
+  // While a composer is open the host is not re-inserted (that reloads the
+  // composer's frame and loses the pick); set once the composer exists.
+  let composing = () => false;
+  const top = keepOnTop(doc, host, () => rewatch(), () => composing());
+  // A host held where it is for the composer is where it should be.
+  const intact = () => (host.parentNode === top.parent() || (top.held() && host.isConnected)) && host.attributes.length === 2
     && host.getAttribute("popover") === "manual" && host.getAttribute("style") === ownStyle && popoverOpen();
   const attach = () => {
     applyHost();
@@ -252,7 +256,10 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
     if (composer) timers.clear(composer.wait);
     composer?.frame.remove();
     composer = null;
+    // A move held off for the composer happens now.
+    if (top.held()) top.place();
   };
+  composing = () => composer !== null;
   stops.push(closeComposer);
   /** The pick whose screenshot is being taken, until the worker opens its composer. */
   let picking: { pickId: string; anchor: Anchor } | null = null;
