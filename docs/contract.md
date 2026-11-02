@@ -1156,7 +1156,8 @@ the same routes):
   spent. At most 30 polls per client address at once, one back every 2 s.
 - `GET /.well-known/clax` (any caller, no credential) → `{kind, contract_version,
   name, origin, api, site_domain?, sign_in, device?, capabilities}`: `kind`
-  is `local` or `hosted` (the Worker answers `hosted`); `name` is the
+  is `local` or `hosted` (the Worker answers `hosted`); `contract_version`
+  is the API contract's major (`1`, "Report queue routes"); `name` is the
   instance's own (`[hosted] name`, the Worker's `INSTANCE_NAME`) or, when it
   has none, its host (a local daemon's is the host and port of its
   `origin`); `origin` is where it is reached (a hosted Clax's public
@@ -4438,6 +4439,28 @@ channel event's `meta`.
 A deployer's app files reports into a queue and its reporters give their
 verdict on fixes through the reporter routes; the queue's triage members
 and their agents work them through the triage routes.
+
+**The API contract.** `web/sdk/openapi.json` (OpenAPI 3.1) is generated from
+the routes (spec 2026-10-27-clax-sdk-design D2, §4.1): each public route
+declares an operation beside its handler (`clax_core::contract::Op`), and
+the schemas are those of the Rust types the handlers read and answer.
+Every reporter route and `POST /api/queues/<qid>/reporter-tokens` is in
+it, and so are `GET /.well-known/clax`, `GET /api/queues`, `POST
+/api/queues/<qid>/service-grants`, and a report's `…/claim` and
+`…/renew`; any other route is internal until its operation is listed.
+Each operation carries `x-clax-retry` (whether it may be sent again after
+a network error that brought no answer), `x-clax-channel` (the credential
+kinds it accepts: `anonymous`, `session`, `token`, `grant`, `service`,
+`reporter`), `x-clax-rights` (`null` when the credential is the whole of
+it, else `{action}` or `{queue_role}`) and `x-clax-stream`; each error
+answer lists its `x-clax-codes`. In an answer an optional field is absent,
+never `null`; a field that may be `null` is always present. The contract's
+`info.version` is semver; `contract_version` in `GET /.well-known/clax` is
+its major. A change that breaks a client of the last release's contract
+(an operation or a field it reads gone, a value it could not hold, a
+request field newly required) raises the major (`scripts/check-contract.py`
+fails it otherwise). The SDK's TypeScript types are generated from it
+(`web/sdk/src/contract.gen.ts`); `just contract` writes both again.
 
 **States.** A report is `open` (waiting for someone: filed, released, its
 lease lapsed, or reopened), `claimed` (an agent's session holds its
