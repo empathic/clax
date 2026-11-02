@@ -505,6 +505,79 @@ async fn every_view_is_recorded_once_a_window() {
 }
 
 #[tokio::test]
+async fn the_audit_view_filters_by_kind_and_refuses_a_session_of_the_token() {
+    let p = people().await;
+    let ts = &p.ts;
+    artifact_with_thread(ts).await;
+    // The owner by hand reads it; the same token naming a session is an
+    // agent and is refused, as is the agent channel.
+    let (s, all) = call(
+        ts,
+        &Who::Owner,
+        Method::GET,
+        "/api/audit?limit=200",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, 200);
+    let r = ts
+        .authed(ts.client.get(format!("{}/api/audit", ts.base)))
+        .header("x-clax-session", "s_any");
+    let (s, v) = json_of(r.send().await.unwrap()).await;
+    assert_eq!((s, code(&v)), (403, "not_for_agents"));
+    let (s, v) = call(ts, &Who::Agent, Method::GET, "/api/audit/1", Value::Null).await;
+    assert_eq!((s, code(&v)), (403, "not_for_agents"));
+    // `kind`: one kind exactly, or the kinds under a prefix.
+    let kinds: Vec<String> = all["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap().to_string())
+        .collect();
+    let first = kinds.first().expect("an event").clone();
+    let (s, v) = call(
+        ts,
+        &Who::Owner,
+        Method::GET,
+        &format!("/api/audit?kind={first}"),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, 200);
+    let got = v["events"].as_array().unwrap();
+    assert_eq!(got.len(), kinds.iter().filter(|k| **k == first).count());
+    let prefix = first.split('.').next().unwrap();
+    let (_, v) = call(
+        ts,
+        &Who::Owner,
+        Method::GET,
+        &format!("/api/audit?kind={prefix}.*"),
+        Value::Null,
+    )
+    .await;
+    assert!(v["events"].as_array().unwrap().iter().all(|e| {
+        e["kind"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("{prefix}."))
+    }));
+    // The same query again records no second view: a follower that polls
+    // with fixed parameters writes one `view.audit` a window.
+    let before = events(ts, "view.audit").len();
+    for _ in 0..3 {
+        call(
+            ts,
+            &Who::Owner,
+            Method::GET,
+            "/api/audit?kind=view.audit",
+            Value::Null,
+        )
+        .await;
+    }
+    assert_eq!(events(ts, "view.audit").len(), before + 1);
+}
+
+#[tokio::test]
 async fn the_audit_view_resolves_actors_and_scopes_readers() {
     let p = people().await;
     let ts = &p.ts;

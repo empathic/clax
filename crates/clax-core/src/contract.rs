@@ -31,7 +31,7 @@ use std::collections::BTreeMap;
 
 /// The contract's version (semver). Its major is [`MAJOR`]; a change that
 /// breaks a client of the last release raises it.
-pub const VERSION: &str = "1.0.0";
+pub const VERSION: &str = "1.1.0";
 /// [`VERSION`]'s major, as discovery serves it (`contract_version`).
 pub const MAJOR: &str = "1";
 

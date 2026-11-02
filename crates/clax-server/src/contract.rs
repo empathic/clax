@@ -10,7 +10,7 @@
 //! `just contract` writes the file again after a change; the tests fail
 //! while it differs from what the routes generate.
 
-use crate::routes::{discovery, queue_agent, queue_reporter, queues};
+use crate::routes::{audit_trail, discovery, queue_agent, queue_reporter, queues};
 use clax_core::contract::{self, Op};
 
 /// The committed contract's path, from the repository's root.
@@ -18,7 +18,13 @@ pub const COMMITTED: &str = "web/sdk/openapi.json";
 
 /// Every public operation, in the contract's order.
 pub fn ops() -> Vec<&'static Op> {
-    let mut ops = vec![&discovery::GET, &queues::LIST, &queues::CREATE_GRANT];
+    let mut ops = vec![
+        &discovery::GET,
+        &audit_trail::LIST,
+        &audit_trail::GET,
+        &queues::LIST,
+        &queues::CREATE_GRANT,
+    ];
     ops.extend(queue_reporter::CONTRACT.iter().copied());
     ops.extend([&queue_agent::CLAIM, &queue_agent::RENEW]);
     ops

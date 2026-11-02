@@ -43,6 +43,9 @@ pub struct AuditQuery {
     pub q: Option<String>,
     pub actor: Option<ActorFilter>,
     pub group: Option<KindGroup>,
+    /// One kind (`artifact.publish`), or every kind under a prefix
+    /// (`bot.*`).
+    pub kind: Option<String>,
     pub artifact: Option<String>,
     /// From this time, inclusive (RFC 3339, as the store stamps).
     pub from: Option<chrono::DateTime<chrono::Utc>>,
@@ -106,15 +109,18 @@ const COLS: &str = "seq, at, kind, actor, artifact_id, artifact2_id, thread_id, 
 
 /// `s` with `\`, `%` and `_` escaped for `LIKE … ESCAPE '\'`.
 fn like_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('%');
+    format!("%{}%", like_escape_bare(s))
+}
+
+/// `s` with LIKE's wildcards and the escape itself escaped.
+fn like_escape_bare(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         if matches!(c, '\\' | '%' | '_') {
             out.push('\\');
         }
         out.push(c);
     }
-    out.push('%');
     out
 }
 
@@ -326,6 +332,21 @@ impl Store {
         }
         if let Some(g) = query.group {
             conds.push(group_sql(g).into());
+        }
+        if let Some(k) = &query.kind {
+            match k.strip_suffix('*') {
+                Some(prefix) => {
+                    let n = bind(
+                        &mut args,
+                        Box::new(format!("{}%", like_escape_bare(prefix))),
+                    );
+                    conds.push(format!("kind LIKE ?{n} ESCAPE '\\'"));
+                }
+                None => {
+                    let n = bind(&mut args, Box::new(k.clone()));
+                    conds.push(format!("kind = ?{n}"));
+                }
+            }
         }
         if let Some(a) = &query.artifact {
             let n = bind(&mut args, Box::new(a.clone()));
@@ -590,6 +611,20 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(views.len(), 2);
+        // A kind, and the kinds under a prefix; `_` is no wildcard.
+        let kind = |k: &str| {
+            q(AuditQuery {
+                kind: Some(k.into()),
+                ..Default::default()
+            })
+        };
+        assert!(kind("bot.call").iter().all(|e| e.kind == "bot.call"));
+        assert_eq!(kind("bot.call").len(), 1);
+        assert_eq!(kind("bot.*").len(), 2);
+        assert_eq!(kind("view.*").len(), views.len());
+        assert!(kind("bot").is_empty());
+        assert!(kind("bot_call").is_empty());
+        assert!(kind("bo_.*").is_empty());
         assert_eq!(
             q(AuditQuery {
                 group: Some(KindGroup::Bot),

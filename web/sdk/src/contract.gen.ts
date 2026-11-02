@@ -1,9 +1,9 @@
 // Generated from web/sdk/openapi.json by web/scripts/contract-types.mjs: do not edit.
-// The Clax API contract (spec 2026-10-27-clax-sdk-design §4.1), version 1.0.0.
+// The Clax API contract (spec 2026-10-27-clax-sdk-design §4.1), version 1.1.0.
 // Regenerate with `just contract`.
 
 /** The contract's version: its major is what `GET /.well-known/clax` serves as `contract_version`. */
-export type ContractVersion = "1.0.0";
+export type ContractVersion = "1.1.0";
 
 /**
  * Spec §9 "Anchors". Every field but `kind` and `file` may be null. `file` is
@@ -157,6 +157,65 @@ export interface ApiErrorDetail {
   code: string;
   /** What went wrong, for a person. */
   message: string;
+}
+
+/**
+ * Who acted, as the view names them: a person key (`p_…`, or `*owner`),
+ * `agent:claxbot`, another agent's handle, or `*system`, with its name.
+ */
+export interface AuditActor {
+  id: string;
+  name: string | null;
+}
+
+/** A recorded event, newest first in a page. */
+export interface AuditEvent {
+  actor: AuditActor;
+  artifact_id: string | null;
+  /** When, RFC 3339. */
+  at: string;
+  /** What happened: `artifact.publish`, `view.audit`, `bot.call`, …. */
+  kind: string;
+  /** The person ClaxBot acted for, for a ClaxBot event. */
+  on_behalf_of: AuditActor | null;
+  /** The ClaxBot run it belongs to. */
+  run: string | null;
+  /** Its place in the journal; larger is later. */
+  seq: number;
+  /** The event in one sentence. */
+  summary: string;
+}
+
+/** An event with its stored body. */
+export interface AuditEventDetail {
+  actor: AuditActor;
+  artifact_id: string | null;
+  /** When, RFC 3339. */
+  at: string;
+  /**
+   * The body as recorded (its envelope included); its shape is the
+   * kind's.
+   */
+  body: unknown;
+  /** What happened: `artifact.publish`, `view.audit`, `bot.call`, …. */
+  kind: string;
+  /** The person ClaxBot acted for, for a ClaxBot event. */
+  on_behalf_of: AuditActor | null;
+  /** The ClaxBot run it belongs to. */
+  run: string | null;
+  /** Its place in the journal; larger is later. */
+  seq: number;
+  /** The event in one sentence. */
+  summary: string;
+}
+
+/**
+ * A page of events, newest first; `next_cursor` is the `seq` the next
+ * (older) page starts below, `null` on the last.
+ */
+export interface AuditPage {
+  events: AuditEvent[];
+  next_cursor: number | null;
 }
 
 /**
@@ -745,6 +804,34 @@ export interface Operations {
     errors: "body_too_large" | "busy" | "external_artifact" | "invalid_anchor" | "invalid_args" | "invalid_clip" | "invalid_context" | "invalid_diagnostics" | "invalid_external_id" | "invalid_metadata" | "invalid_multipart" | "invalid_request" | "invalid_signature" | "invalid_token" | "limit_reached" | "metadata_too_large" | "replayed_request" | "stale_request" | "timeout" | "token_expired" | "wrong_origin";
     retry: false;
     channel: "reporter";
+    rights: null;
+    stream: false;
+  };
+  /** One recorded event the caller may read, with its stored body. */
+  get_audit_event: {
+    method: "GET";
+    path: "/api/audit/{seq}";
+    query: never;
+    request: never;
+    status: 200;
+    response: AuditEventDetail;
+    errors: "forbidden" | "forbidden_origin" | "invalid_path_param" | "not_for_agents" | "not_found" | "not_permitted" | "unauthorized";
+    retry: true;
+    channel: "session" | "token";
+    rights: null;
+    stream: false;
+  };
+  /** The recorded events the caller may read, newest first, filtered. */
+  list_audit_events: {
+    method: "GET";
+    path: "/api/audit";
+    query: { actor?: string; artifact?: string; cursor?: number; from?: string; group?: "views" | "changes" | "bot" | "credits" | "admin"; kind?: string; limit?: number; q?: string; to?: string };
+    request: never;
+    status: 200;
+    response: AuditPage;
+    errors: "forbidden" | "forbidden_origin" | "invalid_parameter" | "not_for_agents" | "not_permitted" | "unauthorized";
+    retry: true;
+    channel: "session" | "token";
     rights: null;
     stream: false;
   };

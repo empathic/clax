@@ -6,6 +6,7 @@
 //! Toolpath rendering happens later, from the stored row.
 
 pub mod args;
+pub mod view;
 
 use crate::gitctx::{self, GitField};
 use serde::{Deserialize, Serialize};
@@ -265,8 +266,9 @@ pub enum Actor {
 
 /// The kind groups the audit view filters by (spec
 /// 2026-10-21-claxbot-design §9.2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[schemars(rename = "AuditGroup")]
 pub enum KindGroup {
     /// `view.*`: what someone looked at.
     Views,
