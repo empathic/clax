@@ -1564,7 +1564,8 @@ the threads changed since the link's cursor (`since`, below), and every
   `<home>/remote-cache/clips/<local thread ID>.png`; `clip_path` names
   that file, never a path a remote sent.
 - An unreachable remote backs the task off, doubling from 1 s to 5 min;
-  once at 5 min the waiting writes are marked not sent until Retry.
+  once at 5 min the waiting writes are marked not sent until Retry, which
+  tries at once and starts the backoff over from 1 s.
 - Thread views carry `linked: {remote_id, remote, remote_origin, url,
   origin ("remote" | "local"), remote_version, twin, unlinked, state
   (null | "pending" | "held" | "failed"), error}` and each linked comment

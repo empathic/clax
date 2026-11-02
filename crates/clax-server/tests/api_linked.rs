@@ -897,6 +897,70 @@ async fn an_outage_queues_marks_rows_not_sent_at_the_cap_then_drains_in_order() 
     .await;
 }
 
+/// A reply on a thread already up, made here while every request to the
+/// remote fails as unreachable: the sync has backed off, at
+/// [`BACKOFF_FIRST`], and the reply reads as sending.
+async fn reply_in_an_outage(p: &Pair) {
+    let t = p.owner_thread(1, "before", whole()).await;
+    let tid = t["id"].as_str().unwrap().to_string();
+    until("the thread goes up", || async {
+        (!p.hosted_threads().await.is_empty()).then_some(())
+    })
+    .await;
+    p.sleeper.wait_for(BACKSTOP, 1).await;
+    p.local.state.linked.set_offline(true);
+    let (s, v) = p
+        .local_req(
+            reqwest::Method::POST,
+            &format!("/api/artifacts/{}/threads/{tid}/comments", p.aid),
+            json!({"body": "one"}),
+            None,
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    p.sleeper.wait_for(BACKOFF_FIRST, 1).await;
+    assert_eq!(reply_state(p).await, "pending");
+}
+
+/// The state of [`reply_in_an_outage`]'s reply.
+async fn reply_state(p: &Pair) -> Value {
+    p.local_threads().await[0]["comments"][1]["linked"]["state"].clone()
+}
+
+/// Fires the sync's backoff from `d` up to its cap, which marks what waits
+/// not sent; checks the reply reads as sending until then.
+async fn back_off_to_the_cap(p: &Pair, mut d: std::time::Duration) {
+    while d < BACKOFF_CAP {
+        p.sleeper.wait_for(d, 1).await;
+        assert_eq!(reply_state(p).await, "pending", "at {d:?}");
+        p.sleeper.fire(d);
+        d = (d * 2).min(BACKOFF_CAP);
+    }
+    p.sleeper.wait_for(BACKOFF_CAP, 1).await;
+    assert_eq!(reply_state(p).await, "failed");
+}
+
+/// The owner's Retry with the remote still away tries at once and starts
+/// the backoff over: what it retried reads as sending until the backoff
+/// reaches its cap again, and only then is marked not sent again.
+#[tokio::test]
+async fn a_retry_in_an_outage_starts_the_backoff_over() {
+    let p = Pair::new().await;
+    reply_in_an_outage(&p).await;
+    back_off_to_the_cap(&p, BACKOFF_FIRST).await;
+    let (s, v) = p
+        .local_req(
+            reqwest::Method::POST,
+            &format!("/api/artifacts/{}/remotes/{}/retry", p.aid, p.remote),
+            json!({}),
+            None,
+        )
+        .await;
+    assert_eq!((s, &v["retried"]), (200, &json!(1)), "{v}");
+    // The try failed: backed off from the first wait, still sending.
+    back_off_to_the_cap(&p, BACKOFF_FIRST).await;
+}
+
 /// The live sessions of the by-hand harness the sync speaks in on the public Clax.
 fn sync_sessions(p: &Pair) -> usize {
     p.public

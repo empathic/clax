@@ -33,9 +33,10 @@
 //! - **Offline.** An unreachable remote backs the task off, doubling from
 //!   [`BACKOFF_FIRST`] to [`BACKOFF_CAP`]; [`Linked::status`] says since
 //!   when, and once the backoff reaches its cap the waiting rows are marked
-//!   not sent, for Retry. A row a try may have made there (its answer
-//!   lost) is resent under its key as soon as the remote answers, before
-//!   anything is read from there. Local work never waits on the remote.
+//!   not sent, for Retry, which tries at once and starts the backoff over.
+//!   A row a try may have made there (its answer lost) is resent under its
+//!   key as soon as the remote answers, before anything is read from
+//!   there. Local work never waits on the remote.
 //!
 //! - **Questions.** An `ask` question of the owner's agents about a linked
 //!   artifact is asked there too, while the link is two-way: in the sync's
@@ -492,13 +493,19 @@ async fn run(s: AppState, rid: String, kick: Arc<Notify>, retry: Arc<Notify>) {
                     publish_outbox(&s, &rid).await;
                 }
                 // A local write meanwhile is queued (and shown pending)
-                // without trying the remote before the backoff ends.
+                // without trying the remote before the backoff ends. The
+                // owner's Retry tries at once and starts the backoff over,
+                // so what it retried reads as sending until the backoff
+                // reaches its cap again.
                 let wait = s.linked.sleeper.sleep(backoff);
                 tokio::pin!(wait);
                 loop {
                     tokio::select! {
                         _ = &mut wait => break,
-                        _ = retry.notified() => break,
+                        _ = retry.notified() => {
+                            backoff = Duration::ZERO;
+                            break;
+                        }
                         _ = kick.notified() => {
                             if scan(&s, &rid).await {
                                 publish_outbox(&s, &rid).await;
