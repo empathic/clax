@@ -157,7 +157,9 @@ Cloudflare's docs.
 
 1. Make the account dev and the previews use (not clax.dev's), on Workers
    Paid, with the Artifacts beta turned on (Storage & databases,
-   Artifacts) for dev.
+   Artifacts) for dev. `just wrangler login`, then `just wrangler whoami`
+   lists the accounts the login sees, with their IDs: the new one's is
+   the environments' `CLOUDFLARE_ACCOUNT_ID`.
 2. On it, add the zones: dev's public
    host's and site domain's, and `PREVIEW_HOST_ZONE` and
    `PREVIEW_SITE_ZONE`.

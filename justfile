@@ -315,6 +315,14 @@ env-deploy NAME *ARGS:
     if [ "$1" = prod ]; then echo "just env-deploy deploys dev or a preview; clax.dev is just clax-dev-deploy" >&2; exit 2; fi
     ./scripts/cloudflare-setup.sh --legal bundled --env "$@"
 
+# Run the Worker's locked wrangler from any directory (Bazel's //crates/clax-worker:wrangler; natively the stamped install in crates/clax-worker), e.g. just wrangler whoami (the accounts the login sees, with their IDs), just wrangler login, just wrangler tail clax-dev
+wrangler *ARGS:
+    ./scripts/run.sh wrangler "$@"
+
+# Run the Worker's locked wrangler with the native tools: its stamped pnpm install in crates/clax-worker
+wrangler-native *ARGS:
+    CLAX_BUILD=native ./scripts/run.sh wrangler "$@"
+
 # Tear down the preview NAME: its Worker with every artifact and person in it, its custom domain, route and DNS record (crates/clax-worker/teardown.mjs; needs CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID; args: --site-zone <zone>, required, and --dry-run). Never dev or prod
 env-teardown NAME *ARGS:
     cd crates/clax-worker && node teardown.mjs "$@"
