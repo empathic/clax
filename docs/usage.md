@@ -647,7 +647,7 @@ one is. To run
 one file's tests: `cargo nextest run -p clax-server -E 'test(/^api_batch::/)'`,
 or `cargo test -p clax-server --test integration api_batch::`.
 
-`scripts/quality_gates.sh` runs every check CI runs: the justfile, plugin wrapper (`scripts/test-ensure-clax.sh`, `just wrapper-test`), release script, release command, release installer and dev script tests (`scripts/test-release.sh`, `scripts/test-release-script.sh` (`scripts/release.sh` against fakes of `gh`, `just` and Bazel), `scripts/test-install.sh` (`just install-test`), `scripts/test-dev.sh`), the Clax app's build script test (`scripts/test-build-app-clax.sh`, a dry run with no build), and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the four skill copies and `docs/contract.md` share the page contract word for word, that the skill copies share the comment loop word for word, that the plugins wire their Stop and prompt hooks, that the workspace, the plugin manifests, the Pi package and the plugins' wrapper's `CLAX_VERSION` carry one version (`scripts/check-version.sh`), that the four plugins carry the same wrapper and pin the newest `v*` release tag, that the Rust and Pi tool descriptions match `plugins/pi/test/fixtures/contract.json`, and, through `scripts/sync-skill-tools.py --check`, that each skill's generated tool block and the tool lists in `docs/contract.md` and the READMEs name exactly that fixture's tools), the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build (before the Rust tests and the release build, which serve or embed it), `cargo fmt`, clippy with `-D warnings` over every target, the Rust tests (`cargo nextest`, or `cargo test` with a warning where nextest is not installed: `cargo install --locked cargo-nextest`), the comment-loop smoke (`scripts/smoke-comment-loop.sh`: a scripted Claude Code session, no model, through tiers 1, 2, 4 and 5 with a fake `codex`), the Pi extension's typecheck and tests, the Worker's checks (`crates/clax-worker`, whose format check, tests (the SQLite VFS's among them) and clippy are the workspace's: `scripts/worker-checks.sh`; `just worker-test` runs them all, under Bazel, `just worker-test-native` with Cargo and pnpm): `test-deploy-config.mjs`, then `test-wasm.mjs`, which builds the wasm Worker into `target/clax-worker/build`, writes through it under `wrangler dev --local` on free ports with fresh state under `target/clax-worker/wasm-test/`, restarts wrangler and checks the data and `PRAGMA integrity_check`, then `test-sandbox.mjs`, ClaxBot's sandbox conformance suite against the Worker Loader sandbox on that build (`crates/clax-worker/src/sandbox/`); and, after the web e2e tests, `e2e.mjs`, which runs the Clax server in its Durable Object under `wrangler dev --local` with the web UI from `web/dist` and checks in two browsers that a published artifact shows in the gallery and opens, that a comment reaches the other browser live over the stream's WebSocket, also after the server is rebuilt as after hibernation, and that everything is there after a restart), the Clax app's gate (`apps/clax_app/tool/check.sh`, skipped where `flutter` is not installed; see "The Clax app" below), and the Playwright end-to-end tests of the web UI. `just web-test` runs the web lint, typecheck, and unit tests.
+`scripts/quality_gates.sh` runs every check CI runs: the justfile, plugin wrapper (`scripts/test-ensure-clax.sh`, `just wrapper-test`), release script, release command, SDK release command, release installer and dev script tests (`scripts/test-release.sh`, `scripts/test-release-script.sh` (`scripts/release.sh` against fakes of `gh`, `just` and Bazel), `scripts/test-release-sdk.sh` (`scripts/release-sdk.sh` against fakes of `gh`, `npm` and `pnpm`), `scripts/test-install.sh` (`just install-test`), `scripts/test-dev.sh`), the Clax app's build script test (`scripts/test-build-app-clax.sh`, a dry run with no build), and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the four skill copies and `docs/contract.md` share the page contract word for word, that the skill copies share the comment loop word for word, that the plugins wire their Stop and prompt hooks, that the workspace, the plugin manifests, the Pi package and the plugins' wrapper's `CLAX_VERSION` carry one version (`scripts/check-version.sh`), that the four plugins carry the same wrapper and pin the newest `v*` release tag, that the Rust and Pi tool descriptions match `plugins/pi/test/fixtures/contract.json`, and, through `scripts/sync-skill-tools.py --check`, that each skill's generated tool block and the tool lists in `docs/contract.md` and the READMEs name exactly that fixture's tools), the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build (before the Rust tests and the release build, which serve or embed it), `cargo fmt`, clippy with `-D warnings` over every target, the Rust tests (`cargo nextest`, or `cargo test` with a warning where nextest is not installed: `cargo install --locked cargo-nextest`), the comment-loop smoke (`scripts/smoke-comment-loop.sh`: a scripted Claude Code session, no model, through tiers 1, 2, 4 and 5 with a fake `codex`), the Pi extension's typecheck and tests, the Worker's checks (`crates/clax-worker`, whose format check, tests (the SQLite VFS's among them) and clippy are the workspace's: `scripts/worker-checks.sh`; `just worker-test` runs them all, under Bazel, `just worker-test-native` with Cargo and pnpm): `test-deploy-config.mjs`, then `test-wasm.mjs`, which builds the wasm Worker into `target/clax-worker/build`, writes through it under `wrangler dev --local` on free ports with fresh state under `target/clax-worker/wasm-test/`, restarts wrangler and checks the data and `PRAGMA integrity_check`, then `test-sandbox.mjs`, ClaxBot's sandbox conformance suite against the Worker Loader sandbox on that build (`crates/clax-worker/src/sandbox/`); and, after the web e2e tests, `e2e.mjs`, which runs the Clax server in its Durable Object under `wrangler dev --local` with the web UI from `web/dist` and checks in two browsers that a published artifact shows in the gallery and opens, that a comment reaches the other browser live over the stream's WebSocket, also after the server is rebuilt as after hibernation, and that everything is there after a restart), the Clax app's gate (`apps/clax_app/tool/check.sh`, skipped where `flutter` is not installed; see "The Clax app" below), and the Playwright end-to-end tests of the web UI. `just web-test` runs the web lint, typecheck, and unit tests.
 
 The web UI is built first (`scripts/build-web.sh`, which keeps the modification times of output it did not change, so an unchanged web UI does not rebuild the release binary that embeds it) and its unit tests run next, alone, since some are timing-sensitive. The other gates then run in concurrent lanes (web e2e then the Worker's e2e, the Rust tests, clippy and `cargo fmt`, web lint and typecheck, the release build, Pi, the scripts, the Worker, the wasm32 check, the Clax app), the longest first, each printing a line as it finishes; a failed gate prints its output. The Rust tests are built before clippy runs, so they start as soon as they can. `pnpm install --frozen-lockfile` runs in `web/`, `plugins/pi/` and `crates/clax-worker/` only when `node_modules` was not installed from the current `pnpm-lock.yaml` by the same Node and pnpm (a hash in `node_modules/.clax-install-stamp`; `CLAX_PNPM_INSTALL=always` ignores it). One debug `clax` is built for the whole run and given to the tests that cannot name it and to the browser tests' daemons as `CLAX_TEST_BIN` (`just test` does the same for the Rust tests), and one release `clax` to the perf gates as `CLAX_PERF_BIN`. The perf gates then run alone, one at a time. The run ends with each gate's time and the total; a slow gate is reported, never failed. On a warm build cache and an otherwise idle machine, the whole run takes under two minutes.
 
@@ -707,13 +707,14 @@ a model, runs only with `VERIFY_PI_SESSION=1` and a provider key you export.
 ### The SDK package
 
 The reporter client, the embeddable overlay and the service client are
-also built as an npm package, `@empathic/clax-sdk`, into `web/dist-sdk`
-(`web/scripts/build-sdk.mjs`): ES modules with Svelte and the overlay's
-other dependencies bundled, and declarations under `types/`. It has three
-entries: `@empathic/clax-sdk` (`ReporterClient`, `ClaxError` and the queue
-routes' types), `@empathic/clax-sdk/overlay` (`overlay`, the same overlay
-as `/_clax/overlay.js`) and `@empathic/clax-sdk/service` (`ServiceClient`,
-for a backend only). Its license is LGPL-2.1-only, that of `web/sdk`,
+also built as an npm package, `@empathic/clax-client-sdk`, into
+`web/dist-sdk` (`web/scripts/build-sdk.mjs`): ES modules with Svelte and
+the overlay's other dependencies bundled, and declarations under
+`types/`. It has three entries: `@empathic/clax-client-sdk`
+(`ReporterClient`, `ClaxError` and the queue routes' types),
+`@empathic/clax-client-sdk/overlay` (`overlay`, the same overlay as
+`/_clax/overlay.js`) and `@empathic/clax-client-sdk/service`
+(`ServiceClient`, for a backend only). Its license is LGPL-2.1-only, that of `web/sdk`,
 `web/overlay` and `web/bridge`.
 
 - `just web` builds it beside the web build (`//web:dist_sdk` under Bazel,
@@ -727,15 +728,23 @@ for a backend only). Its license is LGPL-2.1-only, that of `web/sdk`,
 - `//web:sdk_package` (`pnpm run test:sdk` after a build) checks the
   package as an app gets it, and `//web:bundle_size` holds its overlay
   entry to the `sdkOverlay` ceiling.
-- A release publishes it to npm at the release's version
-  (`.github/workflows/publish-sdk.yml`, step 21 of `just release`;
-  "Releasing" below).
+- Its manifest is `web/sdk/package.json`: its name, its version (its own,
+  not Clax's) and the rest of its metadata. The build publishes it
+  without `private` (which keeps `npm publish` from shipping the source
+  directory) and adds `sideEffects`, `exports`, `types` and
+  `typesVersions`; it refuses a manifest that sets any field but its
+  metadata (`MANIFEST_FIELDS` in `web/scripts/build-sdk.mjs`), so no
+  dependency (the package bundles its own), script or executable is
+  published unseen. The file is also the nearest `package.json` of
+  `web/sdk/src` in Clax's own builds, so it sets nothing that changes how
+  they bundle. `just release-sdk` publishes it ("Releasing the SDK
+  package" below).
 
 To use the checkout's build from another app while developing, link the
 directory, which keeps the package's own name:
 
 ```
-"@empathic/clax-sdk": "link:/path/to/clax/web/dist-sdk"
+"@empathic/clax-client-sdk": "link:/path/to/clax/web/dist-sdk"
 ```
 
 in that app's `package.json` `dependencies` (pnpm and bun both read
@@ -1494,15 +1503,14 @@ just release 0.6.0                              # a dry run: the checks, and eve
 just release 0.6.0 --i-know-what-i-am-doing     # prepare: the release branch and its pull request into prod
 # review the pull request; once CI passes, merge it on GitHub with a merge commit (this deploys clax.dev)
 git switch prod && git pull --ff-only
-just release 0.6.0 --i-know-what-i-am-doing     # cut: tag, release, pin, carry to main, Pi and SDK packages
+just release 0.6.0 --i-know-what-i-am-doing     # cut: tag, release, pin, carry to main, Pi package
 ```
 
 `just release` runs `scripts/release.sh` as it is (no build system in
 between), and releases Clax and all four plugins: the Claude Code, Codex
 and Grok plugins update through this repository's marketplaces once
 `main` carries the new version and its pin, and the Pi package is
-published to npm from the pin commit on `prod`, as is the SDK package,
-`@empathic/clax-sdk`, at the same version.
+published to npm from the pin commit on `prod`.
 
 Which half a run does follows from `origin/prod`. Until `prod`'s version
 is the release's, it **prepares** (steps 2-9), from any branch with a clean
@@ -1522,7 +1530,7 @@ clax.dev. The bump lives on the release branch, never on `main`, until its
 release exists: harnesses update a plugin when its version changes, so
 `main` must get the version and the pin to its release in one push.
 
-Once `prod` is at the release's version, a run **cuts** (steps 11-22),
+Once `prod` is at the release's version, a run **cuts** (steps 11-21),
 from a `prod` checkout at `origin/prod`'s tip: it signs the tag
 `v<version>` on `prod`'s tip and pushes the tag alone; waits for the
 Release workflow on it and checks that the release lists `SHA256SUMS` and
@@ -1538,8 +1546,7 @@ cherry-pick -S -x`) onto `origin/main`'s tip in a temporary worktree under
 merge commits. Last it waits for CI's gate (ci.yml's `bazel` job, not the
 perf-log job, which is cancelled when pushes pile up) on the pin commit on
 `prod`, runs Publish Pi package from that commit with `dry_run` off and
-waits for it, then Publish SDK package the same way, and prints what is
-left by hand: checking that the deploys
+waits for it, and prints what is left by hand: checking that the deploys
 of `prod` succeeded (`gh run list --workflow deploy-prod.yml`), and the
 crates.io package, which it does not publish. It deploys nothing itself.
 
@@ -1557,7 +1564,7 @@ behind `origin/prod` and ahead of it only by the pin commit, and
 pull request is refused). It also needs `gh` signed in (`gh auth status`);
 commit signing working (a signed commit written to a scratch object
 directory); `just`, Bazelisk or Bazel, `python3`, `curl` and `npm` on
-`PATH`; npm reachable (and signed in, with `pnpm`, for a first Pi or SDK
+`PATH`; npm reachable (and signed in, with `pnpm`, for a first Pi
 publish); and the `npm` environment set up (below). It signs every commit
 and the tag with your signing key, never force-pushes, never deletes a
 tag, and checks that each commit and the tag it pushes carries a
@@ -1598,8 +1605,8 @@ bazel-sync` there and amend the pin copy (`git commit -S -a --amend
 tip by the next run. A commit amended unsigned is refused with how to sign
 it (`git commit --amend -S --no-edit`). A failed workflow run is rerun on
 GitHub (`gh run rerun <ID> --failed`), then the command again picks it up;
-a failed Publish Pi package or Publish SDK package run is dispatched anew.
-Each takes the pin commit as its `sha` input and titles its run after it,
+a failed Publish Pi package run is dispatched anew. Publish Pi package
+takes the pin commit as its `sha` input and titles its run after it,
 which is how the script finds the run again. A wait gives up after
 `CLAX_RELEASE_MAX_POLLS` polls (270) `CLAX_RELEASE_POLL_SECONDS` apart
 (20), 90 minutes. The cut is known by its tag and its pin commit on
@@ -1632,7 +1639,6 @@ git push origin HEAD:refs/heads/main
 # once CI passes on the pin commit on prod: Actions, Publish Pi package, Run workflow
 # (on prod, dry_run off, sha the pin commit), or:
 gh workflow run publish-pi.yml --ref prod -f dry_run=false -f sha=<pin commit>
-gh workflow run publish-sdk.yml --ref prod -f dry_run=false -f sha=<pin commit>
 ```
 
 `scripts/test-release-script.sh` (gate "release command") runs the script
@@ -1648,12 +1654,12 @@ the version from another build; a refused push of `prod` and an unsigned
 pin commit; a refused push of `main`; a carry that conflicts, carried by
 hand; versions that disagree after the carry, bumped by hand; a failed
 CI run on the pin commit, also once `main` has moved on;
-and a failed Publish Pi package or Publish SDK package run. It also checks `bazel-sync` that
+and a failed Publish Pi package run. It also checks `bazel-sync` that
 never settles, `gh` failing during a wait, `main` moving during the
 Release wait, a release of the version from an earlier build of the same
-tree or of another tree, the Pi package's and the SDK package's first
-versions published from here (fakes of `npm` and `pnpm`), packages on npm
-published through their workflows, versions npm has already, and each preflight refusal but a missing Bazel,
+tree or of another tree, the Pi package's first version published from
+here (a fake `npm`), a package on npm published through the workflow, a
+version npm has already, and each preflight refusal but a missing Bazel,
 `python3`, `curl`, `npm` or `pnpm`: among them a cut from another branch
 than `prod` or behind `origin/prod`, a squashed pull request, and a
 release branch that `origin/prod` has moved past.
@@ -1691,29 +1697,13 @@ repos/empathic/clax/environments/npm`) and, until npm has the version,
 warns in a dry run and refuses to start a release when it is missing or
 allows more than `prod`; it never changes it.
 Step 20 is done whenever npm has the version. After that first publish,
-step 22 lists the trusted-publisher setup and switching `README.md` and
+step 21 lists the trusted-publisher setup and switching `README.md` and
 `plugins/pi/README.md` to lead their Pi install with `pi install
 npm:@empathic/clax-pi`; until the package exists they keep their current
 install instructions. `scripts/test-plugins.sh` keeps the package
 publishable: public, tagged `pi-package` for Pi's gallery, Pi's own
 modules as optional `"*"` peers (Pi provides them; installed, they would
 add a second Pi of about 200 MB), no `.qual` files, and a `LICENSE`.
-
-The SDK package, `@empathic/clax-sdk` ("The SDK package" above), is
-published by step 21 the same way, through
-`.github/workflows/publish-sdk.yml`: from the pin commit on `prod` with
-CI's `bazel` job passed on it, it builds `web/dist-sdk` (`pnpm run
-build:sdk`, at `Cargo.toml`'s version), runs its test (`pnpm run
-test:sdk`), refuses a version npm has already, and publishes
-`web/dist-sdk` with provenance through npm trusted publishing, in the same
-`npm` environment. While `npm view @empathic/clax-sdk` finds nothing, step
-21 publishes the first version from your machine instead: in a temporary
-worktree of the pin commit under `target/release/`, `pnpm install
---frozen-lockfile`, `pnpm run build:sdk` and `pnpm run test:sdk` in
-`web/`, then `npm publish --access public` from `web/dist-sdk` on your
-terminal; step 22 then lists its trusted-publisher setup (workflow
-`publish-sdk.yml`, environment `npm`). The preflight's `npm` environment
-check stands until npm has both packages at the version.
 
 A plugin pins the release its wrapper names (`PINNED_VERSION` and one
 `SHA256_*` per target in `scripts/ensure-clax.sh`; `scripts/pin-release.sh`
@@ -1749,6 +1739,92 @@ another through the plugins' wrapper pinned to that copy, and publishes the arch
 by hand (Actions, Release, Run workflow), or a pull request that touches the
 release path, does everything except publish, and keeps the result as the
 `release-dist` artifact.
+
+### Releasing the SDK package
+
+The SDK package, `@empathic/clax-client-sdk` ("The SDK package" above),
+has a version of its own, on a semver line of its own: the `version` in
+`web/sdk/package.json`. Nothing ties it to the `clax` binary's version,
+since the package only calls an instance's report-queue routes, and
+`scripts/bump-version.sh` and `scripts/check-version.sh` leave it alone. It
+is published from `prod`, so that a published SDK calls only routes the
+deployed instances have:
+
+1. Raise `web/sdk/package.json`'s `version` on `main` by an ordinary pull request, with the
+   changes it releases.
+2. The next Clax release (`just release`) carries it to `prod`, with the
+   rest of `main`.
+3. Then, from any checkout, publish it:
+
+```
+just release-sdk 0.2.0                              # a dry run: the checks, and every step with whether it is done
+just release-sdk 0.2.0 --i-know-what-i-am-doing     # tag sdk-v0.2.0 on prod and publish
+```
+
+`just release-sdk` runs `scripts/release-sdk.sh`. The commit it publishes
+is the one its tag `sdk-v<version>` names once the tag exists, and
+`origin/prod`'s tip until then. Its preflight refuses to start, changing
+nothing, unless: `gh` is signed in and `git`, `gh` and `npm` are on `PATH`;
+the version is `X.Y.Z`, is the version that commit's `web/sdk/package.json` carries, and is
+newer than every version npm has of the package (none counts as older); a
+tag of the version, if there is one, is the same here and on origin and on
+`origin/prod`; CI's `bazel` job passed on the commit; commit signing works;
+the `npm` environment allows `prod` alone ("Releasing" above; a dry run
+only warns); and, while the package is not on npm, `npm whoami` succeeds
+and `pnpm` is on `PATH`. Then it signs the tag `sdk-v<version>`, "Clax SDK
+<version>", on the commit and pushes the tag alone (no workflow runs on
+it: the Release and fleet-image workflows take `v*` tags), and runs
+`.github/workflows/publish-sdk.yml` from the commit (`gh workflow run
+publish-sdk.yml --ref prod -f dry_run=false -f sha=<commit>`), waiting for
+it and then for npm to list the version. The workflow's `build` job checks
+again that the commit is on `prod` with CI's `bazel` job passed, and that
+origin's tag `sdk-v<version>` names it (a run by hand publishes only a
+commit this command tagged), builds `web/dist-sdk` (`pnpm run
+build:sdk`), runs its test (`pnpm run test:sdk`), refuses a version npm
+has already and packs the tarball; its `publish` job, alone in the `npm`
+environment and alone able to request npm's token, publishes that tarball
+with provenance through npm trusted publishing, with a pinned npm and
+nothing else.
+
+npm lets a package name a trusted publisher only once it exists, so while
+`npm view @empathic/clax-client-sdk` finds nothing, the command publishes
+the first version from your machine instead: in a temporary worktree of the
+commit under `target/release-sdk/`, `pnpm install --frozen-lockfile`,
+`pnpm run build:sdk` and `pnpm run test:sdk` in `web/`, then `npm publish
+--access public` from `web/dist-sdk` on your terminal, for npm's
+one-time-password prompt. From then on, each run ends with the one-time
+setup (and a failed publish through the workflow says it too), until a
+version publishes through the workflow: on npmjs.com, the package's
+Settings, Trusted Publisher, GitHub Actions, organization `empathic`,
+repository `clax`, workflow `publish-sdk.yml`, environment `npm`; then
+Settings, Publishing access: Require two-factor authentication and
+disallow tokens, so that only the workflow can publish it.
+
+The dry run changes nothing (it fetches `prod`, which moves only
+`origin/prod`), and no run changes the checkout's branch or work tree. A
+step that fails stops the run; run the same command again: the tag, here
+and on origin, the workflow's runs (titled after their commit) and the
+versions npm has say what is done, so it resumes at the first step not
+done, waiting for a publish run still under way (or, for one that
+succeeded, for npm to list the version) or dispatching a failed one anew,
+from the tag's commit even once `prod` has moved on. A tag here that is
+not signed is refused (delete it, `git tag -d sdk-v<version>`, and run
+again). A version `prod` has moved past is published from the commit on
+`prod` that carries it, once you tag that commit by hand (`git tag -s
+sdk-v<version> -m "Clax SDK <version>" <commit>`). A version
+npm has is refused, unless it is this command's own finished publish (npm
+has it and origin has its tag), which reports every step done.
+
+`scripts/test-release-sdk.sh` (gate "SDK release command",
+`//scripts:release_sdk`) runs the script in scratch repositories with a
+bare origin and fakes of `gh`, `npm` and `pnpm`: a dry run; a publish
+through the workflow, and a rerun of it; a first version published from
+here; resuming after a failed publish run (once `prod` has moved on) and
+after a wait that gave up; and the preflight's refusals of a version `prod`
+does not carry, a version npm has or one older than npm's, a first publish
+with npm signed out or without `pnpm`, a commit CI failed on, `gh` signed
+out, an `npm` environment open to any branch, and a tag of a commit `prod`
+lacks.
 
 ### The crates.io package
 

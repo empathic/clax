@@ -40,21 +40,46 @@ TEST_FILES = [
     "shell/test-setup.ts",
 ]
 
+# What the SDK package's build (//web:dist_sdk) reads: its sources'
+# directories, its build scripts and their configuration. A part of
+# :files_app, so that an edit elsewhere does not rebuild the package, and a
+# source outside these directories is missing from its sandbox.
+SDK_DIRS = [
+    "sdk/**",
+    "overlay/**",
+    "bridge/**",
+]
+
+SDK_FILES = [
+    "package.json",
+    "scripts/build-sdk.mjs",
+    "scripts/extension-clean.mjs",
+    "scripts/overlay-component-css.mjs",
+    "svelte.config.js",
+    "tsconfig.json",
+]
+
 copy_to_bin(
-    name = "files_app",
+    name = "files_sdk",
     srcs = glob(
-        APP_DIRS,
-        exclude = TEST_FILES + [
+        SDK_DIRS,
+        exclude = TEST_FILES + ["**/.qual"],
+    ) + SDK_FILES,
+    visibility = ["//visibility:public"],
+)
+
+copy_to_bin(
+    name = "files_app_rest",
+    srcs = glob(
+        [d for d in APP_DIRS if d not in SDK_DIRS],
+        exclude = TEST_FILES + SDK_FILES + [
             "**/.qual",
             "extension/key/key.pem",
         ],
     ) + [
         ".oxlintrc.json",
-        "package.json",
         "playwright.config.ts",
         "pnpm-workspace.yaml",
-        "svelte.config.js",
-        "tsconfig.json",
         "vite.bridge.config.ts",
         "vite.bridge-parts.config.ts",
         "vite.shell.config.ts",
@@ -62,6 +87,14 @@ copy_to_bin(
         "vite.overlay.config.ts",
         "vitest.config.ts",
         "vitest.sdk.config.ts",
+    ],
+)
+
+filegroup(
+    name = "files_app",
+    srcs = [
+        ":files_app_rest",
+        ":files_sdk",
     ],
     visibility = ["//visibility:public"],
 )
@@ -133,16 +166,16 @@ pick_dir(
     visibility = ["//visibility:public"],
 )
 
-# pnpm run build:sdk: the SDK package, @empathic/clax-sdk
+# pnpm run build:sdk: the SDK package, @empathic/clax-client-sdk
 # (scripts/build-sdk.mjs), an action of its own so that no web build the
-# binaries embed runs it. It reads the workspace version from Cargo.toml and
-# carries the license text of web/bridge, web/overlay and web/sdk.
+# binaries embed runs it. Its version is its own (sdk/package.json's),
+# and it carries the license text of web/bridge,
+# web/overlay and web/sdk.
 npm_script_build(
     name = "dist_sdk",
     srcs = [
-        ":files_app",
+        ":files_sdk",
         ":node_modules",
-        "//:cargo_toml",
         "//:lgpl_license",
     ],
     out_dirs = ["dist-sdk"],
