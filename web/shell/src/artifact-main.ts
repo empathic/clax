@@ -1,3 +1,4 @@
+import "./owner-proof-install";
 import { mountArtifactView } from "./artifact";
 import { appQuery, inspectQuery, parseShellPath } from "./route";
 import { loadMoreMenu } from "./ui/more-menu.svelte";

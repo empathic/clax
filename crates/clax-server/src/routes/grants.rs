@@ -37,16 +37,9 @@ use serde_json::{Value, json};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// 403 `browser_required` unless a browser of the owner's makes the request
-/// (M20): [`Caller::browser`] for the owner.
+/// (M20; [`clax_http::auth::require_owner_browser`]).
 fn require_browser(caller: &Caller, what: &str) -> Result<(), ApiError> {
-    if caller.browser() && caller.is_owner() {
-        Ok(())
-    } else {
-        Err(ApiError::forbidden(
-            "browser_required",
-            format!("{what} needs the owner's browser: open People in Clax"),
-        ))
-    }
+    clax_http::auth::require_owner_browser(caller, what)
 }
 
 fn invite_view(i: &Invite) -> Value {
@@ -861,11 +854,15 @@ pub struct ApproveBody {
 /// GitHub members' own space, else the collaborator preset. 400 `wrong_code` for another code (the third denies the
 /// request); 400 `invalid_args` for a body naming an existing viewer or the
 /// owner, which take an invite; 409 `name_taken`; 409 `not_pending`.
+/// While an agent of the owner's is live and passkeys are required, the
+/// browser's call waits for a confirmation made with a passkey: 202
+/// `confirmation_pending` ([`clax_http::confirm`]).
 pub async fn approve(
     State(s): State<AppState>,
     d: clax_http::agent::DeniedToGrants,
     _o: SameOrigin,
     caller: Caller,
+    by: clax_http::confirm::Confirming,
     audit: DeferredAudit,
     gid: Result<Path<String>, PathRejection>,
     req: Result<Json<ApproveBody>, JsonRejection>,
@@ -882,6 +879,12 @@ pub async fn approve(
     let (Some(code), Some(name)) = (b.user_code, b.name) else {
         return Err(invalid_args("send the request's user_code and a name"));
     };
+    let decision = clax_http::confirm::Decision::ApproveGrant {
+        grant_id: gid.clone(),
+        name: name.clone(),
+        rights: b.rights.clone().unwrap_or(Value::Null),
+    };
+    clax_http::confirm::require_confirmation(&s, &caller, &by, decision).await?;
     let rights = b.rights.as_ref().map(Rights::parse).transpose()?;
     // A hosted daemon's new person gets their own space, as an invitee's.
     let rights = match rights {

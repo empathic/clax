@@ -474,7 +474,8 @@ async fn a_page_frame_carrying_a_credential_reaches_no_api() {
     let dir = tempfile::tempdir().unwrap();
     let (embed, _rx) = open(dir.path());
     let token = {
-        let (status, v) = call_json(&embed, head("GET", "/api/token", As::Owner), None).await;
+        let (status, v) =
+            call_json(&embed, head("GET", "/api/token", As::OwnerBrowser), None).await;
         assert_eq!(status, 200, "{v}");
         v["token"].as_str().unwrap().to_string()
     };
@@ -1156,7 +1157,7 @@ async fn the_apps_shell_samples_as_the_owners_browser() {
     )
     .await;
     assert_eq!(status, 200, "{v}");
-    let (status, v) = call_json(&embed, head("GET", "/api/token", As::Owner), None).await;
+    let (status, v) = call_json(&embed, head("GET", "/api/token", As::OwnerBrowser), None).await;
     assert_eq!(status, 200, "{v}");
     let bearer = format!("Bearer {}", v["token"].as_str().unwrap());
     let shell = |as_: As, method: &str, path: &str| {
@@ -1188,5 +1189,66 @@ async fn the_apps_shell_samples_as_the_owners_browser() {
     assert!(body.starts_with("event: start\n"), "{body}");
     assert!(body.contains("event: done\n"), "{body}");
     assert!(body.contains("echo: hello"), "{body}");
+    embed.close();
+}
+
+/// The Clax app keeps its own trust: browser confirmation guards external
+/// drivers (a localhost daemon's token, the extension's credential), and
+/// none reaches the in-process core. While agent sessions are live there
+/// (an outside harness's and the app's own), the app's own code (`owner`,
+/// the token) and its shell (`owner-browser`) decide at once: opening a
+/// site to the world and answering a question open no confirmation.
+#[tokio::test]
+async fn the_apps_own_calls_decide_at_once_while_an_agent_is_live() {
+    let dir = tempfile::tempdir().unwrap();
+    let (embed, _rx) = open(dir.path());
+    let aid = publish(&embed, "<title>t</title>", None).await;
+    let mut sid = String::new();
+    for (harness, hsid) in [("claude", "h1"), ("app", "install-1")] {
+        let (status, v) = call_json(
+            &embed,
+            head("POST", "/api/sessions", As::Owner),
+            Some(json!({"harness": harness, "harness_session_id": hsid, "cwd": "/w"})),
+        )
+        .await;
+        assert_eq!(status, 201, "{v}");
+        if harness == "claude" {
+            sid = v["session"]["id"].as_str().unwrap().to_string();
+        }
+    }
+    let (status, v) = call_json(
+        &embed,
+        head("PATCH", &format!("/api/artifacts/{aid}"), As::Owner),
+        Some(json!({"site_access": "world"})),
+    )
+    .await;
+    assert_eq!(status, 200, "{v}");
+    for (n, by) in [(0, As::Owner), (1, As::OwnerBrowser)] {
+        let (status, v) = call_json(
+            &embed,
+            head("POST", &format!("/api/sessions/{sid}/questions"), As::Owner),
+            Some(json!({"source": "ask", "artifact_id": aid, "questions": [{"question": format!("Which {n}?"), "header": "Pick", "options": [{"label": "A"}, {"label": "B"}]}]})),
+        )
+        .await;
+        assert_eq!(status, 201, "{v}");
+        let qid = v["question"]["id"].as_str().unwrap().to_string();
+        let (status, v) = call_json(
+            &embed,
+            head("POST", &format!("/api/questions/{qid}/answer"), by),
+            Some(json!({"answers": [{"selected": ["A"]}]})),
+        )
+        .await;
+        assert_eq!(
+            (status, v["question"]["status"].as_str()),
+            (200, Some("answered")),
+            "{v}"
+        );
+    }
+    let (status, v) = call_json(&embed, head("GET", "/api/confirmations", As::Owner), None).await;
+    assert_eq!(
+        (status, v["confirmations"].as_array().map(Vec::len)),
+        (200, Some(0)),
+        "{v}"
+    );
     embed.close();
 }

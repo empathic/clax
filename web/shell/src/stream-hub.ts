@@ -32,8 +32,17 @@
 // requests `/api/token`. The host passes the core's closing `event: end`
 // block through: after `stream_refused` with 400, 403 or 404 the hub opens
 // nothing until a tab's topics change; after any other end, and after a
-// 5xx answer to a subscription, it opens the stream again after the backoff
-// (reset by `ready`), from its `Last-Event-ID`.
+// 5xx answer to a subscription, it opens the stream again after the backoff,
+// from its `Last-Event-ID`.
+//
+// The backoff resets once a stream carries every topic the tabs want (its
+// subscriptions answered, or none needed), not at `ready`: a stream that
+// opens and then fails its subscriptions waits longer each time. A stream
+// the daemon no longer holds (`unknown_stream`) is opened again at once the
+// first time and after the backoff while it keeps happening. A reopen asked
+// while a stream request is in flight waits for that stream's `ready`, so
+// the hub never aborts a stream request that has not answered (a browser
+// keeps such a socket open to drain it, and the daemon counts it attached).
 //
 // Notifications (a hub made with `notify`): tabs say whether they have focus.
 // For each new unread inbox item (an `inbox_item` event whose `seq` is above
@@ -46,19 +55,28 @@
 // and announces those newer than the newest item when a tab first wanted
 // `inbox` (fetched then) and not announced already, oldest first, at most
 // the newest `CATCH_UP_SHOWN` of them.
+//
+// A local daemon's owner browser session counts only beside its proof
+// (`owner-proof.ts`), which a shared worker cannot read from the origin's
+// storage: each tab's `hello` carries it, the hub sends the latest it heard
+// on every request (and in a WebSocket's address), and a new proof (a login
+// in another tab) opens the stream again.
+import { after } from "./clock";
 import { STUCK_MS, backoff } from "./lifecycle";
+import { PROOF_HEADER, withProof } from "./owner-proof-wire";
 import { parseBlock } from "./sse";
 import { socketUrl } from "./socket-url";
 
 /** What a tab sends the hub. `hello` names the tab's Web Lock (held while
- * the tab lives), when it has one; `topics` is the tab's whole set;
+ * the tab lives), when it has one, and the origin's owner browser session
+ * proof, when there is one (`owner-proof.ts`); `topics` is the tab's whole set;
  * `focus` whether the tab has focus; `reconnect` opens a new stream, the
  * caller having changed to `caller` (a key: see `callerKey`), unless the
  * stream is already opened as that caller; `retry` asks again for topics
  * the daemon refused (the tab joins live after a live seat was refused or
  * released). */
 export type TabMsg =
-  | { t: "hello"; lock?: string }
+  | { t: "hello"; lock?: string; proof?: string }
   | { t: "topics"; topics: string[] }
   | { t: "focus"; focused: boolean }
   | { t: "reconnect"; caller?: string }
@@ -103,6 +121,10 @@ export const CATCH_UP = 20;
 /** Most of those one catch-up announces: the newest, so a long outage
  * ends in a few notifications, not a burst (the count says the rest). */
 export const CATCH_UP_SHOWN = 3;
+/** The label of the wait before a reconnect: it runs on the shell's clock
+ * (`after`, clock.ts), so a browser test advances the hub's clock past it
+ * (`claxTestClock.dueIn`) rather than waiting out the backoff. */
+export const RETRY_LABEL = "stream-retry";
 
 type Timer = ReturnType<typeof setTimeout>;
 
@@ -176,6 +198,9 @@ export class Hub {
   /** The caller a tab asked for while no stream was up: the next `ready`
    * says whether its stream is opened as it. */
   private asked: string | null = null;
+  /** A tab asked for a new stream (naming no caller) while one was being
+   * opened: its `ready` opens another. */
+  private reopenAtReady = false;
   private seq = 0;
   private conn: AbortController | null = null;
   /** The server answered the plain stream request 426: it carries the
@@ -188,7 +213,8 @@ export class Hub {
   /** The `end` block the open stream closed with (the app's host passes the
    * core's), else null. */
   private ended: { reason?: unknown; status?: unknown } | null = null;
-  private retry: Timer | undefined;
+  /** Cancels the pending reconnect after a backoff, if any. */
+  private retry: (() => void) | undefined;
   private linger: Timer | undefined;
   private watchdog: Timer | undefined;
   private pinger: ReturnType<typeof setInterval> | undefined;
@@ -206,6 +232,8 @@ export class Hub {
    * which it skips (`seenSeq` stays its baseline until it ends). */
   private windowSeen: Set<number> | null = null;
   private focusSeq = 0;
+  /** The owner browser session proof the tabs last said, if any. */
+  private proof: string | null = null;
 
   constructor(private readonly env: HubEnv) {
     this.fetch = env.fetch ?? ((...a) => fetch(...a));
@@ -233,6 +261,13 @@ export class Hub {
           c.locked = true;
           const client = c;
           this.env.watchLock(msg.lock, () => { if (this.clients.get(id) === client) this.detach(id); });
+        }
+        if (msg.proof && msg.proof !== this.proof) {
+          const had = this.proof !== null;
+          this.proof = msg.proof;
+          // A new session (a login in another tab): the stream opened with
+          // the old one is reopened with it.
+          if (had && this.conn) this.connect();
         }
         break;
       case "topics": {
@@ -262,7 +297,9 @@ export class Hub {
           if (msg.caller === this.caller) break;
         }
         this.streamId = null;
-        if (this.conn) this.connect();
+        // A stream request in flight is left to answer: its `ready` reopens.
+        if (this.conn && !this.up) this.reopenAtReady = true;
+        else if (this.conn) this.connect();
         break;
       case "retry":
         for (const t of msg.topics) this.refused.delete(t);
@@ -315,7 +352,7 @@ export class Hub {
     else { clearInterval(this.pinger); this.pinger = undefined; }
     if (!want.size) {
       if (this.conn && this.linger === undefined) this.linger = setTimeout(() => { this.linger = undefined; if (!this.wanted().size) this.closeIdle(); }, LINGER_MS);
-      if (!this.conn) { clearTimeout(this.retry); this.retry = undefined; }
+      if (!this.conn) { this.retry?.(); this.retry = undefined; }
       else if (this.up) void this.flush();
       return;
     }
@@ -347,11 +384,18 @@ export class Hub {
 
   private url(path: string): string { return (this.env.base ?? "") + path; }
 
+  /** `h` with the owner browser session proof, when the hub has one. */
+  private proven(h: Record<string, string> = {}): Record<string, string> {
+    return this.proof ? { ...h, [PROOF_HEADER]: this.proof } : h;
+  }
+
   private connect(): void {
     this.drop();
-    clearTimeout(this.retry);
+    this.retry?.();
     this.retry = undefined;
     this.ended = null;
+    // A new stream request answers any reopen a tab asked for.
+    this.reopenAtReady = false;
     const ac = new AbortController();
     this.conn = ac;
     this.arm(ac, CONNECT_MS);
@@ -359,11 +403,10 @@ export class Hub {
   }
 
   private async run(ac: AbortController): Promise<void> {
-    // After a failure the daemon may have restarted with a new token: the
-    // token request renews the events cookie (a LAN view gets a 403 and none).
-    if (this.failures > 0 && !this.env.host) await this.fetch(this.url("/api/token"), { signal: ac.signal, cache: "no-store" }).catch(() => null);
+    // The events cookie is the browser's owner browser session, which
+    // outlives a daemon restart and a new token: nothing renews it.
     if (this.socketMode) return this.runSocket(ac);
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = this.proven();
     if (this.streamId) headers["Last-Event-ID"] = `${this.streamId}:${this.seq}`;
     const res = await this.fetch(this.url("/api/stream"), { headers, signal: ac.signal, cache: "no-store", credentials: "same-origin" });
     if (res.status === 426) {
@@ -400,7 +443,8 @@ export class Hub {
     return new Promise<void>((_, reject) => {
       const q = this.streamId ? `?last_event_id=${encodeURIComponent(`${this.streamId}:${this.seq}`)}` : "";
       const origin = this.env.base ?? (globalThis as { location?: { origin: string } }).location?.origin ?? "";
-      const url = socketUrl(origin, `/api/stream${q}`, !!this.env.host);
+      const raw = socketUrl(origin, `/api/stream${q}`, !!this.env.host);
+      const url = raw === null ? null : withProof(raw, this.proof);
       if (url === null) return reject(new Error("no WebSocket here"));
       const ws = (this.env.socket ?? (u => new WebSocket(u)))(url);
       const ping = setInterval(() => { try { ws.send("ping"); } catch { /* closing */ } }, SOCKET_PING_MS);
@@ -443,8 +487,11 @@ export class Hub {
       this.caller = callerKey(data.caller);
       const asked = this.asked;
       this.asked = null;
-      if (asked !== null && asked !== this.caller) {
-        // A tab asked for another caller while this stream was being opened.
+      const reopen = this.reopenAtReady;
+      this.reopenAtReady = false;
+      if (reopen || (asked !== null && asked !== this.caller)) {
+        // A tab asked for a new stream, or another caller, while this one
+        // was being opened.
         this.streamId = null;
         this.connect();
         return;
@@ -460,7 +507,6 @@ export class Hub {
         for (const c of this.clients.values()) c.live.clear();
       }
       this.up = true;
-      this.failures = 0;
       if (this.toldDown) {
         this.toldDown = false;
         if (this.clients.size) this.env.send([...this.clients.keys()], { t: "status", up: true });
@@ -525,7 +571,7 @@ export class Hub {
     const req = new AbortController();
     const stuck = this.env.host ? undefined : setTimeout(() => req.abort(), STUCK_MS);
     try {
-      const res = await this.fetch(this.url(path), { signal: req.signal, cache: "no-store", credentials: "same-origin" });
+      const res = await this.fetch(this.url(path), { headers: this.proven(), signal: req.signal, cache: "no-store", credentials: "same-origin" });
       if (res.status === 403) return "forbidden";
       if (!res.ok) return null;
       const body: unknown = await res.json();
@@ -591,21 +637,21 @@ export class Hub {
     this.drop();
     const final = this.env.host && this.ended?.reason === "stream_refused" && FINAL.has(this.ended.status as number);
     this.ended = null;
-    if (final) { clearTimeout(this.retry); this.retry = undefined; return; }
+    if (final) { this.retry?.(); this.retry = undefined; return; }
     if (!this.toldDown && !this.env.host) {
       this.toldDown = true;
       if (this.clients.size) this.env.send([...this.clients.keys()], { t: "status", up: false });
     }
     if (!this.wanted().size) return;
-    clearTimeout(this.retry);
-    this.retry = setTimeout(() => { this.retry = undefined; if (this.wanted().size) this.connect(); }, backoff(this.failures++));
+    this.retry?.();
+    this.retry = after(backoff(this.failures++), () => { this.retry = undefined; if (this.wanted().size) this.connect(); }, RETRY_LABEL);
   }
 
   /** No tab wants anything: the connection closes, and the next starts afresh. */
   private closeIdle(): void {
     clearTimeout(this.linger);
     this.linger = undefined;
-    clearTimeout(this.retry);
+    this.retry?.();
     this.retry = undefined;
     this.drop();
     this.streamId = null;
@@ -633,7 +679,11 @@ export class Hub {
         const want = this.wanted();
         const add = [...want].filter(t => !this.server.has(t));
         const remove = [...this.server].filter(t => !want.has(t));
-        if (!add.length && !remove.length) return;
+        if (!add.length && !remove.length) {
+          // The stream carries what the tabs want: the backoff starts over.
+          this.failures = 0;
+          return;
+        }
         if (!(await this.update(add, remove))) return;
       }
     } finally {
@@ -677,7 +727,7 @@ export class Hub {
     try {
       res = await this.fetch(this.url(`/api/stream/${id}`), {
         method: "POST", signal: req.signal, credentials: "same-origin",
-        headers: { "content-type": "application/json" },
+        headers: this.proven({ "content-type": "application/json" }),
         body: JSON.stringify({ subscribe: add, unsubscribe: remove }),
       });
     } catch {
@@ -704,8 +754,7 @@ export class Hub {
     if (code === "unknown_stream") {
       // The daemon no longer holds this stream for this caller (the viewer
       // changed, or it restarted): a new one, and every tab refetches.
-      this.streamId = null;
-      this.connect();
+      this.reopen();
       return false;
     }
     if (res.status >= 500) { this.fail(); return false; }
@@ -729,8 +778,19 @@ export class Hub {
       return true;
     }
     // Only removals, refused: start over on a new stream.
-    this.streamId = null;
-    this.connect();
+    this.reopen();
     return false;
+  }
+
+  /** Opens a new stream (no `Last-Event-ID`) in place of one the daemon
+   * refused to change: at once the first time since the stream last
+   * carried every wanted topic, after the backoff while it keeps
+   * happening. The tabs are not told the stream is down. */
+  private reopen(): void {
+    this.streamId = null;
+    if (this.failures === 0) { this.failures++; this.connect(); return; }
+    this.drop();
+    this.retry?.();
+    this.retry = after(backoff(this.failures++), () => { this.retry = undefined; if (this.wanted().size) this.connect(); }, RETRY_LABEL);
   }
 }

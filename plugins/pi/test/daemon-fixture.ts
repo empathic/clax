@@ -68,6 +68,31 @@ export async function startDaemon(): Promise<TestDaemon> {
   return { home, base, token, stop };
 }
 
+/** The `clax_viewer` cookie (`name=value`) of a browser of this machine's
+ * with no name, minted by the daemon's debug-build test route: reaching the
+ * port alone mints no viewer. */
+export async function viewerCookie(d: { base: string; token: string }): Promise<string> {
+  const v = await api(d, "/api/_test/viewers", { method: "POST" });
+  return `clax_viewer=${v.cookie as string}`;
+}
+
+/** The headers of a browser of the owner's, logged in as `clax open`
+ * does: a login code made with the token, redeemed at `GET /login`; its
+ * owner cookie (`name=value`) and the proof its login's page wrote into the
+ * origin's storage, which the shell sends as `X-Clax-Owner-Proof`. Made
+ * before any agent session, it is a browser the owner opened, which may
+ * make the decisions that wait for the owner's browser while an agent is
+ * live (answering a question among them). */
+export async function ownerBrowser(d: { base: string; token: string }): Promise<Record<string, string>> {
+  const made = await api(d, "/api/browser-login", { method: "POST", body: "{}" });
+  const res = await fetch(`${d.base}${made.path as string}`, { redirect: "manual" });
+  const port = new URL(d.base).port;
+  const cookie = res.headers.getSetCookie().map(c => c.split(";")[0]).find(c => c.startsWith(`clax_owner_${port}=`));
+  const proof = /data-proof="([^"]+)"/.exec(await res.text())?.[1];
+  if (!cookie || !proof) throw new Error(`no owner browser session: HTTP ${res.status}`);
+  return { cookie, "x-clax-owner-proof": proof };
+}
+
 /** `GET` of a daemon API path, as JSON. */
 export async function api(d: { base: string; token: string }, path: string, init: RequestInit = {}): Promise<any> {
   const res = await fetch(`${d.base}${path}`, { ...init, headers: { authorization: `Bearer ${d.token}`, "content-type": "application/json", ...(init.headers ?? {}) } });

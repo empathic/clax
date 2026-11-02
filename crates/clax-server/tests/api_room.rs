@@ -78,6 +78,21 @@ async fn try_connect(
     headers: &[(&str, String)],
 ) -> Result<Client, u16> {
     let mut req = url(ts, aid, peer, token).into_client_request().unwrap();
+    // Without the token or a cookie of its own, a browser of this
+    // machine's with no name ([`TestServer::local_browser`]): a local
+    // daemon opens no socket for a request with no credential at all.
+    if token != Some(ts.token.as_str())
+        && !headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("cookie"))
+    {
+        req.headers_mut().insert(
+            "cookie",
+            format!("clax_viewer={}", ts.local_browser())
+                .parse()
+                .unwrap(),
+        );
+    }
     for (k, v) in headers {
         req.headers_mut().insert(
             tokio_tungstenite::tungstenite::http::HeaderName::from_bytes(k.as_bytes()).unwrap(),

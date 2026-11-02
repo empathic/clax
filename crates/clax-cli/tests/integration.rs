@@ -45,6 +45,8 @@ mod journal;
 mod mcp_preflight;
 #[cfg(any(not(clax_split), clax_split = "native_host"))]
 mod native_host;
+#[cfg(any(not(clax_split), clax_split = "passkeys"))]
+mod passkeys;
 #[cfg(any(not(clax_split), clax_split = "people"))]
 mod people;
 #[cfg(any(not(clax_split), clax_split = "remote_push"))]

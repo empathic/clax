@@ -138,6 +138,13 @@ kinds! {
     QueueUpdate = "queue.update",
     QueueClaim = "queue.claim",
     QueueRelease = "queue.release",
+    RemoteRequestAsk = "remote_request.ask",
+    RemoteRequestAnswer = "remote_request.answer",
+    RemoteRequestClose = "remote_request.close",
+    ConfirmationAnswer = "confirmation.answer",
+    PasskeyAdd = "passkey.add",
+    PasskeyRemove = "passkey.remove",
+    PasskeyRequire = "passkey.require",
 }
 
 impl std::fmt::Display for AuditKind {
@@ -845,6 +852,13 @@ mod tests {
             "queue.update",
             "queue.claim",
             "queue.release",
+            "remote_request.ask",
+            "remote_request.answer",
+            "remote_request.close",
+            "confirmation.answer",
+            "passkey.add",
+            "passkey.remove",
+            "passkey.require",
         ];
         let names: Vec<&str> = AuditKind::ALL.iter().map(|k| k.as_str()).collect();
         assert_eq!(names, spec);

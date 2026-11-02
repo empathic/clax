@@ -200,6 +200,14 @@ pub enum Event {
     People {
         change: serde_json::Value,
     },
+    /// A browser confirmation was asked for or answered (a decision made
+    /// with the daemon token while an agent session is live, which waits
+    /// for a click in the owner's browser): `confirmation` is its view.
+    /// Only the owner's `inbox` stream topic carries it; `/api/events`
+    /// never does.
+    Confirmation {
+        confirmation: serde_json::Value,
+    },
     /// An agent session started, ended or was renamed (spec 2026-10-08-
     /// multi-agent-multi-person §13): clients refetch `GET /api/agents`.
     /// It names no agent. Only the `agents` stream topic carries it (with
@@ -285,6 +293,7 @@ impl Event {
             | Event::InboxRead { .. }
             | Event::ApprovalRequest { .. }
             | Event::People { .. }
+            | Event::Confirmation { .. }
             | Event::Agents { .. }
             | Event::Job { .. }
             | Event::JobsOwner { .. } => "",
@@ -318,6 +327,7 @@ impl Event {
             Event::InboxRead { .. } => "inbox_read",
             Event::ApprovalRequest { .. } => "approval_request",
             Event::People { .. } => "people",
+            Event::Confirmation { .. } => "confirmation",
             Event::Agents { .. } => "agents",
             Event::Job { .. } => "job",
             Event::JobsOwner { .. } => "jobs_owner",
@@ -598,6 +608,9 @@ mod tests {
             },
             Event::People {
                 change: serde_json::json!({"what": "grant_requested"}),
+            },
+            Event::Confirmation {
+                confirmation: serde_json::json!({"id": "cf_x"}),
             },
             Event::Tags {
                 artifact_id: None,

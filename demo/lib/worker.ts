@@ -10,7 +10,8 @@
 // packages installed (`scripts/pnpm-install-stamped.sh crates/clax-worker`).
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { exited, stopGroup } from "./proc.ts";
+import { existsSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,15 +31,6 @@ export function freePort(): Promise<number> {
     });
   });
 }
-
-function exited(child: ChildProcess): Promise<void> {
-  return new Promise((ok) => {
-    if (child.exitCode !== null || child.signalCode !== null) ok();
-    else child.once("exit", () => ok());
-  });
-}
-
-const wait = (ms: number) => new Promise<"timeout">((r) => setTimeout(() => r("timeout"), ms));
 
 /** Builds the Worker (`build.sh`, into target/clax-worker/build). The web
  * UI is built separately, first. `out` takes its stdout ("ignore" drops
@@ -92,6 +84,14 @@ export function demoVars(port: number, secret: string, seats: string): Record<st
   };
 }
 
+/** The vars clax.dev's deploy gives the Worker over `demoVars`, as
+ * demo/clax-dev-local.ts runs it (crates/clax-worker/deploy.mjs writes
+ * them): GitHub sign-in's App, the key-encryption key CLAX_KEK (64 hex
+ * digits) and the bundled Terms of Service and Privacy Policy. */
+export function devLocalVars(o: { githubClientId: string; githubClientSecret: string; kek: string }): Record<string, string> {
+  return { GITHUB_CLIENT_ID: o.githubClientId, GITHUB_CLIENT_SECRET: o.githubClientSecret, CLAX_KEK: o.kek, LEGAL: "bundled" };
+}
+
 /** wrangler.jsonc without its custom build (built beforehand), with
  * absolute paths and `vars` set, written to `dir/wrangler.json`. */
 function writeConfig(dir: string, vars: Record<string, string>): string {
@@ -110,8 +110,14 @@ function writeConfig(dir: string, vars: Record<string, string>): string {
   return path;
 }
 
+/** The Worker is up but its instance cannot open (its `/healthz` answers 500
+ * "the instance could not start: …"), for example over data an earlier
+ * build migrated: waiting longer changes nothing. */
+export class InstanceCannotStart extends Error {}
+
 /** Starts `wrangler dev --local` on `o.dir` with the demo's vars; resolves
- * once `/healthz` answers on the public origin. */
+ * once `/healthz` answers on the public origin, and rejects at once with
+ * [`InstanceCannotStart`] when it answers that the instance cannot start. */
 export async function startWorker(o: WorkerOptions, readyMs = 90_000): Promise<RunningWorker> {
   mkdirSync(o.dir, { recursive: true });
   const wrangler = join(WORKER_DIR, "node_modules/.bin/wrangler");
@@ -119,6 +125,12 @@ export async function startWorker(o: WorkerOptions, readyMs = 90_000): Promise<R
   const config = writeConfig(o.dir, { ...demoVars(o.port, o.secret, o.seats), ...o.vars });
   const log = join(o.dir, "wrangler.log");
   const out = openSync(log, "a");
+  // The log keeps every run's output; a failure shows this run's alone.
+  const from = statSync(log).size;
+  const thisRun = () => {
+    const text = readFileSync(log, "utf8").slice(from).replace(/\n\s*\n/g, "\n").trim();
+    return text ? `wrangler's output this run (the end; all of it in ${log}):\n${text.slice(-2000)}` : `wrangler printed nothing this run (${log}).`;
+  };
   const inspector = await freePort();
   const child = spawn(
     wrangler,
@@ -139,29 +151,27 @@ export async function startWorker(o: WorkerOptions, readyMs = 90_000): Promise<R
   o.onSpawn?.(child);
   let gone = false;
   void exited(child).then(() => (gone = true));
-  const stop = async () => {
-    if (gone) return;
-    try {
-      process.kill(-pid, "SIGTERM");
-    } catch {
-      return;
-    }
-    if ((await Promise.race([exited(child), wait(10_000)])) === "timeout") {
-      try {
-        process.kill(-pid, "SIGKILL");
-      } catch {
-        // already gone
-      }
-      await Promise.race([exited(child), wait(10_000)]);
-    }
-  };
+  const stop = () => stopGroup(child);
   const base = `http://localhost:${o.port}`;
-  const until = Date.now() + readyMs;
+  const started = Date.now();
+  const secs = () => ((Date.now() - started) / 1000).toFixed(1);
+  // What the last `/healthz` got, for a timeout to say.
+  let last = "no answer yet";
   try {
     for (;;) {
-      if (gone) throw new Error(`wrangler dev exited before it was ready; see ${log}:\n${readFileSync(log, "utf8").slice(-2000)}`);
-      if (Date.now() > until) throw new Error(`wrangler dev was not ready within ${readyMs / 1000} s; see ${log}`);
-      if (await fetch(`${base}/healthz`).then((r) => r.ok, () => false)) break;
+      if (gone) throw new Error(`wrangler dev exited after ${secs()} s, before /healthz answered (it last got: ${last}).\n${thisRun()}`);
+      if (Date.now() - started > readyMs) throw new Error(`wrangler dev did not answer /healthz with 200 within ${readyMs / 1000} s (it last got: ${last}).\n${thisRun()}`);
+      const res = await fetch(`${base}/healthz`, { signal: AbortSignal.timeout(5_000) }).catch((e: Error) => {
+        const cause = e.cause as { code?: string; message?: string } | undefined;
+        last = e.name === "TimeoutError" ? "no answer within 5 s" : `no connection (${cause?.code || cause?.message || e.message})`;
+        return null;
+      });
+      if (res?.ok) break;
+      if (res) {
+        const body = await res.text().catch(() => "");
+        last = `${res.status}${body ? `: ${body.trim().slice(0, 300)}` : ""}`;
+        if (res.status === 500 && body.startsWith("the instance could not start")) throw new InstanceCannotStart(body.trim());
+      }
       await new Promise((r) => setTimeout(r, 200));
     }
   } catch (e) {

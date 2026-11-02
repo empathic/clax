@@ -483,6 +483,17 @@ fn effective_key(st: &Store, bot: &Bot) -> clax_core::Result<(Option<KeyInUse>, 
 /// What [`models_of`] answers without an instance key.
 const NO_KEY: &str = "no instance key is set";
 
+/// The Messages client for `store`'s base URL policy: under a hosted
+/// policy it connects only to public addresses
+/// ([`clax_sample::messages::MessagesClient::public_only`]), so a public
+/// name that resolves to a private one never receives the instance's key.
+pub fn messages_client(store: &clax_store::Store) -> MessagesClient {
+    match store.base_url_policy() {
+        clax_store::bot_settings::BaseUrlPolicy::Hosted => MessagesClient::new().public_only(),
+        _ => MessagesClient::new(),
+    }
+}
+
 /// The provider's models with the instance key, or why not.
 async fn models_of(
     s: &AppState,
@@ -498,9 +509,10 @@ async fn models_of(
     let Some((key, slot)) = key else {
         return Ok((Err(NO_KEY.into()), None));
     };
+    let store = s.store.clone();
     // The provider's request is not `Send` on the Worker's one thread.
     let r = clax_rt::sendable(async move {
-        MessagesClient::new()
+        messages_client(&store)
             .list_models(&base_url, &key)
             .await
             // Its own words, never the answer's text: the base URL may be

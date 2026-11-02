@@ -1,9 +1,19 @@
-//! JSON error responses: `{"error": {"code", "message", ...}}`.
+//! JSON error responses: `{"error": {"code", "message", ...}}`; and the
+//! one answer a handler gives up on before it changes anything without
+//! failing, 202 (`ApiError::accepted`): `{"status": <code>, ...}`.
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use clax_core::CoreError;
 use serde_json::json;
+
+/// The hint on every 404 of an artifact on the hosted instance at
+/// `origin` ([`ApiError::not_found_artifact`]).
+pub fn not_found_hint(origin: &str) -> String {
+    format!(
+        "This may be a private page. If it is yours, sign in at {origin}/signin. Agents: connect this Clax instance with the connect_instance tool or `clax remote request <url>`."
+    )
+}
 
 #[derive(Debug)]
 pub struct ApiError {
@@ -35,8 +45,42 @@ impl ApiError {
     pub fn not_found() -> Self {
         Self::new(StatusCode::NOT_FOUND, "not_found", "not found")
     }
+    /// The 404 of an artifact on a hosted instance whose public origin is
+    /// `origin`: [`ApiError::not_found`] with the one hint every such 404
+    /// carries, so it tells nothing of whether the artifact exists. It
+    /// names where to sign in (`sign_in`) and the instance's discovery
+    /// document (`instance`).
+    pub fn not_found_artifact(origin: &str) -> Self {
+        let mut err = Self::not_found();
+        err.extra
+            .insert("hint".into(), json!(not_found_hint(origin)));
+        err.extra
+            .insert("sign_in".into(), json!(format!("{origin}/signin")));
+        err.extra.insert(
+            "instance".into(),
+            json!(format!("{origin}/.well-known/clax")),
+        );
+        err
+    }
     pub fn bad_request(code: &'static str, msg: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_REQUEST, code, msg)
+    }
+    /// 202 `{"status": status, ...fields}`: the call changed nothing yet
+    /// and waits on something else (a browser confirmation,
+    /// [`crate::confirm`]). It travels as an error so a handler returns it
+    /// with `?` before it acts; it is answered as no error is. A
+    /// `confirmation_id` among `fields` is also sent as the
+    /// [`crate::confirm::CONFIRMATION_HEADER`] response header.
+    pub fn accepted(
+        status: &'static str,
+        fields: serde_json::Map<String, serde_json::Value>,
+    ) -> Self {
+        ApiError {
+            status: StatusCode::ACCEPTED,
+            code: status,
+            message: String::new(),
+            extra: fields,
+        }
     }
 }
 
@@ -328,6 +372,22 @@ impl From<CoreError> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        if self.status == StatusCode::ACCEPTED {
+            let id = self
+                .extra
+                .get("confirmation_id")
+                .and_then(|v| v.as_str())
+                .and_then(|v| axum::http::HeaderValue::from_str(v).ok());
+            let mut body = serde_json::Map::new();
+            body.insert("status".into(), json!(self.code));
+            body.extend(self.extra);
+            let mut res = (self.status, axum::Json(body)).into_response();
+            if let Some(id) = id {
+                res.headers_mut()
+                    .insert(crate::confirm::CONFIRMATION_HEADER, id);
+            }
+            return res;
+        }
         let mut err = serde_json::Map::new();
         err.insert("code".into(), json!(self.code));
         err.insert("message".into(), json!(self.message));

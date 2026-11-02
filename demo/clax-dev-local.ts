@@ -54,7 +54,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { BuildLog } from "./lib/build.ts";
 import { PersonSession, setupFirstPerson, signinLink, type PersonInfo } from "./lib/http.ts";
-import { startWorker, type RunningWorker } from "./lib/worker.ts";
+import { InstanceCannotStart, devLocalVars, startWorker, type RunningWorker } from "./lib/worker.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DIR = join(ROOT, "target/clax-dev-local");
@@ -352,20 +352,23 @@ const workerOptions = {
   secret: secrets.SETUP_SECRET,
   seats: "",
   vars: {
-    GITHUB_CLIENT_ID: github.GITHUB_CLIENT_ID,
-    GITHUB_CLIENT_SECRET: github.GITHUB_CLIENT_SECRET,
+    ...devLocalVars({ githubClientId: github.GITHUB_CLIENT_ID, githubClientSecret: github.GITHUB_CLIENT_SECRET, kek: secrets.CLAX_KEK }),
     ...(opts.owner ? { OWNER_GITHUB: github.OWNER_GITHUB } : {}),
-    CLAX_KEK: secrets.CLAX_KEK,
-    LEGAL: "bundled",
     REEL_URL: `${reelBase}/reel.mp4`,
     REEL_POSTER_URL: `${reelBase}/reel-poster.jpg`,
   },
 };
+/** Why the Worker did not start; for an instance that cannot open its data
+ * (one an earlier build of this branch migrated, say), how to start over. */
+function startFailure(e: unknown): string {
+  if (e instanceof InstanceCannotStart) return `The Worker is up, but ${e.message}\nIf an earlier build made this data, start over with \`just clax-dev-local --fresh\` (it deletes ${DIR}).`;
+  return e instanceof Error ? e.message : String(e);
+}
 let w: RunningWorker;
 try {
   w = await startWorker(workerOptions);
 } catch (e) {
-  console.error(e instanceof Error ? e.message : e);
+  console.error(startFailure(e));
   process.exit(1);
 }
 let stopping = false;
@@ -391,14 +394,42 @@ function onWorkerExit(r: RunningWorker): void {
 // web/dist) and restarts the Worker on the same port and data; a change
 // made during a rebuild runs one more. Reload the page to see it.
 // --no-build serves the build it started with.
-const WATCH_SKIP = /(^|\/)(node_modules|dist|dist-extension|reel)(\/|$)|\.qual$|\.DS_Store$/;
+// Only sources count: a file git ignores (a build's own output, such as
+// web/dist-sdk, which the web build rewrites), a directory (its own event
+// comes with each file's), a file that came and went untracked (a package
+// install's temporary file) or a .qual record changes nothing the Worker
+// serves.
+const WATCH_SKIP = /(^|\/)(node_modules|\.git)(\/|$)|\.qual$|\.DS_Store$/;
+/** The paths among `paths` (relative to the repository) that are sources:
+ * files git does not ignore, and files git tracks that are gone. */
+function sources(paths: string[]): string[] {
+  if (!paths.length) return [];
+  const isFile = (p: string) => {
+    try {
+      return statSync(join(ROOT, p)).isFile();
+    } catch {
+      return null;
+    }
+  };
+  const there = paths.filter((p) => isFile(p) === true);
+  const gone = paths.filter((p) => isFile(p) === null);
+  const ignored = spawnSync("git", ["check-ignore", "--stdin", "-z"], { cwd: ROOT, input: there.join("\0") + "\0", encoding: "utf8" });
+  // 0: some are ignored (listed), 1: none are; anything else, count them all.
+  const skip = ignored.status === 0 || ignored.status === 1 ? new Set(ignored.stdout.split("\0")) : new Set<string>();
+  const tracked = gone.length ? new Set(spawnSync("git", ["ls-files", "-z", "--", ...gone], { cwd: ROOT, encoding: "utf8" }).stdout.split("\0")) : new Set<string>();
+  return [...there.filter((p) => !skip.has(p)), ...gone.filter((p) => tracked.has(p))];
+}
 let rebuilding = false;
 let restarting = false;
 let again = false;
 let settleTimer: ReturnType<typeof setTimeout> | undefined;
+/** The paths changed since the last settle, and the sources among the last ones that started a rebuild. */
+const changed = new Set<string>();
+let changedSources: string[] = [];
 /** Rebuilds the web UI and the Worker, then restarts the Worker; false when the build failed. */
 async function rebuildOnce(): Promise<boolean> {
-  console.log("\nA source changed: rebuilding.");
+  const shown = changedSources.slice(0, 3).join(", ") + (changedSources.length > 3 ? ` and ${changedSources.length - 3} more` : "");
+  console.log(`\nA source changed (${shown}): rebuilding.`);
   try {
     await builds.web();
     await builds.worker();
@@ -415,7 +446,7 @@ async function rebuildOnce(): Promise<boolean> {
     console.log(`Rebuilt: reload ${base} to see it.`);
     return true;
   } catch (e) {
-    console.error(`The rebuilt Worker did not start: ${e instanceof Error ? e.message : e}`);
+    console.error(`The rebuilt Worker did not start: ${startFailure(e)}`);
     return stop(1);
   } finally {
     restarting = false;
@@ -445,8 +476,15 @@ function watchSources(): void {
     watchers.push(
       watch(join(ROOT, dir), { recursive: true }, (_, file) => {
         if (!file || stopping || WATCH_SKIP.test(file.toString())) return;
+        changed.add(`${dir}/${file.toString()}`);
         clearTimeout(settleTimer);
-        settleTimer = setTimeout(() => void rebuild(), 300);
+        settleTimer = setTimeout(() => {
+          const found = sources([...changed]);
+          changed.clear();
+          if (!found.length) return;
+          changedSources = found;
+          void rebuild();
+        }, 300);
       }),
     );
   }

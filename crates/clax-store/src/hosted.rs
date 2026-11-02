@@ -348,7 +348,8 @@ fn check_guest_name(tx: &Transaction<'_>, id: &str, name: &str) -> Result<String
 }
 
 impl Store {
-    fn later(&self, secs: i64) -> String {
+    /// The store's time `secs` seconds from now (RFC 3339).
+    pub(crate) fn later(&self, secs: i64) -> String {
         clax_core::time::stamp(self.now_utc() + Duration::seconds(secs))
     }
 

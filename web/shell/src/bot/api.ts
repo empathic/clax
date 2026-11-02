@@ -10,7 +10,7 @@
 // `KeyInfo`. Credits are integer milli-credits, money integer micro-USD,
 // margins integer basis points (§7.1).
 import { getToken } from "../api";
-import { Refused } from "../people/api";
+import { Refused } from "../held";
 
 export { Refused };
 

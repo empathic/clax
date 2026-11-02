@@ -1226,10 +1226,13 @@ pub async fn presence(
 /// filtered for an agent channel's reader, and carries `site_access`. An
 /// agent's opening to the world that waits on its person answers 202
 /// `{status: "approval_pending", question_id, inbox_url}` and changes
-/// nothing.
+/// nothing. The owner's opening to the world made with the token alone
+/// while an agent session is live waits for a click in their browser: 202
+/// `confirmation_pending` ([`clax_http::confirm`]), and changes nothing.
 pub async fn patch(
     State(s): State<AppState>,
     a: Agent<clax_http::agent::ArtifactsPatch>,
+    confirming: clax_http::confirm::Confirming,
     headers: HeaderMap,
     audit: AuditCtx,
     deferred: clax_http::audit::DeferredAudit,
@@ -1273,6 +1276,19 @@ pub async fn patch(
         b.description.as_deref(),
         b.icon.as_deref(),
     )?;
+    if world == Some(true) {
+        let i2 = id.clone();
+        let open = s.store_call(move |st| st.site_open_to_world(&i2)).await?;
+        if !open {
+            let decision = clax_http::confirm::Decision::Widen {
+                artifact_id: id.as_str().to_string(),
+                to: "world".into(),
+                remote_id: None,
+                body: None,
+            };
+            clax_http::confirm::require_confirmation(&s, &a.caller, &confirming, decision).await?;
+        }
+    }
     if let Some(caps) = b.capabilities.clone() {
         manifest_owned(&s, &id, caps).await?;
     }

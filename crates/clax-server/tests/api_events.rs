@@ -228,7 +228,10 @@ async fn raw_stream(
     impl StreamExt<Item = Result<bytes::Bytes, reqwest::Error>> + Unpin + use<>,
     String,
 ) {
-    let mut req = ts.client.get(format!("{}/api/events{query}", ts.base));
+    let mut req = ts
+        .client
+        .get(format!("{}/api/events{query}", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()));
     if let Some(id) = last_event_id {
         req = req.header("last-event-id", id);
     }
@@ -357,57 +360,32 @@ async fn the_artifact_filter_takes_a_comma_list() {
 }
 
 #[tokio::test]
-async fn the_token_route_sets_the_events_cookie_for_the_shell_only() {
+async fn the_token_route_sets_no_cookie_and_the_login_sets_the_events_cookie() {
     let ts = TestServer::spawn().await;
-    let port = ts.base.rsplit(':').next().unwrap().to_string();
-    let plain = ts.get("/api/token").await;
-    assert_eq!(plain.status(), 200);
-    assert!(
-        plain.headers().get("set-cookie").is_none(),
-        "a script gets no cookie"
-    );
+    // The shell's own token request, a browser of the owner's: no cookie.
     let shell = ts
         .client
         .get(format!("{}/api/token", ts.base))
         .header("sec-fetch-site", "same-origin")
+        .header("cookie", ts.owner_cookie())
         .send()
         .await
         .unwrap();
-    let sets: Vec<String> = shell
-        .headers()
-        .get_all("set-cookie")
-        .iter()
-        .map(|v| v.to_str().unwrap().to_string())
-        .collect();
-    assert_eq!(sets.len(), 4, "{sets:?}");
-    // The owner cookie, for the API and the artifact pages: identity, not
-    // the token's level.
-    for (set, path) in sets.iter().zip(["/api", "/a"]) {
-        assert!(set.starts_with(&format!("clax_owner_{port}=")), "{set}");
-        assert!(
-            set.ends_with(&format!(
-                "; Path={path}; Max-Age=157680000; HttpOnly; SameSite=Lax"
-            )),
-            "{set}"
-        );
-        assert!(!set.contains(&ts.token));
-    }
-    for (set, path) in sets[2..].iter().zip(["/api/events", "/api/stream"]) {
-        assert!(set.starts_with(&format!("clax_events_{port}=")), "{set}");
-        assert!(
-            set.contains(&format!("; Path={path}; HttpOnly; SameSite=Strict")),
-            "{set}"
-        );
-        assert!(!set.contains(&ts.token), "the cookie never holds the token");
-    }
-    for site in ["cross-site", "same-site"] {
-        let other = ts
-            .client
-            .get(format!("{}/api/token", ts.base))
-            .header("sec-fetch-site", site)
-            .send()
-            .await
-            .unwrap();
-        assert!(other.headers().get("set-cookie").is_none(), "{site}");
-    }
+    assert_eq!(shell.status(), 200);
+    assert!(shell.headers().get("set-cookie").is_none());
+    // The login's events cookie is the session, never the token, and
+    // stands for the token on the event stream.
+    let login = ts.login("").await;
+    let session = login.cookie.split_once('=').unwrap().1;
+    assert!(session.starts_with("cxb_") && !session.contains(&ts.token));
+    let host = ts.base.trim_start_matches("http://");
+    let events = format!("{}={session}", clax_http::auth::events_cookie_name(host));
+    let res = reqwest::Client::new()
+        .get(format!("{}/api/events", ts.base))
+        .header("cookie", events)
+        .header(clax_http::local_trust::PROOF_HEADER, &login.proof)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
 }

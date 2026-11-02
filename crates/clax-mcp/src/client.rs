@@ -8,13 +8,13 @@ use clax_core::RegisterSession;
 use clax_core::audit::ToolCallReport;
 use clax_core::feedback::MAX_ACK_IDS;
 use clax_core::model::Session;
+use clax_core::remote::{
+    MAX_RESPONSE_BYTES, Remote, SESSION_SECRET_HEADER, Seeker, SessionCredential, SessionKey,
+    keys_of_row,
+};
 #[cfg(not(target_arch = "wasm32"))]
 use clax_core::remote::{
-    MAX_RESPONSE_BYTES, Next, Retry, clock_skew_message, path_and_query, prepare_headers,
-    refusal_message, sign_headers,
-};
-use clax_core::remote::{
-    Remote, SESSION_SECRET_HEADER, Seeker, SessionCredential, SessionKey, keys_of_row,
+    Next, Retry, clock_skew_message, path_and_query, prepare_headers, refusal_message, sign_headers,
 };
 use clax_core::secret::Secret;
 use serde_json::{Value, json};
@@ -133,9 +133,17 @@ pub struct DaemonClient {
     via: Option<&'static str>,
     /// The longest one remote clip fetch may take ([`CLIP_FETCH_TIME`]).
     clip_fetch_time: Duration,
+    /// The most of a remote daemon's answer read before it is refused
+    /// unread ([`MAX_RESPONSE_BYTES`]; a clip's own cap for a clip fetch).
+    body_limit: u64,
     /// The deadline of a publish or an asset upload ([`PUBLISH_TIMEOUT`]).
     publish_timeout: Duration,
     auth: Auth,
+    /// Set for the CLI's tool commands ([`DaemonClient::waiting_for_confirmations`]):
+    /// how a browser confirmation the daemon waits on is shown to the
+    /// person, who confirms it while the call waits. Unset, the call
+    /// answers [`ClientError::Api`] 202 `confirmation_pending` at once.
+    confirm: Option<fn(&str)>,
 }
 
 /// The credential a client's requests carry.
@@ -412,8 +420,10 @@ impl DaemonClient {
             call: None,
             via: None,
             clip_fetch_time: CLIP_FETCH_TIME,
+            body_limit: MAX_RESPONSE_BYTES,
             publish_timeout: PUBLISH_TIMEOUT,
             auth: Auth::Token,
+            confirm: None,
         }
     }
 
@@ -492,6 +502,18 @@ impl DaemonClient {
         self
     }
 
+    /// This client waiting out the browser confirmations the daemon holds
+    /// a call for, as the CLI's own client does: `tell` shows the person
+    /// one line ("Confirm in your browser: <url>"), the client long-polls
+    /// `GET /api/confirmations/<id>?wait=` until the owner answers, then
+    /// makes the call again with the confirmation's ID. The CLI's tool
+    /// commands use it; an agent's tools do not, and get the 202 as
+    /// [`ClientError::Api`] `confirmation_pending` to wait on.
+    pub fn waiting_for_confirmations(mut self, tell: fn(&str)) -> DaemonClient {
+        self.confirm = Some(tell);
+        self
+    }
+
     /// A client that finds its daemon with `refresh` (which may start one) or
     /// `discover` (which must not), and registers `registration` there before
     /// its first request; see [`DaemonClient`].
@@ -518,8 +540,10 @@ impl DaemonClient {
             call: None,
             via: Some(VIA),
             clip_fetch_time: CLIP_FETCH_TIME,
+            body_limit: MAX_RESPONSE_BYTES,
             publish_timeout: PUBLISH_TIMEOUT,
             auth: Auth::Token,
+            confirm: None,
         }
     }
 
@@ -544,8 +568,10 @@ impl DaemonClient {
             call: Some(call),
             via: self.via,
             clip_fetch_time: self.clip_fetch_time,
+            body_limit: self.body_limit,
             publish_timeout: self.publish_timeout,
             auth: self.auth.clone(),
+            confirm: self.confirm,
         }
     }
 
@@ -596,8 +622,10 @@ impl DaemonClient {
             call: self.call.clone(),
             via: self.via,
             clip_fetch_time: self.clip_fetch_time,
+            body_limit: self.body_limit,
             publish_timeout: self.publish_timeout,
             auth: self.auth.clone(),
+            confirm: self.confirm,
         }
     }
 
@@ -921,7 +949,7 @@ impl DaemonClient {
             return attempt_in_process(t.as_ref(), req).await;
         }
         match &self.inner.remote {
-            Some(r) => attempt_signed(r, req).await,
+            Some(r) => attempt_signed(r, req, self.body_limit).await,
             None => attempt(req).await,
         }
     }
@@ -947,6 +975,51 @@ impl DaemonClient {
     }
 
     async fn send_with<F>(&self, mode: Mode, build: F) -> Result<Reply>
+    where
+        F: Fn(&Conn<'_>) -> reqwest::RequestBuilder,
+    {
+        let first = self.send_refreshing(mode, &build).await;
+        let (Some(tell), Err(ClientError::Api { status: 202, error })) = (self.confirm, &first)
+        else {
+            return first;
+        };
+        // The 202's body as `send_once` keeps it: `code` in place of
+        // `status`.
+        let mut body = error.clone();
+        body["status"] = clax_core::confirm::PENDING.into();
+        let Some((id, url)) = clax_core::confirm::held(None, &body) else {
+            return first;
+        };
+        tell(&clax_core::confirm::line(&url));
+        self.wait_for_answer(&id).await?;
+        self.send_refreshing(mode, &|c: &Conn<'_>| {
+            build(c).header(clax_core::confirm::CONFIRMATION_HEADER, id.as_str())
+        })
+        .await
+    }
+
+    /// Waits until confirmation `id` is no longer open, long-polling for at
+    /// most [`clax_core::confirm::MAX_WAIT_SECS`] a time; the daemon
+    /// expires it after ten minutes, which ends the wait.
+    async fn wait_for_answer(&self, id: &str) -> Result<()> {
+        let wait = clax_core::confirm::MAX_WAIT_SECS;
+        let path = format!("/api/confirmations/{id}?wait={wait}");
+        loop {
+            let v = body_json(
+                self.send_refreshing(Mode::DiscoverOnly, &|c: &Conn<'_>| {
+                    c.request(reqwest::Method::GET, &path)
+                        .timeout(Duration::from_secs(wait + 15))
+                })
+                .await?,
+            )
+            .await?;
+            if v["confirmation"]["status"] != "open" {
+                return Ok(());
+            }
+        }
+    }
+
+    async fn send_refreshing<F>(&self, mode: Mode, build: &F) -> Result<Reply>
     where
         F: Fn(&Conn<'_>) -> reqwest::RequestBuilder,
     {
@@ -988,10 +1061,35 @@ impl DaemonClient {
             .await
     }
 
-    /// `GET /api/artifacts/<id>`: `{artifact, versions}`.
-    pub async fn get(&self, id: &str) -> Result<Value> {
-        self.json(|c| c.request(reqwest::Method::GET, &format!("/api/artifacts/{id}")))
+    /// `POST /api/browser-login {next}`: the one-use login path for the
+    /// browser the `open` tool opens, `/login?code=…&next=…` (the local
+    /// daemon's alone), or `None` when the daemon mints none.
+    pub async fn login_path(&self, next: &str) -> Option<String> {
+        let v = self
+            .json(|c| {
+                c.request(reqwest::Method::POST, "/api/browser-login")
+                    .json(&serde_json::json!({"next": next}))
+            })
             .await
+            .ok()?;
+        v["path"]
+            .as_str()
+            .filter(|p| p.starts_with("/login?"))
+            .map(str::to_string)
+    }
+
+    /// The daemon's route of its own artifact `id`
+    /// (`/api/artifacts/<id>`), under which its artifact routes are. A
+    /// connected remote's artifact has the same routes under
+    /// [`Self::remote_artifact_path`]; the methods that take an `api`
+    /// take either.
+    pub fn artifact_path(id: &str) -> String {
+        format!("/api/artifacts/{id}")
+    }
+
+    /// `GET <api>`: the artifact's `{artifact, versions}`.
+    pub async fn get(&self, api: &str) -> Result<Value> {
+        self.json(|c| c.request(reqwest::Method::GET, api)).await
     }
 
     /// `POST /api/artifacts`: creates an artifact; `{artifact, version, url}`.
@@ -1140,12 +1238,9 @@ impl DaemonClient {
     }
 
     /// The stored bytes of `path` in version `n`, unwrapped
-    /// (`GET /api/artifacts/<id>/versions/<n>/files/<path>`).
-    pub async fn file_bytes(&self, id: &str, n: u32, path: &str) -> Result<Vec<u8>> {
-        let path = format!(
-            "/api/artifacts/{id}/versions/{n}/files/{}",
-            encode_path(path)
-        );
+    /// (`GET <api>/versions/<n>/files/<path>`).
+    pub async fn file_bytes(&self, api: &str, n: u32, path: &str) -> Result<Vec<u8>> {
+        let path = format!("{api}/versions/{n}/files/{}", encode_path(path));
         let res = self
             .send(|c| c.request(reqwest::Method::GET, &path))
             .await?;
@@ -1294,10 +1389,10 @@ impl DaemonClient {
             .await
     }
 
-    /// `GET /api/artifacts/<id>/threads`: `{threads, next_cursor}`.
+    /// `GET <api>/threads`: `{threads, next_cursor}`.
     pub async fn threads(
         &self,
-        id: &str,
+        api: &str,
         include_resolved: bool,
         cursor: Option<&str>,
     ) -> Result<Value> {
@@ -1305,65 +1400,49 @@ impl DaemonClient {
         if let Some(c) = cursor {
             q.push(("cursor", c.to_string()));
         }
-        self.json(|c| {
-            c.request(
-                reqwest::Method::GET,
-                &format!("/api/artifacts/{id}/threads"),
-            )
-            .query(&q)
-        })
-        .await
+        let path = format!("{api}/threads");
+        self.json(|c| c.request(reqwest::Method::GET, &path).query(&q))
+            .await
     }
 
-    /// `GET /api/artifacts/<id>/threads/<tid>`: `{thread}` (with `clip_path`,
-    /// since the token is sent).
-    pub async fn thread(&self, id: &str, tid: &str) -> Result<Value> {
-        self.json(|c| {
-            c.request(
-                reqwest::Method::GET,
-                &format!("/api/artifacts/{id}/threads/{}", encode_segment(tid)),
-            )
-        })
-        .await
+    /// `GET <api>/threads/<tid>`: `{thread}` (with `clip_path` for this
+    /// daemon's own artifact, since the token is sent).
+    pub async fn thread(&self, api: &str, tid: &str) -> Result<Value> {
+        let path = format!("{api}/threads/{}", encode_segment(tid));
+        self.json(|c| c.request(reqwest::Method::GET, &path)).await
     }
 
     /// An agent reply: `{comment, thread}` (with `addressed: "pending"` when
     /// `addressed` marked a live page's thread), or `{guidance}` on a thread
     /// not sent to the agent. `addressed` is sent only when true, so a reply
-    /// without it reads the same to a daemon that predates it.
-    pub async fn reply(&self, id: &str, tid: &str, text: &str, addressed: bool) -> Result<Value> {
+    /// without it reads the same to a daemon that predates it. Under
+    /// idempotency key `key` (a remote artifact's reply), the request sent
+    /// again is answered with the comment the first made.
+    pub async fn reply(
+        &self,
+        api: &str,
+        tid: &str,
+        text: &str,
+        addressed: bool,
+        key: Option<&str>,
+    ) -> Result<Value> {
         let mut body = json!({"body": text, "author_kind": "agent"});
         if addressed {
             body["addressed"] = json!(true);
         }
-        self.json(|c| {
-            c.request(
-                reqwest::Method::POST,
-                &format!(
-                    "/api/artifacts/{id}/threads/{}/comments",
-                    encode_segment(tid)
-                ),
-            )
-            .json(&body)
-        })
-        .await
+        let path = format!("{api}/threads/{}/comments", encode_segment(tid));
+        self.json(|c| idempotent(c.request(reqwest::Method::POST, &path), key).json(&body))
+            .await
     }
 
-    /// Resolves as the agent: `{thread}`, or `{guidance}` on a thread not sent
-    /// to the agent.
-    pub async fn resolve(&self, id: &str, tid: &str) -> Result<Value> {
+    /// Resolves as the agent: `{thread}`, or `{guidance}` on a thread not
+    /// sent to the agent; under idempotency key `key`, as
+    /// [`Self::reply`].
+    pub async fn resolve(&self, api: &str, tid: &str, key: Option<&str>) -> Result<Value> {
         let body = json!({"as": "agent"});
-        self.json(|c| {
-            c.request(
-                reqwest::Method::POST,
-                &format!(
-                    "/api/artifacts/{id}/threads/{}/resolve",
-                    encode_segment(tid)
-                ),
-            )
-            .json(&body)
-        })
-        .await
+        let path = format!("{api}/threads/{}/resolve", encode_segment(tid));
+        self.json(|c| idempotent(c.request(reqwest::Method::POST, &path), key).json(&body))
+            .await
     }
 
     /// `PUT /api/sessions/<sid>/watches/<id>`: `{watch}`.
@@ -1386,6 +1465,43 @@ impl DaemonClient {
                 reqwest::Method::DELETE,
                 &format!("{}/watches/{id}", c.session_path()),
             )
+        })
+        .await
+        .map(|_| ())
+    }
+
+    /// `PUT /api/sessions/<sid>/remote-watches {remote, artifact_id, url,
+    /// replies_armed}`: watches artifact `raid` of connected remote `rid`
+    /// (at `url` there); `{watch, mirror, artifact_id, url, remote}`.
+    pub async fn remote_watch(
+        &self,
+        rid: &str,
+        raid: &str,
+        url: &str,
+        replies: bool,
+    ) -> Result<Value> {
+        let body =
+            json!({"remote": rid, "artifact_id": raid, "url": url, "replies_armed": replies});
+        self.json(|c| {
+            c.request(
+                reqwest::Method::PUT,
+                &format!("{}/remote-watches", c.session_path()),
+            )
+            .json(&body)
+        })
+        .await
+    }
+
+    /// `DELETE /api/sessions/<sid>/remote-watches {remote, artifact_id,
+    /// url}`: stops watching artifact `raid` of remote `rid`.
+    pub async fn remote_unwatch(&self, rid: &str, raid: &str, url: &str) -> Result<()> {
+        let body = json!({"remote": rid, "artifact_id": raid, "url": url});
+        self.send(|c| {
+            c.request(
+                reqwest::Method::DELETE,
+                &format!("{}/remote-watches", c.session_path()),
+            )
+            .json(&body)
         })
         .await
         .map(|_| ())
@@ -1425,6 +1541,101 @@ impl DaemonClient {
                 .query(&[("url", url)])
         })
         .await
+    }
+
+    /// `GET /api/resolve?url=`: what the URL names, `{kind, …}`
+    /// ([`crate::target::resolved`] reads it).
+    pub async fn resolve_url(&self, url: &str) -> Result<Value> {
+        self.json(|c| {
+            c.request(reqwest::Method::GET, "/api/resolve")
+                .query(&[("url", url)])
+        })
+        .await
+    }
+
+    /// The daemon's address of artifact `raid` on connected remote `rid`
+    /// (`/api/remotes/<rid>/artifacts/<raid>`), under which its remote
+    /// artifact routes are.
+    pub fn remote_artifact_path(rid: &str, raid: &str) -> String {
+        format!(
+            "/api/remotes/{}/artifacts/{}",
+            encode_segment(rid),
+            encode_segment(raid)
+        )
+    }
+
+    /// Hands thread `tid` of the remote artifact at `api`
+    /// ([`Self::remote_artifact_path`]) to the agent `to` names there, or
+    /// releases it: the remote's `{thread}`. This daemon's own threads are
+    /// handed off through the session ([`Self::handoff`]).
+    pub async fn remote_handoff(&self, api: &str, tid: &str, to: Option<&str>) -> Result<Value> {
+        let body = match to {
+            Some(t) => json!({"to": t}),
+            None => json!({}),
+        };
+        let path = format!("{api}/threads/{}/handoff", encode_segment(tid));
+        self.json(|c| c.request(reqwest::Method::POST, &path).json(&body))
+            .await
+    }
+
+    /// `POST /api/remotes/requests {url, reason?}` as this session: asks
+    /// the person to connect the Clax instance `url` is on: `{status,
+    /// request?, remote?, until?}`.
+    pub async fn remote_request(&self, url: &str, reason: Option<&str>) -> Result<Value> {
+        let mut body = json!({"url": url});
+        if let Some(r) = reason {
+            body["reason"] = json!(r);
+        }
+        self.json(|c| {
+            c.request(reqwest::Method::POST, "/api/remotes/requests")
+                .json(&body)
+        })
+        .await
+    }
+
+    /// `GET /api/remotes/requests/<id>?wait=<wait_s>`: `{request_id,
+    /// status, origin, name, remote?, waited_s, call_again}`; the deadline
+    /// is `wait_s` plus 10 s. `id` must be a ULID.
+    pub async fn remote_request_wait(&self, id: &str, wait_s: u64) -> Result<Value> {
+        let q = [("wait", wait_s.to_string())];
+        let deadline = Duration::from_secs(wait_s + 10);
+        self.json(|c| {
+            c.request(reqwest::Method::GET, &format!("/api/remotes/requests/{id}"))
+                .query(&q)
+                .timeout(deadline)
+        })
+        .await
+    }
+
+    /// Waits on connection request `id` for up to `total_s` seconds, in
+    /// [`Self::remote_request_wait`] polls of at most
+    /// [`clax_core::remote::REQUEST_MAX_WAIT_SECS`]: the last poll's answer,
+    /// once the request is not open or the time is up. A poll answering
+    /// `retry_after_s` (every wait on the request is taken) ends the wait
+    /// too, unless `retry` is set: then it waits that long and polls again.
+    pub async fn remote_request_wait_up_to(
+        &self,
+        id: &str,
+        total_s: u64,
+        retry: bool,
+    ) -> Result<Value> {
+        let cap = clax_core::remote::REQUEST_MAX_WAIT_SECS;
+        let started = clax_rt::time::Instant::now();
+        loop {
+            let left = total_s.saturating_sub(started.elapsed().as_secs());
+            let v = self.remote_request_wait(id, left.min(cap)).await?;
+            if v["status"] != "open" || left <= cap {
+                return Ok(v);
+            }
+            match v["retry_after_s"].as_u64() {
+                Some(_) if !retry => return Ok(v),
+                Some(after) => {
+                    let left = total_s.saturating_sub(started.elapsed().as_secs());
+                    clax_rt::time::sleep(Duration::from_secs(after.min(left))).await;
+                }
+                None => {}
+            }
+        }
     }
 
     /// `PUT /api/sessions/<sid>/working/<id>`: `{working, message_truncated}`.
@@ -1586,7 +1797,12 @@ impl DaemonClient {
     /// `BadResponse`.
     pub async fn clip_bytes(&self, aid: &str, tid: &str) -> Result<Vec<u8>> {
         let path = format!("/api/artifacts/{aid}/threads/{tid}/clip");
-        let res = self
+        // A remote daemon's answer is read no further than a clip may go.
+        let limited = DaemonClient {
+            body_limit: self.body_limit.min(clax_core::clips::MAX_BYTES as u64 + 1),
+            ..self.clone()
+        };
+        let res = limited
             .send(|c| c.request(reqwest::Method::GET, &path))
             .await?;
         let ct = res
@@ -1607,13 +1823,9 @@ impl DaemonClient {
     /// `<home>/remote-cache/clips/` ([`clax_core::clips::rewrite_text`]).
     /// The local daemon's text as it is.
     pub async fn rewrite_clip_text(&self, text: &str) -> String {
-        let Some(fetched) = self
-            .fetch_clips(&clax_core::clips::references_in(text))
+        self.rewrite_clip_payload(Some(text), &mut [])
             .await
-        else {
-            return text.to_string();
-        };
-        clax_core::clips::rewrite_text(text, &mut |a, t| lookup(&fetched, a, t))
+            .unwrap_or_default()
     }
 
     /// For a remote daemon: each of `items` (feedback items or thread
@@ -1621,17 +1833,35 @@ impl DaemonClient {
     /// [`DaemonClient::rewrite_clip_text`] rewrites a line
     /// ([`clax_core::clips::rewrite_json`]).
     pub async fn rewrite_clip_items(&self, items: &mut [Value]) {
-        let refs: Vec<(String, String)> = items
-            .iter()
-            .filter_map(|v| v["clip_path"].as_str())
-            .filter_map(clax_core::clips::parse_reference)
-            .collect();
+        self.rewrite_clip_payload(None, items).await;
+    }
+
+    /// For a remote daemon: one payload's prose `text` and its `items`
+    /// rewritten together, as [`DaemonClient::rewrite_clip_text`] and
+    /// [`DaemonClient::rewrite_clip_items`] rewrite them: each clip that
+    /// either one names is fetched once, all within one `CLIP_FETCH_TIME`.
+    /// Returns the rewritten text (the local daemon's as it is).
+    pub async fn rewrite_clip_payload(
+        &self,
+        text: Option<&str>,
+        items: &mut [Value],
+    ) -> Option<String> {
+        let mut refs = text
+            .map(clax_core::clips::references_in)
+            .unwrap_or_default();
+        refs.extend(
+            items
+                .iter()
+                .filter_map(|v| v["clip_path"].as_str())
+                .filter_map(clax_core::clips::parse_reference),
+        );
         let Some(fetched) = self.fetch_clips(&refs).await else {
-            return;
+            return text.map(str::to_string);
         };
         for v in items {
             clax_core::clips::rewrite_json(v, &mut |a, t| lookup(&fetched, a, t));
         }
+        text.map(|t| clax_core::clips::rewrite_text(t, &mut |a, t| lookup(&fetched, a, t)))
     }
 
     /// [`DaemonClient::fetch_clips`] on wasm32 (a hosted Worker), which is
@@ -1653,8 +1883,14 @@ impl DaemonClient {
     ) -> Option<HashMap<(String, String), std::result::Result<PathBuf, String>>> {
         let remote = self.inner.remote.as_ref()?;
         let dir = remote.clip_cache();
-        // Every distinct clip at once, each given at most CLIP_FETCH_TIME:
-        // a slow clip never holds the feedback it came with.
+        // Every distinct clip given at most CLIP_FETCH_TIME from now, its
+        // wait for a turn included, with clax_core::clips::FETCHES_AT_ONCE
+        // in flight at most, as clax_core::clips::fetch_within fetches: a
+        // slow clip never holds the feedback it came with, and the clips
+        // held in memory at once stay bounded.
+        let turns = Arc::new(tokio::sync::Semaphore::new(
+            clax_core::clips::FETCHES_AT_ONCE,
+        ));
         let mut tasks = tokio::task::JoinSet::new();
         let mut out = HashMap::new();
         for r in refs {
@@ -1663,9 +1899,14 @@ impl DaemonClient {
             }
             out.insert(r.clone(), Err(clax_core::clips::TIMED_OUT.to_string()));
             let (client, dir, r) = (self.clone(), dir.clone(), r.clone());
+            let turns = turns.clone();
             tasks.spawn(async move {
                 let t = client.clip_fetch_time;
-                let got = match tokio::time::timeout(t, client.clip_bytes(&r.0, &r.1)).await {
+                let fetch = async {
+                    let _turn = turns.acquire().await;
+                    client.clip_bytes(&r.0, &r.1).await
+                };
+                let got = match tokio::time::timeout(t, fetch).await {
                     Err(_) => Err(clax_core::clips::TIMED_OUT.to_string()),
                     Ok(Ok(bytes)) => clax_core::clips::store(&dir, &r.0, &r.1, &bytes)
                         .map_err(|e| format!("could not be cached: {e}")),
@@ -2041,6 +2282,7 @@ fn multipart_bytes(filename: &str, content_type: &str, bytes: &[u8]) -> (String,
 async fn attempt_signed(
     remote: &Remote,
     req: reqwest::RequestBuilder,
+    limit: u64,
 ) -> std::result::Result<Reply, Failure> {
     let bad = |m: &str| Failure {
         error: ClientError::BadResponse(m.to_string()),
@@ -2079,7 +2321,7 @@ async fn attempt_signed(
         })?;
         let status = res.status();
         let headers = res.headers().clone();
-        let bytes = capped_body(res).await?;
+        let bytes = capped_body(res, limit).await?;
         let whole = {
             let mut b = http::Response::builder().status(status);
             if let Some(h) = b.headers_mut() {
@@ -2138,6 +2380,7 @@ async fn attempt_signed(
 async fn attempt_signed(
     remote: &Remote,
     _req: reqwest::RequestBuilder,
+    _limit: u64,
 ) -> std::result::Result<Reply, Failure> {
     Err(Failure {
         error: ClientError::Unreachable(format!(
@@ -2148,21 +2391,25 @@ async fn attempt_signed(
     })
 }
 
-/// The body of `res`, at most [`MAX_RESPONSE_BYTES`].
+/// The body of `res`, at most `limit` bytes: a body declared or found
+/// longer is refused, read no further.
 #[cfg(not(target_arch = "wasm32"))]
-async fn capped_body(mut res: reqwest::Response) -> std::result::Result<bytes::Bytes, Failure> {
+async fn capped_body(
+    mut res: reqwest::Response,
+    limit: u64,
+) -> std::result::Result<bytes::Bytes, Failure> {
     let too_big = || Failure {
         error: ClientError::BadResponse(format!(
-            "the daemon's answer is larger than {MAX_RESPONSE_BYTES} bytes"
+            "the daemon's answer is larger than {limit} bytes"
         )),
         refreshable: false,
     };
-    if res.content_length().is_some_and(|n| n > MAX_RESPONSE_BYTES) {
+    if res.content_length().is_some_and(|n| n > limit) {
         return Err(too_big());
     }
     let mut body = Vec::new();
     while let Some(chunk) = res.chunk().await.map_err(transport_error)? {
-        if (body.len() + chunk.len()) as u64 > MAX_RESPONSE_BYTES {
+        if (body.len() + chunk.len()) as u64 > limit {
             return Err(too_big());
         }
         body.extend_from_slice(&chunk);
@@ -2232,10 +2479,48 @@ async fn attempt_in_process(
     .await
 }
 
+/// `req` with an `Idempotency-Key` of `key`, when there is one.
+fn idempotent(req: reqwest::RequestBuilder, key: Option<&str>) -> reqwest::RequestBuilder {
+    match key {
+        Some(k) => req.header("idempotency-key", k),
+        None => req,
+    }
+}
+
 /// `res` when its status is a success; else `ClientError::Api` with the
 /// body's `error` object.
 async fn check(res: Reply) -> std::result::Result<Reply, Failure> {
     let status = res.status();
+    let held = status == reqwest::StatusCode::ACCEPTED
+        && res
+            .headers()
+            .contains_key(clax_core::confirm::CONFIRMATION_HEADER);
+    if held {
+        // A decision held for the owner's browser (`clax_core::confirm`):
+        // the 202's fields, with its one line as the message, for the
+        // agent to wait on.
+        let mut error = match res.bytes().await {
+            Ok(b) => serde_json::from_slice::<Value>(&b).unwrap_or(Value::Null),
+            Err(_) => Value::Null,
+        };
+        if let Some(o) = error.as_object_mut() {
+            o.remove("status");
+            let line = clax_core::confirm::line(
+                o.get("confirm_url")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            );
+            o.insert("code".into(), json!(clax_core::confirm::PENDING));
+            o.insert("message".into(), json!(line));
+        }
+        return Err(Failure {
+            refreshable: false,
+            error: ClientError::Api {
+                status: status.as_u16(),
+                error,
+            },
+        });
+    }
     if status.is_success() {
         return Ok(res);
     }

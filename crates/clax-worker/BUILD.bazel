@@ -70,6 +70,7 @@ copy_to_bin(
         exclude = [
             "deploy-lib.test.mjs",
             "e2e.mjs",
+            "e2e-github.mjs",
             "e2e-hosted.mjs",
             "test-bot.mjs",
             "test-deploy-config.mjs",
@@ -108,7 +109,9 @@ copy_to_bin(
 # The Clax server in its Durable Object under `wrangler dev --local`, in
 # two browsers (e2e.mjs), and as a hosted Clax with each artifact's site on
 # its own host (e2e-hosted.mjs): Playwright from the web UI's packages,
-# found through web/package.json, and the pinned Chromium.
+# found through web/package.json, and the pinned Chromium. GitHub sign-in
+# against a fake GitHub (e2e-github.mjs) runs on demand only
+# (`bazelisk test //crates/clax-worker:e2e_github`).
 [js_test(
     name = name,
     args = ["--no-build"],
@@ -134,11 +137,12 @@ copy_to_bin(
     tags = [
         "cpu:4",
         "no-sandbox",
-    ],
+    ] + (["manual"] if name == "e2e_github" else []),
     timeout = "long",
 ) for name, entry in [
     ("e2e", "e2e.mjs"),
     ("e2e_hosted", "e2e-hosted.mjs"),
+    ("e2e_github", "e2e-github.mjs"),
 ]]
 
 # The config deploy.mjs generates, without wrangler.

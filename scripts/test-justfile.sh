@@ -33,10 +33,12 @@ for s in run.sh check-wasm.sh bazel-gc.sh release.sh cloudflare-setup.sh; do
     printf '#!/bin/sh\nfor a in "$@"; do printf "%%s\\n" "$a"; done\n' > "$tmp/scripts/$s"
     chmod +x "$tmp/scripts/$s"
 done
+# The dev daemon's recipes source this for the checkout's dev home and port.
+printf 'watch_settings() { DEV_HOME=%s/home DEV_PORT=7481; }\n' "$tmp" > "$tmp/scripts/dev-home.sh"
 args=(-E 'test(foo)' 'a b' '$(touch pwned)' ';' '*')
 want="$(printf '%s\n' "${args[@]}")"
 for r in build build-native web web-native web-test web-test-native web-e2e web-e2e-native \
-    pi-test pi-test-native test test-native check check-native ci ci-native perf serve \
+    pi-test pi-test-native test test-native check check-native ci ci-native perf serve clax \
     check-wasm check-wasm-native bazel-gc release clax-dev-deploy; do
     got="$(cd "$tmp" && just "$r" "${args[@]}" 2>&1 | tail -n "${#args[@]}")" || true
     if [ "$got" != "$want" ] || [ -e "$tmp/pwned" ]; then

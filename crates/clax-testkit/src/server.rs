@@ -6,7 +6,6 @@ use clax_core::daemon::{browser_host, probe_host};
 use clax_core::working::{Clock, ManualClock, SystemClock};
 use clax_core::{EventBus, Home};
 use clax_http::AppState;
-use clax_http::wrap_cache::WrapCache;
 use clax_server::router::build_router;
 use clax_store::Store;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -258,6 +257,48 @@ impl clax_core::content::ContentStore for Deferred {
 /// The handshake state [`TestServer::site_cookie`] binds its codes to.
 pub const SITE_STATE: &str = "testkit-site-state";
 
+/// A browser login's two halves: the owner cookie it set (`name=value`) and
+/// the proof its page wrote into the origin's storage, which a browser of
+/// the owner's sends beside the cookie
+/// ([`clax_http::local_trust::PROOF_HEADER`]).
+#[derive(Clone, Debug)]
+pub struct OwnerLogin {
+    pub cookie: String,
+    pub proof: String,
+}
+
+/// The proof a login's page (`clax_http::local_trust::login_page`) carries.
+///
+/// # Panics
+/// When the page carries none.
+pub fn login_page_proof(page: &str) -> String {
+    let (_, rest) = page
+        .split_once("data-proof=\"")
+        .expect("a login page with a proof");
+    rest.split('"').next().unwrap().to_string()
+}
+
+/// The owner cookie (`name=value`) and proof a login answered `res` with.
+///
+/// # Panics
+/// When the login did not answer 200 with an owner cookie and its page.
+pub async fn owner_login_of(base: &str, res: reqwest::Response) -> OwnerLogin {
+    assert_eq!(res.status(), 200);
+    let host = base.trim_start_matches("http://");
+    let name = clax_http::identity::owner_cookie_name(host);
+    let cookie = res
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .filter_map(|v| v.split(';').next())
+        .find(|kv| kv.starts_with(&format!("{name}=")))
+        .expect("an owner cookie")
+        .to_string();
+    let proof = login_page_proof(&res.text().await.unwrap());
+    OwnerLogin { cookie, proof }
+}
+
 /// A running test daemon with its own temporary home and the fixed token `test-token`.
 pub struct TestServer {
     pub base: String,
@@ -292,10 +333,20 @@ pub struct TestServer {
     /// The server's state, for calling what a host calls beside the router
     /// (a socket's reopening).
     pub state: AppState,
+    /// The owner browser session a browser of the owner's holds, opened
+    /// when the daemon started (`None` on a hosted daemon, which has none):
+    /// its cookie value and its proof.
+    owner_session: Option<(String, String)>,
+    /// The `clax_viewer` cookie of [`TestServer::local_browser`]'s browser,
+    /// minted on first use.
+    browser: std::sync::OnceLock<String>,
     extension_id: String,
     /// The owner's site session per artifact that [`TestServer::site_get`]
     /// made, as a browser keeps its cookie.
     site_sessions: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    /// The proof of each owner browser session [`TestServer::login`]
+    /// opened, by its owner cookie (`name=value`).
+    login_proofs: std::sync::Mutex<std::collections::HashMap<String, String>>,
     /// The IPv6 loopback twin of an IPv4 daemon's port ([`listen`]).
     _v6_twin: Option<tokio::net::TcpSocket>,
     _dir: Arc<tempfile::TempDir>,
@@ -591,11 +642,17 @@ impl TestServer {
     /// the database and files are this one's, and nothing held in memory
     /// (streams, claims, caches) carries over. Both serve until dropped.
     pub async fn reopened(&self) -> TestServer {
+        self.reopened_with(|_| {}).await
+    }
+
+    /// [`TestServer::reopened`] with `f` applied to the state before it
+    /// serves.
+    pub async fn reopened_with(&self, f: impl FnOnce(&mut AppState)) -> TestServer {
         Self::start(
             self._dir.clone(),
             IpAddr::V4(Ipv4Addr::LOCALHOST),
             Arc::new(SystemClock),
-            |_| {},
+            f,
             false,
             None,
         )
@@ -640,97 +697,47 @@ impl TestServer {
         let (listener, v6_twin) = listen(bind).await;
         let addr = listener.local_addr().unwrap();
         let port = addr.port();
-        let live_ids = Arc::new(clax_realtime::live::LiveIds::load(&store).unwrap());
-        let ext_creds =
-            Arc::new(clax_http::extension::Credentials::load_with(&store, clock.clone()).unwrap());
         let started_at = store.now();
-        let grant_auth = Arc::new(clax_http::grant_auth::GrantAuth::load(&store).unwrap());
-        let vis_gen = clax_http::state::VisGen::install(&store);
-        let app_data = clax_http::app_data_host::default_host(&store, &home);
-        let mut state = AppState {
-            settings: Arc::new(clax_http::settings::Settings::at_start(&home, false)),
-            // A fixed key-encryption key, so key routes work; no driver:
-            // runs stay queued unless a test installs one.
-            bot: Arc::new(clax_http::bot::Bot {
-                kek: Some(clax_store::secrets::Kek::from_bytes([7; 32])),
-                ..Default::default()
-            }),
+        let mut state = AppState::assemble(clax_http::state::StateParts {
             store,
             home: home.clone(),
             token: token.clone(),
             require_credential: false,
-            events: EventBus::new(),
             started_at,
             version: "test",
             shutdown: tokio::sync::watch::channel(false).1,
-            wrap_cache: Arc::new(WrapCache::new(clax_http::wrap_cache::DEFAULT_MAX_BYTES)),
-            request_timeout: Duration::from_secs(30),
-            publish_timeout: Duration::from_secs(120),
-            sse_keep_alive: Duration::from_secs(15),
             self_base: format!("http://{}:{port}", probe_host(&bind.to_string())),
             browser_base: format!("http://{}:{port}", browser_host(&bind.to_string())),
-            feedback_waiters: Arc::new(Default::default()),
-            followers: Arc::new(Default::default()),
-            feedback_states: Arc::new(Default::default()),
             // Push off; tests about push set it with `spawn_with`.
-            codex: Arc::new(Default::default()),
-            working: Arc::new(clax_core::working::Working::new(clock.clone())),
-            drafts: Arc::new(clax_core::drafts::Drafts::new(clock.clone())),
-            presence: Arc::new(clax_core::presence::Presence::new(clock.clone())),
-            rooms: Arc::new(clax_realtime::room::Rooms::default()),
-            live_layers: Arc::new(clax_realtime::live_layers::LiveLayers::new(clock.clone())),
+            codex: Default::default(),
             // Sampling off; tests that sample set their own with `spawn_with`.
             sample: Arc::new(clax_sample::Sampler::disabled()),
-            // The system resolver and reqwest; tests of `net` set their own.
-            net: Arc::new(clax_http::net::Net::default()),
-            stream: clax_realtime::stream::Hub::new(live_ids.clone()),
-            seats: clax_http::seats::LiveSeats::new(Default::default(), clock.clone()),
-            sockets: Arc::default(),
-            live_ids,
-            ext_creds,
-            extension_id: clax_core::extension::extension_id_in_effect(home.root()),
-            questions: Arc::new(Default::default()),
-            question_grace: Duration::from_secs(5),
+            clock: clock.clone(),
             question_sleeper: Arc::new(clax_realtime::questions::TokioSleeper),
-            question_clock: clock,
+            agent_timer: Arc::new(clax_http::agent::TokioTimer::default()),
+            extension_id: clax_core::extension::extension_id_in_effect(home.root()),
             terminal_after_s: clax_core::config::TERMINAL_AFTER_S,
-            calibration: Arc::default(),
-            verify_times: Arc::default(),
-            audit_wake: clax_http::audit::AuditWake::new(),
-            // No appender; tests of the journal start their own.
-            journal: clax_http::audit::JournalStatus::off(None),
-            exports: clax_http::exports::Exports::new(),
-            call_ids: Arc::new(clax_realtime::call_ids::CallIdWait::new(
-                clax_realtime::call_ids::CALL_ID_GRACE,
-                clax_realtime::call_ids::CALL_ID_CAP,
-            )),
             bind,
             port,
-            // Invites from a daemon on every interface name the address
-            // `lan()` requests arrive on.
-            lan_host: bind.is_unspecified().then_some(IpAddr::V4(LAN_LOCAL)),
-            grant_auth,
-            agent_gate: Arc::new(clax_http::agent::Gate::new(Arc::new(
-                clax_http::agent::TokioTimer::default(),
-            ))),
-            vis_gen,
-            test_daemon: true,
-            app_data,
+            hosted: None,
             // The checkout's web UI; tests of the shell serve their own
             // with `spawn_with_web`.
             web: web_ui(),
-            quickstart: None,
-            hosted: None,
-            // No app links or store pages; tests of them set their own.
-            clax_app: Arc::default(),
-            build: None,
             embed: None,
-            git_remotes: Arc::default(),
-            linked: Arc::new(clax_realtime::linked::Linked::new(Arc::new(
-                clax_realtime::questions::TokioSleeper,
-            ))),
-            jobs_owners: Arc::default(),
-        };
+        })
+        .unwrap();
+        // A fixed key-encryption key, so key routes work; no driver: runs
+        // stay queued unless a test installs one.
+        state.bot = Arc::new(clax_http::bot::Bot {
+            kek: Some(clax_store::secrets::Kek::from_bytes([7; 32])),
+            ..Default::default()
+        });
+        // The default seat limits, whatever the environment says.
+        state.seats = clax_http::seats::LiveSeats::new(Default::default(), clock);
+        // Invites from a daemon on every interface name the address `lan()`
+        // requests arrive on.
+        state.lan_host = bind.is_unspecified().then_some(IpAddr::V4(LAN_LOCAL));
+        state.test_daemon = true;
         f(&mut state);
         state.audit_wake.install(&state.store);
         state.stream.listen(&state.events);
@@ -756,6 +763,7 @@ impl TestServer {
         clax_http::pushes::listen(&state);
         clax_http::git_remotes::listen(&state);
         clax_server::linked::listen(&state);
+        clax_server::routes::remote_requests::resume(&state);
         let events = state.events.clone();
         let store = state.store.clone();
         let working = state.working.clone();
@@ -767,6 +775,26 @@ impl TestServer {
         let agent_gate = state.agent_gate.clone();
         let web = state.web.clone();
         let kept_state = state.clone();
+        let owner_session = state.hosted.is_none().then(|| {
+            let o = state.owner_sessions.open(&state.store).unwrap();
+            (o.cookie.expose().to_string(), o.proof.expose().to_string())
+        });
+        // Every request of the client carries the owner's proof, as a
+        // browser of the owner's shell sends it: beside the owner cookie it
+        // makes the browser the owner's, and alone it is nothing.
+        let client = {
+            let mut h = reqwest::header::HeaderMap::new();
+            if let Some((_, proof)) = &owner_session {
+                h.insert(
+                    clax_http::local_trust::PROOF_HEADER,
+                    reqwest::header::HeaderValue::from_str(proof).unwrap(),
+                );
+            }
+            reqwest::Client::builder()
+                .default_headers(h)
+                .build()
+                .unwrap()
+        };
         let app = if shutdown {
             clax_server::router::build_router_with_shutdown(
                 state,
@@ -788,7 +816,7 @@ impl TestServer {
             base: format!("http://{}:{port}", probe_host(&bind.to_string())),
             token,
             home,
-            client: reqwest::Client::new(),
+            client,
             events,
             store,
             working,
@@ -802,8 +830,11 @@ impl TestServer {
             seats,
             live_layers,
             state: kept_state,
+            owner_session,
+            browser: std::sync::OnceLock::new(),
             extension_id,
             site_sessions: std::sync::Mutex::default(),
+            login_proofs: std::sync::Mutex::default(),
             _v6_twin: v6_twin,
             _dir: dir,
         }
@@ -866,7 +897,20 @@ impl TestServer {
             .unwrap()
     }
 
+    /// A GET from [`TestServer::local_browser`]'s browser: one of this
+    /// machine's that holds no owner browser session.
     pub async fn get(&self, path: &str) -> reqwest::Response {
+        self.client
+            .get(format!("{}{}", self.base, path))
+            .header("cookie", format!("clax_viewer={}", self.local_browser()))
+            .send()
+            .await
+            .unwrap()
+    }
+
+    /// A GET with no credential at all, as any process reaching the port
+    /// sends one.
+    pub async fn get_anonymous(&self, path: &str) -> reqwest::Response {
         self.client
             .get(format!("{}{}", self.base, path))
             .send()
@@ -1168,20 +1212,23 @@ impl TestServer {
         }
         self.client
             .post(format!("{}/api/artifacts/{aid}/threads", self.base))
+            .header("cookie", format!("clax_viewer={}", self.local_browser()))
             .multipart(form)
             .send()
             .await
             .unwrap()
     }
 
-    /// Creates a thread without a clip; returns the thread view.
+    /// Creates a thread without a clip in [`TestServer::local_browser`]'s
+    /// browser; returns the thread view.
     pub async fn thread(&self, aid: &str, version: u32, body: &str) -> serde_json::Value {
         let res = self.create_thread(aid, version, body, None).await;
         assert_eq!(res.status(), 201);
         res.json::<serde_json::Value>().await.unwrap()["thread"].clone()
     }
 
-    /// Presses "Send to agent"; returns the thread view.
+    /// Presses "Send to agent" in [`TestServer::local_browser`]'s browser;
+    /// returns the thread view.
     pub async fn send_thread(&self, aid: &str, tid: &str) -> serde_json::Value {
         let res = self
             .client
@@ -1189,6 +1236,7 @@ impl TestServer {
                 "{}/api/artifacts/{aid}/threads/{tid}/send",
                 self.base
             ))
+            .header("cookie", format!("clax_viewer={}", self.local_browser()))
             .send()
             .await
             .unwrap();
@@ -1196,9 +1244,32 @@ impl TestServer {
         res.json::<serde_json::Value>().await.unwrap()["thread"].clone()
     }
 
-    /// Opens `/api/events<query>` and returns a reader past nothing yet.
+    /// Opens `/api/events<query>` in [`TestServer::local_browser`]'s
+    /// browser and returns a reader past nothing yet.
+    /// A `query` carrying `token=` is the token's alone, with no cookie.
     pub async fn events(&self, query: &str) -> EventReader {
-        self.events_as(query, None).await
+        if query.contains("token=") {
+            return self.events_as(query, None).await;
+        }
+        let cookie = self.local_browser();
+        self.events_as(query, Some(&cookie)).await
+    }
+
+    /// The `clax_viewer` cookie value of a browser of this machine that
+    /// holds no owner browser session and no name: a viewer the daemon
+    /// minted for it (as [`TestServer::viewer`] mints one), the same one on
+    /// every call. [`TestServer::create_thread`], [`TestServer::thread`],
+    /// [`TestServer::send_thread`] and [`TestServer::events`] speak for it:
+    /// a local daemon serves nothing of theirs to a request with no
+    /// credential at all.
+    pub fn local_browser(&self) -> String {
+        self.browser
+            .get_or_init(|| {
+                let cookie = clax_core::secret::viewer_cookie().expose().to_string();
+                self.store.mint_viewer(&cookie, true).unwrap();
+                cookie
+            })
+            .clone()
     }
 
     /// Like [`TestServer::events`], as the viewer whose cookie value is `cookie`.
@@ -1290,17 +1361,15 @@ impl TestViewer {
 }
 
 impl TestServer {
-    /// Creates a viewer, named `name` when given.
+    /// Creates a viewer, named `name` when given: a browser of this machine
+    /// that holds a `clax_viewer` cookie the daemon minted, as one did
+    /// before it logged in. Reaching the port alone mints none (the local
+    /// daemon's gate, `clax_http::local_trust::gate`), so the viewer is
+    /// minted in the store.
     pub async fn viewer(&self, name: Option<&str>) -> TestViewer {
-        let res = self.get("/api/viewers/me").await;
-        let set = res.headers()["set-cookie"].to_str().unwrap().to_string();
-        let cookie = set
-            .split(';')
-            .next()
-            .and_then(|kv| kv.strip_prefix("clax_viewer="))
-            .expect("clax_viewer cookie")
-            .to_string();
-        let mut v: serde_json::Value = res.json().await.unwrap();
+        let cookie = clax_core::secret::viewer_cookie().expose().to_string();
+        let minted = self.store.mint_viewer(&cookie, true).unwrap();
+        let mut v = serde_json::json!({"viewer": minted});
         if let Some(n) = name {
             let res = self
                 .client
@@ -1376,14 +1445,97 @@ impl TestServer {
         self.extension_id.clone()
     }
 
-    /// The owner cookie a browser of the owner's holds (`name=value`), as the
-    /// shell's token request sets it.
+    /// The owner cookie a browser of the owner's holds (`name=value`): the
+    /// owner browser session opened when this daemon started, as a login
+    /// sets it (`GET /login`). On a hosted daemon it names no session.
     pub fn owner_cookie(&self) -> String {
         let host = self.base.trim_start_matches("http://");
         format!(
             "{}={}",
             clax_http::identity::owner_cookie_name(host),
-            clax_http::identity::owner_cookie_value(&self.token)
+            self.owner_session
+                .as_ref()
+                .map_or("none", |(c, _)| c.as_str())
+        )
+    }
+
+    /// The proof of the owner browser session [`TestServer::owner_cookie`]
+    /// names, which every request of [`TestServer::client`] carries
+    /// ([`clax_http::local_trust::PROOF_HEADER`]). On a hosted daemon it
+    /// proves nothing.
+    pub fn owner_proof(&self) -> String {
+        self.owner_session
+            .as_ref()
+            .map_or("none", |(_, p)| p.as_str())
+            .to_string()
+    }
+
+    /// A browser login in a browser holding `cookies` (a `Cookie` header's
+    /// value, maybe empty), as [`TestServer::login_with`] makes one: the
+    /// owner cookie it set and its proof, which
+    /// [`TestServer::proof_for`] gives for that cookie from then on.
+    pub async fn login(&self, cookies: &str) -> OwnerLogin {
+        let login = owner_login_of(&self.base, self.login_with(cookies).await).await;
+        self.login_proofs
+            .lock()
+            .unwrap()
+            .insert(login.cookie.clone(), login.proof.clone());
+        login
+    }
+
+    /// The proof a browser holding `cookies` (a `Cookie` header's value)
+    /// sends: that of the session [`TestServer::login`] opened whose owner
+    /// cookie it holds, else the daemon's own owner browser session's
+    /// ([`TestServer::owner_proof`]).
+    pub fn proof_for(&self, cookies: &str) -> String {
+        self.login_proofs
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(c, _)| cookies.contains(c.as_str()))
+            .map_or_else(|| self.owner_proof(), |(_, p)| p.clone())
+    }
+
+    /// A browser login in a browser holding `cookies` (a `Cookie` header's
+    /// value, maybe empty): a login code made with the token, redeemed at
+    /// `GET /login` by a client that carries no proof, its answer returned
+    /// (200: the login's page, [`login_page_proof`]).
+    ///
+    /// # Panics
+    /// When the code is not made or the login answers other than 200.
+    pub async fn login_with(&self, cookies: &str) -> reqwest::Response {
+        let made: serde_json::Value = self
+            .authed(self.client.post(format!("{}/api/browser-login", self.base)))
+            .json(&serde_json::json!({"next": "/"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let mut req = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap()
+            .get(format!("{}{}", self.base, made["path"].as_str().unwrap()));
+        if !cookies.is_empty() {
+            req = req.header("cookie", cookies);
+        }
+        let res = req.send().await.unwrap();
+        assert_eq!(res.status(), 200);
+        res
+    }
+
+    /// The events cookie of the same session (`name=value`), which the
+    /// event streams take for the token.
+    pub fn events_cookie(&self) -> String {
+        let host = self.base.trim_start_matches("http://");
+        format!(
+            "{}={}",
+            clax_http::auth::events_cookie_name(host),
+            self.owner_session
+                .as_ref()
+                .map_or("none", |(c, _)| c.as_str())
         )
     }
 
@@ -1502,6 +1654,115 @@ impl TestServer {
             .send()
             .await
             .unwrap()
+    }
+
+    /// Answers browser confirmation `id` in the owner's browser (the owner
+    /// cookie, a session opened before any agent's): `POST
+    /// /api/confirmations/<id> {approve}`.
+    pub async fn confirm_raw(&self, id: &str, approve: bool) -> reqwest::Response {
+        self.client
+            .post(format!("{}/api/confirmations/{id}", self.base))
+            .header("cookie", self.owner_cookie())
+            .json(&serde_json::json!({"approve": approve}))
+            .send()
+            .await
+            .unwrap()
+    }
+
+    /// [`TestServer::confirm_raw`], asserting a 200.
+    pub async fn confirm(&self, id: &str, approve: bool) {
+        let res = self.confirm_raw(id, approve).await;
+        assert_eq!(res.status(), 200, "{}", res.text().await.unwrap());
+    }
+
+    /// `method path` with the token and JSON `body`, as the owner by hand
+    /// who confirms in their browser: when the daemon holds the decision
+    /// for a browser confirmation (202 `confirmation_pending`, while an
+    /// agent session is live), the owner approves it ([`TestServer::confirm`])
+    /// and the call is made again with its ID. The final answer.
+    pub async fn confirmed(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: serde_json::Value,
+    ) -> reqwest::Response {
+        let res = self.token_request(method.clone(), path, &body, None).await;
+        let Some(id) = held_confirmation(&res) else {
+            return res;
+        };
+        self.confirm(&id, true).await;
+        self.token_request(method, path, &body, Some(&id)).await
+    }
+
+    /// `method path` with the token and JSON `body`, presenting
+    /// confirmation `confirm` when given: the status and the JSON answer.
+    /// A 202 `confirmation_pending` must name its confirmation in the
+    /// response's confirmation header too.
+    pub async fn token_call(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: serde_json::Value,
+        confirm: Option<&str>,
+    ) -> (u16, serde_json::Value) {
+        let res = self.token_request(method, path, &body, confirm).await;
+        let held = held_confirmation(&res);
+        let status = res.status().as_u16();
+        let v: serde_json::Value = res.json().await.unwrap_or_default();
+        if status == 202 && v["status"] == "confirmation_pending" {
+            assert_eq!(held.as_deref(), v["confirmation_id"].as_str(), "{v}");
+        }
+        (status, v)
+    }
+
+    async fn token_request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: &serde_json::Value,
+        confirm: Option<&str>,
+    ) -> reqwest::Response {
+        let mut req = self.authed(self.client.request(method, format!("{}{path}", self.base)));
+        if let Some(id) = confirm {
+            req = req.header(clax_core::confirm::CONFIRMATION_HEADER, id);
+        }
+        req.json(body).send().await.unwrap()
+    }
+
+    /// `method path` from the browser holding `cookie` (a `Cookie` header's
+    /// value) with its proof, with JSON `body`: the status and the answer.
+    pub async fn as_browser(
+        &self,
+        cookie: &str,
+        method: reqwest::Method,
+        path: &str,
+        body: serde_json::Value,
+    ) -> (u16, serde_json::Value) {
+        self.as_browser_confirming(cookie, method, path, body, None)
+            .await
+    }
+
+    /// [`TestServer::as_browser`], presenting confirmation `confirm` when
+    /// given.
+    pub async fn as_browser_confirming(
+        &self,
+        cookie: &str,
+        method: reqwest::Method,
+        path: &str,
+        body: serde_json::Value,
+        confirm: Option<&str>,
+    ) -> (u16, serde_json::Value) {
+        let mut req = self
+            .client
+            .request(method, format!("{}{path}", self.base))
+            .header("cookie", cookie)
+            .header(clax_http::local_trust::PROOF_HEADER, self.proof_for(cookie));
+        if let Some(id) = confirm {
+            req = req.header(clax_core::confirm::CONFIRMATION_HEADER, id);
+        }
+        let res = req.json(&body).send().await.unwrap();
+        let status = res.status().as_u16();
+        (status, res.json().await.unwrap_or_default())
     }
 
     /// Opens `/api/stream` as a browser of the owner's (the owner cookie)
@@ -1635,15 +1896,15 @@ impl TestServer {
     /// A paired extension: a fresh credential for this server's extension
     /// ID, whose requests come from the extension's origin.
     pub async fn extension(&self) -> TestExtension {
+        // Paired by hand: confirmed in the owner's browser while an agent
+        // is live ([`TestServer::confirmed`]).
         let v: serde_json::Value = self
-            .authed(
-                self.client
-                    .post(format!("{}/api/extension/credentials", self.base)),
+            .confirmed(
+                reqwest::Method::POST,
+                "/api/extension/credentials",
+                serde_json::json!({"extension_id": self.extension_id}),
             )
-            .json(&serde_json::json!({"extension_id": self.extension_id}))
-            .send()
             .await
-            .unwrap()
             .json()
             .await
             .unwrap();
@@ -1908,4 +2169,19 @@ pub fn quickstart_tree(mark: &str) -> clax_core::embedded::MemTree {
             .map(|(p, c)| (p.to_string(), c.into_bytes()))
             .collect(),
     )
+}
+
+/// The confirmation a 202 names in its confirmation header, if it is one.
+fn held_confirmation(res: &reqwest::Response) -> Option<String> {
+    res.headers()
+        .get(clax_core::confirm::CONFIRMATION_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .filter(|_| res.status() == 202)
+}
+
+/// An API error answer's code (`{"error": {"code"}}`), or `""` for an
+/// answer that is not one.
+pub fn error_code(v: &serde_json::Value) -> &str {
+    v["error"]["code"].as_str().unwrap_or_default()
 }

@@ -348,6 +348,9 @@ void main() {
       );
       expect((await api.questions()).single.id, q.id);
 
+      // The app keeps its own trust: with its agent session live, the
+      // person's answer on the app's screen goes ahead at once, with no
+      // browser confirmation (crates/clax-http/src/confirm.rs).
       // Answered with no wait holding it: a late answer on the next poll.
       final answered = await api.answerQuestion(q.id, [
         {

@@ -14,9 +14,10 @@
   // no agent is running to take gets ClaxBot's offer above its card, which
   // asks before spending credits; "Always here" chooses ClaxBot, and then
   // this viewer's later such threads go to it without asking.
-  // In the Clax app, whose scheme answers nothing under `/api/`, a thread's
-  // clip is fetched over the transport and shown by object URL
-  // (`api-image.ts`, loaded only there); a browser loads `clip_url` itself.
+  // A thread's clip is fetched with the page's `fetch` and shown by object
+  // URL (`api-image.ts`), never as an `<img src>` of its `/api/` path: in
+  // the Clax app only the transport reaches the API, and a local owner's
+  // browser sends its session's proof only with a fetch (`owner-proof.ts`).
   // While the artifact's Comments switch is off, the sidebar has no New
   // comment box and its cards no reply box (`noReply`, which its empty Open
   // list explains); Resolve and Reopen stay, and Send for a viewer who may
@@ -26,7 +27,6 @@
   // panel mounts Sidebar alone, without them.
   import { COMMENTS_OFF } from "../failure";
   import type { Thread } from "../threads";
-  import { onHost } from "../transport";
   import { ownTarget, sendsFor } from "../view/send-menu";
   import { unsent } from "../view/batch-model";
   import { BOT, botView, sendToBot, withBot } from "../bot/send.svelte";
@@ -67,7 +67,7 @@
       void sendToBot(ctl, [t.id]);
     }
   });
-  const clip = onHost() ? async (t: Thread) => (t.clip_url ? (await import("../api-image")).apiImageSrc(t.clip_url) : null) : undefined;
+  const clip = async (t: Thread) => (t.clip_url ? (await import("../api-image")).apiImageSrc(t.clip_url) : null);
 </script>
 
 {#snippet writers(tid: string | null)}

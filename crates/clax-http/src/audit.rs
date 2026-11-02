@@ -91,7 +91,7 @@ pub fn channel(id: &Identity, named: Option<Via>, agent_session: bool) -> Via {
     let agent = id.agent_headers_count();
     match named {
         Some(v) if agent => v,
-        _ if id.extension => Via::Extension,
+        _ if id.browser == crate::identity::Browser::Extension => Via::Extension,
         _ if id.owner_browser() => Via::Shell,
         _ if agent && agent_session => Via::Mcp,
         _ if agent => Via::Cli,
@@ -830,11 +830,11 @@ mod tests {
             ..Identity::default()
         };
         let extension = Identity {
-            extension: true,
+            browser: crate::identity::Browser::Extension,
             ..Identity::default()
         };
         let shell = Identity {
-            owner_cookie: true,
+            browser: crate::identity::Browser::Session,
             ..Identity::default()
         };
         let viewer = Identity {

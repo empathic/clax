@@ -164,7 +164,10 @@ async function main() {
     const anon = await fetch(`${base}/api/artifacts`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
     check(anon.status === 401, "publishing without the token is refused", anon.status);
     const tok = await fetch(`${base}/api/token`);
-    check(tok.status === 403, "GET /api/token serves no one", tok.status);
+    // No caller of a Worker holds an owner browser session (only a login on
+    // the daemon's own machine opens one), and one with no credential is
+    // refused before any route.
+    check(tok.status === 401, "GET /api/token serves no one", tok.status);
 
     // A Worker that is not hosted signs no browser in, and a private
     // artifact's site answers only a site session, which the shell asks for

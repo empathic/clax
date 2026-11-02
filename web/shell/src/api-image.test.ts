@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { apiImageSrc } from "./api-image";
+import { PROOF_HEADER, proofFetch } from "./owner-proof";
 
 describe("apiImageSrc", () => {
   // jsdom has no URL.createObjectURL; define it so it can be spied on.
@@ -24,6 +25,16 @@ describe("apiImageSrc", () => {
     } finally {
       vi.restoreAllMocks();
     }
+  });
+
+  it("fetches with the page's fetch, so a local owner's clip carries the session's proof", async () => {
+    // What `installProofFetch` makes of the browser's `fetch`; an `<img src>`
+    // would carry the cookie alone, which the daemon refuses.
+    const seen: Headers[] = [];
+    const raw = vi.fn(async (_: RequestInfo | URL, init?: RequestInit) => { seen.push(new Headers(init?.headers)); return new Response(new Uint8Array([1])); }) as unknown as typeof fetch;
+    const win = { fetch: proofFetch(raw, "http://localhost:7480", () => "cxp_a,cxp_b", () => {}) } as unknown as Window;
+    expect(await apiImageSrc("/api/artifacts/a/threads/t9/clip", win)).toBe("blob:x");
+    expect(seen.map(h => h.get(PROOF_HEADER))).toEqual(["cxp_a,cxp_b"]);
   });
 
   it("rejects on a failed answer, and asks again next time", async () => {

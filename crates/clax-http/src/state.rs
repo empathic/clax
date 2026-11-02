@@ -7,6 +7,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+/// How long one request to a connected remote may take when an agent's
+/// call waits on it ([`AppState::remote_deadline`]): 20 s. The MCP shim
+/// and the CLI give the daemon 30 s (`clax_mcp::client`'s request
+/// timeout), so a remote that takes the connection and never answers is
+/// reported as `remote_unreachable` with 10 s to spare for the daemon's
+/// own work and the answer's way back, rather than as the daemon timing
+/// out. A remote of ours answers a read in well under a second; 20 s
+/// still covers a slow network or a cold Worker. Pushes, uploads and the
+/// linked threads' sync (whose long polls wait 25 s there) keep the
+/// public client's longer deadline (`clax_server::public`).
+pub const REMOTE_DEADLINE: Duration = Duration::from_secs(20);
+
 /// The visibility generation (spec 2026-10-08-multi-agent-multi-person
 /// M17): the store's counter, bumped by every committed change to what an
 /// agent may see, and a notification of each bump for waking the waiters
@@ -117,6 +129,10 @@ pub struct AppState {
     pub request_timeout: Duration,
     /// Deadline for the publish routes and asset upload.
     pub publish_timeout: Duration,
+    /// Deadline for each request an agent's call makes to a connected
+    /// remote through this daemon ([`REMOTE_DEADLINE`] in the daemon):
+    /// reads, comments, watches and sign-ins.
+    pub remote_deadline: Duration,
     /// Interval between SSE keep-alive comments on `/api/events` (15 s in the daemon).
     pub sse_keep_alive: Duration,
     /// Base URL (`http://<host>:<port>`, no trailing slash) at which this daemon
@@ -165,6 +181,14 @@ pub struct AppState {
     /// The Clax extension's live credentials, by hash (spec
     /// 2026-10-05-chrome-overlay-design §5.3).
     pub ext_creds: Arc<crate::extension::Credentials>,
+    /// The live owner browser sessions of a local daemon, by hash
+    /// ([`crate::local_trust`]).
+    pub owner_sessions: Arc<crate::local_trust::OwnerSessions>,
+    /// Where `GET /login` reads which user owns a redeeming connection's
+    /// socket ([`crate::peer_user`]): `/proc` on Linux, where the opener
+    /// takes a login link on its command line; None elsewhere, where the
+    /// link reaches no command line and the check is skipped.
+    pub proc_root: Option<std::path::PathBuf>,
     /// The extension ID in effect for this daemon's home (spec L15): the only
     /// extension that may pair.
     pub extension_id: String,
@@ -232,6 +256,12 @@ pub struct AppState {
     /// Linked threads' sync with remotes (`clax_server::linked`); idle on a
     /// hosted daemon.
     pub linked: Arc<clax_realtime::linked::Linked>,
+    /// Other Clax instances' discovery answers (`clax_server::resolve`), in
+    /// memory, their negative answers expiring on the state's clock.
+    pub discovery: Arc<crate::discovery_cache::DiscoveryCache>,
+    /// Connection requests' sign-in drivers and Connect lock
+    /// (`clax_server::routes::remote_requests`).
+    pub remote_drivers: Arc<crate::remote_drivers::RemoteDrivers>,
     /// Where each artifact's app data is ([`crate::app_data_host`]):
     /// [`AppState::assemble`] sets the host's default (each artifact's file
     /// in the home natively), which a host with its own stores replaces.
@@ -304,6 +334,9 @@ pub fn sessions_ended(
 ) {
     crate::views::question::announce_ids(s, st, withdrawn_questions);
     sessions_stop(ctx, st, audit, touched, sessions);
+    // The linked threads' sync ends the sessions it holds on remotes for
+    // them (followed remote artifacts' followers).
+    s.linked.kick(None);
 }
 
 /// What a host decides about the state it serves from; [`AppState::assemble`]
@@ -353,7 +386,11 @@ impl AppState {
     /// The store's.
     pub fn assemble(p: StateParts) -> clax_core::Result<AppState> {
         let live_ids = Arc::new(clax_realtime::live::LiveIds::load(&p.store)?);
-        let ext_creds = Arc::new(crate::extension::Credentials::load(&p.store)?);
+        let ext_creds = Arc::new(crate::extension::Credentials::load_with(
+            &p.store,
+            p.clock.clone(),
+        )?);
+        let owner_sessions = Arc::new(crate::local_trust::OwnerSessions::load(&p.store)?);
         let grant_auth = Arc::new(crate::grant_auth::GrantAuth::load(&p.store)?);
         let vis_gen = VisGen::install(&p.store);
         let app_data = crate::app_data_host::default_host(&p.store, &p.home);
@@ -382,6 +419,7 @@ impl AppState {
             net: Arc::new(crate::net::Net::default()),
             request_timeout: Duration::from_secs(30),
             publish_timeout: Duration::from_secs(120),
+            remote_deadline: REMOTE_DEADLINE,
             sse_keep_alive: Duration::from_secs(15),
             self_base: p.self_base,
             browser_base: p.browser_base,
@@ -403,10 +441,14 @@ impl AppState {
             sockets: Arc::default(),
             live_ids,
             ext_creds,
+            owner_sessions,
+            proc_root: crate::peer_user::default_proc_root(),
             extension_id: p.extension_id,
             questions: Arc::new(Default::default()),
             question_grace: Duration::from_secs(5),
             question_sleeper: p.question_sleeper,
+            discovery: Arc::new(crate::discovery_cache::DiscoveryCache::new(p.clock.clone())),
+            remote_drivers: Arc::default(),
             question_clock: p.clock,
             terminal_after_s: p.terminal_after_s,
             calibration: Arc::default(),

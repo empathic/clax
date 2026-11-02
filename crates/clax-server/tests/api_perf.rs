@@ -22,12 +22,7 @@ async fn the_token_times_the_calibration_read_each_call() {
 #[tokio::test]
 async fn every_other_caller_is_refused() {
     let ts = TestServer::spawn().await;
-    let host = ts.base.trim_start_matches("http://");
-    let events = format!(
-        "{}={}",
-        clax_http::auth::events_cookie_name(host),
-        clax_http::auth::events_cookie_value(&ts.token)
-    );
+    let events = ts.events_cookie();
     let url = format!("{}{PATH}", ts.base);
     for (who, cookie) in [
         ("no credential", None),

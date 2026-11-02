@@ -17,7 +17,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { api, expect, publishAs, registerSession, startDaemon, test } from "./fixtures";
+import { api, asLocalViewer, expect, publishAs, registerSession, startDaemon, test } from "./fixtures";
 import { ask, ownerCookie } from "./questions-helpers";
 
 /** The environment of a CLI run as a person, on their scratch home, outside any agent channel. */
@@ -125,6 +125,9 @@ test("the inbox groups by agent, threads name their owners and wait for approval
     // behaviour); the caret's menu names each agent's person, the owner's
     // first, and never who approves first (its browser never asks).
     const t2 = (await (await fetch(`${d.base}/api/artifacts/${aid}/threads`, { method: "POST", body: (() => { const f = new FormData(); f.set("anchor", form.get("anchor") as string); f.set("body", "Another note."); f.set("version", "1"); return f; })(), headers: { cookie: asOwner.cookie, origin: d.base } })).json()).thread.id as string;
+    // The machine's own LAN address is this machine: its browser holds a
+    // viewer cookie there.
+    await asLocalViewer(lanCtx, d, new URL(lan).hostname);
     const l = await lanCtx.newPage();
     const refused: number[] = [];
     l.on("response", r => { if (r.url().includes("/approves-first")) refused.push(r.status()); });

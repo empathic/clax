@@ -35,6 +35,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { NATIVE_MCP_PATH } from "./lib/http.ts";
 import { BuildLog } from "./lib/build.ts";
+import { exited, stopGroup } from "./lib/proc.ts";
 import { describe, seed, type Seeded } from "./lib/seed.ts";
 import { freePort, gitToken, startWorker } from "./lib/worker.ts";
 
@@ -138,32 +139,6 @@ function portTaken(port: number): Promise<boolean> {
     s.once("error", () => ok(true));
     s.listen(port, "127.0.0.1", () => s.close(() => ok(false)));
   });
-}
-
-function exited(child: ChildProcess): Promise<number | null> {
-  return new Promise((ok) => {
-    if (child.exitCode !== null || child.signalCode !== null) ok(child.exitCode);
-    else child.once("exit", (code) => ok(code));
-  });
-}
-
-/** Stops a child started with `detached: true` by its process group. */
-async function stopGroup(child: ChildProcess): Promise<void> {
-  const pid = child.pid;
-  if (pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
-  try {
-    process.kill(-pid, "SIGTERM");
-  } catch {
-    return;
-  }
-  const gone = await Promise.race([exited(child).then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), 10_000))]);
-  if (!gone) {
-    try {
-      process.kill(-pid, "SIGKILL");
-    } catch {
-      // already gone
-    }
-  }
 }
 
 const children: ChildProcess[] = [];

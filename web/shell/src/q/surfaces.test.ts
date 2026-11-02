@@ -190,6 +190,27 @@ describe("the questions in the artifact view", () => {
     }
   });
 
+  it("in app mode shows a question asked in a thread as a card in the app's sheet, since the thread cards are hidden", async () => {
+    vi.resetModules();
+    const inT = view({ id: "QT", thread: { id: "t1", open: true } });
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(url.startsWith("/api/inbox/summary") ? { unread: 1, questions: [inT], latest: [] } : { questions: [inT], open: 1 }))));
+    document.documentElement.classList.add("app");
+    document.body.innerHTML = `<aside class="sidebar"><div class="questions-slot"></div><article class="thread"><div class="thread-q-slot" data-slot-thread="t1"></div></article></aside><section class="app-questions"><div class="questions-slot"></div></section>`;
+    try {
+      const qmod = await import("./index");
+      const stream = fakeStream();
+      const stop = qmod.artifact(AID, { keyboardTrail: { onClear: () => () => {} }, guardedAction: (_e, _v, act) => { act(); return null; } }, stream as never);
+      for (const f of stream.on.values()) f({ type: "ready" });
+      await settle();
+      expect([...document.querySelectorAll<HTMLElement>(".app-questions .qcard")].map(c => c.dataset.question)).toEqual(["QT"]);
+      expect(document.querySelector(".app-questions a.q-thread")).toBeNull();
+      expect(document.querySelector(".thread-q-slot .qcard")).toBeNull();
+      stop();
+    } finally {
+      document.documentElement.classList.remove("app");
+    }
+  });
+
   it("outside app mode fills the sidebar even when a sheet's slot is in the document", async () => {
     vi.resetModules();
     vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(url.startsWith("/api/inbox/summary") ? { unread: 0, questions: [], latest: [] } : { questions: [view()], open: 1 }))));

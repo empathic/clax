@@ -151,6 +151,7 @@ pub mod linked;
 pub mod loopback;
 pub mod public;
 mod quickstart;
+pub mod resolve;
 pub mod router;
 pub mod routes;
 #[cfg(not(target_arch = "wasm32"))]
@@ -160,12 +161,14 @@ pub mod shell;
 /// Starts every listener of the state `s` serves from: the HTTP layer's
 /// ([`AppState::start_listeners`](clax_http::state::AppState::start_listeners)),
 /// then the people routes', the jobs routes' and linked threads' sync
-/// ([`linked::listen`]).
+/// ([`linked::listen`]), and the sign-in drivers of the connection requests
+/// a Connect left waiting ([`routes::remote_requests::resume`]).
 /// Returns the handles of the tasks they spawn, which run until aborted.
 pub fn start_listeners(s: &clax_http::state::AppState) -> Vec<clax_rt::JoinHandle<()>> {
     let mut tasks = s.start_listeners();
     routes::people::listen(s);
     routes::jobs::listen(s);
     tasks.extend(linked::listen(s));
+    routes::remote_requests::resume(s);
     tasks
 }

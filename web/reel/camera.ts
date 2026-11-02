@@ -37,10 +37,14 @@ export function fastCamera(startedAt: number, fps = FPS): Camera & { elapsedMs()
     // The one wait on real time in the recorder: the length of the shot,
     // while the video records it, not a stand-in for a condition.
     roll: ms => new Promise(resolve => setTimeout(resolve, ms)),
-    // Real time passes regardless: there is nothing to pause.
+    // Real time passes regardless: there is nothing to pause, or to run.
     still: async () => {},
+    idle: async () => {},
   };
 }
+
+/** One animation frame of the page's clock: what `idle` runs. */
+export const ANIMATION_FRAME_MS = 16;
 
 /** The file of frame `n` (from 0) under a recording's directory. */
 export const framePath = (out: string, n: number) => join(out, "frames", `${String(n).padStart(6, "0")}.png`);
@@ -189,8 +193,13 @@ export async function quietIn<T = unknown>(page: Page, frame: Frame, expression:
  * waited out and its answer handled (so what a timer fetched shows on the
  * frame the timer ran in, however long the network took), its animations
  * are set to their ages, and a PNG screenshot is taken of the viewport.
- * `still()` does nothing: between rolls the clock stands. `onFrame(n)`, when
- * given, runs after frame n is written, on the page as that frame shows it.
+ * `still()` does nothing: between rolls the clock stands. `idle()` runs the
+ * clock one animation frame (ANIMATION_FRAME_MS) off camera, for a wait on
+ * a page that needs a paint to go on (a shell loading starts its requests
+ * after its first paint): no frame is filmed, and the next frame falls one
+ * frame's length after the last on the film, that much later on the page.
+ * `onFrame(n)`, when given, runs after frame n is written, on the page as
+ * that frame shows it.
  */
 export async function deterministicCamera(page: Page, out: string, fps = FPS, onFrame?: (frame: number) => Promise<void>): Promise<Camera> {
   const frameMs = 1000 / fps;
@@ -209,6 +218,9 @@ export async function deterministicCamera(page: Page, out: string, fps = FPS, on
   let now = 0;
   // Time rolled so far, in ms: the frames due are those it covers.
   let rolled = 0;
+  // The page's time that ran off camera (`idle`): each frame falls this much
+  // later on the page's clock, one frame's length after the last.
+  let offstage = 0;
 
   // The page's requests in flight, but for the streams that never end and
   // the script of the shell's shared worker (web/shell/src/stream.ts): a
@@ -346,7 +358,7 @@ export async function deterministicCamera(page: Page, out: string, fps = FPS, on
     async roll(ms: number) {
       rolled += ms;
       while (frames < Math.round(rolled / frameMs)) {
-        const to = Math.round((frames + 1) * frameMs);
+        const to = Math.round((frames + 1) * frameMs) + offstage;
         // What started since the last frame started at its time.
         await freeze(now);
         await page.clock.runFor(to - now);
@@ -360,5 +372,10 @@ export async function deterministicCamera(page: Page, out: string, fps = FPS, on
       }
     },
     still: async () => {},
+    async idle() {
+      await page.clock.runFor(ANIMATION_FRAME_MS);
+      now += ANIMATION_FRAME_MS;
+      offstage += ANIMATION_FRAME_MS;
+    },
   };
 }

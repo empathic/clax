@@ -57,6 +57,29 @@ describe("Panel", () => {
     expect(l.sent).toContainEqual({ t: "set-name", name: "Mia" });
   });
 
+  it("words a declined or expired pairing confirmation as such, with a way to ask again", async () => {
+    for (const [code, words] of [["pairing_declined", "Pairing was declined in your browser."], ["pairing_expired", "The pairing confirmation expired."]]) {
+      const l = link(state({ error: { code, message: "pairing failed" } }));
+      render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z") } });
+      expect(screen.getByRole("alert").textContent).toContain(words);
+      expect(screen.getByRole("alert").textContent).not.toContain("daemon.log");
+      await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(l.sent).toContainEqual({ t: "retry" });
+      cleanup();
+    }
+  });
+
+  it("opens Open in Clax through the worker's login link, with no plain address to follow past it", async () => {
+    const l = link(state());
+    render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z") } });
+    const open = screen.getByRole("button", { name: "Open in Clax" });
+    // No link: a middle-click, a modifier click or "Open in new tab" has no address to open.
+    expect(open.getAttribute("href")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Open in Clax" })).toBeNull();
+    await fireEvent.click(open);
+    expect(l.sent).toContainEqual({ t: "open-clax", path: "/a/7q3k9mzx2b4t" });
+  });
+
   it("shows a failure with a way to retry", async () => {
     const l = link(state({ error: { code: "host_missing", message: "Specified native messaging host not found." } }));
     render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z") } });

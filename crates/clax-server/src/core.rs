@@ -14,7 +14,8 @@ use tokio::sync::watch;
 /// A session unseen for this long, with no live process, is ended by the reaper.
 const SESSION_IDLE: Duration = Duration::from_secs(Store::SESSION_IDLE_SECS);
 /// How often the core deletes drafts older than
-/// [`clax_store::drafts::DRAFT_MAX_AGE`] (and once at start).
+/// [`clax_store::drafts::DRAFT_MAX_AGE`] and prunes ended ClaxBot runs
+/// ([`Store::prune_ended_runs`]), and once at start.
 const DRAFT_SWEEP_INTERVAL: Duration = Duration::from_secs(3600);
 /// How long shutdown waits for the journal appender to close its segment.
 /// The appender stops as shutdown begins, beside the connection drain, and
@@ -286,9 +287,20 @@ impl Core {
         }
         self.bot_driver.release_all();
         // The journal has closed its segment (it began to as shutdown
-        // began) before the store stops.
-        if let Some(stopped) = self.journal_stopped {
-            let _ = tokio::time::timeout(JOURNAL_STOP_TIMEOUT, stopped).await;
+        // began) before the store stops; meanwhile the followers' sessions
+        // the linked sync held on remotes are ended there, within the same
+        // wait.
+        let journal = async {
+            if let Some(stopped) = self.journal_stopped {
+                let _ = tokio::time::timeout(JOURNAL_STOP_TIMEOUT, stopped).await;
+            }
+        };
+        let followers = crate::linked::end_followers(&self.state, JOURNAL_STOP_TIMEOUT);
+        let ((), ended) = futures::future::join(journal, followers).await;
+        if !ended {
+            tracing::warn!(
+                "followers' sessions on remotes did not end in time; the remotes reap them"
+            );
         }
         let store = self.state.store.clone();
         #[cfg(test)]
@@ -409,7 +421,12 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
                 .await;
             match reaped {
                 Ok(r) if r.ended.is_empty() => {}
-                Ok(r) => tracing::info!(count = r.ended.len(), "ended idle sessions"),
+                Ok(r) => {
+                    tracing::info!(count = r.ended.len(), "ended idle sessions");
+                    // A followed remote artifact's session there ends with
+                    // its local session.
+                    reap_state.linked.kick(None);
+                }
                 Err(e) => tracing::warn!(error = %e, "session reaper failed"),
             }
         }
@@ -457,6 +474,15 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
                 Ok(0) => {}
                 Ok(n) => tracing::info!(count = n, "removed old drafts"),
                 Err(e) => tracing::warn!(error = %e, "draft sweep failed"),
+            }
+            match drafts_store.call(|st| st.prune_ended_runs()).await {
+                Ok(p) if p == clax_store::bot_runs::Pruned::default() => {}
+                Ok(p) => tracing::info!(
+                    calls = p.calls,
+                    draft_files = p.draft_files,
+                    "pruned ended ClaxBot runs"
+                ),
+                Err(e) => tracing::warn!(error = %e, "ClaxBot run prune failed"),
             }
         }
     });

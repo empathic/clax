@@ -147,6 +147,7 @@ async fn publish_routes_run_under_the_publish_timeout() {
     let res = ts
         .client
         .get(format!("{}/api/artifacts", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .header(DELAY, &hold)
         .send()
         .await

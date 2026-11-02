@@ -283,7 +283,12 @@ fn serve_replaces_a_real_older_daemon_and_ends_its_event_streams() {
     assert_eq!(info["version"], "0.0.1");
     let port = info["port"].as_u64().unwrap() as u16;
     let mut sse = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-    write!(sse, "GET /api/events HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n").unwrap();
+    let token = info["token"].as_str().unwrap().to_string();
+    write!(
+        sse,
+        "GET /api/events?token={token} HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n"
+    )
+    .unwrap();
     sse.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
     let mut first = [0u8; 64];
     let n = sse.read(&mut first).unwrap();

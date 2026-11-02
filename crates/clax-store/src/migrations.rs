@@ -1843,6 +1843,179 @@ pub const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (thread_id, session_id)
     ) WITHOUT ROWID;
     CREATE INDEX queue_claims_by_session ON queue_claims(session_id);",
+    // 60: a local daemon's browser login (`crate::browser_login`). A login
+    // code, made by a holder of the daemon token, is redeemed once by the
+    // browser it was opened in; an owner browser session is the value of
+    // that browser's owner and events cookies. Both are kept by their
+    // SHA-256 alone, and name no viewer row: a session is the owner's
+    // whatever row the owner is. A hosted daemon writes neither.
+    //
+    // It also adds connection requests (`crate::remote_requests`): an
+    // agent's ask that the owner connect this home to a Clax instance, at
+    // most one open per origin (`remote_requests_open`), each asking
+    // session with the URL it wanted; the origins the owner muted ("Never
+    // for this instance") and those held off a day by "Not now". The
+    // inbox gains their kind, `remote_request`, rebuilt as migration 30
+    // rebuilt it, keeping every `seq`. And it adds what following a remote
+    // artifact keeps: `remote_links.followed`, a link that mirrors a
+    // remote artifact's threads rather than pushes one, with
+    // `remote_links.unwatched_at`, since when no local session has watched
+    // it (the sync leaves it alone then, and drops it a week on), and
+    // `artifacts.remote_mirror`, the local artifact holding those threads
+    // (a column, as `artifacts.kind`'s CHECK cannot be altered without
+    // rebuilding the table every other table names). And a remote may be
+    // `signed_out`: its token was refused there (revoked), so it is kept,
+    // with its links, until the person connects it again; `remotes` is
+    // rebuilt for the status's CHECK, as no table names it, and gains
+    // `reconnecting`, set while a signed-out remote's new sign-in waits, so
+    // one that does not finish leaves it signed out rather than forgotten.
+    // `threads.reopened_by_person` is whose reopen left a thread open
+    // (`*owner`, a person's public ID, or `-` for anyone else; NULL for
+    // Clax itself and reopens before it): a linked thread's reopen goes up
+    // to its remote only when it is the owner's (`crate::linked`).
+    "CREATE TABLE login_codes (
+        sha256 TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        used_at TEXT
+    ) WITHOUT ROWID;
+    CREATE TABLE owner_browser_sessions (
+        sha256 TEXT PRIMARY KEY,
+        proof_sha256 TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        ended_at TEXT
+    ) WITHOUT ROWID;
+    CREATE TABLE remote_requests (
+        id TEXT PRIMARY KEY,
+        origin TEXT NOT NULL,
+        name TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('open', 'connected', 'dismissed', 'muted', 'expired')),
+        opened_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        answered_at TEXT,
+        remote_id TEXT
+    );
+    CREATE UNIQUE INDEX remote_requests_open ON remote_requests(origin) WHERE status = 'open';
+    CREATE INDEX remote_requests_by_opener ON remote_requests(opened_by, created_at);
+    CREATE TABLE remote_request_askers (
+        request_id TEXT NOT NULL REFERENCES remote_requests(id) ON DELETE CASCADE,
+        session_id TEXT NOT NULL,
+        url TEXT,
+        reason TEXT,
+        asked_at TEXT NOT NULL,
+        PRIMARY KEY (request_id, session_id)
+    ) WITHOUT ROWID;
+    CREATE TABLE remote_mutes (
+        origin TEXT PRIMARY KEY,
+        muted_at TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE TABLE remote_dismissals (
+        origin TEXT PRIMARY KEY,
+        until TEXT NOT NULL
+    ) WITHOUT ROWID;
+    ALTER TABLE remote_links ADD COLUMN followed INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE remote_links ADD COLUMN unwatched_at TEXT;
+    ALTER TABLE artifacts ADD COLUMN remote_mirror INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE threads ADD COLUMN reopened_by_person TEXT;
+    CREATE TABLE remotes_60 (
+        id TEXT PRIMARY KEY,
+        origin TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'connected', 'signed_out')),
+        token TEXT,
+        device_code TEXT,
+        user_code TEXT,
+        verification_url TEXT,
+        sign_in_expires_at TEXT,
+        poll_interval_s INTEGER,
+        person_public_id TEXT,
+        person_name TEXT,
+        grant_id TEXT,
+        created_at TEXT NOT NULL,
+        connected_at TEXT,
+        client_kind TEXT,
+        reconnecting INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO remotes_60 SELECT id, origin, name, status, token, device_code, user_code,
+        verification_url, sign_in_expires_at, poll_interval_s, person_public_id, person_name,
+        grant_id, created_at, connected_at, client_kind, 0 FROM remotes;
+    DROP TABLE remotes;
+    ALTER TABLE remotes_60 RENAME TO remotes;
+    CREATE TABLE inbox_items_60 (
+        seq INTEGER PRIMARY KEY,
+        id TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL CHECK (kind IN ('reply', 'version', 'published', 'question', 'finished',
+                                           'approval', 'connection', 'ended', 'push', 'remote_request')),
+        key TEXT NOT NULL UNIQUE,
+        recipient TEXT,
+        artifact_id TEXT,
+        thread_id TEXT,
+        comment_id TEXT,
+        version_n INTEGER,
+        question_id TEXT,
+        session_id TEXT,
+        harness TEXT,
+        request_id TEXT,
+        grant_id TEXT,
+        detail_json TEXT,
+        created_at TEXT NOT NULL,
+        read_at TEXT
+    );
+    INSERT INTO inbox_items_60 SELECT seq, id, kind, key, recipient, artifact_id, thread_id,
+        comment_id, version_n, question_id, session_id, harness, request_id, grant_id, detail_json,
+        created_at, read_at FROM inbox_items;
+    DROP TABLE inbox_items;
+    ALTER TABLE inbox_items_60 RENAME TO inbox_items;
+    CREATE INDEX inbox_unread ON inbox_items(COALESCE(recipient, ''), seq) WHERE read_at IS NULL;
+    CREATE INDEX inbox_by_recipient ON inbox_items(COALESCE(recipient, ''), seq);
+    CREATE INDEX inbox_by_artifact ON inbox_items(COALESCE(recipient, ''), artifact_id, seq);
+    CREATE INDEX inbox_by_kind ON inbox_items(COALESCE(recipient, ''), kind, seq);
+    CREATE INDEX inbox_by_harness ON inbox_items(COALESCE(recipient, ''), harness, seq);
+    CREATE INDEX inbox_by_session ON inbox_items(COALESCE(recipient, ''), session_id, seq);
+    CREATE INDEX inbox_by_created ON inbox_items(created_at, seq);
+    CREATE INDEX inbox_by_thread ON inbox_items(thread_id) WHERE thread_id IS NOT NULL;
+    CREATE INDEX inbox_by_question ON inbox_items(question_id) WHERE question_id IS NOT NULL;
+    CREATE INDEX inbox_by_request ON inbox_items(request_id) WHERE request_id IS NOT NULL;
+    -- Browser confirmation (`crate::confirmations`): a decision made with
+    -- the daemon token while an agent of the owner's is live waits for a
+    -- click in the owner's browser. `decision_json` is the decision a
+    -- confirmation is bound to; `used_at` marks the one call it let
+    -- through. The owner may also require a passkey (WebAuthn with user
+    -- verification) to confirm: `passkeys` holds each one registered
+    -- (its SPKI public key, COSE algorithm and signature counter, and how
+    -- it was added: from which browser, the owner's agents live then),
+    -- `passkey_challenges` each challenge handed out (single use, bound to
+    -- its purpose: a confirmation, a registration, turning the
+    -- requirement off, a removal), and `confirm_prefs` whether passkeys are
+    -- required and whether the first-use offer was put off.
+    CREATE TABLE confirmations (
+        id TEXT PRIMARY KEY,
+        decision_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('open','approved','declined','expired')),
+        created_at TEXT NOT NULL,
+        answered_at TEXT,
+        used_at TEXT
+    ) WITHOUT ROWID;
+    CREATE TABLE passkeys (
+        credential_id TEXT PRIMARY KEY,
+        public_key BLOB NOT NULL,
+        alg INTEGER NOT NULL,
+        sign_count INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        added_by_json TEXT NOT NULL DEFAULT '{}'
+    ) WITHOUT ROWID;
+    CREATE TABLE passkey_challenges (
+        challenge TEXT PRIMARY KEY,
+        purpose TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE TABLE confirm_prefs (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        require_passkey INTEGER NOT NULL DEFAULT 0,
+        offer_dismissed INTEGER NOT NULL DEFAULT 0
+    );
+    -- End of browser confirmation.",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -1884,8 +2057,15 @@ pub const CAPABILITY_APPROVALS_MIGRATION: u32 = QUICKSTART_MIGRATION + 1;
 
 /// The migration that adds report queues and external artifacts
 /// (`queues`, `external_artifacts`, `queue_claims`, and the queue columns
-/// of threads and comments), as a schema version, and this build's last.
+/// of threads and comments), as a schema version.
 pub const QUEUES_MIGRATION: u32 = CAPABILITY_APPROVALS_MIGRATION + 1;
+
+/// The migration that adds a local daemon's browser login (`login_codes`,
+/// `owner_browser_sessions`), connection requests (`remote_requests` and
+/// the tables beside it, the inbox's `remote_request` kind) and followed
+/// remote links (`remote_links.followed`, `artifacts.remote_mirror`), as a
+/// schema version, and this build's last.
+pub const BROWSER_LOGIN_MIGRATION: u32 = QUEUES_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -2045,11 +2225,11 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 
 /// What each migration after the app's leaves in the schema, in order:
 /// ClaxBot's ([`CLAXBOT_MIGRATION`]), then [`LEGACY_PATHS_MIGRATION`] to
-/// [`QUEUES_MIGRATION`]. They follow the app's in every
+/// [`BROWSER_LOGIN_MIGRATION`]. They follow the app's in every
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 10] = [
+const MARKS_AFTER_APP: [Mark<'static>; 11] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
@@ -2060,6 +2240,7 @@ const MARKS_AFTER_APP: [Mark<'static>; 10] = [
     Mark::Table("quickstarts"),
     Mark::Table("capability_approvals"),
     Mark::Table("queues"),
+    Mark::Table("owner_browser_sessions"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -5011,7 +5192,9 @@ mod tests {
             super::CAPABILITY_APPROVALS_MIGRATION + 1
         );
         assert!(MIGRATIONS[first + 17].contains("CREATE TABLE queues ("));
-        assert_eq!(MIGRATIONS.len() as u32, super::QUEUES_MIGRATION);
+        assert_eq!(super::BROWSER_LOGIN_MIGRATION, super::QUEUES_MIGRATION + 1);
+        assert!(MIGRATIONS[first + 18].contains("CREATE TABLE owner_browser_sessions ("));
+        assert_eq!(MIGRATIONS.len() as u32, super::BROWSER_LOGIN_MIGRATION);
     }
 
     #[test]
@@ -5100,7 +5283,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_database_reaches_59() {
+    fn a_fresh_database_reaches_60() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         drop(Store::open(&home).unwrap());
@@ -5118,9 +5301,18 @@ mod tests {
         assert_eq!(super::QUICKSTART_MIGRATION, 57);
         assert_eq!(super::CAPABILITY_APPROVALS_MIGRATION, 58);
         assert_eq!(super::QUEUES_MIGRATION, 59);
-        assert_eq!(user_version(&c), super::QUEUES_MIGRATION);
+        assert_eq!(super::BROWSER_LOGIN_MIGRATION, 60);
+        assert_eq!(user_version(&c), super::BROWSER_LOGIN_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
+            assert_eq!(table_count(&c, table), 1, "{table}");
+        }
+        for table in [
+            "confirmations",
+            "passkeys",
+            "passkey_challenges",
+            "confirm_prefs",
+        ] {
             assert_eq!(table_count(&c, table), 1, "{table}");
         }
     }
@@ -5860,7 +6052,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::QUEUES_MIGRATION);
+        assert_eq!(user_version(&c), super::BROWSER_LOGIN_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -6354,14 +6546,14 @@ mod tests {
         // remote kind migration to 49, ClaxBot's to 50, the site
         // migrations to 54, the return-to migration to 55, the version
         // declarations' to 56, the quickstart's to 57 and the capability
-        // approvals' to 58 and the queues' to 59.
+        // approvals' to 58, the queues' to 59 and the browser login's to 60.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::QUEUES_MIGRATION);
+            assert_eq!(user_version(&c), super::BROWSER_LOGIN_MIGRATION);
             (columns_of(&c), every_row(&c))
         };
 
@@ -6369,8 +6561,8 @@ mod tests {
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(
             user_version(&c),
-            super::QUEUES_MIGRATION + 1,
-            "ClaxBot's 50 and the migrations 51 to 59 after it are one later now"
+            super::BROWSER_LOGIN_MIGRATION + 1,
+            "ClaxBot's 50 and the migrations 51 to 60 after it are one later now"
         );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
@@ -6389,7 +6581,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), super::QUEUES_MIGRATION);
+        assert_eq!(user_version(&copied), super::BROWSER_LOGIN_MIGRATION);
         assert_eq!(
             every_row(&copied),
             before,
@@ -6403,7 +6595,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (super::QUEUES_MIGRATION + 1, schema, rows)
+            (super::BROWSER_LOGIN_MIGRATION + 1, schema, rows)
         );
     }
 
@@ -6677,7 +6869,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, super::QUEUES_MIGRATION);
+        assert_eq!(last, super::BROWSER_LOGIN_MIGRATION);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));

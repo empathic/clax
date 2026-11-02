@@ -3,8 +3,11 @@
 # Bazel when it is installed: scripts/run.sh bin), copies
 # it to a temporary directory (removed on exit) that it names in CLAX_BIN, which
 # the plugins run ahead of anything else, and puts first on PATH; it starts
-# the harness on the dev home ($CLAX_HOME, else ~/.clax-dev, whose daemon
-# listens on $CLAX_DEV_PORT, else 7481). The agents' own home, daemon and
+# the harness on this checkout's dev home (scripts/dev-home.sh, watch_settings:
+# ~/.clax-dev on 7481 for the main checkout, ~/.clax-dev-<name> on a port of
+# its own for a linked worktree, or $CLAX_HOME and $CLAX_DEV_PORT). It starts
+# the home's daemon before the harness, and stops with what to do when the
+# build cannot open the home's database. The agents' own home, daemon and
 # installed binary are untouched.
 #   claude  loads the Clax plugin from this checkout for this run:
 #           claude --plugin-dir plugins/claude-code, with an installed
@@ -56,12 +59,32 @@ cp "$bin" "$tmp/clax"
 # The plugins run CLAX_BIN ahead of anything else; PATH serves the shell.
 export CLAX_BIN="$tmp/clax"
 export PATH="$tmp:$PATH"
-export CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}"
+watch_settings
+export CLAX_HOME="$DEV_HOME"
+# A home with no database yet has no signed-in browser either.
+new_home=""
+[ -e "$CLAX_HOME/clax.db" ] || new_home=1
 # The dev home's config.toml names its port; CLAX_PORT would override it.
 unset CLAX_PORT
-ensure_dev_home "$CLAX_HOME" "${CLAX_DEV_PORT:-7481}"
+ensure_dev_home "$CLAX_HOME" "$DEV_PORT"
 stop_orphan_daemon "$CLAX_HOME"
-echo "clax dev: $("$tmp/clax" --version) at $tmp/clax, CLAX_HOME=$CLAX_HOME"
+echo "clax dev: $("$tmp/clax" --version) at $tmp/clax, CLAX_HOME=$CLAX_HOME (port $(home_port "$CLAX_HOME"))"
+# The daemon starts now, not at the agent's first call, so a home this build
+# cannot open is explained here rather than to the agent.
+log_from="$(log_size "$CLAX_HOME")"
+if ! CLAX_NO_OPEN=1 "$tmp/clax" serve >/dev/null; then
+    explain_home_failure "$CLAX_HOME" "$log_from" || echo "clax dev: the daemon did not start on $CLAX_HOME; see $CLAX_HOME/logs/daemon.log" >&2
+    exit 1
+fi
+# A browser sees this home's inbox, cards and pages once signed in to it
+# (a login link; the home's daemon trusts no browser for being on this
+# machine): a new home opens one signed in, and every run says how.
+if [ -n "$new_home" ] && [ -z "${CLAX_NO_OPEN:-}" ]; then
+    "$tmp/clax" open >/dev/null || true
+    echo "clax dev: opened this dev home's gallery in your browser, signed in"
+else
+    echo "clax dev: to sign a browser in to this dev home: just clax open (or just clax login for a link)"
+fi
 
 # Not exec: the EXIT trap removes the temporary directory after the harness.
 case "$harness" in

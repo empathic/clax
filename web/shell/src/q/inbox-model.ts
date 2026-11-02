@@ -83,7 +83,17 @@ export function itemTitle(i: InboxItem, others: InboxItem[] = [], { page = true 
     }
     case "ended": return `${who} ended`;
     case "push": return `${i.push?.origin ?? "A public Clax"} refused v${i.push?.n ?? "?"}${on(" of ")}`;
+    case "remote_request": return remoteRequestText(i, others);
   }
+}
+
+/** A connection request's line, as its card reads: "<agent> wants to
+ * connect to <name> (<origin>) to read <url>" (without "to read" when it
+ * named no page). */
+export function remoteRequestText(i: InboxItem, others: InboxItem[] = []): string {
+  const r = i.remote_request;
+  if (!r) return "A request to connect a Clax";
+  return `${named(i.agent, others)} wants to connect to ${r.name} (${r.origin})${r.url ? ` to read ${r.url}` : ""}`;
 }
 
 /** An answered question's answers on one line: "Layout: Two · Notes: ok". */
@@ -106,6 +116,7 @@ export function itemText(i: InboxItem): string {
     // What the end cleaned up: the note's line after "<name> ended".
     : i.kind === "ended" ? i.ended?.text.split(" · ").slice(1).join(" · ")
     : i.kind === "push" ? i.push?.message
+    : i.kind === "remote_request" ? i.remote_request?.reason
     : null;
   return (t ?? "").replace(/\s+/g, " ").trim();
 }

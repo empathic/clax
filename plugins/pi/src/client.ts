@@ -136,7 +136,12 @@ function send(base: string, path: string, opts: RequestOptions): Promise<RawResp
     // signs it as sent.
     const u = new URL(base);
     const target = { protocol: u.protocol, hostname: u.hostname.replace(/^\[|\]$/g, ""), port: u.port, path: path || "/" };
-    const req = httpRequest({ ...target, method: opts.method, headers: opts.headers, signal }, res => {
+    // A body always names its length: Node sends a DELETE's body neither
+    // chunked nor with one, which a server reads as the next request.
+    const headers = opts.body === undefined || opts.headers?.["content-length"] !== undefined
+      ? opts.headers
+      : { ...opts.headers, "content-length": String(Buffer.byteLength(opts.body)) };
+    const req = httpRequest({ ...target, method: opts.method, headers, signal }, res => {
       const chunks: Buffer[] = [];
       let size = 0;
       res.on("data", (c: Buffer) => {
@@ -183,10 +188,31 @@ function errorOf(res: RawResponse): Record<string, unknown> {
   return { code: "http_error", message: `daemon answered HTTP ${res.status}` };
 }
 
+/** Resolves once `signal` aborts (never without one). */
+function abortOf(signal: AbortSignal | undefined): Promise<void> {
+  return new Promise<void>(done => {
+    if (!signal) return;
+    if (signal.aborted) return done();
+    signal.addEventListener("abort", () => done(), { once: true });
+  });
+}
+
+/** The failure of a request cancelled through its signal, as [`send`] fails it. */
+const cancelled = () => new Failure(new ClientError("unreachable", "request cancelled"), false);
+
+/** Waits `ms` (with `r`'s sleep when it has one), or until `signal` aborts. */
+async function pause(r: Remote, ms: number, signal: AbortSignal | undefined): Promise<void> {
+  if (r.sleep) return Promise.race([r.sleep(ms), abortOf(signal)]);
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([new Promise<void>(done => { timer = setTimeout(done, ms); }), abortOf(signal)]);
+  clearTimeout(timer);
+}
+
 /** Sends a request to the remote daemon `r` (spec §6.6): signed now, and
  * signed anew for each retry: one on `stale_request`, after learning the
  * daemon's clock from its `Date`; three on `limit_reached` (429) and
- * `busy` (503), after 1, 2 and 4 s with up to a quarter more. At most
+ * `busy` (503), after 1, 2 and 4 s with up to a quarter more, a wait
+ * `opts.signal` cuts short (the request then fails cancelled). At most
  * [`MAX_RESPONSE_BYTES`] of an answer are read. A `stale_request` whose
  * `Date` is further off than a signature may be moved answers 401
  * `clock_skew`, saying so, as the Rust clients do. */
@@ -209,7 +235,8 @@ export async function sendRemote(r: Remote, path: string, opts: RequestOptions):
     }
     if (((res.status === 429 && code === "limit_reached") || (res.status === 503 && code === "busy")) && backoffs < BACKOFF_S.length) {
       const ms = BACKOFF_S[backoffs++]! * 1000;
-      await (r.sleep ?? (t => new Promise<void>(done => setTimeout(done, t))))(ms + Math.random() * ms / 4);
+      await pause(r, ms + Math.random() * ms / 4, opts.signal);
+      if (opts.signal?.aborted) throw cancelled();
       continue;
     }
     return res;
@@ -500,9 +527,16 @@ export class DaemonClient {
    * refreshes and retries once. When the refresh fails, the original error is
    * thrown. With `keepSession`, a refusal of the session it names
    * ([`sessionRefused`]) is thrown as it is, never cured by registering a
-   * new session. */
+   * new session. `opts.signal` bounds the ensuring too: once it aborts, the
+   * request fails cancelled (`unreachable`). */
   private async request(path: Path, opts: RequestOptions, find: Find = this.refreshFn, deadline?: number, keepSession = false): Promise<RawResponse> {
-    await this.ensure(find, deadline);
+    if (opts.signal) {
+      const ensuring = this.ensure(find, deadline);
+      // Left to finish on its own when cancelled: its failure is not this request's.
+      ensuring.catch(() => {});
+      await Promise.race([ensuring, abortOf(opts.signal)]);
+      if (opts.signal.aborted) throw cancelled().error;
+    } else await this.ensure(find, deadline);
     const endpoint = this.endpoint;
     if (!endpoint) throw new ClientError("unreachable", "no daemon found");
     const stale = this.stale();
@@ -538,6 +572,13 @@ export class DaemonClient {
 
   private jsonBody(method: string, body: unknown, timeoutMs = REQUEST_TIMEOUT_MS): RequestOptions {
     return { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body), timeoutMs };
+  }
+
+  /** `POST /api/browser-login` (`{next}`): a one-use login code for a
+   * browser to open, `{path, url, expires_in}`, `path` being
+   * `/login?code=…&next=…` (the local daemon's alone). */
+  browserLogin(next: string): Promise<any> {
+    return this.json("/api/browser-login", this.jsonBody("POST", { next }));
   }
 
   /** `GET /healthz`: `{version, pid, started_at}`. */
@@ -586,10 +627,11 @@ export class DaemonClient {
     return this.json(`/api/artifacts/${id}/tags`, this.jsonBody("PATCH", body));
   }
 
-  /** `GET /api/artifacts/<id>`: `{artifact, versions}`; `artifact` carries
-   * `owner_session_id`, `owner_live` and `owner_harness`. */
-  get(id: string): Promise<any> {
-    return this.json(`/api/artifacts/${id}`, { method: "GET" });
+  /** `GET <api>` (`artifactPath` or `remoteArtifactPath`): `{artifact,
+   * versions}`; this daemon's `artifact` carries `owner_session_id`,
+   * `owner_live` and `owner_harness`. */
+  get(api: string): Promise<any> {
+    return this.json(api, { method: "GET" });
   }
 
   /** `POST /api/artifacts`: creates an artifact; `{artifact, version, url}`. */
@@ -626,9 +668,9 @@ export class DaemonClient {
   }
 
   /** The stored bytes of `path` in version `n`, unwrapped
-   * (`GET /api/artifacts/<id>/versions/<n>/files/<path>`). */
-  async fileBytes(id: string, n: number, path: string): Promise<Buffer> {
-    return (await this.request(`/api/artifacts/${id}/versions/${n}/files/${encodePath(path)}`, { method: "GET" })).body;
+   * (`GET <api>/versions/<n>/files/<path>`). */
+  async fileBytes(api: string, n: number, path: string): Promise<Buffer> {
+    return (await this.request(`${api}/versions/${n}/files/${encodePath(path)}`, { method: "GET" })).body;
   }
 
   /** `POST /api/artifacts/<id>/assets` (multipart field `file`): `{asset, url}`.
@@ -696,31 +738,34 @@ export class DaemonClient {
     return this.json(`/api/artifacts/${id}/docs:str_replace${q ? `?${q}` : ""}`, this.jsonBody("POST", body));
   }
 
-  /** `GET /api/artifacts/<id>/threads`: `{threads, next_cursor}`. */
-  threads(id: string, includeResolved: boolean, cursor?: string): Promise<any> {
+  /** `GET <api>/threads`: `{threads, next_cursor}`. */
+  threads(api: string, includeResolved: boolean, cursor?: string): Promise<any> {
     const q = new URLSearchParams({ include_resolved: String(includeResolved) });
     if (cursor !== undefined) q.set("cursor", cursor);
-    return this.json(`/api/artifacts/${id}/threads?${q}`, { method: "GET" });
+    return this.json(`${api}/threads?${q}`, { method: "GET" });
   }
 
-  /** `GET /api/artifacts/<id>/threads/<tid>`: `{thread}`. */
-  thread(id: string, tid: string): Promise<any> {
-    return this.json(`/api/artifacts/${id}/threads/${tid}`, { method: "GET" });
+  /** `GET <api>/threads/<tid>`: `{thread}`. */
+  thread(api: string, tid: string): Promise<any> {
+    return this.json(`${api}/threads/${encodeURIComponent(tid)}`, { method: "GET" });
   }
 
   /**
    * An agent reply: `{comment, thread}` (with `addressed: "pending"` when `addressed` marked a live page's
-   * thread), or `{guidance}` on a thread not sent to the agent. `addressed` is sent only when true.
+   * thread), or `{guidance}` on a thread not sent to the agent. `addressed` is sent only when true. Under
+   * idempotency key `key` (a remote artifact's reply), the request sent again is answered with the comment
+   * the first made.
    */
-  reply(id: string, tid: string, text: string, addressed = false): Promise<any> {
+  reply(api: string, tid: string, text: string, addressed = false, key?: string): Promise<any> {
     const body: Record<string, unknown> = { body: text, author_kind: "agent" };
     if (addressed) body.addressed = true;
-    return this.json(`/api/artifacts/${id}/threads/${tid}/comments`, this.jsonBody("POST", body));
+    return this.json(`${api}/threads/${encodeURIComponent(tid)}/comments`, idempotent(this.jsonBody("POST", body), key));
   }
 
-  /** Resolves a thread as the agent: `{thread}`, or `{guidance}` on a thread not sent to the agent. */
-  resolve(id: string, tid: string): Promise<any> {
-    return this.json(`/api/artifacts/${id}/threads/${tid}/resolve`, this.jsonBody("POST", { as: "agent" }));
+  /** Resolves a thread as the agent: `{thread}`, or `{guidance}` on a thread not sent to the agent; under
+   * idempotency key `key`, as `reply`. */
+  resolve(api: string, tid: string, key?: string): Promise<any> {
+    return this.json(`${api}/threads/${encodeURIComponent(tid)}/resolve`, idempotent(this.jsonBody("POST", { as: "agent" }), key));
   }
 
   /** `PUT /api/sessions/<sid>/watches/<id>`: `{watch}`. */
@@ -731,6 +776,17 @@ export class DaemonClient {
   /** `DELETE /api/sessions/<sid>/watches/<id>`. */
   async unwatch(id: string): Promise<void> {
     await this.request(() => `${this.sessionPath()}/watches/${id}`, { method: "DELETE" });
+  }
+
+  /** `PUT /api/sessions/<sid>/remote-watches`: watches artifact `raid` of
+   * connected remote `rid` (at `url` there); `{watch, mirror, artifact_id, url, remote}`. */
+  remoteWatch(rid: string, raid: string, url: string, replies: boolean): Promise<any> {
+    return this.json(() => `${this.sessionPath()}/remote-watches`, this.jsonBody("PUT", { remote: rid, artifact_id: raid, url, replies_armed: replies }));
+  }
+
+  /** `DELETE /api/sessions/<sid>/remote-watches`: stops watching artifact `raid` of remote `rid`. */
+  async remoteUnwatch(rid: string, raid: string, url: string): Promise<void> {
+    await this.request(() => `${this.sessionPath()}/remote-watches`, this.jsonBody("DELETE", { remote: rid, artifact_id: raid, url }));
   }
 
   /** `PUT /api/sessions/<sid>/live-watches`: a scope watch on the page `url`; `{live_watch, page, site, covered}`. */
@@ -746,6 +802,19 @@ export class DaemonClient {
   /** `GET /api/live/pages?url=`: `{page, route}`, `page` null when the URL has no live page. */
   livePage(url: string): Promise<any> {
     return this.json(`/api/live/pages?${new URLSearchParams({ url })}`, { method: "GET" });
+  }
+
+  /** `GET /api/resolve?url=`: what the URL names, `{kind, …}` (`resolved`
+   * in `clax.ts` reads it). */
+  resolveUrl(url: string): Promise<any> {
+    return this.json(`/api/resolve?${new URLSearchParams({ url })}`, { method: "GET" });
+  }
+
+  /** Hands thread `tid` of the remote artifact at `api` (`remoteArtifactPath`) to the agent `to` names
+   * there, or releases it: `{thread}`. This daemon's own threads are handed off through the session
+   * (`handoff`). */
+  remoteHandoff(api: string, tid: string, to?: string): Promise<any> {
+    return this.json(`${api}/threads/${encodeURIComponent(tid)}/handoff`, this.jsonBody("POST", to === undefined ? {} : { to }));
   }
 
   /** `PUT /api/sessions/<sid>/working/<id>`: `{working, message_truncated}`. */
@@ -855,6 +924,20 @@ export class DaemonClient {
     return this.json(() => `${this.sessionPath()}/where-to-ask`, { method: "GET" });
   }
 
+  /** `POST /api/remotes/requests {url, reason?}` as this session: asks the
+   * person to connect the Clax instance `url` is on (spec
+   * 2026-10-29-remote-instances §3): `{status, request?, remote?, until?}`. */
+  remoteRequest(url: string, reason?: string): Promise<any> {
+    return this.json(() => "/api/remotes/requests", this.jsonBody("POST", reason === undefined ? { url } : { url, reason }));
+  }
+
+  /** `GET /api/remotes/requests/<id>?wait=<waitS>`: `{request_id, status,
+   * origin, name, remote?, waited_s, call_again}`. `id` must be a ULID. */
+  remoteRequestWait(id: string, waitS: number): Promise<any> {
+    const q = new URLSearchParams({ wait: String(waitS) });
+    return this.json(() => `/api/remotes/requests/${id}?${q}`, { method: "GET", timeoutMs: (waitS + 10) * 1000 });
+  }
+
   /** `POST /api/sessions/<sid>/terminal`: the person typed a prompt (spec
    * 2026-10-16-ask-where-attention-is-design §1). Only discovers a running
    * daemon, never starts one. */
@@ -941,4 +1024,22 @@ export class DaemonClient {
 
   /** The path of this client's session (`/api/sessions/<id>`), as of the attempt. */
   private readonly sessionPath = () => `/api/sessions/${this.sessionId ?? ""}`;
+}
+
+/** The daemon's route of its own artifact `id`, under which its artifact
+ * routes are. A connected remote's artifact has the same routes under
+ * `remoteArtifactPath`; the methods that take an `api` take either. */
+export function artifactPath(id: string): string {
+  return `/api/artifacts/${id}`;
+}
+
+/** The daemon's route of artifact `raid` on connected remote `rid`. */
+export function remoteArtifactPath(rid: string, raid: string): string {
+  return `/api/remotes/${encodeURIComponent(rid)}/artifacts/${encodeURIComponent(raid)}`;
+}
+
+/** `opts` with an `Idempotency-Key` of `key`, when there is one. */
+function idempotent<T extends { headers?: Record<string, string> }>(opts: T, key: string | undefined): T {
+  if (key !== undefined) opts.headers = { ...opts.headers, "idempotency-key": key };
+  return opts;
 }

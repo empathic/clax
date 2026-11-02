@@ -14,6 +14,7 @@ async fn api_json_is_compressed_as_the_client_prefers_and_streams_never_are() {
         let res = ts
             .client
             .get(format!("{}/api/artifacts", ts.base))
+            .header("cookie", format!("clax_viewer={}", ts.local_browser()))
             .header("accept-encoding", accept)
             .send()
             .await
@@ -33,7 +34,8 @@ async fn api_json_is_compressed_as_the_client_prefers_and_streams_never_are() {
     // A small body is not worth it.
     let res = ts
         .client
-        .get(format!("{}/api/viewers/me/attention", ts.base))
+        .get(format!("{}/api/viewers/me", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .header("accept-encoding", "gzip")
         .send()
         .await
@@ -44,6 +46,7 @@ async fn api_json_is_compressed_as_the_client_prefers_and_streams_never_are() {
         let res = ts
             .client
             .get(format!("{}{path}", ts.base))
+            .header("cookie", format!("clax_viewer={}", ts.local_browser()))
             .header("accept-encoding", "gzip, br")
             .send()
             .await
@@ -59,7 +62,13 @@ async fn api_gets_carry_an_etag_and_answer_304_when_current() {
     let a = ts.publish("A", &[("index.html", "a")]).await;
     let aid = a["artifact"]["id"].as_str().unwrap();
     let path = format!("{}/api/artifacts/{aid}/threads", ts.base);
-    let res = ts.client.get(&path).send().await.unwrap();
+    let res = ts
+        .client
+        .get(&path)
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
     // An answer may differ by caller: no shared cache keeps it.
     assert_eq!(res.headers()["cache-control"], "private, no-cache");
@@ -67,6 +76,7 @@ async fn api_gets_carry_an_etag_and_answer_304_when_current() {
     let res = ts
         .client
         .get(&path)
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .header("if-none-match", &tag)
         .send()
         .await
@@ -78,6 +88,7 @@ async fn api_gets_carry_an_etag_and_answer_304_when_current() {
     let res = ts
         .client
         .get(&path)
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .header("if-none-match", &tag)
         .send()
         .await

@@ -1,4 +1,4 @@
-import { test, expect, type Daemon, api, openArtifact, postThread, publishAs, registerSession } from "./fixtures";
+import { test, expect, type Daemon, api, openArtifact, postThread, proofHeaders, publishAs, registerSession } from "./fixtures";
 
 // The send controls follow which agents are live on the daemon: each test
 // has a daemon of its own, so no other test's sessions are among them.
@@ -94,7 +94,7 @@ const panel = async (page: import("@playwright/test").Page) => {
     const bar = page.getByRole("region", { name: "Selected comments" });
     const count = bar.getByRole("status");
     await expect(count).toHaveText("2 selected");
-    await page.request.post(`${d.base}/api/artifacts/${aid}/threads/${ids[0]}/resolve`, { headers: { origin: d.base } });
+    await page.request.post(`${d.base}/api/artifacts/${aid}/threads/${ids[0]}/resolve`, { headers: { origin: d.base, ...proofHeaders(d.base) } });
     await expect(count).toHaveText("1 selected");
     await bar.getByRole("button", { name: /^Send to / }).click();
     await expect(bar).toHaveCount(0);

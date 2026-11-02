@@ -56,6 +56,7 @@ function setup(over: { closed?: boolean; remaining?: number; page?: typeof page 
     },
     open: {
       daemon: async () => "http://127.0.0.1:7480",
+      login: async (path: string) => `http://127.0.0.1:7480/login?code=c&next=${encodeURIComponent(path)}`,
       create: async (url: string) => { calls.push(`create ${url}`); },
       focus: async (tabId: number) => { calls.push(`focus ${tabId}`); },
       find: async (url: string) => { calls.push(`find ${url}`); return url === "http://localhost:5173/other" ? 12 : null; },
@@ -466,7 +467,16 @@ describe("panelAction for the owner's questions and inbox", () => {
     expect(s.calls.slice(2)).toEqual(["focus 4"]);
     await s.run({ t: "open-url", url: "/a/8r4m0nzy3c5v?thread=x", pageUrl: null }, null);
     await s.run({ t: "open-url", url: "/inbox?q=01J9QQQQQQQQQQQQQQQQQQQQQQ", pageUrl: null }, null);
-    expect(s.calls.slice(3)).toEqual(["create http://127.0.0.1:7480/a/8r4m0nzy3c5v?thread=x", "create http://127.0.0.1:7480/inbox?q=01J9QQQQQQQQQQQQQQQQQQQQQQ"]);
+    expect(s.calls.slice(3)).toEqual([
+      `create http://127.0.0.1:7480/login?code=c&next=${encodeURIComponent("/a/8r4m0nzy3c5v?thread=x")}`,
+      `create http://127.0.0.1:7480/login?code=c&next=${encodeURIComponent("/inbox?q=01J9QQQQQQQQQQQQQQQQQQQQQQ")}`,
+    ]);
+  });
+
+  it("opens the panel's Open in Clax through a login link, in a new tab", async () => {
+    const s = setup();
+    await s.run({ t: "open-clax", path: `/a/${AID}` }, null);
+    expect(s.calls).toEqual([`create http://127.0.0.1:7480/login?code=c&next=${encodeURIComponent(`/a/${AID}`)}`]);
   });
 
   it("brings a tab showing the live page with Clax off in it to the front, else opens the item on the daemon", async () => {
@@ -474,7 +484,7 @@ describe("panelAction for the owner's questions and inbox", () => {
     await s.run({ t: "open-url", url: "/a/8r4m0nzy3c5v?thread=x", pageUrl: "http://localhost:5173/other" }, null);
     expect(s.calls).toEqual(["find http://localhost:5173/other", "focus 12"]);
     await s.run({ t: "open-url", url: "/a/8r4m0nzy3c5v", pageUrl: "http://localhost:5173/gone" }, null);
-    expect(s.calls.slice(2)).toEqual(["find http://localhost:5173/gone", "create http://127.0.0.1:7480/a/8r4m0nzy3c5v"]);
+    expect(s.calls.slice(2)).toEqual(["find http://localhost:5173/gone", `create http://127.0.0.1:7480/login?code=c&next=${encodeURIComponent("/a/8r4m0nzy3c5v")}`]);
   });
 
   it("leaves no error on the tab for a failed question or inbox request", async () => {

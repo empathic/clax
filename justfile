@@ -10,11 +10,11 @@ default: help
 help:
     @just --list --unsorted
 
-# Build clax and start a harness on ~/.clax-dev and port 7481 (claude and pi load this checkout's plugin; codex and grok use the installed one); with no harness, `just watch`
+# Build clax and start a harness on this checkout's dev home (~/.clax-dev on 7481; a linked worktree's own ~/.clax-dev-<name>) (claude and pi load this checkout's plugin; codex and grok use the installed one); with no harness, `just watch`
 dev *ARGS:
     ./scripts/dev.sh "$@"
 
-# Run the auto-reloading daemon and web UI (~/.clax-dev on 7481, or $CLAX_DEV_PORT; --shared: ~/.clax on 7480)
+# Run the auto-reloading daemon and web UI on this checkout's dev home (~/.clax-dev on 7481; a linked worktree's own ~/.clax-dev-<name>; or $CLAX_HOME, $CLAX_DEV_PORT; --shared: ~/.clax on 7480)
 watch *ARGS:
     ./scripts/watch.sh "$@"
 
@@ -69,17 +69,21 @@ uninstall:
     -cargo uninstall --root "${CARGO_HOME:-$HOME/.cargo}" clax-cli 2>/dev/null
     rm -f "${CARGO_HOME:-$HOME/.cargo}/bin/clax"
 
-# Run the dev daemon in the foreground on ~/.clax-dev, port 7481 (extra args go to `clax serve`)
+# Run the dev daemon in the foreground on this checkout's dev home and port (extra args go to `clax serve`)
 serve *ARGS:
-    CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" ./scripts/run.sh clax serve --foreground --port 7481 "$@"
+    . scripts/dev-home.sh && watch_settings && CLAX_HOME="$DEV_HOME" ./scripts/run.sh clax serve --foreground --port "$DEV_PORT" "$@"
 
-# Stop the dev daemon (~/.clax-dev)
+# Stop the daemon of this checkout's dev home
 stop:
-    CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" ./scripts/run.sh clax stop
+    . scripts/dev-home.sh && watch_settings && CLAX_HOME="$DEV_HOME" ./scripts/run.sh clax stop
 
-# Check the dev home and its daemon (~/.clax-dev)
+# Check this checkout's dev home and its daemon
 doctor:
-    CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" ./scripts/run.sh clax doctor
+    . scripts/dev-home.sh && watch_settings && CLAX_HOME="$DEV_HOME" ./scripts/run.sh clax doctor
+
+# Run a clax command with the checkout's build on this checkout's dev home (`just clax remote add http://localhost:8789`)
+clax *ARGS:
+    . scripts/dev-home.sh && watch_settings && CLAX_HOME="$DEV_HOME" ./scripts/run.sh clax "$@"
 
 # The Clax app (apps/clax_app). With Bazel each builds or checks from the
 # shared cache (docs/bazel.md, "The Clax app"); each has a `-native` twin
@@ -285,6 +289,10 @@ crate-package: web
 # Run the hosted demo locally in one go (demo/local.ts): install the Worker's packages (stamped pnpm install), build the web UI (Bazel when installed) and the Worker, a fresh `wrangler dev --local` in hosted mode on a free port with one live seat, seed, links, steps and a git clone command; Enter starts the demo agents (extra args: --native for the native daemon instead, --port, --seats, --agents, --pace, --no-build)
 hosted-demo *ARGS:
     node demo/local.ts "$@"
+
+# An agent of a local Clax connects to the dev Worker, reads a private page there and is told of a comment on it, end to end (demo/remote-e2e.ts): the Worker with clax-dev-local's settings and a scratch-home daemon on free ports, each step printed, exit 0 when every step passed; runs in target/remote-e2e/ (args: --no-build to use the last builds, --keep to keep the run directory)
+remote-e2e *ARGS:
+    node demo/remote-e2e.ts "$@"
 
 # Run clax.dev on this machine (demo/clax-dev-local.ts): the Worker under `wrangler dev --local` on the first free port of 8788-8797 with a production deploy's settings (GitHub sign-in against real GitHub, the bundled Terms and Privacy Policy) and nothing seeded, an owner of its own (a sign-in link printed each run) so that your GitHub sign-in is a new person's sign-up with the Terms and the quickstart, its data kept in target/clax-dev-local/; the first run on a machine registers a GitHub App in two clicks in the browser, kept in ~/.config/clax/local/github.env for every worktree rebuilding and restarting the Worker when web/ or crates/ change (args: --fresh to start over, --owner to make your GitHub account the owner, --setup to leave setup open, --port, --no-build to build nothing and watch nothing)
 clax-dev-local *ARGS:

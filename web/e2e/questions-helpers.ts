@@ -2,8 +2,8 @@
 // question and inbox end-to-end tests (spec 2026-10-06-agent-questions-and-inbox
 // §6.1, §7.1). Each call carries the daemon's token; the owner's are made as a
 // browser of the owner's (its owner cookie and the shell's Origin).
-import { createHash } from "node:crypto";
-import { api } from "./fixtures";
+
+import { api, ownerSessionOf } from "./fixtures";
 
 export type QuestionView = {
   id: string;
@@ -34,11 +34,13 @@ export async function waitAnswer(base: string, token: string, sid: string, qid: 
   return ((await api(base, token, `/api/sessions/${sid}/questions/${qid}?wait=10`)) as { question: QuestionView }).question;
 }
 
-/** The owner cookie a browser of the owner's carries (crates/clax-http/src/identity.rs). */
-export function ownerCookie(base: string, token: string): string {
+/** The owner cookie a browser of the owner's carries: the owner browser
+ * session the worker's browsers hold on the daemon at `base`
+ * (crates/clax-http/src/local_trust.rs). `_token` is the daemon's, which
+ * names no cookie. */
+export function ownerCookie(base: string, _token?: string): string {
   const port = new URL(base).port || "80";
-  const value = createHash("sha256").update("clax owner cookie\n").update(token).digest("hex");
-  return `clax_owner_${port}=${value}`;
+  return `clax_owner_${port}=${ownerSessionOf(base)}`;
 }
 
 /** A thread the owner opens on `aid` v1 (on the `h2` of its page `file`) and sends to the agent; returns its ID. */

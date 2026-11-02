@@ -26,7 +26,7 @@
 // The daemon listens on every interface; on a machine with no LAN address
 // it refuses invites (`not_on_lan`) and each test says so and skips.
 import type { Page } from "@playwright/test";
-import { expect, publish, startDaemon, test } from "./fixtures";
+import { asLocalViewer, expect, publish, startDaemon, test } from "./fixtures";
 import { Agent, type Person, connect, handleOf, invite, leave, ownerThread, people, project, sendFrom, threadFrom, threadPage } from "./people-helpers";
 
 const PAGE = { "index.html": "<main><h1>Quarterly Review</h1><h2>Quarterly goals</h2></main>" };
@@ -88,6 +88,9 @@ test("Mia's comment to Sam's agent waits for Sam's approval, which only those co
     // its text nor whose approval.
     await owner.goto(threadPage(d.base, aid, tid));
     await expect(owner.locator(`.thread-card[data-thread="${tid}"] .waiting`)).toHaveText("waiting for Sam's approval");
+    // A visitor at the machine's own LAN address: a browser of this
+    // machine's, with a viewer cookie there.
+    await asLocalViewer(visitorCtx, d, new URL(mia.lan).hostname);
     const visitor = await visitorCtx.newPage();
     await visitor.goto(threadPage(mia.lan, aid, tid));
     await expect(visitor.locator(`.thread-card[data-thread="${tid}"] .waiting`)).toHaveText("sent to sam-notes");
@@ -165,6 +168,7 @@ test("Mia declines Sam's comment: those concerned read it declined by Mia, a vis
     await expect(await waiting(mia.page, mia.lan)).toHaveText("you declined");
     const owner = await ownerCtx.newPage();
     await expect(await waiting(owner, d.base)).toHaveText("declined by Mia");
+    await asLocalViewer(visitorCtx, d, new URL(mia.lan).hostname);
     await expect(await waiting(await visitorCtx.newPage(), mia.lan)).toHaveText("sent to mia-notes");
     expect(miaAgent.seen).not.toContain("bigger chart");
 

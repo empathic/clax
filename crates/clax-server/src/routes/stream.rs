@@ -48,7 +48,9 @@ use std::convert::Infallible;
 /// opened through the extension gateway is live-only
 /// ([`clax_realtime::stream::live_only_admits`]); only requests with the credential
 /// it was opened with change or resume it, and it ends, delivering nothing
-/// more, once that credential is revoked or expires. On a hosted daemon a
+/// more, once that credential is revoked or expires. A stream opened with
+/// a local owner browser session ends once that session ends (`clax
+/// logout`). On a hosted daemon a
 /// client holds at most [`clax_http::socket_caps`]'s caps of streams and
 /// sockets: past one, 429 `too_many_streams` (a resume of a stream whose
 /// connection is still open takes its place).
@@ -76,7 +78,8 @@ pub async fn open(
     let slot = slot_for(&s, &client, resume)?;
     let conn = open_stream(&s, who, local, credential, resume, guest)
         .await?
-        .holding(Some(slot));
+        .holding(Some(slot))
+        .ending_on(crate::routes::events::owner_session_ended(&s, &extensions));
     let chunks = futures::stream::unfold(conn, |mut c| async move {
         c.next().await.map(|b| (Ok::<_, Infallible>(b), c))
     });

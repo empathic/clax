@@ -135,9 +135,14 @@ let tokenFailed = false;
 /** Calls `fn` each time a token request answers with the token after an
  * earlier one failed: only then did this page gain the events cookie. */
 export const onToken = (fn: () => void) => { tokenHeard.add(fn); };
-/** The write token, only served to loopback browsers (a hosted daemon
- * serves its owner's signed-in browser a shell token, `cxo_…`, that stands
- * for it); null on a LAN viewer and anyone else. */
+/** The write token, served only to a browser of the owner's: on a local
+ * daemon one holding an owner browser session (a login link a token
+ * holder made, `clax open`), on a hosted daemon the owner's signed-in
+ * browser, as a shell token (`cxo_…`) that stands for it; null for anyone
+ * else (401 or 403). A local daemon's refusal of a browser that holds no
+ * credential at all (401 `no_credential`) has by then shown how to open
+ * Clax from the terminal: the page's `proofFetch` does so for every API
+ * call. */
 export function getToken(): Promise<string | null> {
   if (!tokenPromise) {
     const p: Promise<string | null> = fetch("/api/token").then(async r => {
@@ -146,7 +151,7 @@ export function getToken(): Promise<string | null> {
         if (tokenFailed) { tokenFailed = false; for (const f of tokenHeard) f(); }
         return t;
       }
-      if (r.status === 403) return null;
+      if (r.status === 403 || r.status === 401) return null;
       throw new Error(`token request failed: ${r.status}`);
     }).catch(() => {
       tokenFailed = true;
@@ -218,7 +223,7 @@ export type QuestionLink = {
   answered_there: boolean; unlinked: boolean;
 };
 
-export type InboxKind = "reply" | "version" | "published" | "question" | "finished" | "approval" | "connection" | "ended" | "push";
+export type InboxKind = "reply" | "version" | "published" | "question" | "finished" | "approval" | "connection" | "ended" | "push" | "remote_request";
 /** A `connection` item's grant: a request waiting for the owner, or a
  * machine that connected with an invite (`person` once it has one). */
 export type InboxConnection = {
@@ -254,6 +259,17 @@ export type InboxApproval = {
 };
 /** A thread an item names; `summary` and `status` are null when it is gone. */
 export type InboxThread = { id: string; summary: string | null; status?: string | null };
+/** A connection request (spec 2026-10-29-remote-instances §3): the Clax
+ * instance an agent asks the owner to connect (`origin`, `name`), what it
+ * wanted to read there (`url`) and why (`reason`), how the request stands
+ * (`status`: `open`, `connected`, `dismissed`, `muted` or `expired`; null
+ * once gone) and how many agents asked. */
+export type InboxRemoteRequest = {
+  id: string; origin: string; name: string; url: string | null; reason: string | null;
+  status: "open" | "connected" | "dismissed" | "muted" | "expired" | null;
+  remote_id: string | null; expires_at: string | null; askers: number;
+};
+
 /** The inbox item view. Each kind fills its own field (`reply` also fills
  * `thread`); a source's text fields are null when `gone`. `seq` orders items
  * (higher is newer) and is the cursor and a bulk mark's `upto`. */
@@ -279,6 +295,8 @@ export type InboxItem = {
   /** `push`: an automatic push of local version `n` that the public Clax at
    * `origin` refused, its code and message, and the public copy's `url`. */
   push?: { n: number | null; origin: string | null; code: string | null; message: string | null; url: string | null };
+  /** `remote_request`: an agent asks the owner to connect another Clax. */
+  remote_request?: InboxRemoteRequest;
   gone: boolean;
   /** Where opening the item leads (a path on the daemon). */
   url: string;

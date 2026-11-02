@@ -198,6 +198,77 @@ async fn the_landing_pages_reel_redirects_to_where_hosted_mode_serves_it() {
 }
 
 #[tokio::test]
+async fn a_seeded_quickstart_plays_the_landing_pages_reel() {
+    let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+    let release =
+        clax_core::quickstart::Release::from_tree(&clax_testkit::quickstart_tree("landing"))
+            .unwrap();
+    let reel = clax_http::hosted::Reel::new(
+        "https://videos.example/r/downloads/default.mp4",
+        Some("https://videos.example/r/thumbnails/thumbnail.jpg"),
+    )
+    .unwrap();
+    let ts = TestServer::spawn_hosted_with(clock, Some("s3cret"), move |s| {
+        s.hosted = s.hosted.take().map(|h| {
+            Arc::new(
+                Arc::try_unwrap(h)
+                    .expect("hosted is not shared yet")
+                    .with_reel(Some(reel)),
+            )
+        });
+    })
+    .await;
+    let clax_store::Seeded::Made { artifact, .. } = ts
+        .store
+        .seed_quickstart(&clax_core::audit::AuditCtx::DAEMON, None, &release)
+        .await
+        .unwrap()
+    else {
+        panic!("an empty gallery is seeded");
+    };
+    let id = artifact.id.to_string();
+    // As the owner's browser on the artifact's site, following no redirect.
+    let c = unfollowed();
+    let site = |id: String, path: &'static str| {
+        let ts = &ts;
+        let c = &c;
+        async move {
+            let cookie = ts.site_cookie(&id).await;
+            c.get(format!("{}{path}", ts.base))
+                .header(reqwest::header::HOST, ts.site_host(&id))
+                .header(COOKIE, cookie)
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    // The shipped copy carries no reel: its site sends the page where the
+    // landing page's comes from, at its current version and at version 1.
+    for path in ["/reel.mp4", "/_clax/v/1/reel.mp4"] {
+        let r = site(id.clone(), path).await;
+        assert_eq!(r.status(), 307, "{path}");
+        assert_eq!(
+            r.headers()["location"],
+            "https://videos.example/r/downloads/default.mp4",
+            "{path}"
+        );
+    }
+    let r = site(id.clone(), "/_clax/v/1/reel-poster.jpg").await;
+    assert_eq!(r.status(), 307);
+    assert_eq!(
+        r.headers()["location"],
+        "https://videos.example/r/thumbnails/thumbnail.jpg"
+    );
+    // Another missing file is still 404, and another artifact has no reel.
+    assert_eq!(site(id, "/_clax/v/1/nope.mp4").await.status(), 404);
+    let other = ts
+        .publish("Other", &[("index.html", "<h1>Other</h1>")])
+        .await;
+    let other = other["artifact"]["id"].as_str().unwrap().to_string();
+    assert_eq!(site(other, "/reel.mp4").await.status(), 404);
+}
+
+#[tokio::test]
 async fn without_a_reel_elsewhere_the_landing_page_serves_none() {
     let dist = dist();
     let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
@@ -433,4 +504,247 @@ async fn the_bundled_documents_are_public_and_otherwise_absent() {
         );
         assert_eq!(r.text().await.unwrap(), body, "{path}");
     }
+}
+
+/// The hint every 404 of an artifact carries on a hosted instance, for the
+/// instance at `origin`.
+fn not_found_hint(origin: &str) -> String {
+    format!(
+        "This may be a private page. If it is yours, sign in at {origin}/signin. Agents: connect this Clax instance with the connect_instance tool or `clax remote request <url>`."
+    )
+}
+
+#[tokio::test]
+async fn a_missing_and_a_private_artifact_404_alike() {
+    let dist = dist();
+    let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+    let ts = spawn(clock, &dist).await;
+    let origin = format!("http://localhost:{}", ts.addr.port());
+    let cookie_of = |r: &reqwest::Response| {
+        r.headers()[SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string()
+    };
+    let r = ts
+        .client
+        .post(format!("{}/api/hosted/setup", ts.base))
+        .header(ORIGIN, &origin)
+        .json(&json!({"secret": "s3cret", "name": "Ada"}))
+        .send()
+        .await
+        .unwrap();
+    let owner = cookie_of(&r);
+    let r = ts
+        .client
+        .post(format!("{}/api/people/invites", ts.base))
+        .header(ORIGIN, &origin)
+        .header(COOKIE, &owner)
+        .json(&json!({"name": "Mia"}))
+        .send()
+        .await
+        .unwrap();
+    let v: serde_json::Value = r.json().await.unwrap();
+    let code = v["invite"]["url"]
+        .as_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap();
+    let r = ts
+        .client
+        .post(format!("{}/api/hosted/invites/{code}/accept", ts.base))
+        .header(ORIGIN, &origin)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    let mia = cookie_of(&r);
+    // Ada's page, private to her, and Mia's, private to Mia.
+    let adas = ts.publish("Ada's", &[("index.html", "<h1>a</h1>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // Mia's agent publishes through her token.
+    let r = ts
+        .client
+        .post(format!("{}/api/hosted/agent-tokens", ts.base))
+        .header(ORIGIN, &origin)
+        .header(COOKIE, &mia)
+        .json(&json!({"label": "laptop"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 201);
+    let v: serde_json::Value = r.json().await.unwrap();
+    let token = v["token"].as_str().unwrap().to_string();
+    let mcp = |body: serde_json::Value, session: Option<&str>| {
+        let mut r = ts
+            .client
+            .post(format!("{}{}", ts.base, clax_testkit::mcp::ADAPTER))
+            .header("accept", clax_testkit::mcp::ACCEPT)
+            .bearer_auth(&token)
+            .json(&body);
+        if let Some(s) = session {
+            r = r.header("mcp-session-id", s);
+        }
+        r.send()
+    };
+    let r = mcp(clax_testkit::mcp::initialize(), None).await.unwrap();
+    assert_eq!(r.status(), 200);
+    let session = r.headers()["mcp-session-id"].to_str().unwrap().to_string();
+    let r = mcp(
+        json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            "params": {"name": "publish", "arguments": {"html": "<h1>m</h1>", "title": "Mia's"}}}),
+        Some(&session),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.status(), 200);
+    let mias = ts
+        .store
+        .list_artifacts()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.title == "Mia's")
+        .unwrap()
+        .id;
+    // A well-formed ID nothing was made at: Ada's page's ID, changed.
+    let last = if adas.ends_with('a') { "b" } else { "a" };
+    let missing = format!("{}{last}", &adas[..adas.len() - 1]);
+    let fetch = async |cookie: Option<&str>, html: bool, id: &str, tail: &str| {
+        let mut req = ts.client.get(format!("{}/a/{id}{tail}", ts.base));
+        if let Some(c) = cookie {
+            req = req.header(COOKIE, c);
+        }
+        if html {
+            req = req.header("accept", "text/html");
+        }
+        let r = req.send().await.unwrap();
+        assert_eq!(r.status(), 404, "{cookie:?} {id}{tail} html={html}");
+        let ct = r.headers()["content-type"].to_str().unwrap().to_string();
+        (ct, r.text().await.unwrap())
+    };
+    // Each caller, with a page of another person's out of their reach.
+    let callers = [
+        (None, &adas),
+        (Some(owner.as_str()), &mias),
+        (Some(mia.as_str()), &adas),
+    ];
+    for (cookie, private) in callers {
+        for tail in ["", "/", "/v/1", "/get", "/v/1/index.html"] {
+            for html in [false, true] {
+                let a = fetch(cookie, html, &missing, tail).await;
+                let b = fetch(cookie, html, private, tail).await;
+                let who = format!("{cookie:?} {tail} html={html}");
+                // The ID is the only difference between the two requests.
+                assert_eq!(a, b, "{who}");
+                if html || tail == "/get" {
+                    assert!(a.0.starts_with("text/html"), "{who}: {a:?}");
+                    assert!(a.1.contains("Sign in"), "{who}: {}", a.1);
+                    assert!(a.1.contains(&format!("{origin}/signin")), "{who}");
+                    assert!(a.1.contains("connect_instance"), "{who}");
+                } else {
+                    assert!(a.0.starts_with("application/json"), "{who}: {a:?}");
+                    let v: serde_json::Value = serde_json::from_str(&a.1).unwrap();
+                    assert_eq!(v["error"]["code"], "not_found", "{who}");
+                    assert_eq!(v["error"]["message"], "not found", "{who}");
+                    assert_eq!(v["error"]["hint"], not_found_hint(&origin), "{who}");
+                    assert_eq!(v["error"]["sign_in"], format!("{origin}/signin"));
+                    assert_eq!(v["error"]["instance"], format!("{origin}/.well-known/clax"));
+                }
+            }
+        }
+    }
+    // The hint names the instance's origin, never the request's Host.
+    let r = ts
+        .client
+        .get(format!("{}/a/{missing}", ts.base))
+        .header("host", "evil.example")
+        .send()
+        .await
+        .unwrap();
+    // Another host never reaches the artifact routes: the host gate's 403.
+    assert_eq!(r.status(), 403);
+    let v: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(v["error"]["code"], "forbidden_host");
+    assert!(!v.to_string().contains("evil.example"), "{v}");
+}
+
+#[tokio::test]
+async fn a_site_host_answers_its_own_404_not_the_instances_hint() {
+    let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+    let ts = TestServer::spawn_hosted_with_site_domain(clock, Some("s3cret"), "clax.test").await;
+    let port = ts.addr.port();
+    let origin = format!("http://localhost:{port}");
+    let r = ts
+        .client
+        .post(format!("{}/api/hosted/setup", ts.base))
+        .header(ORIGIN, &origin)
+        .json(&json!({"secret": "s3cret", "name": "Ada"}))
+        .send()
+        .await
+        .unwrap();
+    let owner = r.headers()[SET_COOKIE]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let aid = ts.publish("Site", &[("index.html", "<h1>s</h1>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let host = format!("{aid}.clax.test:{port}");
+    let raw = unfollowed();
+    let r = ts
+        .client
+        .post(format!("{}/api/artifacts/{aid}/site-code", ts.base))
+        .header(ORIGIN, &origin)
+        .header(COOKIE, &owner)
+        .json(&json!({"partitioned": true, "state": "st"}))
+        .send()
+        .await
+        .unwrap();
+    let v: serde_json::Value = r.json().await.unwrap();
+    let src = v["src"].as_str().unwrap();
+    let r = raw
+        .get(format!(
+            "{}{}",
+            ts.base,
+            &src[src.find("/_clax/").unwrap()..]
+        ))
+        .header("host", &host)
+        .header(COOKIE, "clax_site_state=st")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 302);
+    let site_cookie = r.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let on_site = raw
+        .get(format!("{}/a/x", ts.base))
+        .header("host", &host)
+        .header(COOKIE, &site_cookie)
+        .send()
+        .await
+        .unwrap();
+    let status = on_site.status();
+    let text = on_site.text().await.unwrap();
+    assert_eq!(status, 404, "{text}");
+    assert!(!text.contains("private page"), "{text}");
+    // The same path on the instance's own host gets the hint.
+    let last = if aid.ends_with('a') { "b" } else { "a" };
+    let r = ts.get(&format!("/a/{}{last}", &aid[..aid.len() - 1])).await;
+    assert_eq!(r.status(), 404);
+    assert!(r.text().await.unwrap().contains("private page"));
 }

@@ -72,6 +72,33 @@ async fn stopping_a_core_closes_its_store_and_ends_its_streams() {
     again.stop().await;
 }
 
+/// A core's start makes a new daemon token, and an owner browser session
+/// survives it: only `clax logout` (`DELETE /api/browser-login`) ends one.
+#[tokio::test]
+async fn an_owner_browser_session_survives_a_new_daemon_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = Core::start(cfg(dir.path(), clax_testkit::web_ui(), false), &mut |_| {})
+        .await
+        .unwrap();
+    let st = core.state().clone();
+    let first = st.token.clone();
+    let opened = st.owner_sessions.open(&st.store).unwrap();
+    let hash = opened.cookie.sha256_hex();
+    let proof = opened.proof.expose().to_string();
+    assert!(st.owner_sessions.proves(&hash, &proof));
+    drop(st);
+    core.stop().await;
+    let again = Core::start(cfg(dir.path(), clax_testkit::web_ui(), false), &mut |_| {})
+        .await
+        .unwrap();
+    assert_ne!(again.state().token, first, "a new token");
+    assert!(
+        again.state().owner_sessions.proves(&hash, &proof),
+        "the session survives, with its proof"
+    );
+    again.stop().await;
+}
+
 #[tokio::test]
 async fn a_daemon_has_no_trim_route() {
     let ts = clax_testkit::TestServer::spawn().await;

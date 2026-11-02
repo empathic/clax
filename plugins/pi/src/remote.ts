@@ -376,17 +376,33 @@ function oneLine(s: string): string {
   return s.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, c => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
-/** A fetch of one clip: its cached file, or why there is none. */
+/** A fetch of one clip: its cached file, or why there is none. One is made
+ * per payload: it fetches each clip once however often the payload names
+ * it, and bounds every clip of it from its first fetch, as the shim's
+ * `CLIP_FETCH_TIME` does, so a clip waiting for a turn behind slow ones
+ * never holds the payload longer. */
 export type ClipFetch = (aid: string, tid: string) => Promise<{ path: string } | { why: string }>;
 
-/** Fetches each distinct clip `refs` names once, all at once (each fetch
- * bounds itself). */
+/** The most clip fetches one payload runs at once
+ * (`clax_core::clips::FETCHES_AT_ONCE`, as the contract fixture's
+ * `constants` holds it). */
+export const CLIP_FETCHES_AT_ONCE = 4;
+
+/** Fetches each distinct clip `refs` names once, together, with at most
+ * [`CLIP_FETCHES_AT_ONCE`] in flight; `fetch` bounds each, its wait for a
+ * turn included. */
 async function fetchAll(refs: [string, string][], fetch: ClipFetch): Promise<Map<string, { path: string } | { why: string }>> {
   const keys = [...new Set(refs.map(([aid, tid]) => `${aid}/${tid}`))];
-  const got = await Promise.all(keys.map(k => {
-    const [aid, tid] = k.split("/") as [string, string];
-    return fetch(aid, tid);
-  }));
+  const got: ({ path: string } | { why: string })[] = new Array(keys.length);
+  let next = 0;
+  const turn = async () => {
+    while (next < keys.length) {
+      const i = next++;
+      const [aid, tid] = keys[i]!.split("/") as [string, string];
+      got[i] = await fetch(aid, tid);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CLIP_FETCHES_AT_ONCE, keys.length) }, turn));
   return new Map(keys.map((k, i) => [k, got[i]!]));
 }
 

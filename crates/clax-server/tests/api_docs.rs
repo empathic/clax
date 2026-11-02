@@ -6,6 +6,9 @@ use serde_json::{Value, json};
 enum Who<'a> {
     Token,
     Viewer(&'a TestViewer),
+    /// A browser of this machine with no name and no session
+    /// ([`TestServer::local_browser`]): a local daemon serves nothing to a
+    /// request with no credential at all.
     Nobody,
 }
 
@@ -14,7 +17,7 @@ fn req(ts: &TestServer, m: Method, path: &str, who: &Who) -> reqwest::RequestBui
     match who {
         Who::Token => r.bearer_auth(&ts.token),
         Who::Viewer(v) => r.header("cookie", format!("clax_viewer={}", v.cookie)),
-        Who::Nobody => r,
+        Who::Nobody => r.header("cookie", format!("clax_viewer={}", ts.local_browser())),
     }
 }
 
@@ -138,7 +141,7 @@ async fn levels_follow_the_token_the_viewer_name_and_as_level() {
     assert_eq!(
         send(put("notes/n3", Who::Nobody, true)).await.0,
         404,
-        "no cookie: view"
+        "no name: view"
     );
     assert_eq!(
         send(put("admin-only/a", Who::Viewer(&named), true)).await.0,
@@ -736,11 +739,20 @@ async fn a_wrong_stream_token_counts_as_none() {
     )
     .await;
     let a = ts.viewer(Some("A")).await;
+    // From a browser of this machine's with no name: a wrong token is no
+    // token (with no credential at all, the stream is refused).
+    let browser = ts.local_browser();
     let mut wrong = ts
-        .events(&format!("?artifact={aid}&token=not-the-token"))
+        .events_as(
+            &format!("?artifact={aid}&token=not-the-token"),
+            Some(&browser),
+        )
         .await;
     let mut garbled = ts
-        .events(&format!("?artifact={aid}&token=%zz{}", ts.token))
+        .events_as(
+            &format!("?artifact={aid}&token=%zz{}", ts.token),
+            Some(&browser),
+        )
         .await;
     let private = format!("data/users/{}/p", a.public_id);
     send(
@@ -1083,20 +1095,8 @@ async fn the_events_cookie_counts_as_the_token_on_the_event_stream_only() {
     )
     .await;
     let owner = ts.viewer(Some("Owner")).await;
-    let shell = ts
-        .client
-        .get(format!("{}/api/token", ts.base))
-        .header("sec-fetch-site", "same-origin")
-        .send()
-        .await
-        .unwrap();
-    let events_cookie = shell
-        .headers()
-        .get_all("set-cookie")
-        .iter()
-        .map(|v| v.to_str().unwrap().split(';').next().unwrap().to_string())
-        .find(|c| c.starts_with("clax_events_"))
-        .unwrap();
+    // The events cookie a browser login set.
+    let events_cookie = ts.events_cookie();
     let q = format!("?artifact={aid}");
     let cookies = format!("clax_viewer={}; {events_cookie}", owner.cookie);
     let mut with = ts.events_with(&q, |r| r.header("cookie", cookies)).await;

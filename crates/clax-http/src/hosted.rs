@@ -136,6 +136,9 @@ pub struct Hosted {
     /// The site domain ([`Hosted::with_sites`]); `None` serves sites at
     /// `<id>.localhost` alone ([`crate::host::SiteHosts::local`]).
     pub sites: Option<crate::host::SiteHosts>,
+    /// The name discovery gives the instance ([`Hosted::with_name`]);
+    /// `None` names it by its host.
+    pub name: Option<String>,
     /// Where the landing page's reel is served from ([`Hosted::with_reel`]);
     /// `None` serves it only if the quickstart release carries it.
     pub reel: Option<Reel>,
@@ -404,6 +407,7 @@ impl Hosted {
             public_gallery: false,
             legal: None,
             sites: None,
+            name: None,
             reel: None,
             proxy_noted: std::sync::atomic::AtomicBool::new(false),
         })
@@ -471,6 +475,12 @@ impl Hosted {
         Hosted { sites, ..self }
     }
 
+    /// This hosted mode naming itself `name` in discovery (`None`: its
+    /// host).
+    pub fn with_name(self, name: Option<String>) -> Hosted {
+        Hosted { name, ..self }
+    }
+
     /// This hosted mode sending the landing page's reel (`reel.mp4` and
     /// `reel-poster.jpg` under [`LANDING`]) to `reel`'s addresses (`None`:
     /// served from the quickstart release, if it carries them).
@@ -525,6 +535,7 @@ impl Hosted {
                         .as_deref()
                         .and_then(crate::host::SiteHosts::new),
                 )
+                .with_name(c.name.clone())
         })
     }
 
@@ -953,6 +964,76 @@ pub fn owners_people_view(st: &clax_store::Store, v: &mut Value) -> clax_core::R
     Ok(())
 }
 
+/// `new`, a person's rights the owner sets on a hosted daemon (an array of
+/// access objects, as [`clax_core::rights::Rights::to_json`] writes them),
+/// with every location of `stored` (their rights now) that the owner's
+/// People hides ([`owners_people_view`]: an artifact the owner's listings
+/// do not name) kept: added to the object of `new` of the same type,
+/// actions and level, or as an object of its own when `new` has none. The
+/// owner never saw them, so a value built from what People showed does not
+/// mean to drop them.
+///
+/// # Errors
+/// The store's.
+pub fn keep_hidden_locations(
+    st: &clax_store::Store,
+    stored: &Value,
+    new: &mut Value,
+) -> clax_core::Result<()> {
+    let owner = MemberRights::owner(st)?;
+    let key = |o: &serde_json::Map<String, Value>| {
+        (
+            o.get("type").cloned(),
+            o.get("actions").cloned(),
+            o.get("level").cloned(),
+        )
+    };
+    let (Some(stored), Some(new)) = (stored.as_array(), new.as_array_mut()) else {
+        return Ok(());
+    };
+    for old in stored.iter().filter_map(Value::as_object) {
+        let hidden: Vec<Value> = old
+            .get("locations")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|l| match l.as_str() {
+                None | Some("*" | "own") => false,
+                Some(l) => !owner.lists(st, l.strip_prefix("own:").unwrap_or(l)),
+            })
+            .cloned()
+            .collect();
+        if hidden.is_empty() {
+            continue;
+        }
+        let k = key(old);
+        match new
+            .iter_mut()
+            .filter_map(Value::as_object_mut)
+            .find(|o| key(o) == k)
+        {
+            Some(o) => {
+                let ls = o
+                    .entry("locations")
+                    .or_insert_with(|| Value::Array(Vec::new()));
+                if let Some(ls) = ls.as_array_mut() {
+                    for l in hidden {
+                        if !ls.contains(&l) {
+                            ls.push(l);
+                        }
+                    }
+                }
+            }
+            None => {
+                let mut o = old.clone();
+                o.insert("locations".into(), Value::Array(hidden));
+                new.push(Value::Object(o));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn hide_beyond(v: &mut Value, lists: &mut dyn FnMut(&str) -> bool) {
     match v {
         Value::Array(xs) => xs.iter_mut().for_each(|x| hide_beyond(x, lists)),
@@ -1251,7 +1332,11 @@ impl HostedRequest {
             owner_cookie: false,
             cookie: None,
             hosted_viewer: s.filter(|s| !s.owner).map(|s| s.viewer.clone()),
-            hosted_owner: s.is_some_and(|s| s.owner),
+            browser: if s.is_some_and(|s| s.owner) {
+                crate::identity::Browser::HostedOwner
+            } else {
+                id.browser
+            },
             ..id
         }
     }
@@ -1992,6 +2077,26 @@ pub fn signed_in_response(h: &Hosted, signed: SignedIn, mut shape: Value, key: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_configured_name_is_trimmed_and_reaches_hosted_mode() {
+        let hosted = |extra: &str| {
+            let text = format!("[hosted]\npublic_origin = \"https://clax.example\"\n{extra}");
+            let c = clax_core::config::HomeConfig::from_text(
+                "/h/config.toml".into(),
+                &text,
+                std::iter::empty(),
+            )
+            .unwrap();
+            Hosted::from_config(&c.hosted().unwrap().unwrap()).unwrap()
+        };
+        assert_eq!(hosted("").name, None);
+        assert_eq!(hosted("name = \"  \"\n").name, None);
+        assert_eq!(
+            hosted("name = \"  Studio Clax \"\n").name.as_deref(),
+            Some("Studio Clax")
+        );
+    }
 
     #[test]
     fn a_public_host_from_loopback_is_noted_once_and_only_off_cloudflare() {

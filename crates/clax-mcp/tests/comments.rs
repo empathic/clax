@@ -51,7 +51,8 @@ struct Proxy {
     http: reqwest::Client,
     fail_feedback: AtomicBool,
     fail_question_poll: AtomicBool,
-    before_ack: Mutex<Option<(String, Value)>>,
+    /// A comment to post before the next ack: its URL, cookie and body.
+    before_ack: Mutex<Option<(String, String, Value)>>,
     acks: Mutex<Vec<Value>>,
 }
 
@@ -102,8 +103,15 @@ async fn forward(
             .unwrap()
             .push(serde_json::from_slice(&bytes).unwrap());
         let hook = p.before_ack.lock().unwrap().take();
-        if let Some((url, body)) = hook {
-            let res = p.http.post(url).json(&body).send().await.unwrap();
+        if let Some((url, cookie, body)) = hook {
+            let res = p
+                .http
+                .post(url)
+                .header("cookie", cookie)
+                .json(&body)
+                .send()
+                .await
+                .unwrap();
             assert_eq!(res.status(), 201);
         }
     }
@@ -504,6 +512,7 @@ async fn a_comment_added_between_read_and_ack_is_still_delivered() {
     // The viewer's second comment lands after the tool's read, before its ack.
     *proxy.before_ack.lock().unwrap() = Some((
         format!("{}/api/artifacts/{aid}/threads/{tid}/comments", ts.base),
+        format!("clax_viewer={}", ts.local_browser()),
         json!({"body": "and the footer"}),
     ));
     let (v, trailing) = blocks(
@@ -623,6 +632,7 @@ async fn comments_read_describes_a_drawn_area() {
     let res = ts
         .client
         .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .multipart(form)
         .send()
         .await
@@ -657,6 +667,7 @@ async fn a_label_is_stored_and_summarised_in_place_of_the_quote() {
             .text("version", "1");
         ts.client
             .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+            .header("cookie", format!("clax_viewer={}", ts.local_browser()))
             .multipart(form)
             .send()
     };
@@ -669,6 +680,7 @@ async fn a_label_is_stored_and_summarised_in_place_of_the_quote() {
     let listed: Value = ts
         .client
         .get(format!("{}/api/artifacts/{aid}/threads", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .send()
         .await
         .unwrap()
@@ -713,6 +725,7 @@ async fn a_whole_artifact_comment_goes_through_the_loop() {
     let res = ts
         .client
         .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .multipart(form)
         .send()
         .await
@@ -956,6 +969,7 @@ async fn a_batch_piggybacks_as_one_group_on_the_next_tool_result() {
         .to_string();
     ts.client
         .post(format!("{}/api/artifacts/{aid}/threads:send", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .json(&json!({"thread_ids": [a, b]}))
         .send()
         .await

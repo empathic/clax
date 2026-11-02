@@ -1318,6 +1318,58 @@ impl Store {
             Ok(rows.collect::<rusqlite::Result<_>>()?)
         })
     }
+
+    /// Removes what ended runs no longer need, by the store's clock: the
+    /// call journal (`bot_calls`) of each run that ended over
+    /// [`BOT_JOURNAL_KEEP`] ago, and the draft overlay (`bot_draft_files`)
+    /// of each that ended over [`BOT_DRAFT_KEEP`] ago. The runs, their
+    /// steps, usage and audit events stay. How many rows of each it
+    /// removed.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn prune_ended_runs(&self) -> Result<Pruned> {
+        let now = self.now_utc();
+        let before = |keep: std::time::Duration| {
+            clax_core::time::stamp(
+                now - chrono::Duration::from_std(keep).unwrap_or(chrono::Duration::MAX),
+            )
+        };
+        let (journal, draft) = (before(BOT_JOURNAL_KEEP), before(BOT_DRAFT_KEEP));
+        self.with_tx(|tx| {
+            let calls = tx.execute(
+                "DELETE FROM bot_calls WHERE run_id IN
+                   (SELECT id FROM bot_runs WHERE ended_at IS NOT NULL AND ended_at < ?1)",
+                params![journal],
+            )?;
+            let draft_files = tx.execute(
+                "DELETE FROM bot_draft_files WHERE run_id IN
+                   (SELECT id FROM bot_runs WHERE ended_at IS NOT NULL AND ended_at < ?1)",
+                params![draft],
+            )?;
+            Ok(Pruned { calls, draft_files })
+        })
+    }
+}
+
+/// How long an ended run's call journal is kept: the journal answers a
+/// step's calls made again, so it outlives any driver that lost the run
+/// and may still be running one of its steps (a run's wall time is capped
+/// far below this).
+pub const BOT_JOURNAL_KEEP: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// How long an ended run's draft is kept, viewable from its run (spec
+/// 2026-10-21-claxbot-design §6.3: a run stopped on its limits keeps its
+/// draft).
+pub const BOT_DRAFT_KEEP: std::time::Duration = std::time::Duration::from_secs(30 * 24 * 3600);
+
+/// What [`Store::prune_ended_runs`] removed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Pruned {
+    /// Call journal rows.
+    pub calls: usize,
+    /// Draft overlay rows.
+    pub draft_files: usize,
 }
 
 /// A store transaction a journaled write runs on ([`Store::with_bot_journal`]);
@@ -1689,6 +1741,62 @@ mod tests {
             )),
             "run_invalid",
             "committed"
+        );
+    }
+
+    /// An ended run's call journal goes a day after it ended and its draft
+    /// thirty days after; a run still going keeps both.
+    #[test]
+    fn ended_runs_lose_their_journal_then_their_draft() {
+        let clock = Arc::new(ManualClock::at("2026-10-21T10:00:00Z"));
+        let (_d, st) = store_with_clock(clock.clone());
+        let d = DriverId::named("d1");
+        let work = |run: &Run, kind: StepKind| {
+            st.claim_run(&run.id, &d, 60).unwrap().unwrap();
+            let n = st.next_step_n(&run.id).unwrap();
+            st.begin_step(&run.id, &d, n, kind).unwrap();
+            let entry = st
+                .call_entry(&run.id, &d, n, 1, 0, "threads.read", "h")
+                .unwrap();
+            st.record_bot_call(&entry).unwrap();
+            st.commit_bot_step(
+                &bot(),
+                &run.id,
+                &d,
+                n,
+                StepCommit {
+                    draft: vec![DraftChange::Write {
+                        path: "index.html".into(),
+                        content: b"<p>".to_vec(),
+                        content_type: None,
+                    }],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        };
+        let (ended, going) = (new_run(&st), new_run(&st));
+        work(&ended, StepKind::Turn);
+        work(&ended, StepKind::GiveUp);
+        work(&going, StepKind::Turn);
+        let calls = |run: &Run| st.bot_calls(&run.id, 1).unwrap().len();
+        let drafts = |run: &Run| st.draft_files(&run.id).unwrap().len();
+        assert_eq!(st.prune_ended_runs().unwrap(), Pruned::default());
+
+        clock.advance(BOT_JOURNAL_KEEP.as_secs() as i64 + 1);
+        let p = st.prune_ended_runs().unwrap();
+        assert_eq!((p.calls, p.draft_files), (2, 0));
+        assert_eq!((calls(&ended), drafts(&ended)), (0, 1));
+        assert_eq!((calls(&going), drafts(&going)), (1, 1));
+
+        clock.advance(BOT_DRAFT_KEEP.as_secs() as i64);
+        let p = st.prune_ended_runs().unwrap();
+        assert_eq!((p.calls, p.draft_files), (0, 1));
+        assert_eq!(drafts(&ended), 0);
+        assert_eq!((calls(&going), drafts(&going)), (1, 1));
+        assert_eq!(
+            st.run(&ended.id).unwrap().unwrap().status,
+            RunStatus::GaveUp
         );
     }
 

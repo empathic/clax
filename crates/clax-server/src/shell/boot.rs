@@ -226,16 +226,9 @@ pub async fn assemble(
     let ShellRoute::Artifact { id, version, file } = route else {
         return Ok(None);
     };
-    let who = clax_http::identity::Identity::of(
-        headers,
-        &s.token,
-        clax_http::identity::peer_of(extensions),
-    );
-    // A hosted daemon's browser is the viewer its session signs in as.
-    let who = match extensions.get::<clax_http::hosted::HostedRequest>() {
-        Some(h) => h.identity(who),
-        None => who,
-    };
+    // A hosted daemon's browser is the viewer its session signs in as; a
+    // local daemon's owner browser holds an owner browser session.
+    let who = clax_http::identity::Identity::from_parts(headers, extensions, &s.token);
     let owner_browser = who.is_owner();
     let codex = s.feedback_ctx().codex_push();
     let wakes = crate::routes::sessions::Wakes::of(s);

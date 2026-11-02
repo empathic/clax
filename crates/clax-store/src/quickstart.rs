@@ -237,6 +237,23 @@ impl Store {
         }
     }
 
+    /// Whether `artifact` is a quickstart seeded into a gallery (any
+    /// person's `quickstarts` row names it).
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn is_quickstart(&self, artifact: &str) -> Result<bool> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT 1 FROM quickstarts WHERE artifact_id = ?1",
+                params![artifact],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+        })
+    }
+
     /// The `quickstarts` row of `person` (`None`: the owner), if any.
     ///
     /// # Errors

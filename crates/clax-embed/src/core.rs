@@ -921,17 +921,11 @@ pub(crate) fn request(
     // credential and is asked for with none. A content frame carries no
     // credential of the owner's: only its own site's cookies, which the
     // core adds from its jar (`crate::site_jar`). The shell's API calls its host relays are
-    // the owner's browser's, as a browser's shell is with the owner cookie
-    // its token request set.
+    // the owner's browser's, as a browser's shell is with its owner
+    // browser session: the request is marked as one in process
+    // (`clax_http::local_trust::OwnerSession`), no cookie standing for it.
     if browser || (head.as_ == As::ShellPage && is_shell_document(&head.path)) {
-        b = b.header(
-            "cookie",
-            format!(
-                "{}={}",
-                clax_http::identity::owner_cookie_name("localhost"),
-                clax_http::identity::owner_cookie_value(token)
-            ),
-        );
+        b = b.extension(clax_http::local_trust::OwnerSession::browser());
     }
     if !length && !body.is_empty() {
         b = b.header("content-length", body.len());
@@ -1599,16 +1593,13 @@ mod tests {
                 want.extend(["origin", "sec-fetch-site"]);
                 want.sort_unstable();
             }
-            if as_ == As::ShellPage {
-                want.push("cookie");
-                want.sort_unstable();
-                let owner = format!(
-                    "{}={}",
-                    clax_http::identity::owner_cookie_name("localhost"),
-                    clax_http::identity::owner_cookie_value("t")
-                );
-                assert_eq!(req.headers()["cookie"], owner.as_str());
-            }
+            assert_eq!(
+                req.extensions()
+                    .get::<clax_http::local_trust::OwnerSession>()
+                    .is_some(),
+                as_ == As::ShellPage,
+                "{as_:?}"
+            );
             assert_eq!(names, want, "{as_:?}");
             assert_ne!(req.headers()["host"], "elsewhere");
         }
@@ -1651,6 +1642,12 @@ mod tests {
             let req = request(&head("GET", path, As::ShellPage, None), Bytes::new(), "t").unwrap();
             assert!(req.headers().get("cookie").is_none(), "{path}");
             assert!(req.headers().get("authorization").is_none(), "{path}");
+            assert!(
+                req.extensions()
+                    .get::<clax_http::local_trust::OwnerSession>()
+                    .is_none(),
+                "{path}"
+            );
         }
         let req = request(
             &head("GET", "/a/7q3k9mzx2b4t?app=1", As::ShellPage, None),
@@ -1659,26 +1656,28 @@ mod tests {
         )
         .unwrap();
         assert!(
-            req.headers().get("cookie").is_some(),
+            req.extensions()
+                .get::<clax_http::local_trust::OwnerSession>()
+                .is_some(),
             "the shell document's"
         );
     }
 
     #[test]
-    fn an_owner_browser_frame_carries_the_owner_cookie_and_no_cookie_of_its_own() {
-        let cookie = format!(
-            "{}={}",
-            clax_http::identity::owner_cookie_name("localhost"),
-            clax_http::identity::owner_cookie_value("t")
-        );
+    fn an_owner_browser_frame_is_marked_an_owner_session_and_carries_no_cookie() {
+        let marked = |req: &axum::extract::Request| {
+            req.extensions()
+                .get::<clax_http::local_trust::OwnerSession>()
+                .is_some()
+        };
         let mut h = head("POST", "/api/artifacts/x/sample", As::OwnerBrowser, None);
         h.headers = vec![
             ("authorization".into(), "Bearer shell".into()),
             ("cookie".into(), "clax_viewer=planted".into()),
         ];
         let req = request(&h, Bytes::new(), "t").unwrap();
-        let cookies: Vec<_> = req.headers().get_all("cookie").iter().collect();
-        assert_eq!(cookies, [cookie.as_str()]);
+        assert!(req.headers().get("cookie").is_none());
+        assert!(marked(&req));
         assert_eq!(req.headers()["authorization"], "Bearer shell");
         h.headers.clear();
         let req = request(&h, Bytes::new(), "t").unwrap();
@@ -1687,6 +1686,7 @@ mod tests {
         h.as_ = As::Owner;
         let req = request(&h, Bytes::new(), "t").unwrap();
         assert!(req.headers().get("cookie").is_none());
+        assert!(!marked(&req));
     }
 
     #[test]

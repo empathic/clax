@@ -1575,6 +1575,46 @@ impl Event<'_> {
                 thread(),
                 self.show("reason")
             ),
+            Some(K::RemoteRequestAsk) => format!(
+                "Asked to connect to {} (request {})",
+                self.show("origin"),
+                self.show("request_id")
+            ),
+            Some(K::RemoteRequestAnswer) => format!(
+                "Answered {} to connecting to {} (request {})",
+                self.show("answer"),
+                self.show("origin"),
+                self.show("request_id")
+            ),
+            Some(K::RemoteRequestClose) => format!(
+                "Closed the request to connect to {} as {} (request {})",
+                self.show("origin"),
+                self.show("status"),
+                self.show("request_id")
+            ),
+            Some(K::ConfirmationAnswer) => format!(
+                "{} confirmation {} ({})",
+                if self.str("answer") == Some("approve") {
+                    "Approved"
+                } else {
+                    "Declined"
+                },
+                self.show("confirmation_id"),
+                self.show("decision")
+            ),
+            Some(K::PasskeyAdd) => format!("Added passkey {}", self.show("credential_id")),
+            Some(K::PasskeyRemove) => format!(
+                "Removed passkey {} ({})",
+                self.show("credential_id"),
+                self.show("reason")
+            ),
+            Some(K::PasskeyRequire) => {
+                if self.body.get("required").and_then(Value::as_bool) == Some(true) {
+                    "Required a passkey to confirm".to_string()
+                } else {
+                    "Stopped requiring a passkey to confirm".to_string()
+                }
+            }
             Some(K::BackfillSkip) => {
                 return format!(
                     "Skipped {} row {} while recording earlier history",

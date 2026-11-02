@@ -196,7 +196,11 @@ pub async fn gallery_page(
 /// The data is the API's, so it follows the API's host rule
 /// ([`clax_http::auth::request_host_allowed`], checked before anything is read):
 /// a request whose `Host` the API would refuse (a DNS name rebound to this
-/// machine) gets the bare entry, whose own API calls then fail. A store error
+/// machine) gets the bare entry, whose own API calls then fail. So does a
+/// page load that carries an owner browser session's cookie without its
+/// proof ([`clax_http::local_trust::UnprovenSession`]): every navigation of
+/// a local owner's browser, whose shell then reads the data with the proof
+/// (`web/shell/src/owner-proof.ts`). A store error
 /// or a store slower than the API's timeout also gives the bare entry, and
 /// the shell loads the data itself.
 ///
@@ -227,7 +231,16 @@ pub async fn artifact_page(
         || extensions
             .get::<clax_http::hosted::HostedRequest>()
             .is_some();
-    let injected = if host_ok {
+    // An owner browser session's cookie without its proof passed the gate
+    // for the page load alone: the page carries no data, and the shell
+    // loads it with the proof.
+    let unproven = extensions
+        .get::<clax_http::local_trust::UnprovenSession>()
+        .is_some()
+        && extensions
+            .get::<clax_http::local_trust::OwnerSession>()
+            .is_none();
+    let injected = if host_ok && !unproven {
         within(
             s.request_timeout,
             boot::assemble(&s, route, uri.query(), &req, &extensions),

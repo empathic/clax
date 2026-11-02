@@ -142,17 +142,24 @@ fn tools_of(shared: &Shared) -> &ClaxTools {
 
 /// The adapter's tool set: the sessionless agent on `mcp`, reaching the
 /// router in-process. Its client holds no token: each request's tools act
-/// for its caller ([`ClaxTools::for_caller`]).
+/// for its caller ([`ClaxTools::for_caller`]). On wasm32 (a Worker) `open`
+/// opens nothing: there is no process to start, and the opener's wait
+/// reads a clock wasm32 lacks.
 pub fn tools(state: &AppState) -> ClaxTools {
     let loopback = Arc::new(crate::loopback::Loopback::new(state.clone()));
-    ClaxTools::new(
+    let tools = ClaxTools::new(
         DaemonClient::new(state.self_base.clone(), String::new(), None)
             .with_via(clax_mcp::client::VIA)
             .with_in_process(loopback),
         state.browser_base.clone(),
         None,
         state.home.log_path(),
-    )
+    );
+    if cfg!(target_arch = "wasm32") {
+        tools.with_opener(clax_mcp::tools::Opener::Off)
+    } else {
+        tools
+    }
 }
 
 /// The header that names an MCP session.

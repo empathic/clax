@@ -1153,7 +1153,7 @@ pub fn driver(state: &mut AppState) -> Arc<clax_bot::Driver> {
     let host: Arc<dyn BotHost> = Arc::new(host);
     let deps = clax_bot::Deps::new(
         state.store.clone(),
-        clax_sample::messages::MessagesClient::new(),
+        crate::routes::admin::messages_client(&state.store),
         sandbox(),
         host.clone(),
         Arc::new(clax_http::bot::Settings {

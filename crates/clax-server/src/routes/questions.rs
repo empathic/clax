@@ -25,6 +25,7 @@ use clax_http::audit::DeferredAudit;
 use clax_http::auth::Caller;
 #[cfg(debug_assertions)]
 use clax_http::auth::RequireToken;
+use clax_http::confirm::{Confirming, Decision, require_confirmation};
 use clax_http::error::ApiError;
 use clax_http::identity::Identity;
 use clax_http::state::AppState;
@@ -377,7 +378,82 @@ pub async fn create(
 #[derive(Deserialize)]
 pub struct WaitQuery {
     #[serde(default)]
-    wait: u64,
+    pub(crate) wait: u64,
+}
+
+/// How a long poll's read is called ([`long_poll`]).
+#[derive(Clone, Copy)]
+pub(crate) struct Ending {
+    /// The wait is over: its time passed, its polls were ended (debug
+    /// builds, `QuestionWaiters::expire`), or the daemon stops. The read
+    /// answers now.
+    pub(crate) done: bool,
+    /// The daemon stops.
+    pub(crate) stopped: bool,
+}
+
+/// The long poll a question's, an approval request's and a connection
+/// request's polls share: waits on `key` (held already, `notify` its
+/// waiters' notify, [`clax_realtime::questions::QuestionWaiters::hold`])
+/// until `read` answers. `read` is called at once and after each wake of
+/// `key`, with whether the wait is over ([`Ending`]), and answers `Some`
+/// once what it reads is final or the wait is over.
+pub(crate) async fn long_poll<T, F, Fut>(
+    s: &AppState,
+    key: &str,
+    notify: std::sync::Arc<tokio::sync::Notify>,
+    wait: Duration,
+    mut read: F,
+) -> Result<T, ApiError>
+where
+    F: FnMut(Ending) -> Fut,
+    Fut: std::future::Future<Output = Result<Option<T>, ApiError>>,
+{
+    let mut shutdown = s.shutdown.clone();
+    // A dropped sender means the state has no shutdown source; never end early then.
+    let stopping = async move {
+        if shutdown.wait_for(|v| *v).await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    tokio::pin!(stopping);
+    let expiry = s.question_sleeper.sleep(wait);
+    tokio::pin!(expiry);
+    let mut end = Ending {
+        done: wait.is_zero(),
+        stopped: false,
+    };
+    loop {
+        let notified = notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        #[cfg(debug_assertions)]
+        if s.questions.take_expired(key) {
+            end.done = true;
+        }
+        if let Some(v) = read(end).await? {
+            return Ok(v);
+        }
+        let _parked = s.questions.park(key);
+        tokio::select! {
+            () = &mut notified => {}
+            () = &mut expiry, if !end.done => end.done = true,
+            () = &mut stopping, if !end.done => end = Ending { done: true, stopped: true },
+        }
+    }
+}
+
+/// 429 `limit_reached`: as many polls as may wait on one `what` wait on
+/// it already.
+pub(crate) fn polls_limit(what: &str) -> ApiError {
+    ApiError::new(
+        StatusCode::TOO_MANY_REQUESTS,
+        "limit_reached",
+        format!(
+            "at most {} polls wait on one {what} at once",
+            clax_realtime::questions::MAX_POLLS
+        ),
+    )
 }
 
 /// `GET /api/sessions/<sid>/questions/<qid>?wait=<s>` (a question `sid`
@@ -429,36 +505,10 @@ pub async fn poll(
         }
     };
     let Some((notify, _hold)) = s.questions.hold(&qid, on_last) else {
-        return Err(ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            "limit_reached",
-            format!(
-                "at most {} polls wait on one question at once",
-                clax_realtime::questions::MAX_POLLS
-            ),
-        ));
+        return Err(polls_limit("question"));
     };
-    let mut shutdown = s.shutdown.clone();
-    // A dropped sender means the state has no shutdown source; never end early then.
-    let stopping = async move {
-        if shutdown.wait_for(|v| *v).await.is_err() {
-            std::future::pending::<()>().await;
-        }
-    };
-    tokio::pin!(stopping);
-    let expiry = s.question_sleeper.sleep(wait);
-    tokio::pin!(expiry);
-    let mut done = wait.is_zero();
-    let mut stopped = false;
     let page = clax_http::surface::page(&s, &a, &sid).await?;
-    loop {
-        let notified = notify.notified();
-        tokio::pin!(notified);
-        notified.as_mut().enable();
-        #[cfg(debug_assertions)]
-        if s.questions.take_expired(&qid) {
-            done = true;
-        }
+    let read = |Ending { done, stopped }| {
         let (sid1, qid1, st, vf1, g1, page1) = (
             sid.clone(),
             qid.clone(),
@@ -467,8 +517,9 @@ pub async fn poll(
             grant.clone(),
             page.clone(),
         );
-        let out = s
-            .store_call(move |db| {
+        let s = s.clone();
+        async move {
+            s.store_call(move |db| {
                 let mut row = db.session_or_keyed_question(&sid1, g1.as_deref(), &qid1)?;
                 if row.status == Status::Open && !done {
                     return Ok(None);
@@ -485,20 +536,14 @@ pub async fn poll(
                     clax_http::surface::suggestion(&st, db, &sid1, page1.as_deref())?;
                 Ok(Some((for_asker(db, &vf1, v)?, where_to_ask)))
             })
-            .await?;
-        if let Some((v, where_to_ask)) = out {
-            return Ok(Json(
-                json!({"question": v, "waited_s": started.elapsed().as_secs(),
-                "where_to_ask": where_to_ask}),
-            ));
+            .await
         }
-        let _parked = s.questions.park(&qid);
-        tokio::select! {
-            () = &mut notified => {}
-            () = &mut expiry, if !done => done = true,
-            () = &mut stopping, if !done => (done, stopped) = (true, true),
-        }
-    }
+    };
+    let (v, where_to_ask) = long_poll(&s, &qid, notify, wait, read).await?;
+    Ok(Json(
+        json!({"question": v, "waited_s": started.elapsed().as_secs(),
+        "where_to_ask": where_to_ask}),
+    ))
 }
 
 /// Applies `c` to session `sid`'s question `qid` (or one its agent token
@@ -771,12 +816,17 @@ pub struct AnswerBody {
 /// the extension gateway, `cli` for the token from no browser of the
 /// owner's, else `shell` (a person's browser too). 400 `invalid_answer` for answers that do not fit the questions;
 /// 409 `question_closed`, with the question's view, when it is not open.
-/// Records `question.answer`.
+/// While an agent session is live, the owner's answer made with the token
+/// alone waits for a click in their browser: 202 `confirmation_pending`
+/// ([`clax_http::confirm`]), except for a question an agent's push or
+/// site opening waits on (`approval_pending`), which counts only when
+/// answered in a browser anyway. Records `question.answer`.
 pub async fn answer(
     State(s): State<AppState>,
     d: DeniedToGrants,
     _o: SameOrigin,
     who: Identity,
+    by: Confirming,
     audit: DeferredAudit,
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<AnswerBody>, JsonRejection>,
@@ -785,7 +835,29 @@ pub async fn answer(
     let me = recipient_of(&s, &who).await?;
     let qid = path(p)?;
     let b = body(req)?;
-    let via = if who.extension {
+    // Another's question is not there (404) before anyone is asked to
+    // confirm answering it.
+    let (st, q2, me2) = (s.clone(), qid.clone(), me.clone());
+    let push = s
+        .store_call(move |db| {
+            let q = db.question_of(&q2, me2.as_deref())?;
+            if !clax_http::views::question::in_reach(&st, db, me2.as_deref(), &q)? {
+                return Err(CoreError::NotFound);
+            }
+            Ok(db.push_approval(&q2)?.is_some())
+        })
+        .await?;
+    // A question an agent's push or site opening waits on counts only when
+    // answered in a browser (`routes::remotes`, `routes::world`), so a
+    // token's answer to one asks no confirmation: it would buy nothing.
+    if !push {
+        let decision = Decision::Answer {
+            question_id: qid.clone(),
+            answers: serde_json::to_value(&b.answers).unwrap_or_default(),
+        };
+        require_confirmation(&s, &d.caller(&s).await?, &by, decision).await?;
+    }
+    let via = if who.browser == clax_http::identity::Browser::Extension {
         "extension"
     } else if who.token && !who.owner_browser() {
         "cli"

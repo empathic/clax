@@ -8,6 +8,18 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
 
+/// A viewer cookie of a browser of this machine's with no name, its viewer
+/// minted in the store of the home at `home` (reaching the daemon's port
+/// alone mints none).
+fn browser_cookie(home: &std::path::Path) -> String {
+    let cookie = clax_core::secret::viewer_cookie().expose().to_string();
+    clax_store::Store::open(&clax_core::Home::at(home.to_path_buf()))
+        .unwrap()
+        .mint_viewer(&cookie, true)
+        .unwrap();
+    format!("clax_viewer={cookie}")
+}
+
 /// The harness environment a test inherits from the agent running it; every
 /// `clax` run here starts without it.
 const HARNESS_ENV: [&str; 12] = [
@@ -144,6 +156,7 @@ impl Daemon {
         let res = self
             .http()
             .post(format!("{}/api/artifacts/{aid}/threads", self.base()))
+            .header("cookie", browser_cookie(&self.home()))
             .multipart(form)
             .send()
             .unwrap();

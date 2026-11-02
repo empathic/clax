@@ -859,6 +859,8 @@ fn routes_loud(ev: &Event) -> Vec<(Chan, Gate)> {
             v
         }
         Event::People { .. } => vec![(Chan::People, Gate::Any)],
+        // The owner's alone: the owner's inbox topic.
+        Event::Confirmation { .. } => vec![(Chan::Inbox(String::new()), Gate::Any)],
         // The switch, and what of the declaration is in force, are shown
         // to everyone who may open the artifact.
         Event::Comments { .. } | Event::Permissions { .. } => {
@@ -1965,6 +1967,8 @@ pub struct Conn {
     shutdown_live: bool,
     /// Whether the stream may still deliver (see [`Conn::checking`]).
     check: Option<Box<dyn Fn() -> bool + Send + Sync>>,
+    /// What ends the stream besides shutdown (see [`Conn::ending_on`]).
+    ending: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
     /// Its place in its client's cap (the HTTP layer's `socket_caps`),
     /// given back when the connection drops.
     _slot: Option<Box<dyn std::any::Any + Send + Sync>>,
@@ -1998,8 +2002,20 @@ impl Conn {
             shutdown,
             shutdown_live: true,
             check: None,
+            ending: None,
             _slot: None,
         }
+    }
+
+    /// This connection, ending once `end` resolves (the owner browser
+    /// session the stream was opened with ended), before anything more is
+    /// delivered.
+    pub fn ending_on(
+        mut self,
+        end: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> Conn {
+        self.ending = Some(Box::pin(end));
+        self
     }
 
     /// This connection, holding `slot` (its client's place under the cap)
@@ -2037,23 +2053,32 @@ impl Conn {
             }
             enum Wake {
                 Stop,
+                Ended,
                 NoShutdown,
                 Lagged,
                 Item(Option<Arc<Item>>),
                 KeepAlive,
             }
             let shutdown_live = self.shutdown_live;
+            let ending = self.ending.is_some();
             let wake = tokio::select! {
                 biased;
                 r = self.shutdown.wait_for(|v| *v), if shutdown_live => {
                     if r.is_ok() { Wake::Stop } else { Wake::NoShutdown }
                 }
+                () = async { if let Some(e) = self.ending.as_mut() { e.await } }, if ending => Wake::Ended,
                 () = self.shared.notify.notified() => Wake::Lagged,
                 item = self.rx.recv() => Wake::Item(item),
                 _ = self.keep_alive.tick() => Wake::KeepAlive,
             };
             match wake {
                 Wake::Stop | Wake::Item(None) => return None,
+                Wake::Ended => {
+                    self.ending = None;
+                    self.out.clear();
+                    self.hub.end(&self.id, self.epoch);
+                    return None;
+                }
                 // No shutdown source: never end on it.
                 Wake::NoShutdown => self.shutdown_live = false,
                 Wake::Lagged => {
