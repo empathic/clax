@@ -610,9 +610,11 @@ pub enum SubError {
 /// Whether a live-only stream (one opened through the extension gateway) may
 /// take topic `t`: an `artifact`, `presence` or `working` topic of a live
 /// page in `live`, a `site` topic, `questions` or `inbox` (the extension acts
-/// as the owner); never `gallery`, a `docs` topic (spec
-/// 2026-10-05-chrome-overlay-design §9.5) or `people`, which the panel does
-/// not show.
+/// as the owner), or `queues` (the DevTools panel's Queues view: a bare ping
+/// naming no queue or report, after which the extension's refetch of `GET
+/// /api/queues` shows only the owner's own); never `gallery`, a `docs` topic
+/// (spec 2026-10-05-chrome-overlay-design §9.5) or `people`, which the panel
+/// does not show.
 pub fn live_only_admits(live: &crate::live::LiveIds, t: &Topic) -> bool {
     match t {
         Topic::Gallery
@@ -622,9 +624,8 @@ pub fn live_only_admits(live: &crate::live::LiveIds, t: &Topic) -> bool {
         | Topic::DocsRead { .. }
         | Topic::People
         | Topic::Agents
-        | Topic::Jobs
-        | Topic::Queues => false,
-        Topic::Site(_) | Topic::Questions | Topic::Inbox => true,
+        | Topic::Jobs => false,
+        Topic::Site(_) | Topic::Questions | Topic::Inbox | Topic::Queues => true,
         Topic::Artifact(a) | Topic::ArtifactQuiet(a) | Topic::Presence(a) | Topic::Working(a) => {
             live.contains(a)
         }
@@ -3600,7 +3601,9 @@ mod tests {
         assert_eq!(Topic::parse("queues"), Ok(Topic::Queues));
         assert_eq!(Topic::Queues.name(), "queues");
         assert_eq!(Topic::Queues.artifact(), None);
-        assert!(!live_only_admits(
+        // The extension's live-only stream takes it too (the DevTools
+        // panel's Queues view): the ping names nothing.
+        assert!(live_only_admits(
             &crate::live::LiveIds::default(),
             &Topic::Queues
         ));
