@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publishes the SDK package, @empathic/clax-sdk, to npm from the prod
+# Publishes the SDK package, @empathic/clax-client-sdk, to npm from the prod
 # branch: the procedure docs/usage.md ("Releasing the SDK package")
 # describes. The package has a version of its own, the version in
 # web/sdk/package.json, not Clax's: a pull request to main raises it,

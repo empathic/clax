@@ -707,13 +707,14 @@ a model, runs only with `VERIFY_PI_SESSION=1` and a provider key you export.
 ### The SDK package
 
 The reporter client, the embeddable overlay and the service client are
-also built as an npm package, `@empathic/clax-sdk`, into `web/dist-sdk`
-(`web/scripts/build-sdk.mjs`): ES modules with Svelte and the overlay's
-other dependencies bundled, and declarations under `types/`. It has three
-entries: `@empathic/clax-sdk` (`ReporterClient`, `ClaxError` and the queue
-routes' types), `@empathic/clax-sdk/overlay` (`overlay`, the same overlay
-as `/_clax/overlay.js`) and `@empathic/clax-sdk/service` (`ServiceClient`,
-for a backend only). Its license is LGPL-2.1-only, that of `web/sdk`,
+also built as an npm package, `@empathic/clax-client-sdk`, into
+`web/dist-sdk` (`web/scripts/build-sdk.mjs`): ES modules with Svelte and
+the overlay's other dependencies bundled, and declarations under
+`types/`. It has three entries: `@empathic/clax-client-sdk`
+(`ReporterClient`, `ClaxError` and the queue routes' types),
+`@empathic/clax-client-sdk/overlay` (`overlay`, the same overlay as
+`/_clax/overlay.js`) and `@empathic/clax-client-sdk/service`
+(`ServiceClient`, for a backend only). Its license is LGPL-2.1-only, that of `web/sdk`,
 `web/overlay` and `web/bridge`.
 
 - `just web` builds it beside the web build (`//web:dist_sdk` under Bazel,
@@ -739,7 +740,7 @@ To use the checkout's build from another app while developing, link the
 directory, which keeps the package's own name:
 
 ```
-"@empathic/clax-sdk": "link:/path/to/clax/web/dist-sdk"
+"@empathic/clax-client-sdk": "link:/path/to/clax/web/dist-sdk"
 ```
 
 in that app's `package.json` `dependencies` (pnpm and bun both read
@@ -1737,8 +1738,8 @@ release path, does everything except publish, and keeps the result as the
 
 ### Releasing the SDK package
 
-The SDK package, `@empathic/clax-sdk` ("The SDK package" above), has a
-version of its own, on a semver line of its own: the `version` in
+The SDK package, `@empathic/clax-client-sdk` ("The SDK package" above),
+has a version of its own, on a semver line of its own: the `version` in
 `web/sdk/package.json`. Nothing ties it to the `clax` binary's version,
 since the package only calls an instance's report-queue routes, and
 `scripts/bump-version.sh` and `scripts/check-version.sh` leave it alone. It
@@ -1778,8 +1779,8 @@ publishes `web/dist-sdk` with provenance through npm trusted publishing,
 in the `npm` environment.
 
 npm lets a package name a trusted publisher only once it exists, so while
-`npm view @empathic/clax-sdk` finds nothing, the command publishes the
-first version from your machine instead: in a temporary worktree of the
+`npm view @empathic/clax-client-sdk` finds nothing, the command publishes
+the first version from your machine instead: in a temporary worktree of the
 commit under `target/release-sdk/`, `pnpm install --frozen-lockfile`,
 `pnpm run build:sdk` and `pnpm run test:sdk` in `web/`, then `npm publish
 --access public` from `web/dist-sdk` on your terminal, for npm's

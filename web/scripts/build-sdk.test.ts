@@ -23,7 +23,7 @@ const src = (file: string) => { const at = join(root, file); mkdirSync(dirname(a
 describe("thirdPartyNotices", () => {
   it("passes Clax files of web/bridge, web/overlay and web/sdk, with a query, and virtual modules", () => {
     const ids = [src("bridge/src/anchor.ts"), src("overlay/src/Overlay.svelte") + "?svelte&type=style&lang.css", src("sdk/src/index.ts"), "\0commonjsHelpers.js"];
-    expect(thirdPartyNotices(ids, root)).toBe("The packages @empathic/clax-sdk bundles, and their licenses.\n\n");
+    expect(thirdPartyNotices(ids, root)).toBe("The packages @empathic/clax-client-sdk bundles, and their licenses.\n\n");
   });
 
   it("refuses a Clax file outside them", () => {
@@ -36,7 +36,7 @@ describe("thirdPartyNotices", () => {
     const scoped = pkg("node_modules/@scope/name", "@scope/name", "LICENSE");
     const nested = pkg("node_modules/.pnpm/plain@1.2.3/node_modules/plain", "plain", "LICENSE.md");
     const notices = thirdPartyNotices([join(dirname(scoped), "dist/deep/a.js"), scoped, join(dirname(nested), "lib/b.js")], root);
-    expect(notices).toBe(`The packages @empathic/clax-sdk bundles, and their licenses.
+    expect(notices).toBe(`The packages @empathic/clax-client-sdk bundles, and their licenses.
 
 plain 1.2.3 (MIT)
 

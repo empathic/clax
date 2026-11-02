@@ -133,7 +133,7 @@ pick_dir(
     visibility = ["//visibility:public"],
 )
 
-# pnpm run build:sdk: the SDK package, @empathic/clax-sdk
+# pnpm run build:sdk: the SDK package, @empathic/clax-client-sdk
 # (scripts/build-sdk.mjs), an action of its own so that no web build the
 # binaries embed runs it. Its version is its own (sdk/package.json's),
 # and it carries the license text of web/bridge,

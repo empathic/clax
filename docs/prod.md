@@ -28,7 +28,7 @@ cutting a release is `docs/usage.md`, "Releasing".
    and publishes the Pi package from `prod`.
 5. When the release brought a new SDK package version (the `version` in
    `web/sdk/package.json`) to `prod`, `just release-sdk X.Y.Z`
-   tags `sdk-vX.Y.Z` on `prod` and publishes `@empathic/clax-sdk` from it
+   tags `sdk-vX.Y.Z` on `prod` and publishes `@empathic/clax-client-sdk` from it
    (docs/usage.md, "Releasing the SDK package").
 
 ## One-time GitHub setup

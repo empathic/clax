@@ -1,4 +1,4 @@
-// Builds the SDK package (@empathic/clax-sdk) into web/dist-sdk/: a
+// Builds the SDK package (@empathic/clax-client-sdk) into web/dist-sdk/: a
 // self-contained npm package another app installs or links. Its entries:
 //
 //   "."          sdk/src/index.ts     the reporter client, ClaxError and the

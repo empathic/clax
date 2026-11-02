@@ -68,7 +68,7 @@ const files = (dir: string): string[] =>
 
 describe("the SDK package", () => {
   it("names itself, its license and its entries, and depends on nothing", () => {
-    expect(manifest.name).toBe("@empathic/clax-sdk");
+    expect(manifest.name).toBe("@empathic/clax-client-sdk");
     expect(manifest.version).toBe(source.version);
     expect(manifest).not.toHaveProperty("private");
     expect(manifest.version).toMatch(/^\d+\.\d+\.\d+$/);
@@ -158,9 +158,9 @@ console.log(JSON.stringify(out));
   ])(
     "type-checks an app's use of every entry under moduleResolution %s", (_, moduleResolution, module) => {
       const file = join(app, "app.ts");
-      writeFileSync(file, `import { ClaxError, ReporterClient, type NewReport, type Report, type ReporterAuth, type ReporterToken } from "@empathic/clax-sdk";
-import { overlay, type OverlayHandle, type OverlayOptions } from "@empathic/clax-sdk/overlay";
-import { ServiceClient, type ServiceOptions } from "@empathic/clax-sdk/service";
+      writeFileSync(file, `import { ClaxError, ReporterClient, type NewReport, type Report, type ReporterAuth, type ReporterToken } from "@empathic/clax-client-sdk";
+import { overlay, type OverlayHandle, type OverlayOptions } from "@empathic/clax-client-sdk/overlay";
+import { ServiceClient, type ServiceOptions } from "@empathic/clax-client-sdk/service";
 
 const auth: ReporterAuth = async (publicKey: string): Promise<ReporterToken> => ({ token: publicKey, expires_at: "" });
 const opts: OverlayOptions = { instance: "https://clax.example", queue: "q1", auth };

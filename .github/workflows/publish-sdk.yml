@@ -1,6 +1,6 @@
 name: Publish SDK package
 
-# Publishes web/dist-sdk to npm as @empathic/clax-sdk (built by
+# Publishes web/dist-sdk to npm as @empathic/clax-client-sdk (built by
 # web/scripts/build-sdk.mjs at the package's own version, the
 # version in web/sdk/package.json), run by hand (Actions, Publish SDK package, Run
 # workflow) or by scripts/release-sdk.sh, `just release-sdk`
@@ -47,7 +47,7 @@ concurrency:
 
 jobs:
   publish:
-    name: Publish @empathic/clax-sdk
+    name: Publish @empathic/clax-client-sdk
     # GitHub's runner, not Blacksmith's: npm's trusted publishing and its
     # provenance accept only GitHub-hosted runners.
     runs-on: ubuntu-24.04
@@ -114,8 +114,8 @@ jobs:
         run: |
           set -euo pipefail
           version="$(node -p 'require("./dist-sdk/package.json").version')"
-          if [ "$(npm view "@empathic/clax-sdk@$version" version 2>/dev/null || true)" = "$version" ]; then
-            echo "@empathic/clax-sdk@$version is already on npm" >&2
+          if [ "$(npm view "@empathic/clax-client-sdk@$version" version 2>/dev/null || true)" = "$version" ]; then
+            echo "@empathic/clax-client-sdk@$version is already on npm" >&2
             exit 1
           fi
       - name: Pack

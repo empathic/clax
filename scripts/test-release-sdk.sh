@@ -123,8 +123,8 @@ case "$1" in
             exit 1
         fi
         case "$2" in
-            @empathic/clax-sdk@*) grep -x "${2##*@}" "$S/npm-versions" 2>/dev/null || true ;;
-            @empathic/clax-sdk) tail -n 1 "$S/npm-versions" ;;
+            @empathic/clax-client-sdk@*) grep -x "${2##*@}" "$S/npm-versions" 2>/dev/null || true ;;
+            @empathic/clax-client-sdk) tail -n 1 "$S/npm-versions" ;;
             *) echo "fake npm: unexpected: $*" >&2; exit 2 ;;
         esac ;;
     whoami)
@@ -145,14 +145,14 @@ echo "pnpm $* (in $(basename "$(dirname "$PWD")")/$(basename "$PWD"))" >> "$FAKE
 if [ "$*" = "run build:sdk" ]; then
     mkdir -p dist-sdk
     v="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' sdk/package.json)"
-    printf '{\n  "name": "@empathic/clax-sdk",\n  "version": "%s",\n  "type": "module"\n}\n' "$v" > dist-sdk/package.json
+    printf '{\n  "name": "@empathic/clax-client-sdk",\n  "version": "%s",\n  "type": "module"\n}\n' "$v" > dist-sdk/package.json
 fi
 SH
 FAKE_PATH="$T/bin:$PATH"
 
 # sdk_file VERSION: web/sdk/package.json's stand-in at VERSION.
 sdk_file() {
-    printf '{\n  "name": "@empathic/clax-sdk",\n  "version": "%s",\n  "private": true\n}\n' "$1" \
+    printf '{\n  "name": "@empathic/clax-client-sdk",\n  "version": "%s",\n  "private": true\n}\n' "$1" \
         > "$C/repo/web/sdk/package.json"
 }
 # A fresh case: $C/repo on main, prod and main pushed to $C/origin.git at
@@ -239,7 +239,7 @@ case_1() {
     before="$(snapshot)"
     release 0.2.0; rc=$?
     if [ "$rc" = 0 ] && [ "$before" = "$(snapshot)" ] && [ -z "$(actions)" ] && [ ! -e "$C/repo/target" ] \
-        && has "Dry run: nothing is changed" && has "ok: @empathic/clax-sdk 0.2.0 from $PROD0 on origin/prod" \
+        && has "Dry run: nothing is changed" && has "ok: @empathic/clax-client-sdk 0.2.0 from $PROD0 on origin/prod" \
         && has "2. [todo] Tag the commit: git tag -s sdk-v0.2.0 -m \"Clax SDK 0.2.0\" $PROD0" \
         && has "3. [todo] Push the tag: git push origin refs/tags/sdk-v0.2.0" \
         && has "4. [todo] Publish the SDK package: $(dispatch "$PROD0")" && has "starts at step 2"; then
@@ -252,7 +252,7 @@ case_2() {
     act; rc=$?
     if [ "$rc" = 0 ] && published && [ "$(count "$(dispatch "$PROD0")")" = 1 ] \
         && ! grep '^npm publish' "$FAKE_STATE/calls" >/dev/null && ! grep '^pnpm' "$FAKE_STATE/calls" >/dev/null \
-        && has "Publish SDK package: run 401" && has "@empathic/clax-sdk 0.2.0 is on npm, published from $PROD0" \
+        && has "Publish SDK package: run 401" && has "@empathic/clax-client-sdk 0.2.0 is on npm, published from $PROD0" \
         && ! has "Trusted Publisher"; then
         pass "a later version is tagged and published through publish-sdk.yml on prod"
     else fail "a publish through the workflow (rc=$rc: $(cat "$C/out"))"; fi
@@ -262,7 +262,7 @@ case_2() {
     act; rc=$?
     if [ "$rc" = 0 ] && [ -z "$(actions)" ] && [ "$before" = "$(snapshot)" ] \
         && has "step 2/4 Tag the commit: done already" && has "step 4/4 Publish the SDK package: done already" \
-        && has "note: @empathic/clax-sdk@0.2.0 is on npm and origin has sdk-v0.2.0: every step is done"; then
+        && has "note: @empathic/clax-client-sdk@0.2.0 is on npm and origin has sdk-v0.2.0: every step is done"; then
         pass "a finished publish run again reports every step done"
     else fail "a finished publish run again (rc=$rc: $(actions); $(cat "$C/out"))"; fi
 }
@@ -272,7 +272,7 @@ case_3() {
     new_case
     : > "$FAKE_STATE/npm-absent"
     release 0.2.0; rc=$?
-    if [ "$rc" = 0 ] && has "@empathic/clax-sdk is not on npm yet: step 4 publishes its first version from this machine"; then
+    if [ "$rc" = 0 ] && has "@empathic/clax-client-sdk is not on npm yet: step 4 publishes its first version from this machine"; then
         pass "the dry run says the first version is published from here"
     else fail "the dry run with the package not on npm (rc=$rc: $(cat "$C/out"))"; fi
     : > "$FAKE_STATE/calls"
@@ -282,7 +282,7 @@ case_3() {
         && [ "$(count "pnpm install --frozen-lockfile (in publish/web)")" = 1 ] \
         && [ "$(count "pnpm run build:sdk (in publish/web)")" = 1 ] && [ "$(count "pnpm run test:sdk (in publish/web)")" = 1 ] \
         && ! grep '^gh workflow run' "$FAKE_STATE/calls" >/dev/null \
-        && has "@empathic/clax-sdk@0.2.0 is on npm. Later versions publish through publish-sdk.yml" \
+        && has "@empathic/clax-client-sdk@0.2.0 is on npm. Later versions publish through publish-sdk.yml" \
         && has "Publisher, GitHub Actions: organization empathic, repository clax-test, workflow" \
         && [ ! -e "$C/repo/target/release-sdk/0.2.0/publish" ]; then
         pass "a package not on npm is built, tested and published from here, with the trusted-publisher setup"
@@ -334,16 +334,16 @@ case_6() {
 case_7() {
     new_case
     echo 0.2.0 >> "$FAKE_STATE/npm-versions"
-    refuse "a version npm has, with no tag of it" "npm has @empathic/clax-sdk@0.2.0 already, and origin has no tag sdk-v0.2.0"
+    refuse "a version npm has, with no tag of it" "npm has @empathic/clax-client-sdk@0.2.0 already, and origin has no tag sdk-v0.2.0"
     new_case
     echo 0.3.0 >> "$FAKE_STATE/npm-versions"
-    refuse "a version older than npm's" "npm has @empathic/clax-sdk at 0.3.0, not older than 0.2.0"
+    refuse "a version older than npm's" "npm has @empathic/clax-client-sdk at 0.3.0, not older than 0.2.0"
 }
 case_8() {
     new_case
     : > "$FAKE_STATE/npm-absent"
     : > "$FAKE_STATE/npm-no-login"
-    refuse "a first publish with npm signed out" "@empathic/clax-sdk is not on npm yet, so step 4 publishes its first version from here: sign in first"
+    refuse "a first publish with npm signed out" "@empathic/clax-client-sdk is not on npm yet, so step 4 publishes its first version from here: sign in first"
     new_case
     : > "$FAKE_STATE/npm-absent"
     CASE_PATH="$T/no-pnpm:/usr/bin:/bin"

@@ -1,5 +1,5 @@
 {
-  "name": "@empathic/clax-sdk",
+  "name": "@empathic/clax-client-sdk",
   "version": "0.1.0",
   "private": true,
   "description": "Clax's report queue SDK: the reporter client, the embeddable overlay and the service client",
