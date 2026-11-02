@@ -78,6 +78,27 @@ pub async fn create(
         .into_response())
 }
 
+/// `GET /api/browser-login` (the token) → `{signed_in}`: whether any owner
+/// browser session is live
+/// ([`clax_http::local_trust::OwnerSessions::any_live`]). An agent asks
+/// before it hands the person a link: with none signed in, a link to this
+/// daemon opens the cold-browser page, and `clax open` signs the person's
+/// browser in. 404 on a hosted daemon.
+pub async fn state(
+    State(s): State<AppState>,
+    _d: clax_http::agent::DeniedToGrants,
+    _t: RequireToken,
+) -> Result<Response, ApiError> {
+    if s.hosted.is_some() {
+        return Err(ApiError::not_found());
+    }
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        axum::Json(json!({"signed_in": s.owner_sessions.any_live()})),
+    )
+        .into_response())
+}
+
 /// `DELETE /api/browser-login` (the token, by hand: 403 `not_for_agents`
 /// for the owner's agents) → `{ended}`: ends every owner browser session
 /// ([`clax_http::local_trust::OwnerSessions::end_all`]), so no browser's

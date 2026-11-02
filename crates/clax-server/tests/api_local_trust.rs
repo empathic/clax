@@ -283,6 +283,56 @@ async fn an_owner_session_survives_a_restart_and_ends_when_revoked() {
     assert_eq!(token_status(&again, &cookie, Some(&proof)).await, 401);
 }
 
+/// `GET /api/browser-login` (the token, the owner's agents included) says
+/// whether any owner browser session is live: none once every one ended,
+/// one again after a login. No credential and a browser session alone are
+/// refused.
+#[tokio::test]
+async fn a_token_holder_reads_whether_a_browser_is_signed_in() {
+    let ts = TestServer::spawn().await;
+    let signed_in = || async {
+        let res = ts
+            .authed(ts.client.get(format!("{}/api/browser-login", ts.base)))
+            .header("x-clax-channel", "agent")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let v: Value = res.json().await.unwrap();
+        v["signed_in"].as_bool().expect("signed_in")
+    };
+    assert!(signed_in().await, "the test server's own browser session");
+    let get = || ts.client.get(format!("{}/api/browser-login", ts.base));
+    assert_eq!(code_of(get().send().await.unwrap()).await.0, 401);
+    assert_eq!(
+        code_of(
+            get()
+                .header("cookie", ts.owner_cookie())
+                .send()
+                .await
+                .unwrap()
+        )
+        .await
+        .0,
+        401,
+        "a browser session alone"
+    );
+    ts.state.owner_sessions.end_all(&ts.store).unwrap();
+    assert!(!signed_in().await, "every session ended");
+    let browser = unfollowed();
+    let path = login_path(&ts, "/").await;
+    owner_login_of(
+        &ts.base,
+        browser
+            .get(format!("{}{path}", ts.base))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(signed_in().await, "a login opened one");
+}
+
 /// `DELETE /api/browser-login` (the token, by hand) ends every owner
 /// browser session: each browser's cookie opens nothing after, a new
 /// login code opens a new one. The owner's agents, a browser session
@@ -849,7 +899,7 @@ async fn a_cold_browser_gets_the_open_from_your_terminal_page() {
             "{path}"
         );
         let page = res.text().await.unwrap();
-        assert!(page.contains("Open Clax from your terminal"), "{path}");
+        assert!(page.contains("Open Clax through your agent or terminal"), "{path}");
         assert!(
             page.contains("<code>clax open</code>") && page.contains("<code>clax login</code>")
         );
@@ -869,7 +919,7 @@ async fn a_cold_browser_gets_the_open_from_your_terminal_page() {
         !res.text()
             .await
             .unwrap()
-            .contains("Open Clax from your terminal")
+            .contains("Open Clax through your agent or terminal")
     );
 }
 
