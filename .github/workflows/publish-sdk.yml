@@ -7,11 +7,13 @@ name: Publish SDK package
 # pushed the tag sdk-vX.Y.Z; a run by hand (Actions, Publish SDK package,
 # Run workflow) publishes only a commit that tag names, and a dry run
 # needs no tag. It publishes from the commit `sha` names (by default the
-# tip of the ref it runs on), which must be on prod, where Clax releases
-# go, with CI passed on it: a published SDK then calls only the
-# report-queue routes that deployed instances have. It builds the package
-# and runs its test (pnpm run build:sdk, test:sdk), and refuses a version
-# npm already has. With `dry_run` it does everything but publish. The run
+# tip of the ref it runs on), which must be on the release branch, with CI
+# passed on it. The release branch is prod, where Clax releases go, so
+# that a published SDK calls only the report-queue routes that deployed
+# instances have; until origin has a prod branch (docs/prod.md's one-time
+# GitHub setup creates it), it is main. It builds the package and runs its
+# test (pnpm run build:sdk, test:sdk), and refuses a version npm already
+# has. With `dry_run` it does everything but publish. The run
 # is titled "Publish SDK package <sha>", or "Publish SDK package (dry run)
 # <sha>", so a caller can find it.
 #
@@ -19,15 +21,15 @@ name: Publish SDK package
 # provenance, as publish-pi.yml does, so the package on npmjs.com must name
 # this repository, this workflow and the environment `npm` as its trusted
 # publisher. Only the `publish` job runs in that environment, whose
-# deployment branches the repository's settings limit to prod, so npm
-# refuses a token from a run dispatched on any other ref; and only it may
-# request the token, so no build or test code (the web workspace's
-# dependencies) runs where the token can be had: the `build` job packs the
-# tarball, and `publish` runs nothing but a pinned npm on it. npm offers
-# trusted publishing only for a package that exists, so the first version
-# is not published here: scripts/release-sdk.sh publishes it from the
-# releaser's machine (built in a worktree of the commit on prod) and
-# prints that setup.
+# deployment branches the repository's settings limit to the release
+# branch, so npm refuses a token from a run dispatched on any other ref;
+# and only it may request the token, so no build or test code (the web
+# workspace's dependencies) runs where the token can be had: the `build`
+# job packs the tarball, and `publish` runs nothing but a pinned npm on
+# it. npm offers trusted publishing only for a package that exists, so the
+# first version is not published here: scripts/release-sdk.sh publishes it
+# from the releaser's machine (built in a worktree of the commit on the
+# release branch) and prints that setup.
 on:
   workflow_dispatch:
     inputs:
@@ -36,7 +38,7 @@ on:
         type: boolean
         default: true
       sha:
-        description: "The commit to publish from: on prod, with CI passed (default: the tip of the ref run on)"
+        description: "The commit to publish from: on prod (main while there is no prod), with CI passed (default: the tip of the ref run on)"
         type: string
         default: ""
 
@@ -66,7 +68,7 @@ jobs:
         with:
           ref: ${{ inputs.sha || github.sha }}
           fetch-depth: 0
-      - name: Check the commit is on prod, carries its tag, and CI passed on it
+      - name: Check the commit is on the release branch, carries its tag, and CI passed on it
         working-directory: .
         shell: bash
         env:
@@ -76,9 +78,17 @@ jobs:
         run: |
           set -euo pipefail
           sha="$(git rev-parse --verify "$SHA^{commit}")"
-          git fetch --quiet --no-tags origin prod
+          # The release branch: prod once origin has one, main until then.
+          rc=0
+          git ls-remote --exit-code --heads origin refs/heads/prod >/dev/null || rc=$?
+          case "$rc" in
+            0) branch=prod ;;
+            2) branch=main ;;
+            *) echo "cannot read origin's branches (git ls-remote origin)" >&2; exit 1 ;;
+          esac
+          git fetch --quiet --no-tags origin "$branch"
           if ! git merge-base --is-ancestor "$sha" FETCH_HEAD; then
-            echo "$sha is not on prod: the SDK package is published from a commit on prod" >&2
+            echo "$sha is not on $branch: the SDK package is published from a commit on $branch" >&2
             exit 1
           fi
           # A publish is of the commit `just release-sdk` tagged: the tag

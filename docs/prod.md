@@ -32,7 +32,11 @@ cutting a release is `docs/usage.md`, "Releasing". The `dev` environment
    `web/sdk/package.json`) to `prod`, `just release-sdk X.Y.Z`
    tags `sdk-vX.Y.Z` on `prod` and publishes `@empathic/clax-client-sdk` from it
    (docs/usage.md, "Releasing the SDK package"); the release's last step,
-   "Left by hand", names the command while npm lacks that version.
+   "Left by hand", names the command while npm lacks that version. Until
+   origin has a `prod` branch (the one-time setup below creates it),
+   `just release-sdk` tags and publishes from `main` instead, and the
+   `npm` environment allows `main`; once `prod` exists, it publishes from
+   `prod` with no change to the command.
 
 ## One-time GitHub setup
 
@@ -73,7 +77,9 @@ differs (the ruleset it writes whole each time). It
   its flag. None of these values is kept in this repository;
 - sets the repository variable `PUBLIC_HOST` to the same host, for the
   drift check, which runs outside the environment;
-- makes the environment `npm` deployable from `prod` in place of `main`;
+- makes the environment `npm` deployable from `prod` in place of `main`
+  (from then on `just release-sdk` publishes from `prod`, as it does once
+  origin has a `prod` branch);
 - prints the two commands that set the secrets, which it never runs:
 
 ```

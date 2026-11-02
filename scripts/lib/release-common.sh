@@ -6,8 +6,8 @@
 #
 # The script that sources it sets ROOT (its checkout), NPM (the npm
 # command), NPM_ENV (the GitHub environment the publish workflows run in),
-# PROD (the branch releases come from), POLL (seconds between polls) and
-# MAX_POLLS (polls before a wait gives up), and GH_REPO, or calls
+# POLL (seconds between polls) and MAX_POLLS (polls before a wait gives
+# up), and GH_REPO, or calls
 # resolve_repo for it. It defines g (git in ROOT), say (prints a line),
 # problem (records a preflight failure) and detail (what a heartbeat may
 # tell of the step under way, or nothing). await_run also writes the run it
@@ -62,13 +62,14 @@ check_signing() {
     rm -rf "$scratch" "$scratch.err"
 }
 
-# The npm environment, read-only: it must exist and allow only prod, or a
-# run dispatched on another ref could get npm's token. Prints what is wrong
-# with it, then "$1" (which workflows run in it) and how to set it up, or
-# nothing when it is right. Creating it is a repository setting the owner
-# makes; this only says how.
+# npm_environment_problem BRANCH WHAT: the npm environment, read-only: it
+# must exist and allow only BRANCH, the branch the publish workflows are
+# dispatched on, or a run dispatched on another ref could get npm's token.
+# Prints what is wrong with it, then WHAT (which workflows run in it) and
+# how to set it up, or nothing when it is right. Creating it is a
+# repository setting the owner makes; this only says how.
 npm_environment_problem() {
-    local err policy branches why=""
+    local branch="$1" what="$2" err policy branches why=""
     err="$(mktemp)"
     if ! policy="$(gh api "repos/$GH_REPO/environments/$NPM_ENV" \
         --jq '.deployment_branch_policy | if . == null then "none" else "\(.protected_branches) \(.custom_branch_policies)" end' 2>"$err")"; then
@@ -77,16 +78,16 @@ npm_environment_problem() {
             *) why="cannot read the environment $NPM_ENV: $(tr '\n' ' ' < "$err")" ;;
         esac
     elif [ "$policy" != "false true" ]; then
-        why="the environment $NPM_ENV does not limit its deployment branches to $PROD"
+        why="the environment $NPM_ENV does not limit its deployment branches to $branch"
     elif ! branches="$(gh api "repos/$GH_REPO/environments/$NPM_ENV/deployment-branch-policies" \
         --jq '[.branch_policies[] | "\(.type // "branch"):\(.name)"] | join(",")' 2>"$err")"; then
         why="cannot read the environment $NPM_ENV's deployment branches: $(tr '\n' ' ' < "$err")"
-    elif [ "$branches" != "branch:$PROD" ]; then
-        why="the environment $NPM_ENV allows ${branches:-no branch}, not $PROD alone"
+    elif [ "$branches" != "branch:$branch" ]; then
+        why="the environment $NPM_ENV allows ${branches:-no branch}, not $branch alone"
     fi
     rm -f "$err"
     [ -n "$why" ] || return 0
-    echo "$why. $1; in GitHub, the repository's Settings, Environments, New environment (or $NPM_ENV), name $NPM_ENV; Deployment branches and tags: Selected branches and tags; Add deployment branch or tag rule: branch $PROD"
+    echo "$why. $what; in GitHub, the repository's Settings, Environments, New environment (or $NPM_ENV), name $NPM_ENV; Deployment branches and tags: Selected branches and tags; Add deployment branch or tag rule: branch $branch"
 }
 
 # --- npm ----------------------------------------------------------------------------
@@ -236,14 +237,14 @@ new_publish_run() {
     id="$(publish_run "$1" "$2" "$3")" || return 1
     if [ "$id" != "$4" ]; then echo "$id"; fi
 }
-# publish_through WORKFLOW TITLE COMMIT: publishes from COMMIT through
-# WORKFLOW (dispatched on PROD with dry_run off), whose runs are titled
-# "TITLE <commit>": a run already under way for COMMIT is waited for; one
-# that succeeded is done (it published, though npm's view may not list the
-# version yet: the caller, which found npm without it, waits for npm); none,
-# or one that failed, is dispatched anew.
+# publish_through WORKFLOW TITLE COMMIT BRANCH: publishes from COMMIT
+# through WORKFLOW (dispatched on BRANCH with dry_run off), whose runs are
+# titled "TITLE <commit>": a run already under way for COMMIT is waited
+# for; one that succeeded is done (it published, though npm's view may not
+# list the version yet: the caller, which found npm without it, waits for
+# npm); none, or one that failed, is dispatched anew.
 publish_through() {
-    local workflow="$1" title="$2" commit="$3" id state
+    local workflow="$1" title="$2" commit="$3" branch="$4" id state
     id="$(gh_retry publish_run "$workflow" "$title" "$commit")" || return 1
     state=""
     if [ -n "$id" ]; then state="$(gh_retry run_state "$id")" || return 1; fi
@@ -252,7 +253,7 @@ publish_through() {
             say "  $title: run $id succeeded already"
             return 0 ;;
         "" | completed\ *)
-            gh workflow run "$workflow" --ref "$PROD" -f dry_run=false -f "sha=$commit"
+            gh workflow run "$workflow" --ref "$branch" -f dry_run=false -f "sha=$commit"
             detail "dispatched; waiting for the run to start"
             id="$(await_output new_publish_run "$workflow" "$title" "$commit" "$id")" \
                 || { say "  no $title run for $commit appeared"; return 1; } ;;

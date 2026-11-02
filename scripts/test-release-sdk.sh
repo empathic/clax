@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests scripts/release-sdk.sh in scratch git repositories, each with a bare
-# origin holding main and prod, with fakes of gh, npm and pnpm on PATH and
+# origin holding main and prod (or main alone, which the script publishes
+# from until origin has prod), with fakes of gh, npm and pnpm on PATH and
 # an SSH key of the test's own for signing (gpg.format=ssh in each scratch
 # repository's own config). No network, no GitHub, no npm; git reads no
 # global or system config.
@@ -9,10 +10,13 @@
 # sources (scripts/lib/release-common.sh), and a stand-in for
 # web/sdk/package.json holding the package's name and version. Its
 # history: "SDK 0.1.0", then "SDK 0.2.0", which main and prod are at
-# ($PROD0). The fakes log every call to $FAKE_STATE/calls. The fake gh
-# plays GitHub from the bare origin: a CI run (201) on any commit prod
-# holds, its bazel job's state $FAKE_STATE/201 (default "completed
-# success"); a publish-sdk run (401, 402, ...) per dispatch, titled as
+# ($PROD0, $MAIN0). The fakes log every call to $FAKE_STATE/calls. The fake
+# gh plays GitHub from the bare origin, whose release branch is prod when
+# it has one and main otherwise: the npm environment allows that branch
+# alone (or what $FAKE_STATE/env-branches says); a CI run (201) on any
+# commit that branch holds, its bazel job's state $FAKE_STATE/201 (default
+# "completed success"); a publish-sdk run (401, 402, ...) per dispatch on
+# that branch, titled as
 # .github/workflows/publish-sdk.yml titles it, whose states `gh run view`
 # reports one per call from $FAKE_STATE/<ID> (the last one sticks; none
 # means "completed success"); one seen to succeed puts the version its
@@ -47,6 +51,10 @@ fake_exe "$T/bin/gh" <<'SH'
 S="$FAKE_STATE"
 echo "gh $*" >> "$S/calls"
 origin() { git --git-dir="$FAKE_REMOTE" "$@"; }
+# The branch the SDK is released from: prod when origin has one, else main.
+release_branch() {
+    if origin rev-parse -q --verify refs/heads/prod >/dev/null; then echo prod; else echo main; fi
+}
 flag() {
     want="$1"; shift
     while [ $# -gt 0 ]; do
@@ -67,20 +75,22 @@ case "$1 $2" in
     "auth status")
         if [ -e "$S/no-auth" ]; then echo "You are not logged into any GitHub hosts." >&2; exit 1; fi ;;
     "api repos/"*)
-        # The npm environment: limited to prod unless $FAKE_STATE/no-env
-        # (none) or env-open (any branch).
+        # The npm environment: limited to the release branch unless
+        # $FAKE_STATE/no-env (none), env-open (any branch) or env-branches
+        # (the branches it names).
         case "$2" in
             */environments/npm)
                 if [ -e "$S/no-env" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
                 if [ -e "$S/env-open" ]; then echo none; else echo "false true"; fi ;;
-            */environments/npm/deployment-branch-policies) echo "branch:prod" ;;
+            */environments/npm/deployment-branch-policies)
+                if [ -e "$S/env-branches" ]; then cat "$S/env-branches"; else echo "branch:$(release_branch)"; fi ;;
             *) echo "fake gh: unexpected: $*" >&2; exit 2 ;;
         esac ;;
     "run list")
         case "$(flag --workflow "$@")" in
             ci.yml)
                 sha="$(flag --commit "$@")"
-                if origin merge-base --is-ancestor "$sha" refs/heads/prod 2>/dev/null; then echo "201 $sha"; fi ;;
+                if origin merge-base --is-ancestor "$sha" "refs/heads/$(release_branch)" 2>/dev/null; then echo "201 $sha"; fi ;;
             publish-sdk.yml) cat "$S/publish-runs" 2>/dev/null || true ;;
             *) echo "fake gh: unexpected: $*" >&2; exit 2 ;;
         esac ;;
@@ -99,8 +109,9 @@ case "$1 $2" in
             *) echo "fake gh: unexpected: $*" >&2; exit 2 ;;
         esac ;;
     "workflow run")
+        b="$(release_branch)"
         case "$3 $*" in
-            "publish-sdk.yml "*" --ref prod -f dry_run=false -f sha="*)
+            "publish-sdk.yml "*" --ref $b -f dry_run=false -f sha="*)
                 for a in "$@"; do case "$a" in sha=*) sha="${a#sha=}" ;; esac; done
                 n=$(( $(cat "$S/publish-runs" 2>/dev/null | wc -l) + 401 ))
                 { printf '%s\tPublish SDK package %s\n' "$n" "$sha"; cat "$S/publish-runs" 2>/dev/null; } > "$S/publish-runs.new"
@@ -159,8 +170,9 @@ sdk_file() {
     printf '{\n  "name": "@empathic/clax-client-sdk",\n  "version": "%s",\n  "private": true\n}\n' "$1" \
         > "$C/repo/web/sdk/package.json"
 }
-# A fresh case: $C/repo on main, prod and main pushed to $C/origin.git at
-# "SDK 0.2.0" ($PROD0); npm has 0.1.0.
+# A fresh case: $C/repo on main, main and prod pushed to $C/origin.git at
+# "SDK 0.2.0" ($PROD0, and $MAIN0 the same), or main alone with the
+# argument no-prod; npm has 0.1.0.
 new_case() {
     C="$(mktemp -d "$T/case.XXXXXX")"
     mkdir -p "$C/state" "$C/repo/scripts/lib" "$C/repo/web/sdk"
@@ -183,11 +195,16 @@ new_case() {
     git -C "$r" -c commit.gpgsign=false commit -q -m "SDK 0.1.0"
     sdk_file 0.2.0
     git -C "$r" -c commit.gpgsign=false commit -q -am "SDK 0.2.0"
-    git -C "$r" branch prod
     git -C "$r" remote add origin "$C/origin.git"
-    git -C "$r" push -q origin main prod
+    if [ "${1:-}" = no-prod ]; then
+        git -C "$r" push -q origin main
+    else
+        git -C "$r" branch prod
+        git -C "$r" push -q origin main prod
+    fi
     git -C "$r" fetch -q origin
-    PROD0="$(git -C "$r" rev-parse prod)"
+    MAIN0="$(git -C "$r" rev-parse main)"
+    PROD0="$MAIN0"
 }
 
 # Runs release-sdk.sh from another directory; its output is in $C/out.
@@ -208,7 +225,8 @@ actions() { grep -E '^(gh workflow run|npm publish|pnpm)' "$FAKE_STATE/calls" 2>
 count() { grep -c -x -- "$1" "$FAKE_STATE/calls"; }
 has() { grep -F -- "$1" "$C/out" >/dev/null; }
 o() { git --git-dir="$C/origin.git" "$@"; }
-dispatch() { echo "gh workflow run publish-sdk.yml --ref prod -f dry_run=false -f sha=$1"; }
+# dispatch COMMIT [BRANCH]: step 4's dispatch of COMMIT on BRANCH (prod).
+dispatch() { echo "gh workflow run publish-sdk.yml --ref ${2:-prod} -f dry_run=false -f sha=$1"; }
 # Origin has a signed tag sdk-v0.2.0 "Clax SDK 0.2.0" on commit $1
 # (default: $PROD0), npm has 0.2.0, and no worktree is left.
 published() {
@@ -246,7 +264,8 @@ case_1() {
         && has "Dry run: nothing is changed" && has "ok: @empathic/clax-client-sdk 0.2.0 from $PROD0 on origin/prod" \
         && has "2. [todo] Tag the commit: git tag -s sdk-v0.2.0 -m \"Clax SDK 0.2.0\" $PROD0" \
         && has "3. [todo] Push the tag: git push origin refs/tags/sdk-v0.2.0" \
-        && has "4. [todo] Publish the SDK package: $(dispatch "$PROD0")" && has "starts at step 2"; then
+        && has "4. [todo] Publish the SDK package: $(dispatch "$PROD0")" && has "starts at step 2" \
+        && ! has "no prod branch"; then
         pass "a dry run checks, lists the steps and changes nothing"
     else fail "a dry run (rc=$rc: $(cat "$C/out"))"; fi
 }
@@ -384,6 +403,10 @@ case_10() {
         pass "a dry run warns of an npm environment open to any branch"
     else fail "a dry run with an open npm environment (rc=$rc: $(cat "$C/out"))"; fi
     refuse "an npm environment open to any branch" "the environment npm does not limit its deployment branches to prod"
+    # The npm environment still for main once origin has prod.
+    echo "branch:main" > "$FAKE_STATE/env-branches"
+    rm "$FAKE_STATE/env-open"
+    refuse "an npm environment for main once origin has prod" "the environment npm allows branch:main, not prod alone"
 }
 case_11() {
     # A tag of the version on a commit prod lacks.
@@ -447,10 +470,61 @@ case_14() {
         pass "a publish through the workflow ends the trusted-publisher reminders"
     else fail "the reminders after a publish through the workflow (rc=$rc: $(cat "$C/out"))"; fi
 }
+case_15() {
+    # Origin without prod: the package is published from main. A dry run
+    # passes, saying so; the first version is built from main's tip; a later
+    # one is dispatched on main.
+    new_case no-prod
+    : > "$FAKE_STATE/npm-absent"
+    release 0.2.0; rc=$?
+    if [ "$rc" = 0 ] && has "note: origin has no prod branch yet: publishing from main" \
+        && has "ok: @empathic/clax-client-sdk 0.2.0 from $MAIN0 on origin/main" \
+        && has "4. [todo] Publish the SDK package: $(dispatch "$MAIN0" main)" && ! has "FAIL" && ! has "WARN"; then
+        pass "with no prod on origin, a dry run passes, publishing from main"
+    else fail "a dry run with no prod on origin (rc=$rc: $(cat "$C/out"))"; fi
+    : > "$FAKE_STATE/calls"
+    act; rc=$?
+    if [ "$rc" = 0 ] && published "$MAIN0" && [ "$(count "npm publish at $MAIN0")" = 1 ] \
+        && [ "$(count "pnpm run build:sdk (in publish/web)")" = 1 ] \
+        && ! grep '^gh workflow run' "$FAKE_STATE/calls" >/dev/null; then
+        pass "with no prod on origin, the first version is built and published from main's commit"
+    else fail "a first publish with no prod on origin (rc=$rc: $(actions); $(cat "$C/out"))"; fi
+    sdk_file 0.3.0
+    git -C "$C/repo" -c commit.gpgsign=false commit -q -am "SDK 0.3.0"
+    git -C "$C/repo" push -q origin HEAD:main
+    main1="$(git -C "$C/repo" rev-parse HEAD)"
+    : > "$FAKE_STATE/calls"
+    act 0.3.0; rc=$?
+    if [ "$rc" = 0 ] && [ "$(count "$(dispatch "$main1" main)")" = 1 ] && has "Publish SDK package: run 401" \
+        && [ "$(o rev-parse -q --verify 'refs/tags/sdk-v0.3.0^{commit}')" = "$main1" ] \
+        && grep -x 0.3.0 "$FAKE_STATE/npm-versions" >/dev/null; then
+        pass "with no prod on origin, a later version is dispatched on main"
+    else fail "a publish through the workflow with no prod on origin (rc=$rc: $(actions); $(cat "$C/out"))"; fi
+}
+case_16() {
+    # Origin without prod: main's refusals.
+    new_case no-prod
+    git -C "$C/repo" -c commit.gpgsign=false commit -q --allow-empty -m "Not on main"
+    git -C "$C/repo" tag -s sdk-v0.2.0 -m "Clax SDK 0.2.0"
+    refuse "a tag of a commit main lacks, with no prod on origin" \
+        "the tag sdk-v0.2.0 tags $(git -C "$C/repo" rev-parse HEAD), which is not on origin/main"
+    new_case no-prod
+    refuse "a version main does not carry, with no prod on origin" \
+        "origin/main's tip ($MAIN0) carries SDK version 0.2.0, not 0.3.0 (the version in web/sdk/package.json): raise it on main by a pull request" \
+        0.3.0 --i-know-what-i-am-doing
+    if has "prod gets it"; then fail "the advice with no prod on origin names prod ($(cat "$C/out"))"; fi
+    # The npm environment for prod alone before origin has prod.
+    echo "branch:prod" > "$FAKE_STATE/env-branches"
+    release 0.2.0; rc=$?
+    if [ "$rc" = 0 ] && has "note: WARN: the environment npm allows branch:prod, not main alone"; then
+        pass "with no prod on origin, a dry run warns of an npm environment that allows prod alone"
+    else fail "a dry run with the npm environment for prod and no prod on origin (rc=$rc: $(cat "$C/out"))"; fi
+    refuse "an npm environment for prod alone, with no prod on origin" "the environment npm allows branch:prod, not main alone"
+}
 
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 [ "$JOBS" -le 8 ] || JOBS=8
-CASES="case_1 case_2 case_3 case_4 case_5 case_6 case_7 case_8 case_9 case_10 case_11 case_12 case_13 case_14"
+CASES="case_1 case_2 case_3 case_4 case_5 case_6 case_7 case_8 case_9 case_10 case_11 case_12 case_13 case_14 case_15 case_16"
 # A case's subshell exits 0 once its last check has run; one that dies on
 # the way exits otherwise, and fails the gate whatever it printed before.
 batch=""

@@ -1750,7 +1750,13 @@ has a version of its own, on a semver line of its own: the `version` in
 since the package only calls an instance's report-queue routes, and
 `scripts/bump-version.sh` and `scripts/check-version.sh` leave it alone. It
 is published from `prod`, so that a published SDK calls only routes the
-deployed instances have:
+deployed instances have. Until origin has a `prod` branch (`docs/prod.md`,
+"One-time GitHub setup", creates it), it is published from `main`
+instead: step 2 falls away, and the command says "origin has no prod
+branch yet: publishing from main". Each run decides from origin's
+branches, so once `prod` exists every run publishes from it, with no
+change to the command or the workflow. Below, the release branch is
+whichever of the two it publishes from:
 
 1. Raise `web/sdk/package.json`'s `version` on `main` by an ordinary pull request, with the
    changes it releases.
@@ -1760,29 +1766,31 @@ deployed instances have:
 
 ```
 just release-sdk 0.2.0                              # a dry run: the checks, and every step with whether it is done
-just release-sdk 0.2.0 --i-know-what-i-am-doing     # tag sdk-v0.2.0 on prod and publish
+just release-sdk 0.2.0 --i-know-what-i-am-doing     # tag sdk-v0.2.0 on the release branch and publish
 ```
 
 `just release-sdk` runs `scripts/release-sdk.sh`. The commit it publishes
-is the one its tag `sdk-v<version>` names once the tag exists, and
-`origin/prod`'s tip until then. Its preflight refuses to start, changing
-nothing, unless: `gh` is signed in and `git`, `gh` and `npm` are on `PATH`;
-the version is `X.Y.Z`, is the version that commit's `web/sdk/package.json` carries, and is
-newer than every version npm has of the package (none counts as older); a
-tag of the version, if there is one, is the same here and on origin and on
-`origin/prod`; CI's `bazel` job passed on the commit; commit signing works;
-the `npm` environment allows `prod` alone ("Releasing" above; a dry run
-only warns); and, while the package is not on npm, `npm whoami` succeeds
-and `pnpm` is on `PATH`. Then it signs the tag `sdk-v<version>`, "Clax SDK
-<version>", on the commit and pushes the tag alone (no workflow runs on
-it: the Release and fleet-image workflows take `v*` tags), and runs
+is the one its tag `sdk-v<version>` names once the tag exists, and the
+release branch's tip on origin until then. Its preflight refuses to start,
+changing nothing, unless: `gh` is signed in and `git`, `gh` and `npm` are
+on `PATH`; the version is `X.Y.Z`, is the version that commit's
+`web/sdk/package.json` carries, and is newer than every version npm has of
+the package (none counts as older); a tag of the version, if there is one,
+is the same here and on origin and on the release branch; CI's `bazel` job
+passed on the commit; commit signing works; the `npm` environment allows
+the release branch alone ("Releasing" above sets it up for `prod`; a dry
+run only warns); and, while the package is not on npm, `npm whoami`
+succeeds and `pnpm` is on `PATH`. Then it signs the tag `sdk-v<version>`,
+"Clax SDK <version>", on the commit and pushes the tag alone (no workflow
+runs on it: the Release and fleet-image workflows take `v*` tags), and runs
 `.github/workflows/publish-sdk.yml` from the commit (`gh workflow run
-publish-sdk.yml --ref prod -f dry_run=false -f sha=<commit>`), waiting for
-it and then for npm to list the version. The workflow's `build` job checks
-again that the commit is on `prod` with CI's `bazel` job passed, and that
-origin's tag `sdk-v<version>` names it (a run by hand publishes only a
-commit this command tagged), builds `web/dist-sdk` (`pnpm run
-build:sdk`), runs its test (`pnpm run test:sdk`), refuses a version npm
+publish-sdk.yml --ref <the release branch> -f dry_run=false -f
+sha=<commit>`), waiting for it and then for npm to list the version. The
+workflow's `build` job checks again that the commit is on the release
+branch (`prod` when origin has one, else `main`) with CI's `bazel` job
+passed, and that origin's tag `sdk-v<version>` names it (a run by hand
+publishes only a commit this command tagged), builds `web/dist-sdk` (`pnpm
+run build:sdk`), runs its test (`pnpm run test:sdk`), refuses a version npm
 has already and packs the tarball; its `publish` job, alone in the `npm`
 environment and alone able to request npm's token, publishes that tarball
 with provenance through npm trusted publishing, with a pinned npm and
@@ -1802,18 +1810,18 @@ repository `clax`, workflow `publish-sdk.yml`, environment `npm`; then
 Settings, Publishing access: Require two-factor authentication and
 disallow tokens, so that only the workflow can publish it.
 
-The dry run changes nothing (it fetches `prod`, which moves only
-`origin/prod`), and no run changes the checkout's branch or work tree. A
-step that fails stops the run; run the same command again: the tag, here
-and on origin, the workflow's runs (titled after their commit) and the
-versions npm has say what is done, so it resumes at the first step not
-done, waiting for a publish run still under way (or, for one that
+The dry run changes nothing (it fetches the release branch, which moves
+only its remote-tracking ref), and no run changes the checkout's branch or
+work tree. A step that fails stops the run; run the same command again: the
+tag, here and on origin, the workflow's runs (titled after their commit)
+and the versions npm has say what is done, so it resumes at the first step
+not done, waiting for a publish run still under way (or, for one that
 succeeded, for npm to list the version) or dispatching a failed one anew,
-from the tag's commit even once `prod` has moved on. A tag here that is
-not signed is refused (delete it, `git tag -d sdk-v<version>`, and run
-again). A version `prod` has moved past is published from the commit on
-`prod` that carries it, once you tag that commit by hand (`git tag -s
-sdk-v<version> -m "Clax SDK <version>" <commit>`). A version
+from the tag's commit even once the release branch has moved on. A tag here
+that is not signed is refused (delete it, `git tag -d sdk-v<version>`, and
+run again). A version the release branch has moved past is published from
+the commit on it that carries the version, once you tag that commit by hand
+(`git tag -s sdk-v<version> -m "Clax SDK <version>" <commit>`). A version
 npm has is refused, unless it is this command's own finished publish (npm
 has it and origin has its tag), which reports every step done.
 
@@ -1825,8 +1833,12 @@ here; resuming after a failed publish run (once `prod` has moved on) and
 after a wait that gave up; and the preflight's refusals of a version `prod`
 does not carry, a version npm has or one older than npm's, a first publish
 with npm signed out or without `pnpm`, a commit CI failed on, `gh` signed
-out, an `npm` environment open to any branch, and a tag of a commit `prod`
-lacks.
+out, an `npm` environment open to any branch or allowing `main` alone, and
+a tag of a commit `prod` lacks. With no `prod` on origin, it checks that a
+dry run passes, that the first version is built from `main`'s tip and a
+later one dispatched on `main`, and the refusals of a tag of a commit
+`main` lacks, a version `main` does not carry and an `npm` environment
+allowing `prod` alone.
 
 ### The crates.io package
 

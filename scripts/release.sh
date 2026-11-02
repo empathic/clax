@@ -548,7 +548,7 @@ check_npm_environment() {
     semver_ok "$V" || return 0
     command -v gh >/dev/null 2>&1 && [ -n "${GH_REPO:-}" ] || return 0
     if command -v "$NPM" >/dev/null 2>&1 && pi_has_version; then return 0; fi
-    why="$(npm_environment_problem "publish-pi.yml runs in it")"
+    why="$(npm_environment_problem "$PROD" "publish-pi.yml runs in it")"
     [ -n "$why" ] || return 0
     if [ "$ACT" = 1 ]; then problem "$why"; else NOTES+=("WARN: $why"); fi
 }
@@ -859,7 +859,7 @@ step_20() {
     local on
     on="$(pi_on_npm)" || { say "  cannot ask npm about $(pi_package)"; return 1; }
     if [ "$on" = no ]; then pi_first_publish; return; fi
-    publish_through publish-pi.yml "Publish Pi package" "$PIN_COMMIT"
+    publish_through publish-pi.yml "Publish Pi package" "$PIN_COMMIT" "$PROD"
     await_output pi_npm_version "$V" >/dev/null || { say "  npm does not list $(pi_package)@$V after the publish run"; return 1; }
 }
 
