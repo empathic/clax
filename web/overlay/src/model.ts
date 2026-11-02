@@ -167,6 +167,8 @@ export function problemOf(e: unknown, origin: string): QueueProblem | null {
       return p("The queue this page reports into was not found.", "Whoever runs this site has to point it at a queue that exists.");
     case "unsupported_browser":
       return p(failureText(e), null);
+    case "check_failed":
+      return p(`Clax could not check this page's queue: ${(e as { message?: unknown }).message}`, "Whoever runs this site has to fix how its page signs in to Clax.", { retry: true });
     default:
       return null;
   }

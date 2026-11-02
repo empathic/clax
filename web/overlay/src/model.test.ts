@@ -184,6 +184,7 @@ describe("queue problems", () => {
       expect(problemOf({ code }, O)?.fix).toMatch(/Whoever runs this site/);
     }
     expect(problemOf(new Error("too big"), O)).toBeNull();
+    expect(problemOf({ code: "check_failed", message: "auth failed" }, O)).toMatchObject({ text: "Clax could not check this page's queue: auth failed", retry: true });
     expect(problemOf({ code: "limit_reached" }, O)).toBeNull();
   });
 

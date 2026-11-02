@@ -6,8 +6,11 @@
   // report without one; the send waits for a clip still being taken.
   // "Your reports" opened over a draft hides the composer and keeps the
   // draft, which comes back when the panel closes. The composer or the
-  // panel, the notice and the launcher stack up from the bottom right corner,
-  // none over another; closing the composer gives focus back to Report.
+  // panel, the notices zone and the launcher stack up from the bottom right
+  // corner, none over another; closing the composer gives focus back to
+  // Report. Every notice, status and failure is said in the notices zone
+  // alone (a region and a polite live region), which is always there and
+  // always one size ("No notices" when empty), so none moves another part.
   // On mount it reads "Your reports" once (`check`), before anyone clicks:
   // a refusal of the queue or the instance (`problemOf`) shows as a polite
   // notice that takes no focus, says what is wrong and offers what fixes
@@ -72,7 +75,9 @@
       problem = null;
       return true;
     } catch (e) {
-      raise(e, prompted);
+      // A check that fails some other way (the page's `auth` threw, or the
+      // browser cannot sign) still says so.
+      raise(problemOf(e, origin) ? e : { code: "check_failed", message: failureText(e) }, prompted);
       return false;
     }
   }
@@ -226,6 +231,7 @@
 
   function toggleReports(): void {
     open = !open;
+    replyError = null;
     if (open) poll.start();
     else poll.stop();
   }
@@ -241,7 +247,16 @@
     if (reports) reports = reports.map(x => (x.id === r.id ? r : x));
   }
 
-  const status = $derived(draft ? clipStatus(draft.clip) : null);
+  const status = $derived(draft && !open ? clipStatus(draft.clip) : null);
+  /** Why the last reply on a report was not sent. */
+  let replyError = $state<string | null>(null);
+  /** The failures the zone says besides the problem, each once and not
+   * again when the problem says the same. */
+  const errors = $derived([
+    draft && !open && draft.error ? `Not sent: ${draft.error}` : null,
+    open && loadError && loadError !== problem?.text ? loadError : null,
+    open && replyError ? `Reply not sent: ${replyError}` : null,
+  ].filter((e): e is string => e !== null && e !== `Not sent: ${problem?.text}`));
 </script>
 
 <div class="cx">
@@ -261,15 +276,12 @@
           <img src={clipUrl} alt="Screenshot of the picked part of the page" />
           <figcaption class="small muted">Screenshot</figcaption>
         </figure>
-      {:else if status}
-        <p class="muted small" role="status">{status}</p>
       {/if}
       <textarea rows={3} aria-label="Report" placeholder="What should change here?" {@attach el => el.focus()} bind:value={draft.body}
         onkeydown={e => {
           if (e.key === "Escape") { e.preventDefault(); cancel(); }
           else if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); void send(); }
         }}></textarea>
-      {#if draft.error}<p class="error small" role="alert">Not sent: {draft.error}</p>{/if}
       <div class="actions">
         <button type="button" onclick={cancel}>Cancel</button>
         <button type="submit" class="primary" disabled={!canSend(draft)}>{draft.sending ? "Sending…" : "Send"}</button>
@@ -278,14 +290,26 @@
   {/if}
 
   {#if open}
-    <Reports reports={reports} error={loadError} {origin} onReply={reply} onClose={toggleReports} />
+    <Reports reports={reports} error={loadError} {origin} onReply={reply} onReplyError={t => { replyError = t; }} onClose={toggleReports} />
   {/if}
 
-  {#if problem}
-    <section class="problem" aria-label="Reporting problem">
-      <p role="status">{problem.text}</p>
-      {#if fixText}<p class="small">{fixText}</p>{/if}
-      {#if fixError}<p class="error small" role="alert">{fixError}</p>{/if}
+  <!-- The notices' own zone: always there and always this size, so no
+       notice moves the composer, the panel or the launcher. -->
+  <section class="zone" aria-label="Clax notices">
+    <div class="live" role="status">
+      {#if problem}
+        <div class="problem">
+          <p>{problem.text}</p>
+          {#if fixText}<p class="small">{fixText}</p>{/if}
+          {#if fixError}<p class="small error">{fixError}</p>{/if}
+        </div>
+      {/if}
+      {#each errors as e (e)}<p class="small error">{e}</p>{/each}
+      {#if status}<p class="small muted">{status}</p>{/if}
+      {#if notice}<p class="notice small">{notice}</p>{/if}
+      {#if !problem && errors.length === 0 && !status && !notice}<p class="none small muted">No notices</p>{/if}
+    </div>
+    {#if problem}
       <div class="actions">
         {#if canAllow && adminQueue}
           <button type="button" class="primary" disabled={fixing} onclick={() => void allow()}>{fixing ? "Allowing…" : `Let ${origin} report into ${adminQueue.name}`}</button>
@@ -293,10 +317,8 @@
         {#if problem.retry}<button type="button" onclick={() => void check(true)}>Try again</button>{/if}
         <button type="button" onclick={() => { problem = null; }}>Dismiss</button>
       </div>
-    </section>
-  {/if}
-
-  {#if notice}<p class="notice" role="status">{notice}</p>{/if}
+    {/if}
+  </section>
 
   <div class="launcher">
     <button type="button" class="reports-btn" aria-expanded={open} onclick={toggleReports}>Your reports</button>
@@ -323,12 +345,14 @@
   .clip { margin: 0 0 8px; padding: 4px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); background: var(--bg); }
   .clip img { display: block; max-width: 100%; min-height: 24px; max-height: 160px; object-fit: cover; object-position: left top; }
   .clip figcaption { margin-top: 2px; }
-  .composer > p[role="status"] { margin-bottom: 8px; }
   .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 8px; }
   .error { margin-top: 6px; color: var(--danger); }
-  .problem { flex: none; width: min(360px, calc(100vw - 32px)); padding: 10px 12px; background: var(--raised); border: 1px solid var(--border-hover); border-left: 3px solid var(--danger); border-radius: var(--radius-sm); box-shadow: var(--elev-lg); font-size: 13px; overflow-wrap: anywhere; }
-  .problem p { margin: 0 0 6px; }
-  .notice { flex: none; margin: 0; max-width: min(360px, calc(100vw - 32px)); padding: 8px 12px; background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius-sm); box-shadow: var(--elev-lg); font-size: 13px; }
+  /* A fixed size whatever it says: a longer notice scrolls inside it. */
+  .zone { flex: none; box-sizing: border-box; width: min(360px, calc(100vw - 32px)); height: 112px; overflow-y: auto; padding: 8px 12px; background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius-sm); box-shadow: var(--elev-lg); font-size: 13px; overflow-wrap: anywhere; }
+  .zone p { margin: 0 0 4px; }
+  .zone .problem { padding-left: 8px; border-left: 3px solid var(--danger); }
+  .zone .none { margin: 0; }
+  .zone .actions { justify-content: flex-start; flex-wrap: wrap; margin-top: 4px; }
   @media (max-width: 480px) {
     .composer { position: fixed; left: 0; right: 0; bottom: 0; width: auto; max-height: 70vh; border-width: 3px 0 0; border-radius: var(--radius) var(--radius) 0 0; z-index: 4; }
   }

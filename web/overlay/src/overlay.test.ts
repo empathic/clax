@@ -105,7 +105,7 @@ describe("the overlay", () => {
     await settle();
     expect(modes.at(-1)).toBe(false);
     expect(q(".composer .quote")?.textContent).toBe("«Total: $12»");
-    expect(q(".composer [role=status]")?.textContent).toMatch(/Taking the screenshot/);
+    expect(q(".zone [role=status]")?.textContent).toMatch(/Taking the screenshot/);
     rendered(new Uint8Array([137, 80, 78, 71]).buffer);
     await settle();
     expect(done).toBe(1);
@@ -161,7 +161,7 @@ describe("the overlay", () => {
     expect(filed.map(r => r.body)).toEqual(["Half written, now done"]);
   });
 
-  it("stacks the panel and the notice above the launcher, apart", async () => {
+  it("stacks the panel and the notices zone above the launcher, apart", async () => {
     click(button("Report"));
     onPick({ anchor, render: async () => new ArrayBuffer(0) });
     await settle();
@@ -171,14 +171,15 @@ describe("the overlay", () => {
     click(button("Your reports"));
     await settle();
     const dock = [...q(".dock")!.children].map(c => c.className.split(" ")[0]);
-    expect(dock).toEqual(["panel", "notice", "launcher"]);
+    expect(dock).toEqual(["panel", "zone", "launcher"]);
+    expect(q(".zone .notice")?.textContent).toMatch(/Report sent/);
   });
 
   it("sends without a clip when the clip cannot be drawn", async () => {
     click(button("Report"));
     onPick({ anchor, render: () => Promise.reject(new Error("a cross-origin image")) });
     await settle();
-    expect(q(".composer [role=status]")?.textContent).toMatch(/No screenshot: a cross-origin image/);
+    expect(q(".zone [role=status]")?.textContent).toMatch(/No screenshot: a cross-origin image/);
     type("Broken");
     click(button("Send"));
     await settle();
@@ -212,7 +213,7 @@ describe("the overlay", () => {
     type("Keep me");
     click(button("Send"));
     await settle();
-    expect(q("[role=alert]")?.textContent).toMatch(/Not sent: Clax could not be reached/);
+    expect(q(".zone [role=status]")?.textContent).toMatch(/Not sent: Clax could not be reached/);
     expect(q<HTMLTextAreaElement>(".composer textarea")?.value).toBe("Keep me");
     expect(button("Send")?.disabled).toBe(false);
   });
@@ -329,9 +330,9 @@ describe("the queue check", () => {
     const before = document.activeElement;
     overlayWith([refused("wrong_origin")]);
     await settle();
-    expect(q(".problem [role=status]")?.textContent).toBe(`This page (${location.origin}) may not report into this queue.`);
+    expect(q(".zone [role=status] .problem p")?.textContent).toBe(`This page (${location.origin}) may not report into this queue.`);
     expect(problem()?.textContent).toMatch(/The owner of this Clax has been told/);
-    expect(problem()?.querySelector("[role=alert]")).toBeNull();
+    expect(view.root.querySelector("[role=alert]")).toBeNull();
     expect(document.activeElement).toBe(before);
     expect(button(`Let ${location.origin} report into Shop`)).toBeUndefined();
     click(button("Dismiss"));
@@ -360,13 +361,13 @@ describe("the queue check", () => {
     overlayWith([refused("wrong_origin")], admin);
     await settle();
     expect(problem()?.textContent).toMatch(/Shop lists .* already, so this page's reporter token was made for another origin/);
-    expect([...problem()!.querySelectorAll("button")].map(b => b.textContent?.trim())).toEqual(["Dismiss"]);
+    expect([...view.root.querySelectorAll(".zone .actions button")].map(b => b.textContent?.trim())).toEqual(["Dismiss"]);
   });
 
   it("offers Try again when Clax could not be reached, and says each other refusal with who fixes it", async () => {
     overlayWith([refused("network"), { reports: [], next: null }]);
     await settle();
-    expect(q(".problem [role=status]")?.textContent).toMatch(/could not be reached/);
+    expect(problem()?.textContent).toMatch(/could not be reached/);
     click(button("Try again"));
     await settle();
     expect(problem()).toBeNull();
@@ -384,7 +385,7 @@ describe("the queue check", () => {
     click(button("Dismiss"));
     click(button("Your reports"));
     await settle();
-    expect(q(".panel [role=alert]")?.textContent).toMatch(/may not report/);
+    expect(q(".zone [role=status]")?.textContent).toMatch(/may not report/);
     expect(problem()).toBeNull();
     click(button("Your reports"));
     click(button("Report"));
@@ -393,7 +394,39 @@ describe("the queue check", () => {
     type("Wrong total");
     click(button("Send"));
     await settle();
-    expect(q(".composer [role=alert]")?.textContent).toBe(`Not sent: This page (${location.origin}) may not report into this queue.`);
-    expect(problem()).not.toBeNull();
+    // The problem says it, and the send's own failure is not said twice.
+    expect(problem()?.textContent).toMatch(`This page (${location.origin}) may not report into this queue.`);
+    expect(q(".zone [role=status]")?.textContent).not.toMatch(/Not sent/);
+    expect(q<HTMLTextAreaElement>(".composer textarea")?.value).toBe("Wrong total");
+  });
+});
+
+describe("the notices zone", () => {
+  it("is always there, a region with a polite live region, saying No notices when empty", async () => {
+    const zone = q(".zone")!;
+    expect(zone.tagName).toBe("SECTION");
+    expect(zone.getAttribute("aria-label")).toBe("Clax notices");
+    expect(zone.querySelector("[role=status]")?.textContent?.trim()).toBe("No notices");
+    click(button("Report"));
+    onPick({ anchor, render: async () => new ArrayBuffer(0) });
+    await settle();
+    type("Too wide");
+    click(button("Send"));
+    await settle();
+    // The same element says the notice, in the same place in the dock.
+    expect(q(".zone")).toBe(zone);
+    expect(zone.textContent).toMatch(/Report sent/);
+    expect([...q(".dock")!.children].map(e => e.className.split(" ")[0])).toEqual(["zone", "launcher"]);
+  });
+});
+
+describe("the queue check's other failures", () => {
+  it("says a check that failed some other way, such as the page's auth throwing", async () => {
+    view.unmount();
+    const client: ReporterApi = { fileReport: async () => report("t", []), myReports: async () => { throw new Error("auth failed"); }, comment: async () => report("t", []) };
+    view = mount(Overlay as never, { client, doc: document, host, picker: () => ({ set: () => {}, done: () => {}, destroy: () => {} }), timers }, host);
+    await settle();
+    expect(q(".zone .problem")?.textContent).toMatch(/Clax could not check this page's queue: auth failed/);
+    expect(button("Try again")).toBeDefined();
   });
 });
