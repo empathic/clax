@@ -1,27 +1,33 @@
 name: Publish SDK package
 
 # Publishes web/dist-sdk to npm as @empathic/clax-client-sdk (built by
-# web/scripts/build-sdk.mjs at the package's own version, the
-# version in web/sdk/package.json), run by hand (Actions, Publish SDK package, Run
-# workflow) or by scripts/release-sdk.sh, `just release-sdk`
-# (docs/usage.md, "Releasing the SDK package"). It publishes from the
-# commit `sha` names (by default the tip of the ref it runs on), which must
-# be on prod, where Clax releases go, with CI passed on it: a published SDK
-# then calls only the report-queue routes that deployed instances have. It
-# builds the package and runs its test (pnpm run build:sdk, test:sdk), and
-# refuses a version npm already has. With `dry_run` it does everything but
-# publish. The run is titled "Publish SDK package <sha>", or "Publish SDK
-# package (dry run) <sha>", so a caller can find it.
+# web/scripts/build-sdk.mjs at the package's own version, the version in
+# web/sdk/package.json). scripts/release-sdk.sh, `just release-sdk`
+# (docs/usage.md, "Releasing the SDK package"), dispatches it once it has
+# pushed the tag sdk-vX.Y.Z; a run by hand (Actions, Publish SDK package,
+# Run workflow) publishes only a commit that tag names, and a dry run
+# needs no tag. It publishes from the commit `sha` names (by default the
+# tip of the ref it runs on), which must be on prod, where Clax releases
+# go, with CI passed on it: a published SDK then calls only the
+# report-queue routes that deployed instances have. It builds the package
+# and runs its test (pnpm run build:sdk, test:sdk), and refuses a version
+# npm already has. With `dry_run` it does everything but publish. The run
+# is titled "Publish SDK package <sha>", or "Publish SDK package (dry run)
+# <sha>", so a caller can find it.
 #
 # It publishes through npm trusted publishing (OIDC, no token) with
 # provenance, as publish-pi.yml does, so the package on npmjs.com must name
 # this repository, this workflow and the environment `npm` as its trusted
-# publisher. The job runs in that environment, whose deployment branches the
-# repository's settings limit to prod, so npm refuses a token from a run
-# dispatched on any other ref. npm offers trusted publishing only for a
-# package that exists, so the first version is not published here:
-# scripts/release-sdk.sh publishes it from the releaser's machine (built in
-# a worktree of the commit on prod) and prints that setup.
+# publisher. Only the `publish` job runs in that environment, whose
+# deployment branches the repository's settings limit to prod, so npm
+# refuses a token from a run dispatched on any other ref; and only it may
+# request the token, so no build or test code (the web workspace's
+# dependencies) runs where the token can be had: the `build` job packs the
+# tarball, and `publish` runs nothing but a pinned npm on it. npm offers
+# trusted publishing only for a package that exists, so the first version
+# is not published here: scripts/release-sdk.sh publishes it from the
+# releaser's machine (built in a worktree of the commit on prod) and
+# prints that setup.
 on:
   workflow_dispatch:
     inputs:
@@ -46,16 +52,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Publish @empathic/clax-client-sdk
-    # GitHub's runner, not Blacksmith's: npm's trusted publishing and its
-    # provenance accept only GitHub-hosted runners.
+  build:
+    name: Build and pack @empathic/clax-client-sdk
     runs-on: ubuntu-24.04
-    environment: npm
     permissions:
       contents: read
       actions: read
-      id-token: write
     defaults:
       run:
         working-directory: web
@@ -64,12 +66,13 @@ jobs:
         with:
           ref: ${{ inputs.sha || github.sha }}
           fetch-depth: 0
-      - name: Check the commit is on prod and CI passed on it
+      - name: Check the commit is on prod, carries its tag, and CI passed on it
         working-directory: .
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ inputs.sha || github.sha }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           sha="$(git rev-parse --verify "$SHA^{commit}")"
@@ -77,6 +80,22 @@ jobs:
           if ! git merge-base --is-ancestor "$sha" FETCH_HEAD; then
             echo "$sha is not on prod: the SDK package is published from a commit on prod" >&2
             exit 1
+          fi
+          # A publish is of the commit `just release-sdk` tagged: the tag
+          # names what was published, and the command can finish the
+          # release afterwards.
+          if [ "$DRY_RUN" != true ]; then
+            version="$(jq -r .version web/sdk/package.json)"
+            tag="sdk-v$version"
+            if ! git fetch --quiet --no-tags origin "refs/tags/$tag"; then
+              echo "origin has no tag $tag: publish $version with just release-sdk $version, which tags $sha first" >&2
+              exit 1
+            fi
+            tagged="$(git rev-parse --verify "FETCH_HEAD^{commit}")"
+            if [ "$tagged" != "$sha" ]; then
+              echo "the tag $tag names $tagged, not $sha: publish the commit the tag names" >&2
+              exit 1
+            fi
           fi
           # The gate is ci.yml's bazel job (which runs //web:sdk_package):
           # the run's own conclusion also counts perf-log, which is
@@ -100,10 +119,6 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
-          registry-url: https://registry.npmjs.org
-      # Trusted publishing needs npm 11.5.1 or later; Node 22 ships npm 10.
-      - name: Install npm 11
-        run: npm install -g npm@11
       - name: Build and test
         run: |
           pnpm install --frozen-lockfile
@@ -120,8 +135,46 @@ jobs:
           fi
       - name: Pack
         working-directory: web/dist-sdk
-        run: npm pack --dry-run
+        run: |
+          mkdir -p "$RUNNER_TEMP/sdk-package"
+          npm pack --pack-destination "$RUNNER_TEMP/sdk-package"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sdk-package
+          path: ${{ runner.temp }}/sdk-package/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish @empathic/clax-client-sdk
+    needs: build
+    if: ${{ !inputs.dry_run }}
+    # GitHub's runner, not Blacksmith's: npm's trusted publishing and its
+    # provenance accept only GitHub-hosted runners.
+    runs-on: ubuntu-24.04
+    environment: npm
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sdk-package
+          path: sdk-package
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm 11.5.1 or later; Node 22 ships npm 10.
+      # An exact version: nothing unpinned runs where the token can be had.
+      - name: Install npm
+        run: npm install -g npm@11.6.2
       - name: Publish
-        if: ${{ !inputs.dry_run }}
-        working-directory: web/dist-sdk
-        run: npm publish --provenance --access public
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarballs=(sdk-package/*.tgz)
+          if [ "${#tarballs[@]}" != 1 ]; then
+            echo "expected one tarball, found: ${tarballs[*]}" >&2
+            exit 1
+          fi
+          npm publish "${tarballs[0]}" --provenance --access public
