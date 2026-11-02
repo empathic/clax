@@ -899,7 +899,10 @@ async fn a_cold_browser_gets_the_open_from_your_terminal_page() {
             "{path}"
         );
         let page = res.text().await.unwrap();
-        assert!(page.contains("Open Clax through your agent or terminal"), "{path}");
+        assert!(
+            page.contains("Open Clax through your agent or terminal"),
+            "{path}"
+        );
         assert!(
             page.contains("<code>clax open</code>") && page.contains("<code>clax login</code>")
         );
