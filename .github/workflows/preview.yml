@@ -46,8 +46,25 @@ jobs:
       OAUTH_CLIENT_ID: ${{ vars.OAUTH_CLIENT_ID }}
       OWNER_GITHUB: ${{ vars.OWNER_GITHUB }}
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      CLAX_DEPLOY_HOME: ${{ runner.temp }}/clax-deploy
     steps:
+      # Before anything is installed: every setting the preview environment
+      # needs (scripts/setup-env-github.sh --env preview, docs/environments.md).
+      - name: Check the preview environment is set up
+        env:
+          HAVE_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+          HAVE_OAUTH_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET != '' }}
+        run: |
+          missing=""
+          for v in PREVIEW_HOST_ZONE PREVIEW_SITE_ZONE OAUTH_CLIENT_ID OWNER_GITHUB CLOUDFLARE_ACCOUNT_ID; do
+            [ -n "${!v}" ] || missing="$missing variable:$v"
+          done
+          [ "$HAVE_TOKEN" = true ] || missing="$missing secret:CLOUDFLARE_API_TOKEN"
+          [ "$HAVE_OAUTH_SECRET" = true ] || missing="$missing secret:OAUTH_CLIENT_SECRET"
+          if [ -n "$missing" ]; then
+            echo "::error::the preview environment is not set up; missing:$missing (docs/environments.md, \"Previews\")"
+            exit 1
+          fi
+
       # The pull request's head commit, not the merge commit GitHub makes
       # for the run, so /healthz names a commit someone pushed.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -62,7 +79,11 @@ jobs:
       - name: Install clang, lld and llvm
         run: sudo apt-get update -q && sudo apt-get install -y -q clang lld llvm
 
+      # The deploy record stays in the runner's temporary directory (the
+      # runner context is a step's, not a job's env).
       - name: Build (scripts/cloudflare-setup.sh --env pr-<N> --ci, a dry run; no secrets)
+        env:
+          CLAX_DEPLOY_HOME: ${{ runner.temp }}/clax-deploy
         run: |
           set -euo pipefail
           scripts/cloudflare-setup.sh --env "$NAME" --legal bundled \
@@ -93,6 +114,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
+          CLAX_DEPLOY_HOME: ${{ runner.temp }}/clax-deploy
         run: |
           set -euo pipefail
           scripts/cloudflare-setup.sh --env "$NAME" --legal bundled \
