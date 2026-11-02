@@ -314,7 +314,7 @@ SH
 # ($MAIN0).
 new_case() {
     C="$(mktemp -d "$T/case.XXXXXX")"
-    mkdir -p "$C/state" "$C/repo/scripts/lib" "$C/repo/bazel" "$C/repo/plugins/pi/scripts"
+    mkdir -p "$C/state" "$C/repo/scripts/lib" "$C/repo/bazel" "$C/repo/plugins/pi/scripts" "$C/repo/web/sdk"
     export FAKE_STATE="$C/state" FAKE_REMOTE="$C/origin.git" FAKE_OUT="$C/out" CLAX_RELEASE_NOW_FILE="$C/now"
     echo 1000000 > "$C/now"
     git init -q --bare -b main "$C/origin.git"
@@ -333,6 +333,7 @@ new_case() {
     printf 'CLAX_VERSION="0.5.0"\nPINNED_VERSION="0.5.0"\n' > "$r/scripts/ensure-clax.sh"
     printf 'CLAX_VERSION="0.5.0"\nPINNED_VERSION="0.5.0"\n' > "$r/plugins/pi/scripts/ensure-clax.sh"
     printf '{\n  "name": "@empathic/clax-pi",\n  "version": "0.5.0",\n  "type": "module"\n}\n' > "$r/plugins/pi/package.json"
+    printf '{\n  "name": "@empathic/clax-client-sdk",\n  "version": "0.1.0",\n  "private": true\n}\n' > "$r/web/sdk/package.json"
     echo "version = 0.5.0" > "$r/bazel/workspace.bzl"
     echo "version = 0.5.0" > "$r/MODULE.bazel.lock"
     cat > "$r/scripts/check-version.sh" <<'SH'
@@ -578,7 +579,9 @@ case_2() {
     if [ "$rc" = 0 ] && [ "$got" = "$want" ] && released && has "[100%] Clax 0.6.0 is released." \
         && logs "Release v0.6.0: in_progress" && has "ok: cutting 0.6.0 on prod at origin/prod" \
         && has "check that clax.dev deployed: each push to prod deploys it from GitHub Actions" \
-        && has "gh run list --workflow deploy-prod.yml --repo empathic/clax-test" && ! has "clax-dev-deploy"; then
+        && has "gh run list --workflow deploy-prod.yml --repo empathic/clax-test" && ! has "clax-dev-deploy" \
+        && has "publish the SDK package @empathic/clax-client-sdk 0.1.0, which prod now carries and npm lacks:" \
+        && has "just release-sdk 0.1.0 (docs/usage.md, \"Releasing the SDK package\")"; then
         pass "once merged, a run on prod tags, waits, pins, pushes prod, carries both commits to main and publishes, in order"
     else fail "the cut, in order (rc=$rc; calls: $got; $(cat "$C/out"))"; fi
     # Steps 2-10 (530s of 2390s) count in full.
@@ -588,10 +591,13 @@ case_2() {
         pass "the run on prod shows the preparation done and one line per step"
     else fail "the run on prod's terminal output ($(cat "$C/out"))"; fi
 
+    # npm has the SDK version prod carries: nothing left to publish.
+    echo 0.1.0 >> "$FAKE_STATE/npm-versions"
     : > "$FAKE_STATE/calls"
     before="$(snapshot)"
     act; rc=$?
-    if [ "$rc" = 0 ] && [ -z "$(actions)" ] && [ "$before" = "$(snapshot)" ] && has "step 20/21 Publish the Pi package: done already"; then
+    if [ "$rc" = 0 ] && [ -z "$(actions)" ] && [ "$before" = "$(snapshot)" ] && has "step 20/21 Publish the Pi package: done already" \
+        && has "Left by hand:" && ! has "release-sdk"; then
         pass "a run after a finished release does nothing again"
     else fail "a run after a finished release does nothing again (rc=$rc: $(actions); $(cat "$C/out"))"; fi
 }

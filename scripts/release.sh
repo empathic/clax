@@ -911,6 +911,19 @@ pi_publish_from() {
 }
 # Prints version $1 once npm lists it.
 pi_npm_version() { if pi_has_version "$1"; then echo "$1"; fi; }
+# The SDK package has a version line of its own, which a release brings to
+# prod and scripts/release-sdk.sh publishes from there: says to publish
+# the version prod's web/sdk/package.json carries while npm lacks it.
+sdk_left_by_hand() {
+    local manifest name version
+    manifest="$(g show "refs/remotes/origin/$PROD:web/sdk/package.json" 2>/dev/null)" || return 0
+    name="$(sed -n 's/^  "name": "\(.*\)",$/\1/p' <<< "$manifest")"
+    version="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' <<< "$manifest")"
+    [ -n "$name" ] && [ -n "$version" ] || return 0
+    has_version "$name" "$version" && return 0
+    tell "  - publish the SDK package $name $version, which $PROD now carries and npm lacks:"
+    tell "    just release-sdk $version (docs/usage.md, \"Releasing the SDK package\")"
+}
 step_21() {
     tell "Left by hand:"
     tell "  - check that clax.dev deployed: each push to $PROD deploys it from GitHub Actions (the"
@@ -922,6 +935,7 @@ step_21() {
         tell "  - switch README.md and plugins/pi/README.md to lead their Pi install with"
         tell "    \`pi install npm:$(pi_package)\`"
     fi
+    sdk_left_by_hand
     tell "  - crates.io is not published by this script (docs/usage.md, \"The crates.io package\")"
     tell "  - the release: https://github.com/${GH_REPO:-empathic/clax}/releases/tag/$TAG"
 }
