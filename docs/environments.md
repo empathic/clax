@@ -115,13 +115,18 @@ A Cloudflare API token's Workers permissions are account-wide: one that
 can deploy `clax-pr-12` can also replace `clax`. A preview's run executes
 the pull request's own scripts with the `preview` environment's token, so
 anyone who can push a branch to this repository can use that token.
-Therefore:
 
-- **Put previews (and dev) on a Cloudflare account of their own**, with
-  their zones on it, so neither token can reach clax.dev. Each environment
-  names its account in its `CLOUDFLARE_ACCOUNT_ID` variable.
-- Give each environment its own token, limited to that account and to its
-  zones:
+**dev and the previews share clax.dev's Cloudflare account, for now.** So
+the dev and preview tokens can reach prod's Worker `clax`, its Durable
+Objects and its bucket `clax-assets`: a branch pushed to this repository
+can replace or delete them through its preview's run. Pull requests from
+forks get no preview, so no token reaches them. Moving dev and the
+previews to an account of their own takes that reach away: each
+environment names its account in its `CLOUDFLARE_ACCOUNT_ID` variable, so
+the move is new tokens, zones and variables, and no code change.
+
+Give each environment its own token, limited to the account and to its
+zones (never clax.dev's or clax.run's):
 
 | Scope | Permission | dev | preview |
 |---|---|---|---|
