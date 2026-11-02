@@ -38,6 +38,13 @@ const handle = overlay({
 handle.close();
 ```
 
+The same entry exports `forgetReporter({ instance, queue, user })`, which
+deletes the key and token kept for a reporter (call it on sign-out),
+`diagnostics.install()`, which starts recording the page's recent errors
+before the overlay does (nothing leaves the page unless the reporter ticks
+"Include recent errors"), and `CONTEXT_TIMEOUT_MS`, how long a report waits for the `context` option's
+answer before filing without it.
+
 ## The reporter client
 
 ```ts
