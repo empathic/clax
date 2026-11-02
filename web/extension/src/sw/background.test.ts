@@ -5,7 +5,7 @@
 // is enabled only for the tabs Clax is on.
 import { beforeEach, describe, expect, it } from "vitest";
 import { fakeChrome, type FakeChrome } from "../../test/fake-chrome";
-import { panelPath, startBackground } from "./background";
+import { isPanelSender, panelPath, startBackground } from "./background";
 
 const ORIGIN = "http://localhost:5173";
 const URL1 = `${ORIGIN}/`;
@@ -395,5 +395,26 @@ describe("Clax on per tab", () => {
     expect([...c.menus]).toEqual(["clax-comment"]);
     expect(c.calls.filter(x => x.api === "contextMenus.create")).toHaveLength(2);
     expect(c.menuErrors).toEqual([]);
+  });
+});
+
+describe("the panel pages' ports", () => {
+  const ID = "test-extension";
+  const from = (path: string, over: Partial<chrome.runtime.MessageSender> = {}) =>
+    ({ id: ID, url: `chrome-extension://${ID}/${path}`, ...over }) as chrome.runtime.MessageSender;
+
+  it("admits the side panel and the DevTools panel, neither of which lives in a tab", () => {
+    expect(isPanelSender(from("sidepanel.html?tab=3"), ID)).toBe(true);
+    expect(isPanelSender(from("devtools-panel.html"), ID)).toBe(true);
+  });
+
+  it("lets go of a panel page opened in a tab or a popup window, another extension's page, and any other page", () => {
+    expect(isPanelSender(from("devtools-panel.html", { tab: tab(4) }), ID)).toBe(false);
+    expect(isPanelSender(from("sidepanel.html", { tab: tab(4) }), ID)).toBe(false);
+    expect(isPanelSender(from("devtools-panel.html", { id: "other" }), ID)).toBe(false);
+    expect(isPanelSender(from("devtools.html"), ID)).toBe(false);
+    expect(isPanelSender(from("composer.html"), ID)).toBe(false);
+    expect(isPanelSender({ id: ID } as chrome.runtime.MessageSender, ID)).toBe(false);
+    expect(isPanelSender(undefined, ID)).toBe(false);
   });
 });

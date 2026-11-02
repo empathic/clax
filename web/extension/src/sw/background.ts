@@ -28,6 +28,20 @@ import { composerFrameTab, composerTab, createWorker } from "./worker";
 export const PANEL_PATH = "sidepanel.html";
 /** Each on tab's panel: the page pinned to its tab (`?tab=`), so it acts on that tab wherever the tab goes. */
 export const panelPath = (tabId: number) => `${PANEL_PATH}?tab=${tabId}`;
+/** The DevTools panel's page (RECOMMEND-consultant-2026-11-02-clax-extension-devtools
+ * Q1), which `devtools.html` registers in each DevTools window; it shows
+ * the inspected tab, as the side panel shows its own. */
+export const DEVTOOLS_PANEL_PATH = "devtools-panel.html";
+/** Whether a port's sender is one of the extension's own panel pages (the
+ * side panel or the DevTools panel): the extension's ID, the page's path,
+ * and no tab. Neither page lives in a tab; one that does (the page opened
+ * as a tab, or in a popup window) is let go. */
+export function isPanelSender(s: chrome.runtime.MessageSender | undefined, runtimeId: string): boolean {
+  if (s?.id !== runtimeId || s.tab !== undefined) return false;
+  let page = "";
+  try { page = s.url ? new URL(s.url).pathname : ""; } catch { /* no page */ }
+  return page === `/${PANEL_PATH}` || page === `/${DEVTOOLS_PANEL_PATH}`;
+}
 /** The worker's answer to an overlay message it does not admit: the overlay stops. */
 export const REFUSED = { off: true } as const;
 
@@ -240,9 +254,7 @@ export function startBackground(c: typeof chrome) {
   c.runtime.onConnect.addListener(port => {
     const s = port.sender;
     if (s?.id !== c.runtime.id) { port.disconnect(); return; }
-    let page = "";
-    try { page = s.url ? new URL(s.url).pathname : ""; } catch { /* no page */ }
-    if (port.name.startsWith("panel:") && page === `/${PANEL_PATH}` && s.tab === undefined) {
+    if (port.name.startsWith("panel:") && isPanelSender(s, c.runtime.id)) {
       const kept = tabs.attachPanel(port, (tabId, m) => {
         if (!isFromPanel(m)) return;
         void panelAction(panelDeps, tabId, m, r => { try { port.postMessage(r); } catch { /* the panel closed */ } })

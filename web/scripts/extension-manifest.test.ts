@@ -37,6 +37,16 @@ describe("extensionManifest", () => {
     expect(extensionManifest(web, { test: true }).key).toBe("MIIBIjANBgkq");
   });
 
+  it("ships the committed manifest's six permissions, no optional API permission, and the DevTools page", () => {
+    // vitest runs in web/, as toolpath-schema.test.ts relies on.
+    const m = extensionManifest(`${process.cwd()}/`, { test: false });
+    expect(m.permissions).toEqual(["activeTab", "scripting", "sidePanel", "storage", "nativeMessaging", "contextMenus"]);
+    expect(m).not.toHaveProperty("optional_permissions");
+    expect(m.optional_host_permissions).toEqual(["http://*/*", "https://*/*"]);
+    // The DevTools panel needs no permission: `chrome.devtools.*` comes with the key.
+    expect(m.devtools_page).toBe("devtools.html");
+  });
+
   it("ignores an empty key file, as the daemon does", () => {
     expect(extensionManifest(scratch(" \n"), { test: false })).not.toHaveProperty("key");
   });
