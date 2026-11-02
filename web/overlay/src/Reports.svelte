@@ -16,13 +16,18 @@
     onVerify(id: string): Promise<void>;
     onStillBroken(r: Report): void;
     onClose(): void;
+    /** Only these reports (this page's), with "Show all" back to every one. */
+    only?: string[] | null;
+    onShowAll?(): void;
   };
-  let { reports, error, expanded, onExpand, onReply, onVerify, onStillBroken, onClose }: Props = $props();
+  let { reports: all, error, expanded, only = null, onShowAll, onExpand, onReply, onVerify, onStillBroken, onClose }: Props = $props();
+  const reports = $derived(all && only ? all.filter(r => only.includes(r.id)) : all);
 </script>
 
 <section class="panel" aria-label="Your reports">
   <header>
-    <h2>Your reports</h2>
+    <h2>{only ? "Yours on this page" : "Your reports"}</h2>
+    {#if only && onShowAll}<button type="button" class="ghost small" onclick={onShowAll}>Show all</button>{/if}
     <button type="button" class="ghost" onclick={onClose} aria-label="Close your reports">✕</button>
   </header>
   {#if error}<p class="error small" role="alert">{error}</p>{/if}

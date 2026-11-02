@@ -146,6 +146,51 @@ describe("presentations", () => {
     expect(q("[aria-modal]")).toBeNull();
   });
 
+  it("dialog: Your reports in the header after Close, and '2 of yours on this page' opening just those, the draft kept", async () => {
+    const here = new URL(location.href);
+    const at = (id: string, url: string) => ({ id, artifact: { external_id: "x", url: "" }, context: { v: 1, captured_at: "", environment: { url } }, comments: [], state: "open", status: "open" }) as unknown as Report;
+    const mine = [at("a", `${here.origin}${here.pathname}?tab=`), at("b", `${here.origin}${here.pathname}`), at("c", `${here.origin}/elsewhere`)];
+    const c = client();
+    c.myReports = async () => ({ reports: mine, next: null });
+    start(classic(), { presentation: "dialog", client: c });
+    click(button("Report"));
+    onPick(pickOf());
+    await settle();
+    const head = q(".frame .head")!;
+    expect([...head.querySelectorAll("button")].map(b => b.textContent)).toEqual(["Close · Esc", "Your reports"]);
+    const zone = q(".frame .yours")!;
+    expect(zone.textContent).toBe("2 of yours on this page");
+    type("half written");
+    click(button("2 of yours on this page"));
+    await settle();
+    expect(q(".composer")).toBeNull();
+    expect(q(".panel h2")?.textContent).toBe("Yours on this page");
+    expect(view.root.querySelectorAll(".panel li")).toHaveLength(2);
+    click(button("Show all"));
+    expect(view.root.querySelectorAll(".panel li")).toHaveLength(3);
+    click(q('[aria-label="Close your reports"]'));
+    expect(q<HTMLTextAreaElement>(".composer textarea")?.value).toBe("half written");
+    click(button("Your reports"));
+    await settle();
+    expect(q(".panel h2")?.textContent).toBe("Your reports");
+  });
+
+  it("dialog: no count when none of the reporter's reports is on this page; by artifact when the page names one", async () => {
+    const c = client();
+    c.myReports = async () => ({ reports: [{ id: "a", artifact: { external_id: "cart" }, comments: [], state: "open" } as unknown as Report], next: null });
+    start(classic(), { presentation: "dialog", client: c, externalId: "checkout" });
+    click(button("Report"));
+    onPick(pickOf());
+    await settle();
+    expect(q(".frame .yours")?.textContent).toBe("");
+    view.unmount();
+    start(classic(), { presentation: "dialog", client: c, externalId: "cart" });
+    click(button("Report"));
+    onPick(pickOf());
+    await settle();
+    expect(q(".frame .yours")?.textContent).toBe("1 of yours on this page");
+  });
+
   it("dialog: Tab wraps within it, and Escape anywhere in it closes it", async () => {
     start(classic(), { presentation: "dialog" });
     click(button("Report"));

@@ -114,6 +114,7 @@
     rawCapture = null;
     attachRows = [];
     if (attachments.length) void plugins.attach(attachments.map(a => a.id), doc).then(r => { attachRows = r.rows; });
+    loadOnPage();
   }
 
   /** The mode bar, while it is open: the mode on (none yet for a reopen's note). */
@@ -601,7 +602,42 @@
   }
   function closeReports(): void {
     open = false;
+    pageOnly = false;
     poll.stop();
+  }
+
+  // ---- Yours on this page (the framed composer's header) ----
+
+  /** The reporter's reports on this page, by ID; null until read. */
+  let onPage = $state<string[] | null>(null);
+  /** "Your reports" opened on this page's alone. */
+  let pageOnly = $state(false);
+
+  /** Whether `r` was filed on this page: the same artifact when the page
+   * names one, else the same address (origin and path) at capture. */
+  function onThisPage(r: Report): boolean {
+    if (externalId !== undefined) return r.artifact?.external_id === externalId;
+    const at = r.context?.environment?.url;
+    if (!at) return false;
+    try {
+      const a = new URL(at), here = new URL(pageUrl(doc));
+      return a.origin === here.origin && a.pathname === here.pathname;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Reads which of the reporter's reports are on this page, for the framed composer. */
+  function loadOnPage(): void {
+    onPage = null;
+    if (dockLayout === "dock" && !inWindow) return;
+    client.myReports().then(p => { onPage = p.reports.filter(onThisPage).map(r => r.id); }, () => {});
+  }
+
+  /** Your reports, over the draft (which comes back when it closes); `only` this page's. */
+  function openYours(only: boolean): void {
+    pageOnly = only && !!onPage?.length;
+    showReports();
   }
 
   function viewFiled(): void {
@@ -674,10 +710,13 @@
   {#if draft && !open}
     <form class="composer" class:framed={dockLayout !== "dock" || inWindow} aria-label={reopening ? "Still broken" : "New report"} onsubmit={e => { e.preventDefault(); void send(); }}>
       {#if dockLayout !== "dock" || inWindow}
+        <!-- The header zone: fixed, whatever the form below does. Close, then Your reports, then this page's. -->
         <div class="head">
           <h2 id="cx-composer-title">{dialogTitle}</h2>
           <button type="button" class="ghost small" aria-keyshortcuts="Escape" onclick={cancel}>Close · Esc</button>
+          <button type="button" class="ghost small yours-btn" onclick={() => openYours(false)}>Your reports</button>
         </div>
+        <p class="yours small" aria-live="polite">{#if onPage?.length}<button type="button" class="link" onclick={() => openYours(true)}>{onPage.length} of yours on this page</button>{/if}</p>
       {/if}
       {#if reopening}
         <p class="quote">Still broken: {summaryOf(reopening)}</p>
@@ -704,7 +743,7 @@
       {#if (reopening || (domCapture && barModes.length && draft.clip.state === "none")) && !bar}
         <p class="small"><button type="button" class="ghost" onclick={addScreenshot}>{draft.clip.state === "none" ? "Add a screenshot" : "Retake the screenshot"}</button></p>
       {/if}
-      <textarea rows={3} aria-label={reopening ? "What is still broken" : "Report"} placeholder={reopening ? "What is still broken?" : "What should change here?"} {@attach el => el.focus()} bind:this={noteEl} bind:value={draft.body}
+      <textarea rows={3} aria-label={reopening ? "What is still broken" : "Report"} placeholder={reopening ? "What is still broken?" : "What should change here?"} {@attach el => el.focus()} bind:this={noteEl} bind:value={() => draft?.body ?? "", v => { if (draft) draft.body = v; }}
         onkeydown={e => {
           if (e.key === "Escape") { e.preventDefault(); cancel(); }
           else if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); void send(); }
@@ -779,7 +818,7 @@
   {/if}
 
   {#if open}
-    <Reports {reports} error={loadError} {expanded} onExpand={expand} onReply={reply} onVerify={verify} onStillBroken={stillBroken} onClose={closeReports} />
+    <Reports {reports} error={loadError} {expanded} only={pageOnly ? onPage : null} onShowAll={() => { pageOnly = false; }} onExpand={expand} onReply={reply} onVerify={verify} onStillBroken={stillBroken} onClose={closeReports} />
   {/if}
 
 
@@ -834,6 +873,10 @@
   .dock[data-layout="sheet"] .composer { border-radius: var(--radius) var(--radius) 0 0; }
   .head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
   .head h2 { margin: 0; font: 600 16px/1.3 var(--font); }
+  .head h2 { flex: 1; }
+  /* Reserved, so the count arriving moves nothing. */
+  .yours { min-height: 1.5em; margin: -4px 0 6px; text-align: right; }
+  .yours .link { min-height: 0; padding: 0; border: 0; background: none; color: var(--you-ink); text-decoration: underline; font-size: 12px; }
   .shot { display: block; max-width: 100%; max-height: 240px; margin-bottom: 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); }
   .waiting { padding: 16px; }
   :global(.cx.window) .composer { width: 100%; max-width: 640px; margin: 0 auto; box-shadow: none; border-radius: 0; min-height: 100vh; }
