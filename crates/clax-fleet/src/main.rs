@@ -226,13 +226,23 @@ fn kek_from_env() -> anyhow::Result<Option<[u8; 32]>> {
 
 /// The peer key, which every shard must be given alike: one a shard made
 /// up for itself would be no other shard's, so none would believe another's
-/// forwards.
+/// forwards. Surrounding whitespace, such as the newline a key read from a
+/// file ends in, is not part of it; what is left must be visible ASCII, as
+/// a header carries it.
 fn peer_key(given: Option<String>) -> anyhow::Result<String> {
-    given.filter(|k| !k.trim().is_empty()).ok_or_else(|| {
-        anyhow::anyhow!(
-            "clax-fleet needs CLAX_FLEET_PEER_KEY, the same on every shard (the clax-secrets Secret; docs/kubernetes.md, Deploying)"
-        )
-    })
+    let key = given
+        .map(|k| k.trim().to_owned())
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "clax-fleet needs CLAX_FLEET_PEER_KEY, the same on every shard (the clax-secrets Secret; docs/kubernetes.md, Deploying)"
+            )
+        })?;
+    anyhow::ensure!(
+        key.bytes().all(|b| b.is_ascii_graphic()),
+        "CLAX_FLEET_PEER_KEY holds a character a header cannot carry: use visible ASCII, such as `openssl rand -hex 32`"
+    );
+    Ok(key)
 }
 
 fn serve(a: Serve) -> anyhow::Result<()> {
@@ -371,9 +381,11 @@ async fn run(fleet: Arc<Fleet>, listens: Listens, drain_delay: Duration) -> anyh
 
 fn status(a: Status) -> anyhow::Result<()> {
     let catalog = Catalog::load(&a.catalog).map_err(anyhow::Error::msg)?;
-    let key = a.peer_key.ok_or_else(|| {
-        anyhow::anyhow!("each shard's /status asks for the peer key: set CLAX_FLEET_PEER_KEY")
-    })?;
+    anyhow::ensure!(
+        a.peer_key.is_some(),
+        "each shard's /status asks for the peer key: set CLAX_FLEET_PEER_KEY"
+    );
+    let key = peer_key(a.peer_key)?;
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let client = status_client();
@@ -512,6 +524,22 @@ mod tests {
         }
     }
 
+    /// A key read from a file (`kubectl create secret --from-file`) ends in
+    /// a newline, which the key does not include; one a header cannot carry
+    /// is refused at startup, naming the variable, rather than panicking in
+    /// the proxy.
+    #[test]
+    fn the_peer_key_is_trimmed_and_must_be_a_header_value() {
+        assert_eq!(peer_key(Some("k\n".into())).unwrap(), "k");
+        assert_eq!(peer_key(Some(" k\r\n".into())).unwrap(), "k");
+        for bad in ["a\nb", "a\u{7}b", "ключ"] {
+            let err = peer_key(Some(bad.into())).unwrap_err().to_string();
+            assert!(err.contains("CLAX_FLEET_PEER_KEY"), "{err}");
+        }
+        let key = peer_key(Some("k\n".into())).unwrap();
+        clax_fleet::proxy::Proxy::new(&key);
+    }
+
     /// A shard's line says when it refused the key, answered otherwise, or
     /// did not answer in time, never a live-looking `ready null`.
     #[tokio::test(flavor = "multi_thread")]
@@ -619,6 +647,38 @@ mod tests {
             seen >= 5,
             "only {seen} variables found: the scan missed them"
         );
+    }
+
+    /// docs/kubernetes.md's overlay of one's own renames the image by the
+    /// name deploy/k8s/sqlite gives it: kustomize matches the name as
+    /// already rewritten, so any other would match nothing, and the
+    /// operator's image would be ignored without a word.
+    #[test]
+    fn the_documented_overlay_renames_the_image_the_sqlite_overlay_names() {
+        let sqlite =
+            std::fs::read_to_string(manifests().join("sqlite/kustomization.yaml")).unwrap();
+        let named = sqlite
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("newName: "))
+            .expect("the sqlite overlay renames the image");
+        let guide = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/kubernetes.md"),
+        )
+        .unwrap();
+        let overlay = guide
+            .split("# my-clax/kustomization.yaml\n")
+            .nth(1)
+            .and_then(|rest| rest.split("```").next())
+            .expect("the guide shows my-clax/kustomization.yaml");
+        let images = overlay
+            .split("\nimages:\n")
+            .nth(1)
+            .expect("the guide's overlay sets images");
+        let renamed = images
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("- name: "))
+            .expect("an images entry");
+        assert_eq!(renamed, named);
     }
 
     /// The example catalog is valid, and its instances' setup secrets are
