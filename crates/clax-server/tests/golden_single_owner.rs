@@ -910,8 +910,10 @@ async fn golden_now() -> Value {
 /// frames an artifact on, on every install. An artifact's
 /// `capabilities_in_force`, and for the owner `may_approve` and
 /// `pending_capabilities`, say what of its declaration its owner approved,
-/// on every install.
-pub const ADDITIVE_KEYS: [&str; 26] = [
+/// on every install. A participant agent's `active_at` is when it was last
+/// active (it keeps a just-active agent among the People panel's), on
+/// every install.
+pub const ADDITIVE_KEYS: [&str; 27] = [
     "owner",
     "taken_by",
     "name",
@@ -938,6 +940,7 @@ pub const ADDITIVE_KEYS: [&str; 26] = [
     "capabilities_in_force",
     "may_approve",
     "pending_capabilities",
+    "active_at",
 ];
 
 /// Whether `v`, the value of item 6's key `key` that the golden lacks, is
@@ -954,7 +957,7 @@ pub const ADDITIVE_KEYS: [&str; 26] = [
 /// artifact made before apps has its Comments switch on and no bundle); an
 /// artifact's `capabilities_in_force` a declaration, `may_approve` true and
 /// `pending_capabilities` null (the golden's artifacts declare nothing
-/// that needs approval).
+/// that needs approval); a participant agent's `active_at` null or a time.
 pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
     let owners_agent = |a: &Value| {
         a.is_null()
@@ -986,6 +989,7 @@ pub fn solo_value(key: &str, v: &Value, owner: &str) -> bool {
         "capabilities_in_force" => v.is_object(),
         "may_approve" => *v == json!(true),
         "pending_capabilities" => v.is_null(),
+        "active_at" => v.is_null() || v.as_str().is_some_and(|t| !t.is_empty()),
         _ => false,
     }
 }

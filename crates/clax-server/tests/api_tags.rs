@@ -563,10 +563,10 @@ async fn filters_match_every_tag_named() {
     assert_eq!(s, 400, "{v}");
     let (s, v) = browser(&ts, &cookie, None, "GET", "/api/inbox/summary?tag=c", None).await;
     assert_eq!(s, 200, "{v}");
-    assert!(!v["latest"].as_array().unwrap().is_empty(), "{v}");
-    for item in v["latest"].as_array().unwrap() {
-        assert_eq!(item["artifact"]["id"], json!(z), "{item}");
-    }
+    // The summary's `latest` keeps only what waits on the reader (replies,
+    // approval and connection requests): these items are publishes, which
+    // the list's `kind` filter keeps.
+    assert!(v["latest"].as_array().unwrap().is_empty(), "{v}");
     // Mark all read under a tag marks only its items.
     let (s, v) = browser(
         &ts,
