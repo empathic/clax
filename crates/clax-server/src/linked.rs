@@ -562,7 +562,7 @@ pub(crate) async fn publish_outbox(s: &AppState, rid: &str) {
                 if seen.insert(o.thread_id.clone())
                     && let Some(t) = st.get_thread(&o.thread_id)?
                 {
-                    crate::routes::threads::publish_thread(&ctx, st, &t)?;
+                    crate::routes::threads::publish_thread(&ctx, st, &t);
                 }
             }
             let open: Vec<String> = st
@@ -1340,7 +1340,7 @@ impl Sync {
                     match sent {
                         Ok((t, touched, _)) => {
                             apply(&ctx, st, &touched);
-                            crate::routes::threads::publish_thread(&ctx, st, &t)?;
+                            crate::routes::threads::publish_thread(&ctx, st, &t);
                         }
                         // No longer a watcher here (a late hand-over), or
                         // the thread is resolved or gone here: dropped.
@@ -1423,7 +1423,7 @@ impl Sync {
             .store_call(move |st| {
                 for tid in changed {
                     if let Some(t) = st.get_thread(&tid)? {
-                        crate::routes::threads::publish_thread(&ctx, st, &t)?;
+                        crate::routes::threads::publish_thread(&ctx, st, &t);
                     }
                 }
                 Ok(())
@@ -2413,7 +2413,7 @@ impl Sync {
                 // Only a change is announced: an announcement wakes the
                 // sync again.
                 if changed {
-                    crate::routes::threads::publish_thread(&ctx, st, &t)?;
+                    crate::routes::threads::publish_thread(&ctx, st, &t);
                 }
                 Ok(Some((tid, fresh_thread)))
             })
@@ -2447,7 +2447,7 @@ impl Sync {
                     .store_call(move |st| {
                         st.cache_remote_clip(&t2, &bytes)?;
                         if let Some(t) = st.get_thread(&t2)? {
-                            crate::routes::threads::publish_thread(&ctx, st, &t)?;
+                            crate::routes::threads::publish_thread(&ctx, st, &t);
                         }
                         Ok(())
                     })

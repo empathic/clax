@@ -222,11 +222,12 @@ export type BridgeToShell =
   | { type: "clax:pick"; pickId: string; version: number; anchor: Anchor; clipPng?: ArrayBuffer; clipError?: string }
   | { type: "clax:anchors"; requestId: string | null; results: AnchorResult[] }
   | { type: "clax:cancel" }
-  /** The viewer pressed C in the page (`pageShortcut`, `channel.ts`): the
-   * shell runs its own C (comment mode on or off) under the rules its C
-   * keeps, and only while the frame holds the viewer's gesture. The page can
-   * post this too, so it decides nothing alone. */
-  | { type: "clax:shortcut"; key: "c" }
+  /** The viewer pressed C or F in the page (`pageShortcut`, `channel.ts`):
+   * the shell runs its own key (C, comment mode on or off; F, report a
+   * problem with Clax, where the viewer may) under the rules it keeps, and
+   * only while the frame holds the viewer's gesture. The page can post this
+   * too, so it decides nothing alone. */
+  | { type: "clax:shortcut"; key: "c" | "f" }
   /** The page is going away (`pagehide`): the shell closes the gate until the
    * next document greets, so nothing it sends reaches whatever document the
    * frame shows next. It may arrive once that document has replaced the page,

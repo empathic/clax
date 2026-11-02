@@ -15,13 +15,17 @@
   // again and follows that answer. A hosted daemon serves no token: there
   // the owner is the browser whose session `GET /api/hosted/me` names the
   // owner's, asked only when neither says People is theirs. **Queues**
-  // (`/queues`, the report queues) follows it, for the same viewers.
+  // (`/queues`, the report queues) follows it, for the owner and the
+  // instance's admins only (`myRole`, shared with the header's Admin).
   import { onDestroy } from "svelte";
+  import { isAdmin, myRole } from "../bot/me";
   /** `current`: the page shown (`people`, `queues`), whose link is marked current. */
   const p: { current?: string; owner: boolean; viewer: Viewer } = $props();
   let fresh = $state<Viewer>(undefined);
   const viewer = $derived(fresh === undefined ? p.viewer : fresh);
   let hostedOwner = $state(false);
+  let admin = $state(false);
+  void myRole().then(r => { admin = isAdmin(r); }, () => {});
   $effect(() => {
     if (p.owner || viewer === undefined || (viewer?.person && !viewer.person_revoked_at)) return;
     void fetch("/api/hosted/me").then(r => (r.ok ? r.json() : null)).then((b: { person?: { owner?: boolean } } | null) => { hostedOwner = !!b?.person?.owner; }, () => {});
@@ -36,10 +40,12 @@
   <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="6" cy="5.5" r="2.3" /><path d="M1.8 13c.4-2.4 2.1-3.7 4.2-3.7s3.8 1.3 4.2 3.7M10.6 3.4a2.2 2.2 0 1 1 0 4.3M12 9.6c1.3.5 2 1.6 2.2 3.4" /></svg>
   <span class="word">People</span>
 </a>
+{#if p.owner || hostedOwner || admin}
 <a class="queues-link" href="/queues" aria-label="Queues" aria-current={p.current === "queues" ? "page" : undefined}>
   <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h7" /></svg>
   <span class="word">Queues</span>
 </a>
+{/if}
 {/if}
 
 <style>

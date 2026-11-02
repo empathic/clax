@@ -572,9 +572,7 @@ fn announce_thread(ctx: &clax_realtime::feedback::FeedbackCtx, st: &Store, tid: 
                 comment: json!(c),
             });
         }
-        if let Err(e) = crate::routes::threads::publish_thread(ctx, st, &t) {
-            tracing::warn!(error = %e, "a ClaxBot thread change was not announced");
-        }
+        crate::routes::threads::publish_thread(ctx, st, &t);
     }
 }
 

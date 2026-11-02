@@ -12,6 +12,17 @@ export const MAX_QUOTE = 2000;
 /** The daemon's limit on selector length, in characters. */
 export const MAX_SELECTOR = 1024;
 export const OVERLAY_TAG = "clax-overlay";
+/** Marks an element a page renders never shows (and comment mode never
+ * picks): Clax's own interface carries it, and a host marks its own. */
+export const IGNORE_ATTR = "data-clax-ignore";
+/** Marks an element a page render draws as a solid block of its box. */
+export const REDACT_ATTR = "data-clax-redact";
+/** Marks a field (or what holds fields) whose typed value a page render
+ * shows; a password field's never is. */
+export const SHOW_ATTR = "data-clax-show";
+/** The elements page renders leave out and comment mode never picks:
+ * Clax's overlay hosts and whatever carries `IGNORE_ATTR`. */
+export const UNRENDERED = `${OVERLAY_TAG}, [${IGNORE_ATTR}]`;
 const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE"]);
 const SIMPLE_TAG = /^[A-Za-z][A-Za-z0-9-]*$/;
 

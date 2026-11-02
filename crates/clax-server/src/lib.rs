@@ -147,6 +147,7 @@ pub mod bot;
 pub mod core;
 pub mod github;
 pub mod hosted;
+pub mod integrations;
 pub mod linked;
 pub mod loopback;
 pub mod public;

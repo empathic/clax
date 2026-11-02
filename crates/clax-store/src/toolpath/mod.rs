@@ -1575,6 +1575,9 @@ impl Event<'_> {
                 thread(),
                 self.show("reason")
             ),
+            Some(K::QueueFix) => format!("Proposed fix {} on report {}", self.show("n"), thread()),
+            Some(K::QueueVerify) => format!("Verified the fix on report {}", thread()),
+            Some(K::QueueReopen) => format!("Reopened report {}", thread()),
             Some(K::RemoteRequestAsk) => format!(
                 "Asked to connect to {} (request {})",
                 self.show("origin"),

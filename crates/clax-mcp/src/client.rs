@@ -455,6 +455,24 @@ impl DaemonClient {
         DaemonClient::managed(find.clone(), find, registration).with_remote(remote)
     }
 
+    /// This client proving the session it names (the `session_id` it was
+    /// made with) by `secret` (`X-Clax-Session-Secret`, spec 2026-10-08
+    /// §6.8): a remote daemon's grant session. Call it on a client just
+    /// made.
+    ///
+    /// # Panics
+    /// When the client has been cloned already.
+    pub fn with_session_secret(mut self, secret: Secret) -> DaemonClient {
+        let inner =
+            Arc::get_mut(&mut self.inner).expect("with_session_secret on a client just made");
+        inner
+            .state
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .session_secret = Some(secret);
+        self
+    }
+
     /// Whether this client talks to a remote daemon.
     pub fn is_remote(&self) -> bool {
         self.inner.remote.is_some()
@@ -1172,9 +1190,59 @@ impl DaemonClient {
         .await
     }
 
+    /// `GET /api/queues/<qid>/reports/<tid>`: `{report}`.
+    pub async fn queue_report(&self, qid: &str, tid: &str) -> Result<Value> {
+        self.json(|c| {
+            c.request(
+                reqwest::Method::GET,
+                &format!(
+                    "/api/queues/{}/reports/{}",
+                    encode_segment(qid),
+                    encode_segment(tid)
+                ),
+            )
+        })
+        .await
+    }
+
+    /// `GET /api/queues/<qid>/reports/<tid>/diagnostics?capture=<n>`:
+    /// `{lines}`, capture `n`'s.
+    pub async fn queue_diagnostics(&self, qid: &str, tid: &str, capture: u64) -> Result<Value> {
+        self.json(|c| {
+            c.request(
+                reqwest::Method::GET,
+                &format!(
+                    "/api/queues/{}/reports/{}/diagnostics",
+                    encode_segment(qid),
+                    encode_segment(tid)
+                ),
+            )
+            .query(&[("capture", capture)])
+        })
+        .await
+    }
+
+    /// `POST /api/queues/<qid>/watch` (`on`) or `DELETE` (not `on`): the
+    /// session watches the queue, or no longer does.
+    pub async fn queue_watch(&self, qid: &str, on: bool) -> Result<()> {
+        let method = if on {
+            reqwest::Method::POST
+        } else {
+            reqwest::Method::DELETE
+        };
+        self.send(|c| {
+            c.request(
+                method.clone(),
+                &format!("/api/queues/{}/watch", encode_segment(qid)),
+            )
+        })
+        .await
+        .map(|_| ())
+    }
+
     /// `POST /api/queues/<qid>/reports/<tid>/<action>` (`claim`, `renew`,
-    /// `release`, `resolve`, `comments`) with JSON `body`: the route's
-    /// answer.
+    /// `release`, `resolve`, `comments`, `fix`) with JSON `body`: the
+    /// route's answer.
     pub async fn queue_report_action(
         &self,
         qid: &str,
@@ -1796,14 +1864,21 @@ impl DaemonClient {
     /// ([`clax_core::clips::check`]); a body that is not is
     /// `BadResponse`.
     pub async fn clip_bytes(&self, aid: &str, tid: &str) -> Result<Vec<u8>> {
-        let path = format!("/api/artifacts/{aid}/threads/{tid}/clip");
+        self.png_at(&format!("/api/artifacts/{aid}/threads/{tid}/clip"))
+            .await
+    }
+
+    /// The clip PNG the daemon serves at `path` (a thread's, or a queue
+    /// report's `…/clip` and `…/comments/<cid>/clip`), at most
+    /// [`clax_core::clips::MAX_BYTES`], checked as a PNG.
+    pub async fn png_at(&self, path: &str) -> Result<Vec<u8>> {
         // A remote daemon's answer is read no further than a clip may go.
         let limited = DaemonClient {
             body_limit: self.body_limit.min(clax_core::clips::MAX_BYTES as u64 + 1),
             ..self.clone()
         };
         let res = limited
-            .send(|c| c.request(reqwest::Method::GET, &path))
+            .send(|c| c.request(reqwest::Method::GET, path))
             .await?;
         let ct = res
             .headers()

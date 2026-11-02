@@ -63,6 +63,8 @@ mod api_events;
 mod api_extension;
 #[cfg(any(not(clax_split), clax_split = "api_feedback"))]
 mod api_feedback;
+#[cfg(any(not(clax_split), clax_split = "api_feedback_integration"))]
+mod api_feedback_integration;
 #[cfg(any(not(clax_split), clax_split = "api_forks"))]
 mod api_forks;
 #[cfg(any(not(clax_split), clax_split = "api_gateway"))]
@@ -202,6 +204,8 @@ mod golden_single_owner;
 mod harness_ids;
 #[cfg(any(not(clax_split), clax_split = "hosted_pages"))]
 mod hosted_pages;
+#[cfg(any(not(clax_split), clax_split = "overlay_files"))]
+mod overlay_files;
 #[cfg(any(not(clax_split), clax_split = "sample_anthropic"))]
 mod sample_anthropic;
 #[cfg(any(not(clax_split), clax_split = "shell_boot"))]

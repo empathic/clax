@@ -82,7 +82,8 @@ impl Flags {
 }
 
 /// `person`'s flags on `c`. A stored row whose name this build does not
-/// know is ignored.
+/// know is ignored: a `feedback` row an earlier build set (reporting
+/// problems with Clax now needs no flag) among them.
 pub(crate) fn flags_in(c: &Connection, person: &str) -> Result<Flags> {
     let mut flags = Flags {
         claxbot: Flag::Claxbot.default_for(person),
@@ -172,14 +173,14 @@ mod tests {
             st.flags_of(OWNER).unwrap(),
             Flags {
                 claxbot: true,
-                claxbot_unenforced: false
+                claxbot_unenforced: false,
             }
         );
         assert_eq!(
             st.flags_of(&sam).unwrap(),
             Flags {
                 claxbot: false,
-                claxbot_unenforced: false
+                claxbot_unenforced: false,
             }
         );
     }
@@ -211,6 +212,36 @@ mod tests {
         assert_eq!(events.len(), 2, "{events:?}");
         assert!(events[0].contains("\"value\":true"));
         assert!(events[1].contains("\"person\":\"*owner\""));
+    }
+
+    #[test]
+    fn an_earlier_builds_feedback_row_is_ignored_and_refused_as_a_name() {
+        let (_d, st) = store();
+        let sam = person(&st, "Sam", 1);
+        st.with_tx(|tx| {
+            tx.execute(
+                "INSERT INTO person_flags (person, flag, value, set_by, set_at)
+                 VALUES (?1, 'feedback', 1, '*daemon', '2026-10-29T00:00:00Z')",
+                params![sam],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            st.flags_of(&sam).unwrap(),
+            Flags {
+                claxbot: false,
+                claxbot_unenforced: false,
+            }
+        );
+        let Err(CoreError::Invalid { code, message }) = Flag::parse("feedback") else {
+            panic!("feedback is no flag");
+        };
+        assert_eq!(code, "unknown_flag");
+        assert!(
+            message.ends_with("the flags are claxbot and claxbot_unenforced"),
+            "{message}"
+        );
     }
 
     #[test]

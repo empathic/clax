@@ -305,6 +305,32 @@ impl Store {
         })
     }
 
+    /// The GitHub account linked to the person whose public ID is
+    /// `public_id` (the owner's included), as its last sign-in left it;
+    /// `None` when none is.
+    ///
+    /// # Errors
+    /// The database's.
+    pub fn github_user_of(&self, public_id: &str) -> Result<Option<GitHubUser>> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT gi.github_id, gi.login, gi.name, gi.avatar_url
+                   FROM github_identities gi JOIN viewers v ON v.id = gi.viewer_id
+                  WHERE v.public_id = ?1",
+                params![public_id],
+                |r| {
+                    Ok(GitHubUser {
+                        id: r.get(0)?,
+                        login: r.get(1)?,
+                        name: r.get(2)?,
+                        avatar_url: r.get(3)?,
+                    })
+                },
+            )
+            .optional()?)
+        })
+    }
+
     /// Refuses one more artifact for person `person` (a public ID) when it
     /// would take their account past its cap. The quickstart seeded for
     /// them is not counted. Only a GitHub member is capped, and only while the

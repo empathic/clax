@@ -29,6 +29,9 @@ changes), then
   Worker Loader sandbox (below), on the instance's object;
 - `node test-bot.mjs`: a ClaxBot run driven by the instance's alarm
   against a scripted Messages API on 127.0.0.1 (below), across a restart;
+- `node test-feedback.mjs`: clax.dev's own feedback path over HTTP on a
+  hosted instance, from the config and token routes to the overlay's
+  same-origin reporter reads (`docs/feedback.md`, "What is clax.dev's own");
 - `node test-repos.mjs`: the repository hosts (`CLAX_TEST_JJ` names a `jj`
   for the jj clone check);
 - `node e2e.mjs`: the instance in two browsers with the owner token;

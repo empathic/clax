@@ -29,7 +29,7 @@ interface Manifest {
 /** What each export gives at run time. */
 const RUNTIME: Record<string, string[]> = {
   ".": ["ClaxError", "ReporterClient"],
-  "./overlay": ["overlay"],
+  "./overlay": ["CONTEXT_TIMEOUT_MS", "diagnostics", "forgetReporter", "overlay"],
   "./service": ["ServiceClient"],
 };
 
