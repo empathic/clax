@@ -714,6 +714,28 @@ describe("Tabs and side panels", () => {
     p.onDisconnect.fire();
   });
 
+  it("holds back what waits for no draft while a panel holds one, until it says none or closes", () => {
+    const h = harness();
+    const a = port("panel:2"), b = port("panel:3");
+    h.tabs.attachPanel(a as unknown as chrome.runtime.Port, () => {});
+    h.tabs.attachPanel(b as unknown as chrome.runtime.Port, () => {});
+    expect(h.tabs.drafting()).toBe(false);
+    a.onMessage.fire({ t: "draft", on: true });
+    b.onMessage.fire({ t: "draft", on: true });
+    let ran = 0;
+    h.tabs.whenNoDraft(() => ran++);
+    expect(h.tabs.drafting()).toBe(true);
+    a.onMessage.fire({ t: "draft", on: false });
+    expect(ran).toBe(0);
+    // A panel that closes takes its draft with it.
+    b.onDisconnect.fire();
+    expect(ran).toBe(1);
+    expect(h.tabs.drafting()).toBe(false);
+    h.tabs.whenNoDraft(() => ran++);
+    expect(ran).toBe(2);
+    a.onDisconnect.fire();
+  });
+
   it("reports the owner here every 30 s while a visible panel shows a live page, and never away", async () => {
     vi.useFakeTimers();
     const h = harness();

@@ -227,6 +227,22 @@ describe("PanelLink", () => {
     expect(link.state?.error).toBeNull();
   });
 
+  it("tells the worker of a draft on each change, and again on a new port", async () => {
+    vi.useFakeTimers();
+    const f = fakes();
+    link = new PanelLink(2, { runtime: f.runtime as never, search: "?tab=7", doc: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} } as never });
+    await vi.advanceTimersByTimeAsync(0);
+    link.draft(false);
+    link.draft(true);
+    link.draft(true);
+    expect(f.ports[0].sent.filter(m => (m as { t: string }).t === "draft")).toEqual([{ t: "draft", on: true }]);
+    f.ports[0].onDisconnect.fire();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(f.ports[1].sent).toEqual([{ t: "watch-tab", tabId: 7 }, { t: "visible", on: true }, { t: "draft", on: true }]);
+    link.draft(false);
+    expect(f.ports[1].sent.at(-1)).toEqual({ t: "draft", on: false });
+  });
+
   it("connects again when the worker goes away, and pings while open", async () => {
     vi.useFakeTimers();
     const f = fakes();

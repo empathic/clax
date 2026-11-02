@@ -89,6 +89,8 @@ export const PRESENCE_MS = 30_000;
 type PanelEntry = {
   port: chrome.runtime.Port; tabId: number | null; windowId: number; visible: boolean;
   hubId: string; aid: string | null; presence: PresenceView[]; beat: ReturnType<typeof setInterval> | null;
+  /** The panel holds unsent text (its `draft` message). */
+  draft: boolean;
 };
 
 type Area = { get(k: string): Promise<Record<string, unknown>>; set(v: Record<string, unknown>): Promise<void> };
@@ -797,6 +799,22 @@ export class Tabs {
     };
   }
 
+  /** Whether an open side panel holds unsent text. */
+  drafting(): boolean {
+    for (const p of this.panels) if (p.draft) return true;
+    return false;
+  }
+  /** Runs `fn` once no side panel holds unsent text (at once when none does). */
+  whenNoDraft(fn: () => void): void {
+    this.draftIdlers.push(fn);
+    this.drainDrafts();
+  }
+  private draftIdlers: (() => void)[] = [];
+  private drainDrafts(): void {
+    if (this.drafting()) return;
+    for (const fn of this.draftIdlers.splice(0)) fn();
+  }
+
   /** A side panel's port: `watch-tab` picks the tab it shows, which it then
    * hears of on every change, with the stream's status. Every message it
    * sends passes `isFromPanel` before anything acts on it, and then goes to
@@ -807,7 +825,7 @@ export class Tabs {
     if (!/^\d{1,15}$/.test(name) || !Number.isSafeInteger(windowId)) { port.disconnect(); return false; }
     const entry: PanelEntry = {
       port, tabId: null, windowId, visible: false,
-      hubId: `panel:${++this.panelSeq}`, aid: null, presence: [], beat: null,
+      hubId: `panel:${++this.panelSeq}`, aid: null, presence: [], beat: null, draft: false,
     };
     this.panels.add(entry);
     port.onMessage.addListener((m: unknown) => {
@@ -821,11 +839,15 @@ export class Tabs {
         void this.details(m.tabId);
       } else if (m.t === "visible") {
         if (entry.visible !== m.on) { entry.visible = m.on; this.report(entry); }
+      } else if (m.t === "draft") {
+        entry.draft = m.on;
+        this.drainDrafts();
       }
       onMessage(entry.tabId, m, entry.windowId);
     });
     port.onDisconnect.addListener(() => {
       this.panels.delete(entry);
+      this.drainDrafts();
       if (entry.beat !== null) clearInterval(entry.beat);
       this.d.hub.detach(entry.hubId);
     });

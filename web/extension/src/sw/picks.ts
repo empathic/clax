@@ -111,6 +111,8 @@ export class Picks {
     this.idlers.push(fn);
     this.drain();
   }
+  /** Whether a tab has a pick open. */
+  busy(): boolean { return this.byTab.size > 0; }
   private drain(): void {
     if (this.byTab.size) return;
     for (const fn of this.idlers.splice(0)) fn();

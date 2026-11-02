@@ -328,6 +328,9 @@ describe("messages", () => {
     expect(isFromPanel({ t: "turn-off", origin: "http://localhost:5173" })).toBe(false);
     expect(isFromPanel({ t: "visible", on: false })).toBe(true);
     expect(isFromPanel({ t: "visible", on: "yes" })).toBe(false);
+    expect(isFromPanel({ t: "draft", on: true })).toBe(true);
+    expect(isFromPanel({ t: "draft", on: 1 })).toBe(false);
+    expect(isFromPanel({ t: "draft", on: true, text: "x" })).toBe(false);
     expect(isFromPanel({ t: "delete", threadId: ULID })).toBe(false);
   });
 

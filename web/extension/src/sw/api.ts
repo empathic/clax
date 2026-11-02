@@ -64,6 +64,8 @@ export class Api {
     this.idlers.push(fn);
     this.drain();
   }
+  /** Whether a request waits for its answer. */
+  busy(): boolean { return this.active > 0; }
   private drain(): void {
     if (this.active) return;
     for (const fn of this.idlers.splice(0)) fn();

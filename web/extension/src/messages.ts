@@ -271,6 +271,9 @@ export type PanelToWorker =
   | { t: "open-url"; url: string; pageUrl: string | null }
   /** Whether the panel's document is visible: the worker reports the owner here only while it is. */
   | { t: "visible"; on: boolean }
+  /** Whether the panel holds text the person has not sent or saved: the
+   * extension does not reload for a new build while one does (sw/update.ts). */
+  | { t: "draft"; on: boolean }
   | { t: "ping" };
 
 type Obj = Record<string, unknown>;
@@ -494,7 +497,7 @@ export function isFromPanel(m: unknown): m is PanelToWorker {
     case "looked": return has("threadIds") && Array.isArray(m.threadIds) && m.threadIds.length <= 50 && m.threadIds.every(ulid);
     case "set-name": return has("name") && str(m.name, 64);
     case "select": return has("threadId") && (m.threadId === null || ulid(m.threadId));
-    case "comment-mode": case "visible": return has("on") && bool(m.on);
+    case "comment-mode": case "visible": case "draft": return has("on") && bool(m.on);
     case "navigate": return has("route", "artifactId") && (m.route === null || str(m.route, MAX_ROUTE))
       && typeof m.artifactId === "string" && ARTIFACT_ID.test(m.artifactId);
     case "turn-off": return has("tabId") && count(m.tabId);

@@ -3,8 +3,8 @@
 // reloads and navigations within its origin, and loses it when it leaves the
 // origin, when the icon is clicked again, or when it closes. The side panel
 // is enabled only for the tabs Clax is on.
-import { beforeEach, describe, expect, it } from "vitest";
-import { fakeChrome, type FakeChrome } from "../../test/fake-chrome";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FakeEvent, fakeChrome, type FakeChrome } from "../../test/fake-chrome";
 import { panelPath, startBackground } from "./background";
 
 const ORIGIN = "http://localhost:5173";
@@ -35,7 +35,9 @@ function withDocs(fake: FakeChrome): FakeChrome {
 }
 /** The tab loads a new document: its overlay is gone. */
 const reload = (tabId: number, fake = c) => docs.get(fake)!.delete(tabId);
-const start = (fake: FakeChrome) => startBackground(fake as unknown as typeof chrome);
+/** Each worker's timed look at the files on disk, by fake Chrome: the tests run it themselves. */
+const looks = new WeakMap<FakeChrome, () => void>();
+const start = (fake: FakeChrome) => startBackground(fake as unknown as typeof chrome, { every: (_ms, fn) => looks.set(fake, fn) });
 const options = (fake = c) => fake.calls.filter(x => x.api === "sidePanel.setOptions").map(x => x.args[0] as chrome.sidePanel.PanelOptions);
 /** The last side panel options set for the tab. */
 const panelOf = (tabId: number, fake = c) => options(fake).filter(o => o.tabId === tabId).at(-1) ?? null;
@@ -395,5 +397,58 @@ describe("Clax on per tab", () => {
     expect([...c.menus]).toEqual(["clax-comment"]);
     expect(c.calls.filter(x => x.api === "contextMenus.create")).toHaveLength(2);
     expect(c.menuErrors).toEqual([]);
+  });
+});
+
+describe("a newer build on disk", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+  /** The files on disk, as the worker's fetch of its own URLs sees them. */
+  function disk(files: Record<string, string>) {
+    vi.stubGlobal("fetch", async (u: string) => {
+      const body = files[String(u).replace("chrome-extension://test-extension/", "")];
+      return body === undefined ? new Response("", { status: 404 }) : new Response(body);
+    });
+  }
+  const manifest = (version_name: string) => JSON.stringify({ manifest_version: 3, version: "0.9.0", version_name, background: { service_worker: "sw.js" } });
+  const reloads = () => c.calls.filter(x => x.api === "runtime.reload").length;
+
+  it("reloads the extension once the worker sees it, and not for the files it runs", async () => {
+    disk({ "manifest.json": JSON.stringify({ manifest_version: 3, version: "0.9.0", background: { service_worker: "sw.js" } }), "sw.js": "x" });
+    start(c);
+    await settle();
+    expect(reloads()).toBe(0);
+    disk({ "manifest.json": manifest("0.9.0 (bbbbbbbbbbbb)"), "sw.js": "x" });
+    looks.get(c)!();
+    await settle();
+    expect(reloads()).toBe(1);
+  });
+
+  it("does not reload while a side panel holds a draft, and does once it closes", async () => {
+    disk({ "manifest.json": manifest("0.9.0 (bbbbbbbbbbbb)"), "sw.js": "x" });
+    const bg = start(c);
+    const p = { name: "panel:1", sender: { id: c.runtime.id, url: `chrome-extension://${c.runtime.id}/sidepanel.html?tab=1` }, onMessage: new FakeEvent<[unknown]>(), onDisconnect: new FakeEvent<[]>(), postMessage() {}, disconnect() {} };
+    c.runtime.onConnect.fire(p as unknown as chrome.runtime.Port);
+    p.onMessage.fire({ t: "draft", on: true });
+    // The worker started before the panel said so: its first look found the build.
+    await settle();
+    expect(bg.tabs.drafting()).toBe(true);
+    expect(reloads()).toBe(0);
+    p.onDisconnect.fire();
+    await settle();
+    expect(reloads()).toBe(1);
+  });
+
+  it("does not reload again for a build whose reload did not take, and the gesture still works", async () => {
+    disk({ "manifest.json": manifest("0.9.0 (bbbbbbbbbbbb)"), "sw.js": "x" });
+    start(c);
+    await settle();
+    expect(reloads()).toBe(1);
+    // That reload did not take: within the guard nothing reloads again, and the gesture works.
+    looks.get(c)!();
+    await settle();
+    click(tab(1));
+    await settle();
+    expect(reloads()).toBe(1);
+    expect(panelOf(1)).toEqual({ tabId: 1, path: panelPath(1), enabled: true });
   });
 });

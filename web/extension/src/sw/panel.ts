@@ -132,7 +132,7 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: 
   if (m.t === "set-name") { d.tabs.setViewer((await d.api.setName(m.name)).viewer); return; }
   // A request (`req`) is always answered: a step or a failure.
   if (tabId === null && "req" in m) throw new PanelFailure("no_tab", "The panel shows no tab.");
-  if (m.t === "ping" || m.t === "visible" || tabId === null) return;
+  if (m.t === "ping" || m.t === "visible" || m.t === "draft" || tabId === null) return;
   const s = d.tabs.state(tabId);
   switch (m.t) {
     case "watch-tab": if (s?.url) await d.tabs.route(tabId, s.url); return;

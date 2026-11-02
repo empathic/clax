@@ -217,6 +217,63 @@ fn reinstalling_drops_files_the_new_build_lacks() {
     assert!(leftovers.is_empty(), "{leftovers:?}");
 }
 
+/// Every file under `dir`: its path, contents and mode, sorted by path.
+fn tree(dir: &Path) -> Vec<(String, Vec<u8>, u32)> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for f in std::fs::read_dir(&d).unwrap() {
+            let p = f.unwrap().path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                let rel = p.strip_prefix(dir).unwrap().display().to_string();
+                let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o7777;
+                out.push((rel, std::fs::read(&p).unwrap(), mode));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// A deployer runs `clax extension install` after each new daemon, with no
+/// terminal: it asks nothing, a second run of the same build changes no
+/// file, and a newer build replaces the files at the same path, so Chrome
+/// keeps the extension's ID (an unpacked extension's ID is its path's).
+#[test]
+fn a_deployer_can_run_install_again_and_again_unattended() {
+    let e = Env::new();
+    let run = || {
+        let mut c = std::process::Command::new(crate::common::clax());
+        c.stdin(std::process::Stdio::null());
+        e.cmd_in(Command::from_std(c), &["extension", "install"])
+    };
+    let first = run();
+    let files = tree(&e.p("ax/extension"));
+    let second = run();
+    assert_eq!(first, second);
+    assert_eq!(second["status"], "installed");
+    assert_eq!(tree(&e.p("ax/extension")), files);
+    let id = clax_core::extension::extension_id_from_path(&e.p("ax/extension"));
+    assert_eq!(second["extension_id"], id.as_str());
+
+    std::fs::write(e.p("dist/sw.js"), "export const newer = 1").unwrap();
+    let third = run();
+    assert_eq!(third["status"], "installed");
+    assert_eq!(third["extension_id"], id.as_str());
+    assert_eq!(
+        std::fs::read_to_string(e.p("ax/extension/sw.js")).unwrap(),
+        "export const newer = 1"
+    );
+    assert_eq!(e.cmd(&["extension", "status"])["files"], "current");
+    for b in ["chrome", "brave"] {
+        assert_eq!(host(&third, b)["status"], "installed");
+        assert!(host(&third, b).get("replaced").is_none(), "{third}");
+    }
+}
+
 fn host<'a>(out: &'a Value, browser: &str) -> &'a Value {
     out["hosts"]
         .as_array()

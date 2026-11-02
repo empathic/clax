@@ -17,11 +17,15 @@
 // the worker does not admit is answered `{off: true}`, and the overlay
 // stops: one in a page restored from the back/forward cache after Clax
 // turned off, or one in a document Clax was never on for.
+//
+// The extension reloads itself, at a quiet moment, for a daemon of another
+// version (pairing.ts) and for a newer build on disk (update.ts).
 import { type OverlayToWorker, type WorkerToOverlay, isComposerNote, isFromOverlay, isFromPanel } from "../messages";
 import { captureClip, chromeCapture } from "./capture";
 import * as origins from "./origins";
 import { PairError } from "./pairing";
 import { type PanelDeps, panelAction } from "./panel";
+import { CHECK_MS, QuietGate, Updater, readOwn } from "./update";
 import { composerFrameTab, composerTab, createWorker } from "./worker";
 
 /** The side panel's page, set as each on tab's own panel. */
@@ -35,7 +39,7 @@ export type Background = ReturnType<typeof startBackground>;
 
 /** Registers every listener on `c` (Chrome's API, or the tests' fake) at
  * once, so a worker Chrome restarts for an event hears it. */
-export function startBackground(c: typeof chrome) {
+export function startBackground(c: typeof chrome, env: { every?(ms: number, fn: () => void): void } = {}) {
   const originsEnv: origins.OriginsEnv = { permissions: c.permissions, scripting: c.scripting, boot: origins.bootNonce(c.storage.session) };
   /** Each tab's top document whose overlay last wrote: the worker's
    * messages go to that document, never to a newer one the tab loaded meanwhile. */
@@ -59,9 +63,9 @@ export function startBackground(c: typeof chrome) {
       },
       session: c.storage.session, local: c.storage.local,
       manifestVersion: c.runtime.getManifest().version,
-      // Not mid-request, and not while a pick is open: a reload tears down the
-      // composer (an extension page) and the person's text with it.
-      reload: () => picks.whenIdle(() => api.whenIdle(() => c.runtime.reload())),
+      // At a quiet moment: a reload tears down the composer (an extension
+      // page), the side panel, and the person's text with them.
+      reload: () => gate.when(() => c.runtime.reload()),
       now: () => Date.now(),
     },
     toOverlay,
@@ -72,6 +76,21 @@ export function startBackground(c: typeof chrome) {
     tabActive: async (tabId, windowId) => { const t = await c.tabs.get(tabId); return t.active && t.windowId === windowId; },
     windowOf: async tabId => (await c.tabs.get(tabId)).windowId,
   });
+  // Quiet: no pick open, no request waiting for its answer, no side panel holding unsent text.
+  const gate = new QuietGate([picks, api, { busy: () => tabs.drafting(), whenIdle: fn => tabs.whenNoDraft(fn) }]);
+  // A newer build `clax extension install` put on disk: looked for now,
+  // every CHECK_MS while the worker runs, and at each pairing, panel and
+  // gesture. A composer or panel opened between the install and the next
+  // look is the new build's, served to the old worker until the reload.
+  const updater = new Updater({
+    loaded: c.runtime.getManifest(), read: path => readOwn(c.runtime.getURL(path)), local: c.storage.local,
+    gate, reload: () => c.runtime.reload(), now: () => Date.now(),
+  });
+  const look = () => void updater.check();
+  look();
+  (env.every ?? ((ms, fn) => { setInterval(fn, ms); }))(CHECK_MS, look);
+  const paired = pairer.onPaired;
+  pairer.onPaired = p => { paired?.(p); look(); };
 
   const showPanel = (tabId: number) => quietly(() => c.sidePanel.setOptions({ tabId, path: panelPath(tabId), enabled: true }));
 
@@ -108,6 +127,7 @@ export function startBackground(c: typeof chrome) {
    * panel must be opened before any await: it opens it, and closes it again
    * once it finds the tab was on. */
   function gesture(tab: chrome.tabs.Tab, icon: boolean): void {
+    look();
     const origin = tab.url ? origins.originOf(tab.url) : null;
     if (tab.id === undefined || !origin || !tab.url) return;
     const tabId = tab.id, url = tab.url;
@@ -243,6 +263,7 @@ export function startBackground(c: typeof chrome) {
     let page = "";
     try { page = s.url ? new URL(s.url).pathname : ""; } catch { /* no page */ }
     if (port.name.startsWith("panel:") && page === `/${PANEL_PATH}` && s.tab === undefined) {
+      look();
       const kept = tabs.attachPanel(port, (tabId, m) => {
         if (!isFromPanel(m)) return;
         void panelAction(panelDeps, tabId, m, r => { try { port.postMessage(r); } catch { /* the panel closed */ } })

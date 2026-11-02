@@ -69,6 +69,8 @@ export class PanelLink {
   private closed = false;
   /** The port is new: its first watch says whether the panel is visible. */
   private fresh = true;
+  /** The panel holds unsent text (`draft`). */
+  private drafting = false;
   /** The tab the panel shows (its `?tab=`), or null when the page names none. */
   private readonly pinned: number | null;
   private readonly beat: ReturnType<typeof setInterval>;
@@ -145,11 +147,20 @@ export class PanelLink {
 
   private follow(): void {
     if (this.pinned !== null) this.watch(this.pinned);
+    // A worker that restarted heard nothing of a draft the panel holds.
+    if (this.drafting) this.post({ t: "draft", on: true });
+  }
+
+  /** Whether the panel holds unsent text (`watchDrafts`): told to the worker on each change, and again on each new port. */
+  draft(on: boolean): void {
+    if (on === this.drafting) return;
+    this.drafting = on;
+    this.post({ t: "draft", on });
   }
 
   post(m: PanelToWorker): void {
     if (this.closed) return;
-    if (m.t !== "ping" && m.t !== "visible" && m.t !== "watch-tab" && m.t !== "clip" && m.t !== "far-page" && m.t !== "firsts") this.failure = null;
+    if (m.t !== "ping" && m.t !== "visible" && m.t !== "draft" && m.t !== "watch-tab" && m.t !== "clip" && m.t !== "far-page" && m.t !== "firsts") this.failure = null;
     try { this.port.postMessage(m); } catch { /* the port closed; the link connects again */ }
   }
 
