@@ -136,7 +136,7 @@
   function choose(mode: Mode): void {
     if (!bar) return;
     if (mode === "element" && bar.mode === "element" && picking) {
-      picker.keyboard();
+      picker?.keyboard();
       const root = cx?.getRootNode() as Document | ShadowRoot | undefined;
       const at = root?.activeElement;
       if (at instanceof HTMLElement && cx?.contains(at)) at.blur();
