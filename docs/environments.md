@@ -118,23 +118,22 @@ can deploy `clax-pr-12` can also replace `clax`. A preview's run executes
 the pull request's own scripts with the `preview` environment's token, so
 anyone who can push a branch to this repository can use that token.
 
-**dev and the previews share clax.dev's Cloudflare account, for now.** So
-the dev and preview tokens can reach prod's Worker `clax`, its Durable
-Objects and its bucket `clax-assets`: a branch pushed to this repository
-can replace or delete them through its preview's run. Pull requests from
-forks get no preview, so no token reaches them.
+Who can use the preview token is who has write access to this repository:
+only a writer can push the branch a preview runs, and pull requests from
+forks get no preview (their runs are not given the environment's
+secrets). A check on the pull request's author in `preview.yml` would
+bound nothing more, since a run takes `preview.yml` from the pull request
+itself.
 
-So who reaches the token is who has write access to this repository: only
-a writer can push the branch a preview runs. A check on the pull request's
-author in `preview.yml` would bound nothing more, since a run takes
-`preview.yml` from the pull request itself. Keep write access to people
-trusted with clax.dev. Moving dev and the
-previews to an account of their own takes that reach away: each
-environment names its account in its `CLOUDFLARE_ACCOUNT_ID` variable, so
-the move is new tokens, zones and variables, and no code change.
+**So dev and the previews run on a Cloudflare account of their own**, with
+their zones on it, apart from clax.dev's: neither token can reach prod's
+Worker `clax`, its Durable Objects or its bucket `clax-assets`, whatever a
+branch's run does with it. Each environment names that account in its
+`CLOUDFLARE_ACCOUNT_ID` variable. The account needs Workers Paid (Durable
+Objects and the Worker Loader) and, for dev, the Artifacts beta.
 
-Give each environment its own token, limited to the account and to its
-zones (never clax.dev's or clax.run's):
+Give each environment its own token, limited to that account and to its
+zones:
 
 | Scope | Permission | dev | preview |
 |---|---|---|---|
@@ -156,16 +155,19 @@ Cloudflare's docs.
 
 ### Cloudflare
 
-1. On the account the environments use, add the zones: dev's public
+1. Make the account dev and the previews use (not clax.dev's), on Workers
+   Paid, with the Artifacts beta turned on (Storage & databases,
+   Artifacts) for dev.
+2. On it, add the zones: dev's public
    host's and site domain's, and `PREVIEW_HOST_ZONE` and
    `PREVIEW_SITE_ZONE`.
-2. Turn on Advanced Certificate Manager and Total TLS on
+3. Turn on Advanced Certificate Manager and Total TLS on
    `PREVIEW_SITE_ZONE` (and on dev's site zone when dev's site domain is
    below its zone, `SITE_ZONE`). A dev site domain that is a zone itself
    needs its proxied `*` record and a certificate covering it, as prod's
    does (`crates/clax-worker/README.md`, "DNS for the public host and the
    site domain").
-3. Make the two tokens above.
+4. Make the two tokens above.
 
 ### dev
 
