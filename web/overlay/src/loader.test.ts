@@ -2,7 +2,7 @@
 // targets the config turns on (Addenda 2 and 3).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { definePlugin, PLUGIN_API_VERSION, type ClaxPlugin } from "../../sdk/src/plugin";
-import { authOf, containerUrl, install, installQueued, type PluginName, pluginsFor, type Registry, type Snippet } from "./loader";
+import { authOf, CARRIER_ATTR, claim, containerUrl, install, installQueued, snippetFromTag, type PluginName, pluginsFor, type Registry, type Snippet } from "./loader";
 import type { OverlayHandle } from "./mount";
 import { resolve } from "../../sdk/src/config";
 
@@ -30,7 +30,7 @@ const snippet = (over: Partial<Snippet> = {}): Snippet => ({
 });
 
 let installed: Awaited<ReturnType<typeof install>> | null;
-beforeEach(() => { loaded = []; mounted = []; calls = []; installed = null; document.body.innerHTML = ""; document.cookie = "clax_override=; Max-Age=0; Path=/"; });
+beforeEach(() => { loaded = []; mounted = []; calls = []; installed = null; document.body.innerHTML = ""; document.documentElement.removeAttribute(CARRIER_ATTR); document.cookie = "clax_override=; Max-Age=0; Path=/"; });
 afterEach(() => { installed?.uninstall(); localStorage.clear(); history.replaceState(null, "", "/"); });
 
 describe("pluginsFor", () => {
@@ -165,5 +165,37 @@ describe("authOf and the queued install", () => {
     installed = await installQueued(window);
     expect(mounted).toHaveLength(1);
     expect(installQueued({} as Window)).toBeNull();
+  });
+});
+
+describe("one install, two carriers", () => {
+  const tag = (attrs: Record<string, string>) => {
+    const t = document.createElement("script");
+    for (const [k, v] of Object.entries(attrs)) t.setAttribute(k, v);
+    return t;
+  };
+  it("a tag names its instance by where the script came from, and its container and token route", () => {
+    expect(snippetFromTag(tag({ src: "https://clax.example/_clax/overlay.js?v=0123", "data-container": "q1", "data-auth": "/clax/token" }), "https://site.example/app/")).toEqual({
+      instance: "https://clax.example", container: "q1", auth: "https://site.example/clax/token",
+    });
+    expect(snippetFromTag(tag({ src: "https://example.com/clax/_clax/overlay.js", "data-container": "q1", "data-queue": "q2" }), "https://site.example/")).toEqual({
+      instance: "https://example.com/clax", container: "q1", queue: "q2",
+    });
+    expect(snippetFromTag(tag({ src: "https://clax.example/_clax/overlay.js" }), "https://site.example/")).toBeNull();
+    expect(snippetFromTag(null, "https://site.example/")).toBeNull();
+  });
+  it("the extension installs only where the site has not; the site's install wins and the extension's goes", async () => {
+    const ext = await install(snippet({ carrier: "extension" }));
+    expect(document.documentElement.getAttribute(CARRIER_ATTR)).toBe("extension");
+    await expect(install(snippet({ carrier: "extension" }))).rejects.toThrow(/already has Clax/);
+    installed = await install(snippet());
+    expect(calls).toContain("close");
+    expect(document.documentElement.getAttribute(CARRIER_ATTR)).toBe("site");
+    expect(claim(document, "extension")).toBe(false);
+    ext.uninstall();
+    expect(document.documentElement.getAttribute(CARRIER_ATTR)).toBe("site");
+    installed.uninstall();
+    installed = null;
+    expect(document.documentElement.hasAttribute(CARRIER_ATTR)).toBe(false);
   });
 });

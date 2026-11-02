@@ -825,6 +825,11 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/.well-known/clax", get(discovery::get))
         // `/a/<id>[/v/<n>]/<file>`: the shell reads the version and page from the path.
         .route("/a/{aid}/{*rest}", get(shell::artifact_page))
+        // A site's container, read by the one-tag install and the extension.
+        .route(
+            "/_clax/containers/{id}/{file}",
+            get(crate::routes::containers::config),
+        )
         .route("/_clax/{*path}", get(shell::static_file))
         .route("/sw.js", get(shell::service_worker))
         .layer(clax_http::http_cache::compression());

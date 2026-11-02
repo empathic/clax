@@ -48,6 +48,8 @@ export interface Snippet {
   externalId?: string;
   nonce?: string;
   doc?: Document;
+  /** Who installs: the site (default) or the Clax extension, which yields to the site ([`claim`]). */
+  carrier?: Carrier;
   /** Fetches the container (tests replace it): default a GET of `containerUrl`. */
   fetchContainer?: (url: string) => Promise<unknown>;
   /** The plugins by name (tests replace it). */
@@ -164,6 +166,8 @@ export async function install(s: Snippet): Promise<Installed> {
   const doc = s.doc ?? document;
   const win = doc.defaultView ?? window;
   const origin = win.location?.origin ?? "";
+  const carrier = s.carrier ?? "site";
+  if (!claim(doc, carrier)) throw new Error("Clax.install: this page already has Clax; the site's install wins");
 
   const { container, error } = await fetchContainer(s, win);
   const link = linkOverride(win.location?.search ?? "");
@@ -262,6 +266,15 @@ export async function install(s: Snippet): Promise<Installed> {
   w.clax = q;
   for (const cmd of queued) if (Array.isArray(cmd) && cmd[0] !== "install") push(cmd as Command);
   teardown.push(() => { if (w.clax === q) delete w.clax; });
+  teardown.push(() => { if (doc.documentElement.getAttribute(CARRIER_ATTR) === carrier) doc.documentElement.removeAttribute(CARRIER_ATTR); });
+
+  const uninstall = () => { for (const off of teardown.splice(0).reverse()) { try { off(); } catch (e) { console.error("Clax.install: teardown threw", e); } } };
+  // The extension's overlay goes when the site installs its own.
+  if (carrier === "extension") {
+    const yieldToSite = () => uninstall();
+    doc.addEventListener(SITE_INSTALLED, yieldToSite, { once: true });
+    teardown.unshift(() => doc.removeEventListener(SITE_INSTALLED, yieldToSite));
+  }
 
   return {
     config, source: r.source, ignored: r.ignored, error,
@@ -269,7 +282,7 @@ export async function install(s: Snippet): Promise<Installed> {
     plugins: names, handle, push,
     actions: () => (config.enabled && config["entry.palette"] ? (handle?.actions() ?? (handoff ? [{ id: "clax.report", label: "Send feedback", run: () => report() }] : [])) : []),
     override: layer => writeOverride(doc, layer),
-    uninstall: () => { for (const off of teardown.splice(0).reverse()) { try { off(); } catch (e) { console.error("Clax.install: teardown threw", e); } } },
+    uninstall,
   };
 }
 
@@ -293,4 +306,64 @@ export function installQueued(win: Window = window): Promise<Installed> | null {
   const cmd = q.find(c => Array.isArray(c) && c[0] === "install");
   if (!cmd) return null;
   return install({ ...(cmd[1] as Snippet) }).catch(e => { console.error("Clax.install:", e); throw e; });
+}
+
+/** The snippet a tag carries: `<script src="{instance}/_clax/overlay.js"
+ * data-container="…" data-auth="/clax/token">`. The instance is where the
+ * script came from; `data-auth` is the site's token route, resolved against
+ * the page. `null` for a tag with no `data-container` (a page that calls
+ * `Clax.install` itself). */
+export function snippetFromTag(tag: HTMLScriptElement | null | undefined, base: string): Partial<Snippet> | null {
+  const d = tag?.dataset;
+  if (!tag || !d?.container) return null;
+  let instance: string;
+  try {
+    const src = new URL(tag.src, base);
+    instance = src.origin + src.pathname.replace(/\/_clax\/[^/]*$/, "");
+  } catch { return null; }
+  const s: Partial<Snippet> = { instance: instance.replace(/\/+$/, ""), container: d.container };
+  if (d.queue) s.queue = d.queue;
+  if (d.auth) { try { s.auth = new URL(d.auth, base).href; } catch { /* left out: install says auth is missing */ } }
+  return s;
+}
+
+/** Who put the overlay on the page: the site's own tag (or its own
+ * `Clax.install`), or the Clax extension. */
+export type Carrier = "site" | "extension";
+
+/** The mark on `<html>` naming the carrier that installed Clax. Both worlds
+ * see it: the page's and an extension's content script share the DOM, not
+ * their globals. */
+export const CARRIER_ATTR = "data-clax-installed";
+/** Dispatched on the document when the site installs, so an extension's
+ * overlay already there removes itself: the site's install wins. */
+export const SITE_INSTALLED = "clax:site-installed";
+
+/** Whether `carrier` may install on `doc`, and marks it when it may: the
+ * site always may (an extension's overlay is told to go); the extension may
+ * only where nothing is installed. */
+export function claim(doc: Document, carrier: Carrier): boolean {
+  const html = doc.documentElement;
+  const held = html.getAttribute(CARRIER_ATTR);
+  if (carrier === "extension") {
+    if (held) return false;
+    html.setAttribute(CARRIER_ATTR, "extension");
+    return true;
+  }
+  html.setAttribute(CARRIER_ATTR, "site");
+  if (held === "extension") doc.dispatchEvent(new Event(SITE_INSTALLED));
+  return true;
+}
+
+/** The tag's install, from the script now running: what `/_clax/overlay.js`
+ * does when it is loaded with `data-container`. */
+export function installFromTag(doc: Document = document): Promise<Installed> | null {
+  const tag = doc.currentScript as HTMLScriptElement | null;
+  const s = snippetFromTag(tag, doc.baseURI);
+  if (!s) return null;
+  if (!s.auth) {
+    console.error(`Clax: the tag for container ${s.container} has no data-auth (the site's token route); Clax reports need a reporter token`);
+    return null;
+  }
+  return install({ ...(s as Snippet), doc }).catch(e => { console.error("Clax.install:", e); throw e; });
 }

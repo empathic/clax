@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { Report, ReportPage, ReportState } from "../../../sdk/src/types";
-import { anchorText, browserOf, commitLink, countReports, countsText, parseOrigins, queuesRoute, reportHref, reporterName } from "./model";
+import { anchorText, browserOf, commitLink, containerPath, countReports, countsText, installTag, parseOrigins, queuesRoute, reportHref, reporterName } from "./model";
+
+describe("installTag", () => {
+  it("is one async tag naming the container and the site's token route, pinned with integrity when it can be", () => {
+    expect(installTag("https://clax.example/", "q1", null)).toBe('<script async src="https://clax.example/_clax/overlay.js" data-container="q1" data-auth="/clax/token"></script>');
+    expect(installTag("https://clax.example", "q1", { src: "/_clax/overlay.js?v=0123456789ab", integrity: "sha256-AA+/=" })).toBe(
+      '<script async src="https://clax.example/_clax/overlay.js?v=0123456789ab" integrity="sha256-AA+/=" crossorigin="anonymous" data-container="q1" data-auth="/clax/token"></script>',
+    );
+    expect(installTag("https://clax.example", 'a"b', null)).toContain('data-container="a&quot;b"');
+    expect(containerPath("q 1")).toBe("/_clax/containers/q%201/config.json");
+  });
+});
 
 const report = (state: ReportState) => ({ state }) as Report;
 

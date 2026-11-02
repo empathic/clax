@@ -13,6 +13,7 @@ pub mod bot;
 pub mod client_imports;
 pub mod confirmations;
 pub mod connect;
+pub mod containers;
 pub mod content;
 pub mod discovery;
 pub mod docs;

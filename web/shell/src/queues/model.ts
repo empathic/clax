@@ -193,6 +193,24 @@ export function anchorText(anchor: unknown): string | null {
 /** A diagnostics line's levels, most severe first. */
 export const LEVELS: readonly DiagLine["level"][] = ["error", "warn", "info", "debug"];
 
+/** The overlay a container's answer pins: `src` relative to the instance. */
+export interface OverlayPin { src: string; integrity: string }
+
+/** Where this instance serves queue `qid`'s container. */
+export const containerPath = (qid: string) => `/_clax/containers/${encodeURIComponent(qid)}/config.json`;
+
+const attr = (v: string) => v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+
+/** The one tag a site pastes to install queue `qid` from `instance`:
+ * pinned to `pin`'s version with its integrity, or the bare URL, which
+ * follows each deploy. */
+export function installTag(instance: string, qid: string, pin: OverlayPin | null): string {
+  const base = instance.replace(/\/+$/, "");
+  const src = `${base}${pin?.src ?? "/_clax/overlay.js"}`;
+  const sri = pin ? ` integrity="${attr(pin.integrity)}" crossorigin="anonymous"` : "";
+  return `<script async src="${attr(src)}"${sri} data-container="${attr(qid)}" data-auth="/clax/token"></script>`;
+}
+
 /** What to show for a refusal `e`: the daemon's message (lower case, no
  * full stop) as a sentence. */
 export function refusal(e: unknown): string {

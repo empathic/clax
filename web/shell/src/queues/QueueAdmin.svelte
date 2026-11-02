@@ -11,7 +11,7 @@
   // when the panel opens and after each change.
   import { onMount } from "svelte";
   import * as api from "./api";
-  import { refusal } from "./model";
+  import { containerPath, installTag, type OverlayPin, refusal } from "./model";
 
   const p: { queue: api.Queue } = $props();
   let members = $state<api.QueueMember[] | null>(null);
@@ -22,7 +22,7 @@
   let role = $state<api.QueueRole>("triage");
   let grantName = $state("");
   let made = $state<api.ServiceGrantCreated | null>(null);
-  let copied = $state<"token" | "key" | null>(null);
+  let copied = $state<"token" | "key" | "tag" | null>(null);
   // svelte-ignore state_referenced_locally
   const qid = p.queue.id;
 
@@ -63,13 +63,29 @@
     if (made?.grant.id === g.id) made = null;
     await loadGrants();
   }
-  const copy = (what: "token" | "key", text: string) => { void navigator.clipboard?.writeText(text).then(() => { copied = what; }, () => {}); };
+  const copy = (what: "token" | "key" | "tag", text: string) => { void navigator.clipboard?.writeText(text).then(() => { copied = what; }, () => {}); };
   const day = (iso: string) => iso.slice(0, 10);
 
-  onMount(() => { void loadMembers(); void loadGrants(); });
+  // The one-tag install: the overlay this instance serves, pinned by version
+  // and integrity when the container's answer names it.
+  let pin = $state<OverlayPin | null>(null);
+  let pinned = $state(true);
+  const loadPin = () => fetch(containerPath(qid), { credentials: "omit" }).then(r => (r.ok ? r.json() : null)).then(b => { pin = b?.overlay ?? null; }, () => { pin = null; });
+  const tag = $derived(installTag(location.origin, qid, pinned ? pin : null));
+
+  onMount(() => { void loadMembers(); void loadGrants(); void loadPin(); });
 </script>
 
 <div class="qadmin">
+  <section class="part" aria-labelledby={`install-${qid}`}>
+    <h4 id={`install-${qid}`}>Install</h4>
+    <p class="hint">Paste this tag into any page on this queue's origins. No build step: Clax serves the overlay and its settings, and upgrades it when Clax deploys. <code>data-auth</code> is your backend's token route, which mints reporter tokens with a service grant (below).</p>
+    <div class="cmd"><code aria-label="Install tag">{tag}</code><button type="button" onclick={() => copy("tag", tag)}>{copied === "tag" ? "Copied" : "Copy"}</button></div>
+    {#if pin}
+      <label class="check"><input type="checkbox" checked={pinned} onchange={e => { pinned = e.currentTarget.checked; }} /> Pin this version (with integrity); unpinned follows each Clax deploy within an hour</label>
+    {/if}
+  </section>
+
   <section class="part" aria-label={`Members of ${p.queue.name}`}>
     <h4>Members</h4>
     {#if members?.length}
@@ -151,4 +167,6 @@
   .cmd { display: flex; gap: 8px; align-items: stretch; min-width: 0; }
   .cmd code { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); font: 13px/1.4 var(--mono); overflow-wrap: anywhere; user-select: all; }
   .row { display: flex; gap: 8px; margin-top: 4px; }
+  .check { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 12.5px; color: var(--muted); }
+  .hint code { font: 12px var(--mono); }
 </style>
