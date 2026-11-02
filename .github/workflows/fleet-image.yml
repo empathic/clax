@@ -98,3 +98,19 @@ jobs:
           for digest in *; do sources+=("$IMAGE@sha256:$digest"); done
           [ "${#sources[@]}" -eq 2 ] || { echo "expected 2 digests, got ${#sources[@]}" >&2; exit 1; }
           docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+      # A package's first push makes it private on ghcr.io, and a cluster
+      # without credentials then gets ImagePullBackOff: fail until it is
+      # public.
+      - name: Check that anyone can pull it
+        run: |
+          set -euo pipefail
+          repo="${IMAGE#ghcr.io/}"
+          tag="$(jq -r '.tags[0]' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
+          tag="${tag##*:}"
+          if ! token="$(curl -fsS "https://ghcr.io/token?scope=repository:$repo:pull" | jq -er .token)" ||
+            ! curl -fsS -o /dev/null -H "Authorization: Bearer $token" \
+              -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json" \
+              "https://ghcr.io/v2/$repo/manifests/$tag"; then
+            echo "::error::$IMAGE:$tag cannot be pulled without credentials: set the clax-fleet package's visibility to public (https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility)"
+            exit 1
+          fi
