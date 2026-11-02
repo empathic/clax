@@ -138,10 +138,10 @@ async fn a_tailnet_user_gets_no_token_and_no_owners_power() {
             .send()
     };
     let res = get("/api/token".into()).await.unwrap();
-    assert_eq!(res.status(), 403);
+    assert_eq!(res.status(), 401);
     assert!(res.headers().get("set-cookie").is_none(), "no owner cookie");
     let body: Value = res.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "not_loopback");
+    assert_eq!(body["error"]["code"], "unauthorized");
     // The session list needs the token.
     let res = get("/api/sessions".into()).await.unwrap();
     assert_eq!(res.status(), 401);
@@ -173,16 +173,37 @@ async fn the_headers_are_ignored_on_a_host_that_is_not_trusted() {
     let port = ts.addr.port();
     // A local process on this machine can send them to localhost.
     for host in [format!("localhost:{port}"), format!("127.0.0.1:{port}")] {
-        let (v, cookie) = me(&ts, &ts.base, &host).await;
-        assert!(v.get("tailscale_login").is_none(), "{host}: {v}");
-        assert_eq!(v["display_name"], Value::Null, "{host}");
-        assert!(cookie, "{host}: a cookie viewer, as without the headers");
-        let res = comment(&ts, aid, &host, &format!("http://{host}")).await;
-        assert_eq!(res.status(), 201, "{host}");
-        let t = res.json::<Value>().await.unwrap()["thread"].clone();
-        assert_eq!(t["comments"][0]["author_public_id"], Value::Null, "{host}");
-        assert_eq!(t["comments"][0]["author_name"], "Viewer", "{host}");
+        ignored(&ts, &ts.base, aid, &host, &format!("http://{host}")).await;
     }
+}
+
+/// The tailnet headers count for nothing on `host` from `base`: with no
+/// other credential the gate refuses the request (`local_trust::gate`),
+/// mints no viewer, and writes no comment, as without the headers.
+async fn ignored(ts: &TestServer, base: &str, aid: &str, host: &str, origin: &str) {
+    let res = as_alex(ts.client.get(format!("{base}/api/viewers/me")), host)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 401, "{host}");
+    assert!(res.headers().get("set-cookie").is_none(), "{host}: no viewer");
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "no_credential", "{host}");
+    let form = reqwest::multipart::Form::new()
+        .text("anchor", clax_testkit::element_anchor().to_string())
+        .text("body", "from the phone")
+        .text("version", "1");
+    let res = as_alex(
+        ts.client
+            .post(format!("{base}/api/artifacts/{aid}/threads"))
+            .header("origin", origin)
+            .multipart(form),
+        host,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 401, "{host}");
 }
 
 #[tokio::test]
@@ -190,15 +211,7 @@ async fn the_headers_are_ignored_with_the_setting_off() {
     let ts = tailnet(false).await;
     let a = ts.publish("Doc", &[("index.html", "<h2>x</h2>")]).await;
     let aid = a["artifact"]["id"].as_str().unwrap();
-    let (v, cookie) = me(&ts, &ts.base, TRUSTED).await;
-    assert!(v.get("tailscale_login").is_none(), "{v}");
-    assert_eq!(v["display_name"], Value::Null);
-    assert!(cookie);
-    let res = comment(&ts, aid, TRUSTED, &format!("https://{TRUSTED}")).await;
-    assert_eq!(res.status(), 201);
-    let t = res.json::<Value>().await.unwrap()["thread"].clone();
-    assert_eq!(t["comments"][0]["author_public_id"], Value::Null);
-    assert_eq!(t["comments"][0]["author_name"], "Viewer");
+    ignored(&ts, &ts.base, aid, TRUSTED, &format!("https://{TRUSTED}")).await;
 }
 
 #[tokio::test]
@@ -213,11 +226,10 @@ async fn the_headers_are_ignored_from_a_peer_that_is_not_loopback() {
         s.tailscale_identity = true;
     })
     .await;
+    let a = ts.publish("Doc", &[("index.html", "<h2>x</h2>")]).await;
+    let aid = a["artifact"]["id"].as_str().unwrap();
     let lan = format!("http://{ip}:{}", ts.addr.port());
-    let (v, cookie) = me(&ts, &lan, TRUSTED).await;
-    assert!(v.get("tailscale_login").is_none(), "{v}");
-    assert_eq!(v["display_name"], Value::Null);
-    assert!(cookie, "a cookie viewer, as without the headers");
+    ignored(&ts, &lan, aid, TRUSTED, &format!("https://{TRUSTED}")).await;
 }
 
 /// A daemon trusting [`TRUSTED`], naming tailnet viewers, whose `[serve]
@@ -359,8 +371,8 @@ async fn the_owners_login_from_a_peer_that_is_not_loopback_is_not_the_owner() {
     let lan = format!("http://{ip}:{}", ts.addr.port());
     let (token, _) = get_as(&ts, &lan, "/api/token", TRUSTED, "bdelanghe@github").await;
     assert_eq!(
-        token, 403,
-        "a LAN client naming the trusted host is not the proxy"
+        token, 401,
+        "a LAN client naming the trusted host is not the proxy: no credential"
     );
     let (inbox, _) = get_as(&ts, &lan, "/api/inbox", TRUSTED, "bdelanghe@github").await;
     assert_ne!(inbox, 200);

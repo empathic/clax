@@ -287,7 +287,8 @@ pub fn events_cookie_name(host: &str) -> String {
 
 /// Paths a daemon with `require_credential` serves without a credential on
 /// its own host: `/healthz`, `/.well-known/clax` (what this Clax is), the
-/// shell's static files (`/_clax/...`, code and no data), and the old
+/// shell's static files (`/_clax/...`, and its service worker `/sw.js`, at
+/// the root for its scope: code and no data), and the old
 /// addresses of content and assets (`/c/...`, none of which answers, and
 /// `/_blob/...`, which redirect to the asset's site). A site host's requests pass the gate whatever their path: the
 /// site's access decides each (`crate::site_access`).
@@ -295,6 +296,7 @@ pub fn open_without_credential(path: &str) -> bool {
     path == "/healthz"
         || path == "/.well-known/clax"
         || path.starts_with("/_clax/")
+        || path == "/sw.js"
         || path.starts_with("/c/")
         || path.starts_with("/_blob/")
 }

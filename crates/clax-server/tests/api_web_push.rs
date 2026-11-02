@@ -191,7 +191,8 @@ async fn no_one_but_the_owners_browser_reaches_the_subscription_routes() {
     };
     let tailnet = |login: &'static str| from(login, format!("https://{TRUSTED}"));
     let cases: Vec<(&str, As<'_>, u16, &str)> = vec![
-        ("anonymous", Box::new(|r| r), 403, "forbidden"),
+        // No credential at all: the gate refuses it before any route.
+        ("anonymous", Box::new(|r| r), 401, "no_credential"),
         (
             "a tailnet viewer",
             Box::new(tailnet("alex@github")),
@@ -264,10 +265,12 @@ async fn no_one_but_the_owners_browser_reaches_the_subscription_routes() {
     .send()
     .await
     .unwrap();
-    assert_eq!(res.status(), 403);
+    // An owner browser session another origin sends is no credential at all
+    // (`local_trust::session_counts`): the gate refuses it before any route.
+    assert_eq!(res.status(), 401);
     assert_eq!(
         res.json::<Value>().await.unwrap()["error"]["code"],
-        "forbidden_origin"
+        "no_credential"
     );
 }
 
@@ -563,7 +566,8 @@ async fn the_owners_tailnet_login_through_serve_subscribes_a_device() {
                     Some(&local_origin),
                 )
             }),
-            "forbidden",
+            // The headers name no one there, so it carries no credential.
+            "no_credential",
         ),
         (
             "a cross-site request of the owner's device",
@@ -590,8 +594,10 @@ async fn the_owners_tailnet_login_through_serve_subscribes_a_device() {
         ),
     ];
     for (who, with, code) in &refused {
+        // The gate's refusal of a request with no credential is a 401.
+        let want = if *code == "no_credential" { 401 } else { 403 };
         for (method, status, v) in web_push_calls(&ts, &body, with.as_ref()).await {
-            assert_eq!(status, 403, "{who}: {method}: {v}");
+            assert_eq!(status, want, "{who}: {method}: {v}");
             assert_eq!(v["error"]["code"], *code, "{who}: {method}: {v}");
         }
     }
@@ -628,10 +634,17 @@ async fn without_the_setting_the_owners_tailnet_login_reaches_no_push_route() {
     ] {
         let ts = tailnet_owned_by(identity, owner).await;
         let with = |r| through_serve(r, TRUSTED, "bdelanghe@github", "same-origin", Some(&origin));
+        // With the setting off the headers name no one: no credential,
+        // refused by the gate; with it on, a tailnet viewer the route refuses.
+        let (want, want_code) = if identity {
+            (403, "forbidden")
+        } else {
+            (401, "no_credential")
+        };
         for (method, status, v) in web_push_calls(&ts, &body, &with).await {
-            assert_eq!(status, 403, "{identity} {owner:?}: {method}: {v}");
+            assert_eq!(status, want, "{identity} {owner:?}: {method}: {v}");
             assert_eq!(
-                v["error"]["code"], "forbidden",
+                v["error"]["code"], want_code,
                 "{identity} {owner:?}: {method}: {v}"
             );
         }

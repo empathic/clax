@@ -305,12 +305,12 @@ async fn a_trusted_host_is_admitted_like_localhost_and_nothing_like_it_is() {
             "{host}"
         );
     }
-    // The token stays for this machine's own names: a browser on the
-    // trusted host never holds it.
+    // The token stays for an owner browser session on this machine: a
+    // browser on the trusted host holds none, so is refused it.
     let (status, body) = status_with_host(&ts, &ts.base, "/api/token", TRUSTED).await;
     assert_eq!(
         (status, body["error"]["code"].as_str()),
-        (403, Some("not_loopback"))
+        (401, Some("unauthorized"))
     );
 }
 

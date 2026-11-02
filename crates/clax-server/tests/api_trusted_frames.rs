@@ -290,6 +290,9 @@ async fn without_the_setting_a_trusted_host_frames_as_main_does() {
         .client
         .get(format!("{}/a/{aid}", on.base))
         .header("host", format!("localhost:{port}"))
+        // The owner's browser on this machine: its session and proof.
+        .header("accept", "text/html")
+        .header("cookie", on.owner_cookie())
         .send()
         .await
         .unwrap();
