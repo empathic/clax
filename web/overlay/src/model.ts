@@ -111,11 +111,19 @@ export function reportOf(d: Draft, page: { url: string; title: string }, opts: {
   return r;
 }
 
-/** A failure as the reporter reads it. */
-export function failureText(e: unknown): string {
+/** The origin of the page `doc`, for naming it in a failure. */
+export function pageOrigin(doc: Document): string {
+  return new URL(pageUrl(doc)).origin;
+}
+
+/** A failure as the reporter reads it; `origin`, the page's, is named
+ * when the queue refuses it. */
+export function failureText(e: unknown, origin?: string): string {
   const code = (e as { code?: unknown } | null)?.code;
   if (code === "network") return "Clax could not be reached. Try again.";
-  if (code === "wrong_origin") return "This page may not report into this queue.";
+  if (code === "wrong_origin") {
+    return origin ? `This page (${origin}) may not report into this queue.` : "This page may not report into this queue.";
+  }
   if (code === "not_a_member") return "The queue was not found.";
   if (code === "unsupported_browser") return "This browser can't send reports (it lacks Ed25519 signing). Use a current Chrome, Firefox or Safari.";
   const m = e instanceof Error ? e.message : String(e);

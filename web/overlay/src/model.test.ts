@@ -97,7 +97,9 @@ describe("the page's artifact", () => {
 describe("failures", () => {
   it("read as the reporter would", () => {
     expect(failureText({ code: "network", message: "x" })).toMatch(/could not be reached/);
-    expect(failureText({ code: "wrong_origin" })).toMatch(/may not report/);
+    expect(failureText({ code: "wrong_origin" })).toBe("This page may not report into this queue.");
+    expect(failureText({ code: "wrong_origin" }, "https://app.example")).toBe("This page (https://app.example) may not report into this queue.");
+    expect(failureText({ code: "network", message: "x" }, "https://app.example")).toMatch(/could not be reached/);
     expect(failureText(new Error("too big"))).toBe("too big");
     expect(failureText({ code: "unsupported_browser" })).toBe("This browser can't send reports (it lacks Ed25519 signing). Use a current Chrome, Firefox or Safari.");
   });

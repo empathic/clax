@@ -10,7 +10,7 @@
   // none over another; closing the composer gives focus back to Report.
   import { onDestroy, untrack } from "svelte";
   import type { Report } from "../../sdk/src/types";
-  import { type Clip, type Draft, POLL_MS, Poll, type ReporterApi, type Timers, canSend, clipStatus, failureText, newDraft, pageUrl, quoteOf, realTimers, reportOf, takeClip } from "./model";
+  import { type Clip, type Draft, POLL_MS, Poll, type ReporterApi, type Timers, canSend, clipStatus, failureText, newDraft, pageOrigin, pageUrl, quoteOf, realTimers, reportOf, takeClip } from "./model";
   import type { Picked, Picker } from "./picker";
   import Reports from "./Reports.svelte";
 
@@ -131,7 +131,7 @@
       if (reports) reports = [report, ...reports.filter(r => r.id !== report.id)];
       say("Report sent. Replies show under Your reports.");
     } catch (e) {
-      d.error = failureText(e);
+      d.error = failureText(e, pageOrigin(doc));
     } finally {
       d.sending = false;
     }
@@ -142,7 +142,7 @@
     if (!open) return;
     reports = page.reports;
     loadError = null;
-  }, timers, POLL_MS, e => { loadError = failureText(e); }));
+  }, timers, POLL_MS, e => { loadError = failureText(e, pageOrigin(doc)); }));
 
   function toggleReports(): void {
     open = !open;
