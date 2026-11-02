@@ -252,15 +252,12 @@ async fn every_signed_in_person_reports_with_no_flag() {
     assert!(v["token"].as_str().unwrap().starts_with("cxr_"), "{v}");
 
     // Without a credential, or as a viewer who is no person, none is minted,
-    // and the config is off.
-    let (status, v) = s
+    // and the config is off. A local daemon refuses a request with no
+    // credential before any route (`clax_http::local_trust::gate`).
+    let (status, _) = s
         .as_browser(None, "GET", "/_app/feedback/config", None)
         .await;
-    assert_eq!(status, 200);
-    assert_eq!(
-        v,
-        json!({"enabled": false, "instance": null, "queue": null, "context": null})
-    );
+    assert_eq!(status, 401);
     let (status, _) = s
         .as_browser(
             None,
@@ -395,6 +392,7 @@ async fn the_owner_files_as_their_public_id() {
     let res = client()
         .post(format!("{}/_app/feedback/token", s.ts.base))
         .header("cookie", s.ts.owner_cookie())
+        .header(clax_http::local_trust::PROOF_HEADER, s.ts.owner_proof())
         .json(&json!({"public_key": sig::encode_public(&key.public())}))
         .send()
         .await
@@ -438,10 +436,13 @@ async fn me_flags_lists_own_flags() {
     let ana = ts.person("Ana").await;
     let get = |cookie: String| {
         let base = ts.base.clone();
+        // The owner cookie is a credential with its proof alone.
+        let proof = ts.owner_proof();
         async move {
             let res = client()
                 .get(format!("{base}/api/me/flags"))
                 .header("cookie", cookie)
+                .header(clax_http::local_trust::PROOF_HEADER, proof)
                 .send()
                 .await
                 .unwrap();
