@@ -156,8 +156,9 @@ Cloudflare's docs.
 ### Cloudflare
 
 1. Make the account dev and the previews use (not clax.dev's), on Workers
-   Paid, with the Artifacts beta turned on (Storage & databases,
-   Artifacts) for dev. `just wrangler login`, then `just wrangler whoami`
+   Paid, with R2 turned on (Storage & databases, R2; until it is, every
+   deploy fails making its bucket with Cloudflare's code 10042) and the
+   Artifacts beta turned on (Storage & databases, Artifacts) for dev. `just wrangler login`, then `just wrangler whoami`
    lists the accounts the login sees, with their IDs: the new one's is
    the environments' `CLOUDFLARE_ACCOUNT_ID`.
 2. On it, add the zones: dev's public

@@ -311,3 +311,18 @@ export function reelVars(o) {
   }
   return { REEL_URL: video, ...(poster ? { REEL_POSTER_URL: poster } : {}) };
 }
+
+/** What a failed wrangler run `r` ({code, out, err}) says went wrong, on
+ * one line without colour or wrangler's "✘ [ERROR]": its first error line, with the lines after it
+ * up to wrangler's "If you think this is a bug" footer, since wrangler puts
+ * the Cloudflare API's own reason (and its code) on the line after its
+ * "A request to the Cloudflare API (…) failed."; else the last line it
+ * printed, else its exit code. */
+export function wranglerError(r) {
+  // eslint-disable-next-line no-control-regex
+  const lines = `${r.err}\n${r.out}`.replace(/\x1b\[[0-9;]*m/g, "").split("\n").map((l) => l.trim()).filter(Boolean);
+  const at = lines.findIndex((l) => /^✘|ERROR|error/i.test(l));
+  if (at < 0) return lines.at(-1) ?? `exit ${r.code}`;
+  const end = lines.findIndex((l, i) => i > at && (/^If you think this is a bug/.test(l) || l.startsWith("🪵")));
+  return lines.slice(at, end < 0 ? undefined : end).join(" ").replace(/^✘ \[ERROR\] /, "");
+}

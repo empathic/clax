@@ -23,6 +23,7 @@ import {
   smokeCredential,
   versionIdOf,
   wildcardRecordOf,
+  wranglerError,
 } from "./deploy-lib.mjs";
 
 // What `wrangler deploy` printed when the custom-domains call failed after
@@ -333,4 +334,31 @@ test("the reel's addresses become the Worker's REEL_URL and REEL_POSTER_URL, htt
   assert.throws(() => reelVars({ "reel-poster-url": poster }), /--reel-poster-url needs --reel-url/);
   assert.throws(() => reelVars({ "reel-url": "http://videos.example/r.mp4" }), /--reel-url takes an https:\/\/ URL/);
   assert.throws(() => reelVars({ "reel-url": video, "reel-poster-url": "nope" }), /--reel-poster-url takes an https:\/\/ URL/);
+});
+
+// What `wrangler r2 bucket create` printed on an account without R2: the
+// reason is on the line after wrangler's own.
+const NO_R2 = `
+ ⛅️ wrangler 4.149.0 (update available 4.156.2)
+───────────────────────────────────────────────
+Creating bucket 'clax-assets-preview'...
+
+\x1b[31m✘ \x1b[41;31m[\x1b[41;97mERROR\x1b[41;31m]\x1b[0m \x1b[1mA request to the Cloudflare API (/accounts/c0be/r2/buckets) failed.\x1b[0m
+
+  Please enable R2 through the Cloudflare Dashboard. [code: 10042]
+  
+  If you think this is a bug, please open an issue at: \x1b[4mhttps://github.com/cloudflare/workers-sdk/issues/new/choose\x1b[0m
+
+🪵  Logs were written to "/home/runner/.config/.wrangler/logs/wrangler.log"
+`;
+
+test("a wrangler error keeps Cloudflare's reason, without colour", () => {
+  assert.equal(
+    wranglerError({ code: 1, out: "", err: NO_R2 }),
+    "A request to the Cloudflare API (/accounts/c0be/r2/buckets) failed. Please enable R2 through the Cloudflare Dashboard. [code: 10042]",
+  );
+  // A one-line error, and no output at all.
+  assert.equal(wranglerError({ code: 1, out: "", err: "✘ [ERROR] Missing entry-point\n" }), "Missing entry-point");
+  assert.equal(wranglerError({ code: 1, out: "Uploading…\nsomething broke", err: "" }), "something broke");
+  assert.equal(wranglerError({ code: 3, out: "", err: "" }), "exit 3");
 });

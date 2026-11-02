@@ -131,7 +131,7 @@ import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { dirname, join, resolve } from "node:path";
 import { cloudflare, expiryRule, hasRule } from "./cloudflare-api.mjs";
-import { PREVIEW_ASSET_DAYS, buildId, builtFromRefusal, checkCiOptions, ciSecretsRefusal, doneText, envOf, healthOf, partialTriggerUpdate, prodTipOf, productionGate, reelVars, siteZoneOf, versionIdOf, wildcardRecordOf } from "./deploy-lib.mjs";
+import { PREVIEW_ASSET_DAYS, buildId, builtFromRefusal, checkCiOptions, ciSecretsRefusal, doneText, envOf, healthOf, partialTriggerUpdate, prodTipOf, productionGate, reelVars, siteZoneOf, versionIdOf, wildcardRecordOf, wranglerError } from "./deploy-lib.mjs";
 import { BUILD, BUILT_FROM, HERE, baseConfig, embedsWebUi } from "./harness.mjs";
 
 const WRANGLER = join(HERE, "node_modules/.bin/wrangler");
@@ -295,10 +295,6 @@ function run(cmd, args, env = {}) {
 }
 
 const firstLine = (s) => s.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("⛅️") && !/^─+$/.test(l)) ?? "";
-const lastError = (r) => {
-  const lines = `${r.err}\n${r.out}`.split("\n").map((l) => l.trim()).filter(Boolean);
-  return lines.find((l) => /^✘|ERROR|error/i.test(l)) ?? lines.at(-1) ?? `exit ${r.code}`;
-};
 
 /** The JSON value wrangler printed after any banner. */
 function jsonIn(text) {
@@ -407,14 +403,14 @@ async function ensure(what, args, exists, account) {
   const text = `${r.out}\n${r.err}`;
   if (r.code === 0) return info(`${what}: created`);
   if (exists.test(text)) return info(`${what}: exists`);
-  throw new Error(`${what}: ${lastError(r)}\n   (wrangler ${args.join(" ")})`);
+  throw new Error(`${what}: ${wranglerError(r)}\n   (wrangler ${args.join(" ")})`);
 }
 
 async function artifactsNamespace(account, dryRun, NAMESPACE) {
   const list = await wrangler(["artifacts", "namespaces", "list", "--json"], { account });
   if (list.code !== 0) {
     throw new Error(
-      `Artifacts is not reachable on this account: ${lastError(list)}\n` +
+      `Artifacts is not reachable on this account: ${wranglerError(list)}\n` +
         "   Is the Artifacts beta enabled for it (dashboard > Storage & databases > Artifacts)? " +
         "Deploy with --store memory to run without it.",
     );
@@ -432,9 +428,9 @@ async function artifactsNamespace(account, dryRun, NAMESPACE) {
   // A namespace is made by its first repository.
   const probe = `clax-deploy-probe-${Date.now()}`;
   const made = await wrangler(["artifacts", "repos", "create", probe, "--namespace", NAMESPACE, "--default-branch", "main", "--json"], { account });
-  if (made.code !== 0) throw new Error(`creating the namespace's probe repository failed: ${lastError(made)}`);
+  if (made.code !== 0) throw new Error(`creating the namespace's probe repository failed: ${wranglerError(made)}`);
   const gone = await wrangler(["artifacts", "repos", "delete", probe, "--namespace", NAMESPACE, "--force"], { account });
-  info(`Artifacts namespace ${NAMESPACE}: created${gone.code === 0 ? "" : ` (deleting the probe repository ${probe} failed: ${lastError(gone)})`}`);
+  info(`Artifacts namespace ${NAMESPACE}: created${gone.code === 0 ? "" : ` (deleting the probe repository ${probe} failed: ${wranglerError(gone)})`}`);
 }
 
 const KEK_HEX = /^[0-9a-f]{64}$/i;
@@ -984,7 +980,7 @@ async function main() {
     if (secretsFile) rmSync(secretsFile, { force: true });
   }
   const size = uploadSize(r.out + r.err);
-  if (r.code !== 0) throw new Error(`wrangler deploy failed${retried ? " again, after its one retry" : ""}: ${lastError(r)}`);
+  if (r.code !== 0) throw new Error(`wrangler deploy failed${retried ? " again, after its one retry" : ""}: ${wranglerError(r)}`);
   if (size) {
     const pct = Math.round((size.gzip / PAID_LIMIT_KIB) * 100);
     info(`upload ${(size.total / 1024).toFixed(2)} MiB, ${(size.gzip / 1024).toFixed(2)} MiB gzipped: ${pct}% of Workers Paid's 10 MiB`);
