@@ -22,11 +22,10 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/empathic/clax.git",
-    "directory": "web"
+    "directory": "web/sdk"
   },
   "publishConfig": {
     "access": "public"
   },
-  "type": "module",
-  "sideEffects": false
+  "type": "module"
 }

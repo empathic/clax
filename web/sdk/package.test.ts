@@ -76,11 +76,15 @@ describe("the SDK package", () => {
     expect(manifest.publishConfig).toEqual({ access: "public" });
     expect(manifest.author).toEqual({ name: "Empathic, Inc.", email: "alex@empathic.dev" });
     expect(manifest.homepage).toBe("https://github.com/empathic/clax/tree/main/web/sdk#readme");
+    expect(manifest.repository).toEqual({ type: "git", url: "git+https://github.com/empathic/clax.git", directory: "web/sdk" });
     expect(manifest.bugs).toEqual({ url: "https://github.com/empathic/clax/issues" });
     expect(manifest.keywords).toContain("clax");
     expect(manifest.type).toBe("module");
     expect(manifest.sideEffects).toBe(false);
-    for (const k of ["dependencies", "peerDependencies", "optionalDependencies", "bundleDependencies"]) expect(manifest).not.toHaveProperty(k);
+    // Its metadata and its entries, and nothing else: no dependency, script or executable.
+    expect(Object.keys(manifest).sort()).toEqual([
+      "author", "bugs", "description", "exports", "homepage", "keywords", "license", "name", "publishConfig", "repository", "sideEffects", "type", "types", "typesVersions", "version",
+    ]);
     expect(Object.keys(manifest.exports).sort()).toEqual([".", "./overlay", "./package.json", "./service"]);
     expect(manifest.types).toBe("./types/sdk/src/index.d.ts");
     expect(manifest.typesVersions).toEqual({ "*": { overlay: ["./types/overlay/src/main.d.ts"], service: ["./types/sdk/src/service.d.ts"] } });
@@ -91,6 +95,14 @@ describe("the SDK package", () => {
       expect(existsSync(join(pkg, e.types)), e.types).toBe(true);
       expect(existsSync(join(pkg, e.default)), e.default).toBe(true);
     }
+  });
+
+  it("is built from a manifest whose name and version lines scripts/release-sdk.sh can read", () => {
+    // Two-space indented, each on a line of its own ending in a comma: the
+    // shape the release scripts' sed reads (sdk_field_at).
+    const text = readFileSync(join(web, "sdk", "package.json"), "utf8").split("\n");
+    expect(text).toContain(`  "name": "${source.name}",`);
+    expect(text).toContain(`  "version": "${source.version}",`);
   });
 
   it("carries its README", () => {
@@ -132,6 +144,13 @@ console.log(JSON.stringify(out));
 
   it("keeps class fields and private members as written, for the app's bundler to lower if it must", () => {
     for (const f of files(pkg).filter(p => p.endsWith(".js"))) expect(readFileSync(f, "utf8"), relative(pkg, f)).not.toMatch(/__private(Get|Set|Add|Method)\b|__publicField\b/);
+  });
+
+  it("keeps the overlay entry's declarations to its public interface", () => {
+    // main.d.ts reaches options.d.ts and the SDK's types, not the overlay's
+    // model, its capture or the bridge.
+    expect(files(join(pkg, "types", "overlay")).map(f => relative(join(pkg, "types", "overlay"), f)).sort()).toEqual(["src/main.d.ts", "src/options.d.ts"]);
+    expect(existsSync(join(pkg, "types", "bridge"))).toBe(false);
   });
 
   it("keeps its declarations inside the package, importing no other package", () => {
