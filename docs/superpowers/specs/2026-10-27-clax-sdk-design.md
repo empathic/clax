@@ -239,7 +239,13 @@ consent call from the extension fails to compile rather than answering
   revoking the service grant ends every reporter token it minted.
 - **Origin.** A reporter token is accepted only with an `Origin` equal to
   the one it is bound to, which is on the queue's list of origins (§7.1);
-  the CORS answer names that origin alone.
+  the CORS answer names that origin alone. The one exception is a page
+  served on Clax's own origin, whose browser sends no `Origin` on a
+  same-origin GET: a request with no `Origin` is accepted only with
+  `Sec-Fetch-Site: same-origin` and a token bound to Clax's own origin
+  (a hosted Clax's public origin, else the origin the request reached it
+  at), which is still on the queue's list. Both headers are the
+  browser's own, and page script cannot set either one.
 
 ### 5.4 The extension on a hosted Clax
 

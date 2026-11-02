@@ -734,6 +734,32 @@ async fn without_an_origin_only_a_same_origin_fetch_of_clax_s_own_origin_holds()
 }
 
 #[tokio::test]
+async fn on_a_hosted_clax_its_public_origin_reads_without_an_origin() {
+    let clock = Arc::new(ManualClock::at("2026-10-27T10:00:00Z"));
+    let ts = TestServer::spawn_hosted(clock.clone(), Some("the setup secret")).await;
+    let s = Setup::on(ts, clock, Some("u_a"));
+    let host = format!("localhost:{}", s.ts.addr.port());
+    let own = format!("http://{host}");
+    s.ts.store
+        .update_queue(
+            &AuditCtx::DAEMON,
+            &s.qid,
+            clax_store::queues::QueuePatch {
+                origins: Some(vec![own.clone(), ORIGIN.into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let r = s.reporter_on("emp-1", &own).await;
+    let same = [("sec-fetch-site", "same-origin")];
+    let res = s.as_reporter_on(&r, &host, &s.reports(), &same).await;
+    assert_eq!(res.status(), 200);
+    let other = s.reporter_on("emp-2", ORIGIN).await;
+    let res = s.as_reporter_on(&other, &host, &s.reports(), &same).await;
+    assert_eq!(status_code(res).await, (403, "wrong_origin".into()));
+}
+
+#[tokio::test]
 async fn a_reporter_token_expires_and_ends_with_its_grant() {
     let s = Setup::new().await;
     let r = s.reporter("emp-1").await;
