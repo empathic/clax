@@ -17,10 +17,24 @@
 //! the nonce recorded ([`crate::grant_auth::GrantAuth::record_queue_nonce`]).
 //!
 //! A service request is server to server: one carrying an `Origin` or a
-//! cookie is 403 `forbidden_origin`. A reporter request must carry exactly
-//! one `Origin`, equal to the token's and still among the queue's origins
-//! (403 `wrong_origin` otherwise, a missing one included). [`cors`] answers
-//! a reporter route's cross-origin reads for the queue's origins alone.
+//! cookie is 403 `forbidden_origin`. A reporter request's origin must be
+//! the token's and still among the queue's origins (403 `wrong_origin`
+//! otherwise). It is the request's one `Origin`; with none sent, it is
+//! Clax's own origin, and only for a browser's fetch from a page of that
+//! origin ([`own_origin_fetch`]). [`cors`] answers a reporter route's
+//! cross-origin reads for the queue's origins alone.
+//!
+//! The second case is a page served on Clax's own origin (Basis at
+//! `/fold/` beside Clax on a `[serve] trusted_hosts` name): its browser
+//! sends no `Origin` on a same-origin GET, only `Sec-Fetch-Site:
+//! same-origin`. Accepting that is no weaker than requiring `Origin`:
+//! `Sec-Fetch-*` is set by the browser and forbidden to page script, as
+//! `Origin` is; a client that is not a browser can forge either equally;
+//! and the same page's POSTs already carry `Origin` and pass, so the case
+//! admits only the reads such a page could already make. A request with no
+//! `Origin` and any other `Sec-Fetch-Site` (none, `none`, `same-site`,
+//! `cross-site`), or whose token is for another origin than the one the
+//! request reached Clax at, stays 403.
 
 use crate::agent;
 use crate::error::ApiError;
@@ -241,8 +255,9 @@ impl<const LIMIT: usize> FromRequest<AppState> for ReporterCaller<LIMIT> {
     /// # Errors
     /// 401 `invalid_token` for another credential, an unknown token, one
     /// whose grant was revoked, or another queue's; 401 `token_expired`;
-    /// 403 `wrong_origin` for an `Origin` other than the token's, none, or
-    /// one the queue no longer lists; 401 `invalid_signature`,
+    /// 403 `wrong_origin` for an `Origin` other than the token's, more
+    /// than one, none but from a fetch that is not [`own_origin_fetch`],
+    /// or a token origin the queue no longer lists; 401 `invalid_signature`,
     /// `stale_request` or `replayed_request`; 429 `limit_reached`; 413
     /// `body_too_large`.
     async fn from_request(req: Request, s: &AppState) -> Result<Self, Refusal> {
@@ -264,11 +279,12 @@ impl<const LIMIT: usize> FromRequest<AppState> for ReporterCaller<LIMIT> {
             .await?;
         let (t, origins) = found.ok_or_else(invalid_token)?;
         let mut sent = parts.headers.get_all(header::ORIGIN).iter();
-        let origin = match (sent.next(), sent.next()) {
-            (Some(o), None) => o.to_str().ok(),
-            _ => None,
+        let from_origin = match (sent.next(), sent.next()) {
+            (Some(o), None) => o.to_str().ok() == Some(t.origin.as_str()),
+            (None, _) => own_origin_fetch(s, &parts, &t.origin),
+            _ => false,
         };
-        if origin != Some(t.origin.as_str()) || !origins.contains(&t.origin) {
+        if !from_origin || !origins.contains(&t.origin) {
             return Err(wrong_origin());
         }
         let key = sig::decode_public(&t.public_key).map_err(|e| grant_auth::refuse(e, &s.store))?;
@@ -283,6 +299,43 @@ impl<const LIMIT: usize> FromRequest<AppState> for ReporterCaller<LIMIT> {
             extensions: parts.extensions,
         })
     }
+}
+
+/// Whether a request that sent no `Origin` is a browser's fetch from a page
+/// of `origin`, and `origin` is Clax's own (module doc): the browser says
+/// the fetch is its page's own origin's (one `Sec-Fetch-Site:
+/// same-origin`), and `origin` is a hosted daemon's public origin, or else
+/// `http://` or `https://` and the request's `Host` (`tailscale serve`
+/// ends TLS in front of the daemon), that `Host` being one the API answers
+/// to and not an artifact's own ([`crate::viewer::SameOrigin`]'s rule).
+fn own_origin_fetch(s: &AppState, parts: &Parts, origin: &str) -> bool {
+    let mut site = parts.headers.get_all("sec-fetch-site").iter();
+    let same_origin = matches!(
+        (site.next().map(HeaderValue::to_str), site.next()),
+        (Some(Ok("same-origin")), None)
+    );
+    if !same_origin {
+        return false;
+    }
+    if let Some(h) = &s.hosted {
+        return origin == h.origin;
+    }
+    let mut hosts = parts.headers.get_all(header::HOST).iter();
+    let host = match (hosts.next().map(HeaderValue::to_str), hosts.next()) {
+        (Some(Ok(h)), None) if !h.is_empty() => h,
+        _ => return false,
+    };
+    crate::host::artifact_host(host).is_none()
+        && crate::auth::request_host_allowed(
+            &parts.headers,
+            &parts.uri,
+            &parts.extensions,
+            &s.trusted_hosts,
+        )
+        && origin
+            .strip_prefix("https://")
+            .or_else(|| origin.strip_prefix("http://"))
+            .is_some_and(|rest| rest.eq_ignore_ascii_case(host))
 }
 
 /// The queue ID of a reporter route's path, `/api/queues/<qid>/reporter/…`.

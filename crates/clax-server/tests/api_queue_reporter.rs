@@ -119,11 +119,16 @@ impl Setup {
 
     /// Mints a reporter token for `reporter_id` on [`ORIGIN`].
     async fn reporter(&self, reporter_id: &str) -> Reporter {
+        self.reporter_on(reporter_id, ORIGIN).await
+    }
+
+    /// Mints a reporter token for `reporter_id` on `origin`.
+    async fn reporter_on(&self, reporter_id: &str, origin: &str) -> Reporter {
         let key = KeyPair::generate();
         let res = self
             .service(
                 &format!("/api/queues/{}/reporter-tokens", self.qid),
-                &json!({"reporter_id": reporter_id, "origin": ORIGIN,
+                &json!({"reporter_id": reporter_id, "origin": origin,
                         "public_key": sig::encode_public(&key.public())}),
             )
             .await;
@@ -157,6 +162,26 @@ impl Setup {
             h.push(("content-type", ct.to_string()));
         }
         self.send(method, pq, &h, body).await
+    }
+
+    /// A reporter's signed `GET pq` to `Host: host` with `headers` and no
+    /// body: what a browser sends for a page of `host`'s own origin, whose
+    /// same-origin GET carries no `Origin`.
+    async fn as_reporter_on(
+        &self,
+        r: &Reporter,
+        host: &str,
+        pq: &str,
+        headers: &[(&str, &str)],
+    ) -> reqwest::Response {
+        let sig = signature(&r.key, "GET", pq, host, self.now(), &r.token, b"");
+        let mut h = vec![
+            ("authorization", format!("Clax-Reporter {}", r.token)),
+            ("clax-signature", sig),
+            ("host", host.to_string()),
+        ];
+        h.extend(headers.iter().map(|(k, v)| (*k, (*v).to_string())));
+        self.send("GET", pq, &h, vec![]).await
     }
 
     fn reports(&self) -> String {
@@ -574,6 +599,136 @@ async fn a_reporter_token_holds_only_from_its_origin() {
         .unwrap();
     let res = s
         .as_reporter(&r, Some(ORIGIN), "GET", &s.reports(), None, vec![])
+        .await;
+    assert_eq!(status_code(res).await, (403, "wrong_origin".into()));
+}
+
+/// The `tailscale serve` name Basis and Clax share on phobos.
+const TRUSTED: &str = "phobos.tail556f5b.ts.net";
+
+/// A daemon whose `[serve] trusted_hosts` is [`TRUSTED`], with a queue for
+/// [`TRUSTED`]'s own origin and [`ORIGIN`]: a page served beside Clax on
+/// its own name (Basis at `/fold/`) reports into it.
+async fn same_origin_setup() -> Setup {
+    let clock = Arc::new(ManualClock::at("2026-10-27T10:00:00Z"));
+    let ts = TestServer::spawn_with_clock_and(clock.clone(), |s| {
+        s.trusted_hosts = vec![TRUSTED.to_string()].into();
+    })
+    .await;
+    let s = Setup::on(ts, clock, None);
+    s.ts.store
+        .update_queue(
+            &AuditCtx::DAEMON,
+            &s.qid,
+            clax_store::queues::QueuePatch {
+                origins: Some(vec![format!("https://{TRUSTED}"), ORIGIN.into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    s
+}
+
+#[tokio::test]
+async fn a_page_on_clax_s_own_origin_reads_without_an_origin() {
+    let s = same_origin_setup().await;
+    let own = format!("https://{TRUSTED}");
+    let r = s.reporter_on("bobby", &own).await;
+    // A browser's same-origin GET carries no `Origin`, only
+    // `Sec-Fetch-Site: same-origin`.
+    let res = s
+        .as_reporter_on(
+            &r,
+            TRUSTED,
+            &s.reports(),
+            &[("sec-fetch-site", "same-origin")],
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    // A request that carries `Origin` is judged by it, as before.
+    let res = s
+        .as_reporter_on(&r, TRUSTED, &s.reports(), &[("origin", &own)])
+        .await;
+    assert_eq!(res.status(), 200);
+}
+
+#[tokio::test]
+async fn without_an_origin_only_a_same_origin_fetch_of_clax_s_own_origin_holds() {
+    let s = same_origin_setup().await;
+    let own = format!("https://{TRUSTED}");
+    let r = s.reporter_on("bobby", &own).await;
+    // The browser must say the request is its own origin's, once.
+    for site in [None, Some("none"), Some("same-site"), Some("cross-site")] {
+        let h: Vec<(&str, &str)> = site.map(|v| ("sec-fetch-site", v)).into_iter().collect();
+        let res = s.as_reporter_on(&r, TRUSTED, &s.reports(), &h).await;
+        assert_eq!(
+            status_code(res).await,
+            (403, "wrong_origin".into()),
+            "{site:?}"
+        );
+    }
+    let res = s
+        .as_reporter_on(
+            &r,
+            TRUSTED,
+            &s.reports(),
+            &[
+                ("sec-fetch-site", "same-origin"),
+                ("sec-fetch-site", "same-origin"),
+            ],
+        )
+        .await;
+    assert_eq!(status_code(res).await, (403, "wrong_origin".into()));
+    // An `Origin` sent stays the one that counts, same-origin or not.
+    let res = s
+        .as_reporter_on(
+            &r,
+            TRUSTED,
+            &s.reports(),
+            &[("sec-fetch-site", "same-origin"), ("origin", OTHER)],
+        )
+        .await;
+    assert_eq!(status_code(res).await, (403, "wrong_origin".into()));
+    // The token's origin must be the one the request reached Clax at: not
+    // the loopback name of the same daemon.
+    let res = s
+        .as_reporter_on(
+            &r,
+            &s.host(),
+            &s.reports(),
+            &[("sec-fetch-site", "same-origin")],
+        )
+        .await;
+    assert_eq!(status_code(res).await, (403, "wrong_origin".into()));
+    // A token for another site, sent to Clax's own name, is not Clax's.
+    let other = s.reporter_on("emp-1", ORIGIN).await;
+    let res = s
+        .as_reporter_on(
+            &other,
+            TRUSTED,
+            &s.reports(),
+            &[("sec-fetch-site", "same-origin")],
+        )
+        .await;
+    assert_eq!(status_code(res).await, (403, "wrong_origin".into()));
+    // An origin the queue no longer lists ends the token here too.
+    s.ts.store
+        .update_queue(
+            &AuditCtx::DAEMON,
+            &s.qid,
+            clax_store::queues::QueuePatch {
+                origins: Some(vec![ORIGIN.into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let res = s
+        .as_reporter_on(
+            &r,
+            TRUSTED,
+            &s.reports(),
+            &[("sec-fetch-site", "same-origin")],
+        )
         .await;
     assert_eq!(status_code(res).await, (403, "wrong_origin".into()));
 }
