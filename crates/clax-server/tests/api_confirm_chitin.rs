@@ -16,10 +16,12 @@ use std::time::Duration;
 
 /// A chitin that queues item `000000000001`, `…2`, … (`queued <id>`, as
 /// chitin prints it), keeping each run's arguments as `say.<n>`, and lists
-/// `pending.json` beside it.
+/// `pending.json` beside it. Run with no arguments, it prints the usage of a
+/// chitin that takes the queue's brief (approve-into-fold 710bddd).
 const FAKE_CHITIN: &str = r#"#!/bin/sh
 d=$(dirname "$0")
 case "$1" in
+  "") echo 'usage: chitin ... | say --as <title> --queue --ask <line> --why <text> --effect <text> --undo yes|no|partly [--undo-how <text>] <to> <text> | ...' >&2; exit 2 ;;
   say)
     n=$(( $(cat "$d/count" 2>/dev/null || echo 0) + 1 ))
     echo "$n" > "$d/count"
@@ -279,4 +281,22 @@ async fn without_confirm_to_nothing_is_queued() {
     held(&open_world(&ts, &aid, None).await);
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(!Path::new(&dir.path().join("say.1")).exists());
+}
+
+#[tokio::test]
+async fn with_five_of_claxs_items_waiting_nothing_more_is_queued() {
+    let item = |n: u32| {
+        json!({"id": format!("{n:012x}"), "as": "bobby", "to": "clax", "queued_by": "clax",
+            "text": "x", "declined": false, "expired": false})
+    };
+    let full: Vec<Value> = (100..105).map(item).collect();
+    let r = rig(None, Some(&serde_json::to_string(&full).unwrap())).await;
+    let aid = page(&r.ts, "Capped").await;
+    let id = held(&open_world(&r.ts, &aid, None).await);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(!r.bin_dir().join("say.1").exists());
+    // The browser card still asks.
+    r.ts.confirm(&id, true).await;
+    let (s, v) = open_world(&r.ts, &aid, Some(&id)).await;
+    assert_eq!(s, 200, "{v}");
 }

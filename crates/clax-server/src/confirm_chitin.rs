@@ -171,16 +171,15 @@ pub fn text(v: &Value, h: &str) -> String {
 }
 
 /// `chitin say --queue`'s arguments for confirmation view `v` with binding
-/// `h`, from `c.as_title` to `to`: the brief, then the recipient and the
-/// text ([`text`]).
-pub fn queue_args(c: &SignConfig, to: &str, v: &Value, h: &str) -> Vec<String> {
+/// `h`, from `c.as_title` to `to`: the brief when this chitin takes one
+/// (`brief`, [`takes_brief`]), then the recipient and the text ([`text`]).
+/// A chitin without the brief reads `--ask` as the recipient, so it is
+/// never sent one; a chitin with it refuses an item without.
+pub fn queue_args(c: &SignConfig, to: &str, v: &Value, h: &str, brief: bool) -> Vec<String> {
     let words = one_line(v["words"].as_str().unwrap_or("make a decision"));
     let ask = cut(&format!("Confirm in Clax: {words}"), ASK_MAX);
-    [
-        "say",
-        "--as",
-        &c.as_title,
-        "--queue",
+    let head = ["say", "--as", &c.as_title, "--queue"];
+    let brief_args = [
         "--ask",
         &ask,
         "--why",
@@ -191,12 +190,37 @@ pub fn queue_args(c: &SignConfig, to: &str, v: &Value, h: &str) -> Vec<String> {
         "partly",
         "--undo-how",
         UNDO_HOW,
-        to,
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .chain([text(v, h)])
-    .collect()
+    ];
+    let brief_args: &[&str] = if brief { &brief_args } else { &[] };
+    head.iter()
+        .chain(brief_args)
+        .chain([&to])
+        .map(|s| s.to_string())
+        .chain([text(v, h)])
+        .collect()
+}
+
+/// Whether chitin's usage (`out`, what it prints run with no arguments)
+/// names the queue's brief (`--queue --ask`).
+pub fn usage_takes_brief(out: &str) -> bool {
+    out.contains("--queue --ask")
+}
+
+/// Whether the configured chitin takes a queued item's brief: its usage,
+/// read once when the task starts.
+async fn takes_brief(c: &SignConfig) -> bool {
+    let mut cmd = tokio::process::Command::new(&c.chitin);
+    cmd.stdin(std::process::Stdio::null()).kill_on_drop(true);
+    if let Some(dir) = &c.state_dir {
+        cmd.env("CHITIN_STATE_DIR", dir);
+    }
+    match tokio::time::timeout(Duration::from_secs(20), cmd.output()).await {
+        Ok(Ok(o)) => {
+            usage_takes_brief(&String::from_utf8_lossy(&o.stderr))
+                || usage_takes_brief(&String::from_utf8_lossy(&o.stdout))
+        }
+        _ => false,
+    }
 }
 
 /// What a flow-log line says of an item: approved with a passkey, or
@@ -235,8 +259,7 @@ pub fn recover(
 ) -> HashMap<String, Held> {
     items
         .iter()
-        .filter(|i| i["to"] == to && i["queued_by"] == "clax")
-        .filter(|i| i["declined"] != true && i["expired"] != true)
+        .filter(|i| ours_waiting(i, to))
         .filter_map(|i| {
             let (cid, h) = parse_binding(i["text"].as_str()?)?;
             let item = i["id"].as_str()?.to_string();
@@ -319,11 +342,47 @@ impl Tail {
     }
 }
 
-/// Queues confirmation view `v` with chitin: the item's ID and binding.
-async fn queue(c: &SignConfig, to: &str, v: &Value) -> Result<(String, String), String> {
+/// The most of Clax's items that may wait in chitin's queue at once.
+/// chitin holds at most 50 items for every queuer together and refuses
+/// more, and an item of Clax's waits a day while its confirmation expires
+/// in ten minutes: past this, a confirmation is not queued (the browser
+/// card still asks), so Clax never fills the fleet's signing queue.
+pub const MAX_WAITING: usize = 5;
+
+/// How many items in `chitin pending --json` output `items` Clax queued to
+/// `to` that still wait (neither declined nor expired).
+pub fn waiting(items: &[Value], to: &str) -> usize {
+    items.iter().filter(|i| ours_waiting(i, to)).count()
+}
+
+/// Whether chitin pending item `i` is one Clax queued to `to` that still
+/// waits.
+fn ours_waiting(i: &Value, to: &str) -> bool {
+    i["to"] == to && i["queued_by"] == "clax" && i["declined"] != true && i["expired"] != true
+}
+
+/// Queues confirmation view `v` with chitin, unless [`MAX_WAITING`] of
+/// Clax's items already wait: the item's ID and binding.
+async fn queue(
+    c: &SignConfig,
+    to: &str,
+    v: &Value,
+    brief: bool,
+) -> Result<(String, String), String> {
+    let out = sign::chitin(c, &["pending", "--as", &c.as_title, "--json"])
+        .await
+        .map_err(|e| e.message)?;
+    let items: Vec<Value> =
+        serde_json::from_str(&out).map_err(|e| format!("chitin pending answered no list: {e}"))?;
+    let n = waiting(&items, to);
+    if n >= MAX_WAITING {
+        return Err(format!(
+            "{n} of Clax's items already wait in chitin's queue: not queued, confirm in Clax"
+        ));
+    }
     let (id, decision) = (v["id"].as_str().unwrap_or_default(), &v["decision"]);
     let h = confirm::binding(id, decision);
-    let args = queue_args(c, to, v, &h);
+    let args = queue_args(c, to, v, &h, brief);
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let out = sign::chitin(c, &refs).await.map_err(|e| e.message)?;
     let item = sign::queued_id(&out)
@@ -407,6 +466,7 @@ async fn run(
     mut rx: tokio::sync::broadcast::Receiver<clax_core::Stamped>,
 ) {
     let mut tail = Tail::at_end(&log);
+    let brief = takes_brief(&c).await;
     let (done_tx, mut done) = tokio::sync::mpsc::unbounded_channel();
     // Item ID → what it was queued for, and when.
     let mut held: HashMap<String, (Held, Instant)> = HashMap::new();
@@ -443,7 +503,7 @@ async fn run(
                             let (c, to, v, tx) = (c.clone(), to.clone(), v.clone(), done_tx.clone());
                             let id = id.to_string();
                             clax_rt::spawn(async move {
-                                let _ = tx.send((id, queue(&c, &to, &v).await));
+                                let _ = tx.send((id, queue(&c, &to, &v, brief).await));
                             });
                         }
                     } else {
@@ -540,12 +600,20 @@ mod tests {
             state_dir: None,
             confirm_to: Some("clax".into()),
         };
-        let a = queue_args(
-            &c,
-            "clax",
-            &view("x".repeat(300).as_str(), json!([])),
-            "0011223344556677",
-        );
+        let v = view("x".repeat(300).as_str(), json!([]));
+        // A chitin without the brief gets none: it would read --ask as the recipient.
+        let old = queue_args(&c, "clax", &v, "0011223344556677", false);
+        assert_eq!(&old[..5], ["say", "--as", "bobby", "--queue", "clax"]);
+        assert_eq!(old.len(), 6);
+        // Usage as each chitin prints it (deployed 6h32ad23, 2026-11-02; and
+        // approve-into-fold 710bddd).
+        assert!(!usage_takes_brief(
+            "| say --as <title> --queue [--conversation <id>] [--in-reply-to <id>] <to> <text> |"
+        ));
+        assert!(usage_takes_brief(
+            "say --as <title> --queue --ask <line> --why <text> --effect <text> --undo yes|no|partly [--undo-how <text>]"
+        ));
+        let a = queue_args(&c, "clax", &v, "0011223344556677", true);
         assert_eq!(&a[..5], ["say", "--as", "bobby", "--queue", "--ask"]);
         assert!(a[5].chars().count() <= ASK_MAX && a[5].ends_with('…'));
         assert_eq!(
@@ -681,6 +749,27 @@ mod tests {
         assert!(none.read().is_empty());
         std::fs::write(dir.path().join("later.jsonl"), "{\"e\":5}\n").unwrap();
         assert_eq!(none.read(), vec![json!({"e": 5})]);
+    }
+
+    #[test]
+    fn only_claxs_waiting_items_count_toward_the_cap() {
+        let i = |extra: Value| {
+            let mut v =
+                json!({"to": "clax", "queued_by": "clax", "declined": false, "expired": false});
+            v.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            v
+        };
+        let items = [
+            i(json!({})),
+            i(json!({})),
+            i(json!({"declined": true})),
+            i(json!({"expired": true})),
+            i(json!({"queued_by": "personal-super-human"})),
+            i(json!({"to": "lander"})),
+        ];
+        assert_eq!(waiting(&items, "clax"), 2);
     }
 
     #[test]
