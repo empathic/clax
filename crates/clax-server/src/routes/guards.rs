@@ -140,6 +140,10 @@ mod l10 {
         ("admin::models", Bot),
         ("admin::pricing", Bot),
         ("admin::set_pricing", Bot),
+        ("admin::price_from_tokenulator", Bot),
+        ("admin::set_model_rates", Bot),
+        ("admin::delete_model_rates", Bot),
+        ("admin::refresh_catalog", Bot),
         ("admin::usage", Bot),
         ("audit_trail::list", Bot),
         ("audit_trail::get", Bot),
@@ -618,6 +622,10 @@ mod l10 {
         (
             "admin::test",
             "a read of the provider's model list, recorded as the view view.admin {page: provider.test}",
+        ),
+        (
+            "admin::refresh_catalog",
+            "replaces the cached public price catalog (as the daemon's daily refresh does, unaudited); changes no setting or cost line",
         ),
         (
             "settings::put",

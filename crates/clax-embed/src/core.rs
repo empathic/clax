@@ -641,6 +641,7 @@ async fn opening(sh: Arc<Shared>, opts: OpenOptions) {
         port: 0,
         embed: Some(opts.origins),
         quickstart: false,
+        catalog_url: None,
     };
     // One event per phase, and per migration.
     let mut last = None;

@@ -79,6 +79,27 @@ pub struct Bot {
     /// Every run's live events, which the driver emits and
     /// `GET /api/bot/runs/<id>/events` streams.
     pub events: Arc<clax_bot::EventHub>,
+    /// Where the price catalog is fetched from: the daemon's `[bot]
+    /// price_catalog_url`, the Worker's tokenulator.dev; tests pass a local
+    /// server's. `None` (the default): it is never fetched, and the routes
+    /// that fetch it answer 502 `tokenulator_error`.
+    pub catalog_url: Option<String>,
+    /// The price catalog refresh in flight, so concurrent ones share it.
+    pub catalog_flight: Arc<CatalogFlight>,
+}
+
+/// What a price catalog refresh came to: the listings the cache holds and
+/// when it was fetched, or the refusal's status, code and message.
+pub type CatalogOutcome =
+    Result<(usize, chrono::DateTime<chrono::Utc>), (axum::http::StatusCode, &'static str, String)>;
+
+/// One price catalog refresh at a time: a refresh holds `last` while it
+/// runs and leaves its outcome there, counting itself in `done`; one that
+/// waited on it takes that outcome rather than fetching again.
+#[derive(Default)]
+pub struct CatalogFlight {
+    pub done: std::sync::atomic::AtomicU64,
+    pub last: futures::lock::Mutex<Option<CatalogOutcome>>,
 }
 
 impl Default for Bot {
@@ -90,6 +111,8 @@ impl Default for Bot {
             views: Arc::default(),
             runs: Arc::new(NoRuns),
             events: Arc::default(),
+            catalog_url: None,
+            catalog_flight: Arc::default(),
         }
     }
 }
@@ -196,6 +219,7 @@ impl Bot {
 const CONFIGURED: &[(&str, clax_store::bot_settings::Setting, i64)] = {
     use clax_store::bot_settings::Setting::*;
     &[
+        ("api", Api, 1),
         ("base_url", BaseUrl, 1),
         ("models.default", ModelDefault, 1),
         ("models.quick", ModelQuick, 1),

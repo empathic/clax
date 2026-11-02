@@ -72,6 +72,11 @@ pub struct CoreConfig {
     /// one to the web UI's release at start (`[gallery] quickstart`); a
     /// hosted core never does.
     pub quickstart: bool,
+    /// Where the price catalog is fetched from: `None` (`clax serve`'s),
+    /// as `[bot] price_catalog_url` in effect says
+    /// ([`crate::catalog::url_of`]); `Some(url)`, that (`Some(None)`:
+    /// never), for an embedder or a test that sets it itself.
+    pub catalog_url: Option<Option<String>>,
 }
 
 /// A started core: its state, its router, and the tasks it runs until
@@ -91,7 +96,8 @@ impl Core {
     /// `progress` hears the audit backfill's progress) and starts the
     /// state, the journal, the listeners and the background tasks: the
     /// session reaper, the grant sweeper, the planner statistics refresh,
-    /// the drafts sweeper and the working sweeper. Runs on the caller's
+    /// the drafts sweeper, the working sweeper and the price catalog's
+    /// refresh. Runs on the caller's
     /// Tokio runtime.
     ///
     /// # Errors
@@ -165,7 +171,7 @@ impl Core {
         }
         // The core's `net` keeps a shared disk cache in the home.
         state.net = Arc::new(clax_http::net_cache::daemon_net(cfg.home.root()));
-        state.bot = Arc::new(local_bot(&state));
+        state.bot = Arc::new(local_bot(&state, cfg.catalog_url));
         // ClaxBot's driver: the runs a previous process left, then every new one.
         let bot_driver = crate::bot::driver(&mut state);
         state.audit_wake.install(&state.store);
@@ -407,9 +413,23 @@ fn loose_mode(path: &std::path::Path) -> Option<u32> {
 /// made on first use; none when it cannot be read, so no key is stored),
 /// and the instance key in `[bot] api_key_env`'s variable, which takes
 /// precedence over a stored one. A hosted core reads no `[bot]` and no
-/// variable.
-fn local_bot(s: &AppState) -> clax_http::bot::Bot {
-    let mut bot = clax_http::bot::Bot::default();
+/// such variable. Either takes its price catalog's URL from `catalog_url`
+/// when given, else from `[bot] price_catalog_url`
+/// ([`crate::catalog::url_of`]).
+fn local_bot(s: &AppState, catalog_url: Option<Option<String>>) -> clax_http::bot::Bot {
+    let catalog_url = catalog_url.unwrap_or_else(|| {
+        // A hosted core reads it from the file and the environment too,
+        // though no other `[bot]` key.
+        let read = match &s.settings.running {
+            Some(c) => Some(c.clone()),
+            None => clax_core::config::HomeConfig::load(s.home.root()).ok(),
+        };
+        crate::catalog::url_of(read.as_ref())
+    });
+    let mut bot = clax_http::bot::Bot {
+        catalog_url,
+        ..Default::default()
+    };
     clax_store::secrets::sweep_leftovers(&s.home, s.store.now_utc());
     bot.kek = match clax_store::secrets::Kek::load_or_create(&s.home) {
         Ok(k) => Some(k),
@@ -459,8 +479,8 @@ pub(crate) async fn stop_store(store: Arc<Store>, within: Duration) -> bool {
 }
 
 /// The background tasks a core runs: the session reaper, the grant
-/// sweeper, the planner statistics refresh, the drafts sweeper and the
-/// working sweeper.
+/// sweeper, the planner statistics refresh, the drafts sweeper, the
+/// working sweeper and the price catalog's refresh.
 fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::task::JoinHandle<()>> {
     let fctx = state.feedback_ctx();
     let reap_state = state.clone();
@@ -571,7 +591,18 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
         }
     });
 
-    vec![reaper, grant_sweeper, optimizer, drafts_sweeper, sweeper]
+    // The price catalog, once its cache is a day old: looked at on start
+    // and every hour after.
+    let catalog = crate::catalog::spawn_refresher(state.clone(), crate::catalog::CHECK_EVERY);
+
+    vec![
+        reaper,
+        grant_sweeper,
+        optimizer,
+        drafts_sweeper,
+        sweeper,
+        catalog,
+    ]
 }
 
 #[cfg(test)]

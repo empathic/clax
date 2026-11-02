@@ -601,7 +601,8 @@ impl HomeConfig {
     /// `Invalid { code: "bad_config" }` naming the file (or the variable)
     /// and `[bot]` when it is not a table, has an unknown key or a
     /// mistyped value, leaves `api_key_env` or a model ID empty, sets a
-    /// `base_url` that [`base_url_ok`] refuses, or sets a count, cap or
+    /// `base_url` or a `price_catalog_url` (other than empty or `off`) that
+    /// [`base_url_ok`] refuses, or sets a count, cap or
     /// price outside its range ([`BotConfig`]). The caller turns ClaxBot
     /// off; it never stops the daemon.
     pub fn bot(&self) -> Result<BotConfig> {
@@ -617,6 +618,24 @@ impl HomeConfig {
                     "base_url must be https://, or http:// on localhost, 127.0.0.1 or [::1], not \"{}\"",
                     b.base_url
                 ),
+            ));
+        }
+        let off = |v: &str| v.trim().is_empty() || v.trim().eq_ignore_ascii_case("off");
+        if !off(&b.price_catalog_url) && !base_url_ok(b.price_catalog_url.trim()) {
+            return Err(bad(
+                "price_catalog_url",
+                format!(
+                    "price_catalog_url must be empty, off, https://, or http:// on localhost, 127.0.0.1 or [::1], not \"{}\"",
+                    b.price_catalog_url
+                ),
+            ));
+        }
+        // The default base URL is Anthropic's: another API's key must not
+        // be sent there.
+        if b.api != ModelApi::Anthropic && self.source("bot.base_url") == Source::Default {
+            return Err(bad(
+                "api",
+                format!("api = \"{}\" needs base_url set too", b.api.as_str()),
             ));
         }
         for (tier, id) in [
@@ -1057,12 +1076,14 @@ impl Default for ToolpathConfig {
 pub struct BotConfig {
     /// The instance may run ClaxBot at all (default true).
     pub enabled: bool,
+    /// The API `base_url` speaks ([`ModelApi`], default `anthropic`). Any
+    /// other needs `base_url` set too.
+    pub api: ModelApi,
     /// The environment variable the daemon reads the instance's API key
     /// from (`ANTHROPIC_API_KEY`); not empty. A key there takes precedence
     /// over a stored instance key (spec §8.1).
     pub api_key_env: String,
-    /// Where the Messages API is; the key is sent nowhere else
-    /// ([`base_url_ok`]).
+    /// Where the API is; the key is sent nowhere else ([`base_url_ok`]).
     pub base_url: String,
     /// `max_tokens` of each model turn: 1 to 1,000,000 (default 32,000).
     pub max_tokens: u32,
@@ -1085,12 +1106,39 @@ pub struct BotConfig {
     pub credit_price_micro_usd: u64,
     pub models: BotModels,
     pub script: BotScript,
+    /// Where the daemon fetches the price catalog from
+    /// ([`PRICE_CATALOG_URL`] by default): `https://`, or `http://` on
+    /// localhost, 127.0.0.1 or [::1] ([`base_url_ok`]); empty or `off`,
+    /// never (`off` for the environment, where an empty variable is unset:
+    /// `CLAX_BOT__PRICE_CATALOG_URL=off`). Read from the file and the
+    /// environment alone, never from the admin pages ([`BotConfig::catalog_url`]).
+    pub price_catalog_url: String,
+}
+
+/// tokenulator.dev's price catalog, `[bot] price_catalog_url`'s default.
+pub const PRICE_CATALOG_URL: &str = "https://tokenulator.dev/data/site.json";
+
+impl BotConfig {
+    /// The price catalog URL `price_catalog_url` names: `None` when it is
+    /// empty or `off` (never fetched), or not a URL [`base_url_ok`] takes.
+    #[must_use]
+    pub fn catalog_url(&self) -> Option<&str> {
+        catalog_url_of(&self.price_catalog_url)
+    }
+}
+
+/// [`BotConfig::catalog_url`] of the value `v`.
+#[must_use]
+pub fn catalog_url_of(v: &str) -> Option<&str> {
+    let v = v.trim();
+    (!v.is_empty() && !v.eq_ignore_ascii_case("off") && base_url_ok(v)).then_some(v)
 }
 
 impl Default for BotConfig {
     fn default() -> Self {
         BotConfig {
             enabled: true,
+            api: ModelApi::Anthropic,
             api_key_env: "ANTHROPIC_API_KEY".into(),
             base_url: "https://api.anthropic.com".into(),
             max_tokens: 32000,
@@ -1103,8 +1151,84 @@ impl Default for BotConfig {
             credit_price_micro_usd: 10_000,
             models: BotModels::default(),
             script: BotScript::default(),
+            price_catalog_url: PRICE_CATALOG_URL.into(),
         }
     }
+}
+
+/// The wire API a model provider speaks at its base URL. ClaxBot's turns are
+/// kept as Messages API blocks whatever it is; the client translates each
+/// call to and from the others.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelApi {
+    /// Anthropic's Messages API: `POST {base_url}/v1/messages`, `x-api-key`.
+    #[default]
+    Anthropic,
+    /// OpenAI's Chat Completions API, as Mistral, Subconscious and most
+    /// other hosts serve it: `POST {base_url}/chat/completions`, `Authorization:
+    /// Bearer`. The base URL names the version (`https://api.mistral.ai/v1`).
+    #[serde(rename = "openai")]
+    OpenAi,
+    /// Google's Gemini API: `POST {base_url}/models/{model}:streamGenerateContent`,
+    /// `x-goog-api-key`. The base URL names the version
+    /// (`https://generativelanguage.googleapis.com/v1beta`).
+    Gemini,
+}
+
+impl ModelApi {
+    /// Every API, in the order the admin page offers them.
+    pub const ALL: [ModelApi; 3] = [ModelApi::Anthropic, ModelApi::OpenAi, ModelApi::Gemini];
+
+    /// `anthropic`, `openai` or `gemini`, as configured and stored.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ModelApi::Anthropic => "anthropic",
+            ModelApi::OpenAi => "openai",
+            ModelApi::Gemini => "gemini",
+        }
+    }
+
+    /// The API named `s` ([`ModelApi::as_str`]).
+    pub fn parse(s: &str) -> Option<ModelApi> {
+        ModelApi::ALL.into_iter().find(|a| a.as_str() == s)
+    }
+
+    /// The price catalog's (tokenulator.dev's) provider ID for a provider
+    /// at `base_url` speaking this API, when the host is one it knows.
+    pub fn catalog_provider(self, base_url: &str) -> Option<&'static str> {
+        let host = url_host(base_url);
+        match (self, host.as_str()) {
+            (ModelApi::Anthropic, "api.anthropic.com") => Some("anthropic"),
+            (ModelApi::Gemini | ModelApi::OpenAi, "generativelanguage.googleapis.com") => {
+                Some("google")
+            }
+            (ModelApi::OpenAi, "api.openai.com") => Some("openai"),
+            (ModelApi::OpenAi, "api.mistral.ai") => Some("mistral"),
+            (ModelApi::OpenAi, "api.deepseek.com") => Some("deepseek"),
+            (ModelApi::OpenAi, "api.x.ai") => Some("xai"),
+            (ModelApi::OpenAi, "api.z.ai") => Some("zai"),
+            (ModelApi::OpenAi, "api.groq.com") => Some("groq"),
+            (ModelApi::OpenAi, "api.together.xyz") => Some("together"),
+            (ModelApi::OpenAi, "api.fireworks.ai") => Some("fireworks"),
+            (ModelApi::OpenAi, "openrouter.ai") => Some("openrouter"),
+            _ => None,
+        }
+    }
+}
+
+/// The host `url` names, lowercase, without its port, brackets or a
+/// trailing dot; empty when it names none.
+pub fn url_host(url: &str) -> String {
+    let lower = url.to_ascii_lowercase();
+    let rest = lower.split_once("://").map_or(lower.as_str(), |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let authority = authority.rsplit('@').next().unwrap_or("");
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or(""),
+        None => authority.split(':').next().unwrap_or(""),
+    };
+    host.trim_end_matches('.').to_string()
 }
 
 /// `[bot.models]`: the model ID of each tier; none empty.
@@ -1963,6 +2087,38 @@ mod tests {
     }
 
     #[test]
+    fn the_price_catalog_url_is_tokenulators_a_url_or_off() {
+        let b = under("", &[]).bot().unwrap();
+        assert_eq!(b.catalog_url(), Some(PRICE_CATALOG_URL));
+        let b = under("", &[("CLAX_BOT__PRICE_CATALOG_URL", "off")])
+            .bot()
+            .unwrap();
+        assert_eq!(b.catalog_url(), None);
+        let b = under("[bot]\nprice_catalog_url = \"\"\n", &[])
+            .bot()
+            .unwrap();
+        assert_eq!(b.catalog_url(), None);
+        let b = under(
+            "",
+            &[(
+                "CLAX_BOT__PRICE_CATALOG_URL",
+                "http://127.0.0.1:9/site.json",
+            )],
+        )
+        .bot()
+        .unwrap();
+        assert_eq!(b.catalog_url(), Some("http://127.0.0.1:9/site.json"));
+        let e = under(
+            "[bot]\nprice_catalog_url = \"http://evil.example/x\"\n",
+            &[],
+        )
+        .bot()
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("price_catalog_url"), "{e}");
+    }
+
+    #[test]
     fn an_environment_value_takes_its_settings_type() {
         let c = under(
             "",
@@ -2114,6 +2270,49 @@ mod tests {
             (5, 10, "m")
         );
         assert_eq!(b.base_url, "http://127.0.0.1:9");
+        assert_eq!(b.api, ModelApi::Anthropic);
+        let b = under(
+            "[bot]\napi = \"openai\"\nbase_url = \"https://api.mistral.ai/v1\"\n",
+            &[],
+        )
+        .bot()
+        .unwrap();
+        assert_eq!(b.api, ModelApi::OpenAi);
+        let b = under(
+            "[bot]\nbase_url = \"https://generativelanguage.googleapis.com/v1beta\"\n",
+            &[("CLAX_BOT__API", "gemini")],
+        )
+        .bot()
+        .unwrap();
+        assert_eq!(b.api, ModelApi::Gemini);
+        for a in ModelApi::ALL {
+            assert_eq!(ModelApi::parse(a.as_str()), Some(a));
+        }
+        assert_eq!(ModelApi::parse("OpenAI"), None);
+    }
+
+    #[test]
+    fn known_hosts_name_their_catalog_provider() {
+        let g = "https://generativelanguage.googleapis.com/v1beta";
+        assert_eq!(ModelApi::Gemini.catalog_provider(g), Some("google"));
+        assert_eq!(
+            ModelApi::OpenAi.catalog_provider("https://API.mistral.ai./v1"),
+            Some("mistral")
+        );
+        assert_eq!(
+            ModelApi::Anthropic.catalog_provider("https://api.anthropic.com"),
+            Some("anthropic")
+        );
+        assert_eq!(
+            ModelApi::OpenAi.catalog_provider("https://api.subconscious.dev/v1"),
+            None
+        );
+        assert_eq!(
+            ModelApi::Anthropic.catalog_provider("https://api.mistral.ai/v1"),
+            None
+        );
+        assert_eq!(url_host("http://[::1]:8080/x"), "::1");
+        assert_eq!(url_host("https://u@Example.com:443/"), "example.com");
     }
 
     #[test]
@@ -2124,6 +2323,8 @@ mod tests {
             "[bot]\nenabled = \"yes\"\n",
             "[bot]\napi_key_env = \" \"\n",
             "[bot]\nbase_url = \"http://api.anthropic.com\"\n",
+            "[bot]\napi = \"gemini\"\n",
+            "[bot]\napi = \"cohere\"\nbase_url = \"https://api.cohere.com\"\n",
             "[bot]\nmax_tokens = 0\n",
             "[bot]\nmax_steps = 0\n",
             "[bot]\nconcurrency = 65\n",

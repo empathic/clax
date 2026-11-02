@@ -3,9 +3,16 @@
 //! [`AssistantMessage`] (content blocks kept verbatim, usage, stop reason),
 //! and `GET {base_url}/v1/models` for the models a key may use.
 //!
+//! The same calls go to a provider that speaks another [`ModelApi`]: the
+//! request is translated to it (OpenAI's Chat Completions in [`openai`],
+//! Gemini's `streamGenerateContent` in [`gemini`]) and its stream back into
+//! the Messages API's events, so callers keep one history of Messages API
+//! blocks whatever the provider.
+//!
 //! The key is passed per call as an [`ApiKey`], whose `Debug` hides it and
 //! which has no `Display`. It is sent only to the `base_url` given with it,
-//! in `x-api-key`, after that URL passes
+//! in the API's own header (`x-api-key`, `Authorization: Bearer`,
+//! `x-goog-api-key`), after that URL passes
 //! [`clax_core::config::base_url_ok`] (the `[sample]` rule), and every
 //! error message has it replaced by `[redacted]`. A redirect is never
 //! followed (it would carry the key to the host it names): a 3xx answer is
@@ -23,6 +30,7 @@
 
 use super::sse::SseParser;
 use super::transport::{Body, Transport};
+pub use clax_core::config::ModelApi;
 use futures::StreamExt;
 use serde_json::{Map, Value, json};
 use std::future::Future;
@@ -287,7 +295,7 @@ pub struct MessagesRequest {
     /// `anthropic-beta` values, sent joined by commas when any.
     pub betas: Vec<String>,
     /// Top-level body fields set last, over any this builds (for example
-    /// `fallbacks`).
+    /// `fallbacks`). Sent to the Messages API alone.
     pub extra: Map<String, Value>,
 }
 
@@ -381,11 +389,14 @@ pub struct Usage {
     pub cache_creation_input_tokens: u64,
     pub cache_read_input_tokens: u64,
     pub output_tokens: u64,
+    /// What the provider billed for the call, in micro-USD, when it says
+    /// (`billed_micro_usd` in a usage object; OpenRouter's `usage.cost`).
+    pub billed_micro_usd: Option<u64>,
 }
 
 impl Usage {
-    /// Overwrites each count `v` carries (`message_start`'s, then each
-    /// `message_delta`'s cumulative counts).
+    /// Overwrites each count, and the billed cost, `v` carries
+    /// (`message_start`'s, then each `message_delta`'s cumulative counts).
     fn merge(&mut self, v: &Value) {
         let set = |slot: &mut u64, k: &str| {
             if let Some(n) = v[k].as_u64() {
@@ -399,6 +410,9 @@ impl Usage {
         );
         set(&mut self.cache_read_input_tokens, "cache_read_input_tokens");
         set(&mut self.output_tokens, "output_tokens");
+        if let Some(n) = v["billed_micro_usd"].as_u64() {
+            self.billed_micro_usd = Some(n);
+        }
     }
 }
 
@@ -812,7 +826,12 @@ pub fn http_error(status: u16, retry_after: Option<&str>, body: &str) -> Message
         return MessagesError::Redirected { status };
     }
     let v: Value = serde_json::from_str(body).unwrap_or(Value::Null);
-    let e = &v["error"];
+    // `{error: {type, message}}`, or (Mistral) the error's fields at the top.
+    let e = if v["error"].is_object() {
+        &v["error"]
+    } else {
+        &v
+    };
     let kind = e["type"].as_str().unwrap_or("");
     let message = e["message"]
         .as_str()
@@ -896,6 +915,11 @@ impl Assembler {
     pub fn apply(&mut self, event: &str, data: &str) -> Result<Vec<Delta>, MessagesError> {
         let v: Value = serde_json::from_str(data)
             .map_err(|e| protocol(format!("an event that is not JSON ({event}): {e}")))?;
+        self.apply_value(event, &v)
+    }
+
+    /// [`Assembler::apply`] for an event already parsed.
+    fn apply_value(&mut self, event: &str, v: &Value) -> Result<Vec<Delta>, MessagesError> {
         let kind = v["type"].as_str().unwrap_or(event).to_string();
         let index = || {
             v["index"]
@@ -1138,23 +1162,88 @@ async fn read_all(mut body: Body, idle: Duration) -> Result<Vec<u8>, MessagesErr
     Ok(out)
 }
 
+/// How a stream's events become the Messages API's.
+enum Wire {
+    Anthropic,
+    OpenAi(openai::Translator),
+    Gemini(gemini::Translator),
+}
+
+impl Wire {
+    fn of(api: ModelApi) -> Wire {
+        match api {
+            ModelApi::Anthropic => Wire::Anthropic,
+            ModelApi::OpenAi => Wire::OpenAi(openai::Translator::default()),
+            ModelApi::Gemini => Wire::Gemini(gemini::Translator::default()),
+        }
+    }
+
+    /// One event of the stream into `asm`.
+    fn apply(
+        &mut self,
+        asm: &mut Assembler,
+        event: &str,
+        data: &str,
+    ) -> Result<Vec<Delta>, MessagesError> {
+        let events = match self {
+            Wire::Anthropic => return asm.apply(event, data),
+            Wire::OpenAi(t) => t.apply(data)?,
+            Wire::Gemini(t) => t.apply(data)?,
+        };
+        Self::replay(asm, events)
+    }
+
+    /// What the stream's end means: a Gemini stream ends without a last
+    /// event of its own.
+    fn end(&mut self, asm: &mut Assembler) -> Result<Vec<Delta>, MessagesError> {
+        let events = match self {
+            Wire::Anthropic => return Ok(Vec::new()),
+            Wire::OpenAi(t) => t.end()?,
+            Wire::Gemini(t) => t.end()?,
+        };
+        Self::replay(asm, events)
+    }
+
+    fn replay(asm: &mut Assembler, events: Vec<Value>) -> Result<Vec<Delta>, MessagesError> {
+        let mut out = Vec::new();
+        for e in events {
+            out.extend(asm.apply_value("", &e)?);
+        }
+        Ok(out)
+    }
+}
+
 /// Folds an event-stream `body` into its message, each piece within `idle`.
+#[cfg(all(test, not(target_arch = "wasm32")))]
 async fn fold<F: FnMut(Delta)>(
+    body: Body,
+    idle: Duration,
+    on_delta: F,
+) -> Result<AssistantMessage, MessagesError> {
+    fold_wire(body, idle, Wire::Anthropic, on_delta).await
+}
+
+/// [`fold`] for a stream of `wire`'s events.
+async fn fold_wire<F: FnMut(Delta)>(
     mut body: Body,
     idle: Duration,
+    mut wire: Wire,
     mut on_delta: F,
 ) -> Result<AssistantMessage, MessagesError> {
     let mut parser = SseParser::default();
     let mut asm = Assembler::default();
     while let Some(chunk) = next_chunk(&mut body, idle).await? {
         for ev in parser.push(&chunk) {
-            for d in asm.apply(&ev.event, &ev.data)? {
+            for d in wire.apply(&mut asm, &ev.event, &ev.data)? {
                 on_delta(d);
             }
             if asm.done() {
                 return asm.finish();
             }
         }
+    }
+    for d in wire.end(&mut asm)? {
+        on_delta(d);
     }
     asm.finish()
 }
@@ -1238,7 +1327,8 @@ impl MessagesClient {
         self.timeouts
     }
 
-    /// Sends one request and returns the body of a 2xx answer.
+    /// Sends one request to the Messages API and returns the body of a 2xx
+    /// answer.
     async fn send(
         &self,
         method: &str,
@@ -1254,10 +1344,44 @@ impl MessagesClient {
         if let Some(b) = betas {
             headers.push(("anthropic-beta", b));
         }
+        self.send_with(method, url, &headers, json).await
+    }
+
+    /// Sends one request to `api` with its key header.
+    async fn send_as(
+        &self,
+        api: ModelApi,
+        method: &str,
+        url: &str,
+        key: &ApiKey,
+        json: Option<&Value>,
+    ) -> Result<Body, MessagesError> {
+        match api {
+            ModelApi::Anthropic => self.send(method, url, key, None, json).await,
+            ModelApi::OpenAi => {
+                let h = [("authorization", format!("Bearer {}", key.expose()))];
+                self.send_with(method, url, &h, json).await
+            }
+            ModelApi::Gemini => {
+                let h = [("x-goog-api-key", key.expose().to_string())];
+                self.send_with(method, url, &h, json).await
+            }
+        }
+    }
+
+    /// Sends one request with `headers` and returns the body of a 2xx
+    /// answer.
+    async fn send_with(
+        &self,
+        method: &str,
+        url: &str,
+        headers: &[(&str, String)],
+        json: Option<&Value>,
+    ) -> Result<Body, MessagesError> {
         let res = deadline(
             self.timeouts.headers,
             "answer",
-            self.http.send(method, url, &headers, json),
+            self.http.send(method, url, headers, json),
         )
         .await?
         .map_err(|message| MessagesError::Network { message })?;
@@ -1277,47 +1401,123 @@ impl MessagesClient {
         ))
     }
 
-    /// Streams one call, handing each [`Delta`] to `on_delta` as it arrives,
-    /// and returns the assembled message.
+    /// Streams one call to a provider speaking `api`, handing each
+    /// [`Delta`] to `on_delta` as it arrives, and returns the assembled
+    /// message.
     pub async fn stream<F: FnMut(Delta)>(
         &self,
+        api: ModelApi,
         base_url: &str,
         key: &ApiKey,
         req: &MessagesRequest,
         on_delta: F,
     ) -> Result<AssistantMessage, MessagesError> {
         bounded(self.timeouts.total, async {
-            let url = endpoint(base_url, "/v1/messages")?;
-            let body = self
-                .send("POST", &url, key, req.beta_header(), Some(&req.body()))
-                .await?;
-            fold(body, self.timeouts.idle, on_delta).await
+            let body = match api {
+                ModelApi::Anthropic => {
+                    let url = endpoint(base_url, "/v1/messages")?;
+                    self.send("POST", &url, key, req.beta_header(), Some(&req.body()))
+                        .await?
+                }
+                ModelApi::OpenAi => {
+                    let url = endpoint(base_url, openai::PATH)?;
+                    let body = openai::body(req, base_url);
+                    self.send_as(api, "POST", &url, key, Some(&body)).await?
+                }
+                ModelApi::Gemini => {
+                    let url = endpoint(base_url, &gemini::path(&req.model))?;
+                    let body = gemini::body(req);
+                    self.send_as(api, "POST", &url, key, Some(&body)).await?
+                }
+            };
+            fold_wire(body, self.timeouts.idle, Wire::of(api), on_delta).await
         })
         .await
         .map_err(|e| e.redacted(key))
     }
 
-    /// Every model the key may use, following `has_more`/`last_id` for at
-    /// most [`MAX_MODEL_PAGES`] pages.
+    /// Every model the key may use, following the API's pages for at most
+    /// [`MAX_MODEL_PAGES`] of them.
     pub async fn list_models(
         &self,
+        api: ModelApi,
         base_url: &str,
         key: &ApiKey,
     ) -> Result<Vec<ModelInfo>, MessagesError> {
         bounded(
             self.timeouts.total,
-            self.models(base_url, key, MODEL_PAGE_SIZE, MAX_MODEL_PAGES),
+            self.models_of(api, base_url, key, MODEL_PAGE_SIZE, MAX_MODEL_PAGES),
         )
         .await
         .map_err(|e| e.redacted(key))
     }
 
-    /// Whether the key and URL work: one page of one model.
-    pub async fn test_connection(&self, base_url: &str, key: &ApiKey) -> Result<(), MessagesError> {
-        bounded(self.timeouts.total, self.models(base_url, key, 1, 1))
-            .await
-            .map(|_| ())
-            .map_err(|e| e.redacted(key))
+    /// Whether the key and URL work: one page of one model (all of one
+    /// page where the API cannot ask for less).
+    pub async fn test_connection(
+        &self,
+        api: ModelApi,
+        base_url: &str,
+        key: &ApiKey,
+    ) -> Result<(), MessagesError> {
+        bounded(
+            self.timeouts.total,
+            self.models_of(api, base_url, key, 1, 1),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| e.redacted(key))
+    }
+
+    async fn models_of(
+        &self,
+        api: ModelApi,
+        base_url: &str,
+        key: &ApiKey,
+        limit: u32,
+        pages: usize,
+    ) -> Result<Vec<ModelInfo>, MessagesError> {
+        match api {
+            ModelApi::Anthropic => self.models(base_url, key, limit, pages).await,
+            ModelApi::OpenAi => {
+                let url = endpoint(base_url, "/models")?;
+                let v = self.get_json(api, &url, key).await?;
+                openai::models(&v)
+            }
+            ModelApi::Gemini => {
+                let url = endpoint(base_url, "/models")?;
+                let mut out = Vec::new();
+                let mut token: Option<String> = None;
+                for _ in 0..pages {
+                    let mut page = format!("{url}?pageSize={}", limit.max(1));
+                    if let Some(t) = &token {
+                        page.push_str(&format!("&pageToken={}", query_value(t)));
+                    }
+                    let v = self.get_json(api, &page, key).await?;
+                    out.extend(gemini::models(&v)?);
+                    match v["nextPageToken"].as_str() {
+                        Some(t) if !t.is_empty() && token.as_deref() != Some(t) => {
+                            token = Some(t.to_string());
+                        }
+                        _ => break,
+                    }
+                }
+                Ok(out)
+            }
+        }
+    }
+
+    /// `GET url` as `api`, its answer read as JSON.
+    async fn get_json(
+        &self,
+        api: ModelApi,
+        url: &str,
+        key: &ApiKey,
+    ) -> Result<Value, MessagesError> {
+        let body = self.send_as(api, "GET", url, key, None).await?;
+        let bytes = read_all(body, self.timeouts.idle).await?;
+        serde_json::from_slice(&bytes)
+            .map_err(|e| protocol(format!("a model list that is not JSON: {e}")))
     }
 
     async fn models(
@@ -1435,6 +1635,9 @@ where
         }
     }
 }
+
+mod gemini;
+mod openai;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;

@@ -8,6 +8,7 @@ mod cancel;
 mod driver;
 mod limits;
 mod money;
+mod pricing;
 mod replay;
 mod resume;
 mod rules;

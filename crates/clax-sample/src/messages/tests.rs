@@ -222,7 +222,7 @@ async fn call(
 ) -> (Result<AssistantMessage, MessagesError>, Vec<Delta>) {
     let mut deltas = Vec::new();
     let out = MessagesClient::new()
-        .stream(base, &key(), req, |d| deltas.push(d))
+        .stream(ModelApi::Anthropic, base, &key(), req, |d| deltas.push(d))
         .await;
     (out, deltas)
 }
@@ -259,6 +259,7 @@ async fn a_tool_use_turn_streams_in_small_pieces_into_deltas_and_one_message() {
             cache_creation_input_tokens: 3400,
             cache_read_input_tokens: 51000,
             output_tokens: 87,
+            billed_micro_usd: None,
         }
     );
     assert_eq!(msg.content, expected_content());
@@ -512,7 +513,7 @@ async fn the_key_never_appears_in_an_error() {
         call(&base, &req).await.0.unwrap_err(),
         call(&base, &req).await.0.unwrap_err(),
         MessagesClient::new()
-            .list_models(&base, &key())
+            .list_models(ModelApi::Anthropic, &base, &key())
             .await
             .unwrap_err(),
     ];
@@ -605,7 +606,7 @@ async fn a_base_url_the_sample_rule_refuses_is_never_called() {
         let err = call(bad, &request()).await.0.unwrap_err();
         assert_eq!(err, MessagesError::BadBaseUrl, "{bad}");
         let err = MessagesClient::new()
-            .list_models(bad, &key())
+            .list_models(ModelApi::Anthropic, bad, &key())
             .await
             .unwrap_err();
         assert_eq!(err, MessagesError::BadBaseUrl, "{bad}");
@@ -630,7 +631,7 @@ async fn list_models_follows_pages_and_test_connection_asks_for_one() {
     .await;
     let client = MessagesClient::new();
     let models = client
-        .list_models(&format!("{base}/"), &key())
+        .list_models(ModelApi::Anthropic, &format!("{base}/"), &key())
         .await
         .unwrap();
     assert_eq!(
@@ -645,8 +646,14 @@ async fn list_models_follows_pages_and_test_connection_asks_for_one() {
             created_at: "2026-09-01T00:00:00Z".into(),
         }
     );
-    client.test_connection(&base, &key()).await.unwrap();
-    let err = client.test_connection(&base, &key()).await.unwrap_err();
+    client
+        .test_connection(ModelApi::Anthropic, &base, &key())
+        .await
+        .unwrap();
+    let err = client
+        .test_connection(ModelApi::Anthropic, &base, &key())
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, MessagesError::Auth { status: 401, .. }),
         "{err:?}"
@@ -786,7 +793,7 @@ async fn a_redirect_is_never_followed_so_the_key_stays_with_the_base_url() {
     assert_eq!(err, MessagesError::Redirected { status: 307 });
     assert!(!err.retryable());
     let err = MessagesClient::new()
-        .list_models(&base, &key())
+        .list_models(ModelApi::Anthropic, &base, &key())
         .await
         .unwrap_err();
     assert_eq!(err, MessagesError::Redirected { status: 307 });
@@ -798,7 +805,7 @@ async fn a_redirect_is_never_followed_so_the_key_stays_with_the_base_url() {
 
     let (base, _, trap) = redirect_to_trap(302, 1).await;
     let err = MessagesClient::new()
-        .test_connection(&base, &key())
+        .test_connection(ModelApi::Anthropic, &base, &key())
         .await
         .unwrap_err();
     assert_eq!(err, MessagesError::Redirected { status: 302 });
@@ -847,7 +854,9 @@ async fn an_answer_that_never_comes_is_cut_at_the_header_deadline() {
     let client = quick(5, 60, None);
     let mut deltas = Vec::new();
     let err = client
-        .stream(&base, &key(), &request(), |d| deltas.push(d))
+        .stream(ModelApi::Anthropic, &base, &key(), &request(), |d| {
+            deltas.push(d)
+        })
         .await
         .unwrap_err();
     assert!(
@@ -856,7 +865,10 @@ async fn an_answer_that_never_comes_is_cut_at_the_header_deadline() {
     );
     assert!(err.retryable());
     assert!(deltas.is_empty());
-    let err = client.list_models(&base, &key()).await.unwrap_err();
+    let err = client
+        .list_models(ModelApi::Anthropic, &base, &key())
+        .await
+        .unwrap_err();
     assert!(matches!(err, MessagesError::StreamCut { .. }), "{err:?}");
 }
 
@@ -1184,3 +1196,6 @@ fn an_errors_summary_carries_no_text_from_the_answer() {
     assert_eq!(errors[4].summary(), "api_error (HTTP 500)");
     assert_eq!(errors[5].summary(), "provider error (HTTP 418)");
 }
+
+/// The client against providers that speak another API.
+mod wire;

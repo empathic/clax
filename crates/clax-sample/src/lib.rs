@@ -4,7 +4,8 @@
 //! of a page's request (`request`, refusing with a `SampleError` the route
 //! answers 400 with). `Sampler::disabled()` has no provider: pages then
 //! resolve `use("sample")` to `null` and the routes answer
-//! `sampling_disabled`. It knows nothing of HTTP routes or of the store.
+//! `sampling_disabled`. ClaxBot's model client is `messages`, and its price
+//! lookup `tokenulator`. It knows nothing of HTTP routes or of the store.
 
 pub mod anthropic;
 pub mod cache;
@@ -17,6 +18,7 @@ pub mod quota;
 pub mod request;
 pub mod sse;
 pub mod stub;
+pub mod tokenulator;
 mod transport;
 
 pub use anthropic::KeySource;

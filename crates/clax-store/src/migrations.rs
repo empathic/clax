@@ -2058,6 +2058,27 @@ pub const MIGRATIONS: &[&str] = &[
       queue_id TEXT NOT NULL, grant_id TEXT NOT NULL,
       grant_token TEXT NOT NULL, grant_key BLOB NOT NULL,
       created_at TEXT NOT NULL);",
+    // 62: the cached price catalog (tokenulator.dev's listings,
+    // `crate::price_catalog::CatalogListing`), one row per provider and model, in
+    // micro-USD per million tokens (a missing cache rate is NULL), replaced
+    // whole on each fetch; and the source of the rates each usage row was
+    // charged at (`crate::credits::RateSource`), every earlier row's a cost
+    // line's.
+    "CREATE TABLE price_catalog (
+        provider_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        input_micro_usd INTEGER NOT NULL,
+        output_micro_usd INTEGER NOT NULL,
+        cache_read_micro_usd INTEGER,
+        cache_write_micro_usd INTEGER,
+        source TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        fetched_at TEXT NOT NULL,
+        PRIMARY KEY (provider_id, model_id)
+    ) WITHOUT ROWID;
+    ALTER TABLE usage_rows ADD COLUMN rate_source TEXT NOT NULL DEFAULT 'line'
+        CHECK (rate_source IN ('line', 'catalog', 'default', 'provider'));",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -2111,9 +2132,12 @@ pub const BROWSER_LOGIN_MIGRATION: u32 = QUEUES_MIGRATION + 1;
 
 /// The feedback loop's migration (`report_fixes`, `report_diagnostics`,
 /// `queue_watches`, `instance_feedback`, the report columns of threads and
-/// the profile of reporter tokens), as a schema version, and this build's
-/// last.
+/// the profile of reporter tokens), as a schema version.
 pub const FEEDBACK_LOOP_MIGRATION: u32 = BROWSER_LOGIN_MIGRATION + 1;
+
+/// The migration that adds the cached price catalog (`price_catalog`) and
+/// `usage_rows.rate_source`, as a schema version, and this build's last.
+pub const PRICE_CATALOG_MIGRATION: u32 = FEEDBACK_LOOP_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -2273,11 +2297,11 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 
 /// What each migration after the app's leaves in the schema, in order:
 /// ClaxBot's ([`CLAXBOT_MIGRATION`]), then [`LEGACY_PATHS_MIGRATION`] to
-/// [`FEEDBACK_LOOP_MIGRATION`]. They follow the app's in every
+/// [`PRICE_CATALOG_MIGRATION`]. They follow the app's in every
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 12] = [
+const MARKS_AFTER_APP: [Mark<'static>; 13] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
@@ -2290,6 +2314,7 @@ const MARKS_AFTER_APP: [Mark<'static>; 12] = [
     Mark::Table("queues"),
     Mark::Table("owner_browser_sessions"),
     Mark::Table("report_fixes"),
+    Mark::Table("price_catalog"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -5248,7 +5273,12 @@ mod tests {
             super::BROWSER_LOGIN_MIGRATION + 1
         );
         assert!(MIGRATIONS[first + 19].contains("CREATE TABLE report_fixes ("));
-        assert_eq!(MIGRATIONS.len() as u32, super::FEEDBACK_LOOP_MIGRATION);
+        assert_eq!(
+            super::PRICE_CATALOG_MIGRATION,
+            super::FEEDBACK_LOOP_MIGRATION + 1
+        );
+        assert!(MIGRATIONS[first + 20].contains("CREATE TABLE price_catalog ("));
+        assert_eq!(MIGRATIONS.len() as u32, super::PRICE_CATALOG_MIGRATION);
     }
 
     #[test]
@@ -5337,7 +5367,46 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_database_reaches_60() {
+    fn migration_62_adds_the_catalog_and_marks_every_earlier_charge_a_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        drop(Store::open(&home).unwrap());
+        let c = Connection::open(home.db_path()).unwrap();
+        // The schema as it was before 62, with a usage row.
+        c.execute_batch(
+            "DROP TABLE price_catalog; ALTER TABLE usage_rows DROP COLUMN rate_source;
+             INSERT INTO usage_rows (person, line, unit, qty, rate_cost_micro_usd, margin_bp,
+                credit_price_micro_usd, base_qty, cost_micro_usd, credits_milli, free_milli,
+                key_source, week, at)
+             VALUES ('*owner', 'harness.run', 'run', 1, 0, 9000, 10000, 1, 0, 1000, 1000,
+                'instance', '2026-10-26T00:00:00Z', 'x');",
+        )
+        .unwrap();
+        c.execute_batch(MIGRATIONS[super::PRICE_CATALOG_MIGRATION as usize - 1])
+            .unwrap();
+        let source: String = c
+            .query_row("SELECT rate_source FROM usage_rows", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(source, "line");
+        assert!(
+            c.execute("UPDATE usage_rows SET rate_source = 'guess'", [])
+                .is_err(),
+            "the source is one of four"
+        );
+        c.execute("UPDATE usage_rows SET rate_source = 'catalog'", [])
+            .unwrap();
+        assert_eq!(table_count(&c, "price_catalog"), 1);
+        c.execute(
+            "INSERT INTO price_catalog (provider_id, model_id, name, input_micro_usd,
+                output_micro_usd, source, observed_at, fetched_at)
+             VALUES ('openai', 'gpt-5', 'GPT-5', 1, 2, 's', 'o', 'f')",
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_fresh_database_reaches_62() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         drop(Store::open(&home).unwrap());
@@ -5357,7 +5426,8 @@ mod tests {
         assert_eq!(super::QUEUES_MIGRATION, 59);
         assert_eq!(super::BROWSER_LOGIN_MIGRATION, 60);
         assert_eq!(super::FEEDBACK_LOOP_MIGRATION, 61);
-        assert_eq!(user_version(&c), super::FEEDBACK_LOOP_MIGRATION);
+        assert_eq!(super::PRICE_CATALOG_MIGRATION, 62);
+        assert_eq!(user_version(&c), super::PRICE_CATALOG_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
@@ -6137,7 +6207,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::FEEDBACK_LOOP_MIGRATION);
+        assert_eq!(user_version(&c), super::PRICE_CATALOG_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -6630,16 +6700,16 @@ mod tests {
         // then the jobs migration to 47, the app push migration to 48, the
         // remote kind migration to 49, ClaxBot's to 50, the site
         // migrations to 54, the return-to migration to 55, the version
-        // declarations' to 56, the quickstart's to 57 and the capability
-        // approvals' to 58, the queues' to 59, the browser login's to 60 and
-        // the feedback loop's to 61.
+        // declarations' to 56, the quickstart's to 57, the capability
+        // approvals' to 58, the queues' to 59, the browser login's to 60,
+        // the feedback loop's to 61 and the price catalog's to 62.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::FEEDBACK_LOOP_MIGRATION);
+            assert_eq!(user_version(&c), super::PRICE_CATALOG_MIGRATION);
             (columns_of(&c), every_row(&c))
         };
 
@@ -6647,8 +6717,8 @@ mod tests {
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(
             user_version(&c),
-            super::FEEDBACK_LOOP_MIGRATION + 1,
-            "ClaxBot's 50 and the migrations 51 to 61 after it are one later now"
+            super::PRICE_CATALOG_MIGRATION + 1,
+            "ClaxBot's 50 and the migrations 51 to 62 after it are one later now"
         );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
@@ -6667,7 +6737,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), super::FEEDBACK_LOOP_MIGRATION);
+        assert_eq!(user_version(&copied), super::PRICE_CATALOG_MIGRATION);
         assert_eq!(
             every_row(&copied),
             before,
@@ -6681,7 +6751,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (super::FEEDBACK_LOOP_MIGRATION + 1, schema, rows)
+            (super::PRICE_CATALOG_MIGRATION + 1, schema, rows)
         );
     }
 
@@ -6955,7 +7025,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, super::FEEDBACK_LOOP_MIGRATION);
+        assert_eq!(last, super::PRICE_CATALOG_MIGRATION);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));

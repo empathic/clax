@@ -65,6 +65,11 @@ test --test_env=TOKIO_WORKER_THREADS=4
 # As .cargo/config.toml gives Cargo's tests: CLAX_PORT empty, so a port in
 # the developer's shell never moves a test daemon.
 test --test_env=CLAX_PORT=
+# [bot] price_catalog_url off: a daemon a test starts never fetches the
+# price catalog from tokenulator.dev (crates/clax-server/src/catalog.rs);
+# the tests that refresh it inject a local server's URL. (An empty variable
+# counts as unset, so `off`.)
+test --test_env=CLAX_BOT__PRICE_CATALOG_URL=off
 # The system's tools a test runs (lsof is in /usr/sbin on macOS), and
 # nothing of the developer's own PATH.
 test --test_env=PATH=/usr/bin:/bin:/usr/sbin:/sbin

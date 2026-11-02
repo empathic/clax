@@ -441,8 +441,9 @@ impl Store {
     ///
     /// # Errors
     /// `NotFound` for an artifact that does not exist; `model_not_priced`
-    /// for a model without its token cost lines (an admin prices it with
-    /// [`Store::price_model`]); the store's.
+    /// for a model whose tokens resolve to no rate ([`Store::model_rate`]:
+    /// with `require_explicit_price`, one without its token cost lines,
+    /// which an admin sets with [`Store::set_model_rates`]); the store's.
     pub fn create_run(&self, ctx: &AuditCtx, new: NewRun) -> Result<Run> {
         self.with_tx(|tx| self.create_run_in(tx, ctx, new))
     }
@@ -598,7 +599,7 @@ impl Store {
                 )
                 .optional()?;
             exists.ok_or(CoreError::NotFound)?;
-            check_model_priced(tx, &new.model)?;
+            check_model_priced(tx, &self.bot_overrides(), &new.model, new.key_source)?;
             let id = clax_core::new_ulid();
             let now = self.now();
             tx.execute(
@@ -866,16 +867,39 @@ impl Store {
     /// `NotFound`; `run_not_claimed` when `driver` does not hold the run;
     /// `step_mismatch` when the run is at another step; `run_invalid` for a
     /// run that is not running or stopping, or a `stopping` run's step that
-    /// is not `stopped`; `model_not_priced` for a turn whose model lost its
-    /// cost lines; the store's.
+    /// is not `stopped`; `model_not_priced` for a turn whose model no longer
+    /// resolves to a token rate (`Store::model_rate`); the store's.
     pub fn begin_step(&self, id: &str, driver: &DriverId, n: i64, kind: StepKind) -> Result<Step> {
+        self.begin_step_on(id, driver, n, kind, KeySource::Instance)
+    }
+
+    /// [`Store::begin_step`] for a step whose turn runs on `turn_key`, the
+    /// source of the key the caller chose for the call: a turn on
+    /// [`KeySource::Own`] is not refused for its model's price (its token
+    /// rows are waived), a turn on the instance key is. `turn_key` is read
+    /// only when `kind` is [`StepKind::Turn`]; no other step is checked for
+    /// a price, since none charges tokens. [`Store::begin_step`] passes
+    /// [`KeySource::Instance`], the stricter check.
+    ///
+    /// # Errors
+    /// As [`Store::begin_step`].
+    pub fn begin_step_on(
+        &self,
+        id: &str,
+        driver: &DriverId,
+        n: i64,
+        kind: StepKind,
+        turn_key: KeySource,
+    ) -> Result<Step> {
         let driver = driver.as_str();
         self.with_tx(|tx| {
             let run = run_in(tx, id)?.ok_or(CoreError::NotFound)?;
             check_claim(&run, driver)?;
             check_step(tx, id, n)?;
             if kind == StepKind::Turn {
-                check_model_priced(tx, &run.model)?;
+                // The key the caller chose for the call, which its token
+                // rows are charged on.
+                check_model_priced(tx, &self.bot_overrides(), &run.model, turn_key)?;
             }
             match run.status {
                 RunStatus::Running => {}
@@ -1872,7 +1896,18 @@ mod tests {
     #[test]
     fn a_model_without_prices_cannot_run() {
         let (_d, st) = store();
-        assert_eq!(code(new_run_on(&st, "custom-model")), "model_not_priced");
+        // At the default rates any model runs; with explicit prices
+        // required, only one with its cost lines.
+        new_run_on(&st, "custom-model").unwrap();
+        st.set_bot_settings(
+            DAEMON,
+            &[(
+                crate::bot_settings::Setting::RequireExplicitPrice,
+                Some(json!(true)),
+            )],
+        )
+        .unwrap();
+        assert_eq!(code(new_run_on(&st, "other-model")), "model_not_priced");
         // A model whose lines go away while a run waits is refused at its
         // next turn, before anything is asked of the provider.
         let run = new_run_on(&st, "claude-opus-5-5").unwrap();
@@ -1892,6 +1927,70 @@ mod tests {
         // Its stop is still possible.
         st.cancel_run(DAEMON, &run.id).unwrap();
         st.begin_step(&run.id, &DriverId::named("d"), 1, StepKind::Stopped)
+            .unwrap();
+    }
+
+    #[test]
+    fn an_own_key_run_is_never_refused_for_a_missing_price() {
+        use crate::secrets::{Kek, SecretSlot};
+        let (_d, st) = store();
+        st.set_bot_settings(
+            DAEMON,
+            &[(
+                crate::bot_settings::Setting::RequireExplicitPrice,
+                Some(json!(true)),
+            )],
+        )
+        .unwrap();
+        let aid = artifact(&st, None).to_string();
+        let new = |key_source| NewRun {
+            artifact_id: aid.clone(),
+            person: OWNER.into(),
+            request: RequestKind::Thread,
+            thread_ids: vec!["t1".into()],
+            model: "custom-model".into(),
+            key_source,
+            base_version: 1,
+            agent_grant: None,
+        };
+        assert_eq!(
+            code(st.create_run(&bot(), new(KeySource::Instance))),
+            "model_not_priced"
+        );
+        // On the person's own key its token rows are waived: it runs.
+        let run = st.create_run(&bot(), new(KeySource::Own)).unwrap();
+        let d = DriverId::named("d");
+        st.claim_run(&run.id, &d, 60).unwrap();
+        // A turn is checked on the key its caller chose, whatever the
+        // person's stored key says: with their own key in use, a turn the
+        // caller runs on the instance key (its own key could not be
+        // opened) is refused, as is one begun without a key.
+        st.set_secret(
+            DAEMON,
+            &Kek::from_bytes([7; 32]),
+            &SecretSlot::Own(OWNER.into()),
+            "sk-ant-api03-OWNKEYOWNKEYOWN-wxyz",
+        )
+        .unwrap();
+        assert!(
+            st.secret_meta(&SecretSlot::Own(OWNER.into()))
+                .unwrap()
+                .unwrap()
+                .use_own
+        );
+        assert_eq!(
+            code(st.begin_step_on(&run.id, &d, 1, StepKind::Turn, KeySource::Instance)),
+            "model_not_priced"
+        );
+        assert_eq!(
+            code(st.begin_step(&run.id, &d, 1, StepKind::Turn)),
+            "model_not_priced"
+        );
+        st.begin_step_on(&run.id, &d, 1, StepKind::Turn, KeySource::Own)
+            .unwrap();
+        // Another step is not checked for a price.
+        st.cancel_run(DAEMON, &run.id).unwrap();
+        st.begin_step_on(&run.id, &d, 1, StepKind::Stopped, KeySource::Instance)
             .unwrap();
     }
 
