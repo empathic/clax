@@ -135,6 +135,25 @@ describe("presentations", () => {
     expect(q(".composer")).toBeNull();
   });
 
+  it("dialog: Tab wraps within it, and Escape anywhere in it closes it", async () => {
+    start(classic(), { presentation: "dialog" });
+    click(button("Report"));
+    onPick(pickOf());
+    await settle();
+    const frame = q('.frame[role="dialog"]')!;
+    const send = button("Send")!;
+    const close = button("Close · Esc")!;
+    type("x");
+    send.focus();
+    frame.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(close);
+    frame.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(send);
+    send.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    flushSync();
+    expect(q(".composer")).toBeNull();
+  });
+
   it("note first: the composer at once, nothing captured, and Add a screenshot keeps the note", async () => {
     let renders = 0;
     const renderViewport = async () => { renders++; return { png: PNG, omitted: [], at: { x: 0, y: 0, w: 800, h: 600 }, scale: 1 }; };

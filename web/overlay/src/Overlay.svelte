@@ -368,6 +368,21 @@
     pendingFor = { of, ready: Promise.all([context, metadata, taken]) };
   }
 
+  /** The dialog keeps focus while it is open (aria-modal): Tab and Shift+Tab
+   * wrap within it, and Escape anywhere in it drops the draft, as Close does. */
+  function trapFocus(e: KeyboardEvent): void {
+    const frame = e.currentTarget as HTMLElement;
+    if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); cancel(); return; }
+    if (e.key !== "Tab") return;
+    const all = [...frame.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), textarea, summary, [tabindex='0']")];
+    if (!all.length) return;
+    const root = frame.getRootNode() as Document | ShadowRoot;
+    const at = root.activeElement;
+    const first = all[0], last = all[all.length - 1];
+    if (e.shiftKey && (at === first || at === frame)) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && at === last) { e.preventDefault(); first.focus(); }
+  }
+
   /** "Add a screenshot" on a draft that has none: the mode bar, for a capture into it. */
   let adding = false;
   function addScreenshot(): void {
@@ -730,7 +745,7 @@
   <div class="dock" data-layout={dockLayout}>
   {#if !inWindow}
     {#if draft && !open && dockLayout === "dialog"}
-      <div class="frame" role="dialog" aria-modal="true" aria-labelledby="cx-composer-title">{@render composerSnippet()}</div>
+      <div class="frame" role="dialog" aria-modal="true" aria-labelledby="cx-composer-title" tabindex="-1" onkeydown={trapFocus}>{@render composerSnippet()}</div>
     {:else if draft && !open && dockLayout !== "dock"}
       <div class="frame" role="region" aria-labelledby="cx-composer-title">{@render composerSnippet()}</div>
     {:else}
@@ -779,7 +794,7 @@
 
 <style>
   .cx { pointer-events: auto; }
-  .dock { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; max-height: calc(100vh - 32px); pointer-events: none; }
+  .dock { position: fixed; z-index: 2; right: 16px; bottom: 16px; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; max-height: calc(100vh - 32px); pointer-events: none; }
   .dock > :global(*) { flex: 0 1 auto; min-height: 0; pointer-events: auto; }
   .launcher { display: flex; flex: none; gap: 6px; }
   .launcher button { box-shadow: var(--elev-lg); border-radius: 999px; padding: 7px 14px; }
