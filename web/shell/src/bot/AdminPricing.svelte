@@ -198,12 +198,13 @@
       </table>
     </div>
     {#if card}
-      {#key card.model}
+      <!-- One item, keyed: another model's card is a fresh form (a keyed each, not a key block, which would split Svelte's key runtime into a chunk of its own that the artifact view loads). -->
+      {#each [card] as c (c.model)}
         <div class="pr-card" id="pr-card">
-          <h4>Rate card for {card.name ?? card.model}</h4>
-          <RateCard id={`pr-e-${slug(card.model)}`} model={card.model} from={card} priceMicro={p.credit_price_micro_usd} marginBp={p.token_margin_bp} busy={!!busy} saving={busy === "card"} focus onSave={u => saveCard(card, u)} onCancel={closeCard} />
+          <h4>Rate card for {c.name ?? c.model}</h4>
+          <RateCard id={`pr-e-${slug(c.model)}`} model={c.model} from={c} priceMicro={p.credit_price_micro_usd} marginBp={p.token_margin_bp} busy={!!busy} saving={busy === "card"} focus onSave={u => saveCard(c, u)} onCancel={closeCard} />
         </div>
-      {/key}
+      {/each}
     {/if}
     <p class="note" role="status">{@render note(notes.m)}</p>
   </section>
@@ -227,7 +228,7 @@
       <div class="fields pr-go">
         <div class="field"><label for="pr-a-name">Name (optional)</label><input id="pr-a-name" type="text" placeholder="Gemini 3.5 Flash" bind:value={aName} /></div>
       </div>
-      {#key aKey}<RateCard id="pr-a" model={aModel.trim() || "a new model"} priceMicro={p.credit_price_micro_usd} marginBp={p.token_margin_bp} busy={!!busy} saving={busy === "add"} saveLabel="Add the model" onSave={addCard} />{/key}
+      {#each [aKey] as k (k)}<RateCard id="pr-a" model={aModel.trim() || "a new model"} priceMicro={p.credit_price_micro_usd} marginBp={p.token_margin_bp} busy={!!busy} saving={busy === "add"} saveLabel="Add the model" onSave={addCard} />{/each}
     {/if}
     <p class="note" role="status">{@render note(notes.a)}</p>
   </section>
