@@ -829,7 +829,7 @@ async fn a_reporter_sees_only_its_own_reports_under_own() {
 }
 
 #[tokio::test]
-async fn the_preflight_answers_only_listed_origins() {
+async fn a_listed_origin_reads_every_answer_and_another_only_why_it_was_refused() {
     let s = Setup::new().await;
     let r = s.reporter("emp-1").await;
     let paths = [
@@ -874,18 +874,28 @@ async fn the_preflight_answers_only_listed_origins() {
                 vec![],
             )
             .await;
+        // Another origin's preflight is answered, so its page's request
+        // reaches the route and reads its refusal.
+        assert_eq!(res.headers()["access-control-allow-origin"], OTHER, "{pq}");
         assert!(
-            res.headers().get("access-control-allow-origin").is_none(),
-            "{pq}"
+            res.headers()
+                .get("access-control-allow-credentials")
+                .is_none()
         );
-        assert!(res.headers().get("access-control-allow-headers").is_none());
     }
-    // A refusal from another origin names none either.
+    // Its refusal names it, so the page reads why.
     let res = s
         .as_reporter(&r, Some(OTHER), "GET", &s.reports(), None, vec![])
         .await;
     assert_eq!(res.status(), 403);
-    assert!(res.headers().get("access-control-allow-origin").is_none());
+    assert_eq!(res.headers()["access-control-allow-origin"], OTHER);
+    // A listed origin's request that holds is named; another's never
+    // holds, so no answer with the queue's reports names it.
+    let res = s
+        .as_reporter(&r, Some(ORIGIN), "GET", &s.reports(), None, vec![])
+        .await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.headers()["access-control-allow-origin"], ORIGIN);
     // The service route is not for browsers.
     let res = s
         .send(
@@ -1165,4 +1175,63 @@ async fn on_a_local_clax_one_external_id_is_one_artifact() {
     let mine = filed_artifact(&a).await;
     let b = Setup::on_existing(a, Some("u_b"));
     assert_eq!(filed_artifact(&b).await, mine);
+}
+
+/// The owner's `queue` inbox items.
+fn queue_notes(s: &Setup) -> Vec<clax_store::inbox::ItemRow> {
+    let q = clax_store::inbox::InboxQuery {
+        kinds: vec![clax_store::inbox::Kind::Queue],
+        ..Default::default()
+    };
+    s.ts.store.inbox_list(&q).unwrap().0
+}
+
+#[tokio::test]
+async fn a_signed_read_refused_wrong_origin_tells_the_owner_once_a_day() {
+    let s = Setup::new().await;
+    let r = s.reporter("emp-1").await;
+    // A read whose signature does not hold tells no one.
+    let forged = Reporter {
+        key: KeyPair::generate(),
+        token: r.token.clone(),
+    };
+    let res = s
+        .as_reporter(&forged, Some(OTHER), "GET", &s.reports(), None, vec![])
+        .await;
+    assert_eq!(status_code(res).await, (403, "wrong_origin".into()));
+    assert!(queue_notes(&s).is_empty());
+    // Nor does a refused request with a body.
+    let res = s
+        .as_reporter(
+            &r,
+            Some(OTHER),
+            "POST",
+            &format!("{}/t1/comments", s.reports()),
+            Some("application/json"),
+            br#"{"body":"x"}"#.to_vec(),
+        )
+        .await;
+    assert_eq!(status_code(res).await, (403, "wrong_origin".into()));
+    assert!(queue_notes(&s).is_empty());
+    // A signed read does, naming the queue, the token's origin and the one sent.
+    for _ in 0..2 {
+        let res = s
+            .as_reporter(&r, Some(OTHER), "GET", &s.reports(), None, vec![])
+            .await;
+        assert_eq!(status_code(res).await, (403, "wrong_origin".into()));
+    }
+    let notes = queue_notes(&s);
+    assert_eq!(notes.len(), 1, "one a day");
+    let n = &notes[0];
+    assert_eq!(n.recipient, None, "the owner's");
+    let d = n.detail.as_ref().unwrap();
+    assert_eq!(d["queue_id"], s.qid.as_str());
+    assert_eq!(d["origin"], ORIGIN);
+    assert_eq!(d["sent"], OTHER);
+    assert_eq!(d["code"], "wrong_origin");
+    // The owner's inbox shows it with the queues page to fix it.
+    let v = clax_http::views::inbox::view(&s.ts.store, n, false).unwrap();
+    assert_eq!(v["kind"], "queue");
+    assert_eq!(v["url"], "/queues");
+    assert_eq!(v["queue"]["origin"], ORIGIN);
 }

@@ -22,6 +22,9 @@ describe("inbox model", () => {
     expect(itemTitle(item("push", { push }))).toBe("https://clax.example refused v4 of Quarterly Review");
     expect(itemText(item("push", { push }))).toBe("the public copy is at version 5");
     expect(itemTitle(item("push", { push: undefined }))).toBe("A public Clax refused v? of Quarterly Review");
+    const queue = { id: "q1", name: "Basis", origin: "https://phobos.example", sent: null, code: "wrong_origin" };
+    expect(itemTitle(item("queue", { queue }))).toBe("Queue Basis refused a page of https://phobos.example");
+    expect(itemText(item("queue", { queue }))).toBe("Add https://phobos.example to the queue's origins to let it report");
   });
 
   it("titles a connection, an approval request and an ended agent", () => {

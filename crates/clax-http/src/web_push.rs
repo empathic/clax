@@ -25,7 +25,7 @@ pub const TITLE_MAX: usize = 80;
 pub fn waits_on_owner(kind: Kind) -> bool {
     matches!(
         kind,
-        Kind::Question | Kind::Approval | Kind::Reply | Kind::Connection
+        Kind::Question | Kind::Approval | Kind::Reply | Kind::Connection | Kind::Queue
     )
 }
 
@@ -120,6 +120,11 @@ pub fn message(i: &ItemRow, v: &Value) -> Option<Message> {
             }
             "A machine asks to connect".to_string()
         }
+        Kind::Queue => format!(
+            "Queue {} refused a page of {}",
+            v["queue"]["name"].as_str().unwrap_or("?"),
+            v["queue"]["origin"].as_str().unwrap_or("another origin"),
+        ),
         _ => return None,
     };
     let url = v["url"].as_str().unwrap_or("/inbox");
@@ -299,6 +304,19 @@ mod tests {
         assert_eq!(
             (m.title.as_str(), m.url.as_str()),
             ("An agent needs your approval", "/inbox?approval=r1")
+        );
+    }
+
+    #[test]
+    fn a_queue_s_refusal_of_a_page_pushes_its_queue_and_origin() {
+        let v = json!({"url": "/queues", "queue": {"name": "Basis", "origin": "https://phobos.example"}});
+        let m = message(&item(Kind::Queue), &v).unwrap();
+        assert_eq!(
+            (m.title.as_str(), m.url.as_str()),
+            (
+                "Queue Basis refused a page of https://phobos.example",
+                "/queues"
+            )
         );
     }
 

@@ -58,10 +58,13 @@ pub enum Kind {
     /// An automatic push of a new version to a public Clax was refused
     /// (`detail_json`: the remote and the refusal).
     Push,
+    /// A report queue refused a page (`detail_json`: the queue, the
+    /// origin and the refusal).
+    Queue,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 9] = [
+    pub const ALL: [Kind; 10] = [
         Kind::Reply,
         Kind::Version,
         Kind::Published,
@@ -71,6 +74,7 @@ impl Kind {
         Kind::Connection,
         Kind::Ended,
         Kind::Push,
+        Kind::Queue,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -84,6 +88,7 @@ impl Kind {
             Kind::Connection => "connection",
             Kind::Ended => "ended",
             Kind::Push => "push",
+            Kind::Queue => "queue",
         }
     }
 
@@ -1996,6 +2001,34 @@ impl Store {
         })
     }
 
+    /// Report queue `qid` refused a signed request of a reporter token made
+    /// for `origin` (`code`, such as `wrong_origin`): a `queue` item for the
+    /// owner, its detail `detail` (`{queue_id, queue, origin, sent, code}`)
+    /// and indexed by `text`, keyed by the queue, the code, the token's
+    /// origin and `day` (a UTC date), so a page that keeps being refused
+    /// makes one a day. `None` when that day has one already.
+    pub fn note_queue_refused(
+        &self,
+        qid: &str,
+        code: &str,
+        origin: &str,
+        day: &str,
+        detail: Value,
+        text: &str,
+    ) -> Result<Option<i64>> {
+        self.with_tx(|tx| {
+            insert_at(
+                tx,
+                New {
+                    detail: Some(detail),
+                    text: text.to_string(),
+                    ..New::of(Kind::Queue, format!("queue:{qid}:{code}:{origin}:{day}"))
+                },
+                &self.now(),
+            )
+        })
+    }
+
     /// A working record that ended as finished work (the agent said it was
     /// done, or its turn ended): a `finished` item for its session's person
     /// (the owner for the owner's agents) keeping its message and threads,
@@ -2419,7 +2452,8 @@ impl Store {
                     | Kind::Question
                     | Kind::Connection
                     | Kind::Ended
-                    | Kind::Push => {}
+                    | Kind::Push
+                    | Kind::Queue => {}
                 }
                 out.push(s);
             }

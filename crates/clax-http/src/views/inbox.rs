@@ -477,6 +477,20 @@ fn render(
             });
             !live
         }
+        // A report queue's refusal of a page: the queue, the origins and
+        // the refusal; the queues page fixes it.
+        Kind::Queue => {
+            let d = |k: &str| i.detail.as_ref().map_or(Value::Null, |d| d[k].clone());
+            v["queue"] = json!({
+                "id": d("queue_id"),
+                "name": d("queue"),
+                "origin": d("origin"),
+                "sent": d("sent"),
+                "code": d("code"),
+            });
+            v["url"] = json!("/queues");
+            false
+        }
     };
     v["gone"] = json!(gone);
     Ok(v)

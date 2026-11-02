@@ -83,6 +83,7 @@ export function itemTitle(i: InboxItem, others: InboxItem[] = [], { page = true 
     }
     case "ended": return `${who} ended`;
     case "push": return `${i.push?.origin ?? "A public Clax"} refused v${i.push?.n ?? "?"}${on(" of ")}`;
+    case "queue": return `Queue ${i.queue?.name ?? "?"} refused a page of ${i.queue?.origin ?? "another origin"}`;
   }
 }
 
@@ -106,6 +107,8 @@ export function itemText(i: InboxItem): string {
     // What the end cleaned up: the note's line after "<name> ended".
     : i.kind === "ended" ? i.ended?.text.split(" · ").slice(1).join(" · ")
     : i.kind === "push" ? i.push?.message
+    // How to fix it: let the origin report, from the queue's page.
+    : i.kind === "queue" ? (i.queue?.origin ? `Add ${i.queue.origin} to the queue's origins to let it report` : null)
     : null;
   return (t ?? "").replace(/\s+/g, " ").trim();
 }

@@ -22,7 +22,11 @@
 //! otherwise). It is the request's one `Origin`; with none sent, it is
 //! Clax's own origin, and only for a browser's fetch from a page of that
 //! origin ([`own_origin_fetch`]). [`cors`] answers a reporter route's
-//! cross-origin reads for the queue's origins alone.
+//! cross-origin reads for the queue's origins, and any other origin's
+//! refusals. A signed bodyless request refused `wrong_origin` leaves the
+//! instance's owner a `queue` inbox item, one a day per queue and token
+//! origin ([`note_refused`]): the refusing queue cannot take it, and the
+//! page cannot fix it.
 //!
 //! The second case is a page served on Clax's own origin (Basis at
 //! `/fold/` beside Clax on a `[serve] trusted_hosts` name): its browser
@@ -273,11 +277,14 @@ impl<const LIMIT: usize> FromRequest<AppState> for ReporterCaller<LIMIT> {
                 if t.queue_id != qid {
                     return Ok(None);
                 }
-                let origins = st.queue(&qid)?.map(|q| q.origins).unwrap_or_default();
-                Ok(Some((t, origins)))
+                let (name, origins) = st
+                    .queue(&qid)?
+                    .map(|q| (q.name, q.origins))
+                    .unwrap_or_default();
+                Ok(Some((t, name, origins)))
             })
             .await?;
-        let (t, origins) = found.ok_or_else(invalid_token)?;
+        let (t, name, origins) = found.ok_or_else(invalid_token)?;
         let mut sent = parts.headers.get_all(header::ORIGIN).iter();
         let from_origin = match (sent.next(), sent.next()) {
             (Some(o), None) => o.to_str().ok() == Some(t.origin.as_str()),
@@ -285,6 +292,9 @@ impl<const LIMIT: usize> FromRequest<AppState> for ReporterCaller<LIMIT> {
             _ => false,
         };
         if !from_origin || !origins.contains(&t.origin) {
+            if agent::bodyless(&parts.headers) {
+                note_refused(s, &parts, body, &t, &name, &token).await;
+            }
             return Err(wrong_origin());
         }
         let key = sig::decode_public(&t.public_key).map_err(|e| grant_auth::refuse(e, &s.store))?;
@@ -299,6 +309,51 @@ impl<const LIMIT: usize> FromRequest<AppState> for ReporterCaller<LIMIT> {
             extensions: parts.extensions,
         })
     }
+}
+
+/// Most characters of the refused request's own `Origin` a note keeps.
+const MAX_NOTED_ORIGIN: usize = 200;
+
+/// Notes for the instance's owner that queue `name` refused bodyless
+/// request `parts` of reporter token `t` (`wrong_origin`), once its
+/// signature holds and its nonce is spent as an accepted request's would
+/// be; nothing else. The note is keyed by what the token's signer
+/// vouched for alone (the queue, the token's origin, the day), so a
+/// refused page cannot make more than one a day; the `Origin` it sent is
+/// kept in the detail, cut.
+async fn note_refused(
+    s: &AppState,
+    parts: &Parts,
+    body: Body,
+    t: &ReporterToken,
+    name: &str,
+    token: &Secret,
+) {
+    let verified = async {
+        let key = sig::decode_public(&t.public_key).map_err(|e| grant_auth::refuse(e, &s.store))?;
+        let head = grant_auth::head(parts, &s.store)?;
+        fresh(s, &t.queue_id, &head, &key)?;
+        signed_body(s, parts, body, &t.queue_id, &head, key, token, 0).await
+    };
+    if verified.await.is_err() {
+        return;
+    }
+    let sent: Option<String> = parts
+        .headers
+        .get(header::ORIGIN)
+        .and_then(|o| o.to_str().ok())
+        .map(|o| o.chars().take(MAX_NOTED_ORIGIN).collect());
+    let (qid, origin) = (t.queue_id.clone(), t.origin.clone());
+    let text = format!("Queue {name} refused a page of {origin}");
+    let detail = serde_json::json!({
+        "queue_id": qid, "queue": name, "origin": origin, "sent": sent, "code": "wrong_origin",
+    });
+    let _ = s
+        .store_call(move |st| {
+            let day = st.now_utc().format("%Y-%m-%d").to_string();
+            st.note_queue_refused(&qid, "wrong_origin", &origin, &day, detail, &text)
+        })
+        .await;
 }
 
 /// Whether a request that sent no `Origin` is a browser's fetch from a page
@@ -349,8 +404,10 @@ fn reporter_qid(path: &str) -> Option<&str> {
 /// varies on `Origin`. When the request's one `Origin` is among the path's
 /// queue's origins, the answer names it in `Access-Control-Allow-Origin`
 /// (never `*`, and no credentials mode), and a preflight's answer also
-/// names [`ALLOW_METHODS`] and [`ALLOW_HEADERS`]; for any other origin it
-/// names none, and the browser keeps the answer from the page.
+/// names [`ALLOW_METHODS`] and [`ALLOW_HEADERS`]. Any other origin is
+/// named on a preflight and on a 4xx refusal alone: its page's request
+/// reaches the route, which never lets it through ([`ReporterCaller`]),
+/// and the page reads why (`wrong_origin`) in place of a failed fetch.
 pub async fn cors(State(s): State<AppState>, req: Request, next: Next) -> Response {
     let mut sent = req.headers().get_all(header::ORIGIN).iter();
     let origin = match (sent.next(), sent.next()) {
@@ -369,7 +426,11 @@ pub async fn cors(State(s): State<AppState>, req: Request, next: Next) -> Respon
         .store_call(move |st| Ok(st.queue(&qid)?.map(|q| q.origins).unwrap_or_default()))
         .await
         .is_ok_and(|origins| origins.contains(&origin));
-    if !listed {
+    // Any other origin's preflight and refusals are answered too, so its
+    // page reaches the route and reads why it was refused (`wrong_origin`,
+    // which the instance notes for its owner) in place of a failed fetch;
+    // a refusal carries nothing of the queue's.
+    if !listed && !preflight && !res.status().is_client_error() {
         return res;
     }
     let Ok(value) = HeaderValue::from_str(&origin) else {

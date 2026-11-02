@@ -220,7 +220,7 @@ export type QuestionLink = {
   answered_there: boolean; unlinked: boolean;
 };
 
-export type InboxKind = "reply" | "version" | "published" | "question" | "finished" | "approval" | "connection" | "ended" | "push";
+export type InboxKind = "reply" | "version" | "published" | "question" | "finished" | "approval" | "connection" | "ended" | "push" | "queue";
 /** A `connection` item's grant: a request waiting for the owner, or a
  * machine that connected with an invite (`person` once it has one). */
 export type InboxConnection = {
@@ -281,6 +281,8 @@ export type InboxItem = {
   /** `push`: an automatic push of local version `n` that the public Clax at
    * `origin` refused, its code and message, and the public copy's `url`. */
   push?: { n: number | null; origin: string | null; code: string | null; message: string | null; url: string | null };
+  /** `queue`: a report queue refused a page whose token was made for `origin` (`sent`: the `Origin` it sent). */
+  queue?: { id: string | null; name: string | null; origin: string | null; sent: string | null; code: string | null };
   gone: boolean;
   /** Where opening the item leads (a path on the daemon). */
   url: string;
