@@ -264,15 +264,22 @@ describe("NetworkView", () => {
 
 describe("DevtoolsPanel", () => {
   const panelLink = () => ({ state: null, post: () => {} });
-  it("has three views in a tab list the arrows move through, a notices zone always there, and reads settings only while they are in sight", async () => {
+  /** No queues: the Queues view reads nothing until it is first opened. */
+  const queues = () => ({ base: null, queues: vi.fn(async () => []), reports: vi.fn(), report: vi.fn(), clip: vi.fn(), reply: vi.fn(), resolve: vi.fn(), watch: () => () => {} });
+  it("has four views in a tab list the arrows move through, a notices zone always there, and reads settings only while they are in sight", async () => {
     const settings = { status: "none" as const, snapshot: null, set: vi.fn(), reset: vi.fn(), active: vi.fn() };
-    const { rerender } = render(DevtoolsPanel, { props: { link: panelLink(), settings, network: new NetworkLog(), reload: () => {} } });
+    const q = queues();
+    const { rerender } = render(DevtoolsPanel, { props: { link: panelLink(), queues: q, settings, network: new NetworkLog(), reload: () => {} } });
     const tabs = screen.getAllByRole("tab");
-    expect(tabs.map(t => t.textContent)).toEqual(["Threads", "App settings", "Network"]);
+    expect(tabs.map(t => t.textContent)).toEqual(["Threads", "Queues", "App settings", "Network"]);
     expect(screen.getByRole("status")).toBeTruthy();
     expect(screen.getByText("Connecting to Clax…")).toBeTruthy();
     expect(settings.active).toHaveBeenLastCalledWith(false);
+    expect(q.queues).not.toHaveBeenCalled();
     await fireEvent.keyDown(tabs[0], { key: "ArrowRight" });
+    expect(screen.getByRole("tab", { name: "Queues" }).getAttribute("aria-selected")).toBe("true");
+    expect(await screen.findByText("You have no queues.", { exact: false })).toBeTruthy();
+    await fireEvent.keyDown(screen.getByRole("tab", { name: "Queues" }), { key: "ArrowRight" });
     expect(screen.getByRole("tab", { name: "App settings" }).getAttribute("aria-selected")).toBe("true");
     expect(settings.active).toHaveBeenLastCalledWith(true);
     expect(screen.getByText("This page registers no app dev settings.")).toBeTruthy();
@@ -289,7 +296,7 @@ describe("DevtoolsPanel", () => {
     const settings = new SettingsLink(p.env);
     await settings.refresh();
     const reload = vi.fn();
-    render(DevtoolsPanel, { props: { link: panelLink(), settings, network: new NetworkLog(), reload } });
+    render(DevtoolsPanel, { props: { link: panelLink(), queues: queues(), settings, network: new NetworkLog(), reload } });
     await fireEvent.click(screen.getByRole("tab", { name: "App settings" }));
     await fireEvent.click(screen.getByRole("radio", { name: "Drawer" }));
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Presentation: Drawer (You). Reload the page to apply."));

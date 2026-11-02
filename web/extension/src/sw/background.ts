@@ -65,7 +65,7 @@ export function startBackground(c: typeof chrome) {
     const documentId = docs.get(tabId);
     quietly(() => c.tabs.sendMessage(tabId, m, documentId ? { documentId } : { frameId: 0 }));
   };
-  const { pairer, api, tabs, picks, sites, inbox, fromOverlay } = createWorker({
+  const { pairer, api, tabs, picks, sites, inbox, queues, fromOverlay } = createWorker({
     pair: {
       sendNative: async (host, msg) => {
         try { return await c.runtime.sendNativeMessage(host, msg); }
@@ -257,6 +257,8 @@ export function startBackground(c: typeof chrome) {
     if (port.name.startsWith("panel:") && isPanelSender(s, c.runtime.id)) {
       const kept = tabs.attachPanel(port, (tabId, m) => {
         if (!isFromPanel(m)) return;
+        // The DevTools panel's Queues view follows the queues ping on this port.
+        if (m.t === "queue-watch") { queues.watch(port, m.on); return; }
         void panelAction(panelDeps, tabId, m, r => { try { port.postMessage(r); } catch { /* the panel closed */ } })
           // A panel watching a tab, or asking to retry: an owner check that waited for a pairing runs again.
           .then(() => { if (m.t === "watch-tab" || m.t === "retry") inbox.kick(); });

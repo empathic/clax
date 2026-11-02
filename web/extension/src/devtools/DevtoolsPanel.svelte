@@ -1,25 +1,33 @@
 <script lang="ts">
   // The Clax DevTools panel (RECOMMEND-consultant-2026-11-02-clax-extension-
   // devtools Q1): a third host of the side panel's view, pinned to the
-  // inspected tab. Three views in a tab list (arrows, Home and End move
-  // between them): Threads (the side panel's own `Panel`, unchanged), App
+  // inspected tab. Four views in a tab list (arrows, Home and End move
+  // between them): Threads (the side panel's own `Panel`, unchanged), Queues
+  // (Clax's own queue and report pages, pinned to the inspected site), App
   // settings (the page's dev settings hook) and Network. One notices zone
   // under the tab list, always there and of a fixed height, says what each
   // change did (a live region), so nothing below it moves. Every view stays
-  // mounted while hidden, so switching keeps its state.
+  // mounted while hidden once opened, so switching keeps its state.
   import type { ComponentProps } from "svelte";
   import Panel from "../panel/Panel.svelte";
   import AppSettings from "./AppSettings.svelte";
   import NetworkView from "./NetworkView.svelte";
+  import QueuesView from "./QueuesView.svelte";
   import type { NetworkLog } from "./network.svelte";
   import type { SettingsLink } from "./settings.svelte";
 
-  type View = "threads" | "settings" | "network";
+  type View = "threads" | "queues" | "settings" | "network";
   const VIEWS: { id: View; label: string }[] = [
-    { id: "threads", label: "Threads" }, { id: "settings", label: "App settings" }, { id: "network", label: "Network" },
+    { id: "threads", label: "Threads" }, { id: "queues", label: "Queues" }, { id: "settings", label: "App settings" }, { id: "network", label: "Network" },
   ];
-  let { link, settings, network, shown = true, reload, copy = copyText, now }: {
+  let { link, queues, inspected = { origin: null, page: null }, show = async () => false, settings, network, shown = true, reload, copy = copyText, now }: {
     link: ComponentProps<typeof Panel>["link"];
+    /** The owner's queues, through the worker. */
+    queues: ComponentProps<typeof QueuesView>["api"];
+    /** The inspected page's origin and address. */
+    inspected?: { origin: string | null; page: string | null };
+    /** Shows a selector's element in the inspected page; true when found. */
+    show?(selector: string): Promise<boolean>;
     settings: Pick<SettingsLink, "status" | "snapshot" | "set" | "reset" | "active">;
     network: Pick<NetworkLog, "rows" | "keep" | "clear">;
     /** Whether DevTools shows this panel now (its `onShown` / `onHidden`). */
@@ -30,6 +38,9 @@
     now?: Date;
   } = $props();
   let view = $state<View>("threads");
+  /** The views opened once, which stay mounted. */
+  let seen = $state<Partial<Record<View, true>>>({ threads: true });
+  $effect(() => { if (!seen[view]) seen = { ...seen, [view]: true }; });
   let notice = $state<{ text: string; reload: boolean; n: number } | null>(null);
   let said = 0;
   const say = (text: string, withReload = false) => { notice = { text, reload: withReload, n: ++said }; };
@@ -76,6 +87,10 @@
   </div>
   <div class="view" role="tabpanel" id="dt-threads-panel" aria-labelledby="dt-threads" hidden={view !== "threads"}>
     <Panel {link} {now} />
+  </div>
+  <div class="view" role="tabpanel" id="dt-queues-panel" aria-labelledby="dt-queues" hidden={view !== "queues"}>
+    <!-- Loaded once first opened, then kept: the queue routes are read only for a panel that shows them. -->
+    {#if seen.queues}<QueuesView api={queues} origin={inspected.origin} page={inspected.page} {show} {say} />{/if}
   </div>
   <div class="view" role="tabpanel" id="dt-settings-panel" aria-labelledby="dt-settings" hidden={view !== "settings"}>
     <AppSettings link={settings} {say} />

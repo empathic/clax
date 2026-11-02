@@ -18,7 +18,8 @@ import type { Sites } from "./site";
 import type { Tabs } from "./tabs";
 
 export type PanelDeps = {
-  api: Pick<Api, "sendThread" | "sendBatch" | "comment" | "resolve" | "reopen" | "looked" | "setName" | "move" | "addRule" | "deleteRule" | "suggest" | "sites" | "join" | "split" | "answer" | "clip" | "artifact" | "approvesFirst" | "closeQuestion" | "markItem" | "markItems">;
+  api: Pick<Api, "sendThread" | "sendBatch" | "comment" | "resolve" | "reopen" | "looked" | "setName" | "move" | "addRule" | "deleteRule" | "suggest" | "sites" | "join" | "split" | "answer" | "clip" | "artifact" | "approvesFirst" | "closeQuestion" | "markItem" | "markItems"
+    | "queues" | "queueReports" | "queueReport" | "queueClip" | "queueReply" | "queueResolve">;
   tabs: Pick<Tabs, "ready" | "state" | "admits" | "route" | "applied" | "fail" | "setViewer" | "select" | "setCommentMode" | "commentOn" | "openThread" | "opening" | "onTabs">;
   sites: Pick<Sites, "load" | "origins" | "view" | "applied">;
   /** The owner's questions and inbox. */
@@ -120,6 +121,14 @@ async function inboxAction(d: PanelDeps, m: PanelToWorker, reply: (r: WorkerToPa
       return true;
     }
     case "open-url": await openPath(d, m.url, m.pageUrl); return true;
+    // The DevTools panel's Queues view: the daemon's answer passes through as it came.
+    // With the paired daemon's origin, which the view's "Open in Clax" links are under.
+    case "queue-list": reply({ t: "queue-data", req: m.req, data: { ...(await api.queues()), base: await d.open.daemon() } }); return true;
+    case "queue-reports": reply({ t: "queue-data", req: m.req, data: await api.queueReports(m.qid, m.cursor) }); return true;
+    case "queue-report": reply({ t: "queue-data", req: m.req, data: await api.queueReport(m.qid, m.tid) }); return true;
+    case "queue-clip": reply({ t: "queue-data", req: m.req, data: await api.queueClip(m.qid, m.tid) }); return true;
+    case "queue-reply": reply({ t: "queue-data", req: m.req, data: await api.queueReply(m.qid, m.tid, m.body) }); return true;
+    case "queue-resolve": reply({ t: "queue-data", req: m.req, data: await api.queueResolve(m.qid, m.tid) }); return true;
     default: return false;
   }
 }

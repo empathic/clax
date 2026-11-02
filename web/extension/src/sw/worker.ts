@@ -10,6 +10,7 @@ import { Hub } from "../../../shell/src/stream-hub";
 import type { OverlayToWorker, Rect, WorkerToOverlay } from "../messages";
 import { Api } from "./api";
 import { HUB_ID, WorkerInbox } from "./inbox";
+import { QUEUES_HUB_ID, WorkerQueues } from "./queues";
 import { type PairEnv, Pairer } from "./pairing";
 import { Picks } from "./picks";
 import { Sites } from "./site";
@@ -33,7 +34,7 @@ export type WorkerDeps = {
   now?(): number;
 };
 export type Worker = {
-  pairer: Pairer; api: Api; hub: Hub; tabs: Tabs; picks: Picks; sites: Sites; inbox: WorkerInbox;
+  pairer: Pairer; api: Api; hub: Hub; tabs: Tabs; picks: Picks; sites: Sites; inbox: WorkerInbox; queues: WorkerQueues;
   /** An admitted overlay message from tab `tabId` in window `windowId`; what it answers is the reply. */
   fromOverlay(tabId: number, windowId: number, m: OverlayToWorker, senderUrl?: string): Promise<unknown>;
 };
@@ -62,10 +63,12 @@ export function createWorker(d: WorkerDeps): Worker {
   const api = new Api(pairer, d.fetch);
   let tabs: Tabs | null = null;
   let inbox: WorkerInbox | null = null;
+  let queues: WorkerQueues | null = null;
   const hub = new Hub({
     send: (ids, msg) => {
       if (ids.includes(HUB_ID)) inbox?.fromHub(msg);
-      tabs?.fromHub(ids.filter(id => id !== HUB_ID), msg);
+      if (ids.includes(QUEUES_HUB_ID)) queues?.fromHub(msg);
+      tabs?.fromHub(ids.filter(id => id !== HUB_ID && id !== QUEUES_HUB_ID), msg);
     },
     // The hub renews the shell's events cookie at `/api/token` after a
     // failure; the extension has no cookie, and the gateway refuses that route.
@@ -75,6 +78,8 @@ export function createWorker(d: WorkerDeps): Worker {
   const sites = new Sites({ api, hub, changed: o => tabs?.siteChanged(o) });
   const ib = new WorkerInbox({ api, hub });
   inbox = ib;
+  const qs = new WorkerQueues({ hub });
+  queues = qs;
   tabs = new Tabs({ api, hub, toOverlay: d.toOverlay, inject: d.inject, present: d.present, store: d.store, windowOf: d.windowOf, sites });
   const t = tabs;
   api.onRepair = () => t.repaired();
@@ -100,5 +105,5 @@ export function createWorker(d: WorkerDeps): Worker {
       default: return t.fromOverlay(tabId, windowId, m, senderUrl);
     }
   }
-  return { pairer, api, hub, tabs: t, picks, sites, inbox: ib, fromOverlay };
+  return { pairer, api, hub, tabs: t, picks, sites, inbox: ib, queues: qs, fromOverlay };
 }
