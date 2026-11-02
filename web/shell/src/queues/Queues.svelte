@@ -166,7 +166,7 @@
             <QueueForm queue={q} onSave={f => save(f, q)} onCancel={() => { editing = null; }} />
           {:else}
             <header class="qrow">
-              <h3>{q.name}</h3>
+              <h3><a href={`/queues/${encodeURIComponent(q.id)}`}>{q.name}</a></h3>
               <span class="role">{q.role === "admin" ? "Admin" : "Triage"}</span>
               <span class="sp"></span>
               {#if q.role === "admin"}

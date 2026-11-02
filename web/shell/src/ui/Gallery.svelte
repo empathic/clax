@@ -68,7 +68,8 @@
   let sync: import("./card-sync").CardSync | null = null;
   const inbox = location.pathname === "/inbox";
   // The pages beside the gallery and the inbox, each its own chunk (`gallery-working` `page`).
-  const sub = /^\/(people|tags|queues|admin|settings|me|audit)$/.exec(location.pathname)?.[1] as import("./gallery-working").Page | undefined;
+  // `/queues/<qid>` and `/queues/<qid>/<tid>` are Queues' own pages too.
+  const sub = /^\/(people|tags|queues|admin|settings|me|audit)$|^\/(queues)\/[^/]+(?:\/[^/]+)?\/?$/.exec(location.pathname)?.slice(1).find(Boolean) as import("./gallery-working").Page | undefined;
   // The tag filter: the artifacts shown carry every one. It holds tag IDs
   // once the tags are known (`canonical`), and the address (`?tag=`) names
   // each tag by its name, so a rename follows in place and a deleted tag

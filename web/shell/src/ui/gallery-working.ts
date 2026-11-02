@@ -59,7 +59,8 @@ export type Page = "people" | "tags" | "queues" | "admin" | "settings" | "me" | 
 const PAGES: Record<Page, () => Promise<{ default: unknown }>> = {
   people: () => import("../people/People.svelte"),
   tags: () => import("./TagsPage.svelte"),
-  queues: () => import("../queues/Queues.svelte"),
+  // `/queues` is the index; `/queues/<qid>[/<tid>]` a queue's or a report's own page.
+  queues: () => (location.pathname.replace(/\/$/, "") === "/queues" ? import("../queues/Queues.svelte") : import("../queues/QueueRoute.svelte")),
   admin: () => import("../bot/AdminPage.svelte"),
   settings: () => import("../bot/SettingsPage.svelte"),
   me: () => import("../bot/MePage.svelte"),
