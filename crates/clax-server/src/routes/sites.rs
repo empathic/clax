@@ -322,6 +322,51 @@ pub async fn split(
     })))
 }
 
+/// `POST /api/live/sites/unjoin` `{origin}` (the owner): undoes the join
+/// that brought `origin` into its site, from the audit record: the live
+/// pages that join re-keyed from `origin` to the site's key, still the
+/// site's pages of their paths, are keyed under `origin` again with their
+/// threads, the rules it moved are `origin`'s again, and `origin` is a site
+/// of its own. Unlike a split, what the join took is given back. Answers
+/// `{unjoined, origin, rekeyed, site}` (`unjoined`: false, and nothing
+/// written, when `origin` joined no site; `site`: what is left of the
+/// site). 400 `site_key` for the site's key, `unrecorded_join`; 409
+/// `joining` while the site has a join to finish.
+pub async fn unjoin(
+    State(s): State<AppState>,
+    _d: clax_http::agent::DeniedToGrants,
+    _o: SameOrigin,
+    _w: OwnerWrite,
+    audit: AuditCtx,
+    body: Result<Json<SplitBody>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let b = super::artifacts::body(body)?;
+    let origin = origin_of(&s, &b.origin)?;
+    let o = origin.clone();
+    let st2 = s.clone();
+    let (unjoined, rekeyed, site) = s
+        .store_call(move |st| {
+            let Some(u) = st.unjoin_origin(&audit, &o)? else {
+                return Ok((false, Vec::new(), st.joined_site(&o)?));
+            };
+            st2.live_ids.rekey(&u.rekeyed, &o);
+            st2.live_ids.reload_sites(st)?;
+            st2.events.publish(Event::Site {
+                site: u.site.key.clone(),
+                origins: u.site.origin_names(),
+                left: vec![o.clone()],
+            });
+            Ok((true, u.rekeyed, u.site))
+        })
+        .await?;
+    Ok(Json(json!({
+        "unjoined": unjoined,
+        "origin": origin,
+        "rekeyed": rekeyed,
+        "site": site_view(&site),
+    })))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AnswerBody {

@@ -1253,6 +1253,7 @@ mod l10 {
             "/api/live/sites/suggest",
             "/api/live/sites/join",
             "/api/live/sites/split",
+            "/api/live/sites/unjoin",
             "/api/live/sites/answer",
         ] {
             assert!(clax_http::live_access::live_route(p), "{p}");

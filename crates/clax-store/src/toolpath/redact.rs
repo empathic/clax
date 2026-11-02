@@ -263,6 +263,7 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("live.page_rekey", "from_origin" | "to_origin" | "path") => Safe,
         ("live.page_merge", "origin" | "path" | "merged_into") => Safe,
         ("live.join_answer", "origin" | "with" | "answer" | "until") => Safe,
+        ("live.unjoin", "origin" | "site" | "joined_at" | "rekeyed" | "rules_moved") => Safe,
         (
             "watch.start" | "watch.stop" | "watch.update",
             "target" | "replies_armed" | "source" | "origin" | "path" | "cause" | "move_id"

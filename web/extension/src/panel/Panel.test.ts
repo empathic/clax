@@ -715,9 +715,10 @@ describe("Panel: joined sites", () => {
     await settle();
     expect(l.asked).toEqual([{ t: "split", origin: A }]);
     expect(screen.getByText(/localhost:7702 is a site of its own again/)).toBeTruthy();
-    // "Same app as…" offers the other sites only.
+    // "Same app as…" offers the other sites of its host family only: never a tailnet name.
     const C = "http://localhost:3000";
-    l.sites = [{ key: A, name: O, origins: [O, A] }, { key: C, name: C, origins: [C] }];
+    const T = "https://phobos.tail556f5b.ts.net";
+    l.sites = [{ key: A, name: O, origins: [O, A] }, { key: C, name: C, origins: [C] }, { key: T, name: T, origins: [T] }];
     await r.rerender({ link: { ...l } as never, now: NOW, permit: async () => true });
     const select = screen.getByLabelText("Same app as") as HTMLSelectElement;
     expect([...select.options].map(o => o.textContent)).toEqual(["Choose an address", "localhost:3000"]);

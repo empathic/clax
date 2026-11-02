@@ -716,7 +716,7 @@ impl Event<'_> {
                 .zip(t)
                 .map(|(to, t)| Obj::Thread(to, t)),
             Some(K::LiveRule) => self.str("rule_id").map(Obj::Rule),
-            Some(K::LiveJoin | K::LiveSplit | K::LiveJoinAnswer) => {
+            Some(K::LiveJoin | K::LiveSplit | K::LiveJoinAnswer | K::LiveUnjoin) => {
                 self.row.ids.origin.as_deref().map(Obj::Site)
             }
             Some(
@@ -1174,6 +1174,11 @@ impl Event<'_> {
                 "Split {} off site {}",
                 self.show("origin"),
                 self.show("before_site")
+            ),
+            Some(K::LiveUnjoin) => format!(
+                "Undid the join of {} to site {}",
+                self.show("origin"),
+                self.show("site")
             ),
             Some(K::LivePageRekey) => format!(
                 "Re-keyed live page {} from {} to {}",

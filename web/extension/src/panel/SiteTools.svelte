@@ -27,8 +27,16 @@
   const info = $derived(site?.site ?? null);
   const joined = $derived(!!info?.joined);
   const mine = $derived(info?.origins.map(o => o.origin) ?? [origin]);
-  /** The sites the tab's origin may join: every other one. */
-  const choices = $derived((sites ?? []).filter(c => !c.origins.some(o => mine.includes(o))));
+  const loopback = (h: string) => h === "localhost" || h.endsWith(".localhost") || /^127\./.test(h) || h === "[::1]";
+  /** Whether two origins may be one app, as the daemon's `may_join`: one scheme, both loopback or one host. */
+  const mayJoin = (a: string, b: string) => {
+    try {
+      const x = new URL(a), y = new URL(b);
+      return x.protocol === y.protocol && ((loopback(x.hostname) && loopback(y.hostname)) || x.hostname === y.hostname);
+    } catch { return false; }
+  };
+  /** The sites the tab's origin may join: every other one of its host family (the daemon refuses the rest). */
+  const choices = $derived((sites ?? []).filter(c => !c.origins.some(o => mine.includes(o)) && c.origins.every(o => mine.every(m => mayJoin(m, o)))));
   let pick = $state("");
   /** Whether Addresses is open: what a join or split says shows there, else above it. */
   let open = $state(false);

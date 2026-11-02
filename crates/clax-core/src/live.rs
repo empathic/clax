@@ -83,6 +83,20 @@ pub fn same_host_family(a: &str, b: &str) -> bool {
         && is_loopback_origin(b)
 }
 
+/// Whether two origins may be joined into one site at all, by hand or by
+/// suggestion: one scheme, and either both loopback names or one host name
+/// (ports may differ). A loopback origin and a tailnet or public one are
+/// never one site: the 2026-11-02 join of `https://phobos.tail556f5b.ts.net`
+/// into `http://127.0.0.1:7700` filed Basis's comments under Changeling.
+pub fn may_join(a: &str, b: &str) -> bool {
+    let (Ok(x), Ok(y)) = (url::Url::parse(a), url::Url::parse(b)) else {
+        return false;
+    };
+    x.scheme() == y.scheme()
+        && ((is_loopback_origin(a) && is_loopback_origin(b))
+            || (x.host_str().is_some() && x.host_str() == y.host_str()))
+}
+
 /// `s` cut to at most `max` bytes at a character boundary.
 fn cut(mut s: String, max: usize) -> String {
     if s.len() > max {
@@ -485,6 +499,23 @@ mod tests {
             "http://localhost:7702",
             "http://example.com:7703"
         ));
+    }
+
+    #[test]
+    fn only_one_host_family_may_join() {
+        assert!(may_join("http://localhost:7702", "http://127.0.0.1:7703"));
+        assert!(may_join(
+            "https://phobos.tail556f5b.ts.net",
+            "https://phobos.tail556f5b.ts.net:8444"
+        ));
+        // The 2026-11-02 join: a tailnet name into a loopback port.
+        assert!(!may_join(
+            "https://phobos.tail556f5b.ts.net",
+            "http://127.0.0.1:7700"
+        ));
+        assert!(!may_join("http://localhost:7702", "https://localhost:7703"));
+        assert!(!may_join("https://a.example", "https://b.example"));
+        assert!(!may_join("not a url", "not a url"));
     }
 
     #[test]

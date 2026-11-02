@@ -9638,6 +9638,7 @@ the body below.
 | `live.page_rekey` | `from_origin, to_origin, path` | a page keyed under another origin of its site |
 | `live.page_merge` | `origin, path, merged_into` | a page a join emptied, merged into its site's page (`artifact2_id`) |
 | `live.join_answer` | `origin, with, answer (never\|later), until` | the owner's answer to a suggested join |
+| `live.unjoin` | `origin, site, joined_at, rekeyed[artifact ids], rules_moved[]` | `POST /api/live/sites/unjoin`: the join of `origin` undone from its record, each page given back also a `live.page_rekey` |
 | `watch.start`, `watch.stop` | `target (artifact\|page\|scope), replies_armed, source (direct\|scope), origin?, path?` (start: `cause? (scope\|move), move_id?`) | a new watch, a removal |
 | `watch.update` | `target, origin?, path?, fields{replies_armed?, source?}, cause?` | a change of a watch's arming, or a scope-made watch becoming direct |
 | `working.start` | `key, message, thread_ids[]` | a working record starting |

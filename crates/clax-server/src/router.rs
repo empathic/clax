@@ -279,6 +279,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/api/live/sites", get(sites::list))
         .route("/api/live/sites/suggest", get(sites::suggest))
         .route("/api/live/sites/split", post(sites::split))
+        .route("/api/live/sites/unjoin", post(sites::unjoin))
         .route("/api/live/sites/answer", post(sites::answer))
         .route("/api/extension", get(extension::status))
         .route("/api/toolpath/status", get(toolpath::status))

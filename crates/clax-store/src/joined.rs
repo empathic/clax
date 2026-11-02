@@ -20,7 +20,7 @@ use super::Store;
 use super::live::{LivePage, rematerialize};
 use super::site::{MAX_RULES, Refile, WATCHES_TO};
 use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
-use clax_core::live::same_host_family;
+use clax_core::live::{may_join, same_host_family};
 use clax_core::{CoreError, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
@@ -91,6 +91,17 @@ pub struct Split {
     /// What is left of it (its key moves when the key was split off).
     pub site: JoinedSite,
     /// The live pages re-keyed to the new key.
+    pub rekeyed: Vec<String>,
+}
+
+/// What [`Store::unjoin_origin`] did.
+#[derive(Clone, Debug)]
+pub struct Unjoined {
+    /// The site before the unjoin.
+    pub before: JoinedSite,
+    /// What is left of it.
+    pub site: JoinedSite,
+    /// The live pages keyed under the unjoined origin again.
     pub rekeyed: Vec<String>,
 }
 
@@ -257,6 +268,28 @@ pub(super) fn split_record(
         .with("site", site)
         .with("never_with", never_with.to_vec());
     r.ids.origin = Some(before_site.to_string());
+    r
+}
+
+/// A `live.unjoin`: the join of `origin` to the site keyed `site`, made at
+/// `joined_at`, undone: `rekeyed`, the live pages keyed under `origin`
+/// again (each also a `live.page_rekey`), and `rules_moved`, the rules
+/// that are `origin`'s again.
+pub(super) fn unjoin_record(
+    at: &str,
+    origin: &str,
+    site: &str,
+    joined_at: &str,
+    rekeyed: &[String],
+    rules_moved: &[String],
+) -> AuditRecord {
+    let mut r = AuditRecord::new(AuditKind::LiveUnjoin, at)
+        .with("origin", origin)
+        .with("site", site)
+        .with("joined_at", joined_at)
+        .with("rekeyed", rekeyed.to_vec())
+        .with("rules_moved", rules_moved.to_vec());
+    r.ids.origin = Some(site.to_string());
     r
 }
 
@@ -505,6 +538,18 @@ impl Store {
             }
             let mx = site_of_key(tx, &kx)?.origin_names();
             let my = site_of_key(tx, &ky)?.origin_names();
+            // One app is one host family: never a loopback port and a
+            // tailnet name (the 2026-11-02 phobos ↔ 127.0.0.1:7700 join).
+            if let Some((x, y)) = mx
+                .iter()
+                .flat_map(|x| my.iter().map(move |y| (x, y)))
+                .find(|(x, y)| !may_join(x, y))
+            {
+                return Err(CoreError::invalid(
+                    "other_host_family",
+                    format!("{x} and {y} are not one host, so not one app"),
+                ));
+            }
             if mx.len() + my.len() > MAX_SITE_ORIGINS {
                 return Err(CoreError::invalid(
                     "too_many_origins",
@@ -851,6 +896,126 @@ impl Store {
             Ok(Some(Split {
                 site: site_of_key(tx, &new_key)?,
                 before,
+                rekeyed,
+            }))
+        })
+    }
+
+    /// Undoes the join that brought `origin` into its site, from the audit
+    /// record: each live page a `live.page_rekey` moved from `origin` to the
+    /// site's key after the newest `live.join` that joined `origin` there,
+    /// and that is still the site's page of its path, is keyed under
+    /// `origin` again (its threads and snapshots with it); the merge rules
+    /// that join moved are `origin`'s again; then `origin`'s `live_sites`
+    /// row is dropped (and the site's, when one origin is left). What the
+    /// join merged away, and pages made under the site after it, stay with
+    /// the site. `None`, and nothing written, when `origin` joined no site.
+    ///
+    /// # Errors
+    /// `site_key` when `origin` is its site's key (its pages never moved:
+    /// split it off instead); `unrecorded_join` when no `live.join` record
+    /// names it; `joining` while the site has a join to finish.
+    pub fn unjoin_origin(&self, ctx: &AuditCtx, origin: &str) -> Result<Option<Unjoined>> {
+        self.with_tx(|tx| {
+            let Some(key) = tx
+                .query_row(
+                    "SELECT site FROM live_sites WHERE origin = ?1",
+                    params![origin],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?
+            else {
+                return Ok(None);
+            };
+            if key == origin {
+                return Err(CoreError::invalid(
+                    "site_key",
+                    format!("{origin} is its site's key; split it off instead"),
+                ));
+            }
+            if !pending_pages(tx, &key)?.is_empty() {
+                return Err(joining());
+            }
+            let Some((seq, joined_at, rules)) = tx
+                .query_row(
+                    "SELECT seq, at, json_extract(body, '$.rules_moved') FROM audit_events
+                     WHERE kind = 'live.join' AND json_extract(body, '$.site') = ?2
+                       AND EXISTS(SELECT 1 FROM json_each(body, '$.joined') WHERE value = ?1)
+                     ORDER BY seq DESC LIMIT 1",
+                    params![origin, key],
+                    |r| {
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, Option<String>>(2)?,
+                        ))
+                    },
+                )
+                .optional()?
+            else {
+                return Err(CoreError::invalid(
+                    "unrecorded_join",
+                    format!("no record says how {origin} joined {key}"),
+                ));
+            };
+            let before = site_of_key(tx, &key)?;
+            let pages: Vec<(String, String)> = {
+                let mut st = tx.prepare(
+                    "SELECT DISTINCT e.artifact_id, p.path FROM audit_events e
+                     JOIN live_pages p ON p.artifact_id = e.artifact_id AND p.origin = ?3
+                       AND p.path = json_extract(e.body, '$.path')
+                     JOIN artifacts a ON a.id = p.artifact_id AND a.deleted_at IS NULL
+                     WHERE e.kind = 'live.page_rekey' AND e.seq > ?1
+                       AND json_extract(e.body, '$.from_origin') = ?2
+                       AND json_extract(e.body, '$.to_origin') = ?3
+                       AND NOT EXISTS(SELECT 1 FROM live_pages o WHERE o.origin = ?2 AND o.path = p.path)
+                     ORDER BY p.path",
+                )?;
+                st.query_map(params![seq, origin, key], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            let moved: Vec<String> = rules
+                .and_then(|r| serde_json::from_str(&r).ok())
+                .unwrap_or_default();
+            let mut rules_back = Vec::new();
+            for id in &moved {
+                if tx.execute(
+                    "UPDATE live_rules SET origin = ?2 WHERE id = ?1 AND origin = ?3",
+                    params![id, origin, key],
+                )? > 0
+                {
+                    rules_back.push(id.clone());
+                }
+            }
+            for (aid, _) in &pages {
+                tx.execute(
+                    "UPDATE live_pages SET origin = ?2 WHERE artifact_id = ?1",
+                    params![aid, origin],
+                )?;
+            }
+            tx.execute("DELETE FROM live_sites WHERE origin = ?1", params![origin])?;
+            let left: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM live_sites WHERE site = ?1",
+                params![key],
+                |r| r.get(0),
+            )?;
+            if left <= 1 {
+                tx.execute("DELETE FROM live_sites WHERE site = ?1", params![key])?;
+            }
+            let rekeyed: Vec<String> = pages.iter().map(|(a, _)| a.clone()).collect();
+            // The unjoin, then the pages it re-keyed back.
+            let now = self.now();
+            self.record_audit(
+                tx,
+                ctx,
+                unjoin_record(&now, origin, &key, &joined_at, &rekeyed, &rules_back),
+            )?;
+            for (aid, path) in &pages {
+                self.record_audit(tx, ctx, rekey_record(&now, aid, &key, origin, path))?;
+            }
+            Ok(Some(Unjoined {
+                before,
+                site: site_of_key(tx, &key)?,
                 rekeyed,
             }))
         })
@@ -1278,6 +1443,118 @@ mod tests {
         assert!(ev[1..3].iter().all(|e| e.1["to_origin"] == B));
         assert_eq!(ev[3].1["answer"], "later");
         assert!(ev[3].1["until"].is_string());
+    }
+
+    const PHOBOS: &str = "https://phobos.tail556f5b.ts.net";
+    const CHANGELING: &str = "http://127.0.0.1:7700";
+
+    /// The 2026-11-02T18:42:57.887Z join as the daemon wrote it before the
+    /// host-family guard: `live.join` of phobos into 7700's site, then a
+    /// `live.page_rekey` of each phobos page 7700 had no page of.
+    fn the_bad_join(st: &Store, pages: &[(&ArtifactId, &str)]) {
+        let at = "2026-11-02T18:42:57.887Z";
+        st.with_tx(|tx| {
+            tx.execute(
+                "INSERT INTO live_sites (origin, site, joined_at, last_used_at) VALUES
+                 (?2, ?2, ?3, ?3), (?1, ?2, ?3, ?3)",
+                params![PHOBOS, CHANGELING, at],
+            )?;
+            let joined = [PHOBOS.to_string()];
+            let none: Vec<String> = Vec::new();
+            let rules = Some((none.as_slice(), none.as_slice()));
+            let rec = join_record(at, PHOBOS, Some(CHANGELING), CHANGELING, &joined, rules);
+            st.record_audit(tx, DAEMON, rec)?;
+            for (aid, path) in pages {
+                tx.execute(
+                    "UPDATE live_pages SET origin = ?2 WHERE artifact_id = ?1",
+                    params![aid.as_str(), CHANGELING],
+                )?;
+                st.record_audit(tx, DAEMON, rekey_record(at, aid.as_str(), PHOBOS, CHANGELING, path))?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn a_tailnet_name_and_a_loopback_port_are_never_joined() {
+        let (_d, st) = store();
+        page(&st, CHANGELING, "/", "Changeling");
+        page(&st, PHOBOS, "/fold/", "Basis");
+        assert_eq!(code_of(st.join_origins(DAEMON, PHOBOS, CHANGELING)), "other_host_family");
+        assert_eq!(code_of(st.join_origins(DAEMON, CHANGELING, PHOBOS)), "other_host_family");
+        assert!(!st.joined_site(PHOBOS).unwrap().joined());
+    }
+
+    #[test]
+    fn unjoin_rekeys_the_bad_joins_pages_back_with_their_threads() {
+        let (_d, st) = store();
+        let settings = page(&st, CHANGELING, "/settings", "Settings");
+        let home = page(&st, CHANGELING, "/", "Changeling");
+        let fold = page(&st, PHOBOS, "/fold/", "Basis");
+        let fleet = page(&st, PHOBOS, "/a/f4s6pxhbs8bg", "Fleet");
+        the_bad_join(&st, &[(&fold, "/fold/"), (&fleet, "/a/f4s6pxhbs8bg")]);
+        // As found 2026-11-02: four pages, all keyed 7700; a comment made on
+        // phobos's /fold/ lands on the page filed under 7700.
+        assert_eq!(st.site_pages(PHOBOS).unwrap().len(), 4);
+        let p = st.find_live_page(&key(PHOBOS, "/fold/")).unwrap().unwrap();
+        assert_eq!((p.artifact_id.as_str(), p.origin.as_str()), (fold.as_str(), CHANGELING));
+        let needs_me = thread(&st, &fold);
+        // A page made under the site after the join stays with the site.
+        let later = page(&st, PHOBOS, "/later", "Later");
+
+        let seq = st.newest_seq().unwrap();
+        let u = st.unjoin_origin(DAEMON, PHOBOS).unwrap().unwrap();
+        let mut back = u.rekeyed.clone();
+        back.sort();
+        let mut want = vec![fold.as_str().to_string(), fleet.as_str().to_string()];
+        want.sort();
+        assert_eq!(back, want);
+        assert!(!u.site.joined());
+        assert!(!st.joined_site(PHOBOS).unwrap().joined());
+        assert!(!st.joined_site(CHANGELING).unwrap().joined());
+        for (aid, path) in [(&fold, "/fold/"), (&fleet, "/a/f4s6pxhbs8bg")] {
+            let p = st.find_live_page(&key(PHOBOS, path)).unwrap().unwrap();
+            assert_eq!((p.artifact_id.as_str(), p.origin.as_str()), (aid.as_str(), PHOBOS));
+            assert!(st.find_live_page(&key(CHANGELING, path)).unwrap().is_none());
+        }
+        // The thread rides with its page.
+        let on_fold: Vec<String> =
+            st.list_threads(&fold, true, None, 50).unwrap().0.into_iter().map(|t| t.id).collect();
+        assert_eq!(on_fold, vec![needs_me]);
+        // Changeling keeps its own pages and the one made under the site.
+        for (aid, path) in [(&settings, "/settings"), (&home, "/"), (&later, "/later")] {
+            let p = st.find_live_page(&key(CHANGELING, path)).unwrap().unwrap();
+            assert_eq!(p.artifact_id.as_str(), aid.as_str());
+        }
+        // Recorded: the unjoin, then a re-key back per page.
+        let ev = recorded(&st, seq);
+        let kinds: Vec<&str> = ev.iter().map(|e| e.0.as_str()).collect();
+        assert_eq!(kinds, ["live.unjoin", "live.page_rekey", "live.page_rekey"], "{ev:?}");
+        assert_eq!(ev[0].1["origin"], PHOBOS);
+        assert_eq!(ev[0].1["site"], CHANGELING);
+        assert_eq!(ev[0].1["joined_at"], "2026-11-02T18:42:57.887Z");
+        assert!(ev[1..].iter().all(|e| e.1["from_origin"] == CHANGELING && e.1["to_origin"] == PHOBOS));
+        // Again: nothing to undo.
+        assert!(st.unjoin_origin(DAEMON, PHOBOS).unwrap().is_none());
+    }
+
+    #[test]
+    fn unjoin_refuses_the_key_and_an_unrecorded_join() {
+        let (_d, st) = store();
+        page(&st, A, "/", "App");
+        page(&st, B, "/b", "B");
+        st.join_origins(DAEMON, B, A).unwrap();
+        assert_eq!(code_of(st.unjoin_origin(DAEMON, A)), "site_key");
+        // C in A's site with no `live.join` naming it.
+        st.with_write(|c| {
+            Ok(c.execute(
+                "INSERT INTO live_sites (origin, site, joined_at, last_used_at) VALUES (?1, ?2, 'x', 'x')",
+                params![C, A],
+            )?)
+        })
+        .unwrap();
+        assert_eq!(code_of(st.unjoin_origin(DAEMON, C)), "unrecorded_join");
     }
 
     #[test]
