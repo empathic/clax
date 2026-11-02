@@ -44,11 +44,11 @@ jobs:
       SITE_DOMAIN: ${{ vars.SITE_DOMAIN }}
       SITE_ZONE: ${{ vars.SITE_ZONE }}
       STORE: ${{ vars.STORE }}
-      # dev's GitHub OAuth App's client ID (GitHub refuses a variable named
-      # GITHUB_*).
-      OAUTH_CLIENT_ID: ${{ vars.OAUTH_CLIENT_ID }}
       OWNER_GITHUB: ${{ vars.OWNER_GITHUB }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      # Secrets, not variables: dev's GitHub OAuth App's client ID (GitHub
+      # refuses a name starting GITHUB_) and the Cloudflare account's ID.
+      OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { ref: "${{ env.SHA }}", fetch-depth: 0, persist-credentials: false }

@@ -106,8 +106,8 @@ takes any subdomain of the callback URL's host with the same port and a
 path at or under its path, so the one preview App serves every
 `https://pr-<N>.PREVIEW_HOST_ZONE`
 ([GitHub's docs](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps),
-"Redirect URLs"). The App's client ID is the environment's variable
-`OAUTH_CLIENT_ID` (GitHub refuses variable names starting with `GITHUB_`)
+"Redirect URLs"). The App's client ID is the environment's secret
+`OAUTH_CLIENT_ID` (GitHub refuses secret names starting with `GITHUB_`)
 and its client secret the environment's secret `OAUTH_CLIENT_SECRET`, which
 the workflows pass to the deploy as `GITHUB_CLIENT_SECRET`.
 
@@ -129,7 +129,7 @@ itself.
 their zones on it, apart from clax.dev's: neither token can reach prod's
 Worker `clax`, its Durable Objects or its bucket `clax-assets`, whatever a
 branch's run does with it. Each environment names that account in its
-`CLOUDFLARE_ACCOUNT_ID` variable. The account needs Workers Paid (Durable
+secret `CLOUDFLARE_ACCOUNT_ID`. The account needs Workers Paid (Durable
 Objects and the Worker Loader) and, for dev, the Artifacts beta.
 
 Give each environment its own token, limited to that account and to its
@@ -187,7 +187,7 @@ Cloudflare's docs.
 3. Sign in to dev as the owner, make an agent token named `smoke`
    (settings, Agent tokens).
 4. Set up the `dev` GitHub environment (deployable from `main` only) and
-   its variables from that configuration, then set its three secrets as
+   its variables from that configuration, then set its five secrets as
    the script prints them:
 
    ```
@@ -202,7 +202,7 @@ and warns.
 
 1. Create the preview OAuth App (above), wildcard matching on.
 2. Set up the `preview` GitHub environment (deployable from any branch)
-   and its variables, then its two secrets as the script prints them:
+   and its variables, then its four secrets as the script prints them:
 
    ```
    scripts/setup-env-github.sh --env preview --preview-host-zone <zone> --preview-site-zone <zone> \

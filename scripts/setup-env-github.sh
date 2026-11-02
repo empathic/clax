@@ -20,8 +20,7 @@
 #       --owner-github <login> --cloudflare-account-id <ID>          # dry run
 #
 # --env dev makes `dev` deployable from `main` only and sets its variables
-# PUBLIC_HOST, SITE_DOMAIN, SITE_ZONE, STORE, OAUTH_CLIENT_ID, OWNER_GITHUB
-# and CLOUDFLARE_ACCOUNT_ID. Each setting comes from its flag, else from the
+# PUBLIC_HOST, SITE_DOMAIN, SITE_ZONE, STORE and OWNER_GITHUB. Each setting comes from its flag, else from the
 # deploy configuration `scripts/cloudflare-setup.sh --env dev` keeps:
 # setup.dev.env (PUBLIC_HOST, SITE_DOMAIN, SITE_ZONE, STORE,
 # GITHUB_CLIENT_ID, OWNER_GITHUB; nothing else in it is read) and the deploy
@@ -32,9 +31,12 @@
 #
 # --env preview makes `preview` deployable from any branch (no branch
 # policy: a pull request's run is on its own branch) and sets its variables
-# PREVIEW_HOST_ZONE, PREVIEW_SITE_ZONE, OAUTH_CLIENT_ID, OWNER_GITHUB and
-# CLOUDFLARE_ACCOUNT_ID, from flags alone. The two zones must differ, and
-# neither may be under the other.
+# PREVIEW_HOST_ZONE, PREVIEW_SITE_ZONE and OWNER_GITHUB, from flags alone.
+# The two zones must differ, and neither may be under the other.
+#
+# OAUTH_CLIENT_ID and CLOUDFLARE_ACCOUNT_ID are each environment's secrets,
+# not variables: the script prints their `gh secret set` commands, with
+# the values found, beside the other secrets'.
 #
 # Every environment has GitHub sign-in: --github-client-id and
 # --owner-github (or their setup.dev.env lines, for dev) are required.
@@ -76,9 +78,9 @@ set -euo pipefail
 act=0
 repo="empathic/clax"
 env_name=""
-# The environments' variables, which the workflows read; step 2 reads them
-# by name. The GitHub OAuth App's client ID is OAUTH_CLIENT_ID: GitHub
-# refuses a variable whose name starts with GITHUB_.
+# The environments' settings, which the workflows read; step 2 reads the
+# variables among them by name. The GitHub OAuth App's client ID is
+# OAUTH_CLIENT_ID: GitHub refuses a secret whose name starts with GITHUB_.
 PUBLIC_HOST=""
 SITE_DOMAIN=""
 SITE_ZONE=""
@@ -137,13 +139,13 @@ case "$env_name" in
         fi
         [ -n "$PUBLIC_HOST" ] || missing="$missing --public-host"
         [ -n "$SITE_DOMAIN" ] || missing="$missing --site-domain"
-        vars="CLOUDFLARE_ACCOUNT_ID OAUTH_CLIENT_ID OWNER_GITHUB PUBLIC_HOST SITE_DOMAIN SITE_ZONE STORE"
+        vars="OWNER_GITHUB PUBLIC_HOST SITE_DOMAIN SITE_ZONE STORE"
         where="not in $deploy_home/setup.dev.env and not given"
         ;;
     preview)
         [ -n "$PREVIEW_HOST_ZONE" ] || missing="$missing --preview-host-zone"
         [ -n "$PREVIEW_SITE_ZONE" ] || missing="$missing --preview-site-zone"
-        vars="CLOUDFLARE_ACCOUNT_ID OAUTH_CLIENT_ID OWNER_GITHUB PREVIEW_HOST_ZONE PREVIEW_SITE_ZONE"
+        vars="OWNER_GITHUB PREVIEW_HOST_ZONE PREVIEW_SITE_ZONE"
         where="not given"
         ;;
     "") echo "setup-env-github: --env dev or --env preview is required" >&2; exit 2 ;;
@@ -157,9 +159,10 @@ if [ -n "$missing" ]; then
     echo "setup-env-github: $where:$missing" >&2
     exit 2
 fi
-# The values go into JSON bodies as they are: hostnames, IDs and logins
-# only, so none can carry a quote or a backslash into one.
-for name in $vars; do
+# The values go into JSON bodies and printed commands as they are:
+# hostnames, IDs and logins only, so none can carry a quote or a backslash
+# into one.
+for name in $vars CLOUDFLARE_ACCOUNT_ID OAUTH_CLIENT_ID; do
     case "${!name}" in
         *[!A-Za-z0-9._-]*) echo "setup-env-github: $name '${!name}' is not a hostname, an ID or a login" >&2; exit 2 ;;
     esac
@@ -290,6 +293,8 @@ if [ "$env_name" = dev ] && [ -z "$SITE_ZONE" ]; then
 fi
 
 say "3. Secrets (yours to run; this script never sets them)"
+info "gh secret set CLOUDFLARE_ACCOUNT_ID --env $env_name --repo $repo --body $CLOUDFLARE_ACCOUNT_ID"
+info "gh secret set OAUTH_CLIENT_ID --env $env_name --repo $repo --body $OAUTH_CLIENT_ID"
 if [ "$env_name" = dev ]; then
     info "gh secret set CLOUDFLARE_API_TOKEN --env dev --repo $repo   # dev's Cloudflare API token (docs/environments.md, \"Credentials\")"
     info "gh secret set OAUTH_CLIENT_SECRET --env dev --repo $repo    # dev's GitHub OAuth App's client secret"

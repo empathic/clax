@@ -134,8 +134,8 @@ for want in \
     "would run: gh api --method POST repos/$R/environments/dev/deployment-branch-policies --input - <<< '{\"name\":\"main\",\"type\":\"branch\"}'" \
     "would run: gh api --method POST repos/$R/environments/dev/variables --input - <<< '{\"name\":\"PUBLIC_HOST\",\"value\":\"dev.example\"}'" \
     "would run: gh api --method POST repos/$R/environments/dev/variables --input - <<< '{\"name\":\"SITE_ZONE\",\"value\":\"dev.example\"}'" \
-    "would run: gh api --method POST repos/$R/environments/dev/variables --input - <<< '{\"name\":\"CLOUDFLARE_ACCOUNT_ID\",\"value\":\"$ACC\"}'" \
-    "would run: gh api --method POST repos/$R/environments/dev/variables --input - <<< '{\"name\":\"OAUTH_CLIENT_ID\",\"value\":\"Iv1.devclient\"}'" \
+    "gh secret set CLOUDFLARE_ACCOUNT_ID --env dev --repo $R --body $ACC" \
+    "gh secret set OAUTH_CLIENT_ID --env dev --repo $R --body Iv1.devclient" \
     "gh secret set CLOUDFLARE_API_TOKEN --env dev --repo $R" \
     "gh secret set OAUTH_CLIENT_SECRET --env dev --repo $R" \
     "gh secret set CLAX_SMOKE_TOKEN --env dev --repo $R"; do
@@ -155,7 +155,7 @@ if [ "$(q 'g["envs"]["dev"]["policy"]["custom_branch_policies"]')" = True ] \
     && grep -q "^DELETE repos/$R/environments/dev/deployment-branch-policies/31$" "$C/calls"; then
     pass "dev: deploys from main only, the branch allowed before removed"
 else fail "dev: deploys from main only ($(q 'g["envs"]["dev"]'))"; fi
-if [ "$(q 'sorted(g["envs"]["dev"]["vars"].items())')" = "[('CLOUDFLARE_ACCOUNT_ID', '$ACC'), ('OAUTH_CLIENT_ID', 'Iv1.devclient'), ('OWNER_GITHUB', 'octo-owner'), ('PUBLIC_HOST', 'dev.example'), ('SITE_DOMAIN', 'sites.dev.example'), ('SITE_ZONE', 'dev.example'), ('STORE', 'artifacts')]" ]; then
+if [ "$(q 'sorted(g["envs"]["dev"]["vars"].items())')" = "[('OWNER_GITHUB', 'octo-owner'), ('PUBLIC_HOST', 'dev.example'), ('SITE_DOMAIN', 'sites.dev.example'), ('SITE_ZONE', 'dev.example'), ('STORE', 'artifacts')]" ]; then
     pass "dev: its variables are the deploy configuration's"; else fail "dev: its variables ($(q 'g["envs"]["dev"]["vars"]'))"; fi
 if grep -q "UNEXPECTED\|secret" "$C/calls"; then fail "dev: no gh call but gh api, and no secret set ($(cat "$C/calls"))"; else pass "dev: no gh call but gh api, and no secret set"; fi
 
@@ -195,7 +195,7 @@ else fail "dev: a client ID without an owner login is refused ($(cat "$C/out"))"
 : > "$C/calls"
 if run --env dev --public-host flags.example --site-domain sites.flags --cloudflare-account-id f1a65 \
     --github-client-id Iv1.x --owner-github octo \
-    && grep -qF '{"name":"CLOUDFLARE_ACCOUNT_ID","value":"f1a65"}' "$C/out" && ! grep -qF '"name":"SITE_ZONE"' "$C/out"; then
+    && grep -qF "gh secret set CLOUDFLARE_ACCOUNT_ID --env dev --repo $R --body f1a65" "$C/out" && ! grep -qF '"name":"SITE_ZONE"' "$C/out"; then
     pass "dev: flags alone set it up, SITE_ZONE left without one"
 else fail "dev: flags alone set it up ($(cat "$C/out"))"; fi
 
@@ -218,6 +218,8 @@ for want in \
     "would run: gh api --method PUT repos/$R/environments/preview --input - <<< '{\"deployment_branch_policy\":null}'" \
     "would run: gh api --method POST repos/$R/environments/preview/variables --input - <<< '{\"name\":\"PREVIEW_HOST_ZONE\",\"value\":\"preview.example\"}'" \
     "would run: gh api --method POST repos/$R/environments/preview/variables --input - <<< '{\"name\":\"PREVIEW_SITE_ZONE\",\"value\":\"previewsites.example\"}'" \
+    "gh secret set CLOUDFLARE_ACCOUNT_ID --env preview --repo $R --body $ACC" \
+    "gh secret set OAUTH_CLIENT_ID --env preview --repo $R --body Iv1.previewclient" \
     "gh secret set CLOUDFLARE_API_TOKEN --env preview --repo $R" \
     "gh secret set OAUTH_CLIENT_SECRET --env preview --repo $R" \
     "https://preview.example/auth/github/callback, with wildcard matching on"; do
@@ -235,7 +237,7 @@ if run --env preview --i-know-what-i-am-doing "${PREVIEW[@]}"; then pass "previe
 if [ "$(q 'g["envs"]["preview"]["policy"]')" = None ] && [ "$(q 'g["envs"]["preview"]["branches"]')" = "[]" ]; then
     pass "preview: deploys from any branch, the protected-branches policy removed"
 else fail "preview: deploys from any branch ($(q 'g["envs"]["preview"]'))"; fi
-if [ "$(q 'sorted(g["envs"]["preview"]["vars"].items())')" = "[('CLOUDFLARE_ACCOUNT_ID', '$ACC'), ('OAUTH_CLIENT_ID', 'Iv1.previewclient'), ('OWNER_GITHUB', 'octo-owner'), ('PREVIEW_HOST_ZONE', 'preview.example'), ('PREVIEW_SITE_ZONE', 'previewsites.example')]" ]; then
+if [ "$(q 'sorted(g["envs"]["preview"]["vars"].items())')" = "[('OWNER_GITHUB', 'octo-owner'), ('PREVIEW_HOST_ZONE', 'preview.example'), ('PREVIEW_SITE_ZONE', 'previewsites.example')]" ]; then
     pass "preview: its variables are the flags'"; else fail "preview: its variables ($(q 'g["envs"]["preview"]["vars"]'))"; fi
 : > "$C/calls"
 if run --env preview --i-know-what-i-am-doing "${PREVIEW[@]}" && [ -z "$(writes)" ]; then pass "preview: a second run makes no write"

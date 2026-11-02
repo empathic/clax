@@ -41,11 +41,11 @@ jobs:
       SHA: ${{ github.event.pull_request.head.sha }}
       PREVIEW_HOST_ZONE: ${{ vars.PREVIEW_HOST_ZONE }}
       PREVIEW_SITE_ZONE: ${{ vars.PREVIEW_SITE_ZONE }}
-      # The preview OAuth App's client ID (GitHub refuses a variable named
-      # GITHUB_*).
-      OAUTH_CLIENT_ID: ${{ vars.OAUTH_CLIENT_ID }}
       OWNER_GITHUB: ${{ vars.OWNER_GITHUB }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      # Secrets, not variables: the preview OAuth App's client ID (GitHub
+      # refuses a name starting GITHUB_) and the Cloudflare account's ID.
+      OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       # Before anything is installed: every setting the preview environment
       # needs (scripts/setup-env-github.sh --env preview, docs/environments.md).
@@ -55,8 +55,11 @@ jobs:
           HAVE_OAUTH_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET != '' }}
         run: |
           missing=""
-          for v in PREVIEW_HOST_ZONE PREVIEW_SITE_ZONE OAUTH_CLIENT_ID OWNER_GITHUB CLOUDFLARE_ACCOUNT_ID; do
+          for v in PREVIEW_HOST_ZONE PREVIEW_SITE_ZONE OWNER_GITHUB; do
             [ -n "${!v}" ] || missing="$missing variable:$v"
+          done
+          for v in OAUTH_CLIENT_ID CLOUDFLARE_ACCOUNT_ID; do
+            [ -n "${!v}" ] || missing="$missing secret:$v"
           done
           [ "$HAVE_TOKEN" = true ] || missing="$missing secret:CLOUDFLARE_API_TOKEN"
           [ "$HAVE_OAUTH_SECRET" = true ] || missing="$missing secret:OAUTH_CLIENT_SECRET"
@@ -153,6 +156,6 @@ jobs:
       - name: Tear down (crates/clax-worker/teardown.mjs pr-<N>)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           PREVIEW_SITE_ZONE: ${{ vars.PREVIEW_SITE_ZONE }}
         run: cd crates/clax-worker && node teardown.mjs "pr-${{ github.event.number }}" --site-zone "$PREVIEW_SITE_ZONE"
