@@ -7,7 +7,7 @@
 // `__CLAX_DEVTOOLS_HOOK__`, protocol 1. Each part of the page registers a
 // section of fields; every field has the value it would have without the
 // viewer (its `base`, from the Clax config or the site's code), and may
-// carry the viewer's own override, kept in a cookie (`clax_dev`) or another
+// carry the viewer's own override, kept in a cookie (`clax_dev_<port>`) or another
 // store the host passes. The panel reads `snapshot()` and writes with
 // `set()` / `reset()` through `chrome.devtools.inspectedWindow.eval`, so the
 // extension needs no permission for it, sends nothing to the page but
@@ -26,7 +26,7 @@
 
 export const HOOK_KEY = "__CLAX_DEVTOOLS_HOOK__";
 export const PROTOCOL = 1;
-/** The cookie the default override store keeps the viewer's overrides in. */
+/** The cookie the default override store keeps the viewer's overrides in (with `_<port>`, `cookieName`). */
 export const OVERRIDE_COOKIE = "clax_dev";
 /** The query parameter prefix a link sets an override with: `?clax.<section>.<field>=<value>`. */
 export const OVERRIDE_PARAM = "clax.";
@@ -155,12 +155,17 @@ export function isDevOrigin(origin: string): boolean {
   return h === "localhost" || h === "::1" || /^127(\.\d{1,3}){3}$/.test(h) || /\.(localhost|local|test)$/.test(h);
 }
 
-/** The viewer's overrides in one cookie, `clax_dev=<JSON>` (path /, SameSite=Lax, 30 days, at most 3 KB): a cookie so the
- * loader can read it before anything loads, and a server could too. A refused or full cookie keeps nothing. */
-export function cookieStore(doc: Pick<Document, "cookie"> = document): OverrideStore {
+/** The override cookie's name for a page at `loc`: `clax_dev`, plus `_<port>` when the
+ * address names one. Cookies ignore ports, and every dev app on 127.0.0.1 shares one jar
+ * (Changeling on 7700, the daemon on 7480): the port keeps each site's overrides its own. */
+export const cookieName = (loc: Pick<Location, "port">) => (loc.port ? `${OVERRIDE_COOKIE}_${loc.port}` : OVERRIDE_COOKIE);
+
+/** The viewer's overrides in one cookie, `cookieName(location)=<JSON>` (path /, SameSite=Lax, 30 days, at most 3 KB):
+ * a cookie so the loader can read it before anything loads, and a server could too. A refused or full cookie keeps nothing. */
+export function cookieStore(doc: Pick<Document, "cookie"> = document, name = cookieName(globalThis.location ?? { port: "" })): OverrideStore {
   const read = (): Record<string, Value> => {
     try {
-      const raw = doc.cookie.split("; ").find(c => c.startsWith(`${OVERRIDE_COOKIE}=`))?.slice(OVERRIDE_COOKIE.length + 1);
+      const raw = doc.cookie.split("; ").find(c => c.startsWith(`${name}=`))?.slice(name.length + 1);
       const o: unknown = raw ? JSON.parse(decodeURIComponent(raw)) : {};
       if (!o || typeof o !== "object" || Array.isArray(o)) return {};
       return Object.fromEntries(Object.entries(o).filter(([, v]) => typeof v === "string" || typeof v === "boolean")) as Record<string, Value>;
@@ -171,7 +176,7 @@ export function cookieStore(doc: Pick<Document, "cookie"> = document): OverrideS
     if (v.length > 3000) return false;
     const empty = Object.keys(all).length === 0;
     try {
-      doc.cookie = `${OVERRIDE_COOKIE}=${empty ? "" : v}; path=/; SameSite=Lax; max-age=${empty ? 0 : 30 * 86400}`;
+      doc.cookie = `${name}=${empty ? "" : v}; path=/; SameSite=Lax; max-age=${empty ? 0 : 30 * 86400}`;
       return empty || read()[Object.keys(all).at(-1)!] !== undefined;
     } catch { return false; }
   };
@@ -306,7 +311,7 @@ export function registerDevSettings(section: SectionInit, opts: RegisterOptions 
     hook = createHook(win);
     Object.defineProperty(win, HOOK_KEY, { value: hook, configurable: true, enumerable: false, writable: false });
   }
-  return hook.register(section, opts.store ?? cookieStore(win.document));
+  return hook.register(section, opts.store ?? cookieStore(win.document, cookieName(win.location)));
 }
 
 // The panel's side: what it reads is the page's, so it is checked whole.

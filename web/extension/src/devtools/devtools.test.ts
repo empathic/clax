@@ -140,6 +140,25 @@ describe("AppSettings", () => {
     await waitFor(() => expect(said.at(-1)?.[0]).toBe("Clax on: Off (You). Reload the page to apply."));
   });
 
+  it("puts a control back and says why when the page refuses to keep the change", async () => {
+    const p = inspected();
+    const refusing: OverrideStore = { get: () => undefined, set: () => false, delete: () => {} };
+    registerDevSettings(feedbackAxes, { win: p.win, store: refusing });
+    const link = new SettingsLink(p.env);
+    await link.refresh();
+    const said: string[] = [];
+    render(AppSettings, { props: { link, say: (t: string) => said.push(t) } });
+    const sheet = screen.getByRole("radio", { name: "Sheet" }) as HTMLInputElement;
+    await fireEvent.click(sheet);
+    await waitFor(() => expect(said.at(-1)).toBe("Presentation not changed: This browser refused to keep it (cookies blocked or full)."));
+    expect(sheet.checked).toBe(false);
+    expect((screen.getByRole("radio", { name: "Dialog" }) as HTMLInputElement).checked).toBe(true);
+    const on = screen.getByRole("switch", { name: "Clax on" }) as HTMLInputElement;
+    await fireEvent.click(on);
+    await waitFor(() => expect(said.at(-1)).toMatch(/^Clax on not changed/));
+    expect(on.checked).toBe(true);
+  });
+
   it("says when the page registers nothing", async () => {
     await settingsView();
     expect(screen.getByText("This page registers no app dev settings.")).toBeTruthy();

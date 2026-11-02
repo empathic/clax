@@ -1,14 +1,14 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   HOOK_KEY, LIMITS, OVERRIDE_COOKIE, REV_EXPR, SNAPSHOT_EXPR, type DevtoolsHook, type OverrideStore, type Value,
-  cookieStore, isDevOrigin, parseSetResult, parseSnapshot, registerDevSettings, resetExpr, setExpr,
+  cookieName, cookieStore, isDevOrigin, parseSetResult, parseSnapshot, registerDevSettings, resetExpr, setExpr,
 } from "./devtools";
 import { changelingStyle, feedbackAxes } from "./devtools-fixtures";
 
-/** A page at `href`, with a cookie jar that keeps one value per name, as a browser's does for one path. */
-function page(href: string) {
+/** A page at `href`, with a cookie jar that keeps one value per name, as a browser's does for
+ * one host and path; pages on one host share it whatever their ports (`jar`), as cookies do. */
+function page(href: string, jar = new Map<string, string>()) {
   const u = new URL(href);
-  const jar = new Map<string, string>();
   const doc = {
     get cookie() { return [...jar].map(([k, v]) => `${k}=${v}`).join("; "); },
     set cookie(c: string) {
@@ -17,7 +17,7 @@ function page(href: string) {
       if (attrs.includes("max-age=0")) jar.delete(k); else jar.set(k, v);
     },
   };
-  return { location: { origin: u.origin, search: u.search }, document: doc, jar } as unknown as Window & typeof globalThis & { jar: Map<string, string> };
+  return { location: { origin: u.origin, search: u.search, port: u.port }, document: doc, jar } as unknown as Window & typeof globalThis & { jar: Map<string, string> };
 }
 const hookOf = (w: object) => (w as Record<string, DevtoolsHook>)[HOOK_KEY];
 /** Evaluates a panel expression in `w`, as `inspectedWindow.eval` would. */
@@ -136,18 +136,29 @@ describe("registerDevSettings", () => {
 describe("cookieStore", () => {
   it("keeps every override in one clax_dev cookie, and clears it when the last goes", () => {
     const w = page("http://localhost/");
-    const s = cookieStore(w.document);
+    const s = cookieStore(w.document, OVERRIDE_COOKIE);
     expect(s.set("clax.presentation", "drawer")).toBe(true);
     expect(s.set("clax.enabled", false)).toBe(true);
     expect(JSON.parse(decodeURIComponent(w.jar.get(OVERRIDE_COOKIE)!))).toEqual({ "clax.presentation": "drawer", "clax.enabled": false });
-    expect(cookieStore(w.document).get("clax.enabled")).toBe(false);
+    expect(cookieStore(w.document, OVERRIDE_COOKIE).get("clax.enabled")).toBe(false);
     s.delete("clax.presentation");
     s.delete("clax.enabled");
     expect(w.jar.has(OVERRIDE_COOKIE)).toBe(false);
   });
+  it("names the cookie by port, so dev apps on one host (which share a jar) keep their own overrides", () => {
+    expect([cookieName({ port: "7700" }), cookieName({ port: "" })]).toEqual(["clax_dev_7700", "clax_dev"]);
+    const jar = new Map<string, string>();
+    const changeling = page("http://127.0.0.1:7700/", jar);
+    const other = page("http://127.0.0.1:5173/", jar);
+    registerDevSettings(feedbackAxes, { win: changeling });
+    const h = registerDevSettings(feedbackAxes, { win: other })!;
+    hookOf(changeling).set("clax", "presentation", "drawer");
+    expect([...jar.keys()]).toEqual(["clax_dev_7700"]);
+    expect([h.value("presentation"), h.source("presentation")]).toEqual(["dialog", "clax"]);
+  });
   it("keeps nothing past its size cap, and reads a broken cookie as empty", () => {
     const w = page("http://localhost/");
-    const s = cookieStore(w.document);
+    const s = cookieStore(w.document, OVERRIDE_COOKIE);
     expect(s.set("clax.note", "x".repeat(4000))).toBe(false);
     w.jar.set(OVERRIDE_COOKIE, "%7Bnot json");
     expect(s.get("clax.note")).toBeUndefined();

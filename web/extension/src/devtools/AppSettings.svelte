@@ -24,13 +24,21 @@
   /** Text fields being edited, by id: what the person typed, not yet committed. */
   let drafts = $state<Record<string, string>>({});
 
-  async function done(f: DevField, r: SetResult): Promise<void> {
-    if (!r.ok) { say(`${f.label} not changed: ${r.reason}`); return; }
+  async function done(s: DevSection, f: DevField, r: SetResult): Promise<void> {
+    if (!r.ok) {
+      // The control the person moved shows the value kept again (its bound value never changed, so nothing re-renders it).
+      const id = fid(s, f);
+      const box = document.getElementById(id);
+      if (box instanceof HTMLInputElement && box.type === "checkbox") box.checked = f.value === true;
+      for (const el of document.getElementsByName(id)) if (el instanceof HTMLInputElement) el.checked = el.value === f.value;
+      say(`${f.label} not changed: ${r.reason}`);
+      return;
+    }
     const reload = r.field.applies === "reload";
     say(`${f.label}: ${shown(r.field, r.field.value)} (${SOURCE[r.field.source]}).${reload ? " Reload the page to apply." : ""}`, reload);
   }
-  const set = async (s: DevSection, f: DevField, v: Value) => done(f, await link.set(s.id, f.id, v));
-  const reset = async (s: DevSection, f: DevField) => done(f, await link.reset(s.id, f.id));
+  const set = async (s: DevSection, f: DevField, v: Value) => done(s, f, await link.set(s.id, f.id, v));
+  const reset = async (s: DevSection, f: DevField) => done(s, f, await link.reset(s.id, f.id));
   function commit(s: DevSection, f: DevField): void {
     const id = fid(s, f);
     const v = drafts[id];
@@ -78,7 +86,7 @@
               </fieldset>
             {:else if f.kind === "toggle"}
               <label class="toggle">
-                <input type="checkbox" role="switch" checked={f.value === true} disabled={f.locked} aria-describedby="{id}-src"
+                <input {id} type="checkbox" role="switch" checked={f.value === true} disabled={f.locked} aria-describedby="{id}-src"
                   onchange={e => set(s, f, e.currentTarget.checked)} />
                 <span>{f.label}</span>
               </label>
