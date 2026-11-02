@@ -19,6 +19,6 @@
   "people": 1048576,
   "queues": 24996,
   "partLive": 4616,
-  "overlay": 78082,
-  "sdkOverlay": 111360
+  "overlay": 94208,
+  "sdkOverlay": 131072
 }
