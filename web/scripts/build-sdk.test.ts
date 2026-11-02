@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 // @ts-expect-error plain .mjs without declarations
-import { keepDeclarations, thirdPartyNotices } from "./build-sdk.mjs";
+import { MANIFEST, keepDeclarations, packageJson, thirdPartyNotices } from "./build-sdk.mjs";
 
 let root = "";
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "clax-build-sdk-")); });
@@ -77,5 +77,21 @@ describe("keepDeclarations", () => {
   it("refuses a declaration of a source outside web/bridge, web/overlay and web/sdk", () => {
     const emitted = new Map(Object.entries({ ...entries, "sdk/src/types.d.ts": `export type { Report } from "../../shell/src/api";\n`, "shell/src/api.d.ts": "export interface Report { id: string }\n" }));
     expect(() => keepDeclarations(emitted, root)).toThrow(`the package bundles ${join(root, "shell/src/api.d.ts")}, outside web/bridge, web/overlay, web/sdk, whose license LICENSE does not give the package`);
+  });
+});
+
+describe("packageJson", () => {
+  it("publishes web/sdk/package.json without private, with the entries' files", () => {
+    const published = packageJson();
+    expect(published).not.toHaveProperty("private");
+    for (const k of ["name", "version", "license", "description"]) expect(published[k], k).toBe(MANIFEST[k]);
+    expect(Object.keys(published.exports)).toEqual([".", "./overlay", "./service", "./package.json"]);
+  });
+
+  it("refuses a manifest that sets a derived field or a dependency, or is not private", () => {
+    expect(() => packageJson({ ...MANIFEST, dependencies: { svelte: "^5" } })).toThrow("web/sdk/package.json sets dependencies");
+    expect(() => packageJson({ ...MANIFEST, exports: "./index.js" })).toThrow("web/sdk/package.json sets exports");
+    const { private: _, ...published } = MANIFEST;
+    expect(() => packageJson(published)).toThrow("web/sdk/package.json must be private");
   });
 });

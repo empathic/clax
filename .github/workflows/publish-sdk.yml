@@ -1,8 +1,8 @@
 name: Publish SDK package
 
 # Publishes web/dist-sdk to npm as @empathic/clax-sdk (built by
-# web/scripts/build-sdk.mjs at the package's own version, its
-# PACKAGE_VERSION), run by hand (Actions, Publish SDK package, Run
+# web/scripts/build-sdk.mjs at the package's own version, the
+# version in web/sdk/package.json), run by hand (Actions, Publish SDK package, Run
 # workflow) or by scripts/release-sdk.sh, `just release-sdk`
 # (docs/usage.md, "Releasing the SDK package"). It publishes from the
 # commit `sha` names (by default the tip of the ref it runs on), which must

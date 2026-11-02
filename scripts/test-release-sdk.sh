@@ -7,7 +7,7 @@
 #
 # A scratch repository holds a copy of release-sdk.sh, of the helpers it
 # sources (scripts/lib/release-common.sh), and a stand-in for
-# web/scripts/build-sdk.mjs holding PACKAGE_NAME and PACKAGE_VERSION. Its
+# web/sdk/package.json holding the package's name and version. Its
 # history: "SDK 0.1.0", then "SDK 0.2.0", which main and prod are at
 # ($PROD0). The fakes log every call to $FAKE_STATE/calls. The fake gh
 # plays GitHub from the bare origin: a CI run (201) on any commit prod
@@ -91,8 +91,8 @@ case "$1 $2" in
                 # A publish run that succeeds puts its commit's version on npm.
                 if [ "$state" = "completed success" ]; then
                     sha="$(awk -F '\t' -v id="$3" '$1 == id { sub("Publish SDK package ", "", $2); print $2 }' "$S/publish-runs")"
-                    origin show "$sha:web/scripts/build-sdk.mjs" \
-                        | sed -n 's/^export const PACKAGE_VERSION = "\(.*\)";$/\1/p' >> "$S/npm-versions"
+                    origin show "$sha:web/sdk/package.json" \
+                        | sed -n 's/^  "version": "\(.*\)",$/\1/p' >> "$S/npm-versions"
                 fi
                 echo "$state" ;;
             *) echo "fake gh: unexpected: $*" >&2; exit 2 ;;
@@ -138,28 +138,28 @@ case "$1" in
 esac
 SH
 # pnpm: `run build:sdk` writes dist-sdk/package.json at the version
-# scripts/build-sdk.mjs gives, as the real build does.
+# sdk/package.json gives, as the real build does.
 fake_exe "$T/bin/pnpm" <<'SH'
 #!/bin/sh
 echo "pnpm $* (in $(basename "$(dirname "$PWD")")/$(basename "$PWD"))" >> "$FAKE_STATE/calls"
 if [ "$*" = "run build:sdk" ]; then
     mkdir -p dist-sdk
-    v="$(sed -n 's/^export const PACKAGE_VERSION = "\(.*\)";$/\1/p' scripts/build-sdk.mjs)"
+    v="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' sdk/package.json)"
     printf '{\n  "name": "@empathic/clax-sdk",\n  "version": "%s",\n  "type": "module"\n}\n' "$v" > dist-sdk/package.json
 fi
 SH
 FAKE_PATH="$T/bin:$PATH"
 
-# sdk_file VERSION: web/scripts/build-sdk.mjs's stand-in at VERSION.
+# sdk_file VERSION: web/sdk/package.json's stand-in at VERSION.
 sdk_file() {
-    printf 'export const PACKAGE_NAME = "@empathic/clax-sdk";\nexport const PACKAGE_VERSION = "%s";\n' "$1" \
-        > "$C/repo/web/scripts/build-sdk.mjs"
+    printf '{\n  "name": "@empathic/clax-sdk",\n  "version": "%s",\n  "private": true\n}\n' "$1" \
+        > "$C/repo/web/sdk/package.json"
 }
 # A fresh case: $C/repo on main, prod and main pushed to $C/origin.git at
 # "SDK 0.2.0" ($PROD0); npm has 0.1.0.
 new_case() {
     C="$(mktemp -d "$T/case.XXXXXX")"
-    mkdir -p "$C/state" "$C/repo/scripts/lib" "$C/repo/web/scripts"
+    mkdir -p "$C/state" "$C/repo/scripts/lib" "$C/repo/web/sdk"
     export FAKE_STATE="$C/state" FAKE_REMOTE="$C/origin.git"
     echo 0.1.0 > "$C/state/npm-versions"
     git init -q --bare -b main "$C/origin.git"

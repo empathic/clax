@@ -17,7 +17,8 @@
 // entries' declarations import, with relative specifiers ending in `.js`
 // so a consumer's `moduleResolution` of `bundler` or `nodenext` reads them;
 // `types` and `typesVersions` name them for `node` (node10).
-// Its README is web/sdk/README.md. The package's license is the license of
+// Its README is web/sdk/README.md, and its package.json is web/sdk/package.json
+// (MANIFEST) with the fields the build derives. The package's license is the license of
 // web/bridge, web/overlay and web/sdk in the repository's LICENSE, and the
 // build fails on a bundled source file, or a declaration, of Clax's from
 // anywhere else; THIRD-PARTY-NOTICES.txt holds the license of each npm
@@ -36,17 +37,24 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { cleanOut } from "./extension-clean.mjs";
 import { componentCssIntoScript } from "./overlay-component-css.mjs";
 
-/** The package's name on npm. */
-export const PACKAGE_NAME = "@empathic/clax-sdk";
+const web = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const repo = resolve(web, "..");
+const out = join(web, "dist-sdk");
+
 /**
- * The package's version: a semver line of its own, not Clax's, since the
- * package only calls an instance's report-queue routes. A pull request to
- * main raises it; `just release-sdk` publishes it once prod carries it
- * (scripts/release-sdk.sh, which reads this line).
+ * The package's manifest as written by hand, web/sdk/package.json: its
+ * name, its version (a semver line of its own, not Clax's, since the
+ * package only calls an instance's report-queue routes; a pull request to
+ * main raises it and `just release-sdk` publishes it once prod carries
+ * it), its license and the rest of its metadata. It is `private`, so the
+ * source directory is never published; packageJson() adds what the build
+ * derives.
  */
-export const PACKAGE_VERSION = "0.1.0";
+export const MANIFEST = JSON.parse(readFileSync(join(web, "sdk", "package.json"), "utf8"));
+/** The package's name on npm. */
+export const PACKAGE_NAME = MANIFEST.name;
 /** The package's license: web/bridge's, web/overlay's and web/sdk's in LICENSE. */
-const LICENSE = "LGPL-2.1-only";
+const LICENSE = MANIFEST.license;
 /** The directories, under web/, of the Clax sources the package may bundle: those LICENSE puts under `LICENSE`. */
 const LICENSED_DIRS = ["bridge", "overlay", "sdk"];
 
@@ -57,27 +65,23 @@ export const ENTRIES = [
   { path: "./service", name: "service", src: "sdk/src/service.ts" },
 ];
 
-const web = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const repo = resolve(web, "..");
-const out = join(web, "dist-sdk");
 const ts = createRequire(join(web, "package.json"))("typescript");
 const types = src => `types/${src.replace(/\.ts$/, ".d.ts")}`;
 
-function packageJson() {
+/** Fields the build derives, and dependencies, which the package has none
+ * of (it bundles them): a manifest that sets one is refused. */
+const DERIVED = ["exports", "main", "module", "types", "typings", "typesVersions", "files", "dependencies", "peerDependencies", "optionalDependencies", "bundleDependencies", "bundledDependencies"];
+
+/** The published package.json: `manifest` without `private`, and its
+ * entries' files and declarations. Fails on a manifest that sets a field of
+ * `DERIVED` or is not `private`. */
+export function packageJson(manifest = MANIFEST) {
+  const set = DERIVED.filter(k => k in manifest);
+  if (set.length) throw new Error(`web/sdk/package.json sets ${set.join(", ")}, which the build derives or the package bundles`);
+  if (manifest.private !== true) throw new Error("web/sdk/package.json must be private: the published manifest is the build's");
+  const { private: _, ...meta } = manifest;
   return {
-    name: PACKAGE_NAME,
-    version: PACKAGE_VERSION,
-    description: "Clax's report queue SDK: the reporter client, the embeddable overlay and the service client",
-    keywords: ["clax", "reports", "feedback", "overlay", "sdk"],
-    license: LICENSE,
-    author: { name: "Empathic, Inc.", email: "alex@empathic.dev" },
-    homepage: "https://github.com/empathic/clax/tree/main/web/sdk#readme",
-    bugs: { url: "https://github.com/empathic/clax/issues" },
-    repository: { type: "git", url: "git+https://github.com/empathic/clax.git", directory: "web" },
-    // A scoped package publishes as private unless told otherwise.
-    publishConfig: { access: "public" },
-    type: "module",
-    sideEffects: false,
+    ...meta,
     exports: {
       ...Object.fromEntries(ENTRIES.map(e => [e.path, { types: `./${types(e.src)}`, default: `./${e.name}.js` }])),
       "./package.json": "./package.json",

@@ -727,9 +727,13 @@ for a backend only). Its license is LGPL-2.1-only, that of `web/sdk`,
 - `//web:sdk_package` (`pnpm run test:sdk` after a build) checks the
   package as an app gets it, and `//web:bundle_size` holds its overlay
   entry to the `sdkOverlay` ceiling.
-- Its version is its own, `PACKAGE_VERSION` in `web/scripts/build-sdk.mjs`,
-  not Clax's, and `just release-sdk` publishes it ("Releasing the SDK
-  package" below).
+- Its manifest is `web/sdk/package.json`: its name, its version (its own,
+  not Clax's) and the rest of its metadata. The build publishes it
+  without `private` (which keeps `npm publish` from shipping the source
+  directory) and adds `exports`, `types` and `typesVersions`; it refuses a
+  manifest that sets those or any dependencies, since the package bundles
+  its own. `just release-sdk` publishes it ("Releasing the SDK package"
+  below).
 
 To use the checkout's build from another app while developing, link the
 directory, which keeps the package's own name:
@@ -1734,14 +1738,14 @@ release path, does everything except publish, and keeps the result as the
 ### Releasing the SDK package
 
 The SDK package, `@empathic/clax-sdk` ("The SDK package" above), has a
-version of its own, on a semver line of its own: `PACKAGE_VERSION` in
-`web/scripts/build-sdk.mjs`. Nothing ties it to the `clax` binary's version,
+version of its own, on a semver line of its own: the `version` in
+`web/sdk/package.json`. Nothing ties it to the `clax` binary's version,
 since the package only calls an instance's report-queue routes, and
 `scripts/bump-version.sh` and `scripts/check-version.sh` leave it alone. It
 is published from `prod`, so that a published SDK calls only routes the
 deployed instances have:
 
-1. Raise `PACKAGE_VERSION` on `main` by an ordinary pull request, with the
+1. Raise `web/sdk/package.json`'s `version` on `main` by an ordinary pull request, with the
    changes it releases.
 2. The next Clax release (`just release`) carries it to `prod`, with the
    rest of `main`.
@@ -1756,7 +1760,7 @@ just release-sdk 0.2.0 --i-know-what-i-am-doing     # tag sdk-v0.2.0 on prod and
 is the one its tag `sdk-v<version>` names once the tag exists, and
 `origin/prod`'s tip until then. Its preflight refuses to start, changing
 nothing, unless: `gh` is signed in and `git`, `gh` and `npm` are on `PATH`;
-the version is `X.Y.Z`, is the `PACKAGE_VERSION` that commit carries, and is
+the version is `X.Y.Z`, is the version that commit's `web/sdk/package.json` carries, and is
 newer than every version npm has of the package (none counts as older); a
 tag of the version, if there is one, is the same here and on origin and on
 `origin/prod`; CI's `bazel` job passed on the commit; commit signing works;

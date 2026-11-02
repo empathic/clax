@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Publishes the SDK package, @empathic/clax-sdk, to npm from the prod
 # branch: the procedure docs/usage.md ("Releasing the SDK package")
-# describes. The package has a version of its own, PACKAGE_VERSION in
-# web/scripts/build-sdk.mjs, not Clax's: a pull request to main raises it,
+# describes. The package has a version of its own, the version in
+# web/sdk/package.json, not Clax's: a pull request to main raises it,
 # the next Clax release (scripts/release.sh) brings it to prod, and this
 # publishes it from there, so a published SDK calls only the routes that
 # deployed instances have.
@@ -74,7 +74,7 @@ WORKFLOW=publish-sdk.yml
 # How publish-sdk.yml titles a run that publishes, before its commit.
 RUN_TITLE="Publish SDK package"
 # The file that holds the package's name and version.
-BUILD_SDK=web/scripts/build-sdk.mjs
+SDK_MANIFEST=web/sdk/package.json
 LAST=4
 
 usage() {
@@ -107,11 +107,11 @@ NOTES=()
 
 # --- state, read from git, GitHub and npm -----------------------------------------
 
-# The package's npm name, from the checkout's build-sdk.mjs.
-PKG="$(sed -n 's/^export const PACKAGE_NAME = "\(.*\)";$/\1/p' "$ROOT/$BUILD_SDK")"
-# The SDK version commit $1 carries (its build-sdk.mjs), or nothing.
+# The package's npm name, from the checkout's web/sdk/package.json.
+PKG="$(sed -n 's/^  "name": "\(.*\)",$/\1/p' "$ROOT/$SDK_MANIFEST")"
+# The SDK version commit $1 carries (its web/sdk/package.json), or nothing.
 sdk_version_at() {
-    g show "$1:$BUILD_SDK" 2>/dev/null | sed -n 's/^export const PACKAGE_VERSION = "\(.*\)";$/\1/p'
+    g show "$1:$SDK_MANIFEST" 2>/dev/null | sed -n 's/^  "version": "\(.*\)",$/\1/p'
 }
 is_signed_tag() { g cat-file tag "$TAG" | grep -E -- '^-----BEGIN [A-Z ]*SIGNATURE-----$' >/dev/null; }
 
@@ -158,7 +158,7 @@ check_version() {
     [ "$at" != "$V" ] || return 0
     if [ "$COMMIT" = "$PROD_TIP" ] && [ -z "$LOCAL_TAG$REMOTE_TAG" ]; then what="origin/$PROD's tip ($COMMIT)"
     else what="the tag $TAG's commit ($COMMIT)"; fi
-    problem "$what carries SDK version ${at:-none}, not $V (PACKAGE_VERSION in $BUILD_SDK): raise it on main by a pull request; prod gets it with the next Clax release (just release)"
+    problem "$what carries SDK version ${at:-none}, not $V (the version in $SDK_MANIFEST): raise it on main by a pull request; prod gets it with the next Clax release (just release)"
 }
 
 # The package on npm: X.Y.Z newer than every version npm has, but for this

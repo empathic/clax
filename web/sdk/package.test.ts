@@ -11,11 +11,11 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-// @ts-expect-error plain .mjs without declarations
-import { PACKAGE_VERSION } from "../scripts/build-sdk.mjs";
 
 const web = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const pkgDir = join(web, "dist-sdk");
+/** The manifest the package is built from (web/sdk/package.json). */
+const source = JSON.parse(readFileSync(join(web, "sdk", "package.json"), "utf8"));
 const ts = createRequire(join(web, "package.json"))("typescript") as typeof import("typescript");
 
 interface Manifest {
@@ -69,7 +69,8 @@ const files = (dir: string): string[] =>
 describe("the SDK package", () => {
   it("names itself, its license and its entries, and depends on nothing", () => {
     expect(manifest.name).toBe("@empathic/clax-sdk");
-    expect(manifest.version).toBe(PACKAGE_VERSION);
+    expect(manifest.version).toBe(source.version);
+    expect(manifest).not.toHaveProperty("private");
     expect(manifest.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(manifest.license).toBe("LGPL-2.1-only");
     expect(manifest.publishConfig).toEqual({ access: "public" });

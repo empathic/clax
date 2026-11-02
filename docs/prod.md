@@ -26,8 +26,8 @@ cutting a release is `docs/usage.md`, "Releasing".
    the pin commit to `prod` (the owner bypasses the ruleset for it, which
    deploys again with no server change), carries both commits to `main`
    and publishes the Pi package from `prod`.
-5. When the release brought a new SDK package version (`PACKAGE_VERSION`
-   in `web/scripts/build-sdk.mjs`) to `prod`, `just release-sdk X.Y.Z`
+5. When the release brought a new SDK package version (the `version` in
+   `web/sdk/package.json`) to `prod`, `just release-sdk X.Y.Z`
    tags `sdk-vX.Y.Z` on `prod` and publishes `@empathic/clax-sdk` from it
    (docs/usage.md, "Releasing the SDK package").
 
