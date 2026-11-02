@@ -5,6 +5,12 @@ import type * as Main from "./main";
 
 /** True only when `A` and `B` are each assignable to the other. */
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+/** True only when `A` and `B` are the same type, optional fields too. */
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
+
+/** The report as the API contract generates it (web/sdk/src/contract.gen.ts):
+ * the served copy may leave out no field. */
+export const EQUAL: [Equal<Dts.Report, Main.Report>] = [true];
 
 export const SAME: [
   Same<Dts.OverlayOptions, Main.OverlayOptions>,

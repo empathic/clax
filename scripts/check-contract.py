@@ -58,6 +58,31 @@ class Compare:
         return s if isinstance(s, dict) else {}
 
     @staticmethod
+    def json_type(v):
+        if v is None:
+            return "null"
+        if isinstance(v, bool):
+            return "boolean"
+        if isinstance(v, int):
+            return "integer"
+        if isinstance(v, float):
+            return "number"
+        return {str: "string", list: "array", dict: "object"}[type(v)]
+
+    @staticmethod
+    def values(s):
+        """The values an enum-like schema admits (`enum`, `const`, or a
+        union of those, `null` aside), else `None`."""
+        if "enum" in s:
+            return list(s["enum"])
+        if "const" in s:
+            return [s["const"]]
+        alts = [a for a in (s.get("anyOf") or s.get("oneOf") or []) if a != {"type": "null"}]
+        if alts and all("enum" in a or "const" in a for a in alts):
+            return [v for a in alts for v in Compare.values(a)]
+        return None
+
+    @staticmethod
     def types(s):
         """The JSON types a schema admits, `None` for any."""
         alts = s.get("anyOf") or s.get("oneOf")
@@ -70,7 +95,7 @@ class Compare:
                 out |= t
             return out
         if "const" in s:
-            return {type(s["const"]).__name__}
+            return {Compare.json_type(s["const"])}
         t = s.get("type")
         if t is None:
             return {"object"} if "properties" in s else None
@@ -94,11 +119,7 @@ class Compare:
         if narrower is not None and (wider is None or not wider <= narrower):
             more = "any type" if wider is None else ", ".join(sorted(wider - narrower))
             self.brk(at, f"{'may now hold' if reading else 'no longer takes'} {more}")
-        oe, ne = o.get("enum"), n.get("enum")
-        if "const" in o:
-            oe = [o["const"]]
-        if "const" in n:
-            ne = [n["const"]]
+        oe, ne = self.values(o), self.values(n)
         if reading and oe is not None and ne is not None:
             added = [v for v in ne if v not in oe]
             if added:
@@ -111,6 +132,21 @@ class Compare:
                 self.brk(at, f"no longer takes {', '.join(map(json.dumps, gone))}")
         if not reading and oe is None and ne is not None:
             self.brk(at, "now takes only " + ", ".join(map(json.dumps, ne)))
+        if (oe is None or ne is None) and (o.get("anyOf") or o.get("oneOf") or n.get("anyOf") or n.get("oneOf")):
+            # A union's alternatives, but `null`: each old one against the
+            # new one it names (the same $ref, else the same type, else
+            # the only one).
+            def alts(s):
+                return [a for a in (s.get("anyOf") or s.get("oneOf") or [s]) if a != {"type": "null"}]
+
+            oa, na = alts(o), alts(n)
+            for a in oa:
+                match = [b for b in na if "$ref" in a and b.get("$ref") == a["$ref"]] \
+                    or [b for b in na if "$ref" not in a and "$ref" not in b and b.get("type") == a.get("type")] \
+                    or (na if len(oa) == len(na) == 1 else [])
+                if match and (a, match[0]) != (o, n):
+                    self.compare(a, match[0], reading, at)
+            return
         if "items" in o and "items" in n:
             self.compare(o["items"], n["items"], reading, at + "[]")
         op, np_ = o.get("properties", {}), n.get("properties", {})

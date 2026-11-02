@@ -169,31 +169,53 @@ pub struct Op {
     pub stream: bool,
 }
 
-/// The errors each credential kind's check answers before the handler runs.
+/// The errors each credential kind's check answers before the handler runs
+/// (`clax_http::auth`, `viewer::SameOrigin`, `agent`, `grant_auth`,
+/// `reporter`). A signed credential's body is read within the agent gate's
+/// bounds, whose refusals each signed kind shares.
 #[must_use]
 pub fn credential_errors(c: Channel) -> &'static [(u16, &'static str)] {
     match c {
         Channel::Anonymous => &[],
-        Channel::Session | Channel::Token | Channel::Grant => &[(401, "unauthorized")],
-        // clax_http::reporter and grant_auth.
-        Channel::Service => &[
+        Channel::Session => &[(401, "unauthorized"), (403, "forbidden_origin")],
+        Channel::Token => &[(401, "unauthorized"), (403, "not_permitted")],
+        Channel::Grant => &[
+            (400, "invalid_request"),
             (401, "invalid_token"),
             (401, "invalid_signature"),
             (401, "stale_request"),
             (401, "replayed_request"),
             (403, "forbidden_origin"),
+            (403, "not_permitted"),
+            (408, "timeout"),
             (413, "body_too_large"),
             (429, "limit_reached"),
+            (503, "busy"),
+        ],
+        Channel::Service => &[
+            (400, "invalid_request"),
+            (401, "invalid_token"),
+            (401, "invalid_signature"),
+            (401, "stale_request"),
+            (401, "replayed_request"),
+            (403, "forbidden_origin"),
+            (408, "timeout"),
+            (413, "body_too_large"),
+            (429, "limit_reached"),
+            (503, "busy"),
         ],
         Channel::Reporter => &[
+            (400, "invalid_request"),
             (401, "invalid_token"),
             (401, "token_expired"),
             (401, "invalid_signature"),
             (401, "stale_request"),
             (401, "replayed_request"),
             (403, "wrong_origin"),
+            (408, "timeout"),
             (413, "body_too_large"),
             (429, "limit_reached"),
+            (503, "busy"),
         ],
     }
 }
@@ -232,10 +254,12 @@ fn status_text(status: u16) -> &'static str {
         401 => "Unauthorized",
         403 => "Forbidden",
         404 => "Not Found",
+        408 => "Request Timeout",
         409 => "Conflict",
         410 => "Gone",
         413 => "Content Too Large",
         429 => "Too Many Requests",
+        503 => "Service Unavailable",
         _ => "Error",
     }
 }
@@ -395,8 +419,9 @@ pub fn openapi(ops: &[&Op]) -> Value {
     // two schemas: the request's is `<Name>Input`.
     let mut schemas = out.take_definitions(true);
     let mut inputs = input.take_definitions(true);
+    // Only in answers: a request may send `null` where serde reads it as
+    // absent.
     schemas.values_mut().for_each(optional_is_not_null);
-    inputs.values_mut().for_each(optional_is_not_null);
     // So is one whose request schema refers to such a type.
     let mut renamed: Vec<String> = Vec::new();
     loop {
@@ -457,10 +482,10 @@ pub fn openapi(ops: &[&Op]) -> Value {
     })
 }
 
-/// An object's optional property (an `Option` serde skips when `None`) is
-/// absent rather than `null`: in an answer it is never `null`, and a request
-/// leaves it out (Clax reads `null` there as absent too). A required one
-/// keeps its `null` (an `Option` always sent).
+/// An answer's optional property (an `Option` serde skips when `None`) is
+/// absent rather than `null`: it is never `null`. A required one keeps its
+/// `null` (an `Option` always sent). Requests keep theirs: serde reads a
+/// `null` there as absent.
 fn optional_is_not_null(v: &mut Value) {
     let Value::Object(m) = v else { return };
     let required: Vec<String> = m

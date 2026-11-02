@@ -2,8 +2,9 @@
 # Checks scripts/check-contract.py on changes made to a copy of the
 # committed contract (web/sdk/openapi.json): the contract against itself
 # passes; a field gone from an answer, a field newly required in a request,
-# an enum value an answer may now hold, an operation gone, retry turned off
-# and an enum value a request no longer takes each fail with the same major
+# an enum value an answer may now hold (a plain enum, or one of documented
+# variants), an operation gone, retry turned off, and a value a request no
+# longer takes (behind a nullable union too) each fail with the same major
 # and pass with the next one; an optional field added to a request and a new
 # operation pass with the same major. Bad usage exits 2.
 set -uo pipefail
@@ -52,6 +53,8 @@ breaks=(
     'answer_field|del s["Badge"]["properties"]["waiting"]; s["Badge"]["required"].remove("waiting")|Badge|.waiting is gone'
     'request_required|s["CommentRequest"]["properties"]["kind"] = {"type": "string"}; s["CommentRequest"]["required"].append("kind")|required|.kind is now required'
     'answer_enum|s["ReportState"]["enum"].append("lost")|enum|may now hold "lost"'
+    'answer_documented_enum|s["ReportersSee"]["oneOf"].append({"const": "some", "type": "string"})|oneOf|may now hold "some"'
+    'request_nullable|s["ReportContextInput"]["properties"]["v"]["const"] = 2|nullable|no longer takes 1'
     'operation_gone|del c["paths"]["/api/queues/{qid}/reporter/badge"]|op|GET /api/queues/{qid}/reporter/badge is gone'
     'retry_off|c["paths"]["/api/queues/{qid}/reporter/badge"]["get"]["x-clax-retry"] = False|retry|may no longer be retried'
     'request_enum|s["CaptureMode"]["enum"].remove("area")|enum|no longer takes "area"'

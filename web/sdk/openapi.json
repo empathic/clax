@@ -127,52 +127,149 @@
         ],
         "type": "object"
       },
+      "AnchorAreaInput": {
+        "additionalProperties": false,
+        "description": "A drawn rectangle as fractions (0 to 1) of its element's border box: `x`\nand `y` from its top left corner, `w` and `h` of its width and height.\n`tag`, `text`, and `children` fingerprint that element at draw time (its\nlocal name, the first characters of its text with whitespace collapsed,\nits child element count), so re-anchoring by selector alone can tell\nanother element at the same path; each is optional and serialized only\nwhen present.",
+        "properties": {
+          "children": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "h": {
+            "format": "double",
+            "type": "number"
+          },
+          "tag": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "w": {
+            "format": "double",
+            "type": "number"
+          },
+          "x": {
+            "format": "double",
+            "type": "number"
+          },
+          "y": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y",
+          "w",
+          "h"
+        ],
+        "type": "object"
+      },
       "AnchorInput": {
         "additionalProperties": false,
         "description": "Spec §9 \"Anchors\". Every field but `kind` and `file` may be null. `file` is\nthe published path of the page the anchor is on, `index.html` when absent;\nan `artifact` anchor is on no page, and its `file` is empty.\nAn `area` anchor is a rectangle the viewer drew: `selector` names the\nsmallest element containing it, `area` places it within that element, and\n`rect` holds it in viewport pixels at draw time; `area` is serialized only\nwhen present.",
         "properties": {
           "area": {
-            "$ref": "#/components/schemas/AnchorArea"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnchorAreaInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "custom_name": {
-            "type": "string"
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "file": {
             "default": "index.html",
             "type": "string"
           },
           "html_hash": {
-            "type": "string"
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "kind": {
             "$ref": "#/components/schemas/AnchorKind"
           },
           "label": {
             "description": "The quote as a person reads it: its text with a space where it runs\nfrom one element into another, which the quote (kept as the page's\ntext nodes join, for re-anchoring) lacks. Shown in place of the quote;\nabsent on anchors made without one, which show the quote.",
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "name": {
             "description": "What the element is called, as the bridge read it when it was picked:\nits accessible name, else the start of its text, else its kind with\nthe nearest heading (\"Chart under ‘p95 by four-hour window’\"). Shown\nas a thread's title where the anchor quotes nothing; absent on\nanchors made without one.",
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "prefix": {
-            "type": "string"
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "quote": {
-            "type": "string"
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "rect": {
-            "$ref": "#/components/schemas/AnchorRect"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnchorRect"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "route": {
             "description": "The route a live page's thread was made at (spec 2026-10-05 §5.2):\nthe query and hash route, set by the daemon; absent elsewhere.",
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "selector": {
-            "type": "string"
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "suffix": {
-            "type": "string"
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -537,6 +634,85 @@
         },
         "type": "object"
       },
+      "EnvironmentInput": {
+        "description": "The page and browser the capture was made in. `url` keeps its query\nkeys, never their values ([`scrub_url`]); `route` and `title` are\n[`scrub`]bed.",
+        "properties": {
+          "color_scheme": {
+            "description": "`light` or `dark`, as the page's `prefers-color-scheme` matched.",
+            "enum": [
+              "light",
+              "dark"
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "locale": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "platform": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "route": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scroll": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Scroll"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "time_zone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user_agent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "viewport": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Viewport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
       "FixAttempt": {
         "description": "A fix proposed on a report (§6.2), numbered from 1 in the order\nproposed, with its verdict once given (§6.3): the verdict's note, the\ncontext of whoever gave it, and when.",
         "properties": {
@@ -796,6 +972,36 @@
           },
           "version": {
             "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "ReleaseInput": {
+        "description": "The release of the host app the reporter ran, as the host names it.",
+        "properties": {
+          "channel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "commit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "type": "object"
@@ -1085,6 +1291,69 @@
         ],
         "type": "object"
       },
+      "ReportContextInput": {
+        "additionalProperties": false,
+        "description": "What the reporter's browser said at capture (§5.1): filled by the SDK\nand the host app, checked by [`parse_context`], stored with the report\nand never changed. Its top level admits no other key; the objects inside\nit ignore keys they do not know.",
+        "properties": {
+          "app": {
+            "description": "Opaque JSON the host app adds; every string in it is scrubbed."
+          },
+          "capture": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CaptureInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "captured_at": {
+            "description": "When the capture was made, RFC 3339.",
+            "type": "string"
+          },
+          "environment": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EnvironmentInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "flags": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/FlagValue"
+            },
+            "description": "The host app's feature flags at capture.",
+            "type": "object"
+          },
+          "release": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReleaseInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "v": {
+            "const": 1,
+            "description": "The shape's version: 1.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "v",
+          "captured_at"
+        ],
+        "type": "object"
+      },
       "ReportPage": {
         "description": "A page of reports; `next` is the cursor of the following page, `null`\non the last.",
         "properties": {
@@ -1138,6 +1407,38 @@
         },
         "type": "object"
       },
+      "ReporterProfileInput": {
+        "description": "Who a reporter is, as the integrator's backend asserts it when minting\nthe reporter token (§5.4). Shown to triage members, never to\nreporters.",
+        "properties": {
+          "avatar_url": {
+            "description": "An `https:` or `http:` image URL.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "github": {
+            "description": "A GitHub login, for asking the reporter to review a fix.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "ReporterToken": {
         "description": "A reporter token (`cxr_…`), bound to a key, an origin and a reporter ID.",
         "properties": {
@@ -1163,7 +1464,15 @@
             "type": "string"
           },
           "profile": {
-            "$ref": "#/components/schemas/ReporterProfile",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReporterProfileInput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
             "description": "Who the backend says the reporter is; each report filed under the\ntoken keeps it. Read as JSON first, so a bad one is 400\n`invalid_profile` rather than `invalid_args`."
           },
           "public_key": {
@@ -1307,11 +1616,23 @@
         "description": "A reporter's verdict that a fix works: a note, and its browser's\ncontext at the verdict (checked and scrubbed as a filing's). An empty\nbody is `{}`.",
         "properties": {
           "context": {
-            "$ref": "#/components/schemas/ReportContext",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReportContextInput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
             "description": "Read as JSON first, so a bad one is 400 `invalid_context`."
           },
           "note": {
-            "type": "string"
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "type": "object"
@@ -1386,6 +1707,19 @@
             },
             "description": "OK"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "x-clax-codes": [
+              "invalid_request"
+            ]
+          },
           "401": {
             "content": {
               "application/json": {
@@ -1396,7 +1730,77 @@
             },
             "description": "Unauthorized",
             "x-clax-codes": [
+              "invalid_signature",
+              "invalid_token",
+              "replayed_request",
+              "stale_request",
               "unauthorized"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-clax-codes": [
+              "forbidden_origin",
+              "not_permitted"
+            ]
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Request Timeout",
+            "x-clax-codes": [
+              "timeout"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large",
+            "x-clax-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-clax-codes": [
+              "limit_reached"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-clax-codes": [
+              "busy"
             ]
           }
         },
@@ -1459,7 +1863,8 @@
               "invalid_key",
               "invalid_origin",
               "invalid_profile",
-              "invalid_reporter_id"
+              "invalid_reporter_id",
+              "invalid_request"
             ]
           },
           "401": {
@@ -1492,6 +1897,19 @@
               "wrong_origin"
             ]
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Request Timeout",
+            "x-clax-codes": [
+              "timeout"
+            ]
+          },
           "413": {
             "content": {
               "application/json": {
@@ -1516,6 +1934,19 @@
             "description": "Too Many Requests",
             "x-clax-codes": [
               "limit_reached"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-clax-codes": [
+              "busy"
             ]
           }
         },
@@ -1552,6 +1983,19 @@
             },
             "description": "OK"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "x-clax-codes": [
+              "invalid_request"
+            ]
+          },
           "401": {
             "content": {
               "application/json": {
@@ -1582,6 +2026,19 @@
               "wrong_origin"
             ]
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Request Timeout",
+            "x-clax-codes": [
+              "timeout"
+            ]
+          },
           "413": {
             "content": {
               "application/json": {
@@ -1606,6 +2063,19 @@
             "description": "Too Many Requests",
             "x-clax-codes": [
               "limit_reached"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-clax-codes": [
+              "busy"
             ]
           }
         },
@@ -1660,7 +2130,8 @@
             },
             "description": "Bad Request",
             "x-clax-codes": [
-              "invalid_query"
+              "invalid_query",
+              "invalid_request"
             ]
           },
           "401": {
@@ -1693,6 +2164,19 @@
               "wrong_origin"
             ]
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Request Timeout",
+            "x-clax-codes": [
+              "timeout"
+            ]
+          },
           "413": {
             "content": {
               "application/json": {
@@ -1717,6 +2201,19 @@
             "description": "Too Many Requests",
             "x-clax-codes": [
               "limit_reached"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-clax-codes": [
+              "busy"
             ]
           }
         },
@@ -1798,7 +2295,7 @@
                   "context": {
                     "contentMediaType": "application/json",
                     "contentSchema": {
-                      "$ref": "#/components/schemas/ReportContext"
+                      "$ref": "#/components/schemas/ReportContextInput"
                     },
                     "description": "What the reporter's browser said at capture: at most 16 KiB as compact JSON.",
                     "type": "string"
@@ -1875,6 +2372,7 @@
               "invalid_external_id",
               "invalid_metadata",
               "invalid_multipart",
+              "invalid_request",
               "metadata_too_large"
             ]
           },
@@ -1908,6 +2406,19 @@
               "wrong_origin"
             ]
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Request Timeout",
+            "x-clax-codes": [
+              "timeout"
+            ]
+          },
           "413": {
             "content": {
               "application/json": {
@@ -1932,6 +2443,19 @@
             "description": "Too Many Requests",
             "x-clax-codes": [
               "limit_reached"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-clax-codes": [
+              "busy"
             ]
           }
         },
@@ -1977,6 +2501,19 @@
             },
             "description": "OK"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "x-clax-codes": [
+              "invalid_request"
+            ]
+          },
           "401": {
             "content": {
               "application/json": {
@@ -2020,6 +2557,19 @@
               "not_found"
             ]
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Request Timeout",
+            "x-clax-codes": [
+              "timeout"
+            ]
+          },
           "413": {
             "content": {
               "application/json": {
@@ -2044,6 +2594,19 @@
             "description": "Too Many Requests",
             "x-clax-codes": [
               "limit_reached"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-clax-codes": [
+              "busy"
             ]
           }
         },
@@ -2109,7 +2672,8 @@
             "description": "Bad Request",
             "x-clax-codes": [
               "invalid_args",
-              "invalid_comment"
+              "invalid_comment",
+              "invalid_request"
             ]
           },
           "401": {
@@ -2155,6 +2719,19 @@
               "not_found"
             ]
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Request Timeout",
+            "x-clax-codes": [
+              "timeout"
+            ]
+          },
           "413": {
             "content": {
               "application/json": {
@@ -2179,6 +2756,19 @@
             "description": "Too Many Requests",
             "x-clax-codes": [
               "limit_reached"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-clax-codes": [
+              "busy"
             ]
           }
         },
@@ -2232,6 +2822,19 @@
             },
             "description": "OK"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "x-clax-codes": [
+              "invalid_request"
+            ]
+          },
           "401": {
             "content": {
               "application/json": {
@@ -2275,6 +2878,19 @@
               "not_found"
             ]
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Request Timeout",
+            "x-clax-codes": [
+              "timeout"
+            ]
+          },
           "413": {
             "content": {
               "application/json": {
@@ -2299,6 +2915,19 @@
             "description": "Too Many Requests",
             "x-clax-codes": [
               "limit_reached"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-clax-codes": [
+              "busy"
             ]
           }
         },
@@ -2363,7 +2992,8 @@
             },
             "description": "Bad Request",
             "x-clax-codes": [
-              "invalid_query"
+              "invalid_query",
+              "invalid_request"
             ]
           },
           "401": {
@@ -2409,6 +3039,19 @@
               "not_found"
             ]
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Request Timeout",
+            "x-clax-codes": [
+              "timeout"
+            ]
+          },
           "413": {
             "content": {
               "application/json": {
@@ -2433,6 +3076,19 @@
             "description": "Too Many Requests",
             "x-clax-codes": [
               "limit_reached"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-clax-codes": [
+              "busy"
             ]
           }
         },
@@ -2498,7 +3154,7 @@
                   "context": {
                     "contentMediaType": "application/json",
                     "contentSchema": {
-                      "$ref": "#/components/schemas/ReportContext"
+                      "$ref": "#/components/schemas/ReportContextInput"
                     },
                     "description": "What the reporter's browser said at capture: at most 16 KiB as compact JSON.",
                     "type": "string"
@@ -2547,7 +3203,8 @@
               "invalid_comment",
               "invalid_context",
               "invalid_diagnostics",
-              "invalid_multipart"
+              "invalid_multipart",
+              "invalid_request"
             ]
           },
           "401": {
@@ -2591,6 +3248,19 @@
             "description": "Not Found",
             "x-clax-codes": [
               "not_found"
+            ]
+          },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Request Timeout",
+            "x-clax-codes": [
+              "timeout"
             ]
           },
           "409": {
@@ -2631,6 +3301,19 @@
             "x-clax-codes": [
               "limit_reached"
             ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-clax-codes": [
+              "busy"
+            ]
           }
         },
         "summary": "The token's reporter says a report it filed is still broken: a new capture.",
@@ -2666,6 +3349,19 @@
         "responses": {
           "204": {
             "description": "No Content"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "x-clax-codes": [
+              "invalid_request"
+            ]
           },
           "401": {
             "content": {
@@ -2710,6 +3406,19 @@
               "not_found"
             ]
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Request Timeout",
+            "x-clax-codes": [
+              "timeout"
+            ]
+          },
           "413": {
             "content": {
               "application/json": {
@@ -2734,6 +3443,19 @@
             "description": "Too Many Requests",
             "x-clax-codes": [
               "limit_reached"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-clax-codes": [
+              "busy"
             ]
           }
         },
@@ -2800,7 +3522,8 @@
             "x-clax-codes": [
               "invalid_args",
               "invalid_comment",
-              "invalid_context"
+              "invalid_context",
+              "invalid_request"
             ]
           },
           "401": {
@@ -2846,6 +3569,19 @@
               "not_found"
             ]
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Request Timeout",
+            "x-clax-codes": [
+              "timeout"
+            ]
+          },
           "409": {
             "content": {
               "application/json": {
@@ -2883,6 +3619,19 @@
             "description": "Too Many Requests",
             "x-clax-codes": [
               "limit_reached"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-clax-codes": [
+              "busy"
             ]
           }
         },
@@ -2937,6 +3686,7 @@
             },
             "description": "Bad Request",
             "x-clax-codes": [
+              "invalid_request",
               "no_session"
             ]
           },
@@ -2950,7 +3700,25 @@
             },
             "description": "Unauthorized",
             "x-clax-codes": [
+              "invalid_signature",
+              "invalid_token",
+              "replayed_request",
+              "stale_request",
               "unauthorized"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-clax-codes": [
+              "forbidden_origin",
+              "not_permitted"
             ]
           },
           "404": {
@@ -2967,6 +3735,19 @@
               "not_found"
             ]
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Request Timeout",
+            "x-clax-codes": [
+              "timeout"
+            ]
+          },
           "409": {
             "content": {
               "application/json": {
@@ -2979,6 +3760,45 @@
             "x-clax-codes": [
               "not_claimable",
               "thread_taken"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large",
+            "x-clax-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-clax-codes": [
+              "limit_reached"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-clax-codes": [
+              "busy"
             ]
           }
         },
@@ -3036,6 +3856,7 @@
             },
             "description": "Bad Request",
             "x-clax-codes": [
+              "invalid_request",
               "no_session"
             ]
           },
@@ -3049,7 +3870,25 @@
             },
             "description": "Unauthorized",
             "x-clax-codes": [
+              "invalid_signature",
+              "invalid_token",
+              "replayed_request",
+              "stale_request",
               "unauthorized"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-clax-codes": [
+              "forbidden_origin",
+              "not_permitted"
             ]
           },
           "404": {
@@ -3066,6 +3905,19 @@
               "not_found"
             ]
           },
+          "408": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Request Timeout",
+            "x-clax-codes": [
+              "timeout"
+            ]
+          },
           "409": {
             "content": {
               "application/json": {
@@ -3079,6 +3931,45 @@
               "claim_required",
               "lease_lost",
               "thread_taken"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Content Too Large",
+            "x-clax-codes": [
+              "body_too_large"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-clax-codes": [
+              "limit_reached"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-clax-codes": [
+              "busy"
             ]
           }
         },
@@ -3165,8 +4056,10 @@
             },
             "description": "Forbidden",
             "x-clax-codes": [
+              "forbidden_origin",
               "not_a_person",
               "not_for_agents",
+              "not_permitted",
               "not_queue_admin"
             ]
           },

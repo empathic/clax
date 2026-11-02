@@ -102,6 +102,8 @@ export interface ReportComment {
   capture?: number;
   has_clip?: boolean;
   diagnostics_lines?: number;
+  /** A note for the queue's members alone; never in a reporter's view. */
+  triage_only?: boolean;
 }
 
 export interface ReportClaim {
@@ -183,6 +185,7 @@ export interface Report {
   fixes?: FixAttempt[];
   reopen_count?: number;
   diagnostics_lines?: number;
+  filing_diagnostics_lines?: number;
 }
 
 /** A line of the page's recent diagnostics. */

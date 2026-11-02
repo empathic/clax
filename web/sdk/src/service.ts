@@ -2,7 +2,7 @@
 // grant in its secrets and mints reporter tokens for its own users. Runs
 // in Node 20 or later, a Worker or any runtime with WebCrypto Ed25519; it
 // is never shipped to a page, which would hand out the grant.
-import type { ReporterProfile, ReporterToken, ReporterTokenRequest } from "./types";
+import type { ReporterToken, ReporterTokenRequest } from "./types";
 import { queuePath, readJson, signedFetch, type Fetch } from "./client";
 import { fromBase64url, importPkcs8Signer, type Signer } from "./sign";
 
@@ -34,7 +34,7 @@ export class ServiceClient {
    * filed under the token keeps it, shown to triage members and never to
    * reporters; 400 `invalid_profile` for a field over 256 bytes or an
    * `avatar_url` that is not http(s). */
-  async mintReporterToken(r: ReporterTokenRequest, profile: ReporterProfile | undefined = r.profile): Promise<ReporterToken> {
+  async mintReporterToken(r: ReporterTokenRequest, profile: ReporterTokenRequest["profile"] = r.profile): Promise<ReporterToken> {
     const req: ReporterTokenRequest = { reporter_id: r.reporter_id, origin: r.origin, public_key: r.public_key };
     if (profile !== undefined) req.profile = profile;
     const body = new TextEncoder().encode(JSON.stringify(req));

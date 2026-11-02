@@ -608,6 +608,20 @@ mod tests {
     use super::*;
     use crate::scrub::REDACTED;
 
+    /// The contract's enums of a diagnostics line are the ones it accepts.
+    #[test]
+    fn diag_lines_schema_names_its_levels_and_kinds() {
+        let s = schemars::schema_for!(DiagLine).to_value();
+        assert_eq!(
+            s["properties"]["level"]["enum"],
+            serde_json::json!(DIAG_LEVELS)
+        );
+        assert_eq!(
+            s["properties"]["kind"]["enum"],
+            serde_json::json!(DIAG_KINDS)
+        );
+    }
+
     #[test]
     fn fix_outcomes_round_trip() {
         for o in [

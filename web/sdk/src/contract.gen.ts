@@ -67,6 +67,25 @@ export interface AnchorArea {
 }
 
 /**
+ * A drawn rectangle as fractions (0 to 1) of its element's border box: `x`
+ * and `y` from its top left corner, `w` and `h` of its width and height.
+ * `tag`, `text`, and `children` fingerprint that element at draw time (its
+ * local name, the first characters of its text with whitespace collapsed,
+ * its child element count), so re-anchoring by selector alone can tell
+ * another element at the same path; each is optional and serialized only
+ * when present.
+ */
+export interface AnchorAreaInput {
+  children?: number | null;
+  h: number;
+  tag?: string | null;
+  text?: string | null;
+  w: number;
+  x: number;
+  y: number;
+}
+
+/**
  * Spec §9 "Anchors". Every field but `kind` and `file` may be null. `file` is
  * the published path of the page the anchor is on, `index.html` when absent;
  * an `artifact` anchor is on no page, and its `file` is empty.
@@ -76,10 +95,10 @@ export interface AnchorArea {
  * when present.
  */
 export interface AnchorInput {
-  area?: AnchorArea;
-  custom_name?: string;
+  area?: AnchorAreaInput | null;
+  custom_name?: string | null;
   file?: string;
-  html_hash?: string;
+  html_hash?: string | null;
   kind: AnchorKind;
   /**
    * The quote as a person reads it: its text with a space where it runs
@@ -87,7 +106,7 @@ export interface AnchorInput {
    * text nodes join, for re-anchoring) lacks. Shown in place of the quote;
    * absent on anchors made without one, which show the quote.
    */
-  label?: string;
+  label?: string | null;
   /**
    * What the element is called, as the bridge read it when it was picked:
    * its accessible name, else the start of its text, else its kind with
@@ -95,17 +114,17 @@ export interface AnchorInput {
    * as a thread's title where the anchor quotes nothing; absent on
    * anchors made without one.
    */
-  name?: string;
-  prefix?: string;
-  quote?: string;
-  rect?: AnchorRect;
+  name?: string | null;
+  prefix?: string | null;
+  quote?: string | null;
+  rect?: AnchorRect | null;
   /**
    * The route a live page's thread was made at (spec 2026-10-05 §5.2):
    * the query and hash route, set by the daemon; absent elsewhere.
    */
-  route?: string;
-  selector?: string;
-  suffix?: string;
+  route?: string | null;
+  selector?: string | null;
+  suffix?: string | null;
 }
 
 export type AnchorKind = "element" | "range" | "custom" | "area" | "artifact";
@@ -245,6 +264,25 @@ export interface Environment {
 }
 
 /**
+ * The page and browser the capture was made in. `url` keeps its query
+ * keys, never their values ([`scrub_url`]); `route` and `title` are
+ * [`scrub`]bed.
+ */
+export interface EnvironmentInput {
+  /** `light` or `dark`, as the page's `prefers-color-scheme` matched. */
+  color_scheme?: "light" | "dark";
+  locale?: string | null;
+  platform?: string | null;
+  route?: string | null;
+  scroll?: Scroll | null;
+  time_zone?: string | null;
+  title?: string | null;
+  url?: string | null;
+  user_agent?: string | null;
+  viewport?: Viewport | null;
+}
+
+/**
  * A fix proposed on a report (§6.2), numbered from 1 in the order
  * proposed, with its verdict once given (§6.3): the verdict's note, the
  * context of whoever gave it, and when.
@@ -348,6 +386,14 @@ export interface Release {
   commit?: string;
   id?: string;
   version?: string;
+}
+
+/** The release of the host app the reporter ran, as the host names it. */
+export interface ReleaseInput {
+  channel?: string | null;
+  commit?: string | null;
+  id?: string | null;
+  version?: string | null;
 }
 
 /** A report: a thread filed through a queue (§7). */
@@ -486,6 +532,26 @@ export interface ReportContext {
 }
 
 /**
+ * What the reporter's browser said at capture (§5.1): filled by the SDK
+ * and the host app, checked by [`parse_context`], stored with the report
+ * and never changed. Its top level admits no other key; the objects inside
+ * it ignore keys they do not know.
+ */
+export interface ReportContextInput {
+  /** Opaque JSON the host app adds; every string in it is scrubbed. */
+  app?: unknown;
+  capture?: CaptureInfo | null;
+  /** When the capture was made, RFC 3339. */
+  captured_at: string;
+  environment?: EnvironmentInput | null;
+  /** The host app's feature flags at capture. */
+  flags?: Record<string, FlagValue>;
+  release?: ReleaseInput | null;
+  /** The shape's version: 1. */
+  v: 1;
+}
+
+/**
  * A page of reports; `next` is the cursor of the following page, `null`
  * on the last.
  */
@@ -518,6 +584,20 @@ export interface ReporterProfile {
   name?: string;
 }
 
+/**
+ * Who a reporter is, as the integrator's backend asserts it when minting
+ * the reporter token (§5.4). Shown to triage members, never to
+ * reporters.
+ */
+export interface ReporterProfileInput {
+  /** An `https:` or `http:` image URL. */
+  avatar_url?: string | null;
+  email?: string | null;
+  /** A GitHub login, for asking the reporter to review a fix. */
+  github?: string | null;
+  name?: string | null;
+}
+
 /** A reporter token (`cxr_…`), bound to a key, an origin and a reporter ID. */
 export interface ReporterToken {
   expires_at: string;
@@ -533,7 +613,7 @@ export interface ReporterTokenRequest {
    * token keeps it. Read as JSON first, so a bad one is 400
    * `invalid_profile` rather than `invalid_args`.
    */
-  profile?: ReporterProfile;
+  profile?: ReporterProfileInput | null;
   /** The reporter key's 32 public bytes in unpadded base64url. */
   public_key: string;
   reporter_id: string;
@@ -597,8 +677,8 @@ export interface ServiceGrantRequest {
  */
 export interface VerifyRequest {
   /** Read as JSON first, so a bad one is 400 `invalid_context`. */
-  context?: ReportContext;
-  note?: string;
+  context?: ReportContextInput | null;
+  note?: string | null;
 }
 
 /** The viewport in CSS pixels, and its device pixel ratio. */
@@ -620,7 +700,7 @@ export interface Operations {
     request: never;
     status: 200;
     response: Lease;
-    errors: "no_session" | "not_a_member" | "not_claimable" | "not_found" | "thread_taken" | "unauthorized";
+    errors: "body_too_large" | "busy" | "forbidden_origin" | "invalid_request" | "invalid_signature" | "invalid_token" | "limit_reached" | "no_session" | "not_a_member" | "not_claimable" | "not_found" | "not_permitted" | "replayed_request" | "stale_request" | "thread_taken" | "timeout" | "unauthorized";
     retry: true;
     channel: "token" | "grant";
     rights: { action: "comments.reply" };
@@ -634,7 +714,7 @@ export interface Operations {
     request: ServiceGrantRequest;
     status: 201;
     response: ServiceGrantCreated;
-    errors: "invalid_args" | "invalid_name" | "not_a_member" | "not_a_person" | "not_for_agents" | "not_queue_admin" | "unauthorized";
+    errors: "forbidden_origin" | "invalid_args" | "invalid_name" | "not_a_member" | "not_a_person" | "not_for_agents" | "not_permitted" | "not_queue_admin" | "unauthorized";
     retry: false;
     channel: "session" | "token";
     rights: { queue_role: "admin" };
@@ -662,7 +742,7 @@ export interface Operations {
     request: FormData;
     status: 201;
     response: ReportAnswer;
-    errors: "body_too_large" | "external_artifact" | "invalid_anchor" | "invalid_args" | "invalid_clip" | "invalid_context" | "invalid_diagnostics" | "invalid_external_id" | "invalid_metadata" | "invalid_multipart" | "invalid_signature" | "invalid_token" | "limit_reached" | "metadata_too_large" | "replayed_request" | "stale_request" | "token_expired" | "wrong_origin";
+    errors: "body_too_large" | "busy" | "external_artifact" | "invalid_anchor" | "invalid_args" | "invalid_clip" | "invalid_context" | "invalid_diagnostics" | "invalid_external_id" | "invalid_metadata" | "invalid_multipart" | "invalid_request" | "invalid_signature" | "invalid_token" | "limit_reached" | "metadata_too_large" | "replayed_request" | "stale_request" | "timeout" | "token_expired" | "wrong_origin";
     retry: false;
     channel: "reporter";
     rights: null;
@@ -676,7 +756,7 @@ export interface Operations {
     request: never;
     status: 200;
     response: QueueList;
-    errors: "unauthorized";
+    errors: "body_too_large" | "busy" | "forbidden_origin" | "invalid_request" | "invalid_signature" | "invalid_token" | "limit_reached" | "not_permitted" | "replayed_request" | "stale_request" | "timeout" | "unauthorized";
     retry: true;
     channel: "session" | "token" | "grant";
     rights: null;
@@ -690,7 +770,7 @@ export interface Operations {
     request: ReporterTokenRequest;
     status: 200;
     response: ReporterToken;
-    errors: "body_too_large" | "forbidden_origin" | "invalid_args" | "invalid_key" | "invalid_origin" | "invalid_profile" | "invalid_reporter_id" | "invalid_signature" | "invalid_token" | "limit_reached" | "replayed_request" | "stale_request" | "wrong_origin";
+    errors: "body_too_large" | "busy" | "forbidden_origin" | "invalid_args" | "invalid_key" | "invalid_origin" | "invalid_profile" | "invalid_reporter_id" | "invalid_request" | "invalid_signature" | "invalid_token" | "limit_reached" | "replayed_request" | "stale_request" | "timeout" | "wrong_origin";
     retry: true;
     channel: "service";
     rights: null;
@@ -704,7 +784,7 @@ export interface Operations {
     request: never;
     status: 200;
     response: ReportPage;
-    errors: "body_too_large" | "invalid_query" | "invalid_signature" | "invalid_token" | "limit_reached" | "replayed_request" | "stale_request" | "token_expired" | "wrong_origin";
+    errors: "body_too_large" | "busy" | "invalid_query" | "invalid_request" | "invalid_signature" | "invalid_token" | "limit_reached" | "replayed_request" | "stale_request" | "timeout" | "token_expired" | "wrong_origin";
     retry: true;
     channel: "reporter";
     rights: null;
@@ -718,7 +798,7 @@ export interface Operations {
     request: never;
     status: 200;
     response: Lease;
-    errors: "claim_required" | "lease_lost" | "no_session" | "not_a_member" | "not_found" | "thread_taken" | "unauthorized";
+    errors: "body_too_large" | "busy" | "claim_required" | "forbidden_origin" | "invalid_request" | "invalid_signature" | "invalid_token" | "lease_lost" | "limit_reached" | "no_session" | "not_a_member" | "not_found" | "not_permitted" | "replayed_request" | "stale_request" | "thread_taken" | "timeout" | "unauthorized";
     retry: true;
     channel: "token" | "grant";
     rights: { action: "comments.reply" };
@@ -732,7 +812,7 @@ export interface Operations {
     request: never;
     status: 200;
     response: Badge;
-    errors: "body_too_large" | "invalid_signature" | "invalid_token" | "limit_reached" | "replayed_request" | "stale_request" | "token_expired" | "wrong_origin";
+    errors: "body_too_large" | "busy" | "invalid_request" | "invalid_signature" | "invalid_token" | "limit_reached" | "replayed_request" | "stale_request" | "timeout" | "token_expired" | "wrong_origin";
     retry: true;
     channel: "reporter";
     rights: null;
@@ -746,7 +826,7 @@ export interface Operations {
     request: never;
     status: 200;
     response: Blob;
-    errors: "body_too_large" | "invalid_signature" | "invalid_token" | "limit_reached" | "not_found" | "replayed_request" | "stale_request" | "token_expired" | "wrong_origin";
+    errors: "body_too_large" | "busy" | "invalid_request" | "invalid_signature" | "invalid_token" | "limit_reached" | "not_found" | "replayed_request" | "stale_request" | "timeout" | "token_expired" | "wrong_origin";
     retry: true;
     channel: "reporter";
     rights: null;
@@ -760,7 +840,7 @@ export interface Operations {
     request: CommentRequest;
     status: 200;
     response: ReportAnswer;
-    errors: "body_too_large" | "invalid_args" | "invalid_comment" | "invalid_signature" | "invalid_token" | "limit_reached" | "not_found" | "replayed_request" | "stale_request" | "token_expired" | "wrong_origin";
+    errors: "body_too_large" | "busy" | "invalid_args" | "invalid_comment" | "invalid_request" | "invalid_signature" | "invalid_token" | "limit_reached" | "not_found" | "replayed_request" | "stale_request" | "timeout" | "token_expired" | "wrong_origin";
     retry: false;
     channel: "reporter";
     rights: null;
@@ -774,7 +854,7 @@ export interface Operations {
     request: never;
     status: 200;
     response: Blob;
-    errors: "body_too_large" | "invalid_signature" | "invalid_token" | "limit_reached" | "not_found" | "replayed_request" | "stale_request" | "token_expired" | "wrong_origin";
+    errors: "body_too_large" | "busy" | "invalid_request" | "invalid_signature" | "invalid_token" | "limit_reached" | "not_found" | "replayed_request" | "stale_request" | "timeout" | "token_expired" | "wrong_origin";
     retry: true;
     channel: "reporter";
     rights: null;
@@ -788,7 +868,7 @@ export interface Operations {
     request: never;
     status: 200;
     response: DiagnosticsAnswer;
-    errors: "body_too_large" | "invalid_query" | "invalid_signature" | "invalid_token" | "limit_reached" | "not_found" | "replayed_request" | "stale_request" | "token_expired" | "wrong_origin";
+    errors: "body_too_large" | "busy" | "invalid_query" | "invalid_request" | "invalid_signature" | "invalid_token" | "limit_reached" | "not_found" | "replayed_request" | "stale_request" | "timeout" | "token_expired" | "wrong_origin";
     retry: true;
     channel: "reporter";
     rights: null;
@@ -802,7 +882,7 @@ export interface Operations {
     request: FormData;
     status: 200;
     response: ReportAnswer;
-    errors: "body_too_large" | "invalid_args" | "invalid_clip" | "invalid_comment" | "invalid_context" | "invalid_diagnostics" | "invalid_multipart" | "invalid_signature" | "invalid_token" | "limit_reached" | "not_fix_proposed" | "not_found" | "replayed_request" | "stale_request" | "token_expired" | "wrong_origin";
+    errors: "body_too_large" | "busy" | "invalid_args" | "invalid_clip" | "invalid_comment" | "invalid_context" | "invalid_diagnostics" | "invalid_multipart" | "invalid_request" | "invalid_signature" | "invalid_token" | "limit_reached" | "not_fix_proposed" | "not_found" | "replayed_request" | "stale_request" | "timeout" | "token_expired" | "wrong_origin";
     retry: false;
     channel: "reporter";
     rights: null;
@@ -816,7 +896,7 @@ export interface Operations {
     request: never;
     status: 204;
     response: never;
-    errors: "body_too_large" | "invalid_signature" | "invalid_token" | "limit_reached" | "not_found" | "replayed_request" | "stale_request" | "token_expired" | "wrong_origin";
+    errors: "body_too_large" | "busy" | "invalid_request" | "invalid_signature" | "invalid_token" | "limit_reached" | "not_found" | "replayed_request" | "stale_request" | "timeout" | "token_expired" | "wrong_origin";
     retry: true;
     channel: "reporter";
     rights: null;
@@ -830,7 +910,7 @@ export interface Operations {
     request: VerifyRequest;
     status: 200;
     response: ReportAnswer;
-    errors: "body_too_large" | "invalid_args" | "invalid_comment" | "invalid_context" | "invalid_signature" | "invalid_token" | "limit_reached" | "not_fix_proposed" | "not_found" | "replayed_request" | "stale_request" | "token_expired" | "wrong_origin";
+    errors: "body_too_large" | "busy" | "invalid_args" | "invalid_comment" | "invalid_context" | "invalid_request" | "invalid_signature" | "invalid_token" | "limit_reached" | "not_fix_proposed" | "not_found" | "replayed_request" | "stale_request" | "timeout" | "token_expired" | "wrong_origin";
     retry: false;
     channel: "reporter";
     rights: null;
