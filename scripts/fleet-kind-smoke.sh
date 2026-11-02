@@ -28,7 +28,7 @@ k() { kubectl --context "$ctx" --namespace "$ns" "$@"; }
 cleanup() {
     rc=$?
     for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; wait "$p" 2>/dev/null || true; done
-    if [ "$rc" != 0 ] && kind get clusters 2>/dev/null | grep -qx "$cluster"; then
+    if [ "$rc" != 0 ] && kind get clusters 2>/dev/null | grep -x "$cluster" >/dev/null; then
         say "failed; the cluster's state:"
         k get pods,svc,endpoints -o wide >&2 || true
         k describe pods >&2 || true
@@ -116,7 +116,7 @@ k rollout status statefulset/clax --timeout=300s >&2
 # Forwards a local port to pod $1's port 7480, sets $2 to it, and adds the
 # port-forward's PID to pids.
 port="" p0="" p1=""
-port_in() { port="$(sed -n 's/^Forwarding from 127\.0\.0\.1:\([0-9]*\) .*/\1/p' "$1" | head -1)"; [ -n "$port" ]; }
+port_in() { port="$(sed -n '/^Forwarding from 127\.0\.0\.1:/{s/^Forwarding from 127\.0\.0\.1:\([0-9]*\) .*/\1/p;q;}' "$1")"; [ -n "$port" ]; }
 forward() {
     local log="$work/forward-$1.log"
     k port-forward "pod/$1" :7480 > "$log" 2>&1 &
