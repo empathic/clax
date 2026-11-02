@@ -1,3 +1,6 @@
+<!-- Its CSS travels with it: the shell loads it lazily, and its HTML carries none of it. -->
+<svelte:options css="injected" />
+
 <script lang="ts">
   // One report (triage.ts), in fixed zones: its header (name, state, claim),
   // a status line kept in place, what it is about with "Open on the page"

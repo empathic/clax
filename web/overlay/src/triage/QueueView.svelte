@@ -1,3 +1,6 @@
+<!-- Its CSS travels with it: the shell loads it lazily, and its HTML carries none of it. -->
+<svelte:options css="injected" />
+
 <script lang="ts">
   // A queue's reports (triage.ts): the queue's name, a filter by state, a
   // status line kept in place whether or not it says anything, and the
