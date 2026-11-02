@@ -8,6 +8,11 @@
 //                                     (overlay-component-css.mjs) as in
 //                                     /_clax/overlay.js
 //   "./service"  sdk/src/service.ts   the service client, for a backend
+//   "./plugin"   sdk/src/plugin.ts    the plugin contract (definePlugin, PluginHost)
+//   "./config"   sdk/src/config.ts    the install config: its axes, resolve(), schema
+//   "./plugins"  overlay/src/plugins  Clax's first-party plugins
+//   "./loader"   overlay/src/loader.ts install(): a container, config first, then
+//                                     only the plugins it names (each its own chunk)
 //
 // Each entry is an ES module; code two entries share is one chunk under
 // chunks/, so a class such as ClaxError is the same in every entry. Nothing
@@ -48,6 +53,10 @@ export const ENTRIES = [
   { path: ".", name: "index", src: "sdk/src/index.ts" },
   { path: "./overlay", name: "overlay", src: "overlay/src/main.ts" },
   { path: "./service", name: "service", src: "sdk/src/service.ts" },
+  { path: "./plugin", name: "plugin", src: "sdk/src/plugin.ts" },
+  { path: "./config", name: "config", src: "sdk/src/config.ts" },
+  { path: "./plugins", name: "plugins", src: "overlay/src/plugins/index.ts" },
+  { path: "./loader", name: "loader", src: "overlay/src/loader.ts" },
 ];
 
 const web = resolve(dirname(fileURLToPath(import.meta.url)), "..");

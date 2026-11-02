@@ -64,6 +64,10 @@ describe("keepDeclarations", () => {
     "sdk/src/service.d.ts": "export declare class ServiceClient {}\n",
     "overlay/src/main.d.ts": `export type { OverlayOptions } from "./options";\nexport declare function overlay(o: import("./options").OverlayOptions): void;\n`,
     "overlay/src/options.d.ts": `import type { ReporterAuth } from "../../sdk/src/reporter";\nexport interface OverlayOptions { auth: ReporterAuth }\n`,
+    "sdk/src/plugin.d.ts": "export declare const PLUGIN_API_VERSION = 1;\n",
+    "sdk/src/config.d.ts": "export declare function resolve(): void;\n",
+    "overlay/src/plugins/index.d.ts": `export { PLUGIN_API_VERSION } from "../../../sdk/src/plugin";\n`,
+    "overlay/src/loader.d.ts": `import type { OverlayOptions } from "./options";\nexport declare function install(o: OverlayOptions): void;\n`,
   };
 
   it("keeps what the entries reach, with `.js` specifiers", () => {

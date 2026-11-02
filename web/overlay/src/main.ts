@@ -5,7 +5,7 @@
 // (loader.ts) uses with only the plugins its config names.
 import { type OverlayHandle, mountOverlay } from "./mount";
 import type { OverlayOptions } from "./options";
-import { classic } from "./plugins";
+import { classic } from "./plugins/classic";
 
 export * from "./mount";
 
@@ -17,8 +17,3 @@ export function overlay(opts: OverlayOptions, doc: Document = document): Overlay
   return mountOverlay(opts, opts?.plugins ?? classic(), doc);
 }
 
-export { install, installQueued, type Installed, type Snippet } from "./loader";
-
-// Loaded by a script tag after a tag manager queued `["install", {...}]`: install it now.
-import { installQueued as queued } from "./loader";
-if (typeof window !== "undefined") queued(window)?.catch(() => {});

@@ -29,8 +29,12 @@ interface Manifest {
 /** What each export gives at run time. */
 const RUNTIME: Record<string, string[]> = {
   ".": ["ClaxError", "ReporterClient"],
-  "./overlay": ["CONTEXT_TIMEOUT_MS", "diagnostics", "forgetReporter", "overlay"],
+  "./overlay": ["CONTEXT_TIMEOUT_MS", "diagnostics", "forgetReporter", "mountOverlay", "overlay"],
   "./service": ["ServiceClient"],
+  "./plugin": ["CANCELLABLE", "CAPABILITIES", "PLUGIN_API_VERSION", "PluginHost", "SLOTS", "definePlugin"],
+  "./config": ["ACTIONS", "FIELDS", "OVERRIDE_COOKIE", "PRESENTATIONS", "START_MODES", "check", "configSchema", "flatten", "isDevOrigin", "linkOverride", "parseContainer", "readOverride", "resolve", "writeOverride"],
+  "./plugins": ["ANNOTATE_TOOLS", "BROWSER_KEYS", "CODE_SELECTOR", "EXTENSION_ATTR", "EXTENSION_EVENT", "PLUGIN_API_VERSION", "PluginHost", "annotate", "appVersion", "areaPicker", "browser", "classic", "codeBlur", "codeLine", "codeRegions", "definePlugin", "diagOf", "displayCapture", "domCapture", "elementPicker", "extensionPresent", "extensionPresentation", "handToExtension", "locateCode", "logs", "pagePicker", "presentations", "theme", "windowPresentation"],
+  "./loader": ["REGISTRY", "authOf", "containerUrl", "install", "installQueued", "pluginsFor"],
 };
 
 let manifest: Manifest;
@@ -77,9 +81,12 @@ describe("the SDK package", () => {
     expect(manifest.type).toBe("module");
     expect(manifest.sideEffects).toBe(false);
     for (const k of ["dependencies", "peerDependencies", "optionalDependencies", "bundleDependencies"]) expect(manifest).not.toHaveProperty(k);
-    expect(Object.keys(manifest.exports).sort()).toEqual([".", "./overlay", "./package.json", "./service"]);
+    expect(Object.keys(manifest.exports).sort()).toEqual([".", "./config", "./loader", "./overlay", "./package.json", "./plugin", "./plugins", "./service"]);
     expect(manifest.types).toBe("./types/sdk/src/index.d.ts");
-    expect(manifest.typesVersions).toEqual({ "*": { overlay: ["./types/overlay/src/main.d.ts"], service: ["./types/sdk/src/service.d.ts"] } });
+    expect(manifest.typesVersions).toEqual({ "*": {
+      overlay: ["./types/overlay/src/main.d.ts"], service: ["./types/sdk/src/service.d.ts"], plugin: ["./types/sdk/src/plugin.d.ts"], config: ["./types/sdk/src/config.d.ts"],
+      plugins: ["./types/overlay/src/plugins/index.d.ts"], loader: ["./types/overlay/src/loader.d.ts"],
+    } });
     for (const k of Object.keys(RUNTIME)) {
       const e = manifest.exports[k];
       if (typeof e === "string") throw new Error(`${k} has no conditions`);
