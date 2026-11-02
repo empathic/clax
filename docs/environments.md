@@ -9,7 +9,7 @@ from GitHub Actions:
 |---|---|---|---|---|---|
 | `prod` | `clax` | `clax.dev`, `<ID>.clax.run` | Artifacts (bucket `clax-assets`, queue `clax-artifacts-events`, namespace `clax`) | every push to `prod` (`deploy-prod.yml`, [docs/prod.md](prod.md)) | `production` |
 | `dev` | `clax-dev` | `PUBLIC_HOST`, `<ID>.SITE_DOMAIN` | Artifacts (bucket `clax-assets-dev`, queue `clax-artifacts-events-dev`, namespace `clax-dev`) | every push to `main` whose `ci` run passes (`deploy-dev.yml`) | `dev` |
-| `pr-<N>` | `clax-pr-<N>` | `pr-<N>.PREVIEW_HOST_ZONE`, `<ID>.pr-<N>.PREVIEW_SITE_ZONE` | memory (the RepoDO stand-in), assets in the shared bucket `clax-assets-preview` | every push to a pull request an organization member opens from a branch of this repository (`preview.yml`) | `preview` |
+| `pr-<N>` | `clax-pr-<N>` | `pr-<N>.PREVIEW_HOST_ZONE`, `<ID>.pr-<N>.PREVIEW_SITE_ZONE` | memory (the RepoDO stand-in), assets in the shared bucket `clax-assets-preview` | every push to a pull request from a branch of this repository (`preview.yml`) | `preview` |
 
 The `clax-dev` Worker is the dev environment, not clax.dev; clax.dev is
 `prod`'s Worker `clax` (and `just clax-dev-deploy` deploys it).
@@ -84,11 +84,10 @@ A preview runs no smoke: the deploy's health wait and site host check
 fail its run. It does not exercise the Artifacts store, its queue or the
 diagnostics; dev does, on every merge to `main`.
 
-Only Empathic's people get previews: `preview.yml` deploys a pull request
-only when its author is an owner or member of the organization that owns
-this repository (the event's `author_association`); anyone else's shows
-the deploy job as skipped. Pull requests from forks get no preview either:
-their runs are not given the `preview` environment's secrets.
+Only writers' branches get previews: `preview.yml` deploys a pull request
+whose branch is in this repository, which only someone with write access
+can push. Pull requests from forks get no preview: their runs are not
+given the `preview` environment's secrets.
 
 ## GitHub sign-in on every environment
 
@@ -125,12 +124,11 @@ Objects and its bucket `clax-assets`: a branch pushed to this repository
 can replace or delete them through its preview's run. Pull requests from
 forks get no preview, so no token reaches them.
 
-Deploying only organization members' pull requests narrows that, but does
-not bound it: a pull request's run takes `preview.yml` from the pull
-request itself, so anyone who can push a branch here can open a pull
-request whose copy drops the check, or push to a member's pull request.
-What bounds who reaches the token is who has write access to this
-repository: keep it to Empathic's people. Moving dev and the
+So who reaches the token is who has write access to this repository: only
+a writer can push the branch a preview runs. A check on the pull request's
+author in `preview.yml` would bound nothing more, since a run takes
+`preview.yml` from the pull request itself. Keep write access to people
+trusted with clax.dev. Moving dev and the
 previews to an account of their own takes that reach away: each
 environment names its account in its `CLOUDFLARE_ACCOUNT_ID` variable, so
 the move is new tokens, zones and variables, and no code change.
