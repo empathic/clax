@@ -308,7 +308,7 @@ _bazel() {
         app-macos) _bazel_out //apps/clax_app:macos_app ;;
         home-bundle) _bazel_out //apps/clax_app:home_bundle ;;
         reel) _reel "$@" ;;
-        wrangler) _run "$BAZEL" run --lockfile_mode=error --noshow_progress --ui_event_filters=-info //crates/clax-worker:wrangler -- "$@" ;;
+        wrangler) _run "$BAZEL" run --lockfile_mode=error --noshow_progress --show_result=0 --ui_event_filters=-info //crates/clax-worker:wrangler -- "$@" ;;
     esac
 }
 
