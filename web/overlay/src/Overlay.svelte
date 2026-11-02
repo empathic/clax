@@ -351,6 +351,7 @@
       d = draft;
     }
     adding = false;
+    rawCapture = null;
     refined = plugins.refine(p?.target ?? null, doc);
     const of = d;
     const begun = session.begin({ mode: mode === "screen" || !p ? "screen" : p.mode, method: "dom" });
@@ -402,7 +403,9 @@
 
   /** Runs the filters that are on over capture `c` into `d`'s clip. A
    * filter that fails leaves the screenshot out, never unfiltered. */
+  let filterRun = 0;
   async function filterInto(d: Draft, c: Captured): Promise<void> {
+    const run = ++filterRun;
     filterNotes = [];
     const clip = clipOf(c);
     if (clip.state !== "taken" || !filters.length || !filtersOn.length || !c.at) {
@@ -413,13 +416,14 @@
     d.clip = { state: "taking" };
     try {
       const out = await plugins.filter({ png: clip.png, at: c.at, scale: c.scale, doc }, $state.snapshot(filtersOn) as string[]);
-      if (draft !== d || d.capture !== c) return;
+      // A later capture, toggle or draft has taken over.
+      if (run !== filterRun || draft !== d) return;
       filterNotes = out.notes.map(n => n.note);
       d.clip = { state: "taken", png: out.png };
       revokeClip();
       clipUrl = URL.createObjectURL(out.png);
     } catch (e) {
-      if (draft === d) d.clip = { state: "failed", error: failureText(e) };
+      if (run === filterRun && draft === d) d.clip = { state: "failed", error: failureText(e) };
     }
   }
 
@@ -427,7 +431,7 @@
   function toggleFilter(id: string, on: boolean): void {
     filtersOn = on ? [...filtersOn.filter(x => x !== id), id] : filtersOn.filter(x => x !== id);
     const d = draft, c = rawCapture;
-    if (d && c && d.capture === c) {
+    if (d && c) {
       const ready = filterInto(d, c);
       pendingFor = { of: d, ready: Promise.all([pendingFor?.of === d ? pendingFor.ready : null, ready]) };
     }

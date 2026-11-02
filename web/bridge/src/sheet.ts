@@ -13,7 +13,10 @@ export interface Sheet {
 
 /** Adds a sheet holding `css` to `root`, after the root's other sheets. */
 export function addSheet(root: Document | ShadowRoot, css: string): Sheet {
-  const doc = root instanceof Document ? root : root.ownerDocument;
+  // By node type, not `instanceof`: a document of another window (the
+  // composer's own window) is not an instance of this window's Document.
+  const isDoc = root.nodeType === 9;
+  const doc = isDoc ? (root as Document) : (root as ShadowRoot).ownerDocument;
   const Ctor = doc.defaultView?.CSSStyleSheet;
   if (Ctor && "adoptedStyleSheets" in root && typeof Ctor.prototype.replaceSync === "function") {
     try {
@@ -31,7 +34,7 @@ export function addSheet(root: Document | ShadowRoot, css: string): Sheet {
   }
   const style = doc.createElement("style");
   style.textContent = css;
-  const parent = root instanceof Document ? (root.head ?? root.documentElement) : root;
+  const parent = isDoc ? ((root as Document).head ?? (root as Document).documentElement) : root;
   parent.appendChild(style);
   return { set: text => { style.textContent = text; }, remove: () => style.remove() };
 }
