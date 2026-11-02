@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Report, ReportPage, ReportState } from "../../../sdk/src/types";
-import { anchorText, browserOf, commitLink, containerPath, countReports, countsText, installTag, parseOrigins, queuesRoute, reportHref, reporterName } from "./model";
+import { anchorText, browserOf, commitLink, containerPath, countReports, countsText, deployments, installTag, parseOrigins, queuesRoute, reportHref, reporterName } from "./model";
 
 describe("installTag", () => {
   it("is one async tag naming the container and the site's token route, pinned with integrity when it can be", () => {
@@ -10,6 +10,14 @@ describe("installTag", () => {
     );
     expect(installTag("https://clax.example", 'a"b', null)).toContain('data-container="a&quot;b"');
     expect(containerPath("q 1")).toBe("/_clax/containers/q%201/config.json");
+  });
+  it("every deployment carries the same tag", () => {
+    const tag = installTag("https://clax.example", "q1", null);
+    const d = deployments("https://clax.example", "q1", null);
+    expect(d.map(x => x.id)).toEqual(["render", "edge-cloudflare", "edge-caddy", "edge-nginx", "tag-manager"]);
+    expect(d.find(x => x.id === "edge-cloudflare")!.artifact).toContain(JSON.stringify(tag));
+    expect(d.find(x => x.id === "edge-nginx")!.artifact).toContain(`${tag}</head>`);
+    for (const x of d) expect(x.artifact).toContain("q1");
   });
 });
 

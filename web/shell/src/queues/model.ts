@@ -211,6 +211,27 @@ export function installTag(instance: string, qid: string, pin: OverlayPin | null
   return `<script async src="${attr(src)}"${sri} data-container="${attr(qid)}" data-auth="/clax/token"></script>`;
 }
 
+/** A way an integration reaches pages: each with the artifact its owner pastes. */
+export interface Deployment { id: "render" | "edge-cloudflare" | "edge-caddy" | "edge-nginx" | "tag-manager"; label: string; where: string; artifact: string }
+
+/** The copy-paste artifact of each deployment of queue `qid`, all carrying
+ * the same tag (`installTag`). The extension is the fifth carrier and needs
+ * no artifact: it installs on the pages its owner adds. */
+export function deployments(instance: string, qid: string, pin: OverlayPin | null): Deployment[] {
+  const tag = installTag(instance, qid, pin);
+  const js = JSON.stringify(tag);
+  return [
+    { id: "render", label: "Page or template", where: "In <head> of each page, or the site's third-party head-snippet setting", artifact: tag },
+    {
+      id: "edge-cloudflare", label: "Cloudflare Worker", where: "A Worker on the site's route",
+      artifact: `export default {\n  async fetch(req, env) {\n    const res = await fetch(req);\n    if (!(res.headers.get("content-type") ?? "").includes("text/html")) return res;\n    return new HTMLRewriter()\n      .on("head", { element(e) { e.append(${js}, { html: true }); } })\n      .transform(res);\n  },\n};`,
+    },
+    { id: "edge-caddy", label: "Caddy", where: "In the site's block (needs the replace-response plugin)", artifact: `replace {\n\t"</head>" ${JSON.stringify(`${tag}</head>`)}\n}` },
+    { id: "edge-nginx", label: "nginx", where: "In the site's location (ngx_http_sub_module)", artifact: `sub_filter '</head>' '${tag.replace(/'/g, "\\'")}</head>';\nsub_filter_once on;` },
+    { id: "tag-manager", label: "Tag manager", where: "A Custom HTML tag fired on all pages", artifact: tag },
+  ];
+}
+
 /** What to show for a refusal `e`: the daemon's message (lower case, no
  * full stop) as a sentence. */
 export function refusal(e: unknown): string {

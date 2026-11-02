@@ -11,7 +11,7 @@
   // when the panel opens and after each change.
   import { onMount } from "svelte";
   import * as api from "./api";
-  import { containerPath, installTag, type OverlayPin, refusal } from "./model";
+  import { containerPath, deployments, installTag, type OverlayPin, refusal } from "./model";
 
   const p: { queue: api.Queue } = $props();
   let members = $state<api.QueueMember[] | null>(null);
@@ -22,7 +22,7 @@
   let role = $state<api.QueueRole>("triage");
   let grantName = $state("");
   let made = $state<api.ServiceGrantCreated | null>(null);
-  let copied = $state<"token" | "key" | "tag" | null>(null);
+  let copied = $state<string | null>(null);
   // svelte-ignore state_referenced_locally
   const qid = p.queue.id;
 
@@ -63,7 +63,7 @@
     if (made?.grant.id === g.id) made = null;
     await loadGrants();
   }
-  const copy = (what: "token" | "key" | "tag", text: string) => { void navigator.clipboard?.writeText(text).then(() => { copied = what; }, () => {}); };
+  const copy = (what: string, text: string) => { void navigator.clipboard?.writeText(text).then(() => { copied = what; }, () => {}); };
   const day = (iso: string) => iso.slice(0, 10);
 
   // The one-tag install: the overlay this instance serves, pinned by version
@@ -72,6 +72,7 @@
   let pinned = $state(true);
   const loadPin = () => fetch(containerPath(qid), { credentials: "omit" }).then(r => (r.ok ? r.json() : null)).then(b => { pin = b?.overlay ?? null; }, () => { pin = null; });
   const tag = $derived(installTag(location.origin, qid, pinned ? pin : null));
+  const deploys = $derived(deployments(location.origin, qid, pinned ? pin : null));
 
   onMount(() => { void loadMembers(); void loadGrants(); void loadPin(); });
 </script>
@@ -81,6 +82,14 @@
     <h4 id={`install-${qid}`}>Install</h4>
     <p class="hint">Paste this tag into any page on this queue's origins. No build step: Clax serves the overlay and its settings, and upgrades it when Clax deploys. <code>data-auth</code> is your backend's token route, which mints reporter tokens with a service grant (below).</p>
     <div class="cmd"><code aria-label="Install tag">{tag}</code><button type="button" onclick={() => copy("tag", tag)}>{copied === "tag" ? "Copied" : "Copy"}</button></div>
+    {#each deploys.slice(1) as d (d.id)}
+      <details class="deploy">
+        <summary>{d.label}</summary>
+        <p class="hint">{d.where}</p>
+        <div class="cmd"><pre><code aria-label={`${d.label} snippet`}>{d.artifact}</code></pre><button type="button" onclick={() => copy(d.id, d.artifact)}>{copied === d.id ? "Copied" : "Copy"}</button></div>
+      </details>
+    {/each}
+    <p class="hint">Or the Clax extension: on any page, its owner adds the site to this queue and the extension brings the overlay; a page that has the tag keeps its own.</p>
     {#if pin}
       <label class="check"><input type="checkbox" checked={pinned} onchange={e => { pinned = e.currentTarget.checked; }} /> Pin this version (with integrity); unpinned follows each Clax deploy within an hour</label>
     {/if}
@@ -169,4 +178,8 @@
   .row { display: flex; gap: 8px; margin-top: 4px; }
   .check { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 12.5px; color: var(--muted); }
   .hint code { font: 12px var(--mono); }
+  .deploy { margin-top: 8px; }
+  .deploy summary { cursor: pointer; font-size: 13px; min-height: 24px; }
+  .cmd pre { flex: 1; min-width: 0; margin: 0; overflow-x: auto; }
+  .cmd pre code { display: block; white-space: pre; overflow-wrap: normal; }
 </style>
