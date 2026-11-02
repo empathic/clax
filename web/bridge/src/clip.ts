@@ -183,6 +183,74 @@ export function dataUrlToBuffer(url: string): ArrayBuffer {
   return out.buffer;
 }
 
+/** How far outside a crop, in CSS px, an element still counts as in it, so
+ * shadows and outlines that reach a little past a box still render. */
+export const CROP_SLACK = 32;
+
+const boxedDisplay = (d: string) => d !== "" && d !== "contents" && !d.startsWith("inline") && !d.startsWith("ruby");
+
+/** A clone filter that keeps every element whose box reaches `crop` (client
+ * coordinates, grown by `CROP_SLACK`) and, of an element wholly outside it,
+ * keeps the element and drops its content. modern-screenshot inlines each
+ * element's computed width and height, so the emptied box keeps its size and
+ * nothing in the crop moves; rendering then walks only what the crop shows,
+ * not a whole long page. Only boxes are emptied (never an inline element, whose
+ * size is its content), and never `root`; content that paints far outside its
+ * own element's box (an absolutely placed popover) is left out with it. */
+export function cropFilter(root: Element, crop: { left: number; top: number; width: number; height: number }, win: Window): (n: Node) => boolean {
+  const l = crop.left - CROP_SLACK, t = crop.top - CROP_SLACK, r = crop.left + crop.width + CROP_SLACK, b = crop.top + crop.height + CROP_SLACK;
+  const emptied = new WeakMap<Element, boolean>();
+  const outside = (el: Element): boolean => {
+    let v = emptied.get(el);
+    if (v === undefined) {
+      const box = el.getBoundingClientRect();
+      v = el !== root && el.namespaceURI === XHTML && boxedDisplay(win.getComputedStyle(el).display)
+        && (box.right < l || box.left > r || box.bottom < t || box.top > b);
+      emptied.set(el, v);
+    }
+    return v;
+  };
+  return n => {
+    const p = n.parentNode;
+    return !(p?.nodeType === Node.ELEMENT_NODE && outside(p as Element));
+  };
+}
+
+/** How long a clip waits for the images and videos it renders to load. */
+export const MEDIA_WAIT_MS = 2000;
+
+/** Whether `n` (under `root`) is in the clone `keep` filters: it and every
+ * ancestor below `root` pass. */
+function rendered(n: Node, root: Element, keep: (n: Node) => boolean): boolean {
+  for (let cur: Node | null = n; cur && cur !== root; cur = cur.parentNode) if (!keep(cur)) return false;
+  return true;
+}
+
+/** Waits, at most `ms`, for the images and videos under `root` that the clip
+ * renders (`keep`) and that have not loaded: never for one it leaves out, such
+ * as a lazy image outside the crop, which may never load. */
+export function settleMedia(root: Element, keep: (n: Node) => boolean, ms: number): Promise<void> {
+  const media = [root, ...root.querySelectorAll("img, video")].filter(m => {
+    if (m.localName === "img") return !(m as HTMLImageElement).complete && !!(m as HTMLImageElement).currentSrc;
+    if (m.localName === "video") return (m as HTMLVideoElement).readyState < 2 && !!(m as HTMLVideoElement).currentSrc;
+    return false;
+  }).filter(m => rendered(m, root, keep));
+  if (!media.length) return Promise.resolve();
+  return new Promise(resolve => {
+    let left = media.length;
+    const timer = setTimeout(done, ms);
+    const listeners: (() => void)[] = [];
+    function done() { clearTimeout(timer); listeners.forEach(off => off()); resolve(); }
+    for (const m of media) {
+      const ev = m.localName === "img" ? "load" : "loadeddata";
+      const one = () => { if (--left === 0) done(); };
+      m.addEventListener(ev, one, { once: true });
+      m.addEventListener("error", one, { once: true });
+      listeners.push(() => { m.removeEventListener(ev, one); m.removeEventListener("error", one); });
+    }
+  });
+}
+
 /** How `renderClip` renders: `crop`, the part of the element to render
  * (relative to its top left corner; all of it when absent); `style`, more
  * inline style for the rendered root; `omitted`, what the render leaves out
@@ -263,17 +331,31 @@ export async function renderClipWithReport(el: Element, win: Window = window, ti
     : {};
   const doc = el.ownerDocument;
   const background = clipBackground(el, win);
+  const inCrop = crop ? cropFilter(el, { left: r.left + crop.x, top: r.top + crop.y, width: crop.w, height: crop.h }, win) : () => true;
+  const priv = privateRender(el, origin, seen, blockColour(background));
+  const privKeep = priv.filter ?? (() => true);
+  // What the render keeps: the private render's choice (no cross-origin
+  // image, nothing left out), within the crop.
+  const keep = (n: Node) => privKeep(n) && inCrop(n);
   const once = async (scale: number) => {
+    await settleMedia(el, keep, Math.min(MEDIA_WAIT_MS, timeoutMs));
     const ctx = await createContext(el, {
       ...(fontsRefused.has(doc) ? { font: false as const } : {}),
       scale,
-      ...privateRender(el, origin, seen, blockColour(background)),
+      ...priv,
+      filter: keep,
       fetch: { placeholderImage: TRANSPARENT },
       backgroundColor: background,
       style: { ...clipRootStyle(el, win), ...opts.style, ...cropStyle },
-      timeout: timeoutMs,
+      // createContext waits this long for every <img> and <video> under the
+      // root, rendered or not: a page of lazy images below the fold (which
+      // never load) made each clip wait out its whole budget. `settleMedia`
+      // has waited for the ones the clip renders, so this wait is cut short;
+      // fetches and the final raster then get the clip's whole budget.
+      timeout: 1,
       ...(crop ? { width: crop.w, height: crop.h } : {}),
     });
+    ctx.timeout = timeoutMs;
     if (win.origin === "null") ctx.sandbox = el.ownerDocument.createElement("iframe");
     try {
       return dataUrlToBuffer(await domToPng(ctx));
