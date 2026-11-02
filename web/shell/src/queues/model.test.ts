@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { Report, ReportPage, ReportState } from "../../../sdk/src/types";
-import { countReports, countsText, parseOrigins } from "./model";
+import { type Counts, changeText, countReports, countsText, parseOrigins } from "./model";
 
-const report = (state: ReportState) => ({ state }) as Report;
+const report = (state: ReportState, expires?: string) => ({ state, claim: expires ? { holder_name: "claude", expires_at: expires } : null }) as Report;
+const counts = (open: number, claimed: number, resolved: number, more = false): Counts => ({ open, claimed, resolved, more, lapses: null });
 
 describe("parseOrigins", () => {
   it("keeps each line's origin once, skipping blank lines", () => {
@@ -26,15 +27,38 @@ describe("countReports", () => {
     const asked: (string | null)[] = [];
     const c = await countReports(async cursor => { asked.push(cursor); return pages[cursor ?? ""]; });
     expect(asked).toEqual([null, "c2"]);
-    expect(c).toEqual({ open: 2, claimed: 1, resolved: 1, more: false });
+    expect(c).toEqual({ open: 2, claimed: 1, resolved: 1, more: false, lapses: null });
     expect(countsText(c)).toBe("2 open · 1 claimed · 1 resolved");
+  });
+
+  it("keeps the soonest a claim's lease lapses", async () => {
+    const c = await countReports(async () => ({
+      reports: [report("claimed", "2026-11-02T10:05:00Z"), report("claimed", "2026-11-02T10:01:00Z"), report("open")],
+      next: null,
+    }));
+    expect(c.lapses).toBe(Date.parse("2026-11-02T10:01:00Z"));
   });
 
   it("stops at the page limit and says there are more", async () => {
     let n = 0;
     const c = await countReports(async () => { n++; return { reports: [report("open")], next: "again" }; }, 3);
     expect(n).toBe(3);
-    expect(c).toEqual({ open: 3, claimed: 0, resolved: 0, more: true });
+    expect(c).toEqual({ open: 3, claimed: 0, resolved: 0, more: true, lapses: null });
     expect(countsText(c)).toBe("3+ open · 0+ claimed · 0+ resolved");
+  });
+});
+
+describe("changeText", () => {
+  it("says what rose, the first with its noun", () => {
+    expect(changeText("Bugs", counts(2, 0, 0), counts(1, 1, 0))).toBe("1 report claimed in Bugs.");
+    expect(changeText("Bugs", counts(1, 1, 0), counts(1, 0, 1))).toBe("1 report resolved in Bugs.");
+    expect(changeText("Bugs", counts(0, 1, 0), counts(2, 0, 1))).toBe("2 reports filed, 1 resolved in Bugs.");
+    expect(changeText("Bugs", counts(0, 1, 0), counts(1, 0, 0))).toBe("1 report open again in Bugs.");
+    expect(changeText("Bugs", counts(0, 0, 1), counts(1, 0, 0))).toBe("1 report open again in Bugs.");
+  });
+
+  it("says nothing when nothing rose or a count is cut short", () => {
+    expect(changeText("Bugs", counts(1, 1, 0), counts(1, 1, 0))).toBeNull();
+    expect(changeText("Bugs", counts(1, 0, 0, true), counts(0, 1, 0, true))).toBeNull();
   });
 });

@@ -116,6 +116,14 @@ test("a site's user files a report through the overlay; an agent claims, replies
     await expect(card.getByRole("list", { name: "Origins of Leave app reports" })).toHaveText(site.origin);
     const qid = (await card.getAttribute("data-id"))!;
     expect(qid).toBeTruthy();
+    // The page holds the one stream, as every page does (streams.spec.ts).
+    const streams = await fetch(`${d.base}/api/_test/stream/open`, { headers: { authorization: `Bearer ${d.token}` } });
+    expect(((await streams.json()) as { open: number }).open).toBe(1);
+    // From here the page is never reloaded: its counts follow the reports
+    // as they change, and its status line says what rose.
+    const counts = card.locator(".counts");
+    const heard = owner.locator(".qheard");
+    await expect(counts).toHaveText("0 open · 0 claimed · 0 resolved");
 
     // A service grant: its token and private key, shown once.
     await card.getByRole("button", { name: "Manage" }).click();
@@ -160,6 +168,8 @@ test("a site's user files a report through the overlay; an agent claims, replies
     await expect(composer).toHaveCount(0);
     await expect(emp1.locator(".report-btn")).toBeFocused();
     expect(site.minted).toContain("emp-1");
+    await expect(counts).toHaveText("1 open · 0 claimed · 0 resolved");
+    await expect(heard).toHaveText("1 report filed in Leave app reports.");
 
     // The owner's agent, with an agent token made in the owner's browser.
     const agentToken = await owner.evaluate(async () => {
@@ -194,6 +204,8 @@ test("a site's user files a report through the overlay; an agent claims, replies
     expect(Date.parse(lease.expires_at)).toBeGreaterThan(Date.now());
     expect(lease.report).toMatchObject({ id: report.id, state: "claimed" });
     expect(lease.report.claim).not.toBeNull();
+    await expect(counts).toHaveText("0 open · 1 claimed · 0 resolved");
+    await expect(heard).toHaveText("1 report claimed in Leave app reports.");
     const reply = "The request is for 3 to 6 November; the end date is fixed in the next deploy.";
     await agent.ok("POST", `/api/queues/${qid}/reports/${report.id}/comments`, { body: reply });
 
@@ -229,10 +241,9 @@ test("a site's user files a report through the overlay; an agent claims, replies
     await resolvedRow.getByRole("button", { name: /The dates read/ }).click();
     await expect(resolvedRow.getByRole("button", { name: "Reply", exact: true })).toHaveCount(0);
 
-    // The Queues page counts it resolved.
-    await owner.reload();
-    const counted = owner.locator("li.qcard", { has: owner.getByRole("heading", { name: "Leave app reports" }) });
-    await expect(counted.locator(".counts")).toHaveText("0 open · 0 claimed · 1 resolved");
+    // The Queues page counts it resolved, still with no reload.
+    await expect(counts).toHaveText("0 open · 0 claimed · 1 resolved");
+    await expect(heard).toHaveText("1 report resolved in Leave app reports.");
     await owner.screenshot({ path: shotPath(info, "queues-page"), fullPage: true });
 
     // The overlay ran under the site's policy without tripping it, but for

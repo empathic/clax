@@ -181,7 +181,7 @@ pub async fn events(
         // capabilities, never an agent's). Tag changes reach the gallery's
         // and artifacts' stream topics alone, a Comments switch change the
         // artifact's alone. A site's access change is its room sockets'
-        // alone.
+        // alone. A queue's change is the `queues` topic's alone.
         if matches!(
             ev,
             Event::Site { .. }
@@ -199,6 +199,7 @@ pub async fn events(
                 | Event::FeedbackState { .. }
                 | Event::SiteAccess { .. }
                 | Event::Access { .. }
+                | Event::Queues
         ) {
             return false;
         }
