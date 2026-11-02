@@ -135,6 +135,26 @@ export function commitLink(ctx: ReportContext | undefined): { text: string; href
   return { text: c.length > 12 && /^[0-9a-f]+$/i.test(c) ? c.slice(0, 12) : c, href, host: href ? new URL(href).host : null };
 }
 
+/** Where in the code a report points (`context.app.code`, which the SDK's
+ * code-line picker sends: `{file, start, end, side?, sha?}`), as text and,
+ * when `app.repo` names the repository and a commit is given, a link to
+ * those lines at that commit; null when the context has none or it is not
+ * well formed. */
+export function codeOf(ctx: ReportContext | undefined): { text: string; href: string | null } | null {
+  const app = ctx?.app as { code?: unknown } | undefined;
+  const c = app && typeof app === "object" ? (app.code as Record<string, unknown> | undefined) : undefined;
+  if (!c || typeof c !== "object") return null;
+  const { file, start, end, side, sha } = c;
+  if (typeof file !== "string" || !file || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || (start as number) < 1 || (end as number) < (start as number)) return null;
+  const lines = start === end ? `line ${start}` : `lines ${start}–${end}`;
+  const commit = typeof sha === "string" && /^[0-9a-f]{7,64}$/i.test(sha) ? sha : null;
+  const text = `${file}, ${lines}${side === "LEFT" ? " (old side)" : ""}${commit ? ` at ${commit.slice(0, 12)}` : ""}`;
+  const repo = repoUrl(ctx?.app);
+  const path = file.split("/").map(encodeURIComponent).join("/");
+  const href = repo && commit && side !== "LEFT" ? `${repo}/blob/${commit}/${path}#L${start}${end !== start ? `-L${end}` : ""}` : null;
+  return { text, href };
+}
+
 /** A browser and its major version, read from a user agent: "Chrome 131",
  * "Safari 18", "Firefox 132", "Edge 131"; the agent itself when none is known. */
 export function browserOf(ua: string | undefined): string | null {

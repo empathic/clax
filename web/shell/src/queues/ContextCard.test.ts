@@ -31,6 +31,22 @@ describe("ContextCard", () => {
     expect(m.root.querySelector("code.commit")!.textContent).toBe("f7e862ab0aa1");
   });
 
+  it("shows where in the code the report points, linked at its commit when the repository is named", () => {
+    const code = { file: "web/src/a b.ts", start: 12, end: 14, side: "RIGHT", sha: "abcdef1234567890" };
+    const m = mount(ContextCard, { context: { ...CONTEXT, app: { repo: "https://github.com/empathic/clax", code } }, zone: "UTC", locale: "en-US" });
+    const a = m.root.querySelector<HTMLAnchorElement>("a.code")!;
+    expect(a.textContent).toBe("web/src/a b.ts, lines 12–14 at abcdef123456");
+    expect(a.href).toBe("https://github.com/empathic/clax/blob/abcdef1234567890/web/src/a%20b.ts#L12-L14");
+    expect(a.rel).toBe("noopener noreferrer");
+    // The old side of a diff, or no repository: text, no link.
+    const old = mount(ContextCard, { context: { ...CONTEXT, app: { repo: "https://github.com/empathic/clax", code: { ...code, side: "LEFT", start: 3, end: 3 } } }, zone: "UTC" });
+    expect(old.root.querySelector("a.code")).toBeNull();
+    expect(text(old.root)).toContain("web/src/a b.ts, line 3 (old side) at abcdef123456");
+    // Not well formed: no row.
+    const bad = mount(ContextCard, { context: { ...CONTEXT, app: { code: { file: "a.ts", start: 5, end: 2 } } }, zone: "UTC" });
+    expect(text(bad.root)).not.toContain("Code");
+  });
+
   it("says when a report came with no context", () => {
     const m = mount(ContextCard, {});
     expect(text(m.root)).toContain("The report came with no context.");
