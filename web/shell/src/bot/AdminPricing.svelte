@@ -241,7 +241,7 @@
       {/each}
     </div>
     <div class="pr-strict">
-      <input id="pr-strict" type="checkbox" bind:checked={strict} disabled={ro("require_explicit_price")} />
+      <input id="pr-strict" type="checkbox" checked={strict} onchange={e => { strict = e.currentTarget.checked; }} disabled={ro("require_explicit_price")} />
       <label for="pr-strict">Require an explicit price: refuse runs on a model without a rate card</label>
       <SourceBadge source={p.sources.require_explicit_price} />
     </div>
