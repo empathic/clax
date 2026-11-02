@@ -649,6 +649,38 @@ mod tests {
         );
     }
 
+    /// docs/kubernetes.md's overlay of one's own renames the image by the
+    /// name deploy/k8s/sqlite gives it: kustomize matches the name as
+    /// already rewritten, so any other would match nothing, and the
+    /// operator's image would be ignored without a word.
+    #[test]
+    fn the_documented_overlay_renames_the_image_the_sqlite_overlay_names() {
+        let sqlite =
+            std::fs::read_to_string(manifests().join("sqlite/kustomization.yaml")).unwrap();
+        let named = sqlite
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("newName: "))
+            .expect("the sqlite overlay renames the image");
+        let guide = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/kubernetes.md"),
+        )
+        .unwrap();
+        let overlay = guide
+            .split("# my-clax/kustomization.yaml\n")
+            .nth(1)
+            .and_then(|rest| rest.split("```").next())
+            .expect("the guide shows my-clax/kustomization.yaml");
+        let images = overlay
+            .split("\nimages:\n")
+            .nth(1)
+            .expect("the guide's overlay sets images");
+        let renamed = images
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("- name: "))
+            .expect("an images entry");
+        assert_eq!(renamed, named);
+    }
+
     /// The example catalog is valid, and its instances' setup secrets are
     /// in the variables the sqlite/ overlay's comments put in the Secret.
     #[test]

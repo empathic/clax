@@ -40,9 +40,10 @@ Each release tag publishes `ghcr.io/empathic/clax-fleet:<version>` (and
 its own architecture. The overlay names it through kustomize's `images`
 (`newTag`), which `scripts/bump-version.sh` writes with every other
 version, so the manifests at a release's tag name the image that tag
-publishes. The first published image is the first release after 0.6.0,
-whose tag predates the workflow; until then, and for your own changes,
-build it:
+publishes, and anyone can pull it. **No release publishes the image or
+ships `deploy/k8s` yet**: the first to do both is the first release after
+0.6.0, whose tag predates them. Until then, and for your own changes,
+build the image and push it to a registry your cluster can pull from:
 
 ```
 docker build -f deploy/Dockerfile \
@@ -65,13 +66,20 @@ edits:
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  # The release this checkout is at (deploy/k8s ships from the first
-  # release after 0.6.0).
+  # The release this checkout is at. Before the first release that ships
+  # deploy/k8s, a commit of main instead: ?ref=<commit>.
   - github.com/empathic/clax//deploy/k8s/sqlite?ref=v0.6.0
 images:
-  - name: clax-fleet
+  # The name the sqlite/ overlay gives the image, not its `clax-fleet`:
+  # kustomize matches what it has already rewritten, so `name: clax-fleet`
+  # here would match nothing and the overlay's image would stay.
+  - name: ghcr.io/empathic/clax-fleet
     newName: <registry>/clax-fleet
     newTag: <tag>
+replicas:
+  # As many as the catalog's `shards`.
+  - name: clax
+    count: 2
 configMapGenerator:
   - name: clax-fleet-catalog
     behavior: replace
@@ -81,13 +89,13 @@ configMapGenerator:
       disableNameSuffixHash: true
 ```
 
-To try it on kind with a local build, load the image and point the overlay
-at it:
+Leave out `images` to run the published image of the release in `?ref`.
+To try it on kind with a local build, load the image and give the overlay
+`newName: clax-fleet` and `newTag: dev`:
 
 ```
 docker build -f deploy/Dockerfile -t clax-fleet:dev .
 kind load docker-image clax-fleet:dev
-cd deploy/k8s/sqlite && kustomize edit set image clax-fleet=clax-fleet:dev
 ```
 
 ## The catalog
@@ -140,7 +148,8 @@ catalog is bad exits saying why, so fix the ConfigMap. Kubernetes takes up
 to a minute to update a mounted ConfigMap, and until then a pod that lacks
 a new instance answers its host with the default instance (or 404).
 
-Check a catalog before applying it, with the image:
+Check a catalog before applying it, with the image (your own build's name
+until a release publishes it):
 
 ```
 docker run --rm -v "$PWD":/c ghcr.io/empathic/clax-fleet:0.6.0 check-catalog /c/fleet.toml
@@ -165,12 +174,36 @@ restart sts clax`. An instance whose setup secret is missing logs that
 
 ## Deploying
 
-```
-kubectl create secret generic clax-secrets \
-  --from-literal=CLAX_FLEET_PEER_KEY="$(openssl rand -hex 32)" \
-  --from-literal=CLAX_SETUP_SECRET_EXAMPLE="$(openssl rand -hex 16)"
-kubectl apply -k deploy/k8s/sqlite
-```
+1. **The image.** Use a release's, or build and push your own (The image).
+2. **Your overlay.** Make `my-clax/` with the `kustomization.yaml` of The
+   image and a `fleet.toml` of your own instances (The catalog), each
+   with its own origin and its own `setup_secret_env`. Check it:
+   `docker run --rm -v "$PWD/my-clax":/c <image> check-catalog /c/fleet.toml`.
+   Applying `deploy/k8s/sqlite` itself deploys the example catalog's
+   instance at `https://clax.example.com`, whose name is then that
+   origin's for good.
+3. **The Secret**, in the namespace you deploy to: the peer key, and one
+   setup secret for each instance, under the variable its
+   `setup_secret_env` names:
+
+   ```
+   kubectl create secret generic clax-secrets \
+     --from-literal=CLAX_FLEET_PEER_KEY="$(openssl rand -hex 32)" \
+     --from-literal=CLAX_SETUP_SECRET_ACME="$(openssl rand -hex 16)"
+   ```
+
+4. **Let the Ingress controller in.** The NetworkPolicy admits clients
+   only through it (Security):
+   `kubectl label namespace <controller's namespace> clax.empathic.dev/ingress=true`.
+5. **Apply:** `kubectl apply -k my-clax`, then
+   `kubectl rollout status sts/clax`.
+6. **The Ingress.** Copy `deploy/k8s/examples/ingress.yaml`, put each
+   instance's origin host and site-domain wildcard in it, and apply it
+   (Ingress, DNS and TLS).
+7. **Check it:** `kubectl exec clax-0 -- clax-fleet status` lists each
+   shard as ready, and `curl https://<origin>/healthz` answers through the
+   Ingress. Then open `https://<origin>/setup` with the instance's setup
+   secret.
 
 The StatefulSet `clax` runs pods `clax-0`, `clax-1`, …, each with a 10 Gi
 volume at `/var/lib/clax`, spread across nodes where it can. The headless
