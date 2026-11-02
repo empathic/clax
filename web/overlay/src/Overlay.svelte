@@ -220,6 +220,11 @@
     d.title = "Send feedback";
     d.documentElement.lang = doc.documentElement.lang || "en";
     addSheet(d, `${css.replaceAll(":host", ":root")}\nhtml,body{margin:0;background:var(--bg)}`);
+    // The site's look goes with it: the --clax-* values the overlay's host has (its own, and the page's).
+    try {
+      const cs = win.getComputedStyle(host);
+      for (let i = 0; i < cs.length; i++) if (cs[i].startsWith("--clax-")) d.documentElement.style.setProperty(cs[i], cs.getPropertyValue(cs[i]));
+    } catch { /* no computed style: Clax's own look */ }
     const target = d.createElement("div");
     target.className = "cx window";
     d.body.append(target);
