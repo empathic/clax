@@ -10,10 +10,13 @@ import ComposerFrame from "./ComposerFrame.svelte";
  * to show the frame, so the frame shown is one whose own load has run, and
  * any later load of it is a navigation the overlay closes it for. */
 function start(): void {
-  const pickId = location.hash.slice(1);
+  // `#<pick>`, or `#<pick>.<lost pick>` when it replaces a composer the
+  // worker let go of, whose kept text it takes.
+  const [pickId = "", from] = location.hash.slice(1).split(".");
   if (!PICK_ID.test(pickId)) return;
+  const kept = from !== undefined && PICK_ID.test(from) ? from : undefined;
   const port = chrome.runtime.connect({ name: `composer:${pickId}` });
-  mount(ComposerFrame, { target: document.getElementById("app")!, props: { port, pickId } });
+  mount(ComposerFrame, { target: document.getElementById("app")!, props: { port, pickId, kept } });
 }
 if (document.readyState === "complete") start();
 else addEventListener("load", start, { once: true });

@@ -11,6 +11,11 @@
   // (`dismiss`). Cancel never throws on a closed port. The composer tells
   // the worker how tall its content is (`size`), whenever that changes, and
   // the overlay fits the frame to it.
+  // The typed text is kept in the extension's session storage under the
+  // pick (`composer-draft:<pickId>`; the page cannot read it), so it
+  // outlives the worker and this frame: the composer of the next pick,
+  // opened over a lost one, starts with the lost one's text (`kept`, its
+  // pick ID) and takes it. Posting, cancelling or dismissing forgets it.
   import Composer from "../../../shell/src/ui/Composer.svelte";
   import type { Draft } from "../../../shell/src/view/composer-model";
   import { dataUrlBlob } from "../data-url";
@@ -22,11 +27,32 @@
   /** Sends a one-off message to the worker (`chrome.runtime.sendMessage`). */
   type Notify = (m: ComposerNote) => Promise<unknown> | void;
   const runtimeNotify: Notify = m => chrome.runtime.sendMessage(m);
-  /** `shortcut`: the keyboard command's shortcut, which the no-screenshot notice names. */
-  let { port, pickId, win = window, notify = runtimeNotify, shortcut = readShortcut() }: { port: Port; pickId: string; win?: Window; notify?: Notify; shortcut?: Promise<Shortcut> } = $props();
+  /** Where drafts are kept: the extension's session storage. */
+  type Store = Pick<chrome.storage.StorageArea, "get" | "set" | "remove">;
+  const sessionStore = (): Store | null => (typeof chrome === "undefined" ? null : chrome.storage?.session ?? null);
+  /** `shortcut`: the keyboard command's shortcut, which the no-screenshot
+   * notice names; `kept`: the pick ID of a lost composer whose text this
+   * one starts with. */
+  let { port, pickId, kept, win = window, notify = runtimeNotify, shortcut = readShortcut(), store = sessionStore() }: { port: Port; pickId: string; kept?: string; win?: Window; notify?: Notify; shortcut?: Promise<Shortcut>; store?: Store | null } = $props();
   const note = (m: ComposerNote) => {
     try { void Promise.resolve(notify(m)).catch(() => {}); } catch { /* the extension is gone */ }
   };
+  const keyOf = (id: string) => `composer-draft:${id}`;
+  /** Keeps `text` as pick `id`'s draft, or forgets it when blank. */
+  const keep = (id: string, text: string) => {
+    try { void Promise.resolve(text.trim() ? store?.set({ [keyOf(id)]: text }) : store?.remove(keyOf(id))).catch(() => {}); } catch { /* no storage */ }
+  };
+  /** Pick `id`'s kept draft, taken out of storage; "" when there is none. */
+  async function take(id: string): Promise<string> {
+    try {
+      const got = await store?.get(keyOf(id));
+      await store?.remove(keyOf(id));
+      const v = got?.[keyOf(id)];
+      return typeof v === "string" ? v : "";
+    } catch { return ""; }
+  }
+  /** The text the composer starts with. */
+  let carried = $state("");
 
   let draft = $state<Draft | null>(null);
   let typed = "";
@@ -38,7 +64,7 @@
   let waiting: { ok: () => void; fail: (e: Error) => void } | null = null;
 
   const notice = $derived(
-    gone ? "Clax stopped listening to this comment. Copy your comment, then pick again."
+    gone ? "Clax stopped listening to this comment. Pick again: your text moves to the new comment."
     : failure !== null ? `Not posted: ${failure}`
     : away ? "Typing now goes to the page, not to this comment. Click the comment to keep typing."
     : null,
@@ -51,11 +77,14 @@
       if (!isToComposer(m)) return;
       if (m.t === "draft") {
         const { anchor, clipUrl, clipError, capturing } = m;
-        void shortcut.then(keys => {
+        const from = kept;
+        void Promise.all([shortcut, from ? take(from) : Promise.resolve("")]).then(([keys, text]) => {
+          if (text) { carried = text; typed = text; keep(id, text); }
           draft = { pickId: id, anchor, version: 0, clip: clipUrl ? dataUrlBlob(clipUrl) : null, clipError: clipMessage(clipError, keys), capturing };
         });
       } else if (m.t === "posted") {
         done = true;
+        keep(id, "");
         waiting?.ok();
         waiting = null;
       } else {
@@ -115,6 +144,7 @@
   /** Cancel: over the port while the worker holds it, else as a one-off message. */
   function cancel(): void {
     done = true;
+    keep(pickId, "");
     if (!gone) {
       try { port.postMessage({ t: "cancel" }); return; } catch { gone = true; }
     }
@@ -125,7 +155,7 @@
 <div class="fit" bind:this={fit}>
   {#if notice}<p class="notice" role="alert">{notice}</p>{/if}
   {#if draft}
-    <Composer {draft} onCancel={cancel} onSubmit={submit} onText={t => { typed = t; }} />
+    <Composer {draft} text={carried} onCancel={cancel} onSubmit={submit} onText={t => { typed = t; if (!done) keep(pickId, t); }} />
   {:else}
     <p class="wait">Preparing the comment…</p>
   {/if}

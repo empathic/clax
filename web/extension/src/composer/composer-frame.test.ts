@@ -27,6 +27,15 @@ function fakePort() {
     close: () => { closed = true; },
   };
 }
+/** chrome.storage.session, in memory. */
+function fakeStore(items: Record<string, unknown> = {}) {
+  return {
+    items,
+    get: async (k: string) => (k in items ? { [k]: items[k] } : {}),
+    set: async (o: Record<string, unknown>) => { Object.assign(items, o); },
+    remove: async (k: string) => { delete items[k]; },
+  };
+}
 const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0)); flushSync(); };
 
 let port: ReturnType<typeof fakePort>;
@@ -36,6 +45,7 @@ class FakeResizeObserver { constructor(cb: () => void) { resized.push(cb); } obs
 const w = window as unknown as { ResizeObserver?: unknown };
 let view: Mounted<Record<string, unknown>>;
 let notes: unknown[];
+let store: ReturnType<typeof fakeStore>;
 const urls = URL as unknown as { createObjectURL?: unknown; revokeObjectURL?: unknown };
 const had = { create: urls.createObjectURL, revoke: urls.revokeObjectURL };
 beforeEach(() => {
@@ -45,7 +55,8 @@ beforeEach(() => {
   urls.revokeObjectURL = () => {};
   port = fakePort();
   notes = [];
-  view = mount(ComposerFrame as never, { port, pickId: PICK, notify: (m: unknown) => { notes.push(m); }, shortcut: Promise.resolve("⌥⇧C") });
+  store = fakeStore();
+  view = mount(ComposerFrame as never, { port, pickId: PICK, notify: (m: unknown) => { notes.push(m); }, shortcut: Promise.resolve("⌥⇧C"), store });
 });
 afterEach(() => {
   delete w.ResizeObserver;
@@ -151,18 +162,42 @@ describe("the composer page", () => {
     expect(view.root.querySelector("form.composer img.clip")).not.toBeNull();
   });
 
-  it("says when the worker stopped listening, keeping the text to copy", async () => {
+  it("says when the worker stopped listening, keeping the text for the next pick", async () => {
     port.tell(draft());
     await settle();
     type("Too wide");
     port.drop();
-    expect(notice()).toMatch(/Copy your comment/);
+    expect(notice()).toMatch(/your text moves to the new comment/);
     expect(textarea().value).toBe("Too wide");
+    // Typing on is kept too, outside the page, under the pick.
+    type("Too wide, and too tall");
+    await settle();
+    expect(store.items).toEqual({ [`composer-draft:${PICK}`]: "Too wide, and too tall" });
     // The worker hears of it, so the page gets comment mode back.
     expect(notes).toEqual([{ t: "lost", pickId: PICK }]);
     // Cancel then closes the composer through a one-off message, without throwing.
     (view.root.querySelector("button:not(.primary)") as HTMLButtonElement).click();
     expect(notes.at(-1)).toEqual({ t: "dismiss", pickId: PICK });
+    await settle();
+    expect(store.items).toEqual({});
+  });
+
+  it("starts with a lost composer's text, takes it, and forgets its own once posted", async () => {
+    const LOST = "fedcba9876543210fedcba9876543210";
+    view.unmount();
+    view.root.remove();
+    port = fakePort();
+    store = fakeStore({ [`composer-draft:${LOST}`]: "Too wide" });
+    view = mount(ComposerFrame as never, { port, pickId: PICK, kept: LOST, notify: () => {}, shortcut: Promise.resolve("⌥⇧C"), store });
+    port.tell(draft());
+    await settle();
+    expect(textarea().value).toBe("Too wide");
+    expect(store.items).toEqual({ [`composer-draft:${PICK}`]: "Too wide" });
+    post();
+    expect(port.sent.at(-1)).toEqual({ t: "post", body: "Too wide" });
+    port.tell({ t: "posted", threadId: T1 });
+    await settle();
+    expect(store.items).toEqual({});
   });
 
   it("cancels through a one-off message when the port closed unheard, and a post fails visibly", async () => {
@@ -172,7 +207,7 @@ describe("the composer page", () => {
     port.close();
     post();
     await settle();
-    expect(notice()).toMatch(/Copy your comment/);
+    expect(notice()).toMatch(/stopped listening/);
     (view.root.querySelector("button:not(.primary)") as HTMLButtonElement).click();
     expect(notes).toEqual([{ t: "dismiss", pickId: PICK }]);
   });
