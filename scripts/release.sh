@@ -159,6 +159,10 @@ HEARTBEAT="${CLAX_RELEASE_HEARTBEAT_SECONDS:-30}"
 exec 3>&1 4>&2
 
 g() { git -C "$ROOT" "$@"; }
+# What this shares with scripts/release-sdk.sh: versions, signing, the npm
+# environment, npm, workflow runs and their waits.
+# shellcheck source=scripts/lib/release-common.sh
+. "$ROOT/scripts/lib/release-common.sh"
 say() {
     printf '%s\n' "$*"
     if [ "$LOGGING" = 1 ] && [ "$IN_LOG" = 0 ]; then printf '%s\n' "$*" >> "$LOG"; fi
@@ -290,18 +294,6 @@ trap cleanup EXIT
 
 # --- state, read from git and GitHub -------------------------------------------
 
-semver_ok() { [[ $1 =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; }
-# ver_cmp A B: prints -1, 0 or 1 for the X.Y.Z cores of A and B.
-ver_cmp() {
-    local a b i
-    IFS=. read -r -a a <<< "${1%%-*}"
-    IFS=. read -r -a b <<< "${2%%-*}"
-    for i in 0 1 2; do
-        if [ "$((10#${a[i]}))" -gt "$((10#${b[i]}))" ]; then echo 1; return; fi
-        if [ "$((10#${a[i]}))" -lt "$((10#${b[i]}))" ]; then echo -1; return; fi
-    done
-    echo 0
-}
 checkout_version() { bash "$ROOT/scripts/check-version.sh" --print 2>/dev/null; }
 pinned_version() { sed -n 's/^PINNED_VERSION="\(.*\)"$/\1/p' "$ROOT/scripts/ensure-clax.sh"; }
 # The Clax version commit $1 carries (its scripts/ensure-clax.sh), or nothing.
@@ -317,19 +309,6 @@ is_signed_tag() { g cat-file tag "$TAG" | grep -E -- '^-----BEGIN [A-Z ]*SIGNATU
 release_has_sums() {
     gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null | grep -x SHA256SUMS >/dev/null
 }
-# The newest run of workflow $1 for event $2 on commit $3, or nothing.
-find_run() {
-    gh run list --workflow "$1" --event "$2" --commit "$3" --limit 20 \
-        --json databaseId,headSha --jq '.[] | "\(.databaseId) \(.headSha)"' \
-        | awk -v s="$3" '$2 == s { print $1 }' | sed -n 1p
-}
-run_state() { gh run view "$1" --json status,conclusion --jq '"\(.status) \(.conclusion)"'; }
-# The state of ci.yml run $1's gate, its `bazel` job, as run_state prints
-# it: the run's own conclusion also counts the perf-log job, which waits in
-# a queue of its own and is cancelled when pushes pile up.
-ci_gate_state() {
-    gh run view "$1" --json jobs --jq '.jobs[] | select(.name == "bazel") | "\(.status) \(.conclusion)"' | sed -n 1p
-}
 release_exists() { gh release view "$TAG" --json tagName >/dev/null 2>&1; }
 # The newest pull request from the release branch into prod, as "STATE URL"
 # (OPEN, CLOSED or MERGED), or nothing.
@@ -338,22 +317,10 @@ pr_state() {
 }
 # The Pi package's npm name, from plugins/pi/package.json.
 pi_package() { sed -n 's/^  "name": "\(.*\)",$/\1/p' "$ROOT/plugins/pi/package.json"; }
-# Whether the Pi package exists on npm: prints yes or no; fails, saying
-# npm's error, when npm cannot tell.
-pi_on_npm() {
-    local out
-    if out="$("$NPM" view "$(pi_package)" version 2>&1)"; then echo yes; return 0; fi
-    case "$out" in
-        *E404* | *"404 Not Found"*) echo no ;;
-        *) echo "$out" | tr '\n' ' ' >&2; return 1 ;;
-    esac
-}
-# Whether npm has the Pi package at version $1 (default: this release's).
-pi_has_version() {
-    local out
-    out="$("$NPM" view "$(pi_package)@${1:-$V}" version 2>/dev/null)" || return 1
-    [ "$out" = "${1:-$V}" ]
-}
+# Whether the Pi package exists on npm (on_npm), and has version $1
+# (default: this release's).
+pi_on_npm() { on_npm "$(pi_package)"; }
+pi_has_version() { has_version "$(pi_package)" "${1:-$V}"; }
 # The tree the release was built from, by the rule the Release workflow
 # also uses (scripts/release-exists-check.sh): its SOURCE_TREE asset, or for
 # an older release the run that uploaded it. Nothing when there is none.
@@ -440,38 +407,6 @@ check_tools() {
     done
     command -v bazelisk >/dev/null 2>&1 || command -v bazel >/dev/null 2>&1 \
         || problem "neither bazelisk nor bazel is on PATH (just ci and just bazel-sync run Bazel)"
-}
-
-resolve_repo() {
-    local url
-    if [ -n "${GH_REPO:-}" ]; then return 0; fi
-    url="$(g remote get-url origin 2>/dev/null || true)"
-    case "$url" in
-        git@github.com:*) GH_REPO="${url#git@github.com:}" ;;
-        https://github.com/*) GH_REPO="${url#https://github.com/}" ;;
-        ssh://git@github.com/*) GH_REPO="${url#ssh://git@github.com/}" ;;
-        *) problem "origin ($url) is not a GitHub repository; set GH_REPO=owner/name"; return 0 ;;
-    esac
-    GH_REPO="${GH_REPO%.git}"
-    export GH_REPO
-}
-
-# Commit signing, as git commit -S would sign: a commit object written to a
-# scratch object directory, removed after, so the repository is untouched.
-check_signing() {
-    local scratch objects sha body ok=0
-    scratch="$(mktemp -d)"
-    objects="$(g rev-parse --path-format=absolute --git-common-dir)/objects"
-    if sha="$(GIT_OBJECT_DIRECTORY="$scratch" GIT_ALTERNATE_OBJECT_DIRECTORIES="$objects" \
-            g commit-tree -S -p HEAD -m "release.sh signing check" "HEAD^{tree}" 2>"$scratch.err")" \
-        && body="$(GIT_OBJECT_DIRECTORY="$scratch" GIT_ALTERNATE_OBJECT_DIRECTORIES="$objects" g cat-file commit "$sha")" \
-        && grep -E '^gpgsig(-sha256)? ' >/dev/null <<< "$body"; then
-        ok=1
-    fi
-    if [ "$ok" = 0 ]; then
-        problem "commit signing does not work here (git commit -S): $(tr '\n' ' ' < "$scratch.err")"
-    fi
-    rm -rf "$scratch" "$scratch.err"
 }
 
 check_version() {
@@ -606,33 +541,15 @@ preflight() {
 }
 
 NOTES=()
-# The npm environment, read-only: it must exist and allow only prod, or a
-# run dispatched on another ref could get npm's token. Creating it is a
-# repository setting the owner makes; this only says how. A dry run warns,
-# a release refuses, unless npm has the version already.
+# The npm environment (npm_environment_problem): a dry run warns, a release
+# refuses, unless npm has the version already.
 check_npm_environment() {
-    local err policy branches why=""
+    local why
     semver_ok "$V" || return 0
     command -v gh >/dev/null 2>&1 && [ -n "${GH_REPO:-}" ] || return 0
     if command -v "$NPM" >/dev/null 2>&1 && pi_has_version; then return 0; fi
-    err="$(mktemp)"
-    if ! policy="$(gh api "repos/$GH_REPO/environments/$NPM_ENV" \
-        --jq '.deployment_branch_policy | if . == null then "none" else "\(.protected_branches) \(.custom_branch_policies)" end' 2>"$err")"; then
-        case "$(cat "$err")" in
-            *404* | *"Not Found"*) why="the repository has no environment $NPM_ENV" ;;
-            *) why="cannot read the environment $NPM_ENV: $(tr '\n' ' ' < "$err")" ;;
-        esac
-    elif [ "$policy" != "false true" ]; then
-        why="the environment $NPM_ENV does not limit its deployment branches to $PROD"
-    elif ! branches="$(gh api "repos/$GH_REPO/environments/$NPM_ENV/deployment-branch-policies" \
-        --jq '[.branch_policies[] | "\(.type // "branch"):\(.name)"] | join(",")' 2>"$err")"; then
-        why="cannot read the environment $NPM_ENV's deployment branches: $(tr '\n' ' ' < "$err")"
-    elif [ "$branches" != "branch:$PROD" ]; then
-        why="the environment $NPM_ENV allows ${branches:-no branch}, not $PROD alone"
-    fi
-    rm -f "$err"
+    why="$(npm_environment_problem "publish-pi.yml runs in it")"
     [ -n "$why" ] || return 0
-    why="$why. publish-pi.yml runs in it; in GitHub, the repository's Settings, Environments, New environment (or $NPM_ENV), name $NPM_ENV; Deployment branches and tags: Selected branches and tags; Add deployment branch or tag rule: branch $PROD"
     if [ "$ACT" = 1 ]; then problem "$why"; else NOTES+=("WARN: $why"); fi
 }
 
@@ -745,103 +662,6 @@ done_19() {
 }
 done_20() { pi_has_version; }
 done_21() { false; }
-
-# A poll's gh call may fail this many times in a row (a network or API
-# hiccup) before the wait gives up.
-GH_RETRIES=5
-
-# poll_once CMD...: runs CMD, its output in POLL_OUT. A failure counts in
-# POLL_FAILS and returns 1; GH_RETRIES failures in a row return 2, after
-# saying so (on stderr, as callers capture stdout) with gh's error.
-POLL_FAILS=0
-poll_once() {
-    local err
-    err="$(mktemp)"
-    if POLL_OUT="$("$@" 2>"$err")"; then
-        POLL_FAILS=0
-        rm -f "$err"
-        return 0
-    fi
-    POLL_FAILS=$((POLL_FAILS + 1))
-    if [ "$POLL_FAILS" -ge "$GH_RETRIES" ]; then
-        say "  gh failed $POLL_FAILS times in a row ($*): $(tr '\n' ' ' < "$err")" >&2
-        rm -f "$err"
-        return 2
-    fi
-    rm -f "$err"
-    return 1
-}
-
-# Runs "$@" until it succeeds, at most GH_RETRIES times, POLL seconds apart;
-# prints its output, or says why it gave up.
-gh_retry() {
-    local rc
-    POLL_FAILS=0
-    while :; do
-        rc=0
-        poll_once "$@" || rc=$?
-        case "$rc" in
-            0) printf '%s\n' "$POLL_OUT"; return 0 ;;
-            2) return 1 ;;
-        esac
-        sleep "$POLL"
-    done
-}
-
-# Polls until "$@" prints something, at most MAX_POLLS times; a failed call
-# counts as an empty poll. Says why it gave up, on stderr.
-await_output() {
-    local polls=0 rc
-    POLL_FAILS=0
-    while :; do
-        rc=0
-        poll_once "$@" || rc=$?
-        [ "$rc" != 2 ] || return 1
-        if [ "$rc" = 0 ] && [ -n "$POLL_OUT" ]; then echo "$POLL_OUT"; return 0; fi
-        polls=$((polls + 1))
-        if [ "$polls" -ge "$MAX_POLLS" ]; then
-            if [ "$rc" = 0 ]; then say "  nothing after $polls polls" >&2
-            else say "  nothing after $polls polls; the last gh call failed ($*)" >&2; fi
-            return 1
-        fi
-        sleep "$POLL"
-    done
-}
-
-# Waits for workflow run $1 ($2 names it) to complete; fails unless it
-# succeeded. $3 reads the state (default run_state).
-await_run() {
-    local id="$1" what="$2" read="${3:-run_state}" state last="" polls=0 rc
-    say "  $what: run $id (gh run watch $id --repo $GH_REPO)"
-    detail "run $id"
-    if [ -n "$HB_DIR" ]; then printf '%s\n' "$id" > "$HB_DIR/run"; fi
-    POLL_FAILS=0
-    while :; do
-        rc=0
-        poll_once "$read" "$id" || rc=$?
-        [ "$rc" != 2 ] || return 1
-        state=""
-        [ "$rc" != 0 ] || state="$POLL_OUT"
-        if [ "$rc" = 0 ] && [ "$state" != "$last" ]; then
-            say "  $what: ${state% }"
-            detail "run $id ${state% }"
-            last="$state"
-        fi
-        case "$state" in
-            "completed success") return 0 ;;
-            completed\ *)
-                say "  $what concluded ${state#completed }: see gh run view $id --repo $GH_REPO --log-failed;"
-                say "  once it is fixed, rerun it (gh run rerun $id --failed --repo $GH_REPO)"
-                return 1 ;;
-        esac
-        polls=$((polls + 1))
-        if [ "$polls" -ge "$MAX_POLLS" ]; then
-            say "  gave up waiting for run $id after $polls polls; it may still be running"
-            return 1
-        fi
-        sleep "$POLL"
-    done
-}
 
 worktree_digest() { { g diff HEAD; g status --porcelain=v1 -uall; } | cksum; }
 
@@ -1033,36 +853,13 @@ step_19() {
     id="$(await_output find_run ci.yml push "$PIN_COMMIT")" || { say "  no CI run on $PIN_COMMIT appeared"; return 1; }
     await_run "$id" "CI on $PROD (bazel)" ci_gate_state
 }
-# The newest publish-pi.yml run that publishes (not a dry run) from commit
-# $1, by the title the workflow gives it, or nothing.
-publish_run() {
-    gh run list --workflow publish-pi.yml --event workflow_dispatch --limit 50 \
-        --json databaseId,displayTitle --jq '.[] | "\(.databaseId)\t\(.displayTitle)"' \
-        | awk -F '\t' -v t="Publish Pi package $1" '$2 == t { print $1 }' | sed -n 1p
-}
-# That run, when it is not run $2 (the newest before a dispatch).
-new_publish_run() {
-    local id
-    id="$(publish_run "$1")" || return 1
-    if [ "$id" != "$2" ]; then echo "$id"; fi
-}
-# Publishes from the pin commit: a run already under way for it is waited
-# for; none, or a failed one, is dispatched anew.
+# Publishes from the pin commit through publish-pi.yml (publish_through);
+# while the package is not on npm, from here.
 step_20() {
-    local id state on
+    local on
     on="$(pi_on_npm)" || { say "  cannot ask npm about $(pi_package)"; return 1; }
     if [ "$on" = no ]; then pi_first_publish; return; fi
-    id="$(gh_retry publish_run "$PIN_COMMIT")" || return 1
-    state=""
-    if [ -n "$id" ]; then state="$(gh_retry run_state "$id")" || return 1; fi
-    case "$state" in
-        "" | completed\ *)
-            gh workflow run publish-pi.yml --ref "$PROD" -f dry_run=false -f "sha=$PIN_COMMIT"
-            detail "dispatched; waiting for the run to start"
-            id="$(await_output new_publish_run "$PIN_COMMIT" "$id")" \
-                || { say "  no Publish Pi package run for $PIN_COMMIT appeared"; return 1; } ;;
-    esac
-    await_run "$id" "Publish Pi package"
+    publish_through publish-pi.yml "Publish Pi package" "$PIN_COMMIT"
 }
 
 # The Pi package's first version, published from here: from a temporary

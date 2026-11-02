@@ -1,16 +1,17 @@
 name: Publish SDK package
 
 # Publishes web/dist-sdk to npm as @empathic/clax-sdk (built by
-# web/scripts/build-sdk.mjs at the workspace's version in Cargo.toml), run
-# by hand (Actions, Publish SDK package, Run workflow) or by
-# scripts/release.sh after the Pi package (docs/usage.md, "Releasing"). It
-# publishes from the commit `sha` names (by default the tip of the ref it
-# runs on), which must be on prod, where releases come from, with CI
-# passed on it. It builds the package and runs its test (pnpm run
-# build:sdk, test:sdk), and refuses a version npm already has. With
-# `dry_run` it does everything but publish. The run is titled "Publish SDK
-# package <sha>", or "Publish SDK package (dry run) <sha>", so a caller can
-# find it.
+# web/scripts/build-sdk.mjs at the package's own version, its
+# PACKAGE_VERSION), run by hand (Actions, Publish SDK package, Run
+# workflow) or by scripts/release-sdk.sh, `just release-sdk`
+# (docs/usage.md, "Releasing the SDK package"). It publishes from the
+# commit `sha` names (by default the tip of the ref it runs on), which must
+# be on prod, where Clax releases go, with CI passed on it: a published SDK
+# then calls only the report-queue routes that deployed instances have. It
+# builds the package and runs its test (pnpm run build:sdk, test:sdk), and
+# refuses a version npm already has. With `dry_run` it does everything but
+# publish. The run is titled "Publish SDK package <sha>", or "Publish SDK
+# package (dry run) <sha>", so a caller can find it.
 #
 # It publishes through npm trusted publishing (OIDC, no token) with
 # provenance, as publish-pi.yml does, so the package on npmjs.com must name
@@ -19,8 +20,8 @@ name: Publish SDK package
 # repository's settings limit to prod, so npm refuses a token from a run
 # dispatched on any other ref. npm offers trusted publishing only for a
 # package that exists, so the first version is not published here:
-# scripts/release.sh publishes it from the releaser's machine (built in a
-# worktree of the pin commit on prod) and prints that setup.
+# scripts/release-sdk.sh publishes it from the releaser's machine (built in
+# a worktree of the commit on prod) and prints that setup.
 on:
   workflow_dispatch:
     inputs:
@@ -74,7 +75,7 @@ jobs:
           sha="$(git rev-parse --verify "$SHA^{commit}")"
           git fetch --quiet --no-tags origin prod
           if ! git merge-base --is-ancestor "$sha" FETCH_HEAD; then
-            echo "$sha is not on prod: the SDK package is published from the pin commit on prod" >&2
+            echo "$sha is not on prod: the SDK package is published from a commit on prod" >&2
             exit 1
           fi
           # The gate is ci.yml's bazel job (which runs //web:sdk_package):

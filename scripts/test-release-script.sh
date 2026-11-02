@@ -5,10 +5,11 @@
 # scratch repository's own config). No network, no GitHub; git reads no
 # global or system config.
 #
-# A scratch repository holds a copy of release.sh and stand-ins for the
-# scripts it runs (bump-version.sh, check-version.sh, pin-release.sh write
-# and read CLAX_VERSION and PINNED_VERSION in scripts/ensure-clax.sh; their
-# own tests are scripts/test-release.sh). The fakes log every call to
+# A scratch repository holds a copy of release.sh, of the helpers it
+# sources (scripts/lib/release-common.sh), and stand-ins for the scripts it
+# runs (bump-version.sh, check-version.sh, pin-release.sh write and read
+# CLAX_VERSION and PINNED_VERSION in scripts/ensure-clax.sh; their own
+# tests are scripts/test-release.sh). The fakes log every call to
 # $FAKE_STATE/calls. The fake gh plays GitHub from the bare origin: a pull
 # request ($FAKE_STATE/pr, "STATE URL") once one is created, which the
 # test's merge_pr merges as GitHub would, with a signed merge commit on
@@ -313,7 +314,7 @@ SH
 # ($MAIN0).
 new_case() {
     C="$(mktemp -d "$T/case.XXXXXX")"
-    mkdir -p "$C/state" "$C/repo/scripts" "$C/repo/bazel" "$C/repo/plugins/pi/scripts"
+    mkdir -p "$C/state" "$C/repo/scripts/lib" "$C/repo/bazel" "$C/repo/plugins/pi/scripts"
     export FAKE_STATE="$C/state" FAKE_REMOTE="$C/origin.git" FAKE_OUT="$C/out" CLAX_RELEASE_NOW_FILE="$C/now"
     echo 1000000 > "$C/now"
     git init -q --bare -b main "$C/origin.git"
@@ -326,6 +327,7 @@ new_case() {
     git -C "$r" config user.signingkey "$T/key"
     git -C "$r" config gpg.ssh.allowedSignersFile "$T/allowed_signers"
     cp "$HERE/scripts/release.sh" "$r/scripts/release.sh"
+    cp "$HERE/scripts/lib/release-common.sh" "$r/scripts/lib/release-common.sh"
     cp "$HERE/scripts/release-exists-check.sh" "$r/scripts/release-exists-check.sh"
     printf 'target/\n' > "$r/.gitignore"
     printf 'CLAX_VERSION="0.5.0"\nPINNED_VERSION="0.5.0"\n' > "$r/scripts/ensure-clax.sh"
