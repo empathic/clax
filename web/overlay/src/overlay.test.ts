@@ -142,10 +142,14 @@ const click = (b: HTMLElement | undefined | null) => { if (!b) throw new Error("
 const key = (k: string, target: EventTarget = document.body) => { target.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, composed: true })); flushSync(); };
 
 describe("the overlay", () => {
-  it("starts Element mode from the launcher's mode bar, and Cancel or Escape ends it", () => {
+  it("starts Element mode from the launcher's mode bar, and Cancel or Escape ends it", async () => {
     expect(q(".launcher")).not.toBeNull();
     click(button("Report"));
     expect(modes).toEqual([true]);
+    // The hint is said once the bar is there (a live region filled after it mounts).
+    expect(q('.modebar [role="status"]')?.textContent).toBe("");
+    await tick();
+    flushSync();
     expect(q(".modebar")?.textContent).toMatch(/Click what your report is about/);
     expect(q('.modebar button[aria-pressed="true"]')?.textContent).toMatch(/Element/);
     click(button("Cancel"));

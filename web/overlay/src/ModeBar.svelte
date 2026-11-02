@@ -14,6 +14,7 @@
   // the pointer is farther from, moving to the other edge as the pointer
   // comes near; the full instructions are said in its live region, and only
   // a short hint shows.
+  import { onMount, tick } from "svelte";
   import type { Mode } from "./capture";
   import { edgeFor } from "./keep-clear";
 
@@ -36,6 +37,11 @@
   };
   const SHORT: Record<Mode, string> = { element: "Click or select it", area: "Drag over it", screen: "Taking the page…" };
   const NONE = "Add a screenshot: pick a mode, or just write your note.";
+
+  /** The status region is mounted empty and filled a tick later: a live
+   * region created with its text in it is often not announced (VoiceOver). */
+  let live = $state(false);
+  onMount(() => { void tick().then(() => { live = true; }); });
 
   let bar = $state<HTMLDivElement | null>(null);
   let edge = $state<"top" | "bottom">("top");
@@ -81,7 +87,7 @@
   </div>
   <span class="hint" aria-hidden="true">{mode ? SHORT[mode] : "Pick a mode, or write"} · Esc</span>
   <button type="button" class="ghost" aria-keyshortcuts="Escape" onclick={onCancel}>Cancel</button>
-  <span class="sr" role="status">{mode ? HINT[mode] : NONE}</span>
+  <span class="sr" role="status">{live ? (mode ? HINT[mode] : NONE) : ""}</span>
   <span class="sr outlined" aria-live="polite">{mode === "element" && outlined ? `Outlined ${outlined}.` : ""}</span>
 </div>
 

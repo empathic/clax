@@ -125,10 +125,6 @@ export function mountOverlay(opts: OverlayOptions, pluginList: readonly ClaxPlug
   if (opts.user !== undefined && (typeof opts.user !== "string" || !opts.user)) throw new TypeError("Clax.overlay: user must be a non-empty string");
   const client = new ReporterClient({ instance, queue: opts.queue, auth: opts.auth, user: opts.user });
   const recorder = installDiagnostics(win, { instance });
-  // A page refusing inline style: its clips never try the web fonts' <style>.
-  // The clip code loads on its own (a site with screenshots off never needs
-  // it); this runs before any clip, whose import waits on the same module.
-  void import("../../bridge/src/clip").then(m => { if (opts.nonce !== undefined || m.metaRefusesInlineStyle(doc)) m.withoutWebFonts(doc); });
   const session = new Session({ context: opts.context, metadata: opts.metadata, diagnostics: opts.diagnostics, recorder }, win);
 
   const listeners = { badge: new Set<(n: number) => void>(), filed: new Set<(r: Report) => void>() };
@@ -141,6 +137,11 @@ export function mountOverlay(opts: OverlayOptions, pluginList: readonly ClaxPlug
 
   if (!Array.isArray(pluginList)) throw new TypeError("Clax.overlay: plugins must be a list of plugins");
   const plugins = new PluginHost(pluginList);
+  // A page refusing inline style: its clips never try the web fonts' <style>.
+  // The clip code is loaded only where a capture plugin is in (a site with
+  // screenshots off never fetches it); this runs before any clip, whose
+  // import waits on the same module.
+  if (plugins.list("capture").length) void import("../../bridge/src/clip").then(m => { if (opts.nonce !== undefined || m.metaRefusesInlineStyle(doc)) m.withoutWebFonts(doc); });
   for (const r of plugins.refused) console.warn(`Clax.overlay: plugin ${r.name} refused: ${r.reason}`);
 
   const host = doc.createElement(OVERLAY_TAG);

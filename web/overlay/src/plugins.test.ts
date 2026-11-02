@@ -135,6 +135,17 @@ describe("presentations", () => {
     expect(q(".composer")).toBeNull();
   });
 
+  it.each(["drawer", "sheet"])("%s: a labelled region in its own layout, with no modal", async layout => {
+    start(classic(), { presentation: layout });
+    click(button("Report"));
+    onPick(pickOf());
+    await settle();
+    const frame = q(`.dock[data-layout="${layout}"] .frame[role="region"]`)!;
+    expect(frame.getAttribute("aria-labelledby")).toBe("cx-composer-title");
+    expect(frame.querySelector(".composer")).not.toBeNull();
+    expect(q("[aria-modal]")).toBeNull();
+  });
+
   it("dialog: Tab wraps within it, and Escape anywhere in it closes it", async () => {
     start(classic(), { presentation: "dialog" });
     click(button("Report"));
