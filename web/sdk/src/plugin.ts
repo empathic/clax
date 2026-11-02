@@ -401,8 +401,9 @@ export class PluginHost {
   on<E extends BusEvent>(event: E, fn: (m: BusMessage<E>) => void): () => void {
     let set = this.listeners.get(event);
     if (!set) this.listeners.set(event, (set = new Set()));
-    set.add(fn as (m: BusMessage<BusEvent>) => void);
-    return () => { set!.delete(fn as (m: BusMessage<BusEvent>) => void); };
+    const any = fn as unknown as (m: BusMessage<BusEvent>) => void;
+    set.add(any);
+    return () => { set!.delete(any); };
   }
 
   /** Tells every listener; a cancellable event comes back with why the
