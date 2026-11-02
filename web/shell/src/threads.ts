@@ -1,5 +1,6 @@
 import type { Anchor } from "../../bridge/src/protocol";
 import { ApiError, getToken } from "./api";
+import { type SentTo, sentText } from "./view/sent-text";
 
 export type Tier = "piggyback" | "stop_hook" | "prompt_hook" | "wait" | "queue" | "inject";
 /** `withheld`: held until `approver` (a display name) approves an author
@@ -111,10 +112,16 @@ export async function sendToAgent(aid: string, tid: string, to: string | null = 
     : await post(url, to === null ? undefined : { to });
   return (await ok<{ thread: Thread }>(res)).thread;
 }
+export { type SentTo, sentText };
+/** [`sendToAgent`], with what the send says of whom it reached ([`sentText`]). */
+export async function sendToAgentSaying(aid: string, tid: string, to: string | null): Promise<{ thread: Thread; said: string | null }> {
+  const r = await ok<{ thread: Thread; to?: SentTo | null }>(await post(`/api/artifacts/${aid}/threads/${tid}/send`, to === null ? undefined : { to }));
+  return { thread: r.thread, said: sentText(r.to) };
+}
 /** Sends `threadIds` as one batch with an optional `note`, to the agent `to`
  * names or, with `to` null, without a target (the body has no `to` key). All
  * or nothing: a refusal throws `ApiError` with the daemon's message. */
-export async function sendBatch(aid: string, threadIds: string[], note: string | null, to: string | null): Promise<{ threads: Thread[]; sent: string[]; unchanged: string[] }> {
+export async function sendBatch(aid: string, threadIds: string[], note: string | null, to: string | null): Promise<{ threads: Thread[]; sent: string[]; unchanged: string[]; to?: SentTo | null }> {
   return ok(await post(`/api/artifacts/${aid}/threads:send`, { thread_ids: threadIds, note, ...(to === null ? {} : { to }) }));
 }
 export async function resolveThread(aid: string, tid: string): Promise<Thread> {

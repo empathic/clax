@@ -45,6 +45,8 @@
     farPage?(threadId: string): Promise<FarPage | null>;
     firsts?(threadIds: string[]): Promise<(string | null)[] | null>;
     suggestion?: { origin: string; suggestion: Suggestion | null } | null; sites?: SiteChoice[] | null;
+    /** What the last action that went through said (`notice`), shown in the notices zone. */
+    notice?: string | null;
   } & Partial<Pick<PanelLink, "inbox" | "questions" | "ask" | "onItem">>;
   type Area = Parameters<typeof loadPrefs>[0];
   const local = (): Area => { try { return chrome.storage.local; } catch { return undefined; } };
@@ -193,6 +195,8 @@
   /** The failure the person dismissed, by code, message and how many
    * actions had failed: hidden until another comes, or an action fails again. */
   let dismissed = $state<string | null>(null);
+  /** The worker's last notice the person dismissed. */
+  let saidDismissed = $state<string | null>(null);
   const errorKey = $derived(s?.error ? `${s.error.code}\n${s.error.message}\n${link.failures ?? 0}` : null);
   let copied = $state(false);
   function copy(text: string): void {
@@ -256,23 +260,36 @@
           aria-label={unreadCount ? `Inbox, ${unreadCount} unread` : "Inbox"} onclick={() => (tab = "inbox")} onkeydown={tabKey}>Inbox{#if unreadCount}<span class="count" aria-hidden="true">{unreadCount}</span>{/if}</button>
       </div>
     {/if}
-    {#if link.up === false}
-      <p class="notice quiet" role="status">Reconnecting to Clax. What this shows may be out of date.</p>
-    {/if}
-    {#if s.error && shownHelp && errorKey !== dismissed}
-      <div class="notice" role="alert">
-        <p>{shownHelp.before}{#if shownHelp.command}{" "}<code>{shownHelp.command}</code>{" "}{shownHelp.after ?? ""}{/if}</p>
-        {#if shownHelp.command}
-          {@const command = shownHelp.command}
-          <button type="button" class="ghost" onclick={() => copy(command)}>{copied ? "Copied" : "Copy"}</button>
+    <!-- The notices' own zone: always here at one size, "No notices" when
+         empty, so a notice never moves the panel's other zones. -->
+    <section class="notices" aria-label="Notices">
+      {#if s.error && shownHelp && errorKey !== dismissed}
+        <div class="notice" role="alert">
+          <p>{shownHelp.before}{#if shownHelp.command}{" "}<code>{shownHelp.command}</code>{" "}{shownHelp.after ?? ""}{/if}</p>
+          {#if shownHelp.command}
+            {@const command = shownHelp.command}
+            <button type="button" class="ghost" onclick={() => copy(command)}>{copied ? "Copied" : "Copy"}</button>
+          {/if}
+          {#if RETRYABLE.has(s.error.code)}
+            <button type="button" onclick={() => link.post({ t: "retry" })}>Retry</button>
+          {:else}
+            <button type="button" class="ghost" onclick={() => (dismissed = errorKey)}>Dismiss</button>
+          {/if}
+        </div>
+      {/if}
+      <div class="said" role="status">
+        {#if link.up === false}
+          <p class="notice quiet">Reconnecting to Clax. What this shows may be out of date.</p>
         {/if}
-        {#if RETRYABLE.has(s.error.code)}
-          <button type="button" onclick={() => link.post({ t: "retry" })}>Retry</button>
-        {:else}
-          <button type="button" class="ghost" onclick={() => (dismissed = errorKey)}>Dismiss</button>
+        {#if link.notice && link.notice !== saidDismissed}
+          <p class="notice quiet">{link.notice} <button type="button" class="ghost" onclick={() => (saidDismissed = link.notice ?? null)}>Dismiss</button></p>
         {/if}
       </div>
-    {/if}
+      <!-- Outside the live region: emptying it is not announced. -->
+      {#if !(s.error && shownHelp && errorKey !== dismissed) && link.up !== false && !(link.notice && link.notice !== saidDismissed)}
+        <p class="none">No notices</p>
+      {/if}
+    </section>
     {#if inboxTab && link.questions && link.ask && link.onItem && link.inbox}
       <div class="tabpanel" role="tabpanel" id="ptab-inbox-panel" aria-labelledby="ptab-inbox">
         <!-- Loaded when first opened: the panel's first paint carries none of it. -->
@@ -391,6 +408,10 @@
   .notice p { flex: 1; margin: 0; overflow-wrap: anywhere; }
   .notice code { font: 12.5px var(--mono); padding: 1px 5px; border-radius: var(--radius-xs); background: var(--card); border: 1px solid var(--border); white-space: nowrap; }
   .notice.quiet { background: var(--hover); color: var(--muted); font-size: 13px; }
+  /* One fixed height, empty or not: a notice scrolls inside it, never moving what follows. */
+  .notices { box-sizing: border-box; height: 88px; margin: 8px 0 0; overflow-y: auto; contain: layout size; }
+  .notices .notice { margin-top: 4px; }
+  .notices .none { margin: 12px var(--gutter) 0; font-size: 13px; color: var(--muted); }
   .hint { color: var(--muted); }
   .name { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
   .name input { width: 100%; box-sizing: border-box; }

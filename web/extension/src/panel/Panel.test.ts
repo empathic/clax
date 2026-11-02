@@ -5,6 +5,7 @@ import type { InboxItem } from "../../../shell/src/api";
 import * as fixtures from "../../../shell/src/q/fixtures";
 import type { InboxReq as InboxReqLike } from "./link.svelte";
 import Panel from "./Panel.svelte";
+import PANEL_SOURCE from "./Panel.svelte?raw";
 import { PanelQuestions } from "./questions";
 
 const thread = {
@@ -57,6 +58,34 @@ describe("Panel", () => {
     expect(l.sent).toContainEqual({ t: "set-name", name: "Mia" });
   });
 
+  it("keeps one notices zone at one size, empty or not, so a notice never moves what follows it", async () => {
+    const at = new Date("2026-10-05T10:01:00.000Z");
+    const { container, rerender } = render(Panel, { props: { link: link(state()) as never, now: at } });
+    const zone = screen.getByRole("region", { name: "Notices" });
+    expect(within(zone).getByText("No notices")).toBeTruthy();
+    expect(within(zone).getByRole("status").textContent?.trim()).toBe("");
+    // Every element after the zone, and its box, before any notice.
+    const after = () => [...container.querySelectorAll(".notices ~ *")];
+    const rects = (els: Element[]) => els.map(e => JSON.stringify(e.getBoundingClientRect()));
+    const before = after();
+    const boxes = rects(before);
+    // A send's notice, then a failure: both in the zone, the same nodes after it.
+    await rerender({ link: { ...link(state()), notice: "Sent; scratch.main-ax-rebuild-spike will get it the next time it works." } as never, now: at });
+    expect(screen.getByRole("region", { name: "Notices" })).toBe(zone);
+    expect(within(zone).getByRole("status").textContent).toContain("will get it the next time it works");
+    expect(within(zone).queryByText("No notices")).toBeNull();
+    expect(after()).toEqual(before);
+    expect(rects(after())).toEqual(boxes);
+    await rerender({ link: link(state({ error: { code: "unknown_agent", message: "no live agent on this artifact has that handle" } })) as never, now: at });
+    expect(within(zone).getByRole("alert").textContent).toContain("no live agent");
+    expect(after()).toEqual(before);
+    expect(rects(after())).toEqual(boxes);
+    // The zone's size is fixed by its own rule, not by what it holds.
+    // (jsdom lays nothing out, so the boxes above are equal by construction;
+    // the rule below is what holds them in a browser.)
+    expect(PANEL_SOURCE).toMatch(/\.notices \{[^}]*height: 88px;[^}]*overflow-y: auto;/);
+  });
+
   it("shows a failure with a way to retry", async () => {
     const l = link(state({ error: { code: "host_missing", message: "Specified native messaging host not found." } }));
     render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z") } });
@@ -99,7 +128,8 @@ describe("Panel", () => {
 
   it("says when the worker's stream is down, so what it shows may be stale", () => {
     render(Panel, { props: { link: link(state(), false) as never, now: new Date("2026-10-05T10:01:00.000Z") } });
-    expect(screen.getByText(/out of date/).getAttribute("role")).toBe("status");
+    // Said in the notices zone's polite live region.
+    expect(screen.getByText(/out of date/).closest("[role]")?.getAttribute("role")).toBe("status");
   });
 
   it("shows the page's title and comments as text, never as markup", () => {

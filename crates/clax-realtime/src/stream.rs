@@ -865,6 +865,8 @@ fn routes_loud(ev: &Event) -> Vec<(Chan, Gate)> {
             vec![(Chan::Artifact(a), Gate::Any)]
         }
         Event::Job { .. } | Event::JobsOwner { .. } => vec![(Chan::Jobs, Gate::Any)],
+        // The chitin adapter's, on `/api/events` alone.
+        Event::AgentSent { .. } => Vec::new(),
         // Tag names are the owner's, shown with every artifact anyone sees;
         // the event carries no name, only what to refetch.
         Event::Tags {

@@ -202,6 +202,10 @@ pub async fn events(
         ) {
             return false;
         }
+        // A send to a named agent is the chitin adapter's, which holds the token.
+        if matches!(ev, Event::AgentSent { .. }) && !token {
+            return false;
+        }
         if hidden
             .as_ref()
             .is_some_and(|live| live.contains(ev.artifact_id()))

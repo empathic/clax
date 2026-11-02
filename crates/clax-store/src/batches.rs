@@ -58,7 +58,8 @@ impl Store {
     /// batch, all or nothing. Errors, checked in this order before anything is
     /// written: `invalid_args` (none, more than [`MAX_BATCH_THREADS`], or not
     /// ULIDs), `note_too_long`, `unknown_agent` (`to` is not a live owner or
-    /// watcher of the artifact), `unknown_thread` (missing or on another
+    /// watcher of the artifact, nor a known agent a send may wait for:
+    /// `feedback::queueable_in`), `unknown_thread` (missing or on another
     /// artifact; the message names them), `thread_resolved` (names them), and
     /// `nothing_to_send` when no thread has a viewer comment without a row.
     /// Already-sent threads are accepted: they send only what they have not
@@ -106,8 +107,10 @@ impl Store {
         };
         let to = b.to;
         self.with_tx(|tx| {
+            let routed = self.routed(aid.as_str());
             if let Some(sid) = to.as_deref()
-                && !live_targets_of(tx, aid.as_str(), self.routed(aid.as_str()))?.iter().any(|s| s == sid)
+                && !live_targets_of(tx, aid.as_str(), routed)?.iter().any(|s| s == sid)
+                && !super::feedback::queueable_in(tx, aid.as_str(), sid)?
             {
                 return Err(CoreError::invalid("unknown_agent", "no live agent on this artifact has that handle"));
             }

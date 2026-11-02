@@ -164,6 +164,10 @@ pub struct Session {
     /// Who gave the name: `derived`, `agent` or `person`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name_source: Option<String>,
+    /// The chitin title its agent registered with (its `CHITIN_TITLE`):
+    /// the one channel a send to it is said on, by the chitin adapter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chitin_title: Option<String>,
 }
 
 pub const CONTRACT_VERSION: &str = "0.3.0";
@@ -364,4 +368,18 @@ pub struct RegisterSession {
     /// The repository's branch, for the agent's name (spec §11).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    /// The agent's chitin title (`CHITIN_TITLE`), when it has one: a send
+    /// to the session is said to that title over chitin. Not sent when
+    /// absent; a registration without one keeps the one recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chitin_title: Option<String>,
+}
+
+/// Whether `t` may be a chitin title: 1 to 64 ASCII letters, digits, `.`,
+/// `_` or `-`, starting with a letter or digit.
+pub fn is_chitin_title(t: &str) -> bool {
+    (1..=64).contains(&t.len())
+        && t.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && t.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }

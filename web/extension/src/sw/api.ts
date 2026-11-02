@@ -8,6 +8,7 @@
 import type { AnswerBody, Artifact, InboxFilter, InboxItem, InboxPage, InboxSummary, QuestionView, Version } from "../../../shell/src/api";
 import { inboxQuery } from "../../../shell/src/q/api";
 import type { Thread, Viewer } from "../../../shell/src/threads";
+import type { SentTo } from "../../../shell/src/view/sent-text";
 import type { PresenceView } from "../../../shell/src/view/presence-model";
 import type { Working } from "../../../shell/src/view/working-model";
 import type { PageView, SiteInfo, SiteRule, SiteView } from "../messages";
@@ -137,8 +138,9 @@ export class Api {
     return this.json<{ page: PageView; version: number; linked: string[] }>("/api/live/snapshots", { method: "POST", body: form });
   }
   async comment(aid: string, tid: string, body: string) { ids(aid, [tid]); return this.send<{ thread: Thread }>("POST", `/api/artifacts/${aid}/threads/${tid}/comments`, { body }, true); }
-  async sendThread(aid: string, tid: string, to: string | null) { ids(aid, [tid]); return this.send<{ thread: Thread }>("POST", `/api/artifacts/${aid}/threads/${tid}/send`, to ? { to } : {}, true); }
-  async sendBatch(aid: string, tids: string[], note: string | null, to: string | null) { ids(aid, tids); return this.send<{ threads: Thread[] }>("POST", `/api/artifacts/${aid}/threads:send`, { thread_ids: tids, note, to }, true); }
+  /** `to`: whom a send naming an agent reached (`sentText` words it). */
+  async sendThread(aid: string, tid: string, to: string | null) { ids(aid, [tid]); return this.send<{ thread: Thread; to?: SentTo | null }>("POST", `/api/artifacts/${aid}/threads/${tid}/send`, to ? { to } : {}, true); }
+  async sendBatch(aid: string, tids: string[], note: string | null, to: string | null) { ids(aid, tids); return this.send<{ threads: Thread[]; to?: SentTo | null }>("POST", `/api/artifacts/${aid}/threads:send`, { thread_ids: tids, note, to }, true); }
   /** A thread's clip as a `data:image/png` URL; null when it has none, or it is not a PNG of at most `MAX_CLIP` bytes. */
   async clip(aid: string, tid: string): Promise<string | null> {
     ids(aid, [tid]);

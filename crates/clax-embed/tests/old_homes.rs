@@ -360,7 +360,7 @@ async fn the_installed_flutter_app_home_backs_up_and_is_adopted() {
     let version = clax_store::schema_version(&home).unwrap();
     assert_eq!(
         version,
-        Some(clax_store::migrations::TAILSCALE_LOGIN_MIGRATION)
+        Some(clax_store::migrations::CHITIN_TITLE_MIGRATION)
     );
     assert_eq!(
         version,
