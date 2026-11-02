@@ -102,8 +102,9 @@ struct Serve {
     /// This pod's IP, for the advertised address.
     #[arg(long, env = "POD_IP")]
     pod_ip: Option<String>,
-    /// This process's shard (the ordinal ending the pod's name when
-    /// absent). The number of shards is the catalog's.
+    /// This process's shard, for a process whose name ends in no ordinal
+    /// (the ordinal ending the pod's name when absent; one that disagrees
+    /// with it is refused). The number of shards is the catalog's.
     #[arg(long, env = "CLAX_FLEET_ORDINAL")]
     ordinal: Option<u32>,
     /// Where shard `{shard}`'s process is reached.
@@ -207,6 +208,22 @@ fn ordinal_of(pod: &str) -> Option<u32> {
     pod.rsplit_once('-')?.1.parse().ok()
 }
 
+/// This process's shard: `explicit` (`--ordinal`), else the ordinal its
+/// pod name `pod` ends in. Both, when they differ, are refused: a value in
+/// a StatefulSet's pod template is every pod's, and would give each pod
+/// one shard's instances, homes made twice.
+fn shard_ordinal(explicit: Option<u32>, pod: &str) -> anyhow::Result<u32> {
+    match (explicit, ordinal_of(pod)) {
+        (Some(o), Some(p)) if o != p => anyhow::bail!(
+            "--ordinal (CLAX_FLEET_ORDINAL) is {o}, but the pod name {pod} says {p}: leave it unset in a StatefulSet, where each pod's name gives its shard"
+        ),
+        (Some(o), _) | (None, Some(o)) => Ok(o),
+        (None, None) => {
+            anyhow::bail!("no --ordinal, and the pod name {pod} does not end in one")
+        }
+    }
+}
+
 /// `CLAX_KEK`: 64 hex digits, or nothing.
 fn kek_from_env() -> anyhow::Result<Option<[u8; 32]>> {
     let Ok(hex) = std::env::var("CLAX_KEK") else {
@@ -271,9 +288,7 @@ fn serve(a: Serve) -> anyhow::Result<()> {
         )?;
     }
     let rt = tokio::runtime::Runtime::new()?;
-    let ordinal = a.ordinal.or_else(|| ordinal_of(&pod)).ok_or_else(|| {
-        anyhow::anyhow!("no --ordinal, and the pod name {pod} does not end in one")
-    })?;
+    let ordinal = shard_ordinal(a.ordinal, &pod)?;
     let peer_key = peer_key(a.peer_key)?;
     let fleet = Fleet::new(FleetConfig {
         pod: pod.clone(),
@@ -504,6 +519,24 @@ mod tests {
         assert_eq!(ordinal_of("clax-fleet-12"), Some(12));
         assert_eq!(ordinal_of("clax"), None);
         assert_eq!(ordinal_of("clax-abc12"), None);
+    }
+
+    /// An explicit ordinal is for a process whose name ends in none; one
+    /// that disagrees with the pod name (the same value in every pod's
+    /// template) is refused, naming both, rather than claiming another
+    /// pod's shard.
+    #[test]
+    fn an_explicit_ordinal_must_agree_with_the_pod_name() {
+        assert_eq!(shard_ordinal(None, "clax-3").unwrap(), 3);
+        assert_eq!(shard_ordinal(Some(3), "clax-3").unwrap(), 3);
+        assert_eq!(shard_ordinal(Some(2), "fleet").unwrap(), 2);
+        let err = shard_ordinal(Some(0), "clax-1").unwrap_err().to_string();
+        assert!(
+            err.contains("CLAX_FLEET_ORDINAL") && err.contains("0") && err.contains("clax-1"),
+            "{err}"
+        );
+        let err = shard_ordinal(None, "fleet").unwrap_err().to_string();
+        assert!(err.contains("does not end in one"), "{err}");
     }
 
     #[test]

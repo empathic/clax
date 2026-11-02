@@ -27,7 +27,9 @@ volume.
 
 Requests are matched to instances by `Host`: an instance's public origin,
 or a site host under its site domain (`<artifact ID>.<site_domain>`). One
-instance can be the default, which answers every other host.
+instance can be the default, which answers every other host: for a fleet
+of one tenant. With more, leave none, so that a host no instance names
+gets 404 rather than one tenant's instance.
 
 The fleet adds instances, not throughput for any one of them: one instance
 serves as many requests as one pod can. To grow, run more instances (one
@@ -110,7 +112,7 @@ shards = 2               # the StatefulSet's replicas
 name = "acme"            # lowercase letters, digits and inner dashes
 shard = 0                # the pod (clax-0) whose volume keeps it
 create = true            # may make its home (a new instance only)
-default = true           # answers hosts no instance names
+default = false          # true: answers hosts no instance names (one tenant only)
 paused = false           # true: stopped, its hosts answer 503
 config = '''
 [hosted]
@@ -161,14 +163,23 @@ another tenant. The fleet records the public origin each instance's data
 was made for, and refuses to start a name whose origin changed
 (`instance_reused` in the log).
 
-**Instances' secrets.** Each instance's setup secret (its `[hosted]
-setup_secret_env`) and any GitHub client secret come from the
-`clax-secrets` Secret, which pods read when they start. Every instance
-names a variable of its own (`CLAX_SETUP_SECRET_<NAME>`): the catalog is
-refused when two instances read the same one, or both leave it to the
-default `CLAX_SETUP_SECRET`, since either's secret would then open the
-other's `/setup`, and when one names `CLAX_KEK` or `CLAX_FLEET_PEER_KEY`.
-After adding an instance's secret, or rotating one, run `kubectl rollout
+**Instances' secrets.** An instance reads two secrets from the
+environment, both from the `clax-secrets` Secret, which pods read when
+they start and every instance sees whole:
+
+| `[hosted]` setting | the secret | default variable |
+|---|---|---|
+| `setup_secret_env` | what the first visit to `/setup` asks for | `CLAX_SETUP_SECRET` |
+| `github_client_secret_env` | its GitHub OAuth app's client secret, with `github_client_id` | `GITHUB_CLIENT_SECRET` |
+
+Every instance names variables of its own (`CLAX_SETUP_SECRET_<NAME>`,
+`CLAX_GITHUB_SECRET_<NAME>`). The catalog is refused when two instances
+read one variable, both leaving it to the default included: either's
+setup secret would open the other's `/setup`, and each instance's OAuth
+app has a secret of its own. It is refused too when an instance reads
+`CLAX_KEK` or `CLAX_FLEET_PEER_KEY`. A hosted instance reads no `[bot]`
+or `[sample]` key variable: ClaxBot's model keys are each instance's own,
+stored sealed in its home (CLAX_KEK). After adding an instance's secret, or rotating one, run `kubectl rollout
 restart sts clax`. An instance whose setup secret is missing logs that
 `/setup` stays closed.
 
@@ -177,7 +188,8 @@ restart sts clax`. An instance whose setup secret is missing logs that
 1. **The image.** Use a release's, or build and push your own (The image).
 2. **Your overlay.** Make `my-clax/` with the `kustomization.yaml` of The
    image and a `fleet.toml` of your own instances (The catalog), each
-   with its own origin and its own `setup_secret_env`. Check it:
+   with its own origin and its own `setup_secret_env` (and
+   `github_client_secret_env`, signing in with GitHub). Check it:
    `docker run --rm -v "$PWD/my-clax":/c <image> check-catalog /c/fleet.toml`.
    Applying `deploy/k8s/sqlite` itself deploys the example catalog's
    instance at `https://clax.example.com`, whose name is then that
@@ -223,19 +235,37 @@ past `shards` serves nothing of its own and logs so.
 The new shard never makes an empty instance in its place, because without
 `create = true` a missing home keeps the instance down:
 
-1. Set `paused = true` on the instance and wait for its pod to log
-   `instance stopped`. Its hosts answer 503 meanwhile, never another
-   instance.
-2. Copy its home between the pods:
-   `kubectl exec clax-0 -- tar -C /var/lib/clax/instances -cf - acme | kubectl exec -i clax-1 -- tar -C /var/lib/clax/instances -xf -`
-3. Set its new `shard`, and remove `paused`.
+1. Set `paused = true` on the instance, apply, and wait until
+   `kubectl exec clax-0 -- clax-fleet status` no longer lists it among
+   its shard's running instances. The ConfigMap can take a minute to
+   reach the pod. Its hosts answer 503 meanwhile, never another instance.
+2. Copy its home between the pods, into no home of that name: `tar -x`
+   keeps the files already there that the copy lacks, and a `-wal` left
+   beside a copied database is replayed onto it. If the new shard has
+   one (from an earlier move), move it aside first:
+
+   ```
+   kubectl exec clax-1 -- mv /var/lib/clax/instances/acme /var/lib/clax/instances/acme.before-move
+   kubectl exec clax-0 -- tar -C /var/lib/clax/instances -cf - acme \
+     | kubectl exec -i clax-1 -- tar -C /var/lib/clax/instances -xf -
+   ```
+
+3. Set its new `shard`, remove `paused`, and apply.
+4. Once it serves from the new shard, move the old copy aside, so that a
+   `shard` set back by mistake finds no stale home to start:
+   `kubectl exec clax-0 -- mv /var/lib/clax/instances/acme /var/lib/clax/instances/acme.moved`.
+   A name with a dot is no instance's; delete it when you no longer need
+   it.
 
 **Draining.** On SIGTERM a pod answers `/readyz` with 503 at once, and
 keeps serving for `CLAX_FLEET_DRAIN_DELAY` (5 s) while the Service drops
 it. It then stops every instance and ends the open connections within
 10 s. `terminationGracePeriodSeconds` is 45. An instance whose store takes
 more than 10 s to stop goes on stopping, and is not started again on that
-pod until it has.
+pod until it has. An instance still starting (a long migration) is waited
+for 10 s too; past that the pod logs `the instance is still starting` and
+exits without stopping it, inside its grace period rather than killed at
+its end.
 
 ## CLAX_KEK
 
@@ -315,9 +345,22 @@ copy of a database before a migration is kept in each home.
 ## Backups and restore
 
 A volume snapshot of a live home is only crash-consistent. For a
-consistent copy of one instance, pause it (`paused = true`), copy its home
-out (`kubectl exec … tar`, as in Moving an instance), and unpause it. To
-restore, pause it, copy the home back, and unpause.
+consistent copy of one instance:
+
+1. Pause it, apply, and wait until it no longer runs, as in Moving an
+   instance. A copy taken sooner is of a store still writing.
+2. Copy its home out:
+   `kubectl exec clax-0 -- tar -C /var/lib/clax/instances -cf - acme > acme.tar`.
+3. Remove `paused`, and apply.
+
+To restore, pause it and wait the same way, then move the current home
+aside before extracting the copy, so that none of its files (a `-wal`
+beside the database) is left among the restored ones. Then unpause it:
+
+```
+kubectl exec clax-0 -- mv /var/lib/clax/instances/acme /var/lib/clax/instances/acme.before-restore
+kubectl exec -i clax-0 -- tar -C /var/lib/clax/instances -xf - < acme.tar
+```
 
 ## Operating it
 
@@ -378,7 +421,7 @@ sets the filter (`info`).
 | `CLAX_FLEET_LOCAL_ADMIN_LISTEN` | `--local-admin-listen` | the same, `/status` without the key, on a loopback address (`127.0.0.1:7482`) |
 | `POD_NAME` | `--pod` | this pod's name in the fleet |
 | `POD_IP`, `CLAX_FLEET_ADVERTISE` | `--pod-ip`, `--advertise` | where other pods reach this one (`$POD_IP:<listen port>`) |
-| `CLAX_FLEET_ORDINAL` | `--ordinal` | this pod's shard (by default, its name's suffix) |
+| `CLAX_FLEET_ORDINAL` | `--ordinal` | this process's shard, outside a StatefulSet (by default, its name's suffix; one that disagrees with it is refused) |
 | `CLAX_FLEET_PEER` | `--peer` | where shard `{shard}` is reached |
 | `CLAX_FLEET_PEER_KEY` | `--peer-key` | the key forwards carry (required, the same on every shard) |
 | `CLAX_FLEET_SQLITE_HEAP_MIB` | `--sqlite-heap-mib` | the memory all of a pod's SQLite databases aim to stay under (1024; 0 for none) |
