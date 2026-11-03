@@ -147,6 +147,8 @@ pub mod catalog;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod chitin;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod confirm_chitin;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod core;
 pub mod github;
 pub mod hosted;
@@ -167,7 +169,8 @@ pub mod shell;
 /// then the people routes', the jobs routes' and linked threads' sync
 /// ([`linked::listen`]), the sign-in drivers of the connection requests
 /// a Connect left waiting ([`routes::remote_requests::resume`]) and, off a
-/// Worker, the chitin publisher ([`chitin::listen`]).
+/// Worker, the chitin publisher ([`chitin::listen`]) and the held
+/// confirmations offered to the owner's passkey ([`confirm_chitin::listen`]).
 /// Returns the handles of the tasks they spawn, which run until aborted.
 pub fn start_listeners(s: &clax_http::state::AppState) -> Vec<clax_rt::JoinHandle<()>> {
     let mut tasks = s.start_listeners();
@@ -177,5 +180,7 @@ pub fn start_listeners(s: &clax_http::state::AppState) -> Vec<clax_rt::JoinHandl
     routes::remote_requests::resume(s);
     #[cfg(not(target_arch = "wasm32"))]
     tasks.extend(chitin::listen(s));
+    #[cfg(not(target_arch = "wasm32"))]
+    tasks.extend(confirm_chitin::listen(s));
     tasks
 }

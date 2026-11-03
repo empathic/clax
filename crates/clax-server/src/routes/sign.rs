@@ -65,8 +65,10 @@ fn owner_browser(who: &Identity) -> Result<(), ApiError> {
     }
 }
 
-/// Runs chitin with `args` (and `stdin` closed): its stdout on exit 0.
-async fn chitin(c: &SignConfig, args: &[&str]) -> Result<String, ApiError> {
+/// Runs chitin with `args` (and `stdin` closed) as `CHITIN_TITLE=clax`: its
+/// stdout on exit 0. Also what queues a held confirmation
+/// ([`crate::confirm_chitin`]).
+pub(crate) async fn chitin(c: &SignConfig, args: &[&str]) -> Result<String, ApiError> {
     let mut cmd = tokio::process::Command::new(&c.chitin);
     cmd.args(args)
         .env("CHITIN_TITLE", "clax")
