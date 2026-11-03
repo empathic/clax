@@ -1469,7 +1469,11 @@ mod tests {
                     "UPDATE live_pages SET origin = ?2 WHERE artifact_id = ?1",
                     params![aid.as_str(), CHANGELING],
                 )?;
-                st.record_audit(tx, DAEMON, rekey_record(at, aid.as_str(), PHOBOS, CHANGELING, path))?;
+                st.record_audit(
+                    tx,
+                    DAEMON,
+                    rekey_record(at, aid.as_str(), PHOBOS, CHANGELING, path),
+                )?;
             }
             Ok(())
         })
@@ -1481,8 +1485,14 @@ mod tests {
         let (_d, st) = store();
         page(&st, CHANGELING, "/", "Changeling");
         page(&st, PHOBOS, "/fold/", "Basis");
-        assert_eq!(code_of(st.join_origins(DAEMON, PHOBOS, CHANGELING)), "other_host_family");
-        assert_eq!(code_of(st.join_origins(DAEMON, CHANGELING, PHOBOS)), "other_host_family");
+        assert_eq!(
+            code_of(st.join_origins(DAEMON, PHOBOS, CHANGELING)),
+            "other_host_family"
+        );
+        assert_eq!(
+            code_of(st.join_origins(DAEMON, CHANGELING, PHOBOS)),
+            "other_host_family"
+        );
         assert!(!st.joined_site(PHOBOS).unwrap().joined());
     }
 
@@ -1498,7 +1508,10 @@ mod tests {
         // phobos's /fold/ lands on the page filed under 7700.
         assert_eq!(st.site_pages(PHOBOS).unwrap().len(), 4);
         let p = st.find_live_page(&key(PHOBOS, "/fold/")).unwrap().unwrap();
-        assert_eq!((p.artifact_id.as_str(), p.origin.as_str()), (fold.as_str(), CHANGELING));
+        assert_eq!(
+            (p.artifact_id.as_str(), p.origin.as_str()),
+            (fold.as_str(), CHANGELING)
+        );
         let needs_me = thread(&st, &fold);
         // A page made under the site after the join stays with the site.
         let later = page(&st, PHOBOS, "/later", "Later");
@@ -1515,12 +1528,20 @@ mod tests {
         assert!(!st.joined_site(CHANGELING).unwrap().joined());
         for (aid, path) in [(&fold, "/fold/"), (&fleet, "/a/f4s6pxhbs8bg")] {
             let p = st.find_live_page(&key(PHOBOS, path)).unwrap().unwrap();
-            assert_eq!((p.artifact_id.as_str(), p.origin.as_str()), (aid.as_str(), PHOBOS));
+            assert_eq!(
+                (p.artifact_id.as_str(), p.origin.as_str()),
+                (aid.as_str(), PHOBOS)
+            );
             assert!(st.find_live_page(&key(CHANGELING, path)).unwrap().is_none());
         }
         // The thread rides with its page.
-        let on_fold: Vec<String> =
-            st.list_threads(&fold, true, None, 50).unwrap().0.into_iter().map(|t| t.id).collect();
+        let on_fold: Vec<String> = st
+            .list_threads(&fold, true, None, 50)
+            .unwrap()
+            .0
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
         assert_eq!(on_fold, vec![needs_me]);
         // Changeling keeps its own pages and the one made under the site.
         for (aid, path) in [(&settings, "/settings"), (&home, "/"), (&later, "/later")] {
@@ -1530,11 +1551,19 @@ mod tests {
         // Recorded: the unjoin, then a re-key back per page.
         let ev = recorded(&st, seq);
         let kinds: Vec<&str> = ev.iter().map(|e| e.0.as_str()).collect();
-        assert_eq!(kinds, ["live.unjoin", "live.page_rekey", "live.page_rekey"], "{ev:?}");
+        assert_eq!(
+            kinds,
+            ["live.unjoin", "live.page_rekey", "live.page_rekey"],
+            "{ev:?}"
+        );
         assert_eq!(ev[0].1["origin"], PHOBOS);
         assert_eq!(ev[0].1["site"], CHANGELING);
         assert_eq!(ev[0].1["joined_at"], "2026-11-02T18:42:57.887Z");
-        assert!(ev[1..].iter().all(|e| e.1["from_origin"] == CHANGELING && e.1["to_origin"] == PHOBOS));
+        assert!(
+            ev[1..]
+                .iter()
+                .all(|e| e.1["from_origin"] == CHANGELING && e.1["to_origin"] == PHOBOS)
+        );
         // Again: nothing to undo.
         assert!(st.unjoin_origin(DAEMON, PHOBOS).unwrap().is_none());
     }
