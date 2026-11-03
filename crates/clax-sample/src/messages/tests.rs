@@ -243,6 +243,33 @@ fn expected_content() -> Vec<Block> {
 }
 
 #[tokio::test]
+async fn calls_name_clax_and_carry_the_session_label_but_not_the_key() {
+    let (base, log) = serve(vec![ok(sse(&tool_turn()), 3), ok(sse(&tool_turn()), 3)]).await;
+    let req = request();
+    let labelled = MessagesClient::new().with_session_label("claxbot:run_01");
+    labelled
+        .stream(ModelApi::Anthropic, &base, &key(), &req, |_| {})
+        .await
+        .unwrap();
+    let (out, _) = call(&base, &req).await;
+    out.unwrap();
+
+    let seen = log.lock().unwrap().clone();
+    let ua = format!("Clax/{}", env!("CARGO_PKG_VERSION"));
+    assert_eq!(seen[0].header("user-agent"), Some(ua.as_str()));
+    assert_eq!(seen[0].header("x-llm-session"), Some("claxbot:run_01"));
+    assert!(!format!("{labelled:?}").contains(KEY));
+    for s in &seen {
+        for h in ["user-agent", "x-llm-session"] {
+            assert!(!s.header(h).unwrap_or("").contains(KEY), "{h} carries the key");
+        }
+    }
+    // Unlabelled: the user agent still names Clax, and no session header.
+    assert_eq!(seen[1].header("user-agent"), Some(ua.as_str()));
+    assert_eq!(seen[1].header("x-llm-session"), None);
+}
+
+#[tokio::test]
 async fn a_tool_use_turn_streams_in_small_pieces_into_deltas_and_one_message() {
     let (base, log) = serve(vec![ok(sse(&tool_turn()), 3)]).await;
     let req = request();

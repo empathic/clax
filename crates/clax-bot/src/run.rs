@@ -1884,10 +1884,15 @@ impl Tick<'_> {
                     Some(StepKind::Turn),
                 ));
             }
-            let client = self.deps.client.clone().with_timeouts(Timeouts {
-                total: Some(total),
-                ..self.deps.client.timeouts()
-            });
+            let client = self
+                .deps
+                .client
+                .clone()
+                .with_timeouts(Timeouts {
+                    total: Some(total),
+                    ..self.deps.client.timeouts()
+                })
+                .with_session_label(format!("claxbot:{}", self.run.id));
             let attempt = s.attempt;
             let events = self.opts.events;
             let (store, run_id, n, driver) = (self.store, self.run.id.clone(), self.n, self.driver);
