@@ -6665,13 +6665,51 @@
             ],
             "timestamp": "2026-10-06T14:09:27.121Z"
           }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/site/http%3A%2F%2Flocalhost%3A5173": {
+              "structural": {
+                "joined_at": "2026-10-06T14:05:43.049Z",
+                "origin": "http://127.0.0.1:5173",
+                "rekeyed": [
+                  "q2w4e6r8t0yu"
+                ],
+                "rules_moved": [],
+                "site": "http://localhost:5173",
+                "type": "clax.live.unjoin"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "live.unjoin",
+              "origin": "http://localhost:5173",
+              "seq": 125,
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Undid the join of http://127.0.0.1:5173 to site http://localhost:5173"
+          },
+          "step": {
+            "actor": "human:clax-owner",
+            "id": "e000000000125",
+            "parents": [
+              "e000000000121"
+            ],
+            "timestamp": "2026-10-06T14:09:34.125Z"
+          }
         }
       ],
       "path": {
         "base": {
           "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697"
         },
-        "head": "e000000000121",
+        "head": "e000000000125",
         "id": "clax-install-6a1f0c3e"
       },
       "meta": {
@@ -6856,7 +6894,7 @@
       "clax_version": "0.3.1",
       "first_seq": 1,
       "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-      "last_seq": 124,
+      "last_seq": 125,
       "redaction": [
         "no-names"
       ],

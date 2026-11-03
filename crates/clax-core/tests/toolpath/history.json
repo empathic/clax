@@ -4223,6 +4223,38 @@
     "n": 2
    },
    "backfilled": false
+  },
+  {
+   "seq": 125,
+   "at": "2026-10-06T14:09:34.125Z",
+   "kind": "live.unjoin",
+   "actor": {
+    "type": "owner",
+    "public_id": "u_4be1q8"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": "http://localhost:5173"
+   },
+   "body": {
+    "v": 1,
+    "via": "shell",
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "origin": "http://127.0.0.1:5173",
+    "site": "http://localhost:5173",
+    "joined_at": "2026-10-06T14:05:43.049Z",
+    "rekeyed": [
+     "q2w4e6r8t0yu"
+    ],
+    "rules_moved": []
+   },
+   "backfilled": false
   }
  ]
 }
