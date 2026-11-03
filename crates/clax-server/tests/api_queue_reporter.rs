@@ -1985,3 +1985,36 @@ async fn a_filing_and_a_reporters_comment_reach_the_queues_topic() {
         "{got}"
     );
 }
+
+#[tokio::test]
+async fn filing_and_a_reporters_comment_ping_the_queues_topic() {
+    let s = Setup::new().await;
+    let r = s.reporter("emp-1").await;
+    let mut rx = s.ts.events.subscribe();
+    let pings = |rx: &mut tokio::sync::broadcast::Receiver<clax_core::Stamped>| {
+        let mut n = 0;
+        while let Ok(st) = rx.try_recv() {
+            n += usize::from(matches!(st.event, clax_core::Event::Queues));
+        }
+        n
+    };
+    let res = s.file(&r, "The total is wrong").await;
+    assert_eq!(res.status(), 201);
+    let v: Value = res.json().await.unwrap();
+    let tid = v["report"]["id"].as_str().unwrap().to_string();
+    assert_eq!(pings(&mut rx), 1, "filing");
+    let body = serde_json::to_vec(&json!({"body": "It is 12"})).unwrap();
+    let comments = format!("{}/{tid}/comments", s.reports());
+    let res = s
+        .as_reporter(
+            &r,
+            Some(ORIGIN),
+            "POST",
+            &comments,
+            Some("application/json"),
+            body,
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(pings(&mut rx), 1, "a reporter's comment");
+}

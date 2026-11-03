@@ -59,6 +59,7 @@ export type Page = "people" | "tags" | "queues" | "admin" | "settings" | "me" | 
 const PAGES: Record<Page, () => Promise<{ default: unknown }>> = {
   people: () => import("../people/People.svelte"),
   tags: () => import("./TagsPage.svelte"),
+  // `/queues`, and `/queues/<qid>[/<tid>]`: the page shows a queue's or a report's view in place.
   queues: () => import("../queues/Queues.svelte"),
   admin: () => import("../bot/AdminPage.svelte"),
   settings: () => import("../bot/SettingsPage.svelte"),

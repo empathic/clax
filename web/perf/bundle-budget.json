@@ -13,11 +13,11 @@
   "partRoom": 3657,
   "partSample": 3674,
   "extOverlay": 32768,
-  "extWorker": 25344,
+  "extWorker": 26112,
   "extComposer": 28672,
   "extPanel": 66560,
   "people": 1048576,
-  "queues": 24996,
+  "queues": 27904,
   "partLive": 4616,
   "overlay": 94208,
   "sdkOverlay": 131072

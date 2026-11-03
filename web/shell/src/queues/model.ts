@@ -33,16 +33,22 @@ function originOf(s: string): string | null {
  * IDs and state, for its members alone). */
 export const queueTopic = (qid: string) => `queue:${qid}`;
 
-/** A queue's reports counted by state; `more` when the pages ran past the limit. */
-export type Counts = Record<ReportState, number> & { more: boolean };
+/** A queue's reports counted by state; `more` when the pages ran past the
+ * limit; `lapses` the soonest a claim counted ends (its lease's
+ * `expires_at`, in ms), when one does: no event says a lease lapsed. */
+export type Counts = Record<ReportState, number> & { more: boolean; lapses: number | null };
 
 /** Counts the reports `page` gives, following each page's `next` for at most `limit` pages. */
 export async function countReports(page: (cursor: string | null) => Promise<ReportPage>, limit = 20): Promise<Counts> {
-  const c: Counts = { open: 0, claimed: 0, fix_proposed: 0, verified: 0, resolved: 0, more: false };
+  const c: Counts = { open: 0, claimed: 0, fix_proposed: 0, verified: 0, resolved: 0, more: false, lapses: null };
   let cursor: string | null = null;
   for (let i = 0; i < limit; i++) {
     const p = await page(cursor);
-    for (const r of p.reports) if (r.state in c) c[r.state]++;
+    for (const r of p.reports) {
+      if (r.state in c) c[r.state]++;
+      const end = r.state === "claimed" && r.claim ? Date.parse(r.claim.expires_at) : NaN;
+      if (!Number.isNaN(end) && (c.lapses === null || end < c.lapses)) c.lapses = end;
+    }
     cursor = p.next;
     if (!cursor) return c;
   }
@@ -230,6 +236,28 @@ export function deployments(instance: string, qid: string, pin: OverlayPin | nul
     { id: "edge-nginx", label: "nginx", where: "In the site's location (ngx_http_sub_module)", artifact: `sub_filter '</head>' '${tag.replace(/'/g, "\\'")}</head>';\nsub_filter_once on;` },
     { id: "tag-manager", label: "Tag manager", where: "A Custom HTML tag fired on all pages", artifact: tag },
   ];
+}
+
+/** What changed in queue `name` from counts `a` to `b`, as a sentence for
+ * a screen reader: "1 report claimed in Bugs.", "2 reports filed, 1
+ * resolved in Bugs."; `null` when nothing rose or either count is cut
+ * short (`more`). A report back in `open` (released, or reopened by a
+ * comment) is "open again". */
+export function changeText(name: string, a: Counts, b: Counts): string | null {
+  if (a.more || b.more) return null;
+  const total = (c: Counts) => STATES.reduce((n, s) => n + c[s], 0);
+  const filed = Math.max(0, total(b) - total(a));
+  const parts: [number, string][] = [
+    [filed, "filed"],
+    [b.claimed - a.claimed, "claimed"],
+    [b.fix_proposed - a.fix_proposed, "fix proposed"],
+    [b.verified - a.verified, "verified"],
+    [b.resolved - a.resolved, "resolved"],
+    [b.open - a.open - filed, "open again"],
+  ];
+  const said = parts.filter(([n]) => n > 0).map(([n, what], i) => (i === 0 ? `${n} report${n === 1 ? "" : "s"} ${what}` : `${n} ${what}`));
+  if (!said.length) return null;
+  return `${said.join(", ")} in ${name}.`;
 }
 
 /** What to show for a refusal `e`: the daemon's message (lower case, no

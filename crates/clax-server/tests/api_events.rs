@@ -389,3 +389,17 @@ async fn the_token_route_sets_no_cookie_and_the_login_sets_the_events_cookie() {
         .unwrap();
     assert_eq!(res.status(), 200);
 }
+
+#[tokio::test]
+async fn a_queues_ping_never_reaches_the_event_stream() {
+    let ts = TestServer::spawn().await;
+    let (mut stream, mut buf) = open_stream(&ts, "").await;
+    ts.events.publish(clax_core::Event::Queues);
+    let a = ts.publish("A", &[("index.html", "a")]).await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    // The next event is the publish after it: the ping was left out.
+    let (ev, data) = next_event(&mut stream, &mut buf).await;
+    assert_eq!(ev, "version", "{data}");
+    let v: serde_json::Value = serde_json::from_str(&data).unwrap();
+    assert_eq!(v["artifact_id"], aid);
+}

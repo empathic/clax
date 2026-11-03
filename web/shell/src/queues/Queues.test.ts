@@ -2,6 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { flush, mount } from "../test/svelte";
 import { settle, stubFetch } from "../people/fixtures";
 import Queues from "./Queues.svelte";
+import { after } from "../clock";
+
+vi.mock("../clock", async orig => {
+  const real = await orig<typeof import("../clock")>();
+  return { ...real, after: vi.fn(real.after) };
+});
+const lapseTimers = () => vi.mocked(after).mock.calls.filter(c => c[2] === "queues.lapse").length;
 
 const QUEUE = { id: "q1", name: "Bugs", origins: ["https://app.example"], reporters_see: "own", created_at: "2026-10-27T10:00:00Z", role: "admin" };
 const routes = (o: Record<string, unknown> = {}) => ({
@@ -26,6 +33,56 @@ describe("Queues", () => {
     expect(card.querySelector(".counts")!.textContent).toBe("2 open · 1 claimed · 0 fix proposed · 0 verified · 0 resolved");
     expect(card.querySelector(".origins")!.textContent).toContain("https://app.example");
     expect(document.title).toBe("Queues · Clax");
+  });
+
+  it("watches the queues topic, updates the counts in place at a ping and says what rose, moving no focus", async () => {
+    let reports = [{ state: "open" }, { state: "open" }, { state: "claimed" }];
+    const calls = stubFetch(routes({ "GET /api/queues/q1/reports": () => ({ reports, next: null }) }));
+    let hear: ((e: { type: string }) => void) | null = null;
+    const off = vi.fn();
+    const watch = vi.fn((_t: string[], on: (e: { type: string }) => void) => { hear = on; return off; });
+    const m = mount(Queues, { stream: { watch } as unknown as import("../stream").EventStream });
+    await settle();
+    expect(watch.mock.calls[0][0]).toEqual(["queues"]);
+    const card = m.root.querySelector('[data-id="q1"]')!;
+    const counts = card.querySelector(".counts")!;
+    expect(counts.textContent).toBe("2 open · 1 claimed · 0 fix proposed · 0 verified · 0 resolved");
+    const button = [...m.root.querySelectorAll("button")].find(b => b.textContent === "New queue")!;
+    button.focus();
+    // The agent claims one: the same element now counts it, and the status line says so.
+    reports = [{ state: "open" }, { state: "claimed" }, { state: "claimed" }];
+    hear!({ type: "queues" });
+    await settle();
+    expect(card.querySelector(".counts")).toBe(counts);
+    expect(counts.textContent).toBe("1 open · 2 claimed · 0 fix proposed · 0 verified · 0 resolved");
+    const heard = m.root.querySelector(".qheard")!;
+    expect(heard.getAttribute("role")).toBe("status");
+    expect(heard.textContent).toBe("1 report claimed in Bugs.");
+    expect(document.activeElement).toBe(button);
+    // A stream that comes back refetches and says nothing.
+    reports = [{ state: "open" }, { state: "claimed" }, { state: "resolved" }];
+    const before = calls.length;
+    hear!({ type: "ready" });
+    await settle();
+    expect(calls.length).toBeGreaterThan(before);
+    expect(counts.textContent).toBe("1 open · 1 claimed · 0 fix proposed · 0 verified · 1 resolved");
+    expect(heard.textContent).toBe("1 report claimed in Bugs.");
+    m.unmount();
+    expect(off).toHaveBeenCalled();
+  });
+
+  it("fetches again when the soonest lease shown lapses, and a page gone mid-fetch plants no timer", async () => {
+    const claimed = { state: "claimed", claim: { holder_name: "claude", expires_at: new Date(Date.now() + 60_000).toISOString() } };
+    stubFetch(routes({ "GET /api/queues/q1/reports": { reports: [claimed], next: null } }));
+    const n = lapseTimers();
+    const shown = mount(Queues, {});
+    await settle();
+    expect(lapseTimers()).toBe(n + 1);
+    shown.unmount();
+    const gone = mount(Queues, {});
+    gone.unmount();
+    await settle();
+    expect(lapseTimers()).toBe(n + 1);
   });
 
   it("makes a queue from the form, its origins one per line, and refuses a line that is not an origin", async () => {

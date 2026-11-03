@@ -1983,3 +1983,43 @@ async fn a_failed_live_update_read_does_not_fail_a_committed_write() {
     let t = q.ts.store.get_thread(&q.tid).unwrap().unwrap();
     assert_eq!(t.comments.last().unwrap().body, "on it");
 }
+
+/// How many `queues` pings `rx` holds now.
+fn pings(rx: &mut tokio::sync::broadcast::Receiver<clax_core::Stamped>) -> usize {
+    let mut n = 0;
+    while let Ok(st) = rx.try_recv() {
+        n += usize::from(matches!(st.event, clax_core::Event::Queues));
+    }
+    n
+}
+
+#[tokio::test]
+async fn every_change_to_a_report_pings_the_queues_topic_and_a_renew_does_not() {
+    let q = setup().await;
+    let a = q.session("a").await;
+    let mut rx = q.ts.events.subscribe();
+    for (tail, want) in [
+        ("/claim", 1),
+        ("/renew", 0),
+        ("/release", 1),
+        ("/claim", 1),
+        ("/comments", 1),
+        ("/resolve", 1),
+    ] {
+        let body = if tail == "/comments" {
+            json!({"body": "On it"})
+        } else {
+            json!({})
+        };
+        let (s, v) = q.agent(Some(&a), "POST", &q.report(tail), body).await;
+        assert!(s < 300, "{tail}: {s} {v}");
+        assert_eq!(pings(&mut rx), want, "{tail}");
+    }
+    // A refused change pings no one.
+    let b = q.session("b").await;
+    let (s, v) = q
+        .agent(Some(&b), "POST", &q.report("/release"), json!({}))
+        .await;
+    assert_eq!((s, code(&v)), (409, "thread_taken"), "{v}");
+    assert_eq!(pings(&mut rx), 0);
+}

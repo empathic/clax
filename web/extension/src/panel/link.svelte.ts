@@ -58,6 +58,7 @@ export class PanelLink {
   /** The open questions, and those closing here for a moment. */
   readonly questions = new PanelQuestions(this);
   private items = new Set<(item: InboxItem | null) => void>();
+  private queuePings = new Set<() => void>();
   private reqs = 0;
   private asked = new Map<number, { ok(m: WorkerToPanel): void; fail(e: Failure): void }>();
   /** The lookups (`clip`, `far-page`, `firsts`) asked for and not yet answered, by request number: null when it failed. */
@@ -116,6 +117,7 @@ export class PanelLink {
       else if (m.t === "stream-status") this.up = m.up;
       else if (m.t === "inbox") { this.inbox = { owner: m.owner, unread: m.unread }; this.questions.list(m.questions); }
       else if (m.t === "q-event") this.questions.upsert(m.question);
+      else if (m.t === "queue-ping") { for (const f of [...this.queuePings]) f(); }
       else if (m.t === "inbox-event") {
         this.inbox = { ...this.inbox, unread: m.unread };
         for (const f of [...this.items]) f(m.item);
@@ -145,11 +147,32 @@ export class PanelLink {
 
   private follow(): void {
     if (this.pinned !== null) this.watch(this.pinned);
+    // A worker Chrome restarted holds no topic for this panel: the Queues view's watch is asked for again,
+    // and its listeners read again (what changed meanwhile was not heard).
+    if (this.queuePings.size) { this.post({ t: "queue-watch", on: true }); for (const f of [...this.queuePings]) f(); }
+  }
+
+  /** Hears that the owner's queues may have changed (the DevTools panel's Queues view), until the returned function runs. */
+  onQueuePing(f: () => void): () => void {
+    if (!this.queuePings.size) this.post({ t: "queue-watch", on: true });
+    this.queuePings.add(f);
+    return () => {
+      this.queuePings.delete(f);
+      if (!this.queuePings.size) this.post({ t: "queue-watch", on: false });
+    };
+  }
+
+  /** A `queue-*` request; resolves to the daemon's JSON for it, or rejects with its failure. */
+  async queue(m: Extract<InboxReq, { t: `queue-${string}` }>): Promise<unknown> {
+    const r = await this.send(m);
+    if (r.t !== "queue-data") throw failure("bad_reply", "Clax answered something else.");
+    return r.data;
   }
 
   post(m: PanelToWorker): void {
     if (this.closed) return;
-    if (m.t !== "ping" && m.t !== "visible" && m.t !== "watch-tab" && m.t !== "clip" && m.t !== "far-page" && m.t !== "firsts") this.failure = null;
+    // The Queues view's requests are its own: they leave the page's failure shown.
+    if (m.t !== "ping" && m.t !== "visible" && m.t !== "watch-tab" && m.t !== "clip" && m.t !== "far-page" && m.t !== "firsts" && !m.t.startsWith("queue-")) this.failure = null;
     try { this.port.postMessage(m); } catch { /* the port closed; the link connects again */ }
   }
 

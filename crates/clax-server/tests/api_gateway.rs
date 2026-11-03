@@ -843,3 +843,140 @@ async fn a_credential_without_origin_is_the_extensions_only_when_the_browser_say
         "an Origin of its own is never overridden"
     );
 }
+
+/// A queue of the owner's with one report filed, as the triage tests make it.
+async fn owner_queue(ts: &TestServer) -> (String, String) {
+    use clax_core::audit::AuditCtx;
+    use clax_core::queue::ReportersSee;
+    use clax_store::queues::{ExternalScope, NewQueue, NewReport, ReporterToken};
+    let qid = ts
+        .store
+        .create_queue(
+            &AuditCtx::DAEMON,
+            None,
+            NewQueue {
+                name: "App reports".into(),
+                origins: vec!["https://app.example.com".into()],
+                reporters_see: ReportersSee::Own,
+            },
+        )
+        .unwrap()
+        .id;
+    let token = ReporterToken {
+        queue_id: qid.clone(),
+        service_grant_id: "g1".into(),
+        reporter_id: "emp-1".into(),
+        origin: "https://app.example.com".into(),
+        public_key: String::new(),
+        expires_at: "2099-01-01T00:00:00.000Z".into(),
+        profile: None,
+    };
+    let (r, _) = ts
+        .store
+        .file_report_touched_async(
+            &AuditCtx::DAEMON,
+            &qid,
+            Some(&token),
+            ExternalScope::Instance,
+            NewReport {
+                external_id: Some("invoice:4821".into()),
+                url: "https://app.example.com/invoices/4821".into(),
+                title: "Invoice 4821".into(),
+                anchor: serde_json::from_value(clax_testkit::element_anchor()).unwrap(),
+                body: "The total is wrong".into(),
+                author_name: "emp-1".into(),
+                metadata: json!({}),
+                revision: None,
+                clip: Some(FAKE_PNG.to_vec()),
+                context: None,
+                server: None,
+                diagnostics: None,
+            },
+        )
+        .await
+        .unwrap();
+    (qid, r.id)
+}
+
+#[tokio::test]
+async fn the_extension_triages_the_owners_queues_and_hears_their_ping() {
+    let ts = TestServer::spawn().await;
+    let cred = credential(&ts).await;
+    let (qid, tid) = owner_queue(&ts).await;
+    let report = format!("/api/queues/{qid}/reports/{tid}");
+    let list: Value = ext(&ts, Method::GET, "/api/queues", &cred)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(list["queues"][0]["id"], qid.as_str(), "{list}");
+    let page = ext(
+        &ts,
+        Method::GET,
+        &format!("/api/queues/{qid}/reports"),
+        &cred,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(page.status(), 200);
+    for tail in ["", "/clip"] {
+        let res = ext(&ts, Method::GET, &format!("{report}{tail}"), &cred)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200, "{tail}");
+    }
+    // The stream takes the queues topic, and hears a reply as its ping.
+    let res = ext(&ts, Method::GET, "/api/stream", &cred)
+        .send()
+        .await
+        .unwrap();
+    let mut events = clax_testkit::EventReader::from_response(res);
+    let sid = events.next_named("ready").await["stream"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let st = ext(&ts, Method::POST, &format!("/api/stream/{sid}"), &cred)
+        .json(&json!({"subscribe": ["queues"]}))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(st, 200);
+    let res = ext(&ts, Method::POST, &format!("{report}/comments"), &cred)
+        .json(&json!({"body": "Looking"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    assert_eq!(events.next_named("queues").await["topic"], "queues");
+    let res = ext(&ts, Method::POST, &format!("{report}/resolve"), &cred)
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["report"]["state"], "resolved", "{v}");
+    // Never a claim, a metadata change or a queue's admin routes.
+    for (m, path) in [
+        (Method::POST, format!("{report}/claim")),
+        (Method::POST, format!("{report}/release")),
+        (Method::PATCH, report.clone()),
+        (Method::POST, "/api/queues".to_string()),
+        (Method::DELETE, format!("/api/queues/{qid}")),
+        (Method::GET, format!("/api/queues/{qid}/members")),
+        (Method::GET, format!("/api/queues/{qid}/service-grants")),
+    ] {
+        let res = ext(&ts, m.clone(), &path, &cred)
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 403, "{m} {path}");
+        assert_eq!(code(res).await, "forbidden", "{m} {path}");
+    }
+}

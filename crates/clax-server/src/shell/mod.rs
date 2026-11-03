@@ -830,7 +830,10 @@ mod tests {
         assert_eq!(v, short_hash(&h));
         assert_eq!(
             integrity,
-            format!("sha256-{}", base64::engine::general_purpose::STANDARD.encode(h))
+            format!(
+                "sha256-{}",
+                base64::engine::general_purpose::STANDARD.encode(h)
+            )
         );
     }
 

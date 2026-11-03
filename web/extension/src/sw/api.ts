@@ -148,6 +148,23 @@ export class Api {
     return bytes.length <= MAX_CLIP ? bytesDataUrl(bytes, "image/png") : null;
   }
   async resolve(aid: string, tid: string) { ids(aid, [tid]); return this.send<{ thread: Thread }>("POST", `/api/artifacts/${aid}/threads/${tid}/resolve`, {}); }
+  // The owner's queues, for the DevTools panel's Queues view: reads, a reply and a resolve; never a claim.
+  queues() { return this.json<{ queues: unknown[] }>("/api/queues"); }
+  async queueReports(qid: string, cursor: string | null) {
+    threadIds([qid]);
+    return this.json<{ reports: unknown[]; next: string | null }>(`/api/queues/${qid}/reports${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`);
+  }
+  async queueReport(qid: string, tid: string) { threadIds([qid, tid]); return this.json<{ report: unknown }>(`/api/queues/${qid}/reports/${tid}`); }
+  /** A report's clip as a `data:image/png` URL; null when it has none, or it is not a PNG of at most `MAX_CLIP` bytes. */
+  async queueClip(qid: string, tid: string): Promise<string | null> {
+    threadIds([qid, tid]);
+    const res = await this.request(`/api/queues/${qid}/reports/${tid}/clip`);
+    if (!res.ok || res.headers.get("content-type") !== "image/png") return null;
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    return bytes.length <= MAX_CLIP ? bytesDataUrl(bytes, "image/png") : null;
+  }
+  async queueReply(qid: string, tid: string, body: string) { threadIds([qid, tid]); return this.send<{ report: unknown }>("POST", `/api/queues/${qid}/reports/${tid}/comments`, { body }, true); }
+  async queueResolve(qid: string, tid: string) { threadIds([qid, tid]); return this.send<{ report: unknown }>("POST", `/api/queues/${qid}/reports/${tid}/resolve`, {}); }
   async reopen(aid: string, tid: string) { ids(aid, [tid]); return this.send<{ thread: Thread }>("POST", `/api/artifacts/${aid}/threads/${tid}/reopen`, {}); }
   /** The owner viewer: the extension acts as the owner. */
   me() { return this.json<{ viewer: Viewer }>("/api/viewers/me"); }

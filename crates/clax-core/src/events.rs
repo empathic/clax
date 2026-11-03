@@ -282,6 +282,13 @@ pub enum Event {
         #[serde(skip)]
         carriers: Vec<String>,
     },
+    /// A queue's reports changed (spec 2026-10-27-clax-sdk-design §7.3,
+    /// §7.4): one was filed, claimed, released, replied to, commented on by
+    /// its reporter or resolved. Clients refetch `GET /api/queues` and the
+    /// reports, which say only what the reader's membership shows. It
+    /// names no queue or report. Only the `queues` stream topic carries it;
+    /// `/api/events` never does.
+    Queues,
 }
 
 impl Event {
@@ -312,7 +319,8 @@ impl Event {
             | Event::Confirmation { .. }
             | Event::Agents { .. }
             | Event::Job { .. }
-            | Event::JobsOwner { .. } => "",
+            | Event::JobsOwner { .. }
+            | Event::Queues => "",
             // A report's artifact is its queue maker's: the event goes to
             // the queue's topic alone.
             Event::Report { .. } => "",
@@ -354,6 +362,7 @@ impl Event {
             Event::Comments { .. } => "comments",
             Event::Permissions { .. } => "permissions",
             Event::Tags { .. } => "tags",
+            Event::Queues => "queues",
         }
     }
 }

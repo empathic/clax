@@ -241,3 +241,28 @@ describe("PanelLink", () => {
     expect(f.ports[1].sent).toEqual([{ t: "watch-tab", tabId: 7 }, { t: "visible", on: false }]);
   });
 });
+
+describe("PanelLink's queues", () => {
+  it("watches the queues while any listener does, hears each ping, asks a request's data, and watches again (reading again) after the worker restarts", async () => {
+    vi.useFakeTimers();
+    const f = fakes();
+    link = new PanelLink(0, ENV(f));
+    const p = f.ports[0];
+    const heard = vi.fn();
+    const off = link.onQueuePing(heard);
+    expect(p.sent).toContainEqual({ t: "queue-watch", on: true });
+    p.onMessage.fire({ t: "queue-ping" });
+    expect(heard).toHaveBeenCalledTimes(1);
+    const asked = link.queue({ t: "queue-list" });
+    const sent = p.sent.at(-1) as { t: string; req: number };
+    expect(sent).toEqual({ t: "queue-list", req: sent.req });
+    p.onMessage.fire({ t: "queue-data", req: sent.req, data: { queues: [] } });
+    expect(await asked).toEqual({ queues: [] });
+    p.onDisconnect.fire();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(f.ports[1].sent).toContainEqual({ t: "queue-watch", on: true });
+    expect(heard).toHaveBeenCalledTimes(2);
+    off();
+    expect(f.ports[1].sent.at(-1)).toEqual({ t: "queue-watch", on: false });
+  });
+});

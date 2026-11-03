@@ -250,6 +250,7 @@ pub async fn claim(
         })
         .await?;
     announce_report(&s, &lease.report.queue_id, &lease.report.id).await;
+    s.events.publish(Event::Queues);
     Ok(Json(json!(lease)))
 }
 
@@ -367,6 +368,7 @@ pub async fn release(
             })
             .await?;
         announce_report(&s, &qid, &tid).await;
+        s.events.publish(Event::Queues);
         return Ok(Json(json!({"report": report})));
     }
     let b: ReleaseBody = if raw.iter().all(u8::is_ascii_whitespace) {
@@ -382,6 +384,7 @@ pub async fn release(
             st.release_as_person(&ctx, &qid, &t, &name, public_id.as_deref(), b.note)
         })
         .await?;
+    s.events.publish(Event::Queues);
     let released = woken.is_some();
     if let Some(woken) = woken {
         super::queue_reporter::wake_watchers(&s, woken).await;
@@ -476,6 +479,7 @@ pub async fn reply(
             Ok(json!({"comment": c, "report": report}))
         })
         .await?;
+    s.events.publish(Event::Queues);
     Ok((StatusCode::CREATED, Json(out)).into_response())
 }
 
@@ -519,6 +523,7 @@ pub async fn resolve(
             Ok(report)
         })
         .await?;
+    s.events.publish(Event::Queues);
     Ok(Json(json!({"report": report})))
 }
 

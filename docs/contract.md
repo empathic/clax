@@ -6466,6 +6466,7 @@ router), and a test fails when it differs:
 | `GET /_blob/{aid}/{asset_id}` | Denied | yes: 403 `not_for_agents` |
 | `GET /_blob/{asset_id}` | Denied | yes: 403 `not_for_agents` |
 | `GET /_clax/blob/{asset_id}` | Denied | yes: 403 `not_for_agents` |
+| `GET /_clax/containers/{id}/{file}` | Denied | no |
 | `GET /_clax/{*path}` | Denied | no |
 | `GET /a/{aid}` | Denied | yes: 403 `not_for_agents` |
 | `GET /a/{aid}/` | Denied | yes: 403 `not_for_agents` |
@@ -8450,6 +8451,7 @@ except as noted:
 | `docs:<B>?reader=<A>` | B's `doc` events that `view` with no viewer may read, each only while app A may read B (checked as it is dispatched); subscribing needs A to exist and to be allowed to read B then (403 `not_granted` or `not_declared`). See "Reading another app's documents". |
 | `agents` | `agents` (`{topic}`, naming nothing) whenever the agents roster may have changed: an agent started, ended, was renamed or got watches back, a thread's owner changed, or a working record, question or approval request changed. Refetch `GET /api/agents`. Only the owner's and connected people's streams take it (403 `forbidden` otherwise). |
 | `queue:<qid>` | `report` whenever a report of report queue `<qid>` is filed, claimed, renewed, released (by its agent, or ended by a person), given a fix, verified, reopened, resolved, commented on, or given new metadata (its own or its page artifact's). A claim that lapses publishes none. Only a member of the queue takes it (404 `not_a_member` otherwise, as its triage routes answer, and 400 `invalid_topic` for a `<qid>` that is not a queue ID); each event reaches only the streams of the queue's members at the change, so a member removed hears no more though their stream still holds the topic. |
+| `queues` | `queues` (`{topic}`, naming nothing) whenever a queue's reports may have changed: a report filed, claimed, released, replied to or commented on (by a member or its reporter) or resolved. A renew, a metadata write and a lease that lapses send none. Refetch `GET /api/queues` and the reports, which show only the subscriber's own queues. Only the owner's and connected people's streams take it (403 `forbidden` otherwise); `/api/events` never carries it. |
 | `site:<origin>` | What `artifact:<aid>` carries, for every live page of the origin's site (every origin joined to it, those joined later too: see "Joined sites"), those made later included, and `site` when an origin joins the site or is split off. `<origin>` is written as the daemon normalizes it (`http://localhost:5173`: scheme, lowercased host, port unless the scheme's default, no path), else 400 `invalid_topic`. Only a stream that may see live pages takes it (404 `not_found` otherwise, as for a live page's topic), and only an owner's (403 `forbidden` otherwise). The `thread_deleted` a move sends for older clients is not on it. |
 
 **Events.** Every event but `ready` and `resync` carries `id:

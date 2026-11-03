@@ -13,7 +13,7 @@ use crate::routes::{
     snapshot, stream, surface, tags, threads, token, toolpath, viewers, watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use crate::routes::{events, mcp, net, sign, web_push};
+use crate::routes::{containers, events, mcp, net, sign, web_push};
 use crate::shell;
 use crate::shell::get_page;
 use axum::{
@@ -801,6 +801,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/inbox", get(shell::gallery_page))
         .route("/people", get(shell::gallery_page))
         .route("/queues", get(shell::gallery_page))
+        // A queue's own page and a report's own page; the shell reads the IDs from the path.
         .route("/queues/{qid}", get(shell::gallery_page))
         .route("/queues/{qid}/{tid}", get(shell::gallery_page))
         .route("/tags", get(shell::gallery_page))
@@ -826,10 +827,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         // `/a/<id>[/v/<n>]/<file>`: the shell reads the version and page from the path.
         .route("/a/{aid}/{*rest}", get(shell::artifact_page))
         // A site's container, read by the one-tag install and the extension.
-        .route(
-            "/_clax/containers/{id}/{file}",
-            get(crate::routes::containers::config),
-        )
+        .route("/_clax/containers/{id}/{file}", get(containers::config))
         .route("/_clax/{*path}", get(shell::static_file))
         .route("/sw.js", get(shell::service_worker))
         .layer(clax_http::http_cache::compression());

@@ -229,6 +229,16 @@ fn rule<'a>(m: &Method, path: &'a str) -> Option<Rule<'a>> {
         // to the shell's inbox, where they are decided (spec 2026-10-08
         // §9.5, §15): listing only, never deciding.
         ["api", "approvals", "requests"] if get => Some(Rule::Any),
+        // The DevTools panel's Queues view: the owner's queues and their
+        // reports, read, replied to and resolved as the owner's browser does
+        // (the routes check membership). Never a claim (an agent's alone),
+        // a metadata change, or a queue's admin routes (members, grants,
+        // making or deleting a queue).
+        ["api", "queues"] if get => Some(Rule::Any),
+        ["api", "queues", _, "reports"] if get => Some(Rule::Any),
+        ["api", "queues", _, "reports", _] if get => Some(Rule::Any),
+        ["api", "queues", _, "reports", _, "clip"] if get => Some(Rule::Any),
+        ["api", "queues", _, "reports", _, "comments" | "resolve"] if post => Some(Rule::Any),
         ["api", "stream"] if get => Some(Rule::Any),
         ["api", "stream", _] if post => Some(Rule::Any),
         ["api", "artifacts", aid] if get => Some(Rule::Live(aid)),
@@ -319,7 +329,9 @@ fn from_extension(method: &Method, h: &HeaderMap, origin: &str) -> bool {
 /// `chrome-extension://<ID in effect>`, or a privileged GET without one)
 /// is admitted only from a loopback peer ([`crate::auth::loopback_peer`]:
 /// never on a hosted daemon), only to [`rule`]'s
-/// routes, only with a live credential for that ID, and only for live pages;
+/// routes, only with a live credential for that ID, and only for live pages
+/// (and the owner's queues' triage reads, replies and resolves, which the
+/// queue routes check);
 /// otherwise 403 `forbidden` (401 `unknown_credential` for a missing,
 /// unknown, expired or revoked credential; 404 for an artifact that is not
 /// a live page, as for a missing one). A bearer token from that origin is
@@ -582,6 +594,25 @@ mod tests {
             (&u, "/api/people/P/rights", None),
             (&u, "/api/agents/H/elevate", None),
             (&g, "/api/people/me/raises", None),
+            (&g, "/api/queues", Some(Rule::Any)),
+            (&g, "/api/queues/Q/reports", Some(Rule::Any)),
+            (&g, "/api/queues/Q/reports/T", Some(Rule::Any)),
+            (&g, "/api/queues/Q/reports/T/clip", Some(Rule::Any)),
+            (&p, "/api/queues/Q/reports/T/comments", Some(Rule::Any)),
+            (&p, "/api/queues/Q/reports/T/resolve", Some(Rule::Any)),
+            (&p, "/api/queues", None),
+            (&d, "/api/queues/Q", None),
+            (&Method::PATCH, "/api/queues/Q", None),
+            (&g, "/api/queues/Q/members", None),
+            (&u, "/api/queues/Q/members/P", None),
+            (&g, "/api/queues/Q/service-grants", None),
+            (&p, "/api/queues/Q/service-grants", None),
+            (&p, "/api/queues/Q/reports/T/claim", None),
+            (&p, "/api/queues/Q/reports/T/renew", None),
+            (&p, "/api/queues/Q/reports/T/release", None),
+            (&Method::PATCH, "/api/queues/Q/reports/T", None),
+            (&Method::PATCH, "/api/queues/Q/reports/T/artifact", None),
+            (&p, "/api/queues/Q/reporter-tokens", None),
             (&g, "/api/stream", Some(Rule::Any)),
             (&p, "/api/stream/s1", Some(Rule::Any)),
             (&g, "/api/artifacts/A", Some(Rule::Live("A"))),

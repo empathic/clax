@@ -30,9 +30,9 @@ use serde_json::{Value, json};
 /// The answer for live queue `id`, pinned to `overlay`
 /// (`(version, integrity)`, `None` when the UI is not built).
 pub fn answer(id: &str, overlay: Option<(String, String)>) -> Value {
-    let overlay = overlay.map(|(v, integrity)| {
-        json!({"src": format!("/_clax/overlay.js?v={v}"), "integrity": integrity})
-    });
+    let overlay = overlay.map(
+        |(v, integrity)| json!({"src": format!("/_clax/overlay.js?v={v}"), "integrity": integrity}),
+    );
     json!({"id": id, "version": 0, "config": {}, "overlay": overlay})
 }
 
@@ -41,13 +41,16 @@ pub fn answer(id: &str, overlay: Option<(String, String)>) -> Value {
 pub fn allowed_origin<'a>(origin: Option<&'a str>, origins: &[String]) -> Option<&'a str> {
     let o = origin?;
     let n = clax_core::queue::normalize_origin(o).ok()?;
-    origins.iter().any(|q| *q == n).then_some(o)
+    origins.contains(&n).then_some(o)
 }
 
 fn cors(res: &mut Response, allow: Option<&str>) {
     let h = res.headers_mut();
     h.insert(header::VARY, HeaderValue::from_static("Origin"));
-    h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
     if let Some(v) = allow.and_then(|a| HeaderValue::from_str(a).ok()) {
         h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, v);
     }
@@ -56,6 +59,7 @@ fn cors(res: &mut Response, allow: Option<&str>) {
 /// `GET /_clax/containers/{id}/config.json` (see the module documentation).
 pub async fn config(
     State(s): State<AppState>,
+    _d: clax_http::agent::DeniedToGrants,
     Path((id, file)): Path<(String, String)>,
     req: HeaderMap,
 ) -> Result<Response, ApiError> {
