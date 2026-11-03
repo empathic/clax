@@ -139,19 +139,45 @@ fn check_peers(
     )))
 }
 
-/// Instance secret `var`: the file `<dir>/<var>`, less surrounding
-/// whitespace, when `dir` is given and it holds one; else `env`'s.
+/// Instance secret `var`. With a secrets directory `dir`, the file
+/// `<dir>/<var>` less surrounding whitespace, and nothing when there is no
+/// such file (or it is empty): the directory is the Secret as it is now, so
+/// a key removed from it is gone, whatever the environment the process
+/// started with holds. A file that cannot be read is logged and counts as
+/// none. Without a directory, `env`'s.
 fn read_secret(
     dir: Option<&std::path::Path>,
     var: &str,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Option<String> {
-    let in_dir = dir
-        .filter(|_| var.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
-        .and_then(|d| std::fs::read_to_string(d.join(var)).ok())
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty());
-    in_dir.or_else(|| env(var))
+    let Some(dir) = dir else {
+        return env(var);
+    };
+    if !var.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return None;
+    }
+    let path = dir.join(var);
+    match std::fs::read_to_string(&path) {
+        Ok(s) => Some(s.trim().to_owned()).filter(|s| !s.is_empty()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "an instance's secret file cannot be read; the instance starts without it");
+            None
+        }
+    }
+}
+
+/// Refuses a secrets directory that is not one: every instance secret
+/// would read as absent, with nothing else said.
+fn check_secrets_dir(dir: Option<&std::path::Path>) -> anyhow::Result<()> {
+    if let Some(dir) = dir {
+        anyhow::ensure!(
+            dir.is_dir(),
+            "the secrets directory {} (CLAX_FLEET_SECRETS_DIR) is not a directory: mount the clax-secrets Secret there, or leave it unset to read instances' secrets from the environment",
+            dir.display()
+        );
+    }
+    Ok(())
 }
 
 /// What a fleet runs with.
@@ -177,10 +203,10 @@ pub struct FleetConfig {
     pub kek: Option<[u8; 32]>,
     /// The key forwards between this fleet's processes carry.
     pub peer_key: String,
-    /// Where instances' secrets are read first, each from the file named as
-    /// its variable (a mounted Secret, which the kubelet keeps current, so
-    /// an instance started later reads a key added since); the environment
-    /// when absent or without that file.
+    /// Where instances' secrets are read, each from the file named as its
+    /// variable (a mounted Secret, which the kubelet keeps current, so an
+    /// instance started later reads a key added since, and not one removed
+    /// since); the environment only when absent.
     pub secrets_dir: Option<PathBuf>,
     /// The port the instances are told they serve on.
     pub port: u16,
@@ -311,6 +337,7 @@ impl Fleet {
             Ok(Some(warning)) => tracing::warn!("{warning}"),
             Ok(None) => {}
         }
+        check_secrets_dir(cfg.secrets_dir.as_deref())?;
         std::fs::create_dir_all(cfg.data_dir.join("instances"))?;
         let proxy = Proxy::new(&cfg.peer_key);
         let fleet = Arc::new(Fleet {
@@ -611,7 +638,7 @@ impl Fleet {
                 instance = %inst.name,
                 env = %hosted_cfg.setup_secret_env,
                 secrets_dir = ?self.cfg.secrets_dir,
-                "no setup secret in the secrets directory or this process's environment, so /setup stays closed; add it to the clax-secrets Secret, and pause and unpause the instance once the pod has it (or restart the pods, when the Secret is not mounted)"
+                "no setup secret (in the secrets directory, or in this process's environment when there is none), so /setup stays closed; add it to the clax-secrets Secret, and pause and unpause the instance once the pod has it (or restart the pods, when the Secret is not mounted)"
             );
         }
         let core_cfg = CoreConfig {
@@ -1091,32 +1118,42 @@ mod tests {
         assert!(err.contains("made for https://acme.test"), "{err}");
     }
 
-    /// An instance's secret is the file of its variable's name in the
-    /// secrets directory, a mounted Secret the kubelet keeps current, less
-    /// the newline a file ends in; else the environment's.
+    /// With a secrets directory, an instance's secret is the file of its
+    /// variable's name there, a mounted Secret the kubelet keeps current,
+    /// less the newline a file ends in, and nothing without one: a key
+    /// removed from the Secret is not read from the environment the pod
+    /// started with. Without a directory, the environment's.
     #[test]
-    fn a_secret_is_read_from_its_file_before_the_environment() {
+    fn a_secrets_directory_is_the_only_source_of_instance_secrets() {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("secrets");
         std::fs::create_dir(&dir).unwrap();
         std::fs::write(dir.join("CLAX_SETUP_SECRET_ACME"), "from-file\n").unwrap();
         std::fs::write(dir.join("EMPTY"), "\n").unwrap();
+        std::fs::create_dir(dir.join("A_DIRECTORY")).unwrap();
         std::fs::write(root.path().join("OUTSIDE"), "x").unwrap();
         let env = |var: &str| (var != "UNSET").then(|| format!("env-{var}"));
         let read = |var: &str| read_secret(Some(&dir), var, &env);
         assert_eq!(read("CLAX_SETUP_SECRET_ACME").as_deref(), Some("from-file"));
-        assert_eq!(
-            read("CLAX_SETUP_SECRET_OTHER").as_deref(),
-            Some("env-CLAX_SETUP_SECRET_OTHER")
-        );
-        assert_eq!(read("EMPTY").as_deref(), Some("env-EMPTY"));
+        // Removed from the Secret (or never in it): none, though the
+        // environment has it.
+        assert_eq!(read("CLAX_SETUP_SECRET_REMOVED"), None);
+        assert_eq!(read("EMPTY"), None);
+        // A file that cannot be read is none too.
+        assert_eq!(read("A_DIRECTORY"), None);
         assert_eq!(read("UNSET"), None);
         // No variable name reaches outside the directory.
-        assert_eq!(read("../OUTSIDE").as_deref(), Some("env-../OUTSIDE"));
+        assert_eq!(read("../OUTSIDE"), None);
         assert_eq!(
             read_secret(None, "CLAX_SETUP_SECRET_ACME", &env).as_deref(),
             Some("env-CLAX_SETUP_SECRET_ACME")
         );
+        assert!(check_secrets_dir(Some(&dir)).is_ok());
+        assert!(check_secrets_dir(None).is_ok());
+        let err = check_secrets_dir(Some(&root.path().join("missing")))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("CLAX_FLEET_SECRETS_DIR"), "{err}");
     }
 
     /// A peer template is refused without `{shard}` when there is more than

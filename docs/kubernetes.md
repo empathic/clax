@@ -210,9 +210,13 @@ stored sealed in its home (CLAX_KEK).
 The StatefulSet mounts the Secret at `/etc/clax-secrets`
 (`CLAX_FLEET_SECRETS_DIR`), one file per key, which the kubelet updates in
 place within a minute or two of a change. An instance reads its secrets
-from those files when it starts, and from the environment when there is no
-such file. So **adding a tenant restarts nothing**: add its keys to the
-Secret, then its entry to the catalog:
+from those files when it starts, and only from them: a key with no file
+there is not set, whatever the environment the pod started with holds, so
+a key removed from the Secret is gone at the instance's next start. (The
+environment is read only by a fleet run without a secrets directory.) A
+pod whose `CLAX_FLEET_SECRETS_DIR` is not a directory does not start, and
+a file that cannot be read is logged. So **adding a tenant restarts
+nothing**: add its keys to the Secret, then its entry to the catalog:
 
 ```
 kubectl patch secret clax-secrets --type merge \
@@ -221,8 +225,9 @@ kubectl patch secret clax-secrets --type merge \
 
 To **rotate** an instance's secret, change it in the Secret, wait for the
 pod to see it, then pause and unpause the instance, which reads it again as
-it starts. An instance whose setup secret is missing logs that `/setup`
-stays closed. `CLAX_FLEET_PEER_KEY` and `CLAX_KEK` are the process's own,
+it starts. To **revoke** one (close `/setup` once it is done, or drop a
+leaked OAuth secret), remove its key from the Secret the same way. An
+instance whose setup secret is missing logs that `/setup` stays closed. `CLAX_FLEET_PEER_KEY` and `CLAX_KEK` are the process's own,
 read from the environment as the pod starts: changing either needs
 `kubectl rollout restart sts clax`.
 
@@ -548,7 +553,7 @@ sets the filter (`info`).
 | `CLAX_FLEET_LISTEN` | `--listen` | the instances' address (`0.0.0.0:7480`) |
 | `CLAX_FLEET_ADMIN_LISTEN` | `--admin-listen` | health, status (with the peer key) and metrics (`0.0.0.0:7481`) |
 | `CLAX_FLEET_LOCAL_ADMIN_LISTEN` | `--local-admin-listen` | the same, `/status` without the key, on a loopback address (`127.0.0.1:7482`) |
-| `CLAX_FLEET_SECRETS_DIR` | `--secrets-dir` | where instances' secrets are read first, a file per variable (the StatefulSet: `/etc/clax-secrets`; none by default) |
+| `CLAX_FLEET_SECRETS_DIR` | `--secrets-dir` | where instances' secrets are read, a file per variable, and the environment not at all (the StatefulSet: `/etc/clax-secrets`; none by default, which reads the environment) |
 | `POD_NAME` | `--pod` | this pod's name in the fleet |
 | `POD_IP`, `CLAX_FLEET_ADVERTISE` | `--pod-ip`, `--advertise` | where other pods reach this one (`$POD_IP:<listen port>`) |
 | `CLAX_FLEET_ORDINAL` | `--ordinal` | this process's shard, outside a StatefulSet (by default, its name's suffix; one that disagrees with it is refused) |
