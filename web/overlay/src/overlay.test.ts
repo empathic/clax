@@ -558,6 +558,54 @@ describe("the overlay", () => {
     }
   });
 
+  it("drops a kept draft's screenshot when the app moves to another page, names the page a screenshot is of, and never sends one of a page left", async () => {
+    const was = location.href;
+    history.replaceState(null, "", "/dashboard");
+    try {
+      click(button("Report"));
+      onPick(picked(async () => new Uint8Array([1]).buffer));
+      await settle();
+      expect(q(".composer .of")?.textContent).toBe("Of /dashboard.");
+      type("The diff is empty");
+      click(button("Your reports"));
+      await settle();
+      // The app's own route change: pushState, no event.
+      history.pushState(null, "", "/pr/12/files");
+      click(q('[aria-label="Close your reports"]'));
+      click(button("Send"));
+      await settle();
+      expect(filed).toEqual([]);
+      expect(q(".composer .annotator img")).toBeNull();
+      expect(q(".composer .of")).toBeNull();
+      expect(view.root.textContent).toContain("The page changed, so the screenshot of /dashboard was dropped.");
+      expect(q<HTMLTextAreaElement>(".composer textarea")?.value).toBe("The diff is empty");
+      click(button("Send"));
+      await settle();
+      expect(filed[0]).toMatchObject({ url: `${location.origin}/pr/12/files`, body: "The diff is empty" });
+      expect(filed[0].clip ?? null).toBeNull();
+    } finally {
+      history.replaceState(null, "", was);
+    }
+  });
+
+  it("drops a capture that ends after the app moved to another page", async () => {
+    const was = location.href;
+    history.replaceState(null, "", "/dashboard");
+    try {
+      let finish!: (b: ArrayBuffer) => void;
+      click(button("Report"));
+      onPick(picked(() => new Promise<ArrayBuffer>(ok => { finish = ok; })));
+      await settle();
+      history.pushState(null, "", "/pr/12/files");
+      finish(new Uint8Array([1]).buffer);
+      await settle();
+      expect(q(".composer .annotator img")).toBeNull();
+      expect(view.root.textContent).toContain("the screenshot of /dashboard was dropped");
+    } finally {
+      history.replaceState(null, "", was);
+    }
+  });
+
   it("Your reports opened over a draft hides the composer and keeps the draft for when it closes", async () => {
     click(button("Report"));
     onPick(picked(async () => new Uint8Array([1]).buffer));
@@ -632,6 +680,29 @@ describe("the overlay", () => {
     click(button("Cancel"));
     expect(q(".composer")).toBeNull();
     expect(document.activeElement).toBe(q(".report-btn"));
+  });
+
+  it("with no launcher, gives focus back to the host's own trigger that opened it", async () => {
+    view.unmount();
+    const r = renderComponent(Overlay as never, { props: props({ launcher: false }) as never, target: host });
+    flushSync();
+    const trigger = document.createElement("button");
+    trigger.textContent = "Feedback";
+    document.body.append(trigger);
+    try {
+      trigger.focus();
+      (r.component as unknown as { report(o?: { mode?: string }): void }).report({ mode: "note" });
+      flushSync();
+      await settle();
+      const t = host.querySelector<HTMLTextAreaElement>(".composer textarea")!;
+      expect(document.activeElement).toBe(t);
+      t.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      flushSync();
+      expect(host.querySelector(".composer")).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+    } finally {
+      trigger.remove();
+    }
   });
 
   it("Escape in the composer drops the draft and gives focus back to Report", async () => {

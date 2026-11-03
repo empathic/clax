@@ -225,6 +225,8 @@ export interface Draft {
   sending: boolean;
   /** Why the last send failed; the text stays for another try. */
   error: string | null;
+  /** The page (`pageUrl`) the capture and pick were taken on; null before either. */
+  page: string | null;
 }
 
 /** A new draft at `anchor` (none for the whole page), for `purpose`: a new
@@ -232,7 +234,7 @@ export interface Draft {
 export function newDraft(anchor: Anchor | null, purpose: Purpose = { kind: "new" }, includeDiagnostics = false): Draft {
   return {
     purpose, anchor, clip: purpose.kind === "new" ? { state: "taking" } : { state: "none" }, capture: null, shapes: [], marksNote: null, body: "",
-    includeClip: true, includeDiagnostics, diagnostics: [], context: null, metadata: undefined, sending: false, error: null,
+    includeClip: true, includeDiagnostics, diagnostics: [], context: null, metadata: undefined, sending: false, error: null, page: null,
   };
 }
 

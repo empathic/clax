@@ -167,6 +167,10 @@
    * note being written is not dropped unasked: the reporter is asked first. */
   export function report(opts: { mode?: Mode | "note" } = {}): void {
     if (!canFile) return;
+    // What had focus on the page (the host's trigger, or where a shortcut was pressed) gets it back on close.
+    const at = doc.activeElement;
+    const own = (reportBtn?.getRootNode() as ShadowRoot | Document | undefined) ?? null;
+    opener = at instanceof HTMLElement && at !== doc.body && !(own instanceof ShadowRoot && own.host === at) ? at : null;
     const mode = opts.mode ?? barModes[0]?.mode ?? "note";
     // A presentation outside the page (the Clax extension) takes the report whole.
     if (pres?.handoff?.({ mode, url: pageUrl(doc), title: doc.title }, win)) return;
@@ -283,6 +287,16 @@
     setPicking(false);
     if (!focus) return;
     if (draft) queueMicrotask(() => noteEl?.focus());
+    else giveBack();
+  }
+
+  /** The element that had focus when Clax was opened from the page, if any. */
+  let opener: HTMLElement | null = null;
+  /** Focus goes back where it was when Clax opened (the host's trigger), else to Report. */
+  function giveBack(): void {
+    const o = opener;
+    opener = null;
+    if (o?.isConnected) o.focus();
     else reportBtn?.focus();
   }
 
@@ -360,6 +374,8 @@
     rawCapture = null;
     refined = plugins.refine(p?.target ?? null, doc);
     const of = d;
+    const at = pageUrl(doc);
+    of.page = at;
     const begun = session.begin({ mode: mode === "screen" || !p ? "screen" : p.mode, method: "dom" });
     of.diagnostics = begun.diagnostics;
     pickFor = { of, mode, pick: p };
@@ -368,11 +384,51 @@
     const taken = domCapture
       ? (domCapture.take({ mode, pick: p, win, deps: captureDeps }) as Promise<Captured>).then(c => {
         if (p) picker?.done();
+        // A capture that ends after the app moved to another page is of the page left: dropped.
+        if (draft === of && pageUrl(doc) !== at) { of.page = at; freshen(); return; }
         if (draft === of) return applyCapture(c);
       })
       : Promise.resolve(p ? picker?.done() : undefined);
     pendingFor = { of, ready: Promise.all([context, metadata, taken]) };
   }
+
+  /** A path as the composer names it: `/files/3?tab=diff`. */
+  const pathOf = (url: string) => { try { const u = new URL(url); return u.pathname + u.search; } catch { return url; } };
+  /** The app moved to another page (its own route change, no reload) since
+   * the draft's capture or pick: they are of the page left, so they are
+   * dropped, never sent as this page's, and the reporter is told. True
+   * when something was dropped. */
+  function freshen(): boolean {
+    const d = draft;
+    const now = pageUrl(doc);
+    if (!d || d.page === null || d.page === now) return false;
+    const was = d.page;
+    d.page = now;
+    const had = d.clip.state !== "none" || d.capture !== null || (d.purpose.kind === "new" && d.anchor !== null);
+    if (!had) return false;
+    filterRun++;
+    revokeClip();
+    rawCapture = null;
+    d.capture = null;
+    d.clip = { state: "none" };
+    d.shapes = [];
+    d.marksNote = null;
+    if (d.purpose.kind === "new") d.anchor = null;
+    const begun = session.begin(null);
+    void begun.context.then(c => { if (draft === d) d.context = c; });
+    say(`The page changed, so the screenshot of ${pathOf(was)} was dropped.`);
+    return true;
+  }
+  // Checked at each navigation the browser tells of, and each second while a draft is open (an app's pushState tells nothing).
+  $effect(() => {
+    if (!draft) return;
+    const nav = (win as Window & { navigation?: EventTarget }).navigation;
+    const check = () => { freshen(); };
+    win.addEventListener("popstate", check);
+    nav?.addEventListener?.("currententrychange", check);
+    const tick = win.setInterval(check, 1000);
+    return () => { win.removeEventListener("popstate", check); nav?.removeEventListener?.("currententrychange", check); win.clearInterval(tick); };
+  });
 
   /** The dialog keeps focus while it is open (aria-modal): Tab and Shift+Tab
    * wrap within it, and Escape anywhere in it drops the draft, as Close does. */
@@ -489,7 +545,7 @@
     setPicking(false);
     revokeClip();
     if (wasReopen) showReports();
-    else reportBtn?.focus();
+    else giveBack();
   }
 
   let noticeTimer: unknown = null;
@@ -525,6 +581,8 @@
   const pluginsAdd = untrack(() => attachments.length > 0 || plugins.list("pickers").some(p => p.refine));
 
   async function send(): Promise<void> {
+    // A screenshot of a page since left is never sent: it is dropped, and the reporter sees that first.
+    if (freshen()) return;
     const d = draft;
     if (!d || !canSend(d)) return;
     d.sending = true;
@@ -731,6 +789,7 @@
       {:else if status}
         <p class="muted small" role="status">{status}</p>
       {/if}
+      {#if draft.page && draft.clip.state !== "none"}<p class="small muted of">Of {pathOf(draft.page)}.</p>{/if}
       {#each filterNotes as n (n)}<p class="small muted" role="status">{n}</p>{/each}
       {#if draft.capture?.error}<p class="small warn" role="status">{draft.capture.error}</p>{/if}
       {#if draft.capture?.note}<p class="small warn" role="status">{draft.capture.note}</p>{/if}
