@@ -46,7 +46,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use clax_bot::FakeWebSource;
-use clax_bot::web::page::{self, Handling, decode, links_of_html, links_of_markdown, pretty_json};
+use clax_bot::web::page::{
+    self, Handling, decode, http_error, links_of_html, links_of_markdown, pretty_json,
+};
 use clax_bot::web::url::redirect_allowed;
 use clax_bot::web::{
     CODE_WEB_BLOCKED, CODE_WEB_TOO_LARGE, CODE_WEB_UNAVAILABLE, CODE_WEB_UNSUPPORTED_CONTENT_TYPE,
@@ -419,23 +421,6 @@ impl Conversion {
         self.page.text = markdown;
         Ok(self.page)
     }
-}
-
-fn http_error(url: &PublicUrl, status: u16) -> WebError {
-    let retryable = status >= 500 || status == 429 || status == 408;
-    let next = if retryable {
-        "Try again later, or use another source."
-    } else {
-        "Use another source."
-    };
-    unavailable(
-        format!(
-            "{} answered HTTP {status} without a readable body. {next}",
-            url.normalized()
-        ),
-        retryable,
-    )
-    .went_out(true)
 }
 
 /// What the final response at `url` (`status`, its `Content-Type` header,
@@ -1354,6 +1339,26 @@ mod tests {
             Body::Page(p) => p,
             Body::Convert(c) => panic!("a conversion: {c:?}"),
         }
+    }
+
+    #[test]
+    fn an_error_status_without_a_readable_body_is_unavailable() {
+        let u = url("https://a.example/x");
+        for (status, content_type, body) in [
+            (404, "application/octet-stream", vec![0, 1, 2, 0]),
+            (500, "application/octet-stream", vec![0, 1, 2, 0]),
+            (404, "text/plain", Vec::new()),
+            (500, "image/png", vec![0x89, b'P', b'N', b'G']),
+        ] {
+            let e = match read_body(&u, status, content_type, body, Format::Auto) {
+                Err(e) => e,
+                Ok(_) => panic!("{status} {content_type}: answered as a page"),
+            };
+            assert_eq!(e, http_error(&u, status), "{status} {content_type}");
+        }
+        // A readable error page is a page with its status.
+        let p = page_of(read_body(&u, 404, "text/plain", b"gone".to_vec(), Format::Auto).unwrap());
+        assert_eq!((p.status, p.text.as_str()), (404, "gone"));
     }
 
     #[test]

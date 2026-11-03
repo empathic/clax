@@ -26,8 +26,8 @@
 //! configured ([`fixtures`]).
 
 use clax_bot::web::page::{
-    Handling, decode, handling, is_sniffed, links_of_html, links_of_markdown, media_type,
-    media_type_of, pretty_json, user_agent,
+    Handling, decode, handling, http_error, is_sniffed, links_of_html, links_of_markdown,
+    media_type, media_type_of, pretty_json, user_agent,
 };
 use clax_bot::web::url::{is_local_addr, redirect_allowed};
 use clax_bot::web::{
@@ -525,27 +525,6 @@ impl RestSource {
             request_id: None,
         })
     }
-}
-
-/// The error of a fetch whose final answer at `url` is an error `status`
-/// without a readable body (empty, or not text): `web_unavailable`, gone
-/// out, retryable for a 5xx, 429 or 408. The Worker's source answers the
-/// same (`crates/clax-worker/src/web_source.rs`, `http_error`).
-fn http_error(url: &PublicUrl, status: u16) -> WebError {
-    let retryable = status >= 500 || status == 429 || status == 408;
-    let next = if retryable {
-        "Try again later, or use another source."
-    } else {
-        "Use another source."
-    };
-    unavailable(
-        format!(
-            "{} answered HTTP {status} without a readable body. {next}",
-            url.normalized()
-        ),
-        retryable,
-    )
-    .went_out(true)
 }
 
 /// The error of a call to Cloudflare's API that got no answer.

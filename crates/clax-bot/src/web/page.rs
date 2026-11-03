@@ -679,6 +679,30 @@ pub fn media_type(content_type: &str) -> String {
         .to_ascii_lowercase()
 }
 
+/// The error of a fetch whose final answer at `url` is an error `status`
+/// (4xx or 5xx) without a readable body (empty, or not text by
+/// [`handling`]): `web_unavailable`, gone out, retryable for a 5xx, 429
+/// or 408. Every source answers it so; a readable error page is a page
+/// with its status instead.
+#[must_use]
+pub fn http_error(url: &PublicUrl, status: u16) -> super::WebError {
+    let retryable = status >= 500 || status == 429 || status == 408;
+    let next = if retryable {
+        "Try again later, or use another source."
+    } else {
+        "Use another source."
+    };
+    super::WebError::new(
+        super::CODE_WEB_UNAVAILABLE,
+        format!(
+            "{} answered HTTP {status} without a readable body. {next}",
+            url.normalized()
+        ),
+        retryable,
+    )
+    .went_out(true)
+}
+
 /// Whether a served media type ([`media_type`]) says too little to read a
 /// body by, so the body is sniffed ([`sniff`]): none, or
 /// `application/octet-stream`.
@@ -777,6 +801,38 @@ pub fn handling(content_type: &str, format: super::Format) -> Handling {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_http_error_is_unavailable_and_gone_out() {
+        let u = PublicUrl::parse("https://a.example/x").unwrap();
+        for (status, retryable) in [
+            (400, false),
+            (403, false),
+            (404, false),
+            (408, true),
+            (429, true),
+            (500, true),
+            (503, true),
+        ] {
+            let e = http_error(&u, status);
+            assert_eq!(
+                (e.code, e.went_out, e.retryable),
+                (super::super::CODE_WEB_UNAVAILABLE, true, retryable),
+                "{status}"
+            );
+            let next = if retryable {
+                "Try again later, or use another source."
+            } else {
+                "Use another source."
+            };
+            assert_eq!(
+                e.message,
+                format!(
+                    "https://a.example/x answered HTTP {status} without a readable body. {next}"
+                )
+            );
+        }
+    }
 
     #[test]
     fn only_a_missing_or_octet_stream_type_is_sniffed() {
