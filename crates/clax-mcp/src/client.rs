@@ -1159,6 +1159,26 @@ impl DaemonClient {
             .await
     }
 
+    /// `GET /api/audit?<q>`: a page of the events the caller may read,
+    /// newest first (`clax_core::audit::view::AuditPage`). The route
+    /// answers the owner and their people: an agent's request is 403
+    /// `not_for_agents`.
+    pub async fn audit(&self, q: &clax_core::audit::view::AuditListQuery) -> Result<Value> {
+        let qs = q.to_query();
+        let path = if qs.is_empty() {
+            "/api/audit".to_string()
+        } else {
+            format!("/api/audit?{qs}")
+        };
+        self.json(|c| c.request(reqwest::Method::GET, &path)).await
+    }
+
+    /// `GET /api/audit/<seq>`: one event with its stored body.
+    pub async fn audit_event(&self, seq: i64) -> Result<Value> {
+        self.json(|c| c.request(reqwest::Method::GET, &format!("/api/audit/{seq}")))
+            .await
+    }
+
     /// `GET /api/queues`: `{queues}`, the queues the caller's person is a
     /// member of.
     pub async fn queues(&self) -> Result<Value> {

@@ -675,6 +675,7 @@ describe("clax Pi extension", () => {
         { queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", report_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W", summary: "Fixed", url: "https://x", commit: "c", release: "r", verify_url: "https://y", verify_after: "release:1" },
       ],
       clax_queue_watch: [{ queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }, { queue: "01K6AB3Q9X7N2M4P5R6S8T0V1W", stop: true }],
+      clax_audit: [{}, { seq: 7 }, { since: "2026-11-01", until: "2026-11-02", kind: "bot.*", actor: "claxbot", artifact: id, search: "x", cursor: 9, limit: 20 }],
     };
     const invalid: Record<string, Record<string, unknown>[]> = {
       clax_publish: [{ html: "x", bogus: 1 }, { html: "x", files: { "a.css": { content: "x", nope: 1 } } }, { html: "x", files: { "a.css": { content: "x", encoding: "hex" } } }],
@@ -713,6 +714,7 @@ describe("clax Pi extension", () => {
       clax_queue_get: [{ queue: "q" }, { queue: "q", report_id: "r", capture: 1 }],
       clax_queue_fix: [{ queue: "q", report_id: "r" }, { queue: "q", report_id: "r", summary: "s", fence: 3 }],
       clax_queue_watch: [{}, { queue: "q", stop: "yes" }],
+      clax_audit: [{ bogus: 1 }, { limit: 0 }, { limit: 201 }, { seq: "seven" }],
     };
     expect(Object.keys(valid).sort()).toEqual([...TOOLS].sort());
     const check = (name: string, args: Record<string, unknown>) =>
@@ -1800,6 +1802,19 @@ async function mcpTools(d: { base: string; token: string }): Promise<Map<string,
   const list = await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list" });
   return new Map(list.result.tools.map((t: any) => [t.name, t.inputSchema]));
 }
+
+describe("the audit trail", () => {
+  it("clax_audit is refused to Pi, an agent, as the route refuses every agent", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-audit");
+    for (const args of [{}, { kind: "bot" }, { seq: 1 }]) {
+      const r = await pi.callToolAsPi("clax_audit", args, ctx);
+      expect(r.isError, JSON.stringify(args)).toBe(true);
+      expect(json(r).error.code, JSON.stringify(args)).toBe("not_for_agents");
+    }
+    const both = await pi.callToolAsPi("clax_audit", { seq: 1, kind: "bot" }, ctx);
+    expect(json(both).error.code).toBe("invalid_args");
+  });
+});
 
 describe("report queues", () => {
   it("the queue tools reach the triage routes, and a queue the caller is not in is not_a_member", async () => {

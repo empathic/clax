@@ -106,6 +106,7 @@ async fn mcp_lists_the_tools(path: &str) {
         [
             "ask",
             "asset_upload",
+            "audit",
             "comments_handoff",
             "comments_read",
             "comments_reply",

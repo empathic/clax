@@ -14,7 +14,7 @@ The implementation is the authority where the two disagree:
 
 ## Tools
 
-Forty-two tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
+Forty-three tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
 `tag` and `tags` (see "Tags"), `fork`,
 `asset_upload`, `status`, the comment tools `comments_read`,
 `comments_reply`, `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working` (see
@@ -26,7 +26,8 @@ public Clax"), and the data tools `db_get`, `db_list`,
 `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`,
 `db_batch` (see "Runtime capabilities"), and the report queue tools
 `queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`,
-`queue_resolve`, `queue_get`, `queue_fix` and `queue_watch` (see "Report queue tools"). The MCP implementation lives in
+`queue_resolve`, `queue_get`, `queue_fix` and `queue_watch` (see "Report queue tools"), and `audit` (the
+audit trail, the owner's: refused to agents, see "The audit view" under "Kinds"). The MCP implementation lives in
 `crates/clax-mcp` and is served two ways:
 
 - the stdio shim `clax mcp --agent <claude|codex|grok>`, which a harness
@@ -45,7 +46,7 @@ public Clax"), and the data tools `db_get`, `db_list`,
   which attributes publishes to no session.
 
 Pi's extension API cannot register an MCP server, so `plugins/pi` implements
-the same forty-two tools in TypeScript against the daemon's REST API, with the same
+the same forty-three tools in TypeScript against the daemon's REST API, with the same
 arguments and the same result and error JSON.
 
 Names as the model sees them:
@@ -61,7 +62,7 @@ Names as the model sees them:
 Every MCP tool carries MCP annotations, all with `openWorldHint: false`
 (every tool acts on this machine's Clax home and daemon):
 `readOnlyHint: true` on `read`, `list`, `comments_read`, `queue_list`,
-`wait_for_feedback`, `db_get`, `db_list` and `db_query`; `status` is not
+`wait_for_feedback`, `db_get`, `db_list`, `db_query` and `audit`; `status` is not
 read-only, since with `name` it names the agent (it is
 `destructiveHint: false`, `idempotentHint: true`); `destructiveHint:
 true` on `delete`, `db_set`, `db_update`, `db_delete`, `db_str_replace` and
@@ -4385,6 +4386,7 @@ the copy's remote, the link holds the copy's address alone.
 | `queue_resolve` | `queue`, `report_id`, optional `reason` (`fixed`, `duplicate`, `wontfix`, `cannot_reproduce` or `other`, the default) | `{report}`, resolved with `resolve_reason`; `claim_required`, `lease_lost` or `thread_taken` |
 | `queue_fix` | `queue`, `report_id`, `summary`; optional `url`, `commit`, `release`, `verify_url`, `verify_after` | `{report}`, `fix_proposed` (`POST …/fix`, with no `fence`: the session's live lease is checked); `claim_required`, `lease_lost`, `thread_taken`, `invalid_fix` or `not_claimable` |
 | `queue_watch` | `queue`, optional `stop` | `{queue, watching: true, wake}` (`POST /api/queues/<queue>/watch`; `wake` as `watch` gives it), or with `stop: true` `{queue, watching: false}` (`DELETE`) |
+| `audit` | optional `seq`; or optional `since`, `until`, `kind` (a kind, a prefix `bot.*`, or a group), `actor`, `artifact`, `search`, `cursor`, `limit` | `{events, next_cursor}` (`GET /api/audit`), or with `seq` the event with its `body` (`GET /api/audit/<seq>`); `seq` with a filter is `invalid_args`. An agent's call is 403 `not_for_agents` as the route answers it ("The audit view") |
 
 #### Report queue tools
 
@@ -9712,6 +9714,22 @@ heartbeats, later delivery tiers, stream subscriptions, other reads (a
 person's or an agent's own reads, except through tool calls),
 extension credential grants, a joined site's last-used marks, inbox items
 and read marks, and daemon start and stop are not recorded.
+
+**The audit view.** `GET /api/audit?q=&actor=&group=&kind=&artifact=&from=&to=&cursor=&limit=`
+answers a page of these events newest first, `{events, next_cursor}`, and
+`GET /api/audit/<seq>` one with its stored `body`; both are in the API
+contract (`web/sdk/openapi.json`, operations `list_audit_events` and
+`get_audit_event`). `kind` is one kind or the kinds under a prefix
+(`bot.*`). The same reads are the SDK's `AuditClient`
+(`@empathic/clax-sdk/audit`), `clax audit [SEQ] [--since] [--until]
+[--kind] [--actor] [--artifact] [--search] [--limit] [--follow] [--json]`
+(`--kind` naming a group is sent as `group`; `--follow` polls the same query
+every 2 s and prints each new event, so the view is recorded once a
+window), and the MCP tool `audit`. Each answers its caller as the routes
+do: the owner by hand or in a browser, and connected people, each their own
+scope; an agent (the daemon token with a session or the agent channel) is
+403 `not_for_agents`, a grant 403 `forbidden`, as for every agent route
+the table below denies. A remote Clax does not offer `clax audit`.
 
 The audit view reads these events through kind groups: `views`
 (`view.*`), `bot` (`bot.*`), `admin` (`admin.*`), `credits`

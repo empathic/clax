@@ -169,6 +169,15 @@ pub enum Cmd {
     /// audit journal's state.
     #[command(subcommand)]
     Toolpath(commands::toolpath::Cmd),
+    /// Read the audit trail: recorded events newest last, filtered by time,
+    /// kind, actor or artifact; one event with its body by its seq; or new
+    /// events as they are recorded (--follow).
+    ///
+    /// Prints `SEQ  AT  ACTOR  KIND  SUMMARY` lines; --json gives the
+    /// route's page `{events, next_cursor}` (newest first), one event with
+    /// its `body`, or with --follow one event a line. The owner's by hand:
+    /// refused to an agent's session (`not_for_agents`), as the route is.
+    Audit(commands::audit::Args),
     /// Print a haiku about Clax, one of ten, chosen at random.
     Haiku,
     /// Print the version; with --verbose, also the commit it was built from.
@@ -317,6 +326,7 @@ fn remote_ok(cmd: &Cmd) -> bool {
         | Cmd::Tags(_)
         | Cmd::Extension(_)
         | Cmd::Toolpath(_)
+        | Cmd::Audit(_)
         | Cmd::People { .. }
         | Cmd::NativeHost(_)
         | Cmd::Login(_)
@@ -433,6 +443,7 @@ pub(crate) fn main() {
         Cmd::Bin { cmd } => commands::bin::run(&cli, &home, cmd.as_ref()),
         Cmd::Extension(c) => commands::extension::run(&cli, &home, c),
         Cmd::Toolpath(c) => commands::toolpath::run(&cli, &home, c),
+        Cmd::Audit(a) => commands::audit::run(&cli, &home, a),
         Cmd::Haiku => commands::haiku::run(&cli),
         Cmd::Version(a) => commands::version::run(&cli, a),
         Cmd::NativeHost(a) => commands::native_host::run(&cli, &home, a),

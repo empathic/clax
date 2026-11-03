@@ -608,6 +608,21 @@ export class DaemonClient {
     return this.json("/api/queues", { method: "GET" });
   }
 
+  /** `GET /api/audit?<query>`: `{events, next_cursor}`, newest first. The
+   * route answers the owner and their people; an agent is refused
+   * (`not_for_agents`). */
+  audit(query: Record<string, string | number | undefined>): Promise<any> {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(query)) if (v !== undefined && v !== "") q.set(k, String(v));
+    const s = q.toString();
+    return this.json(s ? `/api/audit?${s}` : "/api/audit", { method: "GET" });
+  }
+
+  /** `GET /api/audit/<seq>`: one event with its stored body. */
+  auditEvent(seq: number): Promise<any> {
+    return this.json(`/api/audit/${seq}`, { method: "GET" });
+  }
+
   /** `GET /api/queues/<qid>/reports?state=&cursor=`: `{reports, next}`. */
   queueReports(qid: string, state?: string, cursor?: string): Promise<any> {
     const q = new URLSearchParams();

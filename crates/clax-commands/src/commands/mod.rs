@@ -1,4 +1,5 @@
 pub mod asset;
+pub mod audit;
 pub mod bin;
 pub mod comments;
 pub mod connect;
