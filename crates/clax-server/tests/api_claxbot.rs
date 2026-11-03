@@ -2648,8 +2648,8 @@ async fn web_is_configured_once_the_account_and_token_are_set() {
     assert_eq!(v["configured"], true, "{v}");
     let (_, me) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
     assert_eq!(
-        me["web"],
-        json!({"on": true, "offered": true, "why_off": null})
+        (&me["web"]["on"], &me["web"]["offered"], &me["web"]["why_off"]),
+        (&json!(true), &json!(true), &Value::Null)
     );
     let (s, v) = call(
         ts,

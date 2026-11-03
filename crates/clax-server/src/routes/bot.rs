@@ -1415,7 +1415,13 @@ pub fn step_view(s: &clax_store::bot_runs::Step, credits_milli: i64) -> Value {
             set("error", out["error"]["message"].clone());
             set("cpu_ms", json!(out["cpu_us"].as_u64().unwrap_or(0) / 1000));
         }
-        StepKind::Finish => set("summary", p["summary"].clone()),
+        StepKind::Finish => {
+            set("summary", p["summary"].clone());
+            // The pages the run read, as the run panel lists them.
+            if p["sources"].as_array().is_some_and(|a| !a.is_empty()) {
+                set("sources", p["sources"].clone());
+            }
+        }
         _ => {
             let reason = if p["reason"].is_null() {
                 p["code"].clone()
@@ -1535,7 +1541,7 @@ pub fn panel_event(
                         v["status"] = json!("running");
                         v["ended_at"] = Value::Null;
                         if let Some(o) = v.as_object_mut() {
-                            for k in ["text", "calls", "logs", "value", "error", "summary", "reason"] {
+                            for k in ["text", "calls", "logs", "value", "error", "summary", "sources", "reason"] {
                                 o.remove(k);
                             }
                         }
