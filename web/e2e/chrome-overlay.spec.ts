@@ -784,7 +784,7 @@ test.describe("holding only the dev server's origin, as the release build does o
     expect(seen).toContain("hidden");
     expect(seen.at(-1)).toBe("shown");
     // The page sees focus leave it for the host, and nothing more.
-    expect(await page.evaluate(() => [(window as unknown as { blurred: boolean }).blurred, document.activeElement?.tagName])).toEqual([true, "CLAX-OVERLAY"]);
+    expect(await page.evaluate(() => [(window as unknown as { blurred: boolean }).blurred, document.activeElement?.tagName])).toEqual([true, "FEEDBACK-OVERLAY"]);
     // The frame sits in a closed shadow root: the page's window.frames does not list it.
     expect(await page.evaluate(() => window.frames.length)).toBe(0);
     // The composer has focus: keys typed go to it, not to the page.
@@ -938,7 +938,7 @@ test.describe("holding only the dev server's origin, as the release build does o
     const box = (await (await composer.frameElement()).boundingBox())!;
     const top = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.tagName ?? null, [box.x + box.width / 2, box.y + box.height / 2] as const);
     // Over the composer the pointer reaches the overlay's host, not the dialog or its backdrop.
-    expect(top).toBe("CLAX-OVERLAY");
+    expect(top).toBe("FEEDBACK-OVERLAY");
     const area = (await composer.locator("textarea").boundingBox())!;
     await page.mouse.click(area.x + 10, area.y + 10);
     await page.keyboard.type("Over a dialog");
