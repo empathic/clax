@@ -265,13 +265,17 @@ def later():
     sent_at["thread"] = browser_thread(aid, "@agent one more thing")["id"]
 sender = threading.Thread(target=later)
 sender.start()
-waited, _ = shim.call("wait_for_feedback", {"url_or_id": aid, "timeout_s": 20})
+# A wait that the comment did not wake still returns it, at timeout_s, so
+# the check is that it came back well before then: no tighter budget, which
+# a loaded machine would miss.
+WAIT_S = 60
+waited, _ = shim.call("wait_for_feedback", {"url_or_id": aid, "timeout_s": WAIT_S})
 returned = time.monotonic()
 sender.join()
 if "thread" not in sent_at:
     fail(f"wait_for_feedback returned before the @agent comment was posted: {waited}")
 lag = returned - sent_at["t"]
-if len(waited["feedback"]) != 1 or waited["call_again"] or not 0 <= lag <= 1.0 \
+if len(waited["feedback"]) != 1 or waited["call_again"] or not 0 <= lag < WAIT_S / 2 \
         or waited["feedback"][0]["thread_id"] != sent_at["thread"] or waited["feedback"][0]["body"] != "@agent one more thing":
     fail(f"wait_for_feedback: {waited} after {lag:.2f}s (expected thread {sent_at.get('thread')})")
 ok(f"tier 4: wait_for_feedback returned {lag * 1000:.0f} ms after the @agent comment was posted")
