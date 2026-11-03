@@ -78,6 +78,35 @@ published, with the kit API version that added it.
   from both the map and the ledger. The checker cannot see that, so a reviewer
   must refuse any removal from `kit-api.json`.
 
+## The gallery
+
+`web/design-gallery/` shows the tokens: the colour roles and the over tier, then
+each shell primitive as a variant table drawn by Svelte snippets (buttons, fields,
+tags, counts and key caps, pins, banners and the composer, people writing). It
+also shows the overlay's mode bar and reports panel on a neutral host page,
+"Example Store". That page sets its own `--muted`, `--fg` and `--bg` in loud
+colours, and none of them reaches the panels. Last comes every contrast pair,
+with the ratio the checker computed (`pairs.g.json`, written by sync-tokens.py).
+Choose the theme with `?theme=light|dark`; with neither, the system's scheme
+applies.
+
+It is a development page, and no production build includes it. Use
+`pnpm run dev:design-gallery` to work on it, and `pnpm run build:design-gallery`
+(or `//web:dist_design_gallery`) for the static build in `web/dist-design-gallery/`.
+The static build uses relative URLs, so it can be published as a Clax artifact.
+
+**The visual gate.** `bazelisk test //web:e2e_design_gallery` screenshots each
+section in light and dark, at 1280 px and 390 px. It compares them pixel for pixel
+with the baselines committed in `web/design-gallery/__screenshots__/darwin/`
+(44 PNGs, 2.2 MB). The target is manual: the baselines are macOS Chromium's, and
+there are none for Linux yet. To record new baselines, run it with
+`--test_env=CLAX_GALLERY_UPDATE=1`; they land in the test's outputs, under
+`bazel-testlogs/web/e2e_design_gallery/test.outputs/baselines/`. Look at them,
+then copy them in. The HTML report, with expected, actual and diff images, is in
+`test.outputs/report/` and is published to Clax beside the gallery. When the
+baseline set grows large, move it to a self-hosted Lost Pixel OSS or Argos with
+object storage.
+
 ## Seams kept, and why
 
 - **`accent` is an alias of `agent`, and `accent-ink` of `agent-ink`.** Clax's

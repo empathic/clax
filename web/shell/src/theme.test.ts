@@ -111,6 +111,8 @@ describe("theme", () => {
     const ALLOWED: Record<string, string[]> = {
       // mask-image reads only alpha: #000 is "opaque", not a colour.
       "shell/src/people/ApprovalCard.svelte": ["#000"],
+      // The gallery's stand-in for a deployer's page: its colours are that page's own, not Clax's.
+      "design-gallery/OverlaySpecimen.svelte": ["*"],
     };
     const web = join(__dirname, "../..");
     const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(e =>
@@ -118,7 +120,7 @@ describe("theme", () => {
     const found = walk(web).flatMap(file => {
       const rel = file.slice(web.length + 1);
       const text = readFileSync(file, "utf8").replace(/\/\* tokens:begin \*\/[\s\S]*?\/\* tokens:end \*\//g, "");
-      return [...text.matchAll(/(?<![\w&/])#[0-9a-fA-F]{3,8}\b/g)].map(m => m[0]).filter(h => !(ALLOWED[rel] ?? []).includes(h)).map(h => `${rel}: ${h}`);
+      return [...text.matchAll(/(?<![\w&/])#[0-9a-fA-F]{3,8}\b/g)].map(m => m[0]).filter(h => !(ALLOWED[rel] ?? []).some(a => a === "*" || a === h)).map(h => `${rel}: ${h}`);
     });
     expect(walk(web).length).toBeGreaterThan(20);
     expect(found).toEqual([]);

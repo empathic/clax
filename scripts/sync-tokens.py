@@ -19,6 +19,8 @@ Writes:
   web/overlay/src/tokens.css        between its markers: the overlay's
                                     :host, exactly the "overlayHost" names
   web/shell/src/ui/LiveWriters.svelte  between its markers: --live-<n>
+  web/design-gallery/pairs.g.json   every contrast pair with its colours
+                                    and computed ratio, for the gallery
 
 and checks that each "over" colour (the tier over the artifact) has one
 value for every theme and is not also a semantic colour; that every *-ink
@@ -61,6 +63,7 @@ OVERLAY_CSS = "web/overlay/src/tokens.css"
 LIVE_SVELTE = "web/shell/src/ui/LiveWriters.svelte"
 LIVE_TS = "web/shell/src/view/live-layers.ts"
 KIT_API = "design/kit-api.json"
+GALLERY_PAIRS = "web/design-gallery/pairs.g.json"
 KIT_CSS = "apps/clax_app/assets/kit/kit.css"
 HOME_APP_CSS = "apps/clax_app/home/home.css"
 MAP_JS = "apps/clax_app/assets/kit/map.js"
@@ -215,6 +218,22 @@ def pairs(tokens):
             if "frame" in tokens.color:
                 out.append({"fg": "live-%d" % i, "bg": "frame", "min": 4.5, "themes": [live["frame"]]})
     return out
+
+
+def pairs_json(tokens):
+    """Every pair (listed and implied) with its colours and the ratio the
+    checker computes, per theme it names, for the design gallery's contrast
+    page (web/design-gallery): the gallery shows the proof, it does not
+    redo it."""
+    out = []
+    for pair in pairs(tokens):
+        row = {"fg": pair["fg"], "bg": pair["bg"], "min": pair["min"], "note": pair.get("note", ""), "themes": {}}
+        for theme in pair["themes"]:
+            fg, bg, page = tokens.colour(pair["fg"], theme), tokens.colour(pair["bg"], theme), tokens.value("bg", theme)
+            ratio = contrast(parse_color(fg), parse_color(bg), parse_color(page))
+            row["themes"][theme] = {"fg": fg, "bg": bg, "page": page, "ratio": round(ratio, 2)}
+        out.append(row)
+    return (json.dumps(out, indent=1) + "\n").encode()
 
 
 def contrast_failures(tokens):
@@ -1023,6 +1042,7 @@ def main(argv):
     outputs.update({
         HOME_CSS: home_css(tokens).encode(),
         HAIKU: read(root, HAIKU_SOURCE, binary=True),
+        GALLERY_PAIRS: pairs_json(tokens),
     })
     geometry = ""
     try:

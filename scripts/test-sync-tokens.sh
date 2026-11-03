@@ -43,6 +43,7 @@ OUTPUTS=(
     apps/clax_app/lib/ui/tokens.g.dart
     apps/clax_app/assets/haiku.json
     apps/clax_app/home/mark.css
+    web/design-gallery/pairs.g.json
 )
 # The kit's stylesheet: only the text between its markers is generated.
 KIT=apps/clax_app/assets/kit/kit.css

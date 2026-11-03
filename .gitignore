@@ -8,6 +8,7 @@ web/dist-extension/*
 !web/dist-extension/.gitkeep
 web/dist-extension-test/
 web/dist-sdk/
+web/dist-design-gallery/
 web/playwright-report/
 web/test-results/
 .DS_Store

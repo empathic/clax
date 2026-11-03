@@ -202,6 +202,7 @@ npm_script_build(
 filegroup(
     name = "token_inputs",
     srcs = [
+        "design-gallery/pairs.g.json",
         "overlay/src/tokens.css",
         "shell/src/theme.css",
         "shell/src/ui/LiveWriters.svelte",
@@ -276,8 +277,58 @@ filegroup(
 # home app's modules, its unit tests and the kit (apps/clax_app/home_unit),
 # the host relay's scripts for one long answer (relay_fixture), and the
 # reel's recorder (web/reel, a package of its own, so no input of :dist).
+# The design gallery (design-gallery/, design/README.md "The gallery"): its
+# sources and configs, its static build, and its screenshot test against
+# the committed baselines. A development page: no production target reads
+# it. The test is manual: its baselines are macOS Chromium's
+# (__screenshots__/darwin/), and a Linux run has none to compare with yet.
+# Run it with `bazelisk test //web:e2e_design_gallery`; record new baselines
+# with --test_env=CLAX_GALLERY_UPDATE=1 (they land in the test's outputs).
+copy_to_bin(
+    name = "files_design_gallery",
+    srcs = glob(["design-gallery/**"], exclude = ["**/.qual"]) + [
+        "playwright.design-gallery.config.ts",
+        "vite.design-gallery.config.ts",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+npm_script_build(
+    name = "dist_design_gallery",
+    srcs = [
+        ":files_app",
+        ":files_design_gallery",
+        ":node_modules",
+    ],
+    out_dirs = ["dist-design-gallery"],
+    script = "build:design-gallery",
+    visibility = ["//visibility:public"],
+)
+
+npm_script_test(
+    name = "e2e_design_gallery",
+    data = [
+        ":dist_design_gallery",
+        ":files_app",
+        ":files_design_gallery",
+        ":node_modules",
+        "@chromium//:browsers",
+    ],
+    env = {
+        "CLAX_GALLERY_DIST": "$(rootpath :dist_design_gallery)",
+        "PLAYWRIGHT_BROWSERS_PATH": "$(rootpath @chromium//:browsers)",
+    },
+    no_copy_to_bin = ["@chromium//:browsers"],
+    script = "e2e:design-gallery",
+    tags = [
+        "manual",
+        "no-sandbox",
+    ],
+)
+
 UNIT_DATA = [
     ":files",
+    ":files_design_gallery",
     ":node_modules",
     "//web/reel:files",
     "//apps/clax_app:home",
