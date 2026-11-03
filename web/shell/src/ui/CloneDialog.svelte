@@ -136,7 +136,7 @@
   .small { min-height: 26px; padding: 3px 10px; font-size: 12.5px; }
   pre { display: block; margin: 0; font: 12.5px/1.55 var(--mono); background: var(--hover); border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 7px 9px; color: var(--fg); overflow-wrap: anywhere; white-space: pre-wrap; user-select: all; }
   .meta { margin: 12px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
-  .error { margin: 10px 0 0; font-size: 12.5px; color: var(--danger, #c0392b); }
+  .error { margin: 10px 0 0; font-size: 12.5px; color: var(--danger); }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   @media (max-width: 700px) {
     .clone-panel { padding: 14px 14px 16px; }

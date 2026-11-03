@@ -231,7 +231,7 @@
   .meta, .none { margin: 8px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
   .none { margin: 0; }
   .small { min-height: 28px; padding: 3px 10px; font-size: 12.5px; }
-  .error { margin: 12px 0 0; font-size: 12.5px; color: var(--danger, #c0392b); }
+  .error { margin: 12px 0 0; font-size: 12.5px; color: var(--danger); }
   footer { display: flex; align-items: center; gap: 8px; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
   footer .sp { flex: 1; }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
