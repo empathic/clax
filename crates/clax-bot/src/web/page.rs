@@ -19,6 +19,10 @@ pub const STORE_BYTES: usize = 1 << 20;
 pub const SNIPPET_CHARS: usize = 600;
 /// The most links kept of one page.
 pub const MAX_LINKS: usize = 1_000;
+/// The most link targets of one page resolved and checked, kept or not:
+/// past this many, a page's later links are not read, so a page of
+/// repeated or refused targets costs at most this many URL parses.
+pub const MAX_CANDIDATES: usize = 10 * MAX_LINKS;
 
 /// `body` as text: in the charset `content_type` declares when
 /// `encoding_rs` knows its label, otherwise UTF-8 with invalid sequences
@@ -101,7 +105,8 @@ pub fn pretty_json(s: &str) -> Option<String> {
 /// against the document's base URL (its first `<base href>`, which applies
 /// to the whole document as in a browser, else `base`), kept when they are
 /// public URLs ([`PublicUrl::parse`]): normalised, each once in the order
-/// first seen, at most [`MAX_LINKS`]. Linear in the page's length.
+/// first seen, at most [`MAX_LINKS`], from the first [`MAX_CANDIDATES`]
+/// `href`s. Linear in the page's length.
 #[must_use]
 pub fn links_of_html(html: &str, base: &PublicUrl) -> Vec<String> {
     #[derive(Default)]
@@ -179,7 +184,9 @@ const MAX_TARGET_BYTES: usize = super::url::MAX_URL_CHARS * 4;
 /// The links of Markdown `md`: inline links and images (`[t](u "title")`),
 /// reference definitions (`[r]: u`), autolinks (`<u>`) and bare `http`
 /// and `https` URLs, resolved against `base` and kept as
-/// [`links_of_html`] keeps them.
+/// [`links_of_html`] keeps them: at most [`MAX_LINKS`], from the first
+/// [`MAX_CANDIDATES`] targets in the page's order, whichever pass found
+/// them.
 ///
 /// A scanner, not a CommonMark parser, linear in `md`'s length: every
 /// pass moves past what it read. It reads code spans and blocks like any
@@ -305,8 +312,9 @@ pub fn links_of_markdown(md: &str, base: &PublicUrl) -> Vec<String> {
 }
 
 /// A page's links as they are kept: public, normalised, each once, at
-/// most [`MAX_LINKS`].
+/// most [`MAX_LINKS`], of at most [`MAX_CANDIDATES`] tried.
 struct Links {
+    tried: usize,
     seen: HashSet<String>,
     links: Vec<String>,
 }
@@ -314,18 +322,21 @@ struct Links {
 impl Links {
     fn new() -> Links {
         Links {
+            tried: 0,
             seen: HashSet::new(),
             links: Vec::new(),
         }
     }
 
-    /// Adds `href`, resolved against `base`, when it is a public URL;
-    /// false once [`MAX_LINKS`] are kept. A target longer than any URL
-    /// kept is dropped unread.
+    /// Tries `href`, resolved against `base`, and keeps it when it is a
+    /// public URL not kept yet; false once [`MAX_LINKS`] are kept or
+    /// [`MAX_CANDIDATES`] tried, when the caller stops. A target longer than
+    /// any URL kept is dropped unread, and counts as tried.
     fn add_from(&mut self, base: &::url::Url, href: &str) -> bool {
-        if self.links.len() >= MAX_LINKS {
+        if self.links.len() >= MAX_LINKS || self.tried >= MAX_CANDIDATES {
             return false;
         }
+        self.tried += 1;
         if href.len() <= MAX_TARGET_BYTES
             && let Ok(abs) = base.join(href.trim())
             && let Ok(u) = PublicUrl::parse(abs.as_str())
@@ -333,7 +344,7 @@ impl Links {
         {
             self.links.push(u.normalized().to_string());
         }
-        self.links.len() < MAX_LINKS
+        self.links.len() < MAX_LINKS && self.tried < MAX_CANDIDATES
     }
 
     fn into_vec(self) -> Vec<String> {
@@ -576,6 +587,32 @@ mod tests {
         assert_eq!(
             &links[..3],
             ["https://x.com/0", "https://y.com/0", "https://z.com/0"]
+        );
+        // Targets past MAX_CANDIDATES are not read, kept or not: a valid
+        // link after a run of refused and repeated ones is dropped.
+        let mut md = String::from("[k](/kept)\n");
+        for i in 0..MAX_CANDIDATES {
+            md.push_str(if i % 2 == 0 {
+                "[m](mailto:a@x.com) "
+            } else {
+                "[r](/kept) "
+            });
+        }
+        md.push_str("[late](/late)\n");
+        assert_eq!(links_of_markdown(&md, &b), vec!["https://x.com/kept"]);
+        let html = format!(
+            r#"<a href="/kept">{}<a href="/late">"#,
+            r#"<a href="javascript:void(0)">"#.repeat(MAX_CANDIDATES)
+        );
+        assert_eq!(links_of_html(&html, &b), vec!["https://x.com/kept"]);
+        // The same page with one target fewer keeps the late link.
+        let html = format!(
+            r#"<a href="/kept">{}<a href="/late">"#,
+            r#"<a href="javascript:void(0)">"#.repeat(MAX_CANDIDATES - 2)
+        );
+        assert_eq!(
+            links_of_html(&html, &b),
+            vec!["https://x.com/kept", "https://x.com/late"]
         );
         // A long `<base href>` is resolved once, not once per link.
         let html = format!(
