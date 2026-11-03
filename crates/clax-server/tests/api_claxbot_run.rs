@@ -1226,26 +1226,48 @@ async fn a_run_keeps_the_web_shape_its_person_had_when_it_started() {
 
 #[tokio::test]
 async fn a_host_source_that_cannot_run_here_reads_not_configured_and_says_why() {
+    use clax_bot::web::WebCheck;
     let fake = FakeMessages::start(vec![]).await;
     let ts = daemon(&fake).await;
     let bot = clax_http::bot::Bot {
         web_configured: true,
         ..Default::default()
     };
+    // With web use off, deciding it asks for no check of the source.
     assert!(clax_server::bot::web_configured(&ts.store, &bot).unwrap());
+    assert!(!bot.web_check.take_wanted(), "no check while web is off");
+    // With search on, every decision asks for one, until one answers.
+    ts.store
+        .set_bot_settings(
+            &AuditCtx::DAEMON,
+            &[(Setting::WebSearchEnabled, Some(json!(true)))],
+        )
+        .unwrap();
+    assert!(clax_server::bot::web_configured(&ts.store, &bot).unwrap());
+    assert!(bot.web_check.take_wanted(), "a check is asked for");
     let v = clax_server::routes::admin::web_view(&ts.store, &bot).unwrap();
     assert_eq!(
-        (&v["configured"], &v["unavailable"]),
-        (&json!(true), &Value::Null)
+        (&v["configured"], &v["unavailable"], &v["checking"]),
+        (&json!(true), &Value::Null, &json!(false))
+    );
+    bot.web_check.set(WebCheck::Checking);
+    let v = clax_server::routes::admin::web_view(&ts.store, &bot).unwrap();
+    assert_eq!(
+        (&v["configured"], &v["checking"]),
+        (&json!(true), &json!(true))
     );
     // Once the host found its source cannot run where it runs (the
     // Worker's AI binding under `wrangler dev --local`), it is not
     // configured, and the admin's view says why.
-    bot.web_unusable
-        .set("the AI binding needs to be run remotely".into());
+    bot.web_check.set(WebCheck::Unusable(
+        "the AI binding needs to be run remotely".into(),
+    ));
     assert!(!clax_server::bot::web_configured(&ts.store, &bot).unwrap());
     let v = clax_server::routes::admin::web_view(&ts.store, &bot).unwrap();
-    assert_eq!(v["configured"], false);
+    assert_eq!(
+        (&v["configured"], &v["checking"]),
+        (&json!(false), &json!(false))
+    );
     assert_eq!(v["unavailable"], "the AI binding needs to be run remotely");
 }
 

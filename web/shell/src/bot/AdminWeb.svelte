@@ -102,6 +102,7 @@
     </div>
     <p class="note">Web content can try to steer ClaxBot. It fetches only URLs from the sender's words, searches and pages it read, but which links it follows and what it searches for can still carry data out.</p>
     {#if w.unavailable}<p class="note">Web access is off: {w.unavailable}</p>
+    {:else if w.checking}<p class="note">Checking whether web access can run here. Reload in a moment.</p>
     {:else if !w.configured && local}<p class="note">Not configured: web access needs the Cloudflare account ID and API token below.</p>{/if}
   </section>
   <section class="bcard" aria-labelledby="aw-s">

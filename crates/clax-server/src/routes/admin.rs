@@ -511,8 +511,9 @@ const WEB: &[(&str, &str, Setting)] = &[
 ];
 
 /// The web settings as `GET /api/admin/web` shows them, with whether web
-/// use is configured and, when the host found its own source cannot run
-/// where it runs, why (`unavailable`, else null).
+/// use is configured, when the host found its own source cannot run
+/// where it runs why (`unavailable`, else null), and whether that check
+/// is still running (`checking`).
 ///
 /// # Errors
 /// The store's.
@@ -545,7 +546,8 @@ pub fn web_view(st: &Store, bot: &Bot) -> clax_core::Result<Value> {
     )?;
     let mut v = json!({
         "configured": crate::bot::web_configured(st, bot)?,
-        "unavailable": bot.web_unusable.why(),
+        "unavailable": bot.web_check.why(),
+        "checking": bot.web_check.state() == clax_bot::web::WebCheck::Checking,
         "sources": sources,
     });
     for (k, g) in groups {

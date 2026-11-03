@@ -311,6 +311,16 @@ describe("Admin › Web", () => {
     expect(m.root.textContent).not.toContain("Not configured");
   });
 
+  it("a_check_still_running_says_so", async () => {
+    stubFetch({
+      "GET /api/admin/web": webSettings({ configured: true, checking: true }),
+      "GET /api/admin/pricing": WEB_PRICING,
+    });
+    const m = mount(AdminWeb, { now: () => new Date("2026-10-21T12:00:00Z") });
+    await settle();
+    expect(m.root.textContent).toContain("Checking whether web access can run here.");
+  });
+
   it("the_token_is_write_only", async () => {
     const calls = stubFetch({
       "GET /api/admin/web": webSettings(),

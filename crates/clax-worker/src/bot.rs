@@ -146,8 +146,8 @@ pub fn sandbox(_env: &worker::Env) -> Result<Arc<dyn Sandbox>, String> {
 /// off, not configured. The source answers `public_origin`'s host and
 /// `site_domain` (with every host under it) as the instance's own, which
 /// no fetch reaches ([`own_hosts`]). The binding's source records in
-/// `unusable` when it finds it cannot run where the Worker runs
-/// (`clax_bot::WebSource::check`).
+/// `check` what it finds of whether it can run where the Worker runs
+/// (`clax_bot::WebSource::start_check`).
 ///
 /// # Errors
 /// Why `public_origin` or `site_domain`, when set, names no host: the
@@ -158,11 +158,11 @@ pub fn web_source(
     test: Option<Arc<crate::web_source::FixtureWeb>>,
     public_origin: Option<&str>,
     site_domain: Option<&str>,
-    unusable: Arc<clax_bot::web::Unusable>,
+    check: Arc<clax_bot::web::HostCheck>,
 ) -> Result<Option<Arc<dyn clax_bot::WebSource>>, String> {
     let source: Arc<dyn clax_bot::WebSource> = match test {
         Some(t) => t,
-        None => match binding_source(env, public_origin, unusable) {
+        None => match binding_source(env, public_origin, check) {
             Some(s) => s,
             None => return Ok(None),
         },
@@ -193,7 +193,7 @@ pub fn own_hosts(
 
 /// `web`, the Worker's web source or why it has none: the source (and no
 /// reason), or none and the reason, logged, which the state carries in
-/// `clax_http::bot::Bot::web_unusable` for the admin Web view.
+/// `clax_http::bot::Bot::web_check` for the admin Web view.
 #[must_use]
 pub fn web_or_reason(
     web: Result<Option<Arc<dyn clax_bot::WebSource>>, String>,
@@ -212,16 +212,16 @@ pub fn web_or_reason(
 fn binding_source(
     env: &worker::Env,
     public_origin: Option<&str>,
-    unusable: Arc<clax_bot::web::Unusable>,
+    check: Arc<clax_bot::web::HostCheck>,
 ) -> Option<Arc<dyn clax_bot::WebSource>> {
     #[cfg(target_arch = "wasm32")]
     {
-        crate::web_source::BindingSource::from_env(env, public_origin, unusable)
+        crate::web_source::BindingSource::from_env(env, public_origin, check)
             .map(|b| Arc::new(b) as Arc<dyn clax_bot::WebSource>)
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let _ = (env, public_origin, unusable);
+        let _ = (env, public_origin, check);
         None
     }
 }

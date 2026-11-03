@@ -2800,13 +2800,13 @@ async fn me_put_needs_a_field() {
 #[tokio::test]
 async fn the_admin_web_view_says_why_web_is_unavailable() {
     // A host whose configured public origin or site domain names no host
-    // (`Bot::web_unusable`, set from the start) has web off, even with a
+    // (`Bot::web_check`, unusable from the start) has web off, even with a
     // source, and says why.
     let why = "the site domain \"https://sites.example/x\" is not a bare host name";
     let ts = TestServer::spawn_with(|s| {
         s.bot = std::sync::Arc::new(clax_http::bot::Bot {
             web_configured: true,
-            web_unusable: std::sync::Arc::new(clax_bot::web::Unusable::because(why)),
+            web_check: std::sync::Arc::new(clax_bot::web::HostCheck::unusable(why)),
             ..Default::default()
         });
     })
@@ -2822,6 +2822,7 @@ async fn the_admin_web_view_says_why_web_is_unavailable() {
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["configured"], false, "{v}");
     assert_eq!(v["unavailable"], why, "{v}");
+    assert_eq!(v["checking"], false, "{v}");
     // Without the reason the same host is configured, and says nothing.
     let ts = TestServer::spawn_with(|s| {
         s.bot = std::sync::Arc::new(clax_http::bot::Bot {

@@ -342,12 +342,16 @@ pub trait WebSource: MaybeSendSync {
         true
     }
 
-    /// Finds out whether the source can run where the host runs, so that
-    /// [`WebSource::configured`] says so from then on: a host calls it
-    /// before it reports or decides web use (its admin's view, a run's
-    /// start). A source that found out keeps the answer; one that could
-    /// not tell tries again at the next call. Nothing by default.
-    async fn check(&self) {}
+    /// Starts finding out, in the background, whether the source can run
+    /// where the host runs, when that is due; it never waits. What it
+    /// finds goes to the host's [`HostCheck`]. Nothing by default.
+    fn start_check(&self) {}
+
+    /// Waits at most `within` for a check [`WebSource::start_check`]
+    /// started and has not finished. Nothing by default.
+    async fn wait_check(&self, within: std::time::Duration) {
+        let _ = within;
+    }
 
     /// The instance's own hosts, which no fetch reaches ([`OwnHosts`]):
     /// none by default; a hosted source answers them ([`WithOwnHosts`]).
@@ -356,37 +360,92 @@ pub trait WebSource: MaybeSendSync {
     }
 }
 
-/// Why a host's web source cannot be used, once the host knows: its
-/// configured public origin or site domain names no host, so a fetch of
-/// the instance's own hosts could not be refused (known at start,
-/// [`Unusable::because`]), or the source found it cannot run where the
-/// host runs ([`WebSource::check`]: on the Worker, an `AI` binding that
-/// cannot run under `wrangler dev --local`). The source and the host's
-/// routes share one: once it is set, web use is not configured and the
-/// admin's view says why. It is set at most once, for the life of the
-/// process (on the Worker, the isolate), so a reason known at start is
-/// never replaced.
+/// What a host knows of whether its web source can be used: the one
+/// record of why web use is off whatever the credentials, which the
+/// source and the host's routes share for as long as the host's state
+/// lives (on the Worker, a Durable Object start). Either cause makes it
+/// [`WebCheck::Unusable`], after which web use is not configured and the
+/// admin's view says why:
+///
+/// - the instance's configured public origin or site domain names no
+///   host, so a fetch of its own hosts could not be refused: known at
+///   start ([`HostCheck::unusable`]);
+/// - the source cannot run where the host runs, which a check finds
+///   ([`WebSource::start_check`]: on the Worker, an `AI` binding that
+///   cannot run under `wrangler dev --local`).
+///
+/// `Unusable` is kept once set, so a reason known at start holds over
+/// whatever a later check finds. A route that decides web use with web
+/// on asks for a check ([`HostCheck::want`]); the host starts it after
+/// the request.
 #[derive(Debug, Default)]
-pub struct Unusable(std::sync::OnceLock<String>);
+pub struct HostCheck(std::sync::Mutex<(WebCheck, bool)>);
 
-impl Unusable {
-    /// Unusable from the start, for `why`.
-    #[must_use]
-    pub fn because(why: impl Into<String>) -> Unusable {
-        let u = Unusable::default();
-        u.set(why.into());
-        u
+/// Where a [`HostCheck`] stands.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum WebCheck {
+    /// Not checked yet, or the last check could not tell.
+    #[default]
+    Unchecked,
+    /// A check is running.
+    Checking,
+    /// The source runs here.
+    Usable,
+    /// The source cannot be used here, and why.
+    Unusable(String),
+}
+
+impl HostCheck {
+    fn lock(&self) -> std::sync::MutexGuard<'_, (WebCheck, bool)> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Records `why` the source cannot be used; a later reason is dropped.
-    pub fn set(&self, why: String) {
-        let _ = self.0.set(why);
+    /// Where the check stands.
+    #[must_use]
+    pub fn state(&self) -> WebCheck {
+        self.lock().0.clone()
+    }
+
+    /// Unusable from the start, for `why` (a configuration that leaves the
+    /// source unusable whatever a check would find).
+    #[must_use]
+    pub fn unusable(why: impl Into<String>) -> HostCheck {
+        HostCheck(std::sync::Mutex::new((
+            WebCheck::Unusable(why.into()),
+            false,
+        )))
+    }
+
+    /// Records where the check stands; `Unusable` is kept once set.
+    pub fn set(&self, to: WebCheck) {
+        let mut g = self.lock();
+        if !matches!(g.0, WebCheck::Unusable(_)) {
+            g.0 = to;
+        }
     }
 
     /// Why the source cannot be used, once that is known.
     #[must_use]
-    pub fn why(&self) -> Option<&str> {
-        self.0.get().map(String::as_str)
+    pub fn why(&self) -> Option<String> {
+        match self.state() {
+            WebCheck::Unusable(why) => Some(why),
+            _ => None,
+        }
+    }
+
+    /// Asks for a check, unless one has answered either way.
+    pub fn want(&self) {
+        let mut g = self.lock();
+        if matches!(g.0, WebCheck::Unchecked) {
+            g.1 = true;
+        }
+    }
+
+    /// Whether a check was asked for since the last call, clearing it.
+    pub fn take_wanted(&self) -> bool {
+        std::mem::take(&mut self.lock().1)
     }
 }
 
@@ -432,8 +491,12 @@ impl WebSource for WithOwnHosts {
         self.source.configured()
     }
 
-    async fn check(&self) {
-        self.source.check().await;
+    fn start_check(&self) {
+        self.source.start_check();
+    }
+
+    async fn wait_check(&self, within: std::time::Duration) {
+        self.source.wait_check(within).await;
     }
 
     fn own_hosts(&self) -> OwnHosts {
@@ -444,6 +507,37 @@ impl WebSource for WithOwnHosts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_host_check_is_asked_for_until_it_answers_and_keeps_unusable() {
+        let c = HostCheck::default();
+        assert_eq!((c.state(), c.why()), (WebCheck::Unchecked, None));
+        assert!(!c.take_wanted());
+        c.want();
+        assert!(c.take_wanted());
+        assert!(!c.take_wanted(), "taken once");
+        // Running, or answered usable: no new check is asked for.
+        c.set(WebCheck::Checking);
+        c.want();
+        assert!(!c.take_wanted());
+        // A check that could not tell leaves it unchecked: asked again.
+        c.set(WebCheck::Unchecked);
+        c.want();
+        assert!(c.take_wanted());
+        c.set(WebCheck::Unusable("cannot run here".into()));
+        c.set(WebCheck::Usable);
+        assert_eq!(c.why().as_deref(), Some("cannot run here"));
+        c.want();
+        assert!(!c.take_wanted());
+        // Unusable from the start: no check is asked for, and what a
+        // check would find never replaces the reason.
+        let c = HostCheck::unusable("the site domain names no host");
+        c.want();
+        assert!(!c.take_wanted());
+        c.set(WebCheck::Usable);
+        c.set(WebCheck::Unusable("cannot run here".into()));
+        assert_eq!(c.why().as_deref(), Some("the site domain names no host"));
+    }
 
     #[test]
     fn charges_follow_the_spec_table() {

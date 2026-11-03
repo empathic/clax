@@ -1156,7 +1156,10 @@ pub fn driver(state: &mut AppState) -> Arc<clax_bot::Driver> {
         hosted.and_then(|h| h.sites.as_ref()).map(|s| s.domain()),
     );
     if let Some(why) = unavailable {
-        state.bot.web_unusable.set(why);
+        state
+            .bot
+            .web_check
+            .set(clax_bot::web::WebCheck::Unusable(why));
     }
     driver_with_web(state, web)
 }
@@ -1204,7 +1207,7 @@ pub fn driver_with_web(
         catalog_url: bot.catalog_url.clone(),
         catalog_flight: bot.catalog_flight.clone(),
         web_configured: bot.web_configured,
-        web_unusable: bot.web_unusable.clone(),
+        web_check: bot.web_check.clone(),
     });
     driver
 }
@@ -1212,7 +1215,7 @@ pub fn driver_with_web(
 /// Whether ClaxBot's web use is configured on this host now: never once
 /// the host knows its source cannot be used (its origin or site domain
 /// names no host, or the source cannot run where it runs:
-/// [`clax_http::bot::Bot::web_unusable`]); else the host says so
+/// [`clax_http::bot::Bot::web_check`]); else the host says so
 /// ([`clax_http::bot::Bot::web_configured`]: the Worker's AI binding, the
 /// daemon's test fixtures), or, on a native daemon, the
 /// instance holds a key-encryption key, a Cloudflare account ID and a
@@ -1222,10 +1225,16 @@ pub fn driver_with_web(
 /// # Errors
 /// The store's.
 pub fn web_configured(st: &Store, bot: &clax_http::bot::Bot) -> clax_core::Result<bool> {
-    if bot.web_unusable.why().is_some() {
+    if bot.web_check.why().is_some() {
         return Ok(false);
     }
     if bot.web_configured {
+        // Every decision on web use (a run's start, the person's and the
+        // admin's views) comes here: with web use on, the host is asked to
+        // check its source, which it does after the request.
+        if web_on(st)? {
+            bot.web_check.want();
+        }
         return Ok(true);
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -1237,6 +1246,14 @@ pub fn web_configured(st: &Store, bot: &clax_http::bot::Bot) -> clax_core::Resul
         let _ = st;
         Ok(false)
     }
+}
+
+/// Whether an admin turned web search or web fetch on.
+fn web_on(st: &Store) -> clax_core::Result<bool> {
+    use clax_store::bot_settings::Setting;
+    let on =
+        |s: Setting| -> clax_core::Result<bool> { Ok(st.bot_setting(s)?.as_bool() == Some(true)) };
+    Ok(on(Setting::WebSearchEnabled)? || on(Setting::WebFetchEnabled)?)
 }
 
 /// A clock reading the store's, owned.

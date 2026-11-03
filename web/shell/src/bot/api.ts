@@ -372,11 +372,12 @@ export const testProvider = () => call<{ ok: boolean; latency_ms: number; error?
 export type WebProvider = "ceramic" | "exa" | "linkup";
 /** Which URLs a fetch may take: those from the sender's words, searches and pages read; any public one; the allowlist's hosts. */
 export type UrlRule = "sourced" | "any_public" | "allowlist";
-/** `GET /api/admin/web`: the web tools' settings, `configured` whether the host has a source at all, `unavailable` why web use is off whatever the credentials (else null), and where each value comes from by its dotted name (`search.provider`). The token is write-only: only its `KeyInfo`. */
+/** `GET /api/admin/web`: the web tools' settings, `configured` whether the host has a source at all, `unavailable` why web use is off whatever the credentials (else null), `checking` whether the host is still checking that its source can run where it runs, and where each value comes from by its dotted name (`search.provider`). The token is write-only: only its `KeyInfo`. */
 export type WebSettings = {
   configured: boolean;
   /** Why web use is off whatever the credentials: the instance's configured public origin or site domain names no host, or the host's own source cannot run where it runs (a Worker under `wrangler dev --local`). Null otherwise. */
   unavailable: string | null;
+  checking: boolean;
   search: { enabled: boolean; provider: WebProvider; gateway: string; byok_alias: string; limit: number; max_per_run: number };
   fetch: { enabled: boolean; url_rule: UrlRule; allowlist: string[]; max_per_run: number };
   cloudflare: { account_id: string; token: KeyInfo };

@@ -274,7 +274,7 @@ struct Instance {
     /// ClaxBot's driver (`crate::bot`).
     bot: crate::bot::WorkerBot,
     /// ClaxBot's web source, when the Worker has one
-    /// ([`InstanceDo::check_web`]).
+    /// ([`InstanceDo::check_web`], [`Instance::start_wanted_web_check`]).
     web: Option<Arc<dyn clax_bot::WebSource>>,
     /// ClaxBot's scripted web source in the test mode (`CLAX_TEST_ROUTES`
     /// and `CLAX_TEST_WEB` both `1`), which `POST /_worker/web-fixtures`
@@ -311,14 +311,14 @@ pub struct InstanceDo {
     bodies: BodyBudget,
 }
 
-/// Whether the answer to a request for `path` says or decides whether web
-/// use is configured: the admin's Web page, a person's ClaxBot page and
-/// the start of a run.
-fn decides_web(path: &str) -> bool {
-    path == "/api/admin/web"
-        || path.starts_with("/api/admin/web/")
-        || path == "/api/me/bot"
-        || path == "/api/bot/runs"
+/// How long `GET /api/admin/web` waits for the web source's check
+/// ([`InstanceDo::check_web`]) before it answers "checking".
+const ADMIN_WEB_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether a request waits for the web source's check: only the admin's
+/// view of the web settings, whose answer is the point of the request.
+fn waits_for_web_check(method: &axum::http::Method, path: &str) -> bool {
+    method == axum::http::Method::GET && path == "/api/admin/web"
 }
 
 fn var(env: &Env, name: &str) -> String {
@@ -620,14 +620,14 @@ fn clax_app(env: &Env) -> Result<clax_core::config::ClaxApp> {
 /// (`crate::bot::web_source`: `test_web` in the test mode, else the `AI`
 /// binding when the Worker has one), which makes the host's web use
 /// configured until the host knows its source cannot be used
-/// (`clax_http::bot::Bot::web_unusable`); the source is returned too, for
-/// [`InstanceDo::check_web`]. When `SITE_DOMAIN` or `PUBLIC_ORIGIN` is set
-/// and names no host there is no source, and the reason is set in
-/// `web_unusable` from the start (`crate::bot::web_or_reason`): web is off
-/// and the admin Web view says why. This is what happens where the
-/// instance otherwise starts (not hosted); a hosted Worker with such a
-/// value is refused before this, by `hosted` and the `fetch` handler
-/// (500).
+/// (`clax_http::bot::Bot::web_check`); the source is returned too, for
+/// [`InstanceDo::check_web`] and [`Instance::start_wanted_web_check`].
+/// When `SITE_DOMAIN` or `PUBLIC_ORIGIN` is set and names no host there
+/// is no source, and `web_check` is unusable from the start with the
+/// reason (`crate::bot::web_or_reason`): web is off and the admin Web view
+/// says why. This is what happens where the instance otherwise starts
+/// (not hosted); a hosted Worker with such a value is refused before
+/// this, by `hosted` and the `fetch` handler (500).
 fn worker_bot(
     env: &Env,
     app: &mut AppState,
@@ -638,18 +638,18 @@ fn worker_bot(
     let public = Some(public.trim()).filter(|p| !p.is_empty());
     // Nor does a fetch reach the instance's own hosts: its public origin
     // and its site domain.
-    let unusable = Arc::new(clax_bot::web::Unusable::default());
+    let check = Arc::new(clax_bot::web::HostCheck::default());
     let (web, why) = crate::bot::web_or_reason(site_hosts(env).and_then(|sites| {
         crate::bot::web_source(
             env,
             test_web,
             public,
             sites.as_ref().map(|s| s.domain()),
-            unusable.clone(),
+            check.clone(),
         )
     }));
     if let Some(why) = why {
-        unusable.set(why);
+        check.set(clax_bot::web::WebCheck::Unusable(why));
     }
     let kek_secret = env
         .secret("CLAX_KEK")
@@ -703,7 +703,7 @@ fn worker_bot(
         catalog_url: first_catalog_url,
         catalog_flight,
         web_configured: web.is_some(),
-        web_unusable: unusable,
+        web_check: check,
     });
     (bot, web)
 }
@@ -763,6 +763,20 @@ struct Kept {
 }
 
 impl Instance {
+    /// Starts the web source's check in the background when a decision on
+    /// web use made with web use on asked for one
+    /// (`clax_http::bot::Bot::web_check`, asked in
+    /// `clax_server::bot::web_configured`, which every run's start,
+    /// whatever started it, and the person's and the admin's views go
+    /// through). It never waits.
+    fn start_wanted_web_check(&self) {
+        if self.app.bot.web_check.take_wanted()
+            && let Some(web) = &self.web
+        {
+            web.start_check();
+        }
+    }
+
     fn build(
         state: &State,
         env: &Env,
@@ -1513,15 +1527,20 @@ impl InstanceDo {
         None
     }
 
-    /// Before a request whose answer says or decides whether web use is
-    /// configured ([`decides_web`]), has the web source find out whether
-    /// it can run here (`clax_bot::WebSource::check`: on the `AI` binding,
-    /// one free `toMarkdown()` of a line of HTML, kept for the isolate's
-    /// life once it answers), so a Worker under `wrangler dev --local`
-    /// reports web use not configured, and why, rather than configured.
-    async fn check_web(inst: &Instance, path: &str) {
-        if let Some(web) = inst.web.as_ref().filter(|_| decides_web(path)) {
-            web.check().await;
+    /// Before the admin's view of the web settings
+    /// ([`waits_for_web_check`]): starts the web source's check if one is
+    /// due, whether web use is on or not, so the admin learns before
+    /// turning it on, and waits for it at most [`ADMIN_WEB_WAIT`]; the
+    /// view answers `checking` if it has not finished. No other request
+    /// waits: a decision on web use asks for a check, which starts after
+    /// the request ([`Instance::start_wanted_web_check`]).
+    async fn check_web(inst: &Instance, req: &axum::http::Request<axum::body::Body>) {
+        if !waits_for_web_check(req.method(), req.uri().path()) {
+            return;
+        }
+        if let Some(web) = &inst.web {
+            web.start_check();
+            web.wait_check(ADMIN_WEB_WAIT).await;
         }
     }
 
@@ -1775,7 +1794,7 @@ impl DurableObject for InstanceDo {
         if let Some(res) = self.test_route(&inst, &req).await {
             return res;
         }
-        Self::check_web(&inst, req.uri().path()).await;
+        Self::check_web(&inst, &req).await;
         self.revive(&inst).await;
         if !matches!(
             *req.method(),
@@ -1784,6 +1803,7 @@ impl DurableObject for InstanceDo {
             self.wrote.set(true);
         }
         let mut res = inst.router.clone().call(req).await.map_err(rust_err)?;
+        inst.start_wanted_web_check();
         inst.bot.take_wakes(now_ms());
         let out = match Self::opened(&mut res) {
             Some((carried, att)) => self.accept(&inst, carried, att),
@@ -1881,6 +1901,7 @@ impl DurableObject for InstanceDo {
             futures_util::pin_mut!(timed);
             let _ = futures_util::future::select(drive, timed).await;
         }
+        inst.start_wanted_web_check();
         inst.settle().await;
         self.schedule(&inst).await;
         // Last: after the runs and with the next alarm already set, so a
@@ -2074,17 +2095,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn web_use_is_checked_before_the_routes_that_report_or_decide_it() {
-        for path in [
-            "/api/admin/web",
-            "/api/admin/web/token",
-            "/api/me/bot",
-            "/api/bot/runs",
+    fn only_the_admins_web_view_waits_for_the_web_check() {
+        use axum::http::Method;
+        assert!(waits_for_web_check(&Method::GET, "/api/admin/web"));
+        for (m, path) in [
+            (Method::PUT, "/api/admin/web"),
+            (Method::GET, "/api/admin/web/token"),
+            (Method::GET, "/api/me/bot"),
+            (Method::POST, "/api/bot/runs"),
+            (Method::GET, "/"),
         ] {
-            assert!(decides_web(path), "{path}");
-        }
-        for path in ["/", "/api/artifacts", "/api/bot/runs/r1/events", "/a/x/"] {
-            assert!(!decides_web(path), "{path}");
+            assert!(!waits_for_web_check(&m, path), "{m} {path}");
         }
     }
 

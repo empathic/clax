@@ -95,13 +95,15 @@ pub struct Bot {
     /// credentials: every run's web use is off, not configured
     /// (`clax_bot::web::WebAccess::now`).
     pub web_configured: bool,
-    /// Why the host's web source cannot be used, once it knows
-    /// (`clax_bot::web::Unusable`): the instance's configured public origin
-    /// or site domain names no host, or the source cannot run where the
-    /// host runs (the Worker's AI binding under `wrangler dev --local`).
-    /// Set, web use is not configured whatever `web_configured` says, and
-    /// the admin's view says why (`GET /api/admin/web`'s `unavailable`).
-    pub web_unusable: Arc<clax_bot::web::Unusable>,
+    /// What the host knows of whether its web source can be used
+    /// (`clax_bot::web::HostCheck`): unusable once the instance's
+    /// configured public origin or site domain names no host (set at
+    /// start), or once a check finds the source cannot run where the host
+    /// runs (the Worker's AI binding under `wrangler dev --local`; never
+    /// checked on the daemon). Unusable, web use is not configured whatever
+    /// `web_configured` says, and the admin's view says why
+    /// (`GET /api/admin/web`'s `unavailable`).
+    pub web_check: Arc<clax_bot::web::HostCheck>,
 }
 
 /// What a price catalog refresh came to: the listings the cache holds and
@@ -130,7 +132,7 @@ impl Default for Bot {
             catalog_url: None,
             catalog_flight: Arc::default(),
             web_configured: false,
-            web_unusable: Arc::default(),
+            web_check: Arc::default(),
         }
     }
 }

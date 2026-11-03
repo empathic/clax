@@ -233,11 +233,63 @@ pub enum BindingCheck {
     /// The binding runs here: web use is configured.
     Usable,
     /// The binding cannot run where the Worker runs, and why: web use is
-    /// not configured, for the isolate's life.
+    /// not configured, for as long as the instance lives (a Durable
+    /// Object start).
     Unusable(String),
     /// The check failed otherwise (a timeout, a passing error): it says
-    /// nothing, and runs again at the next check.
+    /// nothing, and runs again once its back-off passed ([`ProbePlan`]).
     Unknown,
+}
+
+/// The wait before checking again after a check that could not tell
+/// ([`BindingCheck::Unknown`]); it doubles after each further one, up to
+/// [`PROBE_BACKOFF_MAX`].
+pub const PROBE_BACKOFF: Duration = Duration::from_secs(30);
+
+/// The longest wait between checks that cannot tell.
+pub const PROBE_BACKOFF_MAX: Duration = Duration::from_secs(15 * 60);
+
+/// When the binding's check runs (its clock injected as `now_ms`): at
+/// most one at a time, never again once one answered either way, and
+/// after one that could not tell, not before its back-off passed.
+#[derive(Debug, Default)]
+pub struct ProbePlan {
+    running: bool,
+    answered: bool,
+    /// When the next check may start (ms), after one that could not tell.
+    next_at_ms: f64,
+    /// The back-off the next check that cannot tell sets (ms).
+    backoff_ms: f64,
+}
+
+impl ProbePlan {
+    /// Whether a check starts at `now_ms`, marking it running when it
+    /// does.
+    pub fn start(&mut self, now_ms: f64) -> bool {
+        if self.running || self.answered || now_ms < self.next_at_ms {
+            return false;
+        }
+        self.running = true;
+        true
+    }
+
+    /// Records that the running check ended in `check` at `now_ms`.
+    pub fn finish(&mut self, check: &BindingCheck, now_ms: f64) {
+        self.running = false;
+        match check {
+            BindingCheck::Usable | BindingCheck::Unusable(_) => self.answered = true,
+            BindingCheck::Unknown => {
+                let first = PROBE_BACKOFF.as_millis() as f64;
+                let max = PROBE_BACKOFF_MAX.as_millis() as f64;
+                self.backoff_ms = if self.backoff_ms == 0.0 {
+                    first
+                } else {
+                    (self.backoff_ms * 2.0).min(max)
+                };
+                self.next_at_ms = now_ms + self.backoff_ms;
+            }
+        }
+    }
 }
 
 /// What the check's `toMarkdown()` of [`PROBE_HTML`] coming to `outcome`
@@ -674,8 +726,12 @@ pub use binding::BindingSource;
 mod binding {
     use super::*;
     use clax_bot::web::CODE_WEB_TIMEOUT;
-    use futures_util::future::{Either, select};
+    use clax_bot::web::{HostCheck, WebCheck};
+    use futures_util::FutureExt;
+    use futures_util::future::{Either, LocalBoxFuture, Shared, select};
     use js_sys::{Array, Function, Object, Promise, Reflect, Uint8Array};
+    use std::cell::RefCell;
+    use std::rc::Rc;
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::JsFuture;
 
@@ -780,70 +836,75 @@ mod binding {
         ai: JsValue,
         /// [`page::user_agent`] of the instance's public origin, if any.
         user_agent: String,
-        /// Why the binding cannot run here, once a check found it
-        /// ([`binding_check`]); shared with the host's routes.
-        unusable: Arc<clax_bot::web::Unusable>,
-        /// Whether a check has answered, either way.
-        checked: std::cell::Cell<bool>,
+        /// What the checks of the binding found ([`binding_check`]);
+        /// shared with the host's routes.
+        host: Arc<HostCheck>,
+        /// When a check runs.
+        plan: Rc<RefCell<ProbePlan>>,
+        /// The check running now, for [`WebSource::wait_check`].
+        running: Rc<RefCell<Option<Shared<LocalBoxFuture<'static, ()>>>>>,
     }
 
     impl BindingSource {
         /// The source over `env`'s `AI` binding, when it has one. Under
         /// `wrangler dev --local` it has one whose every call throws
-        /// ("needs to be run remotely", [`cannot_run_here`]); the source's
-        /// check ([`WebSource::check`]) finds that out with one free
-        /// conversion and records why in `unusable`, after which web use
-        /// is not configured and a call that still comes is refused
-        /// `web_unavailable`, uncharged. Before a check answered, a search
-        /// and a fetch that needs a conversion ([`conversion_failure`])
-        /// answer `web_unavailable`, uncharged, though the fetch's request
-        /// reached the site; other fetches are answered. Its fetches name
-        /// the instance at
-        /// `public_origin`, when it has one, in their `User-Agent`
-        /// ([`page::user_agent`]).
+        /// ("needs to be run remotely", [`cannot_run_here`]). The source's
+        /// check ([`WebSource::start_check`]) finds that out in the
+        /// background with one free conversion and records it in `host`.
+        /// From then on web use is not configured, and a call that still
+        /// comes (from a run already going) is refused `web_unavailable`,
+        /// uncharged, whatever it fetches. Until the check answers, a
+        /// search, and a fetch that needs a conversion
+        /// ([`conversion_failure`]), answer `web_unavailable`, uncharged,
+        /// though the fetch's request reached the site; other fetches are
+        /// answered. Its fetches name the instance at `public_origin`,
+        /// when it has one, in their `User-Agent` ([`page::user_agent`]).
         #[must_use]
         pub fn from_env(
             env: &worker::Env,
             public_origin: Option<&str>,
-            unusable: Arc<clax_bot::web::Unusable>,
+            host: Arc<HostCheck>,
         ) -> Option<BindingSource> {
             let ai = Reflect::get(env.as_ref(), &JsValue::from_str("AI")).ok()?;
             ai.is_object().then(|| BindingSource {
                 ai,
                 user_agent: page::user_agent(public_origin),
-                unusable,
-                checked: std::cell::Cell::new(false),
+                host,
+                plan: Rc::default(),
+                running: Rc::default(),
             })
         }
+    }
 
-        /// The binding's check: a `toMarkdown()` of [`PROBE_HTML`],
-        /// answered or not within [`PROBE_TIMEOUT`].
-        async fn probe(&self) -> Result<(), String> {
-            let deadline = js_sys::Date::now() + PROBE_TIMEOUT.as_millis() as f64;
-            let parts = Array::of1(&JsValue::from_str(PROBE_HTML));
-            let blob = construct(
-                "Blob",
-                &[parts.into(), object(&[("type", HTML_UTF8.into())]).into()],
-            )
-            .map_err(|e| message(&e))?;
-            let doc = object(&[("name", "probe.html".into()), ("blob", blob)]);
-            let docs = Array::of1(&doc.into());
-            within(
-                call(&self.ai, "toMarkdown", &[docs.into()]),
-                &CancelToken::new(),
-                deadline,
-                "The check",
-            )
-            .await
-            .map_err(|e| e.message)?
-            .map(|_| ())
-            .map_err(|e| message(&e))
-        }
+    /// The binding's check: a `toMarkdown()` of [`PROBE_HTML`] on `ai`,
+    /// answered or not within [`PROBE_TIMEOUT`].
+    async fn probe(ai: JsValue) -> Result<(), String> {
+        let deadline = js_sys::Date::now() + PROBE_TIMEOUT.as_millis() as f64;
+        let parts = Array::of1(&JsValue::from_str(PROBE_HTML));
+        let blob = construct(
+            "Blob",
+            &[parts.into(), object(&[("type", HTML_UTF8.into())]).into()],
+        )
+        .map_err(|e| message(&e))?;
+        let doc = object(&[("name", "probe.html".into()), ("blob", blob)]);
+        let docs = Array::of1(&doc.into());
+        within(
+            call(&ai, "toMarkdown", &[docs.into()]),
+            &CancelToken::new(),
+            deadline,
+            "The check",
+        )
+        .await
+        .map_err(|e| e.message)?
+        .map(|_| ())
+        .map_err(|e| message(&e))
+    }
 
+    impl BindingSource {
         /// The refusal of a call once the binding is known not to run
         /// here: `web_unavailable`, not gone out.
         fn refused(&self) -> Option<WebError> {
-            self.unusable
+            self.host
                 .why()
                 .map(|why| unavailable(format!("{why} Continue without the web."), false))
         }
@@ -1076,29 +1137,49 @@ mod binding {
     impl WebSource for BindingSource {
         /// False once a check found the binding cannot run here.
         fn configured(&self) -> bool {
-            self.unusable.why().is_none()
+            self.host.why().is_none()
         }
 
-        /// One `toMarkdown()` of [`PROBE_HTML`] until a check answers
-        /// ([`binding_check`]); then nothing, for the isolate's life.
-        async fn check(&self) {
-            if self.checked.get() {
+        /// Starts one `toMarkdown()` of [`PROBE_HTML`] in the background
+        /// when [`ProbePlan`] says one is due; what it finds goes to the
+        /// host's [`HostCheck`].
+        fn start_check(&self) {
+            if !self.plan.borrow_mut().start(js_sys::Date::now()) {
                 return;
             }
-            match binding_check(
-                self.probe()
-                    .await
-                    .as_ref()
-                    .map(|()| ())
-                    .map_err(String::as_str),
-            ) {
-                BindingCheck::Usable => self.checked.set(true),
-                BindingCheck::Unusable(why) => {
-                    worker::console_warn!("ClaxBot's web use is off: {why}");
-                    self.unusable.set(why);
-                    self.checked.set(true);
+            self.host.set(WebCheck::Checking);
+            let (ai, plan, host, running) = (
+                self.ai.clone(),
+                self.plan.clone(),
+                self.host.clone(),
+                self.running.clone(),
+            );
+            let run = async move {
+                let outcome = probe(ai).await;
+                let check = binding_check(outcome.as_ref().map(|()| ()).map_err(String::as_str));
+                plan.borrow_mut().finish(&check, js_sys::Date::now());
+                match check {
+                    BindingCheck::Usable => host.set(WebCheck::Usable),
+                    BindingCheck::Unusable(why) => {
+                        worker::console_warn!("ClaxBot's web use is off: {why}");
+                        host.set(WebCheck::Unusable(why));
+                    }
+                    BindingCheck::Unknown => host.set(WebCheck::Unchecked),
                 }
-                BindingCheck::Unknown => {}
+                running.borrow_mut().take();
+            }
+            .boxed_local()
+            .shared();
+            *self.running.borrow_mut() = Some(run.clone());
+            wasm_bindgen_futures::spawn_local(run);
+        }
+
+        /// Waits at most `within` for the check running now, if any.
+        async fn wait_check(&self, within: Duration) {
+            let run = self.running.borrow().clone();
+            if let Some(run) = run {
+                let delay = std::pin::pin!(worker::Delay::from(within));
+                let _ = select(run, delay).await;
             }
         }
 
@@ -1777,6 +1858,35 @@ mod tests {
         assert!(why.contains("needs to be run remotely"), "{why}");
         // Any other failure says nothing yet: the probe runs again later.
         assert_eq!(binding_check(Err("socket hang up")), BindingCheck::Unknown);
+    }
+
+    #[test]
+    fn the_binding_check_runs_one_at_a_time_and_backs_off() {
+        let s = |n: u64| (n * 1000) as f64;
+        let mut p = ProbePlan::default();
+        assert!(p.start(s(0)));
+        assert!(!p.start(s(0)), "one in flight at a time");
+        // One that cannot tell waits 30 s, then 60 s, doubling to 15 min.
+        p.finish(&BindingCheck::Unknown, s(1));
+        assert!(!p.start(s(30)));
+        assert!(p.start(s(31)));
+        p.finish(&BindingCheck::Unknown, s(31));
+        assert!(!p.start(s(90)));
+        assert!(p.start(s(91)));
+        let mut at = 91;
+        for wait in [120, 240, 480, 900, 900, 900] {
+            p.finish(&BindingCheck::Unknown, s(at));
+            assert!(!p.start(s(at + wait - 1)), "{wait}");
+            at += wait;
+            assert!(p.start(s(at)), "{wait}");
+        }
+        // Once it answers, either way, it never runs again.
+        p.finish(&BindingCheck::Usable, s(at));
+        assert!(!p.start(s(at + 86_400)));
+        let mut p = ProbePlan::default();
+        assert!(p.start(0.0));
+        p.finish(&BindingCheck::Unusable("x".into()), 0.0);
+        assert!(!p.start(s(86_400)));
     }
 
     #[test]

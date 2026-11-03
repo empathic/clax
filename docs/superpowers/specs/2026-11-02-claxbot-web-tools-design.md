@@ -351,7 +351,7 @@ instance otherwise starts (a non-hosted Worker with an unusable
 `PUBLIC_ORIGIN`) web use is off, because an instance that cannot name its
 own hosts could not refuse them: the reason, quoting the value, is logged
 and set from the start in the host's one record of why its web source
-cannot be used (`Bot::web_unusable`, §10), which `GET /api/admin/web` shows
+cannot be used (`Bot::web_check`, §10), which `GET /api/admin/web` shows
 as `unavailable` with `configured: false`, and the admin Web page as "Web
 access is off: <reason>". Being known first, it holds over anything a later
 check of the source finds. The daemon takes the same path (`daemon_web`)
@@ -619,20 +619,50 @@ choice", "off on this instance", "not configured").
   key on the gateway: deploying with search on needs one of them, which
   `docs/prod.md` and the deploy checks should say. Under `wrangler dev
   --local` the binding exists but each call throws ("needs to be run
-  remotely"). Before the admin's Web page, a person's ClaxBot page or a
-  run's start (`GET /api/admin/web`, `/api/me/bot`, `POST /api/bot/runs`),
-  the Worker checks the binding once per isolate with a `toMarkdown()` of
-  one line of HTML (free: Cloudflare documents `toMarkdown` as "free for
-  most format conversions", only images using Workers AI models). When it
-  throws so, web use reads not configured from then on, and the admin's
-  view says why (`unavailable`). A run started before the check answered
-  (say from a comment) gets `web_unavailable` for a search, and for a
-  fetch that needs a conversion, neither charged (§6.3); Markdown, JSON,
-  text and `raw` fetches are answered.
+  remotely"). The Worker checks the binding with a `toMarkdown()` of one
+  line of HTML (free: Cloudflare documents `toMarkdown` as "free for most
+  format conversions", only images using Workers AI models), in the
+  background and never on a person's request:
+  - Every decision on web use (a run's start from any route, a comment's
+    mention, a follow-up or an alarm included, and the person's and the
+    admin's views) goes through `clax_server::bot::web_configured`, which,
+    with search or fetch on, asks for a check; the Worker starts it after
+    the request or alarm. With both off, nothing is checked, except for
+    the admin's view.
+  - `GET /api/admin/web` starts one whether web use is on or not and
+    waits for it at most 2 s, answering `checking: true` if it has not
+    finished.
+  - One check runs at a time, per Durable Object start (the state lives
+    with the instance, so an evicted or woken object checks again). One
+    that answers, either way, is kept; one that cannot tell (a timeout,
+    another error) is tried again no sooner than 30 s later, the wait
+    doubling to at most 15 min.
+  - When it throws so, the host's record of why its web source cannot be
+    used (`Bot::web_check`, which §5.3's configuration error also fills,
+    and which keeps the first reason) holds it: web use reads not
+    configured from then on, and the admin's view says why
+    (`unavailable`). A call that still comes from a
+    run already going is refused `web_unavailable`, uncharged, whatever it
+    fetches.
+  - A run that started before the check answered declares `clax.web`.
+    Until the check answers, its searches, and its fetches that need a
+    conversion (HTML, PDF, Office), answer `web_unavailable`, uncharged
+    (§6.3), though such a fetch's request reached the site; its Markdown,
+    JSON, text and `raw` fetches are answered.
 - **Daemon**: `RestSource` in `clax-server`, Cloudflare's REST endpoints and
   the daemon's own HTTP client with the host check (§5.3).
 - **Embedded and other hosts** take `Off(NotConfigured)` until they provide
   a source.
+- **Why web is off, on every host**: `GET /api/admin/web` answers
+  `unavailable`, null or the one reason web use is off whatever the
+  credentials (with `configured: false`), and `checking`, whether a check
+  of the source (the Worker's, above) is still running. The reason is a
+  configured public origin or site domain that names no host (§5.3, known
+  at start and kept), or a source that cannot run where the host runs
+  (above); the first holds over the second. The admin Web page shows "Web
+  access is off: <reason>" in place of the credentials hint, and while a
+  check runs, "Checking whether web access can run here. Reload in a
+  moment."
 
 ## 11. Tests **(design)**
 

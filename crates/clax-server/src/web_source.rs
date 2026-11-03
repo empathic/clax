@@ -1050,7 +1050,7 @@ pub fn for_daemon(
 /// [`for_daemon`]'s source and the reason web use is off. When the hosts
 /// cannot be named the reason is logged and the source is [`NoHostsWeb`],
 /// which is not configured and refuses every call; the reason goes to
-/// `clax_http::bot::Bot::web_unusable`, which the admin Web view shows.
+/// `clax_http::bot::Bot::web_check`, which the admin Web view shows.
 #[must_use]
 pub fn daemon_web(
     store: Arc<Store>,
@@ -1490,6 +1490,10 @@ mod tests {
             stub(),
         );
         let tls = s.tls.as_ref().unwrap();
+        assert!(
+            !webpki_roots::TLS_SERVER_ROOTS.is_empty(),
+            "the roots it trusts"
+        );
         assert!(!tls.crypto_provider().cipher_suites.is_empty());
         assert_eq!(tls.alpn_protocols, [b"http/1.1".to_vec()]);
         // reqwest takes it as its own rustls configuration: a client it
