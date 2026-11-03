@@ -154,10 +154,12 @@ export type ModelApi = "anthropic" | "openai" | "gemini";
  * (`max_steps`, `max_run_credits`, …); `sources` say where each field's
  * value comes from, by its dotted name (`api`, `base_url`, `models.default`,
  * `caps.max_steps`, `key`); a field from the file or the environment is
- * read-only here. */
+ * read-only here. `kek` says whether a key-encryption key seals the keys
+ * and which, by fingerprint, for checking a backup of it. */
 export type Provider = {
   api: ModelApi; base_url: string; models: Models; key: KeyInfo;
   caps: Record<string, number>; sources: Record<string, Source>;
+  kek?: { set: boolean; fingerprint: string | null };
 };
 /** What `PUT /api/admin/provider` changes: any of the editable fields. */
 export type ProviderPatch = { api?: ModelApi; base_url?: string; models?: Partial<Models>; caps?: Record<string, number> };

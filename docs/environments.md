@@ -76,8 +76,9 @@ never be the same site, to a browser, as Clax).
 
 - **First push:** a fresh instance. CI gives it no `SETUP_SECRET` (setup
   stays closed) and no `CLAX_TOKEN` (the instance makes its own); it
-  generates its `CLAX_KEK` and keeps no backup, since the preview's data is
-  thrown away with it. The pull request gets a comment with its address.
+  generates its `CLAX_KEK` and keeps no copy, since the preview's data is
+  thrown away with it (dev's and prod's are kept in 1Password,
+  [docs/prod.md](prod.md), "CLAX_KEK"). The pull request gets a comment with its address.
   Sign in with GitHub as `OWNER_GITHUB` to be its owner; anyone else who
   signs in with GitHub is a new person, as on clax.dev.
 - **Later pushes:** the same Worker, redeployed: its artifacts and people
@@ -200,19 +201,26 @@ The next push to a pull request deploys its preview.
 
 ### dev
 
-1. Deploy dev once from a laptop, which makes its secrets and keeps the
-   backup of its `CLAX_KEK`, as prod's first deploy did, with the preview
-   OAuth App's client secret:
+1. Make dev's `CLAX_KEK` in 1Password, its only copy outside the Worker
+   ([docs/prod.md](prod.md), "CLAX_KEK"):
 
    ```
-   GITHUB_CLIENT_SECRET=… just env-deploy dev --public dev.<PREVIEW_HOST_ZONE> \
+   op item create --category password --vault <vault> --title "dev.<PREVIEW_HOST_ZONE> CLAX_KEK" "password=$(openssl rand -hex 32)"
+   ```
+2. Deploy dev once from a laptop, which makes its secrets and uploads that
+   key, as prod's first deploy did, with the preview OAuth App's client
+   secret:
+
+   ```
+   GITHUB_CLIENT_SECRET=… CLAX_KEK="$(op read 'op://<vault>/dev.<PREVIEW_HOST_ZONE> CLAX_KEK/password')" \
+     just env-deploy dev --public dev.<PREVIEW_HOST_ZONE> \
      --site-domain dev.<PREVIEW_SITE_ZONE> --site-zone <PREVIEW_SITE_ZONE> \
      --github-client-id <ID> --owner-github <login> --account <ID> --i-know-what-i-am-doing
    ```
 
    The settings are kept in `~/.config/clax/deploy/setup.dev.env`, and
    later runs need no flags.
-2. Sign in to dev as the owner, make an agent token named `smoke`
+3. Sign in to dev as the owner, make an agent token named `smoke`
    (settings, Agent tokens), and set it as the `preview` environment's
    `CLAX_DEV_SMOKE_TOKEN`.
 

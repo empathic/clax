@@ -256,12 +256,58 @@ Worker version the deploy made (the record's `version_id`, from `wrangler
 deploy`'s "Current Version ID") and what `/healthz` answers. A failure fails the run and GitHub notifies the owner;
 nothing is rolled back.
 
+## CLAX_KEK
+
+`CLAX_KEK` is ClaxBot's key-encryption key: 64 hex digits that seal every
+model key the instance stores. Two copies exist: the Worker's secret, and
+the one in 1Password, which is the backup. No machine keeps one and no CI
+run holds one: a deploy keeps the Worker's key and never reads it back
+(Cloudflare cannot), so deploys need neither the key nor its backup. The
+backup is needed when the Worker has no key: an instance's first deploy,
+a Worker deleted or remade, or a secret removed or overwritten. Without
+both copies every stored model key is lost.
+
+A new instance (dev's included; previews make their own and keep none):
+
+```
+op item create --category password --vault <vault> --title "<public host> CLAX_KEK" "password=$(openssl rand -hex 32)"
+CLAX_KEK="$(op read 'op://<vault>/<public host> CLAX_KEK/password')" just env-deploy … # its first deploy
+```
+
+A deploy to a Worker without a key uploads the one given in `CLAX_KEK`, and
+refuses when none is. Once deployed, the owner checks the 1Password copy
+is the Worker's key: Admin, Provider shows the key's fingerprint (never
+public), and this prints the copy's:
+
+```
+op read 'op://<vault>/<public host> CLAX_KEK/password' | xxd -r -p | shasum -a 256 | cut -c1-8
+```
+
+Deploys made before this kept the backup in a file,
+`~/.config/clax/deploy/<public host>.kek` (or the record's `kek`) on the
+machine that ran the first deploy; a deploy that finds one says so. Move
+it into 1Password from that machine, check the fingerprints match, then
+delete the file:
+
+```
+op item create --category password --vault <vault> --title "clax.dev CLAX_KEK" "password=$(cat ~/.config/clax/deploy/clax.dev.kek)"
+```
+
+When `/healthz` reports `"kek": false` (every deploy, and the drift check,
+fail on it), put the key back from 1Password:
+
+```
+op read 'op://<vault>/clax.dev CLAX_KEK/password' | just wrangler secret put CLAX_KEK --name clax
+```
+
 ## Drift
 
 Every hour the same workflow's `drift` job compares the `commit` that
 `https://$PUBLIC_HOST/healthz` reports (the repository variable the setup
 script sets; `clax.dev` when it is unset) with `prod`'s tip, and fails when they differ, unless
-a Deploy prod run of the tip is still running or waiting. It holds no
+a Deploy prod run of the tip is still running or waiting. It also fails
+when `/healthz` reports `"kek": false`: the instance has lost its
+`CLAX_KEK` ("CLAX_KEK" above). It holds no
 deploy credential and deploys nothing. When it fails: open the latest
 Deploy prod run; if it failed, fix the cause and release again, or rerun
 it; if none ran, run Deploy prod by hand. Scheduled runs use `main`'s copy

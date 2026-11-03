@@ -1,7 +1,7 @@
 // What deploy.mjs decides from what it reads, as pure functions, so they are
 // tested without an account (deploy-lib.test.mjs).
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 /** Whether a failed `wrangler deploy`'s output (stdout and stderr) says
  * only its triggers were left half-done: the script was uploaded, but the
@@ -56,8 +56,10 @@ export function builtFromRefusal(wasm, record, head) {
 }
 
 /** What a 200 from `/healthz` says while waiting for build `want`:
- * `{ done: true }` once it reports that build, else `{ waiting }` naming
- * what answers instead (an instance from before this deploy). */
+ * `{ done: true, kek }` once it reports that build (`kek`: whether it
+ * reports a key-encryption key; undefined from a build before the field),
+ * else `{ waiting }` naming what answers instead (an instance from before
+ * this deploy). */
 export function healthOf(body, want) {
   let j = null;
   try {
@@ -66,7 +68,7 @@ export function healthOf(body, want) {
     // not JSON
   }
   if (!j || typeof j !== "object") return { waiting: `/healthz answered something that is not its JSON (${String(body).slice(0, 80)}); waiting for build ${want}` };
-  if (j.build === want) return { done: true };
+  if (j.build === want) return { done: true, kek: j.kek };
   const was = j.build ? `build ${j.build}` : "a build that reports none";
   return { waiting: `the instance from before this deploy (${was}, started ${j.started_at ?? "?"}) still answers; waiting for build ${want}` };
 }
@@ -206,12 +208,55 @@ export function ciSecretsRefusal(have, { githubClientId, githubSecretGiven, ephe
   return null;
 }
 
+const KEK_HEX = /^[0-9a-f]{64}$/i;
+
+/** Where to read about CLAX_KEK's backup. */
+const KEK_DOC = 'docs/prod.md, "CLAX_KEK"';
+
+/** What the deploy does about `CLAX_KEK`, ClaxBot's key-encryption key,
+ * given `have`, the secret names the Worker has (`null` without a login),
+ * `given`, the key in the deploy's CLAX_KEK (read from 1Password by its
+ * operator; never from a file the deploy keeps), and whether the Worker is
+ * a preview's (`ephemeral`). Answers `upload` (the key to upload, or
+ * null), `say` (the line it prints, never the key) and `error` (why the
+ * deploy refuses, or null):
+ *
+ * - a Worker with CLAX_KEK keeps it: never rotated, since a new key opens
+ *   nothing the old one sealed, and never compared with `given`, which no
+ *   one can read back from the Worker (an admin compares fingerprints);
+ * - a Worker without one gets `given`, which must be 64 hex digits;
+ * - a preview's gets a new key, kept nowhere else (its stored keys go with
+ *   it);
+ * - any other is refused: its key is made and kept in 1Password by its
+ *   operator, never by a deploy, so no machine is the only copy.
+ *
+ * A dry run uploads and generates nothing. */
+export function kekPlan({ have, given, ephemeral = false, dryRun = false }) {
+  const g = given?.trim() || null;
+  if (g && !KEK_HEX.test(g)) return { upload: null, say: "", error: "CLAX_KEK is not 64 hex digits (32 random bytes)" };
+  if (have === null) return { upload: null, say: "skipped (no login): a deploy keeps the Worker's CLAX_KEK, or uploads the one given", error: null };
+  if (have.includes("CLAX_KEK")) {
+    const note = g ? "; the CLAX_KEK given is not uploaded (compare fingerprints in Admin, Provider)" : "";
+    return { upload: null, say: `the Worker has CLAX_KEK; kept (never rotated)${note}`, error: null };
+  }
+  if (g) return { upload: dryRun ? null : g, say: `${dryRun ? "would upload" : "uploading"} the CLAX_KEK given with the deploy`, error: null };
+  if (ephemeral) {
+    return { upload: dryRun ? null : randomBytes(32).toString("hex"), say: `${dryRun ? "would generate" : "generated"} CLAX_KEK for this preview (kept nowhere else)`, error: null };
+  }
+  return {
+    upload: null,
+    say: "",
+    error:
+      "the Worker has no CLAX_KEK and none was given: give the instance's key from 1Password " +
+      `(CLAX_KEK="$(op read 'op://<vault>/<item>/password')"), or make one and keep it in 1Password first (${KEK_DOC})`,
+  };
+}
+
 /** What deploy.mjs prints when it is done. The first-time setup text (the
  * secrets shown once, the setup URL, the next steps) only when this deploy
  * generated SETUP_SECRET or CLAX_TOKEN (`generated`, the secrets it made);
- * every deploy names the record and the logs, and the CLAX_KEK backup
- * when `kek` names it (a --ci deploy keeps none). */
-export function doneText({ pub, name, diag, generated, record, kek, smoke }) {
+ * every deploy names the record and the logs. */
+export function doneText({ pub, name, diag, generated, record, smoke }) {
   const first = Boolean(generated?.SETUP_SECRET || generated?.CLAX_TOKEN);
   const lines = [];
   if (first) {
@@ -220,12 +265,6 @@ export function doneText({ pub, name, diag, generated, record, kek, smoke }) {
     if (generated.CLAX_TOKEN) lines.push(`     CLAX_TOKEN    ${generated.CLAX_TOKEN}`);
   }
   lines.push("", `   Record:  ${record}`);
-  if (kek) {
-    lines.push(
-      `   CLAX_KEK backup: ${kek} (0600; keep it: without it and the Worker's`,
-      "            secret, every model key ClaxBot stored is lost)",
-    );
-  }
   if (first) {
     lines.push(
       `   Setup:   https://${pub}/setup  (enter SETUP_SECRET and your name; this browser becomes the owner)`,

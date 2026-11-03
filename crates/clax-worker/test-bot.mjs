@@ -28,11 +28,8 @@
 //    while its turn is held: it ends stopped and the API sees its connection
 //    closed (the wasm transport's abort);
 // 5. with the free week cut to nothing, a send is 403 credits_exhausted;
-// 6. with every run ended, no alarm is held for ClaxBot;
-// and, offline first, deploy.mjs's CLAX_KEK plan: kept when the Worker has
-// one (with a warning when this machine keeps no backup), the backup's
-// when it has none, else a new one, backed up before the deploy, never
-// printed.
+// 6. with every run ended, no alarm is held for ClaxBot.
+// (deploy.mjs's CLAX_KEK plan is deploy-lib.test.mjs's.)
 //
 // Prints one line per check and a JSON summary; exits non-zero on the first
 // failure. `node test-bot.mjs --no-build` skips the build.
@@ -42,7 +39,6 @@ import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { HERE, STATE, build, pruneRuns, start, writeConfig } from "./harness.mjs";
-import { kekPath, kekPlan } from "./deploy.mjs";
 
 const ROOT = join(STATE, "bot-test");
 const KEEP_RUNS = 3;
@@ -279,29 +275,6 @@ async function run(base, rid) {
   return ok(base, "GET", `/api/bot/runs/${rid}`);
 }
 
-function checkKekPlan() {
-  const saved = "ab".repeat(32);
-  const kept = kekPlan({ have: ["CLAX_KEK"], saved, savedIn: "file", dryRun: false });
-  check(kept.upload === null && kept.save === null && kept.warn === null && !kept.say.includes(saved),
-    "deploy.mjs keeps the Worker's CLAX_KEK and never rotates it", kept);
-  const unbacked = kekPlan({ have: ["CLAX_KEK"], saved: null, dryRun: false });
-  check(unbacked.upload === null && typeof unbacked.warn === "string", "deploy.mjs warns when the Worker has a CLAX_KEK this machine keeps no backup of", unbacked);
-  const back = kekPlan({ have: [], saved, savedIn: "file", dryRun: false });
-  check(back.upload === saved && back.save === null && !back.say.includes(saved), "deploy.mjs uploads the backed-up CLAX_KEK to a Worker without one", back.say);
-  const fresh = kekPlan({ have: [], saved: null, dryRun: false });
-  check(/^[0-9a-f]{64}$/.test(fresh.upload) && fresh.save === fresh.upload && !fresh.say.includes(fresh.upload),
-    "deploy.mjs makes a new 64-hex-digit CLAX_KEK, backs it up before the deploy, never prints it", fresh.say);
-  check(kekPlan({ have: [], saved: null, dryRun: true }).upload === null, "a dry run uploads no CLAX_KEK");
-  check(kekPath("clax.example.com").endsWith("clax.example.com.kek"), "the backup is a file of its own beside the record");
-  // A backup found only in an old record is written to its own file, so
-  // the record (which may be deleted) is never the only copy.
-  for (const have of [["CLAX_KEK"], [], null]) {
-    const moved = kekPlan({ have, saved, savedIn: "record", dryRun: false });
-    check(moved.save === saved && !moved.say.includes(saved), `a CLAX_KEK kept only in the record is written to its own backup (Worker ${have === null ? "unknown" : have.length ? "has one" : "has none"})`, moved.say);
-  }
-  check(kekPlan({ have: [], saved, savedIn: "record", dryRun: true }).save === null, "a dry run writes no backup");
-}
-
 /** How far ahead the object's alarm is set, in ms; `null` with none. */
 async function alarmIn(base) {
   const { alarm, now } = await ok(base, "GET", "/_worker/alarm");
@@ -311,7 +284,6 @@ async function alarmIn(base) {
 const ENDED = ["finished", "failed", "gave_up", "stopped"];
 
 async function main() {
-  checkKekPlan();
   await build();
   pruneRuns(ROOT, KEEP_RUNS);
   const dir = join(ROOT, `run-${Date.now()}-${process.pid}`);

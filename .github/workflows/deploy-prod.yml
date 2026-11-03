@@ -217,7 +217,7 @@ jobs:
     # check fails, naming the variable.
     permissions: { contents: read, actions: read }
     steps:
-      - name: Compare /healthz's commit with prod's tip
+      - name: Compare /healthz's commit with prod's tip, and check its CLAX_KEK
         env:
           HOST: ${{ vars.PUBLIC_HOST }}
           GH_TOKEN: ${{ github.token }}
@@ -231,6 +231,13 @@ jobs:
             || { echo "::error::https://$HOST/healthz does not answer"; exit 1; }
           commit="$(python3 -c 'import json, sys; print(json.loads(sys.argv[1]).get("commit") or "")' "$health")"
           echo "prod's tip $tip; https://$HOST runs ${commit:-no commit}"
+          # Every stored model key opens only under CLAX_KEK: an instance
+          # that reports none has lost it.
+          kek="$(python3 -c 'import json, sys; print(json.loads(sys.argv[1]).get("kek"))' "$health")"
+          if [ "$kek" = False ]; then
+            echo "::error::https://$HOST reports no CLAX_KEK: put it back from 1Password (docs/prod.md, \"CLAX_KEK\")"
+            exit 1
+          fi
           # /healthz may name the commit in full or by a prefix of it.
           if [ "${#commit}" -lt 7 ] || [ "${tip#"$commit"}" = "$tip" ]; then
             # A deploy of the tip still running or waiting is not drift.
