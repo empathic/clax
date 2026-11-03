@@ -2485,6 +2485,45 @@ async fn admin_web_round_trips() {
 }
 
 #[tokio::test]
+async fn a_bot_web_file_value_is_read_only_on_the_admin_page() {
+    let p = people().await;
+    let ts = &p.ts;
+    let cfg = clax_core::config::HomeConfig::from_text(
+        std::path::PathBuf::from("/h/config.toml"),
+        "[bot.web.fetch]\nurl_rule = \"any_public\"\n[bot.web.search]\nenabled = true\n",
+        [],
+    )
+    .unwrap();
+    ts.store
+        .set_bot_overrides(clax_server::core::bot_overrides(&cfg).0);
+    let owner = Who::OwnerBrowser;
+    let (_, v) = call(ts, &owner, Method::GET, "/api/admin/web", Value::Null).await;
+    assert_eq!(v["fetch"]["url_rule"], "any_public");
+    assert_eq!(v["sources"]["fetch.url_rule"], "file");
+    assert_eq!(v["search"]["enabled"], true);
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web",
+        json!({"fetch": {"url_rule": "sourced"}}),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (409, "setting_overridden"), "{v}");
+    // A field the file leaves alone is the page's.
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web",
+        json!({"fetch": {"enabled": true}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["sources"]["fetch.enabled"], "db");
+}
+
+#[tokio::test]
 async fn admin_web_refuses_a_bad_rule() {
     let p = people().await;
     let ts = &p.ts;

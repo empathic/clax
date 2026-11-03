@@ -510,6 +510,58 @@ async fn opting_out_mid_run_refuses_web_disabled() {
     assert!(web_rows(&env).is_empty());
 }
 
+/// A source that has lost its credentials: it would answer as the fake
+/// does, but says it is not configured.
+struct Unconfigured(std::sync::Arc<clax_bot::web::FakeWebSource>);
+
+#[async_trait::async_trait]
+impl clax_bot::web::WebSource for Unconfigured {
+    async fn search(
+        &self,
+        q: &clax_bot::web::SearchQuery,
+        cancel: &clax_bot_sandbox::CancelToken,
+    ) -> Result<clax_bot::web::SearchAnswer, clax_bot::web::WebError> {
+        self.0.search(q, cancel).await
+    }
+
+    async fn fetch(
+        &self,
+        url: &clax_bot::web::PublicUrl,
+        format: clax_bot::web::Format,
+        limits: &clax_bot::web::FetchLimits,
+        hop: &(
+             dyn for<'u> Fn(&'u clax_bot::web::PublicUrl) -> Result<(), clax_bot::web::WebError>
+                 + Sync
+         ),
+        cancel: &clax_bot_sandbox::CancelToken,
+    ) -> Result<clax_bot::web::FetchedPage, clax_bot::web::WebError> {
+        self.0.fetch(url, format, limits, hop, cancel).await
+    }
+
+    fn configured(&self) -> bool {
+        false
+    }
+}
+
+#[tokio::test]
+async fn a_source_that_lost_its_credentials_refuses_web_disabled() {
+    let env = Env::new().await;
+    env.web().search_answers("a", hits(&[]));
+    env.api.push(env.script_turn(
+        "tu_1",
+        "Search",
+        "try { await clax.web.search('a'); return 'searched'; } catch (e) { return e.code; }",
+    ));
+    env.api.push(finish_turn("done"));
+    let run = env.run_with_web("search");
+    let mut deps = env.deps();
+    deps.web = Some(std::sync::Arc::new(Unconfigured(env.web())));
+    env.drive(&deps, &run, &DriverId::mint()).await;
+    assert_eq!(script_result(&env, &run, 0)["value"], "web_disabled");
+    assert!(env.web().calls().is_empty());
+    assert!(web_rows(&env).is_empty());
+}
+
 #[tokio::test]
 async fn a_host_without_a_source_refuses_web_disabled() {
     let env = Env::new().await;

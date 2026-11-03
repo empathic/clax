@@ -7,8 +7,9 @@
 //! 2. The run declares the operation ([`crate::web::WebShape`]) and the
 //!    host has a source ([`crate::run::Deps::web`]), or `web_disabled`.
 //! 3. The operation is still granted now ([`WebAccess::now`]: the admin
-//!    or the person may have turned it off since the run started), or
-//!    `web_disabled`.
+//!    or the person may have turned it off since the run started, or the
+//!    source lost what it needs, [`crate::web::WebSource::configured`]),
+//!    or `web_disabled`.
 //! 4. Its arguments hold (a query of 1 to 1,024 characters, a `limit` and
 //!    an `offset` not below 0, a URL), or `invalid_args`.
 //! 5. A fetch: the URL is a [`PublicUrl`], the admin's [`UrlRule`] lets
@@ -462,7 +463,7 @@ impl RunHost<'_> {
                 ));
             }
         };
-        let grant = match WebAccess::now(tick.store, &run.person, true) {
+        let grant = match WebAccess::now(tick.store, &run.person, source.configured()) {
             Ok(WebAccess::On(g)) => g,
             Ok(WebAccess::Off(why)) => {
                 return Finish::refused(HostError::new(

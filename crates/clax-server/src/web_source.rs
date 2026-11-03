@@ -57,6 +57,19 @@ pub const FIXTURES_ENV: &str = "CLAX_TEST_WEB_FIXTURES";
 /// its own (a fetch's conversion is also within the fetch's deadline).
 const API_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The most bytes of a search answer read from Cloudflare.
+const SEARCH_ANSWER_BYTES: u64 = 1 << 20;
+
+/// The most bytes of a Markdown conversion's answer read from Cloudflare.
+const CONVERSION_ANSWER_BYTES: u64 = 16 << 20;
+
+/// The `User-Agent` of a fetch from a daemon at `origin`: `ClaxBot/1
+/// (+<origin>)`, so a site can tell who fetched it and where to ask.
+#[must_use]
+pub fn user_agent(origin: &str) -> String {
+    format!("ClaxBot/1 (+{})", origin.trim_end_matches('/'))
+}
+
 /// Whether `ip` is a public unicast address a fetch may connect to: not
 /// in any range [`is_local_addr`] refuses, the one list the URL check and
 /// the DNS check share.
@@ -227,6 +240,8 @@ pub struct RestSource {
     api: Result<reqwest::Client, String>,
     /// Pages: the checked resolver, no redirects, no proxy.
     web: Result<reqwest::Client, String>,
+    /// Sent on every fetch ([`user_agent`]).
+    user_agent: String,
 }
 
 impl RestSource {
@@ -261,6 +276,7 @@ impl RestSource {
     ) -> RestSource {
         let api = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
             .build()
             .map_err(|e| e.to_string());
         let web = reqwest::Client::builder()
@@ -278,7 +294,15 @@ impl RestSource {
             token,
             api,
             web,
+            user_agent: "ClaxBot/1".into(),
         }
+    }
+
+    /// This source, sending `user_agent` on every fetch ([`user_agent`]).
+    #[must_use]
+    pub fn with_user_agent(mut self, user_agent: String) -> RestSource {
+        self.user_agent = user_agent;
+        self
     }
 
     fn client(c: &Result<reqwest::Client, String>) -> Result<&reqwest::Client, WebError> {
@@ -343,7 +367,7 @@ impl RestSource {
             .await
             .map_err(|e| api_error("Markdown conversion", &e))?;
         let status = r.status();
-        let v: Value = r.json().await.unwrap_or(Value::Null);
+        let v = api_json(r, CONVERSION_ANSWER_BYTES, "Markdown conversion").await?;
         let result = RestSource::api_result("Markdown conversion", status, v)?;
         let first = result.as_array().and_then(|a| a.first());
         match first {
@@ -385,6 +409,7 @@ impl RestSource {
             let r = RestSource::client(&self.web)?
                 .get(at.as_str())
                 .header(reqwest::header::ACCEPT, ACCEPT)
+                .header(reqwest::header::USER_AGENT, &self.user_agent)
                 .send()
                 .await
                 .map_err(|e| fetch_error(&e, &at, !first))?;
@@ -578,11 +603,39 @@ fn fetch_error(e: &reqwest::Error, at: &PublicUrl, sent_before: bool) -> WebErro
         return unavailable(format!("{} could not be reached ({e})", at.host()), true)
             .went_out(sent_before);
     }
+    // A request that could not be built or sent: gone out only if an
+    // earlier one was.
     unavailable(
         format!("the fetch of {} failed ({e})", at.normalized()),
         true,
     )
-    .went_out(true)
+    .went_out(sent_before)
+}
+
+/// Cloudflare's JSON answer `r`, read up to `max` bytes; `Null` when it is
+/// not JSON (the status then says what failed).
+///
+/// # Errors
+/// `web_unavailable` past `max` bytes, `web_timeout` or `web_unavailable`
+/// when the body could not be read.
+async fn api_json(mut r: reqwest::Response, max: u64, what: &str) -> Result<Value, WebError> {
+    let too_large = || {
+        unavailable(
+            format!("Cloudflare's {what} answered more than {max} bytes"),
+            false,
+        )
+    };
+    if r.content_length().is_some_and(|n| n > max) {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = r.chunk().await.map_err(|e| api_error(what, &e))? {
+        if (body.len() + chunk.len()) as u64 > max {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(serde_json::from_slice(&body).unwrap_or(Value::Null))
 }
 
 /// `resp`'s body, refused past `max` bytes as it streams.
@@ -672,7 +725,7 @@ impl WebSource for RestSource {
                 .await
                 .map_err(|e| api_error("web search", &e))?;
             let status = r.status();
-            let v: Value = r.json().await.unwrap_or(Value::Null);
+            let v = api_json(r, SEARCH_ANSWER_BYTES, "web search").await?;
             RestSource::api_result("web search", status, v.clone())?;
             Ok(parse_search(v))
         };
@@ -715,15 +768,20 @@ impl WebSource for RestSource {
 }
 
 /// The daemon's [`WebSource`]: at each call, a [`RestSource`] for the
-/// account ID and sealed Cloudflare token the instance holds now (opened
-/// for [`CLOUDFLARE_ORIGIN`] alone), kept while they stay the same.
-/// Without both, every call answers `web_unavailable`, not gone out.
+/// account ID and sealed Cloudflare token the instance holds now, kept
+/// while they stay the same. The token is opened for the API base it is
+/// sent to, which the token's slot binds to [`CLOUDFLARE_ORIGIN`]: any
+/// other base is refused, and reads as not configured. Without both,
+/// [`WebSource::configured`] is false, so a run's calls are refused
+/// `web_disabled` before the source is called; a call that reaches it
+/// anyway answers `web_unavailable`, not gone out.
 pub struct DaemonWeb {
     store: Arc<Store>,
     kek: Option<Kek>,
     api_base: Url,
     allow_loopback: bool,
     lookup: Arc<dyn Lookup>,
+    user_agent: String,
     /// The source of the last credentials, and those credentials.
     current: Mutex<Option<(String, Secret, Arc<RestSource>)>>,
 }
@@ -738,18 +796,32 @@ impl DaemonWeb {
             api_base: Url::parse(CLOUDFLARE_ORIGIN).expect("Cloudflare's origin is a URL"),
             allow_loopback: false,
             lookup: Arc::new(SystemLookup),
+            user_agent: "ClaxBot/1".into(),
             current: Mutex::new(None),
         }
     }
 
+    /// This source, sending `user_agent` on every fetch ([`user_agent`]).
+    #[must_use]
+    pub fn with_user_agent(mut self, user_agent: String) -> DaemonWeb {
+        self.user_agent = user_agent;
+        self
+    }
+
     /// The source for the credentials held now.
     async fn source(&self) -> Result<Arc<RestSource>, WebError> {
-        let (store, kek) = (self.store.clone(), self.kek.clone());
-        let creds = tokio::task::spawn_blocking(move || credentials(&store, kek.as_ref()))
-            .await
-            .map_err(|e| {
-                unavailable(format!("the web settings could not be read ({e})"), true)
-            })??;
+        let (store, kek, base) = (
+            self.store.clone(),
+            self.kek.clone(),
+            self.api_base.as_str().to_string(),
+        );
+        let read_error =
+            |e: String| unavailable(format!("the web settings could not be read ({e})"), true);
+        let creds =
+            tokio::task::spawn_blocking(move || usable(credentials(&store, kek.as_ref(), &base)))
+                .await
+                .map_err(|e| read_error(e.to_string()))?
+                .map_err(|e| read_error(e.to_string()))?;
         let Some((account, token)) = creds else {
             return Err(unavailable(
                 "web use is not configured on this instance: an admin sets the Cloudflare account ID and API token",
@@ -763,41 +835,58 @@ impl DaemonWeb {
         {
             return Ok(s.clone());
         }
-        let source = Arc::new(RestSource::with_lookup(
-            self.api_base.clone(),
-            account.clone(),
-            token.clone(),
-            self.allow_loopback,
-            self.lookup.clone(),
-        ));
+        let source = Arc::new(
+            RestSource::with_lookup(
+                self.api_base.clone(),
+                account.clone(),
+                token.clone(),
+                self.allow_loopback,
+                self.lookup.clone(),
+            )
+            .with_user_agent(self.user_agent.clone()),
+        );
         *current = Some((account, token, source.clone()));
         Ok(source)
     }
 }
 
 /// The account ID and token `st` holds now, the token opened with `kek`
-/// for [`CLOUDFLARE_ORIGIN`]; `None` without both (or without `kek`).
+/// for `base` (the URL it is sent to); `None` without both (or without
+/// `kek`).
 ///
 /// # Errors
-/// The store's, as `web_unavailable`.
-fn credentials(st: &Store, kek: Option<&Kek>) -> Result<Option<(String, Secret)>, WebError> {
-    let store_error = |e: clax_core::CoreError| {
-        unavailable(format!("the web settings could not be read ({e})"), true)
-    };
+/// `kek_mismatch` or `key_host_mismatch` from opening the token; the
+/// store's.
+fn credentials(
+    st: &Store,
+    kek: Option<&Kek>,
+    base: &str,
+) -> clax_core::Result<Option<(String, Secret)>> {
     let Some(kek) = kek else {
         return Ok(None);
     };
-    let account = st
-        .bot_setting(Setting::WebCloudflareAccountId)
-        .map_err(store_error)?;
+    let account = st.bot_setting(Setting::WebCloudflareAccountId)?;
     let account = account.as_str().unwrap_or_default().trim().to_string();
     if account.is_empty() {
         return Ok(None);
     }
-    let token = st
-        .open_for_use(kek, &SecretSlot::Cloudflare, CLOUDFLARE_ORIGIN)
-        .map_err(store_error)?;
+    let token = st.open_for_use(kek, &SecretSlot::Cloudflare, base)?;
     Ok(token.map(|t| (account, t)))
+}
+
+/// `creds` with a token that cannot be opened (sealed under another
+/// key-encryption key, or bound to another origin) read as none: the admin
+/// sets it again, and until then web use is not configured.
+fn usable(
+    creds: clax_core::Result<Option<(String, Secret)>>,
+) -> clax_core::Result<Option<(String, Secret)>> {
+    match creds {
+        Err(clax_core::CoreError::Invalid {
+            code: "kek_mismatch" | "key_host_mismatch",
+            ..
+        }) => Ok(None),
+        other => other,
+    }
 }
 
 #[async_trait::async_trait]
@@ -823,22 +912,23 @@ impl WebSource for DaemonWeb {
             .fetch(url, format, limits, hop, cancel)
             .await
     }
+
+    /// Whether the instance holds an account ID and a token that opens now
+    /// ([`has_credentials`]); a store error reads as not configured.
+    fn configured(&self) -> bool {
+        has_credentials(&self.store, self.kek.as_ref()).unwrap_or(false)
+    }
 }
 
 /// Whether the instance holds what [`DaemonWeb`] needs: a key-encryption
-/// key, a Cloudflare account ID and a sealed token.
+/// key, a Cloudflare account ID and a sealed token that opens with that key
+/// for [`CLOUDFLARE_ORIGIN`]. A token sealed under another key reads as
+/// none, as [`DaemonWeb`] reads it.
 ///
 /// # Errors
 /// The store's.
 pub fn has_credentials(st: &Store, kek: Option<&Kek>) -> clax_core::Result<bool> {
-    if kek.is_none() {
-        return Ok(false);
-    }
-    let account = st.bot_setting(Setting::WebCloudflareAccountId)?;
-    if account.as_str().is_none_or(|a| a.trim().is_empty()) {
-        return Ok(false);
-    }
-    Ok(st.secret_meta(&SecretSlot::Cloudflare)?.is_some())
+    Ok(usable(credentials(st, kek, CLOUDFLARE_ORIGIN))?.is_some())
 }
 
 /// The fixtures source loaded from the JSON file at `path`.
@@ -875,12 +965,13 @@ pub fn fixtures() -> Option<Arc<FakeWebSource>> {
 }
 
 /// The daemon's web source: the test mode's fixtures when they are set
-/// ([`fixtures`]), else a [`DaemonWeb`] on `store`.
+/// ([`fixtures`]), else a [`DaemonWeb`] on `store` whose fetches name the
+/// daemon at `origin` ([`user_agent`]).
 #[must_use]
-pub fn for_daemon(store: Arc<Store>, kek: Option<Kek>) -> Arc<dyn WebSource> {
+pub fn for_daemon(store: Arc<Store>, kek: Option<Kek>, origin: &str) -> Arc<dyn WebSource> {
     match fixtures() {
         Some(f) => f,
-        None => Arc::new(DaemonWeb::new(store, kek)),
+        None => Arc::new(DaemonWeb::new(store, kek).with_user_agent(user_agent(origin))),
     }
 }
 
@@ -1586,20 +1677,11 @@ mod tests {
 
     #[tokio::test]
     async fn the_daemon_source_follows_the_stored_credentials() {
-        let server = Server::start(|r| {
-            assert_eq!(r.header("authorization"), format!("Bearer {TOKEN}"));
-            resp(
-                200,
-                "application/json",
-                json!({"success": true, "result": {"items": [{"url": "https://a.example/"}]}})
-                    .to_string(),
-            )
-        })
-        .await;
+        let server = Server::start(|_| resp(500, "text/plain", "never asked")).await;
         let (_d, st) = store();
         let kek = Kek::generate();
-        let mut web = DaemonWeb::new(st.clone(), Some(kek.clone()));
-        web.api_base = server.api_base();
+        let web = DaemonWeb::new(st.clone(), Some(kek.clone()));
+        assert!(!web.configured());
         let e = web.search(&query(), &CancelToken::new()).await.unwrap_err();
         assert_eq!((e.code, e.went_out), (CODE_WEB_UNAVAILABLE, false), "{e}");
         assert!(e.message.contains("not configured"), "{e}");
@@ -1610,16 +1692,59 @@ mod tests {
         .unwrap();
         st.set_secret(&AuditCtx::DAEMON, &kek, &SecretSlot::Cloudflare, TOKEN)
             .unwrap();
-        let a = web.search(&query(), &CancelToken::new()).await.unwrap();
-        assert_eq!(a.hits.len(), 1);
-        assert_eq!(
-            server.requests()[0].path,
-            format!("/client/v4/accounts/{ACCOUNT}/ai/websearch/")
-        );
+        assert!(web.configured());
+        // The token opens only for the base it is sent to, which its slot
+        // binds to Cloudflare's origin: another base is not configured,
+        // and nothing is sent.
+        let mut elsewhere = DaemonWeb::new(st.clone(), Some(kek.clone()));
+        elsewhere.api_base = server.api_base();
+        let e = elsewhere
+            .search(&query(), &CancelToken::new())
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("not configured"), "{e}");
+        assert!(server.requests().is_empty());
+        // A token sealed under another key-encryption key is none.
+        let other = DaemonWeb::new(st.clone(), Some(Kek::generate()));
+        assert!(!other.configured());
+        assert!(!has_credentials(&st, Some(&Kek::generate())).unwrap());
         st.clear_secret(&AuditCtx::DAEMON, &SecretSlot::Cloudflare)
             .unwrap();
-        let e = web.search(&query(), &CancelToken::new()).await.unwrap_err();
+        assert!(!web.configured());
+    }
+
+    #[tokio::test]
+    async fn a_fetch_names_the_daemon() {
+        let server =
+            Server::start(|r| resp(200, "text/plain", r.header("user-agent").to_string())).await;
+        let s = source(&server, true).with_user_agent(user_agent("https://clax.example/"));
+        let p = fetch(
+            &s,
+            &server.url("site.test", "/"),
+            Format::Auto,
+            FetchLimits::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(p.text, "ClaxBot/1 (+https://clax.example)");
+    }
+
+    #[tokio::test]
+    async fn a_huge_cloudflare_answer_is_refused() {
+        let server = Server::start(|_| {
+            resp(
+                200,
+                "application/json",
+                vec![b' '; usize::try_from(SEARCH_ANSWER_BYTES).unwrap() + 1],
+            )
+        })
+        .await;
+        let e = source(&server, false)
+            .search(&query(), &CancelToken::new())
+            .await
+            .unwrap_err();
         assert_eq!(e.code, CODE_WEB_UNAVAILABLE, "{e}");
+        assert!(e.message.contains("more than"), "{e}");
     }
 
     #[test]

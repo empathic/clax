@@ -479,10 +479,7 @@ fn local_bot(s: &AppState, catalog_url: Option<Option<String>>) -> clax_http::bo
     let Some(cfg) = s.settings.running.as_ref() else {
         return bot;
     };
-    let (mut ov, enabled) = clax_http::bot::configured(cfg);
-    if enabled {
-        web_overrides(cfg, &mut ov);
-    }
+    let (ov, enabled) = bot_overrides(cfg);
     s.store.set_bot_overrides(ov);
     bot.enabled = enabled;
     if let Ok(b) = cfg.bot()
@@ -495,6 +492,21 @@ fn local_bot(s: &AppState, catalog_url: Option<Option<String>>) -> clax_http::bo
         });
     }
     bot
+}
+
+/// The settings `cfg`'s `[bot]` sets, `[bot.web]` included, as overrides
+/// of the stored ones, and whether ClaxBot is on
+/// ([`clax_http::bot::configured`]). `[bot.web]` is laid over whenever
+/// `[bot]` checks, as the rest of `[bot]` is, whether or not it turns
+/// ClaxBot on.
+pub fn bot_overrides(
+    cfg: &clax_core::config::HomeConfig,
+) -> (clax_store::bot_settings::Overrides, bool) {
+    let (mut ov, enabled) = clax_http::bot::configured(cfg);
+    if cfg.bot().is_ok() {
+        web_overrides(cfg, &mut ov);
+    }
+    (ov, enabled)
 }
 
 /// The `web.*` settings `cfg`'s `[bot.web]` sets, from the file or the
@@ -704,6 +716,45 @@ mod tests {
             Setting::WebSearchEnabled,
             &serde_json::json!(true),
             "env:CLAX_BOT__WEB__SEARCH__ENABLED",
+        )
+        .unwrap();
+        assert_eq!(ov, want);
+        // ClaxBot off keeps the overlay, as it keeps the rest of [bot].
+        let off = clax_core::config::HomeConfig::from_text(
+            std::path::PathBuf::from("/h/config.toml"),
+            "[bot]\nenabled = false\n[bot.web.search]\nlimit = 3\n",
+            [],
+        )
+        .unwrap();
+        let (ov, enabled) = super::bot_overrides(&off);
+        assert!(!enabled);
+        let mut want = Overrides::default();
+        want.set(Setting::WebSearchLimit, &serde_json::json!(3), "file")
+            .unwrap();
+        assert_eq!(ov, want);
+        // A value the file may set, the store takes.
+        let cfg = clax_core::config::HomeConfig::from_text(
+            std::path::PathBuf::from("/h/config.toml"),
+            "[bot.web.search]\ngateway = \"\"\nprovider = \" exa \"\n[bot.web.fetch]\nurl_rule = \"any_public \"\n",
+            [],
+        )
+        .unwrap();
+        assert!(cfg.bot().is_ok());
+        let mut ov = Overrides::default();
+        super::web_overrides(&cfg, &mut ov);
+        let mut want = Overrides::default();
+        want.set(Setting::WebSearchGateway, &serde_json::json!(""), "file")
+            .unwrap();
+        want.set(
+            Setting::WebSearchProvider,
+            &serde_json::json!("exa"),
+            "file",
+        )
+        .unwrap();
+        want.set(
+            Setting::WebFetchUrlRule,
+            &serde_json::json!("any_public"),
+            "file",
         )
         .unwrap();
         assert_eq!(ov, want);

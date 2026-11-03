@@ -279,6 +279,15 @@ pub trait WebSource: MaybeSendSync {
         hop: &(dyn for<'u> Fn(&'u PublicUrl) -> Result<(), WebError> + Sync),
         cancel: &CancelToken,
     ) -> Result<FetchedPage, WebError>;
+
+    /// Whether the source can reach its provider now. A host whose
+    /// credentials can be removed while runs are going (the daemon's
+    /// Cloudflare token) answers false once they are, and a run's web
+    /// calls are then refused `web_disabled` ([`WebAccess::now`], not
+    /// configured), as when an admin turns web use off. True by default.
+    fn configured(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

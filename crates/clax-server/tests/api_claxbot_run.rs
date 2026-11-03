@@ -1223,3 +1223,161 @@ async fn a_run_keeps_the_web_shape_its_person_had_when_it_started() {
     let run = start(&t2);
     assert_eq!(ts.store.run(&run.id).unwrap().unwrap().web, "");
 }
+
+/// Turns search and fetch on at `/admin` and sets the Cloudflare account
+/// ID and token, so the daemon's web use is configured.
+async fn web_on(ts: &TestServer) {
+    for (path, body) in [
+        (
+            "/api/admin/web",
+            json!({"search": {"enabled": true}, "fetch": {"enabled": true},
+                   "cloudflare": {"account_id": "0123456789abcdef0123456789abcdef"}}),
+        ),
+        (
+            "/api/admin/web/token",
+            json!({"token": "cf-token-for-tests-1234"}),
+        ),
+    ] {
+        let res = ts
+            .client
+            .put(format!("{}{path}", ts.base))
+            .header("cookie", ts.owner_cookie())
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200, "{path}");
+    }
+}
+
+/// Starts a run on a new thread of a new page, returning its ID.
+async fn start_web_run(ts: &TestServer) -> String {
+    let aid = ts.publish("Web", &[("index.html", "<p>hi</p>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let tid = ts.thread(&aid, 1, "What is Rust?").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = ts
+        .client
+        .post(format!("{}/api/bot/runs", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"thread_ids": [tid], "artifact_id": aid}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let run: Value = res.json().await.unwrap();
+    run["run"]["id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn a_daemon_run_searches_and_fetches_through_its_web_source_and_is_charged() {
+    let fake = FakeMessages::start(vec![
+        Turn::script(
+            "tu_1",
+            "Search and read",
+            "const s = await clax.web.search('rust');
+             const p = await clax.web.fetch(s.results[0].url);
+             return p.text;",
+        ),
+        Turn::finish("Rust is a language."),
+    ])
+    .await;
+    let web = std::sync::Arc::new(
+        clax_bot::web::FakeWebSource::from_fixtures(&json!({
+            "searches": {"rust": [{"url": "https://rust-lang.org/", "title": "Rust"}]},
+            "pages": {"https://rust-lang.org/": {"status": 200, "content_type": "text/markdown",
+                                                 "text": "# Rust\n\nA language."}}
+        }))
+        .unwrap(),
+    );
+    let w = web.clone();
+    let ts = TestServer::spawn_with(move |s| {
+        let d = clax_server::bot::driver_with_web(s, w);
+        clax_server::bot::start_driver(&d);
+    })
+    .await;
+    ts.store
+        .set_bot_settings(
+            &AuditCtx::DAEMON,
+            &[(Setting::BaseUrl, Some(json!(fake.base)))],
+        )
+        .unwrap();
+    let res = ts
+        .client
+        .put(format!("{}/api/admin/provider/key", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"key": KEY}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    web_on(&ts).await;
+    let rid = start_web_run(&ts).await;
+    assert_eq!(ts.store.run(&rid).unwrap().unwrap().web, "search,fetch");
+    let all = events(&ts, &rid, None).await;
+    assert_eq!(all.last().map(|(_, e, _)| e.as_str()), Some("run_end"));
+    assert_eq!(
+        web.calls(),
+        [
+            ("search".to_string(), "rust".to_string()),
+            ("fetch".to_string(), "https://rust-lang.org/".to_string())
+        ]
+    );
+    // The page's text reached the model.
+    let sent = serde_json::to_string(&fake.requests()).unwrap();
+    assert!(sent.contains("A language."), "{sent}");
+    // Both calls are charged to the run.
+    let web_rows: Vec<_> = ts
+        .store
+        .usage_of_run(&rid)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.line.starts_with("web."))
+        .collect();
+    assert_eq!(web_rows.len(), 2, "{web_rows:?}");
+    assert!(web_rows.iter().all(|r| r.credits_milli > 0), "{web_rows:?}");
+}
+
+#[tokio::test]
+async fn a_token_cleared_mid_run_turns_the_daemons_web_off() {
+    let fake = FakeMessages::start(vec![
+        Turn::script(
+            "tu_1",
+            "Search",
+            "try { await clax.web.search('rust'); return 'searched'; } catch (e) { return e.code; }",
+        ),
+        Turn::finish("I could not search."),
+    ])
+    .await;
+    // The daemon's own source: no fixtures, so Cloudflare's, which is
+    // never reached here.
+    let (ts, driver) = held_daemon(&fake).await;
+    web_on(&ts).await;
+    let rid = start_web_run(&ts).await;
+    assert_eq!(ts.store.run(&rid).unwrap().unwrap().web, "search,fetch");
+    let res = ts
+        .client
+        .delete(format!("{}/api/admin/web/token", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    clax_server::bot::start_driver(&driver);
+    let all = events(&ts, &rid, None).await;
+    assert_eq!(all.last().map(|(_, e, _)| e.as_str()), Some("run_end"));
+    let sent = serde_json::to_string(&fake.requests()).unwrap();
+    assert!(sent.contains("web_disabled"), "{sent}");
+    assert!(
+        ts.store
+            .usage_of_run(&rid)
+            .unwrap()
+            .iter()
+            .all(|r| !r.line.starts_with("web.")),
+        "nothing charged"
+    );
+}

@@ -1316,7 +1316,8 @@ pub struct BotWebSearch {
     /// `ceramic` (the default), `exa` or `linkup`.
     pub provider: String,
     /// The AI Gateway searches go through: up to 64 letters, digits, `_`
-    /// and `-` (default `default`).
+    /// and `-` (default `default`; empty is taken, as the stored setting
+    /// takes it).
     pub gateway: String,
     /// The gateway's stored provider key to bill instead of the account's
     /// credits, as `gateway` is spelled; empty (the default) for none.
@@ -1361,7 +1362,10 @@ impl Default for BotWebFetch {
 }
 
 /// Why `[bot.web]` `w` is refused, as (key under `[bot]`, message); `None`
-/// when it checks.
+/// when it checks. The checks are the stored settings' own
+/// (`clax_store::bot_settings::Kind`), so a value the file may set is one
+/// the store takes: names are trimmed, and an empty `gateway` or
+/// `byok_alias` is taken.
 fn bot_web_problem(w: &BotWeb) -> Option<(&'static str, String)> {
     let ident = |s: &str| {
         s.len() <= 64
@@ -1381,7 +1385,7 @@ fn bot_web_problem(w: &BotWeb) -> Option<(&'static str, String)> {
     };
     let s = &w.search;
     let f = &w.fetch;
-    if !matches!(s.provider.as_str(), "ceramic" | "exa" | "linkup") {
+    if !matches!(s.provider.trim(), "ceramic" | "exa" | "linkup") {
         return Some((
             "web.search.provider",
             format!(
@@ -1394,15 +1398,12 @@ fn bot_web_problem(w: &BotWeb) -> Option<(&'static str, String)> {
         ("web.search.gateway", &s.gateway),
         ("web.search.byok_alias", &s.byok_alias),
     ] {
-        if !ident(v) {
+        if !ident(v.trim()) {
             return Some((
                 key,
                 format!("{key} must be up to 64 letters, digits, '_' and '-', not \"{v}\""),
             ));
         }
-    }
-    if s.gateway.is_empty() {
-        return Some(("web.search.gateway", "web.search.gateway is empty".into()));
     }
     if !(1..=10).contains(&s.limit) {
         return Some((
@@ -1418,7 +1419,7 @@ fn bot_web_problem(w: &BotWeb) -> Option<(&'static str, String)> {
             return Some((key, format!("{key} must be at least 1, not {v}")));
         }
     }
-    if !matches!(f.url_rule.as_str(), "sourced" | "any_public" | "allowlist") {
+    if !matches!(f.url_rule.trim(), "sourced" | "any_public" | "allowlist") {
         return Some((
             "web.fetch.url_rule",
             format!(
@@ -2494,6 +2495,15 @@ mod tests {
             Source::Env("CLAX_BOT__WEB__SEARCH__LIMIT".into())
         );
         assert_eq!(c.source("bot.web.fetch.enabled"), Source::Default);
+        // What the stored settings take, the file may set.
+        let w = under(
+            "[bot.web.search]\ngateway = \"\"\nprovider = \" exa \"\n[bot.web.fetch]\nurl_rule = \"any_public \"\n",
+            &[],
+        )
+        .bot()
+        .unwrap()
+        .web;
+        assert_eq!(w.search.gateway, "");
     }
 
     #[test]
@@ -2543,7 +2553,6 @@ mod tests {
             "[bot.web]\nunknown = 1\n",
             "[bot.web.search]\nprovider = \"bing\"\n",
             "[bot.web.search]\nlimit = 11\n",
-            "[bot.web.search]\ngateway = \"\"\n",
             "[bot.web.search]\nbyok_alias = \"a b\"\n",
             "[bot.web.fetch]\nurl_rule = \"open\"\n",
             "[bot.web.fetch]\nallowlist = [\"Example.com\"]\n",

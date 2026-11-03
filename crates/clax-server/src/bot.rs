@@ -1140,11 +1140,26 @@ impl clax_http::bot::Runs for DriverRuns {
 }
 
 /// The driver of a daemon on `state` (native): its deps over the server's
-/// host, this build's sandbox, the state's settings and keys, and the
-/// store's clock; the routes' events hub. Installs it as the state's run
-/// seam and returns it, not yet started.
+/// host, this build's sandbox, the state's settings and keys, the store's
+/// clock and the daemon's web source ([`crate::web_source::for_daemon`],
+/// its fetches naming the daemon's public origin); the routes' events hub.
+/// Installs it as the state's run seam and returns it, not yet started.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn driver(state: &mut AppState) -> Arc<clax_bot::Driver> {
+    let web = crate::web_source::for_daemon(
+        state.store.clone(),
+        state.bot.kek.clone(),
+        &clax_http::site_access::public_origin(state),
+    );
+    driver_with_web(state, web)
+}
+
+/// [`driver`], with `web` as the runs' web source.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn driver_with_web(
+    state: &mut AppState,
+    web: Arc<dyn clax_bot::web::WebSource>,
+) -> Arc<clax_bot::Driver> {
     let bot = state.bot.clone();
     let host = ServerHost::new(state.clone());
     let wake = host.wake.clone();
@@ -1160,7 +1175,8 @@ pub fn driver(state: &mut AppState) -> Arc<clax_bot::Driver> {
         }),
         bot.keys(),
         Arc::new(StoreClock(state.store.clone())),
-    );
+    )
+    .with_web(web);
     let driver = Arc::new(clax_bot::Driver::new(
         clax_store::bot_runs::DriverId::mint(),
         Arc::new(deps),
