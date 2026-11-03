@@ -392,6 +392,11 @@ async fn a_reporter_files_with_a_clip_and_reads_it_back() {
             .unwrap(),
         ORIGIN
     );
+    // The page may read a refusal's Retry-After and the instance's Date.
+    assert_eq!(
+        res.headers()["access-control-expose-headers"],
+        "retry-after, date"
+    );
     let v: Value = res.json().await.unwrap();
     let report = &v["report"];
     let tid = report["id"].as_str().unwrap().to_string();
@@ -804,6 +809,26 @@ async fn the_preflight_answers_only_listed_origins() {
         .await;
     assert_eq!(res.status(), 403);
     assert!(res.headers().get("access-control-allow-origin").is_none());
+    assert!(res.headers().get("access-control-expose-headers").is_none());
+    // A refusal from the queue's origin names it, and exposes the headers
+    // a client retries by (Retry-After, Date).
+    let res = s
+        .send(
+            "GET",
+            &s.reports(),
+            &[
+                ("origin", ORIGIN.into()),
+                ("authorization", "Clax-Reporter cxr_unknown".into()),
+            ],
+            vec![],
+        )
+        .await;
+    assert_eq!(res.headers()["access-control-allow-origin"], ORIGIN);
+    assert_eq!(
+        res.headers()["access-control-expose-headers"],
+        "retry-after, date"
+    );
+    assert_eq!(status_code(res).await, (401, "invalid_token".into()));
     // The service route is not for browsers.
     let res = s
         .send(
