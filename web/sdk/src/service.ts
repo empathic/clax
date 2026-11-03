@@ -1,10 +1,14 @@
 // A deployer's backend (spec 2026-10-27 §5.3): it holds a queue service
 // grant in its secrets and mints reporter tokens for its own users. Runs
-// in Node 20 or later, a Worker or any runtime with WebCrypto Ed25519; it
+// in Node 20 or later, a Worker or any runtime with WebCrypto Ed25519, as
+// an ES module or, through the package's `require` condition, CommonJS; it
 // is never shipped to a page, which would hand out the grant.
 import type { ReporterProfile, ReporterToken, ReporterTokenRequest } from "./types";
 import { checkInstance, queuePath, readJson, sendSigned, Timing, type Fetch } from "./client";
 import { fromBase64url, importPkcs8Signer, type Signer } from "./sign";
+
+export { ClaxError } from "./client";
+export type { ClaxErrorCode, QueueErrorCode, ReporterProfile, ReporterToken, ReporterTokenRequest, SdkErrorCode } from "./types";
 
 export interface ServiceOptions {
   /** The instance's origin, such as `https://clax.example.com`: Clax is

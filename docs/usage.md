@@ -714,7 +714,9 @@ the overlay's other dependencies bundled, and declarations under
 (`ReporterClient`, `ClaxError` and the queue routes' types),
 `@empathic/clax-client-sdk/overlay` (`overlay`, the same overlay as
 `/_clax/overlay.js`) and `@empathic/clax-client-sdk/service`
-(`ServiceClient`, for a backend only). Its license is LGPL-2.1-only, that of `web/sdk`,
+(`ServiceClient` and `ClaxError`, for a backend only, also built as one
+CommonJS file, `service.cjs`, under a `require` condition, with `.d.cts`
+declarations). Its license is LGPL-2.1-only, that of `web/sdk`,
 `web/overlay` and `web/bridge`.
 
 - `just web` builds it beside the web build (`//web:dist_sdk` under Bazel,
