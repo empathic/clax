@@ -117,6 +117,33 @@ the model request; and a send refused `credits_exhausted`. Its scripted
 provider listens on 127.0.0.1, which the test vars
 `CLAX_TEST_ROUTES` and `CLAX_TEST_LOOPBACK_PROVIDER` together allow.
 
+ClaxBot's web tools (`clax.web.search` and `clax.web.fetch`, spec
+`docs/superpowers/specs/2026-11-02-claxbot-web-tools-design.md`) go
+through the Workers AI binding `AI` (`src/web_source.rs`,
+`BindingSource`): a search is `env.AI.websearch()` through the AI Gateway
+the admin names (`search.gateway`), and a fetch is the Worker's own `fetch`
+(redirects followed by hand, each target checked, at most 5; 5 MB and 30 s,
+conversion included), with HTML, PDF and Office documents converted by
+`env.AI.toMarkdown()`. With the binding the instance's web use is
+configured; the admin still turns each tool on. Searches are billed to the
+account through its AI Gateway credits, or to a provider key stored on the
+gateway (`search.byok_alias`), so a deploy with search on needs one of
+them; conversions are free for these formats. Web search on the binding
+needs workerd 1.20260924.1 or later (Wrangler 4.141.0; the repository pins
+4.149.0): on an older runtime every search answers `web_unavailable`. The
+binding has no local simulator: under `wrangler dev --local` it exists and
+every call on it throws, so a web call answers `web_unavailable`.
+
+With `CLAX_TEST_ROUTES` and `CLAX_TEST_WEB` both `1`, the instance uses a
+scripted source instead (`FixtureWeb`, over `clax_bot::FakeWebSource`):
+`POST /_worker/web-fixtures {searches: {<query>: [hit]}, pages: {<url>:
+{status, content_type, text, links} | {redirect}}}` loads it (kept in the
+object's storage across restarts), and `GET /_worker/web-fixtures` lists
+the calls it answered. `test-bot.mjs` runs a script that searches and
+fetches through it, across the restart, and a fetch of a page that
+redirects to itself; `smoke-remote.mjs` makes one real search and one real
+fetch when the deployed instance has web search on.
+
 ## Deploy to Cloudflare
 
 clax.dev, Empathic's instance, is deployed from GitHub Actions on every
@@ -300,6 +327,7 @@ account.
 | `ARTIFACTS` | Cloudflare Artifacts, namespace `clax` | Artifact versions as git repositories, when `REPO_STORE=artifacts` |
 | `WEB` | Workers Static Assets, `../../web/dist` | The web UI (`run_worker_first`) |
 | `LOADER` | Worker Loader (`worker_loaders`) | ClaxBot's code-mode sandbox: a dynamic Worker per script (`src/sandbox/`) |
+| `AI` | Workers AI (`ai`, `remote: true`) | ClaxBot's web tools: `websearch()` through the account's AI Gateway, `toMarkdown()` of fetched pages (`src/web_source.rs`) |
 
 `deploy.mjs` creates the bucket (`npx wrangler r2 bucket create
 clax-assets`), the queue (`npx wrangler queues create
@@ -332,7 +360,7 @@ npx wrangler queues subscription create clax-artifacts-events --source artifacts
 | `GIT_SMART_HTTP` | `0` with `artifacts` | `1` serves the stand-in over git smart HTTP at `/git/*` |
 | `CLAX_INSTANCE` | empty | The instance object's name (`default`) |
 | `CLAX_LIVE_PEOPLE_SEATS`, `CLAX_LIVE_GUEST_SEATS`, `CLAX_LIVE_AGENT_SEATS`, `CLAX_LIVE_SEAT_IDLE_S` | empty | Live seats per artifact and the idle release; empty takes 100, 20, 20 and 180 s |
-| `CLAX_TEST_ROUTES`, `REPO_DEV_ROUTES` | `0` | Test-only routes; never `1` on a deploy |
+| `CLAX_TEST_ROUTES`, `CLAX_TEST_WEB`, `REPO_DEV_ROUTES` | `0` | Test-only routes, and ClaxBot's scripted web source; never `1` on a deploy |
 | `CLAX_DIAG_ROUTES` | `0`; `1` (`deploy.mjs --diag`) only until the smoke is green | `/_diag/` for the owner token (`src/diag.rs`): what the platform's bindings answer |
 | `GITHUB_CLIENT_ID` | the OAuth App's client ID (`deploy.mjs --github-client-id`) | GitHub sign-in; off without it or without `GITHUB_CLIENT_SECRET` |
 | `OWNER_GITHUB` | the owner's GitHub login (`deploy.mjs --owner-github`) | Whoever signs in as that account (case-insensitive) is the owner |

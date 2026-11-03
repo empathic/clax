@@ -273,6 +273,10 @@ struct Instance {
     graced: Cell<bool>,
     /// ClaxBot's driver (`crate::bot`).
     bot: crate::bot::WorkerBot,
+    /// ClaxBot's scripted web source in the test mode (`CLAX_TEST_ROUTES`
+    /// and `CLAX_TEST_WEB` both `1`), which `POST /_worker/web-fixtures`
+    /// loads; `None` otherwise.
+    test_web: Option<Arc<crate::web_source::FixtureWeb>>,
     /// Kept so the streams' `shutdown` never closes.
     _shutdown: tokio::sync::watch::Sender<bool>,
     /// Dropped last: keeps the database file in the VFS.
@@ -599,8 +603,16 @@ fn clax_app(env: &Env) -> Result<clax_core::config::ClaxApp> {
 /// overrides and no environment key; the Worker Loader sandbox, made
 /// first (when it cannot be, ClaxBot is off: `enabled` is false and a send
 /// is refused `not_configured`); the server's host; and a driver of its
-/// own ID, installed as the routes' run seam.
-fn worker_bot(env: &Env, app: &mut AppState) -> crate::bot::WorkerBot {
+/// own ID, installed as the routes' run seam; and its web source
+/// (`crate::bot::web_source`: `test_web` in the test mode, else the `AI`
+/// binding when the Worker has one), which makes the host's web use
+/// configured.
+fn worker_bot(
+    env: &Env,
+    app: &mut AppState,
+    test_web: Option<Arc<crate::web_source::FixtureWeb>>,
+) -> crate::bot::WorkerBot {
+    let web = crate::bot::web_source(env, test_web);
     let kek_secret = env
         .secret("CLAX_KEK")
         .map(|v| v.to_string())
@@ -651,7 +663,7 @@ fn worker_bot(env: &Env, app: &mut AppState) -> crate::bot::WorkerBot {
         events,
         catalog_url: first_catalog_url,
         catalog_flight,
-        web_configured: false,
+        web_configured: web.is_some(),
     });
     bot
 }
@@ -666,6 +678,25 @@ fn resume_after(env: &Env) -> std::time::Duration {
         .flatten()
         .filter(|ms| *ms >= 1_000);
     set.map_or(crate::bot::RESUME_AFTER, std::time::Duration::from_millis)
+}
+
+/// The storage key of the web fixtures `POST /_worker/web-fixtures` last
+/// loaded, so a restart's instance (a rebuilt server, or a new process on
+/// the same state) answers as the one before it.
+const WEB_FIXTURES_KEY: &str = "web_fixtures";
+
+/// The test mode's web source, with `CLAX_TEST_ROUTES` and `CLAX_TEST_WEB`
+/// both `1` (else `None`): scripted by the fixtures last loaded, or by none.
+fn test_web(state: &State, env: &Env) -> Result<Option<Arc<crate::web_source::FixtureWeb>>> {
+    if var(env, "CLAX_TEST_ROUTES") != "1" || var(env, "CLAX_TEST_WEB") != "1" {
+        return Ok(None);
+    }
+    let web = crate::web_source::FixtureWeb::default();
+    if let Some(kept) = kv_get(state, WEB_FIXTURES_KEY)? {
+        let v: serde_json::Value = serde_json::from_str(&kept).map_err(rust_err)?;
+        web.load(&v).map_err(rust_err)?;
+    }
+    Ok(Some(Arc::new(web)))
 }
 
 /// Where the alarm and the pricing routes fetch the price catalog:
@@ -766,7 +797,8 @@ impl Instance {
         clax_core::set_build_commit(build_commit(&var(env, "CLAX_BUILD_COMMIT")));
         app.build = Some(var(env, "CLAX_BUILD")).filter(|b| !b.is_empty());
         app.feedback = feedback_of(env, &app);
-        let bot = worker_bot(env, &mut app);
+        let test_web = test_web(state, env)?;
+        let bot = worker_bot(env, &mut app, test_web.clone());
         app.seats
             .set_limits(clax_core::seats::SeatLimits::from_env(|k| {
                 Some(var(env, k)).filter(|v| !v.is_empty())
@@ -787,6 +819,7 @@ impl Instance {
             kept: RefCell::new(kept_json),
             graced: Cell::new(false),
             bot,
+            test_web,
             _shutdown: shutdown_tx,
             _db: db,
         });
@@ -1455,7 +1488,9 @@ impl InstanceDo {
     ///   artifact's documents are: `{instance_docs, object_store,
     ///   object_doc}`, the documents the instance's database still holds
     ///   for it, whether its object holds a store, and the document at
-    ///   `path` there, read from the object directly (not through the move).
+    ///   `path` there, read from the object directly (not through the move);
+    /// - with `CLAX_TEST_WEB` = `1` too, `POST /_worker/web-fixtures` and
+    ///   `GET /_worker/web-fixtures` ([`InstanceDo::web_fixtures`]).
     ///
     /// On a site host they are the site's paths, as every path is.
     async fn test_route(
@@ -1529,6 +1564,58 @@ impl InstanceDo {
         let _ = self.inner.replace(Ok(fresh));
         self.revived.set(false);
         Some(Response::ok("rebuilt"))
+    }
+
+    /// The test mode's web fixtures (`Instance::test_web`; else `req` is
+    /// given back, and the router answers it), with the token:
+    ///
+    /// - `POST /_worker/web-fixtures {searches, pages}`
+    ///   (`clax_bot::FakeWebSource::from_fixtures`' shape) scripts ClaxBot's
+    ///   web source, replacing what it had, and keeps the fixtures in the
+    ///   object's storage for the instances after a restart: `{ok: true}`,
+    ///   or 400 naming what is not a fixture;
+    /// - `GET /_worker/web-fixtures`: `{calls: [[op, query or URL]]}`, the
+    ///   source's calls since this instance loaded its fixtures.
+    async fn web_fixtures(
+        &self,
+        inst: &Rc<Instance>,
+        req: axum::http::Request<axum::body::Body>,
+    ) -> std::result::Result<Result<Response>, axum::http::Request<axum::body::Body>> {
+        let Some(web) = inst.test_web.clone() else {
+            return Err(req);
+        };
+        let host = req
+            .headers()
+            .get(axum::http::header::HOST)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("");
+        if req.uri().path() != "/_worker/web-fixtures" || inst.app.sites().target(host).is_some() {
+            return Err(req);
+        }
+        if !clax_http::auth::has_token(req.headers(), &inst.app.token) {
+            return Ok(Response::error("the token is required", 401));
+        }
+        if req.method() == axum::http::Method::GET {
+            return Ok(Response::from_json(
+                &serde_json::json!({ "calls": web.calls() }),
+            ));
+        }
+        if req.method() != axum::http::Method::POST {
+            return Ok(Response::error("GET or POST", 405));
+        }
+        let body = match axum::body::to_bytes(req.into_body(), MAX_BODY).await {
+            Ok(b) => b,
+            Err(e) => return Ok(Response::error(format!("{e}"), 400)),
+        };
+        let v: serde_json::Value = match serde_json::from_slice(&body) {
+            Ok(v) => v,
+            Err(e) => return Ok(Response::error(format!("not JSON: {e}"), 400)),
+        };
+        if let Err(e) = web.load(&v) {
+            return Ok(Response::error(e, 400));
+        }
+        Ok(kv_put(&self.state, WEB_FIXTURES_KEY, &v.to_string())
+            .and_then(|()| Response::from_json(&serde_json::json!({ "ok": true }))))
     }
 
     /// `GET /_worker/app-data` (see [`InstanceDo::test_route`]).
@@ -1622,6 +1709,10 @@ impl DurableObject for InstanceDo {
         let req = match http_request(req, &mut hold).await? {
             Ok(r) => r,
             Err(refused) => return Ok(refused),
+        };
+        let req = match self.web_fixtures(&inst, req).await {
+            Ok(res) => return res,
+            Err(req) => req,
         };
         if let Some(res) = self.test_route(&inst, &req).await {
             return res;

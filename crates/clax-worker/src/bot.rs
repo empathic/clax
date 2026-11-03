@@ -138,6 +138,30 @@ pub fn sandbox(_env: &worker::Env) -> Result<Arc<dyn Sandbox>, String> {
     Err("the Worker Loader sandbox is a Worker's (wasm32)".into())
 }
 
+/// Where ClaxBot's `clax.web` calls go on this Worker
+/// (`crate::web_source`): `test`, the scripted source of the test mode,
+/// when given; else the `AI` binding, when the Worker has one; else none,
+/// and the host's web use is off, not configured.
+#[must_use]
+pub fn web_source(
+    env: &worker::Env,
+    test: Option<Arc<crate::web_source::FixtureWeb>>,
+) -> Option<Arc<dyn clax_bot::WebSource>> {
+    if let Some(t) = test {
+        return Some(t);
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::web_source::BindingSource::from_env(env)
+            .map(|b| Arc::new(b) as Arc<dyn clax_bot::WebSource>)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = env;
+        None
+    }
+}
+
 /// ClaxBot's state for the routes on the Worker: the key-encryption key
 /// from `CLAX_KEK`, no environment key, `enabled` only when the sandbox
 /// could be made (else a send is refused `not_configured`), and `runs`.

@@ -362,6 +362,7 @@ export const SMOKE_CANNOT = {
     "site: open to the world, then private again": "opening a site to the world waits on its person's approval",
     "site: two db artifacts kept apart": `each site is signed in to at /site-signin; ${BROWSER_SIGNIN}`,
     "live: a comment on the WebSocket stream": "the live stream is a browser's: an agent token's socket is refused",
+    "claxbot: one web search and one fetch (AI binding)": "the admin's web settings refuse an agent token (403 not_for_agents)",
   },
 };
 

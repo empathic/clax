@@ -27,8 +27,15 @@
 //    the second run, which waited for the person's one slot, is cancelled
 //    while its turn is held: it ends stopped and the API sees its connection
 //    closed (the wasm transport's abort);
-// 5. with the free week cut to nothing, a send is 403 credits_exhausted;
-// 6. with every run ended, no alarm is held for ClaxBot.
+// 5. ClaxBot on the web, through the scripted web source the test routes
+//    select (CLAX_TEST_WEB, POST /_worker/web-fixtures, loaded before the
+//    restart and kept across it): a run whose script searches, fetches the
+//    first result and finishes is charged one search and one fetch, and
+//    its reply ends with the Sources it fetched; a fetch of a page that
+//    redirects to itself ends web_unavailable after five redirects, one
+//    source call, charged once;
+// 6. with the free week cut to nothing, a send is 403 credits_exhausted;
+// 7. with every run ended, no alarm is held for ClaxBot.
 // (deploy.mjs's CLAX_KEK plan is deploy-lib.test.mjs's.)
 //
 // Prints one line per check and a JSON summary; exits non-zero on the first
@@ -176,12 +183,60 @@ try { out.replied = !!(await clax.threads.reply(t.id, "Changed it to 06:15.")).c
 return out;
 `;
 
+/** The web run's script: a search, a fetch of its first result. */
+const WEB_SCRIPT = `
+const s = await clax.web.search("tide tables today");
+const p = await clax.web.fetch(s.results[0].url);
+return { results: s.results.length, first: s.results[0].url, status: p.status, text: p.text, left: p.left };
+`;
+
+/** The redirect loop's script: a fetch of a page that redirects to itself. */
+const LOOP_SCRIPT = `
+try { await clax.web.fetch("https://loop.example/"); return { fetched: true }; }
+catch (e) { return { code: e.code }; }
+`;
+
+/** What the scripted web source answers (src/web_source.rs FixtureWeb). */
+const WEB_FIXTURES = {
+  searches: {
+    "tide tables today": [
+      { url: "https://tides.example/today", title: "Tides today", description: "High water at 06:15." },
+      { url: "https://tides.example/week", title: "This week's tides" },
+    ],
+  },
+  pages: {
+    "https://tides.example/today": { status: 200, content_type: "text/markdown", text: "# Tides today\n\nHigh water at 06:15.\n", links: [] },
+    "https://loop.example/": { redirect: "https://loop.example/" },
+  },
+};
+
+/** A run that runs `code` once, then finishes with `summary`. */
+function scriptThenFinish(marker, turns, code, summary) {
+  if (turns === 0) {
+    return {
+      marker,
+      blocks: [{ type: "tool_use", id: `tu_${marker}_1`, name: "run_script", input: { title: marker, code } }],
+      stop: "tool_use",
+      usage: { input: 700, output: 30 },
+    };
+  }
+  return {
+    marker,
+    blocks: [{ type: "tool_use", id: `tu_${marker}_2`, name: "finish", input: { summary } }],
+    stop: "tool_use",
+    usage: { input: 800, output: 20 },
+  };
+}
+
 /** The scripted runs, told apart by their thread's text. */
 let held = 0;
 function plan(body) {
   const text = JSON.stringify(body.messages);
   const turns = body.messages.filter((m) => m.role === "assistant").length;
   if (text.includes("Hold this one")) return { marker: "cancel", hold: true, usage: { input: 900 } };
+  // The loop's thread is on the web run's artifact, after it: asked first.
+  if (text.includes("Check the looping page")) return scriptThenFinish("loop", turns, LOOP_SCRIPT, "The page redirects to itself.");
+  if (text.includes("Look up today's tides")) return scriptThenFinish("web", turns, WEB_SCRIPT, "High water is at 06:15 today.");
   if (turns === 0) {
     return {
       marker: "main",
@@ -275,6 +330,13 @@ async function run(base, rid) {
   return ok(base, "GET", `/api/bot/runs/${rid}`);
 }
 
+/** Every string in `v`, depth first. */
+function strings(v) {
+  if (typeof v === "string") return [v];
+  if (v && typeof v === "object") return Object.values(v).flatMap(strings);
+  return [];
+}
+
 /** How far ahead the object's alarm is set, in ms; `null` with none. */
 async function alarmIn(base) {
   const { alarm, now } = await ok(base, "GET", "/_worker/alarm");
@@ -292,7 +354,7 @@ async function main() {
   let w;
   const stop = () => (w ? w.stop() : Promise.resolve());
   for (const sig of ["SIGINT", "SIGTERM"]) process.once(sig, () => void stop().then(() => process.exit(130)));
-  const vars = { CLAX_TOKEN: TOKEN, CLAX_TEST_ROUTES: "1", CLAX_TEST_RESUME_AFTER_MS: String(RESUME_MS) };
+  const vars = { CLAX_TOKEN: TOKEN, CLAX_TEST_ROUTES: "1", CLAX_TEST_WEB: "1", CLAX_TEST_RESUME_AFTER_MS: String(RESUME_MS) };
   try {
     // 1. No CLAX_KEK, and no test escape for the provider's URL.
     w = await start(dir, writeConfig(dir, vars), 1);
@@ -321,6 +383,13 @@ async function main() {
     await ok(base, "PUT", "/api/admin/provider", { base_url: fake.base });
     const key = await ok(base, "PUT", "/api/admin/provider/key", { key: KEY });
     check(JSON.stringify(key).includes("wxyz") && !JSON.stringify(key).includes(KEY), "the instance key is stored, write-only", key);
+    // The web source the test routes select, scripted before the restart.
+    r = await call(base, "POST", "/_worker/web-fixtures", { pages: [] });
+    check(r.status === 400, "fixtures that are not fixtures are refused", r);
+    await ok(base, "POST", "/_worker/web-fixtures", WEB_FIXTURES);
+    const web = await ok(base, "PUT", "/api/admin/web", { search: { enabled: true }, fetch: { enabled: true } });
+    check(web.configured === true && web.search.enabled === true && web.fetch.enabled === true, "with the test web source the host's web use is configured, and the admin turns it on", web);
+    await ok(base, "PUT", "/api/me/bot", { web: true });
     r = await call(base, "POST", "/api/bot/runs", { thread_ids: [tid], artifact_id: aid });
     check(r.status === 201, "a thread is sent to ClaxBot", r);
     const rid = r.json.run.id;
@@ -408,14 +477,55 @@ async function main() {
     const doneKinds = replay.filter((e) => e.event === "step_done").map((e) => e.data?.step?.kind);
     check(JSON.stringify(doneKinds) === JSON.stringify(["turn", "finish"]), "the replay rebuilds the committed steps the live hub lost", doneKinds);
 
-    // 5. Credits exhausted.
+    // 5. ClaxBot on the web, after the restart: the fixtures were kept.
+    const wid = (await ok(base, "POST", "/api/artifacts", {
+      title: "Tide sources", files: { "index.html": { content: page, encoding: "utf8" } },
+    })).artifact.id;
+    const webOf = (u) => u.totals.filter((t) => t.line.startsWith("web."));
+    const before5 = webOf(await ok(base, "GET", "/api/me/usage"));
+    check(before5.length === 0, "no web use is charged before a run uses the web", before5);
+    const wt = await thread(base, wid, "Look up today's tides");
+    const wr = (await ok(base, "POST", "/api/bot/runs", { thread_ids: [wt], artifact_id: wid })).run.id;
+    const wdone = await until("the web run ends", async () => {
+      const x = await run(base, wr);
+      return ENDED.includes(x.status) ? x : undefined;
+    });
+    check(wdone.status === "finished", "the web run finished", { status: wdone.status, reason: wdone.reason });
+    const wstep = wdone.steps.find((x) => x.kind === "script");
+    check(wstep?.value?.results === 2 && wstep.value.first === "https://tides.example/today" && wstep.value.status === 200
+      && wstep.value.text.includes("High water at 06:15."), "its script searched the fixture and fetched the first result", wstep);
+    check(JSON.stringify(wstep.calls?.map((x) => [x.op, x.ok])) === JSON.stringify([["web.search", true], ["web.fetch", true]]),
+      "the script's calls are one search and one fetch, both answered", wstep.calls);
+    const rows = webOf(await ok(base, "GET", "/api/me/usage"));
+    check(rows.length === 2 && rows.some((t) => t.line.startsWith("web.search.") && t.qty === 1) && rows.some((t) => t.line === "web.fetch" && t.qty === 1),
+      "the run is charged exactly one search and one fetch", rows);
+    const wthreads = await ok(base, "GET", `/api/artifacts/${wid}/threads`);
+    const webReplies = strings(wthreads).filter((t) => t.startsWith("High water is at 06:15 today."));
+    const sources = webReplies[0]?.split("\n").reduce((at, l, i, all) => (/Sources/.test(l) ? all.slice(i) : at), null);
+    check(webReplies.length === 1 && sources?.some((l) => l.includes("https://tides.example/today"))
+      && !webReplies[0].includes("tides.example/week"), "the reply ends with the Sources it fetched (not those it only found)", webReplies);
+    // a_redirect_loop_ends_after_five: a page that redirects to itself.
+    const lt = await thread(base, wid, "Check the looping page https://loop.example/");
+    const lr = (await ok(base, "POST", "/api/bot/runs", { thread_ids: [lt], artifact_id: wid })).run.id;
+    const ldone = await until("the loop run ends", async () => {
+      const x = await run(base, lr);
+      return ENDED.includes(x.status) ? x : undefined;
+    });
+    const lstep = ldone.steps.find((x) => x.kind === "script");
+    check(lstep?.value?.code === "web_unavailable", "a fetch of a page that redirects to itself ends web_unavailable (it never hangs)", lstep);
+    const { calls } = await ok(base, "GET", "/_worker/web-fixtures");
+    check(calls.filter(([op, u]) => op === "fetch" && u === "https://loop.example/").length === 1, "the loop is one source call", calls);
+    const fetches = webOf(await ok(base, "GET", "/api/me/usage")).find((t) => t.line === "web.fetch");
+    check(fetches?.qty === 2, "and is charged once: it went out", fetches);
+
+    // 6. Credits exhausted.
     const pricing = await ok(base, "GET", "/api/admin/pricing");
     await ok(base, "PUT", "/api/admin/pricing", { ...pricing, free_weekly_milli: 1 });
     const tid3 = await thread(base, aid, "One more");
     r = await call(base, "POST", "/api/bot/runs", { thread_ids: [tid3], artifact_id: aid });
     check(r.status === 403 && r.json?.error?.code === "credits_exhausted", "with the week spent a send is 403 credits_exhausted", r);
 
-    // 6. With every run ended, ClaxBot holds no alarm: what is left is the
+    // 7. With every run ended, ClaxBot holds no alarm: what is left is the
     // instance's own timed work, at least its sweep period ahead.
     const runs = await ok(base, "GET", `/api/bot/runs?artifact=${aid}`);
     const list = runs.runs ?? runs;
