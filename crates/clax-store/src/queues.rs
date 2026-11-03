@@ -3319,7 +3319,9 @@ fn live_session_in(c: &Connection, sid: &str, message: &'static str) -> Result<(
     }
 }
 
+mod installs;
 mod reporter_view;
+pub use installs::{InstallPatch, NewInstall};
 pub use reporter_view::ViewSession;
 
 #[cfg(test)]

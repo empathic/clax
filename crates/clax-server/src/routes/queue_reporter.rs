@@ -111,6 +111,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/queues/{qid}/reporter-tokens", post(mint_token))
         .merge(reporter)
         .merge(super::queue_reporter_view::router())
+        .merge(super::installs::public_router())
         .with_state(state)
 }
 

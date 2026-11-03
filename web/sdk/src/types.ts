@@ -35,6 +35,40 @@ export interface Queue {
   role: QueueRole;
 }
 
+/** What an install's overlay is configured with. Wording left out (null)
+ * is the overlay's own default; it names no product unless `product_name`
+ * does. */
+export interface InstallConfig {
+  product_name: string | null;
+  report_label: string | null;
+  queue_label: string | null;
+  reports_button: boolean;
+  picker: boolean;
+  brand_color: string | null;
+}
+
+/** `Install`: one site that embeds the overlay and files into a queue,
+ * as `GET /api/queues/<qid>/installs` lists it. */
+export interface Install {
+  id: string;
+  queue_id: string;
+  name: string;
+  origins: string[];
+  config: InstallConfig;
+  created_at: string;
+  updated_at: string;
+}
+
+/** What `GET /api/installs/<id>/config` answers anyone: the install's
+ * queue (its name, and its pages' paths on the Clax that serves it) and
+ * its config. */
+export interface PublicInstallConfig {
+  install_id: string;
+  name: string;
+  queue: { id: string; name: string; reporters_see: ReportersSee; page: string; reporter_page: string };
+  config: InstallConfig;
+}
+
 /** The external artifact a report is filed on. */
 export interface ReportArtifact {
   id: string;

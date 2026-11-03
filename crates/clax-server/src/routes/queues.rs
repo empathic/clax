@@ -46,7 +46,7 @@ use serde_json::{Value, json};
 /// 401 without a credential; 403 `not_for_agents` for an agent (each
 /// handler has refused the owner's first, `refuse_agents`); 403
 /// `not_a_person` for a viewer who is no connected person.
-async fn admin_person(s: &AppState, d: &DeniedToGrants) -> Result<Option<String>, ApiError> {
+pub(super) async fn admin_person(s: &AppState, d: &DeniedToGrants) -> Result<Option<String>, ApiError> {
     match d.caller(s).await? {
         Caller::Owner { .. } => Ok(None),
         Caller::Person { viewer } => Ok(Some(viewer.public_id)),
@@ -74,7 +74,7 @@ fn not_queue_admin() -> ApiError {
 /// # Errors
 /// 404 `not_a_member` for a non-member or no such queue; 403
 /// `not_queue_admin` for a triage member.
-fn require_admin(st: &clax_store::Store, qid: &str, person: Option<&str>) -> Result<(), ApiError> {
+pub(super) fn require_admin(st: &clax_store::Store, qid: &str, person: Option<&str>) -> Result<(), ApiError> {
     match st.queue_role(qid, person)? {
         Some(Role::Admin) => Ok(()),
         Some(Role::Triage) => Err(not_queue_admin()),

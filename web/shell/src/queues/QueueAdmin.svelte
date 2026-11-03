@@ -11,6 +11,7 @@
   // when the panel opens and after each change.
   import { onMount } from "svelte";
   import * as api from "./api";
+  import Installs from "./Installs.svelte";
   import { refusal } from "./model";
 
   const p: { queue: api.Queue } = $props();
@@ -127,6 +128,8 @@
     </form>
     {#if grantErr}<p class="err" role="alert">{grantErr}</p>{/if}
   </section>
+
+  <Installs queue={p.queue} admin={true} />
 </div>
 
 <style>

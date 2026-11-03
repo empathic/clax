@@ -25,6 +25,7 @@ pub mod git_token;
 pub mod grants;
 pub mod health;
 pub mod inbox;
+pub mod installs;
 pub mod jobs;
 pub mod live;
 pub mod live_layers;
