@@ -843,6 +843,9 @@ mod binding {
         plan: Rc<RefCell<ProbePlan>>,
         /// The check running now, for [`WebSource::wait_check`].
         running: Rc<RefCell<Option<Shared<LocalBoxFuture<'static, ()>>>>>,
+        /// The Durable Object's state, which keeps a check alive after the
+        /// request that started it ([`WebSource::start_check`]).
+        keep: worker::State,
     }
 
     impl BindingSource {
@@ -864,6 +867,7 @@ mod binding {
             env: &worker::Env,
             public_origin: Option<&str>,
             host: Arc<HostCheck>,
+            keep: worker::State,
         ) -> Option<BindingSource> {
             let ai = Reflect::get(env.as_ref(), &JsValue::from_str("AI")).ok()?;
             ai.is_object().then(|| BindingSource {
@@ -872,6 +876,7 @@ mod binding {
                 host,
                 plan: Rc::default(),
                 running: Rc::default(),
+                keep,
             })
         }
     }
@@ -1142,7 +1147,12 @@ mod binding {
 
         /// Starts one `toMarkdown()` of [`PROBE_HTML`] in the background
         /// when [`ProbePlan`] says one is due; what it finds goes to the
-        /// host's [`HostCheck`].
+        /// host's [`HostCheck`]. The check is handed to the Durable
+        /// Object's `waitUntil()` (which also runs it), so the object is
+        /// kept alive until it ends even after the response that started
+        /// it, rather than resting on the object staying in memory while
+        /// it holds I/O or a timer
+        /// (<https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/>).
         fn start_check(&self) {
             if !self.plan.borrow_mut().start(js_sys::Date::now()) {
                 return;
@@ -1171,7 +1181,7 @@ mod binding {
             .boxed_local()
             .shared();
             *self.running.borrow_mut() = Some(run.clone());
-            wasm_bindgen_futures::spawn_local(run);
+            self.keep.wait_until(run);
         }
 
         /// Waits at most `within` for the check running now, if any.

@@ -630,6 +630,7 @@ fn clax_app(env: &Env) -> Result<clax_core::config::ClaxApp> {
 /// this, by `hosted` and the `fetch` handler (500).
 fn worker_bot(
     env: &Env,
+    state: &State,
     app: &mut AppState,
     test_web: Option<Arc<crate::web_source::FixtureWeb>>,
 ) -> (crate::bot::WorkerBot, Option<Arc<dyn clax_bot::WebSource>>) {
@@ -646,6 +647,7 @@ fn worker_bot(
             public,
             sites.as_ref().map(|s| s.domain()),
             check.clone(),
+            state,
         )
     }));
     if let Some(why) = why {
@@ -768,7 +770,10 @@ impl Instance {
     /// (`clax_http::bot::Bot::web_check`, asked in
     /// `clax_server::bot::web_configured`, which every run's start,
     /// whatever started it, and the person's and the admin's views go
-    /// through). It never waits.
+    /// through). It never waits. A check asked for while the last one's
+    /// back-off runs is declined (`crate::web_source::ProbePlan`) and the
+    /// ask is dropped with it: nothing is lost, because the source stays
+    /// configured meanwhile and the next decision with web on asks again.
     fn start_wanted_web_check(&self) {
         if self.app.bot.web_check.take_wanted()
             && let Some(web) = &self.web
@@ -852,7 +857,7 @@ impl Instance {
         app.build = Some(var(env, "CLAX_BUILD")).filter(|b| !b.is_empty());
         app.feedback = feedback_of(env, &app);
         let test_web = test_web(state, env)?;
-        let (bot, web) = worker_bot(env, &mut app, test_web.clone());
+        let (bot, web) = worker_bot(env, state, &mut app, test_web.clone());
         app.seats
             .set_limits(clax_core::seats::SeatLimits::from_env(|k| {
                 Some(var(env, k)).filter(|v| !v.is_empty())

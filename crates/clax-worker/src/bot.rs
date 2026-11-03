@@ -147,7 +147,8 @@ pub fn sandbox(_env: &worker::Env) -> Result<Arc<dyn Sandbox>, String> {
 /// `site_domain` (with every host under it) as the instance's own, which
 /// no fetch reaches ([`own_hosts`]). The binding's source records in
 /// `check` what it finds of whether it can run where the Worker runs
-/// (`clax_bot::WebSource::start_check`).
+/// (`clax_bot::WebSource::start_check`), and hands its check to the
+/// Durable Object's `state` to keep it alive.
 ///
 /// # Errors
 /// Why `public_origin` or `site_domain`, when set, names no host: the
@@ -159,10 +160,11 @@ pub fn web_source(
     public_origin: Option<&str>,
     site_domain: Option<&str>,
     check: Arc<clax_bot::web::HostCheck>,
+    state: &worker::State,
 ) -> Result<Option<Arc<dyn clax_bot::WebSource>>, String> {
     let source: Arc<dyn clax_bot::WebSource> = match test {
         Some(t) => t,
-        None => match binding_source(env, public_origin, check) {
+        None => match binding_source(env, public_origin, check, state) {
             Some(s) => s,
             None => return Ok(None),
         },
@@ -213,15 +215,22 @@ fn binding_source(
     env: &worker::Env,
     public_origin: Option<&str>,
     check: Arc<clax_bot::web::HostCheck>,
+    state: &worker::State,
 ) -> Option<Arc<dyn clax_bot::WebSource>> {
     #[cfg(target_arch = "wasm32")]
     {
-        crate::web_source::BindingSource::from_env(env, public_origin, check)
+        use wasm_bindgen::JsCast;
+        let raw: &wasm_bindgen::JsValue = state.as_raw().as_ref();
+        let keep = worker::State::from(
+            raw.clone()
+                .unchecked_into::<worker::worker_sys::DurableObjectState>(),
+        );
+        crate::web_source::BindingSource::from_env(env, public_origin, check, keep)
             .map(|b| Arc::new(b) as Arc<dyn clax_bot::WebSource>)
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let _ = (env, public_origin, check);
+        let _ = (env, public_origin, check, state);
         None
     }
 }
