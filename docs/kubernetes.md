@@ -29,7 +29,9 @@ Requests are matched to instances by `Host`: an instance's public origin,
 or a site host under its site domain (`<artifact ID>.<site_domain>`). One
 instance can be the default, which answers every other host: for a fleet
 of one tenant. With more, leave none, so that a host no instance names
-gets 404 rather than one tenant's instance.
+gets 404 rather than one tenant's instance. So everything reaches an
+instance at its public origin, through the Ingress, including an app's
+backend in the same cluster (Report queues and the SDK).
 
 The fleet adds instances, not throughput for any one of them: one instance
 serves as many requests as one pod can. To grow, run more instances (one
@@ -418,6 +420,34 @@ a wildcard DNS record and a wildcard certificate (cert-manager with a
 DNS-01 issuer). Raise the controller's read and send timeouts for event
 streams and WebSockets (the example's are ingress-nginx's), and its body
 limit to above the 16 MB that a publish may send.
+
+## Report queues and the SDK
+
+An app that sends its users' bug reports to an instance's report queue
+([docs/feedback.md](feedback.md)) reaches the instance as everyone else
+does, at its public origin:
+
+- **`instance` is the instance's `[hosted] public_origin`**
+  (`https://acme.clax.example.com`), in the backend's service client and
+  in the overlay's options alike. It is never the `clax` Service's
+  in-cluster address (`http://clax.<namespace>.svc:7480`): the fleet picks
+  the instance by `Host`, so that host names none (404, or the default
+  instance); the NetworkPolicy admits port 7480 only from the Ingress
+  controller and the fleet's pods, so another app's pod times out there;
+  and the SDK signs the host it sends to, so the public host cannot be
+  sent to an internal address.
+- **A backend in the same cluster calls the origin too**, through the
+  Ingress, as a browser would.
+- **The Ingress passes the request on as it came.** A service request is
+  signed over its `Host`, path and query (`Clax-Signature`, beside
+  `Authorization`): the Ingress rewrites neither, and passes both headers
+  through. It answers no CORS of its own on `/api/queues/*/reporter*` (an
+  ingress-nginx `enable-cors` annotation, say): the instance answers
+  those, preflights included, for the queue's own origins.
+
+Then follow [docs/feedback.md](feedback.md) with that origin as the
+instance: the queue and its service grant, the token route in your
+backend, and the overlay on your pages.
 
 ## Sizing
 
