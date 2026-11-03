@@ -174,7 +174,7 @@ export async function install(s: Snippet): Promise<Installed> {
 
   const { container, error } = await fetchContainer(s, win);
   const link = linkOverride(win.location?.search ?? "");
-  const kept = readOverride(doc.cookie ?? "");
+  const kept = readOverride(doc.cookie ?? "", win.location?.port);
   const you = link || kept ? { ...kept, ...link } : undefined;
   const r = resolve({ site: s.site, clax: container?.config, you }, origin);
   const config = r.config;

@@ -77,7 +77,8 @@ export type ClaxConfig = { -readonly [K in FieldName]: ValueOf<(typeof FIELDS)[K
 export type ConfigLayer = Record<string, unknown>;
 
 /** Fields the viewer's cookie never sets. */
-const NOT_OVERRIDABLE: readonly FieldName[] = ["overrides.viewer"];
+// The hooks name page code Clax calls: only the site and its container may name them, never a link or a viewer.
+const NOT_OVERRIDABLE: readonly FieldName[] = ["overrides.viewer", "hooks.logs", "hooks.release", "hooks.user"];
 
 /** `doc`'s nested objects as dotted paths, down to the fields (`theme` and
  * `targets` are values, not objects to walk). */
@@ -195,7 +196,7 @@ export function integrationHook(info: () => InstallInfo, doc: Document): Integra
       const i = info();
       if (!i.applies) return { ok: false, reason: i.config["overrides.viewer"] === "never" ? "Viewer overrides are off for this site." : "Viewer overrides apply on local and tailnet origins only." };
       if (!(field in FIELDS) || NOT_OVERRIDABLE.includes(field as FieldName)) return { ok: false, reason: "That setting can't be overridden." };
-      const layer = { ...readOverride(doc.cookie ?? "") };
+      const layer = { ...readOverride(doc.cookie ?? "", doc.location?.port) };
       if (value === null) delete layer[field];
       else {
         const c = check(field as FieldName, value);
@@ -246,16 +247,22 @@ export function resolve(layers: { site?: unknown; clax?: unknown; you?: unknown 
   return { config: config as ClaxConfig, source, ignored };
 }
 
-/** The cookie a viewer's override is kept in. */
+/** The cookie a viewer's override is kept in, for a page on `port`: `clax_override`,
+ * plus `_<port>` when the address names one. Cookies ignore ports, and every dev
+ * app on 127.0.0.1 shares one jar (a site on 7700, Clax on 7480): the port keeps
+ * each site's override its own, as `clax_dev_<port>` does (devtools.ts). */
+export const overrideCookie = (port = "") => (port ? `${OVERRIDE_COOKIE}_${port}` : OVERRIDE_COOKIE);
+/** The cookie's base name. */
 export const OVERRIDE_COOKIE = "clax_override";
 /** How long it is kept: a week. */
 const OVERRIDE_MAX_AGE = 7 * 24 * 3600;
 
-/** The viewer's override in `cookie` (a document's `cookie` string), or none. */
-export function readOverride(cookie: string): ConfigLayer | undefined {
+/** The viewer's override in `cookie` (a document's `cookie` string) for a page on `port`, or none. */
+export function readOverride(cookie: string, port = ""): ConfigLayer | undefined {
+  const name = overrideCookie(port);
   for (const part of cookie.split(/;\s*/)) {
     const eq = part.indexOf("=");
-    if (eq < 0 || part.slice(0, eq) !== OVERRIDE_COOKIE) continue;
+    if (eq < 0 || part.slice(0, eq) !== name) continue;
     try {
       const v = JSON.parse(decodeURIComponent(part.slice(eq + 1)));
       return v && typeof v === "object" && !Array.isArray(v) ? flatten(v) : undefined;
@@ -266,11 +273,11 @@ export function readOverride(cookie: string): ConfigLayer | undefined {
   return undefined;
 }
 
-/** Writes `layer` as the viewer's override on `doc` (null clears it). */
+/** Writes `layer` as the viewer's override on `doc` (null clears it), in its port's cookie. */
 export function writeOverride(doc: Document, layer: ConfigLayer | null): void {
   const value = layer && Object.keys(layer).length ? encodeURIComponent(JSON.stringify(layer)) : "";
   const secure = doc.location?.protocol === "https:" ? "; Secure" : "";
-  doc.cookie = `${OVERRIDE_COOKIE}=${value}; Path=/; SameSite=Lax; Max-Age=${value ? OVERRIDE_MAX_AGE : 0}${secure}`;
+  doc.cookie = `${overrideCookie(doc.location?.port)}=${value}; Path=/; SameSite=Lax; Max-Age=${value ? OVERRIDE_MAX_AGE : 0}${secure}`;
 }
 
 /** The `?clax.<field>=` values in `search`, as a layer (unknown fields are kept, for `resolve` to report). */

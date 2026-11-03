@@ -385,13 +385,15 @@
       ? (domCapture.take({ mode, pick: p, win, deps: captureDeps }) as Promise<Captured>).then(c => {
         if (p) picker?.done();
         // A capture that ends after the app moved to another page is of the page left: dropped.
-        if (draft === of && pageUrl(doc) !== at) { of.page = at; freshen(); return; }
+        if (draft === of && !samePage(pageUrl(doc), at)) { of.page = at; freshen(); return; }
         if (draft === of) return applyCapture(c);
       })
       : Promise.resolve(p ? picker?.done() : undefined);
     pendingFor = { of, ready: Promise.all([context, metadata, taken]) };
   }
 
+  /** Whether two addresses are the same page: origin and path; a query alone (a filter, a tab) is not another page. */
+  const samePage = (a: string, b: string) => { try { const x = new URL(a), y = new URL(b); return x.origin === y.origin && x.pathname === y.pathname; } catch { return a === b; } };
   /** A path as the composer names it: `/files/3?tab=diff`. */
   const pathOf = (url: string) => { try { const u = new URL(url); return u.pathname + u.search; } catch { return url; } };
   /** The app moved to another page (its own route change, no reload) since
@@ -401,7 +403,7 @@
   function freshen(): boolean {
     const d = draft;
     const now = pageUrl(doc);
-    if (!d || d.page === null || d.page === now) return false;
+    if (!d || d.page === null || samePage(d.page, now)) return false;
     const was = d.page;
     d.page = now;
     const had = d.clip.state !== "none" || d.capture !== null || (d.purpose.kind === "new" && d.anchor !== null);

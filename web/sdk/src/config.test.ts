@@ -1,7 +1,7 @@
 import Ajv2020 from "ajv/dist/2020";
 import COMMITTED from "../clax.config.schema.json";
 import { describe, expect, it } from "vitest";
-import { FIELDS, configSchema, flatten, isDevOrigin, linkOverride, pageHook, parseContainer, readOverride, resolve, writeOverride } from "./config";
+import { FIELDS, configSchema, flatten, isDevOrigin, linkOverride, overrideCookie, pageHook, parseContainer, readOverride, resolve, writeOverride } from "./config";
 
 describe("the config schema", () => {
   it("is the committed clax.config.schema.json (regenerate it from configSchema())", () => {
@@ -93,9 +93,9 @@ describe("the viewer's override", () => {
 
   it("round-trips through the cookie and clears", () => {
     writeOverride(document, { presentation: "sheet", "attachments.logs": true });
-    expect(readOverride(document.cookie)).toEqual({ presentation: "sheet", "attachments.logs": true });
+    expect(readOverride(document.cookie, location.port)).toEqual({ presentation: "sheet", "attachments.logs": true });
     writeOverride(document, null);
-    expect(readOverride(document.cookie)).toBeUndefined();
+    expect(readOverride(document.cookie, location.port)).toBeUndefined();
     expect(readOverride("clax_override=%7Bbroken")).toBeUndefined();
   });
 
@@ -127,5 +127,16 @@ describe("pageHook", () => {
     expect(pageHook(win, "constructor")).toBeUndefined();
     expect(pageHook(win, "a..b")).toBeUndefined();
     expect(pageHook(win, "")).toBeUndefined();
+  });
+});
+
+describe("the override cookie", () => {
+  it("is its port's own: a site on 7700 and Clax on 7480 keep separate overrides", () => {
+    expect(overrideCookie("7700")).toBe("clax_override_7700");
+    expect(overrideCookie("")).toBe("clax_override");
+    const both = `clax_override_7700=${encodeURIComponent('{"presentation":"sheet"}')}; clax_override_7480=${encodeURIComponent('{"presentation":"dialog"}')}`;
+    expect(readOverride(both, "7700")).toEqual({ presentation: "sheet" });
+    expect(readOverride(both, "7480")).toEqual({ presentation: "dialog" });
+    expect(readOverride(both)).toBeUndefined();
   });
 });

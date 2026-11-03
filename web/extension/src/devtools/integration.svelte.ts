@@ -58,6 +58,8 @@ export interface Row {
   value: unknown;
   source: Source;
   choices?: Choice[];
+  /** Set by the site or container only (a hook names page code): never a viewer override. */
+  locked?: boolean;
   /** Not built at all (a row, not a dead control). */
   notBuilt?: string;
 }
@@ -93,7 +95,7 @@ export function groups(i: InstallInfo): Group[] {
       id: "plugins", title: "Plugins",
       rows: (["attachments.screenshot", "annotate", "filters.code-blur", "pickers.code-line", "attachments.errors", "attachments.logs", "attachments.version", "attachments.browser"] as FieldName[]).map(f => row(f)),
     },
-    { id: "host", title: "Host data (what the page exposes)", rows: [row("hooks.logs"), row("hooks.release"), row("hooks.user")] },
+    { id: "host", title: "Host data (what the page exposes)", rows: (["hooks.logs", "hooks.release", "hooks.user"] as FieldName[]).map(f => row(f, { locked: true })) },
     { id: "theme", title: "Theme", rows: [row("theme")] },
   ];
 }

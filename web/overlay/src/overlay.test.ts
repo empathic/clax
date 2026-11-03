@@ -588,6 +588,24 @@ describe("the overlay", () => {
     }
   });
 
+  it("keeps the screenshot when only the query changes (a filter, a tab): the same page", async () => {
+    const was = location.href;
+    history.replaceState(null, "", "/dashboard");
+    try {
+      click(button("Report"));
+      onPick(picked(async () => new Uint8Array([1]).buffer));
+      await settle();
+      history.replaceState(null, "", "/dashboard?tab=open");
+      type("Counts are off");
+      click(button("Send"));
+      await settle();
+      expect(filed).toHaveLength(1);
+      expect(filed[0].clip).toBeTruthy();
+    } finally {
+      history.replaceState(null, "", was);
+    }
+  });
+
   it("drops a capture that ends after the app moved to another page", async () => {
     const was = location.href;
     history.replaceState(null, "", "/dashboard");

@@ -105,7 +105,7 @@
               </label>
             {:else if r.kind === "string"}
               <label class="name" for={id}>{r.label}</label>
-              <input {id} type="text" maxlength={r.field === "entry.key" ? 1 : 200} disabled={!i.applies} aria-describedby="{id}-src"
+              <input {id} type="text" maxlength={r.field === "entry.key" ? 1 : 200} disabled={!i.applies || r.locked} aria-describedby="{id}-src"
                 value={String(mine ? pending[r.field] : r.value)}
                 onchange={e => set(r, e.currentTarget.value)} />
             {:else}
@@ -122,10 +122,10 @@
             {/if}
             {#if !r.notBuilt}
               <p class="src" id="{id}-src">
-                From: {SOURCE_TEXT[r.source]}.
+                From: {SOURCE_TEXT[r.source]}.{#if r.locked} Set by the site or its container only.{/if}
                 {#if mine}You chose {pending[r.field] === null ? "to drop your override" : shownValue({ ...r, value: pending[r.field] })}: reload to apply.{/if}
               </p>
-              {#if i.applies && (r.source === "you" || (mine && pending[r.field] !== null))}
+              {#if i.applies && !r.locked && (r.source === "you" || (mine && pending[r.field] !== null))}
                 <button type="button" class="ghost" onclick={() => set(r, null)}>Reset {r.label}</button>
               {/if}
             {/if}

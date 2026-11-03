@@ -2,7 +2,7 @@
 // targets the config turns on (Addenda 2 and 3).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { definePlugin, PLUGIN_API_VERSION, type ClaxPlugin } from "../../sdk/src/plugin";
-import { INSTALL_KEY } from "../../sdk/src/config";
+import { INSTALL_KEY, overrideCookie } from "../../sdk/src/config";
 import { authOf, CARRIER_ATTR, claim, containerUrl, install, installQueued, snippetFromTag, type PluginName, pluginsFor, type Registry, type Snippet } from "./loader";
 import type { OverlayHandle } from "./mount";
 import { resolve } from "../../sdk/src/config";
@@ -31,7 +31,7 @@ const snippet = (over: Partial<Snippet> = {}): Snippet => ({
 });
 
 let installed: Awaited<ReturnType<typeof install>> | null;
-beforeEach(() => { loaded = []; mounted = []; calls = []; installed = null; document.body.innerHTML = ""; document.documentElement.removeAttribute(CARRIER_ATTR); document.cookie = "clax_override=; Max-Age=0; Path=/"; });
+beforeEach(() => { loaded = []; mounted = []; calls = []; installed = null; document.body.innerHTML = ""; document.documentElement.removeAttribute(CARRIER_ATTR); document.cookie = `${overrideCookie(location.port)}=; Max-Age=0; Path=/`; });
 afterEach(() => { installed?.uninstall(); localStorage.clear(); history.replaceState(null, "", "/"); });
 
 describe("pluginsFor", () => {
@@ -113,7 +113,7 @@ describe("install", () => {
     installed = await install(snippet());
     expect(installed.config.presentation).toBe("sheet");
     expect(installed.source.presentation).toBe("you");
-    expect(document.cookie).toMatch(/clax_override=/);
+    expect(document.cookie).toMatch(new RegExp(`${overrideCookie(location.port)}=`));
     installed.uninstall();
     history.replaceState(null, "", "/");
     installed = await install(snippet());
@@ -269,5 +269,21 @@ describe("the host's data from page-level hooks the container names", () => {
     expect(installed.plugins).toContain("logs");
     expect(installed.plugins).not.toContain("app-version");
     expect(mounted[0].opts.user).toBeUndefined();
+  });
+});
+
+describe("hooks are the site's and its container's only", () => {
+  afterEach(() => { delete (window as unknown as Record<string, unknown>).app; history.replaceState(null, "", "/"); });
+  it("a link or a viewer naming a hook is ignored, and the page code it names is never called", async () => {
+    let called = 0;
+    (window as unknown as Record<string, unknown>).app = { wipe: () => { called++; return "x"; } };
+    history.replaceState(null, "", "/?clax.hooks.user=app.wipe&clax.hooks.logs=app.wipe");
+    installed = await install(snippet());
+    expect(called).toBe(0);
+    expect(installed.ignored).toEqual(expect.arrayContaining([expect.objectContaining({ layer: "you", field: "hooks.user", reason: "a viewer cannot override it" })]));
+    expect(mounted[0].opts.user).toBeUndefined();
+    expect(document.cookie).not.toMatch(/hooks/);
+    const hook = (window as unknown as Record<string, { set(f: string, v: unknown): { ok: boolean } }>)[INSTALL_KEY];
+    expect(hook.set("hooks.user", "app.wipe").ok).toBe(false);
   });
 });
