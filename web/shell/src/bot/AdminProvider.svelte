@@ -110,6 +110,7 @@
         <KeyField info={p.key} label="Instance API key" readOnly={ro("key")} {now} onSave={k => keyChanged(() => setInstanceKey(k))} onClear={() => keyChanged(clearInstanceKey)} />
       </div>
     </div>
+    {#if p.kek}<p class="note">{#if p.kek.set}Stored keys are sealed under the key-encryption key with fingerprint <code>{p.kek.fingerprint}</code>.{:else}No key-encryption key is set, so no API key can be stored.{/if}</p>{/if}
   </section>
   <section class="bcard" aria-labelledby="pv-m">
     <h3 id="pv-m">Models</h3>

@@ -20,13 +20,16 @@
 //    creating and deleting a probe repository, which also proves the
 //    account has Artifacts);
 // 4. generates `SETUP_SECRET` and `CLAX_TOKEN` when the Worker has neither,
-//    and `CLAX_KEK` (ClaxBot's key-encryption key) when it has none, taking
-//    the record's when it has one: never rotated, not even by
-//    --rotate-secrets, since a new one opens no key the old one sealed;
-//    uploads them with the deploy (`wrangler deploy --secrets-file`, so the
-//    first version already has them), prints them once and keeps them in
+//    prints them once and keeps them in
 //    `~/.config/clax/deploy/<public host>.json` (0600; $CLAX_DEPLOY_HOME or $XDG_CONFIG_HOME/clax/deploy when set) for
-//    `smoke-remote.mjs`;
+//    `smoke-remote.mjs`; keeps the Worker's `CLAX_KEK` (ClaxBot's
+//    key-encryption key), never rotated, not even by --rotate-secrets, since
+//    a new one opens no key the old one sealed, and gives a Worker without
+//    one the key in the environment's CLAX_KEK, from its backup (a
+//    preview's alone may get a new one; deploy-lib.mjs kekPlan, docs/prod.md
+//    "CLAX_KEK"); uploads them with the deploy (`wrangler deploy
+//    --secrets-file`, so the first version already has them). A failed
+//    listing of the Worker's secrets fails the deploy;
 // 5. writes `target/deploy/wrangler.deploy.jsonc` (or `--out <path>`):
 //    `wrangler.jsonc` with `HOSTED=1`, the public origin, `SITE_DOMAIN`, the
 //    store, the public host as a custom domain and the route
@@ -96,8 +99,8 @@
 // or CLOUDFLARE_ACCOUNT_ID; --owner-github with --github-client-id); it
 // refuses --rotate-secrets, --diag and a Worker without SETUP_SECRET,
 // CLAX_TOKEN or CLAX_KEK (first-time setup runs from a laptop), keeps the
-// Worker's secrets, notes that it keeps no CLAX_KEK backup, and fails when
-// the health wait or the site host check does.
+// Worker's secrets, and fails when the health wait, the instance's
+// CLAX_KEK (/healthz's `kek`) or the site host check does.
 //
 // --production: this is the production instance. A deploy refuses unless
 // the checkout is clean and its HEAD is origin's prod tip (`git ls-remote
@@ -132,7 +135,7 @@ import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { dirname, join, resolve } from "node:path";
 import { cloudflare, expiryRule, hasRule } from "./cloudflare-api.mjs";
-import { PREVIEW_ASSET_DAYS, buildId, builtFromRefusal, checkCiOptions, ciSecretsRefusal, doneText, envOf, healthOf, partialTriggerUpdate, prodTipOf, productionGate, reelVars, siteZoneOf, versionIdOf, wildcardRecordOf, wranglerError } from "./deploy-lib.mjs";
+import { PREVIEW_ASSET_DAYS, buildId, builtFromRefusal, checkCiOptions, ciSecretsRefusal, doneText, envOf, healthOf, kekPlan, partialTriggerUpdate, prodTipOf, productionGate, reelVars, siteZoneOf, versionIdOf, wildcardRecordOf, wranglerError } from "./deploy-lib.mjs";
 import { BUILD, BUILT_FROM, HERE, baseConfig, embedsWebUi } from "./harness.mjs";
 
 const WRANGLER = join(HERE, "node_modules/.bin/wrangler");
@@ -430,70 +433,29 @@ async function artifactsNamespace(account, dryRun, NAMESPACE) {
   info(`Artifacts namespace ${NAMESPACE}: created${gone.code === 0 ? "" : ` (deleting the probe repository ${probe} failed: ${wranglerError(gone)})`}`);
 }
 
-const KEK_HEX = /^[0-9a-f]{64}$/i;
-
-/** What the deploy does about `CLAX_KEK`, given `have`, the secret names
- * the Worker has (`null` without a login), `saved`, the backup this
- * machine keeps, if any, and `savedIn`, where it was found: "file" (its own,
- * `kekPath`) or "record" (a `kek` an earlier deploy kept in the record):
- * `upload`, the key to upload (the backup when there is one, else 64 new
- * hex digits) or none; `save`, a key to write to the backup file first (a
- * new one, or one found only in the record, so the record, which may be
- * deleted, is never its only copy); `warn`, when the Worker has a key this
- * machine keeps no backup of; and `say`, the line it prints (never the
- * key). */
-export function kekPlan({ have, saved, savedIn, dryRun }) {
-  const kept = typeof saved === "string" && KEK_HEX.test(saved);
-  const save = kept && savedIn === "record" && !dryRun ? saved : null;
-  const moved = save ? "; its backup moved from the record to its own file" : "";
-  if (have === null) return { upload: null, save, warn: null, say: `skipped (no login): a deploy uploads CLAX_KEK when the Worker has none${moved}` };
-  if (have.includes("CLAX_KEK")) {
-    const warn = kept
-      ? null
-      : "the Worker has CLAX_KEK but this machine keeps no backup of it: losing the Worker's secret loses every stored model key; " +
-        "if you have the key, write it to the backup file named below (0600)";
-    return { upload: null, save, warn, say: `the Worker has CLAX_KEK; kept (never rotated)${moved}` };
-  }
-  if (dryRun) return { upload: null, save: null, warn: null, say: `would upload CLAX_KEK ${kept ? "from its backup" : "(new)"} with the deploy` };
-  if (kept) return { upload: saved, save, warn: null, say: `CLAX_KEK from its backup; uploaded with the deploy${moved}` };
-  const fresh = randomBytes(32).toString("hex");
-  return { upload: fresh, save: fresh, warn: null, say: "generated CLAX_KEK; backed up, then uploaded with the deploy" };
+/** Where deploys before its operator kept CLAX_KEK's backup kept it: a
+ * file beside the record, or the record's `kek`. Only looked for, so the
+ * deploy can say to move it (docs/prod.md, "CLAX_KEK"); never read. */
+function oldKekBackup(pub, record) {
+  const file = join(RECORDS, `${pub}.kek`);
+  if (existsSync(file)) return file;
+  return typeof record.kek === "string" ? `${recordPath(pub)} (its "kek")` : null;
 }
 
-/** Where the deploy keeps CLAX_KEK's backup: a file of its own beside the
- * record (0600), which, unlike the record, is never to be deleted. */
-export function kekPath(pub) {
-  return join(RECORDS, `${pub}.kek`);
-}
-
-/** The backup of CLAX_KEK kept for `pub`, `{saved, savedIn}`: its own file
- * ("file"), else a `kek` an earlier deploy kept in the record ("record"),
- * else none. */
-function readKek(pub, record) {
-  try {
-    const k = readFileSync(kekPath(pub), "utf8").trim();
-    if (KEK_HEX.test(k)) return { saved: k, savedIn: "file" };
-  } catch {
-    // none yet
-  }
-  if (typeof record.kek === "string" && KEK_HEX.test(record.kek)) return { saved: record.kek, savedIn: "record" };
-  return { saved: null, savedIn: null };
-}
-
-function writeKek(pub, kek) {
-  mkdirSync(RECORDS, { recursive: true, mode: 0o700 });
-  writeFileSync(kekPath(pub), kek + "\n", { mode: 0o600 });
-  chmodSync(kekPath(pub), 0o600);
-}
-
-/** The secret names the Worker has; empty when it does not exist yet. */
-async function secretNames(account, configPath) {
+/** The secret names the Worker has; empty when it does not exist yet.
+ * Throws when they cannot be listed: a failed listing taken for none
+ * would have the deploy make secrets over the Worker's own. */
+async function secretNames(account, configPath, worker) {
   const r = await wrangler(["secret", "list", "--config", configPath, "--format", "json"], { account });
-  if (r.code !== 0) return [];
+  if (r.code !== 0) {
+    // wrangler 4.149.0: `Worker "<name>" not found.`
+    if (/Worker "[^"]*" not found/.test(`${r.err}\n${r.out}`)) return [];
+    throw new Error(`listing ${worker}'s secrets failed: ${wranglerError(r)}`);
+  }
   try {
     return jsonIn(r.out).map((s) => s.name);
   } catch {
-    return [];
+    throw new Error(`listing ${worker}'s secrets answered no JSON list: ${r.out.slice(0, 200)}`);
   }
 }
 
@@ -868,7 +830,7 @@ async function main() {
 
   step("Secrets");
   const record = readRecord(pub);
-  const have = who ? await secretNames(account, configPath) : [];
+  const have = who ? await secretNames(account, configPath, o.name) : [];
   let secrets = null;
   // A preview deployed by CI gets neither: setup stays closed, the instance
   // makes its own owner token, and the owner signs in with GitHub.
@@ -892,15 +854,14 @@ async function main() {
     info(`generated ${needed.join(" and ")}; uploaded with the deploy`);
   }
   // CLAX_KEK seals the model keys ClaxBot stores (README.md, "ClaxBot"):
-  // made once, backed up in a file of its own before anything is uploaded,
-  // and never rotated, since a new one opens nothing the old one sealed. A
-  // Worker without it gets the backup's, else a new one.
-  const kek = kekPlan({ have: who ? have : null, ...readKek(pub, record), dryRun: o.dryRun });
-  info(kek.say);
-  // A --ci deploy keeps no backup: the one made by the instance's first
-  // deploy is on the machine that ran it.
-  if (kek.warn) info(o.ci ? "notice: the Worker has CLAX_KEK and this run keeps no backup of it (--ci: the backup is kept where the instance was first deployed)" : `WARNING: ${kek.warn}: ${kekPath(pub)}`);
-  if (kek.save) writeKek(pub, kek.save);
+  // the Worker's is kept, never rotated; one without gets the key given in
+  // CLAX_KEK, whose backup its operator keeps, never the deploy
+  // (deploy-lib.mjs kekPlan, docs/prod.md "CLAX_KEK").
+  const kek = kekPlan({ have: who ? have : null, given: process.env.CLAX_KEK, ephemeral: o.ephemeral, dryRun: o.dryRun });
+  if (kek.error && !o.dryRun) throw new Error(kek.error);
+  info(kek.error ? `a deploy would refuse: ${kek.error}` : kek.say);
+  const oldBackup = oldKekBackup(pub, record);
+  if (oldBackup) info(`notice: an old CLAX_KEK backup is at ${oldBackup}: keep it with the instance's backups, check its fingerprint in Admin, Provider, then delete it here (docs/prod.md, "CLAX_KEK")`);
   if (kek.upload) secrets = { ...(secrets ?? {}), CLAX_KEK: kek.upload };
   if (github.client_id) {
     let gh = process.env.GITHUB_CLIENT_SECRET?.trim();
@@ -1018,16 +979,21 @@ async function main() {
     ...legal,
     ...(secrets?.SETUP_SECRET ? { setup_secret: secrets.SETUP_SECRET, setup_done: false } : {}),
     ...(secrets?.CLAX_TOKEN ? { owner_token: secrets.CLAX_TOKEN } : {}),
-    ...(secrets?.CLAX_KEK ? { kek_backup: kekPath(pub) } : {}),
   };
   writeRecord(pub, next);
 
   step(`Waiting for https://${pub}/healthz to report build ${build} (custom domains take a few minutes the first time)`);
+  let kekReported;
   const healthy = await waitHealthy(`https://${pub}/healthz`, o.wait, (res, body) => {
     if (!res.ok) return false;
     const h = healthOf(body, build);
+    if (h.done) kekReported = h.kek;
     return h.done ? true : h.waiting;
   });
+  // ClaxBot's stored keys open only under CLAX_KEK: an instance that
+  // reports none has lost it, or was never given one.
+  const kekLost = healthy && kekReported === false;
+  if (kekLost) info(`WARNING: https://${pub}/healthz reports no CLAX_KEK: put the instance's key back from its backup (docs/prod.md, "CLAX_KEK")`);
   if (!healthy) {
     info(`not healthy within ${o.wait} s. Check: the zone of ${pub} is on account ${account}; ` +
       `Workers > ${o.name} > Settings > Domains & Routes lists ${pub} and *.${site}/*; \`npx wrangler tail ${o.name}\``);
@@ -1040,11 +1006,15 @@ async function main() {
 
   step("Done");
   // The first-time setup text only when this deploy generated the secrets.
-  console.log(doneText({ pub, name: o.name, diag: o.diag, generated: secrets, record: recordPath(pub), kek: o.ci ? null : kekPath(pub), smoke: `node smoke-remote.mjs --deploy ${recordPath(pub)}` }));
+  console.log(doneText({ pub, name: o.name, diag: o.diag, generated: secrets, record: recordPath(pub), smoke: `node smoke-remote.mjs --deploy ${recordPath(pub)}` }));
   if (o.diag) diagReminder(pub);
   // A --ci deploy passes only when the instance answers as this build on
-  // the public host and on a site host.
-  const failed = [...(healthy ? [] : [`https://${pub}/healthz did not report build ${build} within ${o.wait} s`]), ...(siteOk ? [] : [`a site host of ${site} is not served`])];
+  // the public host, with its CLAX_KEK, and on a site host.
+  const failed = [
+    ...(healthy ? [] : [`https://${pub}/healthz did not report build ${build} within ${o.wait} s`]),
+    ...(kekLost ? [`https://${pub}/healthz reports no CLAX_KEK`] : []),
+    ...(siteOk ? [] : [`a site host of ${site} is not served`]),
+  ];
   if (o.ci && failed.length) throw new Error(failed.join("; "));
 }
 
@@ -1061,7 +1031,7 @@ ${bar}`);
 }
 
 // Run as a program; imported (test-deploy-config.mjs checks the generated
-// config, test-bot.mjs checks kekPlan), it deploys nothing.
+// config), it deploys nothing.
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((e) => {
     console.error(`\ndeploy failed: ${e instanceof Error ? e.message : e}`);

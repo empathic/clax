@@ -14,6 +14,7 @@ import {
   doneText,
   envOf,
   healthOf,
+  kekPlan,
   partialTriggerUpdate,
   prodTipOf,
   productionGate,
@@ -77,7 +78,47 @@ test("a build ID names the commit, the time and the random part", () => {
 
 test("the wait is done only when /healthz names the build just uploaded", () => {
   const want = "0a2f4805a1b2-20261023T101500Z-9f86d081";
-  assert.deepEqual(healthOf(JSON.stringify({ version: "0.6.0", pid: null, started_at: "t", commit: "0a2f4805a1b2", build: want }), want), { done: true });
+  assert.deepEqual(healthOf(JSON.stringify({ version: "0.6.0", pid: null, started_at: "t", commit: "0a2f4805a1b2", build: want }), want), { done: true, kek: undefined });
+  // Whether the instance has its CLAX_KEK, as /healthz says.
+  for (const kek of [true, false]) {
+    assert.deepEqual(healthOf(JSON.stringify({ version: "0.6.0", build: want, kek }), want), { done: true, kek });
+  }
+});
+
+test("CLAX_KEK: the Worker's is kept; one without gets the key given; only a preview's may be new", () => {
+  const given = "ab".repeat(32);
+  const kept = kekPlan({ have: ["CLAX_KEK"], given: null });
+  assert.equal(kept.upload, null);
+  assert.equal(kept.error, null);
+  assert.match(kept.say, /kept \(never rotated\)$/);
+  // A key given to a Worker that has one is never uploaded over it.
+  const over = kekPlan({ have: ["CLAX_KEK"], given });
+  assert.equal(over.upload, null);
+  assert.match(over.say, /not uploaded \(compare fingerprints/);
+  assert.doesNotMatch(over.say, new RegExp(given));
+  // A Worker without one gets the key given, never shown.
+  const put = kekPlan({ have: [], given: `${given}\n` });
+  assert.equal(put.upload, given);
+  assert.doesNotMatch(put.say, new RegExp(given));
+  assert.equal(kekPlan({ have: [], given, dryRun: true }).upload, null, "a dry run uploads nothing");
+  // A preview's may be new: kept nowhere else.
+  const fresh = kekPlan({ have: [], given: null, ephemeral: true });
+  assert.match(fresh.upload, /^[0-9a-f]{64}$/);
+  assert.doesNotMatch(fresh.say, new RegExp(fresh.upload));
+  assert.equal(kekPlan({ have: [], given: null, ephemeral: true, dryRun: true }).upload, null);
+  // dev's or prod's without one, and none given: refused, naming its backup.
+  for (const dryRun of [false, true]) {
+    const refused = kekPlan({ have: [], given: null, dryRun });
+    assert.equal(refused.upload, null);
+    assert.match(refused.error, /no CLAX_KEK and none was given: .*from its backup/);
+  }
+  // A key given that is not one is refused, whatever the Worker has.
+  for (const have of [[], ["CLAX_KEK"], null]) {
+    assert.match(kekPlan({ have, given: "not-a-key" }).error, /not 64 hex digits/);
+  }
+  // Without a login nothing is known: nothing is uploaded or refused.
+  assert.deepEqual(kekPlan({ have: null, given: null }).upload, null);
+  assert.equal(kekPlan({ have: null, given: null }).error, null);
 });
 
 test("an instance from before the deploy, of the same version, is waited past", () => {
@@ -237,7 +278,7 @@ test("a preview's first --ci deploy makes no first-time secrets, and still needs
   assert.match(ciSecretsRefusal(["GITHUB_CLIENT_SECRET"], e), /would turn GitHub sign-in off/);
 });
 
-const DONE = { pub: "clax.example.com", name: "clax", diag: false, record: "/r/clax.example.com.json", kek: "/r/clax.example.com.kek", smoke: "node smoke-remote.mjs --deploy /r/clax.example.com.json" };
+const DONE = { pub: "clax.example.com", name: "clax", diag: false, record: "/r/clax.example.com.json", smoke: "node smoke-remote.mjs --deploy /r/clax.example.com.json" };
 const FIRST_TIME = [/Shown once/, /Setup: +https:\/\/clax\.example\.com\/setup/, /Next:/, /Smoke the platform first/];
 
 test("the first deploy prints its secrets once and the setup steps", () => {
@@ -254,13 +295,10 @@ test("a redeploy prints no first-time setup text, whatever else it uploaded", ()
     const t = doneText({ ...DONE, generated });
     for (const re of FIRST_TIME) assert.doesNotMatch(t, re, JSON.stringify(generated));
     assert.match(t, /Record: +\/r\/clax\.example\.com\.json/);
-    assert.match(t, /CLAX_KEK backup: \/r\/clax\.example\.com\.kek/);
     assert.match(t, /Logs: +npx wrangler tail clax/);
+    // Its backup is its operator's, never a file the deploy keeps.
+    assert.doesNotMatch(t, /CLAX_KEK|\.kek/);
   }
-});
-
-test("a --ci deploy names no CLAX_KEK backup", () => {
-  assert.doesNotMatch(doneText({ ...DONE, kek: null, generated: null }), /CLAX_KEK/);
 });
 
 test("the smoke's credential: a session, then an agent token, then setup, then the owner token", () => {

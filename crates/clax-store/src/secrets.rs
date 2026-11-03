@@ -111,6 +111,18 @@ impl Kek {
         Kek(clax_core::secret::random_bytes::<32>())
     }
 
+    /// The first 4 bytes of the SHA-256 of the key's 32 bytes, in
+    /// lowercase hex: which key this is, without the key. The hosted key
+    /// is 64 hex digits, so `xxd -r -p | shasum -a 256 | cut -c1-8` gives
+    /// the same of a copy. Shown to admins alone, never in public.
+    pub fn fingerprint(&self) -> String {
+        use sha2::Digest;
+        sha2::Sha256::digest(self.0)[..4]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
     /// The KEK in `home`'s `secrets/kek` ([`clax_core::Home::kek_path`]),
     /// made there first when missing. It is never replaced, since every
     /// sealed secret depends on it.
@@ -653,6 +665,17 @@ mod tests {
         let ev = st.events_after(0, 100).unwrap();
         let set = ev.iter().find(|e| e.kind == "admin.key").unwrap();
         assert!(set.body.contains("\"person\":\"*owner\""), "{}", set.body);
+    }
+
+    #[test]
+    fn a_kek_fingerprint_is_the_sha256_prefix_of_its_bytes() {
+        // `printf '%064d' 0 | xxd -r -p | shasum -a 256 | cut -c1-8`
+        assert_eq!(Kek::from_bytes([0; 32]).fingerprint(), "66687aad");
+        let hex = "0123456789abcdef".repeat(4);
+        let bytes: Vec<u8> = (0..32)
+            .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap())
+            .collect();
+        assert_eq!(Kek::from_slice(&bytes).unwrap().fingerprint(), "4884fdaa");
     }
 
     #[test]

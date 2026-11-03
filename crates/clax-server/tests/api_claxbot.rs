@@ -310,6 +310,16 @@ async fn keys_are_write_only_and_their_changes_recorded() {
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["key"]["set"], true);
     assert_eq!(v["sources"]["key"], "db");
+    // The key-encryption key that sealed it, by fingerprint, for admins.
+    assert_eq!(v["kek"]["set"], true, "{v}");
+    let fp = v["kek"]["fingerprint"].as_str().unwrap_or_default();
+    assert!(
+        fp.len() == 8
+            && fp
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "{v}"
+    );
     let (s, _) = call(
         ts,
         &Who::Person(p.sam.0.clone()),

@@ -186,9 +186,9 @@ deploy record in `$CLAX_DEPLOY_HOME`. It changes no secret but the GitHub
 client secret it is given (`GITHUB_CLIENT_SECRET`): it refuses a Worker
 without `SETUP_SECRET`, `CLAX_TOKEN` or `CLAX_KEK` (a first deploy), one
 whose GitHub sign-in it would turn off or leave without its secret,
-`--rotate-secrets` and `--diag`; that it keeps no `CLAX_KEK` backup is a
-notice. It prints no first-time setup text, and exits 0 only when the
-deploy, the health wait, the site host check and the smoke all pass. Its
+`--rotate-secrets` and `--diag`. It prints no first-time setup text, and
+exits 0 only when the deploy, the health wait, the instance's `CLAX_KEK`
+(`/healthz` reports one), the site host check and the smoke all pass. Its
 smoke runs as the agent token in `CLAX_SMOKE_TOKEN`, with no diagnostics
 deploy.
 
@@ -362,17 +362,20 @@ npx wrangler secret put CLAX_TOKEN     # the owner's bearer token for the CLI (o
 npx wrangler secret put CLAX_KEK       # ClaxBot's key-encryption key: 64 hex digits (openssl rand -hex 32)
 ```
 
-`deploy.mjs` generates and uploads both on the first deploy, and
-`CLAX_KEK`, ClaxBot's key-encryption key (64 hex digits), when the Worker
-has none: its backup when this machine keeps one, else a new one, written
-to the backup first, `~/.config/clax/deploy/<public host>.kek` (0600).
-Keep that file: the record may be deleted once set up, but without the
-backup and the Worker's secret every stored model key is lost. A deploy
-warns when the Worker has `CLAX_KEK` and this machine keeps no backup.
-`CLAX_KEK` is read from the Worker's secrets alone (a plain var of the
-name is ignored). It is never rotated, `--rotate-secrets`
-included: a new one opens none of the model keys the old one sealed (to
-replace it, clear the stored keys first and set them again after). Without
+`deploy.mjs` generates and uploads both on the first deploy. `CLAX_KEK`,
+ClaxBot's key-encryption key (64 hex digits), it never makes (but for a
+preview, whose stored keys go with it) and never keeps: its operator makes
+it and keeps its backup, outside any machine, and a deploy to a Worker
+without one uploads the key given in the environment's `CLAX_KEK`, refusing
+when none is given ([docs/prod.md](../../docs/prod.md), "CLAX_KEK").
+Without the backup and the Worker's secret every stored model key is lost.
+`/healthz` says whether the instance has a key (`kek`), and every deploy
+checks it; Admin, Provider shows which, by fingerprint, to check the
+backup against. `CLAX_KEK` is read from the Worker's secrets alone
+(a plain var of the name is ignored). It is never rotated,
+`--rotate-secrets` included: a new one opens none of the model keys the old
+one sealed (to replace it, clear the stored keys first and set them again
+after). Without
 `SETUP_SECRET`, `/setup` stays closed. Without `CLAX_TOKEN` the
 instance makes a token and keeps it in its storage, where nothing hands it
 out: set one if you mean to use the CLI against the instance. Use a long

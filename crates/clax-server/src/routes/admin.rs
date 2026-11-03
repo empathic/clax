@@ -16,7 +16,11 @@
 //!   environment) shows its source and is refused 409
 //!   `setting_overridden` here. The instance key is write-only; a key in
 //!   `[bot] api_key_env`'s variable takes precedence over a stored one
-//!   (`sources.key` `env:<NAME>`).
+//!   (`sources.key` `env:<NAME>`). `kek {set, fingerprint}` says whether a
+//!   key-encryption key seals the keys and which ([`Kek::fingerprint`]),
+//!   for checking a backup of it; nothing public shows the fingerprint.
+//!
+//!   [`Kek::fingerprint`]: clax_store::secrets::Kek::fingerprint
 //! - `GET/PUT /api/admin/pricing`: the credit price, the free tier, the
 //!   default token rates, `require_explicit_price` and the cost lines,
 //!   with each priced model's rates and where they come from (`models`)
@@ -338,10 +342,15 @@ pub fn provider_view(st: &Store, bot: &Bot) -> clax_core::Result<Value> {
         caps.insert((*name).into(), get(*s));
         sources.insert(format!("caps.{name}"), json!(src(*s)));
     }
+    // Which key-encryption key seals the keys: its fingerprint, so an
+    // admin can check a backup of it (docs/prod.md, "CLAX_KEK"); `null`
+    // without one. Never in public: /healthz says only whether there is one.
+    let kek = bot.kek.as_ref().map(clax_store::secrets::Kek::fingerprint);
     Ok(json!({
         "api": get(Setting::Api),
         "base_url": get(Setting::BaseUrl),
         "models": models, "key": key, "caps": caps, "sources": sources,
+        "kek": {"set": kek.is_some(), "fingerprint": kek},
     }))
 }
 

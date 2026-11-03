@@ -62,6 +62,9 @@ async fn healthz_reports_version_and_allows_any_origin() {
     assert!(body["pid"].as_u64().unwrap() > 0);
     let started_at = body["started_at"].as_str().expect("started_at is a string");
     chrono::DateTime::parse_from_rfc3339(started_at).expect("started_at is RFC 3339");
+    // Whether a key-encryption key is set, and never which.
+    assert!(body["kek"].is_boolean(), "{body}");
+    assert!(!body.to_string().contains("fingerprint"), "{body}");
 }
 
 #[tokio::test]

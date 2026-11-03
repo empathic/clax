@@ -5,9 +5,11 @@ use serde_json::json;
 
 /// `GET /healthz`: the version, the process ID (`null` in a Worker, which
 /// has no process of its own), the start time, the commit the binary was
-/// built from ([`clax_core::build_commit`]) and the build identity its host
-/// was given ([`AppState::build`]); either of the last two is `null` when
-/// the build was not stamped with it.
+/// built from ([`clax_core::build_commit`]), the build identity its host
+/// was given ([`AppState::build`]), either of these two `null` when the
+/// build was not stamped with it, and `kek`: whether a key-encryption key
+/// seals ClaxBot's stored keys (never which: its fingerprint is for
+/// admins, `GET /api/admin/provider`).
 pub async fn healthz(
     _d: clax_http::agent::DeniedToGrants,
     State(s): State<AppState>,
@@ -17,7 +19,14 @@ pub async fn healthz(
     #[cfg(target_arch = "wasm32")]
     let pid: Option<u32> = None;
     let (commit, build) = stamped(&s);
-    Json(report(s.version, pid, &s.started_at, commit, build))
+    Json(report(
+        s.version,
+        pid,
+        &s.started_at,
+        commit,
+        build,
+        s.bot.kek.is_some(),
+    ))
 }
 
 /// The commit the binary was built from ([`clax_core::build_commit`]) and
@@ -36,6 +45,7 @@ fn report(
     started_at: &str,
     commit: Option<&str>,
     build: Option<&str>,
+    kek: bool,
 ) -> serde_json::Value {
     json!({
         "version": version,
@@ -43,6 +53,7 @@ fn report(
         "started_at": started_at,
         "commit": commit,
         "build": build,
+        "kek": kek,
     })
 }
 
@@ -88,12 +99,12 @@ mod tests {
     #[test]
     fn the_report_names_the_commit_and_build_and_null_when_unstamped() {
         assert_eq!(
-            report("0.6.0", None, "t", Some("0a2f4805a"), Some("b-1")),
-            json!({"version": "0.6.0", "pid": null, "started_at": "t", "commit": "0a2f4805a", "build": "b-1"})
+            report("0.6.0", None, "t", Some("0a2f4805a"), Some("b-1"), true),
+            json!({"version": "0.6.0", "pid": null, "started_at": "t", "commit": "0a2f4805a", "build": "b-1", "kek": true})
         );
         assert_eq!(
-            report("0.6.0", Some(7), "t", None, None),
-            json!({"version": "0.6.0", "pid": 7, "started_at": "t", "commit": null, "build": null})
+            report("0.6.0", Some(7), "t", None, None, false),
+            json!({"version": "0.6.0", "pid": 7, "started_at": "t", "commit": null, "build": null, "kek": false})
         );
     }
 }
