@@ -163,6 +163,10 @@ pub struct Run {
     /// as much as its person's do; `None` for a person's own send and the
     /// owner's agents.
     pub agent_grant: Option<String>,
+    /// The shape of the run's web grant when it was made: `""` (no web
+    /// tools), `"search"`, `"fetch"` or `"search,fetch"`. Written when the
+    /// run is made and never changed.
+    pub web: String,
 }
 
 /// One step.
@@ -202,6 +206,8 @@ pub struct NewRun {
     pub base_version: u32,
     /// The grant of the agent that asked for it ([`Run::agent_grant`]).
     pub agent_grant: Option<String>,
+    /// The shape of its web grant ([`Run::web`]).
+    pub web: String,
 }
 
 /// A change to a run's draft.
@@ -253,7 +259,7 @@ pub struct Committed {
 
 const RUN_COLS: &str = "id, artifact_id, person, request, thread_ids_json, status, reason, model,
     key_source, base_version, credits_milli, claimed_by, claimed_at, created_at, updated_at, ended_at,
-    agent_grant, due_at";
+    agent_grant, due_at, web";
 
 fn row_to_run(r: &Row<'_>) -> rusqlite::Result<Run> {
     let s = |i: usize| r.get::<_, String>(i);
@@ -276,6 +282,7 @@ fn row_to_run(r: &Row<'_>) -> rusqlite::Result<Run> {
         ended_at: r.get(15)?,
         agent_grant: r.get(16)?,
         due_at: r.get(17)?,
+        web: s(18)?,
     })
 }
 
@@ -301,7 +308,7 @@ fn row_to_step(r: &Row<'_>) -> rusqlite::Result<Step> {
 const STEP_COLS: &str =
     "run_id, n, kind, started_at, committed_at, payload_json, attempt, observed_json, failures";
 
-fn run_in(c: &Connection, id: &str) -> Result<Option<Run>> {
+pub(crate) fn run_in(c: &Connection, id: &str) -> Result<Option<Run>> {
     Ok(
         c.prepare_cached(&format!("SELECT {RUN_COLS} FROM bot_runs WHERE id = ?1"))?
             .query_row(params![id], row_to_run)
@@ -322,7 +329,7 @@ fn active_on_in(c: &Connection, threads: &[String]) -> Result<Option<Run>> {
     Ok(q.query_row(params![ids], row_to_run).optional()?)
 }
 
-fn open_step_in(c: &Connection, id: &str) -> Result<Option<Step>> {
+pub(crate) fn open_step_in(c: &Connection, id: &str) -> Result<Option<Step>> {
     Ok(c.prepare_cached(&format!(
         "SELECT {STEP_COLS} FROM bot_steps WHERE run_id = ?1 AND committed_at IS NULL"
     ))?
@@ -395,7 +402,7 @@ impl std::fmt::Display for DriverId {
 }
 
 /// `run_not_claimed` unless `driver` holds run `run`'s claim.
-fn check_claim(run: &Run, driver: &str) -> Result<()> {
+pub(crate) fn check_claim(run: &Run, driver: &str) -> Result<()> {
     if run.claimed_by.as_deref() == Some(driver) {
         Ok(())
     } else {
@@ -604,8 +611,8 @@ impl Store {
             let now = self.now();
             tx.execute(
                 "INSERT INTO bot_runs (id, artifact_id, person, request, thread_ids_json, status,
-                    model, key_source, base_version, created_at, updated_at, agent_grant)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, ?7, ?8, ?9, ?9, ?10)",
+                    model, key_source, base_version, created_at, updated_at, agent_grant, web)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, ?7, ?8, ?9, ?9, ?10, ?11)",
                 params![
                     id,
                     new.artifact_id,
@@ -616,7 +623,8 @@ impl Store {
                     new.key_source.as_str(),
                     new.base_version,
                     now,
-                    new.agent_grant
+                    new.agent_grant,
+                    new.web
                 ],
             )?;
             let mut rec = AuditRecord::new(AuditKind::BotRunStart, now)
@@ -1344,9 +1352,10 @@ impl Store {
     }
 
     /// Removes what ended runs no longer need, by the store's clock: the
-    /// call journal (`bot_calls`) of each run that ended over
-    /// [`BOT_JOURNAL_KEEP`] ago, and the draft overlay (`bot_draft_files`)
-    /// of each that ended over [`BOT_DRAFT_KEEP`] ago. The runs, their
+    /// call journal (`bot_calls`) and the page store (`bot_web_pages`) of
+    /// each run that ended over [`BOT_JOURNAL_KEEP`] ago, and the draft
+    /// overlay (`bot_draft_files`) of each that ended over
+    /// [`BOT_DRAFT_KEEP`] ago. The runs, their
     /// steps, usage and audit events stay. How many rows of each it
     /// removed.
     ///
@@ -1366,12 +1375,21 @@ impl Store {
                    (SELECT id FROM bot_runs WHERE ended_at IS NOT NULL AND ended_at < ?1)",
                 params![journal],
             )?;
+            let pages = tx.execute(
+                "DELETE FROM bot_web_pages WHERE run_id IN
+                   (SELECT id FROM bot_runs WHERE ended_at IS NOT NULL AND ended_at < ?1)",
+                params![journal],
+            )?;
             let draft_files = tx.execute(
                 "DELETE FROM bot_draft_files WHERE run_id IN
                    (SELECT id FROM bot_runs WHERE ended_at IS NOT NULL AND ended_at < ?1)",
                 params![draft],
             )?;
-            Ok(Pruned { calls, draft_files })
+            Ok(Pruned {
+                calls,
+                pages,
+                draft_files,
+            })
         })
     }
 }
@@ -1392,6 +1410,8 @@ pub const BOT_DRAFT_KEEP: std::time::Duration = std::time::Duration::from_secs(3
 pub struct Pruned {
     /// Call journal rows.
     pub calls: usize,
+    /// Page store rows.
+    pub pages: usize,
     /// Draft overlay rows.
     pub draft_files: usize,
 }
@@ -1550,8 +1570,9 @@ pub(crate) fn insert_call(c: &Connection, e: &CallEntry, at: &str) -> Result<()>
     Ok(())
 }
 
-/// The answer the journal's `prev` gives a call `e` at its key.
-pub(crate) fn answer_of(prev: &CallEntry, e: &CallEntry) -> Result<Value> {
+/// `key_reused` unless the journal's `prev` is call `e`: the same op on
+/// the same arguments.
+pub(crate) fn same_call(prev: &CallEntry, e: &CallEntry) -> Result<()> {
     if prev.op != e.op || prev.args_hash != e.args_hash {
         return Err(CoreError::invalid(
             "key_reused",
@@ -1561,6 +1582,12 @@ pub(crate) fn answer_of(prev: &CallEntry, e: &CallEntry) -> Result<Value> {
             ),
         ));
     }
+    Ok(())
+}
+
+/// The answer the journal's `prev` gives a call `e` at its key.
+pub(crate) fn answer_of(prev: &CallEntry, e: &CallEntry) -> Result<Value> {
+    same_call(prev, e)?;
     if prev.ok {
         Ok(prev.result.clone())
     } else {
@@ -1664,6 +1691,7 @@ mod tests {
                 key_source: KeySource::Instance,
                 base_version: 1,
                 agent_grant: None,
+                web: String::new(),
             },
         )
     }
@@ -1952,6 +1980,7 @@ mod tests {
             key_source,
             base_version: 1,
             agent_grant: None,
+            web: String::new(),
         };
         assert_eq!(
             code(st.create_run(&bot(), new(KeySource::Instance))),

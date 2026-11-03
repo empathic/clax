@@ -349,6 +349,14 @@ fn body_class(kind: &str, field: &str) -> Class {
         // (`give_up`): both are text.
         ("bot.call", "run" | "step" | "op" | "ok") => Safe,
         ("bot.call", "target") => Text,
+        // A web call (spec 2026-11-02-claxbot-web-tools §8): its query and
+        // URL are the model's or a page's text; the source that allowed a
+        // fetch is a code (`comment`, `search #<seq>`, `page #<seq>`).
+        (
+            "bot.web",
+            "run" | "step" | "op" | "source" | "provider" | "request_id" | "credits_milli",
+        ) => Safe,
+        ("bot.web", "query" | "url") => Text,
         ("bot.run_end", "run" | "outcome" | "credits_milli") => Safe,
         ("bot.run_end", "reason") => Text,
         ("bot.cancel", "run" | "by") => Safe,

@@ -351,7 +351,7 @@ pub(super) fn segment(h: &History, closed: bool) -> String {
 }
 
 /// The `seq` of the golden history's last row (`tests/toolpath/history.json`).
-const LAST_SEQ: i64 = 125;
+const LAST_SEQ: i64 = 126;
 
 #[test]
 fn a_cloudflare_token_change_is_not_called_a_model_key() {

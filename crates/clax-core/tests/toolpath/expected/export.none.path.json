@@ -3473,13 +3473,62 @@
             ],
             "timestamp": "2026-10-06T14:09:33.124Z"
           }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/run/01JBCB0T000000000000000R01": {
+              "structural": {
+                "credits_milli": 1,
+                "op": "web.fetch",
+                "request_id": "cf-7f3a9c2e",
+                "run": "01JBCB0T000000000000000R01",
+                "source": "search #0",
+                "step": 2,
+                "type": "clax.bot.web",
+                "url": "https://example.com/guide"
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "artifact_id": "k3m9q2w8x1ab",
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "bot.web",
+              "seq": 126,
+              "url": "http://localhost:7480/a/k3m9q2w8x1ab",
+              "v": 1,
+              "via": "daemon"
+            },
+            "description": "ClaxBot run 01JBCB0T000000000000000R01 fetched https://example.com/guide (step 2, 0.001 credits)",
+            "refs": [
+              {
+                "href": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab",
+                "rel": "artifact"
+              },
+              {
+                "href": "http://localhost:7480/a/k3m9q2w8x1ab",
+                "rel": "view"
+              }
+            ]
+          },
+          "step": {
+            "actor": "agent:claxbot/u_77c0zz",
+            "id": "e000000000126",
+            "parents": [
+              "e000000000124"
+            ],
+            "timestamp": "2026-10-06T14:09:35.126Z"
+          }
         }
       ],
       "path": {
         "base": {
           "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/a/k3m9q2w8x1ab"
         },
-        "head": "e000000000124",
+        "head": "e000000000126",
         "id": "clax-artifact-k3m9q2w8x1ab"
       },
       "meta": {
@@ -6882,7 +6931,7 @@
       "clax_version": "0.3.1",
       "first_seq": 1,
       "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-      "last_seq": 125,
+      "last_seq": 126,
       "redaction": [],
       "selection": {
         "artifacts": [],

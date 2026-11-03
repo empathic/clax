@@ -767,6 +767,7 @@ impl Event<'_> {
                 | K::BotTurn
                 | K::BotScript
                 | K::BotCall
+                | K::BotWeb
                 | K::BotRunEnd
                 | K::BotCancel
                 | K::ViewRun,
@@ -1443,6 +1444,17 @@ impl Event<'_> {
                 } else {
                     "refused"
                 }
+            ),
+            Some(K::BotWeb) => format!(
+                "ClaxBot run {} {} (step {}, {} credits)",
+                self.show("run"),
+                match (self.str("op"), self.str("query"), self.str("url")) {
+                    (Some("web.search"), Some(q), _) => format!("searched the web for {q}"),
+                    (Some("web.fetch"), _, Some(u)) => format!("fetched {u}"),
+                    _ => format!("called {}", self.show("op")),
+                },
+                self.show("step"),
+                credits(self.body.get("credits_milli"))
             ),
             Some(K::BotRunEnd) => format!(
                 "Ended ClaxBot run {}: {}{} ({} credits)",

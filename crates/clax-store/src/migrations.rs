@@ -2084,8 +2084,11 @@ pub const MIGRATIONS: &[&str] = &[
     // (`crate::credits::seed_web_lines`). `bot_person_prefs` holds each
     // person's own choice of web tools (§9.2), and `sealed_secrets` is
     // rebuilt with `cloudflare` in its scope CHECK for the instance's
-    // Cloudflare token (§9.3). The new table is the migration's mark
-    // (`MARKS_AFTER_APP`).
+    // Cloudflare token (§9.3). `bot_web_pages` is a run's page store (§6.2):
+    // each page a fetch of the run received, by normalised URL, with the
+    // journal place that fetched it, removed with the run's call journal;
+    // `bot_runs.web` is the web grant's shape when the run was made (§4.4).
+    // `bot_person_prefs` is the migration's mark (`MARKS_AFTER_APP`).
     "CREATE TABLE cost_lines_new (
         id TEXT PRIMARY KEY,
         label TEXT NOT NULL,
@@ -2129,7 +2132,21 @@ pub const MIGRATIONS: &[&str] = &[
         SELECT scope, person, nonce, sealed, last4, use_own, set_by, set_at, last_ok_at, host
         FROM sealed_secrets;
     DROP TABLE sealed_secrets;
-    ALTER TABLE sealed_secrets_new RENAME TO sealed_secrets;",
+    ALTER TABLE sealed_secrets_new RENAME TO sealed_secrets;
+    CREATE TABLE bot_web_pages (
+        run_id TEXT NOT NULL,
+        url TEXT NOT NULL,
+        step_n INTEGER NOT NULL,
+        seq INTEGER NOT NULL,
+        final_url TEXT NOT NULL,
+        status INTEGER NOT NULL,
+        content_type TEXT NOT NULL,
+        text TEXT NOT NULL,
+        total_chars INTEGER NOT NULL,
+        links_json TEXT NOT NULL,
+        PRIMARY KEY (run_id, url)
+    ) WITHOUT ROWID;
+    ALTER TABLE bot_runs ADD COLUMN web TEXT NOT NULL DEFAULT '';",
 ];
 
 /// The ClaxBot migration, as a schema version (spec

@@ -287,6 +287,7 @@ async fn the_servers_host_passes_the_bot_host_conformance_suite() {
                     key_source: KeySource::Instance,
                     base_version: 1,
                     agent_grant: None,
+                    web: String::new(),
                 },
             )
             .unwrap()
@@ -822,6 +823,7 @@ async fn a_reader_of_the_artifact_sees_a_runs_outline_alone_and_loses_it_with_th
                 key_source: clax_store::credits::KeySource::Instance,
                 base_version: 1,
                 agent_grant: None,
+                web: String::new(),
             },
         )
         .unwrap();
@@ -1053,6 +1055,7 @@ async fn a_runs_clax_json_that_changes_the_declaration_is_its_makers() {
                 key_source: KeySource::Instance,
                 base_version: 1,
                 agent_grant: None,
+                web: String::new(),
             },
         )
         .unwrap()
@@ -1125,6 +1128,7 @@ async fn a_runs_events_end_when_the_owner_logs_out() {
                 key_source: clax_store::credits::KeySource::Instance,
                 base_version: 1,
                 agent_grant: None,
+                web: String::new(),
             },
         )
         .unwrap();

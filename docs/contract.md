@@ -9460,6 +9460,7 @@ the body below.
 | `bot.turn` | `run, step, model, key_source (instance\|own), input_tokens, cached_tokens, output_tokens, stop_reason, credits_milli` | a model turn's step committed |
 | `bot.script` | `run, step, title, code_sha256, calls[op], cpu_ms, mem_peak, credits_milli, error` (the code itself is in the run's step, never the body) | a script's step committed |
 | `bot.call` | `run, step, op, target, ok` | every API op a script called, reads included, with its step |
+| `bot.web` | `run, step, op (web.search\|web.fetch), query` or `url, source, provider, request_id, credits_milli` | a web call answered, with its charge, in the transaction that journals it |
 | `bot.run_end` | `run, outcome (finished\|gave_up\|stopped), reason, credits_milli` (the run's total) | a run's terminal step committed |
 | `bot.cancel` | `run, by` (the person key of who asked) | someone asked a queued or running run to stop |
 | `view.run` | `run` | someone opened a run's panel |

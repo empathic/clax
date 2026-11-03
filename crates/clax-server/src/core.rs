@@ -604,6 +604,7 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
                 Ok(p) if p == clax_store::bot_runs::Pruned::default() => {}
                 Ok(p) => tracing::info!(
                     calls = p.calls,
+                    pages = p.pages,
                     draft_files = p.draft_files,
                     "pruned ended ClaxBot runs"
                 ),
