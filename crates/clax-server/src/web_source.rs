@@ -960,6 +960,11 @@ pub fn fixtures() -> Option<Arc<FakeWebSource>> {
 /// fetch refuses already. Both are taken here, once: hosted mode reads
 /// them at start (`[hosted] public_origin`, `site_domain`) and they do not
 /// change before a restart.
+///
+/// Config loading has already refused an origin or site domain that is not
+/// one; were one to reach here, the daemon could not name its own hosts, so
+/// the source is [`NoHostsWeb`]: it logs the reason, ClaxBot's web tools are
+/// off, and no fetch is made that might reach the instance.
 #[must_use]
 pub fn for_daemon(
     store: Arc<Store>,
@@ -967,16 +972,54 @@ pub fn for_daemon(
     origin: Option<&str>,
     site_domain: Option<&str>,
 ) -> Arc<dyn WebSource> {
+    let own = match origin {
+        Some(o) => match OwnHosts::new(Some(o), site_domain) {
+            Ok(own) => Some(own),
+            Err(e) => {
+                tracing::error!(error = %e, "ClaxBot's web tools are off");
+                return Arc::new(NoHostsWeb(e.to_string()));
+            }
+        },
+        None => None,
+    };
     let source: Arc<dyn WebSource> = match fixtures() {
         Some(f) => f,
         None => Arc::new(DaemonWeb::new(store, kek).with_user_agent(user_agent(origin))),
     };
-    match origin {
-        Some(o) => Arc::new(WithOwnHosts::new(
-            source,
-            OwnHosts::new(Some(o), site_domain),
-        )),
+    match own {
+        Some(own) => Arc::new(WithOwnHosts::new(source, own)),
         None => source,
+    }
+}
+
+/// A source that is not configured and answers every call
+/// `web_unavailable`, with the reason the daemon's hosts could not be
+/// named ([`for_daemon`]).
+struct NoHostsWeb(String);
+
+#[async_trait::async_trait]
+impl WebSource for NoHostsWeb {
+    async fn search(
+        &self,
+        _q: &SearchQuery,
+        _cancel: &CancelToken,
+    ) -> Result<SearchAnswer, WebError> {
+        Err(unavailable(self.0.clone(), false))
+    }
+
+    async fn fetch(
+        &self,
+        _url: &PublicUrl,
+        _format: Format,
+        _limits: &FetchLimits,
+        _hop: &(dyn for<'u> Fn(&'u PublicUrl) -> Result<(), WebError> + Sync),
+        _cancel: &CancelToken,
+    ) -> Result<FetchedPage, WebError> {
+        Err(unavailable(self.0.clone(), false))
+    }
+
+    fn configured(&self) -> bool {
+        false
     }
 }
 
@@ -1992,8 +2035,16 @@ mod tests {
         assert!(own.holds("abcdefghijkl.sites.example"));
         assert!(!own.holds("example.com"));
         // A local daemon has none: its hosts are loopback.
-        let local = for_daemon(st, None, None, None);
+        let local = for_daemon(st.clone(), None, None, None);
         assert_eq!(local.own_hosts(), OwnHosts::default());
+        // A site domain that is no host name leaves the web off, not open.
+        let bad = for_daemon(
+            st,
+            None,
+            Some("https://clax.example"),
+            Some("https://sites.example/x"),
+        );
+        assert!(!bad.configured());
     }
 
     #[test]

@@ -10,7 +10,7 @@ use html5ever::tokenizer::{
     BufferQueue, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
 };
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// The most characters one window holds.
 pub const PAGE_CHARS: usize = 20_000;
@@ -190,57 +190,71 @@ const MAX_TARGET_BYTES: usize = super::url::MAX_URL_CHARS * 4;
 /// them.
 ///
 /// A scanner, not a CommonMark parser, linear in `md`'s length: every
-/// pass moves past what it read. It reads code spans and blocks like any
-/// other text, and takes the target of any `](`, so it may count a string
-/// as a link that a renderer would not; a link it counts is still text the
-/// page holds. A target with no end before the next whitespace (an
+/// pass moves past what it read. It reads nothing in code: inline code
+/// spans (a backtick string closed by the next one of the same length in
+/// its paragraph; a backslash does not escape a backtick), fenced code
+/// blocks (a fence of three or more backticks or tildes, closed by a fence
+/// of the same character at least as long, or by the end of the page) and
+/// indented code blocks (four spaces or a tab, after a blank line or
+/// another code block). It takes the target of a `](` only when the `]`
+/// closes a `[` opened earlier in the same paragraph, so a stray `](x` is
+/// no link. Fences and indented code inside list items and block quotes are
+/// not recognised as such: their text is read as any other, so it may count
+/// a string as a link that a renderer would not; a link it counts is still
+/// text the page holds. A target with no end before the next whitespace (an
 /// unclosed `](`) is read to there and not looked at again.
 #[must_use]
 pub fn links_of_markdown(md: &str, base: &PublicUrl) -> Vec<String> {
     let mut found: Vec<(usize, &str)> = Vec::new();
     let mut spans: Vec<(usize, usize)> = Vec::new();
+    let (code, paragraphs) = markdown_code(md);
     // Inline links and images: `](target)` or `](<target>)`, with an
-    // optional title after the target.
-    let mut from = 0;
-    while let Some(i) = md[from..].find("](") {
-        let start = from + i + 2;
-        let rest = &md[start..];
-        let (target, len) = if let Some(r) = rest.strip_prefix('<') {
-            match r.find(['>', '\n']) {
-                Some(j) if r[j..].starts_with('>') => (&r[..j], j + 2),
-                Some(j) => ("", j + 1),
-                None => ("", rest.len()),
+    // optional title after the target, where the `]` closes a `[` of the
+    // same paragraph.
+    let bytes = md.as_bytes();
+    let mut skip = CodeCursor::new(&code);
+    for (para_start, para_end) in paragraphs {
+        let mut open = 0usize;
+        let mut i = para_start;
+        while i < para_end {
+            if let Some(end) = skip.past(i) {
+                i = end;
+                continue;
             }
-        } else {
-            let mut depth = 0usize;
-            let mut end = rest.len();
-            for (j, c) in rest.char_indices() {
-                match c {
-                    '(' => depth += 1,
-                    ')' if depth == 0 => {
-                        end = j;
-                        break;
-                    }
-                    ')' => depth -= 1,
-                    c if c.is_whitespace() => {
-                        end = j;
-                        break;
-                    }
-                    _ => {}
+            match bytes[i] {
+                b'\\' => i += 2,
+                b'[' => {
+                    open += 1;
+                    i += 1;
                 }
+                b']' if open > 0 => {
+                    open -= 1;
+                    if bytes.get(i + 1) != Some(&b'(') {
+                        i += 1;
+                        continue;
+                    }
+                    let start = i + 2;
+                    let rest = &md[start..];
+                    let (target, len) = inline_target(rest);
+                    if !target.is_empty() {
+                        found.push((start, target));
+                        spans.push((start, start + len));
+                    }
+                    // Past the target: nothing in it is read again.
+                    i = start + len;
+                }
+                _ => i += 1,
             }
-            (&rest[..end], end)
-        };
-        if !target.is_empty() {
-            found.push((start, target));
-            spans.push((start, start + len));
         }
-        // Past the target: nothing in it is read again.
-        from = start + len;
     }
     // Autolinks: `<scheme://…>`. Each scan stops at the next `<`.
     let mut from = 0;
+    let mut skip = CodeCursor::new(&code);
     while let Some(i) = md[from..].find('<') {
+        if let Some(end) = skip.past(from + i) {
+            from = end;
+            continue;
+        }
         let start = from + i + 1;
         let rest = &md[start..];
         let j = rest.find(['>', '<', ' ', '\n']).unwrap_or(rest.len());
@@ -252,10 +266,12 @@ pub fn links_of_markdown(md: &str, base: &PublicUrl) -> Vec<String> {
     }
     // Reference definitions: a line `[label]: target`.
     let mut at = 0;
+    let mut skip = CodeCursor::new(&code);
     for line in md.split_inclusive('\n') {
         let trimmed = line.trim_start();
         let indent = line.len() - trimmed.len();
         if indent < 4
+            && skip.past(at).is_none()
             && trimmed.starts_with('[')
             && let Some(j) = trimmed.find("]:")
         {
@@ -289,8 +305,13 @@ pub fn links_of_markdown(md: &str, base: &PublicUrl) -> Vec<String> {
     };
     for scheme in ["https://", "http://"] {
         let mut from = 0;
+        let mut skip = CodeCursor::new(&code);
         while let Some(i) = md[from..].find(scheme) {
             let start = from + i;
+            if let Some(end) = skip.past(start) {
+                from = end;
+                continue;
+            }
             let rest = &md[start..];
             let end = rest
                 .find(|c: char| c.is_whitespace() || "<>()[]\"'`".contains(c))
@@ -310,6 +331,154 @@ pub fn links_of_markdown(md: &str, base: &PublicUrl) -> Vec<String> {
         }
     }
     links.into_vec()
+}
+
+/// The target of the inline link whose `(` ends just before `rest`, and
+/// how many bytes of `rest` it and its closer take: `target)`,
+/// `<target>`, or `target "title")`; an empty target when it has none.
+fn inline_target(rest: &str) -> (&str, usize) {
+    if let Some(r) = rest.strip_prefix('<') {
+        match r.find(['>', '\n']) {
+            Some(j) if r[j..].starts_with('>') => (&r[..j], j + 2),
+            Some(j) => ("", j + 1),
+            None => ("", rest.len()),
+        }
+    } else {
+        let mut depth = 0usize;
+        let mut end = rest.len();
+        for (j, c) in rest.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' if depth == 0 => {
+                    end = j;
+                    break;
+                }
+                ')' => depth -= 1,
+                c if c.is_whitespace() => {
+                    end = j;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        (&rest[..end], end)
+    }
+}
+
+/// A forward-only look-up of sorted, disjoint code ranges.
+struct CodeCursor<'a> {
+    ranges: &'a [(usize, usize)],
+    k: usize,
+}
+
+impl<'a> CodeCursor<'a> {
+    fn new(ranges: &'a [(usize, usize)]) -> CodeCursor<'a> {
+        CodeCursor { ranges, k: 0 }
+    }
+
+    /// Where the code range holding `p` ends, if one does. Each call's `p`
+    /// is at least the last one's.
+    fn past(&mut self, p: usize) -> Option<usize> {
+        while self.k < self.ranges.len() && self.ranges[self.k].1 <= p {
+            self.k += 1;
+        }
+        self.ranges
+            .get(self.k)
+            .filter(|&&(s, _)| s <= p)
+            .map(|&(_, e)| e)
+    }
+}
+
+/// Sorted byte ranges, start to end.
+type Ranges = Vec<(usize, usize)>;
+
+/// The byte ranges of `md` that are code (fenced and indented blocks, and
+/// inline spans), sorted and disjoint; and the ranges of its paragraphs,
+/// runs of text lines outside code blocks, which a link's text and an
+/// inline code span do not cross. One pass over the lines, one over the
+/// backtick strings.
+fn markdown_code(md: &str) -> (Ranges, Ranges) {
+    let mut code: Vec<(usize, usize)> = Vec::new();
+    let mut paragraphs: Vec<(usize, usize)> = Vec::new();
+    // The open fence: its character, length and first byte.
+    let mut fence: Option<(u8, usize, usize)> = None;
+    let mut para: Option<(usize, usize)> = None;
+    let mut at = 0;
+    for line in md.split_inclusive('\n') {
+        let end = at + line.len();
+        let body = line.trim_end_matches(['\n', '\r']);
+        let text = body.trim_start_matches([' ', '\t']);
+        let indent: usize = body[..body.len() - text.len()]
+            .bytes()
+            .map(|b| if b == b' ' { 1 } else { 4 })
+            .sum();
+        let run = |c: u8| text.bytes().take_while(|&b| b == c).count();
+        if let Some((c, len, _)) = fence {
+            if indent < 4 && run(c) >= len && text[run(c)..].trim().is_empty() {
+                let (_, _, from) = fence.take().unwrap_or((c, len, at));
+                code.push((from, end));
+            }
+        } else if text.is_empty() {
+            paragraphs.extend(para.take());
+        } else if indent >= 4 && para.is_none() {
+            code.push((at, end));
+        } else if indent < 4
+            && let Some(c) = [b'`', b'~']
+                .into_iter()
+                .find(|&c| run(c) >= 3 && (c != b'`' || !text[run(c)..].contains('`')))
+        {
+            paragraphs.extend(para.take());
+            fence = Some((c, run(c), at));
+        } else {
+            para = Some((para.map_or(at, |p| p.0), end));
+        }
+        at = end;
+    }
+    paragraphs.extend(para);
+    if let Some((_, _, from)) = fence {
+        code.push((from, md.len()));
+    }
+    // Inline spans: a backtick string opens a span closed by the next
+    // string of the same length in its paragraph; one with no such closer
+    // is text.
+    let bytes = md.as_bytes();
+    for &(s, e) in &paragraphs {
+        let mut strings: Vec<(usize, usize)> = Vec::new();
+        let mut i = s;
+        while i < e {
+            if bytes[i] == b'`' {
+                let n = bytes[i..e].iter().take_while(|&&b| b == b'`').count();
+                strings.push((i, n));
+                i += n;
+            } else {
+                i += 1;
+            }
+        }
+        let mut next_same = vec![None; strings.len()];
+        let mut last: HashMap<usize, usize> = HashMap::new();
+        for (j, &(_, n)) in strings.iter().enumerate().rev() {
+            next_same[j] = last.insert(n, j);
+        }
+        let mut j = 0;
+        while j < strings.len() {
+            match next_same[j] {
+                Some(k) => {
+                    code.push((strings[j].0, strings[k].0 + strings[k].1));
+                    j = k + 1;
+                }
+                None => j += 1,
+            }
+        }
+    }
+    code.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(code.len());
+    for (s, e) in code {
+        match merged.last_mut() {
+            Some(last) if s <= last.1 => last.1 = last.1.max(e),
+            _ => merged.push((s, e)),
+        }
+    }
+    (merged, paragraphs)
 }
 
 /// A page's links as they are kept: public, normalised, each once, at
@@ -1060,12 +1229,76 @@ mod tests {
     }
 
     #[test]
+    fn markdown_links_are_not_read_in_code() {
+        let b = base("https://x.com/a");
+        let links = |md: &str| links_of_markdown(md, &b);
+        let kept = vec!["https://x.com/kept"];
+        // Inline code spans, of any backtick length.
+        assert_eq!(
+            links(
+                "`[a](/no)` `` [b](/no) ` `` ```<https://no.com/> https://no.com/n``` [k](/kept)"
+            ),
+            kept
+        );
+        // A backtick string with no closer is text.
+        assert_eq!(links("` [k](/kept)"), kept);
+        assert_eq!(links("`` a ` [k](/kept) ```"), kept);
+        // A span does not cross a paragraph break.
+        assert_eq!(links("` a\n\n[k](/kept) `"), kept);
+        // Fenced code blocks, backtick and tilde, closed by a fence at
+        // least as long, and one never closed.
+        assert_eq!(
+            links("```\n[a](/no)\nhttps://no.com/\n```\n[k](/kept)"),
+            kept
+        );
+        assert_eq!(
+            links("~~~ rust\n[a](/no)\n~~~~\n[k](/kept)\n~~~\n[b](/no)"),
+            kept
+        );
+        assert_eq!(
+            links("[k](/kept)\n````\n```\n[a](/no)\n```\n[b](/no)"),
+            kept
+        );
+        assert_eq!(links("[k](/kept)\n```\n[a](/no)\n[b]: /no"), kept);
+        // A backtick fence's info string has no backtick: that line is
+        // text, and an inline span.
+        assert_eq!(links("``` `[a](/no)` ```\n[k](/kept)"), kept);
+        // Indented code, after a blank line; a continuation line is text.
+        assert_eq!(links("p\n\n    [a](/no)\n    [b]: /no\n\n[k](/kept)"), kept);
+        assert_eq!(links("\t[a](/no)\n[k](/kept)"), kept);
+        assert_eq!(links("text\n    [k](/kept)"), kept);
+        // A stray `](` with no `[` is no link; a `[` of an earlier
+        // paragraph does not open it.
+        assert_eq!(links("a](/no) [k](/kept) b](/no)"), kept);
+        assert_eq!(links("[open\n\n](/no) [k](/kept)"), kept);
+        // Nested brackets, escapes and images still make links.
+        assert_eq!(links("[a [b] c](/kept) \\](/no)"), kept);
+        assert_eq!(links("![alt [x]](/kept)"), kept);
+        // Outside code the other forms stand.
+        assert_eq!(
+            links("`c`\n<https://y.com/q> https://z.com/r\n[w]: /s"),
+            vec!["https://y.com/q", "https://z.com/r", "https://x.com/s"]
+        );
+    }
+
+    #[test]
     fn hostile_pages_are_scanned_in_one_pass() {
         let b = base("https://x.com/a");
         // Half a million unclosed `](`: one target, read to the end.
         assert!(links_of_markdown(&"](".repeat(500_000), &b).is_empty());
         assert!(links_of_markdown(&"](<".repeat(300_000), &b).is_empty());
         assert!(links_of_markdown(&"<".repeat(1_000_000), &b).is_empty());
+        // Unclosed `[`, backticks of every length, fences and indented
+        // lines: each scan is one pass over the page.
+        assert!(links_of_markdown(&"[".repeat(1_000_000), &b).is_empty());
+        assert!(links_of_markdown(&"[](".repeat(300_000), &b).is_empty());
+        let ticks: String = (1..1_400).map(|n| format!("{} ", "`".repeat(n))).collect();
+        assert!(links_of_markdown(&ticks, &b).is_empty());
+        assert!(links_of_markdown(&"` ".repeat(500_000), &b).is_empty());
+        assert!(links_of_markdown(&"```\n".repeat(200_000), &b).is_empty());
+        assert!(links_of_markdown(&format!("```\n{}", "[a](/x)\n".repeat(100_000)), &b).is_empty());
+        assert!(links_of_markdown(&"~~~ `\n".repeat(200_000), &b).is_empty());
+        assert!(links_of_markdown(&"\n    x".repeat(300_000), &b).is_empty());
         // Bare-URL-like text with no separator is one candidate, too long.
         assert!(links_of_markdown(&"https://x".repeat(100_000), &b).is_empty());
         // Many real links and spans: the first MAX_LINKS are kept.

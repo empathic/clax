@@ -286,7 +286,11 @@ enum UrlSource {
   the page in the page store (§6.2). Every link of the page counts, whether
   or not a script read the window it is in: the page is fixed content the
   run received, so where a script looked in it does not change what it may
-  carry.
+  carry. The Markdown scan reads no code: not inline code spans, fenced
+  code blocks (``` or ~~~) nor indented ones, and a `](` target counts only
+  when its `]` closes a `[` of the same paragraph. It is a linear scanner,
+  not a CommonMark parser: code inside list items and block quotes is not
+  recognised, so a URL there may count as a link.
 - A URL matches when it equals a source URL after normalisation: the
   scheme and host lowercased, the default port and the fragment removed,
   percent-encoding normalised. No prefix or host match.
@@ -298,9 +302,9 @@ enum UrlSource {
   `passwd`, `pwd`, `sig`, `signature`, `credential(s)`, `auth` or
   `authorization` as a component makes it credential-like, and so does a
   `token` component unless `page`, `next`, `continuation`, `pagination` or
-  `sync` comes before it: `api_key`, `access_token` and `X-Amz-Signature`
-  are refused; `keywords`, `page_token`, `nextPageToken` and `cursor` are
-  not.
+  `sync` comes directly before it: `api_key`, `access_token`,
+  `page_session_token` and `X-Amz-Signature` are refused; `keywords`,
+  `page_token`, `next_page_token` and `cursor` are not.
 
 Every fetch records the `UrlSource` that allowed it, in its journal entry;
 the run panel shows it ("from search #2") and the Sources list is built
@@ -334,6 +338,12 @@ resolves the host and refuses when any address it resolves to is in those
 ranges, and connects only to the address it checked, so a DNS answer that
 changes between the check and the connection is not followed. The Worker
 needs no DNS check: a Worker's `fetch` cannot reach a private network.
+A hosted instance's own hosts (its public origin's host, and its site
+domain with every host under it) are refused the same way. A configured
+public origin or site domain that names no host is never dropped: the
+daemon turns web use off (`web_unavailable`, logged) and the Worker does not
+start, as for any other bad `[hosted]`/`SITE_DOMAIN` value, because an
+instance that cannot name its own hosts could not refuse them.
 
 The redirect target is checked by host only, not by source: the source rule
 applies to the URL the script asked for, as in Anthropic's tool.

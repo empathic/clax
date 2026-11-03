@@ -14,7 +14,7 @@ pub const MAX_URL_CHARS: usize = 2_000;
 
 /// The query parameter name components that make a URL look
 /// credentialed ([`looks_credentialed`]). `token` is one too, unless a
-/// [`PAGINATION_WORDS`] component comes before it.
+/// [`PAGINATION_WORDS`] component comes immediately before it.
 const CREDENTIAL_WORDS: [&str; 13] = [
     "key",
     "apikey",
@@ -144,10 +144,11 @@ impl PublicUrl {
 /// camelCase boundaries and compared ignoring case, has a component that
 /// is a credential word (`key`, `apikey`, `secret`, `password`, `passwd`,
 /// `pwd`, `sig`, `signature`, `credential(s)`, `auth`, `authorization`,
-/// `accesstoken`), or a `token` that no pagination word (`page`, `next`,
-/// `continuation`, `pagination`, `sync`) comes before. So `api_key`,
-/// `apiKey`, `access_token`, `X-Amz-Signature` and `sig` look
-/// credentialed, and `keywords`, `page_token`, `pageToken`, `cursor`,
+/// `accesstoken`), or a `token` whose immediately preceding component is
+/// not a pagination word (`page`, `next`, `continuation`, `pagination`,
+/// `sync`). So `api_key`, `apiKey`, `access_token`, `page_auth_token`,
+/// `cursor_access_token`, `X-Amz-Signature` and `sig` look credentialed,
+/// and `keywords`, `page_token`, `pageToken`, `next_page_token`, `cursor`,
 /// `design`, `signup` and `assignee` do not. Such a URL is fetched only
 /// when the sender's own words hold it.
 #[must_use]
@@ -161,10 +162,7 @@ fn credential_name(name: &str) -> bool {
     let parts = name_components(name);
     parts.iter().enumerate().any(|(i, part)| {
         CREDENTIAL_WORDS.contains(&part.as_str())
-            || (part == "token"
-                && !parts[..i]
-                    .iter()
-                    .any(|p| PAGINATION_WORDS.contains(&p.as_str())))
+            || (part == "token" && !(i > 0 && PAGINATION_WORDS.contains(&parts[i - 1].as_str())))
     })
 }
 
@@ -209,23 +207,69 @@ pub struct OwnHosts {
     site_domain: Option<String>,
 }
 
+/// Why [`OwnHosts::new`] refused a configured value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OwnHostsError {
+    /// The public origin is not a URL with a host.
+    PublicOrigin(String),
+    /// The site domain is not a bare host name.
+    SiteDomain(String),
+}
+
+impl std::fmt::Display for OwnHostsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OwnHostsError::PublicOrigin(o) => {
+                write!(f, "the public origin {o:?} is not an origin with a host")
+            }
+            OwnHostsError::SiteDomain(d) => {
+                write!(f, "the site domain {d:?} is not a bare host name")
+            }
+        }
+    }
+}
+
+impl std::error::Error for OwnHostsError {}
+
 impl OwnHosts {
     /// The hosts of an instance at `public_origin` (an origin such as
     /// `https://clax.example`, its port ignored) whose sites are under
-    /// `site_domain` (a bare domain); either may be `None`, and one that
-    /// names no host is none.
-    #[must_use]
-    pub fn new(public_origin: Option<&str>, site_domain: Option<&str>) -> OwnHosts {
+    /// `site_domain` (a bare domain, [`clax_core::config::site_domain`]'s
+    /// rule); either may be `None`, and a blank one is none.
+    ///
+    /// # Errors
+    ///
+    /// [`OwnHostsError`] when a value is set but names no host: an
+    /// instance that could not name its own hosts would let a fetch
+    /// reach them.
+    pub fn new(
+        public_origin: Option<&str>,
+        site_domain: Option<&str>,
+    ) -> Result<OwnHosts, OwnHostsError> {
         let bare = |h: &str| {
             let h = h.trim().trim_end_matches('.').to_ascii_lowercase();
             (!h.is_empty()).then_some(h)
         };
-        OwnHosts {
-            origin_host: public_origin
-                .and_then(|o| Url::parse(o.trim()).ok())
-                .and_then(|u| u.host_str().and_then(bare)),
-            site_domain: site_domain.and_then(bare),
-        }
+        let origin_host = match public_origin.map(str::trim).filter(|o| !o.is_empty()) {
+            None => None,
+            Some(o) => Some(
+                Url::parse(o)
+                    .ok()
+                    .and_then(|u| u.host_str().and_then(bare))
+                    .ok_or_else(|| OwnHostsError::PublicOrigin(o.to_string()))?,
+            ),
+        };
+        let site_domain = match site_domain.and_then(bare) {
+            None => None,
+            Some(d) => Some(
+                clax_core::config::site_domain(&d)
+                    .ok_or_else(|| OwnHostsError::SiteDomain(d.clone()))?,
+            ),
+        };
+        Ok(OwnHosts {
+            origin_host,
+            site_domain,
+        })
     }
 
     /// Whether `host` (as [`PublicUrl::host`] gives it) is one of them.
@@ -507,6 +551,12 @@ mod tests {
             "authorization",
             // A pagination word after the token does not make it one.
             "token_page",
+            // A pagination word counts only directly before `token`.
+            "page_session_token",
+            "next_user_token",
+            "page_auth_token",
+            "cursor_access_token",
+            "sync.refreshToken",
         ] {
             assert!(credential_name(name), "{name} is refused");
         }
@@ -517,6 +567,7 @@ mod tests {
             "page_token",
             "pageToken",
             "nextPageToken",
+            "next_page_token",
             "next_token",
             "continuation_token",
             "continuationToken",
@@ -564,7 +615,7 @@ mod tests {
 
     #[test]
     fn the_instances_own_hosts_are_held() {
-        let own = OwnHosts::new(Some("https://Clax.example:8443"), Some("Sites.example."));
+        let own = OwnHosts::new(Some("https://Clax.example:8443"), Some("Sites.example.")).unwrap();
         for host in [
             "clax.example",
             "CLAX.example.",
@@ -585,10 +636,37 @@ mod tests {
         }
         let none = OwnHosts::default();
         assert!(!none.holds("clax.example"));
-        assert_eq!(OwnHosts::new(Some("not an origin"), Some(" ")), none);
-        let origin_only = OwnHosts::new(Some("https://clax.example"), None);
+        assert_eq!(OwnHosts::new(Some(" "), Some(" ")), Ok(none));
+        assert_eq!(OwnHosts::new(None, None), Ok(OwnHosts::default()));
+        let origin_only = OwnHosts::new(Some("https://clax.example"), None).unwrap();
         assert!(origin_only.holds("clax.example"));
         assert!(!origin_only.holds("a.clax.example"));
+    }
+
+    #[test]
+    fn a_configured_value_that_names_no_host_is_refused() {
+        for bad in ["not an origin", "https://", "mailto:a@b.c"] {
+            assert_eq!(
+                OwnHosts::new(Some(bad), None),
+                Err(OwnHostsError::PublicOrigin(bad.to_string())),
+                "{bad}"
+            );
+        }
+        for bad in [
+            "https://sites.example",
+            "sites.example:8080",
+            "a b",
+            ".x.y",
+            "1.2.3.4",
+        ] {
+            assert_eq!(
+                OwnHosts::new(Some("https://clax.example"), Some(bad)),
+                Err(OwnHostsError::SiteDomain(bad.to_ascii_lowercase())),
+                "{bad}"
+            );
+        }
+        let e = OwnHosts::new(None, Some("sites.example/x")).unwrap_err();
+        assert!(e.to_string().contains("sites.example/x"), "{e}");
     }
 
     #[test]

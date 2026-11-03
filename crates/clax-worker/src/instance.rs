@@ -606,19 +606,20 @@ fn clax_app(env: &Env) -> Result<clax_core::config::ClaxApp> {
 /// own ID, installed as the routes' run seam; and its web source
 /// (`crate::bot::web_source`: `test_web` in the test mode, else the `AI`
 /// binding when the Worker has one), which makes the host's web use
-/// configured.
+/// configured. An error when `SITE_DOMAIN` or `PUBLIC_ORIGIN` is set and
+/// names no host: the instance does not start (as `hosted` refuses one).
 fn worker_bot(
     env: &Env,
     app: &mut AppState,
     test_web: Option<Arc<crate::web_source::FixtureWeb>>,
-) -> crate::bot::WorkerBot {
+) -> std::result::Result<crate::bot::WorkerBot, String> {
     // Only a configured public origin is named to the sites fetched.
     let public = var(env, "PUBLIC_ORIGIN");
     let public = Some(public.trim()).filter(|p| !p.is_empty());
     // Nor does a fetch reach the instance's own hosts: its public origin
     // and its site domain.
-    let sites = site_hosts(env).ok().flatten();
-    let web = crate::bot::web_source(env, test_web, public, sites.as_ref().map(|s| s.domain()));
+    let sites = site_hosts(env)?;
+    let web = crate::bot::web_source(env, test_web, public, sites.as_ref().map(|s| s.domain()))?;
     let kek_secret = env
         .secret("CLAX_KEK")
         .map(|v| v.to_string())
@@ -672,7 +673,7 @@ fn worker_bot(
         catalog_flight,
         web_configured: web.is_some(),
     });
-    bot
+    Ok(bot)
 }
 
 /// How far ahead the alarm is kept while ClaxBot drives:
@@ -805,7 +806,7 @@ impl Instance {
         app.build = Some(var(env, "CLAX_BUILD")).filter(|b| !b.is_empty());
         app.feedback = feedback_of(env, &app);
         let test_web = test_web(state, env)?;
-        let bot = worker_bot(env, &mut app, test_web.clone());
+        let bot = worker_bot(env, &mut app, test_web.clone()).map_err(rust_err)?;
         app.seats
             .set_limits(clax_core::seats::SeatLimits::from_env(|k| {
                 Some(var(env, k)).filter(|v| !v.is_empty())

@@ -847,7 +847,7 @@ async fn the_instances_own_hosts_are_never_fetched() {
     let run = env.run_with_web("fetch");
     let web = Arc::new(WithOwnHosts::new(
         env.web(),
-        OwnHosts::new(Some("https://clax.example"), Some("sites.example")),
+        OwnHosts::new(Some("https://clax.example"), Some("sites.example")).unwrap(),
     ));
     let deps = env.deps().with_web(web);
     let out = env.drive(&deps, &run, &DriverId::mint()).await;

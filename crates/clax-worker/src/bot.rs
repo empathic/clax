@@ -146,35 +146,45 @@ pub fn sandbox(_env: &worker::Env) -> Result<Arc<dyn Sandbox>, String> {
 /// off, not configured. The source answers `public_origin`'s host and
 /// `site_domain` (with every host under it) as the instance's own, which
 /// no fetch reaches ([`own_hosts`]).
-#[must_use]
+///
+/// # Errors
+/// Why `public_origin` or `site_domain`, when set, names no host: the
+/// instance could not tell which hosts are its own, so it does not start.
 pub fn web_source(
     env: &worker::Env,
     test: Option<Arc<crate::web_source::FixtureWeb>>,
     public_origin: Option<&str>,
     site_domain: Option<&str>,
-) -> Option<Arc<dyn clax_bot::WebSource>> {
+) -> Result<Option<Arc<dyn clax_bot::WebSource>>, String> {
     let source: Arc<dyn clax_bot::WebSource> = match test {
         Some(t) => t,
-        None => binding_source(env, public_origin)?,
+        None => match binding_source(env, public_origin) {
+            Some(s) => s,
+            None => return Ok(None),
+        },
     };
-    Some(own_hosts(source, public_origin, site_domain))
+    own_hosts(source, public_origin, site_domain).map(Some)
 }
 
 /// `source`, answering `public_origin`'s host and `site_domain` as the
 /// instance's own hosts (`clax_bot::web::WithOwnHosts`); `source` itself
 /// when the Worker has neither.
-#[must_use]
+///
+/// # Errors
+/// Why a set `public_origin` or `site_domain` names no host
+/// (`clax_bot::web::OwnHosts::new`).
 pub fn own_hosts(
     source: Arc<dyn clax_bot::WebSource>,
     public_origin: Option<&str>,
     site_domain: Option<&str>,
-) -> Arc<dyn clax_bot::WebSource> {
-    let own = clax_bot::web::OwnHosts::new(public_origin, site_domain);
-    if own == clax_bot::web::OwnHosts::default() {
+) -> Result<Arc<dyn clax_bot::WebSource>, String> {
+    let own =
+        clax_bot::web::OwnHosts::new(public_origin, site_domain).map_err(|e| e.to_string())?;
+    Ok(if own == clax_bot::web::OwnHosts::default() {
         source
     } else {
         Arc::new(clax_bot::web::WithOwnHosts::new(source, own))
-    }
+    })
 }
 
 /// The `AI` binding's source, when the Worker has one.
@@ -506,15 +516,25 @@ mod tests {
             fixtures.clone(),
             Some("https://clax.example"),
             Some("sites.example"),
-        );
+        )
+        .unwrap();
         let own = web.own_hosts();
         assert!(own.holds("clax.example"));
         assert!(own.holds("abcdefghijkl.sites.example"));
         assert!(!own.holds("example.com"));
         assert!(web.configured());
         // Without either, the source is unchanged.
-        let bare = own_hosts(fixtures, None, None);
+        let bare = own_hosts(fixtures.clone(), None, None).unwrap();
         assert_eq!(bare.own_hosts(), clax_bot::web::OwnHosts::default());
+        // A set value that names no host is refused, not dropped.
+        let e = own_hosts(fixtures.clone(), None, Some("https://sites.example/"))
+            .err()
+            .unwrap();
+        assert!(e.contains("site domain"), "{e}");
+        let e = own_hosts(fixtures, Some("not an origin"), None)
+            .err()
+            .unwrap();
+        assert!(e.contains("public origin"), "{e}");
     }
 
     #[test]
