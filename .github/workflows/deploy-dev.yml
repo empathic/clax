@@ -3,10 +3,11 @@ name: Deploy dev
 # Deploys the dev environment (docs/environments.md) from main: after every
 # push to main whose ci run passes, and by hand (Actions, Deploy dev, Run
 # workflow), which redeploys main's tip. dev is its own Worker with its own
-# bucket, queue and Artifacts namespace, its own GitHub OAuth App and its
-# own Cloudflare token (the `dev` environment, deployable from main only).
-# A deploy runs scripts/cloudflare-setup.sh --env dev in CI mode as Deploy
-# prod does: it builds in a step without the deploy's secrets, then
+# bucket, queue and Artifacts namespace, at https://dev.<preview host zone>
+# with its sites at <ID>.dev.<preview site zone>. It runs in the `preview`
+# environment: dev and the previews need the same Cloudflare account,
+# token and OAuth App (docs/environments.md, "Credentials"). A deploy runs
+# scripts/cloudflare-setup.sh --env dev in CI mode as Deploy prod does: it builds in a step without the deploy's secrets, then
 # deploys, waits for /healthz to report the build, checks a site host and
 # runs the smoke as dev's agent token. A failure fails the run; nothing is
 # rolled back. dev's first deploy, which makes its secrets, runs from a
@@ -31,22 +32,23 @@ jobs:
       && github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    # Its branch policy admits main only; its variables and secrets are what
-    # scripts/setup-env-github.sh sets and docs/environments.md describes.
-    environment: dev
+    # Its variables and secrets are what scripts/setup-env-github.sh sets
+    # and docs/environments.md describes. The `if` above admits main only;
+    # the environment admits any branch, for the previews.
+    environment: preview
     permissions: { contents: read }
     # One deploy at a time, and a running one is never cancelled. GitHub
     # keeps at most one waiting run per group, the newest.
     concurrency: { group: deploy-dev, cancel-in-progress: false }
     env:
       SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
-      PUBLIC_HOST: ${{ vars.PUBLIC_HOST }}
-      SITE_DOMAIN: ${{ vars.SITE_DOMAIN }}
-      SITE_ZONE: ${{ vars.SITE_ZONE }}
-      STORE: ${{ vars.STORE }}
+      PUBLIC_HOST: dev.${{ vars.PREVIEW_HOST_ZONE }}
+      SITE_DOMAIN: dev.${{ vars.PREVIEW_SITE_ZONE }}
+      SITE_ZONE: ${{ vars.PREVIEW_SITE_ZONE }}
       OWNER_GITHUB: ${{ vars.OWNER_GITHUB }}
-      # Secrets, not variables: dev's GitHub OAuth App's client ID (GitHub
-      # refuses a name starting GITHUB_) and the Cloudflare account's ID.
+      # Secrets, not variables: the preview GitHub OAuth App's client ID
+      # (GitHub refuses a name starting GITHUB_; its wildcard matching
+      # covers dev's host) and the Cloudflare account's ID.
       OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
@@ -58,6 +60,10 @@ jobs:
       - name: Check the commit is main's tip
         run: |
           set -euo pipefail
+          if [ "$PUBLIC_HOST" = dev. ] || [ "$SITE_DOMAIN" = dev. ]; then
+            echo "::error::the preview environment has no PREVIEW_HOST_ZONE or PREVIEW_SITE_ZONE (docs/environments.md, \"Previews\")"
+            exit 1
+          fi
           tip="$(git ls-remote origin refs/heads/main | cut -f1)"
           if [ "$tip" != "$SHA" ]; then
             echo "::notice::$SHA is not main's tip ($tip): the newer push's run deploys that one"
@@ -88,7 +94,7 @@ jobs:
           CLAX_DEPLOY_HOME: ${{ runner.temp }}/clax-deploy
         run: |
           set -euo pipefail
-          args=(--env dev --legal bundled --public "$PUBLIC_HOST" --site-domain "$SITE_DOMAIN" --store "${STORE:-artifacts}")
+          args=(--env dev --legal bundled --public "$PUBLIC_HOST" --site-domain "$SITE_DOMAIN" --store artifacts)
           if [ -n "$SITE_ZONE" ]; then args+=(--site-zone "$SITE_ZONE"); fi
           if [ -n "$OAUTH_CLIENT_ID" ]; then args+=(--github-client-id "$OAUTH_CLIENT_ID" --owner-github "$OWNER_GITHUB"); fi
           scripts/cloudflare-setup.sh "${args[@]}" --account "$CLOUDFLARE_ACCOUNT_ID" --ci
@@ -98,25 +104,25 @@ jobs:
         if: ${{ env.skip != '1' }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLAX_SMOKE_TOKEN: ${{ secrets.CLAX_SMOKE_TOKEN }}
+          CLAX_SMOKE_TOKEN: ${{ secrets.CLAX_DEV_SMOKE_TOKEN }}
           GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
           CLAX_DEPLOY_HOME: ${{ runner.temp }}/clax-deploy
         run: |
           set -euo pipefail
-          args=(--env dev --legal bundled --public "$PUBLIC_HOST" --site-domain "$SITE_DOMAIN" --store "${STORE:-artifacts}")
+          args=(--env dev --legal bundled --public "$PUBLIC_HOST" --site-domain "$SITE_DOMAIN" --store artifacts)
           if [ -n "$SITE_ZONE" ]; then args+=(--site-zone "$SITE_ZONE"); fi
           if [ -n "$OAUTH_CLIENT_ID" ]; then args+=(--github-client-id "$OAUTH_CLIENT_ID" --owner-github "$OWNER_GITHUB"); fi
           # The smoke runs as dev's agent token, which dev's owner makes
           # after its first deploy (docs/environments.md); until it is set
           # the deploy goes on without the smoke and says so.
-          if [ -n "$CLAX_SMOKE_TOKEN" ]; then args+=(--smoke); else echo "::warning::no CLAX_SMOKE_TOKEN in the dev environment: deploying without the smoke"; fi
+          if [ -n "$CLAX_SMOKE_TOKEN" ]; then args+=(--smoke); else echo "::warning::no CLAX_DEV_SMOKE_TOKEN in the preview environment: deploying without the smoke"; fi
           scripts/cloudflare-setup.sh "${args[@]}" --account "$CLOUDFLARE_ACCOUNT_ID" \
             --ci --no-build --i-know-what-i-am-doing
 
       - name: Summary
         if: ${{ always() && env.skip != '1' }}
         env:
-          RECORD: ${{ runner.temp }}/clax-deploy/${{ vars.PUBLIC_HOST }}.json
+          RECORD: ${{ runner.temp }}/clax-deploy/dev.${{ vars.PREVIEW_HOST_ZONE }}.json
         run: |
           field() { node -e 'try { console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]] ?? "") } catch { console.log("") }' "$RECORD" "$1"; }
           health="$(curl -fsS --max-time 20 "https://$PUBLIC_HOST/healthz" 2>&1 || true)"

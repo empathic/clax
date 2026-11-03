@@ -8,14 +8,21 @@ from GitHub Actions:
 | env | Worker | Hosts | Versions | Deployed by | GitHub environment |
 |---|---|---|---|---|---|
 | `prod` | `clax` | `clax.dev`, `<ID>.clax.run` | Artifacts (bucket `clax-assets`, queue `clax-artifacts-events`, namespace `clax`) | every push to `prod` (`deploy-prod.yml`, [docs/prod.md](prod.md)) | `production` |
-| `dev` | `clax-dev` | `PUBLIC_HOST`, `<ID>.SITE_DOMAIN` | Artifacts (bucket `clax-assets-dev`, queue `clax-artifacts-events-dev`, namespace `clax-dev`) | every push to `main` whose `ci` run passes (`deploy-dev.yml`) | `dev` |
+| `dev` | `clax-dev` | `dev.PREVIEW_HOST_ZONE`, `<ID>.dev.PREVIEW_SITE_ZONE` | Artifacts (bucket `clax-assets-dev`, queue `clax-artifacts-events-dev`, namespace `clax-dev`) | every push to `main` whose `ci` run passes (`deploy-dev.yml`) | `preview` |
 | `pr-<N>` | `clax-pr-<N>` | `pr-<N>.PREVIEW_HOST_ZONE`, `<ID>.pr-<N>.PREVIEW_SITE_ZONE` | Artifacts (queue `clax-artifacts-events-pr-<N>`, namespace `clax-pr-<N>`), assets in the shared bucket `clax-assets-preview` | every push to a pull request from a branch of this repository (`preview.yml`) | `preview` |
 
 The `clax-dev` Worker is the dev environment, not clax.dev; clax.dev is
 `prod`'s Worker `clax` (and `just clax-dev-deploy` deploys it).
 
-Every environment has GitHub sign-in, through a GitHub OAuth App of its
-own, and `OWNER_GITHUB` signs in as its owner.
+Every environment has GitHub sign-in, and `OWNER_GITHUB` signs in as its
+owner: prod through its own GitHub OAuth App, dev and the previews through
+the preview one.
+
+dev runs in the `preview` GitHub environment: dev and the previews need
+the same Cloudflare account, token and OAuth App, and dev's hosts are
+named from the preview zones. `deploy-dev.yml` deploys from `main` alone
+(its job's condition); the environment itself admits any branch, for the
+previews.
 
 ## How it fits together
 
@@ -97,20 +104,19 @@ given the `preview` environment's secrets.
 
 ## GitHub sign-in on every environment
 
-Each environment has its own GitHub OAuth App (GitHub, Settings,
+dev and the previews share one GitHub OAuth App (GitHub, Settings,
 Developer settings, OAuth Apps), created by hand, with the scope Clax asks
 for (`read:user`) and no other setting beyond these:
 
 | App | Homepage | Callback URL | Wildcard matching |
 |---|---|---|---|
-| dev | `https://PUBLIC_HOST` | `https://PUBLIC_HOST/auth/github/callback` | off |
 | preview | `https://PREVIEW_HOST_ZONE` | `https://PREVIEW_HOST_ZONE/auth/github/callback` | **on** |
 
 Clax sends `redirect_uri=<public origin>/auth/github/callback`
 (`crates/clax-server/src/github.rs`). With wildcard matching on, GitHub
 takes any subdomain of the callback URL's host with the same port and a
-path at or under its path, so the one preview App serves every
-`https://pr-<N>.PREVIEW_HOST_ZONE`
+path at or under its path, so the one App serves every
+`https://pr-<N>.PREVIEW_HOST_ZONE` and `https://dev.PREVIEW_HOST_ZONE`
 ([GitHub's docs](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps),
 "Redirect URLs"). The App's client ID is the environment's secret
 `OAUTH_CLIENT_ID` (GitHub refuses secret names starting with `GITHUB_`)
@@ -134,13 +140,15 @@ itself.
 **So dev and the previews run on a Cloudflare account of their own**, with
 their zones on it, apart from clax.dev's: neither token can reach prod's
 Worker `clax`, its Durable Objects or its bucket `clax-assets`, whatever a
-branch's run does with it. Each environment names that account in its
-secret `CLOUDFLARE_ACCOUNT_ID`. The account needs Workers Paid (Durable
-Objects and the Worker Loader) and the Artifacts beta.
+branch's run does with it. The `preview` environment names that account
+in its secret `CLOUDFLARE_ACCOUNT_ID`. The account needs Workers Paid
+(Durable Objects and the Worker Loader) and the Artifacts beta.
 
 dev and the previews need the same permissions, so one token, limited to
-that account and to its zones, can serve both environments (or make one
-each, the same):
+that account and to its zones, serves both, in the `preview` environment.
+So does dev's smoke token, `CLAX_DEV_SMOKE_TOKEN`: a writer's branch can
+act as an agent on dev, and redeploy over `clax-dev`, as it could with
+the Cloudflare token alone.
 
 | Scope | Permission | For |
 |---|---|---|
@@ -151,7 +159,7 @@ each, the same):
 | Account | Account Settings: Read | the login check |
 | Zone (public host's) | Zone: Read | the custom domain |
 | Zone (site domain's) | Workers Routes: Edit, Zone: Read | the site route |
-| Zone (site domain's) | DNS: Edit | the `*.pr-<N>` records (and dev's, when `SITE_ZONE` is set) |
+| Zone (site domain's) | DNS: Edit | the `*.pr-<N>` and `*.dev` records |
 | User | User Details: Read, Memberships: Read | the login check |
 
 The same caveats as prod's token apply ([docs/prod.md](prod.md), "The
@@ -167,50 +175,20 @@ Cloudflare's docs.
    deploy fails making its bucket with Cloudflare's code 10042) and the
    Artifacts beta turned on (Storage & databases, Artifacts).
    `just wrangler login`, then `just wrangler whoami` lists the accounts the login sees, with their IDs: the new one's is
-   the environments' `CLOUDFLARE_ACCOUNT_ID`.
-2. On it, add the zones: dev's public
-   host's and site domain's, and `PREVIEW_HOST_ZONE` and
-   `PREVIEW_SITE_ZONE`.
+   the `preview` environment's `CLOUDFLARE_ACCOUNT_ID`.
+2. On it, add the zones `PREVIEW_HOST_ZONE` and `PREVIEW_SITE_ZONE`.
 3. Turn on Advanced Certificate Manager and Total TLS on
-   `PREVIEW_SITE_ZONE` (and on dev's site zone when dev's site domain is
-   below its zone, `SITE_ZONE`). A dev site domain that is a zone itself
-   needs its proxied `*` record and a certificate covering it, as prod's
-   does (`crates/clax-worker/README.md`, "DNS for the public host and the
-   site domain").
+   `PREVIEW_SITE_ZONE`: the sites `<ID>.pr-<N>.PREVIEW_SITE_ZONE` and
+   `<ID>.dev.PREVIEW_SITE_ZONE` are two levels below it, past what
+   Universal SSL covers.
 4. Make the token above.
-
-### dev
-
-1. Create dev's OAuth App (above).
-2. Deploy dev once from a laptop, which makes its secrets, as prod's first
-   deploy did:
-
-   ```
-   GITHUB_CLIENT_SECRET=… just env-deploy dev --public <host> --site-domain <domain> \
-     --github-client-id <ID> --owner-github <login> --account <ID> --i-know-what-i-am-doing
-   ```
-
-   The settings are kept in `~/.config/clax/deploy/setup.dev.env`, and
-   later runs need no flags.
-3. Sign in to dev as the owner, make an agent token named `smoke`
-   (settings, Agent tokens).
-4. Set up the `dev` GitHub environment (deployable from `main` only) and
-   its variables from that configuration, then set its five secrets as
-   the script prints them:
-
-   ```
-   scripts/setup-env-github.sh --env dev                            # dry run
-   scripts/setup-env-github.sh --env dev --i-know-what-i-am-doing   # act
-   ```
-
-Until `CLAX_SMOKE_TOKEN` is set, `deploy-dev.yml` deploys without the smoke
-and warns.
 
 ### Previews
 
 1. Create the preview OAuth App (above), wildcard matching on.
 2. Set up the `preview` GitHub environment (deployable from any branch)
-   and its variables, then its four secrets as the script prints them:
+   and its variables, then its secrets as the script prints them (dev's
+   smoke token waits for dev, below):
 
    ```
    scripts/setup-env-github.sh --env preview --preview-host-zone <zone> --preview-site-zone <zone> \
@@ -219,6 +197,28 @@ and warns.
    ```
 
 The next push to a pull request deploys its preview.
+
+### dev
+
+1. Deploy dev once from a laptop, which makes its secrets and keeps the
+   backup of its `CLAX_KEK`, as prod's first deploy did, with the preview
+   OAuth App's client secret:
+
+   ```
+   GITHUB_CLIENT_SECRET=… just env-deploy dev --public dev.<PREVIEW_HOST_ZONE> \
+     --site-domain dev.<PREVIEW_SITE_ZONE> --site-zone <PREVIEW_SITE_ZONE> \
+     --github-client-id <ID> --owner-github <login> --account <ID> --i-know-what-i-am-doing
+   ```
+
+   The settings are kept in `~/.config/clax/deploy/setup.dev.env`, and
+   later runs need no flags.
+2. Sign in to dev as the owner, make an agent token named `smoke`
+   (settings, Agent tokens), and set it as the `preview` environment's
+   `CLAX_DEV_SMOKE_TOKEN`.
+
+Every green push to `main` deploys dev from then on. Until
+`CLAX_DEV_SMOKE_TOKEN` is set, `deploy-dev.yml` deploys without the smoke
+and warns.
 
 ## By hand
 
