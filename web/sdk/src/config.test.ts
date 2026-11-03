@@ -101,7 +101,7 @@ describe("the viewer's override", () => {
 
   it.each([
     ["http://localhost:5173", true], ["http://127.0.0.1:7700", true], ["https://phobos.tail556f5b.ts.net", true], ["http://app.localhost", true],
-    ["https://changeling.io", false], ["https://evil.ts.net.example.com", false], ["not a url", false],
+    ["https://changeling.io", false], ["https://evil.ts.net.example.com", false], ["not a url", false], ["http://100.101.5.9:7480", true], ["http://100.128.0.1", false], ["http://100.63.255.1", false],
   ])("treats %s as a dev origin: %s", (o, dev) => {
     expect(isDevOrigin(o)).toBe(dev);
   });

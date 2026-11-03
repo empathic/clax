@@ -11,13 +11,14 @@ describe("installTag", () => {
     expect(installTag("https://clax.example", 'a"b', null)).toContain('data-container="a&quot;b"');
     expect(containerPath("q 1")).toBe("/_clax/containers/q%201/config.json");
   });
-  it("every deployment carries the same tag", () => {
-    const tag = installTag("https://clax.example", "q1", null);
+  it("every deployment carries the same tag, naming itself", () => {
     const d = deployments("https://clax.example", "q1", null);
     expect(d.map(x => x.id)).toEqual(["render", "edge-cloudflare", "edge-caddy", "edge-nginx", "tag-manager"]);
-    expect(d.find(x => x.id === "edge-cloudflare")!.artifact).toContain(JSON.stringify(tag));
-    expect(d.find(x => x.id === "edge-nginx")!.artifact).toContain(`${tag}</head>`);
-    for (const x of d) expect(x.artifact).toContain("q1");
+    const tag = (id: (typeof d)[number]["id"]) => installTag("https://clax.example", "q1", null, id);
+    expect(tag("render")).toBe('<script async src="https://clax.example/_clax/overlay.js" data-container="q1" data-auth="/clax/token" data-deployment="render"></script>');
+    expect(d.find(x => x.id === "edge-cloudflare")!.artifact).toContain(JSON.stringify(tag("edge-cloudflare")));
+    expect(d.find(x => x.id === "edge-nginx")!.artifact).toContain(`${tag("edge-nginx")}</head>`);
+    for (const x of d) expect(x.artifact.replace(/\\"/g, "\"")).toContain(`data-deployment="${x.id}"`);
   });
 });
 

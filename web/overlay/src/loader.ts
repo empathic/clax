@@ -13,7 +13,7 @@
 // and a tag manager (`Clax.install({...})`, or `window.clax = [["install",
 // {...}]]` before the script).
 import type { ClaxConfig, ConfigLayer, Container, FieldName, Source } from "../../sdk/src/config";
-import { linkOverride, parseContainer, readOverride, resolve, writeOverride } from "../../sdk/src/config";
+import { INSTALL_KEY, integrationHook, isDevOrigin, linkOverride, parseContainer, readOverride, resolve, writeOverride } from "../../sdk/src/config";
 import type { ClaxPlugin, HandoffRequest } from "../../sdk/src/plugin";
 import type { ReporterAuth } from "../../sdk/src/reporter";
 import type { Release } from "../../sdk/src/types";
@@ -50,6 +50,9 @@ export interface Snippet {
   doc?: Document;
   /** Who installs: the site (default) or the Clax extension, which yields to the site ([`claim`]). */
   carrier?: Carrier;
+  /** Which of the integration's deployments put it here (the tag's `data-deployment`), and the tag's script address: shown in DevTools. */
+  deployment?: string;
+  script?: string;
   /** Fetches the container (tests replace it): default a GET of `containerUrl`. */
   fetchContainer?: (url: string) => Promise<unknown>;
   /** The plugins by name (tests replace it). */
@@ -194,8 +197,11 @@ export async function install(s: Snippet): Promise<Installed> {
     }
   }
 
+  // What the overlay can present, from the plugins it loaded and those it would load (null: it loaded none to ask).
+  let built: string[] | null = null;
   if (config.enabled && !handoff) {
     const plugins = await Promise.all(names.map(n => registry[n](s, config)));
+    built = [...plugins.flatMap(p => p.contributes.presentations?.map(x => x.id) ?? []), ...Object.keys(registry).filter(k => /^(presentation-|pins$)/.test(k)).map(k => k.replace("presentation-", ""))];
     const mount = s.mount ?? (await import("./mount")).mountOverlay;
     handle = mount({
       instance: s.instance, queue: s.queue ?? s.container, auth: authOf(s.auth, win), user: s.user, context: s.context, metadata: s.metadata, externalId: s.externalId, nonce: s.nonce,
@@ -268,6 +274,16 @@ export async function install(s: Snippet): Promise<Installed> {
   teardown.push(() => { if (w.clax === q) delete w.clax; });
   teardown.push(() => { if (doc.documentElement.getAttribute(CARRIER_ATTR) === carrier) doc.documentElement.removeAttribute(CARRIER_ATTR); });
 
+  // The DevTools panel's Integration view reads this, with no host code.
+  const mode = config["overrides.viewer"];
+  const hook = integrationHook(() => ({
+    v: 1, origin, instance: s.instance, container: s.container, version: container?.version ?? null, error, carrier,
+    deployment: s.deployment ?? null, script: s.script ?? null, applies: mode === "always" || (mode === "local" && isDevOrigin(origin)),
+    config, source: r.source, ignored: r.ignored, plugins: names, built,
+  }), doc);
+  Object.defineProperty(win, INSTALL_KEY, { value: hook, configurable: true });
+  teardown.push(() => { if ((win as unknown as Record<string, unknown>)[INSTALL_KEY] === hook) delete (win as unknown as Record<string, unknown>)[INSTALL_KEY]; });
+
   const uninstall = () => { for (const off of teardown.splice(0).reverse()) { try { off(); } catch (e) { console.error("Clax.install: teardown threw", e); } } };
   // The extension's overlay goes when the site installs its own.
   if (carrier === "extension") {
@@ -323,6 +339,8 @@ export function snippetFromTag(tag: HTMLScriptElement | null | undefined, base: 
   } catch { return null; }
   const s: Partial<Snippet> = { instance: instance.replace(/\/+$/, ""), container: d.container };
   if (d.queue) s.queue = d.queue;
+  if (d.deployment) s.deployment = d.deployment;
+  s.script = tag.src;
   if (d.auth) { try { s.auth = new URL(d.auth, base).href; } catch { /* left out: install says auth is missing */ } }
   return s;
 }

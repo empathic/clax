@@ -5,7 +5,10 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HOOK_KEY, type OverrideStore, type Value, registerDevSettings } from "../../../sdk/src/devtools";
 import { changelingStyle, feedbackAxes } from "../../../sdk/src/devtools-fixtures";
+import { INSTALL_KEY, type InstallInfo, integrationHook, isDevOrigin, resolve } from "../../../sdk/src/config";
 import AppSettings from "./AppSettings.svelte";
+import { CHANGELING_PANEL, IntegrationLink, groups, parseInfo } from "./integration.svelte";
+import IntegrationView from "./IntegrationView.svelte";
 import DevtoolsPanel from "./DevtoolsPanel.svelte";
 import { type HarEntry, NetworkLog, RING, asText, elide, loadBody, matches, shownHeaders, toRow } from "./network.svelte";
 import NetworkView from "./NetworkView.svelte";
@@ -264,14 +267,15 @@ describe("NetworkView", () => {
 
 describe("DevtoolsPanel", () => {
   const panelLink = () => ({ state: null, post: () => {} });
+  const noInstall = () => ({ status: "none" as const, info: null, set: vi.fn(), refresh: vi.fn(async () => {}) });
   /** No queues: the Queues view reads nothing until it is first opened. */
   const queues = () => ({ base: null, queues: vi.fn(async () => []), reports: vi.fn(), report: vi.fn(), clip: vi.fn(), reply: vi.fn(), resolve: vi.fn(), watch: () => () => {} });
-  it("has four views in a tab list the arrows move through, a notices zone always there, and reads settings only while they are in sight", async () => {
+  it("has five views in a tab list the arrows move through, a notices zone always there, and reads settings only while they are in sight", async () => {
     const settings = { status: "none" as const, snapshot: null, set: vi.fn(), reset: vi.fn(), active: vi.fn() };
     const q = queues();
-    const { rerender } = render(DevtoolsPanel, { props: { link: panelLink(), queues: q, settings, network: new NetworkLog(), reload: () => {} } });
+    const { rerender } = render(DevtoolsPanel, { props: { link: panelLink(), queues: q, settings, integration: noInstall(), network: new NetworkLog(), reload: () => {} } });
     const tabs = screen.getAllByRole("tab");
-    expect(tabs.map(t => t.textContent)).toEqual(["Threads", "Queues", "App settings", "Network"]);
+    expect(tabs.map(t => t.textContent)).toEqual(["Threads", "Queues", "Integration", "App settings", "Network"]);
     expect(screen.getByRole("status")).toBeTruthy();
     expect(screen.getByText("Connecting to Clax…")).toBeTruthy();
     expect(settings.active).toHaveBeenLastCalledWith(false);
@@ -280,6 +284,9 @@ describe("DevtoolsPanel", () => {
     expect(screen.getByRole("tab", { name: "Queues" }).getAttribute("aria-selected")).toBe("true");
     expect(await screen.findByText("You have no queues.", { exact: false })).toBeTruthy();
     await fireEvent.keyDown(screen.getByRole("tab", { name: "Queues" }), { key: "ArrowRight" });
+    expect(screen.getByRole("tab", { name: "Integration" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByText("Clax is not installed on this page.")).toBeTruthy();
+    await fireEvent.keyDown(screen.getByRole("tab", { name: "Integration" }), { key: "ArrowRight" });
     expect(screen.getByRole("tab", { name: "App settings" }).getAttribute("aria-selected")).toBe("true");
     expect(settings.active).toHaveBeenLastCalledWith(true);
     expect(screen.getByText("This page registers no app dev settings.")).toBeTruthy();
@@ -296,12 +303,86 @@ describe("DevtoolsPanel", () => {
     const settings = new SettingsLink(p.env);
     await settings.refresh();
     const reload = vi.fn();
-    render(DevtoolsPanel, { props: { link: panelLink(), queues: queues(), settings, network: new NetworkLog(), reload } });
+    render(DevtoolsPanel, { props: { link: panelLink(), queues: queues(), settings, integration: noInstall(), network: new NetworkLog(), reload } });
     await fireEvent.click(screen.getByRole("tab", { name: "App settings" }));
     await fireEvent.click(screen.getByRole("radio", { name: "Drawer" }));
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Presentation: Drawer (You). Reload the page to apply."));
     await fireEvent.click(screen.getByRole("button", { name: "Reload page" }));
     expect(reload).toHaveBeenCalledOnce();
     settings.close();
+  });
+});
+
+describe("the Integration view", () => {
+  /** A page whose install is `info` (the real hook over the real resolver), inspected as `inspectedWindow.eval` would. */
+  function installedPage(layers: { site?: unknown; clax?: unknown }, origin = "http://127.0.0.1:7700", extra: Partial<InstallInfo> = {}) {
+    const doc = { cookie: "" } as Document;
+    const r = resolve(layers, origin);
+    const mode = r.config["overrides.viewer"];
+    const info = (): InstallInfo => ({
+      v: 1, origin, instance: "https://clax.example", container: "q1", version: 0, error: null, carrier: "site", deployment: "render",
+      script: "https://clax.example/_clax/overlay.js?v=0123456789ab", applies: mode === "always" || (mode === "local" && isDevOrigin(origin)),
+      config: r.config, source: r.source, ignored: r.ignored, plugins: ["presentations"], built: ["floating", "dialog", "drawer", "sheet", "window", "extension"], ...extra,
+    });
+    const win = { [INSTALL_KEY]: integrationHook(info, doc) };
+    const nav: (() => void)[] = [];
+    const env: InspectEnv = {
+      eval: async expr => new Function("window", `return ${expr};`)(win),
+      onNavigated: f => { nav.push(f); return () => nav.splice(nav.indexOf(f), 1); },
+    };
+    return { doc, env };
+  }
+
+  it("reads the install with no host code, checks it whole, and says when there is none", async () => {
+    const p = installedPage({ clax: { presentation: "dialog" } });
+    const link = new IntegrationLink(p.env);
+    await link.refresh();
+    expect(link.status).toBe("ready");
+    expect(link.info).toMatchObject({ container: "q1", deployment: "render", source: { presentation: "clax" } });
+    expect(parseInfo('{"v":1}')).toBeNull();
+    expect(parseInfo(JSON.stringify({ ...link.info, carrier: "elsewhere" }))).toBeNull();
+    const none = new IntegrationLink({ eval: async () => null, onNavigated: () => () => {} });
+    await none.refresh();
+    expect(none.status).toBe("none");
+  });
+
+  it("maps every option of Changeling's on-page panel to a row, and shows what is not built as such", async () => {
+    const p = installedPage({});
+    const link = new IntegrationLink(p.env);
+    await link.refresh();
+    const rows = groups(link.info!).flatMap(g => g.rows);
+    for (const o of CHANGELING_PANEL) expect(rows.map(r => r.field), o.option).toContain(o.field);
+    expect(rows.find(r => r.field === "pins")?.notBuilt).toBeTruthy();
+    const partial = groups({ ...link.info!, built: ["floating", "dialog"] }).flatMap(g => g.rows).find(r => r.field === "presentation")!;
+    expect(partial.choices!.filter(c => !c.built).map(c => c.value)).toEqual(["drawer", "sheet", "window", "extension"]);
+  });
+
+  it("shows each field's value and source, sets the viewer's override in the page's cookie, and says to reload", async () => {
+    const p = installedPage({ site: { start: "screenshot" } });
+    const link = new IntegrationLink(p.env);
+    await link.refresh();
+    const said: [string, boolean | undefined][] = [];
+    render(IntegrationView, { props: { link, say: (t: string, r?: boolean) => { said.push([t, r]); } } });
+    expect(screen.getByText("render")).toBeTruthy();
+    expect(screen.getByText("pinned, version 0123456789ab")).toBeTruthy();
+    const start = screen.getByRole("group", { name: "Start mode" });
+    expect((within(start).getByRole("radio", { name: "Screenshot then annotate" }) as HTMLInputElement).checked).toBe(true);
+    await fireEvent.click(screen.getByRole("radio", { name: "Side drawer" }));
+    await waitFor(() => expect(said.at(-1)).toEqual(["Presentation: Side drawer (You). Reload the page to apply.", true]));
+    expect(decodeURIComponent(p.doc.cookie)).toContain('"presentation":"drawer"');
+    expect(screen.getByText(/You chose Side drawer: reload to apply/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reset Presentation" })).toBeTruthy();
+    expect(screen.getAllByText("Not built").length).toBeGreaterThan(0);
+  });
+
+  it("is read-only off a local or tailnet origin", async () => {
+    const p = installedPage({}, "https://changeling.io");
+    const link = new IntegrationLink(p.env);
+    await link.refresh();
+    render(IntegrationView, { props: { link, say: () => {} } });
+    expect(screen.getByText(/Read-only here/)).toBeTruthy();
+    expect((screen.getByRole("radio", { name: "Dialog" }) as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByRole("switch", { name: "Floating launcher" }) as HTMLInputElement).disabled).toBe(true);
+    expect((await link.set("presentation", "dialog")).ok).toBe(false);
   });
 });

@@ -10,6 +10,7 @@ import { mount } from "svelte";
 import "../../../shell/src/theme.css";
 import { PanelLink } from "../panel/link.svelte";
 import DevtoolsPanel from "./DevtoolsPanel.svelte";
+import { IntegrationLink } from "./integration.svelte";
 import { type HarEntry, NetworkLog } from "./network.svelte";
 import { panelTriage, showExpr } from "./queues";
 import { SettingsLink, chromeInspect } from "./settings.svelte";
@@ -18,6 +19,7 @@ const tabId = chrome.devtools.inspectedWindow.tabId;
 const inspect = chromeInspect();
 const link = new PanelLink(0, { runtime: chrome.runtime, search: `?tab=${tabId}`, doc: document });
 const settings = new SettingsLink(inspect);
+const integration = new IntegrationLink(inspect);
 const network = new NetworkLog();
 const originOf = () => inspect.eval("location.origin").then(o => (typeof o === "string" && /^https?:\/\//.test(o) ? o : null));
 
@@ -50,7 +52,7 @@ const queues = panelTriage(link);
 mount(DevtoolsPanel, {
   target: document.getElementById("app")!,
   props: {
-    link, settings, network, queues,
+    link, settings, integration, network, queues,
     get shown() { return props.shown; },
     get inspected() { return props.inspected; },
     show: async (selector: string) => (await inspect.eval(showExpr(selector))) === true,

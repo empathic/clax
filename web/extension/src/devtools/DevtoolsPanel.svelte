@@ -1,9 +1,11 @@
 <script lang="ts">
   // The Clax DevTools panel (RECOMMEND-consultant-2026-11-02-clax-extension-
   // devtools Q1): a third host of the side panel's view, pinned to the
-  // inspected tab. Four views in a tab list (arrows, Home and End move
+  // inspected tab. Five views in a tab list (arrows, Home and End move
   // between them): Threads (the side panel's own `Panel`, unchanged), Queues
-  // (Clax's own queue and report pages, pinned to the inspected site), App
+  // (Clax's own queue and report pages, pinned to the inspected site),
+  // Integration (how Clax is installed on the page, every config field and
+  // the viewer's override, with no host code), App
   // settings (the page's dev settings hook) and Network. One notices zone
   // under the tab list, always there and of a fixed height, says what each
   // change did (a live region), so nothing below it moves. Every view stays
@@ -11,16 +13,18 @@
   import type { ComponentProps } from "svelte";
   import Panel from "../panel/Panel.svelte";
   import AppSettings from "./AppSettings.svelte";
+  import IntegrationView from "./IntegrationView.svelte";
+  import type { IntegrationLink } from "./integration.svelte";
   import NetworkView from "./NetworkView.svelte";
   import QueuesView from "./QueuesView.svelte";
   import type { NetworkLog } from "./network.svelte";
   import type { SettingsLink } from "./settings.svelte";
 
-  type View = "threads" | "queues" | "settings" | "network";
+  type View = "threads" | "queues" | "integration" | "settings" | "network";
   const VIEWS: { id: View; label: string }[] = [
-    { id: "threads", label: "Threads" }, { id: "queues", label: "Queues" }, { id: "settings", label: "App settings" }, { id: "network", label: "Network" },
+    { id: "threads", label: "Threads" }, { id: "queues", label: "Queues" }, { id: "integration", label: "Integration" }, { id: "settings", label: "App settings" }, { id: "network", label: "Network" },
   ];
-  let { link, queues, inspected = { origin: null, page: null }, show = async () => false, settings, network, shown = true, reload, copy = copyText, now }: {
+  let { link, queues, inspected = { origin: null, page: null }, show = async () => false, settings, integration, network, shown = true, reload, copy = copyText, now }: {
     link: ComponentProps<typeof Panel>["link"];
     /** The owner's queues, through the worker. */
     queues: ComponentProps<typeof QueuesView>["api"];
@@ -29,6 +33,8 @@
     /** Shows a selector's element in the inspected page; true when found. */
     show?(selector: string): Promise<boolean>;
     settings: Pick<SettingsLink, "status" | "snapshot" | "set" | "reset" | "active">;
+    /** The page's Clax install, read through `inspectedWindow.eval`. */
+    integration: Pick<IntegrationLink, "status" | "info" | "set" | "refresh">;
     network: Pick<NetworkLog, "rows" | "keep" | "clear">;
     /** Whether DevTools shows this panel now (its `onShown` / `onHidden`). */
     shown?: boolean;
@@ -46,6 +52,8 @@
   const say = (text: string, withReload = false) => { notice = { text, reload: withReload, n: ++said }; };
   // The page's settings are read only while they are in sight.
   $effect(() => { settings.active(shown && view === "settings"); });
+  // The install is read again each time the view comes into sight.
+  $effect(() => { if (shown && view === "integration") void integration.refresh(); });
   function key(e: KeyboardEvent): void {
     const i = VIEWS.findIndex(v => v.id === view);
     const to = e.key === "ArrowRight" ? (i + 1) % VIEWS.length : e.key === "ArrowLeft" ? (i + VIEWS.length - 1) % VIEWS.length : e.key === "Home" ? 0 : e.key === "End" ? VIEWS.length - 1 : -1;
@@ -91,6 +99,9 @@
   <div class="view" role="tabpanel" id="dt-queues-panel" aria-labelledby="dt-queues" hidden={view !== "queues"}>
     <!-- Loaded once first opened, then kept: the queue routes are read only for a panel that shows them. -->
     {#if seen.queues}<QueuesView api={queues} origin={inspected.origin} page={inspected.page} {show} {say} />{/if}
+  </div>
+  <div class="view" role="tabpanel" id="dt-integration-panel" aria-labelledby="dt-integration" hidden={view !== "integration"}>
+    <IntegrationView link={integration} {say} />
   </div>
   <div class="view" role="tabpanel" id="dt-settings-panel" aria-labelledby="dt-settings" hidden={view !== "settings"}>
     <AppSettings link={settings} {say} />

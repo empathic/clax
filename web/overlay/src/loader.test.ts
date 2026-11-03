@@ -2,6 +2,7 @@
 // targets the config turns on (Addenda 2 and 3).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { definePlugin, PLUGIN_API_VERSION, type ClaxPlugin } from "../../sdk/src/plugin";
+import { INSTALL_KEY } from "../../sdk/src/config";
 import { authOf, CARRIER_ATTR, claim, containerUrl, install, installQueued, snippetFromTag, type PluginName, pluginsFor, type Registry, type Snippet } from "./loader";
 import type { OverlayHandle } from "./mount";
 import { resolve } from "../../sdk/src/config";
@@ -175,11 +176,11 @@ describe("one install, two carriers", () => {
     return t;
   };
   it("a tag names its instance by where the script came from, and its container and token route", () => {
-    expect(snippetFromTag(tag({ src: "https://clax.example/_clax/overlay.js?v=0123", "data-container": "q1", "data-auth": "/clax/token" }), "https://site.example/app/")).toEqual({
-      instance: "https://clax.example", container: "q1", auth: "https://site.example/clax/token",
+    expect(snippetFromTag(tag({ src: "https://clax.example/_clax/overlay.js?v=0123", "data-container": "q1", "data-auth": "/clax/token", "data-deployment": "render" }), "https://site.example/app/")).toEqual({
+      instance: "https://clax.example", container: "q1", auth: "https://site.example/clax/token", deployment: "render", script: "https://clax.example/_clax/overlay.js?v=0123",
     });
     expect(snippetFromTag(tag({ src: "https://example.com/clax/_clax/overlay.js", "data-container": "q1", "data-queue": "q2" }), "https://site.example/")).toEqual({
-      instance: "https://example.com/clax", container: "q1", queue: "q2",
+      instance: "https://example.com/clax", container: "q1", queue: "q2", script: "https://example.com/clax/_clax/overlay.js",
     });
     expect(snippetFromTag(tag({ src: "https://clax.example/_clax/overlay.js" }), "https://site.example/")).toBeNull();
     expect(snippetFromTag(null, "https://site.example/")).toBeNull();
@@ -197,5 +198,50 @@ describe("one install, two carriers", () => {
     installed.uninstall();
     installed = null;
     expect(document.documentElement.hasAttribute(CARRIER_ATTR)).toBe(false);
+  });
+});
+
+describe("the DevTools panel's integration hook", () => {
+  type Hook = { v: 1; info(): string; set(f: string, v: unknown): { ok: boolean; reason?: string } };
+  const hook = () => (window as unknown as Record<string, Hook | undefined>)[INSTALL_KEY];
+  it("says which container, version, carrier and deployment put Clax here, and how each field resolved, with no host code", async () => {
+    installed = await install(snippet({
+      deployment: "edge-caddy", script: "https://clax.example/_clax/overlay.js?v=0123456789ab",
+      site: { start: "screenshot" },
+      fetchContainer: async () => ({ id: "q1", version: 3, config: { presentation: "drawer" } }),
+      registry: registry({ presentations: async () => fake("presentations", { presentations: [{ id: "floating", label: "F", layout: "dock" }, { id: "drawer", label: "D", layout: "drawer" }] }) }),
+    }));
+    const info = JSON.parse(hook()!.info());
+    expect(info).toMatchObject({
+      v: 1, instance: "https://clax.example", container: "q1", version: 3, carrier: "site", deployment: "edge-caddy",
+      script: "https://clax.example/_clax/overlay.js?v=0123456789ab", applies: true, error: null,
+    });
+    expect(info.config).toMatchObject({ presentation: "drawer", start: "screenshot" });
+    expect(info.source).toMatchObject({ presentation: "clax", start: "site", enabled: "default" });
+    expect(info.built).toEqual(expect.arrayContaining(["floating", "drawer"]));
+    expect(info.built).not.toContain("pins");
+    expect(Object.keys(window)).not.toContain(INSTALL_KEY);
+    installed.uninstall();
+    installed = null;
+    expect(hook()).toBeUndefined();
+  });
+  it("keeps the viewer's override in the page's cookie, checked, for the next load; refuses what it may not take", async () => {
+    installed = await install(snippet());
+    expect(hook()!.set("presentation", "sheet")).toEqual({ ok: true });
+    expect(hook()!.set("presentation", "sideways")).toMatchObject({ ok: false, reason: expect.stringContaining("Not a value it takes") });
+    expect(hook()!.set("overrides.viewer", "always")).toMatchObject({ ok: false });
+    expect(hook()!.set("no.such", true)).toMatchObject({ ok: false });
+    expect(hook()!.set("enabled", false)).toEqual({ ok: true });
+    expect(hook()!.set("enabled", null)).toEqual({ ok: true });
+    installed.uninstall();
+    installed = await install(snippet());
+    expect(installed.source.presentation).toBe("you");
+    expect(installed.config.presentation).toBe("sheet");
+    expect(installed.source.enabled).toBe("default");
+  });
+  it("is read-only where viewer overrides do not apply", async () => {
+    installed = await install(snippet({ fetchContainer: async () => ({ id: "q1", version: 1, config: { overrides: { viewer: "never" } } }) }));
+    expect(JSON.parse(hook()!.info()).applies).toBe(false);
+    expect(hook()!.set("presentation", "sheet")).toEqual({ ok: false, reason: "Viewer overrides are off for this site." });
   });
 });

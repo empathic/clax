@@ -209,32 +209,33 @@ const attr = (v: string) => v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").rep
 
 /** The one tag a site pastes to install queue `qid` from `instance`:
  * pinned to `pin`'s version with its integrity, or the bare URL, which
- * follows each deploy. */
-export function installTag(instance: string, qid: string, pin: OverlayPin | null): string {
+ * follows each deploy; `deployment` names the deployment that carries it,
+ * which the DevTools panel's Integration view shows. */
+export function installTag(instance: string, qid: string, pin: OverlayPin | null, deployment?: Deployment["id"]): string {
   const base = instance.replace(/\/+$/, "");
   const src = `${base}${pin?.src ?? "/_clax/overlay.js"}`;
   const sri = pin ? ` integrity="${attr(pin.integrity)}" crossorigin="anonymous"` : "";
-  return `<script async src="${attr(src)}"${sri} data-container="${attr(qid)}" data-auth="/clax/token"></script>`;
+  const dep = deployment ? ` data-deployment="${deployment}"` : "";
+  return `<script async src="${attr(src)}"${sri} data-container="${attr(qid)}" data-auth="/clax/token"${dep}></script>`;
 }
 
 /** A way an integration reaches pages: each with the artifact its owner pastes. */
 export interface Deployment { id: "render" | "edge-cloudflare" | "edge-caddy" | "edge-nginx" | "tag-manager"; label: string; where: string; artifact: string }
 
-/** The copy-paste artifact of each deployment of queue `qid`, all carrying
- * the same tag (`installTag`). The extension is the fifth carrier and needs
- * no artifact: it installs on the pages its owner adds. */
+/** The copy-paste artifact of each deployment of queue `qid`, each carrying
+ * the same tag (`installTag`) naming that deployment. The extension is the
+ * sixth carrier and needs no artifact: it installs on the pages its owner adds. */
 export function deployments(instance: string, qid: string, pin: OverlayPin | null): Deployment[] {
-  const tag = installTag(instance, qid, pin);
-  const js = JSON.stringify(tag);
+  const tag = (d: Deployment["id"]) => installTag(instance, qid, pin, d);
   return [
-    { id: "render", label: "Page or template", where: "In <head> of each page, or the site's third-party head-snippet setting", artifact: tag },
+    { id: "render", label: "Page or template", where: "In <head> of each page, or the site's third-party head-snippet setting", artifact: tag("render") },
     {
       id: "edge-cloudflare", label: "Cloudflare Worker", where: "A Worker on the site's route",
-      artifact: `export default {\n  async fetch(req, env) {\n    const res = await fetch(req);\n    if (!(res.headers.get("content-type") ?? "").includes("text/html")) return res;\n    return new HTMLRewriter()\n      .on("head", { element(e) { e.append(${js}, { html: true }); } })\n      .transform(res);\n  },\n};`,
+      artifact: `export default {\n  async fetch(req, env) {\n    const res = await fetch(req);\n    if (!(res.headers.get("content-type") ?? "").includes("text/html")) return res;\n    return new HTMLRewriter()\n      .on("head", { element(e) { e.append(${JSON.stringify(tag("edge-cloudflare"))}, { html: true }); } })\n      .transform(res);\n  },\n};`,
     },
-    { id: "edge-caddy", label: "Caddy", where: "In the site's block (needs the replace-response plugin)", artifact: `replace {\n\t"</head>" ${JSON.stringify(`${tag}</head>`)}\n}` },
-    { id: "edge-nginx", label: "nginx", where: "In the site's location (ngx_http_sub_module)", artifact: `sub_filter '</head>' '${tag.replace(/'/g, "\\'")}</head>';\nsub_filter_once on;` },
-    { id: "tag-manager", label: "Tag manager", where: "A Custom HTML tag fired on all pages", artifact: tag },
+    { id: "edge-caddy", label: "Caddy", where: "In the site's block (needs the replace-response plugin)", artifact: `replace {\n\t"</head>" ${JSON.stringify(`${tag("edge-caddy")}</head>`)}\n}` },
+    { id: "edge-nginx", label: "nginx", where: "In the site's location (ngx_http_sub_module)", artifact: `sub_filter '</head>' '${tag("edge-nginx").replace(/'/g, "\\'")}</head>';\nsub_filter_once on;` },
+    { id: "tag-manager", label: "Tag manager", where: "A Custom HTML tag fired on all pages", artifact: tag("tag-manager") },
   ];
 }
 

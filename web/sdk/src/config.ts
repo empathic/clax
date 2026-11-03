@@ -118,7 +118,68 @@ export function check(name: FieldName, v: unknown): { ok: true; value: unknown }
 export function isDevOrigin(origin: string): boolean {
   let host: string;
   try { host = new URL(origin).hostname; } catch { return false; }
-  return host === "localhost" || host === "[::1]" || /^127\./.test(host) || /\.(localhost|local|ts\.net)$/.test(host);
+  // A tailnet's MagicDNS names and its 100.64.0.0/10 addresses.
+  return host === "localhost" || host === "[::1]" || /^127\./.test(host) || /\.(localhost|local|ts\.net)$/.test(host) || /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+$/.test(host);
+}
+
+/** The global an install exposes for the Clax DevTools panel's Integration
+ * view (`IntegrationHook`): what put Clax on the page and how each field
+ * resolved, and the viewer's override to set. No host code is involved. */
+export const INSTALL_KEY = "__CLAX_INSTALL__";
+
+/** What an install tells the DevTools panel, as JSON (protocol 1). */
+export interface InstallInfo {
+  v: 1;
+  origin: string;
+  instance: string;
+  container: string;
+  /** The container version read (from Clax or kept in this browser); null when there was none. */
+  version: number | null;
+  error: string | null;
+  carrier: "site" | "extension";
+  /** The deployment the tag names (`data-deployment`), when it names one. */
+  deployment: string | null;
+  /** The tag's script address (its `?v=` pin), for a tag install. */
+  script: string | null;
+  /** Whether a viewer's override applies on this page now, and the rule that decided. */
+  applies: boolean;
+  config: ClaxConfig;
+  source: Record<FieldName, Source>;
+  ignored: Resolved["ignored"];
+  plugins: string[];
+  /** The presentations (and "pins") the overlay has; null when it loaded none to ask. */
+  built: string[] | null;
+}
+
+/** The object on `window[INSTALL_KEY]`. */
+export interface IntegrationHook {
+  v: 1;
+  /** `InstallInfo` as a JSON string. */
+  info(): string;
+  /** Sets the viewer's override of `field` (null drops it); applies at the next load. */
+  set(field: string, value: unknown): { ok: true } | { ok: false; reason: string };
+}
+
+/** The hook `install` puts on the page (non-enumerable, replaced by a later install). */
+export function integrationHook(info: () => InstallInfo, doc: Document): IntegrationHook {
+  return {
+    v: 1,
+    info: () => JSON.stringify(info()),
+    set(field, value) {
+      const i = info();
+      if (!i.applies) return { ok: false, reason: i.config["overrides.viewer"] === "never" ? "Viewer overrides are off for this site." : "Viewer overrides apply on local and tailnet origins only." };
+      if (!(field in FIELDS) || NOT_OVERRIDABLE.includes(field as FieldName)) return { ok: false, reason: "That setting can't be overridden." };
+      const layer = { ...readOverride(doc.cookie ?? "") };
+      if (value === null) delete layer[field];
+      else {
+        const c = check(field as FieldName, value);
+        if (!c.ok) return { ok: false, reason: `Not a value it takes: ${c.reason}.` };
+        layer[field] = c.value;
+      }
+      writeOverride(doc, layer);
+      return { ok: true };
+    },
+  };
 }
 
 /** The resolved configuration, each field's source, and the values left out and why. */
