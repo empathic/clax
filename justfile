@@ -222,6 +222,10 @@ web-e2e-native *ARGS:
 web-e2e-trace *ARGS:
     CLAX_E2E_TRACE=on CLAX_BUILD=native ./scripts/run.sh web-e2e "$@"
 
+# Print a web build's module graph as JSON (shell, overlay or transport): each module's imports, lazy imports, importers and chunk
+web-graph BUILD="shell":
+    cd web && node scripts/module-graph.mjs {{BUILD}}
+
 # Run the Pi extension tests
 pi-test *ARGS:
     ./scripts/run.sh pi-test "$@"
