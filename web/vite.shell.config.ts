@@ -85,17 +85,31 @@ export function appIconFiles(): Plugin {
 // advance (shell/src/clock.ts); every other build leaves the hook out.
 export const TEST_CLOCK = process.env.CLAX_TEST_CLOCK === "1";
 
-/** The dev server's Svelte DevTools (vite-devtools-svelte: components,
- * state timeline, reactive graph) in the Vite DevTools dock (@vitejs/devtools),
- * both pinned. `pnpm dev` only: they are imported for `serve` alone, so no
- * build, test or the configs' importers load them, and nothing of them can
- * reach a bundle (bundle-size.mjs checks). Open the page, then the dock's
- * handle and its Svelte tab, or /.svelte-devtools/; the first visit asks for
- * the one-time code the dev server prints. */
+/** The dev server's introspection, every package pinned. `pnpm dev` only:
+ * they are imported for `serve` alone, so no build, test or the configs'
+ * importers load them, and nothing of them can reach a bundle
+ * (bundle-size.mjs checks).
+ * - The Vite DevTools dock (@vitejs/devtools): its handle on the page.
+ * - Svelte DevTools (vite-devtools-svelte: components, state timeline,
+ *   reactive graph), the dock's Svelte tab or /.svelte-devtools/; the first
+ *   visit asks for the one-time code the dev server prints.
+ * - vite-plugin-inspect: each module's transforms, the dock's Inspect tab.
+ * - vite-plugin-devtools-json: /.well-known/appspecific/com.chrome.devtools.json,
+ *   so Chrome's DevTools offers to map the page's sources to web/ and save
+ *   edits made there (Sources > Workspace).
+ * - vite-plugin-checker: tsc and oxlint over the shell as files change, in
+ *   the terminal and an overlay on the page (svelte-check has no checker
+ *   here: `pnpm run typecheck` stays the gate for .svelte files). */
 async function devtools(): Promise<Plugin[]> {
-  const [{ svelteDevtools }, { DevTools }] = await Promise.all([import("vite-devtools-svelte"), import("@vitejs/devtools")]);
+  const [{ svelteDevtools }, { DevTools }, { default: inspect }, { default: devtoolsJson }, { default: checker }] = await Promise.all([
+    import("vite-devtools-svelte"), import("@vitejs/devtools"), import("vite-plugin-inspect"), import("vite-plugin-devtools-json"), import("vite-plugin-checker"),
+  ]);
+  const web = fileURLToPath(new URL(".", import.meta.url));
   // svelteDevtools() before the Svelte compiler, so its transforms run first.
-  return [svelteDevtools(), DevTools()].flat();
+  return [
+    svelteDevtools(), DevTools(), inspect(), devtoolsJson({ projectRoot: web }),
+    checker({ root: web, typescript: { root: web, tsconfigPath: "tsconfig.json" }, oxlint: { lintCommand: "oxlint --deny-warnings shell" } }),
+  ].flat() as Plugin[];
 }
 
 export default defineConfig(async ({ command }) => ({

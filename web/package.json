@@ -38,6 +38,9 @@
     "typescript": "^5.7.0",
     "vite": "^8.3.5",
     "vite-devtools-svelte": "0.7.0",
+    "vite-plugin-checker": "0.14.5",
+    "vite-plugin-devtools-json": "1.1.2",
+    "vite-plugin-inspect": "12.1.0",
     "vitest": "^4.1.12"
   },
   "dependencies": {
