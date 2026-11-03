@@ -6391,6 +6391,10 @@ router), and a test fails when it differs:
 | `POST /api/admin/provider/test` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/admin/shutdown` | Denied | no |
 | `GET /api/admin/usage` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/admin/web` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/admin/web` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/admin/web/token` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/admin/web/token` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/agent-read-consents` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/agent-read-consents/{reader}/{source}` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/agent-read-consents/{reader}/{source}` | Denied | yes: 403 `not_for_agents` |
@@ -9986,7 +9990,7 @@ handle, `*system` as "Clax".
 
 | Route | Who | Records |
 |---|---|---|
-| `GET /api/me/bot`, `PUT /api/me/bot {use_own}`, `PUT`/`DELETE /api/me/bot/key` | the owner and connected people, their own | `admin.key` (scope `own`) |
+| `GET /api/me/bot`, `PUT /api/me/bot {use_own?, web?}`, `PUT`/`DELETE /api/me/bot/key` | the owner and connected people, their own | `admin.key` (scope `own`) |
 | `GET /api/me/usage?week=` | the same; on a hosted Clax a run's `artifact_title` is `null` once its artifact is out of the caller's reach (its cost rows stay) | `view.usage` |
 | `GET /api/me/flags` → `{flags: {claxbot, claxbot_unenforced}}` (each person's defaults filled in) | the same, their own; agents 403 `not_for_agents` | — |
 | `GET /api/agents` | as before; ClaxBot is listed first (`handle: "claxbot"`, `builtin: true`, `live`, or `unavailable: no_flag\|no_credits\|not_configured\|model_not_priced`) where the caller may send | — |
@@ -9996,6 +10000,7 @@ handle, `*system` as "Clax".
 | `GET /api/admin/people`, `PUT …/<person>/flags`, `…/credits` | admins | `view.admin {page: people}`, `admin.flag`, `admin.credits` |
 | `PUT /api/admin/people/<person>/role {role}` | the owner alone (403 `owner_only`); the owner's own role 400 `owner_role` | `admin.role` |
 | `GET`/`PUT /api/admin/provider`, `PUT`/`DELETE …/key`, `POST …/test`, `GET …/models` | admins | `view.admin {page: provider\|provider.test\|provider.models}`, `admin.provider`, `admin.key` (scope `instance`) |
+| `GET`/`PUT /api/admin/web`, `PUT`/`DELETE /api/admin/web/token` | admins | `view.admin {page: web}`, `admin.provider`, `admin.key` (scope `cloudflare`) |
 | `GET`/`PUT /api/admin/pricing`, `POST`/`DELETE …/models`, `POST …/tokenulator`, `GET /api/admin/usage?week=` | admins | `view.admin {page: pricing\|usage}`, `admin.cost_line` |
 | `POST /api/admin/pricing/catalog/refresh` | admins | — (it replaces the cached public price catalog alone) |
 | `GET /api/audit?…`, `GET /api/audit/<seq>` | admins every event (on a hosted Clax every event but those naming an artifact out of their own reach), anyone else their scope (Toolpath journal, "Kinds"); a live page's events the owner's alone | `view.audit {filters}` |

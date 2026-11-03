@@ -21,6 +21,19 @@
 //!   for checking a backup of it; nothing public shows the fingerprint.
 //!
 //!   [`Kek::fingerprint`]: clax_store::secrets::Kek::fingerprint
+//! - `GET/PUT /api/admin/web`: the web tools' settings, `{search: {enabled,
+//!   provider, gateway, byok_alias, limit, max_per_run}, fetch: {enabled,
+//!   url_rule, allowlist, max_per_run}, cloudflare: {account_id, token}}`,
+//!   with `configured` (whether the host has a source at all) and `sources`
+//!   keyed `search.provider`, `fetch.url_rule` and so on; `PUT` takes the
+//!   same shape without `configured`, `sources` or `token`, any field may
+//!   be left out and a null puts it back to its default. A value the
+//!   setting's kind refuses is 400; a field the daemon's configuration
+//!   sets is refused 409 `setting_overridden`, as the provider's are.
+//!   `PUT/DELETE /api/admin/web/token` seals or clears the Cloudflare API
+//!   token (503 `no_kek` without a key-encryption key); the token is
+//!   write-only, shown as `key_info` (`last4`), and bound to Cloudflare's
+//!   API origin whatever the model base URL is.
 //! - `GET/PUT /api/admin/pricing`: the credit price, the free tier, the
 //!   default token rates, `require_explicit_price` and the cost lines,
 //!   with each priced model's rates and where they come from (`models`)
@@ -473,6 +486,193 @@ pub async fn clear_key(
             let ctx = audit.resolve(st)?;
             st.clear_secret(&ctx, &SecretSlot::Instance)?;
             provider_view(st, &bot)
+        })
+        .await?;
+    Ok(Json(v))
+}
+
+// ---------------------------------------------------------------------------
+// Web tools
+// ---------------------------------------------------------------------------
+
+/// The web settings by their place in the page: (group, field, setting).
+const WEB: &[(&str, &str, Setting)] = &[
+    ("search", "enabled", Setting::WebSearchEnabled),
+    ("search", "provider", Setting::WebSearchProvider),
+    ("search", "gateway", Setting::WebSearchGateway),
+    ("search", "byok_alias", Setting::WebSearchByokAlias),
+    ("search", "limit", Setting::WebSearchLimit),
+    ("search", "max_per_run", Setting::WebMaxSearchesPerRun),
+    ("fetch", "enabled", Setting::WebFetchEnabled),
+    ("fetch", "url_rule", Setting::WebFetchUrlRule),
+    ("fetch", "allowlist", Setting::WebFetchAllowlist),
+    ("fetch", "max_per_run", Setting::WebMaxFetchesPerRun),
+    ("cloudflare", "account_id", Setting::WebCloudflareAccountId),
+];
+
+/// The web settings as `GET /api/admin/web` shows them.
+///
+/// # Errors
+/// The store's.
+pub fn web_view(st: &Store, bot: &Bot) -> clax_core::Result<Value> {
+    let eff = st.effective_bot_settings()?;
+    let mut groups: serde_json::Map<String, Value> = serde_json::Map::new();
+    let mut sources = serde_json::Map::new();
+    for (group, field, setting) in WEB {
+        let value = eff
+            .get(setting)
+            .map(|e| e.value.clone())
+            .unwrap_or(Value::Null);
+        let source = eff
+            .get(setting)
+            .map(|e| e.source.label())
+            .unwrap_or_else(|| "default".into());
+        groups
+            .entry((*group).to_string())
+            .or_insert_with(|| json!({}))[*field] = value;
+        sources.insert(format!("{group}.{field}"), json!(source));
+    }
+    let meta = st.secret_meta(&SecretSlot::Cloudflare)?;
+    sources.insert(
+        "cloudflare.token".into(),
+        json!(if meta.is_some() { "db" } else { "default" }),
+    );
+    let mut names = Names::new(st);
+    groups["cloudflare"]["token"] = clax_http::bot::key_info(
+        &mut names,
+        meta.as_ref(),
+        clax_store::secrets::CLOUDFLARE_ORIGIN,
+        "the Cloudflare token",
+    )?;
+    let mut v = json!({"configured": bot.web_configured, "sources": sources});
+    for (k, g) in groups {
+        v[k] = g;
+    }
+    Ok(v)
+}
+
+/// `GET /api/admin/web` (see the module documentation).
+pub async fn web(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    who: Identity,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    let (caller, _) = admin(&s, &d).await?;
+    let bot = s.bot.clone();
+    let v = s
+        .store_call(move |st| {
+            let v = web_view(st, &bot)?;
+            viewed(st, &bot, &who, &caller, "web", None)?;
+            Ok(v)
+        })
+        .await?;
+    Ok(Json(v))
+}
+
+/// `PUT /api/admin/web`'s body: each group a map of the fields it may set.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebBody {
+    #[serde(default)]
+    search: Option<serde_json::Map<String, Value>>,
+    #[serde(default)]
+    fetch: Option<serde_json::Map<String, Value>>,
+    #[serde(default)]
+    cloudflare: Option<serde_json::Map<String, Value>>,
+}
+
+/// `PUT /api/admin/web {search?, fetch?, cloudflare?}`: each field given is
+/// set (null: back to its default). 400 `unknown_setting` for a field the
+/// page does not show or a value its kind refuses; 409 `setting_overridden`
+/// for one the daemon's configuration sets.
+pub async fn set_web(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    audit: DeferredAudit,
+    req: Result<Json<WebBody>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    admin(&s, &d).await?;
+    let b = body(req)?;
+    let mut changes: Vec<(Setting, Option<Value>)> = Vec::new();
+    for (group, map) in [
+        ("search", b.search),
+        ("fetch", b.fetch),
+        ("cloudflare", b.cloudflare),
+    ] {
+        for (k, v) in map.unwrap_or_default() {
+            let setting = WEB
+                .iter()
+                .find(|(g, f, _)| *g == group && *f == k)
+                .map(|(_, _, s)| *s)
+                .ok_or_else(|| {
+                    ApiError::bad_request(
+                        "unknown_setting",
+                        format!("no setting is named {group}.{k}"),
+                    )
+                })?;
+            changes.push((setting, (!v.is_null()).then_some(v)));
+        }
+    }
+    let bot = s.bot.clone();
+    let v = s
+        .store_call(move |st| {
+            let ctx = audit.resolve(st)?;
+            st.set_bot_settings(&ctx, &changes)?;
+            web_view(st, &bot)
+        })
+        .await?;
+    Ok(Json(v))
+}
+
+/// `PUT /api/admin/web/token {token}`'s body.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TokenBody {
+    token: String,
+}
+
+/// `PUT /api/admin/web/token {token}`: seals the Cloudflare API token.
+pub async fn set_web_token(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    audit: DeferredAudit,
+    req: Result<Json<TokenBody>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    admin(&s, &d).await?;
+    let b = body(req)?;
+    let bot = s.bot.clone();
+    bot.kek()?;
+    let v = s
+        .store_call(move |st| {
+            let ctx = audit.resolve(st)?;
+            let kek = bot.kek.as_ref().ok_or(CoreError::NotFound)?;
+            st.set_secret(&ctx, kek, &SecretSlot::Cloudflare, &b.token)?;
+            web_view(st, &bot)
+        })
+        .await?;
+    Ok(Json(v))
+}
+
+/// `DELETE /api/admin/web/token`: clears the stored Cloudflare API token.
+pub async fn clear_web_token(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    audit: DeferredAudit,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    admin(&s, &d).await?;
+    let bot = s.bot.clone();
+    let v = s
+        .store_call(move |st| {
+            let ctx = audit.resolve(st)?;
+            st.clear_secret(&ctx, &SecretSlot::Cloudflare)?;
+            web_view(st, &bot)
         })
         .await?;
     Ok(Json(v))

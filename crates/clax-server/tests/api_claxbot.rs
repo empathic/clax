@@ -2398,3 +2398,264 @@ async fn the_providers_models_say_how_each_is_priced() {
                "output_credits_milli_per_mtok": 2_800_000})
     );
 }
+
+const CF_TOKEN: &str = "cf-TOPSECRETTOKENVALUE-wxyz";
+
+#[tokio::test]
+async fn admin_web_round_trips() {
+    let p = people().await;
+    let ts = &p.ts;
+    let owner = Who::OwnerBrowser;
+    let (s, v) = call(ts, &owner, Method::GET, "/api/admin/web", Value::Null).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["search"]["enabled"], false);
+    assert_eq!(v["search"]["provider"], "ceramic");
+    assert_eq!(v["search"]["limit"], 5);
+    assert_eq!(v["search"]["max_per_run"], 10);
+    assert_eq!(v["fetch"]["url_rule"], "sourced");
+    assert_eq!(v["fetch"]["allowlist"], json!([]));
+    assert_eq!(v["fetch"]["max_per_run"], 20);
+    assert_eq!(v["cloudflare"]["account_id"], "");
+    assert_eq!(v["cloudflare"]["token"]["set"], false);
+    assert_eq!(v["configured"], false);
+    assert_eq!(v["sources"]["search.provider"], "default");
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web",
+        json!({
+            "search": {"enabled": true, "provider": "exa", "limit": 3, "max_per_run": 4},
+            "fetch": {"url_rule": "allowlist", "allowlist": ["example.com"]},
+            "cloudflare": {"account_id": "0123456789abcdef0123456789abcdef"},
+        }),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["search"]["enabled"], true);
+    assert_eq!(v["search"]["provider"], "exa");
+    assert_eq!(v["search"]["limit"], 3);
+    assert_eq!(v["search"]["max_per_run"], 4);
+    assert_eq!(v["fetch"]["enabled"], false);
+    assert_eq!(v["fetch"]["url_rule"], "allowlist");
+    assert_eq!(v["fetch"]["allowlist"], json!(["example.com"]));
+    assert_eq!(
+        v["cloudflare"]["account_id"],
+        "0123456789abcdef0123456789abcdef"
+    );
+    assert_eq!(v["sources"]["search.provider"], "db");
+    // null puts a field back to its default.
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web",
+        json!({"search": {"provider": null}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["search"]["provider"], "ceramic");
+    // A field the daemon's configuration sets is refused.
+    let mut ov = Overrides::default();
+    ov.set(Setting::WebSearchLimit, &json!(7), "file").unwrap();
+    ts.store.set_bot_overrides(ov);
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web",
+        json!({"search": {"limit": 2}}),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (409, "setting_overridden"), "{v}");
+    let (_, v) = call(ts, &owner, Method::GET, "/api/admin/web", Value::Null).await;
+    assert_eq!(v["search"]["limit"], 7);
+    assert_eq!(v["sources"]["search.limit"], "file");
+    // An unknown field is refused.
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web",
+        json!({"search": {"nope": 1}}),
+    )
+    .await;
+    assert_eq!(s, 400, "{v}");
+}
+
+#[tokio::test]
+async fn admin_web_refuses_a_bad_rule() {
+    let p = people().await;
+    let ts = &p.ts;
+    for body in [
+        json!({"fetch": {"url_rule": "anything"}}),
+        json!({"search": {"provider": "bing"}}),
+        json!({"search": {"limit": 11}}),
+        json!({"fetch": {"allowlist": ["not a host"]}}),
+        json!({"cloudflare": {"account_id": "0123"}}),
+    ] {
+        let (s, v) = call(
+            ts,
+            &Who::OwnerBrowser,
+            Method::PUT,
+            "/api/admin/web",
+            body.clone(),
+        )
+        .await;
+        assert_eq!(s, 400, "{body}: {v}");
+    }
+    let (_, v) = call(
+        ts,
+        &Who::OwnerBrowser,
+        Method::GET,
+        "/api/admin/web",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(v["fetch"]["url_rule"], "sourced");
+}
+
+#[tokio::test]
+async fn the_token_is_write_only() {
+    let p = people().await;
+    let ts = &p.ts;
+    let owner = Who::OwnerBrowser;
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web/token",
+        json!({"token": CF_TOKEN}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["cloudflare"]["token"]["set"], true);
+    assert_eq!(v["cloudflare"]["token"]["last4"], "wxyz");
+    assert_eq!(
+        v["cloudflare"]["token"]["host"],
+        "https://api.cloudflare.com"
+    );
+    let (_, v) = call(ts, &owner, Method::GET, "/api/admin/web", Value::Null).await;
+    assert_eq!(v["cloudflare"]["token"]["last4"], "wxyz");
+    assert!(!v.to_string().contains("TOPSECRET"), "{v}");
+    for e in ts.store.events_after(0, 10_000).unwrap() {
+        assert!(!e.body.contains("TOPSECRET"), "{}", e.body);
+    }
+    let keys = events(ts, "admin.key");
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0].1["scope"], "cloudflare");
+    assert_eq!(keys[0].1["op"], "set");
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::DELETE,
+        "/api/admin/web/token",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["cloudflare"]["token"]["set"], false);
+    let keys = events(ts, "admin.key");
+    assert_eq!(keys.len(), 2);
+    assert_eq!(keys[1].1["op"], "clear");
+    let (s, v) = call(
+        ts,
+        &Who::Agent,
+        Method::PUT,
+        "/api/admin/web/token",
+        json!({"token": CF_TOKEN}),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "not_for_agents"), "{v}");
+}
+
+#[tokio::test]
+async fn a_member_cannot_admin_web() {
+    let p = people().await;
+    let ts = &p.ts;
+    for who in [Who::Person(p.sam.0.clone()), Who::Viewer(p.lan.clone())] {
+        for (m, path, body) in [
+            (Method::GET, "/api/admin/web", Value::Null),
+            (Method::PUT, "/api/admin/web", json!({})),
+            (
+                Method::PUT,
+                "/api/admin/web/token",
+                json!({"token": CF_TOKEN}),
+            ),
+            (Method::DELETE, "/api/admin/web/token", Value::Null),
+        ] {
+            let (s, v) = call(ts, &who, m.clone(), path, body).await;
+            assert_eq!((s, code(&v)), (403, "forbidden"), "{who:?} {m} {path}: {v}");
+        }
+    }
+    let (s, v) = call(ts, &Who::Agent, Method::GET, "/api/admin/web", Value::Null).await;
+    assert_eq!((s, code(&v)), (403, "not_for_agents"), "{v}");
+}
+
+#[tokio::test]
+async fn me_turns_web_off() {
+    let p = people().await;
+    let ts = &p.ts;
+    let sam = Who::Person(p.sam.0.clone());
+    let (s, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        v["web"],
+        json!({"on": true, "offered": false, "why_off": "admin_off"})
+    );
+    let (s, v) = call(
+        ts,
+        &Who::OwnerBrowser,
+        Method::PUT,
+        "/api/admin/web",
+        json!({"search": {"enabled": true}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    // The host has no source in the test daemon.
+    let (_, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(
+        v["web"],
+        json!({"on": true, "offered": false, "why_off": "not_configured"})
+    );
+    let (s, v) = call(ts, &sam, Method::PUT, "/api/me/bot", json!({"web": false})).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["web"]["on"], false);
+    let (_, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(v["web"]["on"], false);
+    assert_eq!(events(ts, "me.web").len(), 1);
+    // The choice is the person's own.
+    let (_, v) = call(
+        ts,
+        &Who::OwnerBrowser,
+        Method::GET,
+        "/api/me/bot",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(v["web"]["on"], true);
+    let (s, v) = call(ts, &sam, Method::PUT, "/api/me/bot", json!({"web": true})).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["web"]["on"], true);
+}
+
+#[tokio::test]
+async fn me_put_needs_a_field() {
+    let p = people().await;
+    let ts = &p.ts;
+    let sam = Who::Person(p.sam.0.clone());
+    let (s, v) = call(ts, &sam, Method::PUT, "/api/me/bot", json!({})).await;
+    assert_eq!((s, code(&v)), (400, "empty_request"), "{v}");
+    // Both fields in one request: use_own still needs a key.
+    let (s, v) = call(
+        ts,
+        &sam,
+        Method::PUT,
+        "/api/me/bot",
+        json!({"web": false, "use_own": true}),
+    )
+    .await;
+    assert_eq!(s, 404, "{v}");
+    let (_, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(v["web"]["on"], true, "a refused request changes nothing");
+}

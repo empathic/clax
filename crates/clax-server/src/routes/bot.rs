@@ -144,6 +144,25 @@ pub fn can_export(st: &Store, who: &Identity, caller: &Caller) -> clax_core::Res
     Ok(super::toolpath::reads_history(who) || role_of(st, caller)?.is_admin())
 }
 
+/// `GET /api/me/bot`'s `web`: `on` is the person's own choice; `offered`
+/// when the admin turned either operation on and the host has a source;
+/// `why_off` names why web use is off for them now (`admin_off`,
+/// `person_off`, `not_configured`) or is null.
+fn web_view(st: &Store, bot: &Bot, person: &str) -> clax_core::Result<Value> {
+    let on =
+        |s: Setting| -> clax_core::Result<bool> { Ok(st.bot_setting(s)?.as_bool() == Some(true)) };
+    let admin_on = on(Setting::WebSearchEnabled)? || on(Setting::WebFetchEnabled)?;
+    let why_off = match clax_bot::web::WebAccess::now(st, person, bot.web_configured)? {
+        clax_bot::web::WebAccess::Off(why) => json!(why.as_str()),
+        clax_bot::web::WebAccess::On(_) => Value::Null,
+    };
+    Ok(json!({
+        "on": st.web_choice(person)?,
+        "offered": admin_on && bot.web_configured,
+        "why_off": why_off,
+    }))
+}
+
 /// `GET /api/me/bot`'s answer for `person`.
 ///
 /// # Errors
@@ -182,6 +201,7 @@ pub fn me_view(
             "use_own": own.as_ref().is_some_and(|m| m.use_own),
         },
         "week": st.week_usage_now(person)?,
+        "web": web_view(st, bot, person)?,
     });
     if let Some(code) = refused {
         v["unavailable_reason"] = json!(unavailable(code));
@@ -225,28 +245,43 @@ pub async fn me_flags(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct UseOwnBody {
-    use_own: bool,
+pub struct MeBody {
+    #[serde(default)]
+    use_own: Option<bool>,
+    #[serde(default)]
+    web: Option<bool>,
 }
 
-/// `PUT /api/me/bot {use_own}`: whether the caller's runs use their own
-/// key (404 when they have none).
+/// `PUT /api/me/bot {use_own?, web?}`, at least one (else 400
+/// `empty_request`): whether the caller's runs use their own key (404 when
+/// they have none) and whether they allow ClaxBot the web tools.
 pub async fn me_put(
     State(s): State<AppState>,
     d: DeniedToGrants,
     who: Identity,
     _o: SameOrigin,
     audit: DeferredAudit,
-    req: Result<Json<UseOwnBody>, JsonRejection>,
+    req: Result<Json<MeBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
     let (caller, person) = me(&s, &d).await?;
     let b = body(req)?;
+    if b.use_own.is_none() && b.web.is_none() {
+        return Err(ApiError::bad_request(
+            "empty_request",
+            "give use_own, web or both",
+        ));
+    }
     let bot = s.bot.clone();
     let v = s
         .store_call(move |st| {
             let ctx = audit.resolve(st)?;
-            st.set_use_own(&ctx, &person, b.use_own)?;
+            if let Some(on) = b.use_own {
+                st.set_use_own(&ctx, &person, on)?;
+            }
+            if let Some(on) = b.web {
+                st.set_web_choice(&ctx, &person, on)?;
+            }
             me_view(st, &bot, &who, &caller, &person)
         })
         .await?;
