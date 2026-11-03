@@ -28,12 +28,15 @@
 //    while its turn is held: it ends stopped and the API sees its connection
 //    closed (the wasm transport's abort);
 // 5. ClaxBot on the web, through the scripted web source the test routes
-//    select (CLAX_TEST_WEB, POST /_worker/web-fixtures, loaded before the
-//    restart and kept across it): a run whose script searches, fetches the
-//    first result and finishes is charged one search and one fetch, and
-//    its reply ends with the Sources it fetched; a fetch of a page that
-//    redirects to itself ends web_unavailable after five redirects, one
-//    source call, charged once;
+//    select (CLAX_TEST_WEB, POST /_worker/web-fixtures). The fixtures are
+//    loaded before the restart and the web runs start after it, so the
+//    restart checks only that the fixtures are kept and that runs started
+//    in the new incarnation use them; no web run is cut by it (charging
+//    once across a cut step is crates/clax-bot/tests/web.rs's). A run whose
+//    script searches, fetches the first result and finishes is charged one
+//    search and one fetch, and its reply ends with the Sources it fetched;
+//    a fetch of a page that redirects to itself ends web_unavailable after
+//    five redirects, one source call, charged once;
 // 6. with the free week cut to nothing, a send is 403 credits_exhausted;
 // 7. with every run ended, no alarm is held for ClaxBot.
 // (deploy.mjs's CLAX_KEK plan is deploy-lib.test.mjs's.)
@@ -479,7 +482,8 @@ async function main() {
     const doneKinds = replay.filter((e) => e.event === "step_done").map((e) => e.data?.step?.kind);
     check(JSON.stringify(doneKinds) === JSON.stringify(["turn", "finish"]), "the replay rebuilds the committed steps the live hub lost", doneKinds);
 
-    // 5. ClaxBot on the web, after the restart: the fixtures were kept.
+    // 5. ClaxBot on the web, started after the restart: the fixtures
+    // loaded before it were kept.
     const wid = (await ok(base, "POST", "/api/artifacts", {
       title: "Tide sources", files: { "index.html": { content: page, encoding: "utf8" } },
     })).artifact.id;

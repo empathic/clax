@@ -712,9 +712,11 @@ pub fn sniff(body: &[u8]) -> &'static str {
     "text/plain"
 }
 
-/// What a source does with a body of `content_type` (a `Content-Type`
-/// header or a media type; its parameters are ignored) fetched in
-/// `format` (see [`Handling`]):
+/// What a source does with a body of `content_type` fetched in `format`
+/// (see [`Handling`]). Pass the type the body is read as,
+/// [`media_type_of`]`(content_type, body)`, not the raw header: an empty or
+/// `application/octet-stream` type is sniffed there, and would be
+/// `Unsupported` here. (Parameters such as `charset` are ignored.)
 ///
 /// | Type | `Auto` | `Raw` |
 /// |---|---|---|
