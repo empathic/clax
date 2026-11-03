@@ -707,7 +707,7 @@ mod binding {
     /// module docs).
     pub struct BindingSource {
         ai: JsValue,
-        /// [`page::user_agent`] of the instance's public origin.
+        /// [`page::user_agent`] of the instance's public origin, if any.
         user_agent: String,
     }
 
@@ -715,14 +715,14 @@ mod binding {
         /// The source over `env`'s `AI` binding, when it has one. Under
         /// `wrangler dev --local` it has one whose every call throws
         /// ("needs to be run remotely"), which answers `web_unavailable`.
-        /// Its fetches name the instance at `origin` in their `User-Agent`
-        /// ([`page::user_agent`]).
+        /// Its fetches name the instance at `public_origin`, when it has
+        /// one, in their `User-Agent` ([`page::user_agent`]).
         #[must_use]
-        pub fn from_env(env: &worker::Env, origin: &str) -> Option<BindingSource> {
+        pub fn from_env(env: &worker::Env, public_origin: Option<&str>) -> Option<BindingSource> {
             let ai = Reflect::get(env.as_ref(), &JsValue::from_str("AI")).ok()?;
             ai.is_object().then(|| BindingSource {
                 ai,
-                user_agent: page::user_agent(origin),
+                user_agent: page::user_agent(public_origin),
             })
         }
 

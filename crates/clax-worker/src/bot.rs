@@ -141,25 +141,26 @@ pub fn sandbox(_env: &worker::Env) -> Result<Arc<dyn Sandbox>, String> {
 /// Where ClaxBot's `clax.web` calls go on this Worker
 /// (`crate::web_source`): `test`, the scripted source of the test mode,
 /// when given; else the `AI` binding, when the Worker has one, its fetches
-/// naming the instance at `origin` (its public origin) in their
-/// `User-Agent`; else none, and the host's web use is off, not configured.
+/// naming the instance at `public_origin` (`PUBLIC_ORIGIN`, when set; never
+/// a fallback) in their `User-Agent`; else none, and the host's web use is
+/// off, not configured.
 #[must_use]
 pub fn web_source(
     env: &worker::Env,
     test: Option<Arc<crate::web_source::FixtureWeb>>,
-    origin: &str,
+    public_origin: Option<&str>,
 ) -> Option<Arc<dyn clax_bot::WebSource>> {
     if let Some(t) = test {
         return Some(t);
     }
     #[cfg(target_arch = "wasm32")]
     {
-        crate::web_source::BindingSource::from_env(env, origin)
+        crate::web_source::BindingSource::from_env(env, public_origin)
             .map(|b| Arc::new(b) as Arc<dyn clax_bot::WebSource>)
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let _ = (env, origin);
+        let _ = (env, public_origin);
         None
     }
 }

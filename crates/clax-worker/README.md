@@ -124,7 +124,7 @@ through the Workers AI binding `AI` (`src/web_source.rs`,
 the admin names (`search.gateway`), and a fetch is the Worker's own `fetch`
 (redirects followed by hand, each target checked, at most 5; 5 MB and 30 s,
 conversion included; `User-Agent: ClaxBot/1 (+<PUBLIC_ORIGIN>)`, or
-`http://localhost` without one), with HTML, PDF and Office documents
+`ClaxBot/1` without one), with HTML, PDF and Office documents
 converted by `env.AI.toMarkdown()` by the rules every source shares
 (`clax_bot::web::page::handling`). With the binding the instance's web use is
 configured; the admin still turns each tool on. Searches are billed to the

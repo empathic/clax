@@ -612,7 +612,10 @@ fn worker_bot(
     app: &mut AppState,
     test_web: Option<Arc<crate::web_source::FixtureWeb>>,
 ) -> crate::bot::WorkerBot {
-    let web = crate::bot::web_source(env, test_web, &app.self_base);
+    // Only a configured public origin is named to the sites fetched.
+    let public = var(env, "PUBLIC_ORIGIN");
+    let public = Some(public.trim()).filter(|p| !p.is_empty());
+    let web = crate::bot::web_source(env, test_web, public);
     let kek_secret = env
         .secret("CLAX_KEK")
         .map(|v| v.to_string())
