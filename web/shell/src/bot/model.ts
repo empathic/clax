@@ -116,13 +116,13 @@ export function perUnitMilli(line: Pick<CostLine, "cost_micro_usd" | "margin_bp"
 
 export const UNITS: Record<Unit, string> = {
   mtok_input: "1M input tokens", mtok_cached_input: "1M cached tokens", mtok_cache_write: "1M cache-write tokens", mtok_output: "1M output tokens",
-  cpu_gb_s: "CPU·GB-s", mreq: "1M requests", gb_month: "GB-month", run: "run",
+  cpu_gb_s: "CPU·GB-s", mreq: "1M requests", gb_month: "GB-month", run: "run", kreq: "thousand requests",
 };
 
 /** The base unit a usage row counts in (§7.3), by its line's unit. */
 export const BASE_UNITS: Record<Unit, string> = {
   mtok_input: "tokens", mtok_cached_input: "tokens", mtok_cache_write: "tokens", mtok_output: "tokens",
-  cpu_gb_s: "CPU·MiB·ms", mreq: "requests", gb_month: "byte·s", run: "runs",
+  cpu_gb_s: "CPU·MiB·ms", mreq: "requests", gb_month: "byte·s", run: "runs", kreq: "requests",
 };
 
 /** A rate card's token units, in order, with their names. */

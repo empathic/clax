@@ -9860,6 +9860,7 @@ in that unit's base:
 | `mreq` | 10^6 requests | requests |
 | `gb_month` | 1 GiB for 30 days | bytes·s |
 | `run` | one run | runs |
+| `kreq` | 10^3 requests | requests |
 
 A row's credits are ⌈`qty` × cost × (1 + margin) ÷ (credit price × base)⌉
 milli-credits, computed exactly in integers and rounded up once per row,

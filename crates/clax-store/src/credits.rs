@@ -77,6 +77,8 @@ pub enum Unit {
     GbMonth,
     /// One run (the harness fee).
     Run,
+    /// A thousand requests (web search and web fetch).
+    Kreq,
 }
 
 impl Unit {
@@ -90,6 +92,7 @@ impl Unit {
         Unit::Mreq,
         Unit::GbMonth,
         Unit::Run,
+        Unit::Kreq,
     ];
 
     /// The unit's stored name.
@@ -103,6 +106,7 @@ impl Unit {
             Unit::Mreq => "mreq",
             Unit::GbMonth => "gb_month",
             Unit::Run => "run",
+            Unit::Kreq => "kreq",
         }
     }
 
@@ -112,7 +116,8 @@ impl Unit {
     }
 
     /// How many base quantities one line unit is: 10^6 tokens, 1024 MiB ×
-    /// 1000 ms, 10^6 requests, 2^30 bytes × 30 days of seconds, one run.
+    /// 1000 ms, 10^6 requests, 2^30 bytes × 30 days of seconds, one run,
+    /// 10^3 requests.
     pub fn base(self) -> i64 {
         match self {
             Unit::MtokInput
@@ -123,6 +128,7 @@ impl Unit {
             Unit::CpuGbS => 1024 * 1000,
             Unit::GbMonth => (1 << 30) * 30 * 86_400,
             Unit::Run => 1,
+            Unit::Kreq => 1_000,
         }
     }
 
@@ -804,6 +810,24 @@ pub const LINE_SCRIPT_COMPUTE: &str = "script.compute";
 pub const LINE_DO_REQUESTS: &str = "do.requests";
 pub const LINE_TOOLPATH_STORAGE: &str = "toolpath.storage";
 pub const LINE_HARNESS_FEE: &str = "harness.run";
+/// The web fetch line's ID.
+pub const LINE_WEB_FETCH: &str = "web.fetch";
+
+/// The web search line of search provider `provider`.
+pub fn web_search_line(provider: &str) -> String {
+    format!("web.search.{provider}")
+}
+
+/// The web search providers, each with its label and its list price in
+/// micro-USD per thousand requests.
+pub const WEB_PROVIDERS: [(&str, &str, i64); 3] = [
+    ("ceramic", "Web search (Ceramic)", 250),
+    ("exa", "Web search (Exa)", 7_000),
+    ("linkup", "Web search (Linkup)", 5_000),
+];
+
+/// The web fetch line's estimated cost in micro-USD per thousand fetches.
+const WEB_FETCH_COST_MICRO_USD: i64 = 500;
 
 /// The models seeded with token lines, with list prices in micro-USD per
 /// million input, cached input (cache read) and output tokens.
@@ -934,6 +958,40 @@ pub(crate) fn seed_cost_lines(tx: &Transaction<'_>) -> Result<()> {
             Option::<String>::None,
         ])?;
     }
+    Ok(())
+}
+
+/// Seeds the web lines: one search line per provider of [`WEB_PROVIDERS`]
+/// at its list price and [`LINE_WEB_FETCH`] at an estimate, in thousands of
+/// requests at the infrastructure margin, charged on every key. A line that
+/// exists (an admin changed it) is left as it is.
+pub(crate) fn seed_web_lines(tx: &Transaction<'_>) -> Result<()> {
+    let mut insert = tx.prepare(
+        "INSERT OR IGNORE INTO cost_lines (id, label, unit, cost_micro_usd, margin_bp,
+            fixed_credits_milli, applies, source, model, updated_by, updated_at)
+         VALUES (?1, ?2, 'kreq', ?3, ?4, NULL, 'always', ?5, NULL, 'migration',
+                 strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+    )?;
+    for (provider, label, cost) in WEB_PROVIDERS {
+        insert.execute(params![
+            web_search_line(provider),
+            label,
+            cost,
+            INFRA_MARGIN_BP,
+            format!(
+                "Cloudflare Web Search API list price, {provider}, ${}.{:02} per 1,000 requests (check)",
+                cost / 1_000,
+                cost % 1_000 / 10
+            ),
+        ])?;
+    }
+    insert.execute(params![
+        LINE_WEB_FETCH,
+        "Web fetch",
+        WEB_FETCH_COST_MICRO_USD,
+        INFRA_MARGIN_BP,
+        "estimate: Worker subrequest and Durable Object time per fetch (set by the admin)",
+    ])?;
     Ok(())
 }
 
@@ -1316,6 +1374,32 @@ impl Store {
             let rows = q.query_map([], row_to_line)?;
             Ok(rows.collect::<rusqlite::Result<_>>()?)
         })
+    }
+
+    /// The milli-credits one request of web line `line` costs now, rounded
+    /// up as [`row_credits_milli`] rounds: the line's cost per thousand
+    /// requests at its margin and the credit price. `key_source` does not
+    /// change it: a line that applies `always` charges on a person's own
+    /// key too. 0 for a line that does not exist or does not apply to
+    /// `key_source`.
+    ///
+    /// # Errors
+    /// `charge_overflow`; the store's.
+    pub fn one_request_milli(&self, line: &str, key_source: KeySource) -> Result<i64> {
+        let Some(rate) = self.rate_of(line)? else {
+            return Ok(0);
+        };
+        if key_source == KeySource::Own && rate.applies == Applies::InstanceKey {
+            return Ok(0);
+        }
+        row_credits_milli(
+            1,
+            rate.cost_micro_usd,
+            rate.margin_bp,
+            rate.fixed_credits_milli,
+            rate.credit_price_micro_usd,
+            rate.unit.base(),
+        )
     }
 
     /// Cost line `id`, or `None`.
@@ -2775,7 +2859,11 @@ mod tests {
             let l = st.cost_line(id).unwrap().unwrap();
             assert_eq!((l.margin_bp, l.applies), (INFRA_MARGIN_BP, Applies::Always));
         }
-        assert_eq!(lines.len(), 4 * 4 + 4);
+        assert_eq!(
+            lines.len(),
+            4 * 4 + 4 + 4,
+            "model lines, infrastructure, web"
+        );
         assert_eq!(
             st.cost_line("claude-sonnet-5-5.cache_write")
                 .unwrap()
@@ -3079,5 +3167,67 @@ mod tests {
         let empty = st.usage_report(st.now_utc() + Duration::days(7)).unwrap();
         assert_eq!(empty.gross_margin_before_free_bp, None);
         assert_eq!(empty.gross_margin_after_free_bp, None);
+    }
+
+    #[test]
+    fn migration_63_seeds_the_web_lines_at_their_list_prices() {
+        let (_d, st) = store();
+        let l = st.cost_line("web.search.ceramic").unwrap().unwrap();
+        assert_eq!(
+            (l.unit, l.cost_micro_usd, l.applies),
+            (Unit::Kreq, 250, Applies::Always)
+        );
+        assert_eq!(
+            st.cost_line("web.search.exa")
+                .unwrap()
+                .unwrap()
+                .cost_micro_usd,
+            7_000
+        );
+        assert_eq!(
+            st.cost_line("web.search.linkup")
+                .unwrap()
+                .unwrap()
+                .cost_micro_usd,
+            5_000
+        );
+        assert_eq!(
+            st.cost_line(LINE_WEB_FETCH)
+                .unwrap()
+                .unwrap()
+                .cost_micro_usd,
+            500
+        );
+        assert_eq!(l.margin_bp, INFRA_MARGIN_BP);
+        assert_eq!(
+            l.source,
+            "Cloudflare Web Search API list price, ceramic, $0.25 per 1,000 requests (check)"
+        );
+        assert_eq!(
+            st.cost_line("web.search.exa").unwrap().unwrap().source,
+            "Cloudflare Web Search API list price, exa, $7.00 per 1,000 requests (check)"
+        );
+    }
+
+    #[test]
+    fn a_web_request_charges_on_an_own_key_too() {
+        let (_d, st) = store();
+        assert!(
+            st.one_request_milli("web.search.exa", KeySource::Own)
+                .unwrap()
+                > 0
+        );
+        assert_eq!(
+            st.one_request_milli("web.search.exa", KeySource::Own)
+                .unwrap(),
+            st.one_request_milli("web.search.exa", KeySource::Instance)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn kreq_round_trips_and_has_base_1000() {
+        assert_eq!(Unit::parse("kreq"), Some(Unit::Kreq));
+        assert_eq!(Unit::Kreq.base(), 1_000);
     }
 }

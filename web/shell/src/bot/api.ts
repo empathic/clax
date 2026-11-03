@@ -170,7 +170,7 @@ export type ProviderPatch = { api?: ModelApi; base_url?: string; models?: Partia
  * the credits `null` when it resolves to no price). */
 export type PriceSummary = { source: Exclude<RateSource, "provider"> | "mixed" | null; estimated: boolean; input_credits_milli_per_mtok: number | null; output_credits_milli_per_mtok: number | null };
 export type ProviderModels = { models: { id: string; display_name: string; pricing?: PriceSummary | null }[]; fetched_at: string };
-export type Unit = "mtok_input" | "mtok_cached_input" | "mtok_cache_write" | "mtok_output" | "cpu_gb_s" | "mreq" | "gb_month" | "run";
+export type Unit = "mtok_input" | "mtok_cached_input" | "mtok_cache_write" | "mtok_output" | "cpu_gb_s" | "mreq" | "gb_month" | "run" | "kreq";
 /** A cost line (§7.2). `fixed_credits_milli`: a line charged at fixed credits per
  * unit (the harness fee) rather than from its cost. */
 export type CostLine = {
