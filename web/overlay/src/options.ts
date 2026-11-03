@@ -20,6 +20,9 @@ export type HostContext = Partial<ReportContext>;
 /** A value, or a function that gives it (perhaps later). */
 export type Given<T> = T | (() => T | Promise<T>);
 
+/** Where "Your reports" shows: `OverlayOptions.reports`. */
+export type ReportsMode = "button" | "off";
+
 /** `Clax.overlay`'s options. Every report carries the page's URL with its
  * query and without its fragment, and the page's title.
  *
@@ -43,6 +46,12 @@ export interface OverlayOptions {
   /** Whether this reporter may file reports (default true). False: no
    * Report button, and `report()` does nothing; "Your reports" stays. */
   canFile?: boolean;
+  /** The "Your reports" entry point: `"button"` (the default) puts it beside
+   * Report in the launcher; `"off"` leaves it out, with its panel, its
+   * polling and the badge's, for a page that shows the reports itself
+   * (`showReports()` then does nothing). Report stays either way. Default:
+   * `<meta name="clax-reports">`'s content, else `"button"`. */
+  reports?: ReportsMode;
   /** The host's part of each capture's context (spec
    * 2026-10-29-feedback-loop §5.1): `release`, `flags` and `app`, or a
    * function giving them, called when the reporter starts a capture (and

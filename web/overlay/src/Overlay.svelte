@@ -25,7 +25,7 @@
   import { displayCaptureSupported } from "../../bridge/src/display-capture";
   import {
     BadgeWatch, type Draft, POLL_MS, Poll, type ReporterApi, type Session, type Timers, canSend, carryShapes, clipOf, clipStatus, defaultShapes,
-    failureText, newDraft, pageUrl, quoteOf, realTimers, reopenOf, reportOf, summaryOf, withCapture,
+    failureText, newDraft, pageUrl, quoteOf, realTimers, reopenOf, reportOf, type ReportsMode, summaryOf, withCapture,
   } from "./model";
   import ModeBar from "./ModeBar.svelte";
   import type { Mode } from "./options";
@@ -45,6 +45,8 @@
     externalId?: string;
     launcher?: "corner" | false;
     canFile?: boolean;
+    /** "off": no "Your reports" button, panel, or polling (the badge's too); Report stays. */
+    reports?: ReportsMode;
     /** What captures use (tests replace the renders). */
     capture?: CaptureDeps;
     flatten?: FlattenDeps;
@@ -54,8 +56,9 @@
   };
   let {
     client, doc, host, picker: makePicker, session, externalId, launcher = "corner", canFile = true, capture: captureDeps = {}, flatten: flattenDeps = browserFlatten,
-    timers = realTimers, onBadge, onFiled,
+    timers = realTimers, onBadge, onFiled, reports: reportsMode = "button",
   }: Props = $props();
+  const reportsOn = untrack(() => reportsMode !== "off");
 
   const win = untrack(() => doc.defaultView ?? window);
 
@@ -128,7 +131,7 @@
 
   /** Opens "Your reports". */
   export function showReports(): void {
-    if (!open) toggleReports();
+    if (reportsOn && !open) toggleReports();
   }
 
   /** Chooses `mode` in the mode bar. Element chosen again while it is on
@@ -437,7 +440,7 @@
       pulseTimer = timers.set(() => { pulse = false; }, 1600);
     },
   }, timers));
-  untrack(() => badge.start());
+  if (reportsOn) untrack(() => badge.start());
 
   const status = $derived(draft ? clipStatus(draft.clip) : null);
   /** What a send would carry now, as "What's sent" shows it (the marks are drawn in at Send). */
@@ -512,10 +515,10 @@
 
   {#if filed && !open && !draft}
     <section class="filed" role="status" aria-label="Filed">
-      <p><strong>Filed.</strong> Replies and fixes show in Your reports.</p>
+      <p><strong>Filed.</strong>{#if reportsOn} Replies and fixes show in Your reports.{/if}</p>
       <div class="actions">
         <button type="button" class="ghost" aria-label="Dismiss" onclick={() => { filed = null; }}>✕</button>
-        <button type="button" class="primary" bind:this={viewBtn} onclick={viewFiled}>View in Your reports</button>
+        {#if reportsOn}<button type="button" class="primary" bind:this={viewBtn} onclick={viewFiled}>View in Your reports</button>{/if}
       </div>
     </section>
   {/if}
@@ -528,7 +531,9 @@
 
   {#if launcher === "corner"}
     <div class="launcher" class:pulse>
-      <button type="button" class="reports-btn" aria-expanded={open} onclick={toggleReports}>Your reports{#if count}{" "}<span class="count" aria-label={`${count} waiting`}>{count}</span>{/if}</button>
+      {#if reportsOn}
+        <button type="button" class="reports-btn" aria-expanded={open} onclick={toggleReports}>Your reports{#if count}{" "}<span class="count" aria-label={`${count} waiting`}>{count}</span>{/if}</button>
+      {/if}
       {#if canFile}
         <button type="button" class="primary report-btn" bind:this={reportBtn} aria-pressed={picking} onclick={() => (picking ? closeBar() : report())}>
           <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2.5h10a1.5 1.5 0 0 1 1.5 1.5v6A1.5 1.5 0 0 1 13 11.5H7l-3.5 2.5v-2.5H3A1.5 1.5 0 0 1 1.5 10V4A1.5 1.5 0 0 1 3 2.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>

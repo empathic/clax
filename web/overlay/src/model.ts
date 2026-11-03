@@ -13,10 +13,23 @@ import { scrub, wellFormed } from "../../sdk/src/scrub";
 import type { Badge, CaptureInfo, DiagLine, FixAttempt, FixOutcome, FlagValue, Release, Report, ReportComment, ReportContext, ReportPage, ResolveReason } from "../../sdk/src/types";
 import { type Placement, type Shape, remapShapes } from "./annotate";
 import type { Captured } from "./capture";
-import { CONTEXT_TIMEOUT_MS, type Given, type HostContext } from "./options";
+import { CONTEXT_TIMEOUT_MS, type Given, type HostContext, type ReportsMode } from "./options";
 
-export type { Given, HostContext, OverlayOptions } from "./options";
+export type { Given, HostContext, OverlayOptions, ReportsMode } from "./options";
 export { CONTEXT_TIMEOUT_MS };
+
+/** The `<meta name>` a page sets `OverlayOptions.reports` with. */
+export const REPORTS_META = "clax-reports";
+
+/** The overlay's "Your reports" mode: `given`, else `<meta
+ * name="clax-reports">`'s content, else `"button"`. A value that is neither
+ * mode is refused, so a typo never hides the reports unasked. */
+export function reportsModeOf(doc: Document, given?: unknown): ReportsMode {
+  const v = given ?? doc.querySelector<HTMLMetaElement>(`meta[name="${REPORTS_META}"]`)?.content.trim();
+  if (v === undefined || v === "") return "button";
+  if (v === "button" || v === "off") return v;
+  throw new TypeError(`Clax.overlay: reports must be "button" or "off", not ${JSON.stringify(v)}`);
+}
 
 /** How often "Your reports" asks for new replies while it is open. */
 export const POLL_MS = 15_000;

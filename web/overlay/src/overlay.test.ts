@@ -536,6 +536,45 @@ describe("the overlay", () => {
     expect(button("Your reports")).toBeDefined();
   });
 
+  it('with reports: "off", the launcher is Report alone: no Your reports, no panel, no polling, and a send still files', async () => {
+    view.unmount();
+    let asked = 0;
+    client.badge = async () => { asked++; return { waiting: 0, report_ids: [] }; };
+    const r = renderComponent(Overlay as never, { props: props({ reports: "off" }) as never, target: host });
+    flushSync();
+    await settle();
+    const api = r.component as unknown as { showReports(): void };
+    const at = (s: string) => host.querySelector(s);
+    expect(at(".reports-btn")).toBeNull();
+    expect([...at(".launcher")!.querySelectorAll("button")].map(nameOf)).toEqual(["Report"]);
+    api.showReports();
+    await settle();
+    expect(at(".panel")).toBeNull();
+    (at(".report-btn") as HTMLButtonElement).click();
+    flushSync();
+    onPick(picked(async () => new ArrayBuffer(0)));
+    await settle();
+    const t = at(".composer textarea") as HTMLTextAreaElement;
+    t.value = "Off but still filed";
+    t.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    [...host.querySelectorAll("button")].find(b => nameOf(b) === "Send")!.click();
+    flushSync();
+    await settle();
+    expect(filed.map(f => f.body)).toEqual(["Off but still filed"]);
+    expect(at(".filed")?.textContent).not.toMatch(/Your reports/);
+    expect(at(".panel")).toBeNull();
+    expect(listed).toBe(0);
+    expect(asked).toBe(0);
+    expect(timers.pending()).not.toContain(POLL_MS);
+    r.unmount();
+    view = mount(Overlay as never, props(), host);
+  });
+
+  it('with reports: "button" (the default), Your reports sits beside Report', () => {
+    expect([...q(".launcher")!.querySelectorAll("button")].map(nameOf)).toEqual(["Your reports", "Report"]);
+  });
+
   it("files the page's URL with its query and without its fragment", async () => {
     const was = location.href;
     history.replaceState(null, "", "/leave?team=7#req-2");

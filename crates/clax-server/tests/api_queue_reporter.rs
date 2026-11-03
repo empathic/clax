@@ -677,6 +677,114 @@ async fn a_same_origin_read_without_origin_holds_only_on_the_tokens_host() {
     );
 }
 
+/// The `[serve] trusted_hosts` name Basis and Clax share on phobos.
+const TRUSTED: &str = "phobos.tail556f5b.ts.net";
+
+/// Basis on Bobby's phone (2026-11-03): a page at `https://<trusted
+/// host>/fold/` beside a local Clax, reached the way phobos reaches it:
+/// `tailscale serve` ends TLS and proxies to darwin's Caddy on loopback
+/// :80, which keeps `Host` and passes `X-Forwarded-For` on to the daemon
+/// over plain http. The local daemon's public origin is its loopback
+/// `http://` `browser_base`, so the same-origin rule took `http` as its
+/// scheme and refused every read the page sent without `Origin` ("Your
+/// reports": "This page may not report into this queue"). Its POSTs, which
+/// carry `Origin`, already held.
+#[tokio::test]
+async fn basis_on_a_trusted_host_reads_its_reports_behind_tailscale_serve() {
+    let clock = Arc::new(ManualClock::at("2026-10-27T10:00:00Z"));
+    let ts = TestServer::spawn_with_clock_and(clock.clone(), |s| {
+        s.trusted_hosts = vec![TRUSTED.to_string()].into();
+    })
+    .await;
+    let s = Setup::on(ts, clock, None);
+    let page = format!("https://{TRUSTED}");
+    s.ts.store
+        .update_queue(
+            &AuditCtx::DAEMON,
+            &s.qid,
+            clax_store::queues::QueuePatch {
+                origins: Some(vec![page.clone(), format!("http://{TRUSTED}")]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    async fn mint(s: &Setup, origin: &str) -> Reporter {
+        let key = KeyPair::generate();
+        let res = s
+            .service(
+                &format!("/api/queues/{}/reporter-tokens", s.qid),
+                &json!({"reporter_id": "bobby", "origin": origin,
+                        "public_key": sig::encode_public(&key.public())}),
+            )
+            .await;
+        assert_eq!(res.status(), 200);
+        let v: Value = res.json().await.unwrap();
+        Reporter {
+            token: v["token"].as_str().unwrap().to_string(),
+            key,
+        }
+    }
+    /// A request as Caddy forwards the phone's: `Host` the trusted name,
+    /// the tailnet peer in `X-Forwarded-For`, `Sec-Fetch-Site` and `Origin`
+    /// as the browser sent them.
+    async fn via_serve(
+        s: &Setup,
+        r: &Reporter,
+        method: &str,
+        host: &str,
+        origin: Option<&str>,
+        site: Option<&str>,
+    ) -> reqwest::Response {
+        let sig = signature(&r.key, method, &s.reports(), host, s.now(), &r.token, &[]);
+        let mut h = vec![
+            ("host", host.to_string()),
+            ("x-forwarded-for", "100.101.102.103".to_string()),
+            ("authorization", format!("Clax-Reporter {}", r.token)),
+            ("clax-signature", sig),
+        ];
+        if let Some(o) = origin {
+            h.push(("origin", o.to_string()));
+        }
+        if let Some(v) = site {
+            h.push(("sec-fetch-site", v.to_string()));
+        }
+        s.send(method, &s.reports(), &h, vec![]).await
+    }
+    let phone = mint(&s, &page).await;
+    // The read that failed: a same-origin GET, no `Origin`.
+    let res = via_serve(&s, &phone, "GET", TRUSTED, None, Some("same-origin")).await;
+    assert_eq!(res.status(), 200);
+    // The same read with the `Origin` a cross-origin page would send holds too.
+    let res = via_serve(&s, &phone, "GET", TRUSTED, Some(&page), Some("same-origin")).await;
+    assert_eq!(res.status(), 200);
+    // What still holds the line: the browser's mark, the trusted name, and
+    // its https scheme.
+    for site in [None, Some("same-site"), Some("cross-site"), Some("none")] {
+        assert_eq!(
+            status_code(via_serve(&s, &phone, "GET", TRUSTED, None, site).await).await,
+            (403, "wrong_origin".into()),
+            "{site:?}"
+        );
+    }
+    let loopback = s.host();
+    assert_eq!(
+        status_code(via_serve(&s, &phone, "GET", &loopback, None, Some("same-origin")).await).await,
+        (403, "wrong_origin".into()),
+        "the phobos token through a loopback Host"
+    );
+    let plain = mint(&s, &format!("http://{TRUSTED}")).await;
+    assert_eq!(
+        status_code(via_serve(&s, &plain, "GET", TRUSTED, None, Some("same-origin")).await).await,
+        (403, "wrong_origin".into()),
+        "a trusted host's pages are https"
+    );
+    assert_eq!(
+        status_code(via_serve(&s, &phone, "POST", TRUSTED, None, Some("same-origin")).await).await,
+        (403, "wrong_origin".into()),
+        "a write without Origin"
+    );
+}
+
 #[tokio::test]
 async fn a_reporter_token_expires_and_ends_with_its_grant() {
     let s = Setup::new().await;

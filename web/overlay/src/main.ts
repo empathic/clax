@@ -20,13 +20,13 @@ import { type Recorder, installDiagnostics } from "../../sdk/src/diagnostics";
 import { forgetReporter as forgetKept } from "../../sdk/src/keystore";
 import { ReporterClient, type ReporterAuth } from "../../sdk/src/reporter";
 import type { DiagLine, Report } from "../../sdk/src/types";
-import { Session, externalIdOf } from "./model";
-import { CONTEXT_TIMEOUT_MS, type Given, type HostContext, type Mode, type OverlayOptions } from "./options";
+import { Session, externalIdOf, reportsModeOf } from "./model";
+import { CONTEXT_TIMEOUT_MS, type Given, type HostContext, type Mode, type OverlayOptions, type ReportsMode } from "./options";
 import Overlay from "./Overlay.svelte";
 import { commentPicker, type Picked } from "./picker";
 import TOKENS from "./tokens.css?inline";
 
-export type { DiagLine, Given, HostContext, Mode, OverlayOptions, Recorder, Report, ReporterAuth };
+export type { DiagLine, Given, HostContext, Mode, OverlayOptions, Recorder, Report, ReporterAuth, ReportsMode };
 export { CONTEXT_TIMEOUT_MS };
 
 /** What a running overlay tells its host. */
@@ -111,6 +111,7 @@ export function overlay(opts: OverlayOptions, doc: Document = document): Overlay
   const instance = opts.instance.replace(/\/+$/, "");
   const win = doc.defaultView ?? window;
   if (opts.user !== undefined && (typeof opts.user !== "string" || !opts.user)) throw new TypeError("Clax.overlay: user must be a non-empty string");
+  const reports = reportsModeOf(doc, opts.reports);
   const client = new ReporterClient({ instance, queue: opts.queue, auth: opts.auth, user: opts.user });
   const recorder = installDiagnostics(win, { instance });
   // A page refusing inline style: its clips never try the web fonts' <style>.
@@ -142,6 +143,7 @@ export function overlay(opts: OverlayOptions, doc: Document = document): Overlay
       externalId: externalIdOf(doc, opts.externalId),
       launcher: opts.launcher ?? "corner",
       canFile: opts.canFile ?? true,
+      reports,
       onBadge: (n: number) => { lastBadge = n; emit("badge", n); },
       onFiled: (r: Report) => emit("filed", r),
     },

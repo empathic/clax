@@ -15,6 +15,9 @@ export type Mode = "element" | "area" | "screen";
 /** A value, or a function that gives it (perhaps later). */
 export type Given<T> = T | (() => T | Promise<T>);
 
+/** Where "Your reports" shows: `OverlayOptions.reports`. */
+export type ReportsMode = "button" | "off";
+
 /** A reporter token: `cxr_…`, bound to a key, an origin and a reporter ID. */
 export interface ReporterToken {
   token: string;
@@ -192,6 +195,8 @@ export interface OverlayOptions {
   launcher?: "corner" | false;
   /** Whether this reporter may file reports (default true). */
   canFile?: boolean;
+  /** `"button"` (the default): "Your reports" beside Report; `"off"`: no "Your reports", panel or polling. Default `<meta name="clax-reports">`'s content. */
+  reports?: ReportsMode;
   /** The host's `release`, `flags` and `app`, or a function giving them, called when a capture starts. */
   context?: Given<HostContext>;
   /** JSON attached to each report, or a function giving it, called once per report. */
