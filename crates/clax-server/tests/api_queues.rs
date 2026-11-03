@@ -505,3 +505,116 @@ async fn discovery_says_what_this_clax_is_without_a_credential() {
             .contains(&json!("sign_in_link"))
     );
 }
+
+/// Addendum 9: who answers a queue is the queue's own, ordered, checked,
+/// set by its admins, and audited.
+#[tokio::test]
+async fn an_admin_orders_who_answers_the_queue_and_a_triage_member_changes_nothing() {
+    let w = world().await;
+    let qid = make_queue(&w, &w.owner, "Feedback").await;
+    let rs = format!("/api/queues/{qid}/responders");
+    let (s, v) = browser(&w.ts, &w.owner, Method::GET, &rs, None).await;
+    assert_eq!((s, &v["responders"]), (200, &json!([])), "{v}");
+
+    let (s, v) = browser(
+        &w.ts,
+        &w.owner,
+        Method::POST,
+        &format!("/api/queues/{qid}/service-grants"),
+        Some(json!({"name": "changelist-clax-queue"})),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    let gid = v["grant"]["id"].as_str().unwrap().to_string();
+    let list = json!([
+        {"kind": "agent", "name": "work-changeling-queue-agent", "service_grant_id": gid, "escalate_after_secs": 1800},
+        {"kind": "bot", "profile": {"instructions": "Triage UI bugs first.", "tier": "quick", "tools": ["read_report"]}}
+    ]);
+    let (s, v) = browser(
+        &w.ts,
+        &w.owner,
+        Method::PUT,
+        &rs,
+        Some(json!({"responders": list})),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let (_, v) = browser(&w.ts, &w.owner, Method::GET, &rs, None).await;
+    assert_eq!(
+        v["responders"][0]["name"], "work-changeling-queue-agent",
+        "{v}"
+    );
+    assert_eq!(v["responders"][1]["kind"], "bot");
+    assert_eq!(
+        v["responders"][1]["profile"]["max_runs_per_day"],
+        Value::Null
+    );
+
+    for (bad, why) in [
+        (
+            json!([{"kind": "agent", "name": "a"}, {"kind": "agent", "name": "a"}]),
+            "listed twice",
+        ),
+        (
+            json!([{"kind": "agent", "name": "a", "service_grant_id": "nope"}]),
+            "no such service grant",
+        ),
+        (
+            json!([{"kind": "bot", "profile": {"instructions": "", "tier": "huge", "tools": []}}]),
+            "tier",
+        ),
+        (
+            json!([{"kind": "agent", "name": "a", "escalate_after_secs": 5}]),
+            "escalation",
+        ),
+    ] {
+        let (s, v) = browser(
+            &w.ts,
+            &w.owner,
+            Method::PUT,
+            &rs,
+            Some(json!({"responders": bad})),
+        )
+        .await;
+        assert_eq!((s, code(&v)), (400, "invalid_responders"), "{v}");
+        assert!(v["error"]["message"].as_str().unwrap().contains(why), "{v}");
+    }
+    let (s, v) = browser(
+        &w.ts,
+        &w.owner,
+        Method::PUT,
+        &rs,
+        Some(json!({"responders": [{"kind": "person", "name": "x"}]})),
+    )
+    .await;
+    assert_eq!(s, 400, "{v}");
+
+    // A triage member reads nothing of it and changes nothing.
+    let (s, _) = browser(
+        &w.ts,
+        &w.owner,
+        Method::PUT,
+        &format!("/api/queues/{qid}/members/{}", w.sam_public),
+        Some(json!({"role": "triage"})),
+    )
+    .await;
+    assert_eq!(s, 204);
+    let (s, v) = browser(
+        &w.ts,
+        &w.sam,
+        Method::PUT,
+        &rs,
+        Some(json!({"responders": []})),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "not_queue_admin"), "{v}");
+
+    let audited =
+        w.ts.store
+            .events_after(0, 10_000)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "queue.update" && e.body.contains("\"responders\""))
+            .count();
+    assert_eq!(audited, 1);
+}

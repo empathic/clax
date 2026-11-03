@@ -94,6 +94,118 @@ impl Role {
     }
 }
 
+/// One who answers a queue's reports (BRIEF-stint-2026-11-02-clax-script-
+/// install Addendum 9): an outside agent, named by its chitin title and
+/// optionally the queue's service grant it works through, or a ClaxBot
+/// profile on top of the instance's one provider. A queue's responders are
+/// ordered: the first is its first responder; `escalate_after_secs` is how
+/// long a report may wait on this one before the next is asked.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Responder {
+    Agent {
+        /// Its chitin title, such as `work-changeling-queue-agent`.
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        service_grant_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        escalate_after_secs: Option<u32>,
+    },
+    Bot {
+        profile: BotProfile,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        escalate_after_secs: Option<u32>,
+    },
+}
+
+/// A ClaxBot profile for one queue: its instructions, model tier, caps and
+/// tools, over the instance's provider (not a second provider).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BotProfile {
+    pub instructions: String,
+    /// `default`, `quick` or `complex`.
+    pub tier: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_runs_per_day: Option<u32>,
+    #[serde(default)]
+    pub tools: Vec<String>,
+}
+
+/// The most responders a queue has.
+pub const MAX_RESPONDERS: usize = 10;
+
+/// Checks a queue's responders, given its live service grants' IDs:
+/// at most [`MAX_RESPONDERS`], names of 1 to 100 printable characters, each
+/// agent once, a grant the queue's own, instructions of at most 4000
+/// characters, a known tier, at most 20 tools, an escalation of 60 s to 30
+/// days.
+///
+/// # Errors
+/// [`CoreError::InvalidArgs`]-style `invalid_responders`, saying which.
+pub fn check_responders(rs: &[Responder], grants: &[String]) -> Result<()> {
+    let bad = |why: String| Err(CoreError::invalid("invalid_responders", why));
+    if rs.len() > MAX_RESPONDERS {
+        return bad(format!("at most {MAX_RESPONDERS} responders"));
+    }
+    let mut names: Vec<&str> = Vec::new();
+    for (i, r) in rs.iter().enumerate() {
+        let esc = match r {
+            Responder::Agent {
+                name,
+                service_grant_id,
+                escalate_after_secs,
+            } => {
+                if name.is_empty()
+                    || name.chars().count() > 100
+                    || name.chars().any(char::is_control)
+                {
+                    return bad(format!(
+                        "responder {i}: a name of 1 to 100 printable characters"
+                    ));
+                }
+                if names.contains(&name.as_str()) {
+                    return bad(format!("responder {i}: {name} is listed twice"));
+                }
+                names.push(name);
+                if let Some(g) = service_grant_id
+                    && !grants.contains(g)
+                {
+                    return bad(format!(
+                        "responder {i}: no such service grant on this queue"
+                    ));
+                }
+                escalate_after_secs
+            }
+            Responder::Bot {
+                profile,
+                escalate_after_secs,
+            } => {
+                if profile.instructions.chars().count() > 4000 {
+                    return bad(format!(
+                        "responder {i}: instructions of at most 4000 characters"
+                    ));
+                }
+                if !matches!(profile.tier.as_str(), "default" | "quick" | "complex") {
+                    return bad(format!("responder {i}: tier is default, quick or complex"));
+                }
+                if profile.tools.len() > 20
+                    || profile.tools.iter().any(|t| t.is_empty() || t.len() > 64)
+                {
+                    return bad(format!("responder {i}: at most 20 tools, each named"));
+                }
+                escalate_after_secs
+            }
+        };
+        if let Some(s) = esc
+            && !(60..=30 * 86_400).contains(s)
+        {
+            return bad(format!("responder {i}: escalation after 60 s to 30 days"));
+        }
+    }
+    Ok(())
+}
+
 /// Where a report stands (spec 2026-10-29-feedback-loop-design §6.1):
 /// `open`, waiting for someone; `claimed`, while a live lease holds it;
 /// `fix_proposed`, while a fix waits for the reporter's verdict;

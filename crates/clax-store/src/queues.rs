@@ -1438,6 +1438,66 @@ impl Store {
         })
     }
 
+    /// Queue `qid`'s responders, first responder first (none set: empty).
+    ///
+    /// # Errors
+    /// [`CoreError::NotAMember`] for no such queue; database errors.
+    pub fn responders(&self, qid: &str) -> Result<Vec<clax_core::queue::Responder>> {
+        self.with_read(|c| {
+            queue_in(c, qid)?.ok_or(CoreError::NotAMember)?;
+            let raw: Option<String> = c
+                .query_row(
+                    "SELECT responders_json FROM queue_responders WHERE queue_id = ?1",
+                    params![qid],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            Ok(match raw {
+                Some(j) => serde_json::from_str(&j).map_err(|_| CoreError::Corrupt {
+                    artifact_id: qid.to_string(),
+                    column: "queue_responders.responders_json",
+                    version: None,
+                })?,
+                None => Vec::new(),
+            })
+        })
+    }
+
+    /// Replaces queue `qid`'s responders with `rs`, in order, after
+    /// [`clax_core::queue::check_responders`] against its live service
+    /// grants; recorded as `queue.update {op: "responders", count}`.
+    ///
+    /// # Errors
+    /// [`CoreError::NotAMember`] for no such queue; `invalid_responders`.
+    pub fn set_responders(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        rs: &[clax_core::queue::Responder],
+    ) -> Result<()> {
+        let grants: Vec<String> = self
+            .service_grants(qid)?
+            .into_iter()
+            .map(|g| g.id)
+            .collect();
+        clax_core::queue::check_responders(rs, &grants)?;
+        let now = self.now();
+        let json = serde_json::to_string(rs).expect("responders serialise");
+        self.with_tx(|tx| {
+            queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
+            tx.execute(
+                "INSERT INTO queue_responders (queue_id, responders_json, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(queue_id) DO UPDATE SET responders_json = excluded.responders_json, updated_at = excluded.updated_at",
+                params![qid, json, now],
+            )?;
+            let rec = queue_record(AuditKind::QueueUpdate, &now, qid)
+                .with("op", "responders")
+                .with("count", rs.len());
+            self.record_audit(tx, ctx, rec)?;
+            Ok(())
+        })
+    }
+
     /// Queue `qid`'s service grants that are not revoked, oldest first.
     ///
     /// # Errors

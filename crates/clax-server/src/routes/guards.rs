@@ -293,6 +293,8 @@ mod l10 {
         ("queues::patch", NoArtifact),
         ("queues::delete", NoArtifact),
         ("queues::members", NoArtifact),
+        ("queues::responders", NoArtifact),
+        ("queues::put_responders", NoArtifact),
         ("queues::put_member", NoArtifact),
         ("queues::delete_member", NoArtifact),
         ("queues::grants", NoArtifact),

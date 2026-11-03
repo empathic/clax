@@ -158,6 +158,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         )
         .route("/api/queues/{qid}/members", get(queues::members))
         .route(
+            "/api/queues/{qid}/responders",
+            get(queues::responders).put(queues::put_responders),
+        )
+        .route(
             "/api/queues/{qid}/members/{public_id}",
             put(queues::put_member).delete(queues::delete_member),
         )

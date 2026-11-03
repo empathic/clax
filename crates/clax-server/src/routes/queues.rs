@@ -8,6 +8,8 @@
 //!   `PATCH /api/queues/<qid>`, `DELETE /api/queues/<qid>`.
 //! - `GET /api/queues/<qid>/members` → `{members}`; `PUT
 //!   /api/queues/<qid>/members/<public_id> {role}`, `DELETE` the same.
+//! - `GET /api/queues/<qid>/responders` → `{responders}`; `PUT` the same
+//!   `{responders}` replaces who answers the queue, in order.
 //! - `GET /api/queues/<qid>/service-grants` → `{grants}`; `POST
 //!   /api/queues/<qid>/service-grants {name}` → `{grant, token,
 //!   private_key}`, shown once; `DELETE
@@ -384,4 +386,57 @@ pub async fn revoke_grant(
     s.store_call(move |st| st.revoke_service_grant(&ctx, &qid, &gid))
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET /api/queues/<qid>/responders` → `{responders: [...]}`: an admin
+/// reads who answers the queue's reports, first responder first
+/// ([`clax_core::queue::Responder`]: `{kind: "agent", name,
+/// service_grant_id?, escalate_after_secs?}` or `{kind: "bot", profile:
+/// {instructions, tier, max_runs_per_day?, tools}, escalate_after_secs?}`).
+pub async fn responders(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    qid: Result<Path<String>, PathRejection>,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    let person = admin_person(&s, &d).await?;
+    let qid = path(qid)?;
+    admin_of(&s, &qid, person).await?;
+    let rs = s.store_call(move |st| st.responders(&qid)).await?;
+    Ok(Json(json!({ "responders": rs })))
+}
+
+/// `PUT /api/queues/<qid>/responders` body.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RespondersBody {
+    responders: Vec<clax_core::queue::Responder>,
+}
+
+/// `PUT /api/queues/<qid>/responders {responders}` → `{responders}`: an
+/// admin replaces the queue's responders, in order. 400
+/// `invalid_responders` says which entry is refused (too many, a name
+/// twice, a grant not the queue's, an unknown tier, an escalation out of
+/// 60 s to 30 days).
+pub async fn put_responders(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+    _o: SameOrigin,
+    ctx: AuditCtx,
+    qid: Result<Path<String>, PathRejection>,
+    req: Result<Json<RespondersBody>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    let person = admin_person(&s, &d).await?;
+    let qid = path(qid)?;
+    let b = body(req)?;
+    admin_of(&s, &qid, person).await?;
+    let rs = s
+        .store_call(move |st| {
+            st.set_responders(&ctx, &qid, &b.responders)?;
+            st.responders(&qid)
+        })
+        .await?;
+    Ok(Json(json!({ "responders": rs })))
 }

@@ -6638,6 +6638,8 @@ router), and a test fails when it differs:
 | `PUT /api/queues/{qid}/members/{public_id}` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/queues/{qid}/reports/{tid}/reopen` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/queues/{qid}/reports/{tid}/verify` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/queues/{qid}/responders` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/queues/{qid}/responders` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/queues/{qid}/service-grants` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/queues/{qid}/service-grants` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/queues/{qid}/service-grants/{gid}` | Denied | yes: 403 `not_for_agents` |
