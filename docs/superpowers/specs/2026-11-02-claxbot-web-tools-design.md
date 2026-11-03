@@ -292,7 +292,15 @@ enum UrlSource {
   percent-encoding normalised. No prefix or host match.
 - A URL that appears to hold a credential (a `user:pass@` part, or a query
   parameter named like a key, token, secret, password or signature) is
-  refused unless the sender's own words hold that exact URL.
+  refused unless the sender's own words hold that exact URL. A parameter
+  name is judged by its components (split at `-`, `_`, `.` and camelCase
+  boundaries, ignoring case): `key`, `apikey`, `secret`, `password`,
+  `passwd`, `pwd`, `sig`, `signature`, `credential(s)`, `auth` or
+  `authorization` as a component makes it credential-like, and so does a
+  `token` component unless `page`, `next`, `continuation`, `pagination` or
+  `sync` comes before it: `api_key`, `access_token` and `X-Amz-Signature`
+  are refused; `keywords`, `page_token`, `nextPageToken` and `cursor` are
+  not.
 
 Every fetch records the `UrlSource` that allowed it, in its journal entry;
 the run panel shows it ("from search #2") and the Sources list is built
@@ -417,10 +425,16 @@ message written for the model (what to do next):
 | `web_blocked` | a bot challenge answered the fetch | fetch: when it went out |
 | `web_unavailable` | the source failed (Cloudflare 5xx, rate limit, payment required at the gateway, more than 5 redirects) | search no; fetch: when it went out |
 
-A fetch *went out* once its request to the URL was sent (a source sets
-`WebError::went_out`); from then on it is charged whatever it answered,
-so a redirect refused or cut after the first request is charged (§7.2).
-A failed search is never charged.
+A fetch *went out* once a response, of any status, came back from the
+target to its first request, or, on the daemon, once a connection to the
+target was established (a source sets `WebError::went_out`). A first
+request that fails before that (the name does not resolve or resolves
+privately, the connection is refused, or on the Worker the first
+`fetch()` rejects) did not go out and is not charged. After any response
+or redirect, every later failure has gone out, and so has a deadline or a
+cancellation that stops a first request already sent: from then on the
+fetch is charged whatever it answered, so a redirect refused or cut after
+the first response is charged (§7.2). A failed search is never charged.
 
 ### 6.4 Web text is data
 
@@ -445,8 +459,8 @@ Cost lines priced per thousand requests, which needs a new `Unit::Kreq`
   `margin_bp` the existing non-token lines are seeded with. A search is
   charged on the line of the provider that ran it. Changing the provider
   rewrites no price, so a price the admin set by hand survives switching
-  away and back, and the Pricing page shows all three with the one in use
-  marked.
+  away and back, and the admin's Web tab shows each provider's price
+  beside its name, with the one in use selected.
 - With `web.search.byok_alias` set, the provider bills the gateway's stored
   key, not Cloudflare credits; the person still pays the line's price. The
   admin who wants searches on their own key to cost people less lowers the
@@ -512,7 +526,7 @@ take it first):
 | `web.fetch.url_rule` | `sourced` | `sourced`, `any_public` or `allowlist` |
 | `web.fetch.allowlist` | empty | hosts for `allowlist` |
 | `web.cloudflare.account_id` | unset | the daemon's account (REST) |
-| sealed `web.cloudflare.token` | unset | the daemon's API token, Workers AI Read and AI Gateway Read, sealed under the KEK like model keys |
+| sealed `web.cloudflare.token` | unset | the daemon's API token, Workers AI Read and AI Gateway Read (check against your account), sealed under the KEK like model keys |
 
 The daemon's `[bot]` config may set the same keys, laid over the database
 as the other `[bot]` settings are. On the daemon, web use without an
@@ -560,7 +574,9 @@ except the last.
   store serves a second window with no source call; caps and credits refuse
   before the source is called; a mid-run opt-out answers `web_disabled`;
   the declaration matches the grant (§4.4) for each shape.
-- `host_conformance.rs`: the Spend transaction on each store backend.
+- The Spend transaction: `crates/clax-store/src/bot_web.rs`'s tests on
+  the daemon's store, and `crates/clax-worker/test-bot.mjs` on the
+  Worker's.
 - Daemon: `RestSource` against a scripted HTTP server on 127.0.0.1 with the
   loopback allowance only in tests; the DNS check refusing a name that
   resolves to a private address.

@@ -107,9 +107,9 @@ Leave all three open.
 fn migration_63_seeds_the_web_lines_at_their_list_prices() {
     let st = Store::open_in_memory().unwrap();
     let l = st.cost_line("web.search.ceramic").unwrap().unwrap();
-    assert_eq!((l.unit, l.cost_micro_usd, l.applies), (Unit::Kreq, 250, Applies::Always));
-    assert_eq!(st.cost_line("web.search.exa").unwrap().unwrap().cost_micro_usd, 7_000);
-    assert_eq!(st.cost_line("web.search.linkup").unwrap().unwrap().cost_micro_usd, 5_000);
+    assert_eq!((l.unit, l.cost_micro_usd, l.applies), (Unit::Kreq, 250_000, Applies::Always));
+    assert_eq!(st.cost_line("web.search.exa").unwrap().unwrap().cost_micro_usd, 7_000_000);
+    assert_eq!(st.cost_line("web.search.linkup").unwrap().unwrap().cost_micro_usd, 5_000_000);
     assert_eq!(st.cost_line(LINE_WEB_FETCH).unwrap().unwrap().cost_micro_usd, 500_000);
     assert_eq!(l.margin_bp, INFRA_MARGIN_BP);
 }
@@ -404,6 +404,7 @@ impl WebAccess {
     - each `web.search` journal entry's results, as `Search {step, seq}`;
     - each page's links, as `Fetched {step, seq}`.
 - A `web.*` call in `RunHost::perform` goes through these checks in order. The first that fails answers the error, uncharged.
+  (As built, `crates/clax-bot/src/script/web.rs` checks the arguments, the URL and its source (5) and the page store (6) before the cap (4): a page the run already stores is answered, never refused `web_cap`. Its module docs list the order the code follows.)
   1. Replay: a journaled place answers from the journal, as other Host calls do.
   2. Declared: the run's `WebShape` has the op, or `web_disabled`.
   3. Enabled now: `WebAccess::now(store, &run.person, deps.web.is_some())` still grants it (an admin or person change since the run started), or `web_disabled`.
