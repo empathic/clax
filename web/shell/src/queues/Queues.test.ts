@@ -16,6 +16,7 @@ const routes = (o: Record<string, unknown> = {}) => ({
   "GET /api/queues/q1/reports": { reports: [{ state: "open" }, { state: "open" }, { state: "claimed" }], next: null },
   "GET /api/queues/q1/members": { members: [{ public_id: "p2", name: "Mia", role: "triage" }] },
   "GET /api/queues/q1/service-grants": { grants: [] },
+  "GET /api/queues/q1/responders": { responders: [] },
   ...o,
 });
 const click = (el: Element | null | undefined) => flush(() => (el as HTMLElement).click());
@@ -138,5 +139,36 @@ describe("Queues", () => {
     click(m.root.querySelector('[data-member="p2"] button'));
     await settle();
     expect(calls.some(c => c.method === "DELETE" && c.url === "/api/queues/q1/members/p2")).toBe(true);
+  });
+
+  it("names who answers the queue, in order: adds an agent through a grant, moves one up, removes one", async () => {
+    let saved: unknown[] = [];
+    const calls = stubFetch(routes({
+      "GET /api/queues/q1/service-grants": { grants: [{ id: "g1", queue_id: "q1", name: "changelist-clax-queue", public_key: "k", created_at: "2026-11-02T10:00:00Z" }] },
+      "GET /api/queues/q1/responders": { responders: [{ kind: "bot", profile: { instructions: "", tier: "quick", tools: [] } }] },
+      "PUT /api/queues/q1/responders": (b: { responders: unknown[] }) => { saved = b.responders; return { responders: saved }; },
+    }));
+    const m = mount(Queues, {});
+    await settle();
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Manage"));
+    await settle();
+    const list = () => [...m.root.querySelectorAll("[data-responder] .who")].map(e => e.textContent);
+    expect(list()).toEqual(["First: ClaxBot (quick)"]);
+    type(m.root.querySelector('input[name="agent_name"]'), "work-changeling-queue-agent");
+    await flush(() => { const s = m.root.querySelector<HTMLSelectElement>('select[name="agent_grant"]')!; s.value = "g1"; s.dispatchEvent(new Event("change", { bubbles: true })); });
+    type(m.root.querySelector('input[name="agent_escalate"]'), "30");
+    click([...m.root.querySelectorAll("button")].find(b => b.textContent === "Add agent"));
+    await settle();
+    expect(calls.find(c => c.method === "PUT")?.body).toEqual({ responders: [
+      { kind: "bot", profile: { instructions: "", tier: "quick", tools: [] } },
+      { kind: "agent", name: "work-changeling-queue-agent", service_grant_id: "g1", escalate_after_secs: 1800 },
+    ] });
+    expect(list()).toEqual(["ClaxBot (quick)", "work-changeling-queue-agentthrough changelist-clax-queue · next asked after 30 min"].map((t, i) => (i === 0 ? `First: ${t}` : t)));
+    click(m.root.querySelector('[aria-label="Move work-changeling-queue-agent up"]'));
+    await settle();
+    expect((saved[0] as { name: string }).name).toBe("work-changeling-queue-agent");
+    click(m.root.querySelector('[aria-label="Remove ClaxBot (quick)"]'));
+    await settle();
+    expect(saved).toHaveLength(1);
   });
 });

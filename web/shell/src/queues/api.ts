@@ -82,3 +82,12 @@ export const listGrants = (qid: string) => call<{ grants: ServiceGrant[] }>(`${q
 export const createGrant = (qid: string, name: string) => call<ServiceGrantCreated>(`${q(qid)}/service-grants`, "POST", { name });
 /** Revokes a service grant, which ends every reporter token it minted. */
 export const revokeGrant = (qid: string, gid: string) => call<unknown>(`${q(qid)}/service-grants/${e(gid)}`, "DELETE");
+
+/** One who answers a queue's reports (Addendum 9): an outside agent by its chitin title, or a ClaxBot profile; the first is the first responder. */
+export type Responder =
+  | { kind: "agent"; name: string; service_grant_id?: string; escalate_after_secs?: number }
+  | { kind: "bot"; profile: { instructions: string; tier: "default" | "quick" | "complex"; max_runs_per_day?: number; tools: string[] }; escalate_after_secs?: number };
+/** Who answers the queue, first responder first. */
+export const listResponders = (qid: string) => call<{ responders: Responder[] }>(`${q(qid)}/responders`);
+/** Replaces who answers the queue, in order. */
+export const setResponders = (qid: string, responders: Responder[]) => call<{ responders: Responder[] }>(`${q(qid)}/responders`, "PUT", { responders });

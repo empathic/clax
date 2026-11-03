@@ -74,7 +74,37 @@
   const tag = $derived(installTag(location.origin, qid, pinned ? pin : null));
   const deploys = $derived(deployments(location.origin, qid, pinned ? pin : null));
 
-  onMount(() => { void loadMembers(); void loadGrants(); void loadPin(); });
+
+  // Who answers the queue (Addendum 9): an ordered list, the first the
+  // first responder; each change saves the whole list.
+  let responders = $state<api.Responder[] | null>(null);
+  let respErr = $state<string | null>(null);
+  let agentName = $state("");
+  let agentGrant = $state("");
+  let agentEscalate = $state("");
+  const loadResponders = () => api.listResponders(qid).then(b => { responders = b.responders; }, x => { respErr = `Could not load who answers: ${refusal(x)}`; });
+  async function saveResponders(next: api.Responder[]) {
+    respErr = null;
+    try { responders = (await api.setResponders(qid, next)).responders; } catch (x) { respErr = refusal(x); }
+  }
+  async function addAgent(e: Event) {
+    e.preventDefault();
+    const name = agentName.trim();
+    if (!name || !responders) return;
+    const mins = Number(agentEscalate);
+    const r: api.Responder = { kind: "agent", name, ...(agentGrant ? { service_grant_id: agentGrant } : {}), ...(agentEscalate && mins > 0 ? { escalate_after_secs: Math.round(mins * 60) } : {}) };
+    await saveResponders([...responders, r]);
+    if (!respErr) { agentName = ""; agentGrant = ""; agentEscalate = ""; }
+  }
+  const moveUp = (i: number) => { if (responders && i > 0) void saveResponders([...responders.slice(0, i - 1), responders[i], responders[i - 1], ...responders.slice(i + 1)]); };
+  const dropResponder = (i: number) => { if (responders) void saveResponders(responders.filter((_, j) => j !== i)); };
+  const responderName = (r: api.Responder) => (r.kind === "agent" ? r.name : `ClaxBot (${r.profile.tier})`);
+  const responderNote = (r: api.Responder) => [
+    r.kind === "agent" && r.service_grant_id ? `through ${grants?.find(g => g.id === r.service_grant_id)?.name ?? "a revoked grant"}` : "",
+    r.escalate_after_secs ? `next asked after ${Math.round(r.escalate_after_secs / 60)} min` : "",
+  ].filter(Boolean).join(" · ");
+
+  onMount(() => { void loadMembers(); void loadGrants(); void loadPin(); void loadResponders(); });
 </script>
 
 <div class="qadmin">
@@ -119,6 +149,37 @@
     </form>
     <p class="hint">Triage reads and works the queue's reports; admin also changes the queue and its service grants.</p>
     {#if memberErr}<p class="err" role="alert">{memberErr}</p>{/if}
+  </section>
+
+  <section class="part" aria-labelledby={`resp-${qid}`}>
+    <h4 id={`resp-${qid}`}>Who answers</h4>
+    <p class="hint">Who answers this queue's reports, in order: the first is the first responder; the next is asked when one lets a report wait past its time.</p>
+    {#if responders?.length}
+      <ol class="lines" aria-label={`Who answers ${p.queue.name}`}>
+        {#each responders as r, i (responderName(r))}
+          <li class="line" data-responder={i}>
+            <span class="who">{i === 0 ? "First: " : ""}{responderName(r)}{#if responderNote(r)}<span class="key">{responderNote(r)}</span>{/if}</span>
+            {#if i > 0}<button type="button" class="ghost" aria-label={`Move ${responderName(r)} up`} onclick={() => moveUp(i)}>Move up</button>{/if}
+            <button type="button" class="ghost danger" aria-label={`Remove ${responderName(r)}`} onclick={() => dropResponder(i)}>Remove</button>
+          </li>
+        {/each}
+      </ol>
+    {:else if responders}
+      <p class="none">No one is named to answer yet: members triage it by hand.</p>
+    {/if}
+    <form class="add" onsubmit={addAgent}>
+      <label class="field">Agent (its chitin title) <input name="agent_name" autocomplete="off" maxlength="100" placeholder="work-changeling-queue-agent" value={agentName} oninput={e => { agentName = e.currentTarget.value; }} /></label>
+      <label class="field">Through grant
+        <select name="agent_grant" value={agentGrant} onchange={e => { agentGrant = e.currentTarget.value; }}>
+          <option value="">None</option>
+          {#each grants ?? [] as g (g.id)}<option value={g.id}>{g.name}</option>{/each}
+        </select>
+      </label>
+      <label class="field">Escalate after (min) <input name="agent_escalate" type="number" min="1" max="43200" inputmode="numeric" value={agentEscalate} oninput={e => { agentEscalate = e.currentTarget.value; }} /></label>
+      <button type="submit" disabled={!agentName.trim() || !responders}>Add agent</button>
+    </form>
+    <p class="hint">ClaxBot answers a queue once this Clax has a model provider's key; its per-queue profile is set here then.</p>
+    {#if respErr}<p class="err" role="alert">{respErr}</p>{/if}
   </section>
 
   <section class="part" aria-label={`Service grants of ${p.queue.name}`}>
