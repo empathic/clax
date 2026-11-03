@@ -103,6 +103,57 @@ impl Peers {
     }
 }
 
+/// What is wrong with `peers` for a fleet of `shards` whose process
+/// `pod` is shard `ordinal`: an error when a template names one host for
+/// every shard of several, and a warning when this shard's host, a name
+/// not an address, does not begin with the pod's name (a StatefulSet
+/// renamed by a kustomize namePrefix, the template left as it was).
+fn check_peers(
+    peers: &Peers,
+    shards: u32,
+    ordinal: u32,
+    pod: &str,
+) -> Result<Option<String>, String> {
+    let Peers::Template(t) = peers else {
+        return Ok(None);
+    };
+    if shards > 1 && !t.contains("{shard}") {
+        return Err(format!(
+            "the peer template {t} (CLAX_FLEET_PEER) has no {{shard}}, so every shard's forwards would reach one host"
+        ));
+    }
+    let Some(addr) = peers.addr(ordinal) else {
+        return Ok(None);
+    };
+    let host = addr.rsplit_once(':').map_or(addr.as_str(), |(h, _)| h);
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.parse::<IpAddr>().is_ok() || host.eq_ignore_ascii_case("localhost") {
+        return Ok(None);
+    }
+    let first = host.split('.').next().unwrap_or(host);
+    if first.eq_ignore_ascii_case(pod) {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "the peer template (CLAX_FLEET_PEER) reaches this shard at {addr}, which is not this pod, {pod}: forwards to the other shards will fail; give the template the StatefulSet's pod names"
+    )))
+}
+
+/// Instance secret `var`: the file `<dir>/<var>`, less surrounding
+/// whitespace, when `dir` is given and it holds one; else `env`'s.
+fn read_secret(
+    dir: Option<&std::path::Path>,
+    var: &str,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let in_dir = dir
+        .filter(|_| var.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+        .and_then(|d| std::fs::read_to_string(d.join(var)).ok())
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
+    in_dir.or_else(|| env(var))
+}
+
 /// What a fleet runs with.
 pub struct FleetConfig {
     /// This process's name: the pod's.
@@ -126,6 +177,11 @@ pub struct FleetConfig {
     pub kek: Option<[u8; 32]>,
     /// The key forwards between this fleet's processes carry.
     pub peer_key: String,
+    /// Where instances' secrets are read first, each from the file named as
+    /// its variable (a mounted Secret, which the kubelet keeps current, so
+    /// an instance started later reads a key added since); the environment
+    /// when absent or without that file.
+    pub secrets_dir: Option<PathBuf>,
     /// The port the instances are told they serve on.
     pub port: u16,
     /// The clock a failed start's backoff is timed by.
@@ -245,6 +301,16 @@ impl Fleet {
         let catalog = Catalog::load(&cfg.catalog).map_err(|e| {
             anyhow::anyhow!("{e}\n(the catalog in effect on the other processes stays; fix the ConfigMap, or check it first with clax-fleet check-catalog)")
         })?;
+        match check_peers(
+            &cfg.shard.peers,
+            catalog.shards,
+            cfg.shard.ordinal,
+            &cfg.pod,
+        ) {
+            Err(e) => anyhow::bail!(e),
+            Ok(Some(warning)) => tracing::warn!("{warning}"),
+            Ok(None) => {}
+        }
         std::fs::create_dir_all(cfg.data_dir.join("instances"))?;
         let proxy = Proxy::new(&cfg.peer_key);
         let fleet = Arc::new(Fleet {
@@ -530,18 +596,22 @@ impl Fleet {
         let hosted_cfg = config
             .hosted()?
             .ok_or_else(|| anyhow::anyhow!("instance {} has no [hosted]", inst.name))?;
-        let hosted = clax_http::hosted::Hosted::from_config(&hosted_cfg).ok_or_else(|| {
-            anyhow::anyhow!(
-                "instance {}'s public_origin {} is not usable",
-                inst.name,
-                hosted_cfg.public_origin
-            )
-        })?;
+        let env = |var: &str| std::env::var(var).ok();
+        let secret = |var: &str| read_secret(self.cfg.secrets_dir.as_deref(), var, &env);
+        let hosted =
+            clax_http::hosted::Hosted::from_config_with(&hosted_cfg, &secret).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "instance {}'s public_origin {} is not usable",
+                    inst.name,
+                    hosted_cfg.public_origin
+                )
+            })?;
         if !hosted.setup_open() {
             tracing::warn!(
                 instance = %inst.name,
                 env = %hosted_cfg.setup_secret_env,
-                "no setup secret in this process's environment, so /setup stays closed; add it to the Secret and restart the pods (kubectl rollout restart)"
+                secrets_dir = ?self.cfg.secrets_dir,
+                "no setup secret in the secrets directory or this process's environment, so /setup stays closed; add it to the clax-secrets Secret, and pause and unpause the instance once the pod has it (or restart the pods, when the Secret is not mounted)"
             );
         }
         let core_cfg = CoreConfig {
@@ -1021,6 +1091,60 @@ mod tests {
         assert!(err.contains("made for https://acme.test"), "{err}");
     }
 
+    /// An instance's secret is the file of its variable's name in the
+    /// secrets directory, a mounted Secret the kubelet keeps current, less
+    /// the newline a file ends in; else the environment's.
+    #[test]
+    fn a_secret_is_read_from_its_file_before_the_environment() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("secrets");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("CLAX_SETUP_SECRET_ACME"), "from-file\n").unwrap();
+        std::fs::write(dir.join("EMPTY"), "\n").unwrap();
+        std::fs::write(root.path().join("OUTSIDE"), "x").unwrap();
+        let env = |var: &str| (var != "UNSET").then(|| format!("env-{var}"));
+        let read = |var: &str| read_secret(Some(&dir), var, &env);
+        assert_eq!(read("CLAX_SETUP_SECRET_ACME").as_deref(), Some("from-file"));
+        assert_eq!(
+            read("CLAX_SETUP_SECRET_OTHER").as_deref(),
+            Some("env-CLAX_SETUP_SECRET_OTHER")
+        );
+        assert_eq!(read("EMPTY").as_deref(), Some("env-EMPTY"));
+        assert_eq!(read("UNSET"), None);
+        // No variable name reaches outside the directory.
+        assert_eq!(read("../OUTSIDE").as_deref(), Some("env-../OUTSIDE"));
+        assert_eq!(
+            read_secret(None, "CLAX_SETUP_SECRET_ACME", &env).as_deref(),
+            Some("env-CLAX_SETUP_SECRET_ACME")
+        );
+    }
+
+    /// A peer template is refused without `{shard}` when there is more than
+    /// one shard, and a template whose host for this shard does not begin
+    /// with this pod's name (a StatefulSet renamed by a namePrefix) is
+    /// named in a warning.
+    #[test]
+    fn a_peer_template_is_checked_against_the_shards_and_the_pod() {
+        let t = |s: &str| Peers::Template(s.into());
+        let ok = t("clax-{shard}.clax-peers:7480");
+        assert_eq!(check_peers(&ok, 3, 1, "clax-1"), Ok(None));
+        let err = check_peers(&t("clax.clax-peers:7480"), 2, 0, "clax-0").unwrap_err();
+        assert!(
+            err.contains("CLAX_FLEET_PEER") && err.contains("{shard}"),
+            "{err}"
+        );
+        assert_eq!(check_peers(&t("localhost:7480"), 1, 0, "fleet"), Ok(None));
+        let warn = check_peers(&ok, 3, 1, "prod-clax-1").unwrap().unwrap();
+        assert!(
+            warn.contains("clax-1.clax-peers:7480") && warn.contains("prod-clax-1"),
+            "{warn}"
+        );
+        assert_eq!(check_peers(&t("127.0.0.1:748{shard}"), 3, 1, "x"), Ok(None));
+        assert_eq!(check_peers(&t("[::1]:748{shard}"), 3, 1, "x"), Ok(None));
+        let list = Peers::List(vec!["a:1".into(), "b:1".into()]);
+        assert_eq!(check_peers(&list, 2, 0, "x"), Ok(None));
+    }
+
     /// A drain waits for a start under way at most [`STOP_TIMEOUT`], so a
     /// slow start (a long migration) cannot hold the process past its
     /// grace period; a stop the catalog asks for still waits for it.
@@ -1046,6 +1170,7 @@ mod tests {
             },
             kek: None,
             peer_key: "k".into(),
+            secrets_dir: None,
             port: 7480,
             clock: Arc::new(clax_core::working::ManualClock::at("2026-01-01T00:00:00Z")),
         })

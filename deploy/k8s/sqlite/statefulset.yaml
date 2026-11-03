@@ -61,6 +61,8 @@ spec:
               value: /etc/clax/fleet.toml
             - name: CLAX_FLEET_DATA_DIR
               value: /var/lib/clax
+            - name: CLAX_FLEET_SECRETS_DIR
+              value: /etc/clax-secrets
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -69,11 +71,13 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
-          # CLAX_FLEET_PEER_KEY (required, every shard the same), each
-          # instance's setup secret (its [hosted] setup_secret_env), and
+          # CLAX_FLEET_PEER_KEY (required, every shard the same), and
           # CLAX_KEK if every shard should seal secrets under one key: set it
           # before an instance first starts, as a home's own key is never
-          # replaced. A pod does not start without the Secret.
+          # replaced. The process reads these at start; instances' secrets
+          # (their [hosted] setup_secret_env and github_client_secret_env)
+          # come from the mounted copy below first. A pod does not start
+          # without the Secret.
           envFrom:
             - secretRef:
                 name: clax-secrets
@@ -110,12 +114,21 @@ spec:
             - name: catalog
               mountPath: /etc/clax
               readOnly: true
+            - name: secrets
+              mountPath: /etc/clax-secrets
+              readOnly: true
             - name: tmp
               mountPath: /tmp
       volumes:
         - name: catalog
           configMap:
             name: clax-fleet-catalog
+        # The same Secret as files, which the kubelet keeps current
+        # (CLAX_FLEET_SECRETS_DIR): an instance reads its secrets from them
+        # when it starts, so a tenant's secret added later needs no restart.
+        - name: secrets
+          secret:
+            secretName: clax-secrets
         - name: tmp
           emptyDir: {}
   volumeClaimTemplates:

@@ -6,10 +6,11 @@
 #     --from-literal=CLAX_SETUP_SECRET_EXAMPLE="$(openssl rand -hex 16)"
 #   kubectl apply -k deploy/k8s/sqlite
 #
-# To scale out, raise `shards` in the catalog first (no pod restarts: each
-# reloads it), then the StatefulSet's replicas (`kubectl scale sts clax
-# --replicas=N`), and give new instances the new shards with create = true;
-# an instance moves only with its home (docs/kubernetes.md).
+# To scale out, raise `shards` in the catalog and the StatefulSet's
+# replicas together, in an overlay of your own (`replicas:`, not `kubectl
+# scale`, which the next apply undoes), and give new instances the new
+# shards with create = true; an instance moves only with its home
+# (docs/kubernetes.md, Scaling out and Scaling in).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:

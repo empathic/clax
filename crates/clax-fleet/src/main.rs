@@ -118,6 +118,11 @@ struct Serve {
     /// cannot pass for one; every shard needs the same one.
     #[arg(long, env = "CLAX_FLEET_PEER_KEY", hide_env_values = true)]
     peer_key: Option<String>,
+    /// Where instances' secrets are read first, each from the file named
+    /// as its variable (the clax-secrets Secret, mounted); the environment
+    /// when absent or without that file.
+    #[arg(long, env = "CLAX_FLEET_SECRETS_DIR")]
+    secrets_dir: Option<PathBuf>,
     /// How long, after SIGTERM, to keep serving before stopping instances.
     #[arg(long, env = "CLAX_FLEET_DRAIN_DELAY", default_value = "5")]
     drain_delay_secs: u64,
@@ -303,6 +308,7 @@ fn serve(a: Serve) -> anyhow::Result<()> {
         },
         kek,
         peer_key,
+        secrets_dir: a.secrets_dir,
         port: a.listen.port(),
         clock: Arc::new(clax_core::working::SystemClock),
     })?;
