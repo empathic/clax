@@ -6,23 +6,28 @@
 //
 // A preview <name> (deploy-lib.mjs envOf) is the Worker clax-<name>, its
 // custom domain (its public host), its route *.<name>.<site zone>/* and
-// the proxied DNS record *.<name>.<site zone> deploy.mjs made for it. This
-// deletes, in order, the routes on the site zone whose script is the
-// Worker, that DNS record, the Worker's custom domains, and the Worker with
-// its Durable Objects (every artifact and person of the preview). The
-// assets it kept in the shared bucket expire on their own (deploy-lib.mjs
-// PREVIEW_ASSET_DAYS). Each step is idempotent: a preview that is gone, or
+// the proxied DNS record *.<name>.<site zone> deploy.mjs made for it, its
+// queue clax-artifacts-events-<name> and its Artifacts namespace
+// clax-<name>. This deletes, in order, the routes on the site zone whose
+// script is the Worker, that DNS record, the Worker's custom domains, the
+// Worker with its Durable Objects (every artifact and person of the
+// preview), the queue (after the Worker, its consumer), and every
+// repository in the namespace. The namespace stays, empty: Cloudflare's API
+// deletes repositories, not namespaces. The assets it kept in the shared
+// bucket expire on their own (deploy-lib.mjs PREVIEW_ASSET_DAYS). Each step is idempotent: a preview that is gone, or
 // half gone, is torn down again without error. dev and prod are refused.
 //
-// --reap lists the account's Workers named clax-pr-<N> and tears down each
-// whose pull request <N> in --repo is closed, or does not exist; it keeps
+// --reap lists the account's Workers named clax-pr-<N> and queues named
+// clax-artifacts-events-pr-<N>, and tears down each preview whose pull
+// request <N> in --repo is closed, or does not exist; it keeps
 // those whose pull request is open, and fails at the end when GitHub could
 // not say for one (GH_TOKEN, else GITHUB_TOKEN, reads the pull request).
 // The preview workflow tears a preview down when its pull request closes;
 // the reaper catches the closes GitHub sends no event for.
 //
-// It needs CLOUDFLARE_API_TOKEN (Workers Scripts: Edit on the account;
-// Workers Routes: Edit, DNS: Edit and Zone: Read on the site zone) and the
+// It needs CLOUDFLARE_API_TOKEN (Workers Scripts: Edit, Queues: Edit and
+// Artifacts: Edit on the account; Workers Routes: Edit, DNS: Edit and Zone:
+// Read on the site zone) and the
 // account: --account, else CLOUDFLARE_ACCOUNT_ID. --dry-run reads and says
 // what it would delete, deleting nothing.
 
@@ -58,6 +63,14 @@ export async function teardown(api, { name, account, siteZone, siteDomain, dryRu
   }
   const scripts = (await api.scripts(account)) ?? [];
   if (scripts.some((s) => s.id === worker)) await del(`Worker ${worker} and its Durable Objects`, () => api.deleteScript(account, worker));
+  // The queue after its consumer, the Worker. The namespace itself stays:
+  // the API deletes repositories, not namespaces.
+  for (const q of await api.queues(account, res.queue)) {
+    if (q.queue_name === res.queue) await del(`queue ${q.queue_name}`, () => api.deleteQueue(account, q.queue_id));
+  }
+  for (const r of await api.artifactsRepos(account, res.namespace)) {
+    await del(`Artifacts repository ${res.namespace}/${r.name}`, () => api.deleteArtifactsRepo(account, res.namespace, r.name));
+  }
   if (!did.length) info(`nothing left of ${name}`);
   return did;
 }
@@ -83,29 +96,34 @@ export async function prState(repo, n, token) {
   return j.state === "open" ? "open" : "closed";
 }
 
-/** Tears down every preview Worker whose pull request is closed or
- * missing: answers `{ reaped, kept, failed }`, the names of each. */
+/** Tears down every preview whose pull request is closed or missing: each
+ * preview Worker, and each preview queue whose Worker is gone already (a
+ * teardown that stopped after deleting the Worker). Answers
+ * `{ reaped, kept, failed }`, the Workers' names in each. */
 export async function reap(api, { account, siteZone, repo, token, dryRun = false }) {
   const out = { reaped: [], kept: [], failed: [] };
-  for (const s of (await api.scripts(account)) ?? []) {
-    const n = previewPr(s.id);
-    if (n === null) continue;
+  const prs = new Set();
+  for (const s of (await api.scripts(account)) ?? []) prs.add(previewPr(s.id));
+  for (const q of await api.queues(account)) prs.add(previewPr(q.queue_name.replace(/^clax-artifacts-events-/, "clax-")));
+  prs.delete(null);
+  for (const n of [...prs].sort((a, b) => a - b)) {
+    const worker = `clax-pr-${n}`;
     let state;
     try {
       state = await prState(repo, n, token);
     } catch (e) {
-      info(`${s.id}: kept, since GitHub did not say whether #${n} is open (${e.message})`);
-      out.failed.push(s.id);
+      info(`${worker}: kept, since GitHub did not say whether #${n} is open (${e.message})`);
+      out.failed.push(worker);
       continue;
     }
     if (state === "open") {
-      info(`${s.id}: #${n} is open; kept`);
-      out.kept.push(s.id);
+      info(`${worker}: #${n} is open; kept`);
+      out.kept.push(worker);
       continue;
     }
-    console.log(`== ${s.id}: #${n} is ${state}; tearing it down`);
+    console.log(`== ${worker}: #${n} is ${state}; tearing it down`);
     await teardown(api, { name: `pr-${n}`, account, siteZone, dryRun });
-    out.reaped.push(s.id);
+    out.reaped.push(worker);
   }
   return out;
 }

@@ -63,8 +63,9 @@
 // default: the Worker clax, the bucket clax-assets, the queue
 // clax-artifacts-events, the namespace clax), dev (clax-dev, clax-assets-dev,
 // clax-artifacts-events-dev, clax-dev), or a preview's name such as pr-12
-// (the Worker clax-pr-12, versions in memory, the shared bucket
-// clax-assets-preview, whose objects expire after 30 days). A preview
+// (the Worker clax-pr-12, the queue clax-artifacts-events-pr-12, the
+// namespace clax-pr-12, and the shared bucket clax-assets-preview, whose
+// objects expire after 30 days; teardown.mjs deletes the rest). A preview
 // deployed with --ci is given no SETUP_SECRET or CLAX_TOKEN: its owner signs
 // in with GitHub, so --ci needs --github-client-id for it.
 //
@@ -193,10 +194,6 @@ export function parseArgs(argv) {
   o.res = envOf(o.env);
   o.ephemeral = o.res.ephemeral;
   o.name ??= o.res.worker;
-  if (o.ephemeral) {
-    if (o.storeGiven && o.store !== "memory") throw new Error(`a preview (--env ${o.res.env}) keeps its versions in memory: it takes no --store ${o.store}`);
-    o.store = "memory";
-  }
   if (o.production && o.res.env !== "prod") throw new Error(`--production is the prod environment's: it takes no --env ${o.res.env}`);
   if (o["retired-content-origin"] !== undefined && !retiredContentOrigin({ retired_content_origin: o["retired-content-origin"] })) {
     throw new Error(`--retired-content-origin takes an https:// origin (e.g. https://content.example.com), not ${o["retired-content-origin"]}`);

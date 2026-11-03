@@ -2,8 +2,9 @@ name: Preview
 
 # Each pull request from a branch of this repository gets a preview
 # (docs/environments.md): the Worker clax-pr-<N> at https://pr-<N>.<preview
-# host zone>, its sites at <ID>.pr-<N>.<preview site zone>, its versions in
-# memory, fresh at its first deploy, with GitHub sign-in through the
+# host zone>, its sites at <ID>.pr-<N>.<preview site zone>, its versions on
+# Artifacts in a queue and namespace of its own, fresh at its first
+# deploy, with GitHub sign-in through the
 # preview OAuth App (whose callback URL matches every pr-<N> host) and
 # OWNER_GITHUB as its owner. Every push redeploys it; closing the pull
 # request tears it down (crates/clax-worker/teardown.mjs), and the

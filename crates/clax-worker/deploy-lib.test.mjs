@@ -192,10 +192,20 @@ test("prod keeps clax.dev's names, and dev has a bucket, queue and namespace of 
   assert.deepEqual(envOf("dev"), { env: "dev", worker: "clax-dev", bucket: "clax-assets-dev", queue: "clax-artifacts-events-dev", namespace: "clax-dev", ephemeral: false });
 });
 
-test("a preview is its own Worker, in memory, on the shared preview bucket", () => {
-  assert.deepEqual(envOf("pr-12"), { env: "pr-12", worker: "clax-pr-12", bucket: PREVIEW_BUCKET, queue: null, namespace: null, ephemeral: true });
+test("a preview is its own Worker, with a queue and namespace of its own, on the shared preview bucket", () => {
+  assert.deepEqual(envOf("pr-12"), {
+    env: "pr-12",
+    worker: "clax-pr-12",
+    bucket: PREVIEW_BUCKET,
+    queue: "clax-artifacts-events-pr-12",
+    namespace: "clax-pr-12",
+    ephemeral: true,
+  });
   assert.equal(envOf("x").worker, "clax-x");
-  assert.equal(envOf("a".repeat(40)).worker, `clax-${"a".repeat(40)}`);
+  const longest = envOf("a".repeat(40));
+  assert.equal(longest.worker, `clax-${"a".repeat(40)}`);
+  // Cloudflare takes queue names of at most 63 characters.
+  assert.ok(longest.queue.length <= 63, longest.queue);
   for (const bad of ["", "PR-12", "pr_12", "-pr", "pr-", "pr.12", "a".repeat(41), "pr 12"]) {
     assert.throws(() => envOf(bad), /--env takes prod, dev or a preview's name/, JSON.stringify(bad));
   }
@@ -214,7 +224,7 @@ test("the site route's zone is the site domain, or a zone it is under", () => {
 });
 
 test("a preview's --ci deploy needs GitHub sign-in, and no --store", () => {
-  const preview = { ...CI, store: "memory", storeGiven: false, ephemeral: true, "github-client-id": "Iv1", "owner-github": "someone" };
+  const preview = { ...CI, store: "artifacts", storeGiven: false, ephemeral: true, "github-client-id": "Iv1", "owner-github": "someone" };
   assert.doesNotThrow(() => checkCiOptions(preview));
   assert.throws(() => checkCiOptions({ ...preview, "github-client-id": undefined, "owner-github": undefined }), /--github-client-id <ID> \(a preview's only sign-in is GitHub's\)/);
 });
