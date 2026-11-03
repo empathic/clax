@@ -217,8 +217,8 @@ pub fn port_clash(cli: &crate::Cli, home: &Home, port: u16) -> Option<String> {
     let range = port_range(port);
     Some(format!(
         "ports {}-{} are all in use by other programs ({who}), and Clax leaves them alone; give Clax another port: set `port = <a free port>` under `[serve]` in {}, or set {}=<a free port> in the agent's environment",
-        range.start,
-        range.end - 1,
+        range.start(),
+        range.end(),
         home.root().join(clax_core::config::FILE).display(),
         crate::PORT_ENV
     ))
