@@ -35,7 +35,7 @@ describe("PeopleLink", () => {
     stubFetch({});
     const owner = mount(PeopleLink, { owner: true, viewer: null });
     await settle();
-    expect(owner.root.querySelector("a.queues-link")).not.toBeNull();
+    expect([...owner.root.querySelectorAll("a.queues-link")].map(a => [a.getAttribute("href"), a.getAttribute("aria-label")])).toEqual([["/queues", "Queues"], ["/reports", "Reports"]]);
     document.body.replaceChildren();
     forget();
     stubFetch({ "GET /api/me/bot": { enabled: false, role: "admin" } });

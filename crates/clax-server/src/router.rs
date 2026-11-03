@@ -813,6 +813,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/queues", get(shell::gallery_page))
         .route("/queues/{qid}", get(shell::gallery_page))
         .route("/queues/{qid}/{tid}", get(shell::gallery_page))
+        .route("/reports", get(shell::gallery_page))
         .route("/tags", get(shell::gallery_page))
         .route("/admin", get(shell::gallery_page))
         .route("/settings", get(shell::gallery_page))

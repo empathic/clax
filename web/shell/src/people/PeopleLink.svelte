@@ -16,7 +16,8 @@
   // the owner is the browser whose session `GET /api/hosted/me` names the
   // owner's, asked only when neither says People is theirs. **Queues**
   // (`/queues`, the report queues) follows it, for the owner and the
-  // instance's admins only (`myRole`, shared with the header's Admin).
+  // instance's admins only (`myRole`, shared with the header's Admin), and
+  // **Reports** (`/reports`, every report across those queues) beside it.
   import { onDestroy } from "svelte";
   import { isAdmin, myRole } from "../bot/me";
   /** `current`: the page shown (`people`, `queues`), whose link is marked current. */
@@ -44,6 +45,10 @@
 <a class="queues-link" href="/queues" aria-label="Queues" aria-current={p.current === "queues" ? "page" : undefined}>
   <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h7" /></svg>
   <span class="word">Queues</span>
+</a>
+<a class="queues-link" href="/reports" aria-label="Reports" aria-current={p.current === "reports" ? "page" : undefined}>
+  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5h6l2.5 2.5v8.5h-8.5zM6 7.5h4.5M6 10h4.5" /></svg>
+  <span class="word">Reports</span>
 </a>
 {/if}
 {/if}

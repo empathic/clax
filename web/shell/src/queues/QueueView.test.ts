@@ -64,7 +64,7 @@ describe("QueueView", () => {
     const page = (n: number) => ({ reports: [report(n)], next: null });
     stubFetch({
       [`GET ${LIST}?state=active&order=newest`]: page(1),
-      [`GET ${LIST}?state=fix_proposed&order=newest`]: page(2),
+      [`GET ${LIST}?state=open&order=newest`]: page(2),
       [`GET ${LIST}?order=newest`]: page(3),
     });
     const m = mount(QueueView, { qid: "q1", queue: QUEUE, nav: () => {} });
@@ -74,8 +74,8 @@ describe("QueueView", () => {
     const selected = () => m.root.querySelector('[role="tab"][aria-selected="true"]')!.getAttribute("data-tab");
     key("ArrowRight");
     await settle();
-    expect([selected(), document.activeElement?.getAttribute("data-tab")]).toEqual(["fix_proposed", "fix_proposed"]);
-    expect(m.root.querySelector(".rrow a")!.getAttribute("href")).toBe("/queues/q1/t2?state=fix_proposed");
+    expect([selected(), document.activeElement?.getAttribute("data-tab")]).toEqual(["open", "open"]);
+    expect(m.root.querySelector(".rrow a")!.getAttribute("href")).toBe("/queues/q1/t2?state=open");
     key("End");
     await settle();
     expect(selected()).toBe("all");
@@ -185,6 +185,17 @@ describe("QueueView", () => {
       await settle();
     }
     expect(said.filter(s => s === "1 new report.").length).toBe(2);
+  });
+
+  it("opens on the Open or Claimed tab a queue card's count links to", async () => {
+    history.replaceState(null, "", "/queues/q1?state=claimed");
+    const calls = stubFetch({ [`GET ${LIST}?state=claimed&order=newest`]: { reports: [report(4, { state: "claimed" })], next: null } });
+    const m = mount(QueueView, { qid: "q1", queue: QUEUE, nav: () => {} });
+    await settle();
+    expect(tab(m.root, "claimed")!.getAttribute("aria-selected")).toBe("true");
+    expect(ids(m.root)).toEqual(["t4"]);
+    expect(m.root.querySelector(".rrow a")!.getAttribute("href")).toBe("/queues/q1/t4?state=claimed");
+    expect(calls.map(c => c.url)).toEqual([`${LIST}?state=claimed&order=newest`]);
   });
 
   it("opens on the tab the address names", async () => {

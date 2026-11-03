@@ -24,8 +24,34 @@ describe("Queues", () => {
     const card = m.root.querySelector('[data-id="q1"]')!;
     expect(card.querySelector("h3")!.textContent).toBe("Bugs");
     expect(card.querySelector(".counts")!.textContent).toBe("2 open · 1 claimed · 0 fix proposed · 0 verified · 0 resolved");
+    const counts = [...card.querySelectorAll(".counts a")];
+    expect(counts.map(a => a.textContent)).toEqual(["2 open", "1 claimed", "0 fix proposed", "0 verified", "0 resolved"]);
+    expect(counts.map(a => a.getAttribute("href"))).toEqual(["open", "claimed", "fix_proposed", "verified", "resolved"].map(s => `/queues/q1?state=${s}`));
+    expect(counts[0].getAttribute("aria-label")).toBe("2 open reports in Bugs");
+    expect(counts[1].getAttribute("aria-label")).toBe("1 claimed report in Bugs");
     expect(card.querySelector(".origins")!.textContent).toContain("https://app.example");
     expect(document.title).toBe("Queues · Clax");
+  });
+
+  it("puts Reports first among a card's actions, for triage as for admins, and a count opens its tab in place", async () => {
+    history.replaceState(null, "", "/queues");
+    stubFetch(routes({
+      "GET /api/queues": { queues: [QUEUE, { ...QUEUE, id: "q2", name: "Ideas", role: "triage" }] },
+      "GET /api/queues/q2/reports": { reports: [], next: null },
+      "GET /api/queues/q1/reports?state=open&order=newest": { reports: [], next: null },
+    }));
+    const m = mount(Queues, {});
+    await settle();
+    const acts = (id: string) => [...m.root.querySelectorAll(`[data-id="${id}"] .acts > *`)].map(a => a.textContent);
+    expect(acts("q1")).toEqual(["Reports", "Manage", "Edit", "Delete"]);
+    expect(acts("q2")).toEqual(["Reports"]);
+    const reports = m.root.querySelector<HTMLAnchorElement>('[data-id="q2"] .acts a')!;
+    expect([reports.getAttribute("href"), reports.getAttribute("aria-label")]).toEqual(["/queues/q2", "Reports in Ideas"]);
+    click(m.root.querySelector('[data-id="q1"] .counts a'));
+    await settle();
+    expect(`${location.pathname}${location.search}`).toBe("/queues/q1?state=open");
+    expect(m.root.querySelector('[role="tab"][aria-selected="true"]')!.getAttribute("data-tab")).toBe("open");
+    history.replaceState(null, "", "/queues");
   });
 
   it("makes a queue from the form, its origins one per line, and refuses a line that is not an origin", async () => {
