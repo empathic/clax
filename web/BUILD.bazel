@@ -213,6 +213,7 @@ filegroup(
     name = "shell_cases",
     srcs = glob([
         "shell/src/*-cases.json",
+        "shell/src/origin.ts",
         "shell/src/view/frame-host.ts",
         "shell/src/view/haiku.json",
         "shell/src/theme.css",
