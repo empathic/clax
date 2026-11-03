@@ -692,6 +692,7 @@ mod tests {
             has_clip: false,
             diagnostics_lines: 0,
             triage_only,
+            reporter_id: None,
         };
         let r = Report {
             id: "t1".into(),

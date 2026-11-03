@@ -12,7 +12,7 @@
   // and a reply. A reporter replies; resolving is the triage team's. Read
   // again when the page is shown again. Everything shown is text.
   import { onMount } from "svelte";
-  import { STATE_TEXT, aboutOf, failureOf, pageOf, readAll, repliesOf, serial, titleOf } from "../../../overlay/src/triage/triage";
+  import { STATE_TEXT, aboutOf, failureOf, pageOf, readAll, repliesOf, serial, titleOf } from "./reporter-view";
   import type { Report } from "../../../sdk/src/types";
   import { type ReporterQueue, ViewRefused, filedBy, reporterApi, reporterQueuePath, reporterReportPath, reporterRouteOf } from "./reporter-api";
 

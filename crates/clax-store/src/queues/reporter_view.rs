@@ -336,6 +336,10 @@ mod tests {
             author_name: name.into(),
             body: "b".into(),
             created_at: String::new(),
+            capture: None,
+            has_clip: false,
+            diagnostics_lines: 0,
+            triage_only: false,
             reporter_id: rid.map(str::to_string),
         }
     }
@@ -359,6 +363,14 @@ mod tests {
             comments,
             claim: None,
             created_at: String::new(),
+            context: None,
+            server: None,
+            reporter_profile: None,
+            resolve_reason: None,
+            fixes: Vec::new(),
+            reopen_count: 0,
+            diagnostics_lines: 0,
+            filing_diagnostics_lines: 0,
         }
     }
 

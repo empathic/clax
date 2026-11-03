@@ -7648,9 +7648,9 @@ mod tests {
         );
         drop(st);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::TAILSCALE_LOGIN_MIGRATION);
-        for table in ["owner_browser_sessions", "report_fixes", "price_catalog"] {
-            assert_eq!(table_count(&c, table), 1, "main's 60 to 62 ran: {table}");
+        assert_eq!(user_version(&c), super::REPORTER_VIEW_MIGRATION);
+        for table in ["owner_browser_sessions", "report_fixes", "price_catalog", "queue_reporters"] {
+            assert_eq!(table_count(&c, table), 1, "main's 60 to 62 and 64 ran: {table}");
         }
     }
 }
