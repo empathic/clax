@@ -479,6 +479,35 @@ mod tests {
     }
 
     #[test]
+    fn the_runs_web_calls_are_read_at_once_in_order() {
+        let (_d, st) = store();
+        let (run, d) = running(&st);
+        let journal = |n: i64, seq: i64, op: &str| {
+            let e = st
+                .call_entry(&run.id, &d, n, 1, seq, op, &format!("h-{n}-{seq}"))
+                .unwrap()
+                .answered(true, json!({"n": n, "seq": seq}));
+            st.record_bot_call(&e).unwrap()
+        };
+        // Written out of order, across steps, with calls that are not web
+        // calls between them.
+        let b = journal(2, 0, "web.fetch");
+        journal(1, 1, "files.read");
+        let a2 = journal(1, 2, "web.search");
+        let a0 = journal(1, 0, "web.search");
+        journal(2, 1, "webs.other");
+        let (other, d2) = running(&st);
+        let theirs = st
+            .call_entry(&other.id, &d2, 1, 1, 0, "web.search", "h-other")
+            .unwrap()
+            .answered(true, json!({}));
+        let theirs = st.record_bot_call(&theirs).unwrap();
+        assert_eq!(st.bot_web_calls(&run.id).unwrap(), vec![a0, a2, b]);
+        assert_eq!(st.bot_web_calls(&other.id).unwrap(), vec![theirs]);
+        assert!(st.bot_web_calls("no-such-run").unwrap().is_empty());
+    }
+
+    #[test]
     fn a_spend_for_a_run_not_claimed_is_refused() {
         let (_d, st) = store();
         let (run, d) = running(&st);

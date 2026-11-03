@@ -1166,6 +1166,24 @@ impl Store {
         })
     }
 
+    /// Every web call (an op starting `web.`) journaled for run `id`, in
+    /// all its steps, by step and then `seq`: in one read, where
+    /// [`Store::bot_calls`] takes one per step.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn bot_web_calls(&self, id: &str) -> Result<Vec<CallEntry>> {
+        self.with_read(|c| {
+            let mut q = c.prepare_cached(&format!(
+                "SELECT {CALL_COLS} FROM bot_calls
+                  WHERE run_id = ?1 AND substr(op, 1, 4) = 'web.'
+                  ORDER BY step_n, seq"
+            ))?;
+            let rows = q.query_map(params![id], row_to_call)?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
     /// The journal entry of call `seq` (`op` on arguments hashing to
     /// `args_hash`) of attempt `attempt` of step `step_n` of run `run_id`:
     /// made only for the driver holding the run, so no one else can
