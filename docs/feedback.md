@@ -88,29 +88,38 @@ triage members with each report, and never to other reporters. A
 `github` login lets a fixing agent ask the reporter to review its pull
 request.
 
-### Licences of the code you copy
+### Licences of the code you use
 
-The files this guide has you copy or depend on carry Clax's licences
-(`LICENSE`): `web/sdk/src` (`service.ts`, `client.ts`, `sign.ts`,
-`types.ts`) and the overlay's `overlay.d.ts` are AGPL-3.0-only, and
-`clax-core` (with `clax_core::sig`) is GPL-2.0-only OR AGPL-3.0-only;
-the snippets quoted here are as their source files say. They suit a
-product that accepts those terms. A product that does not implements the
-protocol itself: the signed request (`docs/contract.md`, "Signed
-requests") and the reporter routes (`docs/contract.md`, "Report queue routes")
-are the whole contract, and any Ed25519 library signs the lines; the
-overlay script itself is loaded from the instance, not copied.
+The SDK, the overlay and the bridge they are built from (`web/sdk`,
+`web/overlay`, `overlay.d.ts` included, and `web/bridge`) are
+LGPL-2.1-only, as the repository's `LICENSE` says, so the products that
+use them may be under any license. The npm package,
+`@empathic/clax-client-sdk`, is built from them alone and carries the
+same license. The Rust path below depends on `clax-core` (for
+`clax_core::sig`), which is GPL-2.0-only OR AGPL-3.0-only; a product that
+does not accept those terms implements the signed request itself:
+`docs/contract.md`, "Signed requests" and "Report queue routes", is the
+whole contract, and any Ed25519 library signs the lines.
 
 ### TypeScript (Node 20 or later, Workers, Deno, Bun)
 
-`ServiceClient` (`web/sdk/src/service.ts`) signs the request with
-WebCrypto. It is a small file with no dependencies; copy `service.ts`,
-`client.ts`, `sign.ts` and `types.ts` from `web/sdk/src` into your
-backend (AGPL-3.0-only; see "Licences of the code you copy" above).
+`ServiceClient` signs the request with WebCrypto, and retries as the
+contract says (once on `stale_request` with the instance's clock, three
+times on 429 `limit_reached` and 503 `busy`, after 1, 2 and 4 seconds).
+Install the SDK package, which has no dependencies:
+
+```
+npm install @empathic/clax-client-sdk
+```
+
+Its `/service` entry is an ES module and, under the `require` condition,
+a CommonJS file, so `require("@empathic/clax-client-sdk/service")` works
+on any Node 20; the other entries are ES modules alone. A backend that
+cannot take a dependency can copy `service.ts`, `client.ts`, `sign.ts` and
+`types.ts` from `web/sdk/src` instead, and takes no updates that way.
 
 ```ts
-import { ClaxError } from "./clax/client";
-import { ServiceClient } from "./clax/service";
+import { ClaxError, ServiceClient } from "@empathic/clax-client-sdk/service";
 
 const clax = new ServiceClient({
   instance: "https://clax.dev",          // the instance's base URL
@@ -135,8 +144,11 @@ app.post("/clax-token", async (req, res) => {
     res.set("cache-control", "no-store").json(minted); // {token, expires_at}
   } catch (e) {
     // The browser's key refused (the overlay makes a new one), or a limit
-    // reached: passed back with its code. Anything else is your grant's.
+    // still reached after the client's retries: passed back with its code
+    // (and the wait the instance asked for, if it named one). Anything
+    // else is your grant's.
     if (e instanceof ClaxError && (e.code === "invalid_key" || e.code === "limit_reached")) {
+      if (e.retryAfterS !== undefined) res.set("retry-after", String(e.retryAfterS));
       return res.status(e.status).json({ error: { code: e.code, message: e.message } });
     }
     console.error("clax mint", e);
@@ -163,7 +175,7 @@ requests") lists. Two addresses go into it and must not be confused:
 
 A Rust backend can depend on `clax-core` for `clax_core::sig` (the signer
 the instance verifies with; GPL-2.0-only OR AGPL-3.0-only, see
-"Licences of the code you copy" above), or implement the lines with any
+"Licences of the code you use" above), or implement the lines with any
 Ed25519 crate. clax.dev's own token route is written this way. Its backend half
 uses only what an outside backend has (a queue ID, the grant's token and
 key, and the public route). Here it is, quoted from
@@ -293,7 +305,11 @@ The instance's limits on queue keys (`crates/clax-http/src/grant_auth.rs`):
 - A queue holds the nonces of at most 4,096 keys at once
   (`QUEUE_KEYS_PER_QUEUE`), and past that its requests are refused.
 
-Both refusals are 429 `limit_reached`, with `Retry-After`.
+Both refusals are 429 `limit_reached`, until the nonces age out. The
+SDK's clients retry it three times, after 1, 2 and 4 seconds, then fail
+with a `ClaxError` whose `retryAfterS` is the wait the instance asked for,
+when it named one (`Retry-After`, which the reporter routes let the page
+read).
 
 - **Every reporter shares the service grant's limit.** Every mint is
   signed by the one grant key, so the whole product mints at most 1,024
@@ -318,7 +334,9 @@ Both refusals are 429 `limit_reached`, with `Retry-After`.
   - every 15 minutes of use after that;
   - in each new browser or private window, and after the site's storage
     is cleared;
-  - after the instance refuses a token (401);
+  - after the instance refuses a token (401 `token_expired` or
+    `invalid_token`; another 401, such as `stale_request` or
+    `invalid_signature`, is the request's, and mints nothing);
   - on every page load where IndexedDB is unavailable;
   - on every page load when you do not pass `user`.
 
@@ -333,7 +351,21 @@ Both refusals are 429 `limit_reached`, with `Retry-After`.
 
 ## 3. Load the overlay on your pages
 
-The instance serves the overlay to any origin, without credentials:
+`instance` is the instance's origin (`https://clax.dev`): Clax is served
+at the root of its own host, and the overlay refuses a URL with a path,
+query or fragment with a `TypeError`.
+
+A page built with a bundler imports the overlay from the SDK package
+(`npm install @empathic/clax-client-sdk`), with its types:
+
+```ts
+import { overlay } from "@empathic/clax-client-sdk/overlay";
+
+const clax = overlay({ instance: "https://clax.dev", queue: "<queue ID>", user: currentUser.id, auth });
+```
+
+`auth` and `user` are as in the script tag below. The instance also serves
+the same overlay to any origin, without credentials:
 
 - `<instance>/_clax/overlay.js`: a classic script that defines
   `window.Clax`;
@@ -374,8 +406,8 @@ const clax = Clax.overlay({
 
 Save `<instance>/_clax/overlay.d.ts` beside your code as
 `clax-overlay.d.ts` (in SvelteKit, `src/lib/clax-overlay.d.ts`, imported
-as `$lib/clax-overlay`; AGPL-3.0-only, see "Licences of the code you
-copy" above). It is a module, so import its types and type the import
+as `$lib/clax-overlay`; LGPL-2.1-only, see "Licences of the code you
+use" above). It is a module, so import its types and type the import
 with it:
 
 ```ts

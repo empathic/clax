@@ -16,6 +16,7 @@ import { mount, unmount } from "svelte";
 import { OVERLAY_TAG } from "../../bridge/src/anchor";
 import { metaRefusesInlineStyle, withoutWebFonts } from "../../bridge/src/clip";
 import { addSheet } from "../../bridge/src/sheet";
+import { checkInstance } from "../../sdk/src/client";
 import { type Recorder, installDiagnostics } from "../../sdk/src/diagnostics";
 import { forgetReporter as forgetKept } from "../../sdk/src/keystore";
 import { ReporterClient, type ReporterAuth } from "../../sdk/src/reporter";
@@ -72,7 +73,9 @@ export interface ReporterRef {
  * neither. Call it on sign-out; it needs no running overlay. */
 export async function forgetReporter(r: ReporterRef): Promise<void> {
   for (const k of ["instance", "queue", "user"] as const) if (typeof r?.[k] !== "string" || !r[k]) throw new TypeError(`Clax.forgetReporter: ${k} must be a non-empty string`);
-  await forgetKept(r.instance.replace(/\/+$/, ""), r.queue, r.user);
+  const instance = r.instance.replace(/\/+$/, "");
+  checkInstance(instance, "Clax.forgetReporter");
+  await forgetKept(instance, r.queue, r.user);
 }
 
 /** The overlay's mounted component: what `Overlay.svelte` exports. */
@@ -105,10 +108,11 @@ export const diagnostics = {
  * the page's bottom right corner unless `opts.launcher` is false. */
 export function overlay(opts: OverlayOptions, doc: Document = document): OverlayHandle {
   for (const k of ["instance", "queue"] as const) if (typeof opts?.[k] !== "string" || !opts[k]) throw new TypeError(`Clax.overlay: ${k} must be a non-empty string`);
+  const instance = opts.instance.replace(/\/+$/, "");
+  checkInstance(instance, "Clax.overlay");
   if (typeof opts.auth !== "function") throw new TypeError("Clax.overlay: auth must be a function");
   if (opts.launcher !== undefined && opts.launcher !== "corner" && opts.launcher !== false) throw new TypeError('Clax.overlay: launcher must be "corner" or false');
   if (opts.nonce !== undefined && (typeof opts.nonce !== "string" || !opts.nonce)) throw new TypeError("Clax.overlay: nonce must be a non-empty string");
-  const instance = opts.instance.replace(/\/+$/, "");
   const win = doc.defaultView ?? window;
   if (opts.user !== undefined && (typeof opts.user !== "string" || !opts.user)) throw new TypeError("Clax.overlay: user must be a non-empty string");
   const client = new ReporterClient({ instance, queue: opts.queue, auth: opts.auth, user: opts.user });

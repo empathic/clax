@@ -79,6 +79,37 @@ pub struct CoreConfig {
     pub catalog_url: Option<Option<String>>,
 }
 
+/// Opens the store of `home` (its backup, adoption, migrations and audit
+/// backfill) and withdraws the hook questions a previous process left
+/// open, on a blocking thread, so a long migration holds none of the
+/// runtime's workers: the runtime goes on answering everything else (a
+/// fleet's other instances, its health checks) meanwhile. `progress` hears
+/// the backfill's progress on the caller's task, in order. Answers the
+/// store and the IDs of the questions withdrawn.
+async fn open_store(
+    home: &Home,
+    progress: &mut (dyn FnMut(&clax_store::backfill::Progress) + Send),
+) -> anyhow::Result<(Store, Vec<String>)> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let home = home.clone();
+    let opening = tokio::task::spawn_blocking(move || {
+        let store = Store::open_reporting(&home, &mut |p| {
+            let _ = tx.send(*p);
+        })?;
+        // Hooks that waited on the previous daemon are gone: their
+        // questions are withdrawn (and kept, as every question is).
+        let gone = store.withdraw_hook_questions_on_start()?;
+        anyhow::Ok((store, gone))
+    });
+    // Ends when the blocking side drops its sender, as it returns.
+    while let Some(p) = rx.recv().await {
+        progress(&p);
+    }
+    opening
+        .await
+        .map_err(|e| anyhow::anyhow!("opening the store failed: {e}"))?
+}
+
 /// A started core: its state, its router, and the tasks it runs until
 /// [`Core::stop`] (its background tasks and its listeners).
 pub struct Core {
@@ -97,8 +128,9 @@ impl Core {
     /// state, the journal, the listeners and the background tasks: the
     /// session reaper, the grant sweeper, the planner statistics refresh,
     /// the drafts sweeper, the working sweeper and the price catalog's
-    /// refresh. Runs on the caller's
-    /// Tokio runtime.
+    /// refresh. Runs on the caller's Tokio runtime, the store's opening on
+    /// one of its blocking threads, so a long migration leaves the
+    /// runtime's workers free.
     ///
     /// # Errors
     /// When the store does not open or the state cannot be assembled.
@@ -107,10 +139,8 @@ impl Core {
         progress: &mut (dyn FnMut(&clax_store::backfill::Progress) + Send),
     ) -> anyhow::Result<Core> {
         cfg.home.ensure_dirs()?;
-        let store = Arc::new(Store::open_reporting(&cfg.home, progress)?);
-        // Hooks that waited on the previous daemon are gone: their questions
-        // are withdrawn (and kept, as every question is).
-        let gone = store.withdraw_hook_questions_on_start()?;
+        let (store, gone) = open_store(&cfg.home, progress).await?;
+        let store = Arc::new(store);
         if !gone.is_empty() {
             tracing::info!(count = gone.len(), "withdrew mirrored questions left open");
         }

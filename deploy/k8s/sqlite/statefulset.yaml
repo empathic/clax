@@ -76,8 +76,9 @@ spec:
           # before an instance first starts, as a home's own key is never
           # replaced. The process reads these at start; instances' secrets
           # (their [hosted] setup_secret_env and github_client_secret_env)
-          # come from the mounted copy below first. A pod does not start
-          # without the Secret.
+          # come from the mounted copy below alone, so a key removed from
+          # the Secret is not read from here. A pod does not start without
+          # the Secret.
           envFrom:
             - secretRef:
                 name: clax-secrets
@@ -87,11 +88,16 @@ spec:
               port: admin
             periodSeconds: 2
             failureThreshold: 30
+          # Instances migrate on blocking threads, off the runtime that
+          # answers /healthz; a restart still takes a minute of a process
+          # that does not answer, not a slow answer under a burst of starts.
           livenessProbe:
             httpGet:
               path: /healthz
               port: admin
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
           readinessProbe:
             httpGet:
               path: /readyz

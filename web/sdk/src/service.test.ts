@@ -56,6 +56,28 @@ describe("ServiceClient", () => {
     ]);
   });
 
+  it("retries limit_reached after its backoff, signing the retry anew", async () => {
+    const signatures: string[] = [];
+    const slept: number[] = [];
+    const answers = [
+      new Response(JSON.stringify({ error: { code: "limit_reached", message: "full" } }), { status: 429 }),
+      new Response(JSON.stringify({ token: "cxr_a", expires_at: "2026-10-27T12:15:00Z" }), { status: 200 }),
+    ];
+    const client = new ServiceClient({
+      instance: "https://clax.example", queue: "q1", token: "cxq_grant", privateKey: PKCS8,
+      sleep: async ms => { slept.push(ms); }, random: () => 0,
+      fetch: async (_url, init) => { signatures.push((init.headers as Record<string, string>)["clax-signature"]); return answers.shift()!; },
+    });
+    expect(await client.mintReporterToken({ reporter_id: "r", origin: "https://app.example", public_key: "AAAA" })).toEqual({ token: "cxr_a", expires_at: "2026-10-27T12:15:00Z" });
+    expect(slept).toEqual([1000]);
+    expect(new Set(signatures).size).toBe(2);
+  });
+
+  it("refuses an instance that is not an origin", () => {
+    expect(() => new ServiceClient({ instance: "https://apps.example.com/clax", queue: "q1", token: "cxq_grant", privateKey: PKCS8 }))
+      .toThrow(/^ServiceClient: instance must be an origin/);
+  });
+
   it("gives the instance's error", async () => {
     const client = new ServiceClient({
       instance: "https://clax.example", queue: "q1", token: "cxq_grant", privateKey: PKCS8,
