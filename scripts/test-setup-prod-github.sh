@@ -248,8 +248,8 @@ else fail "--public-host updates both PUBLIC_HOSTs ($(writes))"; fi
 new_case npm-extra
 python3 -c 'import json, sys; p = sys.argv[1]; g = json.load(open(p)); g["envs"]["npm"]["branches"].append({"id": 12, "name": "release", "type": "branch"}); json.dump(g, open(p, "w"))' \
     "$C/github.json"
-if run --i-know-what-i-am-doing && writes | grep -qF "DELETE repos/$R/environments/npm/deployment-branch-policies/12" \
-    && ! writes | grep -qF "DELETE repos/$R/environments/npm/deployment-branch-policies/11" \
+if run --i-know-what-i-am-doing && writes | grep -F "DELETE repos/$R/environments/npm/deployment-branch-policies/12" >/dev/null \
+    && ! writes | grep -F "DELETE repos/$R/environments/npm/deployment-branch-policies/11" >/dev/null \
     && [ "$(q 'sorted(b["name"] for b in g["envs"]["npm"]["branches"])')" = "['main', 'prod']" ]; then
     pass "npm's other branches are removed, main and prod kept"
 else fail "npm's other branches are removed ($(writes); $(q 'g["envs"]["npm"]'))"; fi
