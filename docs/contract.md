@@ -6598,6 +6598,7 @@ router), and a test fails when it differs:
 | `POST /api/live/sites/join` | Denied | no |
 | `POST /api/live/sites/split` | Denied | no |
 | `GET /api/live/sites/suggest` | Denied | no |
+| `POST /api/live/sites/unjoin` | Denied | no |
 | `POST /api/live/snapshots` | Denied | no |
 | `POST /api/live/threads` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/live/threads/{tid}/move` | Denied | yes: 403 `not_for_agents` |
@@ -7355,7 +7356,10 @@ own origin is 400 `own_origin`.
   idempotent. 409 `joining` while either site has a join not finished
   (repeat that join first), 409 `unmerging` while either has an un-merge
   under way; 400 `same_origin`, `too_many_origins` (a site joins at most
-  16), `too_many_rules` (64 in force).
+  16), `too_many_rules` (64 in force), `other_host_family` (every pair of
+  the two sites' origins must share a scheme and be either both loopback
+  or one host name, ports aside: a loopback port and a tailnet name are
+  never one app).
 - **`POST /api/live/sites/split`** `{origin}` splits `origin` off its
   site: from then on it is a site of its own, and its new pages and
   threads are its own. What the site holds (pages, threads, rules,
@@ -7368,6 +7372,17 @@ own origin is 400 `own_origin`.
   site}` (`split: false`, writing nothing, when `origin` joined no site;
   `site`: what is left). 409 `joining` while a join of the site is not
   finished.
+- **`POST /api/live/sites/unjoin`** `{origin}` (the daemon token only, not
+  the extension) undoes the join that brought `origin` into its site, from
+  that join's record (the newest `live.join` naming it): each live page a
+  `live.page_rekey` after that record moved from `origin` to the site's
+  key, and still the site's page of its path while `origin` has none
+  there, is keyed under `origin` again, with its threads; the rules that
+  join moved, still at the key, go back; `origin` leaves the site. Unlike
+  split it records no `never` answer. It answers `{unjoined, origin,
+  rekeyed, site}` (`unjoined: false`, writing nothing, when `origin`
+  joined no site). 400 `site_key` (`origin` is the key: split it),
+  `unrecorded_join`; 409 `joining`.
 - **`POST /api/live/sites/answer`** `{origin, with, answer}` records the
   owner's answer to the suggestion that `origin` is the same app as
   `with`: `never`, or `later` (not suggested for a day). It answers
