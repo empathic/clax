@@ -88,7 +88,7 @@
     <h1 id="rr-title">{report ? titleOf(report) : "Report"}</h1>
     {#if report}
       {@const by = filedBy(report)}
-      <p class="state"><span class="st">{STATE_TEXT[report.state]}</span>{#if by} · filed by {by}{/if} · <time datetime={report.created_at}>{new Date(report.created_at).toLocaleString()}</time></p>
+      <p class="state"><span class="st">{STATE_TEXT[report.state]}</span>{by ? ` · filed by ${by === "You" ? "you" : by}` : ""}{" · "}<time datetime={report.created_at}>{new Date(report.created_at).toLocaleString()}</time></p>
     {/if}
     <!-- The status line: reserved, so what is said here moves nothing below. -->
     <p class="said" role="status" aria-live="polite">{error ?? said}</p>
@@ -137,7 +137,7 @@
             <li>
               <a class="card" href={reporterReportPath(route.qid, r.id)}>
                 <span class="t">{titleOf(r)}</span>
-                <span class="m"><span class="st">{STATE_TEXT[r.state]}</span>{#if by} · {by === "You" ? "yours" : `filed by ${by}`}{/if} · {aboutOf(r)}</span>
+                <span class="m"><span class="st">{STATE_TEXT[r.state]}</span>{by ? ` · ${by === "You" ? "yours" : `filed by ${by}`}` : ""}{` · ${aboutOf(r)}`}</span>
                 <span class="m">{r.artifact.title || r.artifact.url} · <time datetime={r.created_at}>{new Date(r.created_at).toLocaleString()}</time></span>
               </a>
             </li>
