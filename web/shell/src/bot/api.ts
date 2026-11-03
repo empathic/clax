@@ -52,7 +52,13 @@ export type MeBot = {
   estimate_milli?: { low: number; high: number } | null;
   can_export?: boolean;
   provider_host?: string | null;
+  web?: MeWeb;
 };
+/** Whether ClaxBot may search and read the web for this person (`GET
+ * /api/me/bot`): `on` their own choice (on by default), `offered` whether
+ * the admin turned a web operation on and the host has a source, `why_off`
+ * why their runs have none now, else `null`. */
+export type MeWeb = { on: boolean; offered: boolean; why_off: "admin_off" | "person_off" | "not_configured" | null };
 
 /** A line of usage: a cost line's ID, its label and unit, and the quantity and credits (§7.3). */
 export type LineTotal = { line: string; label?: string; unit?: string; qty: number; credits_milli: number; cost_micro_usd?: number };
@@ -75,7 +81,13 @@ export type RunStatus = "queued" | "running" | "stopping" | "finished" | "gave_u
 /** Why a run stopped (§4.2, §7.4). */
 export type StopReason = "credits_exhausted" | "run_cap" | "max_steps" | "max_time" | "cancelled" | string;
 /** One `clax` API call a script made: its op, what it named, how it went and how long it took. */
-export type BotCall = { op: string; target?: string | null; ok: boolean; ms: number; error?: string | null };
+export type BotCall = {
+  op: string; target?: string | null; ok: boolean; ms: number; error?: string | null;
+  /** What a web call cost, in milli-credits (absent for any other call; 0 for a page served from the page store). */
+  cost_milli?: number;
+  /** A web call's query (search) or URL (fetch), and for a fetch the source that allowed it: `comment`, `search #<seq>` or `page #<seq>`. */
+  web?: { query?: string; url?: string; source?: string };
+};
 export type StepKind = "turn" | "script" | "finish" | "give_up" | "stopped";
 /** One step of a run (§4.2). A `turn` carries the model's narration
  * (`text`) and tokens; a `script` its title, code, calls, logs, return
@@ -86,6 +98,8 @@ export type BotStep = {
   text?: string; model?: string; input_tokens?: number; cached_tokens?: number; output_tokens?: number; key_source?: "instance" | "own";
   title?: string; code?: string; calls?: BotCall[]; logs?: string[]; value?: unknown; error?: string | null; cpu_ms?: number;
   summary?: string; reason?: string;
+  /** A finish step's Sources: the pages the run fetched, built from its journal. */
+  sources?: { title: string; url: string }[];
   /** Live only, from a turn's `turn_delta`s: the reasoning summary as it
    * streams, and the tool call's input (JSON, partial) as it is written. */
   thinking?: string; input?: string;
@@ -310,6 +324,8 @@ export async function meBot(): Promise<MeBot | null> {
 export const setOwnKey = (key: string) => call<MeBot>("/api/me/bot/key", "PUT", { key });
 export const clearOwnKey = () => call<MeBot>("/api/me/bot/key", "DELETE");
 export const useOwnKey = (use_own: boolean) => call<MeBot>("/api/me/bot", "PUT", { use_own });
+/** Lets ClaxBot's runs for this person search and read the web, or not. */
+export const setWebChoice = (web: boolean) => call<MeBot>("/api/me/bot", "PUT", { web });
 export const meUsage = (week?: string) => call<MeUsage>(`/api/me/usage${query({ week })}`);
 
 /** A send refused because run `run` already works on one of its threads (409 `run_active`). */
@@ -348,6 +364,28 @@ export const setProvider = (patch: ProviderPatch) => call<Provider>("/api/admin/
 export const setInstanceKey = (key: string) => call<Provider>("/api/admin/provider/key", "PUT", { key });
 export const clearInstanceKey = () => call<Provider>("/api/admin/provider/key", "DELETE");
 export const testProvider = () => call<{ ok: boolean; latency_ms: number; error?: string | null }>("/api/admin/provider/test", "POST", {});
+/** The web providers search can use. */
+export type WebProvider = "ceramic" | "exa" | "linkup";
+/** Which URLs a fetch may take: those from the sender's words, searches and pages read; any public one; the allowlist's hosts. */
+export type UrlRule = "sourced" | "any_public" | "allowlist";
+/** `GET /api/admin/web`: the web tools' settings, `configured` whether the host has a source at all, and where each value comes from by its dotted name (`search.provider`). The token is write-only: only its `KeyInfo`. */
+export type WebSettings = {
+  configured: boolean;
+  search: { enabled: boolean; provider: WebProvider; gateway: string; byok_alias: string; limit: number; max_per_run: number };
+  fetch: { enabled: boolean; url_rule: UrlRule; allowlist: string[]; max_per_run: number };
+  cloudflare: { account_id: string; token: KeyInfo };
+  sources: Record<string, Source>;
+};
+/** What `PUT /api/admin/web` changes: any of the editable fields. */
+export type WebPatch = {
+  search?: Partial<Pick<WebSettings["search"], "enabled" | "provider" | "max_per_run">>;
+  fetch?: Partial<WebSettings["fetch"]>;
+  cloudflare?: { account_id?: string };
+};
+export const getAdminWeb = () => call<WebSettings>("/api/admin/web");
+export const putAdminWeb = (patch: WebPatch) => call<WebSettings>("/api/admin/web", "PUT", patch);
+export const putWebToken = (token: string) => call<WebSettings>("/api/admin/web/token", "PUT", { token });
+export const deleteWebToken = () => call<WebSettings>("/api/admin/web/token", "DELETE");
 export const providerModels = () => call<ProviderModels>("/api/admin/provider/models");
 /** `POST /api/admin/pricing/tokenulator`: refreshes the price catalog, then
  * prices `model`'s token lines from it, as `providerId` (its tokenulator.dev

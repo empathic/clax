@@ -15,7 +15,7 @@
   import { onDestroy } from "svelte";
   import { refusal } from "../people/refusal";
   import { type BotRun, type BotStep, type RunEvent, type RunSummary, cancelRun } from "./api";
-  import { credits, ended, meter, openByDefault, runCost, runStatus, stepLine, tail, turnActivity } from "./model";
+  import { callCost, credits, ended, meter, openByDefault, runCost, runStatus, stepLine, tail, turnActivity, webSource } from "./model";
   import { RunFeed } from "./run-feed.svelte";
   import { botView } from "./send.svelte";
   import Meter from "./Meter.svelte";
@@ -127,7 +127,7 @@
               {#if s.code}<pre class="code" aria-label="Code"><code>{s.code}</code></pre>{/if}
               {#if s.calls?.length}
                 <ul class="calls" aria-label="Calls">
-                  {#each s.calls as c, i (i)}<li class:bad={!c.ok}><span aria-label={c.ok ? "ok" : "failed"}>{c.ok ? "✓" : "✗"}</span> <code>{c.op}</code>{#if c.target}{" "}<span class="tg">{c.target}</span>{/if}<span class="ms">{c.ms} ms</span>{#if c.error}<span class="ce">{c.error}</span>{/if}</li>{/each}
+                  {#each s.calls as c, i (i)}<li class:bad={!c.ok}><span aria-label={c.ok ? "ok" : "failed"}>{c.ok ? "✓" : "✗"}</span> <code>{c.op}</code>{#if c.web?.query ?? c.web?.url ?? c.target}{" "}<span class="tg">{c.web?.query ?? c.web?.url ?? c.target}</span>{/if}{#if webSource(c.web?.source)}{" "}<span class="src">{webSource(c.web?.source)}</span>{/if}{#if callCost(c.cost_milli)}{" "}<span class="cc">{callCost(c.cost_milli)}</span>{/if}<span class="ms">{c.ms} ms</span>{#if c.error}<span class="ce">{c.error}</span>{/if}</li>{/each}
                 </ul>
               {/if}
               {#if s.logs?.length}<pre class="out" aria-label="Logs">{s.logs.join("\n")}</pre>{/if}
@@ -136,6 +136,11 @@
             </details>
           {:else if s.kind === "finish"}
             <p class="who">Done</p>{#if s.summary}<p class="say">{s.summary}</p>{/if}
+            {#if s.sources?.length}
+              <ul class="sources" aria-label="Sources">
+                {#each s.sources.filter(x => /^https?:\/\//i.test(x.url)) as x (x.url)}<li><a href={x.url} target="_blank" rel="noopener noreferrer">{x.title || x.url}</a></li>{/each}
+              </ul>
+            {/if}
           {:else if s.kind === "give_up"}
             <p class="who">Gave up</p>{#if s.reason}<p class="say">{s.reason}</p>{/if}
           {:else}
@@ -199,6 +204,9 @@
     .runp .calls li.bad > span:first-child { color: var(--danger); }
     .runp .calls code { font: 12px var(--mono); }
     .runp .calls .tg { color: var(--muted); overflow-wrap: anywhere; min-width: 0; }
+    .runp .calls .src, .runp .calls .cc { color: var(--muted); font-size: 12px; }
+    .runp .sources { margin: 4px 0 0; padding-left: 18px; font-size: 12.5px; overflow-wrap: anywhere; }
+    .runp .sources a { color: var(--accent-ink); text-decoration: underline; }
     .runp .calls .ms { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
     .runp .calls .ce { flex-basis: 100%; color: var(--danger); }
     .runp details .err { margin: 0 10px 8px; }

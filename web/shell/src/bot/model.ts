@@ -114,6 +114,29 @@ export function perUnitMilli(line: Pick<CostLine, "cost_micro_usd" | "margin_bp"
   return Math.ceil((line.cost_micro_usd * (10_000 + line.margin_bp) * 1000) / (10_000 * priceMicro));
 }
 
+/** The web cost lines' price per thousand requests in milli-credits: a search on each provider, and a fetch (`null` where the lines do not list it). */
+export function webPrices(lines: Pick<CostLine, "id" | "cost_micro_usd" | "margin_bp" | "fixed_credits_milli">[], priceMicro: number): { search: Record<string, number>; fetch: number | null } {
+  const out: { search: Record<string, number>; fetch: number | null } = { search: {}, fetch: null };
+  for (const l of lines) {
+    if (l.id === "web.fetch") out.fetch = perUnitMilli(l, priceMicro);
+    else if (l.id.startsWith("web.search.")) out.search[l.id.slice("web.search.".length)] = perUnitMilli(l, priceMicro);
+  }
+  return out;
+}
+
+/** A fetch's source in words: the sender's comment, or the search or page whose result named the URL ("from search #2"). */
+export function webSource(source: string | undefined): string | null {
+  if (!source) return null;
+  return source === "comment" ? "from your comment" : `from ${source}`;
+}
+
+/** What a web call cost: credits, "free" for a page served from the store, nothing for a call that was not charged. */
+export function callCost(milli: number | undefined): string | null {
+  if (milli === undefined || milli === null) return null;
+  if (milli === 0) return "free";
+  return `${credits(milli)} ${milli === 1000 ? "credit" : "credits"}`;
+}
+
 export const UNITS: Record<Unit, string> = {
   mtok_input: "1M input tokens", mtok_cached_input: "1M cached tokens", mtok_cache_write: "1M cache-write tokens", mtok_output: "1M output tokens",
   cpu_gb_s: "CPU·GB-s", mreq: "1M requests", gb_month: "GB-month", run: "run", kreq: "thousand requests",
