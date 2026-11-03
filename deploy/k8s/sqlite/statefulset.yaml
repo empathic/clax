@@ -88,11 +88,16 @@ spec:
               port: admin
             periodSeconds: 2
             failureThreshold: 30
+          # Instances migrate on blocking threads, off the runtime that
+          # answers /healthz; a restart still takes a minute of a process
+          # that does not answer, not a slow answer under a burst of starts.
           livenessProbe:
             httpGet:
               path: /healthz
               port: admin
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
           readinessProbe:
             httpGet:
               path: /readyz

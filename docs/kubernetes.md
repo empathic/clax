@@ -594,7 +594,8 @@ sets the filter (`info`).
   comes back; nothing fails them over to another pod.
 - An instance starts on its first request, so its first request after a
   restart waits for its database to open (and to migrate, after an
-  upgrade).
+  upgrade). The opening runs on a blocking thread, so the pod's other
+  instances and its health checks are answered meanwhile.
 - A forward to a pod whose node is lost (no reset) fails with 502 within
   about 30 s, by TCP keepalive and, on Linux, `TCP_USER_TIMEOUT`. An owner
   that is up but sends no response headers is given up on after 61
