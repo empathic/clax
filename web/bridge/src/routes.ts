@@ -20,7 +20,9 @@ export type Routes = {
   /** Takes the page to the route at `depth`, below the one it shows. */
   back(depth: number): void;
   /** Reports the route the page shows again: the page greeted again, and a
-   * report the shell got while it awaited that hello was not taken. */
+   * report the shell got while it awaited that hello was not taken. While
+   * the shell's back is under way, the report waits until it lands: the
+   * entry the page leaves is a route the shell has already left. */
   report(): void;
 };
 
@@ -36,6 +38,8 @@ export function appRoutes(win: Window, post: (m: RouteReport) => void): Routes {
   // the one the shell last asked for.
   let landing: number | null = null;
   let target = 0;
+  // A report the shell asked for while its back was under way.
+  let owed = false;
   const report = () => post({ type: "clax:route", depth, hash: win.location.hash });
   const push = h.pushState.bind(h);
   const replace = h.replaceState.bind(h);
@@ -45,6 +49,7 @@ export function appRoutes(win: Window, post: (m: RouteReport) => void): Routes {
     routes.splice(depth + 1, routes.length, { href: win.location.href, state });
     depth++;
     landing = null;
+    owed = false;
     report();
   };
   h.replaceState = (state: unknown, unused: string, url?: string | URL | null) => {
@@ -59,6 +64,7 @@ export function appRoutes(win: Window, post: (m: RouteReport) => void): Routes {
       depth = landing;
       landing = null;
       if (target < depth) go();
+      else if (owed) { owed = false; report(); }
       return;
     }
     const href = win.location.href;
@@ -74,7 +80,10 @@ export function appRoutes(win: Window, post: (m: RouteReport) => void): Routes {
     if (win.location.href !== routes[depth].href) plain = false;
   });
   return {
-    report,
+    report() {
+      if (landing === null) report();
+      else owed = true;
+    },
     back(to: number) {
       if (!Number.isInteger(to) || to < 0 || to >= (landing ?? depth)) return;
       target = to;

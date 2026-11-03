@@ -28,6 +28,20 @@ describe("appRoutes", () => {
     stop();
   });
 
+  it("asked to report while the shell's back is under way, reports the route it lands on once it lands", async () => {
+    // Chromium fires a load at the frame for that traversal, and the shell
+    // asks the page to greet again before the page's popstate.
+    const { posted, routes, stop } = watch("/c/a5/v/1/");
+    history.pushState({ n: 1 }, "", "/c/a5/v/1/1");
+    posted.length = 0;
+    routes.back(0);
+    routes.report();
+    expect(posted).toEqual([]);
+    await vi.waitFor(() => expect(posted).toEqual([{ type: "clax:route", depth: 0, hash: "" }]));
+    expect(location.pathname).toBe("/c/a5/v/1/");
+    stop();
+  });
+
   it("reports the page's pushes and its own back, and takes the page back through its own entries on the shell's back", async () => {
     const { posted, routes, pops, stop } = watch("/c/a1/v/1/");
 

@@ -533,6 +533,18 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(posted.length).toBe(sent);
   });
 
+  it("history: back() to a route leaves the move to the page: the shell moves the frame neither to the route's fragment nor anywhere else", async () => {
+    const { frame, host } = await appView();
+    hello(frame, 1);
+    const posted = framePosts(frame);
+    fromFrame(frame.contentWindow!, { type: "clax:route", depth: 1, hash: "#a" });
+    fromFrame(frame.contentWindow!, { type: "clax:route", depth: 2, hash: "" });
+    host.back();
+    expect(posted).toEqual([{ type: "clax:back", depth: 1 }]);
+    expect(location.hash).toBe("#a");
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: true });
+  });
+
   it("history: a load with no new document, and the page greeting again (again: true), keeps its routes", async () => {
     const { frame, host } = await appView();
     hello(frame, 1);
