@@ -11,7 +11,7 @@ import type { CaptureDeps } from "./capture";
 import { PAGE_ANCHOR, POLL_MS, type ReporterApi, Session, type Timers } from "./model";
 import Overlay from "./Overlay.svelte";
 import { PluginHost } from "../../sdk/src/plugin";
-import { classic, presentations } from "./plugins";
+import { browser, classic, logs, presentations } from "./plugins";
 import type { Picked, Picker } from "./picker";
 
 const anchor: Anchor = { kind: "element", selector: "#total", quote: "Total: $12", prefix: "Items: 3", suffix: null, html_hash: "h:4f2a", rect: { x: 10, y: 20, w: 100, h: 20, scrollX: 0, scrollY: 40, viewportW: 1024 }, custom_name: null, file: "index.html", label: "Total: $12", name: "Total" };
@@ -1018,6 +1018,29 @@ describe("the dialog (Addendum 10: Changeling's Send feedback as the reference) 
       expect(host.querySelector(".intro")).toBeNull();
       expect(host.querySelector('[role="dialog"]')?.hasAttribute("aria-describedby")).toBe(false);
       expect(host.querySelector(".retention")).toBeNull();
+    } finally { r.unmount(); }
+  });
+
+  it("matches Changeling's dialog (Addendum 1): the screenshot an unticked opt-in, the log lines listed, a Browser row", async () => {
+    const logLines = [{ at: "2026-11-03T12:00:00Z", level: "warn" as const, text: "slow render" }, { at: "2026-11-03T12:00:01Z", level: "error" as const, text: "fetch failed" }];
+    const r = await open({ plugins: new PluginHost([...classic(), presentations(), logs({ source: () => logLines }), browser()]) });
+    try {
+      const shot = [...host.querySelectorAll<HTMLLabelElement>("fieldset.attach label")].find(l => l.textContent?.trim() === "A screenshot of this page")!;
+      const box = shot.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+      expect(box.checked).toBe(false);
+      expect(host.querySelector(".listing")).toBeNull();
+      const logBox = host.querySelector<HTMLInputElement>('input[aria-label="The app\'s recent log lines"]')!;
+      expect(logBox.checked).toBe(false);
+      logBox.click();
+      await settle();
+      expect(host.querySelector(".listing")?.textContent).toBe("warn slow render\nerror fetch failed");
+      const rows = Object.fromEntries([...host.querySelectorAll(".sending dt")].map(dt => [dt.textContent, dt.nextElementSibling?.textContent]));
+      expect(rows.Browser).toContain(navigator.userAgent);
+      expect(rows.Screenshot).toBe("Not attached");
+      // Ticking the screenshot takes one: the mode bar opens.
+      box.click();
+      await settle();
+      expect(host.querySelector(".modebar")).not.toBeNull();
     } finally { r.unmount(); }
   });
 

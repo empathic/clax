@@ -225,8 +225,10 @@ describe("presentations", () => {
     expect(renders).toBe(0);
     expect(root.querySelector(".composer .quote")?.textContent).toBe("What the page shows");
     type("Started with words", root);
-    // The reference dialog's Attach: "A screenshot of this page" (Addendum 10).
-    click(button("A screenshot of this page", root));
+    // The reference dialog's Attach: "A screenshot of this page", an unticked opt-in (Addenda 10, 1).
+    const shot = [...root.querySelectorAll("fieldset.attach label")].find(l => l.textContent?.trim() === "A screenshot of this page")?.querySelector<HTMLInputElement>("input");
+    expect(shot?.checked).toBe(false);
+    click(shot as unknown as HTMLElement);
     expect(root.querySelector(".modebar")).not.toBeNull();
     // Screen: the visible page, into this draft.
     click(root.querySelector('.modebar button[aria-keyshortcuts="S"]'));
@@ -234,6 +236,9 @@ describe("presentations", () => {
     expect(renders).toBe(1);
     expect(root.querySelector<HTMLTextAreaElement>(".composer textarea")?.value).toBe("Started with words");
     expect(root.querySelector(".composer .annotator img")?.getAttribute("src")).toBe("blob:clip");
+    // Taken, it is ticked (the box is drawn again once the mode bar has closed).
+    expect([...root.querySelectorAll("fieldset.attach label")].find(l => l.textContent?.trim() === "A screenshot of this page")?.querySelector<HTMLInputElement>("input")?.checked).toBe(true);
+    expect(root.querySelector(".sending img.thumb")?.getAttribute("src")).toBe("blob:clip");
     click(button("Send feedback", root));
     await settle();
     expect(filed.map(f => [f.body, !!f.clip])).toEqual([["Started with words", true]]);

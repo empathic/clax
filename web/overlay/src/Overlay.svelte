@@ -120,7 +120,7 @@
   /** The attachments' lines for "What's sent", read when the draft started. */
   let attachRows = $state<SentRow[]>([]);
   /** What the pickers' refinements said of the pick (`context.app` keys). */
-  let refined: Record<string, unknown> = {};
+  let refined = $state.raw<Record<string, unknown>>({});
   /** A draft's screenshot as it was taken, before the filters ran. */
   let rawCapture = $state.raw<Captured | null>(null);
 
@@ -824,7 +824,11 @@
     if (draft?.includeDiagnostics) rows.push(["Recent errors", `${draft.diagnostics.length}`]);
     const a = ("anchor" in outgoing ? outgoing.anchor : null) as { kind?: string; selector?: string } | null;
     rows.push(["Element", a?.kind === "element" && a.selector ? a.selector : "None: the whole page"]);
-    return rows;
+    // A pick in code (the code-line picker): its file and lines.
+    const code = refined.code as { file?: string; start?: number; end?: number } | undefined;
+    if (code?.file) rows.push(["Code", `${code.file}${code.start ? `:${code.start}${code.end && code.end !== code.start ? `-${code.end}` : ""}` : ""}`]);
+    // One row per label: an attachment's row and the overlay's own (Version) may say the same.
+    return rows.filter(([k], i) => rows.findIndex(([j]) => j === k) === i);
   });
 </script>
 
@@ -888,14 +892,18 @@
         {#if framed}
           <legend>Attach</legend>
           {#if domCapture && barModes.length && !bar}
+            <!-- Opt-in, unticked: ticking takes the screenshot (the mode bar); unticking leaves it out. -->
             <span class="opt">
-              <button type="button" class="small" onclick={addScreenshot}>{draft.clip.state === "none" ? "A screenshot of this page" : "Retake the screenshot"}</button>
+              <label><input type="checkbox" checked={draft.clip.state !== "none" && draft.includeClip} onchange={e => { const on = (e.currentTarget as HTMLInputElement).checked; if (!draft) return; if (on && draft.clip.state === "none") { draft.includeClip = true; addScreenshot(); } else draft.includeClip = on; }} /> A screenshot of this page</label>
+              {#if draft.clip.state !== "none"}<button type="button" class="ghost small" onclick={addScreenshot}>Retake</button>{/if}
+            </span>
+            <span class="opt">
               {#if barModes.some(m => m.mode === "element")}<button type="button" class="small" onclick={() => { addScreenshot(); choose("element"); }}>Pick an element on the page</button>{/if}
-              {#if draft.clip.state === "none"}<span class="muted">without one, the report is about the whole page</span>{/if}
+              {#if !draft.anchor}<span class="muted">without one, the report is about the whole page</span>{/if}
             </span>
           {/if}
         {/if}
-        {#if draft.clip.state !== "none"}
+        {#if draft.clip.state !== "none" && !framed}
           <label><input type="checkbox" aria-label="Include screenshot" bind:checked={draft.includeClip} /> Include screenshot</label>
         {/if}
         <label><input type="checkbox" aria-label={`Include recent errors (${draft.diagnostics.length})`} disabled={draft.diagnostics.length === 0} bind:checked={draft.includeDiagnostics} /> Include recent errors ({draft.diagnostics.length})</label>
@@ -906,12 +914,14 @@
         {/each}
         {#each attachments as a (a.id)}
           <label><input type="checkbox" aria-label={a.label} checked={attachOn.includes(a.id)} onchange={e => { const on = (e.currentTarget as HTMLInputElement).checked; attachOn = on ? [...attachOn, a.id] : attachOn.filter(x => x !== a.id); }} /> {a.label}</label>
+          {@const listing = framed && attachOn.includes(a.id) ? attachRows.find(r => r.id === a.id)?.preview ?? "" : ""}
+          {#if listing.includes("\n")}<pre class="listing" aria-label={`${a.label}: what is sent`}>{listing}</pre>{/if}
         {/each}
       </svelte:element>
       {#if framed && sending.length}
         <section class="sending" aria-labelledby="cx-sending-title">
           <h3 id="cx-sending-title">What will be sent</h3>
-          <dl>{#each sending as [k, v] (k)}<dt>{k}</dt><dd>{v}</dd>{/each}</dl>
+          <dl>{#each sending as [k, v] (k)}<dt>{k}</dt><dd>{#if k === "Screenshot" && clipUrl && outgoing?.clip}<img class="thumb" src={clipUrl} alt="The screenshot that will be sent" />{" "}{/if}{v}</dd>{/each}</dl>
         </section>
       {/if}
       {#if outgoing}<Preview sent={outgoing} marked={draft.shapes.length > 0} sentRows={attachRows.filter(r => attachOn.includes(r.id))} filtered={filterNotes} />{/if}
@@ -1042,6 +1052,8 @@
   fieldset.attach { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 12px 12px; margin: 12px 0 0; display: grid; gap: 8px; }
   fieldset.attach legend { color: var(--muted); padding: 0 6px; }
   .opt { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .listing { margin: 0 0 0 22px; max-height: 8.5em; overflow: auto; padding: 6px 8px; font: 11.5px/1.4 var(--mono, ui-monospace, monospace); color: var(--muted); background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-xs); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .thumb { width: 64px; height: 40px; object-fit: cover; vertical-align: middle; border: 1px solid var(--border); border-radius: var(--radius-xs); }
   .sending { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
   .sending h3 { margin: 0; font: 600 14px/1.3 var(--font); }
   .sending dl { display: grid; grid-template-columns: 90px 1fr; gap: 4px 12px; margin: 8px 0 0; font-size: 13px; }
