@@ -25,10 +25,7 @@
   --bg: #f7f7f5;
   --card: #ffffff;
   --raised: #ffffff;
-  --overlay: #ffffff;
   --hover: #f2f2ef;
-  --menu-hover: #f2f2ef;
-  --menu-press: #e6e5e1;
   --fg: #1c1b19;
   --muted: #5f5d58;
   --border: #e6e5e1;
@@ -45,9 +42,7 @@
   --comment-hl: #fbe9e3;
   --selection-bg: #f6d3c7;
   --selection-fg: #1c1b19;
-  --selection-tint: #f6d3c7;
   --danger: #b3261e;
-  --on-danger: #ffffff;
   --danger-tint: #fbeceb;
   --primary-hover: #3a3935;
   --scrim: rgba(20,20,15,.40);
@@ -99,24 +94,16 @@
   --frame: #ffffff;
   --font: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --serif: ui-serif, "New York", Georgia, serif;
   --t: 120ms cubic-bezier(0.4,0,0.2,1);
-  --radius-xs: 4px;
-  --radius-sm: 8px;
   --radius: 10px;
-  --radius-lg: 16px;
-  --radius-xl: 28px;
-  --radius-full: 999px;
-  --radius-control-apple: 6px;
+  --radius-sm: 8px;
+  --radius-xs: 4px;
 }
 :root:not([data-theme="light"]) { @media (prefers-color-scheme: dark) {
   --bg: #141413;
   --card: #1c1c1a;
   --raised: #232321;
-  --overlay: #2a2a27;
   --hover: #2a2a27;
-  --menu-hover: #3a3a36;
-  --menu-press: #46453f;
   --fg: #ecebe7;
   --muted: #a9a69f;
   --border: #2c2c29;
@@ -129,13 +116,8 @@
   --accent-tint: #1f2a1d;
   --you: #ff7a57;
   --you-ink: #ff7a57;
-  --on-you: #141413;
   --comment-hl: #2e1e19;
-  --selection-bg: #f6d3c7;
-  --selection-fg: #1c1b19;
-  --selection-tint: rgba(246,211,199,.28);
   --danger: #ff8a80;
-  --on-danger: #141413;
   --danger-tint: #3a1f1c;
   --primary-hover: #d6d4ce;
   --scrim: rgba(0,0,0,.60);
@@ -177,10 +159,7 @@
   --bg: #141413;
   --card: #1c1c1a;
   --raised: #232321;
-  --overlay: #2a2a27;
   --hover: #2a2a27;
-  --menu-hover: #3a3a36;
-  --menu-press: #46453f;
   --fg: #ecebe7;
   --muted: #a9a69f;
   --border: #2c2c29;
@@ -193,13 +172,8 @@
   --accent-tint: #1f2a1d;
   --you: #ff7a57;
   --you-ink: #ff7a57;
-  --on-you: #141413;
   --comment-hl: #2e1e19;
-  --selection-bg: #f6d3c7;
-  --selection-fg: #1c1b19;
-  --selection-tint: rgba(246,211,199,.28);
   --danger: #ff8a80;
-  --on-danger: #141413;
   --danger-tint: #3a1f1c;
   --primary-hover: #d6d4ce;
   --scrim: rgba(0,0,0,.60);

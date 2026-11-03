@@ -270,9 +270,9 @@ class RegionError(Exception):
     pass
 
 
-def with_region(label, text, body, indent=""):
+def with_region(label, text, body, indent="", header=KIT_HEADER):
     """text with the lines of body (each indented by indent) between its
-    markers, under the generated header."""
+    markers, under header."""
     if text is None:
         raise RegionError("%s: missing" % label)
     begin = text.find(KIT_BEGIN)
@@ -281,7 +281,7 @@ def with_region(label, text, body, indent=""):
     end = text.find(KIT_END, begin)
     if end < 0:
         raise RegionError("%s: tokens:end marker missing" % label)
-    lines = (KIT_HEADER + body).rstrip("\n").split("\n")
+    lines = (header + body).rstrip("\n").split("\n")
     region = "\n" + "".join((indent + l if l else l) + "\n" for l in lines) + indent
     return text[: begin + len(KIT_BEGIN)] + region + text[end:]
 
@@ -338,24 +338,26 @@ def shell_region(tokens):
     only, the tag palette, the shadows, fonts, --t and radii."""
     d = tokens.data
     tags = d.get("tags", {})
+    omit = set(d.get("shellOmit", []))
 
     def themed(theme):
-        out = ["--%s: %s" % (n, tokens.value(n, theme)) for n in tokens.themed()]
+        out = [("--" + n, tokens.value(n, theme)) for n in tokens.themed() if n not in omit]
         for key, parts in tags.items():
-            out += ["--tag-%s-%s: %s" % (key, p, parts[p][theme]) for p in ("bg", "fg", "bd")]
-        out += ["--%s: %s" % (n, shell_value(tokens, n, theme)) for n in SHELL_ELEVATION]
+            out += [("--tag-%s-%s" % (key, p), parts[p][theme]) for p in ("bg", "fg", "bd")]
+        out += [("--" + n, shell_value(tokens, n, theme)) for n in SHELL_ELEVATION]
         return out
 
     light = themed("light")
-    light += ["--%s: var(--%s)" % (n, tokens.color[n]) for n in tokens.color if tokens.is_alias(n)]
-    light += ["--%s: %s" % (n, v) for n, v in tokens.over.items()]
-    light += ["--%s: %s" % (n, shell_value(tokens, n, "light")) for n in ("font", "mono", "serif", "t")]
-    light += ["--%s: %s" % (n, shell_value(tokens, n, "light")) for n in radius_names(d)]
-    return theme_blocks(light, themed("dark"))
+    # The dark blocks set only what dark changes.
+    dark = [x for x, base in zip(themed("dark"), light) if x[1] != base[1]]
+    light += [("--" + n, "var(--%s)" % tokens.color[n]) for n in tokens.color if tokens.is_alias(n) and n not in omit]
+    light += [("--" + n, v) for n, v in tokens.over.items()]
+    light += [("--" + n, shell_value(tokens, n, "light")) for n in SHELL_REST]
+    return theme_blocks(["%s: %s" % x for x in light], ["%s: %s" % x for x in dark])
 
 
-def radius_names(d):
-    return ["radius" if k == "md" else "radius-" + k for k in d["radius"] if k != "tile"]
+# The rest of the shell's tokens: the faces it uses, --t and its radii.
+SHELL_REST = ("font", "mono", "t", "radius", "radius-sm", "radius-xs")
 
 
 def overlay_region(tokens):
@@ -371,11 +373,13 @@ def overlay_region(tokens):
         return shell_value(tokens, n, theme)
 
     def themed(n):
-        return (n in tokens.color and n not in tokens.over) or n in SHELL_ELEVATION
+        themes = (n in tokens.color and n not in tokens.over) or n in SHELL_ELEVATION
+        return themes and value(n, "dark") != value(n, "light")
 
-    light = "".join("  --%s: %s;\n" % (n, value(n, "light")) for n in names)
-    dark = "".join("    --%s: %s;\n" % (n, value(n, "dark")) for n in names if themed(n))
-    return ":host {\n" + light + "}\n@media (prefers-color-scheme: dark) {\n  :host {\n" + dark + "  }\n}\n"
+    # One line a block: the SDK package ships this file unminified.
+    light = " ".join("--%s: %s;" % (n, value(n, "light")) for n in names)
+    dark = " ".join("--%s: %s;" % (n, value(n, "dark")) for n in names if themed(n))
+    return ":host { %s }\n@media (prefers-color-scheme: dark) { :host { %s } }\n" % (light, dark)
 
 
 def live_region(tokens):
@@ -1005,13 +1009,15 @@ def main(argv):
         tokens.kit_version = ledger["version"]
     problems += kit_api_problems(tokens, ledger)
     outputs = {}
-    for path, body, indent in (
-        (THEME_CSS, shell_region(tokens), ""),
-        (OVERLAY_CSS, overlay_region(tokens), ""),
-        (LIVE_SVELTE, live_region(tokens), "    "),
+    for path, body, indent, header in (
+        (THEME_CSS, shell_region(tokens), "", KIT_HEADER),
+        # The SDK package ships the overlay's CSS unminified: its own head
+        # comment says the region is generated.
+        (OVERLAY_CSS, overlay_region(tokens), "", ""),
+        (LIVE_SVELTE, live_region(tokens), "    ", KIT_HEADER),
     ):
         try:
-            outputs[path] = with_region(path, read(root, path), body, indent).encode()
+            outputs[path] = with_region(path, read(root, path), body, indent, header).encode()
         except RegionError as e:
             problems.append(str(e))
     outputs.update({

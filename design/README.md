@@ -8,7 +8,7 @@ is broken.
 
 | Output | What it gets |
 | --- | --- |
-| `web/shell/src/theme.css`, between `tokens:begin` and `tokens:end` | the shell's colours (both tiers), tags, shadows, fonts, `--t` and radii |
+| `web/shell/src/theme.css`, between `tokens:begin` and `tokens:end` | the shell's colours (both tiers, minus the app-only roles in `shellOmit`), tags, shadows, fonts, `--t` and radii; a dark block sets only what dark changes |
 | `web/overlay/src/tokens.css`, between the markers | the overlay's `:host`: exactly the `overlayHost` names |
 | `web/shell/src/ui/LiveWriters.svelte`, between the markers | `--live-<n>` |
 | `apps/clax_app/assets/kit/kit.css`, between the markers | the kit's public `--k-*` (see "The kit's API") |
