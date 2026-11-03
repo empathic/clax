@@ -24,6 +24,7 @@
   import Switch from "./Switch.svelte";
   import PasskeySettings from "../q/PasskeySettings.svelte";
   import RemoteMutes from "./RemoteMutes.svelte";
+  import Debugger from "./Debugger.svelte";
 
   let s = $state<Settings | null>(null);
   let none = $state(false);
@@ -114,6 +115,7 @@
     </div>
     <PasskeySettings />
     <RemoteMutes />
+    <Debugger />
   {:else if !err}
     <p class="note" role="status">Loading the settings…</p>
   {/if}

@@ -27,7 +27,7 @@ describe("Settings", () => {
     });
     const m = mount(SettingsPage, {});
     await settle();
-    expect([...m.root.querySelectorAll(".bcard h3")].map(h => h.textContent)).toEqual(["[serve]", "[bot]", "Remotes"]);
+    expect([...m.root.querySelectorAll(".bcard h3")].map(h => h.textContent)).toEqual(["[serve]", "[bot]", "Remotes", "Debugger"]);
     const port = m.root.querySelector<HTMLInputElement>("#set-serve-port")!;
     expect(port.readOnly).toBe(true);
     const portField = port.closest(".field")!.textContent!;

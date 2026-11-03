@@ -368,6 +368,27 @@ export async function settings(): Promise<Settings | null> {
 /** Writes `set` (dotted name → value; null removes it) to `config.toml`. */
 export const saveSettings = (set: Record<string, unknown>) => call<Settings>("/api/settings", "PUT", { set });
 
+// ---- the Debugger (/settings), read from the routes that exist ----
+
+/** `GET /healthz`: the daemon's version, build and start. */
+export type Health = { version: string; pid: number | null; started_at: string; commit: string | null; build: string | null };
+/** `GET /api/toolpath/status` (the owner): the Toolpath journal's state. */
+export type JournalStatus = { journal: boolean; dir: string; segment: string | null; cursor: number | null; newest_seq: number; lag_ms: number | null; last_error: string | null; warning: string | null };
+/** `GET /api/extension`: the extension's live credentials. */
+export type ExtensionStatus = { extension_id: string | null; live_credentials: number; last_used_at: string | null };
+/** `GET /api/live/sites` (the owner): sites with live pages. */
+export type LiveSite = { site: { key: string; name: string; joined: boolean; origins: string[] }; pages: number; threads: number; last_activity: string | null; joining: unknown[] };
+/** A service grant as `GET /api/people/me` lists it (`views/grant.rs`). */
+export type GrantView = { id: string; status: string; via: string | null; client: { name: string | null; peer_ip: string | null }; person: { public_id: string; display_name: string | null } | null; owner: boolean; created_at: string; last_used_at: string | null; ended_at: string | null };
+/** `GET /api/people/me`: who this request is, and its grants and agents. */
+export type PeopleMe = { person: { public_id: string | null; display_name: string | null; owner: boolean }; grants: GrantView[]; agents: { name?: string; client?: string }[] };
+
+export const health = () => call<Health>("/healthz");
+export const journalStatus = () => call<JournalStatus>("/api/toolpath/status");
+export const extensionStatus = () => call<ExtensionStatus>("/api/extension");
+export const liveSites = () => call<{ sites: LiveSite[] }>("/api/live/sites");
+export const peopleMe = () => call<PeopleMe>("/api/people/me");
+
 export const audit = (f: AuditFilter) => call<AuditPage>(`/api/audit${query(f)}`);
 export const auditEvent = (seq: number) => call<AuditDetail>(`/api/audit/${seq}`);
 /** The Toolpath export of `f`'s artifact and time range (docs/contract.md
