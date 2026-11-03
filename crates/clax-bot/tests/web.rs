@@ -948,8 +948,8 @@ fn sources_markdown_lists_titles_and_final_urls_in_order() {
     assert_eq!(
         sources_markdown(&pages).unwrap(),
         "\n\nSources:\n- [The A page](https://a.example/x)\n\
-         - [https://b.example/](https://b.example/)\n\
-         - [https://c.example/](https://c.example/)"
+         - [https\\:\\/\\/b\\.example\\/](https://b.example/)\n\
+         - [https\\:\\/\\/c\\.example\\/](https://c.example/)"
     );
 }
 
@@ -1089,4 +1089,54 @@ async fn a_resumed_finish_posts_the_sources_once() {
         bodies,
         ["Mine.", "Sources:\n- [Doc title](https://example.com/a)"]
     );
+}
+
+#[test]
+fn a_url_with_markup_is_plain_text_and_an_encoded_target() {
+    let md = sources_markdown(&[stored(
+        "https://a.example/",
+        "https://a.example/a`b*c_d)e f",
+        "",
+    )])
+    .unwrap();
+    assert_eq!(
+        md.lines().last().unwrap(),
+        "- [https\\:\\/\\/a\\.example\\/a\\`b\\*c\\_d\\)e f](https://a.example/a`b*c_d%29e%20f)"
+    );
+    assert_eq!(
+        clax_bot::web::page::link_target("https://x/a)b c<"),
+        "https://x/a%29b%20c%3C"
+    );
+}
+
+#[test]
+fn a_non_http_final_url_falls_back_or_drops_the_page() {
+    let pages = [
+        stored("https://a.example/", "javascript:alert(1)", "# A"),
+        stored("ftp://b.example/", "data:text/html,x", "# B"),
+    ];
+    assert_eq!(
+        sources_markdown(&pages).unwrap(),
+        "\n\nSources:\n- [A](https://a.example/)"
+    );
+}
+
+#[test]
+fn a_page_reached_twice_is_listed_once() {
+    let pages = [
+        stored("https://a.example/1", "https://z.example/p", "# First"),
+        stored("https://a.example/2", "https://z.example/p/", "# Second"),
+        stored("https://a.example/3", "https://z.example/q", "# Third"),
+    ];
+    assert_eq!(
+        sources_markdown(&pages).unwrap(),
+        "\n\nSources:\n- [First](https://z.example/p)\n- [Third](https://z.example/q)"
+    );
+}
+
+#[test]
+fn a_heading_in_a_code_fence_is_not_a_title() {
+    let text = "```sh\n# a comment\n```\n    # indented code\n   # Real title ##  \n";
+    let md = sources_markdown(&[stored("https://a.example/", "", text)]).unwrap();
+    assert!(md.ends_with("- [Real title](https://a.example/)"), "{md}");
 }

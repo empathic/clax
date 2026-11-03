@@ -450,25 +450,68 @@ fn is_http(u: &str) -> bool {
     u.starts_with("http://") || u.starts_with("https://")
 }
 
-/// The first Markdown `# ` heading of `text`, whitespace collapsed.
+/// The first Markdown ATX level-1 heading of `text` outside a fenced code
+/// block (up to three leading spaces, optional closing `#`s), whitespace
+/// collapsed.
 fn heading(text: &str) -> Option<String> {
-    let line = text.lines().find_map(|l| l.strip_prefix("# "))?;
-    let t: String = line.split_whitespace().collect::<Vec<_>>().join(" ");
-    let t: String = t.chars().take(TITLE_CHARS).collect();
-    (!t.is_empty()).then_some(t)
+    let mut fence: Option<(char, usize)> = None;
+    for line in text.lines() {
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        let body = line.trim_start_matches(' ');
+        let run = |c: char| body.chars().take_while(|&x| x == c).count();
+        if indent <= 3 {
+            let mark = ['`', '~'].into_iter().find(|&c| run(c) >= 3);
+            if let Some(c) = mark {
+                let n = run(c);
+                match fence {
+                    None => {
+                        fence = Some((c, n));
+                        continue;
+                    }
+                    Some((fc, fn_)) if fc == c && n >= fn_ && body[n..].trim().is_empty() => {
+                        fence = None;
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if fence.is_some() || indent > 3 {
+            continue;
+        }
+        let Some(rest) = body.strip_prefix("# ") else {
+            continue;
+        };
+        let rest = rest.trim_end();
+        let core = rest.trim_end_matches('#');
+        let rest = if core.is_empty() || core.ends_with(' ') || core.ends_with('\t') {
+            core
+        } else {
+            rest
+        };
+        let t: String = rest.split_whitespace().collect::<Vec<_>>().join(" ");
+        let t: String = t.chars().take(TITLE_CHARS).collect();
+        return (!t.is_empty()).then_some(t);
+    }
+    None
 }
 
 /// The pages `pages` stored, in the order given, as [`Source`]s. A page
-/// whose final URL and requested URL are both not `http(s)` is left out.
+/// whose final URL and requested URL are both not `http(s)` is left out,
+/// and a later page with the same final URL (ignoring a fragment and trailing
+/// slashes) as an earlier one is not listed again.
 #[must_use]
 pub fn sources(pages: &[clax_store::bot_web::WebPageRow]) -> Vec<Source> {
+    let mut seen = std::collections::HashSet::new();
     pages
         .iter()
         .filter_map(|p| {
             let url = [&p.final_url, &p.url].into_iter().find(|u| is_http(u))?;
-            Some(Source {
+            let url = url.trim();
+            let key = url.split('#').next().unwrap_or(url).trim_end_matches('/');
+            seen.insert(key.to_string()).then(|| Source {
                 title: heading(&p.text),
-                url: url.trim().to_string(),
+                url: url.to_string(),
             })
         })
         .collect()
@@ -495,7 +538,7 @@ fn link_text(s: &str) -> String {
 
 /// `u` as a Markdown link destination: the characters that end or open it
 /// are percent-encoded.
-fn link_target(u: &str) -> String {
+pub fn link_target(u: &str) -> String {
     let mut out = String::with_capacity(u.len());
     for c in u.chars() {
         if c.is_whitespace() || c.is_control() || "()<>\\[]".contains(c) {
@@ -524,7 +567,10 @@ pub fn sources_markdown(pages: &[clax_store::bot_web::WebPageRow]) -> Option<Str
     let mut out = String::from("\n\nSources:");
     for s in &all {
         let target = link_target(&s.url);
-        let text = s.title.as_deref().map_or_else(|| target.clone(), link_text);
+        let text = s
+            .title
+            .as_deref()
+            .map_or_else(|| link_text(&s.url), link_text);
         out.push_str(&format!("\n- [{text}]({target})"));
     }
     Some(out)
