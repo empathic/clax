@@ -493,14 +493,37 @@ down while its pod restarts, and migrate when they start. A pod is ready
 before any of its instances starts, so the rollout goes on through every
 shard even when a release's migration fails. **Upgrade one shard first:**
 
-1. Hold the rollout at the highest shard (here, of 3):
-   `kubectl patch sts clax -p '{"spec":{"updateStrategy":{"rollingUpdate":{"partition":2}}}}'`.
-2. Apply the new release (its version in your overlay's URL, The image)
-   or image. Only `clax-2` restarts.
+1. Note the time, for a rollback: `date -u +%Y%m%dT%H%M%S`.
+2. In your overlay, hold the rollout at the highest shard (here, of 3)
+   with a patch, and name the new release (its version in the overlay's
+   URL, The image) or image, in the same change:
+
+   ```yaml
+   patches:
+     - target:
+         kind: StatefulSet
+         name: clax
+       patch: |-
+         - op: add
+           path: /spec/updateStrategy/rollingUpdate
+           value:
+             partition: 2
+   ```
+
+   Apply it (or commit it, for a GitOps controller). Only `clax-2`
+   restarts.
 3. Start each of its instances (`curl https://<origin>/healthz`), and check
-   that `kubectl exec clax-2 -- clax-fleet status` shows none `failing`.
-4. Release the rest:
-   `kubectl patch sts clax -p '{"spec":{"updateStrategy":{"rollingUpdate":{"partition":0}}}}'`.
+   that `kubectl exec clax-2 -- clax-fleet status` prints no `failing`
+   line under shard 2 (each names an instance whose start failed, and
+   why).
+4. Release the rest: set `partition` to 0 in the patch (or remove it),
+   and apply (or commit) again.
+
+The partition is in the overlay, not set with `kubectl patch sts`,
+because Argo CD or Flux undoes a change made beside the overlay, and
+would release every shard at once. On a cluster applied only by hand,
+`kubectl patch sts clax -p '{"spec":{"updateStrategy":{"rollingUpdate":{"partition":2}}}}'`
+holds it too, until the next apply of an overlay without it.
 
 **Rolling back.** An older image refuses a database a newer one migrated,
 so setting the image back is not enough for an instance that already
