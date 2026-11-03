@@ -96,7 +96,7 @@ Leave all three open.
   - `Unit::Kreq` (stored `"kreq"`, base `1_000`).
   - `pub const LINE_WEB_FETCH: &str = "web.fetch"`.
   - `pub fn web_search_line(provider: &str) -> String` → `"web.search.<provider>"`.
-  - `pub const WEB_PROVIDERS: [(&str, &str, i64); 3]`: `[("ceramic", "Web search (Ceramic)", 250), ("exa", "Web search (Exa)", 7_000), ("linkup", "Web search (Linkup)", 5_000)]`, cost in micro-USD per thousand.
+  - `pub const WEB_PROVIDERS: [(&str, &str, i64); 3]`: `[("ceramic", "Web search (Ceramic)", 250_000), ("exa", "Web search (Exa)", 7_000_000), ("linkup", "Web search (Linkup)", 5_000_000)]`, cost in micro-USD per thousand requests (one `kreq`): $0.25, $7.00, $5.00.
   - `pub(crate) fn seed_web_lines(tx: &Transaction<'_>) -> Result<()>`.
   - `Store::one_request_milli(&self, line: &str, key_source: KeySource) -> Result<i64>`: the credits one request of a line costs now, rounded up as `row_credits_milli` rounds.
 
@@ -110,7 +110,7 @@ fn migration_63_seeds_the_web_lines_at_their_list_prices() {
     assert_eq!((l.unit, l.cost_micro_usd, l.applies), (Unit::Kreq, 250, Applies::Always));
     assert_eq!(st.cost_line("web.search.exa").unwrap().unwrap().cost_micro_usd, 7_000);
     assert_eq!(st.cost_line("web.search.linkup").unwrap().unwrap().cost_micro_usd, 5_000);
-    assert_eq!(st.cost_line(LINE_WEB_FETCH).unwrap().unwrap().cost_micro_usd, 500);
+    assert_eq!(st.cost_line(LINE_WEB_FETCH).unwrap().unwrap().cost_micro_usd, 500_000);
     assert_eq!(l.margin_bp, INFRA_MARGIN_BP);
 }
 
