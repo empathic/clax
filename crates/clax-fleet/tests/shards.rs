@@ -3,7 +3,7 @@
 
 use clax_fleet::fleet::{Peers, Shard};
 
-use crate::common::{catalog, healthz, listener, process, write_catalog};
+use crate::common::{catalog, healthz, listener, process, process_keyed, write_catalog};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn every_process_answers_every_instance_and_each_runs_its_own_shard() {
@@ -186,6 +186,75 @@ async fn a_shard_without_the_home_does_not_start_an_empty_instance() {
     assert_eq!(healthz(p0.addr, "acme.test").await.0, 503);
     assert!(p0.fleet.running().is_empty());
     assert!(!dir.path().join("instances/acme/clax.db").exists());
+}
+
+/// Two processes whose peer keys differ (a rotation under way) and whose
+/// catalogs disagree on an instance's shard (a ConfigMap edit reaching
+/// them at different times) each send its requests to the other: the hop
+/// count, believed without the key, ends that at the hop limit with a 503,
+/// and each counts the other's key as a mismatch.
+#[tokio::test(flavor = "multi_thread")]
+async fn processes_whose_keys_and_catalogs_disagree_do_not_pass_a_request_on_forever() {
+    let dir = tempfile::tempdir().unwrap();
+    let (d0, d1) = (dir.path().join("0"), dir.path().join("1"));
+    std::fs::create_dir_all(&d0).unwrap();
+    std::fs::create_dir_all(&d1).unwrap();
+    let cat0 = write_catalog(&d0, &catalog(&[("acme", Some(1))]));
+    let cat1 = write_catalog(&d1, &catalog(&[("acme", Some(0))]));
+    let (l0, l1) = (listener().await, listener().await);
+    let peers = vec![l0.1.to_string(), l1.1.to_string()];
+    let shards = |ordinal| Shard {
+        ordinal,
+        peers: Peers::List(peers.clone()),
+    };
+    let p0 = process_keyed("clax-0", l0, &d0, &cat0, shards(0), "key-0").await;
+    let p1 = process_keyed("clax-1", l1, &d1, &cat1, shards(1), "key-1").await;
+    assert_eq!(healthz(p0.addr, "acme.test").await.0, 503);
+    assert!(p0.fleet.running().is_empty() && p1.fleet.running().is_empty());
+    assert_eq!(counter(&p0.fleet, "requests_forwarded_total"), 1);
+    assert_eq!(counter(&p1.fleet, "requests_forwarded_total"), 1);
+    assert_eq!(counter(&p0.fleet, "peer_key_mismatches_total"), 1);
+    assert_eq!(counter(&p1.fleet, "peer_key_mismatches_total"), 1);
+}
+
+/// A client's hop count keeps its own request from being forwarded, and no
+/// more: its instance header, without the key, is not believed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_clients_hop_count_only_stops_its_own_forward() {
+    let dir = tempfile::tempdir().unwrap();
+    let cat = write_catalog(
+        dir.path(),
+        &catalog(&[("acme", Some(0)), ("globex", Some(1))]),
+    );
+    let (l0, l1) = (listener().await, listener().await);
+    let peers = vec![l0.1.to_string(), l1.1.to_string()];
+    // Shard 1 is not running: a forward there would be a 502.
+    drop(l1);
+    let p0 = process(
+        "clax-0",
+        l0,
+        &dir.path().join("data-0"),
+        &cat,
+        Shard {
+            ordinal: 0,
+            peers: Peers::List(peers),
+        },
+    )
+    .await;
+    let get = |host: &'static str| {
+        reqwest::Client::new()
+            .get(format!("http://{}/healthz", p0.addr))
+            .header("host", host)
+            .header(clax_fleet::proxy::HOP_HEADER, "2")
+            .header(clax_fleet::proxy::INSTANCE_HEADER, "globex")
+            .send()
+    };
+    // Its own shard's instance answers here, by Host, not the header's.
+    assert_eq!(get("acme.test").await.unwrap().status().as_u16(), 200);
+    assert_eq!(p0.fleet.running(), ["acme"]);
+    // Another shard's is not forwarded.
+    assert_eq!(get("globex.test").await.unwrap().status().as_u16(), 503);
+    assert_eq!(counter(&p0.fleet, "requests_forwarded_total"), 0);
 }
 
 /// `create = true` is for an instance's first start: a catalog that gives

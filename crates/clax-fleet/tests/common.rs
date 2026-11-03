@@ -63,10 +63,22 @@ pub async fn listener() -> (tokio::net::TcpListener, SocketAddr) {
 /// `data_dir`, its catalog at `catalog`.
 pub async fn process(
     pod: &str,
+    listener: (tokio::net::TcpListener, SocketAddr),
+    data_dir: &Path,
+    catalog: &Path,
+    shard: Shard,
+) -> Process {
+    process_keyed(pod, listener, data_dir, catalog, shard, PEER_KEY).await
+}
+
+/// [`process`], with the peer key `peer_key`.
+pub async fn process_keyed(
+    pod: &str,
     (listener, addr): (tokio::net::TcpListener, SocketAddr),
     data_dir: &Path,
     catalog: &Path,
     shard: Shard,
+    peer_key: &str,
 ) -> Process {
     let clock = Arc::new(ManualClock::at("2026-01-01T00:00:00Z"));
     let fleet = Fleet::new(FleetConfig {
@@ -78,7 +90,7 @@ pub async fn process(
         web: Arc::new(MemTree(Default::default())),
         shard,
         kek: Some([7; 32]),
-        peer_key: PEER_KEY.to_string(),
+        peer_key: peer_key.to_string(),
         secrets_dir: None,
         port: addr.port(),
         clock: clock.clone(),

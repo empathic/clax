@@ -380,7 +380,10 @@ its volume keeps. With it:
   It admits 7481 only from the fleet's pods and namespaces labelled
   `clax.empathic.dev/metrics=true`; kubelet probes pass on common CNIs.
 - **The peer key.** A forward carries `x-clax-fleet-key`, and without it
-  the forwarding headers are a client's and ignored. Every shard needs the
+  the instance it names is a client's and ignored: the `Host` decides. Its
+  hop count is believed from anyone, so a client can only keep its own
+  request from being forwarded, and shards whose keys differ (a rotation
+  under way) still stop a request after two hops. Every shard needs the
   same one.
 - **What clients see.** A 503 says only that the instance is unavailable.
   Why it is (an error, a pod's name) goes to the log. On port 7481,
@@ -521,8 +524,10 @@ in effect and its reload state, the instances running here, and those
 whose last start failed (`failing`: the error, the failures in a row, and
 when the next start is tried). `/metrics` is Prometheus text: requests
 answered here, forwarded and refused, forward errors, instance starts and
-failures, catalog reload failures, and gauges of running instances and
-readiness.
+failures, catalog reload failures, requests carrying another peer key
+(`clax_fleet_peer_key_mismatches_total`: shards hold different
+`CLAX_FLEET_PEER_KEY` values, so they do not believe each other's
+forwards), and gauges of running instances and readiness.
 
 **An instance that fails to start** (a failing migration, a home holding
 another `CLAX_KEK`, a missing home on its shard) is not started again for
@@ -603,8 +608,10 @@ sets the filter (`info`).
 - the catalog;
 - two-pod fleets in one process: every pod answering every instance,
   catalog changes (paused and removed instances, changed configs and
-  shards), hop limits, forwards for an instance the owner lacks, shards
-  without a home, a failed start's backoff, and the admin port's key;
+  shards, a shard changed under `create = true`), hop limits (a client's,
+  and between pods whose keys and catalogs disagree), forwards for an
+  instance the owner lacks, shards without a home, a failed start's
+  backoff, and the admin port's key;
 - the proxy (WebSockets, streaming, hop limits, the peer key);
 - checks that the manifests set only variables the binary reads, and read
   only Secrets that the docs say to create or a kustomization generates.

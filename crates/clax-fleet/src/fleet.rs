@@ -12,10 +12,12 @@
 //!
 //! A forwarded request carries its hop count ([`HOP_HEADER`]), its
 //! instance's name ([`INSTANCE_HEADER`]) and the fleet's peer key
-//! ([`KEY_HEADER`]); without the key, the first two are a client's and are
-//! ignored. The process a forward reaches serves that instance or answers
-//! 503, whatever its own catalog makes of the `Host`. One forwarded twice
-//! is answered where it lands, so no request circles. An instance being
+//! ([`KEY_HEADER`]). The process a forward reaches serves that instance or
+//! answers 503, whatever its own catalog makes of the `Host`; without the
+//! key, the instance's name is a client's and ignored, and the `Host`
+//! decides. The hop count is believed from anyone: one forwarded twice is
+//! answered where it lands, so no request circles, even between processes
+//! whose keys and catalogs disagree. An instance being
 //! stopped here is refused 503 until the stop ends. A process that is
 //! draining starts nothing.
 //!
@@ -292,6 +294,7 @@ struct Metrics {
     start_failures: AtomicU64,
     stops: AtomicU64,
     catalog_errors: AtomicU64,
+    peer_key_mismatches: AtomicU64,
 }
 
 /// The catalog's reload state, for `/status`.
@@ -310,6 +313,8 @@ pub struct Fleet {
     slots: Mutex<HashMap<String, Arc<Slot>>>,
     draining: AtomicBool,
     metrics: Metrics,
+    /// A request with another peer key was logged.
+    warned_key_mismatch: AtomicBool,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -362,6 +367,7 @@ impl Fleet {
             slots: Mutex::default(),
             draining: AtomicBool::new(false),
             metrics: Metrics::default(),
+            warned_key_mismatch: AtomicBool::new(false),
         });
         fleet.check_ordinal();
         Ok(fleet)
@@ -411,6 +417,27 @@ impl Fleet {
             .get(KEY_HEADER)
             .and_then(|v| v.to_str().ok())
             .is_some_and(|k| key_matches(&self.cfg.peer_key, k))
+    }
+
+    /// [`Fleet::is_peer`] for a request on the instances' port, counting
+    /// one that carries a peer key other than this process's
+    /// (`clax_fleet_peer_key_mismatches_total`, and a warning the first
+    /// time): processes that hold different keys (a rotation under way, a
+    /// Secret edited for some pods) no longer believe each other's
+    /// forwards.
+    fn check_peer_key(&self, headers: &HeaderMap) -> bool {
+        let peer = self.is_peer(headers);
+        if !peer && headers.contains_key(KEY_HEADER) {
+            self.metrics
+                .peer_key_mismatches
+                .fetch_add(1, Ordering::Relaxed);
+            if !self.warned_key_mismatch.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    "a request carried a peer key other than this process's: the fleet's processes hold different CLAX_FLEET_PEER_KEY values, so their forwards are not believed; give every shard the same key and restart them"
+                );
+            }
+        }
+        peer
     }
 
     fn slot(&self, name: &str) -> Arc<Slot> {
@@ -913,6 +940,11 @@ impl Fleet {
             "Catalog reloads that failed.",
             &m.catalog_errors,
         );
+        counter(
+            "peer_key_mismatches_total",
+            "Requests carrying a peer key other than this process's.",
+            &m.peer_key_mismatches,
+        );
         let catalog = self.catalog();
         let failing = lock(&self.catalog_state).error.is_some();
         out.push_str(&format!(
@@ -1070,11 +1102,15 @@ fn hops(req: &Request) -> u8 {
 
 async fn dispatch(State(fleet): State<Arc<Fleet>>, mut req: Request) -> Response {
     let catalog = fleet.catalog();
-    // A client's hop and instance headers are not believed: only a forward
-    // carrying the peer key is another process's.
-    let peer = fleet.is_peer(req.headers());
-    let hops = if peer { hops(&req) } else { 0 };
-    let inst = if hops > 0 {
+    // The hop count is believed from anyone, as a floor: a client that sets
+    // it only keeps its own request from being forwarded, and a forward
+    // from a process whose peer key differs (a key rotation under way)
+    // still counts its hops, so no two processes pass a request between
+    // them without end. The instance header is believed only from a
+    // forward carrying the peer key: from anyone else, the `Host` decides.
+    let peer = fleet.check_peer_key(req.headers());
+    let hops = hops(&req);
+    let inst = if peer && hops > 0 {
         // A forward names its instance; this process's catalog must have it.
         let name = req
             .headers()
