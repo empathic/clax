@@ -25,7 +25,10 @@
 //! ([`FakeWebSource::from_fixtures`]'s shape) instead, and web use is
 //! configured ([`fixtures`]).
 
-use clax_bot::web::page::{decode, links_of_html, links_of_markdown, pretty_json};
+use clax_bot::web::page::{
+    Handling, decode, handling, links_of_html, links_of_markdown, media_type, media_type_of,
+    pretty_json, user_agent,
+};
 use clax_bot::web::url::{is_local_addr, redirect_allowed};
 use clax_bot::web::{
     CODE_URL_NOT_ALLOWED, CODE_WEB_BLOCKED, CODE_WEB_TIMEOUT, CODE_WEB_TOO_LARGE,
@@ -63,20 +66,9 @@ const SEARCH_ANSWER_BYTES: u64 = 1 << 20;
 /// The most bytes of a Markdown conversion's answer read from Cloudflare.
 const CONVERSION_ANSWER_BYTES: u64 = 16 << 20;
 
-/// The `User-Agent` of a fetch: `ClaxBot/1 (+<origin>)` from a hosted
-/// daemon at its public `origin`, so a site can tell who fetched it and
-/// where to ask; plain `ClaxBot/1` from a local daemon (`None`), whose
-/// own address (loopback or LAN, and port) no site is told.
-#[must_use]
-pub fn user_agent(origin: Option<&str>) -> String {
-    match origin
-        .map(|o| o.trim_end_matches('/'))
-        .filter(|o| !o.is_empty())
-    {
-        Some(o) => format!("ClaxBot/1 (+{o})"),
-        None => "ClaxBot/1".to_string(),
-    }
-}
+/// The type an HTML page is sent for conversion as: decoded first,
+/// whatever charset it came in.
+const HTML_UTF8: &str = "text/html; charset=utf-8";
 
 /// Whether `ip` is a public unicast address a fetch may connect to: not
 /// in any range [`is_local_addr`] refuses, the one list the URL check and
@@ -185,51 +177,6 @@ fn cancelled() -> WebError {
 
 fn unavailable(message: impl Into<String>, retryable: bool) -> WebError {
     WebError::new(CODE_WEB_UNAVAILABLE, message, retryable)
-}
-
-/// What a content type is to a fetch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Kind {
-    /// HTML: converted in `Auto`, its links read from the HTML.
-    Html,
-    /// PDF and Office documents: converted in `Auto`, refused in `Raw`.
-    Document,
-    /// Markdown: as it came, its links read from it.
-    Markdown,
-    /// JSON: pretty-printed in `Auto`.
-    Json,
-    /// Other text, as it came.
-    Text,
-    /// Images, audio and video: always refused.
-    Media,
-    /// No type, or an unknown one: text when the body is UTF-8 without a
-    /// NUL, else refused.
-    Unknown,
-}
-
-/// The kind of the media type `essence` (lowercase, no parameters).
-fn kind_of(essence: &str) -> Kind {
-    let (top, sub) = essence.split_once('/').unwrap_or((essence, ""));
-    match (top, sub) {
-        ("text", "html") | ("application", "xhtml+xml") => Kind::Html,
-        ("text", "markdown" | "x-markdown") => Kind::Markdown,
-        ("application", "json") => Kind::Json,
-        ("application", s) if s.ends_with("+json") => Kind::Json,
-        ("application", "pdf" | "msword" | "vnd.ms-excel" | "vnd.apple.numbers") => Kind::Document,
-        ("application", s)
-            if s.starts_with("vnd.openxmlformats-officedocument.")
-                || s.starts_with("vnd.oasis.opendocument.") =>
-        {
-            Kind::Document
-        }
-        ("text", _) => Kind::Text,
-        ("application", "xml" | "javascript" | "ecmascript" | "x-yaml" | "yaml" | "toml") => {
-            Kind::Text
-        }
-        ("application", s) if s.ends_with("+xml") => Kind::Text,
-        ("image" | "audio" | "video", _) => Kind::Media,
-        _ => Kind::Unknown,
-    }
 }
 
 /// A [`WebSource`] over Cloudflare's REST API: search through
@@ -354,16 +301,17 @@ impl RestSource {
         })
     }
 
-    /// `body` (of type `content_type`) converted to Markdown by Cloudflare.
-    async fn to_markdown(&self, body: Vec<u8>, content_type: &str) -> Result<String, WebError> {
-        let essence = content_type.split(';').next().unwrap_or("").trim();
-        let ext = mime_guess::get_mime_extensions_str(essence)
-            .and_then(|e| e.first())
-            .copied()
-            .unwrap_or("bin");
+    /// `body`, a file named `name` of type `mime`, converted to Markdown by
+    /// Cloudflare.
+    async fn to_markdown(
+        &self,
+        body: Vec<u8>,
+        name: String,
+        mime: &str,
+    ) -> Result<String, WebError> {
         let part = reqwest::multipart::Part::bytes(body)
-            .file_name(format!("page.{ext}"))
-            .mime_str(content_type)
+            .file_name(name)
+            .mime_str(mime)
             .map_err(|e| unavailable(format!("the page's type cannot be sent ({e})"), false))?;
         let form = reqwest::multipart::Form::new().part("files", part);
         let r = RestSource::client(&self.api)?
@@ -487,75 +435,74 @@ impl RestSource {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        let essence = declared
-            .split(';')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_ascii_lowercase();
-        let unsupported = |what: &str| {
+        let unsupported = |media: &str, format: Format| {
+            let what = if media.is_empty() {
+                "of no known type"
+            } else {
+                media
+            };
+            let raw = if format == Format::Raw
+                && handling(media, Format::Auto) != Handling::Unsupported
+            {
+                " with format \"raw\"; fetch it without"
+            } else {
+                ""
+            };
             gone(WebError::new(
                 CODE_WEB_UNSUPPORTED_CONTENT_TYPE,
-                format!("{} is {what}, which is not read as text", at.normalized()),
+                format!(
+                    "{} is {what}, which cannot be read as text{raw}. Use another source.",
+                    at.normalized()
+                ),
                 false,
             ))
         };
-        let mut kind = kind_of(&essence);
-        match (kind, format) {
-            (Kind::Media, _) => return Err(unsupported(&essence)),
-            (Kind::Document, Format::Raw) => {
-                return Err(unsupported(&format!("{essence} (binary, asked for raw)")));
-            }
-            _ => {}
+        // A served type the rules refuse is refused before its body is
+        // read; an empty or octet-stream type is sniffed from the body.
+        let served = media_type(&declared);
+        if !served.is_empty()
+            && served != "application/octet-stream"
+            && handling(&served, format) == Handling::Unsupported
+        {
+            return Err(unsupported(&served, format));
         }
         let body = read_capped(resp, limits.max_bytes, &at)
             .await
             .map_err(gone)?;
-        if kind == Kind::Unknown {
-            if !body.contains(&0) && std::str::from_utf8(&body).is_ok() {
-                kind = Kind::Text;
-            } else {
-                let what = if essence.is_empty() {
-                    "untyped binary"
-                } else {
-                    &essence
-                };
-                return Err(unsupported(what));
-            }
-        }
-        let content_type = if essence.is_empty() {
-            "text/plain".to_string()
-        } else {
-            essence.clone()
-        };
-        let (text, links) = match (kind, format) {
-            (Kind::Html, Format::Auto) => {
+        let content_type = media_type_of(&declared, &body);
+        let (text, links) = match handling(&content_type, format) {
+            Handling::Unsupported => return Err(unsupported(&content_type, format)),
+            Handling::Html => {
                 // Sent decoded, as UTF-8, so the conversion never guesses
                 // the page's charset.
                 let html = decode(&body, &declared);
                 let links = links_of_html(&html, &at);
                 let md = self
-                    .to_markdown(html.into_bytes(), "text/html; charset=utf-8")
+                    .to_markdown(html.into_bytes(), "page.html".into(), HTML_UTF8)
                     .await
                     .map_err(gone)?;
                 (md, links)
             }
-            (Kind::Html, Format::Raw) => {
+            Handling::RawHtml => {
                 let html = decode(&body, &declared);
                 let links = links_of_html(&html, &at);
                 (html, links)
             }
-            (Kind::Document, _) => {
-                let md = self.to_markdown(body, &essence).await.map_err(gone)?;
+            Handling::Document(ext) => {
+                let md = self
+                    .to_markdown(body, format!("document.{ext}"), &content_type)
+                    .await
+                    .map_err(gone)?;
                 let links = links_of_markdown(&md, &at);
                 (md, links)
             }
-            (Kind::Json, Format::Auto) => {
+            Handling::Json => {
                 let s = decode(&body, &declared);
-                (pretty_json(&s).unwrap_or(s), Vec::new())
+                let s = pretty_json(&s).unwrap_or(s);
+                let links = links_of_markdown(&s, &at);
+                (s, links)
             }
-            (Kind::Json, Format::Raw) => (decode(&body, &declared), Vec::new()),
-            _ => {
+            Handling::Text => {
                 let s = decode(&body, &declared);
                 let links = links_of_markdown(&s, &at);
                 (s, links)
