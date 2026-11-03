@@ -1,4 +1,4 @@
-# @empathic/clax-sdk
+# @empathic/clax-client-sdk
 
 The SDK for [Clax](https://github.com/empathic/clax)'s report queues: the
 people using your app file reports on its pages into a queue on your Clax
@@ -6,9 +6,9 @@ instance, and read the replies.
 
 | Entry | What it gives | Where it runs |
 |---|---|---|
-| `@empathic/clax-sdk` | `ReporterClient`, `ClaxError` and the queue routes' types | the page |
-| `@empathic/clax-sdk/overlay` | `overlay()`: a Report button, comment mode to point at what the report is about, and "Your reports" with their replies | the page |
-| `@empathic/clax-sdk/service` | `ServiceClient`, which mints reporter tokens with the queue's service grant | your backend only: it holds the grant |
+| `@empathic/clax-client-sdk` | `ReporterClient`, `ClaxError` and the queue routes' types | the page |
+| `@empathic/clax-client-sdk/overlay` | `overlay()`: a Report button, comment mode to point at what the report is about, and "Your reports" with their replies | the page |
+| `@empathic/clax-client-sdk/service` | `ServiceClient`, which mints reporter tokens with the queue's service grant | your backend only: it holds the grant |
 
 Each entry is an ES module with its TypeScript declarations. The package
 has no dependencies: Svelte and the overlay's other packages are bundled.
@@ -16,13 +16,13 @@ has no dependencies: Svelte and the overlay's other packages are bundled.
 ## Install
 
 ```
-npm install @empathic/clax-sdk
+npm install @empathic/clax-client-sdk
 ```
 
 ## The overlay
 
 ```ts
-import { overlay } from "@empathic/clax-sdk/overlay";
+import { overlay } from "@empathic/clax-client-sdk/overlay";
 
 const handle = overlay({
   instance: "https://clax.example.com",
@@ -48,7 +48,7 @@ answer before filing without it.
 ## The reporter client
 
 ```ts
-import { ClaxError, ReporterClient } from "@empathic/clax-sdk";
+import { ClaxError, ReporterClient } from "@empathic/clax-client-sdk";
 
 const client = new ReporterClient({ instance: "https://clax.example.com", queue: "<queue ID>", auth });
 try {
@@ -62,7 +62,7 @@ try {
 ## The backend
 
 ```ts
-import { ServiceClient } from "@empathic/clax-sdk/service";
+import { ServiceClient } from "@empathic/clax-client-sdk/service";
 
 // The queue's service grant (its `token` and `private_key`), from your secrets.
 const service = new ServiceClient({ instance: "https://clax.example.com", queue: "<queue ID>", token: grant.token, privateKey: grant.private_key });

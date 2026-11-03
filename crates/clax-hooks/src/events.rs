@@ -12,6 +12,11 @@ use std::time::Duration;
 /// the hook's deadline ([`Daemon::time_left`]).
 pub const START_FEEDBACK_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// Whether a browser is signed in (`GET /api/browser-login`, an in-memory
+/// check) is asked at session start within this long at most, and not at
+/// all when less than [`MIN_TAKE_TIME`] is left ([`take`]).
+pub const SIGN_IN_TIMEOUT: Duration = Duration::from_millis(250);
+
 /// A request that takes feedback is not made with less than this left
 /// before the hook's deadline ([`Daemon::time_left`]): the daemon marks
 /// what it hands over delivered before it answers, so a take whose answer
@@ -181,6 +186,10 @@ pub fn session_start_with(
         "Clax daemon at {}; artifacts publish with the `publish` tool.",
         daemon.browser_url("/")
     );
+    if let Some(line) = sign_in_line(daemon, wake) {
+        context.push('\n');
+        context.push_str(&line);
+    }
     if let (Some(w), Some(sid)) = (wake, joined["session"]["id"].as_str())
         && let Some(line) = start_push_line(harness, sid, input, daemon, w)
     {
@@ -202,6 +211,26 @@ pub fn session_start_with(
 }
 
 /// The `Push:` line of [`session_start_with`] for session `sid`.
+/// The line telling the agent to sign the person's browser in, when the
+/// daemon says no browser is signed in (`GET /api/browser-login`, read
+/// within [`SIGN_IN_TIMEOUT`]): until one is, every link to the daemon
+/// opens its cold-browser page. None when the daemon cannot say in time,
+/// or at all (a hosted daemon, or one from before the route).
+fn sign_in_line(daemon: &dyn Daemon, wake: Option<&StartWake>) -> Option<String> {
+    let state = take(daemon, "/api/browser-login", Some(SIGN_IN_TIMEOUT)).ok()??;
+    if state["signed_in"] != false {
+        return None;
+    }
+    let open = wake.map_or_else(
+        || "clax open".to_string(),
+        |w| format!("{} open", clax_core::wake::shell_quote(&w.bin)),
+    );
+    Some(format!(
+        "No browser is signed in to this Clax, so a link to it opens a sign-in page: \
+before you give the person a link, run `{open}` once. It signs their default browser in and opens Clax."
+    ))
+}
+
 fn start_push_line(
     harness: &str,
     sid: &str,
@@ -661,6 +690,67 @@ mod tests {
         assert!(text.contains("http://h:1/"), "{text}");
     }
 
+    /// A daemon that says whether a browser is signed in: `signed_in`, or
+    /// nothing (as one from before `GET /api/browser-login`) when `None`.
+    struct SignInFake {
+        signed_in: Option<bool>,
+    }
+    impl Daemon for SignInFake {
+        fn browser_url(&self, path: &str) -> String {
+            format!("http://h:1{path}")
+        }
+        fn get(&self, path: &str) -> anyhow::Result<Value> {
+            match (path, self.signed_in) {
+                ("/api/browser-login", Some(b)) => Ok(json!({"signed_in": b})),
+                ("/api/browser-login", None) => bail!("404 not_found"),
+                _ => Ok(json!({"sessions": [], "feedback": [], "text": null})),
+            }
+        }
+        fn get_with_timeout(&self, path: &str, _: Duration) -> anyhow::Result<Value> {
+            self.get(path)
+        }
+        fn post(&self, _: &str, _: &Value) -> anyhow::Result<Value> {
+            Ok(json!({"session": {"id": "S"}}))
+        }
+        fn patch(&self, _: &str, _: &Value) -> anyhow::Result<Value> {
+            Ok(json!({}))
+        }
+    }
+
+    /// With no browser signed in, the start tells the agent to run `clax
+    /// open` (the binary it runs, when known) before it hands out a link;
+    /// with one signed in, or a daemon that cannot say, it says nothing.
+    #[test]
+    fn a_start_with_no_browser_signed_in_says_to_open_clax() {
+        let text = |signed_in: Option<bool>, wake: Option<&StartWake>| {
+            let d = SignInFake { signed_in };
+            let out = session_start_with("codex", 42, &[], &input("s1"), None, &d, wake).unwrap();
+            out.value().unwrap()["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let w = StartWake {
+            bin: "/b/clax".into(),
+            channel: None,
+        };
+        let with_bin = text(Some(false), Some(&w));
+        assert!(
+            with_bin.contains("No browser is signed in to this Clax")
+                && with_bin.contains("run `'/b/clax' open` once"),
+            "{with_bin}"
+        );
+        let bare = text(Some(false), None);
+        assert!(bare.contains("run `clax open` once"), "{bare}");
+        for (signed_in, what) in [
+            (Some(true), "a browser signed in"),
+            (None, "an older daemon"),
+        ] {
+            let t = text(signed_in, Some(&w));
+            assert!(!t.contains("No browser is signed in"), "{what}: {t}");
+        }
+    }
+
     #[test]
     fn a_quiet_start_joins_and_prints_nothing() {
         let d = Fake::default();
@@ -1005,10 +1095,13 @@ mod tests {
         session_start("claude", 1, &[], &input("s1"), None, &d).unwrap();
         assert_eq!(
             *d.bounded.borrow(),
-            [(
-                "/api/sessions/S/feedback?tier=prompt_hook".to_string(),
-                START_FEEDBACK_TIMEOUT
-            )]
+            [
+                ("/api/browser-login".to_string(), SIGN_IN_TIMEOUT),
+                (
+                    "/api/sessions/S/feedback?tier=prompt_hook".to_string(),
+                    START_FEEDBACK_TIMEOUT
+                )
+            ]
         );
     }
 

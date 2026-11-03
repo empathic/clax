@@ -15,10 +15,8 @@ import { type Omitted, type Rect, type RenderResult, intersect, renderViewportCl
 import { type DisplayResult, captureDisplay, displayCaptureSupported } from "../../bridge/src/display-capture";
 import { nextFrame } from "../../bridge/src/frame";
 import type { CaptureInfo } from "../../sdk/src/types";
+import type { Mode } from "./options";
 import type { Picked } from "./picker";
-
-/** What the reporter captures: a pick, a drawn area, or the visible viewport. */
-export type Mode = "element" | "area" | "screen";
 
 /** A capture: its PNG (null when none could be made), how it was made, why
  * the one asked for could not be made (`error`; a fallback may still be in

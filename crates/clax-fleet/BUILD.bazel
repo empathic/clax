@@ -2,6 +2,9 @@ load("//bazel:cargo.bzl", "cargo_package")
 
 cargo_package(
     # The Kubernetes manifests, which the binary's tests check against its
-    # flags (src/main.rs).
-    test_data = ["//deploy/k8s:manifests"],
+    # flags (src/main.rs), and the guide's overlay against them.
+    test_data = [
+        "//deploy/k8s:manifests",
+        "//docs:kubernetes",
+    ],
 )

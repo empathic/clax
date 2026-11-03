@@ -1,29 +1,66 @@
 # The clax-fleet image (deploy/Dockerfile), published to GitHub's container
 # registry for each release tag and on demand: ghcr.io/<owner>/clax-fleet,
-# tagged with the release's version (v0.6.0 -> 0.6.0) and its commit. The
-# Kubernetes manifests (deploy/k8s) name it by version.
+# tagged with the release's version (v0.6.0 -> 0.6.0), its minor series
+# (0.6) and its commit, signed with cosign, with an SBOM and provenance.
+# The Kubernetes manifests (deploy/k8s) name it by version; each release
+# also gets them rendered with the image pinned by digest, as the asset
+# clax-fleet.yaml (docs/kubernetes.md).
 #
 # Each platform builds on a runner of its own architecture, as release.yml's
-# binaries do (no emulation), and pushes its image by digest alone; `merge`
-# then tags one manifest list naming both, so a tag never names half an
-# image.
+# binaries do (no emulation), and pushes its image by digest alone. `smoke`
+# deploys the pushed amd64 image to a kind cluster (scripts/fleet-kind-smoke.sh)
+# before `merge` tags one manifest list naming both, so a tag never names
+# half an image, nor one that does not serve. A pull request that touches
+# the image or the manifests builds amd64 without pushing and runs the same
+# smoke test (`pr-smoke`).
 name: fleet-image
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/fleet-image.yml"
+      - ".dockerignore"
+      - "deploy/**"
+      - "scripts/fleet-kind-smoke.sh"
+      - "scripts/render-fleet-manifests.sh"
 
 permissions:
   contents: read
-  packages: write
 
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/clax-fleet
 
 jobs:
+  pr-smoke:
+    if: github.event_name == 'pull_request'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64
+          build-args: CLAX_BUILD_COMMIT=${{ github.sha }}
+          tags: clax-fleet:ci
+          load: true
+          # Reads the release builds' cache; a pull request writes none.
+          cache-from: type=gha,scope=fleet-image-amd64
+      - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          install_only: true
+      - run: scripts/fleet-kind-smoke.sh clax-fleet:ci
+
   build:
+    if: github.event_name != 'pull_request'
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      packages: write
     strategy:
       matrix:
         include:
@@ -50,6 +87,10 @@ jobs:
           build-args: CLAX_BUILD_COMMIT=${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          # Attached to each platform's image, and carried into the
+          # manifest list `merge` makes.
+          provenance: mode=max
+          sbom: true
           cache-from: type=gha,scope=fleet-image-${{ matrix.arch }}
           cache-to: type=gha,scope=fleet-image-${{ matrix.arch }},mode=max
       - name: Record the digest
@@ -65,9 +106,47 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  merge:
+  smoke:
     needs: build
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: fleet-image-digest-amd64
+          path: ${{ runner.temp }}/digests
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # The bytes `build` pushed, under a tag kind can load.
+      - name: Pull the amd64 image
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          set -euo pipefail
+          digest="$(ls)"
+          docker pull --platform linux/amd64 "$IMAGE@sha256:$digest"
+          docker tag "$IMAGE@sha256:$digest" clax-fleet:ci
+      - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          install_only: true
+      - run: scripts/fleet-kind-smoke.sh clax-fleet:ci
+
+  merge:
+    needs: [build, smoke]
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    permissions:
+      contents: read
+      packages: write
+      # cosign's keyless signature: a certificate for this workflow's
+      # identity, from GitHub's OIDC token.
+      id-token: write
+    outputs:
+      digest: ${{ steps.list.outputs.digest }}
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -84,10 +163,14 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.IMAGE }}
+          # No `latest`: the manifests name a version, and a moving tag
+          # would let a rescheduled pod run another build than its siblings.
           tags: |
             type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
             type=sha
       - name: Tag the manifest list
+        id: list
         working-directory: ${{ runner.temp }}/digests
         run: |
           set -euo pipefail
@@ -98,3 +181,56 @@ jobs:
           for digest in *; do sources+=("$IMAGE@sha256:$digest"); done
           [ "${#sources[@]}" -eq 2 ] || { echo "expected 2 digests, got ${#sources[@]}" >&2; exit 1; }
           docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+          first="$(jq -r '.tags[0]' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
+          digest="$(docker buildx imagetools inspect "$first" --format '{{json .Manifest}}' | jq -r .digest)"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "no digest for $first: $digest" >&2; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Sign the manifest list
+        env:
+          DIGEST: ${{ steps.list.outputs.digest }}
+        run: cosign sign --yes "$IMAGE@$DIGEST"
+      # A package's first push makes it private on ghcr.io, and a cluster
+      # without credentials then gets ImagePullBackOff: fail until it is
+      # public.
+      - name: Check that anyone can pull it
+        run: |
+          set -euo pipefail
+          repo="${IMAGE#ghcr.io/}"
+          tag="$(jq -r '.tags[0]' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
+          tag="${tag##*:}"
+          if ! token="$(curl -fsS "https://ghcr.io/token?scope=repository:$repo:pull" | jq -er .token)" ||
+            ! curl -fsS -o /dev/null -H "Authorization: Bearer $token" \
+              -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json" \
+              "https://ghcr.io/v2/$repo/manifests/$tag"; then
+            echo "::error::$IMAGE:$tag cannot be pulled without credentials: set the clax-fleet package's visibility to public (https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility)"
+            exit 1
+          fi
+
+  manifests:
+    needs: merge
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    permissions:
+      contents: write
+    env:
+      DIGEST: ${{ needs.merge.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          install_only: true
+      - name: Render clax-fleet.yaml
+        run: scripts/render-fleet-manifests.sh "$IMAGE@$DIGEST" "$RUNNER_TEMP/clax-fleet.yaml"
+      # release.yml makes the release once every platform's binary is built,
+      # which may finish after this; wait for it, then attach the manifests.
+      - name: Attach it to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 180); do
+            gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && break
+            sleep 30
+          done
+          gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/clax-fleet.yaml" --clobber --repo "$GITHUB_REPOSITORY"

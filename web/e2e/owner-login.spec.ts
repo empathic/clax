@@ -95,7 +95,7 @@ test(`the Get in Clax page follows the address's own page, and without a proof s
   await ctx.addInitScript(() => { try { for (const k of Object.keys(localStorage)) if (k.startsWith("clax.owner_proof")) localStorage.removeItem(k); } catch { /* storage refused */ } });
   const cold = await ctx.newPage();
   await cold.goto(`${d.base}/a/${id}/get`);
-  await expect(cold.getByRole("heading", { name: "Open Clax from your terminal" })).toBeVisible();
+  await expect(cold.getByRole("heading", { name: "Open Clax through your agent or terminal" })).toBeVisible();
   await expect(cold.getByText("Signed-out Calculator")).toHaveCount(0);
   await ctx.close();
 });

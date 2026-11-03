@@ -313,3 +313,7 @@ clax-dev-deploy *ARGS:
 # Release Clax VERSION and every plugin: Claude Code, Codex and Grok through the repo's marketplaces, Pi through npm (scripts/release.sh); a dry run unless --i-know-what-i-am-doing
 release VERSION *ARGS:
     ./scripts/release.sh "$@"
+
+# Publish the SDK package, @empathic/clax-client-sdk, at VERSION, its own version (web/sdk/package.json's), from origin's prod once prod carries it (scripts/release-sdk.sh); a dry run unless --i-know-what-i-am-doing
+release-sdk VERSION *ARGS:
+    ./scripts/release-sdk.sh "$@"

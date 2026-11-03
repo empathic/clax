@@ -37,8 +37,10 @@ for path in ("scripts/ensure-clax.sh", "plugins/claude-code/scripts/ensure-clax.
 for path in ("deploy/k8s/sqlite/kustomization.yaml",):
     versions[f"{path} newTag"] = first(r'^    newTag: "([^"]+)"', open(path).read())
 kubernetes = open("docs/kubernetes.md").read()
-versions["docs/kubernetes.md ?ref"] = first(r'/deploy/k8s/sqlite\?ref=v([0-9][0-9A-Za-z.-]*)', kubernetes)
-versions["docs/kubernetes.md image"] = first(r'ghcr\.io/empathic/clax-fleet:([0-9][0-9A-Za-z.-]*)', kubernetes)
+versions["docs/kubernetes.md release manifests"] = first(r'/releases/download/v([0-9][0-9A-Za-z.-]*)/clax-fleet\.yaml', kubernetes)
+images = re.findall(r'ghcr\.io/empathic/clax-fleet:([0-9][0-9A-Za-z.-]*)', kubernetes)
+for i, v in enumerate(images or [None], 1):
+    versions[f"docs/kubernetes.md image #{i}"] = v
 for path in ("plugins/claude-code/skills/clax/SKILL.md", "plugins/clax/skills/clax/SKILL.md", "plugins/pi/skills/clax/SKILL.md", "plugins/clax-grok/skills/clax/SKILL.md"):
     versions[f"{path} tool block"] = first(r'^This is Clax plugin (\S+?)\.(?:\s|$)', open(path).read())
 # Every member that takes the workspace version, in Cargo.lock.

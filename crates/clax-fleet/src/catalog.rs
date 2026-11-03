@@ -9,7 +9,7 @@
 //! name = "acme"
 //! shard = 0        # the StatefulSet ordinal whose volume keeps it
 //! create = true    # may make its home (only for a new instance)
-//! default = true   # answers a request whose Host names no instance
+//! default = false  # true: answers a request whose Host names no instance (one tenant only)
 //! paused = false   # true: kept stopped, its hosts answered 503
 //! config = '''
 //! [hosted]
@@ -35,9 +35,11 @@
 //! (`docs/kubernetes.md`, The catalog).
 //!
 //! Each instance reads its setup secret from the variable its
-//! `setup_secret_env` names, in the one environment every instance of a
-//! process shares: no two instances name the same one (nor leave it to the
-//! same default), and none names a variable of the fleet's own.
+//! `setup_secret_env` names, and its GitHub client secret (when it signs in
+//! with GitHub) from its `github_client_secret_env`'s, in the one
+//! environment every instance of a process shares: no variable is read by
+//! two instances (nor left by both to the same default) or for two
+//! secrets, and none is a variable of the fleet's own.
 //!
 //! A paused instance keeps its hosts: they answer 503 while it is moved or
 //! restored, never the default instance in its place.
@@ -152,6 +154,20 @@ fn normalize_host(host: &str) -> String {
 /// name: its setup secret would be the fleet's key or database URL.
 const FLEET_VARIABLES: [&str; 2] = ["CLAX_KEK", "CLAX_FLEET_PEER_KEY"];
 
+/// A variable an instance reads a secret from, which no other may read
+/// ([`Catalog::parse`]).
+struct SecretRead {
+    /// The `[hosted]` setting that names it.
+    setting: &'static str,
+    /// The secret it holds.
+    secret: &'static str,
+    /// What sharing it would do, after a comma.
+    why: &'static str,
+    /// A name for it of the instance's own.
+    suggest: &'static str,
+    env: String,
+}
+
 /// Whether host name `a` is `b` or under it, label by label.
 fn at_or_under(a: &str, b: &str) -> bool {
     a == b || a.ends_with(&format!(".{b}"))
@@ -181,8 +197,9 @@ impl Catalog {
         };
         let mut names = HashSet::new();
         let mut authorities = HashSet::new();
-        // Each setup secret variable, by the instance that reads it.
-        let mut setup_secrets: HashMap<String, String> = HashMap::new();
+        // Each secret variable, by the instance that reads it and the
+        // secret it holds there.
+        let mut secrets: HashMap<String, (String, &str)> = HashMap::new();
         // Each instance's public host (no port) and site domain, by name.
         let mut hosts: Vec<(String, String, Option<String>)> = Vec::new();
         let mut defaults = 0;
@@ -224,16 +241,52 @@ impl Catalog {
                         "{at}: instance {name} has no [hosted] public_origin; a fleet serves hosted instances only"
                     )
                 })?;
-            let env = hosted.setup_secret_env.clone();
-            if FLEET_VARIABLES.contains(&env.as_str()) {
-                return Err(format!(
-                    "{at}: instance {name}'s setup_secret_env is {env}, a variable of the fleet's own; name one for its setup secret alone"
-                ));
+            // Every variable the instance reads a secret from: its setting,
+            // the secret, why it may be no other's, and a name to give it.
+            let mut reads = vec![SecretRead {
+                setting: "setup_secret_env",
+                secret: "setup secret",
+                why: ", so either's would open the other's /setup",
+                suggest: "CLAX_SETUP_SECRET_<NAME>",
+                env: hosted.setup_secret_env.clone(),
+            }];
+            if let Some(github) = &hosted.github {
+                reads.push(SecretRead {
+                    setting: "github_client_secret_env",
+                    secret: "GitHub client secret",
+                    why: ", though each instance's GitHub OAuth app has a secret of its own",
+                    suggest: "CLAX_GITHUB_SECRET_<NAME>",
+                    env: github.client_secret_env.clone(),
+                });
             }
-            if let Some(other) = setup_secrets.insert(env.clone(), name.clone()) {
-                return Err(format!(
-                    "{at}: instances {other} and {name} both read their setup secret from {env}, so either's would open the other's /setup; give each a setup_secret_env of its own (CLAX_SETUP_SECRET_<NAME>)"
-                ));
+            for SecretRead {
+                setting,
+                secret,
+                why,
+                suggest,
+                env,
+            } in reads
+            {
+                if FLEET_VARIABLES.contains(&env.as_str()) {
+                    return Err(format!(
+                        "{at}: instance {name}'s {setting} is {env}, a variable of the fleet's own; name one for its {secret} alone"
+                    ));
+                }
+                match secrets.get(&env) {
+                    Some((other, theirs)) if *theirs == secret => {
+                        return Err(format!(
+                            "{at}: instances {other} and {name} both read their {secret} from {env}{why}; give each a {setting} of its own ({suggest})"
+                        ));
+                    }
+                    Some((other, theirs)) => {
+                        return Err(format!(
+                            "{at}: instance {name}'s {secret} is read from {env}, which is instance {other}'s {theirs}; give each secret a variable of its own"
+                        ));
+                    }
+                    None => {
+                        secrets.insert(env, (name.clone(), secret));
+                    }
+                }
             }
             let url = url::Url::parse(&hosted.public_origin)
                 .map_err(|err| format!("{at}: instance {name}'s public_origin: {err}"))?;
@@ -391,6 +444,36 @@ setup_secret_env = "CLAX_SETUP_SECRET_GLOBEX"
 '''
 "#;
 
+    /// `text` with instance `name` signing in with GitHub, its client
+    /// secret in variable `env` (the default variable when `None`).
+    fn with_github(text: &str, name: &str, env: Option<&str>) -> String {
+        let setup = format!(
+            "setup_secret_env = \"CLAX_SETUP_SECRET_{}\"\n",
+            name.to_uppercase()
+        );
+        let env = env
+            .map(|e| format!("github_client_secret_env = \"{e}\"\n"))
+            .unwrap_or_default();
+        assert!(text.contains(&setup), "{name} is not in the catalog");
+        text.replace(
+            &setup,
+            &format!("{setup}github_client_id = \"Iv1.{name}\"\n{env}"),
+        )
+    }
+
+    /// Instances may each sign in with GitHub, each with a secret of its
+    /// own; one alone may leave it to the default variable.
+    #[test]
+    fn each_instance_reads_its_github_secret_from_a_variable_of_its_own() {
+        parse(&with_github(TWO, "acme", None)).unwrap();
+        let both = with_github(
+            &with_github(TWO, "acme", Some("CLAX_GITHUB_SECRET_ACME")),
+            "globex",
+            Some("CLAX_GITHUB_SECRET_GLOBEX"),
+        );
+        parse(&both).unwrap();
+    }
+
     #[test]
     fn requests_find_their_instance_by_origin_or_site_host() {
         let c = parse(TWO).unwrap();
@@ -468,6 +551,20 @@ setup_secret_env = "CLAX_SETUP_SECRET_GLOBEX"
             (
                 TWO.replace("CLAX_SETUP_SECRET_GLOBEX", "CLAX_KEK"),
                 "a variable of the fleet's own",
+            ),
+            // Both sign in with GitHub, their secrets left to the default
+            // variable.
+            (
+                with_github(&with_github(TWO, "acme", None), "globex", None),
+                "instances acme and globex both read their GitHub client secret from GITHUB_CLIENT_SECRET",
+            ),
+            (
+                with_github(TWO, "acme", Some("CLAX_SETUP_SECRET_GLOBEX")),
+                "instance globex's setup secret is read from CLAX_SETUP_SECRET_GLOBEX, which is instance acme's GitHub client secret",
+            ),
+            (
+                with_github(TWO, "globex", Some("CLAX_FLEET_PEER_KEY")),
+                "instance globex's github_client_secret_env is CLAX_FLEET_PEER_KEY, a variable of the fleet's own",
             ),
         ];
         for (text, want) in cases {

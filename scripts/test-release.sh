@@ -42,8 +42,9 @@ if (cd "$T" && scripts/bump-version.sh 9.8.7 >/dev/null) && [ "$(cd "$T" && scri
     && python3 "$T/scripts/sync-skill-tools.py" --check >/dev/null \
     && grep -A1 '^name = "clax-fake-exe"$' "$T/Cargo.lock" | grep '^version = "9.8.7"$' >/dev/null \
     && grep -q '^    newTag: "9.8.7"$' "$T/deploy/k8s/sqlite/kustomization.yaml" \
-    && grep -q 'deploy/k8s/sqlite?ref=v9.8.7$' "$T/docs/kubernetes.md" \
-    && grep -q 'ghcr.io/empathic/clax-fleet:9.8.7 ' "$T/docs/kubernetes.md"; then
+    && grep -q 'releases/download/v9.8.7/clax-fleet.yaml$' "$T/docs/kubernetes.md" \
+    && grep -q 'ghcr.io/empathic/clax-fleet:9.8.7 ' "$T/docs/kubernetes.md" \
+    && ! grep -o 'ghcr.io/empathic/clax-fleet:[0-9][0-9A-Za-z.-]*' "$T/docs/kubernetes.md" | grep -v ':9.8.7$' >/dev/null; then
     pass "bump-version writes every version, the launcher copies, skill blocks and fleet image tags included"
 else fail "bump-version writes every version"; fi
 # The Worker's two crates keep their own version (0.0.0) in Cargo.lock.
@@ -83,6 +84,19 @@ for f in deploy/k8s/sqlite/kustomization.yaml; do
     if [ "$rc" = 1 ] && echo "$out" | grep "$f newTag: 9.9.9" >/dev/null; then pass "a stray fleet image tag is named ($f)"
     else fail "a stray fleet image tag is named ($f: $out)"; fi
 done
+# Every image the docs name is checked, not only the first.
+fresh "$T/stray"
+python3 - "$T/stray/docs/kubernetes.md" <<'PY'
+import re, sys
+path = sys.argv[1]
+text = open(path).read()
+ms = list(re.finditer(r'ghcr\.io/empathic/clax-fleet:[0-9][0-9A-Za-z.-]*', text))
+m = ms[-1]
+open(path, "w").write(text[:m.start()] + "ghcr.io/empathic/clax-fleet:9.9.9" + text[m.end():])
+PY
+out="$(cd "$T/stray" && scripts/check-version.sh 2>&1)"; rc=$?
+if [ "$rc" = 1 ] && echo "$out" | grep -E "docs/kubernetes.md image #[2-9]: 9.9.9" >/dev/null; then pass "a stray image version in the docs is named"
+else fail "a stray image version in the docs is named ($out)"; fi
 
 # A pattern that fails to match late in the list leaves every file as it was.
 fresh "$T/half"

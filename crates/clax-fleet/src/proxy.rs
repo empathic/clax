@@ -150,7 +150,8 @@ impl Proxy {
     /// A proxy whose forwards carry the peer key `key`.
     ///
     /// # Panics
-    /// When `key` is not a valid header value (it is hex, or an operator's).
+    /// When `key` is not a valid header value (`clax-fleet serve` refuses
+    /// at startup a CLAX_FLEET_PEER_KEY that is not visible ASCII).
     pub fn new(key: &str) -> Proxy {
         let mut connector = HttpConnector::new();
         connector.set_connect_timeout(Some(CONNECT_TIMEOUT));

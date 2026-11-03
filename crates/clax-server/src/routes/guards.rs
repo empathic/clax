@@ -205,6 +205,7 @@ mod l10 {
         ("extension::status", Token),
         ("extension::mint", Token),
         ("login::create", Token),
+        ("login::state", Token),
         ("login::end_all", Token),
         ("login::retire", NoArtifact),
         ("confirmations::get_one", Token),

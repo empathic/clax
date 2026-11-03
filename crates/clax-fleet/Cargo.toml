@@ -45,6 +45,8 @@ url.workspace = true
 [dev-dependencies]
 reqwest.workspace = true
 tempfile.workspace = true
+# Paused time, for the drain's bound on a start under way (src/fleet.rs).
+tokio = { workspace = true, features = ["full", "test-util"] }
 tokio-tungstenite.workspace = true
 
 [[test]]

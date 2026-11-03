@@ -32,7 +32,9 @@
 //! A stop runs on a task of its own. [`Fleet::stop`] waits for it at most
 //! [`STOP_TIMEOUT`]; a stop that takes longer goes on, and the instance's
 //! slot refuses every start until it ends, so a store left running is
-//! never opened twice.
+//! never opened twice. A stop waits for a start under way to finish
+//! first, except in [`Fleet::drain`], which waits for it at most
+//! [`STOP_TIMEOUT`] and leaves it to the process's end.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -576,11 +578,30 @@ impl Fleet {
     /// [`STOP_TIMEOUT`]; a stop that takes longer goes on (see the
     /// [module docs](self#stopping)).
     pub async fn stop(self: &Arc<Self>, name: &str, why: &str) {
+        self.stop_after(name, why, None).await;
+    }
+
+    /// [`Fleet::stop`], waiting for a start under way at most `start_wait`
+    /// when given: past it, the start goes on and the instance is left
+    /// running.
+    async fn stop_after(self: &Arc<Self>, name: &str, why: &str, start_wait: Option<Duration>) {
         let Some(slot) = lock(&self.slots).get(name).cloned() else {
             return;
         };
         slot.stopping.store(true, Ordering::SeqCst);
-        let mut running = slot.running.lock().await;
+        let mut running = match start_wait {
+            None => slot.running.lock().await,
+            Some(wait) => match tokio::time::timeout(wait, slot.running.lock()).await {
+                Ok(running) => running,
+                Err(_) => {
+                    tracing::warn!(
+                        instance = %name,
+                        "the instance is still starting; this process stops without it"
+                    );
+                    return;
+                }
+            },
+        };
         *slot.router.write().unwrap_or_else(|e| e.into_inner()) = None;
         let Some(r) = running.take() else {
             slot.stopping.store(false, Ordering::SeqCst);
@@ -674,7 +695,9 @@ impl Fleet {
         self.draining.store(true, Ordering::SeqCst);
     }
 
-    /// Drains: starts nothing more, and stops every instance here.
+    /// Drains: starts nothing more, and stops every instance here. A start
+    /// under way is waited for at most [`STOP_TIMEOUT`], so a slow one (a
+    /// long migration) cannot hold the process past its grace period.
     pub async fn drain(self: &Arc<Self>) {
         self.begin_draining();
         // Every slot, not just the running: a start under way holds its
@@ -684,7 +707,11 @@ impl Fleet {
             .into_iter()
             .map(|name| {
                 let fleet = self.clone();
-                async move { fleet.stop(&name, "this process is stopping").await }
+                async move {
+                    fleet
+                        .stop_after(&name, "this process is stopping", Some(STOP_TIMEOUT))
+                        .await;
+                }
             })
             .collect::<Vec<_>>();
         futures::future::join_all(stops).await;
@@ -996,5 +1023,46 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("made for https://acme.test"), "{err}");
+    }
+
+    /// A drain waits for a start under way at most [`STOP_TIMEOUT`], so a
+    /// slow start (a long migration) cannot hold the process past its
+    /// grace period; a stop the catalog asks for still waits for it.
+    #[tokio::test(start_paused = true)]
+    async fn a_drain_waits_for_a_start_under_way_only_so_long() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = dir.path().join("fleet.toml");
+        std::fs::write(
+            &catalog,
+            "shards = 1\n\n[[instance]]\nname = \"acme\"\nshard = 0\nconfig = '''\n[hosted]\npublic_origin = \"https://acme.test\"\nsetup_secret_env = \"CLAX_SETUP_SECRET_ACME\"\n'''\n",
+        )
+        .unwrap();
+        let fleet = Fleet::new(FleetConfig {
+            pod: "clax-0".into(),
+            advertise: "127.0.0.1:7480".into(),
+            data_dir: dir.path().join("data"),
+            catalog,
+            version: "test",
+            web: Arc::new(clax_core::embedded::MemTree(Default::default())),
+            shard: Shard {
+                ordinal: 0,
+                peers: Peers::Template("127.0.0.1:{shard}".into()),
+            },
+            kek: None,
+            peer_key: "k".into(),
+            port: 7480,
+            clock: Arc::new(clax_core::working::ManualClock::at("2026-01-01T00:00:00Z")),
+        })
+        .unwrap();
+        // A start under way holds its slot's lock.
+        let slot = fleet.slot("acme");
+        let start = slot.running.lock().await;
+
+        let a_day = Duration::from_secs(86_400);
+        let stop = tokio::time::timeout(a_day, fleet.stop("acme", "paused")).await;
+        assert!(stop.is_err(), "a catalog's stop waits for the start");
+        let drained = tokio::time::timeout(a_day, fleet.drain()).await;
+        assert!(drained.is_ok(), "the drain waited for the start for a day");
+        drop(start);
     }
 }

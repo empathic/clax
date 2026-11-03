@@ -154,6 +154,13 @@ sh_test(
     data = [":all"],
 )
 
+# scripts/release-sdk.sh against fakes of gh, npm and pnpm.
+sh_test(
+    name = "release_sdk",
+    srcs = ["test-release-sdk.sh"],
+    data = [":all"],
+)
+
 # scripts/check-version-bump.sh (CI's `version` job on pull requests into
 # prod) in a scratch repository of the release files.
 sh_test(

@@ -21,13 +21,14 @@
   import type { Report } from "../../sdk/src/types";
   import { type FlattenDeps, type Shape, browserFlatten, flatten } from "./annotate";
   import Annotator from "./Annotator.svelte";
-  import { type CaptureDeps, type Captured, type Mode, captureExact, captureFor } from "./capture";
+  import { type CaptureDeps, type Captured, captureExact, captureFor } from "./capture";
   import { displayCaptureSupported } from "../../bridge/src/display-capture";
   import {
     BadgeWatch, type Draft, POLL_MS, Poll, type ReporterApi, type Session, type Timers, canSend, carryShapes, clipOf, clipStatus, defaultShapes,
     failureText, newDraft, pageUrl, quoteOf, realTimers, reopenOf, reportOf, summaryOf, withCapture,
   } from "./model";
   import ModeBar from "./ModeBar.svelte";
+  import type { Mode } from "./options";
   import type { Picked, Picker } from "./picker";
   import Preview from "./Preview.svelte";
   import Reports from "./Reports.svelte";

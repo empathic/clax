@@ -111,6 +111,12 @@ async function drag(d: Director, page: Page, target: ReturnType<Frame["locator"]
   await d.hold(120);
 }
 
+/** The thread card holding `text` shows its clip, loaded: a card's clip
+ * loads after the card shows (`Clip`'s `load`) and grows it, moving what is
+ * below it, Send among them. */
+const clipShown = (text: string) =>
+  `[...document.querySelectorAll(".thread-card")].some(c => c.textContent.includes(${JSON.stringify(text)}) && (i => !!i && i.complete && i.naturalHeight > 0)(c.querySelector(".clip img.thumb")))`;
+
 /** Clicks `target` as the director does, but holds the film still from the
  * press until `settled` holds: what the click starts asynchronously (an
  * answer, a navigation) lands on the same frame each run. */
@@ -189,7 +195,7 @@ export default {
     }
     await d.hold(150);
     const card = alex.locator(".thread-card").filter({ hasText: ASK });
-    await press(d, alex, alex.locator(".composer").getByRole("button", { name: "Post comment" }), [async () => (await card.and(alex.locator(".selected")).count()) === 1, "the ask posted as a thread, selected"]);
+    await press(d, alex, alex.locator(".composer").getByRole("button", { name: "Post comment" }), [async () => (await card.and(alex.locator(".selected")).count()) === 1 && (await quietIn<boolean>(alex, alex.mainFrame(), clipShown(ASK))), "the ask posted as a thread, selected, its clip shown"]);
     await press(d, alex, card.getByRole("button", { name: /^Send to / }), [async () => (await card.locator(".waiting").count()) === 1, "the ask was sent to the agent"]);
     const tid = (await card.getAttribute("data-thread"))!;
 
