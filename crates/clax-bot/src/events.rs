@@ -108,6 +108,19 @@ pub enum Event {
     },
 }
 
+/// Adds a call's web fields to its JSON object `v` (a step's `calls`, a
+/// `call` event, the run panel's views of either), each only when
+/// present: `cost_milli`, what a web call charged, and `web`, its
+/// `{query}` or `{url, source}`.
+pub fn with_web_fields(v: &mut Value, cost_milli: Option<i64>, web: Option<&Value>) {
+    if let Some(cost) = cost_milli {
+        v["cost_milli"] = json!(cost);
+    }
+    if let Some(w) = web.filter(|w| !w.is_null()) {
+        v["web"] = w.clone();
+    }
+}
+
 impl Event {
     /// The SSE event name.
     #[must_use]
@@ -137,12 +150,7 @@ impl Event {
                 web,
             } => {
                 let mut v = json!({"op": op, "target": target, "ok": ok, "code": code, "ms": ms});
-                if let Some(cost) = cost_milli {
-                    v["cost_milli"] = json!(cost);
-                }
-                if let Some(w) = web {
-                    v["web"] = w.clone();
-                }
+                with_web_fields(&mut v, *cost_milli, web.as_ref());
                 v
             }
             Event::StepDone {

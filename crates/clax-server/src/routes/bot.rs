@@ -1390,8 +1390,10 @@ pub fn step_view(s: &clax_store::bot_runs::Step, credits_milli: i64) -> Value {
                 .into_iter()
                 .flatten()
                 .map(|c| {
-                    json!({"op": c["op"], "target": c["target"], "ok": c["ok"].as_bool().unwrap_or(false),
-                           "ms": c["ms"].as_u64().unwrap_or(0), "error": c["code"]})
+                    let mut v = json!({"op": c["op"], "target": c["target"], "ok": c["ok"].as_bool().unwrap_or(false),
+                           "ms": c["ms"].as_u64().unwrap_or(0), "error": c["code"]});
+                    clax_bot::events::with_web_fields(&mut v, c["cost_milli"].as_i64(), c.get("web"));
+                    v
                 })
                 .collect();
             set("calls", json!(calls));
@@ -1433,7 +1435,8 @@ pub fn steps_view(
 /// the person it acts for nor an admin): its place, kind, state, times,
 /// credits, a script's title and its calls' ops and outcomes, a finish's
 /// summary or an end's reason; never what was read with the acting
-/// person's rights: narration, code, values, logs, errors, a call's target.
+/// person's rights: narration, code, values, logs, errors, a call's target
+/// or its web query or URL (`web`).
 pub fn for_reader(step: &mut Value) {
     if let Some(o) = step.as_object_mut() {
         for k in [
@@ -1455,6 +1458,7 @@ pub fn for_reader(step: &mut Value) {
                 if let Some(c) = c.as_object_mut() {
                     c.remove("target");
                     c.remove("error");
+                    c.remove("web");
                 }
             }
         }
@@ -1471,6 +1475,7 @@ fn event_for_reader(event: &str, mut data: Value) -> Option<Value> {
             if let Some(c) = data["call"].as_object_mut() {
                 c.remove("target");
                 c.remove("error");
+                c.remove("web");
             }
             Some(data)
         }
@@ -1533,8 +1538,12 @@ pub fn panel_event(
             json!({"step": n, "text": d["text"]})
         }
         "script" => json!({"step": n, "title": d["title"], "code": d["code"]}),
-        "call" => json!({"step": n, "call": {"op": d["op"], "target": d["target"], "ok": d["ok"],
-                                             "ms": d["ms"].as_u64().unwrap_or(0), "error": d["code"]}}),
+        "call" => {
+            let mut call = json!({"op": d["op"], "target": d["target"], "ok": d["ok"],
+                                  "ms": d["ms"].as_u64().unwrap_or(0), "error": d["code"]});
+            clax_bot::events::with_web_fields(&mut call, d["cost_milli"].as_i64(), d.get("web"));
+            json!({"step": n, "call": call})
+        }
         "step_done" => {
             let Some((run, steps)) = st.run_with_steps(run_id)? else {
                 return Ok(None);
@@ -1712,7 +1721,56 @@ pub async fn events(
 
 #[cfg(test)]
 mod tests {
-    use super::quartiles;
+    use super::{event_for_reader, for_reader, panel_event, quartiles, step_view};
+    use serde_json::{Value, json};
+
+    /// A web call as the run loop records it in a step's `calls` and on a
+    /// live `call` event.
+    fn web_call() -> Value {
+        json!({"op": "web.fetch", "target": null, "ok": true, "code": null, "ms": 3,
+               "cost_milli": 1, "web": {"url": "https://example.com/a", "source": "comment"}})
+    }
+
+    #[test]
+    fn a_web_calls_cost_and_source_reach_the_step_view_and_the_call_event() {
+        let step = clax_store::bot_runs::Step {
+            run_id: "r1".into(),
+            n: 2,
+            kind: clax_store::bot_runs::StepKind::Script,
+            started_at: "2026-11-03T10:00:00Z".into(),
+            attempt: 1,
+            committed_at: Some("2026-11-03T10:00:01Z".into()),
+            payload: Some(json!({"title": "Read", "code": "…", "calls": [web_call(),
+                {"op": "files.list", "target": null, "ok": true, "code": null, "ms": 0}]})),
+            observed: Vec::new(),
+            failures: 0,
+        };
+        let mut v = step_view(&step, 1);
+        let calls = &v["calls"];
+        assert_eq!(calls[0]["cost_milli"], 1, "{v}");
+        assert_eq!(calls[0]["web"]["source"], "comment", "{v}");
+        assert!(calls[1].get("cost_milli").is_none() && calls[1].get("web").is_none());
+        for_reader(&mut v);
+        assert!(v["calls"][0].get("web").is_none(), "{v}");
+        assert_eq!(v["calls"][0]["cost_milli"], 1);
+
+        let dir = tempfile::tempdir().unwrap();
+        let st = clax_store::Store::open(&clax_core::Home::at(dir.path().join("ax"))).unwrap();
+        let ev = clax_bot::RunEvent {
+            id: clax_bot::EventId {
+                step: 2,
+                attempt: 1,
+                seq: 1,
+            },
+            event: "call",
+            data: web_call(),
+        };
+        let out = panel_event(&st, "r1", &ev).unwrap().unwrap();
+        assert_eq!(out["call"]["cost_milli"], 1, "{out}");
+        assert_eq!(out["call"]["web"]["url"], "https://example.com/a", "{out}");
+        let read = event_for_reader("call", out).unwrap();
+        assert!(read["call"].get("web").is_none(), "{read}");
+    }
 
     #[test]
     fn estimates_are_the_middle_half_of_recent_runs() {

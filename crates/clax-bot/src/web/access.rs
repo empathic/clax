@@ -32,7 +32,7 @@ use clax_store::Store;
 use clax_store::bot_runs::CallEntry;
 use clax_store::bot_settings::Setting;
 use clax_store::bot_web::WebPageRow;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 /// Which web operations a run declares: kept on the run as `""`,
@@ -181,17 +181,20 @@ pub enum UrlSource {
     /// The request: one of the sender's comments (its ID), or the brief
     /// (`None`).
     Request { comment_id: Option<String> },
-    /// A result of the search journaled at `(step, seq)`.
-    Search { step: i64, seq: i64 },
-    /// A link of the page fetched at `(step, seq)`.
-    Fetched { step: i64, seq: i64 },
+    /// A result of the search journaled at `(step, seq)`, the run's
+    /// `n`th answered search (from 1, in journal order).
+    Search { step: i64, seq: i64, n: i64 },
+    /// A link of the page fetched at `(step, seq)`, the `n`th page of the
+    /// run's page store (from 1, in fetch order).
+    Fetched { step: i64, seq: i64, n: i64 },
     /// No source: the rule is [`UrlRule::AnyPublic`].
     AnyPublic,
 }
 
 impl UrlSource {
     /// How the run panel and the `bot.web` record name it: `comment`,
-    /// `brief`, `search #<seq>`, `page #<seq>` or `any public URL`.
+    /// `brief`, `search #<n>`, `page #<n>` or `any public URL`, where `n`
+    /// numbers the run's searches or pages from 1 across all its steps.
     #[must_use]
     pub fn label(&self) -> String {
         match self {
@@ -199,10 +202,33 @@ impl UrlSource {
                 comment_id: Some(_),
             } => "comment".into(),
             UrlSource::Request { comment_id: None } => "brief".into(),
-            UrlSource::Search { seq, .. } => format!("search #{seq}"),
-            UrlSource::Fetched { seq, .. } => format!("page #{seq}"),
+            UrlSource::Search { n, .. } => format!("search #{n}"),
+            UrlSource::Fetched { n, .. } => format!("page #{n}"),
             UrlSource::AnyPublic => "any public URL".into(),
         }
+    }
+
+    /// It as a fetch's journal entry keeps it: `{label, kind}` and, by
+    /// kind, `comment_id` (`comment`), or `step`, `seq` and `n`
+    /// (`search`, `page`); `kind` is `comment`, `brief`, `search`, `page`
+    /// or `any_public`.
+    #[must_use]
+    pub fn to_json(&self) -> Value {
+        let mut v = match self {
+            UrlSource::Request {
+                comment_id: Some(id),
+            } => json!({"kind": "comment", "comment_id": id}),
+            UrlSource::Request { comment_id: None } => json!({"kind": "brief"}),
+            UrlSource::Search { step, seq, n } => {
+                json!({"kind": "search", "step": step, "seq": seq, "n": n})
+            }
+            UrlSource::Fetched { step, seq, n } => {
+                json!({"kind": "page", "step": step, "seq": seq, "n": n})
+            }
+            UrlSource::AnyPublic => json!({"kind": "any_public"}),
+        };
+        v["label"] = json!(self.label());
+        v
     }
 }
 
@@ -244,7 +270,8 @@ fn urls_in(text: &str) -> Vec<String> {
 /// The URLs a fetch of the run may ask for, by normalised URL, each with
 /// the first source that holds it (spec §5.2): the sender's own comments
 /// (`from_sender`) and the brief in `cx`, then the results of each
-/// answered `web.search` in `journal` (the run's calls, in order), then
+/// answered `web.search` in `journal` (the run's calls, in order; a
+/// search's entry keeps the script's value under `value`), then
 /// the links of each page in `pages` (the run's page store, in fetch
 /// order). Nothing else is a source: not the draft, the published
 /// artifact, a script's output, other people's comments or anything the
@@ -269,24 +296,28 @@ pub fn sources(
         out.entry(u)
             .or_insert(UrlSource::Request { comment_id: None });
     }
-    for e in journal.iter().filter(|e| e.op() == OP_SEARCH && e.ok()) {
-        for r in e.result()["results"].as_array().into_iter().flatten() {
+    let searches = journal.iter().filter(|e| e.op() == OP_SEARCH && e.ok());
+    for (n, e) in (1..).zip(searches) {
+        let results = &e.result()["value"]["results"];
+        for r in results.as_array().into_iter().flatten() {
             if let Some(u) = r["url"].as_str().and_then(|u| PublicUrl::parse(u).ok()) {
                 out.entry(u.normalized().to_string())
                     .or_insert(UrlSource::Search {
                         step: e.step_n(),
                         seq: e.seq(),
+                        n,
                     });
             }
         }
     }
-    for p in pages {
+    for (n, p) in (1..).zip(pages) {
         for l in &p.links {
             if let Ok(u) = PublicUrl::parse(l) {
                 out.entry(u.normalized().to_string())
                     .or_insert(UrlSource::Fetched {
                         step: p.step_n,
                         seq: p.seq,
+                        n,
                     });
             }
         }
@@ -672,15 +703,15 @@ mod tests {
                 0,
                 OP_SEARCH,
                 true,
-                json!({"results": [
-                {"url": "https://example.com/s"}, {"url": "https://found.example/r"}]}),
+                json!({"value": {"results": [
+                {"url": "https://example.com/s"}, {"url": "https://found.example/r"}]}}),
             ),
             entry(
                 1,
                 OP_SEARCH,
                 false,
                 json!({"code": "web_cap",
-                "results": [{"url": "https://refused.example/"}]}),
+                "value": {"results": [{"url": "https://refused.example/"}]}}),
             ),
             entry(2, "files.read", true, json!("https://draft.example/")),
         ];
@@ -714,16 +745,41 @@ mod tests {
                 ("https://example.com/s".to_string(), c1),
                 (
                     "https://found.example/r".to_string(),
-                    UrlSource::Search { step: 2, seq: 0 }
+                    UrlSource::Search {
+                        step: 2,
+                        seq: 0,
+                        n: 1
+                    }
                 ),
                 (
                     "https://linked.example/l".to_string(),
-                    UrlSource::Fetched { step: 3, seq: 4 }
+                    UrlSource::Fetched {
+                        step: 3,
+                        seq: 4,
+                        n: 1
+                    }
                 ),
             ]
         );
-        assert_eq!(UrlSource::Search { step: 2, seq: 0 }.label(), "search #0");
-        assert_eq!(UrlSource::Fetched { step: 3, seq: 4 }.label(), "page #4");
+        let s = UrlSource::Search {
+            step: 2,
+            seq: 0,
+            n: 3,
+        };
+        assert_eq!(s.label(), "search #3");
+        assert_eq!(
+            s.to_json(),
+            json!({"kind": "search", "step": 2, "seq": 0, "n": 3, "label": "search #3"})
+        );
+        assert_eq!(
+            UrlSource::Fetched {
+                step: 3,
+                seq: 4,
+                n: 2
+            }
+            .label(),
+            "page #2"
+        );
         assert_eq!(UrlSource::Request { comment_id: None }.label(), "brief");
     }
 }

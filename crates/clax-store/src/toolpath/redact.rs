@@ -350,13 +350,17 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("bot.call", "run" | "step" | "op" | "ok") => Safe,
         ("bot.call", "target") => Text,
         // A web call (spec 2026-11-02-claxbot-web-tools §8): its query and
-        // URL are the model's or a page's text; the source that allowed a
-        // fetch is a code (`comment`, `search #<seq>`, `page #<seq>`).
+        // URL are the model's or a page's text, and so is the provider's
+        // whole answer to a search; the source that allowed a fetch is a
+        // code (`comment`, `search #<n>`, `page #<n>`), and whether the
+        // call was answered, its error code and whether it came from the
+        // page store are codes too.
         (
             "bot.web",
-            "run" | "step" | "op" | "source" | "provider" | "request_id" | "credits_milli",
+            "run" | "step" | "op" | "source" | "provider" | "request_id" | "credits_milli" | "ok"
+            | "code" | "stored",
         ) => Safe,
-        ("bot.web", "query" | "url") => Text,
+        ("bot.web", "query" | "url" | "response") => Text,
         ("bot.run_end", "run" | "outcome" | "credits_milli") => Safe,
         ("bot.run_end", "reason") => Text,
         ("bot.cancel", "run" | "by") => Safe,

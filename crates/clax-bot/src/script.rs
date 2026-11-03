@@ -48,8 +48,8 @@ struct CallLog {
     replayed: bool,
     /// How long the call took, in milliseconds.
     ms: u64,
-    /// What a web call charged; `None` for any other call, and for one
-    /// answered from the journal.
+    /// What a web call charged, from its journal entry when it was
+    /// answered from the journal; `None` for any other call.
     cost_milli: Option<i64>,
     /// What the run panel shows of a web call: `{query}`, or `{url,
     /// source}` where `source` names where the URL came from
@@ -642,12 +642,7 @@ impl Tick<'_> {
             .map(|c| {
                 let mut v = json!({"op": c.op, "target": c.target, "ok": c.ok, "code": c.code,
                                    "ms": c.ms});
-                if let Some(cost) = c.cost_milli {
-                    v["cost_milli"] = json!(cost);
-                }
-                if let Some(w) = &c.web {
-                    v["web"] = w.clone();
-                }
+                crate::events::with_web_fields(&mut v, c.cost_milli, c.web.as_ref());
                 v
             })
             .collect();

@@ -1449,6 +1449,12 @@ impl Event<'_> {
                 "ClaxBot run {} {} (step {}, {} credits)",
                 self.show("run"),
                 match (self.str("op"), self.str("query"), self.str("url")) {
+                    _ if self.body.get("ok") == Some(&Value::Bool(false)) => format!(
+                        "was refused {} {} ({})",
+                        self.show("op"),
+                        self.str("query").or(self.str("url")).unwrap_or(""),
+                        self.show("code")
+                    ),
                     (Some("web.search"), Some(q), _) => format!("searched the web for {q}"),
                     (Some("web.fetch"), _, Some(u)) => format!("fetched {u}"),
                     _ => format!("called {}", self.show("op")),
