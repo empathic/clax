@@ -1,30 +1,31 @@
 /* The overlay's root, in a shadow root on the deployer's page: no rule of
    the page reaches in, and none of these reaches out. The tokens repeat the
    shell's (shell/src/theme.css) that the overlay uses, with its dark values
-   under the system's dark scheme. Each reads its --clax-* name first: a site
-   themes the overlay by setting --clax-* on :root or on the overlay's host
-   (the theme option and theme plugins), with no other CSS of the site's. */
+   under the system's dark scheme. Each reads its vendor-neutral --feedback-*
+   name first, then the older --clax-* name: a site themes the overlay by
+   setting --feedback-* on :root or on the overlay's host (the theme option
+   and theme plugins), with no other CSS of the site's (white label). */
 :host {
   all: initial;
-  --bg: var(--clax-bg, #f7f7f5); --card: var(--clax-card, #ffffff); --raised: var(--clax-raised, #ffffff); --hover: var(--clax-hover, #f2f2ef); --fg: var(--clax-fg, #1c1b19); --muted: var(--clax-muted, #5f5d58);
-  --border: var(--clax-border, #e6e5e1); --border-hover: var(--clax-border-hover, #d6d4ce); --border-strong: var(--clax-border-strong, #85827b);
-  --primary-hover: var(--clax-primary-hover, #3a3935); --danger: var(--clax-danger, #b3261e); --danger-tint: var(--clax-danger-tint, #fbeceb); --focus: var(--clax-focus, #2f6f2a);
-  --you: var(--clax-you, #e0532f); --on-you: var(--clax-on-you, #141413); --you-ink: var(--clax-you-ink, #b5401f); --agent-ink: var(--clax-agent-ink, #2f6f2a); --accent-tint: var(--clax-accent-tint, #e8f1e6);
-  --comment-hl: var(--clax-comment-hl, #fbe9e3);
-  --elev-lg: var(--clax-elev-lg, 0 2px 6px rgba(20,20,15,.06), 0 16px 40px rgba(20,20,15,.12));
-  --font: var(--clax-font, ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif);
-  --t: var(--clax-t, .12s cubic-bezier(.4,0,.2,1));
-  --radius: var(--clax-radius, 10px); --radius-sm: var(--clax-radius-sm, 8px); --radius-xs: var(--clax-radius-xs, 4px);
+  --bg: var(--feedback-bg, var(--clax-bg, #f7f7f5)); --card: var(--feedback-card, var(--clax-card, #ffffff)); --raised: var(--feedback-raised, var(--clax-raised, #ffffff)); --hover: var(--feedback-hover, var(--clax-hover, #f2f2ef)); --fg: var(--feedback-fg, var(--clax-fg, #1c1b19)); --muted: var(--feedback-muted, var(--clax-muted, #5f5d58));
+  --border: var(--feedback-border, var(--clax-border, #e6e5e1)); --border-hover: var(--feedback-border-hover, var(--clax-border-hover, #d6d4ce)); --border-strong: var(--feedback-border-strong, var(--clax-border-strong, #85827b));
+  --primary-hover: var(--feedback-primary-hover, var(--clax-primary-hover, #3a3935)); --danger: var(--feedback-danger, var(--clax-danger, #b3261e)); --danger-tint: var(--feedback-danger-tint, var(--clax-danger-tint, #fbeceb)); --focus: var(--feedback-focus, var(--clax-focus, #2f6f2a));
+  --you: var(--feedback-you, var(--clax-you, #e0532f)); --on-you: var(--feedback-on-you, var(--clax-on-you, #141413)); --you-ink: var(--feedback-you-ink, var(--clax-you-ink, #b5401f)); --agent-ink: var(--feedback-agent-ink, var(--clax-agent-ink, #2f6f2a)); --accent-tint: var(--feedback-accent-tint, var(--clax-accent-tint, #e8f1e6));
+  --comment-hl: var(--feedback-comment-hl, var(--clax-comment-hl, #fbe9e3));
+  --elev-lg: var(--feedback-elev-lg, var(--clax-elev-lg, 0 2px 6px rgba(20,20,15,.06), 0 16px 40px rgba(20,20,15,.12)));
+  --font: var(--feedback-font, var(--clax-font, ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif));
+  --t: var(--feedback-t, var(--clax-t, .12s cubic-bezier(.4,0,.2,1)));
+  --radius: var(--feedback-radius, var(--clax-radius, 10px)); --radius-sm: var(--feedback-radius-sm, var(--clax-radius-sm, 8px)); --radius-xs: var(--feedback-radius-xs, var(--clax-radius-xs, 4px));
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :host {
-    --bg: var(--clax-bg, #141413); --card: var(--clax-card, #1c1c1a); --raised: var(--clax-raised, #232321); --hover: var(--clax-hover, #2a2a27); --fg: var(--clax-fg, #ecebe7); --muted: var(--clax-muted, #a9a69f);
-    --border: var(--clax-border, #2c2c29); --border-hover: var(--clax-border-hover, #3a3a36); --border-strong: var(--clax-border-strong, #7c7972);
-    --primary-hover: var(--clax-primary-hover, #d6d4ce); --danger: var(--clax-danger, #ff8a80); --danger-tint: var(--clax-danger-tint, #3a1f1c); --focus: var(--clax-focus, #7cc36f);
-    --you: var(--clax-you, #ff7a57); --you-ink: var(--clax-you-ink, #ff7a57); --agent-ink: var(--clax-agent-ink, #7cc36f); --accent-tint: var(--clax-accent-tint, #1f2a1d);
-    --comment-hl: var(--clax-comment-hl, #2e1e19);
-    --elev-lg: var(--clax-elev-lg, 0 2px 6px rgba(0,0,0,.4), 0 16px 40px rgba(0,0,0,.5));
+    --bg: var(--feedback-bg, var(--clax-bg, #141413)); --card: var(--feedback-card, var(--clax-card, #1c1c1a)); --raised: var(--feedback-raised, var(--clax-raised, #232321)); --hover: var(--feedback-hover, var(--clax-hover, #2a2a27)); --fg: var(--feedback-fg, var(--clax-fg, #ecebe7)); --muted: var(--feedback-muted, var(--clax-muted, #a9a69f));
+    --border: var(--feedback-border, var(--clax-border, #2c2c29)); --border-hover: var(--feedback-border-hover, var(--clax-border-hover, #3a3a36)); --border-strong: var(--feedback-border-strong, var(--clax-border-strong, #7c7972));
+    --primary-hover: var(--feedback-primary-hover, var(--clax-primary-hover, #d6d4ce)); --danger: var(--feedback-danger, var(--clax-danger, #ff8a80)); --danger-tint: var(--feedback-danger-tint, var(--clax-danger-tint, #3a1f1c)); --focus: var(--feedback-focus, var(--clax-focus, #7cc36f));
+    --you: var(--feedback-you, var(--clax-you, #ff7a57)); --you-ink: var(--feedback-you-ink, var(--clax-you-ink, #ff7a57)); --agent-ink: var(--feedback-agent-ink, var(--clax-agent-ink, #7cc36f)); --accent-tint: var(--feedback-accent-tint, var(--clax-accent-tint, #1f2a1d));
+    --comment-hl: var(--feedback-comment-hl, var(--clax-comment-hl, #2e1e19));
+    --elev-lg: var(--feedback-elev-lg, var(--clax-elev-lg, 0 2px 6px rgba(0,0,0,.4), 0 16px 40px rgba(0,0,0,.5)));
     color-scheme: dark;
   }
 }

@@ -40,6 +40,7 @@
   } from "./model";
   import ModeBar from "./ModeBar.svelte";
   import type { Picked, Picker } from "./picker";
+  import type { DialogCopy } from "./options";
   import Preview from "./Preview.svelte";
   import Reports from "./Reports.svelte";
 
@@ -71,11 +72,13 @@
     openWindow?: (win: Window) => Window | null;
     /** Turned on or off by config, over each plugin's own default (filter and attachment ids). */
     defaults?: Record<string, boolean>;
+    /** The dialog's words that name the host (the container's `copy.*`); the code itself names no one. */
+    copy?: DialogCopy;
   };
   let {
     client, doc, host, picker: makePicker, session, externalId, launcher = "corner", canFile = true, capture: captureDeps = {}, flatten: flattenDeps = browserFlatten,
-    timers = realTimers, onBadge, onFiled, plugins, presentation: presentationId, css = "", defaults = {},
-    openWindow = (w: Window) => w.open("", "clax-composer", "popup,width=480,height=760"),
+    timers = realTimers, onBadge, onFiled, plugins, presentation: presentationId, css = "", defaults = {}, copy = {},
+    openWindow = (w: Window) => w.open("", "feedback-composer", "popup,width=480,height=760"),
   }: Props = $props();
 
   const win = untrack(() => doc.defaultView ?? window);
@@ -225,11 +228,11 @@
     d.title = "Send feedback";
     d.documentElement.lang = doc.documentElement.lang || "en";
     addSheet(d, `${css.replaceAll(":host", ":root")}\nhtml,body{margin:0;background:var(--bg)}`);
-    // The site's look goes with it: the --clax-* values the overlay's host has (its own, and the page's).
+    // The site's look goes with it: the --feedback-* (and older --clax-*) values the overlay's host has (its own, and the page's).
     try {
       const cs = win.getComputedStyle(host);
-      for (let i = 0; i < cs.length; i++) if (cs[i].startsWith("--clax-")) d.documentElement.style.setProperty(cs[i], cs.getPropertyValue(cs[i]));
-    } catch { /* no computed style: Clax's own look */ }
+      for (let i = 0; i < cs.length; i++) if (cs[i].startsWith("--feedback-") || cs[i].startsWith("--clax-")) d.documentElement.style.setProperty(cs[i], cs.getPropertyValue(cs[i]));
+    } catch { /* no computed style: the overlay's own look */ }
     const target = d.createElement("div");
     target.className = "cx window";
     d.body.append(target);
@@ -763,20 +766,45 @@
   /** The overlay's own root element. */
   let cx = $state<HTMLDivElement | null>(null);
   const reopening = $derived(draft?.purpose.kind === "reopen" ? draft.purpose.report : null);
-  const dialogTitle = $derived(reopening ? "Still broken" : "Send feedback");
+  const dialogTitle = $derived(reopening ? "Still broken" : copy.title || "Send feedback");
+  /** The framed composer (dialog, drawer, sheet, window) is the reference dialog: intro, a labelled note, Attach, What will be sent, retention. */
+  const framed = $derived(dockLayout !== "dock" || inWindow);
+  const reportsLabel = $derived(copy.reportsLabel || "Your reports");
+  /** The container's reports link, if it is http(s); otherwise the reports open in the overlay's own view. */
+  const reportsUrl = $derived.by(() => { try { const u = new URL(copy.reportsUrl ?? ""); return /^https?:$/.test(u.protocol) ? u.href : null; } catch { return null; } });
+  const intro = $derived(framed && !reopening && copy.intro ? copy.intro : "");
+  /** "What will be sent", one row each, from the very report a send carries. */
+  const sending = $derived.by(() => {
+    if (!outgoing) return [];
+    const rows: [string, string][] = [["Note", outgoing.body.trim() || "(nothing yet)"]];
+    if ("url" in outgoing) rows.push(["Page", outgoing.url]);
+    const release = outgoing.context?.release as { version?: string } | undefined;
+    if (release?.version) rows.push(["Version", release.version]);
+    for (const r of attachRows) if (attachOn.includes(r.id)) rows.push([r.label, r.preview.split("\n")[0] ?? ""]);
+    rows.push(["Screenshot", outgoing.clip ? "Attached" : "Not attached"]);
+    if (draft?.includeDiagnostics) rows.push(["Recent errors", `${draft.diagnostics.length}`]);
+    const a = ("anchor" in outgoing ? outgoing.anchor : null) as { kind?: string; selector?: string } | null;
+    rows.push(["Element", a?.kind === "element" && a.selector ? a.selector : "None: the whole page"]);
+    return rows;
+  });
 </script>
 
 {#snippet composerSnippet()}
   {#if draft && !open}
-    <form class="composer" class:framed={dockLayout !== "dock" || inWindow} aria-label={reopening ? "Still broken" : "New report"} onsubmit={e => { e.preventDefault(); void send(); }}>
-      {#if dockLayout !== "dock" || inWindow}
+    <form class="composer" class:framed aria-label={reopening ? "Still broken" : "New report"} onsubmit={e => { e.preventDefault(); void send(); }}>
+      {#if framed}
         <!-- The header zone: fixed, whatever the form below does. Close, then Your reports, then this page's. -->
         <div class="head">
           <h2 id="cx-composer-title">{dialogTitle}</h2>
           <button type="button" class="ghost small" aria-keyshortcuts="Escape" onclick={cancel}>Close · Esc</button>
-          <button type="button" class="ghost small yours-btn" onclick={() => openYours(false)}>Your reports</button>
+          {#if reportsUrl}
+            <a class="yours-btn small" href={reportsUrl} target="_blank" rel="noreferrer">{reportsLabel} ↗</a>
+          {:else}
+            <button type="button" class="ghost small yours-btn" onclick={() => openYours(false)}>{reportsLabel}</button>
+          {/if}
         </div>
         <p class="yours small" aria-live="polite">{#if onPage?.length}<button type="button" class="link" onclick={() => openYours(true)}>{onPage.length} of yours on this page</button>{/if}</p>
+        {#if intro}<p id="cx-composer-intro" class="intro">{intro}</p>{/if}
       {/if}
       {#if reopening}
         <p class="quote">Still broken: {summaryOf(reopening)}</p>
@@ -801,15 +829,26 @@
           <button type="button" class:primary={draft.capture.suggestExact} disabled={exacting} onclick={() => void useExact()}>Use exact screenshot</button>
         </p>
       {/if}
-      {#if (reopening || (domCapture && barModes.length && draft.clip.state === "none")) && !bar}
+      {#if (reopening || (domCapture && barModes.length && draft.clip.state === "none")) && !bar && !framed}
         <p class="small"><button type="button" class="ghost" onclick={addScreenshot}>{draft.clip.state === "none" ? "Add a screenshot" : "Retake the screenshot"}</button></p>
       {/if}
-      <textarea rows={3} aria-label={reopening ? "What is still broken" : "Report"} placeholder={reopening ? "What is still broken?" : "What should change here?"} {@attach el => el.focus()} bind:this={noteEl} bind:value={() => draft?.body ?? "", v => { if (draft) draft.body = v; }}
+      {#if framed}<label class="field" for="cx-note">{reopening ? "What is still broken?" : "What happened?"}</label>{/if}
+      <textarea id="cx-note" rows={framed ? 4 : 3} aria-label={framed ? undefined : reopening ? "What is still broken" : "Report"} placeholder={reopening ? "What is still broken?" : framed ? "What you did, what you expected, what you saw" : "What should change here?"} {@attach el => el.focus()} bind:this={noteEl} bind:value={() => draft?.body ?? "", v => { if (draft) draft.body = v; }}
         onkeydown={e => {
           if (e.key === "Escape") { e.preventDefault(); cancel(); }
           else if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); void send(); }
         }}></textarea>
-      <div class="toggles small">
+      <svelte:element this={framed ? "fieldset" : "div"} class="toggles small" class:attach={framed}>
+        {#if framed}
+          <legend>Attach</legend>
+          {#if domCapture && barModes.length && !bar}
+            <span class="opt">
+              <button type="button" class="small" onclick={addScreenshot}>{draft.clip.state === "none" ? "A screenshot of this page" : "Retake the screenshot"}</button>
+              {#if barModes.some(m => m.mode === "element")}<button type="button" class="small" onclick={() => { addScreenshot(); choose("element"); }}>Pick an element on the page</button>{/if}
+              {#if draft.clip.state === "none"}<span class="muted">without one, the report is about the whole page</span>{/if}
+            </span>
+          {/if}
+        {/if}
         {#if draft.clip.state !== "none"}
           <label><input type="checkbox" aria-label="Include screenshot" bind:checked={draft.includeClip} /> Include screenshot</label>
         {/if}
@@ -822,13 +861,20 @@
         {#each attachments as a (a.id)}
           <label><input type="checkbox" aria-label={a.label} checked={attachOn.includes(a.id)} onchange={e => { const on = (e.currentTarget as HTMLInputElement).checked; attachOn = on ? [...attachOn, a.id] : attachOn.filter(x => x !== a.id); }} /> {a.label}</label>
         {/each}
-      </div>
+      </svelte:element>
+      {#if framed && sending.length}
+        <section class="sending" aria-labelledby="cx-sending-title">
+          <h3 id="cx-sending-title">What will be sent</h3>
+          <dl>{#each sending as [k, v] (k)}<dt>{k}</dt><dd>{v}</dd>{/each}</dl>
+        </section>
+      {/if}
       {#if outgoing}<Preview sent={outgoing} marked={draft.shapes.length > 0} sentRows={attachRows.filter(r => attachOn.includes(r.id))} filtered={filterNotes} />{/if}
       {#if draft.marksNote}<p class="small warn marks" role="status">{draft.marksNote}</p>{/if}
       {#if draft.error}<p class="error small" role="alert">Not sent: {draft.error}</p>{/if}
       <div class="actions">
+        {#if framed && copy.retention}<span class="retention small muted">{copy.retention}</span>{/if}
         <button type="button" onclick={cancel}>Cancel</button>
-        <button type="submit" class="primary" disabled={!canSend(draft)}>{draft.sending ? "Sending…" : "Send"}</button>
+        <button type="submit" class="primary" disabled={!canSend(draft)}>{draft.sending ? "Sending…" : framed && !reopening ? "Send feedback" : "Send"}</button>
       </div>
     </form>
   {:else if inWindow && bar}
@@ -850,7 +896,7 @@
   <div class="dock" data-layout={dockLayout}>
   {#if !inWindow}
     {#if draft && !open && dockLayout === "dialog"}
-      <div class="frame" role="dialog" aria-modal="true" aria-labelledby="cx-composer-title" tabindex="-1" onkeydown={trapFocus}>{@render composerSnippet()}</div>
+      <div class="frame" role="dialog" aria-modal="true" aria-labelledby="cx-composer-title" aria-describedby={intro ? "cx-composer-intro" : undefined} tabindex="-1" onkeydown={trapFocus}>{@render composerSnippet()}</div>
     {:else if draft && !open && dockLayout !== "dock"}
       <div class="frame" role="region" aria-labelledby="cx-composer-title">{@render composerSnippet()}</div>
     {:else}
@@ -938,6 +984,20 @@
   /* Reserved, so the count arriving moves nothing. */
   .yours { min-height: 1.5em; margin: -4px 0 6px; text-align: right; }
   .yours .link { min-height: 0; padding: 0; border: 0; background: none; color: var(--you-ink); text-decoration: underline; font-size: 12px; }
+  /* The reference dialog's zones (Changeling's Send feedback, through tokens only). */
+  a.yours-btn { display: inline-flex; align-items: center; min-height: 32px; padding: 7px 12px; color: var(--fg); border-radius: var(--radius-sm); text-decoration: none; }
+  a.yours-btn:hover { background: var(--hover); }
+  .intro { margin: 0 0 10px; color: var(--muted); }
+  .field { display: block; margin: 6px 0; font-weight: 600; }
+  fieldset.attach { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 12px 12px; margin: 12px 0 0; display: grid; gap: 8px; }
+  fieldset.attach legend { color: var(--muted); padding: 0 6px; }
+  .opt { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .sending { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+  .sending h3 { margin: 0; font: 600 14px/1.3 var(--font); }
+  .sending dl { display: grid; grid-template-columns: 90px 1fr; gap: 4px 12px; margin: 8px 0 0; font-size: 13px; }
+  .sending dt { color: var(--muted); }
+  .sending dd { margin: 0; min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .retention { margin-right: auto; align-self: center; }
   .shot { display: block; max-width: 100%; max-height: 240px; margin-bottom: 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); }
   .waiting { padding: 16px; }
   :global(.cx.window) .composer { width: 100%; max-width: 640px; margin: 0 auto; box-shadow: none; border-radius: 0; min-height: 100vh; }

@@ -28,10 +28,11 @@ export const windowPresentation = () => definePlugin({
 
 /** The attribute the Clax extension sets on the page's root while it is
  * injected in the tab (its announced presence). */
-export const EXTENSION_ATTR = "data-clax-extension";
+export const EXTENSION_ATTR = "data-feedback-extension";
 /** The event the overlay dispatches on the page's document to hand a report
- * to the extension; the extension takes it by cancelling it. */
-export const EXTENSION_EVENT = "clax:extension-report";
+ * to the extension; the extension takes it by cancelling it. Vendor-neutral
+ * like every name a host page can see (white label). */
+export const EXTENSION_EVENT = "feedback:extension-report";
 
 /** Whether the extension announced itself on `win`'s page. */
 export const extensionPresent = (win: Window): boolean => !!win.document?.documentElement?.hasAttribute(EXTENSION_ATTR);
@@ -51,7 +52,7 @@ export function handToExtension(req: HandoffRequest, win: Window): boolean {
  * presence and its page event. A dialog when it is absent or declines. */
 export const extensionPresentation = (opts: { detect?: (win: Window) => boolean; handoff?: (req: HandoffRequest, win: Window) => boolean } = {}) => {
   const p: PresentationContribution = {
-    id: "extension", label: "The Clax extension", layout: "dialog", fallback: "dialog",
+    id: "extension", label: "The browser extension", layout: "dialog", fallback: "dialog",
     available: opts.detect ?? extensionPresent,
     handoff: opts.handoff ?? handToExtension,
   };

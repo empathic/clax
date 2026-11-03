@@ -11,6 +11,7 @@ export const AFFIX = 32;
 export const MAX_QUOTE = 2000;
 /** The daemon's limit on selector length, in characters. */
 export const MAX_SELECTOR = 1024;
+// White label (Addendum 11): still "clax-overlay"; renaming it is a mechanical follow-up across bridge, extension and e2e tests.
 export const OVERLAY_TAG = "clax-overlay";
 /** Marks an element a page renders never shows (and comment mode never
  * picks): Clax's own interface carries it, and a host marks its own. */

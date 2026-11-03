@@ -65,9 +65,18 @@ export const FIELDS = {
   "hooks.logs": { kind: "string", default: "", max: 200, doc: "The page's global (a dotted path) giving its recent log lines." },
   "hooks.release": { kind: "string", default: "", max: 200, doc: "The page's global giving the app version: {version, commit?} or a string." },
   "hooks.user": { kind: "string", default: "", max: 200, doc: "The page's global naming the signed-in person." },
-  theme: { kind: "tokens", default: {}, doc: "--clax-* custom properties: the site's look." },
+  // Every word the dialog says that names the host, from the container: the code names no one (white label).
+  "copy.title": { kind: "string", default: "Send feedback", max: 80, doc: "The dialog's heading." },
+  "copy.intro": { kind: "string", default: "", max: 1000, doc: "The dialog's opening paragraph: whose operators read it, where it goes, which identity it is sent with, what is always sent." },
+  "copy.retention": { kind: "string", default: "", max: 200, doc: "The line by the Send button on how long reports are kept." },
+  "copy.reports-label": { kind: "string", default: "Your reports", max: 80, doc: "The label of the link or button to the reporter's reports." },
+  "copy.reports-url": { kind: "string", default: "", max: 500, doc: "Where the reports link goes (an https URL, opened in a new tab); empty: the reports open in the dialog's own view." },
+  theme: { kind: "tokens", default: {}, doc: "--feedback-* (or --clax-*) custom properties: the site's look." },
   "overrides.viewer": { kind: "enum", values: ["local", "always", "never"], default: "local", doc: "Whether a viewer's cookie override applies: on local and tailnet origins only, everywhere, or nowhere. Never itself overridden by the cookie." },
 } as const satisfies Record<string, Field>;
+
+/** A theme token's name: vendor-neutral `--feedback-*`, or the older `--clax-*` (still read, as a fallback). */
+export const TOKEN_NAME = /^--(feedback|clax)-[a-z0-9-]+$/;
 
 export type FieldName = keyof typeof FIELDS;
 type ValueOf<F> = F extends { kind: "bool" } ? boolean : F extends { kind: "enum"; values: readonly (infer V)[] } ? V : F extends { kind: "targets" } ? Target[] : F extends { kind: "tokens" } ? Record<string, string> : string;
@@ -113,9 +122,9 @@ export function check(name: FieldName, v: unknown): { ok: true; value: unknown }
         ? { ok: true, value: v.map(t => ({ selector: t.selector, action: t.action })) }
         : { ok: false, reason: "not a list of {selector, action}" };
     case "tokens":
-      return v && typeof v === "object" && !Array.isArray(v) && Object.entries(v).every(([k, x]) => /^--clax-[a-z0-9-]+$/.test(k) && typeof x === "string")
+      return v && typeof v === "object" && !Array.isArray(v) && Object.entries(v).every(([k, x]) => TOKEN_NAME.test(k) && typeof x === "string")
         ? { ok: true, value: { ...(v as Record<string, string>) } }
-        : { ok: false, reason: "not a map of --clax-* names to strings" };
+        : { ok: false, reason: "not a map of --feedback-* names to strings" };
   }
 }
 
@@ -152,7 +161,7 @@ export function pageHook(win: object, path: string): (() => unknown) | undefined
 /** The global an install exposes for the Clax DevTools panel's Integration
  * view (`IntegrationHook`): what put Clax on the page and how each field
  * resolved, and the viewer's override to set. No host code is involved. */
-export const INSTALL_KEY = "__CLAX_INSTALL__";
+export const INSTALL_KEY = "__FEEDBACK_INSTALL__";
 
 /** What an install tells the DevTools panel, as JSON (protocol 1). */
 export interface InstallInfo {
@@ -253,7 +262,7 @@ export function resolve(layers: { site?: unknown; clax?: unknown; you?: unknown 
  * each site's override its own, as `clax_dev_<port>` does (devtools.ts). */
 export const overrideCookie = (port = "") => (port ? `${OVERRIDE_COOKIE}_${port}` : OVERRIDE_COOKIE);
 /** The cookie's base name. */
-export const OVERRIDE_COOKIE = "clax_override";
+export const OVERRIDE_COOKIE = "feedback_override";
 /** How long it is kept: a week. */
 const OVERRIDE_MAX_AGE = 7 * 24 * 3600;
 

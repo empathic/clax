@@ -109,7 +109,7 @@ export function pluginsFor(c: ClaxConfig, s: Pick<Snippet, "logs" | "release">):
 /** Where Clax serves a container's published config. */
 export const containerUrl = (instance: string, id: string) => `${instance.replace(/\/+$/, "")}/_clax/containers/${encodeURIComponent(id)}/config.json`;
 
-const CACHE_PREFIX = "clax.container:";
+const CACHE_PREFIX = "feedback.container:";
 
 /** The container from Clax, else the last one this browser kept, else none. */
 async function fetchContainer(s: Snippet, win: Window): Promise<{ container: Container | null; error: string | null }> {
@@ -219,6 +219,7 @@ export async function install(s: Snippet): Promise<Installed> {
       diagnostics: { default: config["attachments.errors"] },
       presentation: config.presentation === "extension" ? "dialog" : config.presentation,
       theme: config.theme,
+      copy: { title: config["copy.title"], intro: config["copy.intro"], retention: config["copy.retention"], reportsLabel: config["copy.reports-label"], reportsUrl: config["copy.reports-url"] },
       defaults: { "code-blur": config["filters.code-blur"], logs: config["attachments.logs"], version: config["attachments.version"], browser: config["attachments.browser"] },
     }, plugins, doc);
     teardown.push(() => handle?.close());
@@ -243,8 +244,8 @@ export async function install(s: Snippet): Promise<Installed> {
       const onClick = (e: MouseEvent) => {
         const at = e.target instanceof Element ? e.target : null;
         if (!at) return;
-        const marked = at.closest<HTMLElement>("[data-clax]");
-        let action = marked?.dataset.clax;
+        const marked = at.closest<HTMLElement>("[data-feedback], [data-clax]");
+        let action = marked?.dataset.feedback ?? marked?.dataset.clax;
         if (!action) action = config.targets.find(t => { try { return !!at.closest(t.selector); } catch { return false; } })?.action;
         if (action !== "report" && action !== "reports" && action !== "close") return;
         e.preventDefault();
@@ -260,6 +261,7 @@ export async function install(s: Snippet): Promise<Installed> {
         if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || e.isComposing || e.key.toLowerCase() !== key) return;
         const at = e.composedPath()[0];
         if (at instanceof HTMLElement && (at.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(at.tagName))) return;
+        // The overlay's host (bridge/src/anchor.ts OVERLAY_TAG, not imported: the loader stays small).
         if (at instanceof Element && at.closest("clax-overlay")) return;
         e.preventDefault();
         report();
@@ -267,21 +269,25 @@ export async function install(s: Snippet): Promise<Installed> {
       win.addEventListener("keydown", onKey);
       teardown.push(() => win.removeEventListener("keydown", onKey));
     }
-    // A link that starts Clax: ?clax=report or ?clax=reports.
+    // A link that starts Clax: ?feedback=report or ?feedback=reports (?clax= still read).
     if (config["entry.link"]) {
-      const asked = new URLSearchParams(win.location?.search ?? "").get("clax");
+      const params = new URLSearchParams(win.location?.search ?? "");
+      const asked = params.get("feedback") ?? params.get("clax");
       if (asked === "report") report();
       else if (asked === "reports") handle?.showReports();
     }
   }
 
   // The command queue: what was pushed before the loader ran, then each push.
-  const w = win as Window & { clax?: unknown };
-  const queued = Array.isArray(w.clax) ? (w.clax as unknown[]) : [];
+  // `window.feedback`, vendor-neutral (white label); a tag manager's older `window.clax` queue is still read and, if it was there, still answered.
+  const w = win as Window & { feedback?: unknown; clax?: unknown };
+  const queued = [...(Array.isArray(w.feedback) ? w.feedback : []), ...(Array.isArray(w.clax) ? w.clax : [])] as unknown[];
+  const legacy = Array.isArray(w.clax);
   const q = { push: (cmd: Command) => { push(cmd); return 0; } };
-  w.clax = q;
+  w.feedback = q;
+  if (legacy) w.clax = q;
   for (const cmd of queued) if (Array.isArray(cmd) && cmd[0] !== "install") push(cmd as Command);
-  teardown.push(() => { if (w.clax === q) delete w.clax; });
+  teardown.push(() => { if (w.feedback === q) delete w.feedback; if (w.clax === q) delete w.clax; });
   teardown.push(() => { if (doc.documentElement.getAttribute(CARRIER_ATTR) === carrier) doc.documentElement.removeAttribute(CARRIER_ATTR); });
 
   // The DevTools panel's Integration view reads this, with no host code.
@@ -327,7 +333,8 @@ export function authOf(auth: ReporterAuth | string, win: Window): ReporterAuth {
 /** The script tag's start: a tag manager's `window.clax = [["install", {...}]]`
  * pushed before the script ran is installed now. */
 export function installQueued(win: Window = window): Promise<Installed> | null {
-  const q = (win as Window & { clax?: unknown }).clax;
+  const g = win as Window & { feedback?: unknown; clax?: unknown };
+  const q = Array.isArray(g.feedback) ? g.feedback : g.clax;
   if (!Array.isArray(q)) return null;
   const cmd = q.find(c => Array.isArray(c) && c[0] === "install");
   if (!cmd) return null;
@@ -362,10 +369,10 @@ export type Carrier = "site" | "extension";
 /** The mark on `<html>` naming the carrier that installed Clax. Both worlds
  * see it: the page's and an extension's content script share the DOM, not
  * their globals. */
-export const CARRIER_ATTR = "data-clax-installed";
+export const CARRIER_ATTR = "data-feedback-installed";
 /** Dispatched on the document when the site installs, so an extension's
  * overlay already there removes itself: the site's install wins. */
-export const SITE_INSTALLED = "clax:site-installed";
+export const SITE_INSTALLED = "feedback:site-installed";
 
 /** Whether `carrier` may install on `doc`, and marks it when it may: the
  * site always may (an extension's overlay is told to go); the extension may

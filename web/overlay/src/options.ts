@@ -9,6 +9,20 @@ import type { ReportContext } from "../../sdk/src/types";
  * overlay's own. */
 export type HostContext = Partial<ReportContext>;
 
+/** The dialog's copy, from the container (`copy.*` in clax.config.json). */
+export interface DialogCopy {
+  /** The heading (default "Send feedback"). */
+  title?: string;
+  /** The opening paragraph: whose operators read it, where it goes, with which identity, what is always sent. None by default. */
+  intro?: string;
+  /** The line by Send on how long reports are kept. None by default. */
+  retention?: string;
+  /** The reports link's or button's label (default "Your reports"). */
+  reportsLabel?: string;
+  /** Where the reports link goes (http or https, a new tab); none: the reports open in the overlay's own view. */
+  reportsUrl?: string;
+}
+
 /** A value, or a function that gives it (perhaps later). */
 export type Given<T> = T | (() => T | Promise<T>);
 
@@ -77,8 +91,10 @@ export interface OverlayOptions {
    * `dialog`, `drawer`, `sheet`, `window`, `extension`). Default: the first
    * one the plugins give. */
   presentation?: string;
-  /** `--clax-*` custom properties: the site's look, over the plugins' themes. */
+  /** `--feedback-*` (or older `--clax-*`) custom properties: the site's look, over the plugins' themes. */
   theme?: Record<string, string>;
+  /** The dialog's words that name the host (the container's `copy.*`): the overlay's own code names no one. */
+  copy?: DialogCopy;
   /** Filters and attachments turned on or off (by id), over each plugin's own default. */
   defaults?: Record<string, boolean>;
 }

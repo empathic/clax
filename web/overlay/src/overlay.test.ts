@@ -11,7 +11,7 @@ import type { CaptureDeps } from "./capture";
 import { PAGE_ANCHOR, POLL_MS, type ReporterApi, Session, type Timers } from "./model";
 import Overlay from "./Overlay.svelte";
 import { PluginHost } from "../../sdk/src/plugin";
-import { classic } from "./plugins";
+import { classic, presentations } from "./plugins";
 import type { Picked, Picker } from "./picker";
 
 const anchor: Anchor = { kind: "element", selector: "#total", quote: "Total: $12", prefix: "Items: 3", suffix: null, html_hash: "h:4f2a", rect: { x: 10, y: 20, w: 100, h: 20, scrollX: 0, scrollY: 40, viewportW: 1024 }, custom_name: null, file: "index.html", label: "Total: $12", name: "Total" };
@@ -686,7 +686,7 @@ describe("the overlay", () => {
     type("Keep me");
     click(button("Send"));
     await settle();
-    expect(q("[role=alert]")?.textContent).toMatch(/Not sent: Clax could not be reached/);
+    expect(q("[role=alert]")?.textContent).toMatch(/Not sent: The feedback service could not be reached/);
     expect(q<HTMLTextAreaElement>(".composer textarea")?.value).toBe("Keep me");
     expect(button("Send")?.disabled).toBe(false);
   });
@@ -908,5 +908,104 @@ describe("the overlay", () => {
       document.removeEventListener("mousedown", page, true);
       outside.remove();
     }
+  });
+});
+
+describe("the dialog (Addendum 10: Changeling's Send feedback as the reference) and white label (Addendum 11)", () => {
+  // Changeling's own words, as its container gives them: the code names no one.
+  const copy = {
+    title: "Send feedback",
+    intro: "Tell Changeling’s operators what went wrong or what you would like. Your report goes to Changeling’s feedback queue, where the operators and their agents read and answer it.",
+    retention: "Reports are kept until an operator deletes them.",
+    reportsLabel: "Your reports",
+    reportsUrl: "https://changeling.example/feedback",
+  };
+  const open = async (over: Record<string, unknown> = {}) => {
+    view.unmount();
+    // The host's own data (its flags) is the host's words: this one names no vendor, so what is left is the overlay's.
+    const neutral = new Session({ context: () => ({ release: { version: "0.6.0" }, flags: { beta: true } }), recorder: { lines: () => lines, count: () => 1, stop: () => {} }, now: () => when }, window);
+    const r = renderComponent(Overlay as never, { props: props({ session: neutral, launcher: false, presentation: "dialog", plugins: new PluginHost([...classic(), presentations()]), copy, ...over }) as never, target: host });
+    flushSync();
+    (r.component as unknown as { report(o?: { mode?: string }): void }).report({ mode: "note" });
+    await settle();
+    return r;
+  };
+  /** Every string a reader or a curious user meets: text, attributes (names and values), and accessible names. */
+  const everything = (root: Element) => {
+    const out: string[] = [root.textContent ?? ""];
+    for (const el of [root, ...root.querySelectorAll("*")]) {
+      out.push(el.localName);
+      for (const a of el.attributes) out.push(a.name, a.value);
+      if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) out.push(el.placeholder, el.value);
+    }
+    return out;
+  };
+
+  it("lays out the reference dialog: heading, intro, What happened?, Attach, What will be sent, retention, Cancel / Send feedback", async () => {
+    const r = await open();
+    try {
+      const dialog = host.querySelector<HTMLElement>('[role="dialog"]')!;
+      expect(dialog.getAttribute("aria-modal")).toBe("true");
+      expect(host.querySelector(`#${dialog.getAttribute("aria-labelledby")}`)?.textContent).toBe("Send feedback");
+      expect(host.querySelector(`#${dialog.getAttribute("aria-describedby")}`)?.textContent).toBe(copy.intro);
+      expect([...host.querySelectorAll(".head button, .head a")].map(b => b.textContent?.trim())).toEqual(["Close · Esc", "Your reports ↗"]);
+      const yours = host.querySelector<HTMLAnchorElement>(".head a")!;
+      expect([yours.href, yours.target, yours.rel]).toEqual([copy.reportsUrl, "_blank", "noreferrer"]);
+      const note = host.querySelector<HTMLTextAreaElement>("#cx-note")!;
+      expect(host.querySelector(`label[for="cx-note"]`)?.textContent).toBe("What happened?");
+      expect(note.placeholder).toBe("What you did, what you expected, what you saw");
+      expect(host.querySelector("fieldset.attach legend")?.textContent).toBe("Attach");
+      expect(host.querySelector("fieldset.attach")?.textContent).toMatch(/A screenshot of this page.*Pick an element on the page.*without one, the report is about the whole page/s);
+      const sendBtn = [...host.querySelectorAll<HTMLButtonElement>(".actions button")];
+      expect(sendBtn.map(b => b.textContent)).toEqual(["Cancel", "Send feedback"]);
+      expect(sendBtn[1].disabled).toBe(true);
+      expect(host.querySelector(".retention")?.textContent).toBe(copy.retention);
+      note.value = "The total is wrong";
+      note.dispatchEvent(new Event("input", { bubbles: true }));
+      await settle();
+      expect(sendBtn[1].disabled).toBe(false);
+      const sent = host.querySelector<HTMLElement>('section[aria-labelledby="cx-sending-title"]')!;
+      expect(sent.querySelector("h3")?.textContent).toBe("What will be sent");
+      const rows = Object.fromEntries([...sent.querySelectorAll("dt")].map(dt => [dt.textContent, dt.nextElementSibling?.textContent]));
+      expect(rows).toMatchObject({ Note: "The total is wrong", Page: location.href.replace(/#.*$/, ""), Version: "0.6.0", Screenshot: "Not attached", Element: "None: the whole page" });
+    } finally { r.unmount(); }
+  });
+
+  it("without a reports URL, opens Your reports in its own view; without copy, says nothing of whose it is", async () => {
+    const r = await open({ copy: {} });
+    try {
+      expect(host.querySelector(".head a")).toBeNull();
+      expect(host.querySelector<HTMLButtonElement>(".head .yours-btn")?.textContent).toBe("Your reports");
+      expect(host.querySelector(".intro")).toBeNull();
+      expect(host.querySelector('[role="dialog"]')?.hasAttribute("aria-describedby")).toBe(false);
+      expect(host.querySelector(".retention")).toBeNull();
+    } finally { r.unmount(); }
+  });
+
+  it("never names Clax: no 'clax' in its text, element names, attributes or accessible names, in the dialog, its notices, or Your reports", async () => {
+    const r = await open();
+    try {
+      const comp = r.component as unknown as { showReports(): void };
+      const note = host.querySelector<HTMLTextAreaElement>("#cx-note")!;
+      note.value = "The total is wrong";
+      note.dispatchEvent(new Event("input", { bubbles: true }));
+      await settle();
+      const seen = everything(host);
+      host.querySelector<HTMLFormElement>(".composer")!.requestSubmit();
+      await settle();
+      seen.push(...everything(host));
+      comp.showReports();
+      await settle();
+      seen.push(...everything(host));
+      // A failure's words too.
+      client.fileReport = async () => { throw Object.assign(new Error("offline"), { code: "network" }); };
+      (r.component as unknown as { report(o?: { mode?: string }): void }).report({ mode: "note" });
+      await settle();
+      const n = host.querySelector<HTMLTextAreaElement>("#cx-note");
+      if (n) { n.value = "again"; n.dispatchEvent(new Event("input", { bubbles: true })); await settle(); host.querySelector<HTMLFormElement>(".composer")?.requestSubmit(); await settle(); }
+      seen.push(...everything(host));
+      expect(seen.join("\n")).toMatch(/Send feedback/);
+      expect(seen.filter(s => /clax/i.test(s))).toEqual([]);
+    } finally { r.unmount(); }
   });
 });

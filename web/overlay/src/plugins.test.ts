@@ -197,7 +197,7 @@ describe("presentations", () => {
     onPick(pickOf());
     await settle();
     const frame = q('.frame[role="dialog"]')!;
-    const send = button("Send")!;
+    const send = button("Send feedback")!;
     const close = button("Close · Esc")!;
     type("x");
     send.focus();
@@ -225,7 +225,8 @@ describe("presentations", () => {
     expect(renders).toBe(0);
     expect(root.querySelector(".composer .quote")?.textContent).toBe("What the page shows");
     type("Started with words", root);
-    click(button("Add a screenshot", root));
+    // The reference dialog's Attach: "A screenshot of this page" (Addendum 10).
+    click(button("A screenshot of this page", root));
     expect(root.querySelector(".modebar")).not.toBeNull();
     // Screen: the visible page, into this draft.
     click(root.querySelector('.modebar button[aria-keyshortcuts="S"]'));
@@ -233,7 +234,7 @@ describe("presentations", () => {
     expect(renders).toBe(1);
     expect(root.querySelector<HTMLTextAreaElement>(".composer textarea")?.value).toBe("Started with words");
     expect(root.querySelector(".composer .annotator img")?.getAttribute("src")).toBe("blob:clip");
-    click(button("Send", root));
+    click(button("Send feedback", root));
     await settle();
     expect(filed.map(f => [f.body, !!f.clip])).toEqual([["Started with words", true]]);
     r.unmount();
@@ -274,7 +275,7 @@ describe("presentations", () => {
     const there = w.document.querySelector(".cx.window")!;
     expect(q(".composer h2", there)?.textContent).toBe("Send feedback");
     type("From the window", there);
-    click(button("Send", there));
+    click(button("Send feedback", there));
     await settle();
     expect(filed.map(r => r.body)).toEqual(["From the window"]);
     expect(closed).toBe(1);

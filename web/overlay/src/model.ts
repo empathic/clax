@@ -365,7 +365,7 @@ export function contextPreview(ctx: ReportContext): string {
 /** A failure as the reporter reads it. */
 export function failureText(e: unknown): string {
   const code = (e as { code?: unknown } | null)?.code;
-  if (code === "network") return "Clax could not be reached. Try again.";
+  if (code === "network") return "The feedback service could not be reached. Try again.";
   if (code === "wrong_origin") return "This page may not report into this queue.";
   if (code === "not_a_member") return "The queue was not found.";
   if (code === "not_fix_proposed") return "No fix is waiting for your check any more.";

@@ -190,6 +190,42 @@
         }
       }
     },
+    "copy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "type": "string",
+          "maxLength": 80,
+          "description": "The dialog's heading.",
+          "default": "Send feedback"
+        },
+        "intro": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "The dialog's opening paragraph: whose operators read it, where it goes, which identity it is sent with, what is always sent.",
+          "default": ""
+        },
+        "retention": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "The line by the Send button on how long reports are kept.",
+          "default": ""
+        },
+        "reports-label": {
+          "type": "string",
+          "maxLength": 80,
+          "description": "The label of the link or button to the reporter's reports.",
+          "default": "Your reports"
+        },
+        "reports-url": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Where the reports link goes (an https URL, opened in a new tab); empty: the reports open in the dialog's own view.",
+          "default": ""
+        }
+      }
+    },
     "theme": {
       "type": "object",
       "propertyNames": {
@@ -198,7 +234,7 @@
       "additionalProperties": {
         "type": "string"
       },
-      "description": "--clax-* custom properties: the site's look.",
+      "description": "--feedback-* (or --clax-*) custom properties: the site's look.",
       "default": {}
     },
     "overrides": {

@@ -17,6 +17,7 @@
 import { mount, unmount } from "svelte";
 import { OVERLAY_TAG } from "../../bridge/src/anchor";
 import { addSheet } from "../../bridge/src/sheet";
+import { TOKEN_NAME } from "../../sdk/src/config";
 import { type Recorder, installDiagnostics } from "../../sdk/src/diagnostics";
 import { forgetReporter as forgetKept } from "../../sdk/src/keystore";
 import { ReporterClient, type ReporterAuth } from "../../sdk/src/reporter";
@@ -109,7 +110,7 @@ export const diagnostics = {
 /** `theme`'s `--clax-*` entries; anything else is left out. */
 function themeOf(theme: Record<string, string> | undefined): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(theme ?? {})) if (/^--clax-[a-z0-9-]+$/.test(k) && typeof v === "string") out[k] = v;
+  for (const [k, v] of Object.entries(theme ?? {})) if (TOKEN_NAME.test(k) && typeof v === "string") out[k] = v;
   return out;
 }
 
@@ -166,7 +167,7 @@ export function mountOverlay(opts: OverlayOptions, pluginList: readonly ClaxPlug
       canFile: opts.canFile ?? true,
       onBadge: (n: number) => { lastBadge = n; emit("badge", n); },
       onFiled: (r: Report) => emit("filed", r),
-      plugins, presentation: opts.presentation, css, defaults: opts.defaults ?? {},
+      plugins, presentation: opts.presentation, css, defaults: opts.defaults ?? {}, copy: opts.copy ?? {},
     },
   }) as unknown as Mounted;
   let open = true;

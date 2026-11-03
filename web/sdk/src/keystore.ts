@@ -28,7 +28,8 @@ export interface ReporterStore {
   forget(): Promise<void>;
 }
 
-const DB = "clax-reporter";
+// Vendor-neutral: a host page's storage never names Clax (white label). A key kept under the old name is not read; the reporter gets a new one.
+const DB = "feedback-reporter";
 const STORE = "reporters";
 
 /** SHA-256 of `s`, in lowercase hex: a user's ID is never stored as given. */

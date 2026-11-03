@@ -96,7 +96,7 @@ describe("the viewer's override", () => {
     expect(readOverride(document.cookie, location.port)).toEqual({ presentation: "sheet", "attachments.logs": true });
     writeOverride(document, null);
     expect(readOverride(document.cookie, location.port)).toBeUndefined();
-    expect(readOverride("clax_override=%7Bbroken")).toBeUndefined();
+    expect(readOverride("feedback_override=%7Bbroken")).toBeUndefined();
   });
 
   it.each([
@@ -132,9 +132,9 @@ describe("pageHook", () => {
 
 describe("the override cookie", () => {
   it("is its port's own: a site on 7700 and Clax on 7480 keep separate overrides", () => {
-    expect(overrideCookie("7700")).toBe("clax_override_7700");
-    expect(overrideCookie("")).toBe("clax_override");
-    const both = `clax_override_7700=${encodeURIComponent('{"presentation":"sheet"}')}; clax_override_7480=${encodeURIComponent('{"presentation":"dialog"}')}`;
+    expect(overrideCookie("7700")).toBe("feedback_override_7700");
+    expect(overrideCookie("")).toBe("feedback_override");
+    const both = `feedback_override_7700=${encodeURIComponent('{"presentation":"sheet"}')}; feedback_override_7480=${encodeURIComponent('{"presentation":"dialog"}')}`;
     expect(readOverride(both, "7700")).toEqual({ presentation: "sheet" });
     expect(readOverride(both, "7480")).toEqual({ presentation: "dialog" });
     expect(readOverride(both)).toBeUndefined();
