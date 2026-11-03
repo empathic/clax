@@ -87,6 +87,13 @@ export interface Report {
   comments: ReportComment[];
   claim: ReportClaim | null;
   created_at: string;
+  /**
+   * Who filed it, in a reporter's answers under `reporters_see: "all"`: the
+   * name the app gave that reporter (null: none), and whether it is the
+   * reader's own. Absent under `"own"` and in a member's answers. Another
+   * reporter's report has `reporter_id` and `metadata` null.
+   */
+  submitter?: Submitter;
   /** What the reporter's browser said at capture; absent when none was
    * sent, and on a report served to a reporter that did not file it. */
   context?: ReportContext;
@@ -242,6 +249,18 @@ export interface Badge {
   report_ids: string[];
 }
 
+/** Who filed a report, as another reporter of its queue may see it. */
+export interface Submitter {
+  name: string | null;
+  you: boolean;
+}
+
+/** `POST /api/queues/{qid}/reporter/view-link`'s answer: a path on the Clax instance, single-use, until `expires_at`. */
+export interface ViewLink {
+  path: string;
+  expires_at: string;
+}
+
 /** `Lease`: what a claim or a renewal answers. */
 export interface Lease {
   lease_id: string;
@@ -259,6 +278,8 @@ export interface ReportPage {
 /** `POST /api/queues/{qid}/reporter-tokens`'s body. */
 export interface ReporterTokenRequest {
   reporter_id: string;
+  /** The name the queue's other reporters see for this one under `reporters_see: "all"`: a display name or handle, never an email; 1 to 120 characters on one line. */
+  reporter_name?: string;
   origin: string;
   /** The reporter key's 32 public bytes in unpadded base64url. */
   public_key: string;

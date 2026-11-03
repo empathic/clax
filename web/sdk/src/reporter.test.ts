@@ -70,6 +70,20 @@ describe("ReporterClient", () => {
     expect(s.auths).toEqual([signer.publicKey]);
   });
 
+  it("asks for a view link, signed, on a report when given, as a URL on the instance", async () => {
+    const s = setup(() => json(200, { path: "/reporter/q%201/enter?code=cxrc_x", expires_at: "2026-10-27T12:01:00Z" }));
+    const { signer, client } = await s.make();
+    expect(await client.viewLink("t 1")).toBe("https://clax.example:8443/reporter/q%201/enter?code=cxrc_x");
+    expect(await client.viewLink()).toBe("https://clax.example:8443/reporter/q%201/enter?code=cxrc_x");
+    const [on, plain] = s.inst.sent;
+    expect(on.method).toBe("POST");
+    expect(on.url.href).toBe("https://clax.example:8443/api/queues/q%201/reporter/view-link");
+    expect(on.headers["content-type"]).toBe("application/json");
+    expect(JSON.parse(new TextDecoder().decode(on.body))).toEqual({ report_id: "t 1" });
+    expect(JSON.parse(new TextDecoder().decode(plain.body))).toEqual({});
+    expect(await verifies(signer, on)).toBe(true);
+  });
+
   it("asks for a new token from 60 s before expiry, not sooner", async () => {
     const s = setup();
     const { client } = await s.make();
