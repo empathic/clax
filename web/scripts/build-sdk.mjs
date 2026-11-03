@@ -8,6 +8,8 @@
 //                                     (overlay-component-css.mjs) as in
 //                                     /_clax/overlay.js
 //   "./service"  sdk/src/service.ts   the service client, for a backend
+//   "./audit"    sdk/src/audit.ts     the audit trail's reader, for the
+//                                     instance's owner and their people
 //
 // Each entry is an ES module; code two entries share is one chunk under
 // chunks/, so a class such as ClaxError is the same in every entry. Nothing
@@ -48,6 +50,7 @@ export const ENTRIES = [
   { path: ".", name: "index", src: "sdk/src/index.ts" },
   { path: "./overlay", name: "overlay", src: "overlay/src/main.ts" },
   { path: "./service", name: "service", src: "sdk/src/service.ts" },
+  { path: "./audit", name: "audit", src: "sdk/src/audit.ts" },
 ];
 
 const web = resolve(dirname(fileURLToPath(import.meta.url)), "..");

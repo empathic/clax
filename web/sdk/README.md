@@ -9,6 +9,7 @@ instance, and read the replies.
 | `@empathic/clax-sdk` | `ReporterClient`, `ClaxError` and the queue routes' types | the page |
 | `@empathic/clax-sdk/overlay` | `overlay()`: a Report button, comment mode to point at what the report is about, and "Your reports" with their replies | the page |
 | `@empathic/clax-sdk/service` | `ServiceClient`, which mints reporter tokens with the queue's service grant | your backend only: it holds the grant |
+| `@empathic/clax-sdk/audit` | `AuditClient`, which reads the instance's audit trail: a page, one event, or new events as they are recorded | the owner's own tools (the daemon token) or the instance's own pages (a browser session); agents and grants are refused |
 
 Each entry is an ES module with its TypeScript declarations. The package
 has no dependencies: Svelte and the overlay's other packages are bundled.
@@ -69,6 +70,22 @@ const service = new ServiceClient({ instance: "https://clax.example.com", queue:
 // For the signed-in user, from the page's origin, for the key the page sent:
 const token = await service.mintReporterToken({ reporter_id: user.id, origin: "https://app.example.com", public_key: publicKey });
 ```
+
+## The audit trail
+
+```ts
+import { AuditClient } from "@empathic/clax-sdk/audit";
+
+// The owner by hand: the daemon token (without one, the browser's session).
+const audit = new AuditClient({ instance: "http://localhost:7480", token: process.env.CLAX_TOKEN });
+const { events, next_cursor } = await audit.list({ kind: "bot.*", from: "2026-11-01" });
+const detail = await audit.event(events[0].seq); // with its stored body
+for await (const e of audit.follow({ group: "changes" })) console.log(e.seq, e.kind, e.summary);
+```
+
+Each reader sees its own scope: the owner and admins every event, a
+connected person the events theirs to read. An agent's or a grant's request
+is refused (403 `not_for_agents`, `forbidden`).
 
 ## License
 

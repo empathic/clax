@@ -9,6 +9,7 @@
 // as text. Keys are write-only: no response carries one, only its
 // `KeyInfo`. Credits are integer milli-credits, money integer micro-USD,
 // margins integer basis points (§7.1).
+import type { AuditEventDetail, AuditFilter, AuditPage } from "../../../sdk/src/audit";
 import { getToken } from "../api";
 import { Refused } from "../held";
 
@@ -258,22 +259,11 @@ export type Settings = {
 
 // ---- audit ----
 
-/** Who acted, as the audit route resolves it: a person key (`p_…`, or
- * `*owner` named as the owner), `agent:claxbot` (ClaxBot), another agent's
- * handle, or `*system` (named "Clax"), each with its name. `on_behalf_of`
- * and a key's `set_by` are resolved the same way. */
-export type AuditActor = { id: string; name: string | null };
-export type AuditEvent = {
-  seq: number; at: string; actor: AuditActor; on_behalf_of: AuditActor | null;
-  kind: string; summary: string; artifact_id: string | null; run: string | null;
-};
+// The audit route's types are the API contract's (web/sdk/src/audit.ts).
+// A key's `set_by` names its setter as an audit actor does.
+export type { AuditActor, AuditEvent, AuditFilter, AuditGroup, AuditPage } from "../../../sdk/src/audit";
 /** `GET /api/audit/<seq>`: the event with its stored body. */
-export type AuditDetail = AuditEvent & { body: unknown };
-export type AuditGroup = "views" | "changes" | "bot" | "credits" | "admin";
-/** `actor`: `claxbot` (ClaxBot acting for anyone, the store's `agent:claxbot`) or a person key (that person and their agents, ClaxBot left out). */
-export type AuditFilter = { q?: string; actor?: string; group?: AuditGroup; artifact?: string; from?: string; to?: string; cursor?: number };
-/** `next_cursor`: the `seq` the next page starts below, when there is one. */
-export type AuditPage = { events: AuditEvent[]; next_cursor: number | null };
+export type AuditDetail = AuditEventDetail;
 
 // ---- calls ----
 

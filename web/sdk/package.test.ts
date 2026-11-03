@@ -31,6 +31,7 @@ const RUNTIME: Record<string, string[]> = {
   ".": ["ClaxError", "ReporterClient"],
   "./overlay": ["CONTEXT_TIMEOUT_MS", "diagnostics", "forgetReporter", "overlay"],
   "./service": ["ServiceClient"],
+  "./audit": ["AuditClient", "auditQuery", "newer"],
 };
 
 let manifest: Manifest;
@@ -77,9 +78,9 @@ describe("the SDK package", () => {
     expect(manifest.type).toBe("module");
     expect(manifest.sideEffects).toBe(false);
     for (const k of ["dependencies", "peerDependencies", "optionalDependencies", "bundleDependencies"]) expect(manifest).not.toHaveProperty(k);
-    expect(Object.keys(manifest.exports).sort()).toEqual([".", "./overlay", "./package.json", "./service"]);
+    expect(Object.keys(manifest.exports).sort()).toEqual([".", "./audit", "./overlay", "./package.json", "./service"]);
     expect(manifest.types).toBe("./types/sdk/src/index.d.ts");
-    expect(manifest.typesVersions).toEqual({ "*": { overlay: ["./types/overlay/src/main.d.ts"], service: ["./types/sdk/src/service.d.ts"] } });
+    expect(manifest.typesVersions).toEqual({ "*": { overlay: ["./types/overlay/src/main.d.ts"], service: ["./types/sdk/src/service.d.ts"], audit: ["./types/sdk/src/audit.d.ts"] } });
     for (const k of Object.keys(RUNTIME)) {
       const e = manifest.exports[k];
       if (typeof e === "string") throw new Error(`${k} has no conditions`);
@@ -157,6 +158,7 @@ console.log(JSON.stringify(out));
       writeFileSync(file, `import { ClaxError, ReporterClient, type NewReport, type Report, type ReporterAuth, type ReporterToken } from "@empathic/clax-sdk";
 import { overlay, type OverlayHandle, type OverlayOptions } from "@empathic/clax-sdk/overlay";
 import { ServiceClient, type ServiceOptions } from "@empathic/clax-sdk/service";
+import { AuditClient, type AuditEvent, type AuditPage } from "@empathic/clax-sdk/audit";
 
 const auth: ReporterAuth = async (publicKey: string): Promise<ReporterToken> => ({ token: publicKey, expires_at: "" });
 const opts: OverlayOptions = { instance: "https://clax.example", queue: "q1", auth };
@@ -168,6 +170,9 @@ export const filed: Promise<Report> = client.fileReport(report);
 export const status = (e: unknown): number | null => (e instanceof ClaxError ? e.status : null);
 const service: ServiceOptions = { instance: "https://clax.example", queue: "q1", token: "cxq_", privateKey: "" };
 export const minted: Promise<ReporterToken> = new ServiceClient(service).mintReporterToken({ reporter_id: "u1", origin: "https://app.example", public_key: "" });
+const audit = new AuditClient({ instance: "http://localhost:7480", token: "daemon-token" });
+export const page: Promise<AuditPage> = audit.list({ kind: "bot.*", from: "2026-11-01" });
+export const followed: AsyncGenerator<AuditEvent> = audit.follow({ group: "changes" });
 // @ts-expect-error: the overlay's options need an auth.
 overlay({ instance: "https://clax.example", queue: "q1" });
 `);

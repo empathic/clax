@@ -62,6 +62,7 @@ describe("keepDeclarations", () => {
     "sdk/src/reporter.d.ts": `import type { Report } from "./types";\nexport declare class ReporterClient { r: Report; }\n`,
     "sdk/src/types.d.ts": "export interface Report { id: string }\n",
     "sdk/src/service.d.ts": "export declare class ServiceClient {}\n",
+    "sdk/src/audit.d.ts": "export declare class AuditClient {}\n",
     "overlay/src/main.d.ts": `export type { OverlayOptions } from "./options";\nexport declare function overlay(o: import("./options").OverlayOptions): void;\n`,
     "overlay/src/options.d.ts": `import type { ReporterAuth } from "../../sdk/src/reporter";\nexport interface OverlayOptions { auth: ReporterAuth }\n`,
   };
