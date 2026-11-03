@@ -1307,6 +1307,7 @@ impl TestServer {
             stream: Box::pin(stream),
             buf: String::new(),
             keep_ready: false,
+            cause: None,
         }
     }
 }

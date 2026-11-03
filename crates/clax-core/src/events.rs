@@ -381,6 +381,21 @@ pub type Tap = Box<dyn Fn(&Event) + Send + Sync>;
 pub struct Stamped {
     pub id: u64,
     pub event: Event,
+    /// The id of the request the event was published because of
+    /// ([`crate::cause`]); `None` when it was published outside any.
+    pub cause: Option<Arc<str>>,
+}
+
+impl Stamped {
+    /// The event as its `/api/events` JSON, with `cause` beside its fields
+    /// when it has one.
+    pub fn json(&self) -> String {
+        let mut v = serde_json::to_value(&self.event).expect("events serialise");
+        if let (Some(cause), Some(o)) = (&self.cause, v.as_object_mut()) {
+            o.insert("cause".into(), serde_json::Value::String(cause.to_string()));
+        }
+        v.to_string()
+    }
 }
 
 /// What a subscriber resuming after event `after` gets: the retained events
@@ -446,6 +461,7 @@ impl EventBus {
         let stamped = Stamped {
             id: ring.last,
             event,
+            cause: crate::cause::current(),
         };
         if ring.recent.len() == EVENT_BUS_CAPACITY {
             ring.recent.pop_front();
@@ -554,6 +570,19 @@ mod tests {
             artifact_id: "a".into(),
         });
         assert_eq!(*seen.lock().unwrap(), vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn events_carry_the_cause_they_were_published_under() {
+        let bus = EventBus::new();
+        let del = || Event::ArtifactDeleted {
+            artifact_id: "a".into(),
+        };
+        crate::cause::with("req-1".into(), || bus.publish(del()));
+        bus.publish(del());
+        let r = bus.resume(Some(0));
+        let causes: Vec<_> = r.replay.iter().map(|s| s.cause.as_deref()).collect();
+        assert_eq!(causes, vec![Some("req-1"), None]);
     }
 
     #[test]

@@ -7,6 +7,8 @@ pub struct EventReader {
     pub(crate) buf: String,
     /// Whether `ready` events are returned rather than skipped.
     pub(crate) keep_ready: bool,
+    /// The `cause` of the event [`EventReader::next`] returned last.
+    pub(crate) cause: Option<String>,
 }
 
 impl EventReader {
@@ -21,12 +23,22 @@ impl EventReader {
             stream: Box::pin(stream),
             buf: String::new(),
             keep_ready: true,
+            cause: None,
         }
+    }
+
+    /// The `cause` of the event [`EventReader::next`] (or
+    /// [`EventReader::next_named`]) returned last: the id of the request
+    /// that published it (`clax_http::request_id`), if any.
+    pub fn cause(&self) -> Option<&str> {
+        self.cause.as_deref()
     }
 
     /// The next event other than keep-alive comments (and `ready`, unless
     /// made by [`EventReader::from_response`]), as (name, data); panics
-    /// when none comes within the [`HANG`](crate::HANG) guard.
+    /// when none comes within the [`HANG`](crate::HANG) guard. The data
+    /// comes without its `cause`, which [`EventReader::cause`] reads, so a
+    /// test may compare an event whole.
     pub async fn next(&mut self) -> (String, serde_json::Value) {
         use futures::StreamExt;
         loop {
@@ -48,10 +60,13 @@ impl EventReader {
                 if name == "ready" && !self.keep_ready {
                     continue;
                 }
-                return (
-                    name,
-                    serde_json::from_str(data).expect("event data is JSON"),
-                );
+                let mut data: serde_json::Value =
+                    serde_json::from_str(data).expect("event data is JSON");
+                self.cause = data
+                    .as_object_mut()
+                    .and_then(|o| o.remove("cause"))
+                    .and_then(|c| c.as_str().map(str::to_owned));
+                return (name, data);
             }
             let chunk = tokio::time::timeout(crate::HANG, self.stream.next())
                 .await

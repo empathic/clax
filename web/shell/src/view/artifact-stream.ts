@@ -5,7 +5,7 @@
 // holds, and the view handles the full events they amount to. It also starts
 // the owner's question surfaces (artifact-questions.ts, a module of their own).
 import { ApiError, getArtifact, getToken, onToken } from "../api";
-import type { ArtifactEvent } from "../events";
+import { type ArtifactEvent, noteEvent } from "../events";
 import { nav } from "../nav";
 import { type StreamEvent, pageStream } from "../stream";
 import { type FeedbackState, type Thread, getViewer, renamedViewer, upsert } from "../threads";
@@ -170,6 +170,7 @@ export class ArtifactStream {
  * delta set after its request started. */
 export function onArtifactEvent(c: ArtifactController, e: ArtifactEvent): void {
   if (c.disposed) return;
+  noteEvent(e);
   c.host?.onEvent(e);
   if (e.type === "version" && e.by_page && e.n > c.shown()) {
     // The page republished itself (artifact.publish): every unpinned view

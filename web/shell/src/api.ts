@@ -1,3 +1,4 @@
+import { causedFetch } from "./events";
 import type { Working } from "./view/working-model";
 
 export type Artifact = {
@@ -165,10 +166,10 @@ export function getToken(): Promise<string | null> {
   return tokenPromise;
 }
 export async function patchArtifact(id: string, patch: Partial<Pick<Artifact, "title" | "description" | "icon" | "pinned">>, token: string): Promise<Artifact> {
-  return (await json<{ artifact: Artifact }>(await fetch(`/api/artifacts/${id}`, { method: "PATCH", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify(patch) }))).artifact;
+  return (await json<{ artifact: Artifact }>(await causedFetch("patch artifact", `/api/artifacts/${id}`, { method: "PATCH", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify(patch) }))).artifact;
 }
 export async function deleteArtifact(id: string, token: string): Promise<void> {
-  await json<unknown>(await fetch(`/api/artifacts/${id}`, { method: "DELETE", headers: { authorization: `Bearer ${token}` } }).then(r => (r.status === 204 ? new Response("{}") : r)));
+  await json<unknown>(await causedFetch("delete artifact", `/api/artifacts/${id}`, { method: "DELETE", headers: { authorization: `Bearer ${token}` } }).then(r => (r.status === 204 ? new Response("{}") : r)));
 }
 
 export type SampleLimits = { maxPromptBytes: number; images?: { maxCount: number; maxInputBytes: number; mediaTypes: string[] }; tools?: { maxCount: number } };

@@ -28,6 +28,7 @@ impl AppState {
         T: Send + 'static,
         F: FnOnce(&Store) -> clax_core::Result<T> + Send + 'static,
     {
+        let f = carry(f);
         self.store.call(f).await.map_err(ApiError::from)
     }
 
@@ -44,6 +45,16 @@ impl AppState {
         F: FnOnce(std::sync::Arc<Store>) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = clax_core::Result<T>> + clax_rt::SendOnNative + 'static,
     {
+        let cause = clax_core::cause::current();
+        let f = move |s| {
+            let fut = f(s);
+            async move {
+                match cause {
+                    Some(c) => clax_core::cause::scope(c, fut).await,
+                    None => fut.await,
+                }
+            }
+        };
         clax_rt::sendable(self.store.call_async(f))
             .await
             .map_err(ApiError::from)
@@ -57,6 +68,21 @@ impl AppState {
         T: Send + 'static,
         F: FnOnce(&Store) -> clax_core::Result<T> + Send + 'static,
     {
+        let f = carry(f);
         self.store.call_bulk(f).await.map_err(ApiError::from)
+    }
+}
+
+/// `f`, run under the cause of the code calling `carry`
+/// ([`clax_core::cause`]): a store job runs on a store thread, outside the
+/// request's task, and the events it publishes still name the request.
+fn carry<T, F>(f: F) -> impl FnOnce(&Store) -> clax_core::Result<T> + Send + 'static
+where
+    F: FnOnce(&Store) -> clax_core::Result<T> + Send + 'static,
+{
+    let cause = clax_core::cause::current();
+    move |s| match cause {
+        Some(c) => clax_core::cause::with(c, || f(s)),
+        None => f(s),
     }
 }
