@@ -432,6 +432,104 @@ pub fn snippet(s: &str, max: usize) -> String {
     format!("{cut}…")
 }
 
+/// A page the run fetched, as the reply cites it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Source {
+    /// The page's first `# ` heading, as page text (unescaped), if any.
+    pub title: Option<String>,
+    /// The page's final URL, or the one asked for when that is not
+    /// `http(s)`.
+    pub url: String,
+}
+
+/// The longest title a Sources list shows, in characters.
+const TITLE_CHARS: usize = 200;
+
+fn is_http(u: &str) -> bool {
+    let u = u.trim_start().to_ascii_lowercase();
+    u.starts_with("http://") || u.starts_with("https://")
+}
+
+/// The first Markdown `# ` heading of `text`, whitespace collapsed.
+fn heading(text: &str) -> Option<String> {
+    let line = text.lines().find_map(|l| l.strip_prefix("# "))?;
+    let t: String = line.split_whitespace().collect::<Vec<_>>().join(" ");
+    let t: String = t.chars().take(TITLE_CHARS).collect();
+    (!t.is_empty()).then_some(t)
+}
+
+/// The pages `pages` stored, in the order given, as [`Source`]s. A page
+/// whose final URL and requested URL are both not `http(s)` is left out.
+#[must_use]
+pub fn sources(pages: &[clax_store::bot_web::WebPageRow]) -> Vec<Source> {
+    pages
+        .iter()
+        .filter_map(|p| {
+            let url = [&p.final_url, &p.url].into_iter().find(|u| is_http(u))?;
+            Some(Source {
+                title: heading(&p.text),
+                url: url.trim().to_string(),
+            })
+        })
+        .collect()
+}
+
+/// `s` as Markdown link text that shows `s` and nothing else: every ASCII
+/// punctuation character is backslash-escaped (which also keeps a bare URL
+/// in it from becoming a link), and line breaks and control characters
+/// become spaces.
+fn link_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_control() {
+            out.push(' ');
+        } else {
+            if c.is_ascii_punctuation() {
+                out.push('\\');
+            }
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// `u` as a Markdown link destination: the characters that end or open it
+/// are percent-encoded.
+fn link_target(u: &str) -> String {
+    let mut out = String::with_capacity(u.len());
+    for c in u.chars() {
+        if c.is_whitespace() || c.is_control() || "()<>\\[]".contains(c) {
+            let mut b = [0u8; 4];
+            for byte in c.encode_utf8(&mut b).bytes() {
+                out.push_str(&format!("%{byte:02X}"));
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The Sources list a reply ends with (spec §8): `None` without pages,
+/// otherwise `"\n\nSources:\n- [<title or final URL>](<final URL>)"` for
+/// each page in fetch order. A title is the page's own text, so it is
+/// rendered as plain text and cannot change the link's target; the
+/// target is the final URL when that is `http(s)`.
+#[must_use]
+pub fn sources_markdown(pages: &[clax_store::bot_web::WebPageRow]) -> Option<String> {
+    let all = sources(pages);
+    if all.is_empty() {
+        return None;
+    }
+    let mut out = String::from("\n\nSources:");
+    for s in &all {
+        let target = link_target(&s.url);
+        let text = s.title.as_deref().map_or_else(|| target.clone(), link_text);
+        out.push_str(&format!("\n- [{text}]({target})"));
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -907,3 +907,186 @@ async fn refused_and_stored_fetches_are_in_the_audit_trail() {
         (&json!(true), &json!(true), &json!(0))
     );
 }
+
+// ---------------------------------------------------------------------------
+// Sources in the reply
+// ---------------------------------------------------------------------------
+
+use clax_bot::web::page::sources_markdown;
+use clax_store::bot_web::WebPageRow;
+
+fn stored(url: &str, final_url: &str, text: &str) -> WebPageRow {
+    WebPageRow {
+        url: url.into(),
+        step_n: 2,
+        seq: 0,
+        final_url: final_url.into(),
+        status: 200,
+        content_type: "text/markdown".into(),
+        text: text.into(),
+        total_chars: text.chars().count() as i64,
+        links: Vec::new(),
+    }
+}
+
+#[test]
+fn sources_markdown_lists_titles_and_final_urls_in_order() {
+    assert_eq!(sources_markdown(&[]), None);
+    let pages = [
+        stored(
+            "https://a.example/",
+            "https://a.example/x",
+            "intro\n# The A page\nbody",
+        ),
+        stored("https://b.example/", "", "no heading"),
+        stored(
+            "https://c.example/",
+            "ftp://c.example/",
+            "## not a title\n#also not",
+        ),
+    ];
+    assert_eq!(
+        sources_markdown(&pages).unwrap(),
+        "\n\nSources:\n- [The A page](https://a.example/x)\n\
+         - [https://b.example/](https://b.example/)\n\
+         - [https://c.example/](https://c.example/)"
+    );
+}
+
+#[test]
+fn a_hostile_title_cannot_change_the_link() {
+    let evil = "# x](https://evil.example) [y \\ <b>*_`!";
+    let md = sources_markdown(&[stored("https://a.example/", "https://a.example/", evil)]).unwrap();
+    let link = md.lines().last().unwrap();
+    assert!(
+        link.starts_with("- [") && link.ends_with("](https://a.example/)"),
+        "{link}"
+    );
+    let title = &link[3..link.len() - "](https://a.example/)".len()];
+    // Every bracket, backslash and markup character of the title is escaped.
+    let mut chars = title.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            chars.next();
+        } else {
+            assert!(!"[]()<>*_`!&|".contains(c), "bare {c:?} in {title}");
+        }
+    }
+    // A title with a line break stays on one line.
+    let md = sources_markdown(&[stored(
+        "https://a.example/",
+        "https://a.example/",
+        "# a\r\n",
+    )])
+    .unwrap();
+    assert_eq!(md.lines().count(), 4);
+}
+
+/// `url` fetched by a script that ends with `tail`, then finish.
+async fn fetch_then(env: &Env, url: &str, tail: &str, summary: &str) -> String {
+    env.web().page(url, page_at(url, "# Doc title\nbody", &[]));
+    sender_says(env, &format!("Read {url}"));
+    env.api.push(env.script_turn(
+        "tu_1",
+        "Web",
+        &format!("await clax.web.fetch({url:?}); {tail}"),
+    ));
+    env.api.push(finish_turn(summary));
+    let run = env.run_with_web("fetch");
+    let out = env.drive(&env.deps(), &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    run
+}
+
+#[tokio::test]
+async fn finish_lists_the_pages_fetched() {
+    let env = Env::new().await;
+    let a = "https://example.com/a";
+    let run = fetch_then(&env, a, "", "All done.").await;
+    let replies = env.replies();
+    assert_eq!(replies.len(), 1);
+    assert_eq!(
+        replies[0].1,
+        "All done.\n\nSources:\n- [Doc title](https://example.com/a)"
+    );
+    let fin = env
+        .store
+        .run_with_steps(&run)
+        .unwrap()
+        .unwrap()
+        .1
+        .into_iter()
+        .find(|s| s.kind == StepKind::Finish)
+        .unwrap();
+    assert_eq!(
+        fin.payload.unwrap()["sources"],
+        json!([{"title": "Doc title", "url": a}])
+    );
+}
+
+#[tokio::test]
+async fn a_run_that_replied_gets_sources_as_a_notice() {
+    let env = Env::new().await;
+    let a = "https://example.com/a";
+    fetch_then(&env, a, "await clax.threads.reply('T1', 'Mine.');", "done").await;
+    let bodies: Vec<String> = env.replies().into_iter().map(|r| r.1).collect();
+    assert_eq!(
+        bodies,
+        ["Mine.", "Sources:\n- [Doc title](https://example.com/a)"]
+    );
+}
+
+#[tokio::test]
+async fn a_run_that_only_searched_lists_none() {
+    let env = Env::new().await;
+    env.web()
+        .search_answers("rust", hits(&["https://example.com/a"]));
+    env.api.push(env.script_turn(
+        "tu_1",
+        "Search",
+        "return (await clax.web.search('rust')).results.length;",
+    ));
+    env.api.push(finish_turn("done"));
+    let run = env.run_with_web("search");
+    env.drive(&env.deps(), &run, &DriverId::mint()).await;
+    let replies = env.replies();
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0].1, "done");
+}
+
+#[tokio::test]
+async fn a_resumed_finish_posts_the_sources_once() {
+    let env = Env::new().await;
+    let a = "https://example.com/a";
+    env.web().page(a, page_at(a, "# Doc title", &[]));
+    sender_says(&env, &format!("Read {a}"));
+    env.api.push(env.script_turn(
+        "tu_1",
+        "Web",
+        &format!("await clax.web.fetch({a:?}); await clax.threads.reply('T1', 'Mine.');"),
+    ));
+    env.api.push(finish_turn("done"));
+    let run = env.run_with_web("fetch");
+    let mut d = env.deps();
+    crash_once(
+        &mut d,
+        CrashPoint::BeforeCommit {
+            step: 4,
+            kind: StepKind::Finish,
+        },
+    );
+    let out = env.drive(&d, &run, &DriverId::mint()).await;
+    assert_eq!(
+        out.last().unwrap().next,
+        Next::Waiting(clax_bot::Wait::Crashed)
+    );
+    assert_eq!(env.replies().len(), 2, "posted before the crash");
+    env.clock.advance(61);
+    let out = env.drive(&env.deps(), &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    let bodies: Vec<String> = env.replies().into_iter().map(|r| r.1).collect();
+    assert_eq!(
+        bodies,
+        ["Mine.", "Sources:\n- [Doc title](https://example.com/a)"]
+    );
+}

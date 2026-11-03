@@ -39,6 +39,7 @@ use crate::events::{Event, EventSink, step_summary};
 use crate::host::{BotHost, NOTICE_SEQ, OpCtx, run_plan};
 use crate::prompt;
 use crate::web::WebSource;
+use crate::web::page::{sources as web_sources, sources_markdown};
 use clax_bot_sandbox::{CancelToken, Limits, MaybeSendSync, Sandbox};
 use clax_core::audit::{Actor, AuditCtx, AuditRecord, Via};
 use clax_core::gitctx::GitField;
@@ -1506,9 +1507,14 @@ impl Tick<'_> {
     /// brief's thread), journaled at the step's notice places; failures are
     /// logged, not fatal.
     async fn notify(&self, attempt: i64, markdown: &str) {
+        self.notify_at(attempt, NOTICE_SEQ, markdown).await;
+    }
+
+    /// [`Self::notify`], the `i`th thread's post at journal place `first + i`.
+    async fn notify_at(&self, attempt: i64, first: i64, markdown: &str) {
         for (i, t) in self.run.thread_ids.iter().enumerate() {
-            let cx = self.op_ctx(attempt, NOTICE_SEQ + i as i64);
-            let seq = NOTICE_SEQ + i as i64;
+            let seq = first + i as i64;
+            let cx = self.op_ctx(attempt, seq);
             let res = match (
                 self.entry(attempt, seq, "reply", &json!([t, markdown])),
                 self.deps.host.plan_reply(&cx, t, markdown).await,
@@ -1675,10 +1681,28 @@ impl Tick<'_> {
     async fn finish(&self, summary: &str) -> Result<TickOutcome> {
         let s = self.begin(StepKind::Finish)?;
         let post = self.hist.replied.is_empty() && !summary.is_empty();
-        if post {
-            self.notify(s.attempt, summary).await;
+        let pages = self.store.web_pages(&self.run.id)?;
+        let sources = sources_markdown(&pages);
+        match (&sources, post) {
+            (Some(list), true) => {
+                self.notify(s.attempt, &format!("{summary}{list}")).await;
+            }
+            (None, true) => self.notify(s.attempt, summary).await,
+            // The run replied itself: the list stands alone, after the
+            // summary's place.
+            (Some(list), false) => {
+                self.notify_at(s.attempt, NOTICE_SEQ + 1, list.trim_start())
+                    .await;
+            }
+            (None, false) => {}
         }
-        let payload = json!({"summary": summary, "posted": post});
+        let payload = json!({
+            "summary": summary,
+            "posted": post,
+            "sources": web_sources(&pages).iter()
+                .map(|s| json!({"title": s.title.as_deref().unwrap_or(&s.url), "url": s.url}))
+                .collect::<Vec<_>>(),
+        });
         let usage = step_usage(&self.settings, self.n, 0, &payload, self.key_source());
         let c = self.commit(
             s.attempt,
