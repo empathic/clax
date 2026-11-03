@@ -96,8 +96,11 @@ export function cloudflare(token) {
      * Worker that is gone already is no error. */
     deleteScript: (account, name) => call("DELETE", `/accounts/${account}/workers/scripts/${q(name)}?force=true`, { missingOk: true }),
     /** The account's queues named `name`, or all of them without one:
-     * `{ queue_id, queue_name }`. */
+     * `{ queue_id, queue_name, consumers: [{ consumer_id, type, script }] }`. */
     queues: (account, name) => all(`/accounts/${account}/queues${name ? `?name=${q(name)}` : ""}`),
+    /** Removes a consumer from a queue; a Worker that consumes a queue
+     * cannot be deleted (code 10064). */
+    deleteQueueConsumer: (account, queue, consumer) => call("DELETE", `/accounts/${account}/queues/${queue}/consumers/${consumer}`, { missingOk: true }),
     deleteQueue: (account, id) => call("DELETE", `/accounts/${account}/queues/${id}`, { missingOk: true }),
     /** The repositories in the Artifacts namespace `namespace`: `{ name }`;
      * none when the namespace does not exist (a namespace is made by its

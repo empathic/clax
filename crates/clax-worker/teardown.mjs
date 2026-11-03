@@ -10,8 +10,9 @@
 // queue clax-artifacts-events-<name> and its Artifacts namespace
 // clax-<name>. This deletes, in order, the routes on the site zone whose
 // script is the Worker, that DNS record, the Worker's custom domains, the
-// Worker with its Durable Objects (every artifact and person of the
-// preview), the queue (after the Worker, its consumer), and every
+// Worker's place as the queue's consumer (Cloudflare refuses to delete a
+// Worker that consumes a queue), the Worker with its Durable Objects
+// (every artifact and person of the preview), the queue, and every
 // repository in the namespace. The namespace stays, empty: Cloudflare's API
 // deletes repositories, not namespaces. The assets it kept in the shared
 // bucket expire on their own (deploy-lib.mjs PREVIEW_ASSET_DAYS). Each step is idempotent: a preview that is gone, or
@@ -61,13 +62,20 @@ export async function teardown(api, { name, account, siteZone, siteDomain, dryRu
   for (const d of await api.workerDomains(account, worker)) {
     if (d.service === worker) await del(`custom domain ${d.hostname}`, () => api.deleteWorkerDomain(account, d.id));
   }
+  // A Worker that consumes a queue cannot be deleted: its consumers go
+  // first, the queue after the Worker.
+  const queues = (await api.queues(account, res.queue)).filter((q) => q.queue_name === res.queue);
+  for (const q of queues) {
+    for (const c of q.consumers ?? []) {
+      if (c.script === worker || c.service === worker) {
+        await del(`consumer ${worker} of queue ${q.queue_name}`, () => api.deleteQueueConsumer(account, q.queue_id, c.consumer_id));
+      }
+    }
+  }
   const scripts = (await api.scripts(account)) ?? [];
   if (scripts.some((s) => s.id === worker)) await del(`Worker ${worker} and its Durable Objects`, () => api.deleteScript(account, worker));
-  // The queue after its consumer, the Worker. The namespace itself stays:
-  // the API deletes repositories, not namespaces.
-  for (const q of await api.queues(account, res.queue)) {
-    if (q.queue_name === res.queue) await del(`queue ${q.queue_name}`, () => api.deleteQueue(account, q.queue_id));
-  }
+  // The namespace itself stays: the API deletes repositories, not namespaces.
+  for (const q of queues) await del(`queue ${q.queue_name}`, () => api.deleteQueue(account, q.queue_id));
   for (const r of await api.artifactsRepos(account, res.namespace)) {
     await del(`Artifacts repository ${res.namespace}/${r.name}`, () => api.deleteArtifactsRepo(account, res.namespace, r.name));
   }
