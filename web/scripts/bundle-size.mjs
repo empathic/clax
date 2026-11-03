@@ -77,9 +77,10 @@ for (const f of filesIn(dist)) {
 }
 
 // The dev server's DevTools (vite.shell.config.ts: vite-devtools-svelte in
-// the @vitejs/devtools dock) are for `pnpm dev` alone: no file of the web
-// UI, the extension or the SDK package may carry them.
-const DEVTOOLS = /svelte-devtools|devframe|vite-devtools|@vitejs\/devtools/;
+// the @vitejs/devtools dock) and the bridge tap (shell/src/bridge-tap.ts)
+// are for `pnpm dev` alone: no file of the web UI, the extension or the SDK
+// package may carry them.
+const DEVTOOLS = /svelte-devtools|devframe|vite-devtools|@vitejs\/devtools|claxBridgeTap/;
 for (const dir of ["../dist/", "../dist-extension/", "../dist-sdk/"].map(d => new URL(d, import.meta.url))) {
   for (const f of existsSync(dir) ? filesIn(dir) : []) {
     if (DEVTOOLS.test(readFileSync(f, "latin1"))) throw new Error(`${f.pathname} carries the dev server's DevTools; they never reach a build`);

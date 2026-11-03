@@ -1,4 +1,5 @@
 import { BRIDGE_TYPES, type BridgeToShell, type ShellToBridge } from "../../bridge/src/protocol";
+import { tapBridge } from "./bridge-tap";
 
 /** The message when the browser delivered it (`isTrusted`, so no script in
  * the shell's origin forged it) from the content frame's window at
@@ -7,6 +8,7 @@ export function acceptFromFrame(e: MessageEvent, frame: Window | null, frameOrig
   if (!e.isTrusted || !frame || e.source !== frame || e.origin !== frameOrigin) return null;
   const d = e.data;
   if (!d || typeof d !== "object" || !BRIDGE_TYPES.has(d.type)) return null;
+  tapBridge("frame→shell", frameOrigin, d);
   return d as BridgeToShell;
 }
 
@@ -20,7 +22,9 @@ export function acceptFromFrame(e: MessageEvent, frame: Window | null, frameOrig
 export function acceptByeFromFrame(e: MessageEvent, frame: Window | null, frameOrigin: string): boolean {
   if (!e.isTrusted || !frame || (e.source !== frame && e.source !== null) || e.origin !== frameOrigin) return false;
   const d = e.data;
-  return !!d && typeof d === "object" && d.type === "clax:bye";
+  const bye = !!d && typeof d === "object" && d.type === "clax:bye";
+  if (bye) tapBridge("frame→shell", frameOrigin, d);
+  return bye;
 }
 
 /** The handshake's state (`clax:site-state`, posted by the site's
@@ -30,12 +34,14 @@ export function acceptSiteState(e: MessageEvent, frame: Window | null, frameOrig
   if (!e.isTrusted || !frame || e.source !== frame || e.origin !== frameOrigin) return null;
   const d = e.data;
   if (!d || typeof d !== "object" || d.type !== "clax:site-state" || typeof d.state !== "string" || typeof d.next !== "string") return null;
+  tapBridge("frame→shell", frameOrigin, d);
   return { state: d.state, next: d.next };
 }
 
 /** Posts to the frame, at its origin only; to a sandboxed frame's opaque
  * origin (`"null"`, which no target can name) by its window alone. */
 export function sendToFrame(frame: Window | null, frameOrigin: string, m: ShellToBridge): void {
+  if (frame) tapBridge("shell→frame", frameOrigin, m);
   frame?.postMessage(m, frameOrigin === "null" ? "*" : frameOrigin);
 }
 
