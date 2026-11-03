@@ -81,6 +81,8 @@ resources:
   # The release's manifests. Before the first release that attaches them,
   # deploy/k8s/release at a commit of main instead:
   # github.com/empathic/clax//deploy/k8s/release?ref=<commit>
+  # 0.6.0 attaches none: until the first release after it does, use the
+  # line above.
   - https://github.com/empathic/clax/releases/download/v0.6.0/clax-fleet.yaml
 images:
   # The name the manifests give the image, not `clax-fleet`: kustomize
@@ -107,7 +109,10 @@ upgrade, change the version in the URL and apply again.
 
 **Checking an image.** Each image is signed with cosign, keylessly, as
 the `fleet-image` workflow of `empathic/clax`, and carries an SBOM and
-build provenance:
+build provenance. The commands name this checkout's version, which
+`scripts/bump-version.sh` keeps current; 0.6.0 published no image, so
+until the first release after it, name a candidate from main
+(`:sha-<commit>`, with `@refs/heads/main` as the identity) instead:
 
 ```
 cosign verify ghcr.io/empathic/clax-fleet:0.6.0 \
@@ -181,8 +186,8 @@ catalog is bad exits saying why, so fix the ConfigMap. Kubernetes takes up
 to a minute to update a mounted ConfigMap, and until then a pod that lacks
 a new instance answers its host with the default instance (or 404).
 
-Check a catalog before applying it, with the image (your own build's name
-until a release publishes it):
+Check a catalog before applying it, with the image (until a release after
+0.6.0 publishes it, a candidate from main or your own build, by its name):
 
 ```
 docker run --rm -v "$PWD":/c ghcr.io/empathic/clax-fleet:0.6.0 check-catalog /c/fleet.toml
