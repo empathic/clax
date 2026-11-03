@@ -4472,9 +4472,39 @@ most 256 bytes, `avatar_url` an http(s) URL; any other key or type is 400
 report filed under the token, and shown to triage members, never to
 reporters.
 
+**Origins.** A queue's `origins` (`POST /api/queues`, `PATCH
+/api/queues/<qid>`, at most 32) are exact origins and origin patterns. An
+exact origin is `scheme://host[:port]` of `http` or `https`, nothing after
+it, stored as a browser's `Origin` header names it: the host lowercased
+(an internationalized one in its `xn--` form) and a default port left out.
+A pattern holds a `*` in its host and is stored the same way
+(`HTTPS://App-PR-*.Example.com:443/` is `https://app-pr-*.example.com`):
+its scheme and port are exact; its host is ASCII, of labels of `a`-`z`,
+`0`-`9`, `-` and `*`; a `*` stands for one or more of `a`-`z`, `0`-`9` and
+`-` within its own label, never a `.`; a label holds at most one `*` and
+at least one other character beside it; and the labels after the last one
+holding a `*` are at least two, none holding one, the last starting with
+a letter. So `https://app-pr-*.example.com` matches
+`https://app-pr-42.example.com`, and not `https://app-pr-.example.com`,
+`https://app-pr-1.evil.example.com`, `https://app-pr-1.example.com.evil.dev`,
+`http://app-pr-1.example.com` or `https://app-pr-1.example.com:8443`;
+`https://*.example.com`, `https://app-*.com` and `https://a**.example.com`
+are refused. Anything else is 400 `invalid_origin`. A queue allows an
+origin it lists, and one a pattern of it matches.
+
+A reporter token is always bound to one exact origin: a mint
+(`…/reporter-tokens`) names an exact origin the queue allows (a pattern is
+400 `invalid_origin`, another origin 403 `wrong_origin`), and the token
+records that origin. Its requests must carry exactly that `Origin`, and
+the queue must still allow it; a page of another origin the same pattern
+matches cannot use the token. A report keeps the URL its page sent; the
+pattern is never stored on a token or a report, nor named in a CORS
+answer.
+
 Reporter routes (`Authorization: Clax-Reporter <token>`, a
 `Clax-Signature` by the reporter's key, the token's `Origin`; each answers
-CORS for the queue's origins, with `Access-Control-Expose-Headers:
+CORS for the origins the queue allows, naming the request's own exact
+`Origin`, never a pattern, with `Access-Control-Expose-Headers:
 retry-after, date` so the page reads a refusal's wait and the instance's
 clock, and its `OPTIONS` preflight). A page served
 by the instance at the token's origin, whose same-origin `GET` a browser
@@ -4508,7 +4538,7 @@ reporter routes' tests fail on a refusal whose code it lacks.
 
 | Route | Body | Answer |
 |---|---|---|
-| `POST /api/queues/<qid>/reporter-tokens` (`Clax-Queue`, the service grant's signature, no `Origin`) | `{reporter_id, origin, public_key, profile?}` | `{token, expires_at}` |
+| `POST /api/queues/<qid>/reporter-tokens` (`Clax-Queue`, the service grant's signature, no `Origin`) | `{reporter_id, origin, public_key, profile?}` | `{token, expires_at}`, bound to exact `origin`; 403 `wrong_origin` for one the queue does not allow, 400 `invalid_origin` for a pattern |
 | `POST /api/queues/<qid>/reporter/reports` | multipart `external_id?`, `url`, `title`, `anchor` (JSON), `body`, `metadata?` (JSON), `revision?`, `clip?` (PNG), `context?` (JSON), `diagnostics?` (JSON lines, `diagnostics.jsonl`) | 201 `{report}`, with `server` |
 | `GET /api/queues/<qid>/reporter/reports?cursor=` | | `{reports, next}`; 400 `invalid_query` for another query |
 | `POST …/reporter/reports/<tid>/comments` | `{body}` | `{report}` |

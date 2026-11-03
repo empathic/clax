@@ -46,8 +46,9 @@ export class ServiceClient {
   }
 
   /** Mints a reporter token for `r.reporter_id`, bound to the key
-   * `r.public_key` and the page origin `r.origin` (one of the queue's
-   * origins): `POST /api/queues/<queue>/reporter-tokens`. `profile` (else
+   * `r.public_key` and the page's exact origin `r.origin` (one the queue
+   * lists, or one of its patterns matches):
+   * `POST /api/queues/<queue>/reporter-tokens`. `profile` (else
    * `r.profile`) is who this backend says the reporter is: each report
    * filed under the token keeps it, shown to triage members and never to
    * reporters; 400 `invalid_profile` for a field over 256 bytes or an

@@ -167,17 +167,18 @@ fn profile_of(v: Option<Value>) -> Result<Option<ReporterProfile>, CoreError> {
 
 /// `POST /api/queues/<qid>/reporter-tokens {reporter_id, origin,
 /// public_key, profile?}`: a reporter token of the caller's service grant
-/// for `reporter_id`, bound to `origin` (one of the queue's) and the
-/// Ed25519 `public_key` (unpadded base64url). `profile` (`{name?, email?,
-/// github?, avatar_url?}`, each at most 256 bytes, `avatar_url` an http(s)
-/// URL) is who the backend says the reporter is: each report filed under
-/// the token keeps it, shown to triage members and never to reporters.
+/// for `reporter_id`, bound to exact `origin` (one the queue lists, or one
+/// of its patterns matches) and the Ed25519 `public_key` (unpadded
+/// base64url). `profile` (`{name?, email?, github?, avatar_url?}`, each at
+/// most 256 bytes, `avatar_url` an http(s) URL) is who the backend says
+/// the reporter is: each report filed under the token keeps it, shown to
+/// triage members and never to reporters.
 /// Answers `{token, expires_at}`.
 ///
 /// # Errors
-/// [`ServiceCaller`]'s; 400 `invalid_args`, `invalid_origin`,
-/// `invalid_reporter_id`, `invalid_key` or `invalid_profile`; 403
-/// `wrong_origin` for an origin the queue does not list.
+/// [`ServiceCaller`]'s; 400 `invalid_args`, `invalid_origin` (a pattern
+/// among them), `invalid_reporter_id`, `invalid_key` or `invalid_profile`;
+/// 403 `wrong_origin` for an origin the queue does not allow.
 pub async fn mint_token(
     State(s): State<AppState>,
     c: ServiceCaller,
@@ -726,7 +727,7 @@ pub async fn badge(
 }
 
 /// `OPTIONS` on each reporter route: the CORS preflight, `204`, whose
-/// headers [`reporter::cors`] adds for the queue's origins.
+/// headers [`reporter::cors`] adds for the origins the queue allows.
 pub async fn preflight() -> StatusCode {
     StatusCode::NO_CONTENT
 }

@@ -124,6 +124,37 @@ async fn a_queue_is_made_listed_changed_and_deleted_in_the_browser() {
     )
     .await;
     assert_eq!((s, code(&v)), (400, "invalid_origin"), "{v}");
+    // An origin pattern is listed, normalized as an origin is; one that
+    // would match a whole shared domain is refused.
+    let (s, v) = browser(
+        &w.ts,
+        &w.owner,
+        Method::PATCH,
+        &format!("/api/queues/{qid}"),
+        Some(json!({"origins": ["https://app.example.com", "HTTPS://PathBase-PR-*.Fly.Dev:443/"]})),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        v["queue"]["origins"],
+        json!(["https://app.example.com", "https://pathbase-pr-*.fly.dev"])
+    );
+    for broad in [
+        "https://*.fly.dev",
+        "https://pr-*.dev",
+        "https://*",
+        "https://a**.fly.dev",
+    ] {
+        let (s, v) = browser(
+            &w.ts,
+            &w.owner,
+            Method::PATCH,
+            &format!("/api/queues/{qid}"),
+            Some(json!({"origins": [broad]})),
+        )
+        .await;
+        assert_eq!((s, code(&v)), (400, "invalid_origin"), "{broad}: {v}");
+    }
     let (s, v) = browser(
         &w.ts,
         &w.owner,

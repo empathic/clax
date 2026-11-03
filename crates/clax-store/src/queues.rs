@@ -42,7 +42,7 @@ use clax_core::queue::{
     MAX_THREAD_METADATA_BYTES, Queue, REPORT_PAGE, REPORTER_TOKEN_PREFIX, REPORTER_TOKEN_SECS,
     Report, ReportComment, ReportOrder, ReportersSee, Role, SERVICE_TOKEN_PREFIX, State,
     StateFilter, check_queue_name, check_reporter_id, metadata_json, metadata_sha256,
-    normalize_origin,
+    normalize_origin, normalize_queue_origin, queue_allows_origin,
 };
 use clax_core::report::{
     DiagLine, FixAttempt, FixOutcome, NewFix, ProposerKind, ReportContext, ReporterProfile,
@@ -57,7 +57,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 #[derive(Clone, Debug)]
 pub struct NewQueue {
     pub name: String,
-    /// Origins as given; each is normalized ([`normalize_origin`]).
+    /// Origins and origin patterns as given; each is normalized
+    /// ([`normalize_queue_origin`]).
     pub origins: Vec<String>,
     pub reporters_see: ReportersSee,
 }
@@ -138,8 +139,9 @@ impl std::fmt::Debug for OwnFeedback {
     }
 }
 
-/// The kept [`OwnFeedback`] on `c`, when its queue is live and lists
-/// `origin` (normalized) and its grant is unrevoked.
+/// The kept [`OwnFeedback`] on `c`, when its queue is live and allows
+/// `origin` (normalized; [`queue_allows_origin`]) and its grant is
+/// unrevoked.
 fn own_feedback_in(c: &Connection, origin: &str) -> Result<Option<OwnFeedback>> {
     let kept = c
         .query_row(
@@ -162,7 +164,7 @@ fn own_feedback_in(c: &Connection, origin: &str) -> Result<Option<OwnFeedback>> 
         return Ok(None);
     };
     let listed =
-        queue_in(c, &kept.queue_id)?.is_some_and(|q| q.origins.iter().any(|o| o == origin));
+        queue_in(c, &kept.queue_id)?.is_some_and(|q| queue_allows_origin(&q.origins, origin));
     Ok(listed.then_some(kept))
 }
 
@@ -172,7 +174,8 @@ pub struct ReporterToken {
     pub queue_id: String,
     pub service_grant_id: String,
     pub reporter_id: String,
-    /// The origin it was minted for: its requests must come from it.
+    /// The exact origin it was minted for, never a pattern: its requests
+    /// must come from it.
     pub origin: String,
     /// The reporter's Ed25519 public key, unpadded base64url.
     pub public_key: String,
@@ -390,7 +393,7 @@ fn normalize_origins(origins: &[String]) -> Result<Vec<String>> {
     }
     let mut out = Vec::with_capacity(origins.len());
     for o in origins {
-        let n = normalize_origin(o)?;
+        let n = normalize_queue_origin(o)?;
         if !out.contains(&n) {
             out.push(n);
         }
@@ -1312,11 +1315,12 @@ impl Store {
     /// The instance's own feedback queue and service grant (spec
     /// 2026-10-29-feedback-loop-design §10.2), for a hosted instance given
     /// none, minting for its public `origin`: the kept ones
-    /// (`instance_feedback`) while the queue is live, lists `origin` and the
-    /// grant is unrevoked. Otherwise, once the instance's owner exists, it
-    /// mends them and keeps what it made in place of the earlier:
+    /// (`instance_feedback`) while the queue is live, allows `origin`
+    /// ([`queue_allows_origin`]) and the grant is unrevoked. Otherwise,
+    /// once the instance's owner exists, it mends them and keeps what it
+    /// made in place of the earlier:
     ///
-    /// - a kept queue that is live but does not list `origin` (the
+    /// - a kept queue that is live but does not allow `origin` (the
     ///   instance's origin moved: a local instance on another port) gets
     ///   it added, the earliest origins dropped past
     ///   [`clax_core::queue::MAX_QUEUE_ORIGINS`];
@@ -1364,7 +1368,7 @@ impl Store {
             };
             let qid = match queue {
                 Some(q) => {
-                    if !q.origins.contains(&origin) {
+                    if !queue_allows_origin(&q.origins, &origin) {
                         let mut origins = q.origins.clone();
                         origins.push(origin.clone());
                         let past = origins
@@ -1500,7 +1504,9 @@ impl Store {
     }
 
     /// Mints a reporter token ([`REPORTER_TOKEN_PREFIX`]) of `grant` for
-    /// reporter `reporter_id` on `origin`, bound to the reporter's Ed25519
+    /// reporter `reporter_id` on exact `origin`, one the queue allows
+    /// ([`queue_allows_origin`]: listed, or matched by one of its
+    /// patterns), bound to that origin and to the reporter's Ed25519
     /// `public_key` (unpadded base64url), valid for
     /// [`REPORTER_TOKEN_SECS`], carrying the reporter's `profile` (an
     /// empty one is none). Answers the token, kept only as its SHA-256,
@@ -1508,8 +1514,9 @@ impl Store {
     /// nothing. Tokens that expired a day before are dropped.
     ///
     /// # Errors
-    /// [`CoreError::WrongOrigin`] for an origin the queue does not list;
-    /// `invalid_origin`, `invalid_reporter_id`, `invalid_key` or
+    /// [`CoreError::WrongOrigin`] for an origin the queue does not allow;
+    /// `invalid_origin` (an origin pattern among them),
+    /// `invalid_reporter_id`, `invalid_key` or
     /// [`CoreError::InvalidProfile`] for bad input; `NotFound` when the
     /// grant or its queue is gone.
     pub fn mint_reporter_token(
@@ -1543,7 +1550,7 @@ impl Store {
             let (true, Some(q)) = (live, q) else {
                 return Err(CoreError::NotFound);
             };
-            if !q.origins.contains(&origin) {
+            if !queue_allows_origin(&q.origins, &origin) {
                 return Err(CoreError::WrongOrigin);
             }
             tx.execute(

@@ -595,6 +595,86 @@ fn mint_refuses_origin_not_in_queue() {
 }
 
 #[test]
+fn a_pattern_mints_a_token_bound_to_the_exact_origin_it_matched() {
+    let (_d, st) = store();
+    let q = st
+        .create_queue(
+            DAEMON,
+            None,
+            NewQueue {
+                name: "Previews".into(),
+                origins: vec![ORIGIN.into(), "https://PathBase-PR-*.fly.dev/".into()],
+                reporters_see: ReportersSee::Own,
+            },
+        )
+        .unwrap();
+    assert_eq!(q.origins, [ORIGIN, "https://pathbase-pr-*.fly.dev"]);
+    let (grant, _, _) = st.create_service_grant(DAEMON, &q.id, "backend").unwrap();
+    let key = clax_core::sig::encode_public(&clax_core::sig::KeyPair::generate().public());
+    let (rt, _) = st
+        .mint_reporter_token(
+            &grant,
+            "emp-1",
+            "https://pathbase-pr-538.fly.dev",
+            &key,
+            None,
+        )
+        .unwrap();
+    let t = st.reporter_by_token(&rt.sha256_hex()).unwrap().unwrap();
+    assert_eq!(t.origin, "https://pathbase-pr-538.fly.dev");
+    st.mint_reporter_token(&grant, "emp-1", ORIGIN, &key, None)
+        .unwrap();
+    for not in [
+        "https://pathbase-pr-1.evil.fly.dev",
+        "http://pathbase-pr-1.fly.dev",
+        "https://pathbase-pr-.fly.dev",
+        "https://pathbase-pr-1.fly.dev:8443",
+    ] {
+        assert!(
+            matches!(
+                st.mint_reporter_token(&grant, "emp-1", not, &key, None),
+                Err(CoreError::WrongOrigin)
+            ),
+            "{not}"
+        );
+    }
+    assert!(matches!(
+        st.mint_reporter_token(&grant, "emp-1", "https://pathbase-pr-*.fly.dev", &key, None),
+        Err(CoreError::Invalid {
+            code: "invalid_origin",
+            ..
+        })
+    ));
+    // A pattern as broad as a shared domain is refused, made or changed.
+    let broad = || NewQueue {
+        name: "Too broad".into(),
+        origins: vec!["https://*.fly.dev".into()],
+        reporters_see: ReportersSee::Own,
+    };
+    assert!(matches!(
+        st.create_queue(DAEMON, None, broad()),
+        Err(CoreError::Invalid {
+            code: "invalid_origin",
+            ..
+        })
+    ));
+    assert!(matches!(
+        st.update_queue(
+            DAEMON,
+            &q.id,
+            super::QueuePatch {
+                origins: Some(broad().origins),
+                ..Default::default()
+            },
+        ),
+        Err(CoreError::Invalid {
+            code: "invalid_origin",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn members_and_roles() {
     let (_d, st) = store();
     let qid = st

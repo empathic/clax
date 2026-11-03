@@ -7,7 +7,11 @@ import type { StateFilter } from "./api";
 /** The origins typed in `text`, one per line: each as its origin
  * (`https://app.example`, no trailing slash), the first of each kept;
  * `bad` holds the lines that are not an http or https origin (a path, a
- * query or another scheme). Blank lines are skipped. */
+ * query or another scheme). A line holding a `*` is an origin pattern
+ * (`https://app-pr-*.example.com`), kept with its host lowercased and a
+ * default port left out; which patterns a queue may list (a `*` beside
+ * other characters of one label, followed by two labels without one) is
+ * the server's to say. Blank lines are skipped. */
 export function parseOrigins(text: string): { origins: string[]; bad: string[] } {
   const origins: string[] = [];
   const bad: string[] = [];
@@ -22,11 +26,24 @@ export function parseOrigins(text: string): { origins: string[]; bad: string[] }
 }
 
 function originOf(s: string): string | null {
+  if (s.includes("*")) return patternOf(s);
   let u: URL;
   try { u = new URL(s); } catch { return null; }
   if (u.protocol !== "https:" && u.protocol !== "http:") return null;
   if (u.username || u.password || u.pathname !== "/" || u.search || u.hash || s.endsWith("?") || s.endsWith("#")) return null;
   return u.origin;
+}
+
+const DEFAULT_PORTS: Record<string, string> = { http: "80", https: "443" };
+
+function patternOf(s: string): string | null {
+  const m = /^(https?):\/\/([a-z0-9*.-]+)(?::(\d{1,5}))?\/?$/i.exec(s);
+  if (!m) return null;
+  const scheme = m[1].toLowerCase();
+  const port = m[3] === undefined ? undefined : String(Number(m[3]));
+  if (port !== undefined && Number(port) > 65535) return null;
+  const keep = port !== undefined && port !== DEFAULT_PORTS[scheme] ? `:${port}` : "";
+  return `${scheme}://${m[2].toLowerCase()}${keep}`;
 }
 
 /** The stream topic of queue `qid`'s report changes (a `report` event,

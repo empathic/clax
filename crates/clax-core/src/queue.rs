@@ -227,8 +227,9 @@ impl<'de> Deserialize<'de> for StateFilter {
 pub struct Queue {
     pub id: String,
     pub name: String,
-    /// The deployer's app's origins (normalized by [`normalize_origin`]):
-    /// a reporter token is minted only for one of them.
+    /// The deployer's app's origins and origin patterns (normalized by
+    /// [`normalize_queue_origin`]): a reporter token is minted only for an
+    /// exact origin they allow ([`queue_allows_origin`]).
     pub origins: Vec<String>,
     pub reporters_see: ReportersSee,
     pub created_at: String,
@@ -406,12 +407,14 @@ pub fn metadata_sha256(json: &str) -> String {
     format!("sha256:{}", crate::audit::sha256_hex(json.as_bytes()))
 }
 
-/// `raw` as a queue lists an origin: `scheme://host[:port]` of an `http`
-/// or `https` URL with nothing after it, the host lowercased and a default
-/// port left out, as a browser's `Origin` header names it.
+/// `raw` as a browser's `Origin` header names it: `scheme://host[:port]`
+/// of an `http` or `https` URL with nothing after it, the host lowercased
+/// and a default port left out. A reporter token is bound to one such
+/// exact origin.
 ///
 /// # Errors
-/// `invalid_origin` for anything else.
+/// `invalid_origin` for anything else, an origin pattern (holding a `*`)
+/// included.
 pub fn normalize_origin(raw: &str) -> Result<String> {
     let bad = || {
         CoreError::invalid(
@@ -431,8 +434,161 @@ pub fn normalize_origin(raw: &str) -> Result<String> {
         return Err(bad());
     }
     match u.origin() {
-        url::Origin::Tuple(..) => Ok(u.origin().ascii_serialization()),
+        url::Origin::Tuple(..) => {
+            let o = u.origin().ascii_serialization();
+            if o.contains('*') {
+                return Err(bad());
+            }
+            Ok(o)
+        }
         url::Origin::Opaque(_) => Err(bad()),
+    }
+}
+
+/// `raw` as a queue lists it: an exact origin ([`normalize_origin`]), or,
+/// when it holds a `*`, an origin pattern normalized the same way (the
+/// host lowercased, a default port left out, nothing after
+/// `host[:port]`).
+///
+/// A pattern's scheme (`http` or `https`) and port are exact; its host is
+/// ASCII (an internationalized label written as its `xn--` form), of
+/// labels of `a`-`z`, `0`-`9`, `-` and `*`. A `*` stands for one or more
+/// of `a`-`z`, `0`-`9` and `-` within its label, never a `.`; a label
+/// holds at most one `*` and at least one other character beside it, and
+/// the labels after the last one holding a `*` are at least two, none
+/// holding one, the last starting with a letter (a pattern names DNS
+/// names, never an IP address). So `https://app-pr-*.example.com` is a
+/// pattern, and `https://*.example.com`, `https://app-*.com` and
+/// `https://app.*-x.com` are not.
+///
+/// # Errors
+/// `invalid_origin` for anything else.
+pub fn normalize_queue_origin(raw: &str) -> Result<String> {
+    if !raw.contains('*') {
+        return normalize_origin(raw);
+    }
+    let (scheme, host, port) = pattern_parts(raw.trim()).ok_or_else(|| {
+        CoreError::invalid(
+            "invalid_origin",
+            format!(
+                "{raw:?} is not an origin pattern: a * stands for part of one label of the host, \
+                 beside at least one other character of that label, and is followed by at least \
+                 two labels with none (https://app-pr-*.example.com)"
+            ),
+        )
+    })?;
+    Ok(match port {
+        Some(p) => format!("{scheme}://{host}:{p}"),
+        None => format!("{scheme}://{host}"),
+    })
+}
+
+/// The scheme, lowercased host and port (`None` for the scheme's default)
+/// of origin pattern `s`, when it is one ([`normalize_queue_origin`]).
+fn pattern_parts(s: &str) -> Option<(&'static str, String, Option<u16>)> {
+    let (scheme, rest) = s.split_once("://")?;
+    let (scheme, default_port) = match scheme.to_ascii_lowercase().as_str() {
+        "http" => ("http", 80),
+        "https" => ("https", 443),
+        _ => return None,
+    };
+    let rest = rest.strip_suffix('/').unwrap_or(rest);
+    let (host, port) = match rest.split_once(':') {
+        Some((h, p)) => {
+            if p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            (h, Some(p.parse::<u16>().ok()?))
+        }
+        None => (rest, None),
+    };
+    let host = host.to_ascii_lowercase();
+    let labels: Vec<&str> = host.split('.').collect();
+    let mut after_star = 0;
+    for label in &labels {
+        let stars = label.bytes().filter(|&b| b == b'*').count();
+        if *label == "*"
+            || label.is_empty()
+            || label.len() > 63
+            || stars > 1
+            || !label.bytes().all(|b| label_byte(b) || b == b'*')
+        {
+            return None;
+        }
+        after_star = if stars == 1 { 0 } else { after_star + 1 };
+    }
+    let starred = labels.iter().any(|l| l.contains('*'));
+    let last_is_name = labels
+        .last()
+        .is_some_and(|l| l.as_bytes()[0].is_ascii_lowercase());
+    if !starred || after_star < 2 || !last_is_name {
+        return None;
+    }
+    Some((scheme, host, port.filter(|&p| p != default_port)))
+}
+
+/// Whether `b` may stand in a pattern's label, and in what its `*` matches.
+fn label_byte(b: u8) -> bool {
+    b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'
+}
+
+/// Whether a queue listing `listed` (each normalized by
+/// [`normalize_queue_origin`]) allows exact origin `origin`: `origin` is
+/// one of them, or, written as [`normalize_origin`] writes it, matched by
+/// one of its patterns (the same scheme and port, and as many labels,
+/// each equal to the pattern's or, for a label holding a `*`, its text
+/// around the `*` with one or more of `a`-`z`, `0`-`9` and `-` in place
+/// of it).
+pub fn queue_allows_origin(listed: &[String], origin: &str) -> bool {
+    listed.iter().any(|l| {
+        if l.contains('*') {
+            pattern_matches(l, origin)
+        } else {
+            l == origin
+        }
+    })
+}
+
+/// Whether origin pattern `pattern` matches `origin`, an exact origin as
+/// [`normalize_origin`] writes it.
+fn pattern_matches(pattern: &str, origin: &str) -> bool {
+    let Some((scheme, host, port)) = pattern_parts(pattern) else {
+        return false;
+    };
+    if normalize_origin(origin).ok().as_deref() != Some(origin) {
+        return false;
+    }
+    let Ok(u) = url::Url::parse(origin) else {
+        return false;
+    };
+    let Some(url::Host::Domain(o_host)) = u.host() else {
+        return false;
+    };
+    let (p_labels, o_labels): (Vec<&str>, Vec<&str>) =
+        (host.split('.').collect(), o_host.split('.').collect());
+    u.scheme() == scheme
+        && u.port() == port
+        && p_labels.len() == o_labels.len()
+        && p_labels
+            .iter()
+            .zip(&o_labels)
+            .all(|(p, o)| label_matches(p, o))
+}
+
+/// Whether label `o` is pattern label `p`: equal to it, or, when `p`
+/// holds a `*`, its text before and after the `*` around one or more
+/// [`label_byte`]s.
+fn label_matches(p: &str, o: &str) -> bool {
+    match p.split_once('*') {
+        None => p == o,
+        Some((before, after)) => {
+            o.len() > before.len() + after.len()
+                && o.starts_with(before)
+                && o.ends_with(after)
+                && o.as_bytes()[before.len()..o.len() - after.len()]
+                    .iter()
+                    .all(|&b| label_byte(b))
+        }
     }
 }
 
@@ -526,6 +682,170 @@ mod tests {
         ] {
             assert!(normalize_origin(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn an_exact_origin_holds_no_star() {
+        for bad in ["https://pr-*.fly.dev", "https://pr-%2A.fly.dev"] {
+            assert!(normalize_origin(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn patterns_normalize_as_exact_origins_do() {
+        let n = |raw| normalize_queue_origin(raw).unwrap();
+        assert_eq!(
+            n("https://pathbase-pr-*.fly.dev"),
+            "https://pathbase-pr-*.fly.dev"
+        );
+        assert_eq!(
+            n(" HTTPS://PathBase-PR-*.Fly.Dev/ "),
+            "https://pathbase-pr-*.fly.dev"
+        );
+        assert_eq!(n("https://pr-*.fly.dev:443"), "https://pr-*.fly.dev");
+        assert_eq!(n("http://pr-*.fly.dev:80/"), "http://pr-*.fly.dev");
+        assert_eq!(n("https://pr-*.fly.dev:8443"), "https://pr-*.fly.dev:8443");
+        assert_eq!(n("http://pr-*.fly.dev:443"), "http://pr-*.fly.dev:443");
+        assert_eq!(n("https://*-app.example.com"), "https://*-app.example.com");
+        assert_eq!(n("https://a*b.example.com"), "https://a*b.example.com");
+        assert_eq!(
+            n("https://web.pr-*.xn--bcher-kva.example"),
+            "https://web.pr-*.xn--bcher-kva.example"
+        );
+        assert_eq!(
+            n("https://a-*.b-*.example.com"),
+            "https://a-*.b-*.example.com"
+        );
+        // An exact origin is normalized as before.
+        assert_eq!(n("https://App.Example.com:443/"), "https://app.example.com");
+    }
+
+    #[test]
+    fn broad_or_malformed_patterns_are_refused() {
+        for bad in [
+            // A label that is only a `*`, or a bare `*` host.
+            "https://*",
+            "https://*.fly.dev",
+            "https://*.*.example.com",
+            "https://app.*.example.com",
+            // Fewer than two labels without one after the last `*`.
+            "https://pr-*.dev",
+            "https://pr-*.fly-*.dev",
+            "https://app.pr-*",
+            "https://example.com-*",
+            // Two `*`s in one label.
+            "https://**.example.com",
+            "https://a**.example.com",
+            "https://a*b*.example.com",
+            // A `*` outside the host.
+            "http*://pr-*.example.com",
+            "*://pr-*.example.com",
+            "https://pr-*.example.com:*",
+            "https://pr-*.example.com:84*",
+            "https://pr-*.example.com/*",
+            "https://pr-*.example.com/path",
+            "https://pr-*.example.com?q=1",
+            "https://pr-*.example.com#f",
+            "https://u@pr-*.example.com",
+            "https://pr-*.example.com//",
+            // Another scheme, no scheme, a bad port.
+            "ftp://pr-*.example.com",
+            "pr-*.example.com",
+            "https://pr-*.example.com:",
+            "https://pr-*.example.com:65536",
+            // Characters a DNS label does not hold, non-ASCII, empty labels.
+            "https://pr_*.example.com",
+            "https://pr-*.bücher.example",
+            "https://pr-*..example.com",
+            "https://.pr-*.example.com",
+            // An IP address.
+            "https://1*.0.0.1",
+            "https://10.0.*1.1",
+        ] {
+            let e = normalize_queue_origin(bad).expect_err(bad);
+            assert!(
+                matches!(
+                    e,
+                    CoreError::Invalid {
+                        code: "invalid_origin",
+                        ..
+                    }
+                ),
+                "{bad}: {e:?}"
+            );
+        }
+        let long = format!("https://{}*.example.com", "a".repeat(63));
+        assert!(normalize_queue_origin(&long).is_err());
+        let longest = format!("https://{}*.example.com", "a".repeat(62));
+        assert!(normalize_queue_origin(&longest).is_ok());
+    }
+
+    #[test]
+    fn a_pattern_matches_one_label_of_name_characters_and_nothing_else() {
+        let listed = vec![normalize_queue_origin("https://pathbase-pr-*.fly.dev").unwrap()];
+        let allows = |o: &str| queue_allows_origin(&listed, o);
+        assert!(allows("https://pathbase-pr-538.fly.dev"));
+        assert!(allows("https://pathbase-pr-1.fly.dev"));
+        assert!(allows("https://pathbase-pr-a-b.fly.dev"));
+        assert!(allows("https://pathbase-pr-12ab.fly.dev"));
+        for not in [
+            // Another label, another domain, an empty match.
+            "https://pathbase-pr-1.evil.fly.dev",
+            "https://pathbase-pr-1.fly.dev.attacker.com",
+            "https://evil.pathbase-pr-1.fly.dev",
+            "https://pathbase-pr-.fly.dev",
+            "https://pathbase-pr.fly.dev",
+            "https://xpathbase-pr-1.fly.dev",
+            // Another scheme or port.
+            "http://pathbase-pr-1.fly.dev",
+            "https://pathbase-pr-1.fly.dev:8443",
+            // Not written as a browser writes an origin.
+            "https://PATHBASE-pr-1.fly.dev",
+            "https://pathbase-pr-1.fly.dev/",
+            "https://pathbase-pr-1.fly.dev:443",
+            "https://pathbase-pr-1.fly.dev/path",
+            "pathbase-pr-1.fly.dev",
+            "null",
+            "",
+            // The pattern itself is no origin.
+            "https://pathbase-pr-*.fly.dev",
+        ] {
+            assert!(!allows(not), "{not}");
+        }
+    }
+
+    #[test]
+    fn a_pattern_keeps_its_port_and_its_text_around_the_star() {
+        let listed = vec![
+            normalize_queue_origin("http://dev-*.example.com:8080").unwrap(),
+            normalize_queue_origin("https://*-web.a-*.example.com").unwrap(),
+        ];
+        let allows = |o: &str| queue_allows_origin(&listed, o);
+        assert!(allows("http://dev-7.example.com:8080"));
+        assert!(!allows("http://dev-7.example.com"));
+        assert!(!allows("https://dev-7.example.com:8080"));
+        assert!(allows("https://pr-9-web.a-x.example.com"));
+        assert!(!allows("https://pr-9-web.a-.example.com"));
+        assert!(!allows("https://-web.a-x.example.com"));
+        assert!(!allows("https://pr-9-web.b-x.example.com"));
+    }
+
+    #[test]
+    fn exact_origins_match_only_themselves() {
+        let listed = vec![
+            normalize_queue_origin("https://app.example.com").unwrap(),
+            normalize_queue_origin("http://localhost:5173").unwrap(),
+        ];
+        assert!(queue_allows_origin(&listed, "https://app.example.com"));
+        assert!(queue_allows_origin(&listed, "http://localhost:5173"));
+        assert!(!queue_allows_origin(
+            &listed,
+            "https://app.example.com:8443"
+        ));
+        assert!(!queue_allows_origin(&listed, "http://app.example.com"));
+        assert!(!queue_allows_origin(&listed, "https://x.app.example.com"));
+        assert!(!queue_allows_origin(&listed, "http://localhost:5174"));
+        assert!(!queue_allows_origin(&[], "https://app.example.com"));
     }
 
     #[test]
