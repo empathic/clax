@@ -140,24 +140,26 @@ pub fn sandbox(_env: &worker::Env) -> Result<Arc<dyn Sandbox>, String> {
 
 /// Where ClaxBot's `clax.web` calls go on this Worker
 /// (`crate::web_source`): `test`, the scripted source of the test mode,
-/// when given; else the `AI` binding, when the Worker has one; else none,
-/// and the host's web use is off, not configured.
+/// when given; else the `AI` binding, when the Worker has one, its fetches
+/// naming the instance at `origin` (its public origin) in their
+/// `User-Agent`; else none, and the host's web use is off, not configured.
 #[must_use]
 pub fn web_source(
     env: &worker::Env,
     test: Option<Arc<crate::web_source::FixtureWeb>>,
+    origin: &str,
 ) -> Option<Arc<dyn clax_bot::WebSource>> {
     if let Some(t) = test {
         return Some(t);
     }
     #[cfg(target_arch = "wasm32")]
     {
-        crate::web_source::BindingSource::from_env(env)
+        crate::web_source::BindingSource::from_env(env, origin)
             .map(|b| Arc::new(b) as Arc<dyn clax_bot::WebSource>)
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let _ = env;
+        let _ = (env, origin);
         None
     }
 }
@@ -344,6 +346,9 @@ pub struct Parts {
     pub enabled: bool,
     pub keys: Keys,
     pub events: Arc<EventHub>,
+    /// Where the runs' `clax.web` calls go ([`web_source`]); none: every
+    /// web call a run makes is refused.
+    pub web: Option<Arc<dyn clax_bot::WebSource>>,
     /// How far ahead the alarm is kept while one drives ([`RESUME_AFTER`]
     /// but in the Worker's tests).
     pub resume_after: Duration,
@@ -369,6 +374,10 @@ impl WorkerBot {
             parts.keys,
             Arc::new(clax_server::bot::StoreClock(parts.store)),
         );
+        let deps = match parts.web {
+            Some(web) => deps.with_web(web),
+            None => deps,
+        };
         let driver = Arc::new(Driver::new(DriverId::mint(), Arc::new(deps), parts.events));
         let kicks = Arc::new(Kicks::new(clax_server::bot::DriverRuns::of(driver.clone())));
         let bot = WorkerBot {

@@ -612,7 +612,7 @@ fn worker_bot(
     app: &mut AppState,
     test_web: Option<Arc<crate::web_source::FixtureWeb>>,
 ) -> crate::bot::WorkerBot {
-    let web = crate::bot::web_source(env, test_web);
+    let web = crate::bot::web_source(env, test_web, &app.self_base);
     let kek_secret = env
         .secret("CLAX_KEK")
         .map(|v| v.to_string())
@@ -649,6 +649,7 @@ fn worker_bot(
         enabled,
         keys: keys.clone(),
         events: events.clone(),
+        web: web.clone(),
         resume_after: resume_after(env),
     });
     // A run's end may start a follow-up: it goes to the driver as the
@@ -1611,11 +1612,16 @@ impl InstanceDo {
             Ok(v) => v,
             Err(e) => return Ok(Response::error(format!("not JSON: {e}"), 400)),
         };
-        if let Err(e) = web.load(&v) {
-            return Ok(Response::error(e, 400));
+        let fake = match clax_bot::FakeWebSource::from_fixtures(&v) {
+            Ok(f) => f,
+            Err(e) => return Ok(Response::error(e, 400)),
+        };
+        // Kept first: the source answers only what a restart would load.
+        if let Err(e) = kv_put(&self.state, WEB_FIXTURES_KEY, &v.to_string()) {
+            return Ok(Err(e));
         }
-        Ok(kv_put(&self.state, WEB_FIXTURES_KEY, &v.to_string())
-            .and_then(|()| Response::from_json(&serde_json::json!({ "ok": true }))))
+        web.replace(fake);
+        Ok(Response::from_json(&serde_json::json!({ "ok": true })))
     }
 
     /// `GET /_worker/app-data` (see [`InstanceDo::test_route`]).

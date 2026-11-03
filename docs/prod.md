@@ -165,6 +165,24 @@ confirmed:
 The token goes only to the `production` environment, which only runs on
 `prod`.
 
+### ClaxBot's web search
+
+The Worker binds Workers AI (`AI`, `crates/clax-worker/wrangler.jsonc`)
+for ClaxBot's `clax.web.search` and `clax.web.fetch`. A deploy carries the
+binding whatever the settings; nothing is billed until an admin turns
+search on (the admin's web settings, `PUT /api/admin/web`). Each search
+then bills the account through the AI Gateway the admin names (`default`
+unless set): its **AI Gateway credits**, or a **provider key stored on the
+gateway** under the alias the admin sets as `search.byok_alias` (the
+provider bills that key). Before turning search on in production, load
+credits on the account or store the provider's key on the gateway;
+without either, every search answers `web_unavailable` ("no credits and
+no provider key") and is not charged to anyone. Fetches and their Markdown
+conversion need neither. Not confirmed: whether uploading a Worker with an
+`ai` binding needs more of the API token than Workers Scripts: Edit.
+`smoke-remote.mjs` makes one real search and one real fetch once search is
+on (`crates/clax-worker/README.md`, "ClaxBot's runs").
+
 ### The smoke's agent token
 
 The deploy's smoke runs as an agent token, never the owner token, which

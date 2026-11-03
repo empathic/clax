@@ -19,7 +19,8 @@
 //!   [`FetchLimits::max_redirects`];
 //! - [`check_head`] and [`read_body`]: what a final response's headers
 //!   and body make of the page (a challenge is `web_blocked`, a body past
-//!   the byte limit `web_too_large`, images, audio and video
+//!   the byte limit `web_too_large`), by the rules every source shares
+//!   ([`page::handling`]: images, audio and video are
 //!   `web_unsupported_content_type`), and what goes to `toMarkdown()`
 //!   ([`Conversion`]);
 //! - [`parse_markdown`]: what `toMarkdown()` answered.
@@ -45,7 +46,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use clax_bot::FakeWebSource;
-use clax_bot::web::page::{decode, links_of_html, links_of_markdown, pretty_json};
+use clax_bot::web::page::{self, Handling, decode, links_of_html, links_of_markdown, pretty_json};
 use clax_bot::web::url::redirect_allowed;
 use clax_bot::web::{
     CODE_WEB_BLOCKED, CODE_WEB_TOO_LARGE, CODE_WEB_UNAVAILABLE, CODE_WEB_UNSUPPORTED_CONTENT_TYPE,
@@ -175,6 +176,31 @@ pub fn search_failure(status: u16, v: &Value) -> Option<WebError> {
         (format!("Web search failed ({what}). {next}"), retryable)
     };
     Some(WebError::new(CODE_WEB_UNAVAILABLE, message, retryable).with_request_id(request_id))
+}
+
+/// Why a `websearch()` call that threw failed: by [`search_failure`]'s
+/// rules when the error carries an HTTP `status` or a gateway `code` (a
+/// code alone stands for its status: payment required, a missing provider
+/// key and a refused request are not retryable, a rate limit is), else a
+/// retryable `web_unavailable` with the error's `message`.
+#[must_use]
+pub fn thrown_search_failure(status: Option<u16>, code: Option<&str>, message: &str) -> WebError {
+    let status = status.or(match code {
+        Some("web_search_payment_required") => Some(402),
+        Some("web_search_byok_not_configured" | "invalid_web_search_input") => Some(400),
+        Some("web_search_unauthorized") => Some(401),
+        Some("web_search_rate_limited") => Some(429),
+        Some("web_search_unavailable") => Some(503),
+        _ => None,
+    });
+    let Some(status) = status.filter(|s| !(200..300).contains(s)) else {
+        return unavailable(
+            format!("Web search failed: {message}. Try again, or continue without searching."),
+            true,
+        );
+    };
+    let body = serde_json::json!({"error": {"code": code, "status": status}});
+    search_failure(status, &body).unwrap_or_else(|| unavailable(message.to_string(), true))
 }
 
 /// The Markdown `toMarkdown()` answered (`v`, its result read as JSON: a
@@ -308,125 +334,6 @@ where
     }
 }
 
-/// How a body of a media type is read.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
-    /// `text/markdown`: as it came.
-    Markdown,
-    /// HTML or XHTML: converted.
-    Html,
-    /// PDF, Office or OpenDocument, converted under a name with this
-    /// extension.
-    Document(&'static str),
-    /// JSON: pretty-printed.
-    Json,
-    /// Other text: as it came.
-    Text,
-    /// Images, audio, video, fonts and anything else.
-    Binary,
-}
-
-/// The documents `toMarkdown()` converts, by media type, with the
-/// extension it reads them by.
-const DOCUMENTS: &[(&str, &str)] = &[
-    ("application/pdf", "pdf"),
-    (
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "docx",
-    ),
-    (
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "xlsx",
-    ),
-    ("application/vnd.ms-excel.sheet.macroenabled.12", "xlsm"),
-    (
-        "application/vnd.ms-excel.sheet.binary.macroenabled.12",
-        "xlsb",
-    ),
-    ("application/vnd.ms-excel", "xls"),
-    ("application/vnd.oasis.opendocument.spreadsheet", "ods"),
-    ("application/vnd.oasis.opendocument.text", "odt"),
-    ("application/vnd.apple.numbers", "numbers"),
-];
-
-/// The `application/` types that are text.
-const TEXT_APPLICATIONS: &[&str] = &[
-    "application/xml",
-    "application/javascript",
-    "application/x-javascript",
-    "application/ecmascript",
-    "application/x-yaml",
-    "application/yaml",
-    "application/toml",
-    "application/x-ndjson",
-    "application/sql",
-    "application/graphql",
-    "application/x-sh",
-];
-
-/// A `Content-Type`'s media type, lowercase, without its parameters.
-#[must_use]
-pub fn media_type(content_type: &str) -> String {
-    content_type
-        .split(';')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase()
-}
-
-/// How a body of `media` (a [`media_type`]) is read.
-#[must_use]
-pub fn kind_of(media: &str) -> Kind {
-    let top = media.split('/').next().unwrap_or("");
-    if matches!(top, "image" | "audio" | "video" | "font") {
-        return Kind::Binary;
-    }
-    match media {
-        "text/markdown" | "text/x-markdown" => return Kind::Markdown,
-        "text/html" | "application/xhtml+xml" => return Kind::Html,
-        "application/json" | "text/json" => return Kind::Json,
-        _ => {}
-    }
-    if let Some((_, ext)) = DOCUMENTS.iter().find(|(m, _)| *m == media) {
-        return Kind::Document(ext);
-    }
-    if media.starts_with("application/") && media.ends_with("+json") {
-        return Kind::Json;
-    }
-    if top == "text" || TEXT_APPLICATIONS.contains(&media) || media.ends_with("+xml") {
-        return Kind::Text;
-    }
-    Kind::Binary
-}
-
-/// A media type for a body served without a useful one, from its first
-/// bytes: PDF, binary (a NUL, or control bytes past one in twenty), HTML,
-/// else plain text.
-#[must_use]
-pub fn sniff(body: &[u8]) -> &'static str {
-    if body.is_empty() {
-        return "text/plain";
-    }
-    let head = &body[..body.len().min(1024)];
-    if head.starts_with(b"%PDF-") {
-        return "application/pdf";
-    }
-    let control = head
-        .iter()
-        .filter(|b| **b < 0x20 && !matches!(**b, 9 | 10 | 12 | 13 | 27))
-        .count();
-    if head.contains(&0) || control * 20 > head.len() {
-        return "application/octet-stream";
-    }
-    let text = String::from_utf8_lossy(head);
-    let start = text.trim_start().to_ascii_lowercase();
-    if start.starts_with("<!doctype html") || start.starts_with("<html") {
-        return "text/html";
-    }
-    "text/plain"
-}
-
 /// What a final response's headers already decide, before its body is
 /// read: a Cloudflare challenge (`cf-mitigated: challenge`) is
 /// `web_blocked`, and a declared length past the byte limit
@@ -532,21 +439,18 @@ fn http_error(url: &PublicUrl, status: u16) -> WebError {
 }
 
 /// What the final response at `url` (`status`, its `Content-Type` header,
-/// its whole `body`) makes in `format` (see [`Kind`]):
-///
-/// - `Auto`: Markdown and text as they came, JSON pretty-printed, HTML and
-///   documents to convert ([`Body::Convert`]: an HTML page is given as
-///   UTF-8, decoded by its charset first);
-/// - `Raw`: every textual body as it came, decoded by its charset.
-///
-/// A missing or `application/octet-stream` type is [`sniff`]ed. An HTML
-/// page's links are read from its HTML, every other page's from its text.
-/// A 4xx or 5xx with a readable body is a page with its status.
+/// its whole `body`) makes in `format`, by the shared rules
+/// ([`page::handling`], on [`page::media_type_of`]'s type: a missing or
+/// `application/octet-stream` type is sniffed): HTML and documents to
+/// convert ([`Body::Convert`]; an HTML page is given as UTF-8, decoded by
+/// its charset first, its links read from the HTML), JSON pretty-printed
+/// in `Auto`, other text as it came, its links read from it. A 4xx or 5xx
+/// with a readable body is a page with its status.
 ///
 /// # Errors
-/// All gone out: `web_unsupported_content_type` for a binary body, or a
-/// document in `Raw`; `web_unavailable` for a 4xx or 5xx whose body is
-/// empty or not text.
+/// All gone out: `web_unsupported_content_type` for what
+/// [`Handling::Unsupported`] covers; `web_unavailable` for a 4xx or 5xx
+/// whose body is empty or not text.
 pub fn read_body(
     url: &PublicUrl,
     status: u16,
@@ -554,37 +458,10 @@ pub fn read_body(
     body: Vec<u8>,
     format: Format,
 ) -> Result<Body, WebError> {
-    let served = media_type(content_type);
-    let media = if served.is_empty() || served == "application/octet-stream" {
-        sniff(&body).to_string()
-    } else {
-        served
-    };
-    let kind = kind_of(&media);
-    let textual = !matches!(kind, Kind::Binary | Kind::Document(_));
-    if status >= 400 && (body.is_empty() || !textual) {
+    let media = page::media_type_of(content_type, &body);
+    let how = page::handling(&media, format);
+    if status >= 400 && (body.is_empty() || !how.is_textual()) {
         return Err(http_error(url, status));
-    }
-    if !textual && (format == Format::Raw || kind == Kind::Binary) {
-        let raw = if matches!(kind, Kind::Document(_)) {
-            " with format \"raw\"; fetch it without"
-        } else {
-            ""
-        };
-        return Err(WebError::new(
-            CODE_WEB_UNSUPPORTED_CONTENT_TYPE,
-            format!(
-                "{} is {}, which cannot be read as text{raw}. Use another source.",
-                url.normalized(),
-                if media.is_empty() {
-                    "of no known type"
-                } else {
-                    &media
-                }
-            ),
-            false,
-        )
-        .went_out(true));
     }
     let page = |text: String, links: Vec<String>| FetchedPage {
         final_url: url.normalized().to_string(),
@@ -594,38 +471,71 @@ pub fn read_body(
         links,
         request_id: None,
     };
-    if let Kind::Document(ext) = kind {
-        return Ok(Body::Convert(Conversion {
-            name: format!("document.{ext}"),
-            mime: media.clone(),
-            bytes: body,
-            page: page(String::new(), Vec::new()),
-            html: false,
-            base: url.clone(),
-        }));
-    }
-    let text = decode(&body, content_type);
-    if kind == Kind::Html {
-        let links = links_of_html(&text, url);
-        if format == Format::Raw {
-            return Ok(Body::Page(page(text, links)));
+    let text = match how {
+        Handling::Unsupported => {
+            let raw = if page::handling(&media, Format::Auto) != Handling::Unsupported {
+                " with format \"raw\"; fetch it without"
+            } else {
+                ""
+            };
+            let what = if media.is_empty() {
+                "of no known type"
+            } else {
+                &media
+            };
+            return Err(WebError::new(
+                CODE_WEB_UNSUPPORTED_CONTENT_TYPE,
+                format!(
+                    "{} is {what}, which cannot be read as text{raw}. Use another source.",
+                    url.normalized()
+                ),
+                false,
+            )
+            .went_out(true));
         }
-        return Ok(Body::Convert(Conversion {
-            name: "page.html".into(),
-            mime: "text/html".into(),
-            bytes: text.into_bytes(),
-            page: page(String::new(), links),
-            html: true,
-            base: url.clone(),
-        }));
-    }
-    let text = match kind {
-        Kind::Json if format == Format::Auto => pretty_json(&text).unwrap_or(text),
-        _ => text,
+        Handling::Document(ext) => {
+            return Ok(Body::Convert(Conversion {
+                name: format!("document.{ext}"),
+                mime: media.clone(),
+                bytes: body,
+                page: page(String::new(), Vec::new()),
+                html: false,
+                base: url.clone(),
+            }));
+        }
+        _ => decode(&body, content_type),
     };
-    let links = links_of_markdown(&text, url);
-    Ok(Body::Page(page(text, links)))
+    Ok(match how {
+        Handling::Html => {
+            let links = links_of_html(&text, url);
+            Body::Convert(Conversion {
+                name: "page.html".into(),
+                mime: HTML_UTF8.into(),
+                bytes: text.into_bytes(),
+                page: page(String::new(), links),
+                html: true,
+                base: url.clone(),
+            })
+        }
+        Handling::RawHtml => {
+            let links = links_of_html(&text, url);
+            Body::Page(page(text, links))
+        }
+        Handling::Json => {
+            let text = pretty_json(&text).unwrap_or(text);
+            let links = links_of_markdown(&text, url);
+            Body::Page(page(text, links))
+        }
+        _ => {
+            let links = links_of_markdown(&text, url);
+            Body::Page(page(text, links))
+        }
+    })
 }
+
+/// The type an HTML page is given to `toMarkdown()` as: it is decoded
+/// first, whatever charset it came in.
+pub const HTML_UTF8: &str = "text/html; charset=utf-8";
 
 /// The test mode's source (`CLAX_TEST_ROUTES` and `CLAX_TEST_WEB`): a
 /// [`FakeWebSource`] scripted by `POST /_worker/web-fixtures`
@@ -647,9 +557,13 @@ impl FixtureWeb {
     /// What in `v` is not a fixture ([`FakeWebSource::from_fixtures`]);
     /// the source is unchanged then.
     pub fn load(&self, v: &Value) -> Result<(), String> {
-        let fake = FakeWebSource::from_fixtures(v)?;
-        *self.fake.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(fake);
+        self.replace(FakeWebSource::from_fixtures(v)?);
         Ok(())
+    }
+
+    /// Makes `fake` the source, replacing what it had.
+    pub fn replace(&self, fake: FakeWebSource) {
+        *self.fake.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(fake);
     }
 
     /// The calls since the last load ([`FakeWebSource::calls`]).
@@ -793,16 +707,23 @@ mod binding {
     /// module docs).
     pub struct BindingSource {
         ai: JsValue,
+        /// [`page::user_agent`] of the instance's public origin.
+        user_agent: String,
     }
 
     impl BindingSource {
         /// The source over `env`'s `AI` binding, when it has one. Under
         /// `wrangler dev --local` it has one whose every call throws
         /// ("needs to be run remotely"), which answers `web_unavailable`.
+        /// Its fetches name the instance at `origin` in their `User-Agent`
+        /// ([`page::user_agent`]).
         #[must_use]
-        pub fn from_env(env: &worker::Env) -> Option<BindingSource> {
+        pub fn from_env(env: &worker::Env, origin: &str) -> Option<BindingSource> {
             let ai = Reflect::get(env.as_ref(), &JsValue::from_str("AI")).ok()?;
-            ai.is_object().then_some(BindingSource { ai })
+            ai.is_object().then(|| BindingSource {
+                ai,
+                user_agent: page::user_agent(origin),
+            })
         }
 
         /// One `GET` of `url`, not following redirects; a redirect's body
@@ -814,7 +735,10 @@ mod binding {
             cancel: &CancelToken,
             deadline: f64,
         ) -> Result<Reply<JsValue>, WebError> {
-            let headers = object(&[("accept", ACCEPT.into())]);
+            let headers = object(&[
+                ("accept", ACCEPT.into()),
+                ("user-agent", self.user_agent.as_str().into()),
+            ]);
             let init = object(&[
                 ("method", "GET".into()),
                 ("redirect", "manual".into()),
@@ -852,7 +776,7 @@ mod binding {
             let status = get(&res, "status").as_f64().unwrap_or(0.0) as u16;
             let location = header(&res, "location");
             if is_redirect(status) && location.is_some() {
-                discard(&res).await;
+                discard(&res, cancel, deadline).await;
             }
             Ok(Reply {
                 status,
@@ -876,7 +800,7 @@ mod binding {
             let length = header(&res, "content-length").and_then(|l| l.trim().parse::<u64>().ok());
             let mitigated = header(&res, "cf-mitigated");
             if let Err(e) = check_head(url, reply.status, length, mitigated.as_deref(), limits) {
-                discard(&res).await;
+                discard(&res, cancel, deadline).await;
                 return Err(e);
             }
             let body = read_capped(&res, url, limits, cancel, deadline).await?;
@@ -935,11 +859,18 @@ mod binding {
         f.call1(&headers, &name.into()).ok()?.as_string()
     }
 
-    /// Cancels `res`'s body, unread.
-    async fn discard(res: &JsValue) {
+    /// Cancels `res`'s body, unread, waiting for it no longer than the
+    /// deadline or the run's cancellation.
+    async fn discard(res: &JsValue, cancel: &CancelToken, deadline: f64) {
         let body = get(res, "body");
         if body.is_object() {
-            let _ = call(&body, "cancel", &[]).await;
+            let _ = within(
+                call(&body, "cancel", &[]),
+                cancel,
+                deadline,
+                "Dropping a body",
+            )
+            .await;
         }
     }
 
@@ -981,11 +912,21 @@ mod binding {
                 return Ok(body);
             }
             let chunk = Uint8Array::new(&get(&step, "value"));
-            if body.len() as u64 + u64::from(chunk.length()) > limits.max_bytes {
-                let _ = call(&reader, "cancel", &[]).await;
+            let len = chunk.length() as usize;
+            if (body.len() + len) as u64 > limits.max_bytes {
+                let _ = within(
+                    call(&reader, "cancel", &[]),
+                    cancel,
+                    deadline,
+                    "Dropping a body",
+                )
+                .await;
                 return Err(too_large(url, limits));
             }
-            body.extend_from_slice(&chunk.to_vec());
+            // Straight from the chunk into the body, with no copy between.
+            let at = body.len();
+            body.resize(at + len, 0);
+            chunk.copy_to(&mut body[at..]);
         }
     }
 
@@ -1017,14 +958,11 @@ mod binding {
             if let Some(alias) = &q.byok_alias {
                 opts.push(("byokAlias", JsValue::from_str(alias)));
             }
+            // A thrown error may name the gateway's status or code.
             let failed = |e: JsValue| {
-                unavailable(
-                    format!(
-                        "Web search failed: {}. Try again, or continue without searching.",
-                        message(&e)
-                    ),
-                    true,
-                )
+                let status = get(&e, "status").as_f64().map(|s| s as u16);
+                let code = get(&e, "code").as_string();
+                thrown_search_failure(status, code.as_deref(), &message(&e))
             };
             let deadline = js_sys::Date::now() + SEARCH_TIMEOUT.as_millis() as f64;
             let res = within(
@@ -1164,6 +1102,36 @@ mod tests {
         )
         .unwrap();
         assert_eq!(e.request_id.as_deref(), Some("gw-9"));
+    }
+
+    #[test]
+    fn a_thrown_search_error_keeps_its_status_and_code() {
+        // Payment required, a missing provider key: not retryable.
+        let e = thrown_search_failure(Some(402), None, "Payment Required");
+        assert_eq!((e.code, e.retryable), (CODE_WEB_UNAVAILABLE, false));
+        let e = thrown_search_failure(None, Some("web_search_byok_not_configured"), "no key");
+        assert!(
+            !e.retryable && e.message.contains("provider key"),
+            "{}",
+            e.message
+        );
+        let e = thrown_search_failure(None, Some("web_search_payment_required"), "x");
+        assert!(
+            !e.retryable && e.message.contains("credits"),
+            "{}",
+            e.message
+        );
+        // A rate limit or a server error may pass.
+        assert!(thrown_search_failure(None, Some("web_search_rate_limited"), "x").retryable);
+        assert!(thrown_search_failure(Some(503), None, "x").retryable);
+        // Nothing to go by: retryable, with the error's message.
+        let e = thrown_search_failure(None, Some("ECONNRESET"), "socket hang up");
+        assert!(
+            e.retryable && e.message.contains("socket hang up"),
+            "{}",
+            e.message
+        );
+        assert!(!e.went_out);
     }
 
     #[test]
@@ -1381,37 +1349,6 @@ mod tests {
         assert_eq!((e.code, e.went_out, sent.len()), (CODE_CANCELLED, false, 0));
     }
 
-    #[test]
-    fn content_types_are_read_by_kind() {
-        for (ct, kind) in [
-            ("text/markdown; charset=utf-8", Kind::Markdown),
-            ("TEXT/HTML", Kind::Html),
-            ("application/xhtml+xml", Kind::Html),
-            ("application/pdf", Kind::Document("pdf")),
-            (
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                Kind::Document("docx"),
-            ),
-            ("application/json", Kind::Json),
-            ("application/ld+json", Kind::Json),
-            ("text/csv", Kind::Text),
-            ("application/xml", Kind::Text),
-            ("application/rss+xml", Kind::Text),
-            ("image/png", Kind::Binary),
-            ("image/svg+xml", Kind::Binary),
-            ("audio/mpeg", Kind::Binary),
-            ("video/mp4", Kind::Binary),
-            ("application/zip", Kind::Binary),
-        ] {
-            assert_eq!(kind_of(&media_type(ct)), kind, "{ct}");
-        }
-        assert_eq!(sniff(b""), "text/plain");
-        assert_eq!(sniff(b"%PDF-1.7 ..."), "application/pdf");
-        assert_eq!(sniff(b"  <!DOCTYPE html><p>x"), "text/html");
-        assert_eq!(sniff(b"a\0b"), "application/octet-stream");
-        assert_eq!(sniff(b"# Notes\n\nplain"), "text/plain");
-    }
-
     fn page_of(b: Body) -> FetchedPage {
         match b {
             Body::Page(p) => p,
@@ -1488,7 +1425,7 @@ mod tests {
         };
         assert_eq!(
             (c.name.as_str(), c.mime.as_str()),
-            ("page.html", "text/html")
+            ("page.html", "text/html; charset=utf-8")
         );
         assert_eq!(c.bytes, html.as_bytes());
         let p = c

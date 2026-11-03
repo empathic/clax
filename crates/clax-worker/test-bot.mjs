@@ -330,11 +330,13 @@ async function run(base, rid) {
   return ok(base, "GET", `/api/bot/runs/${rid}`);
 }
 
-/** Every string in `v`, depth first. */
-function strings(v) {
-  if (typeof v === "string") return [v];
-  if (v && typeof v === "object") return Object.values(v).flatMap(strings);
-  return [];
+/** The `body` of every comment in a threads answer (each object with
+ * a string `body` and an `id`, wherever it is nested), each once. */
+function commentBodies(v, seen = new Set()) {
+  if (Array.isArray(v)) return v.flatMap((x) => commentBodies(x, seen));
+  if (!v || typeof v !== "object") return [];
+  const own = typeof v.body === "string" && typeof v.id === "string" && !seen.has(v.id) ? (seen.add(v.id), [v.body]) : [];
+  return [...own, ...Object.values(v).flatMap((x) => commentBodies(x, seen))];
 }
 
 /** How far ahead the object's alarm is set, in ms; `null` with none. */
@@ -500,7 +502,7 @@ async function main() {
     check(rows.length === 2 && rows.some((t) => t.line.startsWith("web.search.") && t.qty === 1) && rows.some((t) => t.line === "web.fetch" && t.qty === 1),
       "the run is charged exactly one search and one fetch", rows);
     const wthreads = await ok(base, "GET", `/api/artifacts/${wid}/threads`);
-    const webReplies = strings(wthreads).filter((t) => t.startsWith("High water is at 06:15 today."));
+    const webReplies = commentBodies(wthreads).filter((t) => t.startsWith("High water is at 06:15 today."));
     const sources = webReplies[0]?.split("\n").reduce((at, l, i, all) => (/Sources/.test(l) ? all.slice(i) : at), null);
     check(webReplies.length === 1 && sources?.some((l) => l.includes("https://tides.example/today"))
       && !webReplies[0].includes("tides.example/week"), "the reply ends with the Sources it fetched (not those it only found)", webReplies);

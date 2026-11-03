@@ -1,4 +1,5 @@
-//! A fetched page's text: decoding a body by its declared charset,
+//! A fetched page's text: how a body is handled by its type
+//! ([`handling`]), decoding a body by its declared charset,
 //! pretty-printing JSON, the links a page holds (spec §5.2), the window a
 //! script reads (spec §6.1) and search snippets.
 
@@ -576,9 +577,269 @@ pub fn sources_markdown(pages: &[clax_store::bot_web::WebPageRow]) -> Option<Str
     Some(out)
 }
 
+/// The `User-Agent` every source sends with a fetch: `ClaxBot/1
+/// (+<origin>)`, `origin` the instance's public origin (a trailing `/`
+/// dropped), so a site can tell whose bot it is and where to ask.
+#[must_use]
+pub fn user_agent(origin: &str) -> String {
+    format!("ClaxBot/1 (+{})", origin.trim_end_matches('/'))
+}
+
+/// What a source does with a fetched body ([`handling`]). Shared by every
+/// source, so a page reads the same whichever host fetched it; the
+/// variants and their meaning are stable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Handling {
+    /// The text as it came, decoded by its charset: Markdown and other
+    /// text, and every textual body but HTML in `Raw`. Its links are read
+    /// from it ([`links_of_markdown`]).
+    Text,
+    /// HTML as it came, in `Raw`; its links are read from the HTML
+    /// ([`links_of_html`]).
+    RawHtml,
+    /// JSON, pretty-printed ([`pretty_json`]; as it came when it does not
+    /// parse), in `Auto`.
+    Json,
+    /// HTML converted to Markdown, in `Auto`; its links are read from the
+    /// HTML before conversion.
+    Html,
+    /// A PDF, Office or OpenDocument file converted to Markdown under a
+    /// name with this extension (`document.<ext>`), in `Auto`; its links
+    /// are read from the Markdown.
+    Document(&'static str),
+    /// Not read (`web_unsupported_content_type`): images, audio, video,
+    /// fonts and other binary types, and documents in `Raw`.
+    Unsupported,
+}
+
+impl Handling {
+    /// Whether the body is read as text, unconverted or converted from
+    /// HTML: what a 4xx or 5xx must be to be answered as a page.
+    #[must_use]
+    pub fn is_textual(self) -> bool {
+        matches!(
+            self,
+            Handling::Text | Handling::RawHtml | Handling::Json | Handling::Html
+        )
+    }
+}
+
+/// The documents Markdown conversion takes, by media type, with the
+/// extension it reads them by.
+const DOCUMENTS: &[(&str, &str)] = &[
+    ("application/pdf", "pdf"),
+    (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "docx",
+    ),
+    (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "xlsx",
+    ),
+    ("application/vnd.ms-excel.sheet.macroenabled.12", "xlsm"),
+    (
+        "application/vnd.ms-excel.sheet.binary.macroenabled.12",
+        "xlsb",
+    ),
+    ("application/vnd.ms-excel", "xls"),
+    ("application/vnd.oasis.opendocument.spreadsheet", "ods"),
+    ("application/vnd.oasis.opendocument.text", "odt"),
+    ("application/vnd.apple.numbers", "numbers"),
+];
+
+/// The `application/` types that are text.
+const TEXT_APPLICATIONS: &[&str] = &[
+    "application/xml",
+    "application/javascript",
+    "application/x-javascript",
+    "application/ecmascript",
+    "application/x-yaml",
+    "application/yaml",
+    "application/toml",
+    "application/x-ndjson",
+    "application/sql",
+    "application/graphql",
+    "application/x-sh",
+];
+
+/// A `Content-Type`'s media type, lowercase, without its parameters.
+#[must_use]
+pub fn media_type(content_type: &str) -> String {
+    content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
+}
+
+/// The media type a body is read as: the served one ([`media_type`]),
+/// or, when none or `application/octet-stream` was served, [`sniff`]'s.
+#[must_use]
+pub fn media_type_of(content_type: &str, body: &[u8]) -> String {
+    let served = media_type(content_type);
+    if served.is_empty() || served == "application/octet-stream" {
+        sniff(body).to_string()
+    } else {
+        served
+    }
+}
+
+/// A media type for a body served without a useful one, from its first
+/// bytes: PDF, binary (a NUL, or control bytes past one in twenty), HTML,
+/// else plain text.
+#[must_use]
+pub fn sniff(body: &[u8]) -> &'static str {
+    if body.is_empty() {
+        return "text/plain";
+    }
+    let head = &body[..body.len().min(1024)];
+    if head.starts_with(b"%PDF-") {
+        return "application/pdf";
+    }
+    let control = head
+        .iter()
+        .filter(|b| **b < 0x20 && !matches!(**b, 9 | 10 | 12 | 13 | 27))
+        .count();
+    if head.contains(&0) || control * 20 > head.len() {
+        return "application/octet-stream";
+    }
+    let text = String::from_utf8_lossy(head);
+    let start = text.trim_start().to_ascii_lowercase();
+    if start.starts_with("<!doctype html") || start.starts_with("<html") {
+        return "text/html";
+    }
+    "text/plain"
+}
+
+/// What a source does with a body of `content_type` (a `Content-Type`
+/// header or a media type; its parameters are ignored) fetched in
+/// `format` (see [`Handling`]):
+///
+/// | Type | `Auto` | `Raw` |
+/// |---|---|---|
+/// | `text/markdown`, other `text/*`, textual `application/*`, `+xml` | `Text` | `Text` |
+/// | `text/html`, `application/xhtml+xml` | `Html` | `RawHtml` |
+/// | `application/json`, `text/json`, `+json` | `Json` | `Text` |
+/// | PDF, Office, OpenDocument | `Document(ext)` | `Unsupported` |
+/// | `image/*`, `audio/*`, `video/*`, `font/*`, anything else | `Unsupported` | `Unsupported` |
+#[must_use]
+pub fn handling(content_type: &str, format: super::Format) -> Handling {
+    use super::Format::{Auto, Raw};
+    let media = media_type(content_type);
+    let media = media.as_str();
+    let top = media.split('/').next().unwrap_or("");
+    if matches!(top, "image" | "audio" | "video" | "font") {
+        return Handling::Unsupported;
+    }
+    if matches!(media, "text/html" | "application/xhtml+xml") {
+        return match format {
+            Auto => Handling::Html,
+            Raw => Handling::RawHtml,
+        };
+    }
+    if matches!(media, "application/json" | "text/json")
+        || (media.starts_with("application/") && media.ends_with("+json"))
+    {
+        return match format {
+            Auto => Handling::Json,
+            Raw => Handling::Text,
+        };
+    }
+    if let Some((_, ext)) = DOCUMENTS.iter().find(|(m, _)| *m == media) {
+        return match format {
+            Auto => Handling::Document(ext),
+            Raw => Handling::Unsupported,
+        };
+    }
+    if top == "text" || TEXT_APPLICATIONS.contains(&media) || media.ends_with("+xml") {
+        return Handling::Text;
+    }
+    Handling::Unsupported
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn handling_follows_the_type_and_the_format() {
+        use crate::web::Format::{Auto, Raw};
+        for (ct, auto, raw) in [
+            (
+                "text/markdown; charset=utf-8",
+                Handling::Text,
+                Handling::Text,
+            ),
+            ("TEXT/HTML", Handling::Html, Handling::RawHtml),
+            ("application/xhtml+xml", Handling::Html, Handling::RawHtml),
+            (
+                "application/pdf",
+                Handling::Document("pdf"),
+                Handling::Unsupported,
+            ),
+            (
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                Handling::Document("docx"),
+                Handling::Unsupported,
+            ),
+            ("application/json", Handling::Json, Handling::Text),
+            ("application/ld+json", Handling::Json, Handling::Text),
+            ("text/csv", Handling::Text, Handling::Text),
+            ("application/xml", Handling::Text, Handling::Text),
+            ("application/rss+xml", Handling::Text, Handling::Text),
+            ("image/png", Handling::Unsupported, Handling::Unsupported),
+            (
+                "image/svg+xml",
+                Handling::Unsupported,
+                Handling::Unsupported,
+            ),
+            ("audio/mpeg", Handling::Unsupported, Handling::Unsupported),
+            ("video/mp4", Handling::Unsupported, Handling::Unsupported),
+            ("font/woff2", Handling::Unsupported, Handling::Unsupported),
+            (
+                "application/zip",
+                Handling::Unsupported,
+                Handling::Unsupported,
+            ),
+            ("", Handling::Unsupported, Handling::Unsupported),
+        ] {
+            assert_eq!(handling(ct, Auto), auto, "{ct} auto");
+            assert_eq!(handling(ct, Raw), raw, "{ct} raw");
+        }
+        assert!(Handling::Html.is_textual() && Handling::Json.is_textual());
+        assert!(!Handling::Document("pdf").is_textual() && !Handling::Unsupported.is_textual());
+    }
+
+    #[test]
+    fn an_unhelpful_type_is_sniffed() {
+        assert_eq!(sniff(b""), "text/plain");
+        assert_eq!(sniff(b"%PDF-1.7 ..."), "application/pdf");
+        assert_eq!(sniff(b"  <!DOCTYPE html><p>x"), "text/html");
+        assert_eq!(sniff(b"a\0b"), "application/octet-stream");
+        assert_eq!(sniff(b"# Notes\n\nplain"), "text/plain");
+        assert_eq!(
+            media_type_of("application/octet-stream", b"plain"),
+            "text/plain"
+        );
+        assert_eq!(media_type_of("", b"%PDF-1"), "application/pdf");
+        assert_eq!(
+            media_type_of("Text/HTML; charset=x", b"%PDF-1"),
+            "text/html"
+        );
+    }
+
+    #[test]
+    fn the_user_agent_names_the_instance() {
+        assert_eq!(
+            user_agent("https://clax.example.com/"),
+            "ClaxBot/1 (+https://clax.example.com)"
+        );
+        assert_eq!(
+            user_agent("http://localhost"),
+            "ClaxBot/1 (+http://localhost)"
+        );
+    }
 
     fn base(s: &str) -> PublicUrl {
         PublicUrl::parse(s).unwrap()
