@@ -260,44 +260,44 @@ nothing is rolled back.
 
 `CLAX_KEK` is ClaxBot's key-encryption key: 64 hex digits that seal every
 model key the instance stores. Two copies exist: the Worker's secret, and
-the one in 1Password, which is the backup. No machine keeps one and no CI
-run holds one: a deploy keeps the Worker's key and never reads it back
-(Cloudflare cannot), so deploys need neither the key nor its backup. The
-backup is needed when the Worker has no key: an instance's first deploy,
-a Worker deleted or remade, or a secret removed or overwritten. Without
-both copies every stored model key is lost.
+the backup its operator keeps, outside any machine and any CI run. A
+deploy keeps the Worker's key and never reads it back (Cloudflare cannot),
+so deploys need neither the key nor its backup. The backup is needed when
+the Worker has no key: an instance's first deploy, a Worker deleted or
+remade, or a secret removed or overwritten. Without both copies every
+stored model key is lost.
 
-A new instance (dev's included; previews make their own and keep none):
-
-```
-op item create --category password --vault <vault> --title "<public host> CLAX_KEK" "password=$(openssl rand -hex 32)"
-CLAX_KEK="$(op read 'op://<vault>/<public host> CLAX_KEK/password')" just env-deploy … # its first deploy
-```
-
-A deploy to a Worker without a key uploads the one given in `CLAX_KEK`, and
-refuses when none is. Once deployed, the owner checks the 1Password copy
-is the Worker's key: Admin, Provider shows the key's fingerprint (never
-public), and this prints the copy's:
+A new instance's key (dev's included; previews make their own and keep
+none) is 64 random hex digits, `openssl rand -hex 32`, made where the
+backup is kept. A deploy to a Worker without a key uploads the one given in
+the environment's `CLAX_KEK`, and refuses when none is. Give it without
+leaving it in the shell's history or on disk:
 
 ```
-op read 'op://<vault>/<public host> CLAX_KEK/password' | xxd -r -p | shasum -a 256 | cut -c1-8
+read -rs CLAX_KEK && export CLAX_KEK   # paste the key from its backup
+just env-deploy …                      # its first deploy
+unset CLAX_KEK
+```
+
+Once deployed, the owner checks the backup is the Worker's key: Admin,
+Provider shows the key's fingerprint (never public), and this prints the
+backup's, with the key in `CLAX_KEK` as above:
+
+```
+printf %s "$CLAX_KEK" | xxd -r -p | shasum -a 256 | cut -c1-8
 ```
 
 Deploys made before this kept the backup in a file,
 `~/.config/clax/deploy/<public host>.kek` (or the record's `kek`) on the
-machine that ran the first deploy; a deploy that finds one says so. Move
-it into 1Password from that machine, check the fingerprints match, then
-delete the file:
-
-```
-op item create --category password --vault <vault> --title "clax.dev CLAX_KEK" "password=$(cat ~/.config/clax/deploy/clax.dev.kek)"
-```
+machine that ran the first deploy; a deploy that finds one says so. Keep
+that key with the backups, check the fingerprints match, then delete the
+file.
 
 When `/healthz` reports `"kek": false` (every deploy, and the drift check,
-fail on it), put the key back from 1Password:
+fail on it), put the key back from its backup:
 
 ```
-op read 'op://<vault>/clax.dev CLAX_KEK/password' | just wrangler secret put CLAX_KEK --name clax
+read -rs CLAX_KEK && printf %s "$CLAX_KEK" | just wrangler secret put CLAX_KEK --name clax; unset CLAX_KEK
 ```
 
 ## Drift

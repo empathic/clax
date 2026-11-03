@@ -25,7 +25,7 @@
 //    `smoke-remote.mjs`; keeps the Worker's `CLAX_KEK` (ClaxBot's
 //    key-encryption key), never rotated, not even by --rotate-secrets, since
 //    a new one opens no key the old one sealed, and gives a Worker without
-//    one the key in the environment's CLAX_KEK, read from 1Password (a
+//    one the key in the environment's CLAX_KEK, from its backup (a
 //    preview's alone may get a new one; deploy-lib.mjs kekPlan, docs/prod.md
 //    "CLAX_KEK"); uploads them with the deploy (`wrangler deploy
 //    --secrets-file`, so the first version already has them). A failed
@@ -433,7 +433,7 @@ async function artifactsNamespace(account, dryRun, NAMESPACE) {
   info(`Artifacts namespace ${NAMESPACE}: created${gone.code === 0 ? "" : ` (deleting the probe repository ${probe} failed: ${wranglerError(gone)})`}`);
 }
 
-/** Where deploys before CLAX_KEK moved to 1Password kept its backup: a
+/** Where deploys before its operator kept CLAX_KEK's backup kept it: a
  * file beside the record, or the record's `kek`. Only looked for, so the
  * deploy can say to move it (docs/prod.md, "CLAX_KEK"); never read. */
 function oldKekBackup(pub, record) {
@@ -855,13 +855,13 @@ async function main() {
   }
   // CLAX_KEK seals the model keys ClaxBot stores (README.md, "ClaxBot"):
   // the Worker's is kept, never rotated; one without gets the key given in
-  // CLAX_KEK, whose copy is kept in 1Password, never by the deploy
+  // CLAX_KEK, whose backup its operator keeps, never the deploy
   // (deploy-lib.mjs kekPlan, docs/prod.md "CLAX_KEK").
   const kek = kekPlan({ have: who ? have : null, given: process.env.CLAX_KEK, ephemeral: o.ephemeral, dryRun: o.dryRun });
   if (kek.error && !o.dryRun) throw new Error(kek.error);
   info(kek.error ? `a deploy would refuse: ${kek.error}` : kek.say);
   const oldBackup = oldKekBackup(pub, record);
-  if (oldBackup) info(`notice: an old CLAX_KEK backup is at ${oldBackup}: keep it in 1Password, check its fingerprint in Admin, Provider, then delete it here (docs/prod.md, "CLAX_KEK")`);
+  if (oldBackup) info(`notice: an old CLAX_KEK backup is at ${oldBackup}: keep it with the instance's backups, check its fingerprint in Admin, Provider, then delete it here (docs/prod.md, "CLAX_KEK")`);
   if (kek.upload) secrets = { ...(secrets ?? {}), CLAX_KEK: kek.upload };
   if (github.client_id) {
     let gh = process.env.GITHUB_CLIENT_SECRET?.trim();
@@ -993,7 +993,7 @@ async function main() {
   // ClaxBot's stored keys open only under CLAX_KEK: an instance that
   // reports none has lost it, or was never given one.
   const kekLost = healthy && kekReported === false;
-  if (kekLost) info(`WARNING: https://${pub}/healthz reports no CLAX_KEK: put the instance's key back from 1Password (docs/prod.md, "CLAX_KEK")`);
+  if (kekLost) info(`WARNING: https://${pub}/healthz reports no CLAX_KEK: put the instance's key back from its backup (docs/prod.md, "CLAX_KEK")`);
   if (!healthy) {
     info(`not healthy within ${o.wait} s. Check: the zone of ${pub} is on account ${account}; ` +
       `Workers > ${o.name} > Settings > Domains & Routes lists ${pub} and *.${site}/*; \`npx wrangler tail ${o.name}\``);

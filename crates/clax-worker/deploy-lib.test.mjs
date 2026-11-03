@@ -106,11 +106,11 @@ test("CLAX_KEK: the Worker's is kept; one without gets the key given; only a pre
   assert.match(fresh.upload, /^[0-9a-f]{64}$/);
   assert.doesNotMatch(fresh.say, new RegExp(fresh.upload));
   assert.equal(kekPlan({ have: [], given: null, ephemeral: true, dryRun: true }).upload, null);
-  // dev's or prod's without one, and none given: refused, naming 1Password.
+  // dev's or prod's without one, and none given: refused, naming its backup.
   for (const dryRun of [false, true]) {
     const refused = kekPlan({ have: [], given: null, dryRun });
     assert.equal(refused.upload, null);
-    assert.match(refused.error, /no CLAX_KEK and none was given: .*1Password/);
+    assert.match(refused.error, /no CLAX_KEK and none was given: .*from its backup/);
   }
   // A key given that is not one is refused, whatever the Worker has.
   for (const have of [[], ["CLAX_KEK"], null]) {
@@ -296,7 +296,7 @@ test("a redeploy prints no first-time setup text, whatever else it uploaded", ()
     for (const re of FIRST_TIME) assert.doesNotMatch(t, re, JSON.stringify(generated));
     assert.match(t, /Record: +\/r\/clax\.example\.com\.json/);
     assert.match(t, /Logs: +npx wrangler tail clax/);
-    // Its backup is 1Password's, never a file the deploy keeps.
+    // Its backup is its operator's, never a file the deploy keeps.
     assert.doesNotMatch(t, /CLAX_KEK|\.kek/);
   }
 });

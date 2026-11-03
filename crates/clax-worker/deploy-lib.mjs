@@ -215,8 +215,8 @@ const KEK_DOC = 'docs/prod.md, "CLAX_KEK"';
 
 /** What the deploy does about `CLAX_KEK`, ClaxBot's key-encryption key,
  * given `have`, the secret names the Worker has (`null` without a login),
- * `given`, the key in the deploy's CLAX_KEK (read from 1Password by its
- * operator; never from a file the deploy keeps), and whether the Worker is
+ * `given`, the key in the deploy's CLAX_KEK (from the backup its operator
+ * keeps; never from a file the deploy keeps), and whether the Worker is
  * a preview's (`ephemeral`). Answers `upload` (the key to upload, or
  * null), `say` (the line it prints, never the key) and `error` (why the
  * deploy refuses, or null):
@@ -227,8 +227,8 @@ const KEK_DOC = 'docs/prod.md, "CLAX_KEK"';
  * - a Worker without one gets `given`, which must be 64 hex digits;
  * - a preview's gets a new key, kept nowhere else (its stored keys go with
  *   it);
- * - any other is refused: its key is made and kept in 1Password by its
- *   operator, never by a deploy, so no machine is the only copy.
+ * - any other is refused: its key is made and backed up by its operator,
+ *   outside any machine, never by a deploy, so no machine is the only copy.
  *
  * A dry run uploads and generates nothing. */
 export function kekPlan({ have, given, ephemeral = false, dryRun = false }) {
@@ -247,8 +247,8 @@ export function kekPlan({ have, given, ephemeral = false, dryRun = false }) {
     upload: null,
     say: "",
     error:
-      "the Worker has no CLAX_KEK and none was given: give the instance's key from 1Password " +
-      `(CLAX_KEK="$(op read 'op://<vault>/<item>/password')"), or make one and keep it in 1Password first (${KEK_DOC})`,
+      "the Worker has no CLAX_KEK and none was given: give the instance's key from its backup in CLAX_KEK, " +
+      `or make one and back it up first (${KEK_DOC})`,
   };
 }
 

@@ -365,14 +365,13 @@ npx wrangler secret put CLAX_KEK       # ClaxBot's key-encryption key: 64 hex di
 `deploy.mjs` generates and uploads both on the first deploy. `CLAX_KEK`,
 ClaxBot's key-encryption key (64 hex digits), it never makes (but for a
 preview, whose stored keys go with it) and never keeps: its operator makes
-it and keeps it in 1Password, and a deploy to a Worker without one uploads
-the key given in the environment's `CLAX_KEK`
-(`CLAX_KEK="$(op read 'op://<vault>/<item>/password')"`), refusing when
-none is given ([docs/prod.md](../../docs/prod.md), "CLAX_KEK"). Without the
-1Password copy and the Worker's secret every stored model key is lost.
+it and keeps its backup, outside any machine, and a deploy to a Worker
+without one uploads the key given in the environment's `CLAX_KEK`, refusing
+when none is given ([docs/prod.md](../../docs/prod.md), "CLAX_KEK").
+Without the backup and the Worker's secret every stored model key is lost.
 `/healthz` says whether the instance has a key (`kek`), and every deploy
 checks it; Admin, Provider shows which, by fingerprint, to check the
-1Password copy against. `CLAX_KEK` is read from the Worker's secrets alone
+backup against. `CLAX_KEK` is read from the Worker's secrets alone
 (a plain var of the name is ignored). It is never rotated,
 `--rotate-secrets` included: a new one opens none of the model keys the old
 one sealed (to replace it, clear the stored keys first and set them again

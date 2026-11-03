@@ -235,7 +235,7 @@ jobs:
           # that reports none has lost it.
           kek="$(python3 -c 'import json, sys; print(json.loads(sys.argv[1]).get("kek"))' "$health")"
           if [ "$kek" = False ]; then
-            echo "::error::https://$HOST reports no CLAX_KEK: put it back from 1Password (docs/prod.md, \"CLAX_KEK\")"
+            echo "::error::https://$HOST reports no CLAX_KEK: put it back from its backup (docs/prod.md, \"CLAX_KEK\")"
             exit 1
           fi
           # /healthz may name the commit in full or by a prefix of it.
