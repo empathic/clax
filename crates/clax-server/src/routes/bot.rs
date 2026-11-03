@@ -276,6 +276,11 @@ pub async fn me_put(
     let v = s
         .store_call(move |st| {
             let ctx = audit.resolve(st)?;
+            // Everything that can refuse is checked before anything is
+            // written, so a refused request changes nothing.
+            if b.use_own.is_some() && st.secret_meta(&SecretSlot::Own(person.clone()))?.is_none() {
+                return Err(CoreError::NotFound);
+            }
             if let Some(on) = b.use_own {
                 st.set_use_own(&ctx, &person, on)?;
             }

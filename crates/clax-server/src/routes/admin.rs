@@ -519,12 +519,9 @@ pub fn web_view(st: &Store, bot: &Bot) -> clax_core::Result<Value> {
     let mut groups: serde_json::Map<String, Value> = serde_json::Map::new();
     let mut sources = serde_json::Map::new();
     for (group, field, setting) in WEB {
-        let value = eff
-            .get(setting)
-            .map(|e| e.value.clone())
-            .unwrap_or(Value::Null);
-        let source = eff
-            .get(setting)
+        let entry = eff.get(setting);
+        let value = entry.map(|e| e.value.clone()).unwrap_or(Value::Null);
+        let source = entry
             .map(|e| e.source.label())
             .unwrap_or_else(|| "default".into());
         groups

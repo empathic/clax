@@ -2444,6 +2444,7 @@ async fn admin_web_round_trips() {
         "0123456789abcdef0123456789abcdef"
     );
     assert_eq!(v["sources"]["search.provider"], "db");
+    assert_eq!(events(ts, "admin.provider").len(), 1);
     // null puts a field back to its default.
     let (s, v) = call(
         ts,
@@ -2567,6 +2568,13 @@ async fn the_token_is_write_only() {
     )
     .await;
     assert_eq!((s, code(&v)), (403, "not_for_agents"), "{v}");
+    for (m, path, body) in [
+        (Method::PUT, "/api/admin/web", json!({})),
+        (Method::DELETE, "/api/admin/web/token", Value::Null),
+    ] {
+        let (s, v) = call(ts, &Who::Agent, m.clone(), path, body).await;
+        assert_eq!((s, code(&v)), (403, "not_for_agents"), "{m} {path}: {v}");
+    }
 }
 
 #[tokio::test]
