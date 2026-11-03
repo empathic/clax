@@ -50,9 +50,9 @@ kustomize's `images` (`newTag`), which `scripts/bump-version.sh` writes
 with every other version, so the manifests at a release's tag name the
 image that tag publishes, and anyone can pull it. **No release publishes
 the image or ships `deploy/k8s` yet**: the first to do both is the first
-release after 0.6.0, whose tag predates them. Until then, and for your own
-changes, build the image and push it to a registry your cluster can pull
-from:
+release after 0.6.0, whose tag predates them. Until then, run a candidate
+from main (below); for your own changes, build the image and push it to a
+registry your cluster can pull from:
 
 ```
 docker build -f deploy/Dockerfile \
@@ -65,6 +65,29 @@ This builds the web UI with the pinned Node and pnpm, then the release
 target platform, so later builds rebuild only what changed), then a slim
 Debian runtime that runs as UID 10001. Base images are pinned by digest.
 `CLAX_BUILD_COMMIT` is the commit `/status` reports; without it, `unknown`.
+
+**Candidates from main.** Every push to `main` publishes the image the
+same way (both platforms, each smoke-tested, signed), tagged
+`:sha-<commit>` (seven hex digits) and `:main`, for testing what is at
+head before a release. `:main` moves with every push, so it is not for
+production, for the reason there is no `:latest`: a rescheduled pod could
+run another build than its siblings. Deploy a candidate by its commit's
+tag, in your overlay (with `deploy/k8s/release` at the same commit as its
+resource, The image's comment):
+
+```yaml
+images:
+  - name: ghcr.io/empathic/clax-fleet
+    newTag: sha-<commit>
+```
+
+or render the manifests pinned to its digest, as a release's are:
+`scripts/render-fleet-manifests.sh ghcr.io/empathic/clax-fleet@sha256:<digest> clax-fleet.yaml`
+(`docker buildx imagetools inspect ghcr.io/empathic/clax-fleet:sha-<commit>`
+prints the digest). Its signature names `@refs/heads/main` where a
+release's names `@refs/tags/v…`. The first push creates the `clax-fleet`
+package on ghcr.io private, and the workflow's anonymous-pull check fails
+until an administrator of the organization makes it public.
 
 In a cluster of your own, deploy from an overlay that names a release's
 manifests and your catalog, so upgrading never conflicts with local edits.
