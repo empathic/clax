@@ -1,7 +1,8 @@
 // The Cloudflare API calls deploy.mjs and teardown.mjs make that wrangler
 // has no command for: a site domain's wildcard DNS record, the preview
 // bucket's lifecycle rule, and a preview's teardown (its routes, custom
-// domains, DNS record and Worker). Each call takes an API token
+// domains, DNS record, Worker, queue and Artifacts repositories; wrangler
+// is not installed where a teardown runs). Each call takes an API token
 // (CLOUDFLARE_API_TOKEN) and answers the API's `result`, or throws naming
 // the call and the API's errors.
 //
@@ -13,6 +14,10 @@
 //   custom domains https://developers.cloudflare.com/api/resources/workers/subresources/domains/
 //   scripts        https://developers.cloudflare.com/api/resources/workers/subresources/scripts/
 //   R2 lifecycle   https://developers.cloudflare.com/api/resources/r2/subresources/buckets/subresources/lifecycle/
+//   queues         https://developers.cloudflare.com/api/resources/queues/
+//   Artifacts      /accounts/<ID>/artifacts/namespaces/<namespace>/repos[/<name>],
+//                  the paths wrangler's artifacts commands call (no public
+//                  reference during the beta)
 
 const BASE = () => (process.env.CLOUDFLARE_API_BASE || "https://api.cloudflare.com/client/v4").replace(/\/$/, "");
 
@@ -90,6 +95,19 @@ export function cloudflare(token) {
     /** Deletes the Worker `name` with its Durable Objects (`force`); a
      * Worker that is gone already is no error. */
     deleteScript: (account, name) => call("DELETE", `/accounts/${account}/workers/scripts/${q(name)}?force=true`, { missingOk: true }),
+    /** The account's queues named `name`, or all of them without one:
+     * `{ queue_id, queue_name }`. */
+    queues: (account, name) => all(`/accounts/${account}/queues${name ? `?name=${q(name)}` : ""}`),
+    deleteQueue: (account, id) => call("DELETE", `/accounts/${account}/queues/${id}`, { missingOk: true }),
+    /** The repositories in the Artifacts namespace `namespace`: `{ name }`;
+     * none when the namespace does not exist (a namespace is made by its
+     * first repository). */
+    artifactsRepos: async (account, namespace) => {
+      const path = `/accounts/${account}/artifacts/namespaces/${q(namespace)}/repos`;
+      return (await call("GET", path, { missingOk: true })) === null ? [] : all(path);
+    },
+    deleteArtifactsRepo: (account, namespace, name) =>
+      call("DELETE", `/accounts/${account}/artifacts/namespaces/${q(namespace)}/repos/${q(name)}`, { missingOk: true }),
     /** The R2 bucket's lifecycle rules. */
     lifecycle: (account, bucket) => call("GET", `/accounts/${account}/r2/buckets/${q(bucket)}/lifecycle`),
     /** Replaces the R2 bucket's lifecycle rules with `rules`. */

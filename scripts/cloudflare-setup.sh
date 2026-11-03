@@ -124,8 +124,9 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-# The environment's settings file, and whether it is a preview (its
-# versions in memory: no store to ask for). deploy.mjs checks the name.
+# The environment's settings file, and whether it is a preview (its store
+# is Artifacts unless given: no store to ask for). deploy.mjs checks the
+# name.
 preview=0
 case "$env_name" in
   prod) ;;
@@ -158,8 +159,8 @@ fi
 [ -n "$set_site" ] && SITE_DOMAIN="$set_site"
 [ -n "$set_zone" ] && SITE_ZONE="$set_zone"
 [ -n "$set_store" ] && STORE="$set_store"
-# A preview's versions are in memory (deploy.mjs refuses any other store).
-[ "$preview" = 1 ] && [ -z "$STORE" ] && STORE="memory"
+# A preview's versions are on Artifacts unless --store says otherwise.
+[ "$preview" = 1 ] && [ -z "$STORE" ] && STORE="artifacts"
 [ -n "$set_gh_id" ] && GITHUB_CLIENT_ID="$set_gh_id"
 [ -n "$set_owner" ] && OWNER_GITHUB="$set_owner"
 [ "$set_production" = 1 ] && PRODUCTION=1

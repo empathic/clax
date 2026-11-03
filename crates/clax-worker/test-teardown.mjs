@@ -1,10 +1,10 @@
 // Tests of teardown.mjs and cloudflare-api.mjs against a fake Cloudflare
 // API and a fake GitHub API on a loopback port (CLOUDFLARE_API_BASE,
 // GITHUB_API_BASE): a preview's teardown deletes its route, DNS record,
-// custom domain and Worker and nothing of any other Worker, again without
-// error, never dev or prod; a dry run deletes nothing; the reaper tears
-// down the previews of closed and missing pull requests and keeps the
-// others.
+// custom domain, Worker, queue and Artifacts repositories and nothing of
+// any other environment, again without error, never dev or prod; a dry run
+// deletes nothing; the reaper tears down the previews of closed and missing
+// pull requests, a half-torn-down one's included, and keeps the others.
 //
 //   node --test crates/clax-worker/test-teardown.mjs
 import assert from "node:assert/strict";
@@ -36,6 +36,15 @@ function fresh() {
     ],
     scripts: ["clax", "clax-dev", "clax-pr-12", "clax-pr-13"].map((id) => ({ id })),
     lifecycle: [],
+    // Each queue's consumer is the Worker of the same environment.
+    queues: [
+      { queue_id: "q", queue_name: "clax-artifacts-events", consumer: "clax" },
+      { queue_id: "qdev", queue_name: "clax-artifacts-events-dev", consumer: "clax-dev" },
+      { queue_id: "q12", queue_name: "clax-artifacts-events-pr-12", consumer: "clax-pr-12" },
+      { queue_id: "q13", queue_name: "clax-artifacts-events-pr-13", consumer: "clax-pr-13" },
+    ],
+    // Artifacts namespaces and their repositories' names.
+    repos: { clax: ["prod1"], "clax-dev": ["dev1"], "clax-pr-12": ["a1", "b2"], "clax-pr-13": ["c3"] },
   };
   calls = [];
 }
@@ -92,6 +101,36 @@ const server = createServer((req, res) => {
       state.scripts = state.scripts.filter((s) => s.id !== m[1]);
       return ok(res, null);
     }
+    if (p === `/cf/accounts/${ACCOUNT}/queues` && req.method === "GET") {
+      const name = url.searchParams.get("name");
+      return ok(res, state.queues.filter((q) => !name || q.queue_name === name).map(({ queue_id, queue_name }) => ({ queue_id, queue_name })), { page: 1, total_pages: 1 });
+    }
+    if ((m = /^\/cf\/accounts\/acct0\/queues\/(.+)$/.exec(p)) && req.method === "DELETE") {
+      const q = state.queues.find((x) => x.queue_id === m[1]);
+      if (!q) {
+        res.writeHead(404, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ success: false, errors: [{ code: 11000, message: "Queue does not exist" }] }));
+      }
+      if (state.scripts.some((x) => x.id === q.consumer)) {
+        res.writeHead(400, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ success: false, errors: [{ code: 11005, message: "Queue still has a consumer" }] }));
+      }
+      state.queues = state.queues.filter((x) => x !== q);
+      return ok(res, {});
+    }
+    if ((m = /^\/cf\/accounts\/acct0\/artifacts\/namespaces\/([^/]+)\/repos$/.exec(p)) && req.method === "GET") {
+      const repos = state.repos[decodeURIComponent(m[1])];
+      if (!repos) {
+        res.writeHead(404, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ success: false, errors: [{ code: 404, message: "namespace not found" }] }));
+      }
+      return ok(res, repos.map((name) => ({ name })), { page: 1, total_pages: 1 });
+    }
+    if ((m = /^\/cf\/accounts\/acct0\/artifacts\/namespaces\/([^/]+)\/repos\/([^/]+)$/.exec(p)) && req.method === "DELETE") {
+      const ns = decodeURIComponent(m[1]);
+      state.repos[ns] = (state.repos[ns] ?? []).filter((r) => r !== decodeURIComponent(m[2]));
+      return ok(res, null);
+    }
     if (p === `/cf/accounts/${ACCOUNT}/r2/buckets/clax-assets-preview/lifecycle` && req.method === "GET") return ok(res, { rules: state.lifecycle });
     if (p === `/cf/accounts/${ACCOUNT}/r2/buckets/clax-assets-preview/lifecycle` && req.method === "PUT") {
       state.lifecycle = JSON.parse(body).rules;
@@ -126,17 +165,30 @@ beforeEach(fresh);
 
 const api = () => cloudflare("t0ken");
 
-test("a preview's teardown deletes its route, DNS record, custom domain and Worker, and nothing else", async () => {
+test("a preview's teardown deletes its route, DNS record, custom domain, Worker, queue and repositories, and nothing else", async () => {
   const did = await teardown(api(), { name: "pr-12", account: ACCOUNT, siteZone: ZONE });
   assert.deepEqual(did, [
     "route *.pr-12.preview.run/*",
     "DNS record *.pr-12.preview.run (AAAA)",
     "custom domain pr-12.preview.dev",
     "Worker clax-pr-12 and its Durable Objects",
+    "queue clax-artifacts-events-pr-12",
+    "Artifacts repository clax-pr-12/a1",
+    "Artifacts repository clax-pr-12/b2",
   ]);
   assert.deepEqual(state.routes.map((r) => r.id), ["r13"]);
   assert.deepEqual(state.dns.map((d) => d.id), ["d13"]);
   assert.deepEqual(state.domains.map((d) => d.id), ["c13"]);
+  assert.deepEqual(state.scripts.map((s) => s.id), ["clax", "clax-dev", "clax-pr-13"]);
+  assert.deepEqual(state.queues.map((q) => q.queue_id), ["q", "qdev", "q13"]);
+  assert.deepEqual(state.repos, { clax: ["prod1"], "clax-dev": ["dev1"], "clax-pr-12": [], "clax-pr-13": ["c3"] });
+});
+
+test("a preview that never had Artifacts (deployed with --store memory) is torn down without error", async () => {
+  state.queues = state.queues.filter((q) => q.queue_id !== "q12");
+  delete state.repos["clax-pr-12"];
+  const did = await teardown(api(), { name: "pr-12", account: ACCOUNT, siteZone: ZONE });
+  assert.equal(did.length, 4, did.join("\n"));
   assert.deepEqual(state.scripts.map((s) => s.id), ["clax", "clax-dev", "clax-pr-13"]);
 });
 
@@ -150,9 +202,10 @@ test("a preview torn down already is torn down again without error", async () =>
 
 test("a dry run deletes nothing and names what it would", async () => {
   const did = await teardown(api(), { name: "pr-13", account: ACCOUNT, siteZone: ZONE, dryRun: true });
-  assert.equal(did.length, 4);
+  assert.equal(did.length, 6, did.join("\n"));
   assert.equal(calls.filter((c) => c.startsWith("DELETE")).length, 0, calls.join("\n"));
   assert.equal(state.scripts.length, 4);
+  assert.equal(state.queues.length, 4);
 });
 
 test("dev and prod are never torn down", async () => {
@@ -164,10 +217,15 @@ test("dev and prod are never torn down", async () => {
 
 test("the reaper tears down closed and missing pull requests' previews and keeps the rest", async () => {
   state.scripts.push({ id: "clax-pr-14" }, { id: "clax-pr-15" });
-  pulls = { 12: "closed", 13: "open", 15: "error" };
+  // pr-16's Worker is gone already, its queue and repository left behind.
+  state.queues.push({ queue_id: "q16", queue_name: "clax-artifacts-events-pr-16", consumer: "clax-pr-16" });
+  state.repos["clax-pr-16"] = ["d4"];
+  pulls = { 12: "closed", 13: "open", 15: "error", 16: "closed" };
   const r = await reap(api(), { account: ACCOUNT, siteZone: ZONE, repo: "empathic/clax" });
-  assert.deepEqual(r, { reaped: ["clax-pr-12", "clax-pr-14"], kept: ["clax-pr-13"], failed: ["clax-pr-15"] });
+  assert.deepEqual(r, { reaped: ["clax-pr-12", "clax-pr-14", "clax-pr-16"], kept: ["clax-pr-13"], failed: ["clax-pr-15"] });
   assert.deepEqual(state.scripts.map((s) => s.id), ["clax", "clax-dev", "clax-pr-13", "clax-pr-15"]);
+  assert.deepEqual(state.queues.map((q) => q.queue_id), ["q", "qdev", "q13"]);
+  assert.deepEqual(state.repos["clax-pr-16"], []);
 });
 
 test("only clax-pr-<N> Workers are previews to reap", () => {

@@ -117,19 +117,20 @@ export const PREVIEW_ASSET_DAYS = 30;
  * (docs/environments.md): `prod` (the default; clax.dev's own names),
  * `dev`, or a preview's name (`pr-<N>`, or any other lowercase name of
  * letters, digits and inner hyphens, at most 40 characters). Answers
- * `{ env, worker, bucket, queue, namespace, ephemeral }`: each persistent
- * environment has a bucket, queue and Artifacts namespace of its own (a
- * queue takes one consumer Worker, and asset keys and repository names
- * carry no instance); a preview is ephemeral, keeps its versions in the
- * RepoDO stand-in (no queue, no namespace) and shares `PREVIEW_BUCKET`.
- * Throws on any other name. */
+ * `{ env, worker, bucket, queue, namespace, ephemeral }`: every
+ * environment has a queue and Artifacts namespace of its own (a queue takes
+ * one consumer Worker, and repository names carry no instance), and each
+ * persistent one a bucket of its own (asset keys carry no instance either);
+ * a preview is ephemeral (teardown.mjs deletes its Worker, queue and
+ * repositories) and shares `PREVIEW_BUCKET`, whose objects expire. Throws
+ * on any other name. */
 export function envOf(name = "prod") {
   if (name === "prod") return { env: "prod", worker: "clax", bucket: "clax-assets", queue: "clax-artifacts-events", namespace: "clax", ephemeral: false };
   if (name === "dev") return { env: "dev", worker: "clax-dev", bucket: "clax-assets-dev", queue: "clax-artifacts-events-dev", namespace: "clax-dev", ephemeral: false };
   if (!/^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/.test(String(name))) {
     throw new Error(`--env takes prod, dev or a preview's name (lowercase letters, digits and inner hyphens, at most 40; e.g. pr-12), not ${name}`);
   }
-  return { env: name, worker: `clax-${name}`, bucket: PREVIEW_BUCKET, queue: null, namespace: null, ephemeral: true };
+  return { env: name, worker: `clax-${name}`, bucket: PREVIEW_BUCKET, queue: `clax-artifacts-events-${name}`, namespace: `clax-${name}`, ephemeral: true };
 }
 
 /** The zone a site domain's wildcard route is on: `zone` when given (the
@@ -155,8 +156,9 @@ export function wildcardRecordOf(site, zone) {
  * setting given as a flag (a CI run has no record and asks nothing), and
  * none of the options that need a person. Throws naming each flag
  * missing or refused. `env` is the environment (CLOUDFLARE_ACCOUNT_ID).
- * A preview (`o.ephemeral`) keeps its versions in memory, so needs no
- * --store, and needs GitHub sign-in: nobody can sign in to it otherwise. */
+ * A preview (`o.ephemeral`) needs no --store (its default, Artifacts, is
+ * the only one CI deploys it with), and needs GitHub sign-in: nobody can
+ * sign in to it otherwise. */
 export function checkCiOptions(o, env = {}) {
   const missing = [];
   if (!o.public && !o.zone) missing.push("--public <host>");

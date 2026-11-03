@@ -9,7 +9,7 @@ from GitHub Actions:
 |---|---|---|---|---|---|
 | `prod` | `clax` | `clax.dev`, `<ID>.clax.run` | Artifacts (bucket `clax-assets`, queue `clax-artifacts-events`, namespace `clax`) | every push to `prod` (`deploy-prod.yml`, [docs/prod.md](prod.md)) | `production` |
 | `dev` | `clax-dev` | `PUBLIC_HOST`, `<ID>.SITE_DOMAIN` | Artifacts (bucket `clax-assets-dev`, queue `clax-artifacts-events-dev`, namespace `clax-dev`) | every push to `main` whose `ci` run passes (`deploy-dev.yml`) | `dev` |
-| `pr-<N>` | `clax-pr-<N>` | `pr-<N>.PREVIEW_HOST_ZONE`, `<ID>.pr-<N>.PREVIEW_SITE_ZONE` | memory (the RepoDO stand-in), assets in the shared bucket `clax-assets-preview` | every push to a pull request from a branch of this repository (`preview.yml`) | `preview` |
+| `pr-<N>` | `clax-pr-<N>` | `pr-<N>.PREVIEW_HOST_ZONE`, `<ID>.pr-<N>.PREVIEW_SITE_ZONE` | Artifacts (queue `clax-artifacts-events-pr-<N>`, namespace `clax-pr-<N>`), assets in the shared bucket `clax-assets-preview` | every push to a pull request from a branch of this repository (`preview.yml`) | `preview` |
 
 The `clax-dev` Worker is the dev environment, not clax.dev; clax.dev is
 `prod`'s Worker `clax` (and `just clax-dev-deploy` deploys it).
@@ -31,11 +31,14 @@ name refers to:
   an asset's key (`assets/<artifact ID>/…`) nor a repository's name says
   which instance it belongs to.
 - **A preview** (`pr-<N>`, or any lowercase name of at most 40 characters)
-  keeps its versions in memory, so it needs no queue, namespace or event
-  subscription per pull request. Its assets go to the one bucket every
-  preview shares, `clax-assets-preview`, whose objects expire 30 days after
-  they are written (an R2 lifecycle rule `deploy.mjs` sets), so a torn-down
-  preview's assets do not outlive it by more than that.
+  keeps its versions on Artifacts, as dev and prod do, in a queue
+  (`clax-artifacts-events-pr-<N>`) and namespace (`clax-pr-<N>`) of its
+  own, made by its first deploy and deleted by its teardown. Its assets go
+  to the one bucket every preview shares, `clax-assets-preview`, whose
+  objects expire 30 days after they are written (an R2 lifecycle rule
+  `deploy.mjs` sets), so a torn-down preview's assets do not outlive it by
+  more than that. (`--store memory` still deploys one on the RepoDO
+  stand-in, by hand.)
 
 Each environment keeps its laptop settings in a file of its own beside
 prod's `setup.env`: `~/.config/clax/deploy/setup.<name>.env`. The deploy
@@ -74,15 +77,18 @@ never be the same site, to a browser, as Clax).
   stay (they live in its Durable Objects).
 - **Close or merge:** `preview.yml`'s teardown job runs
   `teardown.mjs pr-<N>`, which deletes the route, the DNS record, the
-  custom domain and the Worker with its Durable Objects.
+  custom domain, the Worker with its Durable Objects, then its queue and
+  every repository in its namespace. The namespace itself stays, empty:
+  Cloudflare's API deletes repositories, not namespaces.
 - **Missed closes:** GitHub sends no `closed` event when it cannot build a
   pull request's merge ref. `preview-reaper.yml` runs daily (and by hand,
-  with a dry run) `teardown.mjs --reap`, which tears down every
-  `clax-pr-<N>` Worker whose pull request is closed or gone.
+  with a dry run) `teardown.mjs --reap`, which tears down every preview
+  whose pull request is closed or gone: each `clax-pr-<N>` Worker, and
+  each `clax-artifacts-events-pr-<N>` queue a teardown left behind.
 
 A preview runs no smoke: the deploy's health wait and site host check
-fail its run. It does not exercise the Artifacts store, its queue or the
-diagnostics; dev does, on every merge to `main`.
+fail its run. It runs on the Artifacts store, but nothing checks its queue
+path or the diagnostics; dev's smoke does, on every merge to `main`.
 
 Only writers' branches get previews: `preview.yml` deploys a pull request
 whose branch is in this repository, which only someone with write access
@@ -130,22 +136,23 @@ their zones on it, apart from clax.dev's: neither token can reach prod's
 Worker `clax`, its Durable Objects or its bucket `clax-assets`, whatever a
 branch's run does with it. Each environment names that account in its
 secret `CLOUDFLARE_ACCOUNT_ID`. The account needs Workers Paid (Durable
-Objects and the Worker Loader) and, for dev, the Artifacts beta.
+Objects and the Worker Loader) and the Artifacts beta.
 
-Give each environment its own token, limited to that account and to its
-zones:
+dev and the previews need the same permissions, so one token, limited to
+that account and to its zones, can serve both environments (or make one
+each, the same):
 
-| Scope | Permission | dev | preview |
-|---|---|---|---|
-| Account | Workers Scripts: Edit | yes | yes (deploy, and teardown's deletes) |
-| Account | Workers R2 Storage: Edit | yes | yes (the bucket and its lifecycle rule) |
-| Account | Queues: Edit | yes | no |
-| Account | Artifacts: Edit | yes | no |
-| Account | Account Settings: Read | yes | yes |
-| Zone (public host's) | Zone: Read | yes | yes |
-| Zone (site domain's) | Workers Routes: Edit, Zone: Read | yes | yes |
-| Zone (site domain's) | DNS: Edit | when `SITE_ZONE` is set | yes (the `*.pr-<N>` records) |
-| User | User Details: Read, Memberships: Read | yes | yes |
+| Scope | Permission | For |
+|---|---|---|
+| Account | Workers Scripts: Edit | deploys, and teardown's deletes |
+| Account | Workers R2 Storage: Edit | the buckets, and the preview bucket's lifecycle rule |
+| Account | Queues: Edit | each environment's queue, its consumer, and teardown's deletes |
+| Account | Artifacts: Edit | each environment's namespace, and teardown's repository deletes |
+| Account | Account Settings: Read | the login check |
+| Zone (public host's) | Zone: Read | the custom domain |
+| Zone (site domain's) | Workers Routes: Edit, Zone: Read | the site route |
+| Zone (site domain's) | DNS: Edit | the `*.pr-<N>` records (and dev's, when `SITE_ZONE` is set) |
+| User | User Details: Read, Memberships: Read | the login check |
 
 The same caveats as prod's token apply ([docs/prod.md](prod.md), "The
 Cloudflare API token"): some permission names are not confirmed by
@@ -158,8 +165,8 @@ Cloudflare's docs.
 1. Make the account dev and the previews use (not clax.dev's), on Workers
    Paid, with R2 turned on (Storage & databases, R2; until it is, every
    deploy fails making its bucket with Cloudflare's code 10042) and the
-   Artifacts beta turned on (Storage & databases, Artifacts) for dev. `just wrangler login`, then `just wrangler whoami`
-   lists the accounts the login sees, with their IDs: the new one's is
+   Artifacts beta turned on (Storage & databases, Artifacts).
+   `just wrangler login`, then `just wrangler whoami` lists the accounts the login sees, with their IDs: the new one's is
    the environments' `CLOUDFLARE_ACCOUNT_ID`.
 2. On it, add the zones: dev's public
    host's and site domain's, and `PREVIEW_HOST_ZONE` and
@@ -170,7 +177,7 @@ Cloudflare's docs.
    needs its proxied `*` record and a certificate covering it, as prod's
    does (`crates/clax-worker/README.md`, "DNS for the public host and the
    site domain").
-4. Make the two tokens above.
+4. Make the token above.
 
 ### dev
 

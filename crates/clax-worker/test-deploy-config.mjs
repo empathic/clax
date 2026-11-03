@@ -159,7 +159,7 @@ try {
     assert.equal(r.config.vars.REPO_STORE, "artifacts");
   });
 
-  check("a preview is its own Worker in memory, its sites under the zone's pr-<N>", () => {
+  check("a preview is its own Worker on Artifacts, with a queue and namespace of its own, its sites under the zone's pr-<N>", () => {
     const r = deploy(["--env", "pr-12", "--public", "pr-12.preview.dev", "--site-domain", "pr-12.preview.run", "--site-zone", "preview.run"]);
     assert.equal(r.status, 0, r.text);
     assert.equal(r.config.name, "clax-pr-12");
@@ -168,15 +168,20 @@ try {
       { pattern: "*.pr-12.preview.run/*", zone_name: "preview.run" },
     ]);
     assert.deepEqual(r.config.r2_buckets, [{ binding: "ASSETS", bucket_name: "clax-assets-preview" }]);
+    assert.equal(r.config.vars.REPO_STORE, "artifacts");
+    assert.equal(r.config.vars.SITE_DOMAIN, "pr-12.preview.run");
+    assert.equal(r.config.artifacts[0].namespace, "clax-pr-12");
+    assert.equal(r.config.queues.consumers[0].queue, "clax-artifacts-events-pr-12");
+  });
+
+  check("a preview deployed with --store memory keeps its versions in the RepoDO stand-in", () => {
+    const r = deploy(["--env", "pr-12", "--store", "memory", "--public", "pr-12.preview.dev", "--site-domain", "pr-12.preview.run", "--site-zone", "preview.run"]);
+    assert.equal(r.status, 0, r.text);
     assert.equal(r.config.vars.REPO_STORE, "memory");
     assert.equal(r.config.vars.GIT_SMART_HTTP, "1");
-    assert.equal(r.config.vars.SITE_DOMAIN, "pr-12.preview.run");
     assert.equal("artifacts" in r.config, false);
     assert.equal("queues" in r.config, false);
   });
-
-  check("a preview takes no --store artifacts", () =>
-    refused(["--env", "pr-12", "--store", "artifacts", "--public", "pr-12.preview.dev", "--site-domain", "pr-12.preview.run"], /keeps its versions in memory/));
   check("--production goes with prod alone", () => refused(["--env", "dev", "--production", "--public", "dev.example.com", "--site-domain", "dev-example.run"], /--production is the prod environment's/));
   check("an unknown environment is refused", () => refused(["--env", "Staging!", "--public", "x.example.com", "--site-domain", "x.run"], /--env takes prod, dev or a preview's name/));
   check("a site domain outside --site-zone is refused", () =>
