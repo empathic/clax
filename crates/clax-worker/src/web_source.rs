@@ -174,10 +174,10 @@ pub fn search_failure(status: u16, v: &Value) -> Option<WebError> {
 /// Why a `websearch()` call that threw failed: a `web_unavailable` that is
 /// not retryable when the binding cannot run here ([`cannot_run_here`]);
 /// by [`search_failure`]'s rules when the error carries an HTTP `status`
-/// or a gateway `code` (a
-/// code alone stands for its status: payment required, a missing provider
-/// key and a refused request are not retryable, a rate limit is), else a
-/// retryable `web_unavailable` with the error's `message`.
+/// or a gateway `code` (a code alone stands for its status: payment
+/// required, a missing provider key and a refused request are not
+/// retryable, a rate limit is); else a retryable `web_unavailable` with
+/// the error's `message`.
 #[must_use]
 pub fn thrown_search_failure(status: Option<u16>, code: Option<&str>, message: &str) -> WebError {
     let status = status.or(match code {
@@ -217,6 +217,43 @@ pub fn cannot_run_here(message: &str) -> bool {
     message
         .to_ascii_lowercase()
         .contains("needs to be run remotely")
+}
+
+/// The document [`BindingSource`]'s check converts: one line of HTML, a
+/// conversion Cloudflare documents as free ("`toMarkdown` is free for
+/// most format conversions"; only images use Workers AI models).
+pub const PROBE_HTML: &str = "<p>ClaxBot</p>";
+
+/// How long the binding's check waits for its conversion.
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// What a check of the `AI` binding found.
+#[derive(Debug, PartialEq, Eq)]
+pub enum BindingCheck {
+    /// The binding runs here: web use is configured.
+    Usable,
+    /// The binding cannot run where the Worker runs, and why: web use is
+    /// not configured, for the isolate's life.
+    Unusable(String),
+    /// The check failed otherwise (a timeout, a passing error): it says
+    /// nothing, and runs again at the next check.
+    Unknown,
+}
+
+/// What the check's `toMarkdown()` of [`PROBE_HTML`] coming to `outcome`
+/// (`Ok` for any answer, `Err` with the message of what it threw or why
+/// it was not waited for) says of the binding.
+#[must_use]
+pub fn binding_check(outcome: Result<(), &str>) -> BindingCheck {
+    match outcome {
+        Ok(()) => BindingCheck::Usable,
+        Err(m) if cannot_run_here(m) => BindingCheck::Unusable(format!(
+            "Workers AI cannot run where this Worker runs (under `wrangler dev --local` its \
+             AI binding throws \"{m}\"), so ClaxBot's web search and the conversion of \
+             fetched pages are unavailable. Run the Worker with its AI binding remote."
+        )),
+        Err(_) => BindingCheck::Unknown,
+    }
 }
 
 /// The error of a `toMarkdown()` call that threw `message`. When the
@@ -474,8 +511,9 @@ impl Conversion {
 /// its whole `body`) makes in `format`, by the shared rules
 /// ([`page::handling`], on [`page::media_type_of`]'s type: a missing or
 /// `application/octet-stream` type is sniffed): HTML and documents to
-/// convert ([`Body::Convert`]; an HTML page is given as UTF-8, decoded by
-/// its charset first, its links read from the HTML), JSON pretty-printed
+/// convert ([`Body::Convert`]; an HTML page is decoded by its charset
+/// ([`page::decode_html`]) and given as [`page::html_for_conversion`]'s
+/// UTF-8, its links read from the HTML), JSON pretty-printed
 /// in `Auto`, other text as it came, its links read from it. A 4xx or 5xx
 /// with a readable body is a page with its status.
 ///
@@ -544,7 +582,7 @@ pub fn read_body(
             Body::Convert(Conversion {
                 name: "page.html".into(),
                 mime: HTML_UTF8.into(),
-                bytes: text.into_bytes(),
+                bytes: page::html_for_conversion(&text),
                 page: page(String::new(), links),
                 html: true,
                 base: url.clone(),
@@ -742,25 +780,72 @@ mod binding {
         ai: JsValue,
         /// [`page::user_agent`] of the instance's public origin, if any.
         user_agent: String,
+        /// Why the binding cannot run here, once a check found it
+        /// ([`binding_check`]); shared with the host's routes.
+        unusable: Arc<clax_bot::web::Unusable>,
+        /// Whether a check has answered, either way.
+        checked: std::cell::Cell<bool>,
     }
 
     impl BindingSource {
         /// The source over `env`'s `AI` binding, when it has one. Under
         /// `wrangler dev --local` it has one whose every call throws
-        /// ("needs to be run remotely", [`cannot_run_here`]): a search
-        /// answers `web_unavailable`, and so does a fetch that needs a
-        /// conversion, uncharged ([`conversion_failure`]), though its
-        /// request reached the site. Nothing on the binding tells that
-        /// mode apart without calling it, so the Worker still reports web
-        /// use configured there. Its fetches name the instance at `public_origin`, when it has
-        /// one, in their `User-Agent` ([`page::user_agent`]).
+        /// ("needs to be run remotely", [`cannot_run_here`]); the source's
+        /// check ([`WebSource::check`]) finds that out with one free
+        /// conversion and records why in `unusable`, after which web use
+        /// is not configured and a call that still comes is refused
+        /// `web_unavailable`, uncharged. Before a check answered, a search
+        /// and a fetch that needs a conversion ([`conversion_failure`])
+        /// answer `web_unavailable`, uncharged, though the fetch's request
+        /// reached the site; other fetches are answered. Its fetches name
+        /// the instance at
+        /// `public_origin`, when it has one, in their `User-Agent`
+        /// ([`page::user_agent`]).
         #[must_use]
-        pub fn from_env(env: &worker::Env, public_origin: Option<&str>) -> Option<BindingSource> {
+        pub fn from_env(
+            env: &worker::Env,
+            public_origin: Option<&str>,
+            unusable: Arc<clax_bot::web::Unusable>,
+        ) -> Option<BindingSource> {
             let ai = Reflect::get(env.as_ref(), &JsValue::from_str("AI")).ok()?;
             ai.is_object().then(|| BindingSource {
                 ai,
                 user_agent: page::user_agent(public_origin),
+                unusable,
+                checked: std::cell::Cell::new(false),
             })
+        }
+
+        /// The binding's check: a `toMarkdown()` of [`PROBE_HTML`],
+        /// answered or not within [`PROBE_TIMEOUT`].
+        async fn probe(&self) -> Result<(), String> {
+            let deadline = js_sys::Date::now() + PROBE_TIMEOUT.as_millis() as f64;
+            let parts = Array::of1(&JsValue::from_str(PROBE_HTML));
+            let blob = construct(
+                "Blob",
+                &[parts.into(), object(&[("type", HTML_UTF8.into())]).into()],
+            )
+            .map_err(|e| message(&e))?;
+            let doc = object(&[("name", "probe.html".into()), ("blob", blob)]);
+            let docs = Array::of1(&doc.into());
+            within(
+                call(&self.ai, "toMarkdown", &[docs.into()]),
+                &CancelToken::new(),
+                deadline,
+                "The check",
+            )
+            .await
+            .map_err(|e| e.message)?
+            .map(|_| ())
+            .map_err(|e| message(&e))
+        }
+
+        /// The refusal of a call once the binding is known not to run
+        /// here: `web_unavailable`, not gone out.
+        fn refused(&self) -> Option<WebError> {
+            self.unusable
+                .why()
+                .map(|why| unavailable(format!("{why} Continue without the web."), false))
         }
 
         /// One `GET` of `url`, not following redirects; a redirect's body
@@ -989,6 +1074,34 @@ mod binding {
 
     #[async_trait::async_trait(?Send)]
     impl WebSource for BindingSource {
+        /// False once a check found the binding cannot run here.
+        fn configured(&self) -> bool {
+            self.unusable.why().is_none()
+        }
+
+        /// One `toMarkdown()` of [`PROBE_HTML`] until a check answers
+        /// ([`binding_check`]); then nothing, for the isolate's life.
+        async fn check(&self) {
+            if self.checked.get() {
+                return;
+            }
+            match binding_check(
+                self.probe()
+                    .await
+                    .as_ref()
+                    .map(|()| ())
+                    .map_err(String::as_str),
+            ) {
+                BindingCheck::Usable => self.checked.set(true),
+                BindingCheck::Unusable(why) => {
+                    worker::console_warn!("ClaxBot's web use is off: {why}");
+                    self.unusable.set(why);
+                    self.checked.set(true);
+                }
+                BindingCheck::Unknown => {}
+            }
+        }
+
         async fn search(
             &self,
             q: &SearchQuery,
@@ -996,6 +1109,9 @@ mod binding {
         ) -> Result<SearchAnswer, WebError> {
             if cancel.is_cancelled() {
                 return Err(cancelled());
+            }
+            if let Some(e) = self.refused() {
+                return Err(e);
             }
             if !get(&self.ai, "websearch").is_function() {
                 return Err(unavailable(
@@ -1080,6 +1196,9 @@ mod binding {
             hop: &(dyn for<'u> Fn(&'u PublicUrl) -> Result<(), WebError> + Sync),
             cancel: &CancelToken,
         ) -> Result<FetchedPage, WebError> {
+            if let Some(e) = self.refused() {
+                return Err(e);
+            }
             let deadline = js_sys::Date::now() + limits.timeout.as_millis() as f64;
             let abort = Abort::new();
             let (at, reply) = follow(url, limits, hop, cancel, |u| {
@@ -1564,7 +1683,10 @@ mod tests {
             (c.name.as_str(), c.mime.as_str()),
             ("page.html", "text/html; charset=utf-8")
         );
-        assert_eq!(c.bytes, html.as_bytes());
+        assert_eq!(
+            c.bytes,
+            format!("<meta charset=\"utf-8\">{html}").as_bytes()
+        );
         let p = c
             .finish("# T\n\n[next](https://other.example/)".into())
             .unwrap();
@@ -1626,7 +1748,7 @@ mod tests {
         assert_eq!(c.mime, HTML_UTF8);
         assert_eq!(
             String::from_utf8(c.bytes).unwrap(),
-            "<meta charset=\"iso-8859-1\"><p>caf\u{e9}</p>"
+            "<meta charset=\"utf-8\"><meta charset=\"iso-8859-1\"><p>caf\u{e9}</p>"
         );
         let p = page_of(read_body(&u, 200, "text/html", latin, Format::Raw).unwrap());
         assert_eq!(p.text, "<meta charset=\"iso-8859-1\"><p>caf\u{e9}</p>");
@@ -1642,6 +1764,19 @@ mod tests {
             .unwrap(),
         );
         assert_eq!(p.text, "<meta charset=\"iso-8859-1\">caf\u{e9}");
+    }
+
+    #[test]
+    fn the_binding_probe_says_whether_it_can_run_here() {
+        assert_eq!(binding_check(Ok(())), BindingCheck::Usable);
+        let BindingCheck::Unusable(why) = binding_check(Err("Binding AI needs to be run remotely"))
+        else {
+            panic!("a binding that cannot run here is unusable")
+        };
+        assert!(why.contains("wrangler dev --local"), "{why}");
+        assert!(why.contains("needs to be run remotely"), "{why}");
+        // Any other failure says nothing yet: the probe runs again later.
+        assert_eq!(binding_check(Err("socket hang up")), BindingCheck::Unknown);
     }
 
     #[test]

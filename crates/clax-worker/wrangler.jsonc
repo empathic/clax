@@ -62,7 +62,11 @@
   // 1.20260924.1 or later) and the Markdown conversion of fetched pages
   // (`toMarkdown()`). Searches bill the gateway's credits, or a provider key
   // stored on it. It has no local simulator: under `wrangler dev --local`
-  // every call on it throws, and a web call answers web_unavailable.
+  // every call on it throws. The Worker finds that out with one free
+  // conversion before the admin's Web page, a person's ClaxBot page or a
+  // run's start, and from then reports web use not configured, saying why.
+  // Until then a search, and a fetch that needs a conversion, answer
+  // web_unavailable, uncharged; other fetches are answered.
   "ai": { "binding": "AI", "remote": true },
 
   // The Artifacts event subscription delivers `cf.artifacts.repo.*` events

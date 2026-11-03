@@ -1155,7 +1155,10 @@ pub fn driver(state: &mut AppState) -> Arc<clax_bot::Driver> {
         hosted.map(|h| h.origin.as_str()),
         hosted.and_then(|h| h.sites.as_ref()).map(|s| s.domain()),
     );
-    driver_with(state, web, unavailable)
+    if let Some(why) = unavailable {
+        state.bot.web_unusable.set(why);
+    }
+    driver_with_web(state, web)
 }
 
 /// [`driver`], with `web` as the runs' web source.
@@ -1163,18 +1166,6 @@ pub fn driver(state: &mut AppState) -> Arc<clax_bot::Driver> {
 pub fn driver_with_web(
     state: &mut AppState,
     web: Arc<dyn clax_bot::web::WebSource>,
-) -> Arc<clax_bot::Driver> {
-    let unavailable = state.bot.web_unavailable.clone();
-    driver_with(state, web, unavailable)
-}
-
-/// [`driver_with_web`], with `web_unavailable` as the state's
-/// ([`clax_http::bot::Bot::web_unavailable`]).
-#[cfg(not(target_arch = "wasm32"))]
-fn driver_with(
-    state: &mut AppState,
-    web: Arc<dyn clax_bot::web::WebSource>,
-    web_unavailable: Option<String>,
 ) -> Arc<clax_bot::Driver> {
     let bot = state.bot.clone();
     let host = ServerHost::new(state.clone());
@@ -1213,14 +1204,17 @@ fn driver_with(
         catalog_url: bot.catalog_url.clone(),
         catalog_flight: bot.catalog_flight.clone(),
         web_configured: bot.web_configured,
-        web_unavailable,
+        web_unusable: bot.web_unusable.clone(),
     });
     driver
 }
 
-/// Whether ClaxBot's web use is configured on this host now: the host
-/// says so ([`clax_http::bot::Bot::web_configured`]: the Worker's AI
-/// binding, the daemon's test fixtures), or, on a native daemon, the
+/// Whether ClaxBot's web use is configured on this host now: never once
+/// the host knows its source cannot be used (its origin or site domain
+/// names no host, or the source cannot run where it runs:
+/// [`clax_http::bot::Bot::web_unusable`]); else the host says so
+/// ([`clax_http::bot::Bot::web_configured`]: the Worker's AI binding, the
+/// daemon's test fixtures), or, on a native daemon, the
 /// instance holds a key-encryption key, a Cloudflare account ID and a
 /// sealed token ([`crate::web_source::has_credentials`]), read at each
 /// call so an admin's change takes effect without a restart.
@@ -1228,7 +1222,7 @@ fn driver_with(
 /// # Errors
 /// The store's.
 pub fn web_configured(st: &Store, bot: &clax_http::bot::Bot) -> clax_core::Result<bool> {
-    if bot.web_unavailable.is_some() {
+    if bot.web_unusable.why().is_some() {
         return Ok(false);
     }
     if bot.web_configured {

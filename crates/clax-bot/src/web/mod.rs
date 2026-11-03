@@ -342,10 +342,51 @@ pub trait WebSource: MaybeSendSync {
         true
     }
 
+    /// Finds out whether the source can run where the host runs, so that
+    /// [`WebSource::configured`] says so from then on: a host calls it
+    /// before it reports or decides web use (its admin's view, a run's
+    /// start). A source that found out keeps the answer; one that could
+    /// not tell tries again at the next call. Nothing by default.
+    async fn check(&self) {}
+
     /// The instance's own hosts, which no fetch reaches ([`OwnHosts`]):
     /// none by default; a hosted source answers them ([`WithOwnHosts`]).
     fn own_hosts(&self) -> OwnHosts {
         OwnHosts::default()
+    }
+}
+
+/// Why a host's web source cannot be used, once the host knows: its
+/// configured public origin or site domain names no host, so a fetch of
+/// the instance's own hosts could not be refused (known at start,
+/// [`Unusable::because`]), or the source found it cannot run where the
+/// host runs ([`WebSource::check`]: on the Worker, an `AI` binding that
+/// cannot run under `wrangler dev --local`). The source and the host's
+/// routes share one: once it is set, web use is not configured and the
+/// admin's view says why. It is set at most once, for the life of the
+/// process (on the Worker, the isolate), so a reason known at start is
+/// never replaced.
+#[derive(Debug, Default)]
+pub struct Unusable(std::sync::OnceLock<String>);
+
+impl Unusable {
+    /// Unusable from the start, for `why`.
+    #[must_use]
+    pub fn because(why: impl Into<String>) -> Unusable {
+        let u = Unusable::default();
+        u.set(why.into());
+        u
+    }
+
+    /// Records `why` the source cannot be used; a later reason is dropped.
+    pub fn set(&self, why: String) {
+        let _ = self.0.set(why);
+    }
+
+    /// Why the source cannot be used, once that is known.
+    #[must_use]
+    pub fn why(&self) -> Option<&str> {
+        self.0.get().map(String::as_str)
     }
 }
 
@@ -389,6 +430,10 @@ impl WebSource for WithOwnHosts {
 
     fn configured(&self) -> bool {
         self.source.configured()
+    }
+
+    async fn check(&self) {
+        self.source.check().await;
     }
 
     fn own_hosts(&self) -> OwnHosts {

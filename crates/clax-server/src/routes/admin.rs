@@ -510,7 +510,9 @@ const WEB: &[(&str, &str, Setting)] = &[
     ("cloudflare", "account_id", Setting::WebCloudflareAccountId),
 ];
 
-/// The web settings as `GET /api/admin/web` shows them.
+/// The web settings as `GET /api/admin/web` shows them, with whether web
+/// use is configured and, when the host found its own source cannot run
+/// where it runs, why (`unavailable`, else null).
 ///
 /// # Errors
 /// The store's.
@@ -541,10 +543,11 @@ pub fn web_view(st: &Store, bot: &Bot) -> clax_core::Result<Value> {
         clax_store::secrets::CLOUDFLARE_ORIGIN,
         "the Cloudflare token",
     )?;
-    let mut v = json!({"configured": crate::bot::web_configured(st, bot)?, "sources": sources});
-    if let Some(why) = &bot.web_unavailable {
-        v["unavailable"] = json!(why);
-    }
+    let mut v = json!({
+        "configured": crate::bot::web_configured(st, bot)?,
+        "unavailable": bot.web_unusable.why(),
+        "sources": sources,
+    });
     for (k, g) in groups {
         v[k] = g;
     }

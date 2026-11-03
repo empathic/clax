@@ -897,6 +897,7 @@ dependencies = [
  "reqwest 0.12.28",
  "rmcp",
  "rusqlite",
+ "rustls",
  "send_wrapper",
  "serde",
  "serde_json",
@@ -914,6 +915,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "web-time",
+ "webpki-roots",
 ]
 
 [[package]]

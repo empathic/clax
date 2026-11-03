@@ -26,8 +26,9 @@
 //! configured ([`fixtures`]).
 
 use clax_bot::web::page::{
-    Handling, decode, decode_html, handling, http_error, is_sniffed, links_of_body,
-    links_of_html, links_of_markdown, media_type, media_type_of, pretty_json, user_agent,
+    Handling, decode, decode_html, handling, html_for_conversion, http_error, is_sniffed,
+    links_of_body, links_of_html, links_of_markdown, media_type, media_type_of, pretty_json,
+    user_agent,
 };
 use clax_bot::web::url::{is_local_addr, redirect_allowed};
 use clax_bot::web::{
@@ -203,6 +204,9 @@ pub struct RestSource {
     /// ([`RestSource::web_client`]).
     lookup: Arc<dyn Lookup>,
     allow_loopback: bool,
+    /// The TLS configuration every fetch's client takes, built once
+    /// ([`fetch_tls`]); the reason it could not be otherwise.
+    tls: Result<rustls::ClientConfig, String>,
     /// Sent on every fetch ([`user_agent`]).
     user_agent: String,
 }
@@ -249,6 +253,7 @@ impl RestSource {
             api,
             lookup,
             allow_loopback,
+            tls: fetch_tls(),
             user_agent: "ClaxBot/1".into(),
         }
     }
@@ -258,7 +263,12 @@ impl RestSource {
     /// proxy, and no connection shared with another fetch (each fetch's
     /// first request resolves its name, so it is known when it went out).
     fn web_client(&self, answered: Arc<AtomicBool>) -> Result<reqwest::Client, WebError> {
+        let failed = |e: &dyn std::fmt::Display| {
+            unavailable(format!("the daemon's HTTP client failed ({e})"), false)
+        };
+        let tls = self.tls.as_ref().map_err(|e| failed(e))?;
         reqwest::Client::builder()
+            .use_preconfigured_tls(tls.clone())
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
             .dns_resolver(Arc::new(CheckedResolver {
@@ -267,7 +277,7 @@ impl RestSource {
                 answered,
             }))
             .build()
-            .map_err(|e| unavailable(format!("the daemon's HTTP client failed ({e})"), false))
+            .map_err(|e| failed(&e))
     }
 
     /// This source, sending `user_agent` on every fetch ([`user_agent`]).
@@ -378,8 +388,7 @@ impl RestSource {
         out: &Arc<AtomicBool>,
     ) -> Result<FetchedPage, WebError> {
         let client = self.web_client(out.clone())?;
-        if !matches!(url.as_url().host(), Some(url::Host::Domain(_))) {
-            // No name to resolve: the connection begins at once.
+        if goes_out_on_send(url) {
             out.store(true, Ordering::SeqCst);
         }
         let mut at = url.clone();
@@ -504,12 +513,12 @@ impl RestSource {
         let (text, links) = match handling(&content_type, format) {
             Handling::Unsupported => return Err(unsupported(&content_type, format)),
             Handling::Html => {
-                // Sent decoded, as UTF-8, so the conversion never guesses
-                // the page's charset.
+                // Sent decoded, as UTF-8 declared first, so the conversion
+                // never guesses the page's charset.
                 let html = decode_html(&body, &declared);
                 let links = links_of_html(&html, &at);
                 let md = self
-                    .to_markdown(html.into_bytes(), "page.html".into(), HTML_UTF8)
+                    .to_markdown(html_for_conversion(&html), "page.html".into(), HTML_UTF8)
                     .await
                     .map_err(gone)?;
                 // An error page whose conversion is empty has nothing to
@@ -556,6 +565,32 @@ impl RestSource {
             request_id: None,
         })
     }
+}
+
+/// The TLS configuration of a fetch's client, as reqwest's `rustls-tls`
+/// builds its own: ring, TLS 1.2 and 1.3, the webpki roots, HTTP/1.1 by
+/// ALPN. Built once per source, so a fetch's client parses no roots.
+fn fetch_tls() -> Result<rustls::ClientConfig, String> {
+    let roots = rustls::RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
+    let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| e.to_string())?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    tls.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(tls)
+}
+
+/// Whether a fetch of `url` goes out as its first request is sent: its
+/// host is an IP address, so there is no name to resolve and the
+/// connection begins at once. A host name goes out only once the checked
+/// resolver has answered it ([`CheckedResolver`]).
+fn goes_out_on_send(url: &PublicUrl) -> bool {
+    !matches!(url.as_url().host(), Some(url::Host::Domain(_)))
 }
 
 /// The error of a call to Cloudflare's API that got no answer.
@@ -1015,7 +1050,7 @@ pub fn for_daemon(
 /// [`for_daemon`]'s source and the reason web use is off. When the hosts
 /// cannot be named the reason is logged and the source is [`NoHostsWeb`],
 /// which is not configured and refuses every call; the reason goes to
-/// `clax_http::bot::Bot::web_unavailable`, which the admin Web view shows.
+/// `clax_http::bot::Bot::web_unusable`, which the admin Web view shows.
 #[must_use]
 pub fn daemon_web(
     store: Arc<Store>,
@@ -1445,7 +1480,39 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[test]
+    fn each_fetch_client_takes_the_sources_tls_configuration() {
+        let s = RestSource::with_lookup(
+            Url::parse("http://127.0.0.1:9").unwrap(),
+            ACCOUNT.into(),
+            Secret::new(TOKEN.into()),
+            false,
+            stub(),
+        );
+        let tls = s.tls.as_ref().unwrap();
+        assert!(!tls.crypto_provider().cipher_suites.is_empty());
+        assert_eq!(tls.alpn_protocols, [b"http/1.1".to_vec()]);
+        // reqwest takes it as its own rustls configuration: a client it
+        // did not recognise would not build.
+        s.web_client(Arc::default()).unwrap();
+        s.web_client(Arc::default()).unwrap();
+    }
+
+    #[test]
+    fn only_a_host_name_waits_for_its_resolution_to_go_out() {
+        for (url, at_once) in [
+            ("http://93.184.215.14/", true),
+            ("http://[2606:2800:21f:cb07:6820:80da:af6b:8b2e]/", true),
+            ("http://site.test/", false),
+            ("https://example.com:8443/x", false),
+        ] {
+            let u = PublicUrl::parse(url).unwrap();
+            assert_eq!(goes_out_on_send(&u), at_once, "{url}");
+        }
+    }
+
+    // Paused: the deadline passes on the runtime's clock, with no waiting.
+    #[tokio::test(start_paused = true)]
     async fn a_deadline_or_cancel_before_the_first_name_resolved_did_not_go_out() {
         let s = RestSource::with_lookup(
             Url::parse("http://127.0.0.1:9").unwrap(),
@@ -1456,7 +1523,7 @@ mod tests {
         );
         let url = PublicUrl::parse("http://site.test/").unwrap();
         let limits = FetchLimits {
-            timeout: Duration::from_millis(20),
+            timeout: Duration::from_secs(30),
             ..FetchLimits::default()
         };
         let e = fetch(&s, &url, Format::Auto, limits).await.unwrap_err();
@@ -1638,6 +1705,8 @@ mod tests {
                 assert!(body.contains("name=\"files\""), "{body}");
                 assert!(body.contains("filename=\"page.htm"), "{body}");
                 assert!(body.contains("charset=utf-8"), "{body}");
+                // The copy converted declares UTF-8 before anything else.
+                assert!(body.contains("\r\n\r\n<meta charset=\"utf-8\"><"), "{body}");
                 // The page arrives decoded, as UTF-8.
                 let data = if body.contains("<p>caf\u{e9}</p>") {
                     "caf\u{e9}\n"

@@ -300,6 +300,17 @@ describe("Admin › Web", () => {
     expect(m.root.textContent).not.toContain("Not configured: web access needs");
   });
 
+  it("a_source_that_cannot_run_here_says_why", async () => {
+    stubFetch({
+      "GET /api/admin/web": webSettings({ unavailable: "Workers AI cannot run where this Worker runs." }),
+      "GET /api/admin/pricing": WEB_PRICING,
+    });
+    const m = mount(AdminWeb, { now: () => new Date("2026-10-21T12:00:00Z") });
+    await settle();
+    expect(m.root.textContent).toContain("Web access is off: Workers AI cannot run where this Worker runs.");
+    expect(m.root.textContent).not.toContain("Not configured");
+  });
+
   it("the_token_is_write_only", async () => {
     const calls = stubFetch({
       "GET /api/admin/web": webSettings(),

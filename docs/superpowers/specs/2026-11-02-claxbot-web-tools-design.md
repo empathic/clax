@@ -348,10 +348,13 @@ public origin or site domain that names no host is never dropped. Hosted
 configuration refuses such a value at start, as before: the daemon's config
 load rejects it, and a hosted Worker answers every request 500. Where the
 instance otherwise starts (a non-hosted Worker with an unusable
-`PUBLIC_ORIGIN`) web use is off, with the reason, quoting the value, logged
-and shown by `GET /api/admin/web` as `unavailable` and `configured: false`
-and on the admin Web page, because an instance that cannot name its own
-hosts could not refuse them. The daemon takes the same path (`daemon_web`)
+`PUBLIC_ORIGIN`) web use is off, because an instance that cannot name its
+own hosts could not refuse them: the reason, quoting the value, is logged
+and set from the start in the host's one record of why its web source
+cannot be used (`Bot::web_unusable`, §10), which `GET /api/admin/web` shows
+as `unavailable` with `configured: false`, and the admin Web page as "Web
+access is off: <reason>". Being known first, it holds over anything a later
+check of the source finds. The daemon takes the same path (`daemon_web`)
 should a bad value ever reach it.
 
 The redirect target is checked by host only, not by source: the source rule
@@ -408,11 +411,14 @@ clax.web.fetch(url: string, opts?: { offset?: number; format?: "auto" | "raw" })
   the end. `format: "raw"` returns a textual body unconverted and refuses
   binary types.
 - A textual body is decoded by its charset: the `Content-Type` header's,
-  else UTF-8, a byte-order mark winning over both. HTML is decoded as a
-  browser sniffs it (`clax_bot::web::page::html_encoding`): a byte-order
+  else UTF-8, a byte-order mark winning over both. HTML is decoded in
+  WHATWG's order (`clax_bot::web::page::html_encoding`): a byte-order
   mark, else the header's charset, else the first `<meta charset>` or
-  `<meta http-equiv="Content-Type">` in its first 1,024 bytes, else UTF-8.
-  HTML goes to conversion decoded, as UTF-8.
+  `<meta http-equiv="Content-Type">` in its first 1,024 bytes, with UTF-8
+  as the fallback (where a browser would take its locale's default). HTML
+  goes to conversion decoded, as UTF-8 with `<meta charset="utf-8">` put
+  first (`html_for_conversion`), so the converter reads it as UTF-8
+  whatever meta the page carries.
 - A readable HTTP error page (4xx or 5xx with a text body) is returned with
   its `status`, not as an error.
 
@@ -613,10 +619,16 @@ choice", "off on this instance", "not configured").
   key on the gateway: deploying with search on needs one of them, which
   `docs/prod.md` and the deploy checks should say. Under `wrangler dev
   --local` the binding exists but each call throws ("needs to be run
-  remotely"): a search answers `web_unavailable`, and so does a fetch that
-  needs a conversion, neither charged (§6.3); Markdown, JSON, text and
-  `raw` fetches are answered. Nothing on the binding tells that mode apart
-  without calling it, so the admin's Web page still reads configured there.
+  remotely"). Before the admin's Web page, a person's ClaxBot page or a
+  run's start (`GET /api/admin/web`, `/api/me/bot`, `POST /api/bot/runs`),
+  the Worker checks the binding once per isolate with a `toMarkdown()` of
+  one line of HTML (free: Cloudflare documents `toMarkdown` as "free for
+  most format conversions", only images using Workers AI models). When it
+  throws so, web use reads not configured from then on, and the admin's
+  view says why (`unavailable`). A run started before the check answered
+  (say from a comment) gets `web_unavailable` for a search, and for a
+  fetch that needs a conversion, neither charged (§6.3); Markdown, JSON,
+  text and `raw` fetches are answered.
 - **Daemon**: `RestSource` in `clax-server`, Cloudflare's REST endpoints and
   the daemon's own HTTP client with the host check (§5.3).
 - **Embedded and other hosts** take `Off(NotConfigured)` until they provide

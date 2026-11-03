@@ -1224,6 +1224,31 @@ async fn a_run_keeps_the_web_shape_its_person_had_when_it_started() {
     assert_eq!(ts.store.run(&run.id).unwrap().unwrap().web, "");
 }
 
+#[tokio::test]
+async fn a_host_source_that_cannot_run_here_reads_not_configured_and_says_why() {
+    let fake = FakeMessages::start(vec![]).await;
+    let ts = daemon(&fake).await;
+    let bot = clax_http::bot::Bot {
+        web_configured: true,
+        ..Default::default()
+    };
+    assert!(clax_server::bot::web_configured(&ts.store, &bot).unwrap());
+    let v = clax_server::routes::admin::web_view(&ts.store, &bot).unwrap();
+    assert_eq!(
+        (&v["configured"], &v["unavailable"]),
+        (&json!(true), &Value::Null)
+    );
+    // Once the host found its source cannot run where it runs (the
+    // Worker's AI binding under `wrangler dev --local`), it is not
+    // configured, and the admin's view says why.
+    bot.web_unusable
+        .set("the AI binding needs to be run remotely".into());
+    assert!(!clax_server::bot::web_configured(&ts.store, &bot).unwrap());
+    let v = clax_server::routes::admin::web_view(&ts.store, &bot).unwrap();
+    assert_eq!(v["configured"], false);
+    assert_eq!(v["unavailable"], "the AI binding needs to be run remotely");
+}
+
 /// Turns search and fetch on at `/admin` and sets the Cloudflare account
 /// ID and token, so the daemon's web use is configured.
 async fn web_on(ts: &TestServer) {

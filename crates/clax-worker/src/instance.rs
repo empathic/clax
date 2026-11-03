@@ -273,6 +273,9 @@ struct Instance {
     graced: Cell<bool>,
     /// ClaxBot's driver (`crate::bot`).
     bot: crate::bot::WorkerBot,
+    /// ClaxBot's web source, when the Worker has one
+    /// ([`InstanceDo::check_web`]).
+    web: Option<Arc<dyn clax_bot::WebSource>>,
     /// ClaxBot's scripted web source in the test mode (`CLAX_TEST_ROUTES`
     /// and `CLAX_TEST_WEB` both `1`), which `POST /_worker/web-fixtures`
     /// loads; `None` otherwise.
@@ -306,6 +309,16 @@ pub struct InstanceDo {
     last_catalog_try: Cell<f64>,
     /// The request bodies the object holds.
     bodies: BodyBudget,
+}
+
+/// Whether the answer to a request for `path` says or decides whether web
+/// use is configured: the admin's Web page, a person's ClaxBot page and
+/// the start of a run.
+fn decides_web(path: &str) -> bool {
+    path == "/api/admin/web"
+        || path.starts_with("/api/admin/web/")
+        || path == "/api/me/bot"
+        || path == "/api/bot/runs"
 }
 
 fn var(env: &Env, name: &str) -> String {
@@ -606,25 +619,38 @@ fn clax_app(env: &Env) -> Result<clax_core::config::ClaxApp> {
 /// own ID, installed as the routes' run seam; and its web source
 /// (`crate::bot::web_source`: `test_web` in the test mode, else the `AI`
 /// binding when the Worker has one), which makes the host's web use
-/// configured. When `SITE_DOMAIN` or `PUBLIC_ORIGIN` is set and names no
-/// host there is no source and the reason is the state's
-/// `web_unavailable` (`crate::bot::web_or_reason`): web is off and the
-/// admin Web view says why. This is what happens where the instance
-/// otherwise starts (not hosted); a hosted Worker with such a value is
-/// refused before this, by `hosted` and the `fetch` handler (500).
+/// configured until the host knows its source cannot be used
+/// (`clax_http::bot::Bot::web_unusable`); the source is returned too, for
+/// [`InstanceDo::check_web`]. When `SITE_DOMAIN` or `PUBLIC_ORIGIN` is set
+/// and names no host there is no source, and the reason is set in
+/// `web_unusable` from the start (`crate::bot::web_or_reason`): web is off
+/// and the admin Web view says why. This is what happens where the
+/// instance otherwise starts (not hosted); a hosted Worker with such a
+/// value is refused before this, by `hosted` and the `fetch` handler
+/// (500).
 fn worker_bot(
     env: &Env,
     app: &mut AppState,
     test_web: Option<Arc<crate::web_source::FixtureWeb>>,
-) -> crate::bot::WorkerBot {
+) -> (crate::bot::WorkerBot, Option<Arc<dyn clax_bot::WebSource>>) {
     // Only a configured public origin is named to the sites fetched.
     let public = var(env, "PUBLIC_ORIGIN");
     let public = Some(public.trim()).filter(|p| !p.is_empty());
     // Nor does a fetch reach the instance's own hosts: its public origin
     // and its site domain.
-    let (web, web_unavailable) = crate::bot::web_or_reason(site_hosts(env).and_then(|sites| {
-        crate::bot::web_source(env, test_web, public, sites.as_ref().map(|s| s.domain()))
+    let unusable = Arc::new(clax_bot::web::Unusable::default());
+    let (web, why) = crate::bot::web_or_reason(site_hosts(env).and_then(|sites| {
+        crate::bot::web_source(
+            env,
+            test_web,
+            public,
+            sites.as_ref().map(|s| s.domain()),
+            unusable.clone(),
+        )
     }));
+    if let Some(why) = why {
+        unusable.set(why);
+    }
     let kek_secret = env
         .secret("CLAX_KEK")
         .map(|v| v.to_string())
@@ -677,9 +703,9 @@ fn worker_bot(
         catalog_url: first_catalog_url,
         catalog_flight,
         web_configured: web.is_some(),
-        web_unavailable,
+        web_unusable: unusable,
     });
-    bot
+    (bot, web)
 }
 
 /// How far ahead the alarm is kept while ClaxBot drives:
@@ -812,7 +838,7 @@ impl Instance {
         app.build = Some(var(env, "CLAX_BUILD")).filter(|b| !b.is_empty());
         app.feedback = feedback_of(env, &app);
         let test_web = test_web(state, env)?;
-        let bot = worker_bot(env, &mut app, test_web.clone());
+        let (bot, web) = worker_bot(env, &mut app, test_web.clone());
         app.seats
             .set_limits(clax_core::seats::SeatLimits::from_env(|k| {
                 Some(var(env, k)).filter(|v| !v.is_empty())
@@ -833,6 +859,7 @@ impl Instance {
             kept: RefCell::new(kept_json),
             graced: Cell::new(false),
             bot,
+            web,
             test_web,
             _shutdown: shutdown_tx,
             _db: db,
@@ -1486,6 +1513,18 @@ impl InstanceDo {
         None
     }
 
+    /// Before a request whose answer says or decides whether web use is
+    /// configured ([`decides_web`]), has the web source find out whether
+    /// it can run here (`clax_bot::WebSource::check`: on the `AI` binding,
+    /// one free `toMarkdown()` of a line of HTML, kept for the isolate's
+    /// life once it answers), so a Worker under `wrangler dev --local`
+    /// reports web use not configured, and why, rather than configured.
+    async fn check_web(inst: &Instance, path: &str) {
+        if let Some(web) = inst.web.as_ref().filter(|_| decides_web(path)) {
+            web.check().await;
+        }
+    }
+
     /// The test routes, with `CLAX_TEST_ROUTES` = `1` and the token (else
     /// `None`: the router answers the path, a 404):
     ///
@@ -1736,6 +1775,7 @@ impl DurableObject for InstanceDo {
         if let Some(res) = self.test_route(&inst, &req).await {
             return res;
         }
+        Self::check_web(&inst, req.uri().path()).await;
         self.revive(&inst).await;
         if !matches!(
             *req.method(),
@@ -2032,6 +2072,21 @@ impl InstanceDo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn web_use_is_checked_before_the_routes_that_report_or_decide_it() {
+        for path in [
+            "/api/admin/web",
+            "/api/admin/web/token",
+            "/api/me/bot",
+            "/api/bot/runs",
+        ] {
+            assert!(decides_web(path), "{path}");
+        }
+        for path in ["/", "/api/artifacts", "/api/bot/runs/r1/events", "/a/x/"] {
+            assert!(!decides_web(path), "{path}");
+        }
+    }
 
     #[test]
     fn the_deployed_commit_var_names_the_commit_over_the_build() {
