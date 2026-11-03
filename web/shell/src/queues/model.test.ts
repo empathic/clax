@@ -120,6 +120,12 @@ describe("changeText", () => {
     expect(changeText("Bugs", counts(0, 0, 1), counts(1, 0, 0))).toBe("1 report open again in Bugs.");
   });
 
+  it("says a fix proposed and a fix verified, and counts neither as filed", () => {
+    const fixed: Counts = { ...counts(0, 0, 0), fix_proposed: 1 };
+    expect(changeText("Bugs", counts(0, 1, 0), fixed)).toBe("1 report fix proposed in Bugs.");
+    expect(changeText("Bugs", fixed, { ...counts(0, 0, 0), verified: 1 })).toBe("1 report verified in Bugs.");
+  });
+
   it("says nothing when nothing rose or a count is cut short", () => {
     expect(changeText("Bugs", counts(1, 1, 0), counts(1, 1, 0))).toBeNull();
     expect(changeText("Bugs", counts(1, 0, 0, true), counts(0, 1, 0, true))).toBeNull();

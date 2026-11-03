@@ -33,7 +33,7 @@ export const MAX_PAGES = 10;
 
 export const STATE_TEXT: Record<ReportState, string> = { open: "Open", claimed: "Claimed", fix_proposed: "Fix proposed", verified: "Verified", resolved: "Resolved" };
 export const FILTERS: { value: ReportState | "all"; label: string }[] = [
-  { value: "all", label: "All" }, { value: "open", label: "Open" }, { value: "claimed", label: "Claimed" }, { value: "resolved", label: "Resolved" },
+  { value: "all", label: "All" }, { value: "open", label: "Open" }, { value: "claimed", label: "Claimed" }, { value: "fix_proposed", label: "Fix proposed" }, { value: "verified", label: "Verified" }, { value: "resolved", label: "Resolved" },
 ];
 
 export const queuePath = (qid: string) => `/queues/${encodeURIComponent(qid)}`;
