@@ -42,9 +42,10 @@
 // 8. ClaxBot on the real AI binding, which under `wrangler dev --local`
 //    throws on every call (no CLAX_TEST_WEB): with web on (set while the
 //    test web source was in place, then restarted without it), a run
-//    started before the binding's check answers declares the web; the
-//    admin's GET /api/admin/web then reports web not configured, saying
-//    why, the person's view says not_configured, and the run's search and
+//    started before the binding's check answers declares the web and asks
+//    for the check, after which the person's view says not_configured (no
+//    admin's view having started one); the admin's GET /api/admin/web then
+//    reports web not configured, saying why, and the run's search and
 //    HTML fetch answer web_unavailable, charged nothing;
 // 9. a Worker that is not hosted, with a PUBLIC_ORIGIN that names no host:
 //    the admin's view reports that reason (no source, so no check of the
@@ -598,14 +599,17 @@ async function main() {
     // run declares the web, and the check starts after the request.
     const br = await call(base, "POST", "/api/bot/runs", { thread_ids: [bt], artifact_id: bid });
     check(br.status === 201, "a run is started before the binding's check answered", br);
-    const view = await until("the binding's check answers", async () => {
-      const v = await ok(base, "GET", "/api/admin/web");
-      return v.checking ? undefined : v;
+    // Before the admin's view (which starts a check itself): the decisions
+    // on web use only ask for one, so the person's view turning to
+    // not_configured shows the asked-for check started and answered.
+    const me = await until("the asked-for check answers", async () => {
+      const v = await ok(base, "GET", "/api/me/bot");
+      return v.web?.why_off === "not_configured" ? v : undefined;
     });
-    check(view.configured === false && /needs to be run remotely/.test(view.unavailable ?? ""),
+    check(me.web.offered === false, "a decision on web use alone has the binding checked: the person's view says web is not configured", me.web);
+    const view = await ok(base, "GET", "/api/admin/web");
+    check(view.configured === false && view.checking === false && /needs to be run remotely/.test(view.unavailable ?? ""),
       "the admin's view reports web not configured, with the binding's reason", view);
-    const me = await ok(base, "GET", "/api/me/bot");
-    check(me.web?.offered === false && me.web?.why_off === "not_configured", "the person's view says web is not configured", me.web);
     openLocal();
     const bdone = await until("the local binding run ends", async () => {
       const x = await run(base, br.json.run.id);
