@@ -85,6 +85,10 @@ doctor:
 clax *ARGS:
     . scripts/dev-home.sh && watch_settings && CLAX_HOME="$DEV_HOME" ./scripts/run.sh clax "$@"
 
+# Open the MCP Inspector (a local web page, no account) on this checkout's clax MCP server against the dev home, to call Clax's MCP tools by hand (docs/tracing.md); needs node (npx)
+mcp-inspector AGENT="claude":
+    . scripts/dev-home.sh && watch_settings && CLAX_HOME="$DEV_HOME" npx -y @modelcontextprotocol/inspector ./scripts/run.sh clax exec mcp --agent "{{AGENT}}"
+
 # Set up the instance's own feedback queue on the running dev daemon (~/.clax-dev, or $CLAX_HOME): queue clax-feedback-dev, its service grant and [feedback] in config.toml; restart the daemon after (docs/prod.md)
 dev-feedback:
     ./scripts/dev-feedback.sh
