@@ -30,6 +30,9 @@
   let provider = $state<WebProvider>("ceramic");
   let rule = $state<UrlRule>("sourced");
   let allow = $state("");
+  let gateway = $state("");
+  let alias = $state("");
+  let limit = $state("");
   let maxSearch = $state("");
   let maxFetch = $state("");
   let account = $state("");
@@ -44,8 +47,12 @@
   const hosts = (text: string) => text.split(/[\s,]+/).map(h => h.trim()).filter(Boolean);
 
   function take(x: WebSettings) {
-    w = x; searchOn = x.search.enabled; fetchOn = x.fetch.enabled; provider = x.search.provider; rule = x.fetch.url_rule;
+    w = x; searchOn = x.search.enabled; fetchOn = x.fetch.enabled; provider = x.search.provider; gateway = x.search.gateway; alias = x.search.byok_alias; limit = String(x.search.limit); rule = x.fetch.url_rule;
     allow = x.fetch.allowlist.join("\n"); maxSearch = String(x.search.max_per_run); maxFetch = String(x.fetch.max_per_run); account = x.cloudflare.account_id;
+  }
+  // Setting or clearing the token changes the token alone: edits not yet saved stay.
+  function takeToken(x: WebSettings) {
+    if (w) w = { ...w, cloudflare: { ...w.cloudflare, token: x.cloudflare.token }, sources: x.sources };
   }
   async function save() {
     if (!w || busy) return;
@@ -53,6 +60,13 @@
     const s: NonNullable<WebPatch["search"]> = {};
     if (!ro("search.enabled") && searchOn !== w.search.enabled) s.enabled = searchOn;
     if (!ro("search.provider") && provider !== w.search.provider) s.provider = provider;
+    if (!ro("search.gateway") && gateway.trim() !== w.search.gateway) s.gateway = gateway.trim();
+    if (!ro("search.byok_alias") && alias.trim() !== w.search.byok_alias) s.byok_alias = alias.trim();
+    if (!ro("search.limit") && Number(limit) !== w.search.limit) {
+      const n = Number(limit);
+      if (!Number.isInteger(n) || n < 1 || n > 10) { err = "Results per search is a whole number from 1 to 10."; return; }
+      s.limit = n;
+    }
     const f: NonNullable<WebPatch["fetch"]> = {};
     if (!ro("fetch.enabled") && fetchOn !== w.fetch.enabled) f.enabled = fetchOn;
     if (!ro("fetch.url_rule") && rule !== w.fetch.url_rule) f.url_rule = rule;
@@ -100,6 +114,19 @@
         {#if prices?.fetch !== null && prices?.fetch !== undefined}<small class="note">A page fetched costs {credits(prices.fetch)} credits per {UNITS.kreq}.</small>{/if}
       </div>
       <div class="field">
+        <label for="aw-limit">Results per search <SourceBadge source={w.sources["search.limit"]} /></label>
+        <input id="aw-limit" type="number" min="1" max="10" step="1" inputmode="numeric" bind:value={limit} readonly={ro("search.limit")} />
+      </div>
+      <div class="field">
+        <label for="aw-gateway">Gateway <SourceBadge source={w.sources["search.gateway"]} /></label>
+        <input id="aw-gateway" type="text" spellcheck="false" autocomplete="off" bind:value={gateway} readonly={ro("search.gateway")} />
+      </div>
+      <div class="field">
+        <label for="aw-byok">Provider key alias <SourceBadge source={w.sources["search.byok_alias"]} /></label>
+        <input id="aw-byok" type="text" spellcheck="false" autocomplete="off" bind:value={alias} readonly={ro("search.byok_alias")} aria-describedby="aw-byok-note" />
+        <small id="aw-byok-note" class="note">With an alias, searches bill the provider key stored on the gateway instead of Cloudflare credits.</small>
+      </div>
+      <div class="field">
         <label for="aw-max-search">Searches per run <SourceBadge source={w.sources["search.max_per_run"]} /></label>
         <input id="aw-max-search" type="number" min="1" step="1" inputmode="numeric" bind:value={maxSearch} readonly={ro("search.max_per_run")} />
       </div>
@@ -138,7 +165,7 @@
         </div>
         <div class="field">
           <span class="lbl">API token <SourceBadge source={w.sources["cloudflare.token"]} /></span>
-          <KeyField info={w.cloudflare.token} label="Cloudflare API token" readOnly={ro("cloudflare.token")} {now} onSave={async k => { take(await putWebToken(k)); }} onClear={async () => { take(await deleteWebToken()); }} />
+          <KeyField info={w.cloudflare.token} label="Cloudflare API token" readOnly={ro("cloudflare.token")} {now} onSave={async k => { takeToken(await putWebToken(k)); }} onClear={async () => { takeToken(await deleteWebToken()); }} />
         </div>
       </div>
     </section>

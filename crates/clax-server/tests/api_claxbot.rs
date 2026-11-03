@@ -2687,16 +2687,51 @@ async fn a_member_cannot_admin_web() {
 }
 
 #[tokio::test]
+async fn a_member_sees_the_web_prices_of_the_active_provider() {
+    let p = people().await;
+    let ts = &p.ts;
+    let sam = Who::Person(p.sam.0.clone());
+    let owner = Who::OwnerBrowser;
+    // Fixed charges per thousand requests, so one request is a visible number of milli-credits.
+    let (s, mut pr) = call(ts, &owner, Method::GET, "/api/admin/pricing", Value::Null).await;
+    assert_eq!(s, 200, "{pr}");
+    for l in pr["lines"].as_array_mut().unwrap() {
+        let fixed = match l["id"].as_str().unwrap() {
+            "web.search.ceramic" => 5_000,
+            "web.search.exa" => 70_000,
+            "web.fetch" => 9_000,
+            _ => continue,
+        };
+        l["fixed_credits_milli"] = json!(fixed);
+    }
+    let (s, v) = call(ts, &owner, Method::PUT, "/api/admin/pricing", pr).await;
+    assert_eq!(s, 200, "{v}");
+    let (s, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["web"]["prices"], json!({"search_milli": 5, "fetch_milli": 9}));
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web",
+        json!({"search": {"provider": "exa"}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let (_, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(v["web"]["prices"], json!({"search_milli": 70, "fetch_milli": 9}));
+}
+
+#[tokio::test]
 async fn me_turns_web_off() {
     let p = people().await;
     let ts = &p.ts;
     let sam = Who::Person(p.sam.0.clone());
     let (s, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
     assert_eq!(s, 200, "{v}");
-    assert_eq!(
-        v["web"],
-        json!({"on": true, "offered": false, "why_off": "admin_off"})
-    );
+    assert_eq!(v["web"]["on"], true);
+    assert_eq!(v["web"]["offered"], false);
+    assert_eq!(v["web"]["why_off"], "admin_off");
     let (s, v) = call(
         ts,
         &Who::OwnerBrowser,
@@ -2708,10 +2743,8 @@ async fn me_turns_web_off() {
     assert_eq!(s, 200, "{v}");
     // The host has no source in the test daemon.
     let (_, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
-    assert_eq!(
-        v["web"],
-        json!({"on": true, "offered": false, "why_off": "not_configured"})
-    );
+    assert_eq!(v["web"]["why_off"], "not_configured");
+    assert_eq!(v["web"]["offered"], false);
     let (s, v) = call(ts, &sam, Method::PUT, "/api/me/bot", json!({"web": false})).await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["web"]["on"], false);

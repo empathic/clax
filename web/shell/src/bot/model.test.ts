@@ -190,13 +190,13 @@ describe("the settings", () => {
 
 describe("web calls", () => {
   it("words a fetch's source and a call's cost", () => {
-    expect(webSource("comment")).toBe("from your comment");
+    expect(webSource("comment")).toBe("from the sender's comment");
     expect(webSource("search #2")).toBe("from search #2");
     expect(webSource("page #5")).toBe("from page #5");
     expect(webSource(undefined)).toBeNull();
     expect(callCost(250)).toBe("0.25 credits");
     expect(callCost(1000)).toBe("1 credit");
-    expect(callCost(0)).toBe("free");
+    expect(callCost(0)).toBeNull();
     expect(callCost(undefined)).toBeNull();
   });
 

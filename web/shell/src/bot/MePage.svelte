@@ -10,9 +10,9 @@
   // ClaxBot is not on this Clax.
   import { onMount } from "svelte";
   import { refusal } from "../people/refusal";
-  import { type MeBot, type MeUsage, clearOwnKey, meUsage, pricing, setOwnKey, setWebChoice, useOwnKey } from "./api";
+  import { type MeBot, type MeUsage, clearOwnKey, meUsage, setOwnKey, setWebChoice, useOwnKey } from "./api";
   import { refresh } from "./me";
-  import { UNITS, credits, meter, resetDay, runStatus, tokens, webPrices } from "./model";
+  import { UNITS, credits, meter, resetDay, runStatus, tokens } from "./model";
   import BotPage from "./BotPage.svelte";
   import KeyField from "./KeyField.svelte";
   import Meter from "./Meter.svelte";
@@ -24,16 +24,14 @@
   let usage = $state<MeUsage | null>(null);
   let err = $state<string | null>(null);
   let busy = $state(false);
-  // What a search and a page read cost, from the Pricing lines (only an admin may read those).
-  let prices = $state<ReturnType<typeof webPrices> | null>(null);
   const WHY: Record<string, string> = { admin_off: "Off on this instance", not_configured: "Not configured" };
   const web = $derived(me?.web ?? null);
   const instanceWhy = $derived(web?.why_off && web.why_off !== "person_off" ? WHY[web.why_off] ?? null : null);
+  // What a request costs them, per thousand as the Pricing page words it (the daemon sends one request's milli-credits).
   const cost = $derived.by(() => {
-    const v = Object.values(prices?.search ?? {});
-    if (!prices || !v.length) return "";
-    const [lo, hi] = [Math.min(...v), Math.max(...v)];
-    return `Searches cost ${credits(lo)}${lo === hi ? "" : ` to ${credits(hi)}`} credits${prices.fetch !== null ? ` and reading a page ${credits(prices.fetch)} credits` : ""}, per ${UNITS.kreq}.`;
+    const p = web?.prices;
+    const parts = [p?.search_milli != null ? `Searches cost ${credits(p.search_milli * 1000)} credits` : null, p?.fetch_milli != null ? `${p.search_milli != null ? "reading" : "Reading"} a page ${credits(p.fetch_milli * 1000)} credits` : null].filter(Boolean);
+    return parts.length ? `${parts.join(" and ")}, per ${UNITS.kreq}.` : "";
   });
   const m = $derived(me ? meter(me.week) : null);
   const at = (iso: string) => new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -45,7 +43,6 @@
   onMount(() => {
     document.title = "You · Clax";
     void refresh().then(take, e => { err = refusal(e); });
-    void pricing().then(p => { prices = webPrices(p.lines, p.credit_price_micro_usd); }, () => {});
     void meUsage().then(u => { usage = u; }, () => {});
   });
 </script>

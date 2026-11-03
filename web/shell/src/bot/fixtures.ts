@@ -1,13 +1,13 @@
 // ClaxBot fixtures for the unit tests: the shapes of spec 2026-10-21-claxbot
 // §10 with plausible values, each overridable.
-import type { AdminPerson, WebSettings, AdminUsage, BotRun, CatalogListing, CostLine, MeBot, ModelPricing, Pricing, Provider, Settings, UnitPricing, Week } from "./api";
+import type { AdminPerson, AdminUsage, BotRun, CatalogListing, CostLine, MeBot, ModelPricing, Pricing, Provider, Settings, UnitPricing, WebSettings, Week } from "./api";
 
 export const WEEK_START = "2026-10-19T00:00:00Z";
 export const WEEK_END = "2026-10-26T00:00:00Z";
 export const week = (o: Partial<Week> = {}): Week => ({ start: WEEK_START, end: WEEK_END, weekly_milli: 2_000_000, lift_milli: 0, spent_milli: 310_000, warn: false, exhausted: false, ...o });
 export const meBot = (o: Partial<MeBot> = {}): MeBot => ({
   enabled: true, unenforced: false, available: true, unavailable_reason: null,
-  key: { own: null, use_own: false }, week: week(), role: "member", web: { on: true, offered: true, why_off: null }, ...o,
+  key: { own: null, use_own: false }, week: week(), role: "member", web: { on: true, offered: true, why_off: null, prices: { search_milli: 25, fetch_milli: 50 } }, ...o,
 });
 export const adminPerson = (o: Partial<AdminPerson> = {}): AdminPerson => ({
   person: "p_sam", name: "Sam", role: "member", flags: { claxbot: true, claxbot_unenforced: false }, key_source: "own",

@@ -127,13 +127,12 @@ export function webPrices(lines: Pick<CostLine, "id" | "cost_micro_usd" | "margi
 /** A fetch's source in words: the sender's comment, or the search or page whose result named the URL ("from search #2"). */
 export function webSource(source: string | undefined): string | null {
   if (!source) return null;
-  return source === "comment" ? "from your comment" : `from ${source}`;
+  return source === "comment" ? "from the sender's comment" : `from ${source}`;
 }
 
-/** What a web call cost: credits, "free" for a page served from the store, nothing for a call that was not charged. */
+/** What a web call cost, in credits; nothing for a call with no cost (a page from the store, or a call that failed uncharged). */
 export function callCost(milli: number | undefined): string | null {
-  if (milli === undefined || milli === null) return null;
-  if (milli === 0) return "free";
+  if (!milli || milli <= 0) return null;
   return `${credits(milli)} ${milli === 1000 ? "credit" : "credits"}`;
 }
 

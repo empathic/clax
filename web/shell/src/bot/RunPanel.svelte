@@ -138,7 +138,7 @@
             <p class="who">Done</p>{#if s.summary}<p class="say">{s.summary}</p>{/if}
             {#if s.sources?.length}
               <ul class="sources" aria-label="Sources">
-                {#each s.sources.filter(x => /^https?:\/\//i.test(x.url)) as x (x.url)}<li><a href={x.url} target="_blank" rel="noopener noreferrer">{x.title || x.url}</a></li>{/each}
+                {#each s.sources.filter(x => /^https?:\/\//i.test(x.url)) as x, i (i)}<li><a href={x.url} target="_blank" rel="noopener noreferrer">{x.title || x.url}</a></li>{/each}
               </ul>
             {/if}
           {:else if s.kind === "give_up"}

@@ -58,7 +58,11 @@ export type MeBot = {
  * /api/me/bot`): `on` their own choice (on by default), `offered` whether
  * the admin turned a web operation on and the host has a source, `why_off`
  * why their runs have none now, else `null`. */
-export type MeWeb = { on: boolean; offered: boolean; why_off: "admin_off" | "person_off" | "not_configured" | null };
+export type MeWeb = {
+  on: boolean; offered: boolean; why_off: "admin_off" | "person_off" | "not_configured" | null;
+  /** Milli-credits one request costs them: a search on the active provider's line, a fetch (null for a line that does not exist). */
+  prices: { search_milli: number | null; fetch_milli: number | null };
+};
 
 /** A line of usage: a cost line's ID, its label and unit, and the quantity and credits (§7.3). */
 export type LineTotal = { line: string; label?: string; unit?: string; qty: number; credits_milli: number; cost_micro_usd?: number };
@@ -378,7 +382,7 @@ export type WebSettings = {
 };
 /** What `PUT /api/admin/web` changes: any of the editable fields. */
 export type WebPatch = {
-  search?: Partial<Pick<WebSettings["search"], "enabled" | "provider" | "max_per_run">>;
+  search?: Partial<Pick<WebSettings["search"], "enabled" | "provider" | "gateway" | "byok_alias" | "limit" | "max_per_run">>;
   fetch?: Partial<WebSettings["fetch"]>;
   cloudflare?: { account_id?: string };
 };

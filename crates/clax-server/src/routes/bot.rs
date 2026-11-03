@@ -147,7 +147,9 @@ pub fn can_export(st: &Store, who: &Identity, caller: &Caller) -> clax_core::Res
 /// `GET /api/me/bot`'s `web`: `on` is the person's own choice; `offered`
 /// when the admin turned either operation on and the host has a source;
 /// `why_off` names why web use is off for them now (`admin_off`,
-/// `person_off`, `not_configured`) or is null.
+/// `person_off`, `not_configured`) or is null. `prices` is what one search
+/// (on the active provider's line) and one fetch cost them, in
+/// milli-credits at their key source; null for a line that does not exist.
 fn web_view(st: &Store, bot: &Bot, person: &str) -> clax_core::Result<Value> {
     let on =
         |s: Setting| -> clax_core::Result<bool> { Ok(st.bot_setting(s)?.as_bool() == Some(true)) };
@@ -157,10 +159,20 @@ fn web_view(st: &Store, bot: &Bot, person: &str) -> clax_core::Result<Value> {
         clax_bot::web::WebAccess::Off(why) => json!(why.as_str()),
         clax_bot::web::WebAccess::On(_) => Value::Null,
     };
+    let source = key_source(st, bot, person)?.unwrap_or(KeySource::Instance);
+    let price = |line: String| -> clax_core::Result<Value> {
+        if st.cost_line(&line)?.is_none() {
+            return Ok(Value::Null);
+        }
+        Ok(json!(st.one_request_milli(&line, source)?))
+    };
+    let provider = st.bot_setting(Setting::WebSearchProvider)?;
+    let search = price(format!("web.search.{}", provider.as_str().unwrap_or("ceramic")))?;
     Ok(json!({
         "on": st.web_choice(person)?,
         "offered": admin_on && configured,
         "why_off": why_off,
+        "prices": {"search_milli": search, "fetch_milli": price("web.fetch".into())?},
     }))
 }
 

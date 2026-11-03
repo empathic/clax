@@ -311,6 +311,72 @@ describe("Admin › Web", () => {
     expect(m.root.textContent).not.toContain("cf-secret");
   });
 
+  it("saves the gateway, the provider key alias and the results per search, and refuses a limit outside 1 to 10", async () => {
+    const calls = stubFetch({
+      "GET /api/admin/web": webSettings({ sources: { "search.limit": "default" } }),
+      "PUT /api/admin/web": (b: unknown) => { const x = (b as { search: { gateway: string; byok_alias: string; limit: number } }).search; return webSettings({ search: { ...webSettings().search, ...x } }); },
+    });
+    const m = mount(AdminWeb, {});
+    await settle();
+    expect(m.root.textContent).toContain("With an alias, searches bill the provider key stored on the gateway instead of Cloudflare credits.");
+    type(m.root.querySelector("#aw-limit")!, "11");
+    click(button(m.root, "Save"));
+    expect(m.root.querySelector('[role="alert"]')!.textContent).toBe("Results per search is a whole number from 1 to 10.");
+    expect(calls.some(c => c.method === "PUT")).toBe(false);
+    type(m.root.querySelector("#aw-limit")!, "7");
+    type(m.root.querySelector("#aw-gateway")!, " edge ");
+    type(m.root.querySelector("#aw-byok")!, "exa-key");
+    click(button(m.root, "Save"));
+    await settle();
+    expect(calls.find(c => c.method === "PUT")!.body).toEqual({ search: { gateway: "edge", byok_alias: "exa-key", limit: 7 } });
+    expect(m.root.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("never sends a field the configuration sets, says Nothing changed, and refuses a cap that is not a whole number", async () => {
+    const calls = stubFetch({
+      "GET /api/admin/web": webSettings({ sources: { "search.provider": "file", "fetch.max_per_run": "env:CLAX_BOT__WEB", "search.limit": "file", "search.gateway": "file", "search.byok_alias": "file" } }),
+      "PUT /api/admin/web": webSettings(),
+    });
+    const m = mount(AdminWeb, {});
+    await settle();
+    click(button(m.root, "Save"));
+    expect(m.root.querySelector('[role="status"]')!.textContent).toBe("Nothing changed.");
+    expect(calls.some(c => c.method === "PUT")).toBe(false);
+    choose(m.root.querySelector("#aw-provider")!, "exa");
+    type(m.root.querySelector("#aw-max-fetch")!, "99");
+    type(m.root.querySelector("#aw-limit")!, "9");
+    type(m.root.querySelector("#aw-gateway")!, "other");
+    type(m.root.querySelector("#aw-byok")!, "other");
+    type(m.root.querySelector("#aw-max-search")!, "0");
+    click(button(m.root, "Save"));
+    expect(m.root.querySelector('[role="alert"]')!.textContent).toBe("Searches per run is a whole number, 1 or more.");
+    type(m.root.querySelector("#aw-max-search")!, "12");
+    click(button(m.root, "Save"));
+    await settle();
+    // Only the one field the configuration leaves editable is sent.
+    expect(calls.find(c => c.method === "PUT")!.body).toEqual({ search: { max_per_run: 12 } });
+  });
+
+  it("keeps unsaved edits when the token is set", async () => {
+    stubFetch({
+      "GET /api/admin/web": webSettings(),
+      "PUT /api/admin/web/token": webSettings({ search: { ...webSettings().search, enabled: true }, cloudflare: { account_id: "", token: { set: true, last4: "9f3a", set_at: "2026-10-21T09:00:00Z", last_ok_at: null } } }),
+    });
+    const m = mount(AdminWeb, {});
+    await settle();
+    type(m.root.querySelector("#aw-max-search")!, "4");
+    choose(m.root.querySelector("#aw-rule")!, "any_public");
+    click(button(m.root, /^Set/));
+    const input = m.root.querySelector<HTMLInputElement>('.bkey input[type="password"]')!;
+    type(input, "cf-secret-9f3a");
+    flush(() => input.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    await settle();
+    expect(m.root.querySelector(".bkey-s")!.textContent).toContain("ending 9f3a");
+    expect(m.root.querySelector<HTMLInputElement>("#aw-max-search")!.value).toBe("4");
+    expect(m.root.querySelector<HTMLSelectElement>("#aw-rule")!.value).toBe("any_public");
+    expect(m.root.querySelector('[role="switch"][aria-label="Web search"]')!.getAttribute("aria-checked")).toBe("false");
+  });
+
   it("is not asked for the daemon's account on a hosted Clax", async () => {
     stubFetch({ "GET /api/admin/web": webSettings(), "GET /api/hosted/me": { name: "x" } });
     const m = mount(AdminWeb, {});
