@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import { flush, mount } from "./test/svelte";
 import Publish from "./ui/Publish.svelte";
 
@@ -61,7 +61,7 @@ const settle = async () => { for (let i = 0; i < 5; i++) { await new Promise(r =
 const remote = { id: "r_1", origin: "https://clax.example", name: "clax.example", status: "connected", person_name: "Ada" };
 
 describe("the Publish button", () => {
-  let assign: ReturnType<typeof vi.fn>;
+  let assign: Mock<(url: string) => void>;
   beforeEach(async () => {
     history.replaceState(null, "", "/a/a1");
     assign = vi.fn();

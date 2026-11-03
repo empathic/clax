@@ -35,7 +35,7 @@ import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { cleanOut } from "./extension-clean.mjs";
-import { componentCssIntoScript } from "./overlay-component-css.mjs";
+import { OVERLAY_TARGET, componentCssIntoScript } from "./overlay-component-css.mjs";
 
 const web = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repo = resolve(web, "..");
@@ -279,15 +279,18 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     define: { "process.env.NODE_ENV": JSON.stringify("production") },
     build: {
       outDir: out, emptyOutDir: false, minify: false, sourcemap: false, cssCodeSplit: false,
-      // The oldest browsers the package's code runs in already: those with
-      // Object.hasOwn (web/bridge/src/describe.ts), which /_clax/overlay.js
-      // needs too. Vite's default target lowers the syntax for older ones,
-      // which gain nothing by it, turning Svelte's class fields and private
-      // members into WeakMap helpers an app's bundler cannot undo; an app
-      // that targets older browsers lowers the package in its own build.
-      target: ["chrome93", "edge93", "firefox92", "safari15.4"],
+      // The oldest browsers the package's code runs in already
+      // (OVERLAY_TARGET), which /_clax/overlay.js needs too. A lower target
+      // lowers the syntax for older ones, which gain nothing by it, turning
+      // Svelte's class fields and private members into WeakMap helpers an
+      // app's bundler cannot undo; an app that targets older browsers lowers
+      // the package in its own build.
+      target: OVERLAY_TARGET,
       lib: { entry: Object.fromEntries(ENTRIES.map(e => [e.name, join(web, e.src)])), formats: ["es"], fileName: (_, name) => `${name}.js` },
-      rollupOptions: { output: { chunkFileNames: "chunks/[name].js" } },
+      // Legal comments and pure annotations stay, for an app's bundler; the
+      // sources' JSDoc, which Rolldown (Vite 8's bundler) keeps by default and
+      // Rollup dropped, does not: the types carry it (emitTypes).
+      rolldownOptions: { output: { chunkFileNames: "chunks/[name].js", comments: { legal: true, annotation: true, jsdoc: false } } },
       watch: watch ? {} : null,
     },
   });

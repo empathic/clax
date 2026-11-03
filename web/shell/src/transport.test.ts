@@ -72,7 +72,7 @@ describe("the transport", () => {
     t.callResult(NONCE, sent[0].id as number, { status: 200, headers: [["content-type", "image/png"]], body64: "AP8=" });
     expect([...new Uint8Array(await (await p).arrayBuffer())]).toEqual([0, 255]);
   });
-  it("chunks a body over the limit, each chunk its slice of the body, in order", async () => {
+  it("chunks a body over the limit, each chunk its slice of the body, in order", HEAVY, async () => {
     const { sent, f } = open();
     const body = new Uint8Array(CHUNKED_OVER + 3).map((_, i) => (i * 7 + (i >> 20)) % 251);
     void f("/api/assets", { method: "POST", body });
@@ -83,8 +83,8 @@ describe("the transport", () => {
     // Decoded with Node's base64, not the transport's.
     const same = chunks.map((c, n) => Buffer.from(c.body64 as string, "base64").equals(body.subarray(n * CHUNK, (n + 1) * CHUNK)));
     expect(same).toEqual(chunks.map(() => true));
-  }, HEAVY);
-  it("answers a result sent in parts: each part's base64 joins the next, and the last carries the status and headers", async () => {
+  });
+  it("answers a result sent in parts: each part's base64 joins the next, and the last carries the status and headers", HEAVY, async () => {
     const { sent, t, f } = open();
     // Parts of a multiple of 3 bytes, so their base64 texts join into the body's.
     const PART = 3 << 18;
@@ -107,8 +107,8 @@ describe("the transport", () => {
     expect(r.status).toBe(200);
     expect(r.headers.get("content-type")).toBe("application/octet-stream");
     expect(Buffer.from(await r.arrayBuffer()).equals(Buffer.from(body))).toBe(true);
-  }, HEAVY);
-  it("assembles the host relay's own scripts for a 2.5 MiB answer into its body", async () => {
+  });
+  it("assembles the host relay's own scripts for a 2.5 MiB answer into its body", HEAVY, async () => {
     // Written by apps/clax_app/test/core/channel_relay_test.dart from what ChannelRelay runs.
     const fx = JSON.parse(readFileSync(join(__dirname, "../../../apps/clax_app/test/fixtures/relay_answer_parts.json"), "utf8")) as { nonce: string; id: number; bytes: number; scripts: string[] };
     const sent: Record<string, unknown>[] = [];
@@ -122,7 +122,7 @@ describe("the transport", () => {
     expect(r.status).toBe(200);
     const want = Buffer.from(Uint8Array.from({ length: fx.bytes }, (_, i) => (i * 31 + (i >> 9)) & 255));
     expect(Buffer.from(await r.arrayBuffer()).equals(want)).toBe(true);
-  }, HEAVY);
+  });
   it("an abort between parts rejects the call, posts callAbort, and drops the parts after it; a part of no waiting call does nothing", async () => {
     const { sent, t, f } = open();
     const ac = new AbortController();

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import { CommentMode, type ModeHooks, TOUCH_CLICK_WAIT_MS } from "../src/comment-mode";
 import { FRAME_FALLBACK_MS } from "../src/frame";
 
@@ -9,7 +9,7 @@ vi.setConfig({ testTimeout: 20_000 });
 // time comment mode takes focus back; a no-op keeps the log readable.
 window.focus = () => {};
 
-let hooks: { [K in Exclude<keyof ModeHooks, "live">]: ReturnType<typeof vi.fn> } & Pick<ModeHooks, "live">;
+let hooks: { [K in Exclude<keyof ModeHooks, "live">]: Mock<ModeHooks[K]> } & Pick<ModeHooks, "live">;
 let mode: CommentMode;
 const nextFrame = () => new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
 const outline = () => document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".o")!;

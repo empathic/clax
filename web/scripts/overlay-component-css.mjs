@@ -2,6 +2,12 @@
 // overlay's classic script (vite.overlay.config.ts) and the SDK package's
 // `./overlay` entry (build-sdk.mjs).
 
+/** The oldest browsers the overlay's code runs in already: those with
+ * Object.hasOwn (web/bridge/src/describe.ts). Both builds of it name them,
+ * so the overlay a deployer's page loads keeps this floor whatever Vite's
+ * default target becomes (Vite 7 raised it to Baseline Widely Available). */
+export const OVERLAY_TARGET = ["chrome93", "edge93", "firefox92", "safari15.4"];
+
 /** The string literal in overlay/src/main.ts that the components' CSS replaces. */
 export const CSS_SLOT = "__CLAX_OVERLAY_COMPONENT_CSS__";
 

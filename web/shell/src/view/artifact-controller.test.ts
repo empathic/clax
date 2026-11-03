@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import { dispatchTrusted } from "../../../bridge/test/trusted";
 import { FakeWorker, artifactStreams } from "../test/fake-worker";
 import { MOUNT_TIMEOUT_MS, WAIT_MS } from "../test/timeouts";
@@ -1208,7 +1208,7 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const done = thread("t9", { status: "resolved", resolved_by: "viewer:u_1", resolved_at: "2026-09-30T11:00:00.000Z" });
     const { ctl } = await started({ threads: [done] });
     await vi.waitFor(() => expect(ctl.state.get().threads).toHaveLength(1));
-    const base = fetch as unknown as ReturnType<typeof vi.fn>;
+    const base = fetch as unknown as Mock<typeof fetch>;
     const reopens: RequestInit[] = [];
     let refuse = false;
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {

@@ -10,7 +10,7 @@
 import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
-import { build, transformWithEsbuild } from "vite";
+import { build, minify } from "vite";
 import { cleanOut } from "./extension-clean.mjs";
 import { drawIcons } from "./extension-icons.mjs";
 import { extensionManifest } from "./extension-manifest.mjs";
@@ -20,11 +20,18 @@ const web = fileURLToPath(new URL("..", import.meta.url));
  * whitespace and comments (for the pure annotations a library's consumer
  * might use): the worker is no one's library, so it is minified whole once
  * its chunk is final (`generateBundle`, after every chunk transform; Vite's
- * own pass would print it again). bundle-size.mjs checks it. */
+ * own pass would print it again), by Oxc's minifier (Vite's own since 8),
+ * keeping legal comments where they stand as esbuild's did. bundle-size.mjs
+ * checks it. */
 const minifyWhole = {
   name: "minify-whole",
   async generateBundle(_, bundle) {
-    for (const c of Object.values(bundle)) if (c.type === "chunk") c.code = (await transformWithEsbuild(c.code, c.fileName, { minify: true, format: "esm" })).code;
+    for (const c of Object.values(bundle)) {
+      if (c.type !== "chunk") continue;
+      const out = await minify(c.fileName, c.code, { module: true, codegen: { legalComments: "inline" } });
+      if (out.errors.length) throw new Error(`minifying ${c.fileName}: ${out.errors.map(e => e.message).join("; ")}`);
+      c.code = out.code;
+    }
   },
 };
 const root = `${web}extension/`;
@@ -39,7 +46,7 @@ async function variant(out, test) {
   }
   await build({ ...shared, root, base: "./", plugins: [svelte({ configFile: `${web}svelte.config.js` })],
     build: { outDir: out, emptyOutDir: false, minify: true, sourcemap: false, modulePreload: { polyfill: false },
-      rollupOptions: { input: { composer: `${root}composer.html`, sidepanel: `${root}sidepanel.html` } } } });
+      rolldownOptions: { input: { composer: `${root}composer.html`, sidepanel: `${root}sidepanel.html` } } } });
   writeFileSync(`${out}/manifest.json`, `${JSON.stringify(extensionManifest(web, { test }), null, 2)}\n`);
   drawIcons(`${out}/icons`);
 }

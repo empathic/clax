@@ -87,7 +87,8 @@ describe("reportChrome", () => {
     // the appearance flips: only the media query says so.
     let listener: (() => void) | null = null;
     const query = { matches: false, addEventListener: (_: string, fn: () => void) => { listener = fn; } };
-    const media = vi.spyOn(window, "matchMedia").mockImplementation(q => {
+    // jsdom has no matchMedia to spy on: the test gives the window one.
+    vi.stubGlobal("matchMedia", (q: string) => {
       expect(q).toBe("(prefers-color-scheme: dark)");
       return query as unknown as MediaQueryList;
     });
@@ -102,7 +103,7 @@ describe("reportChrome", () => {
       f.fire();
       expect(post.mock.calls.at(-1)).toEqual([{ type: "clax:chrome", top: "#1d1d1f", bottom: "#ffffff" }]);
     } finally {
-      media.mockRestore();
+      vi.unstubAllGlobals();
     }
   });
 

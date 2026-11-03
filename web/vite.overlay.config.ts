@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
-import { componentCssIntoScript } from "./scripts/overlay-component-css.mjs";
+import { OVERLAY_TARGET, componentCssIntoScript } from "./scripts/overlay-component-css.mjs";
 
 /** The two builds of the one entry: the classic script and its ES module twin. */
 const OUTPUTS = { iife: "overlay.js", es: "overlay.mjs" } as const;
@@ -36,7 +36,7 @@ export default defineConfig({
   build: {
     outDir: "dist/_clax", emptyOutDir: false,
     lib: { entry: "overlay/src/main.ts", formats: ["iife", "es"], name: "Clax", fileName: format => OUTPUTS[format as keyof typeof OUTPUTS] },
-    rollupOptions: { output: { inlineDynamicImports: true } },
-    minify: true, sourcemap: false, cssCodeSplit: false,
+    rolldownOptions: { output: { codeSplitting: false } },
+    minify: true, sourcemap: false, cssCodeSplit: false, target: OVERLAY_TARGET,
   },
 });

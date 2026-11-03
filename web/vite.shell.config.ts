@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
-import { defineConfig, type Plugin } from "vite";
-import type { OutputAsset } from "rollup";
+import { defineConfig, type Plugin, type Rolldown } from "vite";
+type OutputAsset = Rolldown.OutputAsset;
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { appIcons } from "./scripts/extension-icons.mjs";
 // The root is shell/, so the plugin would not find svelte.config.js (runes mode) by itself.
@@ -90,7 +90,7 @@ export default defineConfig({
   define: { __CLAX_TEST_CLOCK__: JSON.stringify(TEST_CLOCK) },
   build: {
     outDir: "../dist", emptyOutDir: false, assetsDir: "_clax/shell", manifest: true,
-    rollupOptions: { input: { index: "shell/index.html", artifact: "shell/artifact.html" } },
+    rolldownOptions: { input: { index: "shell/index.html", artifact: "shell/artifact.html" } },
   },
   server: { proxy: { "/api": "http://127.0.0.1:7481", "/c": "http://127.0.0.1:7481", "/_blob": "http://127.0.0.1:7481", "/healthz": "http://127.0.0.1:7481" } },
 });

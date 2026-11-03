@@ -111,16 +111,19 @@ const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), 
 // and its lazy module, through which the module loads) and the artifact view
 // (its entry, the more menu and roster it loads after its first paint, and
 // its stream's lazy module, whose question surfaces' module loads it once
-// the browser is idle; that module counts here). The module is the host's dynamic
-// import named `index` (Vite keys it by its chunk when another chunk also
-// imports from it). What the module itself loads on demand is not counted.
+// the browser is idle; that module counts here). The module is the host's
+// dynamic import of src/q/index.ts. What the module itself loads on demand is
+// not counted.
 {
   const key = k => Object.keys(manifest).find(m => m.endsWith(k));
   const lazy = key("src/ui/gallery-working.ts");
   const stream = key("src/view/artifact-stream.ts");
   // The artifact entry loads these after its first paint, before its stream opens.
   const painted = ["src/ui/MoreMenu.svelte", "src/ui/Who.svelte"].map(key);
-  const q = lazy && (manifest[lazy].dynamicImports ?? []).find(k => manifest[k].name === "index");
+  // Keyed by its source, or by its chunk when another chunk also imports
+  // from it, then named for its file (`index`, as Rollup named it) or its
+  // directory (`q`, as Rolldown, Vite 8's bundler, names an index file's chunk).
+  const q = lazy && (manifest[lazy].dynamicImports ?? []).find(k => k.endsWith("src/q/index.ts") || ["index", "q"].includes(manifest[k].name));
   if (!q || !stream || painted.some(k => !k)) throw new Error("dist has no question module, gallery-working or artifact-stream chunk");
   const files = keys => new Set(keys.flatMap(h => [...closure(h)].map(k => manifest[k].file)));
   const beyond = hosts => { const loaded = files(hosts); return [...files([q])].filter(f => !loaded.has(f)).reduce((n, f) => n + gz(f), 0); };
