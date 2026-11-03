@@ -226,6 +226,9 @@ impl Kek {
     }
 }
 
+/// The one origin the Cloudflare token is bound to and may be opened for.
+pub const CLOUDFLARE_ORIGIN: &str = "https://api.cloudflare.com";
+
 /// Where a secret is kept.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SecretSlot {
@@ -367,10 +370,15 @@ impl Store {
         };
         // Bound to the provider in effect now: the key is only ever sent
         // there ([`Store::open_for_use`]).
-        let host = self
-            .bot_setting(crate::bot_settings::Setting::BaseUrl)?
-            .as_str()
-            .and_then(clax_core::config::key_host);
+        let host = match slot {
+            // The Cloudflare token goes to Cloudflare's API alone, whatever
+            // the model provider's base URL is.
+            SecretSlot::Cloudflare => Some(CLOUDFLARE_ORIGIN.to_string()),
+            _ => self
+                .bot_setting(crate::bot_settings::Setting::BaseUrl)?
+                .as_str()
+                .and_then(clax_core::config::key_host),
+        };
         self.with_tx(|tx| {
             let now = self.now();
             tx.execute(
@@ -446,8 +454,12 @@ impl Store {
         // Only to a URL the policy allows, and only to the origin the key
         // was set for.
         let refused = |why: String| CoreError::invalid("key_host_mismatch", why);
+        // The Cloudflare token is outside the model base-URL policy: its one
+        // origin is fixed ([`CLOUDFLARE_ORIGIN`]).
         let target = clax_core::config::key_host(base_url)
-            .filter(|_| self.base_url_policy().allows(base_url))
+            .filter(|_| {
+                matches!(slot, SecretSlot::Cloudflare) || self.base_url_policy().allows(base_url)
+            })
             .ok_or_else(|| {
                 refused(format!(
                     "{base_url} is not a URL a model key may be sent to"
@@ -627,11 +639,33 @@ mod tests {
             .set_secret(DAEMON, &kek, &SecretSlot::Cloudflare, token)
             .unwrap();
         assert_eq!(meta.last4, "wxyz");
+        let cf = "https://api.cloudflare.com/client/v4/accounts/x/ai/run";
         let opened = st
-            .open_for_use(&kek, &SecretSlot::Cloudflare, API)
+            .open_for_use(&kek, &SecretSlot::Cloudflare, cf)
             .unwrap()
             .unwrap();
         assert_eq!(opened.expose(), token);
+        // Only Cloudflare's API origin, whatever the model base URL is.
+        assert!(matches!(
+            st.open_for_use(&kek, &SecretSlot::Cloudflare, API),
+            Err(CoreError::Invalid {
+                code: "key_host_mismatch",
+                ..
+            })
+        ));
+        st.set_bot_settings(
+            DAEMON,
+            &[(
+                crate::bot_settings::Setting::BaseUrl,
+                Some(serde_json::json!("https://models.example.com")),
+            )],
+        )
+        .unwrap();
+        assert!(
+            st.open_for_use(&kek, &SecretSlot::Cloudflare, cf)
+                .unwrap()
+                .is_some()
+        );
         // It is its own slot: the instance's model key is not it.
         assert!(
             st.open_for_use(&kek, &SecretSlot::Instance, API)

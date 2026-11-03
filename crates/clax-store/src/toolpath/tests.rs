@@ -354,6 +354,25 @@ pub(super) fn segment(h: &History, closed: bool) -> String {
 const LAST_SEQ: i64 = 125;
 
 #[test]
+fn a_cloudflare_token_change_is_not_called_a_model_key() {
+    let h = history();
+    let mut row = h
+        .rows
+        .iter()
+        .find(|r| r.kind == "admin.key")
+        .unwrap()
+        .clone();
+    let mut body: Value = serde_json::from_str(&row.body).unwrap();
+    body["scope"] = json!("cloudflare");
+    body["op"] = json!("set");
+    body.as_object_mut().unwrap().remove("person");
+    row.body = body.to_string();
+    let text = describe(&row, "install");
+    assert!(text.contains("Set the Cloudflare API token"), "{text}");
+    assert!(!text.contains("model key"), "{text}");
+}
+
+#[test]
 fn render_each_kind_matches_golden() {
     let h = history();
     let kinds: BTreeSet<&str> = h.rows.iter().map(|r| r.kind.as_str()).collect();

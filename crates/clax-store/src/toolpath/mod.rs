@@ -1524,17 +1524,17 @@ impl Event<'_> {
                 self.show("person")
             ),
             Some(K::AdminKey) => format!(
-                "{} the {} model key{}",
+                "{} the {}{}",
                 match (self.str("op"), self.body.get("value")) {
                     (Some("clear"), _) => "Cleared",
                     (Some("use_own"), Some(Value::Bool(true))) => "Put in use",
                     (Some("use_own"), _) => "Took out of use",
                     _ => "Set",
                 },
-                if self.str("scope") == Some("own") {
-                    "own"
-                } else {
-                    "instance"
+                match self.str("scope") {
+                    Some("own") => "own model key",
+                    Some("cloudflare") => "Cloudflare API token",
+                    _ => "instance model key",
                 },
                 match self.str("person") {
                     Some(p) => format!(" of person {p}"),

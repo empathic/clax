@@ -43,14 +43,14 @@ impl Store {
                 )
                 .optional()?
                 .unwrap_or(true);
+            if was == on {
+                return Ok(false);
+            }
             tx.execute(
                 "INSERT INTO bot_person_prefs (person, web, set_at) VALUES (?1, ?2, ?3)
                  ON CONFLICT (person) DO UPDATE SET web = excluded.web, set_at = excluded.set_at",
                 params![person, on, self.now()],
             )?;
-            if was == on {
-                return Ok(false);
-            }
             let rec = AuditRecord::new(AuditKind::MeWeb, self.now())
                 .with("person", person)
                 .with("value", on);

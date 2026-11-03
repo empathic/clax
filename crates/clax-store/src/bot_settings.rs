@@ -278,7 +278,13 @@ impl Setting {
                         })
                         .collect()
                 });
-                hosts.map(|h| Value::from(h)).ok_or_else(|| bad(what))
+                hosts
+                    .filter(|h| {
+                        let set: std::collections::BTreeSet<&&str> = h.iter().collect();
+                        set.len() == h.len()
+                    })
+                    .map(Value::from)
+                    .ok_or_else(|| bad(what))
             }
             Kind::AccountId => match value.as_str().map(str::trim) {
                 Some(s)
@@ -856,6 +862,7 @@ mod tests {
         ] {
             assert!(!ok(Setting::WebFetchAllowlist, bad.clone()), "{bad}");
         }
+        assert!(!ok(Setting::WebFetchAllowlist, json!(["a.com", "a.com"])));
         let many: Vec<String> = (0..101).map(|i| format!("h{i}.com")).collect();
         assert!(!ok(Setting::WebFetchAllowlist, json!(many)));
         assert!(ok(Setting::WebFetchAllowlist, json!(many[..100])));
