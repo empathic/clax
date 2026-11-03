@@ -146,11 +146,14 @@ pub fn redirect_allowed(from: &PublicUrl, to: &PublicUrl) -> bool {
     !(from.scheme() == "https" && to.scheme() == "http")
 }
 
-/// Whether `ip` is in a range no fetch reaches: unspecified, loopback,
-/// private (RFC 1918), link-local, unique-local or broadcast, or an
-/// IPv4-mapped address in one. [`PublicUrl::parse`] applies it to IP
-/// literals; a source that resolves names applies it to every address a
-/// name resolves to (spec §5.3).
+/// Whether `ip` is not a public unicast address, so no fetch reaches it
+/// (spec §5.3): unspecified, loopback, private, shared (CGNAT),
+/// link-local, unique-local, multicast, broadcast, reserved,
+/// documentation and benchmarking ranges, and the IETF's protocol
+/// assignments; an IPv6 address that embeds an IPv4 one (mapped,
+/// compatible, NAT64 `64:ff9b::/96`, 6to4 `2002::/16`) is judged by the
+/// IPv4 address. [`PublicUrl::parse`] applies it to IP literals; a source
+/// that resolves names applies it to every address a name resolves to.
 #[must_use]
 pub fn is_local_addr(ip: IpAddr) -> bool {
     match ip {
@@ -159,30 +162,59 @@ pub fn is_local_addr(ip: IpAddr) -> bool {
     }
 }
 
-/// Whether `a` is unspecified, loopback, private (RFC 1918), link-local
-/// or the limited broadcast address.
+/// The IPv4 ranges [`is_local_addr`] refuses, as (network, prefix length).
+const LOCAL_V4: [([u8; 4], u32); 14] = [
+    ([0, 0, 0, 0], 8),       // "this network", unspecified
+    ([10, 0, 0, 0], 8),      // private
+    ([100, 64, 0, 0], 10),   // shared address space (CGNAT)
+    ([127, 0, 0, 0], 8),     // loopback
+    ([169, 254, 0, 0], 16),  // link-local
+    ([172, 16, 0, 0], 12),   // private
+    ([192, 0, 0, 0], 24),    // IETF protocol assignments
+    ([192, 0, 2, 0], 24),    // documentation (TEST-NET-1)
+    ([192, 168, 0, 0], 16),  // private
+    ([198, 18, 0, 0], 15),   // benchmarking
+    ([198, 51, 100, 0], 24), // documentation (TEST-NET-2)
+    ([203, 0, 113, 0], 24),  // documentation (TEST-NET-3)
+    ([224, 0, 0, 0], 4),     // multicast
+    ([240, 0, 0, 0], 4),     // reserved, and the broadcast address
+];
+
 fn local_v4(a: Ipv4Addr) -> bool {
-    a.is_unspecified()
-        || a.octets()[0] == 0
-        || a.is_loopback()
-        || a.is_private()
-        || a.is_link_local()
-        || a.is_broadcast()
+    let a = u32::from(a);
+    LOCAL_V4.iter().any(|&(net, len)| {
+        let mask = u32::MAX << (32 - len);
+        a & mask == u32::from_be_bytes(net)
+    })
 }
 
-/// Whether `a` is unspecified, loopback, link-local (`fe80::/10`),
-/// unique-local (`fc00::/7`), or an IPv4-mapped or -compatible address
-/// [`local_v4`] refuses.
 fn local_v6(a: Ipv6Addr) -> bool {
-    let first = a.segments()[0];
-    if a.is_unspecified()
-        || a.is_loopback()
-        || (first & 0xffc0) == 0xfe80
-        || (first & 0xfe00) == 0xfc00
-    {
+    let s = a.segments();
+    let v4 = |hi: u16, lo: u16| Ipv4Addr::from((u32::from(hi) << 16) | u32::from(lo));
+    if a.is_unspecified() || a.is_loopback() {
         return true;
     }
-    a.to_ipv4().is_some_and(local_v4)
+    // Mapped (::ffff:0:0/96) and compatible (::/96).
+    if let Some(embedded) = a.to_ipv4() {
+        return local_v4(embedded);
+    }
+    // NAT64: the well-known prefix by its IPv4 address; any other
+    // 64:ff9b::/16 address (the local-use 64:ff9b:1::/48) is refused.
+    if s[0] == 0x64 && s[1] == 0xff9b {
+        return s[2..6] != [0, 0, 0, 0] || local_v4(v4(s[6], s[7]));
+    }
+    // 6to4.
+    if s[0] == 0x2002 {
+        return local_v4(v4(s[1], s[2]));
+    }
+    // Only global unicast (2000::/3) is public: this refuses link-local,
+    // unique-local, site-local, multicast and the discard prefix.
+    if s[0] & 0xe000 != 0x2000 {
+        return true;
+    }
+    // IETF protocol assignments (2001::/23, with Teredo), documentation
+    // (2001:db8::/32 and 3fff::/20).
+    (s[0] == 0x2001 && (s[1] < 0x0200 || s[1] == 0x0db8)) || (s[0] == 0x3fff && s[1] < 0x1000)
 }
 
 /// `s` with the two hex digits of every percent escape in uppercase.
@@ -262,20 +294,63 @@ mod tests {
     }
 
     #[test]
-    fn resolved_addresses_are_checked_by_the_same_ranges() {
+    fn every_non_public_address_is_refused() {
         for local in [
-            "127.0.0.1",
+            "0.1.2.3",
             "10.0.0.1",
+            "100.64.0.1",
+            "100.127.255.254",
+            "127.0.0.1",
             "169.254.169.254",
+            "172.31.0.1",
+            "192.0.0.8",
+            "192.0.2.1",
+            "192.168.0.1",
+            "198.18.0.1",
+            "198.19.255.1",
+            "198.51.100.1",
+            "203.0.113.1",
+            "224.0.0.1",
+            "239.255.255.250",
+            "240.0.0.1",
+            "255.255.255.255",
+            "::",
             "::1",
-            "fd12::1",
             "::ffff:192.168.0.1",
+            "::10.0.0.1",
+            "64:ff9b::a00:1",
+            "64:ff9b:1::1",
+            "2002:7f00:1::",
+            "2002:a9fe:a9fe::1",
+            "fe80::1",
+            "fec0::1",
+            "fd12::1",
+            "ff02::1",
+            "100::1",
+            "2001::1",
+            "2001:db8::1",
+            "3fff::1",
         ] {
             assert!(is_local_addr(local.parse().unwrap()), "{local}");
         }
-        for public in ["1.1.1.1", "2606:4700::1111"] {
+        for public in [
+            "1.1.1.1",
+            "8.8.8.8",
+            "100.63.255.255",
+            "100.128.0.0",
+            "198.20.0.1",
+            "223.255.255.255",
+            "2606:4700::1111",
+            "::ffff:1.1.1.1",
+            "64:ff9b::808:808",
+            "2002:808:808::1",
+            "2001:4860:4860::8888",
+        ] {
             assert!(!is_local_addr(public.parse().unwrap()), "{public}");
         }
+        assert_eq!(refused("http://100.64.0.1/"), CODE_URL_NOT_ALLOWED);
+        assert_eq!(refused("http://[ff02::1]/"), CODE_URL_NOT_ALLOWED);
+        assert_eq!(refused("http://[64:ff9b::7f00:1]/"), CODE_URL_NOT_ALLOWED);
     }
 
     #[test]

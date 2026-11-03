@@ -6,6 +6,7 @@ use super::{
     CODE_URL_NOT_ALLOWED, CODE_WEB_UNAVAILABLE, FetchLimits, FetchedPage, Format, PublicUrl,
     SearchAnswer, SearchHit, SearchQuery, WebError, WebSource, url::redirect_allowed,
 };
+use crate::api::CODE_BAD_ARGS;
 use clax_bot_sandbox::{CODE_CANCELLED, CancelToken};
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
@@ -19,7 +20,14 @@ use std::sync::Mutex;
 /// its normalised form ([`PublicUrl::normalized`]). A redirect
 /// ([`FakeWebSource::redirect`]) is followed as a real source follows one:
 /// an `https` to `http` hop is refused, `hop` is called on the target, and
-/// a chain longer than [`FetchLimits::max_redirects`] is `web_unavailable`.
+/// a chain longer than [`FetchLimits::max_redirects`] or a redirect to no
+/// URL is `web_unavailable`.
+///
+/// A fetch goes out ([`WebError::went_out`]) once it is past its
+/// cancellation check: every error it answers after that, a scripted one,
+/// a refused or cut redirect, or a cancellation between hops, is marked
+/// as gone out. Only an unscripted fetch (a gap in the test) answers
+/// without it.
 #[derive(Debug, Default)]
 pub struct FakeWebSource {
     state: Mutex<State>,
@@ -171,6 +179,9 @@ impl FakeWebSource {
                     .as_object()
                     .ok_or_else(|| format!("{at} must be an object"))?;
                 if let Some(to) = str_field(o, "redirect", &at)? {
+                    if let Some(other) = o.keys().find(|k| *k != "redirect") {
+                        return Err(format!("{at}: a redirect has no {other}"));
+                    }
                     fake.redirect(url, &to);
                     continue;
                 }
@@ -241,10 +252,13 @@ impl WebSource for FakeWebSource {
             .push(("fetch".into(), url.normalized().to_string()));
         let mut at = url.clone();
         let mut hops = 0u8;
+        let mut sent = false;
         loop {
             if cancel.is_cancelled() {
-                return Err(cancelled());
+                return Err(cancelled().went_out(sent));
             }
+            // The request to `at` is on the network from here.
+            sent = true;
             let to = self.state().redirects.get(at.normalized()).cloned();
             let Some(to) = to else { break };
             if hops >= limits.max_redirects {
@@ -256,22 +270,38 @@ impl WebSource for FakeWebSource {
                         limits.max_redirects
                     ),
                     false,
-                ));
+                )
+                .went_out(true));
             }
             hops += 1;
-            let to = PublicUrl::parse(&to)?;
+            let to = match PublicUrl::parse(&to) {
+                Ok(to) => to,
+                Err(e) if e.code == CODE_BAD_ARGS => {
+                    return Err(WebError::new(
+                        CODE_WEB_UNAVAILABLE,
+                        format!("{} redirected to no URL ({to:?})", at.normalized()),
+                        false,
+                    )
+                    .went_out(true));
+                }
+                Err(e) => return Err(e.went_out(true)),
+            };
             if !redirect_allowed(&at, &to) {
                 return Err(WebError::new(
                     CODE_URL_NOT_ALLOWED,
                     format!("{} redirected from https to http", at.normalized()),
                     false,
-                ));
+                )
+                .went_out(true));
             }
-            hop(&to)?;
+            hop(&to).map_err(|e| e.went_out(true))?;
             at = to;
         }
-        next(self.state().pages.get_mut(at.normalized()))
-            .unwrap_or_else(|| Err(unscripted(&format!("a fetch of {}", at.normalized()))))
+        match next(self.state().pages.get_mut(at.normalized())) {
+            Some(Ok(page)) => Ok(page),
+            Some(Err(e)) => Err(e.went_out(true)),
+            None => Err(unscripted(&format!("a fetch of {}", at.normalized()))),
+        }
     }
 }
 
@@ -375,8 +405,10 @@ mod tests {
         );
         let blocked = fetch(&f, "https://a.com/p", &any).await.unwrap_err();
         assert_eq!(blocked.code, crate::web::CODE_WEB_BLOCKED);
+        assert!(blocked.went_out, "a scripted answer went out");
         let missing = fetch(&f, "https://nowhere.com/", &any).await.unwrap_err();
         assert_eq!(missing.code, CODE_WEB_UNAVAILABLE);
+        assert!(!missing.went_out);
 
         // A redirect calls `hop` on its target, and answers its refusal.
         let hops = Mutex::new(Vec::new());
@@ -390,9 +422,11 @@ mod tests {
         let refuse = |_: &PublicUrl| Err(WebError::new(CODE_URL_NOT_ALLOWED, "no", false));
         let refused = fetch(&f, "https://r.com/", &refuse).await.unwrap_err();
         assert_eq!(refused.code, CODE_URL_NOT_ALLOWED);
+        assert!(refused.went_out, "the first request went out");
         // An https to http redirect is refused before `hop`.
         let down = fetch(&f, "https://down.com/", &any).await.unwrap_err();
         assert_eq!(down.code, CODE_URL_NOT_ALLOWED);
+        assert!(down.went_out);
 
         assert_eq!(
             f.calls(),
@@ -419,7 +453,19 @@ mod tests {
         f.redirect("https://b.com/", "https://a.com/");
         let e = fetch(&f, "https://a.com/", &any).await.unwrap_err();
         assert_eq!(e.code, CODE_WEB_UNAVAILABLE);
+        assert!(e.went_out, "a cut redirect loop is charged");
         assert_eq!(f.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_redirect_to_no_url_or_a_private_host_went_out() {
+        let f = FakeWebSource::new();
+        f.redirect("https://bad.com/", "not a url");
+        f.redirect("http://local.com/", "http://127.0.0.1/admin");
+        let bad = fetch(&f, "https://bad.com/", &any).await.unwrap_err();
+        assert_eq!((bad.code, bad.went_out), (CODE_WEB_UNAVAILABLE, true));
+        let local = fetch(&f, "http://local.com/", &any).await.unwrap_err();
+        assert_eq!((local.code, local.went_out), (CODE_URL_NOT_ALLOWED, true));
     }
 
     #[tokio::test]
@@ -432,6 +478,18 @@ mod tests {
             f.search(&query("q"), &c).await.unwrap_err().code,
             CODE_CANCELLED
         );
+        f.page("https://a.com/", Ok(page("https://a.com/", "a")));
+        let e = f
+            .fetch(
+                &url("https://a.com/"),
+                Format::Auto,
+                &FetchLimits::default(),
+                &any,
+                &c,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!((e.code, e.went_out), (CODE_CANCELLED, false));
     }
 
     #[tokio::test]
@@ -489,6 +547,7 @@ mod tests {
             json!([]),
             json!({"searches": {"q": [{"title": "no url"}]}}),
             json!({"pages": {"https://x.com/": {"status": 200}}}),
+            json!({"pages": {"https://x.com/": {"redirect": "https://y.com/", "status": 200}}}),
             json!({"pages": {"https://x.com/": {"status": 200, "content_type": "text/html",
                                                "text": "t", "links": [1]}}}),
         ] {

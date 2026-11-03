@@ -410,12 +410,17 @@ message written for the model (what to do next):
 | `credits_exhausted` | the person cannot pay for the call | no |
 | `bad_args` | arguments fail their check (the existing `CODE_BAD_ARGS`) | no |
 | `url_not_in_prior_context` | no source holds the URL (§5.2) | no |
-| `url_not_allowed` | the URL rule or the host check refuses it, on the URL or a redirect | no |
-| `web_timeout` | the deadline passed (30 s by default, conversion included) | search no, fetch yes |
-| `web_too_large` | the body passed the byte limit (5 MB) | fetch yes |
-| `web_unsupported_content_type` | images, audio, video, binary in raw mode | fetch yes |
-| `web_blocked` | a bot challenge answered the fetch | fetch yes |
-| `web_unavailable` | the source failed (Cloudflare 5xx, rate limit, payment required at the gateway) | no |
+| `url_not_allowed` | the URL rule or the host check refuses it, on the URL or a redirect | on the URL no; on a redirect, fetch: when it went out |
+| `web_timeout` | the deadline passed (30 s by default, conversion included) | search no; fetch: when it went out |
+| `web_too_large` | the body passed the byte limit (5 MB) | fetch: when it went out |
+| `web_unsupported_content_type` | images, audio, video, binary in raw mode | fetch: when it went out |
+| `web_blocked` | a bot challenge answered the fetch | fetch: when it went out |
+| `web_unavailable` | the source failed (Cloudflare 5xx, rate limit, payment required at the gateway, more than 5 redirects) | search no; fetch: when it went out |
+
+A fetch *went out* once its request to the URL was sent (a source sets
+`WebError::went_out`); from then on it is charged whatever it answered,
+so a redirect refused or cut after the first request is charged (§7.2).
+A failed search is never charged.
 
 ### 6.4 Web text is data
 

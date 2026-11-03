@@ -98,15 +98,16 @@ pub fn pretty_json(s: &str) -> Option<String> {
 }
 
 /// The `href`s of `html`'s `a`, `area` and `link` elements, resolved
-/// against `base` (or the page's own `<base href>`), kept when they are
+/// against the document's base URL (its first `<base href>`, which applies
+/// to the whole document as in a browser, else `base`), kept when they are
 /// public URLs ([`PublicUrl::parse`]): normalised, each once in the order
-/// first seen, at most [`MAX_LINKS`].
+/// first seen, at most [`MAX_LINKS`]. Linear in the page's length.
 #[must_use]
 pub fn links_of_html(html: &str, base: &PublicUrl) -> Vec<String> {
     #[derive(Default)]
     struct Hrefs {
         base: RefCell<Option<String>>,
-        hrefs: RefCell<Vec<(Option<String>, String)>>,
+        hrefs: RefCell<Vec<String>>,
     }
     impl TokenSink for Hrefs {
         type Handle = ();
@@ -129,16 +130,12 @@ pub fn links_of_html(html: &str, base: &PublicUrl) -> Vec<String> {
                         *base = Some(h);
                     }
                 }
-                ("a" | "area" | "link", Some(h)) => {
-                    let base = self.base.borrow().clone();
-                    self.hrefs.borrow_mut().push((base, h));
-                }
+                ("a" | "area" | "link", Some(h)) => self.hrefs.borrow_mut().push(h),
                 _ => {}
             }
-            // Text in these is not markup: an `href` in a script is not a link.
-            if tag.self_closing {
-                return TokenSinkResult::Continue;
-            }
+            // Text in these is not markup (an `href` in a script is not a
+            // link), whether or not the tag is written self-closing: HTML
+            // ignores `/>` on them, so `<script/>` still opens a script.
             match &*tag.name {
                 "script" => TokenSinkResult::RawData(RawKind::ScriptData),
                 "style" | "xmp" | "iframe" | "noembed" | "noframes" => {
@@ -154,23 +151,42 @@ pub fn links_of_html(html: &str, base: &PublicUrl) -> Vec<String> {
     let tok = Tokenizer::new(Hrefs::default(), TokenizerOpts::default());
     let _ = tok.feed(&input);
     tok.end();
-    let hrefs = tok.sink.hrefs.into_inner();
+    let Hrefs {
+        base: page_base,
+        hrefs,
+    } = tok.sink;
+    // Resolved once: a long `<base href>` costs its length, not its length
+    // per link.
+    let doc_base = page_base
+        .into_inner()
+        .filter(|b| b.len() <= MAX_TARGET_BYTES)
+        .and_then(|b| base.as_url().join(b.trim()).ok())
+        .unwrap_or_else(|| base.as_url().clone());
     let mut links = Links::new();
-    for (page_base, href) in hrefs {
-        let resolved_base = page_base
-            .and_then(|b| base.as_url().join(b.trim()).ok())
-            .unwrap_or_else(|| base.as_url().clone());
-        if !links.add_from(&resolved_base, &href) {
+    for href in hrefs.into_inner() {
+        if !links.add_from(&doc_base, &href) {
             break;
         }
     }
     links.into_vec()
 }
 
+/// The most bytes of a link target worth resolving: a URL of
+/// [`MAX_URL_CHARS`](super::url::MAX_URL_CHARS) characters is at most four
+/// bytes each.
+const MAX_TARGET_BYTES: usize = super::url::MAX_URL_CHARS * 4;
+
 /// The links of Markdown `md`: inline links and images (`[t](u "title")`),
 /// reference definitions (`[r]: u`), autolinks (`<u>`) and bare `http`
 /// and `https` URLs, resolved against `base` and kept as
 /// [`links_of_html`] keeps them.
+///
+/// A scanner, not a CommonMark parser, linear in `md`'s length: every
+/// pass moves past what it read. It reads code spans and blocks like any
+/// other text, and takes the target of any `](`, so it may count a string
+/// as a link that a renderer would not; a link it counts is still text the
+/// page holds. A target with no end before the next whitespace (an
+/// unclosed `](`) is read to there and not looked at again.
 #[must_use]
 pub fn links_of_markdown(md: &str, base: &PublicUrl) -> Vec<String> {
     let mut found: Vec<(usize, &str)> = Vec::new();
@@ -180,12 +196,12 @@ pub fn links_of_markdown(md: &str, base: &PublicUrl) -> Vec<String> {
     let mut from = 0;
     while let Some(i) = md[from..].find("](") {
         let start = from + i + 2;
-        from = start;
         let rest = &md[start..];
         let (target, len) = if let Some(r) = rest.strip_prefix('<') {
             match r.find(['>', '\n']) {
                 Some(j) if r[j..].starts_with('>') => (&r[..j], j + 2),
-                _ => continue,
+                Some(j) => ("", j + 1),
+                None => ("", rest.len()),
             }
         } else {
             let mut depth = 0usize;
@@ -211,20 +227,20 @@ pub fn links_of_markdown(md: &str, base: &PublicUrl) -> Vec<String> {
             found.push((start, target));
             spans.push((start, start + len));
         }
+        // Past the target: nothing in it is read again.
+        from = start + len;
     }
-    // Autolinks: `<scheme://…>`.
+    // Autolinks: `<scheme://…>`. Each scan stops at the next `<`.
     let mut from = 0;
     while let Some(i) = md[from..].find('<') {
         let start = from + i + 1;
-        from = start;
         let rest = &md[start..];
-        if let Some(j) = rest.find(['>', '<', ' ', '\n'])
-            && rest[j..].starts_with('>')
-            && rest[..j].contains("://")
-        {
+        let j = rest.find(['>', '<', ' ', '\n']).unwrap_or(rest.len());
+        if rest[j..].starts_with('>') && rest[..j].contains("://") {
             found.push((start, &rest[..j]));
             spans.push((start, start + j));
         }
+        from = start + j;
     }
     // Reference definitions: a line `[label]: target`.
     let mut at = 0;
@@ -249,7 +265,20 @@ pub fn links_of_markdown(md: &str, base: &PublicUrl) -> Vec<String> {
         }
         at += line.len();
     }
-    // Bare URLs, outside the links above.
+    // Bare URLs, outside the links above: the spans, sorted and merged, are
+    // searched by halves.
+    spans.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(spans.len());
+    for (s, e) in spans {
+        match merged.last_mut() {
+            Some(last) if s <= last.1 => last.1 = last.1.max(e),
+            _ => merged.push((s, e)),
+        }
+    }
+    let inside = |p: usize| {
+        let k = merged.partition_point(|&(s, _)| s <= p);
+        k > 0 && p < merged[k - 1].1
+    };
     for scheme in ["https://", "http://"] {
         let mut from = 0;
         while let Some(i) = md[from..].find(scheme) {
@@ -259,9 +288,8 @@ pub fn links_of_markdown(md: &str, base: &PublicUrl) -> Vec<String> {
                 .find(|c: char| c.is_whitespace() || "<>()[]\"'`".contains(c))
                 .unwrap_or(rest.len());
             from = start + end.max(scheme.len());
-            let inside = spans.iter().any(|&(s, e)| s <= start && start < e);
             let url = rest[..end].trim_end_matches(['.', ',', ';', ':', '!', '?']);
-            if !inside && url.len() > scheme.len() {
+            if !inside(start) && url.len() > scheme.len() {
                 found.push((start, url));
             }
         }
@@ -292,12 +320,14 @@ impl Links {
     }
 
     /// Adds `href`, resolved against `base`, when it is a public URL;
-    /// false once [`MAX_LINKS`] are kept.
+    /// false once [`MAX_LINKS`] are kept. A target longer than any URL
+    /// kept is dropped unread.
     fn add_from(&mut self, base: &::url::Url, href: &str) -> bool {
         if self.links.len() >= MAX_LINKS {
             return false;
         }
-        if let Ok(abs) = base.join(href.trim())
+        if href.len() <= MAX_TARGET_BYTES
+            && let Ok(abs) = base.join(href.trim())
             && let Ok(u) = PublicUrl::parse(abs.as_str())
             && self.seen.insert(u.normalized().to_string())
         {
@@ -365,11 +395,15 @@ pub fn window(text: &str, offset: usize, page_chars: usize) -> Window {
 }
 
 /// `s` cut to at most `max` characters at a word boundary, ending with `…`
-/// (which counts) when cut; `s` whole when it fits.
+/// (which counts) when cut; `s` whole when it fits, and empty when `max`
+/// is 0.
 #[must_use]
 pub fn snippet(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
+    }
+    if max == 0 {
+        return String::new();
     }
     let keep = max.saturating_sub(1);
     let prefix_end = s.char_indices().nth(keep).map_or(s.len(), |(i, _)| i);
@@ -497,6 +531,12 @@ mod tests {
         );
         let based = r#"<base href="https://cdn.x.com/dir/"><a href="p">p</a>"#;
         assert_eq!(links_of_html(based, &b), vec!["https://cdn.x.com/dir/p"]);
+        // The first `<base href>` applies to the whole document.
+        let late = r#"<a href="p">p</a><base href="https://cdn.x.com/dir/"><base href="/no/">"#;
+        assert_eq!(links_of_html(late, &b), vec!["https://cdn.x.com/dir/p"]);
+        // `<script/>` still opens a script.
+        let script = r#"<script/><a href="/in-script"></script><a href="/out">"#;
+        assert_eq!(links_of_html(script, &b), vec!["https://x.com/out"]);
         let md = "See [b](/b#c \"t\"), ![i](<img.png>), <https://y.com/q>.\n\
                   Bare https://z.com/r, and [ref]: /s\n[w]: https://w.com/";
         assert_eq!(
@@ -514,12 +554,48 @@ mod tests {
     }
 
     #[test]
+    fn hostile_pages_are_scanned_in_one_pass() {
+        let b = base("https://x.com/a");
+        // Half a million unclosed `](`: one target, read to the end.
+        assert!(links_of_markdown(&"](".repeat(500_000), &b).is_empty());
+        assert!(links_of_markdown(&"](<".repeat(300_000), &b).is_empty());
+        assert!(links_of_markdown(&"<".repeat(1_000_000), &b).is_empty());
+        // Bare-URL-like text with no separator is one candidate, too long.
+        assert!(links_of_markdown(&"https://x".repeat(100_000), &b).is_empty());
+        // Many real links and spans: the first MAX_LINKS are kept.
+        let many: String = (0..50_000)
+            .map(|i| {
+                format!(
+                    "[l](/{i}) <https://y.com/{i}> https://z.com/{i}
+"
+                )
+            })
+            .collect();
+        let links = links_of_markdown(&many, &b);
+        assert_eq!(links.len(), MAX_LINKS);
+        assert_eq!(
+            &links[..3],
+            ["https://x.com/0", "https://y.com/0", "https://z.com/0"]
+        );
+        // A long `<base href>` is resolved once, not once per link.
+        let html = format!(
+            r#"<base href="/{}">{}"#,
+            "a".repeat(5_000),
+            r#"<a href="b">"#.repeat(100_000)
+        );
+        assert_eq!(links_of_html(&html, &b), vec!["https://x.com/b"]);
+    }
+
+    #[test]
     fn a_snippet_cuts_at_a_word() {
         assert_eq!(snippet("short text", 600), "short text");
         assert_eq!(snippet("alpha beta gamma", 12), "alpha beta…");
         assert_eq!(snippet("alpha beta gamma", 11), "alpha beta…");
         assert_eq!(snippet("alpha beta gamma", 10), "alpha…");
         assert_eq!(snippet("abcdefghij", 5), "abcd…");
+        assert_eq!(snippet("abcdefghij", 1), "…");
+        assert_eq!(snippet("abcdefghij", 0), "");
+        assert_eq!(snippet("", 0), "");
         let long = "word ".repeat(200);
         let s = snippet(&long, SNIPPET_CHARS);
         assert!(s.chars().count() <= SNIPPET_CHARS);

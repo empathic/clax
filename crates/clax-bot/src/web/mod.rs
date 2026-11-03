@@ -39,8 +39,10 @@
 //! below, a message written for the model (what to do next) and a
 //! `retryable` flag. Arguments that fail their check are
 //! [`api::CODE_BAD_ARGS`](crate::api::CODE_BAD_ARGS). Whether a failed call
-//! is charged is [`charged`]: a failed search never is; a fetch that went
-//! out on the network is, whatever it answered (spec §7.2).
+//! is charged is [`charged`]: a failed search never is; a fetch is when it
+//! went out on the network ([`WebError::went_out`]: its first request was
+//! sent), whatever it answered, so a redirect refused or cut after that is
+//! charged too (spec §7.2).
 
 pub mod fake;
 pub mod page;
@@ -74,7 +76,7 @@ pub const CODE_WEB_UNSUPPORTED_CONTENT_TYPE: &str = "web_unsupported_content_typ
 /// A bot challenge answered the fetch.
 pub const CODE_WEB_BLOCKED: &str = "web_blocked";
 /// The source failed: a Cloudflare 5xx, a rate limit, payment required at
-/// the gateway, or a redirect chain too long.
+/// the gateway, a redirect chain too long or a redirect to no URL.
 pub const CODE_WEB_UNAVAILABLE: &str = "web_unavailable";
 
 /// The operation name of a search, as [`charged`] takes it.
@@ -82,22 +84,16 @@ pub const OP_SEARCH: &str = "web.search";
 /// The operation name of a fetch, as [`charged`] takes it.
 pub const OP_FETCH: &str = "web.fetch";
 
-/// Whether a call of `op` ([`OP_SEARCH`] or [`OP_FETCH`]) that failed with
-/// `code` is charged and counts against the run's cap (spec §6.3,
-/// "Charged"): only a fetch that went out on the network, so one that
-/// timed out, was too large, had an unsupported type or was blocked. A
-/// failed search never is, and neither is a call refused before it went
-/// out or one the source could not make (`web_unavailable`).
+/// Whether a call of `op` ([`OP_SEARCH`] or [`OP_FETCH`]) that failed
+/// with `err` is charged and counts against the run's cap (spec §6.3,
+/// §7.2): a failed search never is; a failed fetch is exactly when it
+/// went out ([`WebError::went_out`]), whatever it answered. A refusal
+/// before the request was sent (`web_disabled`, `web_cap`,
+/// `credits_exhausted`, `invalid_args`, `url_not_in_prior_context`, or
+/// `url_not_allowed` on the URL asked for) never went out.
 #[must_use]
-pub fn charged(code: &str, op: &str) -> bool {
-    op == OP_FETCH
-        && matches!(
-            code,
-            CODE_WEB_TIMEOUT
-                | CODE_WEB_TOO_LARGE
-                | CODE_WEB_UNSUPPORTED_CONTENT_TYPE
-                | CODE_WEB_BLOCKED
-        )
+pub fn charged(op: &str, err: &WebError) -> bool {
+    op == OP_FETCH && err.went_out
 }
 
 /// The search provider a gateway sends a query to; each has its own cost
@@ -200,18 +196,22 @@ pub struct FetchedPage {
     pub request_id: Option<String>,
 }
 
-/// A web call that failed: a code above, a message for the model, and
-/// whether trying again may succeed.
+/// A web call that failed: a code above, a message for the model, whether
+/// trying again may succeed, and whether it went out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WebError {
     pub code: &'static str,
     pub message: String,
     pub retryable: bool,
     pub request_id: Option<String>,
+    /// Whether the call's request to the URL was sent before it failed: a
+    /// source sets it once the fetch's first request is on the network,
+    /// and a fetch that went out is charged ([`charged`]).
+    pub went_out: bool,
 }
 
 impl WebError {
-    /// An error with no request ID.
+    /// An error with no request ID, that did not go out.
     #[must_use]
     pub fn new(code: &'static str, message: impl Into<String>, retryable: bool) -> WebError {
         WebError {
@@ -219,7 +219,15 @@ impl WebError {
             message: message.into(),
             retryable,
             request_id: None,
+            went_out: false,
         }
+    }
+
+    /// This error, marked as having gone out (or not).
+    #[must_use]
+    pub fn went_out(mut self, went_out: bool) -> WebError {
+        self.went_out = went_out;
+        self
     }
 
     /// This error, with the request ID of the call that failed.
@@ -268,29 +276,30 @@ mod tests {
 
     #[test]
     fn charges_follow_the_spec_table() {
-        assert!(!charged(CODE_WEB_TIMEOUT, OP_SEARCH));
-        assert!(charged(CODE_WEB_TIMEOUT, OP_FETCH));
-        assert!(!charged(CODE_URL_NOT_ALLOWED, OP_FETCH));
-        assert!(!charged(CODE_WEB_CAP, OP_FETCH));
-        assert!(!charged(CODE_WEB_CAP, OP_SEARCH));
-        for code in [
-            CODE_WEB_TOO_LARGE,
-            CODE_WEB_UNSUPPORTED_CONTENT_TYPE,
-            CODE_WEB_BLOCKED,
-        ] {
-            assert!(charged(code, OP_FETCH), "{code}");
-            assert!(!charged(code, OP_SEARCH), "{code}");
-        }
-        for code in [
+        let all = [
             CODE_WEB_DISABLED,
+            CODE_WEB_CAP,
             CODE_CREDITS_EXHAUSTED,
             crate::api::CODE_BAD_ARGS,
             CODE_URL_NOT_IN_PRIOR_CONTEXT,
+            CODE_URL_NOT_ALLOWED,
+            CODE_WEB_TIMEOUT,
+            CODE_WEB_TOO_LARGE,
+            CODE_WEB_UNSUPPORTED_CONTENT_TYPE,
+            CODE_WEB_BLOCKED,
             CODE_WEB_UNAVAILABLE,
-        ] {
-            assert!(!charged(code, OP_FETCH), "{code}");
-            assert!(!charged(code, OP_SEARCH), "{code}");
+        ];
+        for code in all {
+            let before = WebError::new(code, "m", false);
+            let after = WebError::new(code, "m", false).went_out(true);
+            // A failed search is never charged.
+            assert!(!charged(OP_SEARCH, &before), "{code}");
+            assert!(!charged(OP_SEARCH, &after), "{code}");
+            // A fetch is charged exactly when it went out.
+            assert!(!charged(OP_FETCH, &before), "{code}");
+            assert!(charged(OP_FETCH, &after), "{code}");
         }
+        assert!(!WebError::new(CODE_WEB_TIMEOUT, "m", true).went_out);
     }
 
     #[test]
