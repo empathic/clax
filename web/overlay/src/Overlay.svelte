@@ -10,7 +10,7 @@
   // none over another; closing the composer gives focus back to Report.
   import { onDestroy, untrack } from "svelte";
   import type { Report } from "../../sdk/src/types";
-  import { type Clip, type Draft, POLL_MS, Poll, type ReporterApi, type Timers, canSend, clipStatus, failureText, newDraft, pageUrl, quoteOf, realTimers, reportOf, takeClip } from "./model";
+  import { type Clip, type Draft, POLL_MS, Poll, type ReporterApi, type Timers, canSend, clipStatus, failureText, newDraft, pageUrl, quoteOf, realTimers, reportOf, type ReportsMode, takeClip } from "./model";
   import type { Picked, Picker } from "./picker";
   import Reports from "./Reports.svelte";
 
@@ -25,8 +25,10 @@
     externalId?: string;
     metadata?: unknown;
     timers?: Timers;
+    /** "off": no "Your reports" button, panel or polling; Report stays. */
+    reports?: ReportsMode;
   };
-  let { client, doc, host, picker: makePicker, externalId, metadata, timers = realTimers }: Props = $props();
+  let { client, doc, host, picker: makePicker, externalId, metadata, timers = realTimers, reports: reportsMode = "button" }: Props = $props();
 
   let picking = $state(false);
   let draft = $state<Draft | null>(null);
@@ -129,7 +131,7 @@
       if (draft !== d) return;
       cancel();
       if (reports) reports = [report, ...reports.filter(r => r.id !== report.id)];
-      say("Report sent. Replies show under Your reports.");
+      say(reportsMode === "off" ? "Report sent." : "Report sent. Replies show under Your reports.");
     } catch (e) {
       d.error = failureText(e);
     } finally {
@@ -198,7 +200,9 @@
   {#if notice}<p class="notice" role="status">{notice}</p>{/if}
 
   <div class="launcher">
-    <button type="button" class="reports-btn" aria-expanded={open} onclick={toggleReports}>Your reports</button>
+    {#if reportsMode !== "off"}
+      <button type="button" class="reports-btn" aria-expanded={open} onclick={toggleReports}>Your reports</button>
+    {/if}
     <button type="button" class="primary report-btn" bind:this={reportBtn} aria-pressed={picking} onclick={() => (picking ? stopPicking() : startPicking())}>
       <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2.5h10a1.5 1.5 0 0 1 1.5 1.5v6A1.5 1.5 0 0 1 13 11.5H7l-3.5 2.5v-2.5H3A1.5 1.5 0 0 1 1.5 10V4A1.5 1.5 0 0 1 3 2.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
       {picking ? "Picking…" : "Report"}

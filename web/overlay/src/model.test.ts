@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Anchor } from "../../bridge/src/protocol";
 import type { Report } from "../../sdk/src/types";
-import { canSend, clipStatus, externalIdOf, failureText, newDraft, Poll, POLL_MS, quoteOf, repliesOf, reportOf, summaryOf, takeClip, type Timers } from "./model";
+import { canSend, clipStatus, externalIdOf, failureText, newDraft, Poll, POLL_MS, quoteOf, repliesOf, reportOf, reportsModeOf, summaryOf, takeClip, type Timers } from "./model";
 
 const anchor: Anchor = { kind: "element", selector: "#save", quote: "Save   the\nform", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
 
@@ -91,6 +91,25 @@ describe("the page's artifact", () => {
     expect(externalIdOf(doc, "given")).toBe("given");
     meta.content = "";
     expect(externalIdOf(doc)).toBeUndefined();
+  });
+});
+
+describe("the Your reports mode", () => {
+  it("is the option, else the clax-reports meta, else button; anything else is refused", () => {
+    const doc = document.implementation.createHTMLDocument("t");
+    expect(reportsModeOf(doc)).toBe("button");
+    const meta = doc.createElement("meta");
+    meta.name = "clax-reports";
+    meta.content = " off ";
+    doc.head.append(meta);
+    expect(reportsModeOf(doc)).toBe("off");
+    expect(reportsModeOf(doc, "button")).toBe("button");
+    meta.content = "";
+    expect(reportsModeOf(doc)).toBe("button");
+    expect(reportsModeOf(doc, "off")).toBe("off");
+    expect(() => reportsModeOf(doc, "hidden")).toThrow(/reports must be "button" or "off"/);
+    meta.content = "Off";
+    expect(() => reportsModeOf(doc)).toThrow(TypeError);
   });
 });
 

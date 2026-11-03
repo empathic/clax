@@ -26,6 +26,26 @@ export interface OverlayOptions {
   /** The page's artifact. Default: `<meta name="clax-artifact">`'s content,
    * else none, and the instance files the report on the page URL without its route. */
   externalId?: string;
+  /** The "Your reports" entry point: `"button"` (the default) puts it beside
+   * Report in the launcher; `"off"` leaves it out, with its panel and its
+   * polling, for a page that shows the reports itself. Report stays either
+   * way. Default: `<meta name="clax-reports">`'s content, else `"button"`. */
+  reports?: ReportsMode;
+}
+
+/** Where "Your reports" shows: `OverlayOptions.reports`. */
+export type ReportsMode = "button" | "off";
+/** The `<meta name>` a page sets `OverlayOptions.reports` with. */
+export const REPORTS_META = "clax-reports";
+
+/** The overlay's "Your reports" mode: `given`, else `<meta
+ * name="clax-reports">`'s content, else `"button"`. A value that is neither
+ * mode is refused, so a typo never hides the reports unasked. */
+export function reportsModeOf(doc: Document, given?: unknown): ReportsMode {
+  const v = given ?? doc.querySelector<HTMLMetaElement>(`meta[name="${REPORTS_META}"]`)?.content.trim();
+  if (v === undefined || v === "") return "button";
+  if (v === "button" || v === "off") return v;
+  throw new TypeError(`Clax.overlay: reports must be "button" or "off", not ${JSON.stringify(v)}`);
 }
 
 /** A draft's screenshot: being taken, taken, or not taken (why). */

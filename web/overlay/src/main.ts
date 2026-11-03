@@ -10,7 +10,7 @@ import { mount, unmount } from "svelte";
 import { OVERLAY_TAG } from "../../bridge/src/anchor";
 import { addSheet } from "../../bridge/src/sheet";
 import { ReporterClient } from "../../sdk/src/reporter";
-import { externalIdOf, type OverlayOptions } from "./model";
+import { externalIdOf, type OverlayOptions, reportsModeOf } from "./model";
 import Overlay from "./Overlay.svelte";
 import { commentPicker, type Picked } from "./picker";
 import TOKENS from "./tokens.css?inline";
@@ -37,6 +37,7 @@ const HOST_CSS = "all:initial!important;position:fixed!important;left:0!importan
 export function overlay(opts: OverlayOptions, doc: Document = document): OverlayHandle {
   for (const k of ["instance", "queue"] as const) if (typeof opts?.[k] !== "string" || !opts[k]) throw new TypeError(`Clax.overlay: ${k} must be a non-empty string`);
   if (typeof opts.auth !== "function") throw new TypeError("Clax.overlay: auth must be a function");
+  const reports = reportsModeOf(doc, opts.reports);
   const client = new ReporterClient({ instance: opts.instance.replace(/\/+$/, ""), queue: opts.queue, auth: opts.auth });
 
   const host = doc.createElement(OVERLAY_TAG);
@@ -55,6 +56,7 @@ export function overlay(opts: OverlayOptions, doc: Document = document): Overlay
       picker: (onPick: (p: Picked) => void, onCancel: () => void) => commentPicker(doc, onPick, onCancel),
       externalId: externalIdOf(doc, opts.externalId),
       metadata: opts.metadata,
+      reports,
     },
   });
   let open = true;

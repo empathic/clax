@@ -278,6 +278,34 @@ describe("the overlay", () => {
     expect(q(".panel .thread")?.textContent).toMatch(/Still there/);
   });
 
+  it('with reports: "off", the launcher is Report alone: no Your reports, no panel, no polling, and a send still files', async () => {
+    view.unmount();
+    const client: ReporterApi = {
+      fileReport: async r => { filed.push(r); return report("t9", [r.body]); },
+      myReports: async () => { listed++; return { reports: [], next: null }; },
+      comment: async () => report("t", []),
+    };
+    view = mount(Overlay as never, { client, doc: document, host, picker: (p: (x: Picked) => void) => { onPick = p; return { set: () => {}, done: () => {}, destroy: () => {} }; }, timers, reports: "off" }, host);
+    expect(button("Your reports")).toBeUndefined();
+    expect(q(".reports-btn")).toBeNull();
+    expect([...q(".launcher")!.querySelectorAll("button")].map(b => b.textContent?.trim())).toEqual(["Report"]);
+    click(button("Report"));
+    onPick({ anchor, render: async () => new ArrayBuffer(0) });
+    await settle();
+    type("Off but still filed");
+    click(button("Send"));
+    await settle();
+    expect(filed.map(r => r.body)).toEqual(["Off but still filed"]);
+    expect(q(".notice")?.textContent).toBe("Report sent.");
+    expect(q(".panel")).toBeNull();
+    expect(listed).toBe(0);
+    expect(timers.pending()).not.toContain(POLL_MS);
+  });
+
+  it('with reports: "button" (the default), Your reports sits beside Report', () => {
+    expect([...q(".launcher")!.querySelectorAll("button")].map(b => b.textContent?.trim())).toEqual(["Your reports", "Report"]);
+  });
+
   it("while comment mode is on, presses on the overlay stop before the page's listeners, and others go on", () => {
     click(button("Report"));
     const heard: string[] = [];
