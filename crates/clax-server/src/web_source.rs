@@ -26,8 +26,8 @@
 //! configured ([`fixtures`]).
 
 use clax_bot::web::page::{
-    Handling, decode, handling, http_error, is_sniffed, links_of_body, links_of_html,
-    links_of_markdown, media_type, media_type_of, pretty_json, user_agent,
+    Handling, decode, decode_html, handling, http_error, is_sniffed, links_of_body,
+    links_of_html, links_of_markdown, media_type, media_type_of, pretty_json, user_agent,
 };
 use clax_bot::web::url::{is_local_addr, redirect_allowed};
 use clax_bot::web::{
@@ -118,11 +118,15 @@ impl std::error::Error for Refused {}
 /// The fetch client's resolver: resolves a name and answers its addresses
 /// only when every one is public ([`is_public`]), so the client connects
 /// to nothing else. `allow_loopback` also admits loopback addresses, for
-/// tests against a local server; nothing else sets it.
+/// tests against a local server; nothing else sets it. Each fetch has its
+/// own, which sets `answered` once it has answered checked addresses: the
+/// client then begins connecting to them, and the fetch has gone out
+/// ([`RestSource::fetch`]).
 #[derive(Clone)]
 pub struct CheckedResolver {
     lookup: Arc<dyn Lookup>,
     allow_loopback: bool,
+    answered: Arc<AtomicBool>,
 }
 
 impl CheckedResolver {
@@ -152,6 +156,7 @@ impl reqwest::dns::Resolve for CheckedResolver {
         let this = self.clone();
         Box::pin(async move {
             let addrs = this.check(name.as_str()).await?;
+            this.answered.store(true, Ordering::SeqCst);
             // Port 0: the client puts the URL's port on each address.
             let addrs: reqwest::dns::Addrs =
                 Box::new(addrs.into_iter().map(|ip| SocketAddr::new(ip, 0)));
@@ -190,12 +195,14 @@ pub struct RestSource {
     account_id: String,
     token: Secret,
     /// Cloudflare's API: no redirects followed (the token goes nowhere
-    /// else). Each client is the reason it could not be built otherwise,
+    /// else). The client is the reason it could not be built otherwise,
     /// and every call then answers `web_unavailable`: never a client
     /// without these rules.
     api: Result<reqwest::Client, String>,
-    /// Pages: the checked resolver, no redirects, no proxy.
-    web: Result<reqwest::Client, String>,
+    /// What each fetch's own client resolves names with
+    /// ([`RestSource::web_client`]).
+    lookup: Arc<dyn Lookup>,
+    allow_loopback: bool,
     /// Sent on every fetch ([`user_agent`]).
     user_agent: String,
 }
@@ -235,23 +242,32 @@ impl RestSource {
             .no_proxy()
             .build()
             .map_err(|e| e.to_string());
-        let web = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .no_proxy()
-            .dns_resolver(Arc::new(CheckedResolver {
-                lookup,
-                allow_loopback,
-            }))
-            .build()
-            .map_err(|e| e.to_string());
         RestSource {
             api_base,
             account_id,
             token,
             api,
-            web,
+            lookup,
+            allow_loopback,
             user_agent: "ClaxBot/1".into(),
         }
+    }
+
+    /// The client of one fetch: the checked resolver, which sets
+    /// `answered` once it has answered checked addresses, no redirects, no
+    /// proxy, and no connection shared with another fetch (each fetch's
+    /// first request resolves its name, so it is known when it went out).
+    fn web_client(&self, answered: Arc<AtomicBool>) -> Result<reqwest::Client, WebError> {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .dns_resolver(Arc::new(CheckedResolver {
+                lookup: self.lookup.clone(),
+                allow_loopback: self.allow_loopback,
+                answered,
+            }))
+            .build()
+            .map_err(|e| unavailable(format!("the daemon's HTTP client failed ({e})"), false))
     }
 
     /// This source, sending `user_agent` on every fetch ([`user_agent`]).
@@ -349,27 +365,33 @@ impl RestSource {
         }
     }
 
-    /// The fetch, without its deadline or cancellation; `sent` is set once
-    /// the first request is handed to the client.
+    /// The fetch, without its deadline or cancellation; `out` is set once
+    /// it has gone out: when the first request's name has resolved to
+    /// checked addresses (by the client's resolver), or, for a host that
+    /// is an IP address, as the first request is sent.
     async fn fetch_page(
         &self,
         url: &PublicUrl,
         format: Format,
         limits: &FetchLimits,
         hop: &(dyn for<'u> Fn(&'u PublicUrl) -> Result<(), WebError> + Sync),
-        sent: &AtomicBool,
+        out: &Arc<AtomicBool>,
     ) -> Result<FetchedPage, WebError> {
+        let client = self.web_client(out.clone())?;
+        if !matches!(url.as_url().host(), Some(url::Host::Domain(_))) {
+            // No name to resolve: the connection begins at once.
+            out.store(true, Ordering::SeqCst);
+        }
         let mut at = url.clone();
         let mut hops = 0u8;
         let resp = loop {
-            let first = !sent.swap(true, Ordering::SeqCst);
-            let r = RestSource::client(&self.web)?
+            let r = client
                 .get(at.as_str())
                 .header(reqwest::header::ACCEPT, ACCEPT)
                 .header(reqwest::header::USER_AGENT, &self.user_agent)
                 .send()
                 .await
-                .map_err(|e| fetch_error(&e, &at, !first))?;
+                .map_err(|e| fetch_error(&e, &at, hops > 0))?;
             if !matches!(r.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
                 break r;
             }
@@ -484,7 +506,7 @@ impl RestSource {
             Handling::Html => {
                 // Sent decoded, as UTF-8, so the conversion never guesses
                 // the page's charset.
-                let html = decode(&body, &declared);
+                let html = decode_html(&body, &declared);
                 let links = links_of_html(&html, &at);
                 let md = self
                     .to_markdown(html.into_bytes(), "page.html".into(), HTML_UTF8)
@@ -498,7 +520,7 @@ impl RestSource {
                 (md, links)
             }
             Handling::RawHtml => {
-                let html = decode(&body, &declared);
+                let html = decode_html(&body, &declared);
                 let links = links_of_html(&html, &at);
                 (html, links)
             }
@@ -703,10 +725,13 @@ impl WebSource for RestSource {
         if cancel.is_cancelled() {
             return Err(cancelled());
         }
-        let sent = AtomicBool::new(false);
+        // Gone out once the first request's name resolved to checked
+        // addresses and the connection to them began: a deadline or a
+        // cancellation before that charges nothing.
+        let out = Arc::new(AtomicBool::new(false));
         let work = tokio::time::timeout(
             limits.timeout,
-            self.fetch_page(url, format, limits, hop, &sent),
+            self.fetch_page(url, format, limits, hop, &out),
         );
         tokio::select! {
             r = work => r.unwrap_or_else(|_| Err(WebError::new(
@@ -718,8 +743,8 @@ impl WebSource for RestSource {
                 ),
                 true,
             )
-            .went_out(sent.load(Ordering::SeqCst)))),
-            () = cancel.cancelled() => Err(cancelled().went_out(sent.load(Ordering::SeqCst))),
+            .went_out(out.load(Ordering::SeqCst)))),
+            () = cancel.cancelled() => Err(cancelled().went_out(out.load(Ordering::SeqCst))),
         }
     }
 }
@@ -1411,13 +1436,51 @@ mod tests {
         assert_eq!(e.message, "not on the list");
     }
 
+    /// A resolver whose lookups never answer.
+    struct Silent;
+
+    impl Lookup for Silent {
+        fn lookup(&self, _: &str) -> LookupFuture {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_deadline_or_cancel_before_the_first_name_resolved_did_not_go_out() {
+        let s = RestSource::with_lookup(
+            Url::parse("http://127.0.0.1:9").unwrap(),
+            ACCOUNT.into(),
+            Secret::new(TOKEN.into()),
+            true,
+            Arc::new(Silent),
+        );
+        let url = PublicUrl::parse("http://site.test/").unwrap();
+        let limits = FetchLimits {
+            timeout: Duration::from_millis(20),
+            ..FetchLimits::default()
+        };
+        let e = fetch(&s, &url, Format::Auto, limits).await.unwrap_err();
+        assert_eq!((e.code, e.went_out), (CODE_WEB_TIMEOUT, false), "{e}");
+        assert!(!charged(OP_FETCH, &e));
+        // Cancelled while the name resolves: not gone out either.
+        let cancel = CancelToken::new();
+        let c = cancel.clone();
+        let limits = FetchLimits::default();
+        let call = s.fetch(&url, Format::Auto, &limits, &any, &cancel);
+        let (r, ()) = tokio::join!(call, async move {
+            tokio::task::yield_now().await;
+            c.cancel();
+        });
+        let e = r.unwrap_err();
+        assert_eq!((e.code, e.went_out), (CODE_CANCELLED, false), "{e}");
+        assert!(!charged(OP_FETCH, &e));
+    }
+
     #[tokio::test]
     async fn a_refused_first_connection_did_not_go_out_and_a_later_one_did() {
-        // A port nothing listens on: the connection is refused.
-        let closed = {
-            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            l.local_addr().unwrap().port()
-        };
+        // Port 0: no connection to it can be made (refused, or the address
+        // cannot be assigned), whatever else listens on the host.
+        let closed = 0;
         let server = Server::start(move |r| match r.path.as_str() {
             "/away" => redirect(&format!("http://site.test:{closed}/")),
             "/lost" => redirect("http://nowhere.test/"),
@@ -1564,6 +1627,11 @@ mod tests {
                 "text/html; charset=iso-8859-1",
                 b"<p>caf\xe9</p>".to_vec(),
             ),
+            "/meta" => resp(
+                200,
+                "text/html",
+                b"<meta charset=\"iso-8859-1\"><p>caf\xe9</p>".to_vec(),
+            ),
             p if p == format!("/client/v4/accounts/{ACCOUNT}/ai/tomarkdown") => {
                 assert_eq!(r.header("authorization"), format!("Bearer {TOKEN}"));
                 let body = String::from_utf8_lossy(&r.body);
@@ -1616,6 +1684,17 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(p.text, "caf\u{e9}\n");
+        // So is a page whose charset only its meta declares, and its raw
+        // HTML is decoded by it too.
+        let meta = server.url("site.test", "/meta");
+        let p = fetch(&s, &meta, Format::Auto, FetchLimits::default())
+            .await
+            .unwrap();
+        assert_eq!(p.text, "caf\u{e9}\n");
+        let p = fetch(&s, &meta, Format::Raw, FetchLimits::default())
+            .await
+            .unwrap();
+        assert_eq!(p.text, "<meta charset=\"iso-8859-1\"><p>caf\u{e9}</p>");
     }
 
     #[tokio::test]

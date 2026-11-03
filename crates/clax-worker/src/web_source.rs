@@ -33,8 +33,12 @@
 //! refused) did not go out. Every error after a response, a refused or cut
 //! redirect, a body too large, a failed conversion, a deadline or a
 //! cancellation, is marked as gone out, and so is a deadline or a
-//! cancellation while the first request is in flight. A search never is
-//! (a failed search is not charged).
+//! cancellation while the first request is in flight (the Worker's
+//! `fetch()` does not say whether its name has resolved yet). One failure
+//! after a response is not: a conversion the `AI` binding cannot make
+//! where the Worker runs ([`conversion_failure`]), which is the
+//! platform's, not the page's. A search never is (a failed search is not
+//! charged).
 //!
 //! # The deadline
 //!
@@ -50,8 +54,8 @@ use std::time::Duration;
 
 use clax_bot::FakeWebSource;
 use clax_bot::web::page::{
-    self, Handling, decode, http_error, links_of_body, links_of_html, links_of_markdown,
-    pretty_json,
+    self, Handling, decode, decode_html, http_error, links_of_body, links_of_html,
+    links_of_markdown, pretty_json,
 };
 use clax_bot::web::url::redirect_allowed;
 use clax_bot::web::{
@@ -167,8 +171,10 @@ pub fn search_failure(status: u16, v: &Value) -> Option<WebError> {
     Some(WebError::new(CODE_WEB_UNAVAILABLE, message, retryable).with_request_id(request_id))
 }
 
-/// Why a `websearch()` call that threw failed: by [`search_failure`]'s
-/// rules when the error carries an HTTP `status` or a gateway `code` (a
+/// Why a `websearch()` call that threw failed: a `web_unavailable` that is
+/// not retryable when the binding cannot run here ([`cannot_run_here`]);
+/// by [`search_failure`]'s rules when the error carries an HTTP `status`
+/// or a gateway `code` (a
 /// code alone stands for its status: payment required, a missing provider
 /// key and a refused request are not retryable, a rate limit is), else a
 /// retryable `web_unavailable` with the error's `message`.
@@ -182,6 +188,15 @@ pub fn thrown_search_failure(status: Option<u16>, code: Option<&str>, message: &
         Some("web_search_unavailable") => Some(503),
         _ => None,
     });
+    if cannot_run_here(message) {
+        return unavailable(
+            format!(
+                "Web search is unavailable on this Worker: its AI binding cannot run here \
+                 ({message}). Continue without searching."
+            ),
+            false,
+        );
+    }
     let Some(status) = status.filter(|s| !(200..300).contains(s)) else {
         return unavailable(
             format!("Web search failed: {message}. Try again, or continue without searching."),
@@ -190,6 +205,45 @@ pub fn thrown_search_failure(status: Option<u16>, code: Option<&str>, message: &
     };
     let body = serde_json::json!({"error": {"code": code, "status": status}});
     search_failure(status, &body).unwrap_or_else(|| unavailable(message.to_string(), true))
+}
+
+/// Whether a binding call that threw `message` failed because the binding
+/// cannot run where this Worker runs: under `wrangler dev --local` the
+/// `AI` binding exists but each call throws "Binding AI needs to be run
+/// remotely". That failure is the platform's, never the page's or the
+/// query's.
+#[must_use]
+pub fn cannot_run_here(message: &str) -> bool {
+    message
+        .to_ascii_lowercase()
+        .contains("needs to be run remotely")
+}
+
+/// The error of a `toMarkdown()` call that threw `message`. When the
+/// binding cannot run here ([`cannot_run_here`]) it is `web_unavailable`,
+/// not retryable and not gone out, so the fetch is not charged although
+/// its request reached the site: the person pays for no conversion the
+/// platform could not make. Anything else is the page's: a retryable
+/// `web_unavailable` that went out.
+#[must_use]
+pub fn conversion_failure(message: &str) -> WebError {
+    if cannot_run_here(message) {
+        return unavailable(
+            format!(
+                "Markdown conversion is unavailable on this Worker: its AI binding cannot run \
+                 here ({message}). Fetch the page with format \"raw\", or use another source."
+            ),
+            false,
+        );
+    }
+    unavailable(
+        format!(
+            "The page could not be converted to Markdown: {message}. Try again, or fetch it \
+             with format \"raw\"."
+        ),
+        true,
+    )
+    .went_out(true)
 }
 
 /// The Markdown `toMarkdown()` answered (`v`, its result read as JSON: a
@@ -481,6 +535,7 @@ pub fn read_body(
                 base: url.clone(),
             }));
         }
+        Handling::Html | Handling::RawHtml => decode_html(&body, content_type),
         _ => decode(&body, content_type),
     };
     Ok(match how {
@@ -692,8 +747,12 @@ mod binding {
     impl BindingSource {
         /// The source over `env`'s `AI` binding, when it has one. Under
         /// `wrangler dev --local` it has one whose every call throws
-        /// ("needs to be run remotely"), which answers `web_unavailable`.
-        /// Its fetches name the instance at `public_origin`, when it has
+        /// ("needs to be run remotely", [`cannot_run_here`]): a search
+        /// answers `web_unavailable`, and so does a fetch that needs a
+        /// conversion, uncharged ([`conversion_failure`]), though its
+        /// request reached the site. Nothing on the binding tells that
+        /// mode apart without calling it, so the Worker still reports web
+        /// use configured there. Its fetches name the instance at `public_origin`, when it has
         /// one, in their `User-Agent` ([`page::user_agent`]).
         #[must_use]
         pub fn from_env(env: &worker::Env, public_origin: Option<&str>) -> Option<BindingSource> {
@@ -767,7 +826,9 @@ mod binding {
             })
         }
 
-        /// The page of `reply`, the final response at `url`.
+        /// The page of `reply`, the final response at `url`. Every error
+        /// has gone out but a conversion the binding cannot make here
+        /// ([`conversion_failure`]).
         async fn page(
             &self,
             url: &PublicUrl,
@@ -781,36 +842,32 @@ mod binding {
             let content_type = header(&res, "content-type").unwrap_or_default();
             let length = header(&res, "content-length").and_then(|l| l.trim().parse::<u64>().ok());
             let mitigated = header(&res, "cf-mitigated");
+            let gone = |e: WebError| e.went_out(true);
             if let Err(e) = check_head(url, reply.status, length, mitigated.as_deref(), limits) {
                 discard(&res, cancel, deadline).await;
-                return Err(e);
+                return Err(gone(e));
             }
-            let body = read_capped(&res, url, limits, cancel, deadline).await?;
-            match read_body(url, reply.status, &content_type, body, format)? {
+            let body = read_capped(&res, url, limits, cancel, deadline)
+                .await
+                .map_err(gone)?;
+            match read_body(url, reply.status, &content_type, body, format).map_err(gone)? {
                 Body::Page(p) => Ok(p),
                 Body::Convert(c) => {
                     let markdown = self.to_markdown(&c, cancel, deadline).await?;
-                    c.finish(markdown)
+                    c.finish(markdown).map_err(gone)
                 }
             }
         }
 
-        /// `toMarkdown([{name, blob}])` of `c`.
+        /// `toMarkdown([{name, blob}])` of `c`. A thrown error is
+        /// [`conversion_failure`]'s; every other error has gone out.
         async fn to_markdown(
             &self,
             c: &Conversion,
             cancel: &CancelToken,
             deadline: f64,
         ) -> Result<String, WebError> {
-            let failed = |e: JsValue| {
-                unavailable(
-                    format!(
-                        "The page could not be converted to Markdown: {}. Try again, or fetch it with format \"raw\".",
-                        message(&e)
-                    ),
-                    true,
-                )
-            };
+            let failed = |e: JsValue| conversion_failure(&message(&e));
             let parts = Array::of1(&Uint8Array::from(c.bytes.as_slice()).into());
             let blob = construct(
                 "Blob",
@@ -828,7 +885,8 @@ mod binding {
                 deadline,
                 "The conversion",
             )
-            .await?
+            .await
+            .map_err(|e| e.went_out(true))?
             .map_err(failed)?;
             parse_markdown(&to_value(&out))
         }
@@ -1030,7 +1088,6 @@ mod binding {
             .await?;
             self.page(&at, reply, format, limits, cancel, deadline)
                 .await
-                .map_err(|e| e.went_out(true))
         }
     }
 }
@@ -1555,6 +1612,66 @@ mod tests {
             (p.content_type.as_str(), p.text.as_str()),
             ("text/plain", "plain words")
         );
+    }
+
+    #[test]
+    fn an_html_page_in_its_meta_charset_goes_to_conversion_as_utf8() {
+        let u = url("https://a.example/");
+        let latin = b"<meta charset=\"iso-8859-1\"><p>caf\xe9</p>".to_vec();
+        let Body::Convert(c) =
+            read_body(&u, 200, "text/html", latin.clone(), Format::Auto).unwrap()
+        else {
+            panic!("HTML is converted")
+        };
+        assert_eq!(c.mime, HTML_UTF8);
+        assert_eq!(
+            String::from_utf8(c.bytes).unwrap(),
+            "<meta charset=\"iso-8859-1\"><p>caf\u{e9}</p>"
+        );
+        let p = page_of(read_body(&u, 200, "text/html", latin, Format::Raw).unwrap());
+        assert_eq!(p.text, "<meta charset=\"iso-8859-1\"><p>caf\u{e9}</p>");
+        // The header's charset beats the meta.
+        let p = page_of(
+            read_body(
+                &u,
+                200,
+                "text/html; charset=utf-8",
+                "<meta charset=\"iso-8859-1\">caf\u{e9}".as_bytes().to_vec(),
+                Format::Raw,
+            )
+            .unwrap(),
+        );
+        assert_eq!(p.text, "<meta charset=\"iso-8859-1\">caf\u{e9}");
+    }
+
+    #[test]
+    fn a_binding_that_cannot_run_here_charges_nothing() {
+        // `wrangler dev --local`: the AI binding exists, and each call
+        // throws.
+        let thrown = "Binding AI needs to be run remotely";
+        let e = conversion_failure(thrown);
+        assert_eq!(
+            (e.code, e.went_out, e.retryable),
+            (CODE_WEB_UNAVAILABLE, false, false),
+            "{e}"
+        );
+        assert!(!clax_bot::web::charged(clax_bot::web::OP_FETCH, &e));
+        assert!(e.message.contains("format \"raw\""), "{}", e.message);
+        let e = thrown_search_failure(None, None, thrown);
+        assert_eq!(
+            (e.code, e.went_out, e.retryable),
+            (CODE_WEB_UNAVAILABLE, false, false),
+            "{e}"
+        );
+        // Any other thrown conversion error is the page's: gone out,
+        // charged, retryable.
+        let e = conversion_failure("Internal error");
+        assert_eq!(
+            (e.code, e.went_out, e.retryable),
+            (CODE_WEB_UNAVAILABLE, true, true),
+            "{e}"
+        );
+        assert!(e.message.contains("Internal error"), "{}", e.message);
     }
 
     #[test]

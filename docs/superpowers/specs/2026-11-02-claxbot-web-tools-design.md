@@ -407,6 +407,12 @@ clax.web.fetch(url: string, opts?: { offset?: number; format?: "auto" | "raw" })
   where one falls in the last tenth of the window; `nextOffset` is `null` at
   the end. `format: "raw"` returns a textual body unconverted and refuses
   binary types.
+- A textual body is decoded by its charset: the `Content-Type` header's,
+  else UTF-8, a byte-order mark winning over both. HTML is decoded as a
+  browser sniffs it (`clax_bot::web::page::html_encoding`): a byte-order
+  mark, else the header's charset, else the first `<meta charset>` or
+  `<meta http-equiv="Content-Type">` in its first 1,024 bytes, else UTF-8.
+  HTML goes to conversion decoded, as UTF-8.
 - A readable HTTP error page (4xx or 5xx with a text body) is returned with
   its `status`, not as an error.
 
@@ -450,16 +456,28 @@ only the message.
 | `web_blocked` | a bot challenge answered the fetch | fetch: when it went out |
 | `web_unavailable` | the source failed (Cloudflare 5xx, rate limit, payment required at the gateway, more than 5 redirects) | search no; fetch: when it went out |
 
-A fetch *went out* once a response, of any status, came back from the
-target to its first request, or, on the daemon, once a connection to the
-target was established (a source sets `WebError::went_out`). A first
-request that fails before that (the name does not resolve or resolves
-privately, the connection is refused, or on the Worker the first
-`fetch()` rejects) did not go out and is not charged. After any response
-or redirect, every later failure has gone out, and so has a deadline or a
-cancellation that stops a first request already sent: from then on the
-fetch is charged whatever it answered, so a redirect refused or cut after
-the first response is charged (§7.2). A failed search is never charged.
+A fetch *went out* (a source sets `WebError::went_out`) by these rules:
+
+- Once a response, of any status, came back from the target to its first
+  request, every later failure has gone out and is charged, whatever it
+  answered: a redirect refused or cut after the first response, a body too
+  large, a failed conversion (§7.2). The one exception is on the Worker: a
+  conversion its `AI` binding cannot make where it runs (under `wrangler dev
+  --local` each binding call throws "needs to be run remotely") is the
+  platform's failure, `web_unavailable` and not charged, though the request
+  reached the site.
+- A first request that fails on its own with no response (the name does not
+  resolve or resolves privately, the connection is refused, or on the Worker
+  the first `fetch()` rejects) did not go out and is not charged.
+- A deadline or a cancellation before the first response: on the daemon,
+  the fetch has gone out once the first request's name has resolved to
+  checked public addresses and the connection to them began (at once for a
+  host that is an IP address), and not before, so a deadline or a
+  cancellation while the name resolves is not charged. On the Worker, whose
+  `fetch()` does not say when its name resolved, it has gone out once the
+  first `fetch()` was started.
+
+A failed search is never charged.
 
 ### 6.4 Web text is data
 
@@ -518,9 +536,12 @@ account. The admin's Pricing page lists them with the other lines.
   request context cannot be read answers `web_unavailable`, not
   retryable, telling the script to do without the page.
 - A search that fails is not charged (as Anthropic and the gateway do),
-  though it counts; every fetch that went out on the network is charged,
-  whatever it answered (as Anthropic's `max_uses` counts failed fetches),
-  and a fetch that failed before it went out is not charged but counts.
+  though it counts; every fetch that went out on the network (§6.3's rules)
+  is charged, whatever it answered (as Anthropic's `max_uses` counts failed
+  fetches). A fetch that failed before it went out (its name never
+  resolved, its first connection was refused, a deadline or a cancellation
+  came first) and a Worker conversion the platform could not make are not
+  charged, but count.
 - A fetch answered from the page store (§6.2) is not charged and does not
   count.
 - The usage row is written in the Spend transaction (§4.2), on the run's
@@ -590,7 +611,12 @@ choice", "off on this instance", "not configured").
   1.20260924.1 or later (Wrangler 4.141.0; the repository pins 4.149.0).
   Searches bill the account through its AI Gateway credits or a provider
   key on the gateway: deploying with search on needs one of them, which
-  `docs/prod.md` and the deploy checks should say.
+  `docs/prod.md` and the deploy checks should say. Under `wrangler dev
+  --local` the binding exists but each call throws ("needs to be run
+  remotely"): a search answers `web_unavailable`, and so does a fetch that
+  needs a conversion, neither charged (§6.3); Markdown, JSON, text and
+  `raw` fetches are answered. Nothing on the binding tells that mode apart
+  without calling it, so the admin's Web page still reads configured there.
 - **Daemon**: `RestSource` in `clax-server`, Cloudflare's REST endpoints and
   the daemon's own HTTP client with the host check (§5.3).
 - **Embedded and other hosts** take `Off(NotConfigured)` until they provide

@@ -252,15 +252,25 @@ pub struct WebError {
     pub retryable: bool,
     pub request_id: Option<String>,
     /// Whether the fetch went out before it failed; a fetch that went out
-    /// is charged ([`charged`]). A fetch went out once a response, of any
-    /// status, came back from the target to its first request, or, on the
-    /// daemon, once a connection to the target was established. A first
-    /// request that fails before that (the name does not resolve or
-    /// resolves privately, the connection is refused, or on the Worker the
-    /// first `fetch()` rejects) did not go out. After any response or
-    /// redirect every later failure has gone out, and so has a deadline or
-    /// a cancellation that stops a first request already sent. Every
-    /// source sets it by this one definition (spec §6.3).
+    /// is charged ([`charged`]). Every source sets it by this definition
+    /// (spec §6.3):
+    ///
+    /// - A fetch went out once a response, of any status, came back from
+    ///   the target to its first request; every later failure has gone
+    ///   out (a refused or cut redirect, a body too large, a failed
+    ///   conversion), except, on the Worker, a conversion its `AI`
+    ///   binding cannot make where it runs (`wrangler dev --local`),
+    ///   which is the platform's failure and not gone out.
+    /// - A first request that failed on its own, with no response (the
+    ///   name does not resolve or resolves privately, the connection is
+    ///   refused, or on the Worker the first `fetch()` rejects), did not
+    ///   go out.
+    /// - A deadline or a cancellation before the first response: on the
+    ///   daemon, gone out once the first request's name has resolved to
+    ///   checked public addresses and the connection to them began (at
+    ///   once for a host that is an IP address), and not before; on the
+    ///   Worker, whose `fetch()` does not say when its name resolved,
+    ///   gone out once the first `fetch()` was started.
     pub went_out: bool,
 }
 

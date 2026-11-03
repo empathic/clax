@@ -25,22 +25,258 @@ pub const MAX_LINKS: usize = 1_000;
 /// repeated or refused targets costs at most this many URL parses.
 pub const MAX_CANDIDATES: usize = 10 * MAX_LINKS;
 
-/// `body` as text: in the charset `content_type` declares when
-/// `encoding_rs` knows its label, otherwise UTF-8 with invalid sequences
-/// replaced. A byte-order mark wins over the declared charset, as in a
-/// browser.
+/// `body`, a body that is not HTML, as text: in the charset `content_type`
+/// declares when `encoding_rs` knows its label, otherwise UTF-8 with
+/// invalid sequences replaced. A byte-order mark wins over the declared
+/// charset, as in a browser. HTML is [`decode_html`]'s.
 #[must_use]
 pub fn decode(body: &[u8], content_type: &str) -> String {
-    let declared = content_type.split(';').skip(1).find_map(|param| {
+    header_encoding(content_type)
+        .unwrap_or(UTF_8)
+        .decode(body)
+        .0
+        .into_owned()
+}
+
+/// `body`, an HTML document, as text, in [`html_encoding`]'s encoding
+/// (invalid sequences replaced). Every source decodes fetched HTML with
+/// it, before reading its links or sending it for conversion.
+#[must_use]
+pub fn decode_html(body: &[u8], content_type: &str) -> String {
+    html_encoding(body, content_type)
+        .decode_without_bom_handling(strip_bom(body))
+        .0
+        .into_owned()
+}
+
+/// The encoding of the HTML document `body` served as `content_type`, as
+/// a browser sniffs it (WHATWG HTML "determining the character
+/// encoding"): a byte-order mark; else the charset `content_type`
+/// declares, when `encoding_rs` knows its label; else the first `<meta
+/// charset>` or `<meta http-equiv="Content-Type" content="…charset=…">` in
+/// the first 1,024 bytes (WHATWG "prescan a byte stream", in which a
+/// UTF-16 label means UTF-8 and `x-user-defined` windows-1252); else
+/// UTF-8.
+#[must_use]
+pub fn html_encoding(body: &[u8], content_type: &str) -> &'static Encoding {
+    if let Some((bom, _)) = Encoding::for_bom(body) {
+        return bom;
+    }
+    header_encoding(content_type)
+        .or_else(|| prescan(&body[..body.len().min(PRESCAN_BYTES)]))
+        .unwrap_or(UTF_8)
+}
+
+/// How much of an HTML document [`html_encoding`] prescans for a meta
+/// charset.
+const PRESCAN_BYTES: usize = 1024;
+
+/// The encoding `content_type`'s `charset` parameter names, when
+/// `encoding_rs` knows its label.
+fn header_encoding(content_type: &str) -> Option<&'static Encoding> {
+    let label = content_type.split(';').skip(1).find_map(|param| {
         let (name, value) = param.split_once('=')?;
         name.trim()
             .eq_ignore_ascii_case("charset")
             .then(|| value.trim().trim_matches(['"', '\'']))
-    });
-    let encoding = declared
-        .and_then(|label| Encoding::for_label(label.as_bytes()))
-        .unwrap_or(UTF_8);
-    encoding.decode(body).0.into_owned()
+    })?;
+    Encoding::for_label(label.as_bytes())
+}
+
+/// `body` without its byte-order mark, if it has one.
+fn strip_bom(body: &[u8]) -> &[u8] {
+    Encoding::for_bom(body).map_or(body, |(_, len)| &body[len..])
+}
+
+/// The bytes HTML's prescan treats as whitespace.
+fn is_space(b: u8) -> bool {
+    matches!(b, b'\t' | b'\n' | b'\x0c' | b'\r' | b' ')
+}
+
+/// The encoding the first `<meta>` declaring one in `head` names (WHATWG
+/// HTML "prescan a byte stream to determine its encoding"), skipping
+/// comments and the attributes of other tags.
+fn prescan(head: &[u8]) -> Option<&'static Encoding> {
+    let at = |i: usize| head.get(i).copied();
+    let mut i = 0;
+    while i < head.len() {
+        let rest = &head[i..];
+        if rest.starts_with(b"<!--") {
+            // Past the comment's `-->`, which may share the opening's
+            // dashes (`<!-->`).
+            i = find(head, i + 2, b"-->").map_or(head.len(), |e| e + 3);
+        } else if rest.len() >= 6
+            && rest[..5].eq_ignore_ascii_case(b"<meta")
+            && (is_space(rest[5]) || rest[5] == b'/')
+        {
+            i += 6;
+            let (mut seen, mut got_pragma, mut need_pragma, mut charset) =
+                (HashSet::new(), false, None, None);
+            while let Some((name, value, next)) = attribute(head, i) {
+                i = next;
+                if !seen.insert(name.clone()) {
+                    continue;
+                }
+                match name.as_slice() {
+                    b"http-equiv" => got_pragma |= value.eq_ignore_ascii_case(b"content-type"),
+                    b"content" if charset.is_none() => {
+                        if let Some(e) = charset_in_content(&value) {
+                            charset = Some(e);
+                            need_pragma = Some(true);
+                        }
+                    }
+                    b"charset" => {
+                        charset = Encoding::for_label(&value);
+                        need_pragma = Some(false);
+                    }
+                    _ => {}
+                }
+            }
+            match (need_pragma, charset) {
+                (Some(need), Some(e)) if got_pragma || !need => {
+                    return Some(
+                        if e == encoding_rs::UTF_16BE || e == encoding_rs::UTF_16LE {
+                            UTF_8
+                        } else if e == encoding_rs::X_USER_DEFINED {
+                            encoding_rs::WINDOWS_1252
+                        } else {
+                            e
+                        },
+                    );
+                }
+                _ => {}
+            }
+        } else if rest.len() >= 2
+            && rest[0] == b'<'
+            && (rest[1].is_ascii_alphabetic()
+                || (rest[1] == b'/' && at(i + 2).is_some_and(|b| b.is_ascii_alphabetic())))
+        {
+            // A tag: past its name, then past each of its attributes.
+            i += 1;
+            while at(i).is_some_and(|b| !is_space(b) && b != b'>') {
+                i += 1;
+            }
+            while let Some((_, _, next)) = attribute(head, i) {
+                i = next;
+            }
+        } else if rest.starts_with(b"<!") || rest.starts_with(b"</") || rest.starts_with(b"<?") {
+            i = find(head, i, b">").map_or(head.len(), |e| e + 1);
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// Where `needle` next starts in `hay` at or after `from`.
+fn find(hay: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+    hay.get(from..)?
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|p| p + from)
+}
+
+/// The attribute of a tag at `i` in `head` (WHATWG HTML "get an
+/// attribute"): its lowercase name, its value with ASCII letters
+/// lowercased, and where the next one starts; `None` at the tag's `>` or
+/// the end of `head`.
+fn attribute(head: &[u8], mut i: usize) -> Option<(Vec<u8>, Vec<u8>, usize)> {
+    let at = |i: usize| head.get(i).copied();
+    while at(i).is_some_and(|b| is_space(b) || b == b'/') {
+        i += 1;
+    }
+    if at(i)? == b'>' {
+        return None;
+    }
+    let mut name = Vec::new();
+    loop {
+        let b = at(i)?;
+        if b == b'=' && !name.is_empty() {
+            break;
+        }
+        if is_space(b) {
+            while at(i).is_some_and(is_space) {
+                i += 1;
+            }
+            if at(i)? != b'=' {
+                return Some((name, Vec::new(), i));
+            }
+            break;
+        }
+        if b == b'/' || b == b'>' {
+            return Some((name, Vec::new(), i));
+        }
+        name.push(b.to_ascii_lowercase());
+        i += 1;
+    }
+    // At the `=`.
+    i += 1;
+    while at(i).is_some_and(is_space) {
+        i += 1;
+    }
+    let mut value = Vec::new();
+    match at(i)? {
+        q @ (b'"' | b'\'') => {
+            i += 1;
+            loop {
+                let b = at(i)?;
+                i += 1;
+                if b == q {
+                    return Some((name, value, i));
+                }
+                value.push(b.to_ascii_lowercase());
+            }
+        }
+        b'>' => Some((name, value, i)),
+        _ => {
+            while let Some(b) = at(i).filter(|b| !is_space(*b) && *b != b'>') {
+                value.push(b.to_ascii_lowercase());
+                i += 1;
+            }
+            Some((name, value, i))
+        }
+    }
+}
+
+/// The encoding a meta element's `content` names (WHATWG HTML "extracting
+/// a character encoding from a meta element"): the label after the first
+/// `charset` followed by `=`, quoted or up to a space or `;`.
+fn charset_in_content(content: &[u8]) -> Option<&'static Encoding> {
+    let at = |i: usize| content.get(i).copied();
+    let mut from = 0;
+    loop {
+        let start = from
+            + content
+                .get(from..)?
+                .windows(7)
+                .position(|w| w.eq_ignore_ascii_case(b"charset"))?;
+        let mut i = start + 7;
+        while at(i).is_some_and(is_space) {
+            i += 1;
+        }
+        if at(i) != Some(b'=') {
+            from = i;
+            continue;
+        }
+        i += 1;
+        while at(i).is_some_and(is_space) {
+            i += 1;
+        }
+        let label = match at(i)? {
+            q @ (b'"' | b'\'') => {
+                let rest = &content[i + 1..];
+                &rest[..rest.iter().position(|b| *b == q)?]
+            }
+            _ => {
+                let rest = &content[i..];
+                &rest[..rest
+                    .iter()
+                    .position(|b| is_space(*b) || *b == b';')
+                    .unwrap_or(rest.len())]
+            }
+        };
+        return Encoding::for_label(label);
+    }
 }
 
 /// `s` pretty-printed with two-space indents, when it is JSON. Only the
@@ -1265,6 +1501,91 @@ mod tests {
             "caf\u{fffd}"
         );
         assert_eq!(decode(b"\xef\xbb\xbfhi", "text/plain"), "hi");
+    }
+
+    #[test]
+    fn an_html_pages_meta_charset_is_honoured() {
+        let latin = |head: &str| [head.as_bytes(), b"<p>caf\xe9</p>"].concat();
+        for head in [
+            "<meta charset=\"iso-8859-1\">",
+            "<!doctype html><html><head><META CHARSET=iso-8859-1>",
+            "<meta charset='latin1'/>",
+            "<meta http-equiv=\"Content-Type\" content=\"text/html; charset=iso-8859-1\">",
+            "<meta content='text/html;charset=\"windows-1252\"' http-equiv=content-type>",
+            // Comments and other tags' attributes are skipped, not read.
+            "<!-- <meta charset=\"utf-8\"> --><title x=\"<meta charset=utf-8>\"></title>\
+             <meta charset=\"iso-8859-1\">",
+        ] {
+            assert_eq!(
+                decode_html(&latin(head), "text/html"),
+                format!("{head}<p>caf\u{e9}</p>"),
+                "{head}"
+            );
+        }
+        // A content without http-equiv, an http-equiv without a charset,
+        // an unknown label and a meta past the first 1,024 bytes are not
+        // declarations: UTF-8.
+        for head in [
+            "<meta content=\"text/html; charset=iso-8859-1\">".to_string(),
+            "<meta http-equiv=\"content-type\" content=\"text/html\">".to_string(),
+            "<meta charset=\"nonsense\">".to_string(),
+            format!("{}<meta charset=\"iso-8859-1\">", " ".repeat(1024)),
+        ] {
+            assert_eq!(
+                decode_html(&latin(&head), "text/html"),
+                format!("{head}<p>caf\u{fffd}</p>"),
+                "{head}"
+            );
+        }
+        // A UTF-16 label in a meta means UTF-8; x-user-defined,
+        // windows-1252.
+        assert_eq!(
+            decode_html("<meta charset=utf-16le>é".as_bytes(), "text/html"),
+            "<meta charset=utf-16le>é"
+        );
+        assert_eq!(
+            html_encoding(b"<meta charset=x-user-defined>", ""),
+            encoding_rs::WINDOWS_1252
+        );
+        // Text that is not HTML is never prescanned.
+        assert_eq!(
+            decode(&latin("<meta charset=\"iso-8859-1\">"), "text/plain"),
+            "<meta charset=\"iso-8859-1\"><p>caf\u{fffd}</p>"
+        );
+    }
+
+    #[test]
+    fn a_bom_and_then_the_header_beat_a_meta_charset() {
+        let page =
+            |head: &[u8]| [head, b"<meta charset=\"iso-8859-1\"><p>caf", "é".as_bytes()].concat();
+        assert_eq!(
+            decode_html(&page(b"\xef\xbb\xbf"), "text/html"),
+            "<meta charset=\"iso-8859-1\"><p>café"
+        );
+        assert_eq!(
+            decode_html(&page(b""), "text/html; charset=utf-8"),
+            "<meta charset=\"iso-8859-1\"><p>café"
+        );
+        assert_eq!(
+            html_encoding(b"<meta charset=\"iso-8859-1\">", "text/html; charset=utf-8"),
+            UTF_8
+        );
+        assert_eq!(
+            html_encoding(
+                b"\xef\xbb\xbf<meta charset=\"iso-8859-1\">",
+                "text/html; charset=iso-8859-2"
+            ),
+            UTF_8
+        );
+        // A header naming an unknown label declares nothing: the meta is
+        // read.
+        assert_eq!(
+            decode_html(
+                b"<meta charset=\"iso-8859-1\">caf\xe9",
+                "text/html; charset=bogus"
+            ),
+            "<meta charset=\"iso-8859-1\">café"
+        );
     }
 
     #[test]
