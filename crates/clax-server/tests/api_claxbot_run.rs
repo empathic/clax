@@ -1225,6 +1225,28 @@ async fn a_run_keeps_the_web_shape_its_person_had_when_it_started() {
 }
 
 #[tokio::test]
+async fn a_daemons_driver_keeps_why_its_own_hosts_cannot_be_named() {
+    // A public origin that names no host, which config loading refuses,
+    // put below it: the driver's source is off and the routes' state
+    // says why.
+    let mut bot = None;
+    let ts = TestServer::spawn_with(|s| {
+        let mut h = clax_http::hosted::Hosted::new("https://clax.example", None).unwrap();
+        h.origin = "not an origin".into();
+        s.hosted = Some(std::sync::Arc::new(h));
+        let _driver = clax_server::bot::driver(s);
+        bot = Some(s.bot.clone());
+    })
+    .await;
+    let bot = bot.unwrap();
+    assert!(!clax_server::bot::web_configured(&ts.store, &bot).unwrap());
+    let v = clax_server::routes::admin::web_view(&ts.store, &bot).unwrap();
+    assert_eq!(v["configured"], false, "{v}");
+    let why = v["unavailable"].as_str().unwrap_or_default();
+    assert!(why.contains("\"not an origin\""), "{v}");
+}
+
+#[tokio::test]
 async fn a_host_source_that_cannot_run_here_reads_not_configured_and_says_why() {
     use clax_bot::web::WebCheck;
     let fake = FakeMessages::start(vec![]).await;

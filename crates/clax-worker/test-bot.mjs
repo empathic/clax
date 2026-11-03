@@ -38,8 +38,21 @@
 //    a fetch of a page that redirects to itself ends web_unavailable after
 //    five redirects, one source call, charged once;
 // 6. with the free week cut to nothing, a send is 403 credits_exhausted;
-// 7. with every run ended, no alarm is held for ClaxBot.
-// (deploy.mjs's CLAX_KEK plan is deploy-lib.test.mjs's.)
+// 7. with every run ended, no alarm is held for ClaxBot;
+// 8. ClaxBot on the real AI binding, which under `wrangler dev --local`
+//    throws on every call (no CLAX_TEST_WEB): with web on (set while the
+//    test web source was in place, then restarted without it), a run
+//    started before the binding's check answers declares the web; the
+//    admin's GET /api/admin/web then reports web not configured, saying
+//    why, the person's view says not_configured, and the run's search and
+//    HTML fetch answer web_unavailable, charged nothing;
+// 9. a Worker that is not hosted, with a PUBLIC_ORIGIN that names no host:
+//    the admin's view reports that reason (no source, so no check of the
+//    binding replaces it);
+// and, offline first, deploy.mjs's CLAX_KEK plan: kept when the Worker has
+// one (with a warning when this machine keeps no backup), the backup's
+// when it has none, else a new one, backed up before the deploy, never
+// printed.
 //
 // Prints one line per check and a JSON summary; exits non-zero on the first
 // failure. `node test-bot.mjs --no-build` skips the build.
@@ -119,9 +132,10 @@ async function ok(base, method, path, body) {
 // ---------------------------------------------------------------------------
 
 /** `POST /v1/messages` answered by `plan(body)`: `{blocks, stop, usage}` streams
- * a whole turn; `{hold, usage}` sends `message_start` and holds the response
- * open until the client closes it. Every request's usage as sent is kept by
- * run marker, with each held request's close. */
+ * a whole turn (once `gate`, a promise, resolves, when given); `{hold, usage}`
+ * sends `message_start` and holds the response open until the client closes
+ * it. Every request's usage as sent is kept by run marker, with each held
+ * request's close. */
 function fakeMessages(plan) {
   const seen = [];
   const server = createServer((req, res) => {
@@ -131,9 +145,10 @@ function fakeMessages(plan) {
     }
     let raw = "";
     req.on("data", (c) => (raw += c));
-    req.on("end", () => {
+    req.on("end", async () => {
       const body = JSON.parse(raw);
       const p = plan(body);
+      await p.gate;
       const rec = { marker: p.marker, key: req.headers["x-api-key"], input: p.usage.input, output: 1, held: !!p.hold, closed: false };
       seen.push(rec);
       res.writeHead(200, { "content-type": "text/event-stream" });
@@ -231,11 +246,29 @@ function scriptThenFinish(marker, turns, code, summary) {
   };
 }
 
+/** The local binding run's script (8.): a search and a fetch of an HTML
+ * page, each failure's code and whether it is retryable. */
+const LOCAL_SCRIPT = `
+const out = [];
+for (const f of [() => clax.web.search("tide tables today"), () => clax.web.fetch("https://tides.example/today.html")]) {
+  try { await f(); out.push("answered"); } catch (e) { out.push([e.code, e.retryable]); }
+}
+return out;
+`;
+
+/** Opens the local binding run's first turn (8.), once the test has seen
+ * the binding's check answer. */
+let openLocal;
+const localGate = new Promise((r) => (openLocal = r));
+
 /** The scripted runs, told apart by their thread's text. */
 let held = 0;
 function plan(body) {
   const text = JSON.stringify(body.messages);
   const turns = body.messages.filter((m) => m.role === "assistant").length;
+  if (text.includes("Read the local tides")) {
+    return { ...scriptThenFinish("local", turns, LOCAL_SCRIPT, "The web is unavailable here."), gate: turns === 0 ? localGate : undefined };
+  }
   if (text.includes("Hold this one")) return { marker: "cancel", hold: true, usage: { input: 900 } };
   // The loop's thread is on the web run's artifact, after it: asked first.
   if (text.includes("Check the looping page")) return scriptThenFinish("loop", turns, LOOP_SCRIPT, "The page redirects to itself.");
@@ -539,6 +572,61 @@ async function main() {
     const last = await ok(base, "GET", "/_worker/alarm");
     check(last.bot === null, "with no run left, ClaxBot's driver wants no alarm", last);
     check(last.alarm === null || last.alarm > last.now, "and the alarm left is only the instance's own work, ahead", last);
+    await w.stop();
+
+    // 8. The real AI binding under `wrangler dev --local`. Web use is set
+    // up with the test web source in place (no check of the binding runs
+    // there), then the Worker restarts without it.
+    const ldir = join(dir, "local-binding");
+    mkdirSync(ldir, { recursive: true });
+    const lvars = { ...vars, CLAX_KEK: KEK, CLAX_TEST_LOOPBACK_PROVIDER: "1" };
+    w = await start(ldir, writeConfig(ldir, lvars), 8);
+    base = w.base;
+    await ok(base, "PUT", "/api/admin/provider", { base_url: fake.base });
+    await ok(base, "PUT", "/api/admin/provider/key", { key: KEY });
+    await ok(base, "PUT", "/api/admin/web", { search: { enabled: true }, fetch: { enabled: true } });
+    await ok(base, "PUT", "/api/me/bot", { web: true });
+    const bid = (await ok(base, "POST", "/api/artifacts", {
+      title: "Local tides", files: { "index.html": { content: page, encoding: "utf8" } },
+    })).artifact.id;
+    const bt = await thread(base, bid, "Read the local tides at https://tides.example/today.html");
+    await w.stop();
+    const { CLAX_TEST_WEB: _, ...noTestWeb } = lvars;
+    w = await start(ldir, writeConfig(ldir, noTestWeb), 9);
+    base = w.base;
+    // The first request decides web use before any check answered: the
+    // run declares the web, and the check starts after the request.
+    const br = await call(base, "POST", "/api/bot/runs", { thread_ids: [bt], artifact_id: bid });
+    check(br.status === 201, "a run is started before the binding's check answered", br);
+    const view = await until("the binding's check answers", async () => {
+      const v = await ok(base, "GET", "/api/admin/web");
+      return v.checking ? undefined : v;
+    });
+    check(view.configured === false && /needs to be run remotely/.test(view.unavailable ?? ""),
+      "the admin's view reports web not configured, with the binding's reason", view);
+    const me = await ok(base, "GET", "/api/me/bot");
+    check(me.web?.offered === false && me.web?.why_off === "not_configured", "the person's view says web is not configured", me.web);
+    openLocal();
+    const bdone = await until("the local binding run ends", async () => {
+      const x = await run(base, br.json.run.id);
+      return ENDED.includes(x.status) ? x : undefined;
+    });
+    const bstep = bdone.steps.find((x) => x.kind === "script");
+    check(JSON.stringify(bstep?.value) === JSON.stringify([["web_unavailable", false], ["web_unavailable", false]]),
+      "it declared the web (else web_disabled), and its search and HTML fetch answer web_unavailable, not retryable", bstep);
+    const bweb = webOf(await ok(base, "GET", "/api/me/usage"));
+    check(bweb.length === 0, "and the run is charged no web use", bweb);
+    await w.stop();
+
+    // 9. A Worker that is not hosted, with a PUBLIC_ORIGIN naming no host.
+    const odir = join(dir, "bad-origin");
+    mkdirSync(odir, { recursive: true });
+    w = await start(odir, writeConfig(odir, { ...noTestWeb, PUBLIC_ORIGIN: "not an origin" }), 10);
+    base = w.base;
+    await ok(base, "PUT", "/api/admin/web", { search: { enabled: true }, fetch: { enabled: true } });
+    const oview = await ok(base, "GET", "/api/admin/web");
+    check(oview.configured === false && oview.checking === false && (oview.unavailable ?? "").includes('"not an origin"')
+      && !/run remotely/.test(oview.unavailable), "a bad PUBLIC_ORIGIN turns web off, and the admin's view gives that reason", oview);
   } finally {
     await stop();
     await fake.close();
