@@ -71,7 +71,7 @@ const LABEL: Partial<Record<FieldName, string>> = {
   "entry.palette": "Command palette entry", "entry.link": "?clax= links", targets: "Host trigger selectors", presentation: "Presentation", start: "Start mode",
   "attachments.screenshot": "Screenshot", annotate: "Annotate", "filters.code-blur": "Blur code", "pickers.code-line": "Code-line picker",
   "attachments.errors": "Recent errors", "attachments.logs": "App logs", "attachments.version": "App version", "attachments.browser": "Browser",
-  pins: "Inline pins", theme: "Theme tokens", render: "Clax pages drawn", "filters.code-selector": "What counts as code", "overrides.viewer": "Viewer overrides",
+  pins: "Inline pins", theme: "Theme tokens", "hooks.logs": "Log lines from", "hooks.release": "App version from", "hooks.user": "Signed-in person from", render: "Clax pages drawn", "filters.code-selector": "What counts as code", "overrides.viewer": "Viewer overrides",
 };
 const START_TEXT: Record<ClaxConfig["start"], string> = { note: "Note", screenshot: "Screenshot then annotate", element: "Element picker first" };
 
@@ -93,6 +93,7 @@ export function groups(i: InstallInfo): Group[] {
       id: "plugins", title: "Plugins",
       rows: (["attachments.screenshot", "annotate", "filters.code-blur", "pickers.code-line", "attachments.errors", "attachments.logs", "attachments.version", "attachments.browser"] as FieldName[]).map(f => row(f)),
     },
+    { id: "host", title: "Host data (what the page exposes)", rows: [row("hooks.logs"), row("hooks.release"), row("hooks.user")] },
     { id: "theme", title: "Theme", rows: [row("theme")] },
   ];
 }

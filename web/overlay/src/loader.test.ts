@@ -245,3 +245,29 @@ describe("the DevTools panel's integration hook", () => {
     expect(hook()!.set("presentation", "sheet")).toEqual({ ok: false, reason: "Viewer overrides are off for this site." });
   });
 });
+
+describe("the host's data from page-level hooks the container names", () => {
+  afterEach(() => { delete (window as unknown as Record<string, unknown>).app; });
+  it("reads logs, the app's version and the signed-in person from the globals the container names, with no host code", async () => {
+    class App { lines = [{ at: "2026-11-02T10:00:00Z", level: "error", text: "boom" }]; feedbackLogs() { return this.lines; } }
+    (window as unknown as Record<string, unknown>).app = Object.assign(new App(), { release: { version: "0.6.1", commit: "abc" }, user: { name: () => "Ana" } });
+    const seen: Record<string, unknown> = {};
+    installed = await install(snippet({
+      fetchContainer: async () => ({ id: "q1", version: 2, config: { hooks: { logs: "app.feedbackLogs", release: "app.release", user: "app.user.name" } } }),
+      registry: registry({
+        logs: async s => { seen.logs = s.logs?.(); return fake("logs"); },
+        "app-version": async s => { seen.release = typeof s.release === "function" ? s.release() : s.release; return fake("app-version"); },
+      }),
+    }));
+    expect(installed.plugins).toEqual(expect.arrayContaining(["logs", "app-version"]));
+    expect(seen.logs).toEqual([{ at: "2026-11-02T10:00:00Z", level: "error", text: "boom" }]);
+    expect(seen.release).toEqual({ version: "0.6.1", commit: "abc" });
+    expect(mounted[0].opts.user).toBe("Ana");
+  });
+  it("names nothing it can't read: a missing global, a malformed path, the prototype chain", async () => {
+    installed = await install(snippet({ fetchContainer: async () => ({ id: "q1", version: 2, config: { hooks: { logs: "app.nope", release: "constructor.prototype", user: "a..b" } } }) }));
+    expect(installed.plugins).toContain("logs");
+    expect(installed.plugins).not.toContain("app-version");
+    expect(mounted[0].opts.user).toBeUndefined();
+  });
+});

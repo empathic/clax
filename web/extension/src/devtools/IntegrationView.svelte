@@ -105,7 +105,7 @@
               </label>
             {:else if r.kind === "string"}
               <label class="name" for={id}>{r.label}</label>
-              <input {id} type="text" maxlength={r.field === "entry.key" ? 1 : 500} disabled={!i.applies} aria-describedby="{id}-src"
+              <input {id} type="text" maxlength={r.field === "entry.key" ? 1 : 200} disabled={!i.applies} aria-describedby="{id}-src"
                 value={String(mine ? pending[r.field] : r.value)}
                 onchange={e => set(r, e.currentTarget.value)} />
             {:else}

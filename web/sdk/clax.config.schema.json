@@ -166,6 +166,30 @@
       "description": "Reports are pinned on what they are about.",
       "default": false
     },
+    "hooks": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "logs": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "The page's global (a dotted path) giving its recent log lines.",
+          "default": ""
+        },
+        "release": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "The page's global giving the app version: {version, commit?} or a string.",
+          "default": ""
+        },
+        "user": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "The page's global naming the signed-in person.",
+          "default": ""
+        }
+      }
+    },
     "theme": {
       "type": "object",
       "propertyNames": {

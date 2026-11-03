@@ -61,6 +61,10 @@ export const FIELDS = {
   "filters.code-selector": { kind: "string", default: "pre, code, .cm-content, [data-clax-code]", max: 500, doc: "What counts as code, for the blur." },
   "pickers.code-line": { kind: "bool", default: false, doc: "A pick in code records its file and lines (from the site's code locator)." },
   pins: { kind: "bool", default: false, doc: "Reports are pinned on what they are about." },
+  // The host's data, read from what the page already exposes (no host code for Clax): a global by its dotted path from `window`.
+  "hooks.logs": { kind: "string", default: "", max: 200, doc: "The page's global (a dotted path) giving its recent log lines." },
+  "hooks.release": { kind: "string", default: "", max: 200, doc: "The page's global giving the app version: {version, commit?} or a string." },
+  "hooks.user": { kind: "string", default: "", max: 200, doc: "The page's global naming the signed-in person." },
   theme: { kind: "tokens", default: {}, doc: "--clax-* custom properties: the site's look." },
   "overrides.viewer": { kind: "enum", values: ["local", "always", "never"], default: "local", doc: "Whether a viewer's cookie override applies: on local and tailnet origins only, everywhere, or nowhere. Never itself overridden by the cookie." },
 } as const satisfies Record<string, Field>;
@@ -120,6 +124,28 @@ export function isDevOrigin(origin: string): boolean {
   try { host = new URL(origin).hostname; } catch { return false; }
   // A tailnet's MagicDNS names and its 100.64.0.0/10 addresses.
   return host === "localhost" || host === "[::1]" || /^127\./.test(host) || /\.(localhost|local|ts\.net)$/.test(host) || /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+$/.test(host);
+}
+
+/** What the page exposes at `path` (a dotted path from `win`, such as
+ * "app.release"): a function is called (with no arguments) when read.
+ * A method is called on its object. Undefined for an empty or malformed
+ * path, a missing global, or one that throws; never `__proto__`,
+ * `prototype` or `constructor`. */
+export function pageHook(win: object, path: string): (() => unknown) | undefined {
+  if (!/^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*$/.test(path)) return undefined;
+  const keys = path.split(".");
+  if (keys.some(k => k === "__proto__" || k === "prototype" || k === "constructor")) return undefined;
+  return () => {
+    try {
+      let at: unknown = win, of: unknown = undefined;
+      for (const k of keys) {
+        if (at === null || (typeof at !== "object" && typeof at !== "function")) return undefined;
+        of = at;
+        at = (at as Record<string, unknown>)[k];
+      }
+      return typeof at === "function" ? (at as () => unknown).call(of) : at;
+    } catch { return undefined; }
+  };
 }
 
 /** The global an install exposes for the Clax DevTools panel's Integration

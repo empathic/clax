@@ -1,7 +1,7 @@
 import Ajv2020 from "ajv/dist/2020";
 import COMMITTED from "../clax.config.schema.json";
 import { describe, expect, it } from "vitest";
-import { FIELDS, configSchema, flatten, isDevOrigin, linkOverride, parseContainer, readOverride, resolve, writeOverride } from "./config";
+import { FIELDS, configSchema, flatten, isDevOrigin, linkOverride, pageHook, parseContainer, readOverride, resolve, writeOverride } from "./config";
 
 describe("the config schema", () => {
   it("is the committed clax.config.schema.json (regenerate it from configSchema())", () => {
@@ -113,5 +113,19 @@ describe("parseContainer", () => {
     expect(() => parseContainer({ id: "q1", version: -1, config: {} })).toThrow(/version/);
     expect(() => parseContainer({ id: "", version: 1, config: {} })).toThrow(/id/);
     expect(() => parseContainer(null)).toThrow();
+  });
+});
+
+describe("pageHook", () => {
+  it("reads a dotted global, calling a function on its object; refuses prototype paths and malformed ones", () => {
+    const win = { app: { n: 2, twice() { return this.n * 2; }, bad() { throw new Error("x"); } } };
+    expect(pageHook(win, "app.twice")?.()).toBe(4);
+    expect(pageHook(win, "app.n")?.()).toBe(2);
+    expect(pageHook(win, "app.missing.deeper")?.()).toBeUndefined();
+    expect(pageHook(win, "app.bad")?.()).toBeUndefined();
+    expect(pageHook(win, "app.__proto__")).toBeUndefined();
+    expect(pageHook(win, "constructor")).toBeUndefined();
+    expect(pageHook(win, "a..b")).toBeUndefined();
+    expect(pageHook(win, "")).toBeUndefined();
   });
 });

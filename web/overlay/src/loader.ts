@@ -13,7 +13,7 @@
 // and a tag manager (`Clax.install({...})`, or `window.clax = [["install",
 // {...}]]` before the script).
 import type { ClaxConfig, ConfigLayer, Container, FieldName, Source } from "../../sdk/src/config";
-import { INSTALL_KEY, integrationHook, isDevOrigin, linkOverride, parseContainer, readOverride, resolve, writeOverride } from "../../sdk/src/config";
+import { INSTALL_KEY, integrationHook, isDevOrigin, linkOverride, pageHook, parseContainer, readOverride, resolve, writeOverride } from "../../sdk/src/config";
 import type { ClaxPlugin, HandoffRequest } from "../../sdk/src/plugin";
 import type { ReporterAuth } from "../../sdk/src/reporter";
 import type { Release } from "../../sdk/src/types";
@@ -178,6 +178,16 @@ export async function install(s: Snippet): Promise<Installed> {
   const you = link || kept ? { ...kept, ...link } : undefined;
   const r = resolve({ site: s.site, clax: container?.config, you }, origin);
   const config = r.config;
+  // The host's data from what the page already exposes, by the globals the config names, where the snippet gives none (no host code).
+  const named = (f: "hooks.logs" | "hooks.release" | "hooks.user") => (config[f] ? pageHook(win, config[f]) : undefined);
+  const logsAt = named("hooks.logs"), releaseAt = named("hooks.release"), userAt = named("hooks.user");
+  const userSaid = userAt?.();
+  s = {
+    ...s,
+    logs: s.logs ?? (logsAt && (() => { const v = logsAt(); return Array.isArray(v) ? (v as LogLine[]) : []; })),
+    release: s.release ?? (releaseAt && (() => { const v = releaseAt(); return typeof v === "string" ? { version: v } : v && typeof v === "object" ? (v as Release) : {}; })),
+    user: s.user ?? (typeof userSaid === "string" && userSaid ? userSaid : undefined),
+  };
   // A link's override is kept for this viewer, where overrides apply at all.
   if (link && !r.ignored.some(i => i.layer === "you")) writeOverride(doc, { ...kept, ...link });
 
