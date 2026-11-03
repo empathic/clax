@@ -226,6 +226,15 @@ filegroup(
     visibility = ["//crates:__subpackages__"],
 )
 
+# The error codes the SDK's QueueErrorCode lists (sdk/src/types.ts), which
+# clax-server's reporter route tests check every refusal against
+# (tests/api_queue_reporter.rs).
+filegroup(
+    name = "sdk_error_codes",
+    srcs = ["sdk/test/queue-error-codes.json"],
+    visibility = ["//crates:__subpackages__"],
+)
+
 # The SDK's request signing, which the Worker's feedback check signs a
 # reporter's calls with (crates/clax-worker/test-feedback.mjs).
 copy_to_bin(

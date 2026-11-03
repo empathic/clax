@@ -5,7 +5,7 @@
 // read by TypeScript as a consumer's. Run by `pnpm run test:sdk` after the
 // build (//web:sdk_package under Bazel), not by the unit tests.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -18,13 +18,16 @@ const pkgDir = join(web, "dist-sdk");
 const source = JSON.parse(readFileSync(join(web, "sdk", "package.json"), "utf8"));
 const ts = createRequire(join(web, "package.json"))("typescript") as typeof import("typescript");
 
+/** An export's declarations and module. */
+interface Conditions { types: string; default: string }
+
 interface Manifest {
   name: string;
   version: string;
   license: string;
   type: string;
   sideEffects: boolean;
-  exports: Record<string, { types: string; default: string } | string>;
+  exports: Record<string, Conditions | { import: Conditions; require: Conditions } | string>;
   [k: string]: unknown;
 }
 
@@ -32,7 +35,7 @@ interface Manifest {
 const RUNTIME: Record<string, string[]> = {
   ".": ["ClaxError", "ReporterClient"],
   "./overlay": ["CONTEXT_TIMEOUT_MS", "diagnostics", "forgetReporter", "overlay"],
-  "./service": ["ServiceClient"],
+  "./service": ["ClaxError", "ServiceClient"],
 };
 
 let manifest: Manifest;
@@ -91,10 +94,18 @@ describe("the SDK package", () => {
     for (const k of Object.keys(RUNTIME)) {
       const e = manifest.exports[k];
       if (typeof e === "string") throw new Error(`${k} has no conditions`);
-      expect(Object.keys(e)).toEqual(["types", "default"]);
-      expect(existsSync(join(pkg, e.types)), e.types).toBe(true);
-      expect(existsSync(join(pkg, e.default)), e.default).toBe(true);
+      // The service entry is also CommonJS; the others are ES modules alone.
+      expect(Object.keys(e)).toEqual(k === "./service" ? ["import", "require"] : ["types", "default"]);
+      for (const c of "import" in e ? [e.import, e.require] : [e]) {
+        expect(Object.keys(c)).toEqual(["types", "default"]);
+        expect(existsSync(join(pkg, c.types)), c.types).toBe(true);
+        expect(existsSync(join(pkg, c.default)), c.default).toBe(true);
+      }
     }
+    expect(manifest.exports["./service"]).toEqual({
+      import: { types: "./types/sdk/src/service.d.ts", default: "./service.js" },
+      require: { types: "./types/sdk/src/service.d.cts", default: "./service.cjs" },
+    });
   });
 
   it("is built from a manifest whose name and version lines scripts/release-sdk.sh can read", () => {
@@ -124,6 +135,47 @@ console.log(JSON.stringify(out));
 `);
     const out = JSON.parse(execFileSync(process.execPath, [probe], { cwd: app, encoding: "utf8" }));
     expect(out).toEqual(RUNTIME);
+  });
+
+  it("gives the service entry's ClaxError as the main entry's", () => {
+    const probe = join(app, "same.mjs");
+    writeFileSync(probe, `const [main, service] = await Promise.all([import(${JSON.stringify(manifest.name)}), import(${JSON.stringify(`${manifest.name}/service`)})]);
+console.log(JSON.stringify(main.ClaxError === service.ClaxError));
+`);
+    expect(execFileSync(process.execPath, [probe], { cwd: app, encoding: "utf8" }).trim()).toBe("true");
+  });
+
+  it("requires the service entry from CommonJS as its own CommonJS file, which needs no ES module support", () => {
+    const probe = join(app, "probe.cjs");
+    writeFileSync(probe, `const name = ${JSON.stringify(`${manifest.name}/service`)};
+const service = require(name);
+const e = new service.ClaxError("limit_reached", "full", 429, 30);
+console.log(JSON.stringify({ file: require("node:path").basename(require.resolve(name)), keys: Object.keys(service).sort(), error: [e instanceof Error, e.name, e.code, e.retryAfterS] }));
+`);
+    const out = JSON.parse(execFileSync(process.execPath, [probe], { cwd: app, encoding: "utf8" }));
+    expect(out).toEqual({ file: "service.cjs", keys: RUNTIME["./service"], error: [true, "ClaxError", "limit_reached", 30] });
+    // Nothing in it loads an ES module: no import() or import statement.
+    expect(readFileSync(join(pkg, "service.cjs"), "utf8")).not.toMatch(/\bimport\s*\(|^\s*import\s/m);
+  });
+
+  it("type-checks a CommonJS backend's use of the service entry against its .d.cts declarations", () => {
+    const file = join(app, "backend.cts");
+    writeFileSync(file, `import { ClaxError, ServiceClient, type ServiceOptions, type QueueErrorCode, type ReporterToken } from "@empathic/clax-client-sdk/service";
+
+const opts: ServiceOptions = { instance: "https://clax.example", queue: "q1", token: "cxq_", privateKey: "", sleep: async () => {} };
+export const minted: Promise<ReporterToken> = new ServiceClient(opts).mintReporterToken({ reporter_id: "u1", origin: "https://app.example", public_key: "" });
+export const wait = (e: unknown): number | undefined => (e instanceof ClaxError ? e.retryAfterS : undefined);
+export const limited: QueueErrorCode = "limit_reached";
+`);
+    const program = ts.createProgram([file], {
+      module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext, target: ts.ScriptTarget.ES2022, lib: ["lib.es2022.d.ts", "lib.dom.d.ts"], types: [], strict: true, noEmit: true,
+    });
+    const diagnostics = ts.getPreEmitDiagnostics(program);
+    expect(ts.formatDiagnostics(diagnostics, { getCanonicalFileName: f => f, getCurrentDirectory: () => app, getNewLine: () => "\n" })).toBe("");
+    // TypeScript names the files it read by their real paths.
+    const real = realpathSync(pkg);
+    const read = program.getSourceFiles().map(f => relative(real, realpathSync(f.fileName))).filter(f => !f.startsWith(".."));
+    expect(read.sort()).toEqual(["types/sdk/src/client.d.cts", "types/sdk/src/service.d.cts", "types/sdk/src/sign.d.cts", "types/sdk/src/types.d.cts"]);
   });
 
   it("changes nothing on import, and runs the overlay with its components' CSS from its own bundle", async () => {

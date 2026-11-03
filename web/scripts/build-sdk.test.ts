@@ -90,6 +90,13 @@ describe("keepDeclarations", () => {
     expect(kept.get("overlay/src/options.d.ts")).toContain(`from "../../sdk/src/reporter.js"`);
   });
 
+  it("keeps the CommonJS entries' alone as .d.cts, with `.cjs` specifiers", () => {
+    const emitted = new Map(Object.entries({ ...entries, "sdk/src/service.d.ts": `export { ClaxError } from "./client";\nexport type * from "./types";\n`, "sdk/src/client.d.ts": "export declare class ClaxError {}\n" }));
+    const kept = keepDeclarations(emitted, root, { cjs: true });
+    expect([...kept.keys()].sort()).toEqual(["sdk/src/client.d.cts", "sdk/src/service.d.cts", "sdk/src/types.d.cts"]);
+    expect(kept.get("sdk/src/service.d.cts")).toBe(`export { ClaxError } from "./client.cjs";\nexport type * from "./types.cjs";\n`);
+  });
+
   it("refuses a declaration of a source outside web/bridge, web/overlay and web/sdk", () => {
     const emitted = new Map(Object.entries({ ...entries, "sdk/src/types.d.ts": `export type { Report } from "../../shell/src/api";\n`, "shell/src/api.d.ts": "export interface Report { id: string }\n" }));
     expect(() => keepDeclarations(emitted, root)).toThrow(`the package bundles ${join(root, "shell/src/api.d.ts")}, outside web/bridge, web/overlay, web/sdk, whose license LICENSE does not give the package`);
@@ -102,6 +109,12 @@ describe("packageJson", () => {
     expect(published).not.toHaveProperty("private");
     for (const k of ["name", "version", "license", "description"]) expect(published[k], k).toBe(MANIFEST[k]);
     expect(Object.keys(published.exports)).toEqual([".", "./overlay", "./service", "./package.json"]);
+    // The service entry, a backend's, is CommonJS too; the page's are ES modules alone.
+    expect(published.exports["./service"]).toEqual({
+      import: { types: "./types/sdk/src/service.d.ts", default: "./service.js" },
+      require: { types: "./types/sdk/src/service.d.cts", default: "./service.cjs" },
+    });
+    expect(published.exports["."]).toEqual({ types: "./types/sdk/src/index.d.ts", default: "./index.js" });
     expect(Object.keys(MANIFEST).filter(k => !MANIFEST_FIELDS.includes(k))).toEqual([]);
     expect(Object.keys(published).sort()).toEqual([...Object.keys(MANIFEST).filter(k => k !== "private"), "sideEffects", "exports", "types", "typesVersions"].sort());
     expect(published.sideEffects).toBe(false);

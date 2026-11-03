@@ -63,6 +63,10 @@ pub const ALLOW_HEADERS: &str = "authorization, clax-signature, content-type";
 pub const ALLOW_METHODS: &str = "GET, POST";
 /// Seconds a browser may keep a preflight's answer.
 const PREFLIGHT_MAX_AGE: &str = "600";
+/// The response headers a reporter's page may read cross-origin beyond the
+/// safelisted ones: a refusal's `Retry-After`, and the `Date` a client
+/// learns the instance's clock from after a `stale_request`.
+pub const EXPOSE_HEADERS: &str = "retry-after, date";
 
 /// Whether the request carries a queue credential ([`QUEUE_SCHEME`] or
 /// [`REPORTER_SCHEME`]), valid or not: one is accepted on the queue routes
@@ -342,9 +346,10 @@ fn reporter_qid(path: &str) -> Option<&str> {
 /// Route layer of the reporter routes: CORS (spec §5.3). Every answer
 /// varies on `Origin`. When the request's one `Origin` is among the path's
 /// queue's origins, the answer names it in `Access-Control-Allow-Origin`
-/// (never `*`, and no credentials mode), and a preflight's answer also
-/// names [`ALLOW_METHODS`] and [`ALLOW_HEADERS`]; for any other origin it
-/// names none, and the browser keeps the answer from the page.
+/// (never `*`, and no credentials mode) and [`EXPOSE_HEADERS`], and a
+/// preflight's answer also names [`ALLOW_METHODS`] and [`ALLOW_HEADERS`];
+/// for any other origin it names none, and the browser keeps the answer
+/// from the page.
 pub async fn cors(State(s): State<AppState>, req: Request, next: Next) -> Response {
     let mut sent = req.headers().get_all(header::ORIGIN).iter();
     let origin = match (sent.next(), sent.next()) {
@@ -371,6 +376,10 @@ pub async fn cors(State(s): State<AppState>, req: Request, next: Next) -> Respon
     };
     let h = res.headers_mut();
     h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
+    h.insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        HeaderValue::from_static(EXPOSE_HEADERS),
+    );
     if preflight {
         h.insert(
             header::ACCESS_CONTROL_ALLOW_METHODS,

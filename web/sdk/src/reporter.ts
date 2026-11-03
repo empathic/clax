@@ -2,7 +2,7 @@
 // reports into a queue and reads the replies, with a reporter token its own
 // backend mints for a key that never leaves the page.
 import type { Badge, DiagLine, Report, ReportContext, ReportPage, ReporterToken } from "./types";
-import { ClaxError, failure, multipart, queuePath, readJson, signedFetch, type Fetch, type Part } from "./client";
+import { checkInstance, ClaxError, errorCode, failure, multipart, queuePath, readJson, sendSigned, Timing, type Fetch, type Part } from "./client";
 import { encodeDiagnostics } from "./diagnostics";
 import { wellFormed } from "./scrub";
 import { indexedDbStore, type Kept, type ReporterStore } from "./keystore";
@@ -11,6 +11,12 @@ import { base64url, generateKeyPair, keyedSigner, type KeyedSigner } from "./sig
 /** Seconds before a token's `expires_at` that the client asks for a new one. */
 export const RENEW_BEFORE_S = 60;
 
+/** The 401 codes a new token can cure, on which the client asks `auth`
+ * for one and sends the call again: the token expired, or the instance no
+ * longer knows it. Any other 401 (`stale_request`, `replayed_request`,
+ * `invalid_signature`) is the request's own, and is the call's error. */
+const RENEW_ON = new Set(["token_expired", "invalid_token"]);
+
 /** Gets a reporter token for the key `publicKey` (unpadded base64url): the
  * deployer's own call to its backend, which knows the reporter from its
  * own session and calls `POST /api/queues/<queue>/reporter-tokens` with the
@@ -18,7 +24,9 @@ export const RENEW_BEFORE_S = 60;
 export type ReporterAuth = (publicKey: string) => Promise<ReporterToken>;
 
 export interface ReporterOptions {
-  /** The instance's base URL, such as `https://clax.corp.example`. */
+  /** The instance's origin, such as `https://clax.corp.example`: Clax is
+   * served at the root of its own host, so a URL with a path, query or
+   * fragment is refused with a `TypeError`. */
   instance: string;
   /** The queue's ID. */
   queue: string;
@@ -27,6 +35,11 @@ export interface ReporterOptions {
   fetch?: Fetch;
   /** Milliseconds since the Unix epoch. Default: `Date.now`. */
   now?: () => number;
+  /** Waits out a retry's backoff (429 `limit_reached`, 503 `busy`).
+   * Default: `setTimeout`. */
+  sleep?: (ms: number) => Promise<void>;
+  /** A number in [0, 1) that scales a backoff's jitter. Default: `Math.random`. */
+  random?: () => number;
   /** The reporter's key. Default: the one kept for `user` (below), else a
    * new non-extractable one, made on first use; a browser without WebCrypto
    * Ed25519 fails every call with `ClaxError` code `unsupported_browser`. */
@@ -129,12 +142,16 @@ async function captureParts(c: { clip?: Blob | Uint8Array; context?: ReportConte
  *
  * Each call carries a reporter token: the client asks `auth` for one on
  * first use and again from [`RENEW_BEFORE_S`] seconds before it expires,
- * and on a 401 asks once more and sends the call again once. Calls made
- * while a token is being fetched share that one `auth` call. With a `user`,
- * the key and the token are kept across page loads (`ReporterOptions.user`). */
+ * and on a 401 `token_expired` or `invalid_token` asks once more and sends
+ * the call again once. Calls made while a token is being fetched share
+ * that one `auth` call. With a `user`, the key and the token are kept
+ * across page loads (`ReporterOptions.user`). Each request is retried as
+ * `docs/contract.md` ("Signed requests") says: once on 401 `stale_request`
+ * with the instance's clock, which the client keeps, and up to three times
+ * on 429 `limit_reached` and 503 `busy`, after 1, 2 and 4 seconds. */
 export class ReporterClient {
   private readonly fetch: Fetch;
-  private readonly now: () => number;
+  private readonly timing: Timing;
   private signer: Promise<KeyedSigner> | undefined;
   private token: { token: string; expiresAt: number } | undefined;
   private pending: Promise<{ token: string; expiresAt: number }> | undefined;
@@ -146,8 +163,9 @@ export class ReporterClient {
   private rekeyed = false;
 
   constructor(private readonly opts: ReporterOptions) {
+    checkInstance(opts.instance, "ReporterClient");
     this.fetch = opts.fetch ?? ((input, init) => globalThis.fetch(input, init));
-    this.now = opts.now ?? Date.now;
+    this.timing = new Timing(opts.now ?? Date.now, opts.sleep, opts.random);
     if (opts.signer) this.signer = Promise.resolve(opts.signer);
     this.store = opts.signer ? null
       : opts.store !== undefined ? opts.store
@@ -330,12 +348,12 @@ export class ReporterClient {
   }
 
   private async send(method: string, path: string, body?: Uint8Array, contentType?: string): Promise<Response> {
-    const once = async (token: string) => signedFetch({
-      method, instance: this.opts.instance, path, body, contentType, now: this.now, fetch: this.fetch,
+    const once = async (token: string) => sendSigned({
+      method, instance: this.opts.instance, path, body, contentType, fetch: this.fetch,
       credential: { scheme: "Clax-Reporter", token, signer: await this.key() },
-    });
+    }, this.timing);
     const first = await once((await this.current()).token);
-    if (first.status !== 401) return first;
+    if (first.status !== 401 || !RENEW_ON.has(await errorCode(first))) return first;
     this.token = undefined;
     if (this.store) await this.store.forgetToken().catch(() => { this.store = null; });
     return once((await this.current()).token);
@@ -345,7 +363,8 @@ export class ReporterClient {
   private async current(): Promise<{ token: string; expiresAt: number }> {
     const key = await this.key();
     const t = this.token;
-    if (t && this.now() < t.expiresAt - RENEW_BEFORE_S * 1000) return t;
+    // `expires_at` is the instance's time.
+    if (t && this.timing.now() < t.expiresAt - RENEW_BEFORE_S * 1000) return t;
     this.pending ??= (async () => {
       try {
         let got: ReporterToken;

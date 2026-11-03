@@ -10,12 +10,19 @@
 //   "./service"  sdk/src/service.ts   the service client, for a backend
 //
 // Each entry is an ES module; code two entries share is one chunk under
-// chunks/, so a class such as ClaxError is the same in every entry. Nothing
+// chunks/, so a class such as ClaxError is the same in every entry. The
+// service entry, which a backend loads and which needs no DOM, is also one
+// CommonJS file, service.cjs, under its `require` condition, for a
+// CommonJS backend on a Node that cannot require an ES module (before
+// 20.19 and 22.12); its ClaxError is its own, so such a backend takes
+// ClaxError from the service entry too. Nothing
 // is minified (the consumer's bundler minifies) and nothing is left to a
 // dependency: the package declares none. Each entry has declarations
 // under types/, emitted by TypeScript from the sources and kept to what the
 // entries' declarations import, with relative specifiers ending in `.js`
-// so a consumer's `moduleResolution` of `bundler` or `nodenext` reads them;
+// so a consumer's `moduleResolution` of `bundler` or `nodenext` reads them
+// (and, for service.cjs, a copy of the service entry's as `.d.cts` with
+// specifiers ending in `.cjs`, which TypeScript reads as CommonJS);
 // `types` and `typesVersions` name them for `node` (node10).
 // Its README is web/sdk/README.md, and its package.json is web/sdk/package.json
 // (MANIFEST) with the fields the build derives. The package's license is the license of
@@ -61,15 +68,26 @@ const LICENSE = MANIFEST.license;
 /** The directories, under web/, of the Clax sources the package may bundle: those LICENSE puts under `LICENSE`. */
 const LICENSED_DIRS = ["bridge", "overlay", "sdk"];
 
-/** The package's entries: its export, the file it builds to and the source. */
+/** The package's entries: its export, the file it builds to, the source,
+ * and whether it is also built as CommonJS (`<name>.cjs`). */
 export const ENTRIES = [
   { path: ".", name: "index", src: "sdk/src/index.ts" },
   { path: "./overlay", name: "overlay", src: "overlay/src/main.ts" },
-  { path: "./service", name: "service", src: "sdk/src/service.ts" },
+  { path: "./service", name: "service", src: "sdk/src/service.ts", cjs: true },
 ];
 
 const ts = createRequire(join(web, "package.json"))("typescript");
 const types = src => `types/${src.replace(/\.ts$/, ".d.ts")}`;
+/** A declaration's CommonJS twin: `a.d.ts` as `a.d.cts`. */
+const cjsTypes = file => file.replace(/\.d\.ts$/, ".d.cts");
+
+/** An entry's `exports` conditions: its declarations and ES module, and
+ * for a CommonJS entry the same under `import` and `require`. */
+function conditions(e) {
+  const esm = { types: `./${types(e.src)}`, default: `./${e.name}.js` };
+  if (!e.cjs) return esm;
+  return { import: esm, require: { types: `./${cjsTypes(types(e.src))}`, default: `./${e.name}.cjs` } };
+}
 
 /** The fields web/sdk/package.json may set, each published as written
  * (but `private`): a manifest that sets any other is refused, so a field
@@ -92,7 +110,7 @@ export function packageJson(manifest = MANIFEST) {
     // does not use.
     sideEffects: false,
     exports: {
-      ...Object.fromEntries(ENTRIES.map(e => [e.path, { types: `./${types(e.src)}`, default: `./${e.name}.js` }])),
+      ...Object.fromEntries(ENTRIES.map(e => [e.path, conditions(e)])),
       "./package.json": "./package.json",
     },
     // For TypeScript's `node` (node10) resolution, which reads no `exports`:
@@ -190,9 +208,11 @@ function declarationOptions() {
  * siblings without an extension, which `nodenext` does not resolve). Fails
  * on a declaration of a source outside `LICENSED_DIRS`, a specifier that
  * names another package or a file with no declarations, and a reference
- * directive. */
-export function keepDeclarations(emitted, root = web) {
+ * directive. With `cjs`, it keeps those of the CommonJS entries alone,
+ * each as `.d.cts` with its specifiers ending in `.cjs`. */
+export function keepDeclarations(emitted, root = web, { cjs = false } = {}) {
   const kept = new Map();
+  const ext = cjs ? ".cjs" : ".js";
   const visit = file => {
     if (kept.has(file)) return;
     assertLicensed(slashed(join(root, file)), root);
@@ -206,11 +226,11 @@ export function keepDeclarations(emitted, root = web) {
       const target = [`${base}.d.ts`, `${base}/index.d.ts`].find(f => emitted.has(f));
       if (!target) throw new Error(`${file} imports ${spec}, which has no declarations`);
       visit(target);
-      return `${lead}${q}${spec}${target.endsWith("/index.d.ts") ? "/index" : ""}.js${q}`;
+      return `${lead}${q}${spec}${target.endsWith("/index.d.ts") ? "/index" : ""}${ext}${q}`;
     }));
   };
-  for (const e of ENTRIES) visit(e.src.replace(/\.ts$/, ".d.ts"));
-  return kept;
+  for (const e of ENTRIES) if (!cjs || e.cjs) visit(e.src.replace(/\.ts$/, ".d.ts"));
+  return cjs ? new Map([...kept].map(([file, text]) => [cjsTypes(file), text])) : kept;
 }
 
 /** The program the declarations are emitted from: the entries' sources and
@@ -224,7 +244,7 @@ function emitTypes(program) {
   const emitted = new Map();
   const result = program.emit(undefined, (file, text) => emitted.set(file.slice("/types/".length), text));
   if (result.diagnostics.length) throw new Error(formatDiagnostics(result.diagnostics));
-  const kept = keepDeclarations(emitted);
+  const kept = [...keepDeclarations(emitted), ...keepDeclarations(emitted, web, { cjs: true })];
   rmSync(join(out, "types"), { recursive: true, force: true });
   for (const [file, text] of kept) {
     const to = join(out, "types", file);
@@ -292,4 +312,21 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     },
   });
   if (watch) result.on("event", e => { if (e.code === "ERROR") console.error(e.error); });
+  // The CommonJS entries, each one file of its own (no chunk is shared
+  // with the ES modules), built after them so that their chunks/ and
+  // metadata stand; the license guard holds for what they bundle too.
+  const cjs = await build({
+    configFile: false, logLevel: watch ? "info" : "warn", publicDir: false, root: web,
+    plugins: [{ name: "clax-sdk-cjs-licensed", apply: "build", generateBundle(_, bundle) { thirdPartyNotices(Object.values(bundle).flatMap(c => (c.type === "chunk" ? Object.keys(c.modules) : []))); } }],
+    define: { "process.env.NODE_ENV": JSON.stringify("production") },
+    build: {
+      outDir: out, emptyOutDir: false, minify: false, sourcemap: false, copyPublicDir: false,
+      // Node 20, the oldest the service entry runs in.
+      target: "node20",
+      lib: { entry: Object.fromEntries(ENTRIES.filter(e => e.cjs).map(e => [e.name, join(web, e.src)])), formats: ["cjs"], fileName: (_, name) => `${name}.cjs` },
+      rollupOptions: { output: { exports: "named" } },
+      watch: watch ? {} : null,
+    },
+  });
+  if (watch) cjs.on("event", e => { if (e.code === "ERROR") console.error(e.error); });
 }

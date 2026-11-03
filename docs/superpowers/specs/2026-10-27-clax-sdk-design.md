@@ -225,7 +225,24 @@ consent call from the extension fails to compile rather than answering
      origin, public_key}`, signed with the service grant.
   4. The answer is a token bound to that key, that origin and that
      `reporter_id`, valid 15 minutes (D12). The SDK calls `auth` again
-     before it expires.
+     before it expires, and after a 401 `token_expired` or
+     `invalid_token`; any other 401 (`stale_request`, `replayed_request`,
+     `invalid_signature`) is the request's, which a new token cannot
+     cure, so it mints nothing.
+- **Retries.** The reporter and service clients retry as every signing
+  client does (`Retry`, `crates/clax-core/src/remote.rs`): once on
+  `stale_request` with the offset the answer's `Date` gives, three times
+  on `limit_reached` and `busy` after 1, 2 and 4 seconds, re-signing each,
+  with an injected wait so tests do not wait. A refusal that names a wait
+  (`Retry-After`) carries it to the caller, and the reporter routes' CORS
+  answers expose `Retry-After` and `Date` to the page.
+- **The instance is an origin.** Clax is served at the root of its own
+  host and a signature covers the path the instance receives, so the
+  clients and the overlay refuse an `instance` with a path, query or
+  fragment rather than drop it.
+- **Packaging.** `@empathic/clax-client-sdk` is ES modules; its service
+  entry, a backend's, is also CommonJS (a `require` condition), since a
+  Node before 20.19 cannot require an ES module.
 - **What a reporter token may do:** file reports into its queue, and read,
   reply on and see the replies to the reports `reporters_see` (§7.2) shows
   that `reporter_id`. Nothing else; it is never a person.

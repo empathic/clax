@@ -270,13 +270,23 @@ fn multipart(parts: &[(&str, Part<'_>)]) -> (Vec<u8>, String) {
     (b, format!("multipart/form-data; boundary={boundary}"))
 }
 
+/// The error codes the SDK's `QueueErrorCode` lists (web/sdk/src/types.ts).
+fn sdk_error_codes() -> Vec<String> {
+    serde_json::from_str(include_str!("../../../web/sdk/test/queue-error-codes.json")).unwrap()
+}
+
+/// A refusal's status and error code; fails on a code the SDK's
+/// `QueueErrorCode` does not list, so each refusal these tests reach keeps
+/// that list whole.
 async fn status_code(res: reqwest::Response) -> (u16, String) {
     let s = res.status().as_u16();
     let v: Value = res.json().await.unwrap_or_default();
-    (
-        s,
-        v["error"]["code"].as_str().unwrap_or_default().to_string(),
-    )
+    let code = v["error"]["code"].as_str().unwrap_or_default().to_string();
+    assert!(
+        code.is_empty() || sdk_error_codes().contains(&code),
+        "{code} is missing from web/sdk/test/queue-error-codes.json and the SDK's QueueErrorCode"
+    );
+    (s, code)
 }
 
 #[tokio::test]
@@ -391,6 +401,11 @@ async fn a_reporter_files_with_a_clip_and_reads_it_back() {
             .to_str()
             .unwrap(),
         ORIGIN
+    );
+    // The page may read a refusal's Retry-After and the instance's Date.
+    assert_eq!(
+        res.headers()["access-control-expose-headers"],
+        "retry-after, date"
     );
     let v: Value = res.json().await.unwrap();
     let report = &v["report"];
@@ -804,6 +819,26 @@ async fn the_preflight_answers_only_listed_origins() {
         .await;
     assert_eq!(res.status(), 403);
     assert!(res.headers().get("access-control-allow-origin").is_none());
+    assert!(res.headers().get("access-control-expose-headers").is_none());
+    // A refusal from the queue's origin names it, and exposes the headers
+    // a client retries by (Retry-After, Date).
+    let res = s
+        .send(
+            "GET",
+            &s.reports(),
+            &[
+                ("origin", ORIGIN.into()),
+                ("authorization", "Clax-Reporter cxr_unknown".into()),
+            ],
+            vec![],
+        )
+        .await;
+    assert_eq!(res.headers()["access-control-allow-origin"], ORIGIN);
+    assert_eq!(
+        res.headers()["access-control-expose-headers"],
+        "retry-after, date"
+    );
+    assert_eq!(status_code(res).await, (401, "invalid_token".into()));
     // The service route is not for browsers.
     let res = s
         .send(

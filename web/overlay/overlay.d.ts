@@ -182,7 +182,9 @@ export interface Recorder {
 
 /** `Clax.overlay`'s options. */
 export interface OverlayOptions {
-  /** The instance's base URL, such as `https://clax.corp.example`. */
+  /** The instance's origin, such as `https://clax.corp.example`: Clax is
+   * served at the root of its own host, so a URL with a path, query or
+   * fragment is refused with a `TypeError`. */
   instance: string;
   /** The queue's ID. */
   queue: string;
