@@ -30,7 +30,7 @@ describe("Installs", () => {
     const row = m.root.querySelector('[data-install="i1"]')!;
     expect(row.textContent).toContain("Changelist");
     expect(row.textContent).toContain("https://app.example");
-    expect(row.querySelector(".sum")!.textContent).toBe('named "Acme" · Report button · no element picker');
+    expect(row.querySelector(".sum")!.textContent).toBe('named "Acme" · Your reports · no element picker');
     expect(row.querySelector("code")!.textContent).toBe('<meta name="clax-install" content="i1">');
     expect(button(m.root, "Edit")).toBeUndefined();
     expect(button(m.root, "New install")).toBeUndefined();
@@ -72,7 +72,7 @@ describe("Installs", () => {
     type(m.root, "brand_color", "red");
     submit(m.root);
     await settle();
-    expect(calls.find(c => c.method === "PATCH")!.body.config.brand_color).toBe("red");
+    expect((calls.find(c => c.method === "PATCH")!.body as { config: { brand_color: string } }).config.brand_color).toBe("red");
     expect(m.root.querySelector('[role="alert"]')!.textContent).toBe("The accent colour (brand_color) is #rrggbb.");
   });
 });

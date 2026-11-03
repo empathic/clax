@@ -34,8 +34,17 @@ export type ReportsMode = "button" | "off";
 export interface OverlayOptions {
   /** The instance's base URL, such as `https://clax.corp.example`. */
   instance: string;
-  /** The queue's ID. */
-  queue: string;
+  /** The queue's ID. Optional with an install (`install`, or the page's
+   * `<meta name="clax-install">`), whose config names its queue; given,
+   * it is the queue filed into. */
+  queue?: string;
+  /** The install's ID, whose config Clax serves: the queue it files into,
+   * its wording, and whether it shows "Your reports" and the element
+   * picker; edited in Clax, on the queue's Installs. Default: `<meta
+   * name="clax-install">`'s content. The overlay starts once the config is
+   * fetched; when it cannot be (in `INSTALL_TIMEOUT_MS`), it starts on this
+   * page's own options and metas. */
+  install?: string;
   /** Gets a reporter token for the reporter's public key, from the deployer's backend. */
   auth: ReporterAuth;
   /** `"corner"` (the default): the Report and "Your reports" buttons in the
@@ -50,7 +59,8 @@ export interface OverlayOptions {
    * Report in the launcher; `"off"` leaves it out, with its panel, its
    * polling and the badge's, for a page that shows the reports itself
    * (`showReports()` then does nothing). Report stays either way. Default:
-   * `<meta name="clax-reports">`'s content, else `"button"`. */
+   * `<meta name="clax-reports">`'s content, else `"button"`. An install's
+   * config, once fetched, sets it in their place. */
   reports?: ReportsMode;
   /** The host's part of each capture's context (spec
    * 2026-10-29-feedback-loop §5.1): `release`, `flags` and `app`, or a

@@ -31,7 +31,8 @@ pub struct InstallConfig {
     /// overlay's "Files into".
     #[serde(default)]
     pub queue_label: Option<String>,
-    /// Whether the overlay shows its Report button.
+    /// Whether the overlay shows "Your reports" beside Report (the page's
+    /// `<meta name="clax-reports">` `button`; false is its `off`).
     #[serde(default = "yes")]
     pub reports_button: bool,
     /// Whether the overlay offers its element picker.

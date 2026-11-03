@@ -40,6 +40,8 @@ export interface Queue {
  * does. */
 export interface InstallConfig {
   product_name: string | null;
+  /** The Report button's label (and below, the words before the queue's
+   * name in the Report panel); `reports_button` is "Your reports". */
   report_label: string | null;
   queue_label: string | null;
   reports_button: boolean;

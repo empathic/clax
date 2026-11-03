@@ -187,8 +187,10 @@ export interface Recorder {
 export interface OverlayOptions {
   /** The instance's base URL, such as `https://clax.corp.example`. */
   instance: string;
-  /** The queue's ID. */
-  queue: string;
+  /** The queue's ID. Optional with an install, whose config names it. */
+  queue?: string;
+  /** The install's ID, whose config Clax serves (its queue, wording, and whether it shows "Your reports" and the element picker). Default `<meta name="clax-install">`'s content. The overlay starts once the config is fetched, else on this page's own options. */
+  install?: string;
   /** Gets a reporter token for the reporter's public key, from the deployer's backend. */
   auth: ReporterAuth;
   /** `"corner"` (the default): Report and "Your reports" in the bottom right corner; `false`: none. */

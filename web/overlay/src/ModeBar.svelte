@@ -10,8 +10,9 @@
   // note, before its new capture).
   import type { Mode } from "./options";
 
-  type Props = { mode: Mode | null; outlined?: string | null; onMode(m: Mode): void; onCancel(): void };
-  let { mode, outlined = null, onMode, onCancel }: Props = $props();
+  // `element` false (the install turned the element picker off): no Element mode.
+  type Props = { mode: Mode | null; outlined?: string | null; element?: boolean; onMode(m: Mode): void; onCancel(): void };
+  let { mode, outlined = null, element = true, onMode, onCancel }: Props = $props();
 
   /** Focus goes to the mode that is on (none for a reopen's note, whose
    * text field keeps it). */
@@ -46,7 +47,7 @@
 
 <div class="modebar" role="toolbar" aria-label="Capture" tabindex="-1" onkeydown={rove}>
   <div class="modes">
-    {#each MODES as m (m.mode)}
+    {#each MODES.filter(m => element || m.mode !== "element") as m (m.mode)}
       <button type="button" {@attach el => focusOn(el, m.mode)} aria-pressed={mode === m.mode} aria-keyshortcuts={m.key} onclick={() => onMode(m.mode)}>{m.label}<kbd aria-hidden="true">{m.key}</kbd></button>
     {/each}
   </div>

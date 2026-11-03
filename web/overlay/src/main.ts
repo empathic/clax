@@ -20,6 +20,7 @@ import { type Recorder, installDiagnostics } from "../../sdk/src/diagnostics";
 import { forgetReporter as forgetKept } from "../../sdk/src/keystore";
 import { ReporterClient, type ReporterAuth } from "../../sdk/src/reporter";
 import type { DiagLine, Report } from "../../sdk/src/types";
+import { type Settings, fetchInstall, installIdOf, settingsOf } from "./install";
 import { Session, externalIdOf, reportsModeOf } from "./model";
 import { CONTEXT_TIMEOUT_MS, type Given, type HostContext, type Mode, type OverlayOptions, type ReportsMode } from "./options";
 import Overlay from "./Overlay.svelte";
@@ -104,15 +105,18 @@ export const diagnostics = {
 /** Starts the overlay on `doc` (default this page's), with the launcher in
  * the page's bottom right corner unless `opts.launcher` is false. */
 export function overlay(opts: OverlayOptions, doc: Document = document): OverlayHandle {
-  for (const k of ["instance", "queue"] as const) if (typeof opts?.[k] !== "string" || !opts[k]) throw new TypeError(`Clax.overlay: ${k} must be a non-empty string`);
+  if (typeof opts?.instance !== "string" || !opts.instance) throw new TypeError("Clax.overlay: instance must be a non-empty string");
+  const installId = installIdOf(doc, opts.install);
+  if (opts.queue !== undefined || !installId) if (typeof opts.queue !== "string" || !opts.queue) throw new TypeError("Clax.overlay: queue must be a non-empty string");
   if (typeof opts.auth !== "function") throw new TypeError("Clax.overlay: auth must be a function");
   if (opts.launcher !== undefined && opts.launcher !== "corner" && opts.launcher !== false) throw new TypeError('Clax.overlay: launcher must be "corner" or false');
   if (opts.nonce !== undefined && (typeof opts.nonce !== "string" || !opts.nonce)) throw new TypeError("Clax.overlay: nonce must be a non-empty string");
   const instance = opts.instance.replace(/\/+$/, "");
   const win = doc.defaultView ?? window;
   if (opts.user !== undefined && (typeof opts.user !== "string" || !opts.user)) throw new TypeError("Clax.overlay: user must be a non-empty string");
-  const reports = reportsModeOf(doc, opts.reports);
-  const client = new ReporterClient({ instance, queue: opts.queue, auth: opts.auth, user: opts.user });
+  // Without an install the page's own options start it at once (a bad
+  // `reports` is refused here); with one, once its config is fetched.
+  if (!installId) reportsModeOf(doc, opts.reports);
   const recorder = installDiagnostics(win, { instance });
   // A page refusing inline style: its clips never try the web fonts' <style>.
   if (opts.nonce !== undefined || metaRefusesInlineStyle(doc)) withoutWebFonts(doc);
@@ -135,23 +139,47 @@ export function overlay(opts: OverlayOptions, doc: Document = document): Overlay
   for (const k of ["keydown", "keyup", "keypress"]) root.addEventListener(k, e => e.stopPropagation());
   doc.documentElement.appendChild(host);
 
-  const app = mount(Overlay, {
-    target,
-    props: {
-      client, doc, host, session,
-      picker: (onPick: (p: Picked) => void, onCancel: () => void, onHover?: (what: string | null) => void) => commentPicker(doc, onPick, onCancel, onHover),
-      externalId: externalIdOf(doc, opts.externalId),
-      launcher: opts.launcher ?? "corner",
-      canFile: opts.canFile ?? true,
-      reports,
-      onBadge: (n: number) => { lastBadge = n; emit("badge", n); },
-      onFiled: (r: Report) => emit("filed", r),
-    },
-  }) as unknown as Mounted;
   let open = true;
+  let app: Mounted | null = null;
+  let client: ReporterClient | null = null;
+  // What the host asked before the overlay started, done once it has.
+  let asked: ((a: Mounted) => void) | null = null;
+  const start = (s: Settings) => {
+    if (!open) return;
+    client = new ReporterClient({ instance, queue: s.queue, auth: opts.auth, user: opts.user });
+    if (s.brandColor) addSheet(root, `:host{--you:${s.brandColor};--you-ink:${s.brandColor};}`);
+    app = mount(Overlay, {
+      target,
+      props: {
+        client, doc, host, session,
+        picker: (onPick: (p: Picked) => void, onCancel: () => void, onHover?: (what: string | null) => void) => commentPicker(doc, onPick, onCancel, onHover),
+        externalId: externalIdOf(doc, opts.externalId),
+        launcher: opts.launcher ?? "corner",
+        canFile: opts.canFile ?? true,
+        reports: s.reports,
+        elementPicker: s.picker,
+        wording: s.wording,
+        queueInfo: s.queueInfo,
+        onBadge: (n: number) => { lastBadge = n; emit("badge", n); },
+        onFiled: (r: Report) => emit("filed", r),
+      },
+    }) as unknown as Mounted;
+    asked?.(app);
+    asked = null;
+  };
+  const ready = installId
+    ? fetchInstall(instance, installId, (win.fetch ?? fetch).bind(win)).then(cfg => {
+      if (!cfg) console.warn(`Clax.overlay: install ${installId}'s config could not be fetched; starting on the page's own options`);
+      let s: Settings;
+      try { s = settingsOf(cfg, opts, doc); } catch (e) { console.error(e); return; }
+      if (!s.queue) { console.error("Clax.overlay: no queue: the page names none and the install's config could not be fetched"); return; }
+      start(s);
+    })
+    : (start(settingsOf(null, opts, doc)), Promise.resolve());
+  const whenUp = (fn: (a: Mounted) => void) => { if (!open) return; if (app) fn(app); else asked = fn; };
   return {
-    report(o) { if (open) app.report(o); },
-    showReports() { if (open) app.showReports(); },
+    report(o) { whenUp(a => a.report(o)); },
+    showReports() { whenUp(a => a.showReports()); },
     on(event: keyof OverlayEvents, fn: ((n: number) => void) | ((r: Report) => void)) {
       if (event !== "badge" && event !== "filed") throw new TypeError(`Clax.overlay: no event ${String(event)}`);
       const set = listeners[event] as Set<typeof fn>;
@@ -159,13 +187,13 @@ export function overlay(opts: OverlayOptions, doc: Document = document): Overlay
       if (event === "badge" && lastBadge !== null) (fn as (n: number) => void)(lastBadge);
       return () => { set.delete(fn); };
     },
-    forget: () => client.forget(),
+    forget: () => ready.then(() => client?.forget()),
     close() {
       if (!open) return;
       open = false;
       listeners.badge.clear();
       listeners.filed.clear();
-      void unmount(app as never);
+      if (app) void unmount(app as never);
       host.remove();
     },
   };

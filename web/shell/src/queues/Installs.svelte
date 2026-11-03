@@ -67,7 +67,7 @@
   const copy = (id: string) => { void navigator.clipboard?.writeText(metaTag(id)).then(() => { copied = id; }, () => {}); };
   const summary = (c: api.InstallConfig) => [
     c.product_name ? `named "${c.product_name}"` : "no product name",
-    c.reports_button ? "Report button" : "no Report button",
+    c.reports_button ? "Your reports" : "no Your reports",
     c.picker ? "element picker" : "no element picker",
   ].join(" · ");
 
@@ -82,7 +82,7 @@
     <label class="field">Report button label <input name="report_label" maxlength="80" placeholder="Report" value={form.report_label} oninput={e => { form.report_label = e.currentTarget.value; }} /></label>
     <label class="field">Words before the queue's name <input name="queue_label" maxlength="80" placeholder="Files into" value={form.queue_label} oninput={e => { form.queue_label = e.currentTarget.value; }} /></label>
     <label class="field">Accent colour <input name="brand_color" maxlength="7" placeholder="#rrggbb" spellcheck="false" value={form.brand_color} oninput={e => { form.brand_color = e.currentTarget.value; }} /></label>
-    <label class="check"><input type="checkbox" name="reports_button" checked={form.reports_button} onchange={e => { form.reports_button = e.currentTarget.checked; }} /> Show the Report button</label>
+    <label class="check"><input type="checkbox" name="reports_button" checked={form.reports_button} onchange={e => { form.reports_button = e.currentTarget.checked; }} /> Show "Your reports"</label>
     <label class="check"><input type="checkbox" name="picker" checked={form.picker} onchange={e => { form.picker = e.currentTarget.checked; }} /> Offer the element picker</label>
     <div class="row">
       <button type="submit" class="primary" disabled={!form.name.trim()}>{editing === "new" ? "Add install" : "Save"}</button>

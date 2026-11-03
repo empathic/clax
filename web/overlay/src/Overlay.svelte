@@ -27,6 +27,7 @@
     BadgeWatch, type Draft, POLL_MS, Poll, type ReporterApi, type Session, type Timers, canSend, carryShapes, clipOf, clipStatus, defaultShapes,
     failureText, newDraft, pageUrl, quoteOf, realTimers, reopenOf, reportOf, type ReportsMode, summaryOf, withCapture,
   } from "./model";
+  import { DEFAULT_WORDING, type QueueInfo, type Wording } from "./install";
   import ModeBar from "./ModeBar.svelte";
   import type { Mode } from "./options";
   import type { Picked, Picker } from "./picker";
@@ -47,6 +48,13 @@
     canFile?: boolean;
     /** "off": no "Your reports" button, panel, or polling (the badge's too); Report stays. */
     reports?: ReportsMode;
+    /** False: no Element mode (the install turned the element picker off);
+     * a report starts in Area. */
+    elementPicker?: boolean;
+    /** The words the overlay shows, from its install (`install.ts`). */
+    wording?: Wording;
+    /** The queue its install names, shown in the Report panel. */
+    queueInfo?: QueueInfo | null;
     /** What captures use (tests replace the renders). */
     capture?: CaptureDeps;
     flatten?: FlattenDeps;
@@ -57,7 +65,10 @@
   let {
     client, doc, host, picker: makePicker, session, externalId, launcher = "corner", canFile = true, capture: captureDeps = {}, flatten: flattenDeps = browserFlatten,
     timers = realTimers, onBadge, onFiled, reports: reportsMode = "button",
+    elementPicker = true, wording = DEFAULT_WORDING, queueInfo = null,
   }: Props = $props();
+  /** The mode a report starts in. */
+  const firstMode = (m?: Mode): Mode => (m === "element" || m === undefined) && !elementPicker ? "area" : m ?? "element";
   const reportsOn = untrack(() => reportsMode !== "off");
 
   const win = untrack(() => doc.defaultView ?? window);
@@ -112,10 +123,10 @@
   export function report(opts: { mode?: Mode } = {}): void {
     if (!canFile) return;
     if (draft?.purpose.kind === "reopen" && (draft.body.trim() !== "" || draft.clip.state !== "none")) {
-      confirmDrop = { mode: opts.mode ?? "element" };
+      confirmDrop = { mode: firstMode(opts.mode) };
       return;
     }
-    startReport(opts.mode ?? "element");
+    startReport(firstMode(opts.mode));
   }
 
   function startReport(mode: Mode): void {
@@ -139,6 +150,7 @@
    * overlay, so the arrow keys move the outline and Enter picks. */
   function choose(mode: Mode): void {
     if (!bar) return;
+    mode = firstMode(mode);
     if (mode === "element" && bar.mode === "element" && picking) {
       picker?.keyboard();
       const root = cx?.getRootNode() as Document | ShadowRoot | undefined;
@@ -454,7 +466,7 @@
 
 <div class="cx" bind:this={cx}>
   {#if bar}
-    <ModeBar mode={bar.mode} {outlined} onMode={choose} onCancel={() => closeBar()} />
+    <ModeBar mode={bar.mode} {outlined} element={elementPicker} onMode={choose} onCancel={() => closeBar()} />
   {/if}
 
   <div class="dock">
@@ -537,7 +549,7 @@
       {#if canFile}
         <button type="button" class="primary report-btn" bind:this={reportBtn} aria-pressed={picking} onclick={() => (picking ? closeBar() : report())}>
           <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2.5h10a1.5 1.5 0 0 1 1.5 1.5v6A1.5 1.5 0 0 1 13 11.5H7l-3.5 2.5v-2.5H3A1.5 1.5 0 0 1 1.5 10V4A1.5 1.5 0 0 1 3 2.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
-          {picking ? "Picking…" : "Report"}
+          {picking ? "Picking…" : wording.reportLabel}
         </button>
       {/if}
     </div>
