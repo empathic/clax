@@ -50,7 +50,8 @@
 #    sets its variables;
 # 4. sets the repository variable PUBLIC_HOST, which the hourly drift check
 #    (.github/workflows/deploy-prod.yml) reads outside the environment;
-# 5. makes the environment `npm` deployable from `prod` in place of `main`;
+# 5. makes the environment `npm` deployable from `prod` and `main` alone
+#    (publish-pi.yml runs in it from prod, publish-sdk.yml from main);
 # 6. prints the `gh secret set` commands for the production environment's
 #    two secrets, which it never runs: their values are yours to paste.
 #
@@ -230,9 +231,10 @@ else
     write POST "repos/$repo/rulesets" "$ruleset"
 fi
 
-# branch_policy ENV: makes ENV deployable from `prod` alone.
+# branch_policy ENV BRANCH...: makes ENV deployable from the BRANCHes alone.
 branch_policy() {
-    local env="$1" e custom policies keep=0 pid name
+    local env="$1" e custom policies pid name b have
+    shift
     e="$(get "repos/$repo/environments/$env")" || e='{}'
     custom="$(json '(j.get("deployment_branch_policy") or {}).get("custom_branch_policies") is True' <<< "$e")"
     if [ "$custom" = True ]; then
@@ -245,13 +247,17 @@ branch_policy() {
     policies=""
     [ "$custom" = True ] && policies="$(get "repos/$repo/environments/$env/deployment-branch-policies" \
         | json '"\n".join("%s %s:%s" % (p["id"], p.get("type", "branch"), p["name"]) for p in j["branch_policies"])')"
+    for b in "$@"; do
+        have=0
+        while read -r pid name; do
+            if [ -n "$pid" ] && [ "$name" = "branch:$b" ]; then have=1; fi
+        done <<< "$policies"
+        if [ "$have" = 1 ]; then info "$env: branch $b is allowed"
+        else write POST "repos/$repo/environments/$env/deployment-branch-policies" "{\"name\":\"$b\",\"type\":\"branch\"}"; fi
+    done
     while read -r pid name; do
         [ -n "$pid" ] || continue
-        if [ "$name" = branch:prod ]; then keep=1; info "$env: branch prod is allowed"; fi
-    done <<< "$policies"
-    [ "$keep" = 1 ] || write POST "repos/$repo/environments/$env/deployment-branch-policies" '{"name":"prod","type":"branch"}'
-    while read -r pid name; do
-        [ -n "$pid" ] && [ "$name" != branch:prod ] || continue
+        case " $* " in *" ${name#branch:} "*) [ "${name%%:*}" = branch ] && continue ;; esac
         info "$env: $name is allowed; removed"
         write DELETE "repos/$repo/environments/$env/deployment-branch-policies/$pid"
     done <<< "$policies"
@@ -273,7 +279,7 @@ set_var() {
 }
 
 say "3. Environment production"
-branch_policy production
+branch_policy production prod
 for name in CLOUDFLARE_ACCOUNT_ID OAUTH_CLIENT_ID OWNER_GITHUB PUBLIC_HOST RETIRED_CONTENT_ORIGIN SITE_DOMAIN STORE; do
     [ -z "${!name}" ] || set_var "repos/$repo/environments/production/variables" "$name" "${!name}"
 done
@@ -284,7 +290,7 @@ say "4. Repository variable PUBLIC_HOST (the drift check's host)"
 set_var "repos/$repo/actions/variables" PUBLIC_HOST "$PUBLIC_HOST"
 
 say "5. Environment npm"
-branch_policy npm
+branch_policy npm prod main
 
 say "6. Secrets (yours to run; this script never sets them)"
 info "gh secret set CLOUDFLARE_API_TOKEN --env production --repo $repo   # the token docs/prod.md describes"

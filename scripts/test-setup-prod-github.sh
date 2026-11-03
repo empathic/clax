@@ -172,11 +172,14 @@ for want in \
     "would run: gh api --method POST repos/$R/environments/production/variables --input - <<< '{\"name\":\"CLOUDFLARE_ACCOUNT_ID\",\"value\":\"$ACC\"}'" \
     "would run: gh api --method POST repos/$R/actions/variables --input - <<< '{\"name\":\"PUBLIC_HOST\",\"value\":\"pub.example\"}'" \
     "would run: gh api --method POST repos/$R/environments/npm/deployment-branch-policies --input - <<< '{\"name\":\"prod\",\"type\":\"branch\"}'" \
-    "would run: gh api --method DELETE repos/$R/environments/npm/deployment-branch-policies/11" \
+    "npm: branch main is allowed" \
     "gh secret set CLOUDFLARE_API_TOKEN --env production --repo $R" \
     "gh secret set CLAX_SMOKE_TOKEN --env production --repo $R"; do
     if grep -qF -- "$want" "$C/out"; then pass "the dry run prints: ${want:0:90}"; else fail "the dry run prints: $want ($(cat "$C/out"))"; fi
 done
+# npm keeps main, which publish-sdk.yml is dispatched on.
+if grep -qF "DELETE repos/$R/environments/npm/" "$C/out"; then fail "the dry run keeps npm's main ($(cat "$C/out"))"
+else pass "the dry run keeps npm's main"; fi
 
 # Acting: GitHub ends as set up.
 new_case act
@@ -207,8 +210,8 @@ if [ "$(q 'sorted(g["envs"]["production"]["vars"].items())')" = "[('CLOUDFLARE_A
     pass "production's variables are the deploy configuration's"; else fail "production's variables ($(q 'g["envs"]["production"]["vars"]'))"; fi
 if [ "$(q 'g.get("repo_vars")')" = "{'PUBLIC_HOST': 'pub.example'}" ]; then pass "the repository variable PUBLIC_HOST is the instance's, for the drift check"
 else fail "the repository variable PUBLIC_HOST ($(q 'g.get("repo_vars")'))"; fi
-if [ "$(q '[b["name"] for b in g["envs"]["npm"]["branches"]]')" = "['prod']" ]; then pass "npm deploys from prod in place of main"
-else fail "npm deploys from prod ($(q 'g["envs"]["npm"]'))"; fi
+if [ "$(q 'sorted(b["name"] for b in g["envs"]["npm"]["branches"])')" = "['main', 'prod']" ]; then pass "npm deploys from prod and main"
+else fail "npm deploys from prod and main ($(q 'g["envs"]["npm"]'))"; fi
 if grep -q "UNEXPECTED\|secret" "$C/calls"; then fail "no gh call but gh api, and no secret set ($(cat "$C/calls"))"; else pass "no gh call but gh api, and no secret set"; fi
 
 # Again: only the ruleset is written.
@@ -240,6 +243,16 @@ if run --i-know-what-i-am-doing --public-host other.example --cloudflare-account
     && [ "$(q 'g["envs"]["production"]["vars"]["PUBLIC_HOST"]')" = other.example ]; then
     pass "--public-host updates the environment's and the repository's PUBLIC_HOST"
 else fail "--public-host updates both PUBLIC_HOSTs ($(writes))"; fi
+
+# npm allowing a branch besides main and prod: it is removed, main kept.
+new_case npm-extra
+python3 -c 'import json, sys; p = sys.argv[1]; g = json.load(open(p)); g["envs"]["npm"]["branches"].append({"id": 12, "name": "release", "type": "branch"}); json.dump(g, open(p, "w"))' \
+    "$C/github.json"
+if run --i-know-what-i-am-doing && writes | grep -qF "DELETE repos/$R/environments/npm/deployment-branch-policies/12" \
+    && ! writes | grep -qF "DELETE repos/$R/environments/npm/deployment-branch-policies/11" \
+    && [ "$(q 'sorted(b["name"] for b in g["envs"]["npm"]["branches"])')" = "['main', 'prod']" ]; then
+    pass "npm's other branches are removed, main and prod kept"
+else fail "npm's other branches are removed ($(writes); $(q 'g["envs"]["npm"]'))"; fi
 
 # --commit in place of the instance's, and a commit not on main.
 new_case commit

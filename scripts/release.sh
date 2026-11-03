@@ -20,8 +20,8 @@
 #
 #    1  preflight. Always: gh signed in; X.Y.Z newer than every v* tag;
 #       commit signing works; the tools present; npm reachable (and signed
-#       in, for a first Pi publish); the npm environment limited to prod (a
-#       dry run only warns). Preparing: origin/prod older than X.Y.Z; a clean
+#       in, for a first Pi publish); the npm environment allowing prod and
+#       no branch but prod and main (a dry run only warns). Preparing: origin/prod older than X.Y.Z; a clean
 #       checkout on any branch, or on release/X.Y.Z ahead of origin/prod only
 #       by merges of origin/main and the release commit; the release's pull
 #       request not open (an open one refuses: merge it first). Cutting: on
@@ -119,7 +119,8 @@ MAX_POLLS="${CLAX_RELEASE_MAX_POLLS:-270}"
 ACT_FLAG="--i-know-what-i-am-doing"
 NPM="${CLAX_RELEASE_NPM:-npm}"
 # The GitHub environment publish-pi.yml's job runs in, which npm's trusted
-# publisher names and the repository limits to prod.
+# publisher names and the repository limits to prod and main (where
+# publish-sdk.yml runs).
 NPM_ENV=npm
 PNPM="${CLAX_RELEASE_PNPM:-pnpm}"
 # The branch releases come from, and the last step.

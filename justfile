@@ -331,6 +331,6 @@ env-teardown NAME *ARGS:
 release VERSION *ARGS:
     ./scripts/release.sh "$@"
 
-# Publish the SDK package, @empathic/clax-client-sdk, at VERSION, its own version (web/sdk/package.json's), from origin's prod once prod carries it, or from main while origin has no prod (scripts/release-sdk.sh); a dry run unless --i-know-what-i-am-doing
+# Publish the SDK package, @empathic/clax-client-sdk, at VERSION, its own version (web/sdk/package.json's), from origin's main (scripts/release-sdk.sh); a dry run unless --i-know-what-i-am-doing
 release-sdk VERSION *ARGS:
     ./scripts/release-sdk.sh "$@"

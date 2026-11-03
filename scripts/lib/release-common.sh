@@ -62,14 +62,19 @@ check_signing() {
     rm -rf "$scratch" "$scratch.err"
 }
 
+# The branches the npm environment may allow: prod, which publish-pi.yml is
+# dispatched on, and main, which publish-sdk.yml is.
+NPM_ENV_BRANCHES="main prod"
+
 # npm_environment_problem BRANCH WHAT: the npm environment, read-only: it
-# must exist and allow only BRANCH, the branch the publish workflows are
-# dispatched on, or a run dispatched on another ref could get npm's token.
-# Prints what is wrong with it, then WHAT (which workflows run in it) and
-# how to set it up, or nothing when it is right. Creating it is a
-# repository setting the owner makes; this only says how.
+# must exist, allow BRANCH, the branch the caller's publish workflow is
+# dispatched on, and allow no branch but those in NPM_ENV_BRANCHES, or a
+# run dispatched on another ref could get npm's token. Prints what is wrong
+# with it, then WHAT (which workflows run in it) and how to set it up, or
+# nothing when it is right. Creating it is a repository setting the owner
+# makes; this only says how.
 npm_environment_problem() {
-    local branch="$1" what="$2" err policy branches why=""
+    local branch="$1" what="$2" err policy branches b why=""
     err="$(mktemp)"
     if ! policy="$(gh api "repos/$GH_REPO/environments/$NPM_ENV" \
         --jq '.deployment_branch_policy | if . == null then "none" else "\(.protected_branches) \(.custom_branch_policies)" end' 2>"$err")"; then
@@ -78,16 +83,25 @@ npm_environment_problem() {
             *) why="cannot read the environment $NPM_ENV: $(tr '\n' ' ' < "$err")" ;;
         esac
     elif [ "$policy" != "false true" ]; then
-        why="the environment $NPM_ENV does not limit its deployment branches to $branch"
+        why="the environment $NPM_ENV does not limit its deployment branches to ${NPM_ENV_BRANCHES// / and }"
     elif ! branches="$(gh api "repos/$GH_REPO/environments/$NPM_ENV/deployment-branch-policies" \
         --jq '[.branch_policies[] | "\(.type // "branch"):\(.name)"] | join(",")' 2>"$err")"; then
         why="cannot read the environment $NPM_ENV's deployment branches: $(tr '\n' ' ' < "$err")"
-    elif [ "$branches" != "branch:$branch" ]; then
-        why="the environment $NPM_ENV allows ${branches:-no branch}, not $branch alone"
+    else
+        case ",$branches," in
+            *",branch:$branch,"*) ;;
+            *) why="the environment $NPM_ENV allows ${branches:-no branch}, not $branch" ;;
+        esac
+        for b in ${branches//,/ }; do
+            case " $NPM_ENV_BRANCHES " in
+                *" ${b#branch:} "*) [ "${b%%:*}" = branch ] && continue ;;
+            esac
+            why="${why:+$why; }the environment $NPM_ENV allows $b, which is not one of ${NPM_ENV_BRANCHES// / and }"
+        done
     fi
     rm -f "$err"
     [ -n "$why" ] || return 0
-    echo "$why. $what; in GitHub, the repository's Settings, Environments, New environment (or $NPM_ENV), name $NPM_ENV; Deployment branches and tags: Selected branches and tags; Add deployment branch or tag rule: branch $branch"
+    echo "$why. $what; in GitHub, the repository's Settings, Environments, New environment (or $NPM_ENV), name $NPM_ENV; Deployment branches and tags: Selected branches and tags; Add deployment branch or tag rule: branch $branch (scripts/setup-prod-github.sh allows main and prod)"
 }
 
 # --- npm ----------------------------------------------------------------------------

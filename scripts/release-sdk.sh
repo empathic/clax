@@ -1,42 +1,38 @@
 #!/usr/bin/env bash
-# Publishes the SDK package, @empathic/clax-client-sdk, to npm from the
-# release branch: the procedure docs/usage.md ("Releasing the SDK package")
-# describes. The package has a version of its own, the version in
-# web/sdk/package.json, not Clax's: a pull request to main raises it,
-# the next Clax release (scripts/release.sh) brings it to prod, and this
-# publishes it from there, so a published SDK calls only the routes that
-# deployed instances have. The release branch is prod once origin has a
-# prod branch, and main until then (docs/prod.md's one-time GitHub setup
-# creates prod), when this publishes a version main carries: each run
-# decides once, from origin's branches, and a run from main says so.
+# Publishes the SDK package, @empathic/clax-client-sdk, to npm from main:
+# the procedure docs/usage.md ("Releasing the SDK package") describes. The
+# package has a version of its own, the version in web/sdk/package.json,
+# not Clax's: a pull request to main raises it, and this publishes it from
+# main, whether or not origin has a prod branch. A published SDK may
+# therefore call report-queue routes that deployed instances (prod's tip)
+# do not have yet.
 #
 #   scripts/release-sdk.sh X.Y.Z                            a dry run
 #   scripts/release-sdk.sh X.Y.Z --i-know-what-i-am-doing   the publish
 #
 # The dry run, the default, runs the read-only checks and prints every step
 # with whether it is done already; it changes nothing (it fetches origin's
-# release branch, which moves only the remote-tracking ref). With
+# main, which moves only the remote-tracking ref). With
 # --i-know-what-i-am-doing it acts, signing the tag with the checkout's
 # signing key. It never changes the checkout's branch or work tree, so the
 # checkout may be on any branch, in any state.
 #
 # The commit it publishes is the one the tag sdk-vX.Y.Z names, here or on
-# origin, once the tag exists, and the release branch's tip on origin until
-# then.
+# origin, once the tag exists, and origin/main's tip until then.
 #
 #   1  preflight: gh signed in; git, gh and npm on PATH; X.Y.Z is a version
 #      (X.Y.Z), the SDK version that commit carries, and newer than every
 #      version npm has of the package (none counts as older); the tag, if
-#      there is one, the same here and on origin and on the release branch;
-#      CI's bazel job passed on the commit; commit signing works; the npm
-#      environment limited to the release branch (a dry run only warns);
+#      there is one, the same here and on origin and on origin/main; CI's
+#      bazel job passed on the commit; commit signing works; the npm
+#      environment allows main (a dry run only warns);
 #      while the package is not on npm, npm signed in and pnpm on PATH. A
 #      failure here changes nothing.
 #   2  a signed tag sdk-vX.Y.Z, "Clax SDK X.Y.Z", on the commit
 #   3  git push origin refs/tags/sdk-vX.Y.Z (the tag alone; no workflow
 #      runs on it: release.yml and fleet-image.yml take v* tags)
-#   4  gh workflow run publish-sdk.yml --ref <the release branch> -f
-#      dry_run=false -f sha=<the commit>, and wait for it. While the
+#   4  gh workflow run publish-sdk.yml --ref main -f dry_run=false -f
+#      sha=<the commit>, and wait for it. While the
 #      package is not on npm (trusted publishing needs a package that
 #      exists), its first version is published from here instead: in a
 #      temporary worktree of the commit (target/release-sdk/X.Y.Z/publish),
@@ -76,10 +72,10 @@ ACT_FLAG="--i-know-what-i-am-doing"
 NPM="${CLAX_RELEASE_NPM:-npm}"
 PNPM="${CLAX_RELEASE_PNPM:-pnpm}"
 # The GitHub environment publish-sdk.yml's job runs in, which npm's trusted
-# publisher names and the repository limits to the release branch.
+# publisher names and the repository limits to main and prod.
 NPM_ENV=npm
-# The release branch, which preflight sets once (release_branch).
-BRANCH=""
+# The branch the package is published from.
+BRANCH=main
 WORKFLOW=publish-sdk.yml
 # How publish-sdk.yml titles a run that publishes, before its commit.
 RUN_TITLE="Publish SDK package"
@@ -130,33 +126,18 @@ sdk_field_at() {
 sdk_version_at() { sdk_field_at "$1" version; }
 is_signed_tag() { g cat-file tag "$TAG" 2>/dev/null | grep -E -- '^-----BEGIN [A-Z ]*SIGNATURE-----$' >/dev/null; }
 
-# The release branch: prod, where Clax releases go, once origin has a prod
-# branch; main until then. Prints it, or fails when origin cannot be read.
-release_branch() {
-    local rc=0
-    g ls-remote --exit-code --heads origin refs/heads/prod >/dev/null || rc=$?
-    case "$rc" in
-        0) echo prod ;;
-        2) echo main ;;
-        *) return 1 ;;
-    esac
-}
-
 # PKG is the package's npm name, from the commit published.
 BRANCH_TIP="" LOCAL_TAG="" REMOTE_TAG="" COMMIT="" PKG="" ON_NPM=""
 # Reads the state the steps are judged by; fails, saying why in
 # REFRESH_ERR, when origin cannot be read.
 refresh() {
     local out
-    BRANCH_TIP=""
-    if [ -n "$BRANCH" ]; then
-        BRANCH_TIP="$(g rev-parse -q --verify "refs/remotes/origin/$BRANCH^{commit}" 2>/dev/null || true)"
-    fi
+    BRANCH_TIP="$(g rev-parse -q --verify "refs/remotes/origin/$BRANCH^{commit}" 2>/dev/null || true)"
     LOCAL_TAG="$(g rev-parse -q --verify "refs/tags/$TAG^{commit}" 2>/dev/null || true)"
     out="$(g ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")" \
         || { REFRESH_ERR="cannot read origin (git ls-remote origin)"; return 1; }
     REMOTE_TAG="$(awk -v t="refs/tags/$TAG" '$2 == t "^{}" { p = $1 } $2 == t { q = $1 } END { print (p != "" ? p : q) }' <<< "$out")"
-    # The tag's commit once there is a tag; the release branch's tip until then.
+    # The tag's commit once there is a tag; the branch's tip until then.
     COMMIT="${LOCAL_TAG:-${REMOTE_TAG:-$BRANCH_TIP}}"
     PKG=""
     if [ -n "$COMMIT" ]; then PKG="$(sdk_field_at "$COMMIT" name)"; fi
@@ -171,9 +152,9 @@ check_tools() {
     done
 }
 
-# The version: the commit's, and the tag's commit on the release branch.
+# The version: the commit's, and the tag's commit on the branch.
 check_version() {
-    local at what how
+    local at what
     if ! semver_ok "$V"; then
         problem "$V is not a version (X.Y.Z)"
         return 0
@@ -203,9 +184,7 @@ check_version() {
             return 0
         fi
     else what="the tag $TAG's commit ($COMMIT)"; fi
-    how="raise it on main by a pull request"
-    if [ "$BRANCH" = prod ]; then how="$how; prod gets it with the next Clax release (just release)"; fi
-    problem "$what carries SDK version ${at:-none}, not $V (the version in $SDK_MANIFEST): $how"
+    problem "$what carries SDK version ${at:-none}, not $V (the version in $SDK_MANIFEST): raise it on main by a pull request"
 }
 
 # The package on npm: X.Y.Z newer than every version npm has, but for this
@@ -272,7 +251,7 @@ check_ci() {
 # refuses, unless npm has the version already.
 check_npm_environment() {
     local why
-    command -v gh >/dev/null 2>&1 && [ -n "${GH_REPO:-}" ] && [ -n "$BRANCH" ] && semver_ok "$V" || return 0
+    command -v gh >/dev/null 2>&1 && [ -n "${GH_REPO:-}" ] && semver_ok "$V" || return 0
     if [ "$ON_NPM" = yes ] && has_version "$PKG" "$V"; then return 0; fi
     why="$(npm_environment_problem "$BRANCH" "$WORKFLOW runs in it")"
     [ -n "$why" ] || return 0
@@ -283,16 +262,11 @@ preflight() {
     check_tools
     command -v git >/dev/null 2>&1 || return 0
     resolve_repo
-    if ! BRANCH="$(release_branch)"; then
-        problem "cannot read origin's branches (git ls-remote origin)"
-    elif [ "$BRANCH" = main ]; then
-        NOTES+=("origin has no prod branch yet: publishing from main")
-    fi
-    if [ -n "$BRANCH" ] && ! g fetch --quiet --no-tags origin "$BRANCH"; then
+    if ! g fetch --quiet --no-tags origin "$BRANCH"; then
         problem "cannot fetch $BRANCH from origin: the SDK package is published from $BRANCH"
     fi
     refresh || problem "$REFRESH_ERR"
-    if [ -n "$BRANCH" ] && [ -z "$BRANCH_TIP" ]; then problem "origin has no $BRANCH branch"; fi
+    [ -n "$BRANCH_TIP" ] || problem "origin has no $BRANCH branch"
     check_version
     if command -v gh >/dev/null 2>&1 && ! gh auth status >/dev/null 2>&1; then
         problem "gh is not signed in (gh auth login)"
@@ -315,7 +289,7 @@ command_of() {
     case "$1" in
         2) echo "git tag -s $TAG -m \"Clax SDK $V\" $c" ;;
         3) echo "git push origin refs/tags/$TAG" ;;
-        4) echo "gh workflow run $WORKFLOW --ref ${BRANCH:-<the release branch>} -f dry_run=false -f sha=$c, wait (the first version: npm publish from here)" ;;
+        4) echo "gh workflow run $WORKFLOW --ref $BRANCH -f dry_run=false -f sha=$c, wait (the first version: npm publish from here)" ;;
     esac
 }
 
@@ -401,7 +375,7 @@ trusted_publisher_setup() {
 overview() {
     local n
     say ""
-    say "The steps ($PKG $V from ${COMMIT:-?}; origin/${BRANCH:-?} at ${BRANCH_TIP:-?}):"
+    say "The steps ($PKG $V from ${COMMIT:-?}; origin/$BRANCH at ${BRANCH_TIP:-?}):"
     NEXT=""
     for n in $(seq 2 "$LAST"); do
         if [ -z "$NEXT" ] && "done_$n" 2>/dev/null; then

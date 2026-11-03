@@ -160,14 +160,15 @@ case "$1 $2" in
             *) echo "no assets match the file pattern" >&2; exit 1 ;;
         esac ;;
     "api repos/"*)
-        # The npm environment: limited to prod unless $FAKE_STATE/no-env
-        # (none), env-open (any branch) or env-branch (another branch).
+        # The npm environment: limited to main and prod, as
+        # scripts/setup-prod-github.sh sets it, unless $FAKE_STATE/no-env
+        # (none), env-open (any branch) or env-branch (main alone).
         case "$2" in
             */environments/npm)
                 if [ -e "$S/no-env" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
                 if [ -e "$S/env-open" ]; then echo none; else echo "false true"; fi ;;
             */environments/npm/deployment-branch-policies)
-                if [ -e "$S/env-branch" ]; then echo "branch:main"; else echo "branch:prod"; fi ;;
+                if [ -e "$S/env-branch" ]; then echo "branch:main"; else echo "branch:main,branch:prod"; fi ;;
             */git/commits/*) origin rev-parse "${2##*/}^{tree}" ;;
             *) echo "fake gh: unexpected: $*" >&2; exit 2 ;;
         esac ;;
@@ -992,10 +993,10 @@ case_15b() {
     refuse "a release with no npm environment" "FAIL: the repository has no environment npm"
     rm "$FAKE_STATE/no-env"
     : > "$FAKE_STATE/env-open"
-    refuse "an npm environment open to every branch" "the environment npm does not limit its deployment branches to prod"
+    refuse "an npm environment open to every branch" "the environment npm does not limit its deployment branches to main and prod"
     rm "$FAKE_STATE/env-open"
     : > "$FAKE_STATE/env-branch"
-    refuse "an npm environment for main, as before releases came from prod" "the environment npm allows branch:main, not prod alone"
+    refuse "an npm environment for main, as before releases came from prod" "the environment npm allows branch:main, not prod"
     rm "$FAKE_STATE/env-branch"
     # The version on npm already: the environment no longer matters.
     : > "$FAKE_STATE/no-env"
