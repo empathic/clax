@@ -218,6 +218,15 @@ export interface OverlayOptions {
    * minutes per user rather than on every page load. Without it, every
    * page load asks `auth` for a token. */
   user?: string;
+  /** Your own page of the reporter's reports: called, in place of opening
+   * "Your reports", by the Filed notice's "View in …" (with the report just
+   * filed) and the corner launcher's "Your reports" (with none). The notice
+   * closes and focus leaves its button before the call. `showReports()`
+   * still opens "Your reports". */
+  onShowReports?: (report?: Report) => void;
+  /** What the Filed notice calls the place replies show (default
+   * `"Your reports"`): "Replies and fixes show in <label>." and "View in <label>". */
+  reportsLabel?: string;
 }
 
 /** What a running overlay tells its host. */
@@ -229,6 +238,7 @@ export interface OverlayEvents {
 /** A running overlay. */
 export interface OverlayHandle {
   report(opts?: { mode?: Mode }): void;
+  /** Opens "Your reports", the overlay's own panel, with or without `onShowReports`. */
   showReports(): void;
   on(event: "badge", fn: (n: number) => void): () => void;
   on(event: "filed", fn: (r: Report) => void): () => void;

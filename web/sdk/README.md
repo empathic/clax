@@ -69,6 +69,26 @@ const handle = overlay({
 handle.close();
 ```
 
+Its other options (`launcher`, `canFile`, `context`, `metadata`,
+`diagnostics`, `externalId`, `nonce`) are in the guide's
+["The overlay's options"](https://github.com/empathic/clax/blob/main/docs/feedback.md#4-the-overlays-options).
+If your app has a page of its own listing the user's reports, the
+overlay can send them there instead of its "Your reports" panel:
+
+```ts
+overlay({
+  // …the options above, and:
+  launcher: false,
+  // What the Filed notice calls your page: "Replies and fixes show in
+  // Feedback." and its button, "View in Feedback". Default "Your reports".
+  reportsLabel: "Feedback",
+  // Called by that button with the report just filed, and by the corner's
+  // "Your reports" (with `launcher: "corner"`) with none. Default: none,
+  // and both open the panel. `handle.showReports()` still opens the panel.
+  onShowReports: report => router.push(report ? `/feedback#${report.id}` : "/feedback"),
+});
+```
+
 The same entry exports `forgetReporter({ instance, queue, user })`, which
 deletes the key and token kept for a reporter (call it on sign-out),
 `diagnostics.install()`, which starts recording the page's recent errors

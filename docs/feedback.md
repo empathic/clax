@@ -561,12 +561,15 @@ drawn in fallback fonts.
 | `externalId` | The record the report is about, in your terms (`invoice:4821`). Default: the page's `<meta name="clax-artifact" content="…">`; with neither, the instance files the report on the page's origin and path (its query and fragment left out), so every report on one path is about one record. |
 | `nonce` | Your policy's style nonce (section 3). |
 | `user` | A stable ID of the signed-in user: the reporter's key and token are kept across page loads for it (section 2). |
+| `onShowReports(report?)` | Your own page of the user's reports, called where the overlay would open "Your reports": the Filed notice's "View in …" (with the report just filed) and the corner's "Your reports" (with none). Default: none, and both open "Your reports". |
+| `reportsLabel` | What the Filed notice calls that place: "Replies and fixes show in *label*." and "View in *label*". Default `"Your reports"`. |
 
 The handle:
 
 - `report({mode?})` opens the capture bar (`"element"` by default, or
   `"area"`, `"screen"`);
-- `showReports()` opens "Your reports";
+- `showReports()` opens "Your reports", the overlay's own panel, with or
+  without `onShowReports`;
 - `on("badge", n => …)` hears how many reports wait for the user (a fix
   to check, or a reply), at once and on every change; `on("filed", r =>
   …)` hears each filed report; each returns its unsubscribe function;
@@ -598,6 +601,30 @@ addEventListener("keydown", e => {
   clax.report();
 });
 ```
+
+If your app has its own page of the user's reports, send them there
+instead of "Your reports": give `onShowReports`, and name the page with
+`reportsLabel`.
+
+```js
+const clax = Clax.overlay({
+  ...,
+  launcher: false,
+  reportsLabel: "Feedback",
+  onShowReports: report => router.push(report ? `/feedback#${report.id}` : "/feedback"),
+});
+```
+
+The Filed notice then reads "Replies and fixes show in Feedback.", and
+its button, "View in Feedback", calls `onShowReports` with the report
+just filed; with `launcher: "corner"`, the corner's "Your reports" calls
+it with no report. The notice closes and focus leaves its button, for
+Report in the corner or else the page's body, before the call, so your
+page can take focus. `showReports()` still opens the overlay's panel,
+and a "Still broken" note started there goes back to it. Your page reads
+and answers the reports with a `ReporterClient` of the same `instance`,
+`queue`, `user` and `auth`: `myReports()`, `comment()`, `seen()` (which
+takes a read reply off the badge), `verify()` and `reopen()`.
 
 ## 5. Context and flags
 
@@ -683,7 +710,8 @@ reporter sees it before sending.
 4. **What's sent** shows exactly what goes: the page and the anchor, the
    context JSON, your metadata, the error lines when ticked, and whether
    the screenshot goes.
-5. **Send**, then "Filed" with "View in Your reports".
+5. **Send**, then "Filed" with "View in Your reports" (or in your own page:
+   `onShowReports`, section 4).
 
 **Your reports** lists what the user filed, with their state ("Open",
 "Being worked on", "Fix ready for you to check", "Fixed: you confirmed

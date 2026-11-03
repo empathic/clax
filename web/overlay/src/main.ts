@@ -46,7 +46,8 @@ export interface OverlayHandle {
    * `"screen"` captures the visible page at once). Does nothing when
    * `canFile` is false. */
   report(opts?: { mode?: Mode }): void;
-  /** Opens "Your reports". */
+  /** Opens "Your reports", the overlay's own panel, with or without
+   * `onShowReports`. */
   showReports(): void;
   /** Listens for `event`; the result stops listening. */
   on(event: "badge", fn: (n: number) => void): () => void;
@@ -113,6 +114,9 @@ export function overlay(opts: OverlayOptions, doc: Document = document): Overlay
   if (typeof opts.auth !== "function") throw new TypeError("Clax.overlay: auth must be a function");
   if (opts.launcher !== undefined && opts.launcher !== "corner" && opts.launcher !== false) throw new TypeError('Clax.overlay: launcher must be "corner" or false');
   if (opts.nonce !== undefined && (typeof opts.nonce !== "string" || !opts.nonce)) throw new TypeError("Clax.overlay: nonce must be a non-empty string");
+  const onShowReports = opts.onShowReports;
+  if (onShowReports !== undefined && typeof onShowReports !== "function") throw new TypeError("Clax.overlay: onShowReports must be a function");
+  if (opts.reportsLabel !== undefined && (typeof opts.reportsLabel !== "string" || !opts.reportsLabel.trim())) throw new TypeError("Clax.overlay: reportsLabel must be a non-empty string");
   const win = doc.defaultView ?? window;
   if (opts.user !== undefined && (typeof opts.user !== "string" || !opts.user)) throw new TypeError("Clax.overlay: user must be a non-empty string");
   const client = new ReporterClient({ instance, queue: opts.queue, auth: opts.auth, user: opts.user });
@@ -148,6 +152,10 @@ export function overlay(opts: OverlayOptions, doc: Document = document): Overlay
       canFile: opts.canFile ?? true,
       onBadge: (n: number) => { lastBadge = n; emit("badge", n); },
       onFiled: (r: Report) => emit("filed", r),
+      onShowReports: onShowReports && ((r?: Report) => {
+        try { onShowReports(r); } catch (e) { console.error("Clax.overlay: onShowReports threw", e); }
+      }),
+      reportsLabel: opts.reportsLabel,
     },
   }) as unknown as Mounted;
   let open = true;
