@@ -2648,7 +2648,11 @@ async fn web_is_configured_once_the_account_and_token_are_set() {
     assert_eq!(v["configured"], true, "{v}");
     let (_, me) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
     assert_eq!(
-        (&me["web"]["on"], &me["web"]["offered"], &me["web"]["why_off"]),
+        (
+            &me["web"]["on"],
+            &me["web"]["offered"],
+            &me["web"]["why_off"]
+        ),
         (&json!(true), &json!(true), &Value::Null)
     );
     let (s, v) = call(
@@ -2708,7 +2712,10 @@ async fn a_member_sees_the_web_prices_of_the_active_provider() {
     assert_eq!(s, 200, "{v}");
     let (s, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
     assert_eq!(s, 200, "{v}");
-    assert_eq!(v["web"]["prices"], json!({"search_milli": 5, "fetch_milli": 9}));
+    assert_eq!(
+        v["web"]["prices"],
+        json!({"search_milli": 5, "fetch_milli": 9})
+    );
     let (s, v) = call(
         ts,
         &owner,
@@ -2719,7 +2726,10 @@ async fn a_member_sees_the_web_prices_of_the_active_provider() {
     .await;
     assert_eq!(s, 200, "{v}");
     let (_, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
-    assert_eq!(v["web"]["prices"], json!({"search_milli": 70, "fetch_milli": 9}));
+    assert_eq!(
+        v["web"]["prices"],
+        json!({"search_milli": 70, "fetch_milli": 9})
+    );
 }
 
 #[tokio::test]

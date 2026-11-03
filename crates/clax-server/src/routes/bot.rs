@@ -167,7 +167,10 @@ fn web_view(st: &Store, bot: &Bot, person: &str) -> clax_core::Result<Value> {
         Ok(json!(st.one_request_milli(&line, source)?))
     };
     let provider = st.bot_setting(Setting::WebSearchProvider)?;
-    let search = price(format!("web.search.{}", provider.as_str().unwrap_or("ceramic")))?;
+    let search = price(format!(
+        "web.search.{}",
+        provider.as_str().unwrap_or("ceramic")
+    ))?;
     Ok(json!({
         "on": st.web_choice(person)?,
         "offered": admin_on && configured,
