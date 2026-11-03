@@ -565,6 +565,9 @@ pub async fn web(
     d.refuse_agents()?;
     let (caller, _) = admin(&s, &d).await?;
     let bot = s.bot.clone();
+    if let Some(check) = &bot.admin_web_check {
+        check.before_view().await;
+    }
     let v = s
         .store_call(move |st| {
             let v = web_view(st, &bot)?;

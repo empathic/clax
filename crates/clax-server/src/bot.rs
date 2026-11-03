@@ -1208,6 +1208,7 @@ pub fn driver_with_web(
         catalog_flight: bot.catalog_flight.clone(),
         web_configured: bot.web_configured,
         web_check: bot.web_check.clone(),
+        admin_web_check: bot.admin_web_check.clone(),
     });
     driver
 }

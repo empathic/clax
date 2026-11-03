@@ -342,6 +342,17 @@ pub trait WebSource: MaybeSendSync {
         true
     }
 
+    /// Why the source cannot be used here, once its host knows (the
+    /// host's [`HostCheck`]: on the Worker, an `AI` binding that cannot
+    /// run under `wrangler dev --local`). A run that declared web use then
+    /// has its calls refused `web_unavailable`, not retryable, uncharged
+    /// and uncounted, where a source that is not configured
+    /// ([`WebSource::configured`]) is refused `web_disabled`. None by
+    /// default.
+    fn unusable(&self) -> Option<String> {
+        None
+    }
+
     /// Starts finding out, in the background, whether the source can run
     /// where the host runs, when that is due; it never waits. What it
     /// finds goes to the host's [`HostCheck`]. Nothing by default.
@@ -489,6 +500,10 @@ impl WebSource for WithOwnHosts {
 
     fn configured(&self) -> bool {
         self.source.configured()
+    }
+
+    fn unusable(&self) -> Option<String> {
+        self.source.unusable()
     }
 
     fn start_check(&self) {

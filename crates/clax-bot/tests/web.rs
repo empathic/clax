@@ -564,6 +564,93 @@ async fn a_source_that_lost_its_credentials_refuses_web_disabled() {
     assert!(web_rows(&env).is_empty());
 }
 
+/// A source whose host found it cannot run here (the Worker's AI binding
+/// under `wrangler dev --local`) while `why` holds a reason: it would
+/// answer as the fake does, and says why it cannot.
+struct CannotRunHere {
+    fake: std::sync::Arc<clax_bot::web::FakeWebSource>,
+    why: std::sync::Mutex<Option<String>>,
+}
+
+#[async_trait::async_trait]
+impl clax_bot::web::WebSource for CannotRunHere {
+    async fn search(
+        &self,
+        q: &clax_bot::web::SearchQuery,
+        cancel: &clax_bot_sandbox::CancelToken,
+    ) -> Result<clax_bot::web::SearchAnswer, clax_bot::web::WebError> {
+        self.fake.search(q, cancel).await
+    }
+
+    async fn fetch(
+        &self,
+        url: &clax_bot::web::PublicUrl,
+        format: clax_bot::web::Format,
+        limits: &clax_bot::web::FetchLimits,
+        hop: &(
+             dyn for<'u> Fn(&'u clax_bot::web::PublicUrl) -> Result<(), clax_bot::web::WebError>
+                 + Sync
+         ),
+        cancel: &clax_bot_sandbox::CancelToken,
+    ) -> Result<clax_bot::web::FetchedPage, clax_bot::web::WebError> {
+        self.fake.fetch(url, format, limits, hop, cancel).await
+    }
+
+    fn unusable(&self) -> Option<String> {
+        self.why.lock().unwrap().clone()
+    }
+}
+
+#[tokio::test]
+async fn a_source_found_unusable_mid_run_refuses_web_unavailable_uncounted() {
+    let env = Env::new().await;
+    set(&env, &[(Setting::WebMaxSearchesPerRun, json!(1))]);
+    let a = "https://example.com/a";
+    sender_says(&env, &format!("Read {a}"));
+    env.web().search_answers("a", hits(&[]));
+    env.web().page(a, page("hello", &[]));
+    env.api.push(env.script_turn(
+        "tu_1",
+        "Web",
+        &format!(
+            "const out = [];
+             for (const f of [() => clax.web.search('a'), () => clax.web.fetch({a:?})]) {{
+               try {{ await f(); out.push('ok'); }} catch (e) {{ out.push([e.code, e.retryable]); }}
+             }}
+             return out;"
+        ),
+    ));
+    env.api.push(env.script_turn(
+        "tu_2",
+        "Search",
+        "try { await clax.web.search('a'); return 'searched'; } catch (e) { return e.code; }",
+    ));
+    env.api.push(finish_turn("done"));
+    let run = env.run_with_web("search,fetch");
+    let source = std::sync::Arc::new(CannotRunHere {
+        fake: env.web(),
+        why: std::sync::Mutex::new(Some("Workers AI cannot run here.".into())),
+    });
+    let mut deps = env.deps();
+    deps.web = Some(source.clone());
+    let d = DriverId::mint();
+    assert_eq!(env.tick(&deps, &run, &d).await.kind, Some(StepKind::Turn));
+    assert_eq!(env.tick(&deps, &run, &d).await.kind, Some(StepKind::Script));
+    // Configured, but the host's check says the source cannot run here:
+    // `web_unavailable`, not retryable, nothing sent, charged or counted.
+    assert_eq!(
+        script_result(&env, &run, 0)["value"],
+        json!([["web_unavailable", false], ["web_unavailable", false]])
+    );
+    assert!(env.web().calls().is_empty());
+    assert!(web_rows(&env).is_empty());
+    // Uncounted: with a cap of one search, the next one, made once the
+    // source can be used, is answered.
+    *source.why.lock().unwrap() = None;
+    env.drive(&deps, &run, &d).await;
+    assert_eq!(script_result(&env, &run, 1)["value"], "searched");
+}
+
 #[tokio::test]
 async fn a_host_without_a_source_refuses_web_disabled() {
     let env = Env::new().await;

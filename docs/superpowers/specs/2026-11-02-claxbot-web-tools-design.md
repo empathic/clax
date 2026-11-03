@@ -450,7 +450,7 @@ only the message.
 
 | Code | When | Charged |
 |---|---|---|
-| `web_disabled` | the admin or the person turned the operation off mid-run, or it is not declared | no |
+| `web_disabled` | the admin or the person turned the operation off mid-run, the source lost its credentials, or it is not declared | no |
 | `web_cap` | the run's search or fetch cap is reached | no |
 | `credits_exhausted` | the person cannot pay for the call | no |
 | `bad_args` | arguments fail their check (the existing `CODE_BAD_ARGS`) | no |
@@ -460,7 +460,7 @@ only the message.
 | `web_too_large` | the body passed the byte limit (5 MB) | fetch: when it went out |
 | `web_unsupported_content_type` | images, audio, video, binary in raw mode | fetch: when it went out |
 | `web_blocked` | a bot challenge answered the fetch | fetch: when it went out |
-| `web_unavailable` | the source failed (Cloudflare 5xx, rate limit, payment required at the gateway, more than 5 redirects) | search no; fetch: when it went out |
+| `web_unavailable` | the source failed (Cloudflare 5xx, rate limit, payment required at the gateway, more than 5 redirects), or its host found it cannot run here (§10: refused before the source, not counted) | search no; fetch: when it went out |
 
 A fetch *went out* (a source sets `WebError::went_out`) by these rules:
 
@@ -629,9 +629,11 @@ choice", "off on this instance", "not configured").
     with search or fetch on, asks for a check; the Worker starts it after
     the request or alarm. With both off, nothing is checked, except for
     the admin's view.
-  - `GET /api/admin/web` starts one whether web use is on or not and
-    waits for it at most 2 s, answering `checking: true` if it has not
-    finished.
+  - `GET /api/admin/web`, once it knows the caller is an admin
+    (`Bot::admin_web_check`, so a request about to be refused starts no
+    check and waits for none), starts one whether web use is on or not
+    and waits for it at most 2 s, answering `checking: true` if it has
+    not finished.
   - One check runs at a time, per Durable Object start (the state lives
     with the instance, so an evicted or woken object checks again). One
     that answers, either way, is kept; one that cannot tell (a timeout,
@@ -642,8 +644,10 @@ choice", "off on this instance", "not configured").
     and which keeps the first reason) holds it: web use reads not
     configured from then on, and the admin's view says why
     (`unavailable`). A call that still comes from a
-    run already going is refused `web_unavailable`, uncharged, whatever it
-    fetches.
+    run already going is refused `web_unavailable` (not retryable,
+    neither charged nor counted), whatever it fetches: the run's check 3
+    (`WebSource::unusable`) tells a source that cannot run here from web
+    use turned off or never configured, which is `web_disabled`.
   - A run that started before the check answered declares `clax.web`.
     Until the check answers, its searches, and its fetches that need a
     conversion (HTML, PDF, Office), answer `web_unavailable`, uncharged

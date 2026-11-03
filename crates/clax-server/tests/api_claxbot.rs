@@ -2797,6 +2797,60 @@ async fn me_put_needs_a_field() {
     assert_eq!(v["web"]["on"], true, "a refused request changes nothing");
 }
 
+/// Counts the admin web view's checks of the host's web source.
+#[derive(Default)]
+struct CountedCheck(std::sync::atomic::AtomicUsize);
+
+impl clax_http::bot::AdminWebCheck for CountedCheck {
+    fn before_view(&self) -> futures::future::BoxFuture<'static, ()> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async {})
+    }
+}
+
+#[tokio::test]
+async fn only_an_admins_web_view_checks_the_web_source() {
+    let check = std::sync::Arc::new(CountedCheck::default());
+    let hook = check.clone();
+    let ts = TestServer::spawn_with(move |s| {
+        s.bot = std::sync::Arc::new(clax_http::bot::Bot {
+            web_configured: true,
+            admin_web_check: Some(hook),
+            ..Default::default()
+        });
+    })
+    .await;
+    let checks = || check.0.load(std::sync::atomic::Ordering::SeqCst);
+    // A request refused before the view starts no check and waits for none.
+    for who in [Who::Anonymous, Who::Agent] {
+        let (s, v) = call(&ts, &who, Method::GET, "/api/admin/web", Value::Null).await;
+        assert!(s == 401 || s == 403, "{who:?}: {s} {v}");
+        assert_eq!(checks(), 0, "{who:?}");
+    }
+    // Nor does any other admin web route.
+    let (s, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::PUT,
+        "/api/admin/web",
+        json!({"search": {"enabled": true}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(checks(), 0);
+    // The admin's view does, once.
+    let (s, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::GET,
+        "/api/admin/web",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(checks(), 1);
+}
+
 #[tokio::test]
 async fn the_admin_web_view_says_why_web_is_unavailable() {
     // A host whose configured public origin or site domain names no host

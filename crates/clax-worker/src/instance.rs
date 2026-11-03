@@ -274,7 +274,7 @@ struct Instance {
     /// ClaxBot's driver (`crate::bot`).
     bot: crate::bot::WorkerBot,
     /// ClaxBot's web source, when the Worker has one
-    /// ([`InstanceDo::check_web`], [`Instance::start_wanted_web_check`]).
+    /// ([`AdminWebView`], [`Instance::start_wanted_web_check`]).
     web: Option<Arc<dyn clax_bot::WebSource>>,
     /// ClaxBot's scripted web source in the test mode (`CLAX_TEST_ROUTES`
     /// and `CLAX_TEST_WEB` both `1`), which `POST /_worker/web-fixtures`
@@ -312,13 +312,29 @@ pub struct InstanceDo {
 }
 
 /// How long `GET /api/admin/web` waits for the web source's check
-/// ([`InstanceDo::check_web`]) before it answers "checking".
+/// ([`AdminWebView`]) before it answers "checking".
 const ADMIN_WEB_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Whether a request waits for the web source's check: only the admin's
-/// view of the web settings, whose answer is the point of the request.
-fn waits_for_web_check(method: &axum::http::Method, path: &str) -> bool {
-    method == axum::http::Method::GET && path == "/api/admin/web"
+/// The admin's view of the web settings checks the Worker's web source
+/// (`clax_http::bot::AdminWebCheck`, run by `GET /api/admin/web` once the
+/// caller is known to be an admin): it starts the source's check if one
+/// is due, whether web use is on or not, so the admin learns before
+/// turning it on, and waits for it at most [`ADMIN_WEB_WAIT`]; the view
+/// answers `checking` if it has not finished. No other request waits: a
+/// decision on web use asks for a check, which starts after the request
+/// ([`Instance::start_wanted_web_check`]). The source is held in a
+/// `SendWrapper`, as the Worker's other JavaScript-backed values are: a
+/// Durable Object runs on one thread.
+struct AdminWebView(worker::send::SendWrapper<Arc<dyn clax_bot::WebSource>>);
+
+impl clax_http::bot::AdminWebCheck for AdminWebView {
+    fn before_view(&self) -> futures_util::future::BoxFuture<'static, ()> {
+        let web = self.0.0.clone();
+        Box::pin(worker::send::SendFuture::new(async move {
+            web.start_check();
+            web.wait_check(ADMIN_WEB_WAIT).await;
+        }))
+    }
 }
 
 fn var(env: &Env, name: &str) -> String {
@@ -621,13 +637,15 @@ fn clax_app(env: &Env) -> Result<clax_core::config::ClaxApp> {
 /// binding when the Worker has one), which makes the host's web use
 /// configured until the host knows its source cannot be used
 /// (`clax_http::bot::Bot::web_check`); the source is returned too, for
-/// [`InstanceDo::check_web`] and [`Instance::start_wanted_web_check`].
-/// When `SITE_DOMAIN` or `PUBLIC_ORIGIN` is set and names no host there
-/// is no source, and `web_check` is unusable from the start with the
-/// reason (`crate::bot::web_or_reason`): web is off and the admin Web view
-/// says why. This is what happens where the instance otherwise starts
-/// (not hosted); a hosted Worker with such a value is refused before
-/// this, by `hosted` and the `fetch` handler (500).
+/// [`Instance::start_wanted_web_check`]; it is the admin web view's check
+/// ([`AdminWebView`]) too.
+/// On a Worker that is not hosted (`HOSTED` is not `1`), `SITE_DOMAIN` is
+/// ignored ([`site_hosts`] is none: such a Worker serves no sites), and a
+/// set `PUBLIC_ORIGIN` that names no host leaves no source, with
+/// `web_check` unusable from the start for the reason
+/// (`crate::bot::web_or_reason`): web is off and the admin Web view says
+/// why. A hosted Worker with an unusable `SITE_DOMAIN` or `PUBLIC_ORIGIN`
+/// never gets here: `hosted` and the `fetch` handler refuse it (500).
 fn worker_bot(
     env: &Env,
     state: &State,
@@ -706,6 +724,10 @@ fn worker_bot(
         catalog_flight,
         web_configured: web.is_some(),
         web_check: check,
+        admin_web_check: web.clone().map(|w| {
+            Arc::new(AdminWebView(worker::send::SendWrapper::new(w)))
+                as Arc<dyn clax_http::bot::AdminWebCheck>
+        }),
     });
     (bot, web)
 }
@@ -1532,23 +1554,6 @@ impl InstanceDo {
         None
     }
 
-    /// Before the admin's view of the web settings
-    /// ([`waits_for_web_check`]): starts the web source's check if one is
-    /// due, whether web use is on or not, so the admin learns before
-    /// turning it on, and waits for it at most [`ADMIN_WEB_WAIT`]; the
-    /// view answers `checking` if it has not finished. No other request
-    /// waits: a decision on web use asks for a check, which starts after
-    /// the request ([`Instance::start_wanted_web_check`]).
-    async fn check_web(inst: &Instance, req: &axum::http::Request<axum::body::Body>) {
-        if !waits_for_web_check(req.method(), req.uri().path()) {
-            return;
-        }
-        if let Some(web) = &inst.web {
-            web.start_check();
-            web.wait_check(ADMIN_WEB_WAIT).await;
-        }
-    }
-
     /// The test routes, with `CLAX_TEST_ROUTES` = `1` and the token (else
     /// `None`: the router answers the path, a 404):
     ///
@@ -1799,7 +1804,6 @@ impl DurableObject for InstanceDo {
         if let Some(res) = self.test_route(&inst, &req).await {
             return res;
         }
-        Self::check_web(&inst, &req).await;
         self.revive(&inst).await;
         if !matches!(
             *req.method(),
@@ -2099,19 +2103,58 @@ impl InstanceDo {
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_the_admins_web_view_waits_for_the_web_check() {
-        use axum::http::Method;
-        assert!(waits_for_web_check(&Method::GET, "/api/admin/web"));
-        for (m, path) in [
-            (Method::PUT, "/api/admin/web"),
-            (Method::GET, "/api/admin/web/token"),
-            (Method::GET, "/api/me/bot"),
-            (Method::POST, "/api/bot/runs"),
-            (Method::GET, "/"),
-        ] {
-            assert!(!waits_for_web_check(&m, path), "{m} {path}");
+    /// Records the checks started and waited for, and the wait's bound.
+    #[derive(Default)]
+    struct Checked(std::sync::Mutex<Vec<String>>);
+
+    #[async_trait::async_trait]
+    impl clax_bot::WebSource for Checked {
+        async fn search(
+            &self,
+            _q: &clax_bot::web::SearchQuery,
+            _cancel: &clax_bot_sandbox::CancelToken,
+        ) -> std::result::Result<clax_bot::web::SearchAnswer, clax_bot::web::WebError> {
+            unreachable!()
         }
+
+        async fn fetch(
+            &self,
+            _url: &clax_bot::web::PublicUrl,
+            _format: clax_bot::web::Format,
+            _limits: &clax_bot::web::FetchLimits,
+            _hop: &(
+                 dyn for<'u> Fn(
+                &'u clax_bot::web::PublicUrl,
+            ) -> std::result::Result<(), clax_bot::web::WebError>
+                     + Sync
+             ),
+            _cancel: &clax_bot_sandbox::CancelToken,
+        ) -> std::result::Result<clax_bot::web::FetchedPage, clax_bot::web::WebError> {
+            unreachable!()
+        }
+
+        fn start_check(&self) {
+            self.0.lock().unwrap().push("start".into());
+        }
+
+        async fn wait_check(&self, within: std::time::Duration) {
+            self.0.lock().unwrap().push(format!("wait {within:?}"));
+        }
+    }
+
+    #[test]
+    fn the_admins_web_view_starts_the_check_and_waits_for_it_bounded() {
+        use clax_http::bot::AdminWebCheck;
+        let source = Arc::new(Checked::default());
+        let view = AdminWebView(worker::send::SendWrapper::new(source.clone()));
+        // Nothing happens until the route runs the check.
+        let check = view.before_view();
+        assert!(source.0.lock().unwrap().is_empty());
+        futures_util::FutureExt::now_or_never(check).expect("answers");
+        assert_eq!(
+            *source.0.lock().unwrap(),
+            ["start".to_string(), format!("wait {ADMIN_WEB_WAIT:?}")]
+        );
     }
 
     #[test]

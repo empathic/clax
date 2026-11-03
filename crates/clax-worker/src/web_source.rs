@@ -1140,9 +1140,10 @@ mod binding {
 
     #[async_trait::async_trait(?Send)]
     impl WebSource for BindingSource {
-        /// False once a check found the binding cannot run here.
-        fn configured(&self) -> bool {
-            self.host.why().is_none()
+        /// Why the binding cannot run here, once a check found it: a run
+        /// that declared web use is then refused `web_unavailable`.
+        fn unusable(&self) -> Option<String> {
+            self.host.why()
         }
 
         /// Starts one `toMarkdown()` of [`PROBE_HTML`] in the background

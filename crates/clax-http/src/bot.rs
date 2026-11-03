@@ -104,6 +104,22 @@ pub struct Bot {
     /// `web_configured` says, and the admin's view says why
     /// (`GET /api/admin/web`'s `unavailable`).
     pub web_check: Arc<clax_bot::web::HostCheck>,
+    /// What `GET /api/admin/web` runs once it knows the caller is an
+    /// admin, before it reads the view ([`AdminWebCheck`]): the Worker's
+    /// check of its AI binding. None (the default): nothing, as on the
+    /// daemon.
+    pub admin_web_check: Option<Arc<dyn AdminWebCheck>>,
+}
+
+/// The host's check of its web source for the admin's view of the web
+/// settings, run only for a request that will be answered that view
+/// (after authentication), so a request about to be refused starts no
+/// work and waits for none.
+pub trait AdminWebCheck: Send + Sync {
+    /// Starts the host's check of its web source if one is due, and waits
+    /// for it a bounded time; the view then answers `checking` if it has
+    /// not finished.
+    fn before_view(&self) -> futures::future::BoxFuture<'static, ()>;
 }
 
 /// What a price catalog refresh came to: the listings the cache holds and
@@ -133,6 +149,7 @@ impl Default for Bot {
             catalog_flight: Arc::default(),
             web_configured: false,
             web_check: Arc::default(),
+            admin_web_check: None,
         }
     }
 }

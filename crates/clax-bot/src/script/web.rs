@@ -9,7 +9,11 @@
 //! 3. The operation is still granted now ([`WebAccess::now`]: the admin
 //!    or the person may have turned it off since the run started, or the
 //!    source lost what it needs, [`crate::web::WebSource::configured`]),
-//!    or `web_disabled`.
+//!    or `web_disabled`. A source still configured whose host found it
+//!    cannot be used here ([`crate::web::WebSource::unusable`]: the
+//!    Worker's AI binding under `wrangler dev --local`) is refused
+//!    `web_unavailable` instead, not retryable: the web was not turned
+//!    off, it cannot run here. Neither refusal is charged or counted.
 //! 4. Its arguments hold (a query of 1 to 1,024 characters, a `limit` and
 //!    an `offset` not below 0, a URL), or `invalid_args`.
 //! 5. A fetch: the URL is a [`PublicUrl`], its host is not one of the
@@ -536,6 +540,12 @@ impl RunHost<'_> {
             }
             Err(e) => return Finish::refused(host_error(&e)),
         };
+        if let Some(why) = source.unusable() {
+            return Finish::refused(HostError::new(
+                CODE_WEB_UNAVAILABLE,
+                format!("{why} Continue without the web."),
+            ));
+        }
         let call = match call_of(op, args, &grant) {
             Ok(c) => c,
             Err(e) => return Finish::refused(e),
