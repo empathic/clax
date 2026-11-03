@@ -194,16 +194,17 @@ const MAX_TARGET_BYTES: usize = super::url::MAX_URL_CHARS * 4;
 /// spans (a backtick string closed by the next one of the same length in
 /// its paragraph; a backslash-escaped backtick opens none), fenced code
 /// blocks (a fence of three or more backticks or tildes, closed by a fence
-/// of the same character at least as long, or by the end of the page) and
+/// of the same character at least as long, or by the end of the page, or
+/// for a fence in a list item by the end of the item) and
 /// indented code blocks (four spaces or a tab, after a blank line or
 /// another code block, but not inside a list item). It takes the target of a `](` only when the `]`
 /// closes a `[` opened earlier in the same paragraph, so a stray `](x` is
 /// no link. Where the structure is ambiguous the text is read as text:
-/// fences and indented code inside list items and block quotes are not
-/// recognised, nor is an indented line after a list item's text, and a
-/// fence never closed runs to the end of the page; so it may count a string
-/// as a link that a renderer would not; a link it counts is still
-/// text the page holds. A target with no end before the next whitespace (an
+/// indented code inside list items and block quotes is not recognised, nor
+/// are fences in block quotes, nor is an indented line after a list item's
+/// text; so it may count a string as a link that a renderer would not; a
+/// link it counts is still text the page holds. A target with no end
+/// before the next whitespace (an
 /// unclosed `](`) is read to there and not looked at again.
 #[must_use]
 pub fn links_of_markdown(md: &str, base: &PublicUrl) -> Vec<String> {
@@ -455,7 +456,9 @@ fn markdown_code(md: &str) -> (Ranges, Ranges) {
     let mut code: Vec<(usize, usize)> = Vec::new();
     let mut paragraphs: Vec<(usize, usize)> = Vec::new();
     // The open fence: its character, length and first byte.
-    let mut fence: Option<(u8, usize, usize)> = None;
+    // and, for a fence opened inside a list item, the indentation of its
+    // lines: a text line indented less ends the item and the fence.
+    let mut fence: Option<(u8, usize, usize, Option<usize>)> = None;
     let mut para: Option<(usize, usize)> = None;
     // Whether the last block line was a list item or after one: an
     // indented line is then its continuation, not code.
@@ -470,9 +473,17 @@ fn markdown_code(md: &str) -> (Ranges, Ranges) {
             .map(|b| if b == b' ' { 1 } else { 4 })
             .sum();
         let run = |c: u8| text.bytes().take_while(|&b| b == c).count();
-        if let Some((c, len, _)) = fence {
+        if let Some((c, len, from, Some(item))) = fence
+            && !text.is_empty()
+            && indent < item
+            && !(indent < 4 && run(c) >= len && text[run(c)..].trim().is_empty())
+        {
+            code.push((from, at));
+            fence = None;
+        }
+        if let Some((c, len, from, _)) = fence {
             if indent < 4 && run(c) >= len && text[run(c)..].trim().is_empty() {
-                let (_, _, from) = fence.take().unwrap_or((c, len, at));
+                fence = None;
                 code.push((from, end));
             }
         } else if text.is_empty() {
@@ -485,7 +496,7 @@ fn markdown_code(md: &str) -> (Ranges, Ranges) {
                 .find(|&c| run(c) >= 3 && (c != b'`' || !text[run(c)..].contains('`')))
         {
             paragraphs.extend(para.take());
-            fence = Some((c, run(c), at));
+            fence = Some((c, run(c), at, (in_list && indent > 0).then_some(indent)));
             in_list = false;
         } else {
             if indent < 4 {
@@ -496,7 +507,7 @@ fn markdown_code(md: &str) -> (Ranges, Ranges) {
         at = end;
     }
     paragraphs.extend(para);
-    if let Some((_, _, from)) = fence {
+    if let Some((_, _, from, _)) = fence {
         code.push((from, md.len()));
     }
     // Inline spans: a backtick string opens a span closed by the next
@@ -1383,6 +1394,22 @@ mod tests {
             links("`a\\` [k](/kept) `[x](/no)`"),
             vec!["https://x.com/kept"]
         );
+    }
+
+    #[test]
+    fn an_unclosed_fence_in_a_list_item_ends_with_the_item() {
+        let b = base("https://x.com/a");
+        let links = |md: &str| links_of_markdown(md, &b);
+        let kept = vec!["https://x.com/kept"];
+        assert_eq!(links("- a\n  ```\n  [x](/no)\n- b [k](/kept)\n"), kept);
+        assert_eq!(
+            links("1. a\n\n   ~~~\n   [x](/no)\n\nback [k](/kept)\n"),
+            kept
+        );
+        // Inside the item the fence is still code, and a closed one is.
+        assert_eq!(links("- a\n  ```\n  [x](/no)\n  ```\n  [k](/kept)\n"), kept);
+        // A fence outside any item runs to the end of the page.
+        assert!(links("p\n```\n[x](/no)\nback [y](/no)\n").is_empty());
     }
 
     #[test]

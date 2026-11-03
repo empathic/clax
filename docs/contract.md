@@ -10000,7 +10000,7 @@ handle, `*system` as "Clax".
 | `GET /api/admin/people`, `PUT …/<person>/flags`, `…/credits` | admins | `view.admin {page: people}`, `admin.flag`, `admin.credits` |
 | `PUT /api/admin/people/<person>/role {role}` | the owner alone (403 `owner_only`); the owner's own role 400 `owner_role` | `admin.role` |
 | `GET`/`PUT /api/admin/provider`, `PUT`/`DELETE …/key`, `POST …/test`, `GET …/models` | admins | `view.admin {page: provider\|provider.test\|provider.models}`, `admin.provider`, `admin.key` (scope `instance`) |
-| `GET`/`PUT /api/admin/web`, `PUT`/`DELETE /api/admin/web/token` | admins | `view.admin {page: web}`, `admin.provider`, `admin.key` (scope `cloudflare`) |
+| `GET`/`PUT /api/admin/web`, `PUT`/`DELETE /api/admin/web/token`; the answer's `configured` says whether the host has a web source, and is false, with `unavailable` holding the reason (a string quoting the value), when the instance's configured public origin or site domain names no host and so web use is off on a host that could not refuse its own hosts; `unavailable` is absent otherwise | admins | `view.admin {page: web}`, `admin.provider`, `admin.key` (scope `cloudflare`) |
 | `GET`/`PUT /api/admin/pricing`, `POST`/`DELETE …/models`, `POST …/tokenulator`, `GET /api/admin/usage?week=` | admins | `view.admin {page: pricing\|usage}`, `admin.cost_line` |
 | `POST /api/admin/pricing/catalog/refresh` | admins | — (it replaces the cached public price catalog alone) |
 | `GET /api/audit?…`, `GET /api/audit/<seq>` | admins every event (on a hosted Clax every event but those naming an artifact out of their own reach), anyone else their scope (Toolpath journal, "Kinds"); a live page's events the owner's alone | `view.audit {filters}` |
