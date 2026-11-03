@@ -192,22 +192,58 @@ const MAX_TARGET_BYTES: usize = super::url::MAX_URL_CHARS * 4;
 /// A scanner, not a CommonMark parser, linear in `md`'s length: every
 /// pass moves past what it read. It reads nothing in code: inline code
 /// spans (a backtick string closed by the next one of the same length in
-/// its paragraph; a backslash does not escape a backtick), fenced code
+/// its paragraph; a backslash-escaped backtick opens none), fenced code
 /// blocks (a fence of three or more backticks or tildes, closed by a fence
 /// of the same character at least as long, or by the end of the page) and
 /// indented code blocks (four spaces or a tab, after a blank line or
-/// another code block). It takes the target of a `](` only when the `]`
+/// another code block, but not inside a list item). It takes the target of a `](` only when the `]`
 /// closes a `[` opened earlier in the same paragraph, so a stray `](x` is
-/// no link. Fences and indented code inside list items and block quotes are
-/// not recognised as such: their text is read as any other, so it may count
-/// a string as a link that a renderer would not; a link it counts is still
+/// no link. Where the structure is ambiguous the text is read as text:
+/// fences and indented code inside list items and block quotes are not
+/// recognised, nor is an indented line after a list item's text, and a
+/// fence never closed runs to the end of the page; so it may count a string
+/// as a link that a renderer would not; a link it counts is still
 /// text the page holds. A target with no end before the next whitespace (an
 /// unclosed `](`) is read to there and not looked at again.
 #[must_use]
 pub fn links_of_markdown(md: &str, base: &PublicUrl) -> Vec<String> {
+    scan_links(md, base, true)
+}
+
+/// The links of `text` that is not Markdown (JSON, plain text, source
+/// files, feeds): [`links_of_markdown`]'s forms, read from the whole text
+/// with no notion of code, and a `](` takes its target whether or not a
+/// `[` opened it. Backticks and indentation mean nothing in such text, so
+/// a URL is never dropped for them.
+#[must_use]
+pub fn links_of_text(text: &str, base: &PublicUrl) -> Vec<String> {
+    scan_links(text, base, false)
+}
+
+/// The links of a body of media type `media` (as [`media_type`] gives it)
+/// that is read as text: [`links_of_markdown`] for `text/markdown` and
+/// `text/x-markdown`, else [`links_of_text`]. Markdown a source converted
+/// itself (`toMarkdown()`'s answer) goes to [`links_of_markdown`] directly.
+#[must_use]
+pub fn links_of_body(text: &str, base: &PublicUrl, media: &str) -> Vec<String> {
+    if matches!(
+        media_type(media).as_str(),
+        "text/markdown" | "text/x-markdown"
+    ) {
+        links_of_markdown(text, base)
+    } else {
+        links_of_text(text, base)
+    }
+}
+
+fn scan_links(md: &str, base: &PublicUrl, markdown: bool) -> Vec<String> {
     let mut found: Vec<(usize, &str)> = Vec::new();
     let mut spans: Vec<(usize, usize)> = Vec::new();
-    let (code, paragraphs) = markdown_code(md);
+    let (code, paragraphs) = if markdown {
+        markdown_code(md)
+    } else {
+        (Vec::new(), vec![(0, md.len())])
+    };
     // Inline links and images: `](target)` or `](<target>)`, with an
     // optional title after the target, where the `]` closes a `[` of the
     // same paragraph.
@@ -227,8 +263,8 @@ pub fn links_of_markdown(md: &str, base: &PublicUrl) -> Vec<String> {
                     open += 1;
                     i += 1;
                 }
-                b']' if open > 0 => {
-                    open -= 1;
+                b']' if open > 0 || !markdown => {
+                    open = open.saturating_sub(1);
                     if bytes.get(i + 1) != Some(&b'(') {
                         i += 1;
                         continue;
@@ -389,6 +425,24 @@ impl<'a> CodeCursor<'a> {
     }
 }
 
+/// Whether `text` (a line without its indentation) starts a list item:
+/// `-`, `*` or `+`, or up to nine digits and `.` or `)`, then a space, a
+/// tab or the end of the line.
+fn list_marker(text: &str) -> bool {
+    let b = text.as_bytes();
+    let after = if matches!(b.first(), Some(b'-' | b'*' | b'+')) {
+        1
+    } else {
+        let digits = b.iter().take_while(|c| c.is_ascii_digit()).count();
+        if (1..=9).contains(&digits) && matches!(b.get(digits), Some(b'.' | b')')) {
+            digits + 1
+        } else {
+            return false;
+        }
+    };
+    matches!(b.get(after), None | Some(b' ' | b'\t'))
+}
+
 /// Sorted byte ranges, start to end.
 type Ranges = Vec<(usize, usize)>;
 
@@ -403,6 +457,9 @@ fn markdown_code(md: &str) -> (Ranges, Ranges) {
     // The open fence: its character, length and first byte.
     let mut fence: Option<(u8, usize, usize)> = None;
     let mut para: Option<(usize, usize)> = None;
+    // Whether the last block line was a list item or after one: an
+    // indented line is then its continuation, not code.
+    let mut in_list = false;
     let mut at = 0;
     for line in md.split_inclusive('\n') {
         let end = at + line.len();
@@ -420,7 +477,7 @@ fn markdown_code(md: &str) -> (Ranges, Ranges) {
             }
         } else if text.is_empty() {
             paragraphs.extend(para.take());
-        } else if indent >= 4 && para.is_none() {
+        } else if indent >= 4 && para.is_none() && !in_list {
             code.push((at, end));
         } else if indent < 4
             && let Some(c) = [b'`', b'~']
@@ -429,7 +486,11 @@ fn markdown_code(md: &str) -> (Ranges, Ranges) {
         {
             paragraphs.extend(para.take());
             fence = Some((c, run(c), at));
+            in_list = false;
         } else {
+            if indent < 4 {
+                in_list = list_marker(text);
+            }
             para = Some((para.map_or(at, |p| p.0), end));
         }
         at = end;
@@ -440,30 +501,44 @@ fn markdown_code(md: &str) -> (Ranges, Ranges) {
     }
     // Inline spans: a backtick string opens a span closed by the next
     // string of the same length in its paragraph; one with no such closer
-    // is text.
+    // is text, and a backslash-escaped backtick opens none.
     let bytes = md.as_bytes();
     for &(s, e) in &paragraphs {
-        let mut strings: Vec<(usize, usize)> = Vec::new();
+        // Each backtick string: where it starts, how long it is as a
+        // closer, and how long as an opener (one less when a backslash
+        // escapes its first backtick).
+        let mut strings: Vec<(usize, usize, usize)> = Vec::new();
         let mut i = s;
         while i < e {
             if bytes[i] == b'`' {
                 let n = bytes[i..e].iter().take_while(|&&b| b == b'`').count();
-                strings.push((i, n));
+                let slashes = bytes[s..i]
+                    .iter()
+                    .rev()
+                    .take_while(|&&b| b == b'\\')
+                    .count();
+                strings.push((i, n, n - slashes % 2));
                 i += n;
             } else {
                 i += 1;
             }
         }
-        let mut next_same = vec![None; strings.len()];
+        // For each string as an opener, the next string that closes it.
+        let mut next_close: Vec<Option<usize>> = vec![None; strings.len()];
         let mut last: HashMap<usize, usize> = HashMap::new();
-        for (j, &(_, n)) in strings.iter().enumerate().rev() {
-            next_same[j] = last.insert(n, j);
+        for (j, &(_, n, open)) in strings.iter().enumerate().rev() {
+            if open > 0 {
+                next_close[j] = last.get(&open).copied();
+            }
+            last.insert(n, j);
         }
         let mut j = 0;
         while j < strings.len() {
-            match next_same[j] {
+            match next_close[j] {
                 Some(k) => {
-                    code.push((strings[j].0, strings[k].0 + strings[k].1));
+                    // An escaped opener's span starts after its backslash'd tick.
+                    let start = strings[j].0 + (strings[j].1 - strings[j].2);
+                    code.push((start, strings[k].0 + strings[k].1));
                     j = k + 1;
                 }
                 None => j += 1,
@@ -1279,6 +1354,71 @@ mod tests {
             links("`c`\n<https://y.com/q> https://z.com/r\n[w]: /s"),
             vec!["https://y.com/q", "https://z.com/r", "https://x.com/s"]
         );
+    }
+
+    #[test]
+    fn ambiguous_markdown_structure_is_read_as_text() {
+        let b = base("https://x.com/a");
+        let links = |md: &str| links_of_markdown(md, &b);
+        // A list item's indented continuation after a blank line is not
+        // indented code.
+        assert_eq!(
+            links("- a\n\n- b\n\n    See [docs](https://d.example/)\n"),
+            vec!["https://d.example/"]
+        );
+        assert_eq!(
+            links("1. Install\n\n    Then see https://d.example/\n"),
+            vec!["https://d.example/"]
+        );
+        // The list ends at a paragraph that is not indented: indented code
+        // after it is code again.
+        assert_eq!(links("- a\n\np\n\n    [x](/no)\n"), Vec::<String>::new());
+        // A backslash-escaped backtick opens no code span.
+        assert_eq!(
+            links("a \\` b [k](https://d.example/) `c`"),
+            vec!["https://d.example/"]
+        );
+        // A span may still end in a backslash.
+        assert_eq!(
+            links("`a\\` [k](/kept) `[x](/no)`"),
+            vec!["https://x.com/kept"]
+        );
+    }
+
+    #[test]
+    fn only_markdown_bodies_have_code() {
+        let b = base("https://x.com/a");
+        let urls = |md: &str, media: &str| links_of_body(md, &b, media);
+        let json = "[{\"body\": \"use ` here\", \"html_url\": \"https://d.example/1\"}, \
+                    {\"body\": \"and ` there\"}]";
+        let py = "def f():\n    x = 1\n\n    url = \"https://d.example/\"\n";
+        let js = "const u = `https://d.example/${id}`;";
+        for media in [
+            "application/json",
+            "text/plain",
+            "text/x-python",
+            "application/xml",
+        ] {
+            assert_eq!(urls(json, media), vec!["https://d.example/1"], "{media}");
+            assert_eq!(urls(py, media), vec!["https://d.example/"], "{media}");
+            assert_eq!(
+                urls(js, media),
+                vec!["https://d.example/$%7Bid%7D"],
+                "{media}"
+            );
+            // The old plain scan: a `](` takes its target with no `[`.
+            assert_eq!(urls("a](/p)", media), vec!["https://x.com/p"], "{media}");
+        }
+        // Markdown bodies skip code.
+        for media in [
+            "text/markdown",
+            "text/x-markdown",
+            "text/markdown; charset=utf-8",
+        ] {
+            assert!(urls(json, media).is_empty(), "{media}");
+            assert!(urls(py, media).is_empty(), "{media}");
+            assert!(urls("a](/p)", media).is_empty(), "{media}");
+        }
     }
 
     #[test]

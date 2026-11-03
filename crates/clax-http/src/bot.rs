@@ -95,6 +95,13 @@ pub struct Bot {
     /// credentials: every run's web use is off, not configured
     /// (`clax_bot::web::WebAccess::now`).
     pub web_configured: bool,
+    /// Why the host's web use is off whatever else holds: the instance's
+    /// configured public origin or site domain names no host, so it could
+    /// not refuse a fetch of its own hosts. `Some` makes
+    /// `clax_server::bot::web_configured` false and is shown in the admin
+    /// Web view (`GET /api/admin/web`'s `unavailable`); `None` (the
+    /// default) is no such problem.
+    pub web_unavailable: Option<String>,
 }
 
 /// What a price catalog refresh came to: the listings the cache holds and
@@ -123,6 +130,7 @@ impl Default for Bot {
             catalog_url: None,
             catalog_flight: Arc::default(),
             web_configured: false,
+            web_unavailable: None,
         }
     }
 }

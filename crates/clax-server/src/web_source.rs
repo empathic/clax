@@ -26,8 +26,8 @@
 //! configured ([`fixtures`]).
 
 use clax_bot::web::page::{
-    Handling, decode, handling, http_error, is_sniffed, links_of_html, links_of_markdown,
-    media_type, media_type_of, pretty_json, user_agent,
+    Handling, decode, handling, http_error, is_sniffed, links_of_body, links_of_html,
+    links_of_markdown, media_type, media_type_of, pretty_json, user_agent,
 };
 use clax_bot::web::url::{is_local_addr, redirect_allowed};
 use clax_bot::web::{
@@ -516,12 +516,12 @@ impl RestSource {
             Handling::Json => {
                 let s = decode(&body, &declared);
                 let s = pretty_json(&s).unwrap_or(s);
-                let links = links_of_markdown(&s, &at);
+                let links = links_of_body(&s, &at, &content_type);
                 (s, links)
             }
             Handling::Text => {
                 let s = decode(&body, &declared);
-                let links = links_of_markdown(&s, &at);
+                let links = links_of_body(&s, &at, &content_type);
                 (s, links)
             }
         };
@@ -963,38 +963,53 @@ pub fn fixtures() -> Option<Arc<FakeWebSource>> {
 ///
 /// Config loading has already refused an origin or site domain that is not
 /// one; were one to reach here, the daemon could not name its own hosts, so
-/// the source is [`NoHostsWeb`]: it logs the reason, ClaxBot's web tools are
-/// off, and no fetch is made that might reach the instance.
-#[must_use]
+/// [`daemon_web`] gives [`NoHostsWeb`] and the reason.
+///
+/// # Errors
+/// Why the origin or site domain names no host.
 pub fn for_daemon(
     store: Arc<Store>,
     kek: Option<Kek>,
     origin: Option<&str>,
     site_domain: Option<&str>,
-) -> Arc<dyn WebSource> {
+) -> Result<Arc<dyn WebSource>, String> {
     let own = match origin {
-        Some(o) => match OwnHosts::new(Some(o), site_domain) {
-            Ok(own) => Some(own),
-            Err(e) => {
-                tracing::error!(error = %e, "ClaxBot's web tools are off");
-                return Arc::new(NoHostsWeb(e.to_string()));
-            }
-        },
+        Some(o) => Some(OwnHosts::new(Some(o), site_domain).map_err(|e| e.to_string())?),
         None => None,
     };
     let source: Arc<dyn WebSource> = match fixtures() {
         Some(f) => f,
         None => Arc::new(DaemonWeb::new(store, kek).with_user_agent(user_agent(origin))),
     };
-    match own {
+    Ok(match own {
         Some(own) => Arc::new(WithOwnHosts::new(source, own)),
         None => source,
+    })
+}
+
+/// [`for_daemon`]'s source and the reason web use is off. When the hosts
+/// cannot be named the reason is logged and the source is [`NoHostsWeb`],
+/// which is not configured and refuses every call; the reason goes to
+/// `clax_http::bot::Bot::web_unavailable`, which the admin Web view shows.
+#[must_use]
+pub fn daemon_web(
+    store: Arc<Store>,
+    kek: Option<Kek>,
+    origin: Option<&str>,
+    site_domain: Option<&str>,
+) -> (Arc<dyn WebSource>, Option<String>) {
+    match for_daemon(store, kek, origin, site_domain) {
+        Ok(web) => (web, None),
+        Err(why) => {
+            tracing::error!(%why, "ClaxBot's web tools are off");
+            (Arc::new(NoHostsWeb(why.clone())), Some(why))
+        }
     }
 }
 
 /// A source that is not configured and answers every call
 /// `web_unavailable`, with the reason the daemon's hosts could not be
-/// named ([`for_daemon`]).
+/// named ([`daemon_web`]).
 struct NoHostsWeb(String);
 
 #[async_trait::async_trait]
@@ -2029,22 +2044,33 @@ mod tests {
             None,
             Some("https://clax.example"),
             Some("sites.example"),
-        );
+        )
+        .unwrap();
         let own = hosted.own_hosts();
         assert!(own.holds("clax.example"));
         assert!(own.holds("abcdefghijkl.sites.example"));
         assert!(!own.holds("example.com"));
         // A local daemon has none: its hosts are loopback.
-        let local = for_daemon(st.clone(), None, None, None);
+        let local = for_daemon(st.clone(), None, None, None).unwrap();
         assert_eq!(local.own_hosts(), OwnHosts::default());
         // A site domain that is no host name leaves the web off, not open.
-        let bad = for_daemon(
+        let why = for_daemon(
+            st.clone(),
+            None,
+            Some("https://clax.example"),
+            Some("https://sites.example/x"),
+        )
+        .err()
+        .unwrap();
+        assert!(why.contains("\"https://sites.example/x\""), "{why}");
+        let (bad, unavailable) = daemon_web(
             st,
             None,
             Some("https://clax.example"),
             Some("https://sites.example/x"),
         );
         assert!(!bad.configured());
+        assert_eq!(unavailable, Some(why));
     }
 
     #[test]

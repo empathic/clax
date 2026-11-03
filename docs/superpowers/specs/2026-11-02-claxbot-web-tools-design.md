@@ -286,11 +286,15 @@ enum UrlSource {
   the page in the page store (§6.2). Every link of the page counts, whether
   or not a script read the window it is in: the page is fixed content the
   run received, so where a script looked in it does not change what it may
-  carry. The Markdown scan reads no code: not inline code spans, fenced
-  code blocks (``` or ~~~) nor indented ones, and a `](` target counts only
-  when its `]` closes a `[` of the same paragraph. It is a linear scanner,
-  not a CommonMark parser: code inside list items and block quotes is not
-  recognised, so a URL there may count as a link.
+  carry. The scan of a Markdown body (`text/markdown`, `text/x-markdown`,
+  and Markdown a source converted itself) reads no code: not inline code
+  spans (a backslash-escaped backtick opens none), fenced code blocks
+  (``` or ~~~) nor indented ones (not after a list item), and a `](` target
+  counts only when its `]` closes a `[` of the same paragraph. Any other
+  text body (JSON, plain text, source files, feeds) is scanned plainly, with
+  no notion of code. The Markdown scan is linear, not a CommonMark parser,
+  and reads ambiguous structure as text: code inside list items and block
+  quotes is not recognised, so a URL there may count as a link.
 - A URL matches when it equals a source URL after normalisation: the
   scheme and host lowercased, the default port and the fragment removed,
   percent-encoding normalised. No prefix or host match.
@@ -340,10 +344,11 @@ changes between the check and the connection is not followed. The Worker
 needs no DNS check: a Worker's `fetch` cannot reach a private network.
 A hosted instance's own hosts (its public origin's host, and its site
 domain with every host under it) are refused the same way. A configured
-public origin or site domain that names no host is never dropped: the
-daemon turns web use off (`web_unavailable`, logged) and the Worker does not
-start, as for any other bad `[hosted]`/`SITE_DOMAIN` value, because an
-instance that cannot name its own hosts could not refuse them.
+public origin or site domain that names no host is never dropped: web use
+is off on both hosts (the instance still starts), with the reason, quoting
+the value, logged and shown by `GET /api/admin/web` as `unavailable` and
+`configured: false`, because an instance that cannot name its own hosts could
+not refuse them.
 
 The redirect target is checked by host only, not by source: the source rule
 applies to the URL the script asked for, as in Anthropic's tool.

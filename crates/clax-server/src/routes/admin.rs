@@ -542,6 +542,9 @@ pub fn web_view(st: &Store, bot: &Bot) -> clax_core::Result<Value> {
         "the Cloudflare token",
     )?;
     let mut v = json!({"configured": crate::bot::web_configured(st, bot)?, "sources": sources});
+    if let Some(why) = &bot.web_unavailable {
+        v["unavailable"] = json!(why);
+    }
     for (k, g) in groups {
         v[k] = g;
     }

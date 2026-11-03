@@ -1149,13 +1149,13 @@ impl clax_http::bot::Runs for DriverRuns {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn driver(state: &mut AppState) -> Arc<clax_bot::Driver> {
     let hosted = state.hosted.as_ref();
-    let web = crate::web_source::for_daemon(
+    let (web, unavailable) = crate::web_source::daemon_web(
         state.store.clone(),
         state.bot.kek.clone(),
         hosted.map(|h| h.origin.as_str()),
         hosted.and_then(|h| h.sites.as_ref()).map(|s| s.domain()),
     );
-    driver_with_web(state, web)
+    driver_with(state, web, unavailable)
 }
 
 /// [`driver`], with `web` as the runs' web source.
@@ -1163,6 +1163,18 @@ pub fn driver(state: &mut AppState) -> Arc<clax_bot::Driver> {
 pub fn driver_with_web(
     state: &mut AppState,
     web: Arc<dyn clax_bot::web::WebSource>,
+) -> Arc<clax_bot::Driver> {
+    let unavailable = state.bot.web_unavailable.clone();
+    driver_with(state, web, unavailable)
+}
+
+/// [`driver_with_web`], with `web_unavailable` as the state's
+/// ([`clax_http::bot::Bot::web_unavailable`]).
+#[cfg(not(target_arch = "wasm32"))]
+fn driver_with(
+    state: &mut AppState,
+    web: Arc<dyn clax_bot::web::WebSource>,
+    web_unavailable: Option<String>,
 ) -> Arc<clax_bot::Driver> {
     let bot = state.bot.clone();
     let host = ServerHost::new(state.clone());
@@ -1201,6 +1213,7 @@ pub fn driver_with_web(
         catalog_url: bot.catalog_url.clone(),
         catalog_flight: bot.catalog_flight.clone(),
         web_configured: bot.web_configured,
+        web_unavailable,
     });
     driver
 }
@@ -1215,6 +1228,9 @@ pub fn driver_with_web(
 /// # Errors
 /// The store's.
 pub fn web_configured(st: &Store, bot: &clax_http::bot::Bot) -> clax_core::Result<bool> {
+    if bot.web_unavailable.is_some() {
+        return Ok(false);
+    }
     if bot.web_configured {
         return Ok(true);
     }

@@ -2796,3 +2796,47 @@ async fn me_put_needs_a_field() {
     let (_, v) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
     assert_eq!(v["web"]["on"], true, "a refused request changes nothing");
 }
+
+#[tokio::test]
+async fn the_admin_web_view_says_why_web_is_unavailable() {
+    // A host whose configured public origin or site domain names no host
+    // (`Bot::web_unavailable`) has web off, even with a source, and says why.
+    let why = "the site domain \"https://sites.example/x\" is not a bare host name";
+    let ts = TestServer::spawn_with(|s| {
+        s.bot = std::sync::Arc::new(clax_http::bot::Bot {
+            web_configured: true,
+            web_unavailable: Some(why.to_string()),
+            ..Default::default()
+        });
+    })
+    .await;
+    let (s, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::GET,
+        "/api/admin/web",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["configured"], false, "{v}");
+    assert_eq!(v["unavailable"], why, "{v}");
+    // Without the reason the same host is configured, and says nothing.
+    let ts = TestServer::spawn_with(|s| {
+        s.bot = std::sync::Arc::new(clax_http::bot::Bot {
+            web_configured: true,
+            ..Default::default()
+        });
+    })
+    .await;
+    let (_, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::GET,
+        "/api/admin/web",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(v["configured"], true, "{v}");
+    assert!(v.get("unavailable").is_none(), "{v}");
+}

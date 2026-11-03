@@ -50,7 +50,8 @@ use std::time::Duration;
 
 use clax_bot::FakeWebSource;
 use clax_bot::web::page::{
-    self, Handling, decode, http_error, links_of_html, links_of_markdown, pretty_json,
+    self, Handling, decode, http_error, links_of_body, links_of_html, links_of_markdown,
+    pretty_json,
 };
 use clax_bot::web::url::redirect_allowed;
 use clax_bot::web::{
@@ -500,11 +501,11 @@ pub fn read_body(
         }
         Handling::Json => {
             let text = pretty_json(&text).unwrap_or(text);
-            let links = links_of_markdown(&text, url);
+            let links = links_of_body(&text, url, &media);
             Body::Page(page(text, links))
         }
         _ => {
-            let links = links_of_markdown(&text, url);
+            let links = links_of_body(&text, url, &media);
             Body::Page(page(text, links))
         }
     })

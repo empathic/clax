@@ -149,7 +149,8 @@ pub fn sandbox(_env: &worker::Env) -> Result<Arc<dyn Sandbox>, String> {
 ///
 /// # Errors
 /// Why `public_origin` or `site_domain`, when set, names no host: the
-/// instance could not tell which hosts are its own, so it does not start.
+/// instance could not tell which hosts are its own, so it has no source
+/// ([`web_or_reason`]).
 pub fn web_source(
     env: &worker::Env,
     test: Option<Arc<crate::web_source::FixtureWeb>>,
@@ -185,6 +186,23 @@ pub fn own_hosts(
     } else {
         Arc::new(clax_bot::web::WithOwnHosts::new(source, own))
     })
+}
+
+/// `web`, the Worker's web source or why it has none: the source (and no
+/// reason), or none and the reason, logged, which the state carries as
+/// `clax_http::bot::Bot::web_unavailable` for the admin Web view.
+#[must_use]
+pub fn web_or_reason(
+    web: Result<Option<Arc<dyn clax_bot::WebSource>>, String>,
+) -> (Option<Arc<dyn clax_bot::WebSource>>, Option<String>) {
+    match web {
+        Ok(web) => (web, None),
+        Err(why) => {
+            #[cfg(target_arch = "wasm32")]
+            worker::console_error!("ClaxBot's web tools are off: {why}");
+            (None, Some(why))
+        }
+    }
 }
 
 /// The `AI` binding's source, when the Worker has one.
@@ -535,6 +553,11 @@ mod tests {
             .err()
             .unwrap();
         assert!(e.contains("public origin"), "{e}");
+        // The Worker keeps starting: no source, and the reason in quotes.
+        let (web, why) = web_or_reason(Err(e.clone()));
+        assert!(web.is_none());
+        assert_eq!(why, Some(e));
+        assert!(web_or_reason(Ok(None)).1.is_none());
     }
 
     #[test]

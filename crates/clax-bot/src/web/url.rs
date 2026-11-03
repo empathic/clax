@@ -259,11 +259,12 @@ impl OwnHosts {
                     .ok_or_else(|| OwnHostsError::PublicOrigin(o.to_string()))?,
             ),
         };
-        let site_domain = match site_domain.and_then(bare) {
+        let site_domain = match site_domain.filter(|d| bare(d).is_some()) {
             None => None,
-            Some(d) => Some(
-                clax_core::config::site_domain(&d)
-                    .ok_or_else(|| OwnHostsError::SiteDomain(d.clone()))?,
+            Some(raw) => Some(
+                bare(raw)
+                    .and_then(|d| clax_core::config::site_domain(&d))
+                    .ok_or_else(|| OwnHostsError::SiteDomain(raw.to_string()))?,
             ),
         };
         Ok(OwnHosts {
@@ -661,12 +662,21 @@ mod tests {
         ] {
             assert_eq!(
                 OwnHosts::new(Some("https://clax.example"), Some(bad)),
-                Err(OwnHostsError::SiteDomain(bad.to_ascii_lowercase())),
+                Err(OwnHostsError::SiteDomain(bad.to_string())),
                 "{bad}"
             );
         }
-        let e = OwnHosts::new(None, Some("sites.example/x")).unwrap_err();
-        assert!(e.to_string().contains("sites.example/x"), "{e}");
+        // The error quotes the value as configured.
+        let e = OwnHosts::new(Some(" Not An Origin "), Some(" Sites.Example/X. ")).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "the public origin \"Not An Origin\" is not an origin with a host"
+        );
+        let e = OwnHosts::new(None, Some(" Sites.Example/X. ")).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "the site domain \" Sites.Example/X. \" is not a bare host name"
+        );
     }
 
     #[test]
