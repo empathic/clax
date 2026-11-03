@@ -375,6 +375,8 @@ export type UrlRule = "sourced" | "any_public" | "allowlist";
 /** `GET /api/admin/web`: the web tools' settings, `configured` whether the host has a source at all, and where each value comes from by its dotted name (`search.provider`). The token is write-only: only its `KeyInfo`. */
 export type WebSettings = {
   configured: boolean;
+  /** Why web use is off whatever the credentials: the instance's configured public origin or site domain names no host. Absent otherwise. */
+  unavailable?: string;
   search: { enabled: boolean; provider: WebProvider; gateway: string; byok_alias: string; limit: number; max_per_run: number };
   fetch: { enabled: boolean; url_rule: UrlRule; allowlist: string[]; max_per_run: number };
   cloudflare: { account_id: string; token: KeyInfo };

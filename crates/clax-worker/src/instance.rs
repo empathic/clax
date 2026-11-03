@@ -609,7 +609,9 @@ fn clax_app(env: &Env) -> Result<clax_core::config::ClaxApp> {
 /// configured. When `SITE_DOMAIN` or `PUBLIC_ORIGIN` is set and names no
 /// host there is no source and the reason is the state's
 /// `web_unavailable` (`crate::bot::web_or_reason`): web is off and the
-/// admin Web view says why; the instance still starts.
+/// admin Web view says why. This is what happens where the instance
+/// otherwise starts (not hosted); a hosted Worker with such a value is
+/// refused before this, by `hosted` and the `fetch` handler (500).
 fn worker_bot(
     env: &Env,
     app: &mut AppState,

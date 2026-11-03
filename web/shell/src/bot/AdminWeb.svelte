@@ -101,7 +101,8 @@
       <div class="field"><Switch checked={fetchOn} label="Web fetch" disabled={ro("fetch.enabled")} onchange={on => { fetchOn = on; }} /> <SourceBadge source={w.sources["fetch.enabled"]} /></div>
     </div>
     <p class="note">Web content can try to steer ClaxBot. It fetches only URLs from the sender's words, searches and pages it read, but which links it follows and what it searches for can still carry data out.</p>
-    {#if !w.configured && local}<p class="note">Not configured: web access needs the Cloudflare account ID and API token below.</p>{/if}
+    {#if w.unavailable}<p class="note">Web access is off: {w.unavailable}</p>
+    {:else if !w.configured && local}<p class="note">Not configured: web access needs the Cloudflare account ID and API token below.</p>{/if}
   </section>
   <section class="bcard" aria-labelledby="aw-s">
     <h3 id="aw-s">Search</h3>

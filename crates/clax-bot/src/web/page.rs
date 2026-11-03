@@ -497,10 +497,14 @@ fn markdown_code(md: &str) -> (Ranges, Ranges) {
         {
             paragraphs.extend(para.take());
             fence = Some((c, run(c), at, (in_list && indent > 0).then_some(indent)));
-            in_list = false;
+            if indent == 0 {
+                in_list = false;
+            }
         } else {
-            if indent < 4 {
-                in_list = list_marker(text);
+            if indent < 4 && list_marker(text) {
+                in_list = true;
+            } else if indent == 0 && para.is_none() {
+                in_list = false;
             }
             para = Some((para.map_or(at, |p| p.0), end));
         }
@@ -1384,6 +1388,15 @@ mod tests {
         // The list ends at a paragraph that is not indented: indented code
         // after it is code again.
         assert_eq!(links("- a\n\np\n\n    [x](/no)\n"), Vec::<String>::new());
+        // A wrapped item, and a continuation after a fence closed in an item.
+        assert_eq!(
+            links("- item text that\n  wraps here\n\n    See [docs](https://d.example/)\n"),
+            vec!["https://d.example/"]
+        );
+        assert_eq!(
+            links("- a\n\n  ```\n  x\n  ```\n\n    See https://d.example/\n"),
+            vec!["https://d.example/"]
+        );
         // A backslash-escaped backtick opens no code span.
         assert_eq!(
             links("a \\` b [k](https://d.example/) `c`"),

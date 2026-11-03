@@ -291,6 +291,15 @@ describe("Admin › Web", () => {
     expect(m.root.querySelector('[role="status"]')!.textContent).toContain("Saved.");
   });
 
+  it("shows why web is unavailable, in place of the credentials hint", async () => {
+    const why = 'the site domain "https://sites.example/x" is not a bare host name';
+    stubFetch({ "GET /api/admin/web": webSettings({ unavailable: why }), "GET /api/admin/pricing": WEB_PRICING });
+    const m = mount(AdminWeb, {});
+    await settle();
+    expect(m.root.textContent).toContain(`Web access is off: ${why}`);
+    expect(m.root.textContent).not.toContain("Not configured: web access needs");
+  });
+
   it("the_token_is_write_only", async () => {
     const calls = stubFetch({
       "GET /api/admin/web": webSettings(),

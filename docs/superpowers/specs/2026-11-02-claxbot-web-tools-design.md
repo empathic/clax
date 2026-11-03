@@ -344,11 +344,15 @@ changes between the check and the connection is not followed. The Worker
 needs no DNS check: a Worker's `fetch` cannot reach a private network.
 A hosted instance's own hosts (its public origin's host, and its site
 domain with every host under it) are refused the same way. A configured
-public origin or site domain that names no host is never dropped: web use
-is off on both hosts (the instance still starts), with the reason, quoting
-the value, logged and shown by `GET /api/admin/web` as `unavailable` and
-`configured: false`, because an instance that cannot name its own hosts could
-not refuse them.
+public origin or site domain that names no host is never dropped. Hosted
+configuration refuses such a value at start, as before: the daemon's config
+load rejects it, and a hosted Worker answers every request 500. Where the
+instance otherwise starts (a non-hosted Worker with an unusable
+`PUBLIC_ORIGIN`) web use is off, with the reason, quoting the value, logged
+and shown by `GET /api/admin/web` as `unavailable` and `configured: false`
+and on the admin Web page, because an instance that cannot name its own
+hosts could not refuse them. The daemon takes the same path (`daemon_web`)
+should a bad value ever reach it.
 
 The redirect target is checked by host only, not by source: the source rule
 applies to the URL the script asked for, as in Anthropic's tool.
