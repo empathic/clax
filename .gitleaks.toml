@@ -1,5 +1,5 @@
 # gitleaks configuration for this repository: gitleaks' default rules, plus
-# an allowlist of four commits already on main whose `generic-api-key`
+# an allowlist of five commits already on main whose `generic-api-key`
 # findings are false positives. The allowlist is by commit, not by path, so
 # the same files are still scanned in every later commit.
 #
@@ -12,6 +12,9 @@
 #   key, which bundle_reader.dart's verifyManifest checks signatures with.
 # - 20c92cf0 (docs/contract.md:8323): prose, "person's own key ... under a
 #   32-byte key".
+# - 4b0985b6 (crates/clax-fleet/src/.qual:116): a review annotation's prose
+#   about the fleet peer key (`openssl rand -hex 32 > key`), next to its
+#   sha256 annotation id. It has no key in it.
 
 [extend]
 useDefault = true
@@ -23,4 +26,5 @@ commits = [
   "8ad5c5651d1076321bb45d61a7831321ed56ebb7",
   "f1c07f346b1224ce3f13c186dcd9c4661a06ebc3",
   "20c92cf00e14bb857e729a16204e983de38e82db",
+  "4b0985b600fb1df211f2672f90b0359556cd545f",
 ]
