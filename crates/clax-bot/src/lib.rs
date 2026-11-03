@@ -11,7 +11,10 @@
 //! - [`run`]: the step state machine, [`run::tick`], with enforcement and
 //!   metering; [`script`]: a script step;
 //! - [`driver`]: the scheduler over ticks, for the daemon and the Worker;
-//! - [`events`]: a run's live events and their replay.
+//! - [`events`]: a run's live events and their replay;
+//! - [`web`]: the values of `clax.web.search` and `clax.web.fetch`, and
+//!   [`web::WebSource`], where results and pages come from, with
+//!   [`web::FakeWebSource`].
 //!
 //! It builds for native targets and for wasm32 (the hosted Worker); the
 //! sandbox and the server are wired in by the crates above it.
@@ -26,6 +29,7 @@ pub mod host_conformance;
 pub mod prompt;
 pub mod run;
 pub mod script;
+pub mod web;
 
 pub use clax_store::Journaled;
 pub use driver::{Driver, IdleReport};
@@ -35,3 +39,4 @@ pub use run::{
     Deps, Keys, Next, Refusal, RunSettings, SettingsSource, TickOpts, TickOutcome, Wait, refusal,
     tick,
 };
+pub use web::{FakeWebSource, WebSource};

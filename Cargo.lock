@@ -469,6 +469,7 @@ dependencies = [
  "clax-rt",
  "clax-sample",
  "clax-store",
+ "encoding_rs",
  "futures",
  "html5ever",
  "rusqlite",
@@ -477,6 +478,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]
