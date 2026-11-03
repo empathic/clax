@@ -4474,7 +4474,9 @@ reporters.
 
 Reporter routes (`Authorization: Clax-Reporter <token>`, a
 `Clax-Signature` by the reporter's key, the token's `Origin`; each answers
-CORS for the queue's origins and its `OPTIONS` preflight). A page served
+CORS for the queue's origins, with `Access-Control-Expose-Headers:
+retry-after, date` so the page reads a refusal's wait and the instance's
+clock, and its `OPTIONS` preflight). A page served
 by the instance at the token's origin, whose same-origin `GET` a browser
 sends with no `Origin`, is taken as from that origin when it is a `GET` or
 `HEAD` carrying one `Sec-Fetch-Site: same-origin` and one `Host` that is
@@ -4492,7 +4494,17 @@ age out. The SDK's reporter client, given the signed-in user's ID
 (`user`), keeps its key (a non-extractable Ed25519 `CryptoKey`) and its
 token in IndexedDB per instance, queue and user, and asks the deployer's
 backend for a token again only from 60 seconds before it expires or after
-a 401.
+a 401 `token_expired` or `invalid_token` (another 401 is the request's own,
+and is the call's error). The SDK's reporter and service clients retry as
+"Signed requests" says the clients do: once on `stale_request` with the
+offset its `Date` gives, and three times on `limit_reached` and `busy`,
+after 1, 2 and 4 seconds with up to a quarter more of jitter, signing each
+attempt anew; the error a caller then gets carries the answer's
+`Retry-After` in seconds (`retryAfterS`) when it named one. Their
+`instance` is an origin: Clax is served at the root of its own host, and a
+URL with a path, query or fragment is a `TypeError`. `QueueErrorCode`
+(`web/sdk/src/types.ts`) lists the codes the queue routes answer, and the
+reporter routes' tests fail on a refusal whose code it lacks.
 
 | Route | Body | Answer |
 |---|---|---|
