@@ -58,8 +58,25 @@
 // `--config-only` stops after step 5 and runs neither wrangler nor a build:
 // it needs no login and changes nothing but the config file.
 //
+// --env <name>: the environment (docs/environments.md, deploy-lib.mjs
+// envOf), which names the Worker and the resources of step 3: prod (the
+// default: the Worker clax, the bucket clax-assets, the queue
+// clax-artifacts-events, the namespace clax), dev (clax-dev, clax-assets-dev,
+// clax-artifacts-events-dev, clax-dev), or a preview's name such as pr-12
+// (the Worker clax-pr-12, versions in memory, the shared bucket
+// clax-assets-preview, whose objects expire after 30 days). A preview
+// deployed with --ci is given no SETUP_SECRET or CLAX_TOKEN: its owner signs
+// in with GitHub, so --ci needs --github-client-id for it.
+//
+// --site-zone <zone>: the zone the site domain is on, when the site domain
+// is under it (a preview's pr-12.<zone>; default: the site domain itself).
+// The wildcard route is on that zone, and with CLOUDFLARE_API_TOKEN set the
+// deploy makes the proxied DNS record *.<site domain> in it
+// (cloudflare-api.mjs); its certificate takes Total TLS on the zone.
+//
 // Options: --public <host>, --site-domain <domain>, --zone <zone>, --store
-// artifacts|memory (default artifacts), --name <worker> (default clax),
+// artifacts|memory (default artifacts), --name <worker> (default: the
+// environment's),
 // --account <ID> (else CLOUDFLARE_ACCOUNT_ID, else the login's one account),
 // --rotate-secrets, --diag (--no-diag, the default, keeps them off),
 // --no-build, --wait <s> (default 600), --out <path>, --config-only,
@@ -113,7 +130,8 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync
 import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { dirname, join, resolve } from "node:path";
-import { buildId, builtFromRefusal, checkCiOptions, ciSecretsRefusal, doneText, healthOf, partialTriggerUpdate, prodTipOf, productionGate, reelVars, versionIdOf } from "./deploy-lib.mjs";
+import { cloudflare, expiryRule, hasRule } from "./cloudflare-api.mjs";
+import { PREVIEW_ASSET_DAYS, buildId, builtFromRefusal, checkCiOptions, ciSecretsRefusal, doneText, envOf, healthOf, partialTriggerUpdate, prodTipOf, productionGate, reelVars, siteZoneOf, versionIdOf, wildcardRecordOf, wranglerError } from "./deploy-lib.mjs";
 import { BUILD, BUILT_FROM, HERE, baseConfig, embedsWebUi } from "./harness.mjs";
 
 const WRANGLER = join(HERE, "node_modules/.bin/wrangler");
@@ -138,15 +156,12 @@ function moveOldRecords() {
     // left: files already in RECORDS under the same name
   }
 }
-const BUCKET = "clax-assets";
-const QUEUE = "clax-artifacts-events";
-const NAMESPACE = "clax";
 // Workers Paid: 10 MB after compression; Free: 3 MB.
 const PAID_LIMIT_KIB = 10 * 1024;
 
 export function parseArgs(argv) {
-  const o = { store: "artifacts", storeGiven: false, name: "clax", wait: 600, diag: false, build: true, dryRun: false, yes: false, rotate: false, configOnly: false, ci: false, production: false, fromLaptop: false };
-  const takes = new Set(["--public", "--site-domain", "--zone", "--store", "--name", "--account", "--wait", "--out", "--github-client-id", "--owner-github", "--legal", "--terms-url", "--privacy-url", "--legal-version", "--retired-content-origin", "--reel-url", "--reel-poster-url"]);
+  const o = { store: "artifacts", storeGiven: false, wait: 600, diag: false, build: true, dryRun: false, yes: false, rotate: false, configOnly: false, ci: false, production: false, fromLaptop: false };
+  const takes = new Set(["--public", "--site-domain", "--zone", "--store", "--name", "--account", "--wait", "--out", "--github-client-id", "--owner-github", "--legal", "--terms-url", "--privacy-url", "--legal-version", "--retired-content-origin", "--reel-url", "--reel-poster-url", "--env", "--site-zone"]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const [flag, inline] = a.includes("=") ? a.split(/=(.*)/s) : [a, undefined];
@@ -173,6 +188,16 @@ export function parseArgs(argv) {
     else throw new Error(`unknown option ${a} (see the top of deploy.mjs)`);
   }
   if (!["artifacts", "memory"].includes(o.store)) throw new Error(`--store is artifacts or memory, not ${o.store}`);
+  // The environment's Cloudflare resources (deploy-lib.mjs envOf); --name
+  // still names another Worker.
+  o.res = envOf(o.env);
+  o.ephemeral = o.res.ephemeral;
+  o.name ??= o.res.worker;
+  if (o.ephemeral) {
+    if (o.storeGiven && o.store !== "memory") throw new Error(`a preview (--env ${o.res.env}) keeps its versions in memory: it takes no --store ${o.store}`);
+    o.store = "memory";
+  }
+  if (o.production && o.res.env !== "prod") throw new Error(`--production is the prod environment's: it takes no --env ${o.res.env}`);
   if (o["retired-content-origin"] !== undefined && !retiredContentOrigin({ retired_content_origin: o["retired-content-origin"] })) {
     throw new Error(`--retired-content-origin takes an https:// origin (e.g. https://content.example.com), not ${o["retired-content-origin"]}`);
   }
@@ -270,10 +295,6 @@ function run(cmd, args, env = {}) {
 }
 
 const firstLine = (s) => s.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("⛅️") && !/^─+$/.test(l)) ?? "";
-const lastError = (r) => {
-  const lines = `${r.err}\n${r.out}`.split("\n").map((l) => l.trim()).filter(Boolean);
-  return lines.find((l) => /^✘|ERROR|error/i.test(l)) ?? lines.at(-1) ?? `exit ${r.code}`;
-};
 
 /** The JSON value wrangler printed after any banner. */
 function jsonIn(text) {
@@ -348,7 +369,10 @@ async function hostnames(o) {
       (await ask(o, "Site domain (a zone of its own on this account; each artifact is served at <ID>.<site domain>), e.g. example.run")),
     pub,
   );
-  return { pub, site };
+  // The zone the site route is on: the site domain itself, unless it is
+  // under one (a preview's pr-<N>.<zone>).
+  const siteZone = siteZoneOf(site, o["site-zone"] ?? readRecord(pub).site_zone);
+  return { pub, site, zone: siteZone };
 }
 
 /** The login and the account to use; `null` when not logged in. */
@@ -379,14 +403,14 @@ async function ensure(what, args, exists, account) {
   const text = `${r.out}\n${r.err}`;
   if (r.code === 0) return info(`${what}: created`);
   if (exists.test(text)) return info(`${what}: exists`);
-  throw new Error(`${what}: ${lastError(r)}\n   (wrangler ${args.join(" ")})`);
+  throw new Error(`${what}: ${wranglerError(r)}\n   (wrangler ${args.join(" ")})`);
 }
 
-async function artifactsNamespace(account, dryRun) {
+async function artifactsNamespace(account, dryRun, NAMESPACE) {
   const list = await wrangler(["artifacts", "namespaces", "list", "--json"], { account });
   if (list.code !== 0) {
     throw new Error(
-      `Artifacts is not reachable on this account: ${lastError(list)}\n` +
+      `Artifacts is not reachable on this account: ${wranglerError(list)}\n` +
         "   Is the Artifacts beta enabled for it (dashboard > Storage & databases > Artifacts)? " +
         "Deploy with --store memory to run without it.",
     );
@@ -404,9 +428,9 @@ async function artifactsNamespace(account, dryRun) {
   // A namespace is made by its first repository.
   const probe = `clax-deploy-probe-${Date.now()}`;
   const made = await wrangler(["artifacts", "repos", "create", probe, "--namespace", NAMESPACE, "--default-branch", "main", "--json"], { account });
-  if (made.code !== 0) throw new Error(`creating the namespace's probe repository failed: ${lastError(made)}`);
+  if (made.code !== 0) throw new Error(`creating the namespace's probe repository failed: ${wranglerError(made)}`);
   const gone = await wrangler(["artifacts", "repos", "delete", probe, "--namespace", NAMESPACE, "--force"], { account });
-  info(`Artifacts namespace ${NAMESPACE}: created${gone.code === 0 ? "" : ` (deleting the probe repository ${probe} failed: ${lastError(gone)})`}`);
+  info(`Artifacts namespace ${NAMESPACE}: created${gone.code === 0 ? "" : ` (deleting the probe repository ${probe} failed: ${wranglerError(gone)})`}`);
 }
 
 const KEK_HEX = /^[0-9a-f]{64}$/i;
@@ -489,7 +513,7 @@ export function retiredContentOrigin(record) {
   }
 }
 
-function deployConfig(o, pub, site, account, github, legal, out, retired, build, commit) {
+function deployConfig(o, pub, site, zone, account, github, legal, out, retired, build, commit) {
   const c = baseConfig();
   delete c.$schema;
   // The config lives in target/deploy/, so its paths name the crate's files.
@@ -506,7 +530,7 @@ function deployConfig(o, pub, site, account, github, legal, out, retired, build,
   // `*.<site>` (README.md, "DNS for the public host and the site domain").
   c.routes = [
     { pattern: pub, custom_domain: true },
-    { pattern: `*.${site}/*`, zone_name: site },
+    { pattern: `*.${site}/*`, zone_name: zone },
   ];
   // The retired content host stays a custom domain of the Worker, which
   // answers its old asset addresses with a redirect to their sites.
@@ -537,10 +561,15 @@ function deployConfig(o, pub, site, account, github, legal, out, retired, build,
     ...(legal.terms_url ? { TERMS_URL: legal.terms_url, PRIVACY_URL: legal.privacy_url, LEGAL_VERSION: legal.legal_version } : {}),
     ...reelVars(o),
   };
+  // The environment's own bucket, namespace and queue (deploy-lib.mjs envOf).
+  for (const b of c.r2_buckets ?? []) if (b.binding === "ASSETS") b.bucket_name = o.res.bucket;
   if (o.store === "memory") {
     // No Artifacts: neither its binding nor its events' queue.
     delete c.artifacts;
     delete c.queues;
+  } else {
+    for (const a of c.artifacts ?? []) a.namespace = o.res.namespace;
+    for (const q of c.queues?.consumers ?? []) q.queue = o.res.queue;
   }
   const header =
     "// Generated by deploy.mjs from wrangler.jsonc; edit that, or deploy.mjs's\n" +
@@ -692,7 +721,7 @@ export function siteHealthy(res, body) {
 
 /** Checks a random site host's health; failing, prints each manual step
  * with what it found. Answers whether the site host is healthy. */
-async function checkSiteHost(site, account, seconds) {
+async function checkSiteHost(site, zone, account, seconds) {
   const host = `${randomSiteId()}.${site}`;
   const url = `https://${host}/_clax/healthz`;
   step(`Checking a site host: ${url}`);
@@ -702,25 +731,65 @@ async function checkSiteHost(site, account, seconds) {
   // Worker without site hosts, Cloudflare's error pages, a redirect, a
   // parking page) is not the Worker serving sites.
   if (await waitHealthy(url, seconds, siteHealthy)) return true;
-  const [zone, wildcard, cert] = await Promise.all([zoneFound(site), wildcardFound(host), certificateFound(host)]);
+  const [zoneNs, wildcard, cert] = await Promise.all([zoneFound(zone), wildcardFound(host), certificateFound(host)]);
   const mark = (r) => (r.ok ? "done" : "TO DO");
+  // The record's name within the zone: `*`, or `*.pr-12` below it.
+  const name = site === zone ? "*" : `*.${site.slice(0, -zone.length - 1)}`;
   info(`the site domain's hosts are not served yet. What a wildcard needs, that deploy.mjs cannot do through wrangler:`);
-  info(`1. [${mark(zone)}] the zone ${site} on account ${account ?? "(this one)"} (dashboard > Add a domain), its registrar pointing at Cloudflare's name servers`);
-  info(`   found: ${zone.found}`);
-  info(`2. [${mark(wildcard)}] a proxied DNS record for * in ${site} (dashboard > ${site} > DNS > Records: type AAAA, name *, content 100::, Proxied)`);
+  info(`1. [${mark(zoneNs)}] the zone ${zone} on account ${account ?? "(this one)"} (dashboard > Add a domain), its registrar pointing at Cloudflare's name servers`);
+  info(`   found: ${zoneNs.found}`);
+  info(`2. [${mark(wildcard)}] a proxied DNS record for ${name} in ${zone} (dashboard > ${zone} > DNS > Records: type AAAA, name ${name}, content 100::, Proxied${site === zone ? "" : "; deploy.mjs makes it when given CLOUDFLARE_API_TOKEN"})`);
   info(`   found: ${wildcard.found}`);
-  info(`3. [${mark(cert)}] a certificate whose hosts include *.${site} (if Universal SSL's does not: Advanced Certificate Manager or Total TLS)`);
+  info(`3. [${mark(cert)}] a certificate whose hosts include *.${site} (${site === zone ? "if Universal SSL's does not: Advanced Certificate Manager or Total TLS" : `Universal SSL covers one level only: Total TLS, with Advanced Certificate Manager, on ${zone}`})`);
   info(`   found: ${cert.found}`);
   info(`then run deploy.mjs again (it checks ${url.replace(host, `<ID>.${site}`)} again)`);
   return false;
 }
 
+/** What wrangler cannot make, through the Cloudflare API with
+ * CLOUDFLARE_API_TOKEN (cloudflare-api.mjs): the proxied wildcard record of
+ * a site domain below its zone (`*.pr-12.<zone>`), and the rule that
+ * expires the preview bucket's objects after PREVIEW_ASSET_DAYS days.
+ * Without a token, or in a dry run, it says what it would make; a
+ * missing record shows again in the site host check's steps. */
+async function previewResources(o, { who, account, site, zone, BUCKET }) {
+  const record = wildcardRecordOf(site, zone);
+  const token = process.env.CLOUDFLARE_API_TOKEN?.trim();
+  if (!record && !o.ephemeral) return;
+  const api = token && who && !o.dryRun ? cloudflare(token) : null;
+  if (record) {
+    if (!api) info(`${o.dryRun ? "would make" : "skipped (no CLOUDFLARE_API_TOKEN)"}, if missing: the proxied DNS record ${record} (AAAA 100::) in the zone ${zone}`);
+    else {
+      const zoneId = await api.zoneId(zone);
+      const have = await api.dnsRecords(zoneId, record);
+      if (have.length) info(`DNS record ${record}: exists`);
+      else {
+        await api.createProxiedRecord(zoneId, record, `clax: the site hosts of the Worker ${o.name}`);
+        info(`DNS record ${record}: created (proxied AAAA 100::)`);
+      }
+    }
+  }
+  if (o.ephemeral) {
+    const rule = expiryRule(PREVIEW_ASSET_DAYS);
+    if (!api) info(`${o.dryRun ? "would set" : "skipped (no CLOUDFLARE_API_TOKEN)"}: the R2 bucket ${BUCKET}'s rule deleting objects after ${PREVIEW_ASSET_DAYS} days`);
+    else {
+      const rules = (await api.lifecycle(account, BUCKET))?.rules ?? [];
+      if (hasRule(rules, rule)) info(`R2 bucket ${BUCKET}: objects expire after ${PREVIEW_ASSET_DAYS} days`);
+      else {
+        await api.putLifecycle(account, BUCKET, [...rules.filter((r) => r.id !== rule.id), rule]);
+        info(`R2 bucket ${BUCKET}: set its objects to expire after ${PREVIEW_ASSET_DAYS} days`);
+      }
+    }
+  }
+}
+
 /** Takes the hostnames and writes the deploy config (steps 2 and 5). */
 async function writeDeployConfig(o, account) {
   step("Hostnames");
-  const { pub, site } = await hostnames(o);
+  const { pub, site, zone } = await hostnames(o);
+  info(`env    ${o.res.env} (worker ${o.name}, bucket ${o.res.bucket}${o.store === "artifacts" ? `, queue ${o.res.queue}, Artifacts namespace ${o.res.namespace}` : ""})`);
   info(`public https://${pub}`);
-  info(`sites  https://<artifact ID>.${site}`);
+  info(`sites  https://<artifact ID>.${site}${zone === site ? "" : ` (on the zone ${zone})`}`);
 
   step("Deploy config");
   const early = readRecord(pub);
@@ -737,9 +806,9 @@ async function writeDeployConfig(o, account) {
   const configPath = o.out ? resolve(o.out) : DEPLOY_CONFIG;
   const commit = await sourceCommit();
   const build = buildId(commit, new Date(), randomBytes(4).toString("hex"));
-  const config = deployConfig(o, pub, site, account, github, legal, configPath, retired, build, commit);
+  const config = deployConfig(o, pub, site, zone, account, github, legal, configPath, retired, build, commit);
   info(`wrote ${configPath} (worker ${config.name}, REPO_STORE=${o.store}, SITE_DOMAIN=${site}, diagnostics ${o.diag ? "on" : "off"}, build ${build})`);
-  return { pub, site, github, legal, config, configPath, retired, commit, build };
+  return { pub, site, zone, github, legal, config, configPath, retired, commit, build };
 }
 
 async function main() {
@@ -772,10 +841,11 @@ async function main() {
   }
   const account = who?.account.id;
 
-  const { pub, site, github, legal, config, configPath, retired, commit, build } = await writeDeployConfig(o, account);
+  const { pub, site, zone, github, legal, config, configPath, retired, commit, build } = await writeDeployConfig(o, account);
   if (o.diag) diagReminder(pub);
 
   step("Resources");
+  const { bucket: BUCKET, queue: QUEUE, namespace: NAMESPACE } = o.res;
   if (!who) {
     info(`skipped (no login): wrangler r2 bucket create ${BUCKET}`);
     if (o.store === "artifacts") {
@@ -784,12 +854,12 @@ async function main() {
     }
   } else if (o.dryRun) {
     info(`would make, if missing: R2 bucket ${BUCKET}${o.store === "artifacts" ? `, queue ${QUEUE}` : ""}`);
-    if (o.store === "artifacts") await artifactsNamespace(account, true);
+    if (o.store === "artifacts") await artifactsNamespace(account, true, NAMESPACE);
   } else {
     await ensure(`R2 bucket ${BUCKET}`, ["r2", "bucket", "create", BUCKET], /already exists|10004/i, account);
     if (o.store === "artifacts") {
       await ensure(`Queue ${QUEUE}`, ["queues", "create", QUEUE], /already (exists|taken)|11009/i, account);
-      await artifactsNamespace(account, false);
+      await artifactsNamespace(account, false, NAMESPACE);
       info(
         "Artifacts sends `pushed` events only to a subscription per repository (source artifacts.repo); " +
           "none is made here, so a git push becomes a version at the artifact's next publish " +
@@ -797,20 +867,24 @@ async function main() {
       );
     }
   }
+  await previewResources(o, { who, account, site, zone, BUCKET });
 
   step("Secrets");
   const record = readRecord(pub);
   const have = who ? await secretNames(account, configPath) : [];
   let secrets = null;
-  const needed = ["SETUP_SECRET", "CLAX_TOKEN"].filter((n) => o.rotate || !have.includes(n));
+  // A preview deployed by CI gets neither: setup stays closed, the instance
+  // makes its own owner token, and the owner signs in with GitHub.
+  const needed = o.ci && o.ephemeral ? [] : ["SETUP_SECRET", "CLAX_TOKEN"].filter((n) => o.rotate || !have.includes(n));
   if (o.ci && who) {
     // First-time setup stays on a laptop: a --ci deploy changes no secret
-    // but the GitHub client secret it is given.
-    const refusal = ciSecretsRefusal(have, { githubClientId: github.client_id, githubSecretGiven: Boolean(process.env.GITHUB_CLIENT_SECRET?.trim()) });
+    // but the GitHub client secret it is given (and a preview's CLAX_KEK).
+    const refusal = ciSecretsRefusal(have, { githubClientId: github.client_id, githubSecretGiven: Boolean(process.env.GITHUB_CLIENT_SECRET?.trim()), ephemeral: o.ephemeral });
     if (refusal && !o.dryRun) throw new Error(refusal);
     if (refusal) info(`a deploy would refuse: ${refusal}`);
   }
   if (!who) info("skipped (no login): wrangler secret list; a deploy generates SETUP_SECRET and CLAX_TOKEN when the Worker has neither");
+  else if (o.ci && o.ephemeral) info("a preview: no SETUP_SECRET (setup stays closed) and no CLAX_TOKEN (the instance makes its own); the owner signs in with GitHub");
   else if (needed.length === 0) {
     info(`the Worker has SETUP_SECRET and CLAX_TOKEN; kept${record.setup_secret ? ` (in ${recordPath(pub)})` : " (not shown: --rotate-secrets makes new ones)"}`);
   } else if (o.dryRun) info(`would generate ${needed.join(" and ")} and upload them with the deploy`);
@@ -906,7 +980,7 @@ async function main() {
     if (secretsFile) rmSync(secretsFile, { force: true });
   }
   const size = uploadSize(r.out + r.err);
-  if (r.code !== 0) throw new Error(`wrangler deploy failed${retried ? " again, after its one retry" : ""}: ${lastError(r)}`);
+  if (r.code !== 0) throw new Error(`wrangler deploy failed${retried ? " again, after its one retry" : ""}: ${wranglerError(r)}`);
   if (size) {
     const pct = Math.round((size.gzip / PAID_LIMIT_KIB) * 100);
     info(`upload ${(size.total / 1024).toFixed(2)} MiB, ${(size.gzip / 1024).toFixed(2)} MiB gzipped: ${pct}% of Workers Paid's 10 MiB`);
@@ -921,14 +995,19 @@ async function main() {
 
   // An older record's content_origin is kept as the retired one; its
   // version_id was an earlier deploy's.
-  const { content_origin: _old, retired_content_origin: _kept, version_id: _was, ...kept } = record;
+  const { content_origin: _old, retired_content_origin: _kept, version_id: _was, site_zone: _zone, queue: _queue, namespace: _namespace, ...kept } = record;
   const versionId = versionIdOf(r.out + r.err);
   const next = {
     ...kept,
     ...(retired ? { retired_content_origin: retired } : {}),
     public_origin: `https://${pub}`,
     site_domain: site,
+    ...(zone !== site ? { site_zone: zone } : {}),
+    env: o.res.env,
     worker: o.name,
+    // What smoke-remote.mjs and teardown.mjs act on (deploy-lib.mjs envOf).
+    bucket: o.res.bucket,
+    ...(o.store === "artifacts" ? { queue: o.res.queue, namespace: o.res.namespace } : {}),
     account,
     store: o.store,
     diag: o.diag,
@@ -957,8 +1036,10 @@ async function main() {
       `Workers > ${o.name} > Settings > Domains & Routes lists ${pub} and *.${site}/*; \`npx wrangler tail ${o.name}\``);
   }
   // The wildcard's DNS record and certificate are the account's, not the
-  // deploy's: a shorter wait, then the steps that are left.
-  const siteOk = await checkSiteHost(site, account, Math.min(o.wait, 120));
+  // deploy's: a shorter wait, then the steps that are left. A site domain
+  // below its zone (a preview's) has a record this deploy may just have
+  // made, whose certificate Total TLS issues only then: the full wait.
+  const siteOk = await checkSiteHost(site, zone, account, zone === site ? Math.min(o.wait, 120) : o.wait);
 
   step("Done");
   // The first-time setup text only when this deploy generated the secrets.

@@ -56,4 +56,17 @@ if [ "$got" != "$(printf '%s\n' --legal bundled --production --smoke)" ]; then
     printf '%s\n' "$got" | sed 's/^/    | /' >&2
     missing=1
 fi
+# env-deploy deploys another environment, never prod (clax-dev-deploy's),
+# and hands the rest on intact after --env.
+got="$(cd "$tmp" && just env-deploy dev "${args[@]}" 2>&1 | tail -n "$((${#args[@]} + 4))")" || true
+if [ "$got" != "$(printf '%s\n' --legal bundled --env dev "${args[@]}")" ] || [ -e "$tmp/pwned" ]; then
+    echo "just env-deploy does not pass --legal bundled --env and its arguments intact; got:" >&2
+    printf '%s\n' "$got" | sed 's/^/    | /' >&2
+    missing=1
+fi
+if got="$(cd "$tmp" && just env-deploy prod 2>&1)" || [[ "$got" != *"just clax-dev-deploy"* ]]; then
+    echo "just env-deploy prod is not refused; got:" >&2
+    printf '%s\n' "$got" | sed 's/^/    | /' >&2
+    missing=1
+fi
 exit "$missing"

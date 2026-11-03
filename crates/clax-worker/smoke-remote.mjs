@@ -5,6 +5,8 @@
 //   node smoke-remote.mjs --url https://clax.example.com --setup-secret … --token …
 //   node smoke-remote.mjs --url … --session <the clax session cookie's value> --token …
 //   node smoke-remote.mjs --url … --site-domain example.run …   # the site domain (else the record's site_domain)
+//   node smoke-remote.mjs --url … --queue … --namespace …      # the environment's queue and Artifacts namespace
+//                                                # (else the record's queue and namespace, else prod's)
 //   CLAX_SMOKE_TOKEN=cxa_… node smoke-remote.mjs --deploy …    # as an agent token (or --agent-token cxa_…)
 //   node smoke-remote.mjs --local [--no-build]   # against a fresh `wrangler dev --local`, REPO_STORE=memory
 //   node smoke-remote.mjs --local --setup-done   # the same, its setup done beforehand, as after an earlier
@@ -364,6 +366,7 @@ async function smoke(c, o) {
   const dbIds = [];
   let agentTokenId = "";
   let subscription = "";
+  const queue = o.queue ?? "clax-artifacts-events";
   let madeOwner = false;
   // An agent token is chosen whatever setup's state (smokeCredential), so
   // the steps before the credential step already know it.
@@ -756,9 +759,9 @@ async function smoke(c, o) {
     const wr = join(HERE, "node_modules/.bin/wrangler");
     const env = { ...process.env, WRANGLER_SEND_METRICS: "false", FORCE_COLOR: "0", ...(o.account ? { CLOUDFLARE_ACCOUNT_ID: o.account } : {}) };
     const name = `clax-smoke-${RUN}`;
-    const r = await run(wr, ["queues", "subscription", "create", "clax-artifacts-events", "--source", "artifacts.repo", "--events", "pushed", "--source-namespace", "clax", "--source-repo-name", `a-${aid}`, "--name", name], { cwd: HERE, env });
+    const r = await run(wr, ["queues", "subscription", "create", queue, "--source", "artifacts.repo", "--events", "pushed", "--source-namespace", o.namespace ?? "clax", "--source-repo-name", `a-${aid}`, "--name", name], { cwd: HERE, env });
     if (r.code !== 0) throw new Error(`wrangler queues subscription create: ${short((r.err || r.out).trim(), 500)} (logged in? \`npx wrangler login\`)`);
-    const list = await run(wr, ["queues", "subscription", "list", "clax-artifacts-events", "--json"], { cwd: HERE, env });
+    const list = await run(wr, ["queues", "subscription", "list", queue, "--json"], { cwd: HERE, env });
     try {
       const j = JSON.parse(list.out.slice(list.out.indexOf("[")));
       subscription = j.find((s) => s.name === name)?.id ?? "";
@@ -830,7 +833,7 @@ async function smoke(c, o) {
   console.log("\n-- cleanup");
   if (subscription) {
     const wr = join(HERE, "node_modules/.bin/wrangler");
-    const r = await run(wr, ["queues", "subscription", "delete", "clax-artifacts-events", "--id", subscription, "--force"], { cwd: HERE, env: { ...process.env, WRANGLER_SEND_METRICS: "false" } });
+    const r = await run(wr, ["queues", "subscription", "delete", queue, "--id", subscription, "--force"], { cwd: HERE, env: { ...process.env, WRANGLER_SEND_METRICS: "false" } });
     console.log(`     subscription ${subscription}: ${r.code === 0 ? "deleted" : `left (${short(r.err || r.out, 200)})`}`);
   }
   if (!flag("--keep") && c.mcpBearer) {
@@ -932,6 +935,10 @@ async function main() {
     siteDomain: opt("--site-domain"),
     // The store, until the diagnostics say (an agent token's smoke has none).
     store: opt("--store"),
+    // Where Artifacts sends pushed events, and the repositories' namespace
+    // (else the record's, else prod's).
+    queue: opt("--queue"),
+    namespace: opt("--namespace"),
   };
   let base = opt("--url");
   let token = opt("--token") ?? process.env.CLAX_TOKEN;
@@ -948,6 +955,10 @@ async function main() {
     o.account ??= r.account;
     o.siteDomain ??= r.site_domain;
     o.store ??= r.store;
+    // The environment's queue and namespace (deploy-lib.mjs envOf); a
+    // record from before environments is prod's.
+    o.queue ??= r.queue;
+    o.namespace ??= r.namespace;
     o.onSetup = () => writeFileSync(record, JSON.stringify({ ...r, setup_done: true }, null, 2) + "\n", { mode: 0o600 });
   }
   if (o.local) {

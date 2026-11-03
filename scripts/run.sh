@@ -33,6 +33,9 @@
 #   scripts/run.sh home-bundle       the home app's bundle, as the app builds pack it, and print its path
 #   scripts/run.sh reel --fast <id>  record the sizzle reel's vignette <id> in fast mode
 #                                    (//web/reel:<id>_fast) into target/reel/<id>/; Bazel only
+#   scripts/run.sh wrangler [args]   run the Worker's locked wrangler (whoami, login, tail, …):
+#                                    //crates/clax-worker:wrangler (natively its stamped
+#                                    pnpm install in crates/clax-worker)
 #   scripts/run.sh which             say which build system would run, and why
 #   scripts/run.sh --dry-run <task>  say what would run, and run nothing
 #
@@ -84,6 +87,7 @@ case "$task" in
     app-test|app-integration|app-apk|app-macos) needs=(rust web flutter) ;;
     home-bundle) needs=(flutter) ;;
     reel) needs=(rust web) ;;
+    wrangler) needs=(web) ;;
     *) usage ;;
 esac
 
@@ -304,6 +308,7 @@ _bazel() {
         app-macos) _bazel_out //apps/clax_app:macos_app ;;
         home-bundle) _bazel_out //apps/clax_app:home_bundle ;;
         reel) _reel "$@" ;;
+        wrangler) _run "$BAZEL" run --lockfile_mode=error --noshow_progress --show_result=0 --ui_event_filters=-info //crates/clax-worker:wrangler -- "$@" ;;
     esac
 }
 
@@ -403,6 +408,10 @@ _native() {
             _run ./scripts/build-home-bundle.sh --i-know-what-i-am-doing &&
                 { [ "$dry" = 1 ] || echo "$PWD/apps/clax_app/assets/home/home.clax"; }
             ;;
+        wrangler)
+            _run ./scripts/pnpm-install-stamped.sh crates/clax-worker --silent &&
+                _run crates/clax-worker/node_modules/.bin/wrangler "$@"
+            ;;
     esac
 }
 
@@ -447,7 +456,7 @@ status=$?
 _perf_record
 
 if [ "$status" -eq 0 ]; then result="passed"; else result="failed (exit $status)"; fi
-case "$task" in build|web|bin|install|rust-project|app-apk|app-macos|home-bundle) result="${result/passed/done}" ;; esac
+case "$task" in build|web|bin|install|rust-project|app-apk|app-macos|home-bundle|wrangler) result="${result/passed/done}" ;; esac
 line="── \`$task\` $result with the native tools, not Bazel. CI gates on Bazel, and the two can differ: this does not say what CI will."
 if [ "$BUILD_SYSTEM_FALLBACK" = 1 ]; then
     line="$line Install Bazelisk for the same checks: $(build_system_install_hint)"

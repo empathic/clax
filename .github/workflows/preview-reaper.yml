@@ -1,0 +1,44 @@
+name: Preview reaper
+
+# Tears down every preview whose pull request is closed
+# (crates/clax-worker/teardown.mjs --reap). preview.yml tears a preview
+# down on its pull request's `closed` event, but GitHub sends none when it
+# cannot build the pull request's merge ref (a conflict, a stale draft, a
+# stacked pull request closed by deleting its base), and a teardown can
+# fail. It lists the account's clax-pr-<N> Workers and keeps those whose
+# pull request is open. Scheduled runs use main's copy of this file; the
+# schedule is in UTC.
+on:
+  schedule:
+    - cron: "0 12 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: List what would be torn down, deleting nothing
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  reap:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # The preview credentials: the reaper deletes previews only (teardown.mjs
+    # refuses dev and prod).
+    environment: preview
+    permissions: { contents: read, pull-requests: read }
+    concurrency: { group: preview-reaper, cancel-in-progress: false }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: 26 }
+      - name: Reap (crates/clax-worker/teardown.mjs --reap)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIEW_SITE_ZONE: ${{ vars.PREVIEW_SITE_ZONE }}
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run && '--dry-run' || '' }}
+        run: cd crates/clax-worker && node teardown.mjs --reap --site-zone "$PREVIEW_SITE_ZONE" --repo "$GITHUB_REPOSITORY" $DRY_RUN

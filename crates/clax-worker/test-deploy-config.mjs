@@ -140,6 +140,48 @@ try {
     assert.equal(r.config.vars.SITE_DOMAIN, "other.run");
   });
 
+  check("prod deploys clax.dev's Worker, bucket, queue and namespace", () => {
+    const r = deploy(["--public", "clax.example.com", "--site-domain", "example.run"]);
+    assert.equal(r.status, 0, r.text);
+    assert.equal(r.config.name, "clax");
+    assert.deepEqual(r.config.r2_buckets, [{ binding: "ASSETS", bucket_name: "clax-assets" }]);
+    assert.equal(r.config.artifacts[0].namespace, "clax");
+    assert.equal(r.config.queues.consumers[0].queue, "clax-artifacts-events");
+  });
+
+  check("dev deploys a Worker, bucket, queue and namespace of its own", () => {
+    const r = deploy(["--env", "dev", "--public", "dev.example.com", "--site-domain", "dev-example.run"]);
+    assert.equal(r.status, 0, r.text);
+    assert.equal(r.config.name, "clax-dev");
+    assert.deepEqual(r.config.r2_buckets, [{ binding: "ASSETS", bucket_name: "clax-assets-dev" }]);
+    assert.equal(r.config.artifacts[0].namespace, "clax-dev");
+    assert.equal(r.config.queues.consumers[0].queue, "clax-artifacts-events-dev");
+    assert.equal(r.config.vars.REPO_STORE, "artifacts");
+  });
+
+  check("a preview is its own Worker in memory, its sites under the zone's pr-<N>", () => {
+    const r = deploy(["--env", "pr-12", "--public", "pr-12.preview.dev", "--site-domain", "pr-12.preview.run", "--site-zone", "preview.run"]);
+    assert.equal(r.status, 0, r.text);
+    assert.equal(r.config.name, "clax-pr-12");
+    assert.deepEqual(r.config.routes, [
+      { pattern: "pr-12.preview.dev", custom_domain: true },
+      { pattern: "*.pr-12.preview.run/*", zone_name: "preview.run" },
+    ]);
+    assert.deepEqual(r.config.r2_buckets, [{ binding: "ASSETS", bucket_name: "clax-assets-preview" }]);
+    assert.equal(r.config.vars.REPO_STORE, "memory");
+    assert.equal(r.config.vars.GIT_SMART_HTTP, "1");
+    assert.equal(r.config.vars.SITE_DOMAIN, "pr-12.preview.run");
+    assert.equal("artifacts" in r.config, false);
+    assert.equal("queues" in r.config, false);
+  });
+
+  check("a preview takes no --store artifacts", () =>
+    refused(["--env", "pr-12", "--store", "artifacts", "--public", "pr-12.preview.dev", "--site-domain", "pr-12.preview.run"], /keeps its versions in memory/));
+  check("--production goes with prod alone", () => refused(["--env", "dev", "--production", "--public", "dev.example.com", "--site-domain", "dev-example.run"], /--production is the prod environment's/));
+  check("an unknown environment is refused", () => refused(["--env", "Staging!", "--public", "x.example.com", "--site-domain", "x.run"], /--env takes prod, dev or a preview's name/));
+  check("a site domain outside --site-zone is refused", () =>
+    refused(["--env", "pr-12", "--public", "pr-12.preview.dev", "--site-domain", "pr-12.preview.run", "--site-zone", "other.run"], /not in the zone other\.run/));
+
   check("a site host is healthy only with the Worker's answer", () => {
     const res = (status, headers = {}) => ({ status, headers: new Headers(headers) });
     const ok = { "referrer-policy": "no-referrer", "content-type": "application/json" };

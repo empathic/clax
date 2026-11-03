@@ -1,6 +1,7 @@
 load("@aspect_rules_js//js:defs.bzl", "js_test")
 load("@bazel_lib//lib:copy_to_bin.bzl", "copy_to_bin")
 load("@npm_worker//:defs.bzl", "npm_link_all_packages")
+load("@npm_worker//crates/clax-worker:wrangler/package_json.bzl", wrangler_bin = "bin")
 load("//bazel:cargo.bzl", "cargo_package")
 load("//bazel/wasm:worker.bzl", "worker_bundle")
 
@@ -55,8 +56,26 @@ js_test(
     patch_node_fs = False,
 )
 
+# A preview's teardown and the reaper (teardown.mjs), and the Cloudflare API
+# calls deploy.mjs makes (cloudflare-api.mjs), against a fake Cloudflare
+# and GitHub API on a loopback port.
+js_test(
+    name = "teardown_test",
+    data = [":scripts"],
+    entry_point = "test-teardown.mjs",
+    node_options = ["--test"],
+    patch_node_fs = False,
+)
+
 # wrangler, from pnpm-lock.yaml.
 npm_link_all_packages(name = "node_modules")
+
+# The locked wrangler command line, for `just wrangler` (scripts/run.sh
+# wrangler): the package's own bin, as rules_js generates it, like
+# //web:playwright. `bazel run` starts it in the workspace's directory, so
+# its login is the user's own (wrangler keeps it in the user's
+# configuration directory).
+wrangler_bin.wrangler_binary(name = "wrangler")
 
 # What the checks run under `wrangler dev --local` read: the scripts, the
 # harness and wrangler.jsonc, beside the Worker as Bazel built it
@@ -76,6 +95,7 @@ copy_to_bin(
             "test-deploy-config.mjs",
             "test-feedback.mjs",
             "test-sandbox.mjs",
+            "test-teardown.mjs",
             "test-wasm.mjs",
         ],
     ) + ["wrangler.jsonc"],

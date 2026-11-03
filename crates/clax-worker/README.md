@@ -121,9 +121,11 @@ provider listens on 127.0.0.1, which the test vars
 
 clax.dev, Empathic's instance, is deployed from GitHub Actions on every
 push to `prod`, never from a laptop: [docs/prod.md](../../docs/prod.md) has
-the workflow and its GitHub setup. What follows sets up an instance (its
-first deploy, which generates its secrets, always runs from a laptop) and
-deploys any other.
+the workflow and its GitHub setup. Beside it, a `dev` environment deploys
+from every green push to `main`, and each pull request gets a preview
+(`deploy.mjs --env`, `teardown.mjs`): [docs/environments.md](../../docs/environments.md).
+What follows sets up an instance (its first deploy, which generates its
+secrets, runs from a laptop; a preview's from CI) and deploys any other.
 
 ### In one command
 
