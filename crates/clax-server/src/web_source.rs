@@ -26,8 +26,8 @@
 //! configured ([`fixtures`]).
 
 use clax_bot::web::page::{
-    Handling, decode, handling, links_of_html, links_of_markdown, media_type, media_type_of,
-    pretty_json, user_agent,
+    Handling, decode, handling, is_sniffed, links_of_html, links_of_markdown, media_type,
+    media_type_of, pretty_json, user_agent,
 };
 use clax_bot::web::url::{is_local_addr, redirect_allowed};
 use clax_bot::web::{
@@ -457,19 +457,27 @@ impl RestSource {
                 false,
             ))
         };
-        // A served type the rules refuse is refused before its body is
-        // read; an empty or octet-stream type is sniffed from the body.
+        // Before the body is read: an error status whose served type is not
+        // text has no readable body, and a type the rules refuse is
+        // refused. A type that says too little is sniffed from the body.
         let served = media_type(&declared);
-        if !served.is_empty()
-            && served != "application/octet-stream"
-            && handling(&served, format) == Handling::Unsupported
-        {
-            return Err(unsupported(&served, format));
+        if !is_sniffed(&served) && !handling(&served, format).is_textual() {
+            if status >= 400 {
+                return Err(http_error(&at, status));
+            }
+            if handling(&served, format) == Handling::Unsupported {
+                return Err(unsupported(&served, format));
+            }
         }
         let body = read_capped(resp, limits.max_bytes, &at)
             .await
             .map_err(gone)?;
         let content_type = media_type_of(&declared, &body);
+        // An error status is a page only with a readable body, as on the
+        // Worker.
+        if status >= 400 && (body.is_empty() || !handling(&content_type, format).is_textual()) {
+            return Err(http_error(&at, status));
+        }
         let (text, links) = match handling(&content_type, format) {
             Handling::Unsupported => return Err(unsupported(&content_type, format)),
             Handling::Html => {
@@ -517,6 +525,27 @@ impl RestSource {
             request_id: None,
         })
     }
+}
+
+/// The error of a fetch whose final answer at `url` is an error `status`
+/// without a readable body (empty, or not text): `web_unavailable`, gone
+/// out, retryable for a 5xx, 429 or 408. The Worker's source answers the
+/// same (`crates/clax-worker/src/web_source.rs`, `http_error`).
+fn http_error(url: &PublicUrl, status: u16) -> WebError {
+    let retryable = status >= 500 || status == 429 || status == 408;
+    let next = if retryable {
+        "Try again later, or use another source."
+    } else {
+        "Use another source."
+    };
+    unavailable(
+        format!(
+            "{} answered HTTP {status} without a readable body. {next}",
+            url.normalized()
+        ),
+        retryable,
+    )
+    .went_out(true)
 }
 
 /// The error of a call to Cloudflare's API that got no answer.
@@ -1565,6 +1594,64 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!((e.code, e.went_out), (CODE_WEB_TOO_LARGE, true), "{e}");
+    }
+
+    #[tokio::test]
+    async fn an_error_status_without_a_readable_body_is_unavailable() {
+        let server = Server::start(|r| {
+            let (status, rest) = r.path[1..].split_once('/').unwrap();
+            let status: u16 = status.parse().unwrap();
+            match rest {
+                "empty" => resp(status, "text/plain", Vec::new()),
+                "binary" => resp(status, "application/octet-stream", vec![0, 1, 2, 0]),
+                "image" => resp(status, "image/png", vec![0x89, b'P', b'N', b'G']),
+                "pdf" => resp(status, "application/pdf", b"%PDF-1.4".to_vec()),
+                _ => resp(status, "text/plain", "gone"),
+            }
+        })
+        .await;
+        let s = source(&server, true);
+        for (status, retryable) in [(404, false), (500, true)] {
+            // Empty and sniffed binary bodies after the download, an image
+            // and a raw document before it.
+            for (body, format) in [
+                ("empty", Format::Auto),
+                ("binary", Format::Auto),
+                ("image", Format::Auto),
+                ("pdf", Format::Raw),
+            ] {
+                let url = server.url("site.test", &format!("/{status}/{body}"));
+                let e = fetch(&s, &url, format, FetchLimits::default())
+                    .await
+                    .unwrap_err();
+                assert_eq!(
+                    (e.code, e.went_out, e.retryable),
+                    (CODE_WEB_UNAVAILABLE, true, retryable),
+                    "{status} {body}: {e}"
+                );
+                assert!(
+                    e.message
+                        .contains(&format!("answered HTTP {status} without a readable body")),
+                    "{e}"
+                );
+            }
+            // A readable error page is a page with its status.
+            let url = server.url("site.test", &format!("/{status}/text"));
+            let p = fetch(&s, &url, Format::Auto, FetchLimits::default())
+                .await
+                .unwrap();
+            assert_eq!((p.status, p.text.as_str()), (status, "gone"));
+        }
+        // A 200 image is still unsupported, not unavailable.
+        let e = fetch(
+            &s,
+            &server.url("site.test", "/200/image"),
+            Format::Auto,
+            FetchLimits::default(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.code, CODE_WEB_UNSUPPORTED_CONTENT_TYPE, "{e}");
     }
 
     #[tokio::test]

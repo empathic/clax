@@ -679,12 +679,20 @@ pub fn media_type(content_type: &str) -> String {
         .to_ascii_lowercase()
 }
 
+/// Whether a served media type ([`media_type`]) says too little to read a
+/// body by, so the body is sniffed ([`sniff`]): none, or
+/// `application/octet-stream`.
+#[must_use]
+pub fn is_sniffed(served: &str) -> bool {
+    served.is_empty() || served == "application/octet-stream"
+}
+
 /// The media type a body is read as: the served one ([`media_type`]),
-/// or, when none or `application/octet-stream` was served, [`sniff`]'s.
+/// or, when it says too little ([`is_sniffed`]), [`sniff`]'s.
 #[must_use]
 pub fn media_type_of(content_type: &str, body: &[u8]) -> String {
     let served = media_type(content_type);
-    if served.is_empty() || served == "application/octet-stream" {
+    if is_sniffed(&served) {
         sniff(body).to_string()
     } else {
         served
@@ -769,6 +777,25 @@ pub fn handling(content_type: &str, format: super::Format) -> Handling {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_missing_or_octet_stream_type_is_sniffed() {
+        assert!(is_sniffed(""));
+        assert!(is_sniffed("application/octet-stream"));
+        for served in ["text/plain", "text/html", "image/png", "application/x-foo"] {
+            assert!(!is_sniffed(served), "{served}");
+        }
+        // media_type_of follows it.
+        assert_eq!(
+            media_type_of("application/octet-stream", b"hi"),
+            "text/plain"
+        );
+        assert_eq!(media_type_of("", b"%PDF-1.4"), "application/pdf");
+        assert_eq!(
+            media_type_of("application/x-foo", b"hi"),
+            "application/x-foo"
+        );
+    }
 
     #[test]
     fn handling_follows_the_type_and_the_format() {
