@@ -138,7 +138,7 @@ shards = 2               # the StatefulSet's replicas
 [[instance]]
 name = "acme"            # lowercase letters, digits and inner dashes
 shard = 0                # the pod (clax-0) whose volume keeps it
-create = true            # may make its home (a new instance only)
+create = true            # may make its home: a new instance's first start only
 default = false          # true: answers hosts no instance names (one tenant only)
 paused = false           # true: stopped, its hosts answer 503
 config = '''
@@ -171,8 +171,9 @@ Every pod reloads the catalog every 5 s. When an instance is added it
 starts on its first request. When one is removed, paused, or its `config`
 or shard changes, it stops, and its next request starts it again from the
 new entry. A catalog that does not parse leaves the previous one in
-effect. The reload error is logged once, `/status` shows it, and
-`clax_fleet_catalog_stale` is 1. A pod that starts while the mounted
+effect, and so does one that gives an instance another shard while it has
+`create = true` (Moving an instance). The reload error is logged once,
+`/status` shows it, and `clax_fleet_catalog_stale` is 1. A pod that starts while the mounted
 catalog is bad exits saying why, so fix the ConfigMap. Kubernetes takes up
 to a minute to update a mounted ConfigMap, and until then a pod that lacks
 a new instance answers its host with the default instance (or 404).
@@ -183,6 +184,13 @@ until a release publishes it):
 ```
 docker run --rm -v "$PWD":/c ghcr.io/empathic/clax-fleet:0.6.0 check-catalog /c/fleet.toml
 ```
+
+**`create = true` is for a new instance's first start.** It lets the
+instance's shard make an empty home where it finds none, which the pod
+logs at `warn` (`making a new, empty home`). Once the instance has
+started, remove it from the entry: left on, a shard that finds no home
+(a wrong `shard`, a copy put in the wrong place) makes an empty instance
+that answers the tenant's hosts, its `/setup` open to the setup secret.
 
 **An instance's data is kept under its name.** Removing an entry stops the
 instance and keeps its home. Never give a removed instance's name to
@@ -277,7 +285,8 @@ Secret.
 
 **Scaling out:** raise `shards` in `my-clax/fleet.toml` and `count` under
 `replicas` in `my-clax/kustomization.yaml` together, to the same number,
-and apply. Give new instances the new shards with `create = true`. Change
+and apply. Give new instances the new shards with `create = true`, and
+remove it once each has started. Change
 the replicas there, not with `kubectl scale`: the next apply (or a GitOps
 controller) would put them back, taking the new shards' instances down. A
 pod whose ordinal is past `shards` serves nothing of its own and logs so.
@@ -294,9 +303,14 @@ pod whose ordinal is past `shards` serves nothing of its own and logs so.
 
 **Moving an instance** to another shard means moving its home with it.
 The new shard never makes an empty instance in its place, because without
-`create = true` a missing home keeps the instance down:
+`create = true` a missing home keeps the instance down. A catalog that
+changes an instance's shard while it still has `create = true` is refused
+(the previous one stays in effect, as for one that does not parse), but
+only by pods running when it arrives: a pod that starts with it takes it,
+so remove `create = true` before the move, not with it:
 
-1. Set `paused = true` on the instance, apply, and wait until
+1. Set `paused = true` on the instance, remove `create = true` if it is
+   still there, apply, and wait until
    `kubectl exec clax-0 -- clax-fleet status` no longer lists it among
    its shard's running instances. The ConfigMap can take a minute to
    reach the pod. Its hosts answer 503 meanwhile, never another instance.
@@ -311,7 +325,7 @@ The new shard never makes an empty instance in its place, because without
      | kubectl exec -i clax-1 -- tar -C /var/lib/clax/instances -xf -
    ```
 
-3. Set its new `shard`, remove `paused`, and apply.
+3. Set its new `shard`, remove `paused`, and apply. Leave `create` out.
 4. Once it serves from the new shard, move the old copy aside, so that a
    `shard` set back by mistake finds no stale home to start:
    `kubectl exec clax-0 -- mv /var/lib/clax/instances/acme /var/lib/clax/instances/acme.moved`.

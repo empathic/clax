@@ -620,6 +620,13 @@ impl Fleet {
                 home.root().display()
             );
         }
+        if !home.db_path().exists() {
+            tracing::warn!(
+                instance = %inst.name,
+                home = %home.root().display(),
+                "making a new, empty home for the instance (create = true); remove create = true from its catalog entry once it has started"
+            );
+        }
         home.ensure_dirs()?;
         claim_origin_file(&home, &inst.name, &inst.origin)?;
         write_if_changed(
@@ -744,10 +751,17 @@ impl Fleet {
     /// longer has, or that is paused, or whose config or shard changed,
     /// with why it must stop. It compares every tick, whether or not the
     /// catalog changed: an instance started from the catalog a reload
-    /// replaced stops too. A catalog that does not load is logged once per
+    /// replaced stops too. A catalog that does not load, or that moves an
+    /// instance to another shard while `create = true`, is logged once per
     /// distinct error and kept out of effect.
     async fn reload(&self) -> Vec<(String, &'static str)> {
-        match Catalog::load(&self.cfg.catalog) {
+        let loaded = Catalog::load(&self.cfg.catalog).and_then(|next| {
+            match moved_with_create(&self.catalog(), &next) {
+                Some(e) => Err(format!("{}: {e}", self.cfg.catalog.display())),
+                None => Ok(next),
+            }
+        });
+        match loaded {
             Ok(next) => {
                 let changed = *self.catalog() != next;
                 if changed {
@@ -969,6 +983,23 @@ impl Fleet {
             )
             .with_state(self.clone())
     }
+}
+
+/// Why `next` may not replace `prev`, when it gives an instance of `prev`
+/// another shard while `create = true`: the new shard, finding no home
+/// there, would make an empty one and answer the tenant's hosts with it.
+/// `create` is for an instance's first start; a moved instance's home is
+/// copied to its new shard first (docs/kubernetes.md, Moving an instance).
+fn moved_with_create(prev: &Catalog, next: &Catalog) -> Option<String> {
+    next.instances.iter().find_map(|i| {
+        let was = prev.get(&i.name)?;
+        (i.create && was.shard != i.shard).then(|| {
+            format!(
+                "instance {}'s shard changes from {} to {} while it has create = true, which would make an empty home on shard {}; remove create = true and move its home (docs/kubernetes.md, Moving an instance)",
+                i.name, was.shard, i.shard, i.shard
+            )
+        })
+    })
 }
 
 /// Places the fleet's key-encryption key in `home` when it has none, and

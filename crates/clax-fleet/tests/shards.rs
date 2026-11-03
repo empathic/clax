@@ -188,6 +188,54 @@ async fn a_shard_without_the_home_does_not_start_an_empty_instance() {
     assert!(!dir.path().join("instances/acme/clax.db").exists());
 }
 
+/// `create = true` is for an instance's first start: a catalog that gives
+/// an instance another shard while it is set is refused, as one that does
+/// not parse is (the previous stays in effect, `/status` says why), so the
+/// new shard never makes an empty instance in its place. Without it, the
+/// move takes effect.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_shard_change_with_create_set_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let cat = write_catalog(dir.path(), &catalog(&[("acme", Some(0))]));
+    let (l0, l1) = (listener().await, listener().await);
+    let peers = vec![l0.1.to_string(), l1.1.to_string()];
+    let shards = |ordinal| Shard {
+        ordinal,
+        peers: Peers::List(peers.clone()),
+    };
+    let p0 = process("clax-0", l0, &dir.path().join("data-0"), &cat, shards(0)).await;
+    let p1 = process("clax-1", l1, &dir.path().join("data-1"), &cat, shards(1)).await;
+    assert_eq!(healthz(p1.addr, "acme.test").await.0, 200);
+    assert_eq!(p0.fleet.running(), ["acme"]);
+
+    write_catalog(dir.path(), &catalog(&[("acme", Some(1))]));
+    p0.fleet.tick().await;
+    p1.fleet.tick().await;
+    for p in [&p0, &p1] {
+        let status = p.fleet.status();
+        let error = status["catalog"]["error"].as_str().unwrap_or_default();
+        assert!(
+            error.contains("acme") && error.contains("create = true"),
+            "{status}"
+        );
+        assert!(p.fleet.metrics().contains("clax_fleet_catalog_stale 1"));
+    }
+    assert_eq!(healthz(p1.addr, "acme.test").await.0, 200);
+    assert_eq!(p0.fleet.running(), ["acme"]);
+    assert!(!dir.path().join("data-1/instances/acme").exists());
+
+    // Without create, the move is the catalog's: shard 1 has no home for
+    // it, so it stays down rather than start empty.
+    let moved = catalog(&[("acme", Some(1))]).replace("create = true\n", "");
+    write_catalog(dir.path(), &moved);
+    p0.fleet.tick().await;
+    p1.fleet.tick().await;
+    assert!(p0.fleet.status()["catalog"]["error"].is_null());
+    assert!(p0.fleet.running().is_empty());
+    assert_eq!(healthz(p1.addr, "acme.test").await.0, 503);
+    assert!(!dir.path().join("data-1/instances/acme/clax.db").exists());
+}
+
 /// The value of counter `name` in a fleet's `/metrics` text.
 fn counter(fleet: &clax_fleet::fleet::Fleet, name: &str) -> u64 {
     let metrics = fleet.metrics();
