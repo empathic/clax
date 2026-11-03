@@ -41,6 +41,7 @@ pub mod permissions;
 pub mod questions;
 pub mod queue_agent;
 pub mod queue_reporter;
+pub mod queue_reporter_view;
 pub mod queues;
 pub mod remote_apps;
 pub mod remote_artifacts;

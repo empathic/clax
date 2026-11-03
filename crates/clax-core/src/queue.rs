@@ -25,6 +25,19 @@ pub const MAX_QUEUE_NAME_CHARS: usize = 120;
 pub const MAX_QUEUE_ORIGINS: usize = 32;
 /// The longest reporter ID, in bytes.
 pub const MAX_REPORTER_ID_BYTES: usize = 256;
+/// The longest reporter name, in characters.
+pub const MAX_REPORTER_NAME_CHARS: usize = 120;
+/// What a reporter is shown for another reporter whose name the app never
+/// gave.
+pub const ANOTHER_REPORTER: &str = "another reporter";
+/// How long a reporter's view link's code lasts, in seconds.
+pub const VIEW_CODE_SECS: i64 = 60;
+/// How long a reporter's view session (its cookie) lasts, in seconds.
+pub const VIEW_SESSION_SECS: i64 = 900;
+/// The prefix of a reporter's view-link code.
+pub const VIEW_CODE_PREFIX: &str = "cxrc_";
+/// The prefix of a reporter's view-session token.
+pub const VIEW_SESSION_PREFIX: &str = "cxrv_";
 /// The longest revision, in bytes.
 pub const MAX_REVISION_BYTES: usize = 256;
 /// Reports per page of a listing.
@@ -272,6 +285,10 @@ pub struct ReportComment {
     /// claim): a reporter's view of the report leaves it out.
     #[serde(default, skip_serializing_if = "is_false")]
     pub triage_only: bool,
+    /// The reporter that wrote it, for the store's reporter view
+    /// ([`ReporterReport`]); never served.
+    #[serde(skip)]
+    pub reporter_id: Option<String>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -357,6 +374,28 @@ impl Report {
 
 fn is_zero(n: &u32) -> bool {
     *n == 0
+}
+
+/// Who filed a report, as another reporter of its queue may see it: the
+/// name its app gave the reporter (`None`: none given), and whether it is
+/// the reader's own. Never an ID, an email or a token.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Submitter {
+    pub name: Option<String>,
+    pub you: bool,
+}
+
+/// A report as a reporter reads it (the reporter routes and the
+/// reporter's view): under `reporters_see: all`, another reporter's report
+/// has no `reporter_id` and no `metadata`, its reporters' comments carry
+/// their names (or [`ANOTHER_REPORTER`]), and every report names its
+/// [`Submitter`]; under `own` there is no `submitter`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReporterReport {
+    #[serde(flatten)]
+    pub report: Report,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submitter: Option<Submitter>,
 }
 
 /// A claim's answer (§7.4): the lease, its expiry, its fence (larger for
@@ -464,6 +503,25 @@ pub fn check_reporter_id(id: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// `name` as a reporter's name is kept: trimmed, 1 to
+/// [`MAX_REPORTER_NAME_CHARS`] characters on one line.
+///
+/// # Errors
+/// `invalid_reporter_name` otherwise.
+pub fn reporter_name(name: &str) -> Result<String> {
+    let n = name.trim();
+    if n.is_empty()
+        || n.chars().count() > MAX_REPORTER_NAME_CHARS
+        || n.chars().any(char::is_control)
+    {
+        return Err(CoreError::invalid(
+            "invalid_reporter_name",
+            format!("a reporter name is 1 to {MAX_REPORTER_NAME_CHARS} characters on one line"),
+        ));
+    }
+    Ok(n.to_string())
 }
 
 /// `Ok` for a revision: at most [`MAX_REVISION_BYTES`] bytes, opaque.

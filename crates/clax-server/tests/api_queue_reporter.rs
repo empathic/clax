@@ -1163,9 +1163,340 @@ async fn under_all_a_reporter_reads_and_comments_on_anothers_report() {
     let v: Value = res.json().await.unwrap();
     let cs = v["report"]["comments"].as_array().unwrap();
     assert_eq!(cs.len(), 2, "{v}");
-    assert_eq!(cs[1]["author_name"], "emp-b");
+    assert_eq!(cs[1]["author_name"], "emp-b", "its own comment");
     assert_eq!(cs[1]["author_kind"], "reporter");
+    // Another reporter's: no ID, no metadata; the app gave no names.
+    assert_eq!(cs[0]["author_name"], "another reporter");
+    assert_eq!(v["report"]["reporter_id"], Value::Null);
+    assert_eq!(v["report"]["metadata"], Value::Null);
+    assert_eq!(v["report"]["submitter"], json!({"name": null, "you": false}));
+}
+
+/// Mints a reporter token for `reporter_id` named `name` on [`ORIGIN`].
+async fn named(s: &Setup, reporter_id: &str, name: &str) -> Reporter {
+    let key = KeyPair::generate();
+    let res = s
+        .service(
+            &format!("/api/queues/{}/reporter-tokens", s.qid),
+            &json!({"reporter_id": reporter_id, "reporter_name": name, "origin": ORIGIN,
+                    "public_key": sig::encode_public(&key.public())}),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    let v: Value = res.json().await.unwrap();
+    Reporter {
+        token: v["token"].as_str().unwrap().to_string(),
+        key,
+    }
+}
+
+fn set_see(s: &Setup, see: ReportersSee) {
+    s.ts.store
+        .update_queue(
+            &AuditCtx::DAEMON,
+            &s.qid,
+            clax_store::queues::QueuePatch {
+                reporters_see: Some(see),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+}
+
+/// `r`'s reports through its token.
+async fn api_list(s: &Setup, r: &Reporter) -> Value {
+    let res = s
+        .as_reporter(r, Some(ORIGIN), "GET", &s.reports(), None, vec![])
+        .await;
+    assert_eq!(res.status(), 200);
+    res.json().await.unwrap()
+}
+
+/// The owner's reports of `s`'s queue.
+async fn owner_list(s: &Setup) -> Value {
+    let res = s
+        .ts
+        .get_authed(&format!("/api/queues/{}/reports", s.qid))
+        .await;
+    assert_eq!(res.status(), 200);
+    res.json().await.unwrap()
+}
+
+/// A view link of `r` (on report `report_id` when given): its answer.
+async fn view_link(s: &Setup, r: &Reporter, report_id: Option<&str>) -> reqwest::Response {
+    let pq = format!("/api/queues/{}/reporter/view-link", s.qid);
+    let body = match report_id {
+        Some(t) => serde_json::to_vec(&json!({"report_id": t})).unwrap(),
+        None => vec![],
+    };
+    s.as_reporter(r, Some(ORIGIN), "POST", &pq, Some("application/json"), body)
+        .await
+}
+
+/// Follows `path` (a view link's): the `Location` it answers and the
+/// cookie it sets, if any.
+async fn enter(s: &Setup, path: &str) -> (String, Option<String>) {
+    let res = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+        .get(format!("{}{path}", s.ts.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 303, "{path}");
+    assert_eq!(res.headers()["cache-control"], "private, no-store");
+    let to = res.headers()["location"].to_str().unwrap().to_string();
+    let cookie = res.headers().get("set-cookie").map(|c| {
+        let c = c.to_str().unwrap();
+        assert!(c.contains("HttpOnly") && c.contains("SameSite=Lax"), "{c}");
+        assert!(c.contains(&format!("Path=/reporter/{}", s.qid)), "{c}");
+        c.split(';').next().unwrap().to_string()
+    });
+    (to, cookie)
+}
+
+/// A reporter's view session: the cookie a fresh view link of `r` gives.
+async fn view_session(s: &Setup, r: &Reporter) -> String {
+    let res = view_link(s, r, None).await;
+    assert_eq!(res.status(), 200);
+    let v: Value = res.json().await.unwrap();
+    let (to, cookie) = enter(s, v["path"].as_str().unwrap()).await;
+    assert_eq!(to, format!("/reporter/{}", s.qid));
+    cookie.expect("a fresh code sets the cookie")
+}
+
+/// `GET /reporter/<qid>/<tail>` with `cookie`.
+async fn view_get(s: &Setup, cookie: &str, tail: &str) -> reqwest::Response {
+    s.send(
+        "GET",
+        &format!("/reporter/{}/{tail}", s.qid),
+        &[("cookie", cookie.to_string())],
+        vec![],
+    )
+    .await
+}
+
+async fn view_json(s: &Setup, cookie: &str, tail: &str) -> Value {
+    let res = view_get(s, cookie, tail).await;
+    assert_eq!(res.status(), 200, "{tail}");
+    res.json().await.unwrap()
+}
+
+/// Two reporters of one queue, both named by their app, each filing one
+/// report: under `own` each reads only its own and no submitter; under
+/// `all` each reads both, the other's by name only, its own marked `you`;
+/// the token's routes and the view's answer the same; and the owner's view
+/// is the same under both settings, with every reporter's ID.
+#[tokio::test]
+async fn two_reporters_see_what_reporters_see_allows_and_the_owner_sees_every_report() {
+    let s = Setup::new().await;
+    let a = named(&s, "emp-a", "alice-gh").await;
+    let b = named(&s, "emp-b", "bob-gh").await;
+    let v: Value = s.file(&a, "Alice's report").await.json().await.unwrap();
+    let ta = v["report"]["id"].as_str().unwrap().to_string();
     assert_eq!(v["report"]["reporter_id"], "emp-a");
+    assert!(v["report"].get("submitter").is_none(), "{v}");
+    let v: Value = s.file(&b, "Bob's report").await.json().await.unwrap();
+    let tb = v["report"]["id"].as_str().unwrap().to_string();
+    let (ca, cb) = (view_session(&s, &a).await, view_session(&s, &b).await);
+
+    // Their own reports.
+    let owner_before = owner_list(&s).await;
+    for (r, c, mine, theirs) in [(&a, &ca, &ta, &tb), (&b, &cb, &tb, &ta)] {
+        let api = api_list(&s, r).await;
+        let reports = api["reports"].as_array().unwrap();
+        assert_eq!(reports.len(), 1, "{api}");
+        assert_eq!(&reports[0]["id"], mine);
+        assert_eq!(reports[0]["metadata"], json!({"order": 7}));
+        assert!(reports[0].get("submitter").is_none(), "{api}");
+        assert_eq!(view_json(&s, c, "api/reports").await, api, "the view reads the same");
+        let q = view_json(&s, c, "api/queue").await;
+        assert_eq!(q["queue"]["reporters_see"], "own");
+        assert_eq!(q["queue"]["name"], "Orders");
+        assert_eq!(view_get(&s, c, &format!("api/reports/{theirs}")).await.status(), 404);
+        assert_eq!(
+            view_get(&s, c, &format!("api/reports/{theirs}/clip")).await.status(),
+            404
+        );
+        let one = view_json(&s, c, &format!("api/reports/{mine}")).await;
+        assert_eq!(one["report"], reports[0]);
+    }
+
+    // Every report in the queue.
+    set_see(&s, ReportersSee::All);
+    for (r, c, mine, theirs, me, other) in [
+        (&a, &ca, &ta, &tb, "alice-gh", "bob-gh"),
+        (&b, &cb, &tb, &ta, "bob-gh", "alice-gh"),
+    ] {
+        let api = api_list(&s, r).await;
+        let reports = api["reports"].as_array().unwrap();
+        assert_eq!(reports.len(), 2, "{api}");
+        let by_id = |id: &str| reports.iter().find(|x| x["id"] == id).unwrap().clone();
+        let (m, o) = (by_id(mine), by_id(theirs));
+        assert_eq!(m["submitter"], json!({"name": me, "you": true}));
+        assert!(m["reporter_id"].as_str().unwrap().starts_with("emp-"));
+        assert_eq!(m["metadata"], json!({"order": 7}));
+        assert_eq!(m["comments"][0]["author_name"], me);
+        assert_eq!(o["submitter"], json!({"name": other, "you": false}));
+        assert_eq!(o["reporter_id"], Value::Null);
+        assert_eq!(o["metadata"], Value::Null);
+        assert_eq!(o["comments"][0]["author_name"], other);
+        assert_eq!(o["comments"][0]["author_kind"], "reporter");
+        let theirs_id = if me == "alice-gh" { "emp-b" } else { "emp-a" };
+        assert!(!api.to_string().contains(theirs_id), "{api}");
+        assert_eq!(view_json(&s, c, "api/reports").await, api, "the view reads the same");
+        let q = view_json(&s, c, "api/queue").await;
+        assert_eq!(q["queue"]["reporters_see"], "all");
+        let one = view_json(&s, c, &format!("api/reports/{theirs}")).await;
+        assert_eq!(one["report"], o);
+        assert_eq!(
+            view_get(&s, c, &format!("api/reports/{theirs}/clip")).await.status(),
+            200
+        );
+    }
+
+    // The owner's view is unchanged by the setting, and names reporters by ID.
+    let owner = owner_list(&s).await;
+    assert_eq!(owner, owner_before);
+    let reporters: Vec<_> = owner["reports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            assert!(r.get("submitter").is_none(), "{r}");
+            assert_eq!(r["metadata"], json!({"order": 7}));
+            (
+                r["reporter_id"].as_str().unwrap().to_string(),
+                r["comments"][0]["author_name"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        reporters,
+        [("emp-a".into(), "emp-a".into()), ("emp-b".into(), "emp-b".into())]
+    );
+}
+
+#[tokio::test]
+async fn a_view_link_is_single_use_short_lived_and_of_its_queue() {
+    let s = Setup::new().await;
+    let a = named(&s, "emp-a", "alice-gh").await;
+    let b = named(&s, "emp-b", "bob-gh").await;
+    let v: Value = s.file(&a, "Alice's report").await.json().await.unwrap();
+    let ta = v["report"]["id"].as_str().unwrap().to_string();
+
+    let res = view_link(&s, &a, Some(&ta)).await;
+    assert_eq!(res.status(), 200);
+    let v: Value = res.json().await.unwrap();
+    let path = v["path"].as_str().unwrap().to_string();
+    assert!(path.starts_with(&format!("/reporter/{}/enter?code=cxrc_", s.qid)), "{path}");
+    let (to, cookie) = enter(&s, &path).await;
+    assert_eq!(to, format!("/reporter/{}/{ta}", s.qid), "the link's report");
+    let cookie = cookie.unwrap();
+    // Spent.
+    assert_eq!(enter(&s, &path).await, (format!("/reporter/{}", s.qid), None));
+    // Expired.
+    let v: Value = view_link(&s, &a, None).await.json().await.unwrap();
+    s.clock.advance(61);
+    assert_eq!(
+        enter(&s, v["path"].as_str().unwrap()).await,
+        (format!("/reporter/{}", s.qid), None)
+    );
+    // A report the reporter does not see has no link.
+    let res = view_link(&s, &b, Some(&ta)).await;
+    assert_eq!(status_code(res).await, (404, "not_found".into()));
+    // No cookie, a made-up one, or another queue's path: no session.
+    assert_eq!(view_get(&s, "x=y", "api/reports").await.status(), 401);
+    assert_eq!(
+        view_get(&s, "clax_reporter=cxrv_nope", "api/reports").await.status(),
+        401
+    );
+    let other = Setup::on_existing(s, None);
+    let res = other
+        .send(
+            "GET",
+            &format!("/reporter/{}/api/reports", other.qid),
+            &[("cookie", cookie.clone())],
+            vec![],
+        )
+        .await;
+    assert_eq!(res.status(), 401, "a session is its queue's alone");
+}
+
+#[tokio::test]
+async fn a_view_session_comments_as_its_reporter_and_ends_with_its_queue() {
+    let s = Setup::new().await;
+    let a = named(&s, "emp-a", "alice-gh").await;
+    let v: Value = s.file(&a, "Alice's report").await.json().await.unwrap();
+    let ta = v["report"]["id"].as_str().unwrap().to_string();
+    let c = view_session(&s, &a).await;
+    let pq = format!("/reporter/{}/api/reports/{ta}/comments", s.qid);
+    let body = serde_json::to_vec(&json!({"body": "Still wrong"})).unwrap();
+    let res = s
+        .send("POST", &pq, &[("cookie", c.clone())], body.clone())
+        .await;
+    assert_eq!(status_code(res).await, (415, "unsupported_media_type".into()));
+    let res = s
+        .send(
+            "POST",
+            &pq,
+            &[
+                ("cookie", c.clone()),
+                ("content-type", "application/json".into()),
+            ],
+            body,
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    let v: Value = res.json().await.unwrap();
+    let cs = v["report"]["comments"].as_array().unwrap();
+    assert_eq!(cs.len(), 2, "{v}");
+    assert_eq!(cs[1]["author_kind"], "reporter");
+    assert_eq!(cs[1]["author_name"], "alice-gh");
+    // The owner sees it as the reporter's, by ID.
+    let owner = owner_list(&s).await;
+    assert_eq!(owner["reports"][0]["comments"][1]["author_name"], "emp-a");
+
+    s.ts.store.delete_queue(&AuditCtx::DAEMON, &s.qid).unwrap();
+    assert_eq!(view_get(&s, &c, "api/reports").await.status(), 401);
+}
+
+#[tokio::test]
+async fn a_reporter_name_is_one_line_of_at_most_120_characters() {
+    let s = Setup::new().await;
+    for bad in ["", "   ", "two\nlines", &"x".repeat(121)] {
+        let key = KeyPair::generate();
+        let res = s
+            .service(
+                &format!("/api/queues/{}/reporter-tokens", s.qid),
+                &json!({"reporter_id": "emp-a", "reporter_name": bad, "origin": ORIGIN,
+                        "public_key": sig::encode_public(&key.public())}),
+            )
+            .await;
+        assert_eq!(
+            status_code(res).await,
+            (400, "invalid_reporter_name".into()),
+            "{bad:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_reporter_pages_are_the_shell_s() {
+    let s = Setup::new().await;
+    for tail in ["", "/01J0000000000000000000000A"] {
+        let res = s
+            .send("GET", &format!("/reporter/{}{tail}", s.qid), &[], vec![])
+            .await;
+        // The testkit's daemon may have no web build: the shell's own answer.
+        match res.status().as_u16() {
+            200 => assert_eq!(res.headers()["cache-control"], "private, no-store"),
+            503 => assert_eq!(status_code(res).await, (503, "ui_not_built".into())),
+            other => panic!("{other}"),
+        }
+    }
 }
 
 /// The artifact a report filed by a new reporter of `s`'s queue is on.

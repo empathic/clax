@@ -18,13 +18,16 @@
 //!   {note?, context?}` and `…/reopen` (multipart) → `{report}`; `GET
 //!   …/reporter/reports/<tid>/diagnostics?capture=` → `{lines}`; `POST
 //!   …/reporter/reports/<tid>/seen` → 204; `GET
-//!   /api/queues/<qid>/reporter/badge` → `{waiting, report_ids}`; `OPTIONS`
+//!   /api/queues/<qid>/reporter/badge` → `{waiting, report_ids}`; `POST
+//!   …/reporter/view-link {report_id?}` → `{path, expires_at}`; `OPTIONS`
 //!   on each, the CORS preflight ([`clax_http::reporter::cors`]).
 //!
 //! The reporter is always the token's, never the body's. A reporter reads
 //! the reports its queue's `reporters_see` shows it, and gives a verdict on
 //! the ones it filed; any other is 404 `not_found`, as one that does not
-//! exist.
+//! exist. A filed, commented or listed report it is answered is a
+//! [`clax_core::queue::ReporterReport`]: what it may see of the queue's
+//! other reporters (`clax_store::queues` decides it in one place).
 
 use super::assets::multipart_error;
 use super::queue_agent::{
@@ -96,6 +99,10 @@ pub fn router(state: AppState) -> Router {
             "/api/queues/{qid}/reporter/badge",
             get(badge).options(preflight),
         )
+        .route(
+            "/api/queues/{qid}/reporter/view-link",
+            post(view_link).options(preflight),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             reporter::cors,
@@ -103,12 +110,13 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/queues/{qid}/reporter-tokens", post(mint_token))
         .merge(reporter)
+        .merge(super::queue_reporter_view::router())
         .with_state(state)
 }
 
 /// Who a reporter's change is recorded as: reporter `reporter_id` of queue
 /// `queue_id`, no person of this instance, from the network.
-fn reporter_ctx(queue_id: &str, reporter_id: &str) -> AuditCtx {
+pub(super) fn reporter_ctx(queue_id: &str, reporter_id: &str) -> AuditCtx {
     AuditCtx {
         actor: Actor::Reporter {
             queue_id: queue_id.to_string(),
@@ -128,6 +136,8 @@ fn json_body<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, ApiError
 #[serde(deny_unknown_fields)]
 struct MintBody {
     reporter_id: String,
+    #[serde(default)]
+    reporter_name: Option<String>,
     origin: String,
     public_key: String,
     #[serde(default)]
@@ -165,18 +175,22 @@ fn profile_of(v: Option<Value>) -> Result<Option<ReporterProfile>, CoreError> {
         .map_err(|e| bad(e.to_string()))
 }
 
-/// `POST /api/queues/<qid>/reporter-tokens {reporter_id, origin,
-/// public_key, profile?}`: a reporter token of the caller's service grant
-/// for `reporter_id`, bound to `origin` (one of the queue's) and the
-/// Ed25519 `public_key` (unpadded base64url). `profile` (`{name?, email?,
-/// github?, avatar_url?}`, each at most 256 bytes, `avatar_url` an http(s)
-/// URL) is who the backend says the reporter is: each report filed under
-/// the token keeps it, shown to triage members and never to reporters.
+/// `POST /api/queues/<qid>/reporter-tokens {reporter_id, reporter_name?,
+/// origin, public_key, profile?}`: a reporter token of the caller's service
+/// grant for `reporter_id`, bound to `origin` (one of the queue's) and the
+/// Ed25519 `public_key` (unpadded base64url). `reporter_name`, when given,
+/// is the name the queue's other reporters see for this one under
+/// `reporters_see: all` (a display name or handle, never an email).
+/// `profile` (`{name?, email?, github?, avatar_url?}`, each at most 256
+/// bytes, `avatar_url` an http(s) URL) is who the backend says the
+/// reporter is: each report filed under the token keeps it, shown to
+/// triage members and never to reporters.
 /// Answers `{token, expires_at}`.
 ///
 /// # Errors
 /// [`ServiceCaller`]'s; 400 `invalid_args`, `invalid_origin`,
-/// `invalid_reporter_id`, `invalid_key` or `invalid_profile`; 403
+/// `invalid_reporter_id`, `invalid_reporter_name`, `invalid_key` or
+/// `invalid_profile`; 403
 /// `wrong_origin` for an origin the queue does not list.
 pub async fn mint_token(
     State(s): State<AppState>,
@@ -187,9 +201,10 @@ pub async fn mint_token(
     let grant = c.grant;
     let (token, expires_at) = s
         .store_call(move |st| {
-            st.mint_reporter_token(
+            st.mint_named_reporter_token(
                 &grant,
                 &b.reporter_id,
+                b.reporter_name.as_deref(),
                 &b.origin,
                 &b.public_key,
                 profile.as_ref(),
@@ -350,9 +365,10 @@ fn new_report(s: &AppState, mut p: Parts, reporter_id: &str) -> Result<NewReport
     })
 }
 
-/// Broadcasts report `tid`'s `thread` event, as a thread's routes do; a
-/// failure is logged, the change being made.
-async fn announce(s: &AppState, tid: String) {
+/// Broadcasts report `tid`'s `thread` event, as a thread's routes do, and
+/// the `queues` ping; a failure is logged, the change being made.
+pub(super) async fn announce(s: &AppState, tid: String) {
+    s.events.publish(clax_core::Event::Queues);
     let ctx = s.feedback_ctx();
     let r = s
         .store_call(move |st| {
@@ -422,16 +438,15 @@ pub async fn file_report(
     };
     let (report, woken) = s
         .store_call_async(move |st| async move {
-            st.file_report_touched_async(&reporter_ctx(&qid, &rid), &qid, Some(&token), scope, new)
-                .await
+            let (r, woken) = st
+                .file_report_touched_async(&reporter_ctx(&qid, &rid), &qid, Some(&token), scope, new)
+                .await?;
+            Ok((st.as_reporter(&qid, &rid, r)?, woken))
         })
         .await?;
-    announce(&s, report.id.clone()).await;
+    announce(&s, report.report.id.clone()).await;
     wake_watchers(&s, woken).await;
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({ "report": report.for_reporter() })),
-    ))
+    Ok((StatusCode::CREATED, Json(json!({ "report": report }))))
 }
 
 #[derive(Deserialize)]
@@ -455,14 +470,8 @@ pub async fn my_reports(
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let rid = r.token.reporter_id;
     let (reports, next) = s
-        .store_call(move |st| {
-            st.reports(&qid, Visibility::Reporter(&rid), None, q.cursor.as_deref())
-        })
+        .store_call(move |st| st.reporter_reports(&qid, &rid, q.cursor.as_deref()))
         .await?;
-    let reports: Vec<_> = reports
-        .into_iter()
-        .map(clax_core::queue::Report::for_reporter)
-        .collect();
     Ok(Json(json!({ "reports": reports, "next": next })))
 }
 
@@ -490,12 +499,14 @@ pub async fn comment(
     let t = tid.clone();
     let (report, woken) = s
         .store_call(move |st| {
-            st.reporter_comment_touched(&reporter_ctx(&qid, &rid), &qid, &t, &rid, &b.body)
+            let (r, woken) =
+                st.reporter_comment_touched(&reporter_ctx(&qid, &rid), &qid, &t, &rid, &b.body)?;
+            Ok((st.as_reporter(&qid, &rid, r)?, woken))
         })
         .await?;
     announce(&s, tid).await;
     wake_watchers(&s, woken).await;
-    Ok(Json(json!({ "report": report.for_reporter() })))
+    Ok(Json(json!({ "report": report })))
 }
 
 /// A reporter's page keeps no clip: its token is short-lived and its
@@ -725,6 +736,46 @@ pub async fn badge(
     Ok(Json(json!(badge)))
 }
 
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct ViewLinkBody {
+    #[serde(default)]
+    report_id: Option<String>,
+}
+
+/// `POST /api/queues/<qid>/reporter/view-link {report_id?}`: a link that
+/// opens the token's reporter's view of the queue in Clax
+/// ([`super::queue_reporter_view`]), on report `report_id` when given.
+/// Answers `{path, expires_at}`: `path` is on this Clax, carries a
+/// single-use code and lasts until `expires_at`, so the app asks for it
+/// when the link is followed.
+///
+/// # Errors
+/// [`ReporterCaller`]'s; 404 `not_found` for a report the reporter does
+/// not see; 400 `invalid_args`.
+pub async fn view_link(
+    State(s): State<AppState>,
+    Path(qid): Path<String>,
+    r: ReporterCaller,
+) -> Result<Json<Value>, ApiError> {
+    let b: ViewLinkBody = if r.body.is_empty() {
+        ViewLinkBody::default()
+    } else {
+        json_body(&r.body)?
+    };
+    let t = r.token;
+    let q = qid.clone();
+    let (code, expires_at) = s
+        .store_call(move |st| {
+            st.mint_view_code(&q, &t.service_grant_id, &t.reporter_id, b.report_id.as_deref())
+        })
+        .await?;
+    Ok(Json(json!({
+        "path": super::queue_reporter_view::enter_path(&qid, code.expose()),
+        "expires_at": expires_at,
+    })))
+}
+
 /// `OPTIONS` on each reporter route: the CORS preflight, `204`, whose
 /// headers [`reporter::cors`] adds for the queue's origins.
 pub async fn preflight() -> StatusCode {
@@ -751,10 +802,10 @@ mod tests {
                 _ => assert!(sig.contains("r: ReporterCaller"), "{name}"),
             }
         }
-        assert_eq!(seen, 12);
+        assert_eq!(seen, 13);
         let routes = &src[src.find("pub fn router").unwrap()..];
         let routes = &routes[..routes.find("\n}\n").unwrap()];
-        assert_eq!(routes.matches(".route(").count(), 10);
+        assert_eq!(routes.matches(".route(").count(), 11);
         assert_eq!(routes.matches(".route_layer(").count(), 1);
         assert!(routes.find("reporter::cors").unwrap() < routes.find("reporter-tokens").unwrap());
     }

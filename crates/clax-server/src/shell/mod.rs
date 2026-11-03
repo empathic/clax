@@ -189,6 +189,18 @@ pub async fn gallery_page(
     entry(&s, &req, "index.html")
 }
 
+/// `/reporter/<qid>[/<tid>]`: the gallery's entry, which shows a reporter's
+/// view of its queue by its path (`crate::routes::queue_reporter_view`).
+///
+/// # Errors
+/// 503 `ui_not_built` without a web build.
+pub fn reporter_page(
+    s: &clax_http::state::AppState,
+    req: &HeaderMap,
+) -> Result<Response, ApiError> {
+    entry(s, req, "index.html")
+}
+
 /// `/a/…`: `artifact.html` with the first-load data ([`boot`]), or the
 /// gallery for a path that names no artifact (the shell shows the gallery for
 /// it too).
