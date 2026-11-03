@@ -521,12 +521,12 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(routeBacks()).toEqual([]);
     expect(posted.filter(m => m.type === "clax:hash").at(-1)).toEqual({ type: "clax:hash", hash: "" });
     host.back();
-    expect(routeBacks()).toEqual([{ type: "clax:back", depth: 1 }]);
+    expect(routeBacks()).toEqual([{ type: "clax:back", depth: 1, seq: 1 }]);
     expect(ofType("history").at(-1)).toEqual({ type: "history", back: true });
     // The page reports the route it returned to: no new entry.
-    fromFrame(frame.contentWindow!, { type: "clax:route", depth: 1, hash: "" });
+    fromFrame(frame.contentWindow!, { type: "clax:route", depth: 1, hash: "", back: 1 });
     // The page's own back to its first route: the app's history follows.
-    fromFrame(frame.contentWindow!, { type: "clax:route", depth: 0, hash: "" });
+    fromFrame(frame.contentWindow!, { type: "clax:route", depth: 0, hash: "", back: 1 });
     expect(ofType("history").at(-1)).toEqual({ type: "history", back: false });
     const sent = posted.length;
     host.back();
@@ -540,8 +540,23 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     fromFrame(frame.contentWindow!, { type: "clax:route", depth: 1, hash: "#a" });
     fromFrame(frame.contentWindow!, { type: "clax:route", depth: 2, hash: "" });
     host.back();
-    expect(posted).toEqual([{ type: "clax:back", depth: 1 }]);
+    expect(posted).toEqual([{ type: "clax:back", depth: 1, seq: 1 }]);
     expect(location.hash).toBe("#a");
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: true });
+  });
+
+  it("history: a route report the page made before it took the shell's back is dropped: the page reported on a greeting asked for just before", async () => {
+    const { frame, host } = await appView();
+    hello(frame, 1);
+    fromFrame(frame.contentWindow!, { type: "clax:route", depth: 1, hash: "", back: 0 });
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: true });
+    host.back();
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: false });
+    // Made before the page took back 1, it names the route the shell left.
+    fromFrame(frame.contentWindow!, { type: "clax:route", depth: 1, hash: "", back: 0 });
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: false });
+    // A push after it is a route again.
+    fromFrame(frame.contentWindow!, { type: "clax:route", depth: 1, hash: "", back: 1 });
     expect(ofType("history").at(-1)).toEqual({ type: "history", back: true });
   });
 
@@ -560,9 +575,9 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     fromFrame(frame.contentWindow!, { type: "clax:hello", artifact: ID, version: 1, file: "index.html", again: true });
     expect(ofType("history").at(-1)).toEqual({ type: "history", back: true });
     host.back();
-    expect(posted.filter(m => m.type === "clax:back")).toEqual([{ type: "clax:back", depth: 1 }]);
+    expect(posted.filter(m => m.type === "clax:back")).toEqual([{ type: "clax:back", depth: 1, seq: 1 }]);
     host.back();
-    expect(posted.filter(m => m.type === "clax:back")).toEqual([{ type: "clax:back", depth: 1 }, { type: "clax:back", depth: 0 }]);
+    expect(posted.filter(m => m.type === "clax:back")).toEqual([{ type: "clax:back", depth: 1, seq: 1 }, { type: "clax:back", depth: 0, seq: 2 }]);
     expect(ofType("history").at(-1)).toEqual({ type: "history", back: false });
   });
 

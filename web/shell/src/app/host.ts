@@ -498,6 +498,11 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   // `clax:hash` has not come back yet: each is the page reporting that move,
   // not a new entry, even after a later `back()` left it.
   let echoes: string[] = [];
+  // The shell's route backs (`clax:back`) in this document. A route report
+  // stamped with an earlier one was made before the page took the latest:
+  // it names a route the shell has left (the page may report on a greeting
+  // the shell asked for just before its back), and is dropped.
+  let backs = 0;
   const postHistory = () => {
     const back = trail.length > 1;
     if (nonce === null || back === toldBack) return;
@@ -517,6 +522,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
    * to, so they leave the trail. */
   const newDocument = () => {
     depth = 0;
+    backs = 0;
     echoes = [];
     trail = trail.filter(e => e.route === 0);
   };
@@ -546,7 +552,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     const routeBack = from.route > to.route;
     if (routeBack) {
       depth = to.route;
-      if (ctl.gate.open) ctl.send({ type: "clax:back", depth: to.route });
+      if (ctl.gate.open) ctl.send({ type: "clax:back", depth: to.route, seq: ++backs });
     } else if (from.route === to.route && from.file === to.file && from.hash !== to.hash) echoes.push(to.hash);
     setUrl(shellPath(ctl.id, s().pinnedVersion, to.file, ctl.shown()) + appQuery(location.search) + to.hash);
     if (!routeBack) win.dispatchEvent(new PopStateEvent("popstate"));
@@ -783,7 +789,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
           echoes = [];
           visit(file, m.hash);
         }
-      } else if (Number.isInteger(m.depth) && m.depth >= 0) route(file, m.depth, m.hash);
+      } else if (Number.isInteger(m.depth) && m.depth >= 0 && (typeof m.back === "number" ? m.back : 0) === backs) route(file, m.depth, m.hash);
       return;
     }
     if (m?.type === "clax:chrome") {

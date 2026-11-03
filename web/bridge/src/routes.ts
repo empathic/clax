@@ -11,14 +11,16 @@
 // `popstate`, which its router follows. Loaded with the caps part on the app
 // shell's welcome, so a page outside the app loads none of it.
 
-export type RouteReport = { type: "clax:route"; depth: number; hash: string };
+export type RouteReport = { type: "clax:route"; depth: number; hash: string; back: number };
 
 /** One route the page pushed (or loaded at): its URL and its state. */
 type Route = { href: string; state: unknown };
 
 export type Routes = {
-  /** Takes the page to the route at `depth`, below the one it shows. */
-  back(depth: number): void;
+  /** Takes the page to the route at `depth`, below the one it shows: the
+   * shell's back numbered `seq`. Each report after carries that number, so
+   * the shell knows a report made before it from one made after. */
+  back(depth: number, seq: number): void;
   /** Reports the route the page shows again: the page greeted again, and a
    * report the shell got while it awaited that hello was not taken. While
    * the shell's back is under way, the report waits until it lands: the
@@ -40,7 +42,9 @@ export function appRoutes(win: Window, post: (m: RouteReport) => void): Routes {
   let target = 0;
   // A report the shell asked for while its back was under way.
   let owed = false;
-  const report = () => post({ type: "clax:route", depth, hash: win.location.hash });
+  // The number of the shell's last back taken.
+  let backs = 0;
+  const report = () => post({ type: "clax:route", depth, hash: win.location.hash, back: backs });
   const push = h.pushState.bind(h);
   const replace = h.replaceState.bind(h);
   const go = () => { landing = target; h.go(target - depth); };
@@ -84,7 +88,8 @@ export function appRoutes(win: Window, post: (m: RouteReport) => void): Routes {
       if (landing === null) report();
       else owed = true;
     },
-    back(to: number) {
+    back(to: number, seq: number) {
+      if (Number.isInteger(seq) && seq > backs) backs = seq;
       if (!Number.isInteger(to) || to < 0 || to >= (landing ?? depth)) return;
       target = to;
       if (landing !== null) return;
