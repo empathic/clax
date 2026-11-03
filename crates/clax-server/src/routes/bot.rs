@@ -1455,7 +1455,8 @@ pub fn steps_view(
 /// credits, a script's title and its calls' ops and outcomes, a finish's
 /// summary or an end's reason; never what was read with the acting
 /// person's rights: narration, code, values, logs, errors, a call's target
-/// or its web query or URL (`web`).
+/// or its web query or URL (`web`). A finish's `sources` stay: they are
+/// part of the reply ClaxBot posts, which readers of the artifact see.
 pub fn for_reader(step: &mut Value) {
     if let Some(o) = step.as_object_mut() {
         for k in [
@@ -1789,6 +1790,32 @@ mod tests {
         assert_eq!(out["call"]["web"]["url"], "https://example.com/a", "{out}");
         let read = event_for_reader("call", out).unwrap();
         assert!(read["call"].get("web").is_none(), "{read}");
+    }
+
+    #[test]
+    fn a_finish_steps_sources_reach_the_step_view_and_survive_for_reader() {
+        let finish = |payload: Value| clax_store::bot_runs::Step {
+            run_id: "r1".into(),
+            n: 3,
+            kind: clax_store::bot_runs::StepKind::Finish,
+            started_at: "2026-11-03T10:00:00Z".into(),
+            attempt: 1,
+            committed_at: Some("2026-11-03T10:00:01Z".into()),
+            payload: Some(payload),
+            observed: Vec::new(),
+            failures: 0,
+        };
+        let sources = json!([{"title": "Runes", "url": "https://docs.example.com/runes"}]);
+        let mut v = step_view(&finish(json!({"summary": "Done.", "sources": sources})), 0);
+        assert_eq!(v["sources"], sources, "{v}");
+        for_reader(&mut v);
+        assert_eq!(v["sources"], sources, "{v}");
+        assert_eq!(v["summary"], "Done.");
+        // A run that read no page has none to list.
+        let v = step_view(&finish(json!({"summary": "Done.", "sources": []})), 0);
+        assert!(v.get("sources").is_none(), "{v}");
+        let v = step_view(&finish(json!({"summary": "Done."})), 0);
+        assert!(v.get("sources").is_none(), "{v}");
     }
 
     #[test]
