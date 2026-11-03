@@ -583,4 +583,6 @@ export interface ReporterApi {
   reopen(reportId: string, r: Reopening): Promise<Report>;
   badge(): Promise<Badge>;
   seen(reportId: string): Promise<void>;
+  /** The URL of the reporter's view of the queue (a single-use link). */
+  viewLink?(reportId?: string): Promise<string>;
 }

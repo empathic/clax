@@ -1,6 +1,6 @@
 import { render as renderComponent } from "@testing-library/svelte";
 import { flushSync, tick } from "svelte";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Anchor } from "../../bridge/src/protocol";
 import type { RenderResult } from "../../bridge/src/clip";
 import type { NewReport, Reopening, Verification } from "../../sdk/src/reporter";
@@ -852,5 +852,54 @@ describe("the overlay", () => {
       document.removeEventListener("mousedown", page, true);
       outside.remove();
     }
+  });
+});
+
+describe("the overlay of an install", () => {
+  const queueInfo = { name: "Changelist bugs", page: "https://clax.example/queues/q1", reporterPage: "https://clax.example/reporter/q1" };
+  const remount = (over: Record<string, unknown>) => { view.unmount(); view = mount(Overlay as never, props(over), host); };
+
+  it("names its queue at the top of the Report panel, in its words, as the note's description", async () => {
+    remount({ queueInfo, wording: { productName: "Acme", reportLabel: "Feedback", queueLabel: "Sends to" } });
+    expect(button("Report")).toBeUndefined();
+    click(button("Feedback"));
+    key("s");
+    await settle();
+    const form = q<HTMLFormElement>(".composer")!;
+    expect(form.getAttribute("aria-label")).toBe("Acme: New report");
+    // The line is the panel's first child, so nothing above it moves it.
+    expect(form.firstElementChild?.className).toContain("queue-line");
+    const line = q("#cx-queue")!;
+    expect(line.textContent).toBe("Sends to Changelist bugs");
+    expect(q<HTMLAnchorElement>("#cx-queue a")!.href).toBe(queueInfo.reporterPage);
+    expect(q(".composer textarea")!.getAttribute("aria-describedby")).toBe("cx-queue");
+    expect(form.textContent).not.toMatch(/Clax/);
+  });
+
+  it("opens the reporter's view through a fresh view link", async () => {
+    const opened: { opener: unknown; location: { href: string }; close(): void } = { opener: window, location: { href: "" }, close: () => {} };
+    const open = vi.spyOn(window, "open").mockReturnValue(opened as unknown as Window);
+    remount({ queueInfo, client: { ...client, viewLink: async () => "https://clax.example/reporter/q1/enter?code=cxrc_1" } });
+    click(button("Report"));
+    key("s");
+    await settle();
+    click(q("#cx-queue a"));
+    await settle();
+    expect(open).toHaveBeenCalledWith("about:blank", "_blank");
+    expect(opened.location.href).toBe("https://clax.example/reporter/q1/enter?code=cxrc_1");
+    expect(opened.opener).toBeNull();
+    open.mockRestore();
+  });
+
+  it("names no queue without an install, and offers no Element mode with the picker off", async () => {
+    expect(q("#cx-queue")).toBeNull();
+    remount({ elementPicker: false });
+    click(button("Report"));
+    expect(q('.modebar button[aria-pressed="true"]')?.textContent).toMatch(/Area/);
+    expect([...view.root.querySelectorAll(".modebar .modes button")].map(b => nameOf(b))).toEqual(["Area", "Screen"]);
+    key("e");
+    expect(q('.modebar button[aria-pressed="true"]')?.textContent).toMatch(/Area/);
+    expect(modes.at(-1)).toBe(true);
+    expect(areas.at(-1)).toBe(true);
   });
 });

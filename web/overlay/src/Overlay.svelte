@@ -140,6 +140,23 @@
     choose(mode);
   }
 
+  /** Follows the queue's link in the Report panel: the reporter's view of
+   * the queue in Clax, through a fresh single-use view link, in a new tab
+   * opened at the click (so no popup blocker stops it). A client with no
+   * view links follows the link's own address. */
+  async function openQueue(e: MouseEvent): Promise<void> {
+    if (!client.viewLink || e.metaKey || e.ctrlKey || e.shiftKey) return;
+    e.preventDefault();
+    const tab = doc.defaultView?.open("about:blank", "_blank") ?? null;
+    try {
+      const url = await client.viewLink();
+      if (tab) { tab.opener = null; tab.location.href = url; } else doc.defaultView?.open(url, "_blank", "noopener");
+    } catch {
+      tab?.close();
+      notice = `Could not open ${queueInfo?.name ?? "the queue"}. Try again.`;
+    }
+  }
+
   /** Opens "Your reports". */
   export function showReports(): void {
     if (reportsOn && !open) toggleReports();
@@ -471,7 +488,11 @@
 
   <div class="dock">
   {#if draft && !open}
-    <form class="composer" aria-label={reopening ? "Still broken" : "New report"} onsubmit={e => { e.preventDefault(); void send(); }}>
+    <form class="composer" aria-label={`${wording.productName ? `${wording.productName}: ` : ""}${reopening ? "Still broken" : "New report"}`} onsubmit={e => { e.preventDefault(); void send(); }}>
+      {#if queueInfo}
+        <!-- Its first line, there from the panel's first frame: nothing moves under it. The note's field names it as its description. -->
+        <p class="queue-line" id="cx-queue">{wording.queueLabel} <a href={queueInfo.reporterPage} target="_blank" rel="noopener" onclick={openQueue}>{queueInfo.name}</a></p>
+      {/if}
       {#if reopening}
         <p class="quote">Still broken: {summaryOf(reopening)}</p>
       {:else}
@@ -494,7 +515,7 @@
       {#if reopening && !bar}
         <p class="small"><button type="button" class="ghost" onclick={() => { bar = { mode: null }; }}>{draft.clip.state === "none" ? "Add a screenshot" : "Retake the screenshot"}</button></p>
       {/if}
-      <textarea rows={3} aria-label={reopening ? "What is still broken" : "Report"} placeholder={reopening ? "What is still broken?" : "What should change here?"} {@attach el => el.focus()} bind:this={noteEl} bind:value={draft.body}
+      <textarea rows={3} aria-label={reopening ? "What is still broken" : "Report"} aria-describedby={queueInfo ? "cx-queue" : undefined} placeholder={reopening ? "What is still broken?" : "What should change here?"} {@attach el => el.focus()} bind:this={noteEl} bind:value={draft.body}
         onkeydown={e => {
           if (e.key === "Escape") { e.preventDefault(); cancel(); }
           else if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); void send(); }
@@ -571,6 +592,8 @@
   @keyframes pulse { 0% { box-shadow: 0 0 0 0 var(--you); } 100% { box-shadow: 0 0 0 12px transparent; } }
   @media (prefers-reduced-motion: reduce) { .launcher.pulse .reports-btn { animation: none; outline: 2px solid var(--you); } }
   .composer { width: min(380px, calc(100vw - 32px)); overflow: auto; background: var(--raised); border: 1px solid var(--border-hover); border-top: 3px solid var(--you); border-radius: var(--radius); padding: 12px; box-shadow: var(--elev-lg); z-index: 2; }
+  .queue-line { margin: 0 0 6px; min-height: 1.4em; font-size: 12.5px; line-height: 1.4; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .queue-line a { color: var(--you-ink); font-weight: 600; }
   .quote { margin: 0 0 8px; padding: 4px 8px; font-size: 13px; color: var(--muted); background: var(--comment-hl); border-left: 2px solid var(--you); border-radius: 0 var(--radius-xs) var(--radius-xs) 0; overflow-wrap: anywhere; }
   .composer > p[role="status"] { margin-bottom: 8px; }
   .warn { margin-bottom: 6px; color: var(--you-ink); }
