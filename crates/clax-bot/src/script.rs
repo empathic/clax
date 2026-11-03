@@ -386,7 +386,7 @@ impl RunHost<'_> {
                             }
                             res
                         }
-                        // A Spend operation is the run loop's (`Performer::Web`).
+                        // Unreachable: every Spend operation is `Performer::Web`.
                         api::Access::Spend => {
                             let res = Err(HostError::new(
                                 api::CODE_UNKNOWN_OP,

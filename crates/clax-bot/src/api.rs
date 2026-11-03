@@ -30,6 +30,8 @@ pub enum Ty {
     Int,
     /// Any JSON number.
     Num,
+    /// A string, one of these.
+    Enum(&'static [&'static str]),
     Bool,
     Null,
     /// Any JSON value.
@@ -250,7 +252,8 @@ pub static THREAD: Ty = Ty::Named(
 
 /// What a run has left after a web call: searches and fetches under the
 /// run's caps, and credits in the person's week.
-pub static WEB_LEFT: Ty = Ty::Named("WebLeft", &WEB_LEFT_FIELDS);
+/// (A `const`, so the types that hold it take it by value.)
+const WEB_LEFT: Ty = Ty::Named("WebLeft", &WEB_LEFT_FIELDS);
 
 static WEB_LEFT_FIELDS: Ty = Ty::Object(&[
     req("searches", Ty::Int),
@@ -272,7 +275,7 @@ pub static SEARCH_RESULTS: Ty = Ty::Named(
     "SearchResults",
     &Ty::Object(&[
         req("results", Ty::Array(&SEARCH_RESULT)),
-        req("left", Ty::Named("WebLeft", &WEB_LEFT_FIELDS)),
+        req("left", WEB_LEFT),
     ]),
 );
 
@@ -287,7 +290,7 @@ pub static WEB_PAGE: Ty = Ty::Named(
         req("offset", Ty::Int),
         req("nextOffset", Ty::Union(&[Ty::Int, Ty::Null])),
         req("totalChars", Ty::Int),
-        req("left", Ty::Named("WebLeft", &WEB_LEFT_FIELDS)),
+        req("left", WEB_LEFT),
     ]),
 );
 
@@ -558,7 +561,10 @@ pub static OPS: &[OpSpec] = &[
             p("url", &Ty::Str),
             p_opt(
                 "opts",
-                &Ty::Object(&[opt("offset", Ty::Int), opt("format", Ty::Str)]),
+                &Ty::Object(&[
+                    opt("offset", Ty::Int),
+                    opt("format", Ty::Enum(&["auto", "raw"])),
+                ]),
             ),
         ],
         result: &WEB_PAGE,
@@ -662,6 +668,11 @@ fn check(ty: &Ty, v: &Value) -> Result<(), String> {
         Ty::Int => (v.is_i64() || v.is_u64())
             .then_some(())
             .ok_or(" must be an integer".into()),
+        Ty::Enum(values) => v
+            .as_str()
+            .is_some_and(|s| values.contains(&s))
+            .then_some(())
+            .ok_or(format!(" must be one of {}", values.join(", "))),
         Ty::Num => v
             .is_number()
             .then_some(())
@@ -750,6 +761,11 @@ fn ts_type(ty: &Ty) -> String {
     match ty {
         Ty::Str => "string".into(),
         Ty::Int | Ty::Num => "number".into(),
+        Ty::Enum(values) => values
+            .iter()
+            .map(|v| format!("{v:?}"))
+            .collect::<Vec<_>>()
+            .join(" | "),
         Ty::Bool => "boolean".into(),
         Ty::Null => "null".into(),
         Ty::Any => "unknown".into(),
@@ -914,6 +930,7 @@ fn schema(ty: &Ty) -> Value {
         Ty::Str => json!({"type": "string"}),
         Ty::Int => json!({"type": "integer"}),
         Ty::Num => json!({"type": "number"}),
+        Ty::Enum(values) => json!({"type": "string", "enum": values}),
         Ty::Bool => json!({"type": "boolean"}),
         Ty::Null => json!({"type": "null"}),
         Ty::Any => json!({}),
@@ -1056,6 +1073,19 @@ mod tests {
         );
         assert!(check_args("web.search", &json!(["q", "5"])).is_err());
         assert!(check_args("web.fetch", &json!(["u", {"offs": 1}])).is_err());
+        let m = check_args("web.fetch", &json!(["u", {"format": "html"}])).unwrap_err();
+        assert_eq!(m.code, CODE_BAD_ARGS);
+        assert!(
+            m.message
+                .contains("argument 2 (opts).format must be one of auto, raw"),
+            "{m}"
+        );
+        assert!(check_args("web.fetch", &json!(["u", {"format": 1}])).is_err());
+        let schema = f.args_schema();
+        assert_eq!(
+            schema["prefixItems"][1]["properties"]["format"],
+            json!({"type": "string", "enum": ["auto", "raw"]})
+        );
     }
 
     #[test]

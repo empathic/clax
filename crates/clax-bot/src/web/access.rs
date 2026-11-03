@@ -194,6 +194,8 @@ impl WebAccess {
                 .unwrap_or(0))
         };
         let search = if search_on {
+            // The setting is checked on write (`Setting::check`), so the
+            // fallback is never reached in practice.
             let provider = match text(Setting::WebSearchProvider)?.as_str() {
                 "exa" => Provider::Exa,
                 "linkup" => Provider::Linkup,

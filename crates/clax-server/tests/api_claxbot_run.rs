@@ -1171,3 +1171,55 @@ async fn a_runs_events_end_when_the_owner_logs_out() {
     .await;
     assert!(ended.is_ok(), "the run's events end at logout");
 }
+
+#[tokio::test]
+async fn a_run_keeps_the_web_shape_its_person_had_when_it_started() {
+    use clax_core::ArtifactId;
+    use clax_server::routes::bot::{Sender, start_run};
+    use clax_store::bot_runs::RequestKind;
+    use clax_store::roles::OWNER;
+    let fake = FakeMessages::start(vec![]).await;
+    let ts = daemon(&fake).await;
+    let id_of = |v: &Value| v["id"].as_str().unwrap().to_string();
+    let aid = id_of(&ts.publish("Web", &[("index.html", "<p>hi</p>")]).await["artifact"]);
+    let (t1, t2) = (
+        id_of(&ts.thread(&aid, 1, "Find the latest figures.").await),
+        id_of(&ts.thread(&aid, 1, "And the year before.").await),
+    );
+    ts.store
+        .set_bot_settings(
+            &AuditCtx::DAEMON,
+            &[(Setting::WebSearchEnabled, Some(json!(true)))],
+        )
+        .unwrap();
+    let bot = clax_http::bot::Bot {
+        kek: ts.state.bot.kek.clone(),
+        web_configured: true,
+        ..Default::default()
+    };
+    let sender = Sender {
+        person: OWNER.into(),
+        agent_grant: None,
+    };
+    let aid = ArtifactId::parse(&aid).unwrap();
+    let start = |tid: &str| {
+        start_run(
+            &ts.store,
+            &bot,
+            &AuditCtx::DAEMON,
+            &sender,
+            &aid,
+            RequestKind::Thread,
+            vec![tid.to_string()],
+        )
+        .unwrap()
+    };
+    let run = start(&t1);
+    assert_eq!(ts.store.run(&run.id).unwrap().unwrap().web, "search");
+    // A person who chose web off gets a run without it.
+    ts.store
+        .set_web_choice(&AuditCtx::DAEMON, OWNER, false)
+        .unwrap();
+    let run = start(&t2);
+    assert_eq!(ts.store.run(&run.id).unwrap().unwrap().web, "");
+}
