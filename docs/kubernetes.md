@@ -559,7 +559,9 @@ is what makes a forward believed on 7480. An instance's own `/healthz`
 answers on 7480 at its origin, with the version.
 
 **Which pod runs which instance:** `kubectl exec clax-0 -- clax-fleet
-status` lists each shard's running instances.
+status` lists each shard's running instances, and under each shard a
+`failing` line for every instance whose last start failed (the failures
+in a row, when the next start is tried, and the error).
 
 **Logs** are text by default; set `CLAX_FLEET_LOG_FORMAT=json` for one JSON
 object per line, with each request's `instance` in its span. `RUST_LOG`

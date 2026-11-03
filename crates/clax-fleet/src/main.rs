@@ -442,8 +442,9 @@ fn status_client() -> StatusClient {
 
 /// One shard's line of `clax-fleet status`, from its `/status` at `addr`
 /// asked with the peer key `key`: its pod, readiness and running
-/// instances, or why there are none (refused, another status, no answer
-/// within `timeout`).
+/// instances, and a line for each instance whose last start failed; or
+/// why there are none (refused, another status, no answer within
+/// `timeout`).
 async fn shard_status(client: &StatusClient, addr: &str, key: &str, timeout: Duration) -> String {
     use http_body_util::BodyExt;
     let ask = async {
@@ -472,14 +473,38 @@ async fn shard_status(client: &StatusClient, addr: &str, key: &str, timeout: Dur
         }
         Ok(Ok((_, body))) => match serde_json::from_slice::<serde_json::Value>(&body) {
             Ok(v) => format!(
-                "({}): ready {}, running {}",
+                "({}): ready {}, running {}{}",
                 v["pod"].as_str().unwrap_or("?"),
                 v["ready"],
-                v["running"]
+                v["running"],
+                failing_lines(&v["failing"])
             ),
             Err(e) => format!("({addr}): its /status is not JSON: {e}"),
         },
     }
+}
+
+/// The instances of a shard's `/status` whose last start failed, one
+/// indented line each (its name, the failures in a row, when the next
+/// start is tried, and why), each after a newline; empty when none is.
+fn failing_lines(failing: &serde_json::Value) -> String {
+    let Some(failing) = failing.as_object() else {
+        return String::new();
+    };
+    let mut names: Vec<&String> = failing.keys().collect();
+    names.sort();
+    names
+        .into_iter()
+        .map(|name| {
+            let f = &failing[name];
+            format!(
+                "\n  failing {name}: {} in a row, next try in {} ms: {}",
+                f["failures"],
+                f["retry_in_ms"],
+                f["error"].as_str().unwrap_or("?")
+            )
+        })
+        .collect()
 }
 
 fn nix_hostname() -> anyhow::Result<String> {
@@ -580,7 +605,8 @@ mod tests {
     }
 
     /// A shard's line says when it refused the key, answered otherwise, or
-    /// did not answer in time, never a live-looking `ready null`.
+    /// did not answer in time, never a live-looking `ready null`, and names
+    /// each instance whose start failed.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_shard_that_refuses_or_does_not_answer_says_so() {
         use axum::routing::get;
@@ -600,6 +626,23 @@ mod tests {
         let answering = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let answering_addr = answering.local_addr().unwrap().to_string();
         tokio::spawn(async move { axum::serve(answering, app).await });
+        let app = axum::Router::new().route(
+            "/status",
+            get(|| async {
+                axum::Json(serde_json::json!({
+                    "pod": "clax-2",
+                    "ready": true,
+                    "running": [],
+                    "failing": {
+                        "globex": {"error": "migration 70 failed", "failures": 3, "retry_in_ms": 8000},
+                        "acme": {"error": "no home on this shard", "failures": 1, "retry_in_ms": 0},
+                    },
+                }))
+            }),
+        );
+        let failing = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let failing_addr = failing.local_addr().unwrap().to_string();
+        tokio::spawn(async move { axum::serve(failing, app).await });
         // Takes the connection and never answers.
         let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let silent_addr = silent.local_addr().unwrap().to_string();
@@ -623,6 +666,12 @@ mod tests {
         assert_eq!(
             line(answering_addr).await,
             r#"(clax-1): ready true, running ["acme"]"#
+        );
+        // An instance whose start failed is named, with why: not running
+        // reads the same as not yet requested.
+        assert_eq!(
+            line(failing_addr).await,
+            "(clax-2): ready true, running []\n  failing acme: 1 in a row, next try in 0 ms: no home on this shard\n  failing globex: 3 in a row, next try in 8000 ms: migration 70 failed"
         );
         let silent = line(silent_addr).await;
         assert!(silent.contains("did not answer within"), "{silent}");
