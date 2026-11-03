@@ -63,11 +63,19 @@ const SEARCH_ANSWER_BYTES: u64 = 1 << 20;
 /// The most bytes of a Markdown conversion's answer read from Cloudflare.
 const CONVERSION_ANSWER_BYTES: u64 = 16 << 20;
 
-/// The `User-Agent` of a fetch from a daemon at `origin`: `ClaxBot/1
-/// (+<origin>)`, so a site can tell who fetched it and where to ask.
+/// The `User-Agent` of a fetch: `ClaxBot/1 (+<origin>)` from a hosted
+/// daemon at its public `origin`, so a site can tell who fetched it and
+/// where to ask; plain `ClaxBot/1` from a local daemon (`None`), whose
+/// own address (loopback or LAN, and port) no site is told.
 #[must_use]
-pub fn user_agent(origin: &str) -> String {
-    format!("ClaxBot/1 (+{})", origin.trim_end_matches('/'))
+pub fn user_agent(origin: Option<&str>) -> String {
+    match origin
+        .map(|o| o.trim_end_matches('/'))
+        .filter(|o| !o.is_empty())
+    {
+        Some(o) => format!("ClaxBot/1 (+{o})"),
+        None => "ClaxBot/1".to_string(),
+    }
 }
 
 /// Whether `ip` is a public unicast address a fetch may connect to: not
@@ -779,6 +787,10 @@ pub struct DaemonWeb {
     store: Arc<Store>,
     kek: Option<Kek>,
     api_base: Url,
+    /// Tests only: where requests go instead of `api_base`, the token
+    /// still opened for `api_base` (Cloudflare's origin).
+    #[cfg(test)]
+    send_to: Option<Url>,
     allow_loopback: bool,
     lookup: Arc<dyn Lookup>,
     user_agent: String,
@@ -794,11 +806,33 @@ impl DaemonWeb {
             store,
             kek,
             api_base: Url::parse(CLOUDFLARE_ORIGIN).expect("Cloudflare's origin is a URL"),
+            #[cfg(test)]
+            send_to: None,
             allow_loopback: false,
             lookup: Arc::new(SystemLookup),
-            user_agent: "ClaxBot/1".into(),
+            user_agent: user_agent(None),
             current: Mutex::new(None),
         }
+    }
+
+    /// Tests only: this source sending to `base` (a local server),
+    /// resolving fetched names with `lookup` and admitting loopback, while
+    /// the token is still opened for Cloudflare's origin alone.
+    #[cfg(test)]
+    fn sending_to(mut self, base: Url, lookup: Arc<dyn Lookup>) -> DaemonWeb {
+        self.send_to = Some(base);
+        self.lookup = lookup;
+        self.allow_loopback = true;
+        self
+    }
+
+    /// The base requests go to: `api_base` (in tests, `send_to`).
+    fn target(&self) -> Url {
+        #[cfg(test)]
+        if let Some(t) = &self.send_to {
+            return t.clone();
+        }
+        self.api_base.clone()
     }
 
     /// This source, sending `user_agent` on every fetch ([`user_agent`]).
@@ -837,7 +871,7 @@ impl DaemonWeb {
         }
         let source = Arc::new(
             RestSource::with_lookup(
-                self.api_base.clone(),
+                self.target(),
                 account.clone(),
                 token.clone(),
                 self.allow_loopback,
@@ -914,7 +948,11 @@ impl WebSource for DaemonWeb {
     }
 
     /// Whether the instance holds an account ID and a token that opens now
-    /// ([`has_credentials`]); a store error reads as not configured.
+    /// ([`has_credentials`]); a store error reads as not configured. It
+    /// reads the store and opens the token on the calling thread (a
+    /// performer's, once per web call, beside its other store reads), not
+    /// on a blocking thread as [`DaemonWeb`]'s calls do: one indexed row
+    /// and one decryption of a short token.
     fn configured(&self) -> bool {
         has_credentials(&self.store, self.kek.as_ref()).unwrap_or(false)
     }
@@ -965,10 +1003,12 @@ pub fn fixtures() -> Option<Arc<FakeWebSource>> {
 }
 
 /// The daemon's web source: the test mode's fixtures when they are set
-/// ([`fixtures`]), else a [`DaemonWeb`] on `store` whose fetches name the
-/// daemon at `origin` ([`user_agent`]).
+/// ([`fixtures`]), else a [`DaemonWeb`] on `store` whose fetches name a
+/// hosted daemon's public `origin` ([`user_agent`]; `None` on a local
+/// daemon). The origin is taken here, once: hosted mode reads it at start
+/// (`[hosted] public_origin`) and it does not change before a restart.
 #[must_use]
-pub fn for_daemon(store: Arc<Store>, kek: Option<Kek>, origin: &str) -> Arc<dyn WebSource> {
+pub fn for_daemon(store: Arc<Store>, kek: Option<Kek>, origin: Option<&str>) -> Arc<dyn WebSource> {
     match fixtures() {
         Some(f) => f,
         None => Arc::new(DaemonWeb::new(store, kek).with_user_agent(user_agent(origin))),
@@ -1717,15 +1757,114 @@ mod tests {
     async fn a_fetch_names_the_daemon() {
         let server =
             Server::start(|r| resp(200, "text/plain", r.header("user-agent").to_string())).await;
-        let s = source(&server, true).with_user_agent(user_agent("https://clax.example/"));
-        let p = fetch(
-            &s,
-            &server.url("site.test", "/"),
-            Format::Auto,
-            FetchLimits::default(),
+        let ua = |origin: Option<&str>| {
+            let s = source(&server, true).with_user_agent(user_agent(origin));
+            let url = server.url("site.test", "/");
+            async move {
+                fetch(&s, &url, Format::Auto, FetchLimits::default())
+                    .await
+                    .unwrap()
+                    .text
+            }
+        };
+        // A hosted daemon names its public origin.
+        assert_eq!(
+            ua(Some("https://clax.example/")).await,
+            "ClaxBot/1 (+https://clax.example)"
+        );
+        // A local daemon names no address of its own.
+        assert_eq!(ua(None).await, "ClaxBot/1");
+        assert_eq!(ua(Some("")).await, "ClaxBot/1");
+    }
+
+    #[tokio::test]
+    async fn the_daemon_source_sends_the_token_held_now() {
+        let server = Server::start(|r| match r.path.as_str() {
+            "/page" => resp(200, "text/plain", r.header("user-agent").to_string()),
+            _ => resp(
+                200,
+                "application/json",
+                json!({"success": true, "result": {"items": [{"url": "https://a.example/"}]}})
+                    .to_string(),
+            ),
+        })
+        .await;
+        let (_d, st) = store();
+        let kek = Kek::generate();
+        let web = DaemonWeb::new(st.clone(), Some(kek.clone()))
+            .with_user_agent(user_agent(Some("https://clax.example")))
+            .sending_to(server.api_base(), stub());
+        st.set_bot_settings(
+            &AuditCtx::DAEMON,
+            &[(Setting::WebCloudflareAccountId, Some(json!(ACCOUNT)))],
         )
-        .await
         .unwrap();
+        st.set_secret(&AuditCtx::DAEMON, &kek, &SecretSlot::Cloudflare, TOKEN)
+            .unwrap();
+        let bearers = || -> Vec<String> {
+            server
+                .requests()
+                .iter()
+                .filter(|r| r.path.ends_with("/ai/websearch/"))
+                .map(|r| r.header("authorization").to_string())
+                .collect()
+        };
+        assert_eq!(
+            web.search(&query(), &CancelToken::new())
+                .await
+                .unwrap()
+                .hits
+                .len(),
+            1
+        );
+        assert_eq!(
+            server.requests()[0].path,
+            format!("/client/v4/accounts/{ACCOUNT}/ai/websearch/")
+        );
+        // The same credentials reuse the source; a rotated token never
+        // goes out as the old one.
+        web.search(&query(), &CancelToken::new()).await.unwrap();
+        st.set_secret(
+            &AuditCtx::DAEMON,
+            &kek,
+            &SecretSlot::Cloudflare,
+            "cf-rotated-5678",
+        )
+        .unwrap();
+        web.search(&query(), &CancelToken::new()).await.unwrap();
+        assert_eq!(
+            bearers(),
+            [
+                format!("Bearer {TOKEN}"),
+                format!("Bearer {TOKEN}"),
+                "Bearer cf-rotated-5678".to_string()
+            ]
+        );
+        // Cleared, then set again: the new one, not the cached one.
+        st.clear_secret(&AuditCtx::DAEMON, &SecretSlot::Cloudflare)
+            .unwrap();
+        let e = web.search(&query(), &CancelToken::new()).await.unwrap_err();
+        assert!(e.message.contains("not configured"), "{e}");
+        st.set_secret(
+            &AuditCtx::DAEMON,
+            &kek,
+            &SecretSlot::Cloudflare,
+            "cf-third-9012",
+        )
+        .unwrap();
+        web.search(&query(), &CancelToken::new()).await.unwrap();
+        assert_eq!(bearers().last().unwrap(), "Bearer cf-third-9012");
+        // Its fetches carry the daemon's User-Agent.
+        let p = web
+            .fetch(
+                &server.url("site.test", "/page"),
+                Format::Auto,
+                &FetchLimits::default(),
+                &any,
+                &CancelToken::new(),
+            )
+            .await
+            .unwrap();
         assert_eq!(p.text, "ClaxBot/1 (+https://clax.example)");
     }
 

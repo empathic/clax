@@ -1142,14 +1142,15 @@ impl clax_http::bot::Runs for DriverRuns {
 /// The driver of a daemon on `state` (native): its deps over the server's
 /// host, this build's sandbox, the state's settings and keys, the store's
 /// clock and the daemon's web source ([`crate::web_source::for_daemon`],
-/// its fetches naming the daemon's public origin); the routes' events hub.
+/// its fetches naming a hosted daemon's public origin, a local one's
+/// nothing); the routes' events hub.
 /// Installs it as the state's run seam and returns it, not yet started.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn driver(state: &mut AppState) -> Arc<clax_bot::Driver> {
     let web = crate::web_source::for_daemon(
         state.store.clone(),
         state.bot.kek.clone(),
-        &clax_http::site_access::public_origin(state),
+        state.hosted.as_ref().map(|h| h.origin.as_str()),
     );
     driver_with_web(state, web)
 }

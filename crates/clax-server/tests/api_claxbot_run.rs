@@ -1343,7 +1343,7 @@ async fn a_daemon_run_searches_and_fetches_through_its_web_source_and_is_charged
 }
 
 #[tokio::test]
-async fn a_token_cleared_mid_run_turns_the_daemons_web_off() {
+async fn a_token_cleared_between_a_runs_start_and_its_first_web_call_refuses_web_disabled() {
     let fake = FakeMessages::start(vec![
         Turn::script(
             "tu_1",
