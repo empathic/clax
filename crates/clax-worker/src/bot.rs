@@ -143,16 +143,45 @@ pub fn sandbox(_env: &worker::Env) -> Result<Arc<dyn Sandbox>, String> {
 /// when given; else the `AI` binding, when the Worker has one, its fetches
 /// naming the instance at `public_origin` (`PUBLIC_ORIGIN`, when set; never
 /// a fallback) in their `User-Agent`; else none, and the host's web use is
-/// off, not configured.
+/// off, not configured. The source answers `public_origin`'s host and
+/// `site_domain` (with every host under it) as the instance's own, which
+/// no fetch reaches ([`own_hosts`]).
 #[must_use]
 pub fn web_source(
     env: &worker::Env,
     test: Option<Arc<crate::web_source::FixtureWeb>>,
     public_origin: Option<&str>,
+    site_domain: Option<&str>,
 ) -> Option<Arc<dyn clax_bot::WebSource>> {
-    if let Some(t) = test {
-        return Some(t);
+    let source: Arc<dyn clax_bot::WebSource> = match test {
+        Some(t) => t,
+        None => binding_source(env, public_origin)?,
+    };
+    Some(own_hosts(source, public_origin, site_domain))
+}
+
+/// `source`, answering `public_origin`'s host and `site_domain` as the
+/// instance's own hosts (`clax_bot::web::WithOwnHosts`); `source` itself
+/// when the Worker has neither.
+#[must_use]
+pub fn own_hosts(
+    source: Arc<dyn clax_bot::WebSource>,
+    public_origin: Option<&str>,
+    site_domain: Option<&str>,
+) -> Arc<dyn clax_bot::WebSource> {
+    let own = clax_bot::web::OwnHosts::new(public_origin, site_domain);
+    if own == clax_bot::web::OwnHosts::default() {
+        source
+    } else {
+        Arc::new(clax_bot::web::WithOwnHosts::new(source, own))
     }
+}
+
+/// The `AI` binding's source, when the Worker has one.
+fn binding_source(
+    env: &worker::Env,
+    public_origin: Option<&str>,
+) -> Option<Arc<dyn clax_bot::WebSource>> {
     #[cfg(target_arch = "wasm32")]
     {
         crate::web_source::BindingSource::from_env(env, public_origin)
@@ -468,6 +497,25 @@ impl WorkerBot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_web_source_names_the_instances_own_hosts() {
+        let fixtures: Arc<dyn clax_bot::WebSource> =
+            Arc::new(crate::web_source::FixtureWeb::default());
+        let web = own_hosts(
+            fixtures.clone(),
+            Some("https://clax.example"),
+            Some("sites.example"),
+        );
+        let own = web.own_hosts();
+        assert!(own.holds("clax.example"));
+        assert!(own.holds("abcdefghijkl.sites.example"));
+        assert!(!own.holds("example.com"));
+        assert!(web.configured());
+        // Without either, the source is unchanged.
+        let bare = own_hosts(fixtures, None, None);
+        assert_eq!(bare.own_hosts(), clax_bot::web::OwnHosts::default());
+    }
 
     #[test]
     fn the_budget_leaves_the_margin_of_the_wall_limit_and_fits_a_turn() {

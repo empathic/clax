@@ -33,7 +33,8 @@ use clax_bot::web::url::{is_local_addr, redirect_allowed};
 use clax_bot::web::{
     CODE_URL_NOT_ALLOWED, CODE_WEB_BLOCKED, CODE_WEB_TIMEOUT, CODE_WEB_TOO_LARGE,
     CODE_WEB_UNAVAILABLE, CODE_WEB_UNSUPPORTED_CONTENT_TYPE, FakeWebSource, FetchLimits,
-    FetchedPage, Format, PublicUrl, SearchAnswer, SearchHit, SearchQuery, WebError, WebSource,
+    FetchedPage, Format, OwnHosts, PublicUrl, SearchAnswer, SearchHit, SearchQuery, WebError,
+    WebSource, WithOwnHosts,
 };
 use clax_bot_sandbox::{CODE_CANCELLED, CancelToken};
 use clax_core::secret::Secret;
@@ -489,6 +490,11 @@ impl RestSource {
                     .to_markdown(html.into_bytes(), "page.html".into(), HTML_UTF8)
                     .await
                     .map_err(gone)?;
+                // An error page whose conversion is empty has nothing to
+                // read, as on the Worker.
+                if status >= 400 && md.trim().is_empty() {
+                    return Err(http_error(&at, status));
+                }
                 (md, links)
             }
             Handling::RawHtml => {
@@ -501,6 +507,9 @@ impl RestSource {
                     .to_markdown(body, format!("document.{ext}"), &content_type)
                     .await
                     .map_err(gone)?;
+                if status >= 400 && md.trim().is_empty() {
+                    return Err(http_error(&at, status));
+                }
                 let links = links_of_markdown(&md, &at);
                 (md, links)
             }
@@ -628,30 +637,15 @@ async fn read_capped(
 }
 
 /// `v`'s `result` (or `v` itself) as a search answer: each item with a
-/// URL, and the request ID of `metadata.requestId`.
+/// URL ([`SearchHit::of_item`]), and the request ID of
+/// `metadata.requestId`.
 fn parse_search(v: Value) -> SearchAnswer {
     let result = match v.get("result") {
         Some(r) if r.is_object() => r.clone(),
         _ => v.clone(),
     };
     let s = |o: &Value, k: &str| o.get(k).and_then(Value::as_str).map(str::to_string);
-    let hits = result
-        .get("items")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|i| {
-                    Some(SearchHit {
-                        url: s(i, "url").filter(|u| !u.trim().is_empty())?,
-                        title: s(i, "title"),
-                        description: s(i, "description"),
-                        age: s(i, "age"),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let hits = SearchHit::of_items(&result);
     SearchAnswer {
         hits,
         request_id: result.get("metadata").and_then(|m| s(m, "requestId")),
@@ -960,13 +954,29 @@ pub fn fixtures() -> Option<Arc<FakeWebSource>> {
 /// The daemon's web source: the test mode's fixtures when they are set
 /// ([`fixtures`]), else a [`DaemonWeb`] on `store` whose fetches name a
 /// hosted daemon's public `origin` ([`user_agent`]; `None` on a local
-/// daemon). The origin is taken here, once: hosted mode reads it at start
-/// (`[hosted] public_origin`) and it does not change before a restart.
+/// daemon). A hosted daemon's source answers its origin's host and its
+/// `site_domain` as its own hosts, which no fetch reaches
+/// ([`WithOwnHosts`]); a local daemon's hosts are loopback, which every
+/// fetch refuses already. Both are taken here, once: hosted mode reads
+/// them at start (`[hosted] public_origin`, `site_domain`) and they do not
+/// change before a restart.
 #[must_use]
-pub fn for_daemon(store: Arc<Store>, kek: Option<Kek>, origin: Option<&str>) -> Arc<dyn WebSource> {
-    match fixtures() {
+pub fn for_daemon(
+    store: Arc<Store>,
+    kek: Option<Kek>,
+    origin: Option<&str>,
+    site_domain: Option<&str>,
+) -> Arc<dyn WebSource> {
+    let source: Arc<dyn WebSource> = match fixtures() {
         Some(f) => f,
         None => Arc::new(DaemonWeb::new(store, kek).with_user_agent(user_agent(origin))),
+    };
+    match origin {
+        Some(o) => Arc::new(WithOwnHosts::new(
+            source,
+            OwnHosts::new(Some(o), site_domain),
+        )),
+        None => source,
     }
 }
 
@@ -1344,6 +1354,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_refused_first_connection_did_not_go_out_and_a_later_one_did() {
+        // A port nothing listens on: the connection is refused.
+        let closed = {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let server = Server::start(move |r| match r.path.as_str() {
+            "/away" => redirect(&format!("http://site.test:{closed}/")),
+            "/lost" => redirect("http://nowhere.test/"),
+            _ => resp(200, "text/plain", "x"),
+        })
+        .await;
+        let s = source(&server, true);
+        let refused = PublicUrl::parse(&format!("http://site.test:{closed}/")).unwrap();
+        let e = fetch(&s, &refused, Format::Auto, FetchLimits::default())
+            .await
+            .unwrap_err();
+        assert_eq!((e.code, e.went_out), (CODE_WEB_UNAVAILABLE, false), "{e}");
+        assert!(!charged(OP_FETCH, &e));
+        // After a redirect came back, a refused connection or a name that
+        // does not resolve has gone out.
+        for path in ["/away", "/lost"] {
+            let e = fetch(
+                &s,
+                &server.url("site.test", path),
+                Format::Auto,
+                FetchLimits::default(),
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                (e.code, e.went_out),
+                (CODE_WEB_UNAVAILABLE, true),
+                "{path}: {e}"
+            );
+            assert!(charged(OP_FETCH, &e));
+        }
+    }
+
+    #[tokio::test]
     async fn search_posts_the_gateway_and_reads_items() {
         let server = Server::start(|r| {
             (r.path == format!("/client/v4/accounts/{ACCOUNT}/ai/websearch/")).then(|| Resp {
@@ -1353,7 +1403,8 @@ mod tests {
                     "success": true,
                     "result": {
                         "items": [
-                            {"url": "https://a.example/", "title": "A", "description": "First"},
+                            {"url": "https://a.example/", "title": "A", "description": "First",
+                             "lastModifiedDate": "2026-10-01"},
                             {"url": "https://b.example/", "age": "2d"},
                             {"title": "no url"}
                         ],
@@ -1374,7 +1425,7 @@ mod tests {
                     url: "https://a.example/".into(),
                     title: Some("A".into()),
                     description: Some("First".into()),
-                    age: None,
+                    age: Some("2026-10-01".into()),
                 },
                 SearchHit {
                     url: "https://b.example/".into(),
@@ -1578,6 +1629,25 @@ mod tests {
     #[tokio::test]
     async fn an_error_status_without_a_readable_body_is_unavailable() {
         let server = Server::start(|r| {
+            if r.path == format!("/client/v4/accounts/{ACCOUNT}/ai/tomarkdown") {
+                // An HTML page with text converts to it; one without, to
+                // nothing but white space.
+                let body = String::from_utf8_lossy(&r.body);
+                let data = if body.contains("<p>gone</p>") {
+                    "gone\n"
+                } else {
+                    " \n"
+                };
+                return resp(
+                    200,
+                    "application/json",
+                    json!({"success": true, "result": [
+                        {"name": "page.html", "mimeType": "text/html", "format": "markdown",
+                         "data": data}
+                    ]})
+                    .to_string(),
+                );
+            }
             let (status, rest) = r.path[1..].split_once('/').unwrap();
             let status: u16 = status.parse().unwrap();
             match rest {
@@ -1585,6 +1655,8 @@ mod tests {
                 "binary" => resp(status, "application/octet-stream", vec![0, 1, 2, 0]),
                 "image" => resp(status, "image/png", vec![0x89, b'P', b'N', b'G']),
                 "pdf" => resp(status, "application/pdf", b"%PDF-1.4".to_vec()),
+                "blank-html" => resp(status, "text/html", "<html><body></body></html>"),
+                "html" => resp(status, "text/html", "<html><body><p>gone</p></body></html>"),
                 _ => resp(status, "text/plain", "gone"),
             }
         })
@@ -1598,6 +1670,8 @@ mod tests {
                 ("binary", Format::Auto),
                 ("image", Format::Auto),
                 ("pdf", Format::Raw),
+                // An HTML error page whose conversion is empty, after it.
+                ("blank-html", Format::Auto),
             ] {
                 let url = server.url("site.test", &format!("/{status}/{body}"));
                 let e = fetch(&s, &url, format, FetchLimits::default())
@@ -1620,6 +1694,11 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!((p.status, p.text.as_str()), (status, "gone"));
+            let url = server.url("site.test", &format!("/{status}/html"));
+            let p = fetch(&s, &url, Format::Auto, FetchLimits::default())
+                .await
+                .unwrap();
+            assert_eq!((p.status, p.text.as_str()), (status, "gone\n"));
         }
         // A 200 image is still unsupported, not unavailable.
         let e = fetch(
@@ -1897,6 +1976,24 @@ mod tests {
             .unwrap_err();
         assert_eq!(e.code, CODE_WEB_UNAVAILABLE, "{e}");
         assert!(e.message.contains("more than"), "{e}");
+    }
+
+    #[test]
+    fn a_hosted_daemons_source_names_its_own_hosts() {
+        let (_d, st) = store();
+        let hosted = for_daemon(
+            st.clone(),
+            None,
+            Some("https://clax.example"),
+            Some("sites.example"),
+        );
+        let own = hosted.own_hosts();
+        assert!(own.holds("clax.example"));
+        assert!(own.holds("abcdefghijkl.sites.example"));
+        assert!(!own.holds("example.com"));
+        // A local daemon has none: its hosts are loopback.
+        let local = for_daemon(st, None, None, None);
+        assert_eq!(local.own_hosts(), OwnHosts::default());
     }
 
     #[test]

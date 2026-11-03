@@ -27,11 +27,14 @@
 //!
 //! # Going out
 //!
-//! A fetch goes out ([`WebError::went_out`], so it is charged) once its
-//! first request is handed to `fetch`: every error after that, a refused
-//! or cut redirect, a body too large, a failed conversion, a deadline or a
-//! cancellation, is marked as gone out. A search never is (a failed
-//! search is not charged).
+//! A fetch goes out ([`WebError::went_out`], so it is charged) once a
+//! response, of any status, came back to its first request: a first
+//! `fetch()` that rejects (the name does not resolve, the connection is
+//! refused) did not go out. Every error after a response, a refused or cut
+//! redirect, a body too large, a failed conversion, a deadline or a
+//! cancellation, is marked as gone out, and so is a deadline or a
+//! cancellation while the first request is in flight. A search never is
+//! (a failed search is not charged).
 //!
 //! # The deadline
 //!
@@ -65,6 +68,10 @@ pub const ACCEPT: &str = "text/markdown, text/html;q=0.9, */*;q=0.8";
 /// How long a search is waited for.
 pub const SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The most bytes of a search answer read, as on the daemon: past them the
+/// search is `web_unavailable`.
+pub const SEARCH_ANSWER_BYTES: u64 = 1 << 20;
+
 /// The statuses whose `Location` is followed.
 #[must_use]
 pub fn is_redirect(status: u16) -> bool {
@@ -76,36 +83,15 @@ fn str_of<'v>(v: &'v Value, key: &str) -> Option<&'v str> {
 }
 
 /// The search `v` (`websearch()`'s response, read as JSON) answered: each
-/// item with a URL, its title and description when the provider gave
-/// them (a blank one is none), its `lastModifiedDate` as its age, and
+/// item with a URL ([`SearchHit::of_item`]: its title and description when
+/// the provider gave them, a blank one being none, and its
+/// `lastModifiedDate`, else its `age`, as its age), and
 /// `metadata.requestId`. Items without a URL, and items that are no
 /// object, are dropped; a response without `items` has no hits (whether
 /// it is an answer at all is [`search_failure`]'s). `raw` is `v`.
 #[must_use]
 pub fn parse_search(v: &Value) -> SearchAnswer {
-    let text = |item: &Value, key: &str| {
-        str_of(item, key)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-    };
-    let hits = v
-        .get("items")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| {
-                    Some(SearchHit {
-                        url: text(item, "url")?,
-                        title: text(item, "title"),
-                        description: text(item, "description"),
-                        age: text(item, "lastModifiedDate"),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let hits = SearchHit::of_items(v);
     SearchAnswer {
         hits,
         request_id: v
@@ -263,7 +249,9 @@ fn unavailable(message: String, retryable: bool) -> WebError {
 ///
 /// # Errors
 /// `cancelled` when `cancel` is cancelled before a request (gone out after
-/// the first); every other error has gone out: `send`'s, `hop`'s, a
+/// the first response); the first request's own failure, gone out as
+/// `send` marked it ([`WebError::went_out`]: a rejected `fetch()` did not
+/// go out); every other error has gone out: a later request's, `hop`'s, a
 /// `Location` that is no URL or a chain too long (`web_unavailable`), an
 /// `https` to `http` hop or a target that is no public URL
 /// (`url_not_allowed`).
@@ -280,13 +268,17 @@ where
 {
     let mut at = url.clone();
     let mut hops = 0u8;
-    let mut sent = false;
+    let mut answered = false;
     loop {
         if cancel.is_cancelled() {
-            return Err(cancelled().went_out(sent));
+            return Err(cancelled().went_out(answered));
         }
-        sent = true;
-        let reply = send(at.clone()).await.map_err(|e| e.went_out(true))?;
+        // The first request's failure went out only as `send` says; once
+        // a response came back, every failure has.
+        let reply = send(at.clone())
+            .await
+            .map_err(|e| if answered { e.went_out(true) } else { e })?;
+        answered = true;
         let location = match &reply.location {
             Some(l) if is_redirect(reply.status) => l.clone(),
             _ => return Ok((at, reply)),
@@ -750,13 +742,17 @@ mod binding {
                 &Array::of2(&url.as_str().into(), &init.into()),
             )
             .map_err(failed)?;
+            // A deadline or cancellation with the request in flight has
+            // gone out; a rejected `fetch()` has not (`follow` marks a
+            // later request's failure as gone out).
             let res = within(
                 JsFuture::from(Promise::resolve(&started)),
                 cancel,
                 deadline,
                 "The fetch",
             )
-            .await?
+            .await
+            .map_err(|e| e.went_out(true))?
             .map_err(failed)?;
             let status = get(&res, "status").as_f64().unwrap_or(0.0) as u16;
             let location = header(&res, "location");
@@ -882,23 +878,40 @@ mod binding {
         if !stream.is_object() {
             return Ok(Vec::new());
         }
-        let reader = call(&stream, "getReader", &[]).await.map_err(failed)?;
+        read_upto(
+            &stream,
+            limits.max_bytes,
+            cancel,
+            deadline,
+            "Reading the page",
+            &failed,
+        )
+        .await?
+        .ok_or_else(|| too_large(url, limits))
+    }
+
+    /// The bytes of the readable `stream`, or `None` once they pass `max`
+    /// (the stream cancelled there); `failed` makes a read's error.
+    async fn read_upto(
+        stream: &JsValue,
+        max: u64,
+        cancel: &CancelToken,
+        deadline: f64,
+        what: &str,
+        failed: &dyn Fn(JsValue) -> WebError,
+    ) -> Result<Option<Vec<u8>>, WebError> {
+        let reader = call(stream, "getReader", &[]).await.map_err(failed)?;
         let mut body = Vec::new();
         loop {
-            let step = within(
-                call(&reader, "read", &[]),
-                cancel,
-                deadline,
-                "Reading the page",
-            )
-            .await?
-            .map_err(failed)?;
+            let step = within(call(&reader, "read", &[]), cancel, deadline, what)
+                .await?
+                .map_err(failed)?;
             if get(&step, "done").as_bool().unwrap_or(false) {
-                return Ok(body);
+                return Ok(Some(body));
             }
             let chunk = Uint8Array::new(&get(&step, "value"));
             let len = chunk.length() as usize;
-            if (body.len() + len) as u64 > limits.max_bytes {
+            if (body.len() + len) as u64 > max {
                 let _ = within(
                     call(&reader, "cancel", &[]),
                     cancel,
@@ -906,7 +919,7 @@ mod binding {
                     "Dropping a body",
                 )
                 .await;
-                return Err(too_large(url, limits));
+                return Ok(None);
             }
             // Straight from the chunk into the body, with no copy between.
             let at = body.len();
@@ -959,12 +972,41 @@ mod binding {
             .await?
             .map_err(failed)?;
             let status = get(&res, "status").as_f64().unwrap_or(0.0) as u16;
-            let text = within(call(&res, "text", &[]), cancel, deadline, "The search")
+            // Read up to SEARCH_ANSWER_BYTES, from the body's stream when the
+            // answer has one, else from its text, as the daemon reads its own.
+            let too_large = || {
+                unavailable(
+                    format!(
+                        "The search answered more than {SEARCH_ANSWER_BYTES} bytes. \
+                         Continue without searching."
+                    ),
+                    false,
+                )
+            };
+            let stream = get(&res, "body");
+            let bytes = if stream.is_object() {
+                read_upto(
+                    &stream,
+                    SEARCH_ANSWER_BYTES,
+                    cancel,
+                    deadline,
+                    "The search",
+                    &failed,
+                )
                 .await?
-                .map_err(failed)?
-                .as_string()
-                .unwrap_or_default();
-            let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+                .ok_or_else(too_large)?
+            } else {
+                let text = within(call(&res, "text", &[]), cancel, deadline, "The search")
+                    .await?
+                    .map_err(failed)?
+                    .as_string()
+                    .unwrap_or_default();
+                if text.len() as u64 > SEARCH_ANSWER_BYTES {
+                    return Err(too_large());
+                }
+                text.into_bytes()
+            };
+            let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
             match search_failure(status, &v) {
                 Some(e) => Err(e),
                 None => Ok(parse_search(&v)),
@@ -1004,7 +1046,7 @@ mod tests {
             "items": [
                 {"url": "https://a.example/", "title": "A", "description": "About A",
                  "lastModifiedDate": "2026-10-01"},
-                {"url": " https://b.example/x ", "title": "  "}
+                {"url": " https://b.example/x ", "title": "  ", "age": "3 days"}
             ],
             "metadata": {"query": "q", "requestId": "req-1", "latencyMs": 12}
         });
@@ -1021,6 +1063,8 @@ mod tests {
         assert_eq!(a.hits[1].url, "https://b.example/x");
         assert_eq!(a.hits[1].title, None);
         assert_eq!(a.hits[1].description, None);
+        // An item with only `age` keeps it.
+        assert_eq!(a.hits[1].age.as_deref(), Some("3 days"));
     }
 
     #[test]
@@ -1317,9 +1361,39 @@ mod tests {
             (CODE_URL_NOT_ALLOWED, true, 1)
         );
         assert_eq!(e.message, "not here");
-        // A request that failed went out.
+        // A request that failed after a redirect came back went out.
+        let (r, sent) = run("https://a.example/", &any, &c, |u| {
+            if u.host() == "a.example" {
+                Ok(redirect("https://b.example/"))
+            } else {
+                Err(WebError::new(CODE_WEB_UNAVAILABLE, "reset", true))
+            }
+        })
+        .await;
+        let e = r.unwrap_err();
+        assert_eq!(
+            (e.code, e.went_out, sent.len()),
+            (CODE_WEB_UNAVAILABLE, true, 2)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_first_request_that_got_no_response_did_not_go_out() {
+        let c = CancelToken::new();
+        // A rejected first fetch() (no DNS answer, a refused connection).
+        let (r, sent) = run("https://a.example/", &any, &c, |_| {
+            Err(WebError::new(CODE_WEB_UNAVAILABLE, "refused", true))
+        })
+        .await;
+        let e = r.unwrap_err();
+        assert_eq!(
+            (e.code, e.went_out, sent.len()),
+            (CODE_WEB_UNAVAILABLE, false, 1)
+        );
+        // A deadline with the first request in flight, as `request` marks
+        // it, stays gone out.
         let (r, _) = run("https://a.example/", &any, &c, |_| {
-            Err(WebError::new(CODE_WEB_UNAVAILABLE, "reset", true))
+            Err(WebError::new(clax_bot::web::CODE_WEB_TIMEOUT, "late", true).went_out(true))
         })
         .await;
         assert!(r.unwrap_err().went_out);

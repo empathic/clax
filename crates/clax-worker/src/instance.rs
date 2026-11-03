@@ -615,7 +615,10 @@ fn worker_bot(
     // Only a configured public origin is named to the sites fetched.
     let public = var(env, "PUBLIC_ORIGIN");
     let public = Some(public.trim()).filter(|p| !p.is_empty());
-    let web = crate::bot::web_source(env, test_web, public);
+    // Nor does a fetch reach the instance's own hosts: its public origin
+    // and its site domain.
+    let sites = site_hosts(env).ok().flatten();
+    let web = crate::bot::web_source(env, test_web, public, sites.as_ref().map(|s| s.domain()));
     let kek_secret = env
         .secret("CLAX_KEK")
         .map(|v| v.to_string())

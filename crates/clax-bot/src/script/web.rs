@@ -12,8 +12,9 @@
 //!    or `web_disabled`.
 //! 4. Its arguments hold (a query of 1 to 1,024 characters, a `limit` and
 //!    an `offset` not below 0, a URL), or `invalid_args`.
-//! 5. A fetch: the URL is a [`PublicUrl`], the admin's [`UrlRule`] lets
-//!    its host be reached, a source holds it ([`sources`]) unless the rule
+//! 5. A fetch: the URL is a [`PublicUrl`], its host is not one of the
+//!    instance's own ([`crate::web::WebSource::own_hosts`]), the admin's
+//!    [`UrlRule`] lets its host be reached, a source holds it ([`sources`]) unless the rule
 //!    is [`UrlRule::AnyPublic`], and a URL that looks credentialed
 //!    ([`looks_credentialed`]) is in the sender's own words; else
 //!    `url_not_allowed` or `url_not_in_prior_context`. When the request
@@ -29,8 +30,9 @@
 //!    at its rate (at most their credits left this week, unless their
 //!    credits are not enforced), or `credits_exhausted`.
 //! 9. The source is called, with the run's cancel token and, for a fetch,
-//!    the host check of every redirect target (the rule's host part, spec
-//!    §5.3; the source refuses an `https` to `http` hop itself).
+//!    the host check of every redirect target (the instance's own hosts
+//!    and the rule's host part, as in check 5, spec §5.3; the source
+//!    refuses an `https` to `http` hop itself).
 //!
 //! # What is written
 //!
@@ -60,7 +62,7 @@ use super::{RunHost, recorded};
 use crate::api::CODE_BAD_ARGS;
 use crate::host::host_error;
 use crate::web::page::{PAGE_CHARS, SNIPPET_CHARS, STORE_BYTES, snippet, window};
-use crate::web::url::looks_credentialed;
+use crate::web::url::{OwnHosts, looks_credentialed};
 use crate::web::{
     CODE_CREDITS_EXHAUSTED, CODE_URL_NOT_ALLOWED, CODE_URL_NOT_IN_PRIOR_CONTEXT, CODE_WEB_CAP,
     CODE_WEB_DISABLED, CODE_WEB_UNAVAILABLE, FetchGrant, Format, OP_SEARCH, PublicUrl,
@@ -156,6 +158,41 @@ fn cut(text: &str, max: usize) -> (String, i64) {
         end -= 1;
     }
     (text[..end].to_string(), total)
+}
+
+/// Why a fetch may not reach `host`, on the URL asked for (check 5) or a
+/// redirect target (the `hop` check): it is one of the instance's own
+/// hosts (`own`, spec §5.3), or the rule does not let a fetch reach it
+/// ([`UrlRule::allows_host`]). `None` when it may.
+fn host_refused(rule: &UrlRule, own: &OwnHosts, host: &str) -> Option<&'static str> {
+    if own.holds(host) {
+        Some("this instance's own host, which a fetch never reaches; use another source")
+    } else if !rule.allows_host(host) {
+        Some("a host this instance does not fetch from")
+    } else {
+        None
+    }
+}
+
+/// The most bytes of a provider's search response a `bot.web` audit record
+/// keeps whole.
+const AUDIT_RESPONSE_BYTES: usize = 64 << 10;
+
+/// What a search's `bot.web` audit record keeps of the provider's
+/// response, so a row stays small whatever a provider answers: the whole
+/// response when its JSON is at most [`AUDIT_RESPONSE_BYTES`], else only
+/// each hit's `url`, `title` and `age` and the `requestId`, marked
+/// `truncated`.
+fn audit_response(a: &SearchAnswer) -> Value {
+    if a.raw.to_string().len() <= AUDIT_RESPONSE_BYTES {
+        return a.raw.clone();
+    }
+    let items: Vec<Value> = a
+        .hits
+        .iter()
+        .map(|h| json!({"url": h.url, "title": h.title, "age": h.age}))
+        .collect();
+    json!({"items": items, "requestId": a.request_id, "truncated": true})
 }
 
 /// What the script sees of a search answer: at most `limit` results with
@@ -520,7 +557,8 @@ impl RunHost<'_> {
                     "left": cx.left(cx.searches + 1, cx.fetches, p.credits - p.price),
                 });
                 extra.push(("request_id", json!(a.request_id)));
-                extra.push(("response", a.raw));
+                // Trimmed past AUDIT_RESPONSE_BYTES ([`audit_response`]).
+                extra.push(("response", audit_response(&a)));
                 Finish {
                     usage: Some((p.usage, p.price)),
                     extra,
@@ -551,7 +589,8 @@ impl RunHost<'_> {
     ) -> Finish {
         let tick = self.tick;
         shown["url"] = json!(url.normalized());
-        let (src, pages, journal) = match self.url_source(&g.rule, url).await {
+        let own = cx.source.own_hosts();
+        let (src, pages, journal) = match self.url_source(&g.rule, &own, url).await {
             Ok(x) => x,
             Err(e) => return Finish::refused(e),
         };
@@ -590,19 +629,16 @@ impl RunHost<'_> {
             Err(e) => return refused(e),
         };
         let rule = g.rule.clone();
+        let own = cx.source.own_hosts();
         let hop = move |to: &PublicUrl| -> Result<(), WebError> {
             let to = PublicUrl::parse(to.as_str())?;
-            if rule.allows_host(to.host()) {
-                Ok(())
-            } else {
-                Err(WebError::new(
+            match host_refused(&rule, &own, to.host()) {
+                None => Ok(()),
+                Some(why) => Err(WebError::new(
                     CODE_URL_NOT_ALLOWED,
-                    format!(
-                        "the page redirected to {}, a host this instance does not fetch",
-                        to.host()
-                    ),
+                    format!("the page redirected to {}, {why}", to.host()),
                     false,
-                ))
+                )),
             }
         };
         let got = cx
@@ -698,19 +734,18 @@ impl RunHost<'_> {
     }
 
     /// Where `url` came from, as `rule` requires (check 5), with the run's
-    /// page store and journal it was derived from.
+    /// page store and journal it was derived from; `url`'s host is neither
+    /// one of `own` nor off the rule's hosts ([`host_refused`]).
     async fn url_source(
         &self,
         rule: &UrlRule,
+        own: &OwnHosts,
         url: &PublicUrl,
     ) -> Result<(UrlSource, Vec<WebPageRow>, Vec<CallEntry>), HostError> {
-        if !rule.allows_host(url.host()) {
+        if let Some(why) = host_refused(rule, own, url.host()) {
             return Err(HostError::new(
                 CODE_URL_NOT_ALLOWED,
-                format!(
-                    "{} is not on the hosts this instance fetches from",
-                    url.host()
-                ),
+                format!("{} is {why}", url.host()),
             ));
         }
         let tick = self.tick;
@@ -776,5 +811,39 @@ impl RunHost<'_> {
             count(&|l| l.starts_with("web.search.")),
             count(&|l| l == LINE_WEB_FETCH),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::web::SearchHit;
+
+    #[test]
+    fn a_large_search_response_is_trimmed_for_the_audit() {
+        let hit = SearchHit {
+            url: "https://a.example/".into(),
+            title: Some("A".into()),
+            description: Some("about A".into()),
+            age: Some("2d".into()),
+        };
+        let small = SearchAnswer {
+            hits: vec![hit.clone()],
+            request_id: Some("req-1".into()),
+            raw: json!({"items": [{"url": "https://a.example/"}], "extra": "kept"}),
+        };
+        assert_eq!(audit_response(&small), small.raw);
+        let large = SearchAnswer {
+            raw: json!({"items": [{"url": "https://a.example/",
+                                    "description": "x".repeat(AUDIT_RESPONSE_BYTES)}]}),
+            ..small
+        };
+        let kept = audit_response(&large);
+        assert_eq!(
+            kept,
+            json!({"items": [{"url": "https://a.example/", "title": "A", "age": "2d"}],
+                   "requestId": "req-1", "truncated": true})
+        );
+        assert!(kept.to_string().len() < 1_000);
     }
 }

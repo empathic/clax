@@ -47,9 +47,9 @@
 //! `retryable` flag. Arguments that fail their check are
 //! [`api::CODE_BAD_ARGS`](crate::api::CODE_BAD_ARGS). Whether a failed call
 //! is charged is [`charged`]: a failed search never is; a fetch is when it
-//! went out on the network ([`WebError::went_out`]: its first request was
-//! sent), whatever it answered, so a redirect refused or cut after that is
-//! charged too (spec §7.2).
+//! went out on the network ([`WebError::went_out`] says when), whatever it
+//! answered, so a redirect refused or cut after that is charged too (spec
+//! §7.2).
 
 pub mod access;
 pub mod fake;
@@ -60,7 +60,7 @@ pub use access::{
     FetchGrant, SearchGrant, UrlRule, UrlSource, WebAccess, WebGrant, WebOff, WebShape,
 };
 pub use fake::FakeWebSource;
-pub use url::PublicUrl;
+pub use url::{OwnHosts, PublicUrl};
 
 use clax_bot_sandbox::{CancelToken, MaybeSendSync};
 use serde_json::Value;
@@ -151,8 +151,44 @@ pub struct SearchHit {
     pub age: Option<String>,
 }
 
+impl SearchHit {
+    /// The hit of one search result item `item`, as both Cloudflare
+    /// surfaces (the AI binding's `websearch()` and the REST API's
+    /// `websearch/`) give it: its `url`, `title` and `description`, and its
+    /// age from `lastModifiedDate`, else `age`. Each value is trimmed, and a
+    /// blank one is none; an item with no URL, or that is no object, is no
+    /// hit.
+    #[must_use]
+    pub fn of_item(item: &Value) -> Option<SearchHit> {
+        let text = |key: &str| {
+            item.get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        };
+        Some(SearchHit {
+            url: text("url")?,
+            title: text("title"),
+            description: text("description"),
+            age: text("lastModifiedDate").or_else(|| text("age")),
+        })
+    }
+
+    /// The hits of `v`'s `items` list ([`SearchHit::of_item`]); none when
+    /// `v` has no list.
+    #[must_use]
+    pub fn of_items(v: &Value) -> Vec<SearchHit> {
+        v.get("items")
+            .and_then(Value::as_array)
+            .map(|items| items.iter().filter_map(SearchHit::of_item).collect())
+            .unwrap_or_default()
+    }
+}
+
 /// A source's answer to a search: its hits, and the provider's whole
-/// response for the audit record (never shown to a script).
+/// response for the audit record, which keeps it whole only up to 64 KiB
+/// (never shown to a script).
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchAnswer {
     pub hits: Vec<SearchHit>,
@@ -215,9 +251,16 @@ pub struct WebError {
     pub message: String,
     pub retryable: bool,
     pub request_id: Option<String>,
-    /// Whether the call's request to the URL was sent before it failed: a
-    /// source sets it once the fetch's first request is on the network,
-    /// and a fetch that went out is charged ([`charged`]).
+    /// Whether the fetch went out before it failed; a fetch that went out
+    /// is charged ([`charged`]). A fetch went out once a response, of any
+    /// status, came back from the target to its first request, or, on the
+    /// daemon, once a connection to the target was established. A first
+    /// request that fails before that (the name does not resolve or
+    /// resolves privately, the connection is refused, or on the Worker the
+    /// first `fetch()` rejects) did not go out. After any response or
+    /// redirect every later failure has gone out, and so has a deadline or
+    /// a cancellation that stops a first request already sent. Every
+    /// source sets it by this one definition (spec §6.3).
     pub went_out: bool,
 }
 
@@ -288,6 +331,59 @@ pub trait WebSource: MaybeSendSync {
     fn configured(&self) -> bool {
         true
     }
+
+    /// The instance's own hosts, which no fetch reaches ([`OwnHosts`]):
+    /// none by default; a hosted source answers them ([`WithOwnHosts`]).
+    fn own_hosts(&self) -> OwnHosts {
+        OwnHosts::default()
+    }
+}
+
+/// A source that answers `own` as the instance's own hosts
+/// ([`WebSource::own_hosts`]) and is otherwise `source`: how a host
+/// names its public origin and site domain to the run's URL check.
+pub struct WithOwnHosts {
+    source: std::sync::Arc<dyn WebSource>,
+    own: OwnHosts,
+}
+
+impl WithOwnHosts {
+    /// `source`, with `own` as its own hosts.
+    #[must_use]
+    pub fn new(source: std::sync::Arc<dyn WebSource>, own: OwnHosts) -> WithOwnHosts {
+        WithOwnHosts { source, own }
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl WebSource for WithOwnHosts {
+    async fn search(
+        &self,
+        q: &SearchQuery,
+        cancel: &CancelToken,
+    ) -> Result<SearchAnswer, WebError> {
+        self.source.search(q, cancel).await
+    }
+
+    async fn fetch(
+        &self,
+        url: &PublicUrl,
+        format: Format,
+        limits: &FetchLimits,
+        hop: &(dyn for<'u> Fn(&'u PublicUrl) -> Result<(), WebError> + Sync),
+        cancel: &CancelToken,
+    ) -> Result<FetchedPage, WebError> {
+        self.source.fetch(url, format, limits, hop, cancel).await
+    }
+
+    fn configured(&self) -> bool {
+        self.source.configured()
+    }
+
+    fn own_hosts(&self) -> OwnHosts {
+        self.own.clone()
+    }
 }
 
 #[cfg(test)]
@@ -320,6 +416,36 @@ mod tests {
             assert!(charged(OP_FETCH, &after), "{code}");
         }
         assert!(!WebError::new(CODE_WEB_TIMEOUT, "m", true).went_out);
+    }
+
+    #[test]
+    fn a_search_item_reads_its_age_from_either_field() {
+        let hit = |v: Value| SearchHit::of_item(&v);
+        let h = hit(serde_json::json!({
+            "url": " https://a.example/ ", "title": "A", "description": " ",
+            "lastModifiedDate": "2026-10-01", "age": "2d"
+        }))
+        .unwrap();
+        assert_eq!(h.url, "https://a.example/");
+        assert_eq!(h.title.as_deref(), Some("A"));
+        assert_eq!(h.description, None);
+        assert_eq!(
+            h.age.as_deref(),
+            Some("2026-10-01"),
+            "lastModifiedDate first"
+        );
+        let h = hit(serde_json::json!({"url": "https://b.example/", "age": "2d"})).unwrap();
+        assert_eq!(h.age.as_deref(), Some("2d"));
+        let h =
+            hit(serde_json::json!({"url": "https://c.example/", "lastModifiedDate": ""})).unwrap();
+        assert_eq!(h.age, None);
+        assert_eq!(hit(serde_json::json!({"title": "no URL"})), None);
+        assert_eq!(hit(serde_json::json!("https://d.example/")), None);
+        let all = SearchHit::of_items(&serde_json::json!({"items": [
+            {"url": "https://a.example/"}, 7, {"url": ""}, {"url": "https://b.example/"}
+        ]}));
+        assert_eq!(all.len(), 2);
+        assert!(SearchHit::of_items(&serde_json::json!({})).is_empty());
     }
 
     #[test]

@@ -12,16 +12,29 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 /// The longest URL, in characters, a fetch takes.
 pub const MAX_URL_CHARS: usize = 2_000;
 
-/// The query parameter name parts that make a URL look credentialed.
-const CREDENTIAL_PARAMS: [&str; 7] = [
+/// The query parameter name components that make a URL look
+/// credentialed ([`looks_credentialed`]). `token` is one too, unless a
+/// [`PAGINATION_WORDS`] component comes before it.
+const CREDENTIAL_WORDS: [&str; 13] = [
     "key",
-    "token",
+    "apikey",
+    "accesstoken",
     "secret",
     "password",
     "passwd",
+    "pwd",
     "sig",
     "signature",
+    "credential",
+    "credentials",
+    "auth",
+    "authorization",
 ];
+
+/// The components that make a later `token` a place in a list of results
+/// (`page_token`, `nextPageToken`, `continuation_token`, `sync_token`),
+/// not a credential.
+const PAGINATION_WORDS: [&str; 5] = ["page", "next", "continuation", "pagination", "sync"];
 
 /// An `http` or `https` URL without credentials, at most
 /// [`MAX_URL_CHARS`] characters, whose host is not a private or local
@@ -126,16 +139,107 @@ impl PublicUrl {
     }
 }
 
-/// Whether `u` looks like it holds a credential: a query parameter whose
-/// name, ignoring case, contains `key`, `token`, `secret`, `password`,
-/// `passwd`, `sig` or `signature` (spec §5.2). Such a URL is fetched only
+/// Whether `u` looks like it holds a credential (spec §5.2): a query
+/// parameter whose name, split into components at `-`, `_`, `.` and
+/// camelCase boundaries and compared ignoring case, has a component that
+/// is a credential word (`key`, `apikey`, `secret`, `password`, `passwd`,
+/// `pwd`, `sig`, `signature`, `credential(s)`, `auth`, `authorization`,
+/// `accesstoken`), or a `token` that no pagination word (`page`, `next`,
+/// `continuation`, `pagination`, `sync`) comes before. So `api_key`,
+/// `apiKey`, `access_token`, `X-Amz-Signature` and `sig` look
+/// credentialed, and `keywords`, `page_token`, `pageToken`, `cursor`,
+/// `design`, `signup` and `assignee` do not. Such a URL is fetched only
 /// when the sender's own words hold it.
 #[must_use]
 pub fn looks_credentialed(u: &PublicUrl) -> bool {
-    u.url.query_pairs().any(|(name, _)| {
-        let name = name.to_ascii_lowercase();
-        CREDENTIAL_PARAMS.iter().any(|p| name.contains(p))
+    u.url.query_pairs().any(|(name, _)| credential_name(&name))
+}
+
+/// Whether a query parameter named `name` holds a credential, by
+/// [`looks_credentialed`]'s rule.
+fn credential_name(name: &str) -> bool {
+    let parts = name_components(name);
+    parts.iter().enumerate().any(|(i, part)| {
+        CREDENTIAL_WORDS.contains(&part.as_str())
+            || (part == "token"
+                && !parts[..i]
+                    .iter()
+                    .any(|p| PAGINATION_WORDS.contains(&p.as_str())))
     })
+}
+
+/// `name`'s components, lowercase: split at `-`, `_`, `.` and anything
+/// else that is not a letter or digit, and at camelCase boundaries (a
+/// lowercase letter or digit then an uppercase one, and the last capital
+/// of a run of them before a lowercase letter: `AWSAccessKeyId` is `aws`,
+/// `access`, `key`, `id`).
+fn name_components(name: &str) -> Vec<String> {
+    let chars: Vec<char> = name.chars().collect();
+    let mut parts = Vec::new();
+    let mut part = String::new();
+    for (i, &c) in chars.iter().enumerate() {
+        if !c.is_alphanumeric() {
+            if !part.is_empty() {
+                parts.push(std::mem::take(&mut part));
+            }
+            continue;
+        }
+        if c.is_uppercase() && !part.is_empty() {
+            let prev = chars[i - 1];
+            let next_lower = chars.get(i + 1).is_some_and(|n| n.is_lowercase());
+            if prev.is_lowercase() || prev.is_numeric() || (prev.is_uppercase() && next_lower) {
+                parts.push(std::mem::take(&mut part));
+            }
+        }
+        part.extend(c.to_lowercase());
+    }
+    if !part.is_empty() {
+        parts.push(part);
+    }
+    parts
+}
+
+/// The instance's own hosts, which no fetch reaches, on the URL asked for
+/// or a redirect target (spec §5.3): a hosted instance's public origin's
+/// host, and its site domain with every host under it. A local daemon
+/// has none: its hosts are loopback, which [`PublicUrl::parse`] refuses.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OwnHosts {
+    origin_host: Option<String>,
+    site_domain: Option<String>,
+}
+
+impl OwnHosts {
+    /// The hosts of an instance at `public_origin` (an origin such as
+    /// `https://clax.example`, its port ignored) whose sites are under
+    /// `site_domain` (a bare domain); either may be `None`, and one that
+    /// names no host is none.
+    #[must_use]
+    pub fn new(public_origin: Option<&str>, site_domain: Option<&str>) -> OwnHosts {
+        let bare = |h: &str| {
+            let h = h.trim().trim_end_matches('.').to_ascii_lowercase();
+            (!h.is_empty()).then_some(h)
+        };
+        OwnHosts {
+            origin_host: public_origin
+                .and_then(|o| Url::parse(o.trim()).ok())
+                .and_then(|u| u.host_str().and_then(bare)),
+            site_domain: site_domain.and_then(bare),
+        }
+    }
+
+    /// Whether `host` (as [`PublicUrl::host`] gives it) is one of them.
+    #[must_use]
+    pub fn holds(&self, host: &str) -> bool {
+        let host = host.trim_end_matches('.').to_ascii_lowercase();
+        self.origin_host.as_deref() == Some(host.as_str())
+            || self.site_domain.as_deref().is_some_and(|d| {
+                host == d
+                    || host
+                        .strip_suffix(d)
+                        .is_some_and(|sub| sub.len() > 1 && sub.ends_with('.'))
+            })
+    }
 }
 
 /// Whether a redirect from `from` to `to` may be followed by every rule:
@@ -370,11 +474,121 @@ mod tests {
     #[test]
     fn a_token_query_looks_credentialed() {
         let looks = |s: &str| looks_credentialed(&PublicUrl::parse(s).unwrap());
+        for name in [
+            "key",
+            "KEY",
+            "apikey",
+            "api_key",
+            "apiKey",
+            "api-key",
+            "x.api.key",
+            "token",
+            "access_token",
+            "accessToken",
+            "AccessToken",
+            "accesstoken",
+            "id_token",
+            "oauth_token",
+            "authToken",
+            "X-Amz-Security-Token",
+            "AWSAccessKeyId",
+            "secret",
+            "client_secret",
+            "password",
+            "passwd",
+            "pwd",
+            "sig",
+            "signature",
+            "X-Amz-Signature",
+            "X-Goog-Signature",
+            "X-Amz-Credential",
+            "credentials",
+            "auth",
+            "authorization",
+            // A pagination word after the token does not make it one.
+            "token_page",
+        ] {
+            assert!(credential_name(name), "{name} is refused");
+        }
+        for name in [
+            "keywords",
+            "keyword",
+            "monkey",
+            "page_token",
+            "pageToken",
+            "nextPageToken",
+            "next_token",
+            "continuation_token",
+            "continuationToken",
+            "pagination_token",
+            "sync_token",
+            "syncToken",
+            "cursor",
+            "design",
+            "signup",
+            "assignee",
+            "author",
+            "tokens",
+            "passage",
+            "page",
+            "q",
+            "",
+        ] {
+            assert!(!credential_name(name), "{name} is accepted");
+        }
         assert!(looks("https://x.com/?api_key=1"));
         assert!(looks("https://x.com/?X-Amz-Signature=1"));
         assert!(looks("https://x.com/?a=1&AccessToken=2"));
         assert!(!looks("https://x.com/?page=2"));
+        assert!(!looks(
+            "https://x.com/?keywords=rust&pageToken=abc&assignee=me"
+        ));
         assert!(!looks("https://x.com/key/token?q=secret"));
+    }
+
+    #[test]
+    fn a_name_splits_at_separators_and_camel_case() {
+        assert_eq!(
+            name_components("X-Amz-Signature"),
+            ["x", "amz", "signature"]
+        );
+        assert_eq!(
+            name_components("AWSAccessKeyId"),
+            ["aws", "access", "key", "id"]
+        );
+        assert_eq!(name_components("nextPageToken"), ["next", "page", "token"]);
+        assert_eq!(name_components("v2Token"), ["v2", "token"]);
+        assert_eq!(name_components("a.b_c--d"), ["a", "b", "c", "d"]);
+        assert!(name_components("").is_empty());
+    }
+
+    #[test]
+    fn the_instances_own_hosts_are_held() {
+        let own = OwnHosts::new(Some("https://Clax.example:8443"), Some("Sites.example."));
+        for host in [
+            "clax.example",
+            "CLAX.example.",
+            "sites.example",
+            "abcdefghijkl.sites.example",
+            "a.b.sites.example",
+        ] {
+            assert!(own.holds(host), "{host}");
+        }
+        for host in [
+            "www.clax.example",
+            "example",
+            "xsites.example",
+            "sites.example.com",
+            "other.example",
+        ] {
+            assert!(!own.holds(host), "{host}");
+        }
+        let none = OwnHosts::default();
+        assert!(!none.holds("clax.example"));
+        assert_eq!(OwnHosts::new(Some("not an origin"), Some(" ")), none);
+        let origin_only = OwnHosts::new(Some("https://clax.example"), None);
+        assert!(origin_only.holds("clax.example"));
+        assert!(!origin_only.holds("a.clax.example"));
     }
 
     #[test]

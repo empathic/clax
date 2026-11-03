@@ -8,7 +8,8 @@ use clax_bot::Next;
 use clax_bot::host::CommentMeta;
 use clax_bot::run::CrashPoint;
 use clax_bot::web::{
-    CODE_WEB_TIMEOUT, CODE_WEB_UNAVAILABLE, FetchedPage, SearchAnswer, SearchHit, WebError,
+    CODE_WEB_TIMEOUT, CODE_WEB_UNAVAILABLE, FetchedPage, OwnHosts, SearchAnswer, SearchHit,
+    WebError, WithOwnHosts,
 };
 use clax_core::audit::AuditCtx;
 use clax_store::bot_runs::{DriverId, RunStatus, StepKind};
@@ -16,6 +17,7 @@ use clax_store::bot_settings::Setting;
 use clax_store::credits::{CostLinePatch, KeySource, LINE_WEB_FETCH};
 use clax_store::roles::OWNER;
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 const SEARCH_LINE: &str = "web.search.ceramic";
 
@@ -637,6 +639,50 @@ async fn a_redirect_to_a_private_host_is_refused() {
     assert_eq!(v, "url_not_allowed");
     assert_eq!(env.web().calls(), fetches(&[a]));
     // The request to the URL went out: the fetch is charged.
+    assert_eq!(web_rows(&env), [LINE_WEB_FETCH]);
+}
+
+#[tokio::test]
+async fn the_instances_own_hosts_are_never_fetched() {
+    let env = Env::new().await;
+    let (own, site, away) = (
+        "https://clax.example/a",
+        "https://abcdefghijkl.sites.example/",
+        "https://example.com/r",
+    );
+    sender_says(&env, &format!("Read {own}, {site} and {away}"));
+    env.web().page(own, page_at(own, "own", &[]));
+    env.web().page(site, page_at(site, "site", &[]));
+    env.web().redirect(away, "https://clax.example/admin");
+    env.api.push(env.script_turn(
+        "tu_1",
+        "Web",
+        &format!(
+            "const out = [];
+             for (const u of [{own:?}, {site:?}, {away:?}]) {{
+               try {{ out.push((await clax.web.fetch(u)).text); }} catch (e) {{ out.push(e.code); }}
+             }}
+             return out;"
+        ),
+    ));
+    env.api.push(finish_turn("done"));
+    let run = env.run_with_web("fetch");
+    let web = Arc::new(WithOwnHosts::new(
+        env.web(),
+        OwnHosts::new(Some("https://clax.example"), Some("sites.example")),
+    ));
+    let deps = env.deps().with_web(web);
+    let out = env.drive(&deps, &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    let r = script_result(&env, &run, 0);
+    assert_eq!(
+        r["value"],
+        json!(["url_not_allowed", "url_not_allowed", "url_not_allowed"]),
+        "{r}"
+    );
+    // The own hosts were refused before the source; the redirect to one
+    // after its request went out, so only it is charged.
+    assert_eq!(env.web().calls(), fetches(&[away]));
     assert_eq!(web_rows(&env), [LINE_WEB_FETCH]);
 }
 
