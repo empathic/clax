@@ -43,7 +43,8 @@ Each release tag publishes `ghcr.io/empathic/clax-fleet:<version>` for
 linux/amd64 and linux/arm64, each built on a runner of its own
 architecture, and tags it `:<major>.<minor>` (the newest patch of that
 series) and `:sha-<commit>` too. There is no `:latest`. Before any tag
-names it, the image is deployed to a kind cluster and has to serve
+names it, each platform's image is deployed to a kind cluster, on a
+runner of its architecture, and has to serve
 (`scripts/fleet-kind-smoke.sh`, below). The overlay names it through
 kustomize's `images` (`newTag`), which `scripts/bump-version.sh` writes
 with every other version, so the manifests at a release's tag name the

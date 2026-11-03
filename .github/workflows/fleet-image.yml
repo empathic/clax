@@ -8,11 +8,12 @@
 #
 # Each platform builds on a runner of its own architecture, as release.yml's
 # binaries do (no emulation), and pushes its image by digest alone. `smoke`
-# deploys the pushed amd64 image to a kind cluster (scripts/fleet-kind-smoke.sh)
-# before `merge` tags one manifest list naming both, so a tag never names
-# half an image, nor one that does not serve. A pull request that touches
-# the image or the manifests builds amd64 without pushing and runs the same
-# smoke test (`pr-smoke`).
+# deploys each pushed image to a kind cluster on a runner of its
+# architecture (scripts/fleet-kind-smoke.sh), and `merge` tags one manifest
+# list naming both only once both have served, so a tag never names half an
+# image, nor one that does not serve. A pull request that touches the image
+# or the manifests builds amd64 without pushing and runs the same smoke test
+# (`pr-smoke`).
 name: fleet-image
 
 on:
@@ -106,17 +107,24 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # Each platform's image, on a runner of its own architecture, as `build`
+  # made it: `merge` tags nothing until both have served.
   smoke:
     needs: build
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
       packages: read
+    strategy:
+      matrix:
+        include:
+          - { platform: linux/amd64, arch: amd64, os: blacksmith-4vcpu-ubuntu-2404 }
+          - { platform: linux/arm64, arch: arm64, os: blacksmith-4vcpu-ubuntu-2404-arm }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: fleet-image-digest-amd64
+          name: fleet-image-digest-${{ matrix.arch }}
           path: ${{ runner.temp }}/digests
       - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
@@ -124,12 +132,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       # The bytes `build` pushed, under a tag kind can load.
-      - name: Pull the amd64 image
+      - name: Pull the image
         working-directory: ${{ runner.temp }}/digests
+        env:
+          PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
           digest="$(ls)"
-          docker pull --platform linux/amd64 "$IMAGE@sha256:$digest"
+          docker pull --platform "$PLATFORM" "$IMAGE@sha256:$digest"
           docker tag "$IMAGE@sha256:$digest" clax-fleet:ci
       - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
         with:
