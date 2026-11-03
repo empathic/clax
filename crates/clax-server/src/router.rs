@@ -1312,6 +1312,9 @@ fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
         state,
         host::site_layer,
     ))
+    // Outermost of all: every request is named before anything answers it,
+    // and whatever it publishes carries that name as its cause.
+    .layer(axum::middleware::from_fn(clax_http::request_id::layer))
 }
 
 #[cfg(test)]

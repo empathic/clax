@@ -10,6 +10,7 @@ pub mod apps;
 pub mod audit;
 pub mod brief;
 pub mod capabilities;
+pub mod cause;
 pub mod changelog;
 pub mod clips;
 pub mod config;

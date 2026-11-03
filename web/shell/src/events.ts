@@ -3,7 +3,57 @@ import type { PresenceView } from "./view/presence-model";
 import type { Working } from "./view/working-model";
 import type { DraftView } from "./view/draft-model";
 
-export type ArtifactEvent =
+/** Every `/api/events` event may name `cause`: the id of the request it was
+ * published because of (the daemon's `x-request-id`, which a page may choose
+ * itself, see `causedFetch`). Absent for events no request caused. */
+export type ArtifactEvent = Caused & ArtifactEventBody;
+
+/** The request an event names as its cause. */
+export interface Caused { cause?: string }
+
+/** Requests this page sent with `causedFetch`, by id: what they were for
+ * (`label`) and the User Timing mark they started at. Bounded: the oldest
+ * is forgotten past `MAX_PENDING`. */
+const pending = new Map<string, { label: string; mark: string }>();
+const MAX_PENDING = 200;
+
+/** A new request id: well formed for the daemon (`[A-Za-z0-9._-]{1,64}`). */
+export function newRequestId(): string {
+  const rand = Math.random().toString(36).slice(2, 12);
+  return `p${Date.now().toString(36)}-${rand}`;
+}
+
+/** Notes request `id` (for `label`) as pending, with a User Timing mark at its start. */
+export function noteRequest(id: string, label: string): void {
+  const mark = `clax:req:${id}`;
+  try { performance.mark(mark, { detail: { id, label } }); } catch { /* no User Timing */ }
+  pending.set(id, { label, mark });
+  while (pending.size > MAX_PENDING) pending.delete(pending.keys().next().value as string);
+}
+
+/** `fetch`, under a request id this page chose: sent as `x-request-id` and
+ * noted (`noteRequest`), so the events the request causes are joined back to
+ * it (`noteEvent`) and its `Server-Timing` sits beside a User Timing
+ * measure in the Performance panel. */
+export function causedFetch(label: string, input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const id = newRequestId();
+  const headers = new Headers(init.headers);
+  headers.set("x-request-id", id);
+  noteRequest(id, label);
+  return fetch(input, { ...init, headers });
+}
+
+/** Joins event `e` to the pending request it names as its cause, if this
+ * page sent it: measures request → event in User Timing
+ * (`clax <label> → <type>`) and returns what the request was for. */
+export function noteEvent(e: Caused & { type: string }): string | undefined {
+  const p = e.cause ? pending.get(e.cause) : undefined;
+  if (!p) return undefined;
+  try { performance.measure(`clax ${p.label} → ${e.type}`, { start: p.mark, detail: { cause: e.cause } }); } catch { /* mark cleared */ }
+  return p.label;
+}
+
+type ArtifactEventBody =
   /** A new version; `by_page` when the page published it (`artifact.publish`). */
   | { type: "version"; artifact_id: string; n: number; by_page?: boolean }
   | { type: "artifact_deleted"; artifact_id: string }

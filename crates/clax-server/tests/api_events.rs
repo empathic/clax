@@ -121,12 +121,14 @@ async fn delete_emits_artifact_deleted() {
         .await
         .unwrap();
     assert!(res.status().is_success(), "{}", res.status());
+    let rid = res.headers()["x-request-id"].to_str().unwrap().to_owned();
     let (ev, data) = next_event(&mut stream, &mut buf).await;
     assert_eq!(ev, "artifact_deleted");
     let v: serde_json::Value = serde_json::from_str(&data).unwrap();
+    // `cause` names the DELETE that caused it (`clax_http::request_id`).
     assert_eq!(
         v,
-        serde_json::json!({"type": "artifact_deleted", "artifact_id": aid})
+        serde_json::json!({"type": "artifact_deleted", "artifact_id": aid, "cause": rid})
     );
 }
 

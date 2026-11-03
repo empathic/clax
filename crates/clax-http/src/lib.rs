@@ -44,6 +44,7 @@ pub mod net;
 pub mod net_cache;
 pub mod peer_user;
 pub mod perf;
+pub mod request_id;
 pub mod pushes;
 pub mod remote_drivers;
 pub mod reporter;

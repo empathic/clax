@@ -254,7 +254,7 @@ pub async fn events(
             SseEvent::default()
                 .id(format!("{epoch}-{}", st.id))
                 .event(st.event.name())
-                .data(serde_json::to_string(&st.event).unwrap())
+                .data(st.json())
         }
     };
     let at = if resume.resumed {
