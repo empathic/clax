@@ -372,6 +372,8 @@ fn body_class(kind: &str, field: &str) -> Class {
         // The keys of the local daemon's settings written to config.toml
         // (`serve.port`), never their values.
         ("admin.settings", "fields") => Safe,
+        // A person's own choice of the web tools: their key and a flag.
+        ("me.web", "person" | "value") => Safe,
         // External artifacts and report queues (spec
         // 2026-10-27-clax-sdk-design §6.6): an app's opaque IDs, titles,
         // revisions and metadata are its users' text; a page URL can carry

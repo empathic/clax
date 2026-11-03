@@ -233,6 +233,8 @@ pub enum SecretSlot {
     Instance,
     /// A person's own model key, by person key.
     Own(String),
+    /// The instance's Cloudflare API token, which the web tools use.
+    Cloudflare,
 }
 
 impl SecretSlot {
@@ -240,12 +242,13 @@ impl SecretSlot {
         match self {
             SecretSlot::Instance => "instance",
             SecretSlot::Own(_) => "own",
+            SecretSlot::Cloudflare => "cloudflare",
         }
     }
 
     pub(crate) fn person(&self) -> &str {
         match self {
-            SecretSlot::Instance => "",
+            SecretSlot::Instance | SecretSlot::Cloudflare => "",
             SecretSlot::Own(p) => p,
         }
     }
@@ -613,6 +616,29 @@ mod tests {
                 .map(|s| s.expose().to_string()),
             None
         );
+    }
+
+    #[test]
+    fn the_cloudflare_token_seals_and_opens() {
+        let (_d, st) = store();
+        let kek = Kek::from_bytes([7; 32]);
+        let token = "cf-token-0123456789abcdefghij-wxyz";
+        let meta = st
+            .set_secret(DAEMON, &kek, &SecretSlot::Cloudflare, token)
+            .unwrap();
+        assert_eq!(meta.last4, "wxyz");
+        let opened = st
+            .open_for_use(&kek, &SecretSlot::Cloudflare, API)
+            .unwrap()
+            .unwrap();
+        assert_eq!(opened.expose(), token);
+        // It is its own slot: the instance's model key is not it.
+        assert!(
+            st.open_for_use(&kek, &SecretSlot::Instance, API)
+                .unwrap()
+                .is_none()
+        );
+        assert!(st.clear_secret(DAEMON, &SecretSlot::Cloudflare).unwrap());
     }
 
     #[test]

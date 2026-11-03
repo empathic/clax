@@ -776,7 +776,7 @@ impl Event<'_> {
                 .map(Obj::Person)
                 .or(Some(Obj::Install)),
             Some(K::ViewAudit | K::AdminProvider | K::AdminSettings) => Some(Obj::Install),
-            Some(K::AdminRole | K::AdminFlag | K::AdminCredits | K::BotRefused) => {
+            Some(K::AdminRole | K::AdminFlag | K::AdminCredits | K::BotRefused | K::MeWeb) => {
                 self.str("person").map(Obj::Person)
             }
             Some(K::AdminKey) => Some(self.str("person").map_or(Obj::Install, Obj::Person)),
@@ -1514,6 +1514,15 @@ impl Event<'_> {
                 };
                 format!("Changed the ClaxBot settings {}", and_list(&fields))
             }
+            Some(K::MeWeb) => format!(
+                "Turned web search and fetch {} for person {}",
+                if self.body.get("value").and_then(Value::as_bool) == Some(true) {
+                    "on"
+                } else {
+                    "off"
+                },
+                self.show("person")
+            ),
             Some(K::AdminKey) => format!(
                 "{} the {} model key{}",
                 match (self.str("op"), self.body.get("value")) {

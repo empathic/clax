@@ -2081,9 +2081,12 @@ pub const MIGRATIONS: &[&str] = &[
     // `cost_lines.unit` takes `kreq`, a thousand requests, so `cost_lines` is
     // rebuilt with the one CHECK widened (SQLite cannot alter a CHECK) and
     // its rows copied; the Rust step ([`WEB_MIGRATION`]) seeds the web lines
-    // (`crate::credits::seed_web_lines`). It makes no table or column, so it
-    // leaves the marker `web_lines` (`MARKS_AFTER_APP`).
-    concat!(migration_marker!("web_lines"), "CREATE TABLE cost_lines_new (
+    // (`crate::credits::seed_web_lines`). `bot_person_prefs` holds each
+    // person's own choice of web tools (§9.2), and `sealed_secrets` is
+    // rebuilt with `cloudflare` in its scope CHECK for the instance's
+    // Cloudflare token (§9.3). The new table is the migration's mark
+    // (`MARKS_AFTER_APP`).
+    "CREATE TABLE cost_lines_new (
         id TEXT PRIMARY KEY,
         label TEXT NOT NULL,
         unit TEXT NOT NULL CHECK (unit IN
@@ -2103,7 +2106,30 @@ pub const MIGRATIONS: &[&str] = &[
                source, model, updated_by, updated_at
         FROM cost_lines;
     DROP TABLE cost_lines;
-    ALTER TABLE cost_lines_new RENAME TO cost_lines;"),
+    ALTER TABLE cost_lines_new RENAME TO cost_lines;
+    CREATE TABLE bot_person_prefs (
+        person TEXT PRIMARY KEY,
+        web INTEGER NOT NULL,
+        set_at TEXT NOT NULL
+    );
+    CREATE TABLE sealed_secrets_new (
+        scope TEXT NOT NULL CHECK (scope IN ('instance', 'own', 'cloudflare')),
+        person TEXT NOT NULL,
+        nonce BLOB NOT NULL,
+        sealed BLOB NOT NULL,
+        last4 TEXT NOT NULL,
+        use_own INTEGER NOT NULL DEFAULT 1,
+        set_by TEXT NOT NULL,
+        set_at TEXT NOT NULL,
+        last_ok_at TEXT,
+        host TEXT,
+        PRIMARY KEY (scope, person)
+    );
+    INSERT INTO sealed_secrets_new
+        SELECT scope, person, nonce, sealed, last4, use_own, set_by, set_at, last_ok_at, host
+        FROM sealed_secrets;
+    DROP TABLE sealed_secrets;
+    ALTER TABLE sealed_secrets_new RENAME TO sealed_secrets;",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -2345,7 +2371,7 @@ const MARKS_AFTER_APP: [Mark<'static>; 14] = [
     Mark::Table("owner_browser_sessions"),
     Mark::Table("report_fixes"),
     Mark::Table("price_catalog"),
-    Mark::Marker("web_lines"),
+    Mark::Table("bot_person_prefs"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which

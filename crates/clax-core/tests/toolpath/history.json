@@ -4223,6 +4223,35 @@
     "n": 2
    },
    "backfilled": false
+  },
+  {
+   "seq": 125,
+   "at": "2026-10-06T14:09:34.125Z",
+   "kind": "me.web",
+   "actor": {
+    "type": "viewer",
+    "public_id": "u_77c0zz",
+    "display_name": "Sam",
+    "person": true
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "shell",
+    "person": "u_77c0zz",
+    "value": false
+   },
+   "backfilled": false
   }
  ]
 }

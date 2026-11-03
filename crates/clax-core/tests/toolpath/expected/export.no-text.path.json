@@ -6752,13 +6752,45 @@
             ],
             "timestamp": "2026-10-06T14:09:27.121Z"
           }
+        },
+        {
+          "change": {
+            "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697/u/u_77c0zz": {
+              "structural": {
+                "person": "u_77c0zz",
+                "type": "clax.me.web",
+                "value": false
+              }
+            }
+          },
+          "meta": {
+            "clax": {
+              "backfilled": false,
+              "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+              "clax_version": "0.3.1",
+              "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
+              "kind": "me.web",
+              "seq": 125,
+              "v": 1,
+              "via": "shell"
+            },
+            "description": "Turned web search and fetch off for person u_77c0zz"
+          },
+          "step": {
+            "actor": "human:clax-person/u_77c0zz",
+            "id": "e000000000125",
+            "parents": [
+              "e000000000121"
+            ],
+            "timestamp": "2026-10-06T14:09:34.125Z"
+          }
         }
       ],
       "path": {
         "base": {
           "uri": "clax://6a1f0c3e9b2d4785a0c1e2f3d4b5a697"
         },
-        "head": "e000000000121",
+        "head": "e000000000125",
         "id": "clax-install-6a1f0c3e"
       },
       "meta": {
@@ -6946,7 +6978,7 @@
       "clax_version": "0.3.1",
       "first_seq": 1,
       "install": "6a1f0c3e9b2d4785a0c1e2f3d4b5a697",
-      "last_seq": 124,
+      "last_seq": 125,
       "redaction": [
         "no-text"
       ],
