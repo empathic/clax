@@ -23,8 +23,9 @@
 //!    the store: free, and not counted against the cap. It must ask for
 //!    the format the page was fetched in, or `invalid_args`.
 //! 7. The run's cap for the operation has room, or `web_cap`. The count
-//!    is of the run's charged calls (its `web.*` usage rows), so a search
-//!    that failed, or a fetch that never went out, does not count.
+//!    is of the run's calls that reached the source (its journaled web
+//!    calls marked `counted`), charged or not: a search that failed and a
+//!    fetch that never went out count, though neither is charged.
 //! 8. The operation's cost line exists (else `web_unavailable`: web
 //!    pricing is not configured), and the person can pay for one request
 //!    at its rate (at most their credits left this week, unless their
@@ -45,16 +46,19 @@
 //! refusal at check 2 is journaled alone.
 //!
 //! Each entry keeps, beside the script's value (`value`) or the error
-//! (`code`, `message`): `cost_milli`, the charge; `web`, what the run
-//! panel shows (`{query}`, or `{url, source}` once the URL parsed); and,
-//! for a fetch whose URL had a source, `source` (the [`UrlSource`] that
-//! allowed it, [`UrlSource::to_json`]) and `format`. A call answered from
-//! the journal shows the same.
+//! (`code`, `message`, and `retryable` when it is): `cost_milli`, the
+//! charge; `web`, what the run panel shows (`{query}`, or `{url, source}`
+//! once the URL parsed); `counted`, true when the call reached the source
+//! (check 9), which check 7 counts; and, for a fetch whose URL had a
+//! source, `source` (the [`UrlSource`] that allowed it,
+//! [`UrlSource::to_json`]) and `format`. A call answered from the journal
+//! shows the same and is not counted again.
 //!
 //! Every answer carries `left`: the run's searches and fetches left under
 //! the caps after the call, and the person's credits left this week as a
-//! number of credits. A script's error carries only a code and a message,
-//! so a retryable error's message says to try again.
+//! number of credits. A script's error carries the [`WebError`]'s
+//! `retryable` flag ([`HostError::retryable`]), and a retryable error's
+//! message also says to try again, for a model that reads only the message.
 //!
 //! [`Store::spend_journaled`]: clax_store::Store::spend_journaled
 
@@ -65,7 +69,7 @@ use crate::web::page::{PAGE_CHARS, SNIPPET_CHARS, STORE_BYTES, snippet, window};
 use crate::web::url::{OwnHosts, looks_credentialed};
 use crate::web::{
     CODE_CREDITS_EXHAUSTED, CODE_URL_NOT_ALLOWED, CODE_URL_NOT_IN_PRIOR_CONTEXT, CODE_WEB_CAP,
-    CODE_WEB_DISABLED, CODE_WEB_UNAVAILABLE, FetchGrant, Format, OP_SEARCH, PublicUrl,
+    CODE_WEB_DISABLED, CODE_WEB_UNAVAILABLE, FetchGrant, Format, OP_FETCH, OP_SEARCH, PublicUrl,
     SearchAnswer, SearchGrant, SearchQuery, UrlRule, UrlSource, WebAccess, WebError, WebGrant,
     WebShape, WebSource, access::sources, charged,
 };
@@ -102,6 +106,9 @@ struct Finish {
     extra: Vec<(&'static str, Value)>,
     source: Option<UrlSource>,
     format: Option<Format>,
+    /// Whether the call reached the source (check 9), and so counts
+    /// against the run's cap.
+    counted: bool,
 }
 
 impl Finish {
@@ -115,6 +122,7 @@ impl Finish {
             extra: Vec::new(),
             source: None,
             format: None,
+            counted: false,
         }
     }
 
@@ -238,11 +246,11 @@ fn page_value(p: &WebPageRow, offset: usize, left: Value) -> Value {
     })
 }
 
-/// `e` as the script sees it: a retryable error's message says to try
-/// again.
+/// `e` as the script sees it: a retryable error is
+/// [`HostError::retryable`], and its message says to try again.
 fn from_web(e: &WebError) -> HostError {
     if e.retryable {
-        HostError::new(e.code, format!("{} (retryable: try again)", e.message))
+        HostError::new(e.code, format!("{} (retryable: try again)", e.message)).retryable()
     } else {
         HostError::new(e.code, e.message.clone())
     }
@@ -256,6 +264,9 @@ fn entry_result(f: &Finish, cost: i64, shown: &Value) -> Value {
     };
     v["cost_milli"] = json!(cost);
     v["web"] = shown.clone();
+    if f.counted {
+        v["counted"] = json!(true);
+    }
     if let Some(src) = &f.source {
         v["source"] = src.to_json();
     }
@@ -371,18 +382,33 @@ fn call_of(op: &str, args: &[Value], grant: &WebGrant) -> Result<Call, HostError
 }
 
 /// What the checks after the arguments read: the call's place, the grant
-/// now, the run's charged counts and its source.
+/// now, the run's journaled web calls, its counted calls ([`counts`]) and
+/// its source.
 struct Ctx<'g> {
     op: &'g str,
     seq: i64,
     grant: WebGrant,
+    journal: Vec<CallEntry>,
     searches: u32,
     fetches: u32,
     source: &'g Arc<dyn WebSource>,
 }
 
+/// The searches and fetches in `journal` (a run's web calls) that reached
+/// the source, charged or not: the calls the run's caps count.
+fn counts(journal: &[CallEntry]) -> (u32, u32) {
+    let count = |op: &str| {
+        let n = journal
+            .iter()
+            .filter(|e| e.op() == op && e.result()["counted"] == json!(true))
+            .count();
+        u32::try_from(n).unwrap_or(u32::MAX)
+    };
+    (count(OP_SEARCH), count(OP_FETCH))
+}
+
 impl Ctx<'_> {
-    /// `left` once the run made `searches` and `fetches` charged calls,
+    /// `left` once the run made `searches` and `fetches` counted calls,
     /// with `credits_milli` left this week.
     fn left(&self, searches: u32, fetches: u32, credits_milli: i64) -> Value {
         let under = |g: Option<u32>, n: u32| g.map_or(0, |max| max.saturating_sub(n));
@@ -517,14 +543,16 @@ impl RunHost<'_> {
             Ok(c) => c,
             Err(e) => return Finish::refused(e),
         };
-        let (searches, fetches) = match self.spent_counts() {
-            Ok(c) => c,
-            Err(e) => return Finish::refused(e),
+        let journal = match tick.store.bot_web_calls(&run.id) {
+            Ok(j) => j,
+            Err(e) => return Finish::refused(host_error(&e)),
         };
+        let (searches, fetches) = counts(&journal);
         let cx = Ctx {
             op,
             seq,
             grant,
+            journal,
             searches,
             fetches,
             source,
@@ -562,15 +590,18 @@ impl RunHost<'_> {
                 Finish {
                     usage: Some((p.usage, p.price)),
                     extra,
+                    counted: true,
                     ..Finish::new(Ok(v))
                 }
             }
             Err(e) => {
                 extra.push(("request_id", json!(e.request_id)));
                 Finish {
-                    // A failed search is never charged (spec §7.2).
+                    // A failed search is never charged, but it counts
+                    // (spec §7.2).
                     usage: charged(cx.op, &e).then_some((p.usage, p.price)),
                     extra,
+                    counted: true,
                     ..Finish::refused(from_web(&e))
                 }
             }
@@ -590,14 +621,15 @@ impl RunHost<'_> {
         let tick = self.tick;
         shown["url"] = json!(url.normalized());
         let own = cx.source.own_hosts();
-        let (src, pages, journal) = match self.url_source(&g.rule, &own, url).await {
+        let (src, pages) = match self.url_source(&g.rule, &own, url, &cx.journal).await {
             Ok(x) => x,
             Err(e) => return Finish::refused(e),
         };
         shown["source"] = json!(src.label());
         let refused = |e: HostError| Finish::refused(e).of_fetch(&src, format);
         if let Some(p) = pages.iter().find(|p| p.url == url.normalized()) {
-            let kept_as = journal
+            let kept_as = cx
+                .journal
                 .iter()
                 .find(|e| e.step_n() == p.step_n && e.seq() == p.seq)
                 .and_then(|e| e.result()["format"].as_str())
@@ -665,12 +697,15 @@ impl RunHost<'_> {
                     usage: Some((p.usage, p.price)),
                     page: Some(row),
                     extra: vec![("request_id", json!(page.request_id))],
+                    counted: true,
                     ..Finish::new(Ok(v)).of_fetch(&src, format)
                 }
             }
+            // Charged when it went out; counted whether or not (spec §7.2).
             Err(e) => Finish {
                 usage: charged(cx.op, &e).then_some((p.usage, p.price)),
                 extra: vec![("request_id", json!(e.request_id))],
+                counted: true,
                 ..refused(from_web(&e))
             },
         }
@@ -734,14 +769,16 @@ impl RunHost<'_> {
     }
 
     /// Where `url` came from, as `rule` requires (check 5), with the run's
-    /// page store and journal it was derived from; `url`'s host is neither
-    /// one of `own` nor off the rule's hosts ([`host_refused`]).
+    /// page store it was derived from beside `journal` (the run's web
+    /// calls); `url`'s host is neither one of `own` nor off the rule's
+    /// hosts ([`host_refused`]).
     async fn url_source(
         &self,
         rule: &UrlRule,
         own: &OwnHosts,
         url: &PublicUrl,
-    ) -> Result<(UrlSource, Vec<WebPageRow>, Vec<CallEntry>), HostError> {
+        journal: &[CallEntry],
+    ) -> Result<(UrlSource, Vec<WebPageRow>), HostError> {
         if let Some(why) = host_refused(rule, own, url.host()) {
             return Err(HostError::new(
                 CODE_URL_NOT_ALLOWED,
@@ -758,20 +795,13 @@ impl RunHost<'_> {
                 CODE_WEB_UNAVAILABLE,
                 "the request this run answers could not be read (retryable: try again)",
             )
+            .retryable()
         })?;
-        let mut journal = Vec::new();
-        for n in 1..=tick.n {
-            journal.extend(
-                tick.store
-                    .bot_calls(&tick.run.id, n)
-                    .map_err(|e| host_error(&e))?,
-            );
-        }
         let pages = tick
             .store
             .web_pages(&tick.run.id)
             .map_err(|e| host_error(&e))?;
-        let found = sources(&cx, &journal, &pages).remove(url.normalized());
+        let found = sources(&cx, journal, &pages).remove(url.normalized());
         if looks_credentialed(url) && !matches!(found, Some(UrlSource::Request { .. })) {
             return Err(HostError::new(
                 CODE_URL_NOT_ALLOWED,
@@ -793,24 +823,7 @@ impl RunHost<'_> {
                 ));
             }
         };
-        Ok((src, pages, journal))
-    }
-
-    /// The run's charged searches and fetches so far: its `web.*` usage
-    /// rows.
-    fn spent_counts(&self) -> Result<(u32, u32), HostError> {
-        let rows = self
-            .tick
-            .store
-            .usage_of_run(&self.tick.run.id)
-            .map_err(|e| host_error(&e))?;
-        let count = |f: &dyn Fn(&str) -> bool| {
-            u32::try_from(rows.iter().filter(|r| f(&r.line)).count()).unwrap_or(u32::MAX)
-        };
-        Ok((
-            count(&|l| l.starts_with("web.search.")),
-            count(&|l| l == LINE_WEB_FETCH),
-        ))
+        Ok((src, pages))
     }
 }
 

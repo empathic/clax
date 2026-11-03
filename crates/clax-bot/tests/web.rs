@@ -629,6 +629,136 @@ async fn a_failed_search_is_free_and_a_failed_fetch_is_not() {
 }
 
 #[tokio::test]
+async fn a_web_error_says_whether_it_is_retryable_and_replays_so() {
+    let env = Env::new().await;
+    let off = "https://off.example/x";
+    env.web().search_answers(
+        "down",
+        Err(WebError::new(
+            CODE_WEB_UNAVAILABLE,
+            "the provider is down",
+            true,
+        )),
+    );
+    env.api.push(env.script_turn(
+        "tu_1",
+        "Web",
+        &format!(
+            "const out = [];
+             try {{ await clax.web.search('down'); }} catch (e) {{ out.push([e.code, e.retryable]); }}
+             try {{ await clax.web.fetch({off:?}); }} catch (e) {{ out.push([e.code, e.retryable]); }}
+             return out;"
+        ),
+    ));
+    env.api.push(finish_turn("done"));
+    let run = env.run_with_web("search,fetch");
+    let mut a = env.deps();
+    crash_once(
+        &mut a,
+        CrashPoint::BeforeCommit {
+            step: 2,
+            kind: StepKind::Script,
+        },
+    );
+    let out = env.drive(&a, &run, &DriverId::mint()).await;
+    assert_eq!(
+        out.last().unwrap().next,
+        Next::Waiting(clax_bot::Wait::Crashed)
+    );
+    env.clock.advance(61);
+    let out = env.drive(&env.deps(), &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    // The script run again answers from the journal, flag and all.
+    assert_eq!(
+        script_result(&env, &run, 0)["value"],
+        json!([
+            ["web_unavailable", true],
+            ["url_not_in_prior_context", false]
+        ])
+    );
+    assert_eq!(env.web().calls().len(), 1);
+}
+
+#[tokio::test]
+async fn failed_calls_count_against_the_cap_uncharged_across_a_restart() {
+    let env = Env::new().await;
+    set(
+        &env,
+        &[
+            (Setting::WebMaxSearchesPerRun, json!(2)),
+            (Setting::WebMaxFetchesPerRun, json!(1)),
+        ],
+    );
+    let a = "https://example.com/gone";
+    sender_says(&env, &format!("Read {a}"));
+    env.web().search_answers(
+        "down",
+        Err(WebError::new(
+            CODE_WEB_UNAVAILABLE,
+            "the provider is down",
+            true,
+        )),
+    );
+    // `a` has no scripted answer: the fake fails its fetch before it goes
+    // out, so it is not charged, but it reached the source.
+    let attempts = "const out = [];
+         for (let i = 0; i < 2; i++) {
+           try { await clax.web.search('down'); } catch (e) { out.push(e.code); }
+         }
+         return out;";
+    env.api.push(env.script_turn("tu_1", "Search", attempts));
+    env.api.push(env.script_turn(
+        "tu_2",
+        "Again",
+        &format!(
+            "const out = [];
+             try {{ await clax.web.search('down'); }} catch (e) {{ out.push(e.code); }}
+             for (let i = 0; i < 2; i++) {{
+               try {{ await clax.web.fetch({a:?}); }} catch (e) {{ out.push(e.code); }}
+             }}
+             return out;"
+        ),
+    ));
+    env.api.push(finish_turn("done"));
+    let run = env.run_with_web("search,fetch");
+    let mut crashing = env.deps();
+    crash_once(
+        &mut crashing,
+        CrashPoint::BeforeCommit {
+            step: 2,
+            kind: StepKind::Script,
+        },
+    );
+    let out = env.drive(&crashing, &run, &DriverId::mint()).await;
+    assert_eq!(
+        out.last().unwrap().next,
+        Next::Waiting(clax_bot::Wait::Crashed)
+    );
+    env.clock.advance(61);
+    let out = env.drive(&env.deps(), &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    assert_eq!(
+        script_result(&env, &run, 0)["value"],
+        json!(["web_unavailable", "web_unavailable"])
+    );
+    // The two searches replayed after the restart count once each, so the
+    // third is refused; so is the second fetch, after one that failed.
+    assert_eq!(
+        script_result(&env, &run, 1)["value"],
+        json!(["web_cap", "web_unavailable", "web_cap"])
+    );
+    assert_eq!(
+        env.web().calls(),
+        [
+            ("search".to_string(), "down".to_string()),
+            ("search".to_string(), "down".to_string()),
+            ("fetch".to_string(), a.to_string()),
+        ]
+    );
+    assert!(web_rows(&env).is_empty(), "{:?}", web_rows(&env));
+}
+
+#[tokio::test]
 async fn a_redirect_to_a_private_host_is_refused() {
     let env = Env::new().await;
     let a = "http://example.com/a";

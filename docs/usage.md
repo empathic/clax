@@ -202,6 +202,8 @@ url_rule = "sourced"          # sourced, any_public or allowlist
 allowlist = []                # hosts for allowlist; "*.example.com" matches subdomains
 ```
 
+The per-run caps count every search and fetch that reached the source, whether or not it was charged: a failed search is free but counts, so a script cannot retry a provider that is down without end; a page read again from the run's page store neither costs nor counts. A failed web call throws a `HostError` whose `code` says why and whose `retryable` is true when the same call may succeed if made again.
+
 The account ID and token are set only at `/admin`. For tests, `CLAX_TEST_WEB_FIXTURES=<path>` in the daemon's environment answers every search and fetch from that JSON file (`{searches: {<query>: [hit]}, pages: {<url>: {status, content_type, text, links} | {redirect}}}`) instead of Cloudflare, and web use counts as configured.
 
 A new artifact needs a title: `--title`, or else the page's `<title>`. Updates keep the current title unless `--title` is given.

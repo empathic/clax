@@ -840,7 +840,9 @@ pub fn dts(shape: WebShape) -> String {
          // function is async; a failure rejects with an Error whose name is\n\
          // \"HostError\" and whose `code` says why: the codes each lists, or\n\
          // invalid_args, or replay_diverged (a script run again after a\n\
-         // restart that did not make the calls it made before). files.* and\n\
+         // restart that did not make the calls it made before). Its\n\
+         // `retryable` is true when the same call may succeed if made again\n\
+         // (a source that failed or timed out), false otherwise. files.* and\n\
          // draft.* change only the run's draft, which the artifact gets on\n\
          // draft.publish; db.* and threads.* writes take effect at once.\n\
          // A script's clock is its step's start for the whole run (measuring\n\

@@ -103,18 +103,31 @@ struct RunHost<'a> {
     state: Mutex<HostState>,
 }
 
+/// A failure as the journal keeps it: `code`, `message`, and `retryable`
+/// when it is.
 fn err_json(e: &HostError) -> Value {
-    json!({"code": e.code, "message": e.message})
+    let mut v = json!({"code": e.code, "message": e.message});
+    if e.retryable {
+        v["retryable"] = json!(true);
+    }
+    v
 }
 
+/// The answer journal entry `e` holds, a failure as [`err_json`] kept it.
 fn recorded(e: &CallEntry) -> std::result::Result<Value, HostError> {
     if e.ok() {
         Ok(e.result().clone())
     } else {
-        Err(HostError::new(
-            e.result()["code"].as_str().unwrap_or("call_failed"),
-            e.result()["message"].as_str().unwrap_or(""),
-        ))
+        let r = e.result();
+        let err = HostError::new(
+            r["code"].as_str().unwrap_or("call_failed"),
+            r["message"].as_str().unwrap_or(""),
+        );
+        Err(if r["retryable"] == json!(true) {
+            err.retryable()
+        } else {
+            err
+        })
     }
 }
 

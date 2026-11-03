@@ -409,7 +409,13 @@ Fetching the same page fresh within a run is not offered in v1.
 ### 6.3 Errors **(design)**
 
 One vocabulary across sources, each error with a `retryable` flag and a
-message written for the model (what to do next):
+message written for the model (what to do next). The flag reaches the
+script on the thrown error, `e.retryable` (true or false), on every
+sandbox; it is a field of every host error (`HostError::retryable`), false
+for the codes no retry gets past, and kept in the call's journal entry so a
+call answered from the journal after a restart throws the same. A
+retryable error's message also says to try again, for a model reading
+only the message.
 
 | Code | When | Charged |
 |---|---|---|
@@ -480,10 +486,15 @@ account. The admin's Pricing page lists them with the other lines.
 - Before a call, the run checks the person can pay the line's price for one
   request and the run's cap has room; otherwise it refuses
   (`credits_exhausted`, `web_cap`) and nothing goes out.
-- A search that fails is not charged (as Anthropic and the gateway do);
-  every fetch that went out on the network is charged and counts against the
-  cap, whatever it answered (as Anthropic's `max_uses` counts failed
-  fetches).
+- The cap counts every call that reached the source, charged or not: the
+  cap bounds attempts, so a script cannot retry a provider that is down
+  without end. The count is of the run's journaled web calls marked as
+  having reached the source, so a call answered from the journal after a
+  restart is not counted twice.
+- A search that fails is not charged (as Anthropic and the gateway do),
+  though it counts; every fetch that went out on the network is charged,
+  whatever it answered (as Anthropic's `max_uses` counts failed fetches),
+  and a fetch that failed before it went out is not charged but counts.
 - A fetch answered from the page store (§6.2) is not charged and does not
   count.
 - The usage row is written in the Spend transaction (§4.2), on the run's
