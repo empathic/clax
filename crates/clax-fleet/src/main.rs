@@ -102,8 +102,9 @@ struct Serve {
     /// This pod's IP, for the advertised address.
     #[arg(long, env = "POD_IP")]
     pod_ip: Option<String>,
-    /// This process's shard (the ordinal ending the pod's name when
-    /// absent). The number of shards is the catalog's.
+    /// This process's shard, for a process whose name ends in no ordinal
+    /// (the ordinal ending the pod's name when absent; one that disagrees
+    /// with it is refused). The number of shards is the catalog's.
     #[arg(long, env = "CLAX_FLEET_ORDINAL")]
     ordinal: Option<u32>,
     /// Where shard `{shard}`'s process is reached.
@@ -207,6 +208,22 @@ fn ordinal_of(pod: &str) -> Option<u32> {
     pod.rsplit_once('-')?.1.parse().ok()
 }
 
+/// This process's shard: `explicit` (`--ordinal`), else the ordinal its
+/// pod name `pod` ends in. Both, when they differ, are refused: a value in
+/// a StatefulSet's pod template is every pod's, and would give each pod
+/// one shard's instances, homes made twice.
+fn shard_ordinal(explicit: Option<u32>, pod: &str) -> anyhow::Result<u32> {
+    match (explicit, ordinal_of(pod)) {
+        (Some(o), Some(p)) if o != p => anyhow::bail!(
+            "--ordinal (CLAX_FLEET_ORDINAL) is {o}, but the pod name {pod} says {p}: leave it unset in a StatefulSet, where each pod's name gives its shard"
+        ),
+        (Some(o), _) | (None, Some(o)) => Ok(o),
+        (None, None) => {
+            anyhow::bail!("no --ordinal, and the pod name {pod} does not end in one")
+        }
+    }
+}
+
 /// `CLAX_KEK`: 64 hex digits, or nothing.
 fn kek_from_env() -> anyhow::Result<Option<[u8; 32]>> {
     let Ok(hex) = std::env::var("CLAX_KEK") else {
@@ -226,13 +243,23 @@ fn kek_from_env() -> anyhow::Result<Option<[u8; 32]>> {
 
 /// The peer key, which every shard must be given alike: one a shard made
 /// up for itself would be no other shard's, so none would believe another's
-/// forwards.
+/// forwards. Surrounding whitespace, such as the newline a key read from a
+/// file ends in, is not part of it; what is left must be visible ASCII, as
+/// a header carries it.
 fn peer_key(given: Option<String>) -> anyhow::Result<String> {
-    given.filter(|k| !k.trim().is_empty()).ok_or_else(|| {
-        anyhow::anyhow!(
-            "clax-fleet needs CLAX_FLEET_PEER_KEY, the same on every shard (the clax-secrets Secret; docs/kubernetes.md, Deploying)"
-        )
-    })
+    let key = given
+        .map(|k| k.trim().to_owned())
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "clax-fleet needs CLAX_FLEET_PEER_KEY, the same on every shard (the clax-secrets Secret; docs/kubernetes.md, Deploying)"
+            )
+        })?;
+    anyhow::ensure!(
+        key.bytes().all(|b| b.is_ascii_graphic()),
+        "CLAX_FLEET_PEER_KEY holds a character a header cannot carry: use visible ASCII, such as `openssl rand -hex 32`"
+    );
+    Ok(key)
 }
 
 fn serve(a: Serve) -> anyhow::Result<()> {
@@ -261,9 +288,7 @@ fn serve(a: Serve) -> anyhow::Result<()> {
         )?;
     }
     let rt = tokio::runtime::Runtime::new()?;
-    let ordinal = a.ordinal.or_else(|| ordinal_of(&pod)).ok_or_else(|| {
-        anyhow::anyhow!("no --ordinal, and the pod name {pod} does not end in one")
-    })?;
+    let ordinal = shard_ordinal(a.ordinal, &pod)?;
     let peer_key = peer_key(a.peer_key)?;
     let fleet = Fleet::new(FleetConfig {
         pod: pod.clone(),
@@ -371,9 +396,11 @@ async fn run(fleet: Arc<Fleet>, listens: Listens, drain_delay: Duration) -> anyh
 
 fn status(a: Status) -> anyhow::Result<()> {
     let catalog = Catalog::load(&a.catalog).map_err(anyhow::Error::msg)?;
-    let key = a.peer_key.ok_or_else(|| {
-        anyhow::anyhow!("each shard's /status asks for the peer key: set CLAX_FLEET_PEER_KEY")
-    })?;
+    anyhow::ensure!(
+        a.peer_key.is_some(),
+        "each shard's /status asks for the peer key: set CLAX_FLEET_PEER_KEY"
+    );
+    let key = peer_key(a.peer_key)?;
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let client = status_client();
@@ -494,6 +521,24 @@ mod tests {
         assert_eq!(ordinal_of("clax-abc12"), None);
     }
 
+    /// An explicit ordinal is for a process whose name ends in none; one
+    /// that disagrees with the pod name (the same value in every pod's
+    /// template) is refused, naming both, rather than claiming another
+    /// pod's shard.
+    #[test]
+    fn an_explicit_ordinal_must_agree_with_the_pod_name() {
+        assert_eq!(shard_ordinal(None, "clax-3").unwrap(), 3);
+        assert_eq!(shard_ordinal(Some(3), "clax-3").unwrap(), 3);
+        assert_eq!(shard_ordinal(Some(2), "fleet").unwrap(), 2);
+        let err = shard_ordinal(Some(0), "clax-1").unwrap_err().to_string();
+        assert!(
+            err.contains("CLAX_FLEET_ORDINAL") && err.contains("0") && err.contains("clax-1"),
+            "{err}"
+        );
+        let err = shard_ordinal(None, "fleet").unwrap_err().to_string();
+        assert!(err.contains("does not end in one"), "{err}");
+    }
+
     #[test]
     fn only_serve_logging_json_logs_its_fatal_error() {
         let serve = Cli::parse_from(["clax-fleet", "serve"]).cmd;
@@ -510,6 +555,22 @@ mod tests {
             let err = peer_key(missing).unwrap_err().to_string();
             assert!(err.contains("needs CLAX_FLEET_PEER_KEY"), "{err}");
         }
+    }
+
+    /// A key read from a file (`kubectl create secret --from-file`) ends in
+    /// a newline, which the key does not include; one a header cannot carry
+    /// is refused at startup, naming the variable, rather than panicking in
+    /// the proxy.
+    #[test]
+    fn the_peer_key_is_trimmed_and_must_be_a_header_value() {
+        assert_eq!(peer_key(Some("k\n".into())).unwrap(), "k");
+        assert_eq!(peer_key(Some(" k\r\n".into())).unwrap(), "k");
+        for bad in ["a\nb", "a\u{7}b", "ключ"] {
+            let err = peer_key(Some(bad.into())).unwrap_err().to_string();
+            assert!(err.contains("CLAX_FLEET_PEER_KEY"), "{err}");
+        }
+        let key = peer_key(Some("k\n".into())).unwrap();
+        clax_fleet::proxy::Proxy::new(&key);
     }
 
     /// A shard's line says when it refused the key, answered otherwise, or
@@ -619,6 +680,38 @@ mod tests {
             seen >= 5,
             "only {seen} variables found: the scan missed them"
         );
+    }
+
+    /// docs/kubernetes.md's overlay of one's own renames the image by the
+    /// name deploy/k8s/sqlite gives it: kustomize matches the name as
+    /// already rewritten, so any other would match nothing, and the
+    /// operator's image would be ignored without a word.
+    #[test]
+    fn the_documented_overlay_renames_the_image_the_sqlite_overlay_names() {
+        let sqlite =
+            std::fs::read_to_string(manifests().join("sqlite/kustomization.yaml")).unwrap();
+        let named = sqlite
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("newName: "))
+            .expect("the sqlite overlay renames the image");
+        let guide = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/kubernetes.md"),
+        )
+        .unwrap();
+        let overlay = guide
+            .split("# my-clax/kustomization.yaml\n")
+            .nth(1)
+            .and_then(|rest| rest.split("```").next())
+            .expect("the guide shows my-clax/kustomization.yaml");
+        let images = overlay
+            .split("\nimages:\n")
+            .nth(1)
+            .expect("the guide's overlay sets images");
+        let renamed = images
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("- name: "))
+            .expect("an images entry");
+        assert_eq!(renamed, named);
     }
 
     /// The example catalog is valid, and its instances' setup secrets are

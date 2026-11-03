@@ -17,12 +17,21 @@ shards = 2
 name = "example"
 shard = 0
 create = true
-default = true
+# No `default = true`: with more than one tenant, a host no instance names
+# would be answered by the default's instance (docs/kubernetes.md, The
+# catalog). Leave none, and such hosts get 404.
 config = '''
 [hosted]
 public_origin = "https://clax.example.com"
-site_domain = "clax-sites.example.com"
+# On a registrable domain of its own, not under example.com: an artifact
+# page there could otherwise set cookies the origin receives
+# (docs/kubernetes.md, The catalog).
+site_domain = "clax-sites.example.net"
 # The setup secret the first visit to /setup asks for, from the
 # environment (the clax-secrets Secret): one variable per instance.
 setup_secret_env = "CLAX_SETUP_SECRET_EXAMPLE"
+# Signing in with GitHub: the OAuth app's client secret, also one variable
+# per instance.
+# github_client_id = "<the app's client ID>"
+# github_client_secret_env = "CLAX_GITHUB_SECRET_EXAMPLE"
 '''

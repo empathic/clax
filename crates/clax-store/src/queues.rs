@@ -722,7 +722,7 @@ fn reports_of(
                 let reporter: Option<String> = r.get(5)?;
                 Ok(ReportComment {
                     id: r.get(0)?,
-                    author_kind: match reporter {
+                    author_kind: match &reporter {
                         Some(_) => AUTHOR_REPORTER.to_string(),
                         None => r.get(1)?,
                     },
@@ -733,6 +733,7 @@ fn reports_of(
                     has_clip: r.get(7)?,
                     diagnostics_lines: r.get::<_, Option<u32>>(8)?.unwrap_or(0),
                     triage_only: r.get(9)?,
+                    reporter_id: reporter,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1122,6 +1123,7 @@ impl Store {
                 "DELETE FROM queue_reporter_tokens WHERE queue_id = ?1",
                 params![qid],
             )?;
+            reporter_view::forget_in(tx, "queue_id", qid)?;
             let rec = queue_record(AuditKind::QueueUpdate, &now, qid).with("op", "delete");
             self.record_audit(tx, ctx, rec)?;
             Ok(())
@@ -1551,6 +1553,7 @@ impl Store {
                 "DELETE FROM queue_reporter_tokens WHERE service_grant_id = ?1",
                 params![gid],
             )?;
+            reporter_view::forget_in(tx, "service_grant_id", gid)?;
             let rec = queue_record(AuditKind::QueueUpdate, &now, qid)
                 .with("op", "revoke_grant")
                 .with("grant_id", gid);
@@ -1580,7 +1583,29 @@ impl Store {
         public_key: &str,
         profile: Option<&ReporterProfile>,
     ) -> Result<(Secret, String)> {
+        self.mint_named_reporter_token(grant, reporter_id, None, origin, public_key, profile)
+    }
+
+    /// [`Store::mint_reporter_token`], keeping `reporter_name` (when given)
+    /// as the name the queue's other reporters see for `reporter_id`
+    /// (`queue_reporters`; the latest given stands).
+    ///
+    /// # Errors
+    /// [`Store::mint_reporter_token`]'s; `invalid_reporter_name` for a bad
+    /// name.
+    pub fn mint_named_reporter_token(
+        &self,
+        grant: &ServiceGrant,
+        reporter_id: &str,
+        reporter_name: Option<&str>,
+        origin: &str,
+        public_key: &str,
+        profile: Option<&ReporterProfile>,
+    ) -> Result<(Secret, String)> {
         check_reporter_id(reporter_id)?;
+        let reporter_name = reporter_name
+            .map(clax_core::queue::reporter_name)
+            .transpose()?;
         let origin = normalize_origin(origin)?;
         clax_core::sig::decode_public(public_key)
             .map_err(|_| CoreError::invalid("invalid_key", "public_key is not an Ed25519 key"))?;
@@ -1625,6 +1650,13 @@ impl Store {
                     profile_json
                 ],
             )?;
+            if let Some(name) = &reporter_name {
+                tx.execute(
+                    "INSERT INTO queue_reporters (queue_id, reporter_id, name) VALUES (?1, ?2, ?3)
+                     ON CONFLICT (queue_id, reporter_id) DO UPDATE SET name = excluded.name",
+                    params![grant.queue_id, reporter_id, name],
+                )?;
+            }
             Ok(())
         })?;
         Ok((token, expires_at))
@@ -3346,6 +3378,11 @@ fn live_session_in(c: &Connection, sid: &str, message: &'static str) -> Result<(
         Err(CoreError::invalid("unknown_session", message))
     }
 }
+
+mod installs;
+mod reporter_view;
+pub use installs::{InstallPatch, NewInstall};
+pub use reporter_view::ViewSession;
 
 #[cfg(test)]
 mod tests;

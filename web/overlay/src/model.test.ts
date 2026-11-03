@@ -5,7 +5,7 @@ import type { Badge, DiagLine, Report } from "../../sdk/src/types";
 import type { Captured } from "./capture";
 import {
   BADGE_POLL_MS, BadgeWatch, CONTEXT_TIMEOUT_MS, MAX_CONTEXT_BYTES, PAGE_ANCHOR, Poll, POLL_MS, Session, type Timers, type Visibility,
-  buildContext, canSend, carryShapes, clipOf, clipStatus, contextPreview, defaultShapes, externalIdOf, failureText, newDraft, quoteOf, reopenOf, repliesOf, reportOf,
+  buildContext, canSend, carryShapes, clipOf, clipStatus, contextPreview, defaultShapes, externalIdOf, failureText, newDraft, quoteOf, reopenOf, repliesOf, reportOf, reportsModeOf,
   safeLink, stateLabel, summaryOf, waitingFix,
 } from "./model";
 
@@ -147,6 +147,25 @@ describe("the page's artifact", () => {
     expect(externalIdOf(doc, "given")).toBe("given");
     meta.content = "";
     expect(externalIdOf(doc)).toBeUndefined();
+  });
+});
+
+describe("the Your reports mode", () => {
+  it("is the option, else the clax-reports meta, else button; anything else is refused", () => {
+    const doc = document.implementation.createHTMLDocument("t");
+    expect(reportsModeOf(doc)).toBe("button");
+    const meta = doc.createElement("meta");
+    meta.name = "clax-reports";
+    meta.content = " off ";
+    doc.head.append(meta);
+    expect(reportsModeOf(doc)).toBe("off");
+    expect(reportsModeOf(doc, "button")).toBe("button");
+    meta.content = "";
+    expect(reportsModeOf(doc)).toBe("button");
+    expect(reportsModeOf(doc, "off")).toBe("off");
+    expect(() => reportsModeOf(doc, "hidden")).toThrow(/reports must be "button" or "off"/);
+    meta.content = "Off";
+    expect(() => reportsModeOf(doc)).toThrow(TypeError);
   });
 });
 

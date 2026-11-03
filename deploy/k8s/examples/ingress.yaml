@@ -17,7 +17,7 @@ spec:
   tls:
     - hosts:
         - clax.example.com
-        - "*.clax-sites.example.com"
+        - "*.clax-sites.example.net"
       secretName: clax-tls
   rules:
     - host: clax.example.com
@@ -30,7 +30,7 @@ spec:
                 name: clax
                 port:
                   name: http
-    - host: "*.clax-sites.example.com"
+    - host: "*.clax-sites.example.net"
       http:
         paths:
           - path: /

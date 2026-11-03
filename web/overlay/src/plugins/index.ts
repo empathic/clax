@@ -1,4 +1,4 @@
-// Clax's first-party plugins (`@empathic/clax-sdk/plugins`): every feedback
+// Clax's first-party plugins (`@empathic/clax-client-sdk/plugins`): every feedback
 // feature of prod Changeling's Send-feedback dialog, as plugins of the SDK's
 // contract (sdk/src/plugin.ts). A host passes the ones it wants to
 // `overlay({ plugins })`, or names them in its config and the loader

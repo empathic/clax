@@ -1,8 +1,17 @@
-// `Clax.overlay`'s options, in a module of their own: the overlay's public
-// types (main.ts) reach the SDK's reporter types and nothing of the bridge.
+// `Clax.overlay`'s options, and the other names of its public interface
+// that main.ts does not define, in a module of their own: the overlay's
+// public types (main.ts) reach this module, the SDK's reporter and plugin
+// types, and nothing of the bridge or of the overlay's model.
 import type { ClaxPlugin } from "../../sdk/src/plugin";
 import type { ReporterAuth } from "../../sdk/src/reporter";
 import type { ReportContext } from "../../sdk/src/types";
+
+/** What the reporter captures: a pick, a drawn area, or the visible viewport. */
+export type Mode = "element" | "area" | "screen";
+
+/** How long the host's `context` and `metadata` functions may take before
+ * the capture goes on without them. */
+export const CONTEXT_TIMEOUT_MS = 2000;
 
 /** What the host says about the moment of a capture. Only `release`,
  * `flags` and `app` are taken; the time, environment and capture are the
@@ -26,6 +35,9 @@ export interface DialogCopy {
 /** A value, or a function that gives it (perhaps later). */
 export type Given<T> = T | (() => T | Promise<T>);
 
+/** Where "Your reports" shows: `OverlayOptions.reports`. */
+export type ReportsMode = "button" | "off";
+
 /** `Clax.overlay`'s options. Every report carries the page's URL with its
  * query and without its fragment, and the page's title.
  *
@@ -37,8 +49,17 @@ export type Given<T> = T | (() => T | Promise<T>);
 export interface OverlayOptions {
   /** The instance's base URL, such as `https://clax.corp.example`. */
   instance: string;
-  /** The queue's ID. */
-  queue: string;
+  /** The queue's ID. Optional with an install (`install`, or the page's
+   * `<meta name="clax-install">`), whose config names its queue; given,
+   * it is the queue filed into. */
+  queue?: string;
+  /** The install's ID, whose config Clax serves: the queue it files into,
+   * its wording, and whether it shows "Your reports" and the element
+   * picker; edited in Clax, on the queue's Installs. Default: `<meta
+   * name="clax-install">`'s content. The overlay starts once the config is
+   * fetched; when it cannot be (in `INSTALL_TIMEOUT_MS`), it starts on this
+   * page's own options and metas. */
+  install?: string;
   /** Gets a reporter token for the reporter's public key, from the deployer's backend. */
   auth: ReporterAuth;
   /** `"corner"` (the default): the Report and "Your reports" buttons in the
@@ -49,6 +70,13 @@ export interface OverlayOptions {
   /** Whether this reporter may file reports (default true). False: no
    * Report button, and `report()` does nothing; "Your reports" stays. */
   canFile?: boolean;
+  /** The "Your reports" entry point: `"button"` (the default) puts it beside
+   * Report in the launcher; `"off"` leaves it out, with its panel, its
+   * polling and the badge's, for a page that shows the reports itself
+   * (`showReports()` then does nothing). Report stays either way. Default:
+   * `<meta name="clax-reports">`'s content, else `"button"`. An install's
+   * config, once fetched, sets it in their place. */
+  reports?: ReportsMode;
   /** The host's part of each capture's context (spec
    * 2026-10-29-feedback-loop §5.1): `release`, `flags` and `app`, or a
    * function giving them, called when the reporter starts a capture (and
@@ -82,7 +110,7 @@ export interface OverlayOptions {
    * minutes per user rather than on every page load. Without it, every
    * page load asks `auth` for a token. */
   user?: string;
-  /** The plugins (`@empathic/clax-sdk/plugins`): every feature the overlay
+  /** The plugins (`@empathic/clax-client-sdk/plugins`): every feature the overlay
    * shows comes from one. Default: `classic()`, the overlay as it was before
    * plugins (the DOM render and the exact screenshot, Box/Arrow/Redact/Text,
    * Element, Area and Screen, the corner dock). */

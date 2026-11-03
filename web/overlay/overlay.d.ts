@@ -15,6 +15,9 @@ export type Mode = "element" | "area" | "screen";
 /** A value, or a function that gives it (perhaps later). */
 export type Given<T> = T | (() => T | Promise<T>);
 
+/** Where "Your reports" shows: `OverlayOptions.reports`. */
+export type ReportsMode = "button" | "off";
+
 /** A reporter token: `cxr_…`, bound to a key, an origin and a reporter ID. */
 export interface ReporterToken {
   token: string;
@@ -184,14 +187,18 @@ export interface Recorder {
 export interface OverlayOptions {
   /** The instance's base URL, such as `https://clax.corp.example`. */
   instance: string;
-  /** The queue's ID. */
-  queue: string;
+  /** The queue's ID. Optional with an install, whose config names it. */
+  queue?: string;
+  /** The install's ID, whose config Clax serves (its queue, wording, and whether it shows "Your reports" and the element picker). Default `<meta name="clax-install">`'s content. The overlay starts once the config is fetched, else on this page's own options. */
+  install?: string;
   /** Gets a reporter token for the reporter's public key, from the deployer's backend. */
   auth: ReporterAuth;
   /** `"corner"` (the default): Report and "Your reports" in the bottom right corner; `false`: none. */
   launcher?: "corner" | false;
   /** Whether this reporter may file reports (default true). */
   canFile?: boolean;
+  /** `"button"` (the default): "Your reports" beside Report; `"off"`: no "Your reports", panel or polling. Default `<meta name="clax-reports">`'s content. */
+  reports?: ReportsMode;
   /** The host's `release`, `flags` and `app`, or a function giving them, called when a capture starts. */
   context?: Given<HostContext>;
   /** JSON attached to each report, or a function giving it, called once per report. */
@@ -216,7 +223,7 @@ export interface OverlayOptions {
    * minutes per user rather than on every page load. Without it, every
    * page load asks `auth` for a token. */
   user?: string;
-  /** The plugins (`@empathic/clax-sdk/plugins`); default the classic set. */
+  /** The plugins (`@empathic/clax-client-sdk/plugins`); default the classic set. */
   plugins?: ClaxPlugin[];
   /** How the composer is shown: a presentation plugin's id. */
   presentation?: string;

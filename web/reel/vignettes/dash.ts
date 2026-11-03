@@ -98,6 +98,12 @@ const STEADY_CARET = `(() => {
 
 type Cast = { alex: Page; f1: Frame; base: string; token: string; aid: string; sid: string; v2: string };
 
+/** The thread card holding `text` shows its clip, loaded: a card's clip
+ * loads after the card shows (`Clip`'s `load`) and grows it, moving what is
+ * below it, Send among them. */
+const clipShown = (text: string) =>
+  `[...document.querySelectorAll(".thread-card")].some(c => c.textContent.includes(${JSON.stringify(text)}) && (i => !!i && i.complete && i.naturalHeight > 0)(c.querySelector(".clip img.thumb")))`;
+
 const fixture = (name: string) => readFileSync(new URL(`../fixtures/dash/${name}`, import.meta.url), "utf8");
 
 /** Moves to `target` and presses it, filmed; then releases it and runs
@@ -187,7 +193,10 @@ export default {
     // between the release and its showing.
     const card = alex.locator(".thread-card").filter({ hasText: "forecast dashboard" }).first();
     const send = card.getByRole("button", { name: /^Send to / });
-    await pressThen(d, alex, alex.locator(".composer").getByRole("button", { name: "Post comment" }), () => send.waitFor({ state: "visible" }));
+    await pressThen(d, alex, alex.locator(".composer").getByRole("button", { name: "Post comment" }), async () => {
+      await send.waitFor({ state: "visible" });
+      await d.until(async () => (await card.and(alex.locator(".selected")).count()) === 1 && (await quietIn<boolean>(alex, alex.mainFrame(), clipShown("forecast dashboard"))), "the ask posted as a thread, selected, its clip shown");
+    });
     await pressThen(d, alex, send, () => card.locator(".waiting").waitFor({ state: "visible" }));
     const tid = await card.getAttribute("data-thread");
     if (!tid) throw new Error("the thread card has no data-thread");

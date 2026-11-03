@@ -64,7 +64,7 @@ describe("QueueView", () => {
     const page = (n: number) => ({ reports: [report(n)], next: null });
     stubFetch({
       [`GET ${LIST}?state=active&order=newest`]: page(1),
-      [`GET ${LIST}?state=fix_proposed&order=newest`]: page(2),
+      [`GET ${LIST}?state=open&order=newest`]: page(2),
       [`GET ${LIST}?order=newest`]: page(3),
     });
     const m = mount(QueueView, { qid: "q1", queue: QUEUE, nav: () => {} });
@@ -74,8 +74,8 @@ describe("QueueView", () => {
     const selected = () => m.root.querySelector('[role="tab"][aria-selected="true"]')!.getAttribute("data-tab");
     key("ArrowRight");
     await settle();
-    expect([selected(), document.activeElement?.getAttribute("data-tab")]).toEqual(["fix_proposed", "fix_proposed"]);
-    expect(m.root.querySelector(".rrow a")!.getAttribute("href")).toBe("/queues/q1/t2?state=fix_proposed");
+    expect([selected(), document.activeElement?.getAttribute("data-tab")]).toEqual(["open", "open"]);
+    expect(m.root.querySelector(".rrow a")!.getAttribute("href")).toBe("/queues/q1/t2?state=open");
     key("End");
     await settle();
     expect(selected()).toBe("all");
@@ -187,6 +187,17 @@ describe("QueueView", () => {
     expect(said.filter(s => s === "1 new report.").length).toBe(2);
   });
 
+  it("opens on the Open or Claimed tab a queue card's count links to", async () => {
+    history.replaceState(null, "", "/queues/q1?state=claimed");
+    const calls = stubFetch({ [`GET ${LIST}?state=claimed&order=newest`]: { reports: [report(4, { state: "claimed" })], next: null } });
+    const m = mount(QueueView, { qid: "q1", queue: QUEUE, nav: () => {} });
+    await settle();
+    expect(tab(m.root, "claimed")!.getAttribute("aria-selected")).toBe("true");
+    expect(ids(m.root)).toEqual(["t4"]);
+    expect(m.root.querySelector(".rrow a")!.getAttribute("href")).toBe("/queues/q1/t4?state=claimed");
+    expect(calls.map(c => c.url)).toEqual([`${LIST}?state=claimed&order=newest`]);
+  });
+
   it("opens on the tab the address names", async () => {
     history.replaceState(null, "", "/queues/q1?state=resolved");
     stubFetch({ [`GET ${LIST}?state=resolved&order=newest`]: { reports: [], next: null } });
@@ -194,5 +205,22 @@ describe("QueueView", () => {
     await settle();
     expect(tab(m.root, "resolved")!.getAttribute("aria-selected")).toBe("true");
     expect(m.root.querySelector(".qnone")!.textContent).toBe("No resolved reports.");
+  });
+
+  it("says what its reporters see, and lists its installs once they are opened", async () => {
+    const calls = stubFetch({
+      [`GET ${LIST}?state=active&order=newest`]: { reports: [], next: null },
+      "GET /api/queues/q1/installs": { installs: [{ id: "i1", queue_id: "q1", name: "Changelist", origins: ["https://app.example"], config: { product_name: null, report_label: null, queue_label: null, reports_button: true, picker: true, brand_color: null }, created_at: "", updated_at: "" }] },
+    });
+    const m = mount(QueueView, { qid: "q1", queue: { ...QUEUE, reporters_see: "all" as const }, nav: () => {} });
+    await settle();
+    expect(m.root.querySelector(".qabout .see")!.textContent).toBe("Reporters see every report in this queue");
+    expect(m.root.querySelector(".qabout .origins")!.textContent).toBe("from https://app.example");
+    expect(calls.some(c => c.url.endsWith("/installs"))).toBe(false);
+    const details = m.root.querySelector<HTMLDetailsElement>("details.qinstalls")!;
+    flush(() => { details.open = true; details.dispatchEvent(new Event("toggle")); });
+    await settle();
+    expect(m.root.querySelector('[data-install="i1"]')!.textContent).toContain("Changelist");
+    expect([...m.root.querySelectorAll(".qinstalls button")].some(b => b.textContent === "Edit")).toBe(false);
   });
 });

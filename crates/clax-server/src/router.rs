@@ -7,7 +7,7 @@ use crate::integrations::feedback as feedback_integration;
 use crate::routes::{
     admin, app_bundles, app_drafts, approvals, artifacts, assets, audit_trail, bot, client_imports,
     confirmations, connect, content, discovery, docs, drafts, extension, feedback, git_token,
-    grants, health, inbox, jobs, live, live_layers, login, mcp_http, passkeys, people, perf,
+    grants, health, inbox, installs, jobs, live, live_layers, login, mcp_http, passkeys, people, perf,
     permissions, questions, queue_agent, queue_reporter, queues, remote_apps, remote_artifacts,
     remote_requests, remotes, resolve, room, sample, sessions, settings, site_signin, sites,
     snapshot, stream, surface, tags, threads, token, toolpath, viewers, watches, working,
@@ -66,7 +66,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/api/token", get(token::token))
         .route(
             "/api/browser-login",
-            post(login::create).delete(login::end_all),
+            get(login::state).post(login::create).delete(login::end_all),
         )
         .route("/api/browser-login/retire", post(login::retire))
         .route("/api/confirmations", get(confirmations::list))
@@ -172,6 +172,16 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route(
             "/api/queues/{qid}/service-grants/{gid}",
             delete(queues::revoke_grant),
+        )
+        // A queue's installs; their public config is with the reporter
+        // routes, in front of the credential layers.
+        .route(
+            "/api/queues/{qid}/installs",
+            get(installs::list).post(installs::create),
+        )
+        .route(
+            "/api/queues/{qid}/installs/{iid}",
+            patch(installs::patch).delete(installs::delete),
         )
         .route("/api/queues/{qid}/reports", get(queue_agent::list))
         .route(
@@ -808,6 +818,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         // A queue's own page and a report's own page; the shell reads the IDs from the path.
         .route("/queues/{qid}", get(shell::gallery_page))
         .route("/queues/{qid}/{tid}", get(shell::gallery_page))
+        .route("/reports", get(shell::gallery_page))
         .route("/tags", get(shell::gallery_page))
         .route("/admin", get(shell::gallery_page))
         .route("/settings", get(shell::gallery_page))

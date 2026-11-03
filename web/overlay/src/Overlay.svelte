@@ -32,13 +32,15 @@
   import type { AttachmentData, CaptureContribution, PluginHost, SentRow } from "../../sdk/src/plugin";
   import type { DiagLine, ReportContext, Report } from "../../sdk/src/types";
   import { type FlattenDeps, type Shape, browserFlatten, flatten } from "./annotate";
-  import type { CaptureDeps, Captured, Mode } from "./capture";
+  import type { CaptureDeps, Captured } from "./capture";
   import Portal from "./Portal.svelte";
   import {
     BadgeWatch, type Draft, POLL_MS, Poll, type ReporterApi, type Session, type Timers, canSend, carryShapes, clipOf, clipStatus, defaultShapes,
-    failureText, newDraft, pageUrl, quoteOf, realTimers, reopenOf, reportOf, summaryOf, withCapture,
+    failureText, newDraft, pageUrl, quoteOf, realTimers, reopenOf, reportOf, type ReportsMode, summaryOf, withCapture,
   } from "./model";
+  import { DEFAULT_WORDING, type QueueInfo, type Wording } from "./install";
   import ModeBar from "./ModeBar.svelte";
+  import type { Mode } from "./options";
   import type { Picked, Picker } from "./picker";
   import type { DialogCopy } from "./options";
   import Preview from "./Preview.svelte";
@@ -56,6 +58,15 @@
     externalId?: string;
     launcher?: "corner" | false;
     canFile?: boolean;
+    /** "off": no "Your reports" button, panel, or polling (the badge's too); Report stays. */
+    reports?: ReportsMode;
+    /** False: no Element mode (the install turned the element picker off);
+     * a report starts in Area. */
+    elementPicker?: boolean;
+    /** The words the overlay shows, from its install (`install.ts`). */
+    wording?: Wording;
+    /** The queue its install names, shown in the Report panel. */
+    queueInfo?: QueueInfo | null;
     /** What captures use (tests replace the renders). */
     capture?: CaptureDeps;
     flatten?: FlattenDeps;
@@ -79,7 +90,9 @@
     client, doc, host, picker: makePicker, session, externalId, launcher = "corner", canFile = true, capture: captureDeps = {}, flatten: flattenDeps = browserFlatten,
     timers = realTimers, onBadge, onFiled, plugins, presentation: presentationId, css = "", defaults = {}, copy = {},
     openWindow = (w: Window) => w.open("", "feedback-composer", "popup,width=480,height=760"),
+    reports: reportsMode = "button", elementPicker = true, wording = DEFAULT_WORDING, queueInfo = null,
   }: Props = $props();
+  const reportsOn = untrack(() => reportsMode !== "off");
 
   const win = untrack(() => doc.defaultView ?? window);
 
@@ -92,7 +105,10 @@
   const filters = untrack(() => plugins.list("filters"));
   const attachments = untrack(() => plugins.list("attachments"));
   /** The mode bar's modes: the pickers that are comment modes, in plugin order. */
-  const barModes = untrack(() => plugins.list("pickers").filter(p => p.mode).map(p => ({ mode: p.mode as Mode, label: p.label, key: (p.key ?? p.mode![0]).toUpperCase() })));
+  // The install's `picker: false` leaves the element picker out (and a report then starts in the next mode).
+  const barModes = untrack(() => plugins.list("pickers").filter(p => p.mode && (elementPicker || p.mode !== "element")).map(p => ({ mode: p.mode as Mode, label: p.label, key: (p.key ?? p.mode![0]).toUpperCase() })));
+  /** The mode a report starts in: `m` when the mode bar has it (or a note), else the bar's first, else a note. */
+  const firstMode = (m?: Mode | "note"): Mode | "note" => (m === "note" || barModes.some(b => b.mode === m) ? m! : barModes[0]?.mode ?? "note");
   const pres = untrack(() => plugins.presentation(presentationId, win));
   const layout = untrack(() => pres?.layout ?? "dock");
   const onDefault = (id: string, d: boolean) => (typeof defaults[id] === "boolean" ? defaults[id] : d);
@@ -174,7 +190,7 @@
     const at = doc.activeElement;
     const own = (reportBtn?.getRootNode() as ShadowRoot | Document | undefined) ?? null;
     opener = at instanceof HTMLElement && at !== doc.body && !(own instanceof ShadowRoot && own.host === at) ? at : null;
-    const mode = opts.mode ?? barModes[0]?.mode ?? "note";
+    const mode = firstMode(opts.mode);
     // A presentation outside the page (the Clax extension) takes the report whole.
     if (pres?.handoff?.({ mode, url: pageUrl(doc), title: doc.title }, win)) return;
     if (draft?.purpose.kind === "reopen" && (draft.body.trim() !== "" || draft.clip.state !== "none")) {
@@ -251,9 +267,26 @@
   // The composer's window closes once its draft is sent or dropped.
   $effect(() => { if (!draft && popup && !bar) closeWindow(); });
 
+  /** Follows the queue's link in the Report panel: the reporter's view of
+   * the queue in Clax, through a fresh single-use view link, in a new tab
+   * opened at the click (so no popup blocker stops it). A client with no
+   * view links follows the link's own address. */
+  async function openQueue(e: MouseEvent): Promise<void> {
+    if (!client.viewLink || e.metaKey || e.ctrlKey || e.shiftKey) return;
+    e.preventDefault();
+    const tab = doc.defaultView?.open("about:blank", "_blank") ?? null;
+    try {
+      const url = await client.viewLink();
+      if (tab) { tab.opener = null; tab.location.href = url; } else doc.defaultView?.open(url, "_blank", "noopener");
+    } catch {
+      tab?.close();
+      notice = `Could not open ${queueInfo?.name ?? "the queue"}. Try again.`;
+    }
+  }
+
   /** Opens "Your reports". */
   export function showReports(): void {
-    if (!open) toggleReports();
+    if (reportsOn && !open) toggleReports();
   }
 
   /** Chooses `mode` in the mode bar. Element chosen again while it is on
@@ -303,15 +336,16 @@
     else reportBtn?.focus();
   }
 
-  // E, A and S choose a mode and Escape leaves, wherever focus is but in a
-  // text field (the page's, or the reopen's note).
+  // A mode's key (E, A, S) chooses it and Escape leaves, wherever focus is but in a
+  // text field (the page's, or the reopen's note). A mode the bar does not have (the
+  // install's picker off: no Element) is no key.
   $effect(() => {
     if (!bar) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
       const at = e.composedPath()[0];
       if (at instanceof HTMLElement && (at.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(at.tagName))) return;
-      const mode = ({ e: "element", a: "area", s: "screen" } as const)[e.key.toLowerCase() as "e" | "a" | "s"];
+      const mode = barModes.find(m => m.key.toLowerCase() === e.key.toLowerCase())?.mode;
       if (e.key === "Escape") closeBar();
       else if (mode) choose(mode);
       else return;
@@ -752,7 +786,7 @@
       pulseTimer = timers.set(() => { pulse = false; }, 1600);
     },
   }, timers));
-  untrack(() => badge.start());
+  if (reportsOn) untrack(() => badge.start());
 
   const status = $derived(draft ? clipStatus(draft.clip) : null);
   /** What a send would carry now, as "What's sent" shows it (the marks are drawn in at Send). */
@@ -772,7 +806,11 @@
   const reportsLabel = $derived(copy.reportsLabel || "Your reports");
   /** The container's reports link, if it is http(s); otherwise the reports open in the overlay's own view. */
   const reportsUrl = $derived.by(() => { try { const u = new URL(copy.reportsUrl ?? ""); return /^https?:$/.test(u.protocol) ? u.href : null; } catch { return null; } });
+  /** Where Your reports links: the queue's reporter page in the instance (through a view link) when the install names the queue, else the container's link. */
+  const reportsHref = $derived(queueInfo?.reporterPage ?? reportsUrl);
   const intro = $derived(framed && !reopening && copy.intro ? copy.intro : "");
+  /** The dialog's description: the lede it shows (the queue line, else the container's intro). */
+  const describedBy = $derived(queueInfo && !reopening ? "cx-queue" : intro ? "cx-composer-intro" : undefined);
   /** "What will be sent", one row each, from the very report a send carries. */
   const sending = $derived.by(() => {
     if (!outgoing) return [];
@@ -792,20 +830,27 @@
 
 {#snippet composerSnippet()}
   {#if draft && !open}
-    <form class="composer" class:framed aria-label={reopening ? "Still broken" : "New report"} onsubmit={e => { e.preventDefault(); void send(); }}>
+    <form class="composer" class:framed aria-label={`${wording.productName ? `${wording.productName}: ` : ""}${reopening ? "Still broken" : "New report"}`} onsubmit={e => { e.preventDefault(); void send(); }}>
       {#if framed}
-        <!-- The header zone: fixed, whatever the form below does. Close, then Your reports, then this page's. -->
+        <!-- The header zone: fixed, whatever the form below does. Close, then Your reports (when the install shows it), then this page's. -->
         <div class="head">
           <h2 id="cx-composer-title">{dialogTitle}</h2>
           <button type="button" class="ghost small" aria-keyshortcuts="Escape" onclick={cancel}>Close · Esc</button>
-          {#if reportsUrl}
-            <a class="yours-btn small" href={reportsUrl} target="_blank" rel="noreferrer">{reportsLabel} ↗</a>
-          {:else}
-            <button type="button" class="ghost small yours-btn" onclick={() => openYours(false)}>{reportsLabel}</button>
+          {#if reportsOn}
+            {#if reportsHref}
+              <a class="yours-btn small" href={reportsHref} target="_blank" rel="noreferrer" onclick={queueInfo ? openQueue : undefined}>{reportsLabel} ↗</a>
+            {:else}
+              <button type="button" class="ghost small yours-btn" onclick={() => openYours(false)}>{reportsLabel}</button>
+            {/if}
           {/if}
         </div>
-        <p class="yours small" aria-live="polite">{#if onPage?.length}<button type="button" class="link" onclick={() => openYours(true)}>{onPage.length} of yours on this page</button>{/if}</p>
-        {#if intro}<p id="cx-composer-intro" class="intro">{intro}</p>{/if}
+        {#if reportsOn}<p class="yours small" aria-live="polite">{#if onPage?.length}<button type="button" class="link" onclick={() => openYours(true)}>{onPage.length} of yours on this page</button>{/if}</p>{/if}
+      {/if}
+      {#if queueInfo && !reopening}
+        <!-- The lede: one line naming where the report goes, there from the panel's first frame (nothing moves under it). The dialog and the note name it as their description. -->
+        <p class="queue-line" id="cx-queue">{wording.queueLabel} <a href={queueInfo.reporterPage} target="_blank" rel="noopener" onclick={openQueue}>{queueInfo.name}</a></p>
+      {:else if intro}
+        <p id="cx-composer-intro" class="intro">{intro}</p>
       {/if}
       {#if reopening}
         <p class="quote">Still broken: {summaryOf(reopening)}</p>
@@ -834,7 +879,7 @@
         <p class="small"><button type="button" class="ghost" onclick={addScreenshot}>{draft.clip.state === "none" ? "Add a screenshot" : "Retake the screenshot"}</button></p>
       {/if}
       {#if framed}<label class="field" for="cx-note">{reopening ? "What is still broken?" : "What happened?"}</label>{/if}
-      <textarea id="cx-note" rows={framed ? 4 : 3} aria-label={framed ? undefined : reopening ? "What is still broken" : "Report"} placeholder={reopening ? "What is still broken?" : framed ? "What you did, what you expected, what you saw" : "What should change here?"} {@attach el => el.focus()} bind:this={noteEl} bind:value={() => draft?.body ?? "", v => { if (draft) draft.body = v; }}
+      <textarea id="cx-note" rows={framed ? 4 : 3} aria-label={framed ? undefined : reopening ? "What is still broken" : "Report"} aria-describedby={queueInfo && !reopening ? "cx-queue" : undefined} placeholder={reopening ? "What is still broken?" : framed ? "What you did, what you expected, what you saw" : "What should change here?"} {@attach el => el.focus()} bind:this={noteEl} bind:value={() => draft?.body ?? "", v => { if (draft) draft.body = v; }}
         onkeydown={e => {
           if (e.key === "Escape") { e.preventDefault(); cancel(); }
           else if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); void send(); }
@@ -897,7 +942,7 @@
   <div class="dock" data-layout={dockLayout}>
   {#if !inWindow}
     {#if draft && !open && dockLayout === "dialog"}
-      <div class="frame" role="dialog" aria-modal="true" aria-labelledby="cx-composer-title" aria-describedby={intro ? "cx-composer-intro" : undefined} tabindex="-1" onkeydown={trapFocus}>{@render composerSnippet()}</div>
+      <div class="frame" role="dialog" aria-modal="true" aria-labelledby="cx-composer-title" aria-describedby={describedBy} tabindex="-1" onkeydown={trapFocus}>{@render composerSnippet()}</div>
     {:else if draft && !open && dockLayout !== "dock"}
       <div class="frame" role="region" aria-labelledby="cx-composer-title">{@render composerSnippet()}</div>
     {:else}
@@ -917,10 +962,10 @@
 
   {#if filed && !open && !draft}
     <section class="filed" role="status" aria-label="Filed">
-      <p><strong>Filed.</strong> Replies and fixes show in Your reports.</p>
+      <p><strong>Filed.</strong>{#if reportsOn} Replies and fixes show in Your reports.{/if}</p>
       <div class="actions">
         <button type="button" class="ghost" aria-label="Dismiss" onclick={() => { filed = null; }}>✕</button>
-        <button type="button" class="primary" bind:this={viewBtn} onclick={viewFiled}>View in Your reports</button>
+        {#if reportsOn}<button type="button" class="primary" bind:this={viewBtn} onclick={viewFiled}>View in Your reports</button>{/if}
       </div>
     </section>
   {/if}
@@ -932,11 +977,13 @@
 
   {#if launcher === "corner"}
     <div class="launcher" class:pulse>
-      <button type="button" class="reports-btn" aria-expanded={open} onclick={toggleReports}>Your reports{#if count}{" "}<span class="count" aria-label={`${count} waiting`}>{count}</span>{/if}</button>
+      {#if reportsOn}
+        <button type="button" class="reports-btn" aria-expanded={open} onclick={toggleReports}>Your reports{#if count}{" "}<span class="count" aria-label={`${count} waiting`}>{count}</span>{/if}</button>
+      {/if}
       {#if canFile}
         <button type="button" class="primary report-btn" bind:this={reportBtn} aria-pressed={picking} onclick={() => (picking ? closeBar() : report())}>
           <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M3 2.5h10a1.5 1.5 0 0 1 1.5 1.5v6A1.5 1.5 0 0 1 13 11.5H7l-3.5 2.5v-2.5H3A1.5 1.5 0 0 1 1.5 10V4A1.5 1.5 0 0 1 3 2.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
-          {picking ? "Picking…" : "Report"}
+          {picking ? "Picking…" : wording.reportLabel}
         </button>
       {/if}
     </div>
@@ -958,6 +1005,8 @@
   @keyframes pulse { 0% { box-shadow: 0 0 0 0 var(--you); } 100% { box-shadow: 0 0 0 12px transparent; } }
   @media (prefers-reduced-motion: reduce) { .launcher.pulse .reports-btn { animation: none; outline: 2px solid var(--you); } }
   .composer { width: min(380px, calc(100vw - 32px)); overflow: auto; background: var(--raised); border: 1px solid var(--border-hover); border-top: 3px solid var(--you); border-radius: var(--radius); padding: 12px; box-shadow: var(--elev-lg); z-index: 2; }
+  .queue-line { margin: 0 0 6px; min-height: 1.4em; font-size: 12.5px; line-height: 1.4; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .queue-line a { color: var(--you-ink); font-weight: 600; }
   .quote { margin: 0 0 8px; padding: 4px 8px; font-size: 13px; color: var(--muted); background: var(--comment-hl); border-left: 2px solid var(--you); border-radius: 0 var(--radius-xs) var(--radius-xs) 0; overflow-wrap: anywhere; }
   .composer > p[role="status"] { margin-bottom: 8px; }
   .warn { margin-bottom: 6px; color: var(--you-ink); }

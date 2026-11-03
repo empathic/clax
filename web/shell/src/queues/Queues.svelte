@@ -13,7 +13,8 @@
   // in place, and what rose is said in a polite status line ("1 report
   // claimed in Bugs."), no focus moved. A claim's lease can lapse with no
   // ping: the list is fetched again when the soonest one shown would. A
-  // queue's name opens its reports (`/queues/<qid>`, `QueueView`), and a
+  // queue's name and its Reports action open its reports, and each count
+  // that state's tab (`?state=`) (`/queues/<qid>`, `QueueView`), and a
   // report its own view (`/queues/<qid>/<tid>`, `ReportView`; spec
   // 2026-10-29-feedback-loop-design §8): the page moves between them in
   // place, through the browser's history.
@@ -21,7 +22,7 @@
   import { after, wall } from "../clock";
   import type { EventStream } from "../stream";
   import * as api from "./api";
-  import { type Counts, changeText, countReports, countsText, queueHref, queuesRoute, refusal } from "./model";
+  import { type Counts, STATES, STATE_LABEL, changeText, countReports, countsText, queueHref, queuesRoute, refusal } from "./model";
   import QueueAdmin from "./QueueAdmin.svelte";
   import QueueForm from "./QueueForm.svelte";
   import QueueView from "./QueueView.svelte";
@@ -205,15 +206,25 @@
               <h3><a href={queueHref(q.id)} onclick={nav}>{q.name}</a></h3>
               <span class="role">{q.role === "admin" ? "Admin" : "Triage"}</span>
               <span class="sp"></span>
-              {#if q.role === "admin"}
-                <span class="acts">
+              <span class="acts">
+                <a class="act" href={queueHref(q.id)} onclick={nav} aria-label={`Reports in ${q.name}`}>Reports</a>
+                {#if q.role === "admin"}
                   <button type="button" class="ghost" aria-expanded={!!managing[q.id]} onclick={() => { managing[q.id] = !managing[q.id]; }}>Manage</button>
                   <button type="button" class="ghost" aria-label={`Edit queue ${q.name}`} onclick={() => open(q.id)}>Edit</button>
                   <button type="button" class="ghost danger" aria-label={`Delete queue ${q.name}`} onclick={() => void remove(q)}>Delete</button>
-                </span>
-              {/if}
+                {/if}
+              </span>
             </header>
-            <p class="counts">{c === "failed" ? "Could not count its reports." : c ? countsText(c) : "Counting reports…"}</p>
+            {#if c && c !== "failed"}
+              <ul class="counts" aria-label={`Reports in ${q.name} by state`}>
+                {#each STATES as s, i (s)}
+                  {@const n = `${c[s]}${c.more ? "+" : ""}`}
+                  <li>{#if i}<span class="dot" aria-hidden="true">{" · "}</span>{/if}<a href={queueHref(q.id, s)} onclick={nav} aria-label={`${n} ${STATE_LABEL[s].toLowerCase()} ${c[s] === 1 && !c.more ? "report" : "reports"} in ${q.name}`}>{n} {STATE_LABEL[s].toLowerCase()}</a></li>
+                {/each}
+              </ul>
+            {:else}
+              <p class="counts">{c === "failed" ? "Could not count its reports." : "Counting reports…"}</p>
+            {/if}
             <p class="meta">{seeText(q)} · <span class="key">{q.id}</span></p>
             {#if q.origins.length}
               <ul class="origins" aria-label={`Origins of ${q.name}`}>{#each q.origins as o (o)}<li>{o}</li>{/each}</ul>
@@ -253,9 +264,14 @@
   .qrow h3 a:hover, .qrow h3 a:focus-visible { text-decoration: underline; }
   .role { padding: 1px 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 12px; }
   .acts { display: flex; flex-wrap: wrap; gap: 2px; }
-  .acts button { min-height: 28px; padding: 2px 8px; color: var(--muted); }
+  .acts button, .acts .act { min-height: 28px; padding: 2px 8px; color: var(--muted); }
+  .acts .act { display: inline-flex; align-items: center; border-radius: var(--radius-sm); font-size: 13px; text-decoration: none; }
+  .acts .act:hover, .acts .act:focus-visible { color: var(--fg); background: var(--hover); }
   .acts .danger:hover, .acts .danger:focus-visible { color: var(--danger); }
-  .counts { margin: 8px 0 0; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+  .counts { margin: 8px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; font-size: 13.5px; line-height: 1.5; font-variant-numeric: tabular-nums; }
+  .counts .dot { white-space: pre; color: var(--muted); }
+  .counts a { color: inherit; text-decoration: underline; text-decoration-color: var(--border); text-underline-offset: 2px; }
+  .counts a:hover, .counts a:focus-visible { text-decoration-color: currentColor; }
   .meta { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
   .key { font: 12px var(--mono); }
   .origins { margin: 6px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 4px 6px; }
@@ -265,5 +281,5 @@
     .qcard { padding: 12px; }
     .acts { width: 100%; }
   }
-  @media (pointer: coarse) { .acts button { min-height: 44px; } }
+  @media (pointer: coarse) { .acts button, .acts .act { min-height: 44px; } }
 </style>

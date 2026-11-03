@@ -1,7 +1,7 @@
 // A reporter's client (spec 2026-10-27 §5.3): a deployer's page files
 // reports into a queue and reads the replies, with a reporter token its own
 // backend mints for a key that never leaves the page.
-import type { Badge, DiagLine, Report, ReportContext, ReportPage, ReporterToken } from "./types";
+import type { Badge, DiagLine, Report, ReportContext, ReportPage, ReporterToken, ViewLink } from "./types";
 import { ClaxError, failure, multipart, queuePath, readJson, signedFetch, type Fetch, type Part } from "./client";
 import { encodeDiagnostics } from "./diagnostics";
 import { wellFormed } from "./scrub";
@@ -257,6 +257,17 @@ export class ReporterClient {
     const { body, contentType } = multipart(parts, boundary);
     const { report } = await readJson<{ report: Report }>(await this.send("POST", path, body, contentType));
     return report;
+  }
+
+  /** The URL of this reporter's view of the queue in Clax (on report
+   * `reportId` when given): `POST …/reporter/view-link`. It carries a
+   * single-use code that lasts a minute, so ask for it when the link is
+   * followed, not when it is drawn. */
+  async viewLink(reportId?: string): Promise<string> {
+    const bytes = new TextEncoder().encode(JSON.stringify(reportId === undefined ? {} : { report_id: reportId }));
+    const { path } = await readJson<ViewLink>(
+      await this.send("POST", queuePath(this.opts.queue, "reporter", "view-link"), bytes, "application/json"));
+    return new URL(path, this.opts.instance.replace(/\/?$/, "/")).toString();
   }
 
   /** The reporter's public key in unpadded base64url. */

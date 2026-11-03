@@ -75,7 +75,7 @@
   const top = location.pathname.replace(/^\/queues\/.+/, "/queues");
   const inbox = top === "/inbox";
   // The pages beside the gallery and the inbox, each its own chunk (`gallery-working` `page`).
-  const sub = /^\/(people|tags|queues|admin|settings|me|audit)$/.exec(top)?.[1] as import("./gallery-working").Page | undefined;
+  const sub = /^\/(people|tags|queues|reports|admin|settings|me|audit)$/.exec(top)?.[1] as import("./gallery-working").Page | undefined;
   // The tag filter: the artifacts shown carry every one. It holds tag IDs
   // once the tags are known (`canonical`), and the address (`?tag=`) names
   // each tag by its name, so a rename follows in place and a deleted tag

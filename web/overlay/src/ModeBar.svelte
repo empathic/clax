@@ -15,16 +15,18 @@
   // comes near; the full instructions are said in its live region, and only
   // a short hint shows.
   import { onMount, tick } from "svelte";
-  import type { Mode } from "./capture";
   import { edgeFor } from "./keep-clear";
+  import type { Mode } from "./options";
 
-  type Props = { mode: Mode | null; outlined?: string | null; modes?: { mode: Mode; label: string; key: string }[]; onMode(m: Mode): void; onCancel(): void };
+  // `element` false (the install turned the element picker off): no Element mode.
+  type Props = { mode: Mode | null; outlined?: string | null; modes?: { mode: Mode; label: string; key: string }[]; element?: boolean; onMode(m: Mode): void; onCancel(): void };
   const ALL: { mode: Mode; label: string; key: string }[] = [
     { mode: "element", label: "Element", key: "E" },
     { mode: "area", label: "Area", key: "A" },
     { mode: "screen", label: "Screen", key: "S" },
   ];
-  let { mode, outlined = null, modes = ALL, onMode, onCancel }: Props = $props();
+  let { mode, outlined = null, modes = ALL, element = true, onMode, onCancel }: Props = $props();
+  const shown = $derived(modes.filter(m => element || m.mode !== "element"));
 
   /** Focus goes to the mode that is on (none for a reopen's note, whose
    * text field keeps it). */
@@ -81,7 +83,7 @@
 
 <div class="modebar" class:bottom={edge === "bottom"} data-edge={edge} role="toolbar" aria-label="Capture" tabindex="-1" onkeydown={rove} bind:this={bar}>
   <div class="modes">
-    {#each modes as m (m.mode)}
+    {#each shown as m (m.mode)}
       <button type="button" {@attach el => focusOn(el, m.mode)} aria-pressed={mode === m.mode} aria-keyshortcuts={m.key} onclick={() => onMode(m.mode)}>{m.label}<kbd aria-hidden="true">{m.key}</kbd></button>
     {/each}
   </div>

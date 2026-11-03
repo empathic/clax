@@ -1008,16 +1008,20 @@ impl HomeConfig {
     /// `chitin` (required: the CLI's path), `as` (the chitin title the
     /// messages are queued as and approved for, default `bobby`) and
     /// `state_dir` (passed to chitin as `CHITIN_STATE_DIR`; unset leaves
-    /// chitin's own default). `None` without a `[sign]` table: the page and
-    /// its routes answer 404.
+    /// chitin's own default), `confirm_to` (the chitin title a held browser
+    /// confirmation is queued to, as an item for `as` to approve or decline
+    /// with a passkey, `clax_server::confirm_chitin`; default `clax`, the
+    /// declared daemon peer) and `confirm` (`false` queues none). `None`
+    /// without a `[sign]` table: the page and its routes answer 404, and no
+    /// confirmation is queued.
     ///
     /// # Errors
     /// `Invalid { code: "bad_config" }` naming the file (or the variable)
     /// and the key when `[sign]` is not a table, `chitin` is missing or not
-    /// a non-empty string, `as` is not a chitin title (1 to 128 of letters,
-    /// digits, `.`, `_` and `-`, starting with a letter or digit), `state_dir`
-    /// is not a non-empty string, or any other key is set. The daemon does
-    /// not start on it.
+    /// a non-empty string, `as` or `confirm_to` is not a chitin title (1 to
+    /// 128 of letters, digits, `.`, `_` and `-`, starting with a letter or
+    /// digit), `state_dir` is not a non-empty string, `confirm` is not a
+    /// boolean, or any other key is set. The daemon does not start on it.
     pub fn sign(&self) -> Result<Option<SignConfig>> {
         let Some(table) = self.value("sign") else {
             return Ok(None);
@@ -1031,12 +1035,12 @@ impl HomeConfig {
         };
         if let Some(k) = dict
             .keys()
-            .find(|k| !["chitin", "as", "state_dir"].contains(&k.as_str()))
+            .find(|k| !["chitin", "as", "state_dir", "confirm", "confirm_to"].contains(&k.as_str()))
         {
             return Err(self.bad(
                 "sign",
                 "[sign]",
-                format!("has no key {k:?} (chitin, as, state_dir)"),
+                format!("has no key {k:?} (chitin, as, state_dir, confirm, confirm_to)"),
             ));
         }
         let path = |key: &str| -> Result<Option<String>> {
@@ -1076,10 +1080,37 @@ impl HomeConfig {
                 }
             },
         };
+        let confirm_to = match self.value("sign.confirm_to") {
+            None => "clax".to_string(),
+            Some(v) => match v.as_str().filter(|t| valid_chitin_title(t)) {
+                Some(t) => t.to_string(),
+                None => {
+                    return Err(self.bad(
+                        "sign.confirm_to",
+                        "[sign]",
+                        format!(
+                            "confirm_to must be a chitin title such as \"clax\", not {}",
+                            shown(&v)
+                        ),
+                    ));
+                }
+            },
+        };
+        let confirm = match self.value("sign.confirm") {
+            None => true,
+            Some(v) => v.to_bool().ok_or_else(|| {
+                self.bad(
+                    "sign.confirm",
+                    "[sign]",
+                    format!("confirm must be true or false, not {}", shown(&v)),
+                )
+            })?,
+        };
         Ok(Some(SignConfig {
             chitin,
             as_title,
             state_dir,
+            confirm_to: confirm.then_some(confirm_to),
         }))
     }
 
@@ -1402,6 +1433,11 @@ pub struct SignConfig {
     pub as_title: String,
     /// `CHITIN_STATE_DIR` for chitin; `None` for chitin's default.
     pub state_dir: Option<String>,
+    /// The chitin title a held browser confirmation is queued to, for
+    /// `as_title` to approve or decline with a passkey
+    /// (`clax_server::confirm_chitin`); `None` queues none (`confirm =
+    /// false`).
+    pub confirm_to: Option<String>,
 }
 
 /// A chitin title: 1 to 128 of ASCII letters, digits, `.`, `_` and `-`,
@@ -3293,7 +3329,22 @@ mod tests {
                 chitin: "/nix/store/x-chitin/bin/chitin".into(),
                 as_title: "bobby".into(),
                 state_dir: None,
+                confirm_to: Some("clax".into()),
             })
+        );
+        assert_eq!(
+            with("[sign]\nchitin = \"chitin\"\nconfirm_to = \"clax-confirm\"\n")
+                .sign()
+                .unwrap()
+                .and_then(|s| s.confirm_to),
+            Some("clax-confirm".into())
+        );
+        assert_eq!(
+            with("[sign]\nchitin = \"chitin\"\nconfirm = false\n")
+                .sign()
+                .unwrap()
+                .and_then(|s| s.confirm_to),
+            None
         );
         assert_eq!(
             with("[sign]\nchitin = \"chitin\"\nas = \"alex\"\nstate_dir = \"/Users/bobby/.local/state/chitin\"\n")
@@ -3310,6 +3361,8 @@ mod tests {
             "[sign]\nchitin = \"chitin\"\nas = \"a b\"\n",
             "[sign]\nchitin = \"chitin\"\nstate_dir = 1\n",
             "[sign]\nchitin = \"chitin\"\ntitle = \"bobby\"\n",
+            "[sign]\nchitin = \"chitin\"\nconfirm_to = \"a b\"\n",
+            "[sign]\nchitin = \"chitin\"\nconfirm = \"yes\"\n",
         ] {
             let e = with(t).sign().unwrap_err().to_string();
             assert!(

@@ -45,6 +45,8 @@ mod api_claxbot;
 mod api_claxbot_run;
 #[cfg(any(not(clax_split), clax_split = "api_client_imports"))]
 mod api_client_imports;
+#[cfg(any(not(clax_split), clax_split = "api_confirm_chitin"))]
+mod api_confirm_chitin;
 #[cfg(any(not(clax_split), clax_split = "api_confirmations"))]
 mod api_confirmations;
 #[cfg(any(not(clax_split), clax_split = "api_content"))]
@@ -83,6 +85,8 @@ mod api_hosted_content;
 mod api_hosted_github;
 #[cfg(any(not(clax_split), clax_split = "api_inbox"))]
 mod api_inbox;
+#[cfg(any(not(clax_split), clax_split = "api_installs"))]
+mod api_installs;
 #[cfg(any(not(clax_split), clax_split = "api_jobs"))]
 mod api_jobs;
 #[cfg(any(not(clax_split), clax_split = "api_linked"))]

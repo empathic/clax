@@ -648,29 +648,6 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
     ]
 }
 
-#[cfg(test)]
-mod tests {
-    #[cfg(unix)]
-    #[test]
-    fn a_grant_file_others_may_read_is_loose() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("g.json");
-        std::fs::write(&p, "{}").unwrap();
-        for (mode, loose) in [
-            (0o600, false),
-            (0o400, false),
-            (0o640, true),
-            (0o604, true),
-            (0o620, true),
-        ] {
-            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
-            assert_eq!(super::loose_mode(&p).is_some(), loose, "{mode:o}");
-        }
-        assert_eq!(super::loose_mode(&dir.path().join("none")), None);
-    }
-}
-
 /// The owner's tailnet devices (`[serve] owner_tailscale_nodes`), named by
 /// the home's `tailscale` CLI, when the home has an owner tailnet login and
 /// lists them; `None` otherwise (an embedded core has no login, and a home
@@ -698,4 +675,27 @@ fn owner_devices(
         }),
         Arc::new(clax_core::working::SystemClock),
     ))))
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn a_grant_file_others_may_read_is_loose() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("g.json");
+        std::fs::write(&p, "{}").unwrap();
+        for (mode, loose) in [
+            (0o600, false),
+            (0o400, false),
+            (0o640, true),
+            (0o604, true),
+            (0o620, true),
+        ] {
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(super::loose_mode(&p).is_some(), loose, "{mode:o}");
+        }
+        assert_eq!(super::loose_mode(&dir.path().join("none")), None);
+    }
 }

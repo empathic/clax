@@ -1,0 +1,31 @@
+{
+  "name": "@empathic/clax-client-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Clax's report queue SDK: the reporter client, the embeddable overlay and the service client",
+  "keywords": [
+    "clax",
+    "reports",
+    "feedback",
+    "overlay",
+    "sdk"
+  ],
+  "license": "LGPL-2.1-only",
+  "author": {
+    "name": "Empathic, Inc.",
+    "email": "alex@empathic.dev"
+  },
+  "homepage": "https://github.com/empathic/clax/tree/main/web/sdk#readme",
+  "bugs": {
+    "url": "https://github.com/empathic/clax/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/empathic/clax.git",
+    "directory": "web/sdk"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module"
+}

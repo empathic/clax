@@ -4,7 +4,8 @@
 // plugin is in; without one a report is its note and where it points.
 import { definePlugin, PLUGIN_API_VERSION } from "../../../sdk/src/plugin";
 import { displayCaptureSupported } from "../../../bridge/src/display-capture";
-import { type CaptureDeps, type Captured, type Mode, captureExact, captureFor } from "../capture";
+import { type CaptureDeps, type Captured, captureExact, captureFor } from "../capture";
+import type { Mode } from "../options";
 import type { Picked } from "../picker";
 
 /** What the overlay asks of a capture plugin. */

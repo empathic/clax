@@ -17,7 +17,7 @@ import { INSTALL_KEY, integrationHook, isDevOrigin, linkOverride, pageHook, pars
 import type { ClaxPlugin, HandoffRequest } from "../../sdk/src/plugin";
 import type { ReporterAuth } from "../../sdk/src/reporter";
 import type { Release } from "../../sdk/src/types";
-import type { Mode } from "./capture";
+import type { Mode } from "./options";
 import type { OverlayHandle } from "./mount";
 import type { Given, HostContext } from "./options";
 import type { LogLine } from "./plugins/attachments";

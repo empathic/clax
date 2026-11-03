@@ -43,6 +43,7 @@ pub mod perf;
 pub mod presence;
 pub mod publish;
 pub mod questions;
+pub mod install;
 pub mod queue;
 pub mod quickstart;
 pub mod remote;

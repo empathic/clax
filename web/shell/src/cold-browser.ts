@@ -1,11 +1,11 @@
 // A browser of this machine that holds no credential of the local daemon's
 // (no owner browser session, no viewer): the daemon answers its requests 401
 // `no_credential`, and serves a page load the same page this shows. Opening
-// Clax from the terminal (`clax open`, or `clax login` for a link) signs the
-// browser in once.
+// Clax through the person's agent or the terminal (`clax open`, or `clax
+// login` for a link) signs the browser in once.
 
 /** The heading the page shows. */
-export const COLD_HEADING = "Open Clax from your terminal";
+export const COLD_HEADING = "Open Clax through your agent or terminal";
 
 /** Whether `r` is the local daemon's refusal of a request that carries no
  * credential (401 `no_credential`). Reads a copy of its body. */
@@ -19,7 +19,7 @@ export async function isColdRefusal(r: Response): Promise<boolean> {
   }
 }
 
-/** Replaces the page with how to open Clax from the terminal, once. */
+/** Replaces the page with how to open Clax, once. */
 export function showColdBrowser(doc: Document = document): void {
   if (doc.getElementById("clax-cold")) return;
   const main = doc.createElement("main");
@@ -30,9 +30,9 @@ export function showColdBrowser(doc: Document = document): void {
   h.style.fontSize = "1.25rem";
   const p = doc.createElement("p");
   const code = (t: string) => { const c = doc.createElement("code"); c.textContent = t; return c; };
-  p.append("Run ", code("clax open"), " (or ", code("clax login"), " for a link).");
+  p.append("Ask your agent to open Clax, or run ", code("clax open"), " (", code("clax login"), " for a link).");
   const why = doc.createElement("p");
-  why.textContent = "This browser is not signed in to this machine's Clax yet. Opening it from the terminal signs it in once.";
+  why.textContent = "This browser is not signed in to this machine's Clax yet. Opening Clax that way signs it in once.";
   main.append(h, p, why);
   doc.body.replaceChildren(main);
   doc.title = "Open Clax";

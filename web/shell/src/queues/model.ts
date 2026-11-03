@@ -82,6 +82,8 @@ export const OUTCOME_LABEL: Record<FixOutcome, string> = {
 /** The queue view's tabs: the filter each lists by (`null`: every state). */
 export const TABS: readonly { key: string; label: string; state: StateFilter | null }[] = [
   { key: "active", label: "Active", state: "active" },
+  { key: "open", label: "Open", state: "open" },
+  { key: "claimed", label: "Claimed", state: "claimed" },
   { key: "fix_proposed", label: "Fix proposed", state: "fix_proposed" },
   { key: "verified", label: "Verified", state: "verified" },
   { key: "resolved", label: "Resolved", state: "resolved" },
@@ -97,8 +99,8 @@ export function queuesRoute(pathname: string): QueuesRoute {
   const d = (s: string) => { try { return decodeURIComponent(s); } catch { return s; } };
   return m[2] ? { view: "report", qid: d(m[1]), tid: d(m[2]) } : { view: "queue", qid: d(m[1]) };
 }
-/** The queue view's address, and a report's. */
-export const queueHref = (qid: string) => `/queues/${encodeURIComponent(qid)}`;
+/** The queue view's address (on the tab of `state` when given), and a report's. */
+export const queueHref = (qid: string, state?: string) => `/queues/${encodeURIComponent(qid)}${state && state !== "active" ? `?state=${encodeURIComponent(state)}` : ""}`;
 export const reportHref = (qid: string, tid: string) => `${queueHref(qid)}/${encodeURIComponent(tid)}`;
 
 /** Who filed `r`, as triage knows them: the profile's name or GitHub
@@ -109,6 +111,26 @@ export function reporterName(r: Pick<Report, "reporter_profile" | "reporter_id">
 }
 /** The note `r` was filed with: its first comment. */
 export const noteOf = (r: Pick<Report, "comments">): string => r.comments[0]?.body ?? "";
+
+/** The first line of `r`'s note with any text, trimmed. */
+export const firstLine = (r: Pick<Report, "comments">): string => noteOf(r).split(/\r?\n/).find(l => l.trim())?.trim() ?? "";
+/** How many comments followed `r`'s filing note. */
+export const replyCount = (r: Pick<Report, "comments">): number => Math.max(0, r.comments.length - 1);
+
+/** One queue's listing as far as it has been fetched, the latest filed first. */
+export type Feed = { reports: Report[]; next: string | null };
+const filed = (r: Pick<Report, "created_at">) => Date.parse(r.created_at) || 0;
+/** The reports of every feed, the latest filed first, that are certainly
+ * in order: none newer can come from a feed's next page, so a report
+ * older than the oldest fetched of a feed with more is held back until
+ * that feed is fetched further. */
+export function newestAcross(feeds: readonly Feed[]): Report[] {
+  const all = feeds.flatMap(f => f.reports).sort((a, b) => filed(b) - filed(a) || b.id.localeCompare(a.id));
+  const ends = feeds.filter(f => f.next && f.reports.length).map(f => filed(f.reports[f.reports.length - 1]));
+  if (!ends.length) return all;
+  const cutoff = Math.max(...ends);
+  return all.filter(r => filed(r) >= cutoff);
+}
 
 /** `s` as a link target when it is an http or https URL, else `null`. */
 export function httpUrl(s: string | null | undefined): string | null {
@@ -247,14 +269,14 @@ export function deployments(instance: string, qid: string, pin: OverlayPin | nul
 export function changeText(name: string, a: Counts, b: Counts): string | null {
   if (a.more || b.more) return null;
   const total = (c: Counts) => STATES.reduce((n, s) => n + c[s], 0);
-  const filed = Math.max(0, total(b) - total(a));
+  const added = Math.max(0, total(b) - total(a));
   const parts: [number, string][] = [
-    [filed, "filed"],
+    [added, "filed"],
     [b.claimed - a.claimed, "claimed"],
     [b.fix_proposed - a.fix_proposed, "fix proposed"],
     [b.verified - a.verified, "verified"],
     [b.resolved - a.resolved, "resolved"],
-    [b.open - a.open - filed, "open again"],
+    [b.open - a.open - added, "open again"],
   ];
   const said = parts.filter(([n]) => n > 0).map(([n, what], i) => (i === 0 ? `${n} report${n === 1 ? "" : "s"} ${what}` : `${n} ${what}`));
   if (!said.length) return null;

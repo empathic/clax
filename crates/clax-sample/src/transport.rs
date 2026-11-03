@@ -41,6 +41,10 @@ impl Reply {
     }
 }
 
+/// The `User-Agent` of every model call: names Clax to the provider and to a
+/// local LLM proxy, which records it per call.
+pub const USER_AGENT: &str = concat!("Clax/", env!("CARGO_PKG_VERSION"));
+
 #[derive(Clone)]
 pub(crate) struct Transport {
     #[cfg(not(target_arch = "wasm32"))]
@@ -54,6 +58,7 @@ impl Transport {
             client: reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(10))
                 .redirect(reqwest::redirect::Policy::none())
+                .user_agent(USER_AGENT)
                 .build()
                 .expect("a reqwest client with default TLS"),
         }
@@ -71,6 +76,7 @@ impl Transport {
             client: reqwest::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(10))
                 .redirect(reqwest::redirect::Policy::none())
+                .user_agent(USER_AGENT)
                 .dns_resolver(std::sync::Arc::new(PublicOnly))
                 .build()
                 .expect("a reqwest client with default TLS"),

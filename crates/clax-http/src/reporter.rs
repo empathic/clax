@@ -22,7 +22,10 @@
 //! (403 `wrong_origin` otherwise, a missing one included), or, a browser's
 //! same-origin read carrying none, come from that origin's own pages
 //! (a `GET` or `HEAD` with `Sec-Fetch-Site: same-origin`, the token
-//! origin's `Host`, and the instance's own scheme). [`cors`] answers
+//! origin's `Host`, and the scheme the instance serves at that `Host`:
+//! `https` on a `[serve] trusted_hosts` name behind its TLS front, else its
+//! public origin's). Each `wrong_origin` is logged at debug with its reason
+//! and queue, never the token. [`cors`] answers
 //! a reporter route's cross-origin reads for the queue's origins alone.
 
 use crate::agent;
@@ -104,9 +107,9 @@ fn wrong_origin() -> Refusal {
 /// same-origin `GET` or `HEAD`, and says so in the one
 /// `Sec-Fetch-Site: same-origin` (a header no page can set); the request's
 /// one `Host`, which the signature covers, must then be `origin`'s host and
-/// port, and `origin`'s scheme the one the instance serves (`own`, its
-/// public origin). This is the instance's own pages reading from it (an
-/// instance that is its own integrating product, `docs/prod.md`).
+/// port, and `origin`'s scheme the one the instance serves at that `Host`
+/// (`own`, [`own_scheme`]). This is the instance's own pages reading from
+/// it (an instance that is its own integrating product, `docs/prod.md`).
 fn same_origin_as(method: &Method, headers: &HeaderMap, origin: &str, own: &str) -> bool {
     if method != Method::GET && method != Method::HEAD {
         return false;
@@ -129,6 +132,40 @@ fn same_origin_as(method: &Method, headers: &HeaderMap, origin: &str, own: &str)
     scheme_of == own_scheme
         && one("sec-fetch-site") == Some("same-origin")
         && one(header::HOST.as_str()).is_some_and(|h| h.eq_ignore_ascii_case(&authority))
+}
+
+/// The origin, as `<scheme>://`, the instance serves its pages under at
+/// the request's `Host`: on a `[serve] trusted_hosts` name (not an
+/// artifact's), `https://`, as a TLS front such as `tailscale serve` ends
+/// TLS before a local daemon and proxies it plain (`Host` kept); else the
+/// scheme of its public origin ([`crate::site_access::public_origin`], a
+/// hosted daemon's, or a local one's loopback `browser_base`).
+///
+/// A local daemon cannot see the browser's scheme behind a front, and its
+/// `browser_base` is loopback `http://`, so taking that scheme for a
+/// trusted host refused every same-origin read of a page served beside
+/// Clax on it (Basis at `https://<trusted host>/fold/`).
+fn own_scheme(s: &AppState, headers: &HeaderMap) -> String {
+    let mut hosts = headers.get_all(header::HOST).iter();
+    if s.hosted.is_none()
+        && let (Some(Ok(host)), None) = (hosts.next().map(HeaderValue::to_str), hosts.next())
+        && crate::auth::trusted_host(host, &s.trusted_hosts)
+        && crate::host::artifact_host(host).is_none()
+    {
+        return "https://".to_string();
+    }
+    crate::site_access::public_origin(s)
+}
+
+/// Says a reporter request's `wrong_origin` refusal at debug, with its
+/// reason and the queue (never the token).
+fn refused_origin(qid: &str, reason: &'static str) -> Refusal {
+    tracing::debug!(
+        queue = qid,
+        reason,
+        "reporter request refused: wrong_origin"
+    );
+    wrong_origin()
 }
 
 /// The one `Authorization` value of the request, when its scheme is
@@ -306,17 +343,24 @@ impl<const LIMIT: usize> FromRequest<AppState> for ReporterCaller<LIMIT> {
         let (t, origins) = found.ok_or_else(invalid_token)?;
         let mut sent = parts.headers.get_all(header::ORIGIN).iter();
         let from_origin = match (sent.next(), sent.next()) {
-            (Some(o), None) => o.to_str().ok() == Some(t.origin.as_str()),
+            (Some(o), None) => (o.to_str().ok() == Some(t.origin.as_str()))
+                .then_some(())
+                .ok_or("origin_not_tokens"),
             (None, _) => same_origin_as(
                 &parts.method,
                 &parts.headers,
                 &t.origin,
-                &crate::site_access::public_origin(s),
-            ),
-            _ => false,
+                &own_scheme(s, &parts.headers),
+            )
+            .then_some(())
+            .ok_or("no_origin_not_same_origin"),
+            _ => Err("origin_repeated"),
         };
-        if !from_origin || !origins.contains(&t.origin) {
-            return Err(wrong_origin());
+        if let Err(reason) = from_origin {
+            return Err(refused_origin(&t.queue_id, reason));
+        }
+        if !origins.contains(&t.origin) {
+            return Err(refused_origin(&t.queue_id, "origin_not_listed"));
         }
         let key = sig::decode_public(&t.public_key).map_err(|e| grant_auth::refuse(e, &s.store))?;
         let head = grant_auth::head(&parts, &s.store)?;

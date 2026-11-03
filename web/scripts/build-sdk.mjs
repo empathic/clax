@@ -1,4 +1,4 @@
-// Builds the SDK package (@empathic/clax-sdk) into web/dist-sdk/: a
+// Builds the SDK package (@empathic/clax-client-sdk) into web/dist-sdk/: a
 // self-contained npm package another app installs or links. Its entries:
 //
 //   "."          sdk/src/index.ts     the reporter client, ClaxError and the
@@ -22,7 +22,8 @@
 // entries' declarations import, with relative specifiers ending in `.js`
 // so a consumer's `moduleResolution` of `bundler` or `nodenext` reads them;
 // `types` and `typesVersions` name them for `node` (node10).
-// Its README is web/sdk/README.md. The package's license is the license of
+// Its README is web/sdk/README.md, and its package.json is web/sdk/package.json
+// (MANIFEST) with the fields the build derives. The package's license is the license of
 // web/bridge, web/overlay and web/sdk in the repository's LICENSE, and the
 // build fails on a bundled source file, or a declaration, of Clax's from
 // anywhere else; THIRD-PARTY-NOTICES.txt holds the license of each npm
@@ -36,15 +37,32 @@
 // the declarations' on fixtures.
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { cleanOut } from "./extension-clean.mjs";
 import { componentCssIntoScript } from "./overlay-component-css.mjs";
 
+const web = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const repo = resolve(web, "..");
+const out = join(web, "dist-sdk");
+
+/**
+ * The package's manifest as written by hand, web/sdk/package.json: its
+ * name, its version (a semver line of its own, not Clax's, since the
+ * package only calls an instance's report-queue routes; a pull request to
+ * main raises it and `just release-sdk` publishes it once prod carries
+ * it), its license and the rest of its metadata. It is `private`, so the
+ * source directory is never published; packageJson() adds what the build
+ * derives. It is also the nearest package.json of web/sdk/src, which Vite
+ * and Node read in Clax's own builds of those sources (the shell and
+ * /_clax/overlay.js), so it sets nothing that changes how they bundle:
+ * `sideEffects` is the published manifest's alone.
+ */
+export const MANIFEST = JSON.parse(readFileSync(join(web, "sdk", "package.json"), "utf8"));
 /** The package's name on npm. */
-export const PACKAGE_NAME = "@empathic/clax-sdk";
+export const PACKAGE_NAME = MANIFEST.name;
 /** The package's license: web/bridge's, web/overlay's and web/sdk's in LICENSE. */
-const LICENSE = "LGPL-2.1-only";
+const LICENSE = MANIFEST.license;
 /** The directories, under web/, of the Clax sources the package may bundle: those LICENSE puts under `LICENSE`. */
 const LICENSED_DIRS = ["bridge", "overlay", "sdk"];
 
@@ -59,28 +77,28 @@ export const ENTRIES = [
   { path: "./loader", name: "loader", src: "overlay/src/loader.ts" },
 ];
 
-const web = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const repo = resolve(web, "..");
-const out = join(web, "dist-sdk");
 const ts = createRequire(join(web, "package.json"))("typescript");
 const types = src => `types/${src.replace(/\.ts$/, ".d.ts")}`;
 
-function packageJson() {
-  const version = readFileSync(join(repo, "Cargo.toml"), "utf8").match(/^\[workspace\.package\][^[]*?^version\s*=\s*"([^"]+)"/m)?.[1];
-  if (!version) throw new Error("no [workspace.package] version in Cargo.toml");
+/** The fields web/sdk/package.json may set, each published as written
+ * (but `private`): a manifest that sets any other is refused, so a field
+ * the build derives, a dependency (the package bundles them), a lifecycle
+ * script or an executable never reaches the published package unseen. */
+export const MANIFEST_FIELDS = ["name", "version", "private", "description", "keywords", "license", "author", "contributors", "homepage", "bugs", "repository", "funding", "publishConfig", "type"];
+
+/** The published package.json: `manifest` without `private`, and its
+ * entries' files and declarations. Fails on a manifest that sets a field
+ * outside `MANIFEST_FIELDS` or is not `private`. */
+export function packageJson(manifest = MANIFEST) {
+  const other = Object.keys(manifest).filter(k => !MANIFEST_FIELDS.includes(k));
+  if (other.length) throw new Error(`web/sdk/package.json sets ${other.join(", ")}, which it may not: it sets only ${MANIFEST_FIELDS.join(", ")}, and the build derives the rest`);
+  if (manifest.private !== true) throw new Error("web/sdk/package.json must be private: the published manifest is the build's");
+  const { private: _, ...meta } = manifest;
   return {
-    name: PACKAGE_NAME,
-    version,
-    description: "Clax's report queue SDK: the reporter client, the embeddable overlay and the service client",
-    keywords: ["clax", "reports", "feedback", "overlay", "sdk"],
-    license: LICENSE,
-    author: { name: "Empathic, Inc.", email: "alex@empathic.dev" },
-    homepage: "https://github.com/empathic/clax/tree/main/web/sdk#readme",
-    bugs: { url: "https://github.com/empathic/clax/issues" },
-    repository: { type: "git", url: "git+https://github.com/empathic/clax.git", directory: "web" },
-    // A scoped package publishes as private unless told otherwise.
-    publishConfig: { access: "public" },
-    type: "module",
+    ...meta,
+    // Importing an entry changes nothing until it is called (the package's
+    // test checks the overlay's), so an app's bundler may drop what it
+    // does not use.
     sideEffects: false,
     exports: {
       ...Object.fromEntries(ENTRIES.map(e => [e.path, { types: `./${types(e.src)}`, default: `./${e.name}.js` }])),
@@ -113,28 +131,35 @@ FOR A PARTICULAR PURPOSE. See the license text for details.
 `;
 }
 
-/** Fails unless `file`, a path under `root` (web/), lies in one of
- * `LICENSED_DIRS`. */
+/** `path` with `/` separators, as Vite writes module IDs on every platform. */
+const slashed = path => path.split(sep).join("/");
+
+/** Fails unless `file`, a path under `root` (web/) with `/` separators,
+ * lies in one of `LICENSED_DIRS`. */
 function assertLicensed(file, root) {
-  if (LICENSED_DIRS.some(d => file.startsWith(join(root, d) + sep))) return;
+  if (LICENSED_DIRS.some(d => file.startsWith(`${slashed(join(root, d))}/`))) return;
   throw new Error(`the package bundles ${file}, outside web/${LICENSED_DIRS.join(", web/")}, whose license LICENSE does not give the package`);
 }
 
-/** The npm packages the bundle took modules from (`moduleIds`, Rollup's),
- * with their license texts. Fails on a Clax source file outside
- * `LICENSED_DIRS` of `root` (web/), and on a package with no license file. */
+/** The npm packages the bundle took modules from (`moduleIds`, Rollup's,
+ * with `/` separators), with their license texts. A virtual module's ID
+ * starts with `\0`: one that wraps a file (such as a CommonJS module's
+ * `?commonjs-exports`) counts as that file, and one of no file (a helper
+ * such as `\0commonjsHelpers.js`) carries nothing. Fails on a Clax source
+ * file outside `LICENSED_DIRS` of `root` (web/), and on a package with no
+ * license file. */
 export function thirdPartyNotices(moduleIds, root = web) {
-  const nm = `${sep}node_modules${sep}`;
+  const nm = "/node_modules/";
   const roots = new Set();
   for (const id of moduleIds) {
-    const at = id.lastIndexOf(nm);
+    const file = id.replace(/^\0/, "").split("?")[0];
+    const at = file.lastIndexOf(nm);
     if (at < 0) {
-      const file = id.split("?")[0];
-      if (!file.startsWith("\0")) assertLicensed(file, root);
+      if (!id.startsWith("\0") || isAbsolute(file)) assertLicensed(file, root);
       continue;
     }
-    const rest = id.slice(at + nm.length).split(sep);
-    roots.add(id.slice(0, at + nm.length) + rest.slice(0, rest[0].startsWith("@") ? 2 : 1).join(sep));
+    const rest = file.slice(at + nm.length).split("/");
+    roots.add(file.slice(0, at + nm.length) + rest.slice(0, rest[0].startsWith("@") ? 2 : 1).join("/"));
   }
   const sections = [...roots].sort().map(dir => {
     const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
@@ -179,7 +204,7 @@ export function keepDeclarations(emitted, root = web) {
   const kept = new Map();
   const visit = file => {
     if (kept.has(file)) return;
-    assertLicensed(join(root, file), root);
+    assertLicensed(slashed(join(root, file)), root);
     const text = emitted.get(file);
     if (text === undefined) throw new Error(`no declarations for ${file}`);
     kept.set(file, "");
@@ -230,7 +255,7 @@ function writeMetadata(moduleIds) {
  * the modules the bundle took (for THIRD-PARTY-NOTICES.txt), and removes a
  * chunk an earlier build of `--watch` wrote that this one did not. Rollup
  * watches the bundle's modules only, which leaves out one reached by
- * `import type` alone (sdk/src/types.ts, overlay/src/options.ts): every
+ * `import type` alone (such as sdk/src/types.ts): every
  * source the declarations are emitted from is watched too. */
 let program;
 const packageFiles = {

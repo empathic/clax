@@ -1,4 +1,4 @@
-# @empathic/clax-sdk
+# @empathic/clax-client-sdk
 
 The SDK for [Clax](https://github.com/empathic/clax)'s report queues: the
 people using your app file reports on its pages into a queue on your Clax
@@ -6,13 +6,13 @@ instance, and read the replies.
 
 | Entry | What it gives | Where it runs |
 |---|---|---|
-| `@empathic/clax-sdk` | `ReporterClient`, `ClaxError` and the queue routes' types | the page |
-| `@empathic/clax-sdk/overlay` | `overlay()`: a Report button, comment mode to point at what the report is about, and "Your reports" with their replies | the page |
-| `@empathic/clax-sdk/service` | `ServiceClient`, which mints reporter tokens with the queue's service grant | your backend only: it holds the grant |
-| `@empathic/clax-sdk/loader` | `install()`: Clax as a container, configured from Clax, installing only what its config names | the page |
-| `@empathic/clax-sdk/plugins` | Clax's own plugins: capture, annotate, code blur, logs, version, browser, pickers, presentations, theme | the page |
-| `@empathic/clax-sdk/plugin` | the plugin contract: `definePlugin`, `PluginHost` | the page |
-| `@empathic/clax-sdk/config` | the install config: its fields, `resolve()`, its JSON Schema | anywhere |
+| `@empathic/clax-client-sdk` | `ReporterClient`, `ClaxError` and the queue routes' types | the page |
+| `@empathic/clax-client-sdk/overlay` | `overlay()`: a Report button, comment mode to point at what the report is about, and "Your reports" with their replies | the page |
+| `@empathic/clax-client-sdk/service` | `ServiceClient`, which mints reporter tokens with the queue's service grant | your backend only: it holds the grant |
+| `@empathic/clax-client-sdk/loader` | `install()`: Clax as a container, configured from Clax, installing only what its config names | the page |
+| `@empathic/clax-client-sdk/plugins` | Clax's own plugins: capture, annotate, code blur, logs, version, browser, pickers, presentations, theme | the page |
+| `@empathic/clax-client-sdk/plugin` | the plugin contract: `definePlugin`, `PluginHost` | the page |
+| `@empathic/clax-client-sdk/config` | the install config: its fields, `resolve()`, its JSON Schema | anywhere |
 
 Each entry is an ES module with its TypeScript declarations. The package
 has no dependencies: Svelte and the overlay's other packages are bundled.
@@ -20,13 +20,13 @@ has no dependencies: Svelte and the overlay's other packages are bundled.
 ## Install
 
 ```
-npm install @empathic/clax-sdk
+npm install @empathic/clax-client-sdk
 ```
 
 ## The overlay
 
 ```ts
-import { overlay } from "@empathic/clax-sdk/overlay";
+import { overlay } from "@empathic/clax-client-sdk/overlay";
 
 const handle = overlay({
   instance: "https://clax.example.com",
@@ -57,8 +57,8 @@ page, and how the composer is presented. `overlay()` without `plugins` runs
 `classic()`; pass your own list to choose:
 
 ```ts
-import { overlay } from "@empathic/clax-sdk/overlay";
-import { annotate, appVersion, browser, codeBlur, domCapture, displayCapture, elementPicker, logs, pagePicker, presentations } from "@empathic/clax-sdk/plugins";
+import { overlay } from "@empathic/clax-client-sdk/overlay";
+import { annotate, appVersion, browser, codeBlur, domCapture, displayCapture, elementPicker, logs, pagePicker, presentations } from "@empathic/clax-client-sdk/plugins";
 
 overlay({
   instance, queue, auth,
@@ -72,7 +72,7 @@ overlay({
 
 A plugin that adds data to a report must give its line in "What's sent";
 data without one is not sent. Write your own with `definePlugin` from
-`@empathic/clax-sdk/plugin`.
+`@empathic/clax-client-sdk/plugin`.
 
 ## Install as a container
 
@@ -81,7 +81,7 @@ defaults under it and a viewer's override over it, and installs only what
 the result names: a site with screenshots off never loads capture.
 
 ```ts
-import { install } from "@empathic/clax-sdk/loader";
+import { install } from "@empathic/clax-client-sdk/loader";
 
 const clax = await install({
   instance: "https://clax.example.com",
@@ -98,13 +98,13 @@ Any element starts Clax with `data-clax="report"` (or `"reports"`); so do
 the config's `targets` selectors, its key, a `?clax=report` link, and
 `clax.push(["report"])`. With the classic script, a tag manager queues
 `window.clax = [["install", {...}]]` before `/_clax/overlay.js` loads.
-The config's fields and their JSON Schema are in `@empathic/clax-sdk/config`
+The config's fields and their JSON Schema are in `@empathic/clax-client-sdk/config`
 (`clax.config.schema.json`).
 
 ## The reporter client
 
 ```ts
-import { ClaxError, ReporterClient } from "@empathic/clax-sdk";
+import { ClaxError, ReporterClient } from "@empathic/clax-client-sdk";
 
 const client = new ReporterClient({ instance: "https://clax.example.com", queue: "<queue ID>", auth });
 try {
@@ -118,7 +118,7 @@ try {
 ## The backend
 
 ```ts
-import { ServiceClient } from "@empathic/clax-sdk/service";
+import { ServiceClient } from "@empathic/clax-client-sdk/service";
 
 // The queue's service grant (its `token` and `private_key`), from your secrets.
 const service = new ServiceClient({ instance: "https://clax.example.com", queue: "<queue ID>", token: grant.token, privateKey: grant.private_key });

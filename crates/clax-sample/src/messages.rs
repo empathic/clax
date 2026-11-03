@@ -1266,6 +1266,9 @@ pub struct ModelInfo {
 pub struct MessagesClient {
     http: Transport,
     timeouts: Timeouts,
+    /// Sent as `x-llm-session` on Anthropic calls, so a local LLM proxy can
+    /// tell whose calls these are (ClaxBot labels each run `claxbot:<run id>`).
+    session_label: Option<String>,
 }
 
 impl Default for MessagesClient {
@@ -1307,7 +1310,15 @@ impl MessagesClient {
         MessagesClient {
             http: Transport::new(),
             timeouts: Timeouts::default(),
+            session_label: None,
         }
+    }
+
+    /// This client labelling its Anthropic calls `x-llm-session: <label>`.
+    /// The label names the caller and holds no secret: a proxy records it.
+    pub fn with_session_label(mut self, label: impl Into<String>) -> MessagesClient {
+        self.session_label = Some(label.into());
+        self
     }
 
     /// This client connecting only to public addresses, whatever a base
@@ -1343,6 +1354,9 @@ impl MessagesClient {
         ];
         if let Some(b) = betas {
             headers.push(("anthropic-beta", b));
+        }
+        if let Some(l) = &self.session_label {
+            headers.push(("x-llm-session", l.clone()));
         }
         self.send_with(method, url, &headers, json).await
     }

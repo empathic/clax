@@ -342,8 +342,8 @@ fn app_page(s: &AppState, id: &ArtifactId, a: &App) -> Response {
 /// ([`clax_http::local_trust::proofs_kept_js`]: newest first, at most
 /// [`clax_http::local_trust::MAX_PROOFS`]), with a fetch of the same page,
 /// and puts the page that answers in place of its own; it follows a
-/// redirect there, and shows how to open Clax from the terminal when it
-/// holds no proof or the proof is refused. Its Download .clax, a link to
+/// redirect there, and shows how to open Clax (through the agent or the
+/// terminal) when it holds no proof or the proof is refused. Its Download .clax, a link to
 /// `/api/…` that a navigation (a middle-click, Save link as) would reach
 /// without the proof, becomes a button: a click fetches the bundle with the
 /// proofs and saves it from the bytes, and a failed fetch says so under it.
@@ -353,7 +353,7 @@ const BARE_SCRIPT: &str = r#"(function(){
 var H=__HEADER__,P=__PROOFS__,p=[],i,m=document.querySelector("main");
 try{p=P(localStorage,null,__MAX__).map(function(x){return x[1]})}catch(e){}
 p=p.join(",");
-function cold(){var c=m.querySelector("section");if(c)c.innerHTML="<h1>Open Clax from your terminal</h1><p>Run <code>clax open</code> (or <code>clax login</code> for a link). This browser is not signed in to this machine’s Clax.</p>"}
+function cold(){var c=m.querySelector("section");if(c)c.innerHTML="<h1>Open Clax through your agent or terminal</h1><p>Ask your agent to open Clax, or run <code>clax open</code> (<code>clax login</code> for a link). This browser is not signed in to this machine’s Clax.</p>"}
 if(!p||typeof fetch!=="function"){cold();return}
 var h={};h[H]=p;
 function say(b,t){var e=b.parentNode.parentNode.querySelector(".err");if(!e){e=document.createElement("p");e.className="err";e.setAttribute("role","alert");b.parentNode.after(e)}e.textContent=t}

@@ -13,17 +13,28 @@ import { scrub, wellFormed } from "../../sdk/src/scrub";
 import type { Badge, CaptureInfo, DiagLine, FixAttempt, FixOutcome, FlagValue, Release, Report, ReportComment, ReportContext, ReportPage, ResolveReason } from "../../sdk/src/types";
 import { type Placement, type Shape, remapShapes } from "./annotate";
 import type { Captured } from "./capture";
-import type { Given, HostContext } from "./options";
+import { CONTEXT_TIMEOUT_MS, type Given, type HostContext, type ReportsMode } from "./options";
 
-export type { Given, HostContext, OverlayOptions } from "./options";
+export type { Given, HostContext, OverlayOptions, ReportsMode } from "./options";
+export { CONTEXT_TIMEOUT_MS };
+
+/** The `<meta name>` a page sets `OverlayOptions.reports` with. */
+export const REPORTS_META = "clax-reports";
+
+/** The overlay's "Your reports" mode: `given`, else `<meta
+ * name="clax-reports">`'s content, else `"button"`. A value that is neither
+ * mode is refused, so a typo never hides the reports unasked. */
+export function reportsModeOf(doc: Document, given?: unknown): ReportsMode {
+  const v = given ?? doc.querySelector<HTMLMetaElement>(`meta[name="${REPORTS_META}"]`)?.content.trim();
+  if (v === undefined || v === "") return "button";
+  if (v === "button" || v === "off") return v;
+  throw new TypeError(`Clax.overlay: reports must be "button" or "off", not ${JSON.stringify(v)}`);
+}
 
 /** How often "Your reports" asks for new replies while it is open. */
 export const POLL_MS = 15_000;
 /** How often the badge is asked for while the page is visible. */
 export const BADGE_POLL_MS = 60_000;
-/** How long the host's `context` and `metadata` functions may take before
- * the capture goes on without them. */
-export const CONTEXT_TIMEOUT_MS = 2000;
 /** The largest context Clax takes, as compact JSON. */
 export const MAX_CONTEXT_BYTES = 16 * 1024;
 /** The longest title a report carries (the page's title, cut). */
@@ -574,4 +585,6 @@ export interface ReporterApi {
   reopen(reportId: string, r: Reopening): Promise<Report>;
   badge(): Promise<Badge>;
   seen(reportId: string): Promise<void>;
+  /** The URL of the reporter's view of the queue (a single-use link). */
+  viewLink?(reportId?: string): Promise<string>;
 }

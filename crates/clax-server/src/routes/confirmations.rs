@@ -179,8 +179,7 @@ pub async fn answer(
                 };
                 confirm::check_assertion(&st, db, &format!("confirm:{id}"), a)?;
             }
-            let c = db.answer_confirmation(&audit.resolve(db)?, &id, b.approve)?;
-            confirm::view(&st, db, &c)
+            confirm::answer(&st, db, &audit.resolve(db)?, &id, b.approve, &[])
         })
         .await
         .map_err(|e| confirm::passkey_error(answer_error(e)))?;

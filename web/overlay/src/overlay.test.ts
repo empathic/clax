@@ -1,6 +1,6 @@
 import { render as renderComponent } from "@testing-library/svelte";
 import { flushSync, tick } from "svelte";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Anchor } from "../../bridge/src/protocol";
 import type { RenderResult } from "../../bridge/src/clip";
 import type { NewReport, Reopening, Verification } from "../../sdk/src/reporter";
@@ -542,6 +542,45 @@ describe("the overlay", () => {
     expect(button("Your reports")).toBeDefined();
   });
 
+  it('with reports: "off", the launcher is Report alone: no Your reports, no panel, no polling, and a send still files', async () => {
+    view.unmount();
+    let asked = 0;
+    client.badge = async () => { asked++; return { waiting: 0, report_ids: [] }; };
+    const r = renderComponent(Overlay as never, { props: props({ reports: "off" }) as never, target: host });
+    flushSync();
+    await settle();
+    const api = r.component as unknown as { showReports(): void };
+    const at = (s: string) => host.querySelector(s);
+    expect(at(".reports-btn")).toBeNull();
+    expect([...at(".launcher")!.querySelectorAll("button")].map(nameOf)).toEqual(["Report"]);
+    api.showReports();
+    await settle();
+    expect(at(".panel")).toBeNull();
+    (at(".report-btn") as HTMLButtonElement).click();
+    flushSync();
+    onPick(picked(async () => new ArrayBuffer(0)));
+    await settle();
+    const t = at(".composer textarea") as HTMLTextAreaElement;
+    t.value = "Off but still filed";
+    t.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    [...host.querySelectorAll("button")].find(b => nameOf(b) === "Send")!.click();
+    flushSync();
+    await settle();
+    expect(filed.map(f => f.body)).toEqual(["Off but still filed"]);
+    expect(at(".filed")?.textContent).not.toMatch(/Your reports/);
+    expect(at(".panel")).toBeNull();
+    expect(listed).toBe(0);
+    expect(asked).toBe(0);
+    expect(timers.pending()).not.toContain(POLL_MS);
+    r.unmount();
+    view = mount(Overlay as never, props(), host);
+  });
+
+  it('with reports: "button" (the default), Your reports sits beside Report', () => {
+    expect([...q(".launcher")!.querySelectorAll("button")].map(nameOf)).toEqual(["Your reports", "Report"]);
+  });
+
   it("files the page's URL with its query and without its fragment", async () => {
     const was = location.href;
     history.replaceState(null, "", "/leave?team=7#req-2");
@@ -982,6 +1021,29 @@ describe("the dialog (Addendum 10: Changeling's Send feedback as the reference) 
     } finally { r.unmount(); }
   });
 
+  it("with an install (Addendum 2): its one-line lede names where the report goes in the install's words, Your reports goes to the reporter page, and none of it says Clax", async () => {
+    const queueInfo = { name: "Changeling's feedback queue", page: "https://feedback.example/queues/q1", reporterPage: "https://feedback.example/reporter/q1" };
+    const wording = { productName: null, reportLabel: "Send feedback", queueLabel: "Goes to" };
+    const r = await open({ queueInfo, wording, copy: { retention: copy.retention } });
+    try {
+      const dialog = host.querySelector<HTMLElement>('[role="dialog"]')!;
+      const lede = host.querySelector(`#${dialog.getAttribute("aria-describedby")}`)!;
+      expect(lede.textContent).toBe("Goes to Changeling's feedback queue");
+      expect(lede.classList.contains("queue-line")).toBe(true);
+      expect(host.querySelector(".intro")).toBeNull();
+      const yours = host.querySelector<HTMLAnchorElement>(".head a.yours-btn")!;
+      expect([yours.href, yours.textContent]).toEqual([queueInfo.reporterPage, "Your reports ↗"]);
+      expect(host.querySelector(".composer")!.getAttribute("aria-label")).toBe("New report");
+      expect(everything(host).filter(s => /clax/i.test(s))).toEqual([]);
+    } finally { r.unmount(); }
+    // The install's reports_button off: no Your reports in the dialog's header.
+    const off = await open({ queueInfo, wording, reports: "off" });
+    try {
+      expect(host.querySelector(".head .yours-btn")).toBeNull();
+      expect([...host.querySelectorAll(".head button, .head a")].map(b => b.textContent?.trim())).toEqual(["Close · Esc"]);
+    } finally { off.unmount(); }
+  });
+
   it("never names Clax: no 'clax' in its text, element names, attributes or accessible names, in the dialog, its notices, or Your reports", async () => {
     const r = await open();
     try {
@@ -1007,5 +1069,56 @@ describe("the dialog (Addendum 10: Changeling's Send feedback as the reference) 
       expect(strings.join("\n")).toMatch(/Send feedback/);
       expect(strings.filter(s => /clax/i.test(s))).toEqual([]);
     } finally { r.unmount(); }
+  });
+});
+
+describe("the overlay of an install", () => {
+  const queueInfo = { name: "Changelist bugs", page: "https://clax.example/queues/q1", reporterPage: "https://clax.example/reporter/q1" };
+  const remount = (over: Record<string, unknown>) => { view.unmount(); view = mount(Overlay as never, props(over), host); };
+
+  it("names its queue at the top of the Report panel, in its words, as the note's description", async () => {
+    remount({ queueInfo, wording: { productName: "Acme", reportLabel: "Feedback", queueLabel: "Sends to" } });
+    expect(button("Report")).toBeUndefined();
+    click(button("Feedback"));
+    key("s");
+    await settle();
+    const form = q<HTMLFormElement>(".composer")!;
+    expect(form.getAttribute("aria-label")).toBe("Acme: New report");
+    // The line is the panel's first child, so nothing above it moves it.
+    expect(form.firstElementChild?.className).toContain("queue-line");
+    const line = q("#cx-queue")!;
+    expect(line.textContent).toBe("Sends to Changelist bugs");
+    expect(q<HTMLAnchorElement>("#cx-queue a")!.href).toBe(queueInfo.reporterPage);
+    expect(q(".composer textarea")!.getAttribute("aria-describedby")).toBe("cx-queue");
+    expect(form.textContent).not.toMatch(/Clax/);
+  });
+
+  it("opens the reporter's view through a fresh view link", async () => {
+    const opened: { opener: unknown; location: { href: string }; close(): void } = { opener: window, location: { href: "" }, close: () => {} };
+    const open = vi.spyOn(window, "open").mockReturnValue(opened as unknown as Window);
+    remount({ queueInfo, client: { ...client, viewLink: async () => "https://clax.example/reporter/q1/enter?code=cxrc_1" } });
+    click(button("Report"));
+    key("s");
+    await settle();
+    click(q("#cx-queue a"));
+    await settle();
+    expect(open).toHaveBeenCalledWith("about:blank", "_blank");
+    expect(opened.location.href).toBe("https://clax.example/reporter/q1/enter?code=cxrc_1");
+    expect(opened.opener).toBeNull();
+    open.mockRestore();
+  });
+
+  it("names no queue without an install, and offers no Element mode with the picker off", async () => {
+    expect(q("#cx-queue")).toBeNull();
+    remount({ elementPicker: false });
+    click(button("Report"));
+    await tick();
+    flushSync();
+    expect(q('.modebar button[aria-pressed="true"]')?.textContent).toMatch(/Area/);
+    expect([...view.root.querySelectorAll(".modebar .modes button")].map(b => nameOf(b))).toEqual(["Area", "Screen"]);
+    key("e");
+    expect(q('.modebar button[aria-pressed="true"]')?.textContent).toMatch(/Area/);
+    expect(modes.at(-1)).toBe(true);
+    expect(areas.at(-1)).toBe(true);
   });
 });
