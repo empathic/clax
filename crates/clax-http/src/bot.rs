@@ -86,6 +86,11 @@ pub struct Bot {
     pub catalog_url: Option<String>,
     /// The price catalog refresh in flight, so concurrent ones share it.
     pub catalog_flight: Arc<CatalogFlight>,
+    /// The host has a web source for ClaxBot's `clax.web.*`: the Worker
+    /// its AI binding, the daemon a Cloudflare account ID and token.
+    /// False (the default): every run's web use is off, not configured
+    /// (`clax_bot::web::WebAccess::now`).
+    pub web_configured: bool,
 }
 
 /// What a price catalog refresh came to: the listings the cache holds and
@@ -113,6 +118,7 @@ impl Default for Bot {
             events: Arc::default(),
             catalog_url: None,
             catalog_flight: Arc::default(),
+            web_configured: false,
         }
     }
 }

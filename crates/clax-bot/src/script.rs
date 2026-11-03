@@ -336,6 +336,19 @@ impl RunHost<'_> {
         }
         let spec = api::op(op).expect("checked");
         let res = match spec.performer {
+            // No run has a web source yet: every web call is refused,
+            // uncharged, and journaled like any other refusal.
+            api::Performer::Web => match replay {
+                Some(e) => recorded(e),
+                None => {
+                    let res = Err(HostError::new(
+                        crate::web::CODE_WEB_DISABLED,
+                        format!("clax.{op} is not available to this run"),
+                    ));
+                    self.journal(seq, op, raw, &res, false);
+                    res
+                }
+            },
             api::Performer::Draft => {
                 let res = self.draft_op(op, &args, replay).await;
                 if replay.is_none() {
@@ -371,6 +384,15 @@ impl RunHost<'_> {
                             if res.is_err() {
                                 self.journal(seq, op, raw, &res, false);
                             }
+                            res
+                        }
+                        // A Spend operation is the run loop's (`Performer::Web`).
+                        api::Access::Spend => {
+                            let res = Err(HostError::new(
+                                api::CODE_UNKNOWN_OP,
+                                format!("clax.{op} is not a host operation"),
+                            ));
+                            self.journal(seq, op, raw, &res, false);
                             res
                         }
                     }

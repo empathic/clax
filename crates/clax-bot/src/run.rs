@@ -1836,7 +1836,7 @@ impl Tick<'_> {
                 }
             };
             (
-                prompt::system_prompt(self.run.request),
+                prompt::system_prompt(self.run.request, crate::web::WebShape::parse(&self.run.web)),
                 vec![Block::text(prompt::request_message(self.run.request, &cx))],
             )
         } else {

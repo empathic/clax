@@ -15,6 +15,13 @@
 //! redirect target before following it, after refusing an `https` to
 //! `http` redirect itself ([`url::redirect_allowed`]).
 //!
+//! # Who may use it
+//!
+//! [`WebAccess`] (in [`access`]) is what a run may do on the web now:
+//! off, and why, or the operations the admin turned on with their
+//! settings. A run's [`WebShape`], which operations it declares, is fixed
+//! when the run is made; what changes later is checked at each call.
+//!
 //! # URLs
 //!
 //! A URL a source is asked to fetch is a [`PublicUrl`]: `http` or
@@ -44,10 +51,14 @@
 //! sent), whatever it answered, so a redirect refused or cut after that is
 //! charged too (spec §7.2).
 
+pub mod access;
 pub mod fake;
 pub mod page;
 pub mod url;
 
+pub use access::{
+    FetchGrant, SearchGrant, UrlRule, UrlSource, WebAccess, WebGrant, WebOff, WebShape,
+};
 pub use fake::FakeWebSource;
 pub use url::PublicUrl;
 

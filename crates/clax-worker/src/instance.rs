@@ -651,6 +651,7 @@ fn worker_bot(env: &Env, app: &mut AppState) -> crate::bot::WorkerBot {
         events,
         catalog_url: first_catalog_url,
         catalog_flight,
+        web_configured: false,
     });
     bot
 }

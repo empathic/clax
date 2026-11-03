@@ -38,6 +38,7 @@ use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use clax_bot::web::WebAccess;
 use clax_core::ArtifactId;
 use clax_core::CoreError;
 use clax_core::audit::{AuditCtx, AuditKind};
@@ -824,7 +825,10 @@ pub fn start_run(
             key_source,
             base_version: art.current_version,
             agent_grant: sender.agent_grant.clone(),
-            web: String::new(),
+            web: WebAccess::now(st, person, bot.web_configured)?
+                .shape()
+                .as_str()
+                .to_string(),
         },
     )?
     .map_err(|active| run_active(&active.id))
