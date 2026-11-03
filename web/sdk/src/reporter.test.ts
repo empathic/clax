@@ -22,7 +22,8 @@ function instance(answer: (s: Sent) => Response) {
   return { sent, fetch };
 }
 
-const json = (status: number, v: unknown) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json" } });
+const json = (status: number, v: unknown, headers: Record<string, string> = {}) =>
+  new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json", ...headers } });
 
 /** Whether `s` carries a valid signature by `key` over what it sends. */
 async function verifies(key: KeyedSigner, s: Sent): Promise<boolean> {
@@ -107,6 +108,46 @@ describe("ReporterClient", () => {
     await expect(client.myReports()).rejects.toMatchObject({ code: "token_expired", status: 401 });
     expect(s.inst.sent).toHaveLength(2);
     expect(s.auths).toHaveLength(2);
+  });
+
+  it("renews on a 401 invalid_token too", async () => {
+    let failures = 1;
+    const s = setup(() => (failures-- > 0 ? json(401, { error: { code: "invalid_token", message: "unknown" } }) : json(200, { reports: [], next: null })));
+    const { client } = await s.make();
+    await client.myReports();
+    expect(s.auths).toHaveLength(2);
+  });
+
+  it("asks for no new token on a 401 a token cannot cure", async () => {
+    for (const code of ["stale_request", "replayed_request", "invalid_signature"]) {
+      const s = setup(() => json(401, { error: { code, message: code } }));
+      const { client } = await s.make();
+      await expect(client.myReports(), code).rejects.toMatchObject({ code, status: 401 });
+      await expect(client.badge(), code).rejects.toMatchObject({ code, status: 401 });
+      expect(s.auths, code).toHaveLength(1);
+      expect(s.inst.sent, code).toHaveLength(2);
+    }
+  });
+
+  it("retries limit_reached with the same token, then gives its Retry-After", async () => {
+    const inst = instance(() => json(429, { error: { code: "limit_reached", message: "full" } }, { "retry-after": "60" }));
+    const auths: string[] = [];
+    const slept: number[] = [];
+    const client = new ReporterClient({
+      instance: "https://clax.example", queue: "q1", fetch: inst.fetch, now: () => T0, signer: await generateSigner(),
+      auth: async pk => { auths.push(pk); return { token: "cxr_1", expires_at: new Date(T0 + 900_000).toISOString() }; },
+      sleep: async ms => { slept.push(ms); }, random: () => 0,
+    });
+    await expect(client.badge()).rejects.toMatchObject({ code: "limit_reached", status: 429, retryAfterS: 60 });
+    expect(slept).toEqual([1000, 2000, 4000]);
+    expect(inst.sent.map(r => r.headers.authorization)).toEqual(Array(4).fill("Clax-Reporter cxr_1"));
+    expect(auths).toHaveLength(1);
+  });
+
+  it("refuses an instance that is not an origin", () => {
+    const auth = async () => ({ token: "", expires_at: "" });
+    expect(() => new ReporterClient({ instance: "https://apps.example.com/clax", queue: "q1", auth })).toThrow(TypeError);
+    expect(() => new ReporterClient({ instance: "https://apps.example.com/clax", queue: "q1", auth })).toThrow(/^ReporterClient: instance must be an origin/);
   });
 
   it("files a report as signed multipart with its clip", async () => {

@@ -7,6 +7,11 @@ const opts = { instance: "https://clax.example", queue: "q1", auth: async () => 
 afterEach(() => { for (const el of document.querySelectorAll(OVERLAY_TAG)) el.remove(); });
 
 describe("overlay()", () => {
+  it("refuses an instance that is not an origin, and adds nothing to the page", () => {
+    expect(() => overlay({ ...opts, instance: "https://apps.example.com/clax" })).toThrow(/^Clax\.overlay: instance must be an origin/);
+    expect(document.querySelectorAll(OVERLAY_TAG)).toHaveLength(0);
+  });
+
   // As a React app in StrictMode does in development: its effect's setup,
   // cleanup and setup again, in one task.
   it("leaves nothing in the page when closed in the task that started it", () => {

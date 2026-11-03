@@ -1,16 +1,22 @@
-// The client core the queue helpers share: signed requests to an instance
-// and the one error shape.
-import type { ApiErrorBody } from "./types";
+// The client core the queue helpers share: signed requests to an instance,
+// the retries every signing client makes, and the one error shape.
+import type { ApiErrorBody, ClaxErrorCode } from "./types";
 import { newNonce, signature, type Signer } from "./sign";
 
 /** A failed call: the error code the instance answered (`ApiError`'s
  * `error.code`), its message and the HTTP status; `network` with status 0 when
  * no answer came, `bad_response` for an answer that is not the JSON
- * expected. */
+ * expected. `retryAfterS` is the wait in seconds the answer asked for (its
+ * `Retry-After`, else the error's `retry_after_s`), when it named one: a
+ * caller passing a refusal on, such as a backend's token route answering
+ * 429 `limit_reached`, passes it on too. */
 export class ClaxError extends Error {
-  constructor(readonly code: string, message: string, readonly status: number) {
+  declare readonly retryAfterS?: number;
+
+  constructor(readonly code: ClaxErrorCode, message: string, readonly status: number, retryAfterS?: number) {
     super(message);
     this.name = "ClaxError";
+    if (retryAfterS !== undefined) this.retryAfterS = retryAfterS;
   }
 }
 
@@ -30,7 +36,7 @@ export interface SignedCredential {
 /** One signed request. */
 export interface SignedRequest {
   method: string;
-  /** The instance's base URL, such as `https://clax.example`. */
+  /** The instance's origin, such as `https://clax.example` (`checkInstance`). */
   instance: string;
   /** The path and query, starting with `/`. */
   path: string;
@@ -40,6 +46,61 @@ export interface SignedRequest {
   /** Milliseconds since the Unix epoch. */
   now: () => number;
   fetch: Fetch;
+}
+
+/** Throws a `TypeError` naming `who` unless `instance` is an origin: an
+ * `http` or `https` URL with no user, path (but `/`), query or fragment.
+ * Clax is served at the root of its own host, and a request is signed
+ * over its path as the instance receives it, so an instance behind a path
+ * prefix cannot be reached. */
+export function checkInstance(instance: string, who: string): void {
+  let ok = false;
+  try {
+    const u = new URL(instance);
+    ok = /^https?:$/.test(u.protocol) && !u.username && !u.password && u.pathname === "/" && !/[?#]/.test(instance);
+  } catch {
+    // Not a URL.
+  }
+  if (!ok) throw new TypeError(`${who}: instance must be an origin, such as https://clax.example.com, not ${JSON.stringify(instance)}`);
+}
+
+/** Backoffs, in seconds, before each retry of 429 `limit_reached` and 503
+ * `busy` (`clax_core::remote::BACKOFF_S`): three retries, each waiting up
+ * to a quarter more as jitter. */
+export const BACKOFF_S = [1, 2, 4];
+/** Seconds the instance's clock may be learned off by
+ * (`clax_core::remote::MAX_OFFSET_S`); a `stale_request` whose `Date` is
+ * further off is not retried. */
+export const MAX_OFFSET_S = 600;
+
+/** A client's time: its `clock`, `offsetMs` the instance's clock is ahead
+ * of it as learned, `now()` the instance's time as best known (both in
+ * milliseconds), `sleep` that waits out a backoff and `random`, a number in
+ * [0, 1) that scales a backoff's jitter. `learn` takes an answer's `Date`
+ * as the instance's clock: true when it is readable and within
+ * [`MAX_OFFSET_S`] of `clock`. (No comment in its body: the package ships
+ * class bodies' comments, which count toward its size ceilings.) */
+export class Timing {
+  offsetMs = 0;
+
+  constructor(
+    private readonly clock: () => number,
+    readonly sleep: (ms: number) => Promise<void> = ms => new Promise(resolve => setTimeout(resolve, ms)),
+    readonly random: () => number = Math.random,
+  ) {}
+
+  now(): number {
+    return this.clock() + this.offsetMs;
+  }
+
+  learn(date: string | null): boolean {
+    const at = date ? Date.parse(date) : NaN;
+    if (Number.isNaN(at)) return false;
+    const offset = at - this.clock();
+    if (Math.abs(offset) > MAX_OFFSET_S * 1000) return false;
+    this.offsetMs = offset;
+    return true;
+  }
 }
 
 /** `/api/queues/<queue>` and `rest`, each segment percent-encoded. */
@@ -70,6 +131,44 @@ export async function signedFetch(r: SignedRequest): Promise<Response> {
   }
 }
 
+/** The error code of a refusal, read from a copy so that the answer's own
+ * body stays unread; `""` for one without the error shape. */
+export async function errorCode(res: Response): Promise<string> {
+  try {
+    const body = await res.clone().json() as Partial<ApiErrorBody> | null;
+    return typeof body?.error?.code === "string" ? body.error.code : "";
+  } catch {
+    return "";
+  }
+}
+
+/** Sends `r` as `signedFetch` does, at `timing`'s time, and retries as
+ * every signing client does (`docs/contract.md`, "Signed requests"),
+ * signing each attempt anew: once on 401 `stale_request` when its `Date`
+ * gives an offset within [`MAX_OFFSET_S`], which the calls after it keep,
+ * and up to three times on 429 `limit_reached` and 503 `busy`, after
+ * [`BACKOFF_S`]. The last answer comes back whatever its status. */
+export async function sendSigned(r: Omit<SignedRequest, "now">, timing: Timing): Promise<Response> {
+  let staleRetried = false;
+  let backoffs = 0;
+  for (;;) {
+    const res = await signedFetch({ ...r, now: () => timing.now() });
+    if (res.status !== 401 && res.status !== 429 && res.status !== 503) return res;
+    const code = await errorCode(res);
+    if (res.status === 401 && code === "stale_request" && !staleRetried) {
+      staleRetried = true;
+      if (timing.learn(res.headers.get("date"))) continue;
+      return res;
+    }
+    if (((res.status === 429 && code === "limit_reached") || (res.status === 503 && code === "busy")) && backoffs < BACKOFF_S.length) {
+      const base = BACKOFF_S[backoffs++] * 1000;
+      await timing.sleep(base + base * Math.min(Math.max(timing.random(), 0), 1) / 4);
+      continue;
+    }
+    return res;
+  }
+}
+
 /** The JSON of a 2xx answer; a `ClaxError` from any other. */
 export async function readJson<T>(res: Response): Promise<T> {
   if (!res.ok) throw await failure(res);
@@ -80,15 +179,20 @@ export async function readJson<T>(res: Response): Promise<T> {
   }
 }
 
-/** The `ClaxError` a non-2xx answer stands for. */
+/** The `ClaxError` a non-2xx answer stands for: its wait is the seconds of
+ * its `Retry-After` (Clax answers seconds, never a date), else of the
+ * error's `retry_after_s`. */
 export async function failure(res: Response): Promise<ClaxError> {
-  let body: Partial<ApiErrorBody> = {};
+  let body: { error?: Partial<ApiErrorBody["error"]> & { retry_after_s?: unknown } } = {};
   try {
-    body = await res.json() as Partial<ApiErrorBody>;
+    body = (await res.json() as typeof body | null) ?? {};
   } catch {
     // An answer without the error shape keeps its status alone.
   }
-  return new ClaxError(body.error?.code ?? `http_${res.status}`, body.error?.message ?? res.statusText, res.status);
+  const header = res.headers.get("retry-after")?.trim() ?? "";
+  const inBody = body.error?.retry_after_s;
+  const after = /^\d+$/.test(header) ? Number(header) : typeof inBody === "number" && inBody >= 0 ? inBody : undefined;
+  return new ClaxError(body.error?.code ?? `http_${res.status}`, body.error?.message ?? res.statusText, res.status, after);
 }
 
 const utf8 = new TextEncoder();
