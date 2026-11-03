@@ -38,6 +38,7 @@
 use crate::events::{Event, EventSink, step_summary};
 use crate::host::{BotHost, NOTICE_SEQ, OpCtx, run_plan};
 use crate::prompt;
+use crate::web::WebSource;
 use clax_bot_sandbox::{CancelToken, Limits, MaybeSendSync, Sandbox};
 use clax_core::audit::{Actor, AuditCtx, AuditRecord, Via};
 use clax_core::gitctx::GitField;
@@ -258,6 +259,10 @@ pub struct Deps {
     pub retry_later: Duration,
     /// For tests: where to stop as if crashed.
     pub crash: Option<CrashHook>,
+    /// Where `clax.web.*` calls are sent (spec
+    /// 2026-11-02-claxbot-web-tools §4.3); `None` on a host without one,
+    /// where every web call is refused `web_disabled`.
+    pub web: Option<Arc<dyn WebSource>>,
 }
 
 impl std::fmt::Debug for Deps {
@@ -265,13 +270,14 @@ impl std::fmt::Debug for Deps {
         f.debug_struct("Deps")
             .field("keys", &self.keys)
             .field("retry", &self.retry)
+            .field("web", &self.web.is_some())
             .finish_non_exhaustive()
     }
 }
 
 impl Deps {
     /// Deps with the default retry policy, a 30 s wait after the model
-    /// stays unreachable, and no crash hook.
+    /// stays unreachable, no crash hook and no web source.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         store: Arc<Store>,
@@ -293,7 +299,15 @@ impl Deps {
             retry: RetryPolicy::default(),
             retry_later: Duration::from_secs(30),
             crash: None,
+            web: None,
         }
+    }
+
+    /// These deps, sending web calls to `web`.
+    #[must_use]
+    pub fn with_web(mut self, web: Arc<dyn WebSource>) -> Deps {
+        self.web = Some(web);
+        self
     }
 
     pub(crate) fn crashes(&self, at: CrashPoint) -> bool {

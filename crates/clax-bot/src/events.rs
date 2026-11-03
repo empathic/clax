@@ -87,6 +87,12 @@ pub enum Event {
         /// How long the call took, in milliseconds (0 for one answered
         /// from the journal).
         ms: u64,
+        /// What a web call charged, in millicredits; `None` for any other
+        /// call and for one answered from the journal.
+        cost_milli: Option<i64>,
+        /// A web call's `{query}` or `{url, source}`; `None` for any other
+        /// call.
+        web: Option<Value>,
     },
     /// The step committed. `summary` is [`step_summary`] of its payload.
     StepDone {
@@ -127,7 +133,18 @@ impl Event {
                 ok,
                 code,
                 ms,
-            } => json!({"op": op, "target": target, "ok": ok, "code": code, "ms": ms}),
+                cost_milli,
+                web,
+            } => {
+                let mut v = json!({"op": op, "target": target, "ok": ok, "code": code, "ms": ms});
+                if let Some(cost) = cost_milli {
+                    v["cost_milli"] = json!(cost);
+                }
+                if let Some(w) = web {
+                    v["web"] = w.clone();
+                }
+                v
+            }
             Event::StepDone {
                 kind,
                 credits_milli,
@@ -348,6 +365,8 @@ fn canonical(
                     ok: c["ok"].as_bool().unwrap_or(false),
                     code: c["code"].as_str().map(str::to_string),
                     ms: c["ms"].as_u64().unwrap_or(0),
+                    cost_milli: c["cost_milli"].as_i64(),
+                    web: c.get("web").filter(|w| !w.is_null()).cloned(),
                 },
             );
         }

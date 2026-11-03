@@ -13,3 +13,4 @@ mod replay;
 mod resume;
 mod rules;
 mod runs;
+mod web;

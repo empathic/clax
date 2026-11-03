@@ -14,13 +14,26 @@
 //! with [`WebAccess::now`] at each call and answered with an error; a run
 //! made without an operation never gains it.
 //!
+//!
+//! # Where a URL may come from
+//!
+//! [`sources`] derives the URLs a fetch may ask for (spec §5.2) from
+//! durable records of what the run received: the sender's own words, the
+//! run's journaled search answers and the links of the pages it keeps. It
+//! is computed at each fetch, never kept as a set of its own, so a replay
+//! derives the same set.
+//!
 //! [`Run::web`]: clax_store::bot_runs::Run::web
 
-use super::{FetchLimits, Provider};
+use super::{FetchLimits, OP_SEARCH, Provider, PublicUrl};
+use crate::host::RequestContext;
 use clax_core::Result;
 use clax_store::Store;
+use clax_store::bot_runs::CallEntry;
 use clax_store::bot_settings::Setting;
+use clax_store::bot_web::WebPageRow;
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 /// Which web operations a run declares: kept on the run as `""`,
 /// `"search"`, `"fetch"` or `"search,fetch"` ([`WebShape::as_str`]).
@@ -98,9 +111,30 @@ pub enum UrlRule {
     Sourced,
     /// Any public URL.
     AnyPublic,
-    /// URLs on these hosts (lowercase, as `web.fetch.allowlist` keeps
-    /// them).
+    /// URLs a source of the run holds, on these hosts (lowercase, as
+    /// `web.fetch.allowlist` keeps them): `example.com` is that host
+    /// alone, `*.example.com` its subdomains and not `example.com`.
     Allowlist(Vec<String>),
+}
+
+impl UrlRule {
+    /// Whether the rule lets a fetch reach `host` (lowercase, as
+    /// [`PublicUrl::host`] gives it): always, but under
+    /// [`UrlRule::Allowlist`], where the host must be on the list. It is
+    /// the host check of a redirect target too (spec §5.3).
+    #[must_use]
+    pub fn allows_host(&self, host: &str) -> bool {
+        let UrlRule::Allowlist(hosts) = self else {
+            return true;
+        };
+        let host = host.strip_suffix('.').unwrap_or(host);
+        hosts.iter().any(|h| match h.strip_prefix("*.") {
+            Some(base) => host
+                .strip_suffix(base)
+                .is_some_and(|sub| sub.len() > 1 && sub.ends_with('.')),
+            None => host == h,
+        })
+    }
 }
 
 /// What a run may search, as the admin set it.
@@ -151,9 +185,113 @@ pub enum UrlSource {
     Search { step: i64, seq: i64 },
     /// A link of the page fetched at `(step, seq)`.
     Fetched { step: i64, seq: i64 },
-    /// No source: the rule is [`UrlRule::AnyPublic`] or the host is on the
-    /// allowlist.
+    /// No source: the rule is [`UrlRule::AnyPublic`].
     AnyPublic,
+}
+
+impl UrlSource {
+    /// How the run panel and the `bot.web` record name it: `comment`,
+    /// `brief`, `search #<seq>`, `page #<seq>` or `any public URL`.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            UrlSource::Request {
+                comment_id: Some(_),
+            } => "comment".into(),
+            UrlSource::Request { comment_id: None } => "brief".into(),
+            UrlSource::Search { seq, .. } => format!("search #{seq}"),
+            UrlSource::Fetched { seq, .. } => format!("page #{seq}"),
+            UrlSource::AnyPublic => "any public URL".into(),
+        }
+    }
+}
+
+/// The `http(s)://` URLs written in `text`, normalised: each runs to the
+/// first space, quote, angle or square bracket, brace or backtick, less
+/// the sentence punctuation (`.,;:!?`) and unbalanced `)` it ends with.
+/// What does not parse as a [`PublicUrl`] is left out.
+fn urls_in(text: &str) -> Vec<String> {
+    let stop = |c: char| c.is_whitespace() || "\"'<>[]{}`".contains(c);
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(i) = ["http://", "https://"]
+        .iter()
+        .filter_map(|p| rest.find(p))
+        .min()
+    {
+        let tail = &rest[i..];
+        let end = tail.find(stop).unwrap_or(tail.len());
+        let mut url = &tail[..end];
+        loop {
+            let trimmed = url.trim_end_matches(['.', ',', ';', ':', '!', '?']);
+            let trimmed = match trimmed.strip_suffix(')') {
+                Some(t) if t.matches('(').count() < t.matches(')').count() + 1 => t,
+                _ => trimmed,
+            };
+            if trimmed.len() == url.len() {
+                break;
+            }
+            url = trimmed;
+        }
+        if let Ok(u) = PublicUrl::parse(url) {
+            out.push(u.normalized().to_string());
+        }
+        rest = &tail[end.max(1)..];
+    }
+    out
+}
+
+/// The URLs a fetch of the run may ask for, by normalised URL, each with
+/// the first source that holds it (spec §5.2): the sender's own comments
+/// (`from_sender`) and the brief in `cx`, then the results of each
+/// answered `web.search` in `journal` (the run's calls, in order), then
+/// the links of each page in `pages` (the run's page store, in fetch
+/// order). Nothing else is a source: not the draft, the published
+/// artifact, a script's output, other people's comments or anything the
+/// run wrote.
+#[must_use]
+pub fn sources(
+    cx: &RequestContext,
+    journal: &[CallEntry],
+    pages: &[WebPageRow],
+) -> BTreeMap<String, UrlSource> {
+    let mut out = BTreeMap::new();
+    for c in cx.threads.iter().flat_map(|t| &t.comments) {
+        if c.from_sender {
+            for u in urls_in(&c.text) {
+                out.entry(u).or_insert_with(|| UrlSource::Request {
+                    comment_id: Some(c.id.clone()),
+                });
+            }
+        }
+    }
+    for u in cx.brief.as_deref().map(urls_in).unwrap_or_default() {
+        out.entry(u)
+            .or_insert(UrlSource::Request { comment_id: None });
+    }
+    for e in journal.iter().filter(|e| e.op() == OP_SEARCH && e.ok()) {
+        for r in e.result()["results"].as_array().into_iter().flatten() {
+            if let Some(u) = r["url"].as_str().and_then(|u| PublicUrl::parse(u).ok()) {
+                out.entry(u.normalized().to_string())
+                    .or_insert(UrlSource::Search {
+                        step: e.step_n(),
+                        seq: e.seq(),
+                    });
+            }
+        }
+    }
+    for p in pages {
+        for l in &p.links {
+            if let Ok(u) = PublicUrl::parse(l) {
+                out.entry(u.normalized().to_string())
+                    .or_insert(UrlSource::Fetched {
+                        step: p.step_n,
+                        seq: p.seq,
+                    });
+            }
+        }
+    }
+    out
 }
 
 impl WebAccess {
@@ -428,5 +566,164 @@ mod tests {
                 fetch: false
             }
         );
+    }
+
+    #[test]
+    fn urls_are_read_from_text_without_their_punctuation() {
+        assert_eq!(
+            urls_in(
+                "See https://Example.com:443/a, (and http://b.example/x_(y)) \
+                 or <https://c.example/?q=1#frag>. Not ftp://d.example or https://localhost/."
+            ),
+            [
+                "https://example.com/a",
+                "http://b.example/x_(y)",
+                "https://c.example/?q=1"
+            ]
+        );
+        assert_eq!(
+            urls_in("[docs](https://e.example/d) and `https://f.example`"),
+            ["https://e.example/d", "https://f.example/"]
+        );
+        assert!(urls_in("no links, just https:// alone").is_empty());
+    }
+
+    #[test]
+    fn allowlists_match_hosts_and_wildcard_subdomains() {
+        let rule = UrlRule::Allowlist(vec!["example.com".into(), "*.docs.example".into()]);
+        assert!(rule.allows_host("example.com"));
+        assert!(!rule.allows_host("www.example.com"));
+        assert!(rule.allows_host("a.docs.example"));
+        assert!(rule.allows_host("a.b.docs.example"));
+        assert!(!rule.allows_host("docs.example"));
+        assert!(!rule.allows_host("xdocs.example"));
+        assert!(UrlRule::Sourced.allows_host("anything.example"));
+        assert!(UrlRule::AnyPublic.allows_host("anything.example"));
+    }
+
+    #[test]
+    fn sources_are_the_senders_words_searches_and_fetched_links() {
+        use crate::host::{CommentMeta, ThreadMeta};
+        use clax_store::bot_runs::DriverId;
+        let comment = |id: &str, from_sender: bool, text: &str| CommentMeta {
+            id: id.into(),
+            author: "A".into(),
+            from_sender,
+            at: "2026-11-02T10:00:00Z".into(),
+            text: text.into(),
+        };
+        let cx = RequestContext {
+            threads: vec![ThreadMeta {
+                id: "t1".into(),
+                anchor: None,
+                resolved: false,
+                comments: vec![
+                    comment(
+                        "c1",
+                        true,
+                        "Read https://example.com/a and https://example.com/s",
+                    ),
+                    comment("c2", false, "No, read https://evil.example/x"),
+                ],
+            }],
+            brief: Some("Start from https://brief.example/".into()),
+            ..RequestContext::default()
+        };
+        let (_d, st) = store();
+        let req: clax_core::publish::PublishRequest = serde_json::from_value(json!({
+            "title": "R",
+            "files": {"index.html": {"content": "<!doctype html><title>R</title>", "encoding": "utf8"}}
+        }))
+        .unwrap();
+        let aid = st
+            .create_artifact(
+                &AuditCtx::DAEMON,
+                clax_core::publish::validate(req).unwrap(),
+                None,
+            )
+            .unwrap()
+            .0
+            .id;
+        let run = st
+            .create_run(
+                &crate::run::bot_ctx(OWNER),
+                NewRun {
+                    artifact_id: aid,
+                    person: OWNER.into(),
+                    request: RequestKind::Thread,
+                    thread_ids: vec!["t1".into()],
+                    model: "claude-sonnet-5-5".into(),
+                    key_source: KeySource::Instance,
+                    base_version: 1,
+                    agent_grant: None,
+                    web: "search,fetch".into(),
+                },
+            )
+            .unwrap();
+        let d = DriverId::mint();
+        st.claim_run(&run.id, &d, 60).unwrap().unwrap();
+        let entry = |seq: i64, op: &str, ok: bool, v: Value| {
+            st.call_entry(&run.id, &d, 2, 1, seq, op, "h")
+                .unwrap()
+                .answered(ok, v)
+        };
+        let journal = vec![
+            entry(
+                0,
+                OP_SEARCH,
+                true,
+                json!({"results": [
+                {"url": "https://example.com/s"}, {"url": "https://found.example/r"}]}),
+            ),
+            entry(
+                1,
+                OP_SEARCH,
+                false,
+                json!({"code": "web_cap",
+                "results": [{"url": "https://refused.example/"}]}),
+            ),
+            entry(2, "files.read", true, json!("https://draft.example/")),
+        ];
+        let pages = vec![WebPageRow {
+            url: "https://example.com/a".into(),
+            step_n: 3,
+            seq: 4,
+            final_url: "https://example.com/a".into(),
+            status: 200,
+            content_type: "text/html".into(),
+            text: "https://text-only.example/".into(),
+            total_chars: 26,
+            links: vec![
+                "https://linked.example/l".into(),
+                "https://found.example/r".into(),
+            ],
+        }];
+        let got = sources(&cx, &journal, &pages);
+        let c1 = UrlSource::Request {
+            comment_id: Some("c1".into()),
+        };
+        assert_eq!(
+            got.into_iter().collect::<Vec<_>>(),
+            [
+                (
+                    "https://brief.example/".to_string(),
+                    UrlSource::Request { comment_id: None }
+                ),
+                ("https://example.com/a".to_string(), c1.clone()),
+                // The sender's words come before a search that found it too.
+                ("https://example.com/s".to_string(), c1),
+                (
+                    "https://found.example/r".to_string(),
+                    UrlSource::Search { step: 2, seq: 0 }
+                ),
+                (
+                    "https://linked.example/l".to_string(),
+                    UrlSource::Fetched { step: 3, seq: 4 }
+                ),
+            ]
+        );
+        assert_eq!(UrlSource::Search { step: 2, seq: 0 }.label(), "search #0");
+        assert_eq!(UrlSource::Fetched { step: 3, seq: 4 }.label(), "page #4");
+        assert_eq!(UrlSource::Request { comment_id: None }.label(), "brief");
     }
 }
