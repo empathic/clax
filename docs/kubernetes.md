@@ -529,22 +529,36 @@ holds it too, until the next apply of an overlay without it.
 so setting the image back is not enough for an instance that already
 started on the new one. Before migrating, each home keeps a copy of its
 database as it was, in `backups/clax-<schema version>-<UTC time>.db` (the
-newest three). For each such instance:
+newest three, and one older). Such an instance logged `upgrading the
+database; copied it first` as it started on the new release, with the
+schema versions (`from`, `to`) and the copy. An instance that did not (the
+release changed no schema, or it has not started since) needs no rollback:
+leave it be. For each that did:
 
 1. Pause it, apply, and wait until it no longer runs (Moving an instance).
-2. Set its database aside, and put the newest copy in its place:
+2. Set its database aside, and put the copy this upgrade made in its
+   place. `SINCE` is the time you noted in step 1 of Upgrading; the
+   command refuses a home whose newest copy is older (one an earlier
+   upgrade made), before it moves anything, and prints the copy it puts
+   back:
 
    ```
-   kubectl exec clax-0 -- sh -c 'cd /var/lib/clax/instances \
+   kubectl exec clax-0 -- env SINCE=20261102T120000 sh -c 'cd /var/lib/clax/instances \
+     && copy="$(ls acme/backups | grep "^clax-.*\.db$" | sort -t- -k3,3 | tail -n 1)" \
+     && { [ -n "$copy" ] && expr "${copy##*-}" \> "$SINCE" >/dev/null \
+          || { echo "acme has no copy made since $SINCE: it did not migrate on this upgrade" >&2; exit 1; }; } \
+     && echo "restoring acme/backups/$copy" \
      && mkdir acme.rolled-back \
      && for f in clax.db clax.db-wal clax.db-shm; do [ ! -e acme/$f ] || mv acme/$f acme.rolled-back/; done \
-     && cp "acme/backups/$(ls acme/backups | grep "^clax-.*\.db$" | sort -t- -k3,3 | tail -n 1)" acme/clax.db'
+     && cp "acme/backups/$copy" acme/clax.db'
    ```
 
 3. Once every such instance is done, set the release (or image) back,
    apply, and unpause them.
 
-What an instance stored after its migration is lost.
+What an instance stored after its migration is lost. An instance made on
+the new release has no copy to go back to: the older image cannot open
+its database.
 
 ## Backups and restore
 
