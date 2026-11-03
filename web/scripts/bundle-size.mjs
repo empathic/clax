@@ -76,6 +76,16 @@ for (const f of filesIn(dist)) {
   if (text.includes("claxTestClock") || text.includes("clax.test-clock")) throw new Error(`${f.pathname} carries the test clock hook; web/dist must be built without CLAX_TEST_CLOCK`);
 }
 
+// The dev server's DevTools (vite.shell.config.ts: vite-devtools-svelte in
+// the @vitejs/devtools dock) are for `pnpm dev` alone: no file of the web
+// UI, the extension or the SDK package may carry them.
+const DEVTOOLS = /svelte-devtools|devframe|vite-devtools|@vitejs\/devtools/;
+for (const dir of ["../dist/", "../dist-extension/", "../dist-sdk/"].map(d => new URL(d, import.meta.url))) {
+  for (const f of existsSync(dir) ? filesIn(dir) : []) {
+    if (DEVTOOLS.test(readFileSync(f, "latin1"))) throw new Error(`${f.pathname} carries the dev server's DevTools; they never reach a build`);
+  }
+}
+
 // Fonts: none. No font file anywhere in the build, and no entry preloads
 // one or declares an @font-face that fetches one.
 const FONT_FILE = /\.(woff2?|ttf|otf|eot)$/i;

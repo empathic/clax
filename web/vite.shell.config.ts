@@ -85,12 +85,25 @@ export function appIconFiles(): Plugin {
 // advance (shell/src/clock.ts); every other build leaves the hook out.
 export const TEST_CLOCK = process.env.CLAX_TEST_CLOCK === "1";
 
-export default defineConfig({
-  root: "shell", base: "/", plugins: [svelte({ configFile: SVELTE_CONFIG }), inlineCss(), appIconFiles()],
+/** The dev server's Svelte DevTools (vite-devtools-svelte: components,
+ * state timeline, reactive graph) in the Vite DevTools dock (@vitejs/devtools),
+ * both pinned. `pnpm dev` only: they are imported for `serve` alone, so no
+ * build, test or the configs' importers load them, and nothing of them can
+ * reach a bundle (bundle-size.mjs checks). Open the page, then the dock's
+ * handle and its Svelte tab, or /.svelte-devtools/; the first visit asks for
+ * the one-time code the dev server prints. */
+async function devtools(): Promise<Plugin[]> {
+  const [{ svelteDevtools }, { DevTools }] = await Promise.all([import("vite-devtools-svelte"), import("@vitejs/devtools")]);
+  // svelteDevtools() before the Svelte compiler, so its transforms run first.
+  return [svelteDevtools(), DevTools()].flat();
+}
+
+export default defineConfig(async ({ command }) => ({
+  root: "shell", base: "/", plugins: [...(command === "serve" ? await devtools() : []), svelte({ configFile: SVELTE_CONFIG }), inlineCss(), appIconFiles()],
   define: { __CLAX_TEST_CLOCK__: JSON.stringify(TEST_CLOCK) },
   build: {
     outDir: "../dist", emptyOutDir: false, assetsDir: "_clax/shell", manifest: true,
     rolldownOptions: { input: { index: "shell/index.html", artifact: "shell/artifact.html" } },
   },
   server: { proxy: { "/api": "http://127.0.0.1:7481", "/c": "http://127.0.0.1:7481", "/_blob": "http://127.0.0.1:7481", "/healthz": "http://127.0.0.1:7481" } },
-});
+}));
