@@ -25,7 +25,10 @@ export default defineConfig({
   workers,
   timeout: 30_000,
   expect: { timeout: 5_000 },
-  use: { browserName: "chromium", screenshot: "only-on-failure" },
+  // A trace (`pnpm exec playwright show-trace <zip>`) of a test's first
+  // retry, so a run with --retries keeps one of each flaky test;
+  // CLAX_E2E_TRACE=on (`just web-e2e-trace`) traces every test.
+  use: { browserName: "chromium", screenshot: "only-on-failure", trace: process.env.CLAX_E2E_TRACE === "on" ? "on" : "on-first-retry" },
   ...(outputs ? { outputDir: join(outputs, "test-results") } : {}),
   // Projects schedule the work: the gesture tests take up to five eighths of
   // the workers. Several wait out Chromium's 5 s user activation, which no

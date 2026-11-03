@@ -218,6 +218,10 @@ web-e2e *ARGS:
 web-e2e-native *ARGS:
     CLAX_BUILD=native ./scripts/run.sh web-e2e "$@"
 
+# Run the Playwright end-to-end tests with pnpm, tracing every test (web/test-results/*/trace.zip; open with `pnpm exec playwright show-trace`)
+web-e2e-trace *ARGS:
+    CLAX_E2E_TRACE=on CLAX_BUILD=native ./scripts/run.sh web-e2e "$@"
+
 # Run the Pi extension tests
 pi-test *ARGS:
     ./scripts/run.sh pi-test "$@"
