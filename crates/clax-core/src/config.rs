@@ -603,7 +603,8 @@ impl HomeConfig {
     /// mistyped value, leaves `api_key_env` or a model ID empty, sets a
     /// `base_url` or a `price_catalog_url` (other than empty or `off`) that
     /// [`base_url_ok`] refuses, or sets a count, cap or
-    /// price outside its range ([`BotConfig`]). The caller turns ClaxBot
+    /// price outside its range ([`BotConfig`]), or a `[bot.web]` value its
+    /// field's documentation refuses ([`BotWeb`]). The caller turns ClaxBot
     /// off; it never stops the daemon.
     pub fn bot(&self) -> Result<BotConfig> {
         let b: BotConfig = self.table("bot")?;
@@ -682,6 +683,9 @@ impl HomeConfig {
                 };
                 return Err(bad(key, format!("{key} must be {range}, not {v}")));
             }
+        }
+        if let Some((key, what)) = bot_web_problem(&b.web) {
+            return Err(bad(key, what));
         }
         Ok(b)
     }
@@ -1106,6 +1110,8 @@ pub struct BotConfig {
     pub credit_price_micro_usd: u64,
     pub models: BotModels,
     pub script: BotScript,
+    /// `[bot.web]`: the web tools' settings ([`BotWeb`]).
+    pub web: BotWeb,
     /// Where the daemon fetches the price catalog from
     /// ([`PRICE_CATALOG_URL`] by default): `https://`, or `http://` on
     /// localhost, 127.0.0.1 or [::1] ([`base_url_ok`]); empty or `off`,
@@ -1151,6 +1157,7 @@ impl Default for BotConfig {
             credit_price_micro_usd: 10_000,
             models: BotModels::default(),
             script: BotScript::default(),
+            web: BotWeb::default(),
             price_catalog_url: PRICE_CATALOG_URL.into(),
         }
     }
@@ -1270,6 +1277,167 @@ impl Default for BotScript {
             max_calls: 200,
         }
     }
+}
+
+/// `[bot.web]`: ClaxBot's web search and fetch (spec
+/// 2026-11-02-claxbot-web-tools-design §9.1), the stored `web.*` settings
+/// of the same names that the file or the environment overrides
+/// (`[bot.web.search] provider` is `web.search.provider`). The Cloudflare
+/// account ID and API token are not here: an admin sets them at `/admin`,
+/// the token sealed under the key-encryption key.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct BotWeb {
+    /// The most searches one run makes: at least 1 (default 10).
+    pub max_searches_per_run: u64,
+    /// The most fetches one run makes: at least 1 (default 20).
+    pub max_fetches_per_run: u64,
+    pub search: BotWebSearch,
+    pub fetch: BotWebFetch,
+}
+
+impl Default for BotWeb {
+    fn default() -> Self {
+        BotWeb {
+            max_searches_per_run: 10,
+            max_fetches_per_run: 20,
+            search: BotWebSearch::default(),
+            fetch: BotWebFetch::default(),
+        }
+    }
+}
+
+/// `[bot.web.search]`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct BotWebSearch {
+    /// The instance offers search (default false).
+    pub enabled: bool,
+    /// `ceramic` (the default), `exa` or `linkup`.
+    pub provider: String,
+    /// The AI Gateway searches go through: up to 64 letters, digits, `_`
+    /// and `-` (default `default`).
+    pub gateway: String,
+    /// The gateway's stored provider key to bill instead of the account's
+    /// credits, as `gateway` is spelled; empty (the default) for none.
+    pub byok_alias: String,
+    /// Results per search: 1 to 10 (default 5).
+    pub limit: u32,
+}
+
+impl Default for BotWebSearch {
+    fn default() -> Self {
+        BotWebSearch {
+            enabled: false,
+            provider: "ceramic".into(),
+            gateway: "default".into(),
+            byok_alias: String::new(),
+            limit: 5,
+        }
+    }
+}
+
+/// `[bot.web.fetch]`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct BotWebFetch {
+    /// The instance offers fetch (default false).
+    pub enabled: bool,
+    /// `sourced` (the default), `any_public` or `allowlist`.
+    pub url_rule: String,
+    /// The hosts `allowlist` admits: at most 100 lowercase hostnames, each
+    /// optionally starting `*.`, none twice (default none).
+    pub allowlist: Vec<String>,
+}
+
+impl Default for BotWebFetch {
+    fn default() -> Self {
+        BotWebFetch {
+            enabled: false,
+            url_rule: "sourced".into(),
+            allowlist: Vec::new(),
+        }
+    }
+}
+
+/// Why `[bot.web]` `w` is refused, as (key under `[bot]`, message); `None`
+/// when it checks.
+fn bot_web_problem(w: &BotWeb) -> Option<(&'static str, String)> {
+    let ident = |s: &str| {
+        s.len() <= 64
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+    };
+    let hostname = |h: &str| {
+        let h = h.strip_prefix("*.").unwrap_or(h);
+        h.len() <= 253
+            && h.split('.').all(|l| {
+                (1..=63).contains(&l.len())
+                    && !l.starts_with('-')
+                    && !l.ends_with('-')
+                    && l.bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            })
+    };
+    let s = &w.search;
+    let f = &w.fetch;
+    if !matches!(s.provider.as_str(), "ceramic" | "exa" | "linkup") {
+        return Some((
+            "web.search.provider",
+            format!(
+                "web.search.provider must be ceramic, exa or linkup, not \"{}\"",
+                s.provider
+            ),
+        ));
+    }
+    for (key, v) in [
+        ("web.search.gateway", &s.gateway),
+        ("web.search.byok_alias", &s.byok_alias),
+    ] {
+        if !ident(v) {
+            return Some((
+                key,
+                format!("{key} must be up to 64 letters, digits, '_' and '-', not \"{v}\""),
+            ));
+        }
+    }
+    if s.gateway.is_empty() {
+        return Some(("web.search.gateway", "web.search.gateway is empty".into()));
+    }
+    if !(1..=10).contains(&s.limit) {
+        return Some((
+            "web.search.limit",
+            format!("web.search.limit must be from 1 to 10, not {}", s.limit),
+        ));
+    }
+    for (key, v) in [
+        ("web.max_searches_per_run", w.max_searches_per_run),
+        ("web.max_fetches_per_run", w.max_fetches_per_run),
+    ] {
+        if !(1..=1_000_000_000_000).contains(&v) {
+            return Some((key, format!("{key} must be at least 1, not {v}")));
+        }
+    }
+    if !matches!(f.url_rule.as_str(), "sourced" | "any_public" | "allowlist") {
+        return Some((
+            "web.fetch.url_rule",
+            format!(
+                "web.fetch.url_rule must be sourced, any_public or allowlist, not \"{}\"",
+                f.url_rule
+            ),
+        ));
+    }
+    let distinct: std::collections::BTreeSet<&String> = f.allowlist.iter().collect();
+    if f.allowlist.len() > 100
+        || distinct.len() != f.allowlist.len()
+        || !f.allowlist.iter().all(|h| hostname(h))
+    {
+        return Some((
+            "web.fetch.allowlist",
+            "web.fetch.allowlist must be at most 100 distinct lowercase hostnames, each optionally starting '*.'".into(),
+        ));
+    }
+    None
 }
 
 /// How many live artifacts one GitHub member may keep by default
@@ -2292,6 +2460,43 @@ mod tests {
     }
 
     #[test]
+    fn bot_web_defaults_and_overrides() {
+        let w = under("", &[]).bot().unwrap().web;
+        assert_eq!(w, BotWeb::default());
+        assert_eq!((w.max_searches_per_run, w.max_fetches_per_run), (10, 20));
+        assert_eq!(
+            (
+                w.search.enabled,
+                w.search.provider.as_str(),
+                w.search.gateway.as_str(),
+                w.search.byok_alias.as_str(),
+                w.search.limit
+            ),
+            (false, "ceramic", "default", "", 5)
+        );
+        assert_eq!(
+            (w.fetch.enabled, w.fetch.url_rule.as_str()),
+            (false, "sourced")
+        );
+        assert!(w.fetch.allowlist.is_empty());
+        let c = under(
+            "[bot.web]\nmax_searches_per_run = 3\n[bot.web.search]\nenabled = true\nprovider = \"exa\"\n[bot.web.fetch]\nurl_rule = \"allowlist\"\nallowlist = [\"*.example.com\"]\n",
+            &[("CLAX_BOT__WEB__SEARCH__LIMIT", "7")],
+        );
+        let w = c.bot().unwrap().web;
+        assert_eq!(w.max_searches_per_run, 3);
+        assert!(w.search.enabled);
+        assert_eq!((w.search.provider.as_str(), w.search.limit), ("exa", 7));
+        assert_eq!(w.fetch.allowlist, vec!["*.example.com".to_string()]);
+        assert_eq!(c.source("bot.web.search.provider"), Source::File);
+        assert_eq!(
+            c.source("bot.web.search.limit"),
+            Source::Env("CLAX_BOT__WEB__SEARCH__LIMIT".into())
+        );
+        assert_eq!(c.source("bot.web.fetch.enabled"), Source::Default);
+    }
+
+    #[test]
     fn known_hosts_name_their_catalog_provider() {
         let g = "https://generativelanguage.googleapis.com/v1beta";
         assert_eq!(ModelApi::Gemini.catalog_provider(g), Some("google"));
@@ -2334,6 +2539,15 @@ mod tests {
             "[bot.models]\nquick = \"\"\n",
             "[bot.models]\nhuge = \"x\"\n",
             "[bot.script]\nmemory_mib = 0\n",
+            "[bot.web]\nmax_fetches_per_run = 0\n",
+            "[bot.web]\nunknown = 1\n",
+            "[bot.web.search]\nprovider = \"bing\"\n",
+            "[bot.web.search]\nlimit = 11\n",
+            "[bot.web.search]\ngateway = \"\"\n",
+            "[bot.web.search]\nbyok_alias = \"a b\"\n",
+            "[bot.web.fetch]\nurl_rule = \"open\"\n",
+            "[bot.web.fetch]\nallowlist = [\"Example.com\"]\n",
+            "[bot.web.fetch]\nallowlist = [\"a.com\", \"a.com\"]\n",
         ] {
             let c = with(&format!("{t}[serve]\nport = 7481\n"));
             let e = c.bot().unwrap_err();

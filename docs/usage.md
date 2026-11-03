@@ -182,6 +182,28 @@ A page that declares a capability reaching past itself (the internet, Claude, Cl
 
 Every setting in `config.toml` can also come from the environment: `CLAX_<TABLE>__<KEY>`, a double underscore for each level (`CLAX_SERVE__PORT=7481`, `CLAX_SAMPLE__MAX_TOKENS=8000`, `CLAX_BOT__MODELS__DEFAULT=claude-opus-5-5`), which overrides the file, which overrides the defaults (`[hosted]` alone is read from the file only). An invalid table turns off only what it configures; `clax doctor` warns about it. The `[bot]` table configures ClaxBot (its provider, models, caps and credits; `docs/contract.md`, "`config.toml`"). The local daemon's `GET /api/settings` lists every setting with the value in effect and where it came from (`default`, `file` or `env:<NAME>`), and the value pending the next start when the file now differs, and `PUT /api/settings` writes the ones the file holds back into `config.toml`, keeping its comments; the owner and the admins the owner names may use either, and a change takes effect when the daemon next starts. ClaxBot runs in the daemon once a model key is set: `[bot] api_key_env` names the variable it reads the instance key from (`ANTHROPIC_API_KEY`), or an admin sets one at `/admin` (Provider); its runs, credits and audit are under `/me`, `/admin` and `/audit` (`docs/contract.md`, "ClaxBot routes"). ClaxBot speaks Anthropic's Messages API by default; `[bot] api = "openai"` (Chat Completions, as Mistral and Subconscious serve it, `base_url = "https://api.mistral.ai/v1"`) or `api = "gemini"` (`base_url = "https://generativelanguage.googleapis.com/v1beta"`) points it at another provider, as does the API picker under Provider. A model a run uses is priced, unit by unit, by its rate card (its four token lines, each at cost plus margin or at fixed credits per million tokens), else by tokenulator.dev's price catalog for the provider in effect (which the daemon fetches once a day from `[bot] price_catalog_url`, tokenulator.dev's by default; `off` turns it off), else by the instance's default rates; a price no admin set is an estimate (with "Require an explicit price" set, a model without a rate card is refused instead). Admin › Pricing shows each model's credits per million tokens and where each rate comes from, flags a rate card whose cost drifted from the catalog's, and edits, adds (by hand or from tokenulator.dev) and removes rate cards, the default rates and the catalog's refresh; the model pickers under Provider show each listed model's price, and say when one is only estimated. A `[bot]` value set in the file or the environment overrides the admin pages' one and shows read-only there.
 
+ClaxBot can search the web and read pages (`clax.web.search` and `clax.web.fetch`) once an admin turns either on at `/admin` (Web) and the daemon has a Cloudflare account to send them through: the account ID and an API token with Workers AI Read and AI Gateway Read, set on the same page (the token sealed like a model key, and sent only to `https://api.cloudflare.com`). Without both the page says "not configured" and web use is off; setting them takes effect at once. Searches go through Cloudflare's Web Search API on the account's AI Gateway, billed to its AI Gateway credits or a provider key stored on the gateway (`byok_alias`); the daemon fetches pages itself, resolving every name it fetches, on each redirect too, and connecting only to an address it checked is public, then converts HTML, PDF and Office documents to Markdown through Workers AI. The `[bot.web]` table sets the same settings the Web page shows, as the rest of `[bot]` does:
+
+```toml
+[bot.web]
+max_searches_per_run = 10     # at least 1
+max_fetches_per_run = 20      # at least 1
+
+[bot.web.search]
+enabled = false
+provider = "ceramic"          # ceramic, exa or linkup
+gateway = "default"           # the AI Gateway ID
+byok_alias = ""               # a provider key stored on the gateway; empty for none
+limit = 5                     # results per search, 1 to 10
+
+[bot.web.fetch]
+enabled = false
+url_rule = "sourced"          # sourced, any_public or allowlist
+allowlist = []                # hosts for allowlist; "*.example.com" matches subdomains
+```
+
+The account ID and token are set only at `/admin`. For tests, `CLAX_TEST_WEB_FIXTURES=<path>` in the daemon's environment answers every search and fetch from that JSON file (`{searches: {<query>: [hit]}, pages: {<url>: {status, content_type, text, links} | {redirect}}}`) instead of Cloudflare, and web use counts as configured.
+
 A new artifact needs a title: `--title`, or else the page's `<title>`. Updates keep the current title unless `--title` is given.
 
 Tags sort the gallery. The owner keeps one list of them, each a name, a colour (`gray`, `red`, `orange`, `yellow`, `green`, `teal`, `blue`, `purple`, `pink` or `brown`) and an optional description: `clax tags create design --colour blue --description "Waiting on a design pass"`, `clax tags edit design --name "Design review"` (the artifacts carrying it follow the rename), `clax tags delete design` (removes it from every artifact). Anyone who may see an artifact sees its tags. The owner tags any artifact, and a person the artifacts they made; agents apply existing tags (`clax publish page.html --tags design,draft`, or the `tag` tool) and never make one: a tag that is not on the list is refused, naming the ones that are.

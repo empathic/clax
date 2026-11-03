@@ -445,7 +445,11 @@ fn loose_mode(path: &std::path::Path) -> Option<u32> {
 /// precedence over a stored one. A hosted core reads no `[bot]` and no
 /// such variable. Either takes its price catalog's URL from `catalog_url`
 /// when given, else from `[bot] price_catalog_url`
-/// ([`crate::catalog::url_of`]).
+/// ([`crate::catalog::url_of`]). Web use is configured from the start in
+/// the test mode of [`crate::web_source::fixtures`]; otherwise it is while
+/// the instance holds a Cloudflare account ID and token
+/// ([`crate::bot::web_configured`]). `[bot.web]` is laid over the stored
+/// `web.*` settings as the rest of `[bot]` is ([`web_overrides`]).
 fn local_bot(s: &AppState, catalog_url: Option<Option<String>>) -> clax_http::bot::Bot {
     let catalog_url = catalog_url.unwrap_or_else(|| {
         // A hosted core reads it from the file and the environment too,
@@ -458,6 +462,7 @@ fn local_bot(s: &AppState, catalog_url: Option<Option<String>>) -> clax_http::bo
     });
     let mut bot = clax_http::bot::Bot {
         catalog_url,
+        web_configured: crate::web_source::fixtures().is_some(),
         ..Default::default()
     };
     clax_store::secrets::sweep_leftovers(&s.home, s.store.now_utc());
@@ -474,7 +479,10 @@ fn local_bot(s: &AppState, catalog_url: Option<Option<String>>) -> clax_http::bo
     let Some(cfg) = s.settings.running.as_ref() else {
         return bot;
     };
-    let (ov, enabled) = clax_http::bot::configured(cfg);
+    let (mut ov, enabled) = clax_http::bot::configured(cfg);
+    if enabled {
+        web_overrides(cfg, &mut ov);
+    }
     s.store.set_bot_overrides(ov);
     bot.enabled = enabled;
     if let Ok(b) = cfg.bot()
@@ -487,6 +495,34 @@ fn local_bot(s: &AppState, catalog_url: Option<Option<String>>) -> clax_http::bo
         });
     }
     bot
+}
+
+/// The `web.*` settings `cfg`'s `[bot.web]` sets, from the file or the
+/// environment, added to `ov` as [`clax_http::bot::configured`] adds the
+/// rest of `[bot]`: each `bot.web.<key>` overrides the stored setting
+/// `web.<key>`. The Cloudflare account ID is the admin pages' alone.
+fn web_overrides(
+    cfg: &clax_core::config::HomeConfig,
+    ov: &mut clax_store::bot_settings::Overrides,
+) {
+    use clax_store::bot_settings::Setting;
+    for &setting in Setting::ALL {
+        if !setting.key().starts_with("web.") || setting == Setting::WebCloudflareAccountId {
+            continue;
+        }
+        let full = format!("bot.{}", setting.key());
+        let source = cfg.source(&full);
+        if source == clax_core::config::Source::Default {
+            continue;
+        }
+        let Some(v) = cfg.value(&full) else { continue };
+        let Ok(v) = v.deserialize::<serde_json::Value>() else {
+            continue;
+        };
+        if let Err(e) = ov.set(setting, &v, source.label()) {
+            tracing::warn!("[bot.web] {} is not taken: {e}", setting.key());
+        }
+    }
 }
 
 /// Stops `store` ([`Store::shutdown`]), waiting at most `within` for its
@@ -638,6 +674,41 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bot_web_is_laid_over_the_stored_web_settings() {
+        use clax_store::bot_settings::{Overrides, Setting};
+        let cfg = clax_core::config::HomeConfig::from_text(
+            std::path::PathBuf::from("/h/config.toml"),
+            "[bot.web]\nmax_fetches_per_run = 3\n[bot.web.search]\nprovider = \"linkup\"\n[bot.web.fetch]\nallowlist = [\"*.example.com\"]\n",
+            [("CLAX_BOT__WEB__SEARCH__ENABLED".to_string(), "true".to_string())],
+        )
+        .unwrap();
+        let mut ov = Overrides::default();
+        super::web_overrides(&cfg, &mut ov);
+        let mut want = Overrides::default();
+        want.set(Setting::WebMaxFetchesPerRun, &serde_json::json!(3), "file")
+            .unwrap();
+        want.set(
+            Setting::WebSearchProvider,
+            &serde_json::json!("linkup"),
+            "file",
+        )
+        .unwrap();
+        want.set(
+            Setting::WebFetchAllowlist,
+            &serde_json::json!(["*.example.com"]),
+            "file",
+        )
+        .unwrap();
+        want.set(
+            Setting::WebSearchEnabled,
+            &serde_json::json!(true),
+            "env:CLAX_BOT__WEB__SEARCH__ENABLED",
+        )
+        .unwrap();
+        assert_eq!(ov, want);
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_grant_file_others_may_read_is_loose() {

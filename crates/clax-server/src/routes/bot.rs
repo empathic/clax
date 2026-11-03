@@ -152,13 +152,14 @@ fn web_view(st: &Store, bot: &Bot, person: &str) -> clax_core::Result<Value> {
     let on =
         |s: Setting| -> clax_core::Result<bool> { Ok(st.bot_setting(s)?.as_bool() == Some(true)) };
     let admin_on = on(Setting::WebSearchEnabled)? || on(Setting::WebFetchEnabled)?;
-    let why_off = match clax_bot::web::WebAccess::now(st, person, bot.web_configured)? {
+    let configured = crate::bot::web_configured(st, bot)?;
+    let why_off = match clax_bot::web::WebAccess::now(st, person, configured)? {
         clax_bot::web::WebAccess::Off(why) => json!(why.as_str()),
         clax_bot::web::WebAccess::On(_) => Value::Null,
     };
     Ok(json!({
         "on": st.web_choice(person)?,
-        "offered": admin_on && bot.web_configured,
+        "offered": admin_on && configured,
         "why_off": why_off,
     }))
 }
@@ -865,7 +866,7 @@ pub fn start_run(
             key_source,
             base_version: art.current_version,
             agent_grant: sender.agent_grant.clone(),
-            web: WebAccess::now(st, person, bot.web_configured)?
+            web: WebAccess::now(st, person, crate::bot::web_configured(st, bot)?)?
                 .shape()
                 .as_str()
                 .to_string(),

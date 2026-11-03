@@ -159,6 +159,8 @@ pub mod routes;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod serve;
 pub mod shell;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod web_source;
 
 /// Starts every listener of the state `s` serves from: the HTTP layer's
 /// ([`AppState::start_listeners`](clax_http::state::AppState::start_listeners)),

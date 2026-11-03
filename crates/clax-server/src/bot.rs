@@ -1185,6 +1185,30 @@ pub fn driver(state: &mut AppState) -> Arc<clax_bot::Driver> {
     driver
 }
 
+/// Whether ClaxBot's web use is configured on this host now: the host
+/// says so ([`clax_http::bot::Bot::web_configured`]: the Worker's AI
+/// binding, the daemon's test fixtures), or, on a native daemon, the
+/// instance holds a key-encryption key, a Cloudflare account ID and a
+/// sealed token ([`crate::web_source::has_credentials`]), read at each
+/// call so an admin's change takes effect without a restart.
+///
+/// # Errors
+/// The store's.
+pub fn web_configured(st: &Store, bot: &clax_http::bot::Bot) -> clax_core::Result<bool> {
+    if bot.web_configured {
+        return Ok(true);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::web_source::has_credentials(st, bot.kek.as_ref())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = st;
+        Ok(false)
+    }
+}
+
 /// A clock reading the store's, owned.
 pub struct StoreClock(pub Arc<Store>);
 

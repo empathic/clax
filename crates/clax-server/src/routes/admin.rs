@@ -541,7 +541,7 @@ pub fn web_view(st: &Store, bot: &Bot) -> clax_core::Result<Value> {
         clax_store::secrets::CLOUDFLARE_ORIGIN,
         "the Cloudflare token",
     )?;
-    let mut v = json!({"configured": bot.web_configured, "sources": sources});
+    let mut v = json!({"configured": crate::bot::web_configured(st, bot)?, "sources": sources});
     for (k, g) in groups {
         v[k] = g;
     }

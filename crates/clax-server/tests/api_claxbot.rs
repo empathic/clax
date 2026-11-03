@@ -2578,6 +2578,53 @@ async fn the_token_is_write_only() {
 }
 
 #[tokio::test]
+async fn web_is_configured_once_the_account_and_token_are_set() {
+    let p = people().await;
+    let ts = &p.ts;
+    let owner = Who::OwnerBrowser;
+    let sam = Who::Person(p.sam.0.clone());
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web",
+        json!({"search": {"enabled": true},
+               "cloudflare": {"account_id": "0123456789abcdef0123456789abcdef"}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["configured"], false, "an account ID without a token");
+    let (_, me) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(me["web"]["why_off"], "not_configured");
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web/token",
+        json!({"token": CF_TOKEN}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    // Taken at once, without a restart.
+    assert_eq!(v["configured"], true, "{v}");
+    let (_, me) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(
+        me["web"],
+        json!({"on": true, "offered": true, "why_off": null})
+    );
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::DELETE,
+        "/api/admin/web/token",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["configured"], false);
+}
+
+#[tokio::test]
 async fn a_member_cannot_admin_web() {
     let p = people().await;
     let ts = &p.ts;
