@@ -12,7 +12,7 @@ window.focus = () => {};
 let hooks: { [K in Exclude<keyof ModeHooks, "live">]: ReturnType<typeof vi.fn> } & Pick<ModeHooks, "live">;
 let mode: CommentMode;
 const nextFrame = () => new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
-const outline = () => document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".o")!;
+const outline = () => document.querySelector("feedback-overlay")!.shadowRoot!.querySelector<HTMLElement>(".o")!;
 const fire = (el: Element, type: string) => el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true }));
 function select(el: Element, from: number, to: number) {
   const r = document.createRange();
@@ -24,7 +24,7 @@ function select(el: Element, from: number, to: number) {
 }
 
 beforeEach(() => {
-  document.querySelectorAll("clax-overlay").forEach(n => n.remove());
+  document.querySelectorAll("feedback-overlay").forEach(n => n.remove());
   document.body.innerHTML = `<h2>Quarterly goals</h2><p>Grow revenue</p>`;
   document.getSelection()!.removeAllRanges();
   hooks = { hover: vi.fn(), pickElement: vi.fn(), pickRange: vi.fn(), pickArea: vi.fn(), cancel: vi.fn() };
@@ -64,7 +64,7 @@ describe("CommentMode", () => {
     expect(outline().style.display).toBe("block");
     document.querySelector("h2")!.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: null }));
     expect(outline().style.display).toBe("none");
-    expect(document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".pin")!.style.display).toBe("none");
+    expect(document.querySelector("feedback-overlay")!.shadowRoot!.querySelector<HTMLElement>(".pin")!.style.display).toBe("none");
     expect(hooks.hover).toHaveBeenLastCalledWith(null);
     // Moving within the page is not leaving it.
     fire(document.querySelector("h2")!, "mousemove");
@@ -75,7 +75,7 @@ describe("CommentMode", () => {
 
   it("moves an overlay created before <body> to the end of the document when the mode turns on and when the pin shows", () => {
     const root = document.documentElement;
-    const overlay = document.querySelector("clax-overlay")!;
+    const overlay = document.querySelector("feedback-overlay")!;
     root.insertBefore(overlay, document.body);
     mode.set(true);
     expect(root.lastElementChild).toBe(overlay);
@@ -86,7 +86,7 @@ describe("CommentMode", () => {
 
   it("moves an overlay created before <body> to the end of the document when it outlines", async () => {
     const root = document.documentElement;
-    const overlay = document.querySelector("clax-overlay")!;
+    const overlay = document.querySelector("feedback-overlay")!;
     root.insertBefore(overlay, document.body);
     mode.set(true);
     fire(document.querySelector("h2")!, "mousemove");
@@ -153,7 +153,7 @@ describe("CommentMode", () => {
     mode.set(true);
     fire(document.querySelector("h3")!, "mousemove");
     await nextFrame();
-    const host = document.querySelector<HTMLElement>("clax-overlay")!;
+    const host = document.querySelector<HTMLElement>("feedback-overlay")!;
     expect(host.style.getPropertyValue("--ax-tint")).toBe("rgba(224, 83, 47, 0.24)");
     fire(document.getElementById("l")!, "mousemove");
     await nextFrame();
@@ -242,7 +242,7 @@ describe("an outline the host leads", () => {
 });
 
 describe("drawing areas", () => {
-  const areaBox = () => document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".a")!;
+  const areaBox = () => document.querySelector("feedback-overlay")!.shadowRoot!.querySelector<HTMLElement>(".a")!;
   const at = (el: Element, type: string, x: number, y: number, init: MouseEventInit = {}) => {
     const e = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, buttons: type === "mouseup" || type === "click" ? 0 : 1, ...init });
     el.dispatchEvent(e);
@@ -484,7 +484,7 @@ describe("drawing areas", () => {
 describe("trusted input", () => {
   it("ignores events the page dispatched itself", async () => {
     mode.set(false);
-    document.querySelectorAll("clax-overlay").forEach(n => n.remove());
+    document.querySelectorAll("feedback-overlay").forEach(n => n.remove());
     const strict = new CommentMode(document, hooks);
     try {
       strict.set(true);
@@ -504,9 +504,9 @@ describe("trusted input", () => {
   });
 
   it("can keep its drawing in a closed shadow root and hide it", () => {
-    document.querySelectorAll("clax-overlay").forEach(n => n.remove());
+    document.querySelectorAll("feedback-overlay").forEach(n => n.remove());
     const m = new CommentMode(document, { hover() {}, pickElement() {}, pickRange() {}, pickArea() {}, cancel() {} }, { trustedOnly: false, shadow: "closed" });
-    const host = document.querySelector("clax-overlay") as HTMLElement;
+    const host = document.querySelector("feedback-overlay") as HTMLElement;
     expect(host.shadowRoot).toBeNull();
     m.setVisible(false);
     expect(host.style.visibility).toBe("hidden");
@@ -638,7 +638,7 @@ describe("touch long-press", () => {
   let under: Element | null;
   beforeEach(() => {
     mode.set(false);
-    document.querySelectorAll("clax-overlay").forEach(n => n.remove());
+    document.querySelectorAll("feedback-overlay").forEach(n => n.remove());
     f = fakeTimers();
     mode = new CommentMode(document, hooks, { trustedOnly: false, timers: f.t });
     under = null;
@@ -841,7 +841,7 @@ describe("touch long-press", () => {
     touch(h2, "touchend", 10, 10);
   });
   describe("hold, then drag", () => {
-    const areaBox = () => document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".a")!;
+    const areaBox = () => document.querySelector("feedback-overlay")!.shadowRoot!.querySelector<HTMLElement>(".a")!;
     const rects = Range.prototype.getClientRects;
     let p: HTMLElement;
     let img: HTMLElement;
@@ -867,7 +867,7 @@ describe("touch long-press", () => {
     /** Comment mode as app mode has it: a drag picks on its release. */
     const appMode = () => {
       mode.set(false);
-      document.querySelectorAll("clax-overlay").forEach(n => n.remove());
+      document.querySelectorAll("feedback-overlay").forEach(n => n.remove());
       mode = new CommentMode(document, hooks, { trustedOnly: false, timers: f.t, confirmDrag: () => false });
     };
     beforeEach(appMode);
@@ -1036,7 +1036,7 @@ describe("touch long-press", () => {
     });
   
     describe("in a browser, a Comment chip confirms the drag", () => {
-      const chip = () => document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".c")!;
+      const chip = () => document.querySelector("feedback-overlay")!.shadowRoot!.querySelector<HTMLElement>(".c")!;
       /** A tap on the chip, as the browser delivers it: touches, then the
        * compatibility mouse events and the click, from inside the overlay. */
       const tapChip = () => {
@@ -1054,7 +1054,7 @@ describe("touch long-press", () => {
       };
       beforeEach(() => {
         mode.set(false);
-        document.querySelectorAll("clax-overlay").forEach(n => n.remove());
+        document.querySelectorAll("feedback-overlay").forEach(n => n.remove());
         mode = new CommentMode(document, hooks, { trustedOnly: false, timers: f.t });
       });
 

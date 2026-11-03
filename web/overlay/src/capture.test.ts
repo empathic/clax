@@ -81,10 +81,10 @@ describe("capture", () => {
   });
 
   it("an exact capture of a pick is cropped to the pick, with the overlay stepped aside", async () => {
-    const host = document.createElement("clax-overlay");
+    const host = document.createElement("feedback-overlay");
     // Another Clax overlay (the extension's) guards its host's style: it is
     // never touched.
-    const other = document.createElement("clax-overlay");
+    const other = document.createElement("feedback-overlay");
     document.documentElement.append(host, other);
     document.body.innerHTML = `<aside id="chat" data-clax-ignore style="opacity: 0.5">chat</aside><div id="sh"></div>`;
     const shadow = document.getElementById("sh")!.attachShadow({ mode: "open" });

@@ -7,7 +7,7 @@ import { dispatchTrusted } from "./trusted";
 const posted: { type: string; requestId?: string | null; results?: { id: string; found: boolean }[] }[] = [];
 const shell = { postMessage: (m: { type: string }) => { posted.push(m); } };
 const send = (data: unknown) => dispatchTrusted(window, new MessageEvent("message", { data, origin: location.origin, source: shell as unknown as Window }));
-const focusBox = () => document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".f")!;
+const focusBox = () => document.querySelector("feedback-overlay")!.shadowRoot!.querySelector<HTMLElement>(".f")!;
 
 // An area drawn on a section that, by selector alone, now finds a section
 // with another child count and unlike text: another element on a later

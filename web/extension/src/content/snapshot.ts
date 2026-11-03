@@ -13,7 +13,7 @@
 // parser reads as raw text or RCDATA are written as escaped text only, never
 // with child elements; and style text cannot open a tag. The daemon also
 // serves the snapshot with a policy that runs no page script (§8.4).
-import { OVERLAY_TAG } from "../../../bridge/src/anchor";
+import { isOverlayHost } from "../../../bridge/src/anchor";
 
 export const MAX_ELEMENTS = 100_000;
 export const MAX_BYTES = 8 * 1024 * 1024;
@@ -184,7 +184,7 @@ class Writer {
     this.tick();
     const name = el.localName;
     const tag = name.toLowerCase();
-    if (this.o.skip.has(el) || tag === OVERLAY_TAG || DROP.has(tag)) return;
+    if (this.o.skip.has(el) || isOverlayHost(el) || DROP.has(tag)) return;
     if (tag === "input" && (el as HTMLInputElement).type === "hidden") return;
     if (tag === "meta" && (el.hasAttribute("http-equiv") || !META_NAMES.has((el.getAttribute("name") ?? "").toLowerCase()))) return;
     if ((tag === "set" || tag === "animate") && /(^|:)href$/i.test(el.getAttribute("attributeName") ?? "")) return;

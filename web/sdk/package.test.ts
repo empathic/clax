@@ -123,13 +123,13 @@ console.log(JSON.stringify(out));
     expect({ html: document.documentElement.outerHTML, globals: Object.keys(globalThis).sort() }).toEqual(before);
 
     const handle = mod.overlay({ instance: "https://clax.example", queue: "q1", auth: async () => { throw new Error("no backend"); } });
-    const root = document.querySelector("clax-overlay")?.shadowRoot;
+    const root = document.querySelector("feedback-overlay")?.shadowRoot;
     if (!root) throw new Error("the overlay added no shadow root");
     // jsdom has no constructed sheets: the overlay falls back to a <style> (bridge/src/sheet.ts).
     const css = [...(root.adoptedStyleSheets ?? []).flatMap(s => [...s.cssRules].map(r => r.cssText)), ...[...root.querySelectorAll("style")].map(s => s.textContent)].join("\n");
     expect(css).toMatch(/\.launcher\.svelte-/);
     handle.close();
-    expect(document.querySelector("clax-overlay")).toBeNull();
+    expect(document.querySelector("feedback-overlay")).toBeNull();
     expect(readFileSync(join(pkg, "overlay.js"), "utf8")).not.toContain("__CLAX_OVERLAY_COMPONENT_CSS__");
   });
 

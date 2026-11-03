@@ -11,8 +11,17 @@ export const AFFIX = 32;
 export const MAX_QUOTE = 2000;
 /** The daemon's limit on selector length, in characters. */
 export const MAX_SELECTOR = 1024;
-// White label (Addendum 11): still "clax-overlay"; renaming it is a mechanical follow-up across bridge, extension and e2e tests.
-export const OVERLAY_TAG = "clax-overlay";
+/** The element the overlay's shadow roots hang from. White label (Addendum
+ * 11): a host page's DOM never names Clax. */
+export const OVERLAY_TAG = "feedback-overlay";
+/** The host element's name before the white label. Still recognised (never
+ * made) for one release, so a host made by an older bundle or extension in
+ * the same page stays out of picks, renders and snapshots. */
+export const LEGACY_OVERLAY_TAG = "clax-overlay";
+/** A selector for every overlay host, current or legacy. */
+export const OVERLAY_HOSTS = `${OVERLAY_TAG}, ${LEGACY_OVERLAY_TAG}`;
+/** Whether `el` is itself an overlay host, current or legacy. */
+export const isOverlayHost = (el: Element) => el.localName === OVERLAY_TAG || el.localName === LEGACY_OVERLAY_TAG;
 /** Marks an element a page renders never shows (and comment mode never
  * picks): Clax's own interface carries it, and a host marks its own. */
 export const IGNORE_ATTR = "data-clax-ignore";
@@ -23,7 +32,7 @@ export const REDACT_ATTR = "data-clax-redact";
 export const SHOW_ATTR = "data-clax-show";
 /** The elements page renders leave out and comment mode never picks:
  * Clax's overlay hosts and whatever carries `IGNORE_ATTR`. */
-export const UNRENDERED = `${OVERLAY_TAG}, [${IGNORE_ATTR}]`;
+export const UNRENDERED = `${OVERLAY_HOSTS}, [${IGNORE_ATTR}]`;
 const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE"]);
 const SIMPLE_TAG = /^[A-Za-z][A-Za-z0-9-]*$/;
 
@@ -48,7 +57,7 @@ export function textIndex(root: Node): TextIndex {
   const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode: n => {
       const p = n.parentElement;
-      return p && !SKIP.has(p.tagName) && !p.closest(OVERLAY_TAG) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+      return p && !SKIP.has(p.tagName) && !p.closest(OVERLAY_HOSTS) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
     },
   });
   const pieces: Piece[] = [];
@@ -138,9 +147,9 @@ export const htmlHash = (el: Element) => `sha256:${sha256Hex(withoutOverlay(el).
 
 /** `el`, or a copy of it without the overlay hosts in it. */
 function withoutOverlay(el: Element): Element {
-  if (!el.querySelector(OVERLAY_TAG)) return el;
+  if (!el.querySelector(OVERLAY_HOSTS)) return el;
   const copy = el.cloneNode(true) as Element;
-  for (const h of copy.querySelectorAll(OVERLAY_TAG)) h.remove();
+  for (const h of copy.querySelectorAll(OVERLAY_HOSTS)) h.remove();
   return copy;
 }
 
@@ -263,7 +272,7 @@ export function textPrefix(el: Element, idx?: TextIndex): string {
     const walker = el.ownerDocument.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
       acceptNode: n => {
         const p = n.parentElement;
-        return p && !SKIP.has(p.tagName) && !p.closest(OVERLAY_TAG) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+        return p && !SKIP.has(p.tagName) && !p.closest(OVERLAY_HOSTS) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
       },
     });
     for (let n = walker.nextNode(); n && out.length < FINGERPRINT_TEXT + 1; n = walker.nextNode()) add(n as Text);
@@ -278,7 +287,7 @@ export function fingerprint(el: Element): { tag: string; text: string; children:
 }
 
 /** `el`'s child elements but Clax's overlay hosts. */
-const ownChildren = (el: Element) => el.childElementCount - [...el.children].filter(c => c.localName === OVERLAY_TAG).length;
+const ownChildren = (el: Element) => el.childElementCount - [...el.children].filter(isOverlayHost).length;
 
 /** `el`'s local name, at most 64 UTF-16 units, never ending inside a surrogate pair. */
 const tagOf = (el: Element) => cut(el.localName, 0, 64);

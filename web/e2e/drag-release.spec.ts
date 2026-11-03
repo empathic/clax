@@ -26,7 +26,7 @@ const toHost = (page: Page) => page.evaluate(n => (window as unknown as { claxTo
  * session to make the call without a gesture, as `quietEval` does). */
 const host = (page: Page, call: string) => page.evaluate(`window.claxHost.${call}`);
 /** How comment mode's drawing `cls` (`o` outline, `a` area, `f` focus) shows. */
-const drawn = (frame: Frame, cls: string) => frame.evaluate(c => (document.querySelector("clax-overlay")!.shadowRoot!.querySelector(`.${c}`) as HTMLElement).style.display || "none", cls);
+const drawn = (frame: Frame, cls: string) => frame.evaluate(c => (document.querySelector("feedback-overlay")!.shadowRoot!.querySelector(`.${c}`) as HTMLElement).style.display || "none", cls);
 
 /** Moves the mouse onto the frame at `at` from a shell element, so the shell
  * counts the viewer's arrival. A mouse that is over the frame only by the

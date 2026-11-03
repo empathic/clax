@@ -207,7 +207,7 @@ test("comment on a dev server page, reach the agent, and follow a hot reload", a
   await expect.poll(() => panel.text()).not.toContain("Confirm pairing in your Clax browser tab");
 
   // A page script finds no shadow root to read.
-  expect(await page.evaluate(() => (document.querySelector("clax-overlay") as HTMLElement | null)?.shadowRoot ?? null)).toBeNull();
+  expect(await page.evaluate(() => (document.querySelector("feedback-overlay") as HTMLElement | null)?.shadowRoot ?? null)).toBeNull();
 
   const t1 = Date.now();
   await page.locator("#save").click();
@@ -356,7 +356,7 @@ test("the panel recovers when the daemon restarts on another port", async ({ liv
 
 /** How many overlays the page's document has: each has two hosts in the
  * top layer, the pins' and comment mode's. */
-const overlays = (page: Page) => page.evaluate(() => document.querySelectorAll("clax-overlay[popover]").length / 2);
+const overlays = (page: Page) => page.evaluate(() => document.querySelectorAll("feedback-overlay[popover]").length / 2);
 
 test("Clax is on only in the tab it was turned on in, stays on through a reload, and turns off when the tab leaves the origin", async ({ live }) => {
   const { siteUrl } = live;
@@ -774,7 +774,7 @@ test.describe("holding only the dev server's origin, as the release build does o
       w.hostChanges = [];
       w.blurred = false;
       addEventListener("blur", () => { w.blurred = true; });
-      for (const el of document.querySelectorAll("clax-overlay")) new MutationObserver(() => w.hostChanges.push(el.getAttribute("style") ?? "")).observe(el, { attributes: true });
+      for (const el of document.querySelectorAll("feedback-overlay")) new MutationObserver(() => w.hostChanges.push(el.getAttribute("style") ?? "")).observe(el, { attributes: true });
     });
     await page.locator("#save").click();
     const composer = await until(() => page.frames().find(f => f.url().includes("/composer.html")));
@@ -931,7 +931,7 @@ test.describe("holding only the dev server's origin, as the release build does o
       d.showModal();
     });
     // Both hosts move into the dialog (outside it the page is inert) and stay in the top layer, above it.
-    await expect.poll(() => page.evaluate(() => [...document.querySelectorAll("dialog > clax-overlay")].filter(el => el.matches(":popover-open")).length)).toBe(2);
+    await expect.poll(() => page.evaluate(() => [...document.querySelectorAll("dialog > feedback-overlay")].filter(el => el.matches(":popover-open")).length)).toBe(2);
     await page.locator("#ok").click();
     const composer = await until(() => page.frames().find(f => f.url().includes("/composer.html")));
     await composer.locator("textarea").waitFor();

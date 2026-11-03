@@ -177,7 +177,7 @@ describe("private DOM renders", () => {
   });
 
   it("drops data-clax-ignore and the overlay host", async () => {
-    await render(`<p id="kept">page</p><div id="chat" data-clax-ignore><p>support chat</p></div><clax-overlay id="ov"></clax-overlay>`);
+    await render(`<p id="kept">page</p><div id="chat" data-clax-ignore><p>support chat</p></div><feedback-overlay id="ov"></feedback-overlay>`);
     expect(inCopy("#kept")).not.toBeNull();
     expect(inCopy("#chat")).toBeNull();
     expect(inCopy("#ov")).toBeNull();

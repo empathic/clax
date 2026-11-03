@@ -15,11 +15,11 @@ function dialog(): HTMLDialogElement {
 const open = (d: HTMLDialogElement) => { d.setAttribute("data-modal", ""); d.setAttribute("open", ""); };
 const settle = () => new Promise(r => setTimeout(r, 0));
 
-afterEach(() => { document.body.replaceChildren(); for (const h of document.querySelectorAll("clax-overlay")) h.remove(); });
+afterEach(() => { document.body.replaceChildren(); for (const h of document.querySelectorAll("feedback-overlay")) h.remove(); });
 
 describe("keepOnTop", () => {
   it("moves the host into the page's topmost modal dialog while it is open, and back to <html> after", async () => {
-    const host = document.createElement("clax-overlay");
+    const host = document.createElement("feedback-overlay");
     host.setAttribute("popover", "manual");
     const top = keepOnTop(document, host);
     top.place();
@@ -43,7 +43,7 @@ describe("keepOnTop", () => {
   });
 
   it("puts the host back when the page removes the dialog it was in, and does nothing once stopped", async () => {
-    const host = document.createElement("clax-overlay");
+    const host = document.createElement("feedback-overlay");
     const top = keepOnTop(document, host);
     top.place();
     const d = dialog();
@@ -71,7 +71,7 @@ describe("anchors of a dialog the host sits in", () => {
   it("leave the host out of the hash and the fingerprint", () => {
     const d = dialog();
     const before = [htmlHash(d), fingerprint(d)];
-    d.append(document.createElement("clax-overlay"));
+    d.append(document.createElement("feedback-overlay"));
     expect([htmlHash(d), fingerprint(d)]).toEqual(before);
   });
 });

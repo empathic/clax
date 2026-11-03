@@ -56,7 +56,7 @@ async function openOnPhone(page: Page, title: string, _mode: "subdomain"): Promi
 
 /** Taps the bridge's "Comment" chip in the frame, once it shows. */
 async function tapChip(page: Page, frame: Frame) {
-  const chip = frame.locator("clax-overlay .c");
+  const chip = frame.locator("feedback-overlay .c");
   await expect(chip).toBeVisible();
   await expect(chip).toHaveText("Comment");
   const b = (await chip.boundingBox())!;
@@ -95,7 +95,7 @@ for (const mode of ["subdomain"] as const) {
     // The drag did not scroll the page, and its selection and chip are gone.
     expect(await frame.evaluate(() => scrollY)).toBe(0);
     expect(await frame.evaluate(() => String(getSelection()))).toBe("");
-    await expect(frame.locator("clax-overlay .c")).toBeHidden();
+    await expect(frame.locator("feedback-overlay .c")).toBeHidden();
     await expect(page.locator(".composer textarea")).toBeFocused();
     const tid = await post(page, "Which regions?");
     const t = await api(d.base, d.token, `/api/artifacts/${aid}/threads/${tid}`);
@@ -133,10 +133,10 @@ for (const mode of ["subdomain"] as const) {
     const { frame, cdp } = await openOnPhone(page, `Drop offer ${mode}`, mode);
     const p = (await frame.locator("#p").boundingBox())!;
     await holdDrag(cdp, { x: p.x + 2, y: p.y + 14 }, { x: p.x + 160, y: p.y + 14 }, HOLD_MS);
-    await expect(frame.locator("clax-overlay .c")).toBeVisible();
+    await expect(frame.locator("feedback-overlay .c")).toBeVisible();
     const pic = (await frame.locator("#pic").boundingBox())!;
     await page.touchscreen.tap(pic.x + 150, pic.y + 100);
-    await expect(frame.locator("clax-overlay .c")).toBeHidden();
+    await expect(frame.locator("feedback-overlay .c")).toBeHidden();
     expect(await frame.evaluate(() => String(getSelection()))).toBe("");
     expect(await picks(page)).toBe(0);
     // The next tap picks as a tap does.
@@ -205,7 +205,7 @@ test.describe("app mode", () => {
       expect(pick.anchor.kind).toBe("range");
       expect(PARA.startsWith(pick.anchor.quote.trim())).toBe(true);
       expect(pick.clipError).toBeUndefined();
-      await expect(frame.locator("clax-overlay .c")).toBeHidden();
+      await expect(frame.locator("feedback-overlay .c")).toBeHidden();
       // The app's composer shows the words the drag selected.
       await expect.poll(async () => ((await ofType(page, "state")).at(-1)?.draft as { kind?: string } | undefined)?.kind).toBe("range");
       const draft = (await ofType(page, "state")).at(-1)!.draft as { quote: string };

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { AnchorCache, buildElementAnchor, buildRangeAnchor, cssPath, resolveAnchor, textIndex } from "../src/anchor";
+import { AnchorCache, buildElementAnchor, buildRangeAnchor, cssPath, LEGACY_OVERLAY_TAG, OVERLAY_HOSTS, OVERLAY_TAG, resolveAnchor, textIndex } from "../src/anchor";
 import type { Anchor } from "../src/protocol";
 
 const PAGE = `<main><section><h2>Intro</h2><p>Hello there.</p></section><section><h2>Quarterly goals</h2><ul><li>Ship it</li><li>Grow</li><li>Drop this</li></ul></section></main>`;
@@ -7,7 +7,7 @@ const h2 = () => document.querySelectorAll("h2")[1];
 
 beforeEach(() => {
   document.body.innerHTML = PAGE;
-  document.querySelectorAll("clax-overlay").forEach(n => n.remove());
+  document.querySelectorAll(OVERLAY_HOSTS).forEach(n => n.remove());
 });
 
 describe("cssPath", () => {
@@ -111,11 +111,14 @@ describe("labels", () => {
   });
 });
 
-it("text index skips scripts, styles, and the overlay", () => {
+it("text index skips scripts, styles, and the overlay (its legacy host name too)", () => {
   document.body.innerHTML = `<script>var x = "Quarterly goals"</script><style>p{}</style><p>Quarterly goals</p>`;
-  const overlay = document.createElement("clax-overlay");
-  overlay.textContent = "Quarterly goals";
-  document.documentElement.appendChild(overlay);
+  for (const tag of [OVERLAY_TAG, LEGACY_OVERLAY_TAG]) {
+    const overlay = document.createElement(tag);
+    overlay.textContent = "Quarterly goals";
+    document.documentElement.appendChild(overlay);
+  }
+  expect(OVERLAY_TAG).not.toMatch(/clax/i);
   expect(textIndex(document.body).text).toBe("Quarterly goals");
 });
 

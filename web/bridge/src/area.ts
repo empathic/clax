@@ -8,7 +8,7 @@
 // (`html`, its whole scrollable size). Holding Option (Alt) targets the
 // enclosing element of the hovered target, one ancestor more per Up press.
 
-import { OVERLAY_TAG, cssPath, fingerprint, htmlHash, named } from "./anchor";
+import { OVERLAY_HOSTS, cssPath, fingerprint, htmlHash, named } from "./anchor";
 import { blockAncestor } from "./block";
 import { type Anchor, type AnchorArea, type Box, INDEX_FILE } from "./protocol";
 import { caretAt } from "./target";
@@ -113,7 +113,7 @@ export function containingElement(doc: Document, r: AreaRect): Element {
   let best: Element | null = null;
   let bestArea = Infinity;
   for (const hit of hits) {
-    if (hit.closest(OVERLAY_TAG)) continue;
+    if (hit.closest(OVERLAY_HOSTS)) continue;
     // HTML inside an SVG `<foreignObject>` walks up to the `<svg>`, not into its shapes.
     for (let e: Element | null = foreignRoot(hit); e && e !== doc.documentElement; e = e.parentElement ? foreignRoot(e.parentElement) : null) {
       const b = e.getBoundingClientRect();

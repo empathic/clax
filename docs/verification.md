@@ -1316,7 +1316,7 @@ const frame = page.frame({ url: re }) ?? die("content frame never loaded");
 ok(`browser loaded the shell and the content frame at ${frame.url()}`);
 await page.getByRole("button", { name: "Comment", exact: true }).click();
 await frame.locator("h2").hover();
-await frame.locator("clax-overlay .o").waitFor({ state: "visible" });
+await frame.locator("feedback-overlay .o").waitFor({ state: "visible" });
 await frame.locator("h2").click();
 const composer = page.locator(".composer");
 await composer.locator("img.clip").waitFor({ state: "visible" });

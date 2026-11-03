@@ -57,11 +57,11 @@ function env(): OverlayEnv {
 }
 const tell = (m: unknown, sender = WORKER) => listeners.forEach(l => l(m, sender));
 const tick = (ms: number) => ticks.filter(e => e.ms === ms).forEach(e => e.fn());
-const hosts = () => [...document.querySelectorAll("clax-overlay")];
+const hosts = () => [...document.querySelectorAll("feedback-overlay")];
 const pins = () => roots.flatMap(r => [...r.querySelectorAll("button.pin")]);
 
 beforeEach(() => {
-  document.querySelectorAll("clax-overlay").forEach(n => n.remove());
+  document.querySelectorAll("feedback-overlay").forEach(n => n.remove());
   document.body.innerHTML = `<div id="app"><main><button id="save">Save</button></main></div>`;
   sent = []; listeners = []; ticks = []; roots = []; global = {};
   timers = manual();
@@ -227,7 +227,7 @@ describe("the overlay", () => {
     const q = sent.filter(m => m.t === "quiet");
     expect(q).toHaveLength(1);
     expect(q[0].snapshot).toContain("Save");
-    expect(q[0].snapshot).not.toContain("clax-overlay");
+    expect(q[0].snapshot).not.toContain("feedback-overlay");
     timers.advance(5000);
     tick(1000);
     expect(sent.filter(m => m.t === "quiet")).toHaveLength(1);

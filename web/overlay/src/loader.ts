@@ -261,8 +261,8 @@ export async function install(s: Snippet): Promise<Installed> {
         if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || e.isComposing || e.key.toLowerCase() !== key) return;
         const at = e.composedPath()[0];
         if (at instanceof HTMLElement && (at.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(at.tagName))) return;
-        // The overlay's host (bridge/src/anchor.ts OVERLAY_TAG, not imported: the loader stays small).
-        if (at instanceof Element && at.closest("clax-overlay")) return;
+        // The overlay's hosts (bridge/src/anchor.ts OVERLAY_HOSTS, not imported: the loader stays small).
+        if (at instanceof Element && at.closest("feedback-overlay, clax-overlay")) return;
         e.preventDefault();
         report();
       };

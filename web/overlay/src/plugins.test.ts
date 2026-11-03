@@ -403,7 +403,7 @@ describe("pickers", () => {
 
 describe("the plugins on their own", () => {
   it("codeRegions: the outermost code in the image, in its pixels, rounded outward; none of Clax's own", () => {
-    document.body.innerHTML = `<pre id=a><code id=b>x</code></pre><clax-overlay><pre id=c>y</pre></clax-overlay>`;
+    document.body.innerHTML = `<pre id=a><code id=b>x</code></pre><feedback-overlay><pre id=c>y</pre></feedback-overlay>`;
     const rect = (l: number, t: number, w: number, h: number) => () => ({ left: l, top: t, right: l + w, bottom: t + h, width: w, height: h, x: l, y: t, toJSON: () => ({}) }) as DOMRect;
     document.getElementById("a")!.getBoundingClientRect = rect(10.5, 20.2, 100, 30);
     document.getElementById("c")!.getBoundingClientRect = rect(0, 0, 50, 50);

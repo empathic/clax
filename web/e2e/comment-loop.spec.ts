@@ -26,7 +26,7 @@ test(`comment in the browser, the agent receives it, replies, and resolves`, asy
   await page.getByRole("button", { name: "Comment", exact: true }).click();
   await commentModeIn(frame);
   await frame.locator("h2").hover();
-  await expect(frame.locator("clax-overlay .o")).toBeVisible();
+  await expect(frame.locator("feedback-overlay .o")).toBeVisible();
   await frame.locator("h2").click();
   const composer = page.locator(".composer");
   await expect(composer.locator("img.clip")).toBeVisible();

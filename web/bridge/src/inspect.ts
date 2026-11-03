@@ -138,7 +138,7 @@ export function settle(doc: Document, maxMs: number, deps: SettleDeps): Promise<
   });
 }
 
-const HIDDEN_TAGS = /^(script|style|noscript|template|head|clax-overlay)$/i;
+const HIDDEN_TAGS = /^(script|style|noscript|template|head|feedback-overlay|clax-overlay)$/i;
 
 /** Whether a reader sees `el` (or would, scrolled to it). */
 function shown(el: Element, win: Window): boolean {

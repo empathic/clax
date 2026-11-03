@@ -4,7 +4,7 @@
 // by selector (default `pre, code, .cm-content, [data-clax-code]`); a region
 // inside another is blurred with it.
 import { type Box, definePlugin, type FilterInput, PLUGIN_API_VERSION } from "../../../sdk/src/plugin";
-import { OVERLAY_TAG } from "../../../bridge/src/anchor";
+import { OVERLAY_HOSTS } from "../../../bridge/src/anchor";
 
 export const CODE_SELECTOR = "pre, code, .cm-content, [data-clax-code]";
 
@@ -26,7 +26,7 @@ export function codeRegions(input: Pick<FilterInput, "at" | "scale" | "doc">, se
   let els: Element[];
   try { els = [...doc.querySelectorAll(selector)]; } catch { return out; }
   for (const el of els) {
-    if (el.parentElement?.closest(selector) || el.closest(OVERLAY_TAG)) continue;
+    if (el.parentElement?.closest(selector) || el.closest(OVERLAY_HOSTS)) continue;
     const r = el.getBoundingClientRect();
     const x0 = Math.max(r.left + sx, at.x), y0 = Math.max(r.top + sy, at.y);
     const x1 = Math.min(r.right + sx, at.x + at.w), y1 = Math.min(r.bottom + sy, at.y + at.h);
