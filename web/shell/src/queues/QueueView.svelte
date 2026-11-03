@@ -13,11 +13,13 @@
   // when the stream comes back (one fetch at a time, one more after it when
   // another change came meanwhile, none while Load more is fetching): the
   // rows stay until the new ones replace them, so the page keeps its place,
-  // and what changed is said politely.
+  // and what changed is said politely. Under its name, what its reporters
+  // see and its origins; its Installs open below (an admin edits them).
   import { onMount } from "svelte";
   import type { EventStream } from "../stream";
   import { relativeTime } from "../format";
   import * as api from "./api";
+  import Installs from "./Installs.svelte";
   import { STATE_LABEL, TABS, noteOf, queueTopic, refusal, reportHref, reporterName } from "./model";
 
   const p: { qid: string; queue?: api.Queue | null; nav: (e: MouseEvent) => void; stream?: EventStream } = $props();
@@ -27,6 +29,8 @@
   let next = $state<string | null>(null);
   let err = $state<string | null>(null);
   let more = $state(false);
+  // The queue's installs, fetched once their section is opened.
+  let installsOpen = $state(false);
   // What changed since the list was last fetched, said politely.
   let notice = $state("");
   // How many pages the tab shows.
@@ -137,6 +141,16 @@
     {#if p.queue}<span class="role">{p.queue.role === "admin" ? "Admin" : "Triage"}</span>{/if}
   </header>
   {#if p.queue === undefined}<p class="qerr" role="alert">No queue {p.qid} is yours to triage.</p>{/if}
+  {#if p.queue}
+    <p class="qabout">
+      <span class="see">{p.queue.reporters_see === "all" ? "Reporters see every report in this queue" : "Reporters see only their own reports"}</span>
+      {#if p.queue.origins.length}<span class="origins">from {p.queue.origins.join(", ")}</span>{/if}
+    </p>
+    <details class="qinstalls" ontoggle={e => { installsOpen = e.currentTarget.open; }}>
+      <summary>Installs</summary>
+      {#if installsOpen}<Installs queue={p.queue} admin={p.queue.role === "admin"} />{/if}
+    </details>
+  {/if}
   <div class="tabs" role="tablist" aria-label="Reports by state" tabindex="-1" onkeydown={keys}>
     {#each TABS as t (t.key)}
       <button type="button" role="tab" class="tab" data-tab={t.key} aria-selected={tab === t.key} tabindex={tab === t.key ? 0 : -1} aria-controls="qv-list" onclick={() => choose(t.key)}>{t.label}</button>
@@ -184,6 +198,10 @@
   .qh { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; }
   .qh h2 { margin: 0; font-size: 22px; line-height: 1.2; overflow-wrap: anywhere; min-width: 0; }
   .role { padding: 1px 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 12px; }
+  .qabout { display: flex; flex-wrap: wrap; gap: 2px 12px; margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+  .origins { font: 12px var(--mono); overflow-wrap: anywhere; }
+  .qinstalls { margin: 8px 0 0; font-size: 13px; }
+  .qinstalls summary { cursor: pointer; color: var(--muted); }
   .qerr { margin: 12px 0 0; color: var(--danger); font-size: 13px; }
   .tabs { display: flex; gap: 2px; margin: 14px 0 12px; border-bottom: 1px solid var(--border); overflow-x: auto; }
   .tab { min-height: 34px; padding: 4px 12px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--muted); white-space: nowrap; }

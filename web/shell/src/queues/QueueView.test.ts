@@ -195,4 +195,21 @@ describe("QueueView", () => {
     expect(tab(m.root, "resolved")!.getAttribute("aria-selected")).toBe("true");
     expect(m.root.querySelector(".qnone")!.textContent).toBe("No resolved reports.");
   });
+
+  it("says what its reporters see, and lists its installs once they are opened", async () => {
+    const calls = stubFetch({
+      [`GET ${LIST}?state=active&order=newest`]: { reports: [], next: null },
+      "GET /api/queues/q1/installs": { installs: [{ id: "i1", queue_id: "q1", name: "Changelist", origins: ["https://app.example"], config: { product_name: null, report_label: null, queue_label: null, reports_button: true, picker: true, brand_color: null }, created_at: "", updated_at: "" }] },
+    });
+    const m = mount(QueueView, { qid: "q1", queue: { ...QUEUE, reporters_see: "all" as const }, nav: () => {} });
+    await settle();
+    expect(m.root.querySelector(".qabout .see")!.textContent).toBe("Reporters see every report in this queue");
+    expect(m.root.querySelector(".qabout .origins")!.textContent).toBe("from https://app.example");
+    expect(calls.some(c => c.url.endsWith("/installs"))).toBe(false);
+    const details = m.root.querySelector<HTMLDetailsElement>("details.qinstalls")!;
+    flush(() => { details.open = true; details.dispatchEvent(new Event("toggle")); });
+    await settle();
+    expect(m.root.querySelector('[data-install="i1"]')!.textContent).toContain("Changelist");
+    expect([...m.root.querySelectorAll(".qinstalls button")].some(b => b.textContent === "Edit")).toBe(false);
+  });
 });
