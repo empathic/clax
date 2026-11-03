@@ -969,6 +969,8 @@ async fn other_commands_refuse_remotely() {
         vec!["tags"],
         vec!["inbox"],
         vec!["toolpath", "status"],
+        vec!["audit"],
+        vec!["audit", "--follow"],
         vec!["extension", "status"],
         vec!["comments", "name", "Samuel"],
     ] {
