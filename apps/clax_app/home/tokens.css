@@ -29,9 +29,17 @@
   --danger-tint: #fbeceb;
   --primary-hover: #3a3935;
   --scrim: rgba(20,20,15,.40);
+  --shadow: rgba(20,20,15,.08);
   --pin: #e0532f;
   --on-pin: #141413;
   --pin-ring: #ffffff;
+  --pin-shadow: rgba(20,20,15,.45);
+  --pin-addressed: #ffffff;
+  --pin-addressed-ink: #1c1b19;
+  --pin-addressed-ring: #2f6f2a;
+  --pin-onit: #2f6f2a;
+  --on-pin-onit: #ffffff;
+  --frame: #ffffff;
   --surface-container-lowest: #ffffff;
   --surface-container-low: #fbfbf9;
   --surface-container: #f2f2ef;
@@ -41,7 +49,7 @@
   --elev-2: 0 2px 6px rgba(20,20,15,.08), 0 8px 24px rgba(20,20,15,.10);
   --elev-3: 0 2px 6px rgba(20,20,15,.06), 0 16px 40px rgba(20,20,15,.12);
   --accent: var(--agent);
-  --pink: var(--selection-bg);
+  --accent-ink: var(--agent-ink);
   --focus: var(--agent);
   --font: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -113,9 +121,7 @@
     --danger-tint: #3a1f1c;
     --primary-hover: #d6d4ce;
     --scrim: rgba(0,0,0,.60);
-    --pin: #e0532f;
-    --on-pin: #141413;
-    --pin-ring: #ffffff;
+    --shadow: rgba(0,0,0,.50);
     --surface-container-lowest: #0f0f0e;
     --surface-container-low: #1c1c1a;
     --surface-container: #232321;
@@ -156,9 +162,7 @@
   --danger-tint: #3a1f1c;
   --primary-hover: #d6d4ce;
   --scrim: rgba(0,0,0,.60);
-  --pin: #e0532f;
-  --on-pin: #141413;
-  --pin-ring: #ffffff;
+  --shadow: rgba(0,0,0,.50);
   --surface-container-lowest: #0f0f0e;
   --surface-container-low: #1c1c1a;
   --surface-container: #232321;

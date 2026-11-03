@@ -196,13 +196,17 @@ npm_script_build(
     visibility = ["//visibility:public"],
 )
 
-# What scripts/sync-tokens.py reads from the shell: the haikus it copies
-# into the app, and the app-mode colours it checks against design/tokens.json.
+# What scripts/sync-tokens.py reads and writes in web/: the haikus it copies
+# into the app, the generated regions of the shell's theme, the overlay's
+# tokens and the live colours, and the frame's live palette it checks.
 filegroup(
     name = "token_inputs",
     srcs = [
+        "overlay/src/tokens.css",
         "shell/src/theme.css",
+        "shell/src/ui/LiveWriters.svelte",
         "shell/src/view/haiku.json",
+        "shell/src/view/live-layers.ts",
     ],
     visibility = [
         "//design:__pkg__",

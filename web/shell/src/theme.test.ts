@@ -60,14 +60,17 @@ describe("theme", () => {
 
   it("gives both dark paths the same overrides, and the accent greens alias the agent's", () => {
     expect(systemDark).toEqual(tokens(block(':root[data-theme="dark"]')));
-    for (const t of ["--bg", "--card", "--raised", "--hover", "--fg", "--muted", "--border", "--border-hover", "--border-strong", "--you", "--on-you", "--you-ink", "--agent", "--agent-ink", "--accent-tint", "--comment-hl", "--danger", "--danger-tint", "--shadow", "--elev", "--elev-lg", "--pink", "--font", "--mono", "--radius", "--radius-sm"]) expect(light, t).toHaveProperty(t);
+    for (const t of ["--bg", "--card", "--raised", "--hover", "--fg", "--muted", "--border", "--border-hover", "--border-strong", "--you", "--on-you", "--you-ink", "--agent", "--agent-ink", "--accent-tint", "--comment-hl", "--danger", "--danger-tint", "--shadow", "--elev", "--elev-lg", "--selection-bg", "--font", "--mono", "--radius", "--radius-sm"]) expect(light, t).toHaveProperty(t);
     expect(light["--accent"]).toBe("var(--agent)");
     expect(light["--accent-ink"]).toBe("var(--agent-ink)");
     expect(light["--focus"]).toBe("var(--agent)");
     // The dark paths set the green once, as --agent; the aliases follow it.
     for (const d of [systemDark, tokens(block(':root[data-theme="dark"]'))]) for (const t of ["--accent", "--accent-ink", "--focus"]) expect(d).not.toHaveProperty(t);
-    // Pins sit over the artifact: one literal set, the same in both themes.
-    for (const t of ["--pin", "--on-pin", "--pin-ring"]) expect(systemDark).not.toHaveProperty(t);
+    // Pins and the frame sit over the artifact: the over tier, one value, set in :root only.
+    for (const t of ["--pin", "--on-pin", "--pin-ring", "--pin-addressed", "--pin-addressed-ink", "--pin-addressed-ring", "--pin-onit", "--on-pin-onit", "--pin-shadow", "--frame"]) {
+      expect(light, t).toHaveProperty(t);
+      expect(systemDark).not.toHaveProperty(t);
+    }
   });
 
   it.each([["light", light], ["dark", dark], ["system dark", { ...light, ...systemDark }]] as const)("meets WCAG AA in %s", (_, theme) => {

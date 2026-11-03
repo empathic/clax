@@ -13,11 +13,21 @@ Writes:
   apps/clax_app/assets/kit/kit.css  the text between /* tokens:begin */ and
                                     /* tokens:end */: the "kit" map's --k-*
                                     properties
+  web/shell/src/theme.css           between its markers: the shell's
+                                    colours (both tiers), tags, shadows,
+                                    fonts, --t and radii, light and dark
+  web/overlay/src/tokens.css        between its markers: the overlay's
+                                    :host, exactly the "overlayHost" names
+  web/shell/src/ui/LiveWriters.svelte  between its markers: --live-<n>
 
-and checks, in both modes and both with and without more contrast, that
-every pair under "contrast" meets its minimum (WCAG 2.x, a translucent
-colour composited on the pair's background), that web/shell/src/theme.css
-gives each "appMode" colour the source's value, that kit.css declares no
+and checks that each "over" colour (the tier over the artifact) has one
+value for every theme and is not also a semantic colour; that every *-ink
+and on-* colour is the text of some contrast pair; in both modes and both
+with and without more contrast, that every pair under "contrast", each
+tag's text on its tint and each live colour on --card, --bg and the frame
+meets its minimum (WCAG 2.x, a translucent colour composited on the pair's
+background); that LIVE_PALETTE in web/shell/src/view/live-layers.ts is the
+live colours the frame draws; that kit.css declares no
 token of the "kit" map again outside its generated region but inside an
 @supports block (a later declaration would override the brand), and that
 every color-mix() in kit.css, the home app's home.css and the map's
@@ -47,6 +57,9 @@ DART = "apps/clax_app/lib/ui/tokens.g.dart"
 HAIKU = "apps/clax_app/assets/haiku.json"
 HAIKU_SOURCE = "web/shell/src/view/haiku.json"
 THEME_CSS = "web/shell/src/theme.css"
+OVERLAY_CSS = "web/overlay/src/tokens.css"
+LIVE_SVELTE = "web/shell/src/ui/LiveWriters.svelte"
+LIVE_TS = "web/shell/src/view/live-layers.ts"
 KIT_CSS = "apps/clax_app/assets/kit/kit.css"
 HOME_APP_CSS = "apps/clax_app/home/home.css"
 MAP_JS = "apps/clax_app/assets/kit/map.js"
@@ -104,16 +117,43 @@ def dart_color(text):
 
 
 class Tokens:
+    """The source's colours: the semantic tier ("color", a value per theme
+    or an alias to another colour) and the over-the-artifact tier ("over",
+    one value for every theme, since what it sits on is the artifact's and
+    Clax sets none of its colours), read as one map; plus the tag palette
+    ("tags") and the live colours ("live"), read by their CSS names."""
+
     def __init__(self, data):
         self.data = data
-        self.color = data["color"]
+        self.over = data.get("over", {})
+        self.color = dict(data["color"])
+        for name, v in self.over.items():
+            if isinstance(v, str) and name not in self.color:
+                self.color[name] = {"light": v, "dark": v}
 
     def is_alias(self, name):
         return isinstance(self.color[name], str)
 
     def concrete(self):
-        """The colour names that carry values, in the source's order."""
+        """The colour names that carry values, in the source's order, the
+        over tier last."""
         return [n for n in self.color if not self.is_alias(n)]
+
+    def themed(self):
+        """The concrete colours whose value may change with the theme: not
+        the over tier's."""
+        return [n for n in self.concrete() if n not in self.over]
+
+    def colour(self, name, theme, more=False):
+        """The value of a colour by its CSS name: a semantic or over colour,
+        tag-<key>-<bg|fg|bd>, or live-<n>."""
+        m = re.fullmatch(r"tag-([a-z]+)-(bg|fg|bd)", name)
+        if m and name not in self.color:
+            return self.data["tags"][m.group(1)][m.group(2)][theme]
+        m = re.fullmatch(r"live-(\d+)", name)
+        if m and name not in self.color:
+            return self.data["live"][theme][int(m.group(1))]
+        return self.value(name, theme, more)
 
     def resolve(self, name):
         seen = set()
@@ -155,15 +195,34 @@ def contrast(fg, bg, page):
     return (lighter + 0.05) / (darker + 0.05)
 
 
+def pairs(tokens):
+    """The source's contrast pairs, and those its palettes imply: each tag's
+    text on its tint, and each live colour on the grounds it is drawn on
+    (its theme's --card and --bg, and the frame, which draws the "frame"
+    theme's set in both)."""
+    out = list(tokens.data.get("contrast", []))
+    both = ["light", "dark"]
+    for key in tokens.data.get("tags", {}):
+        out.append({"fg": "tag-%s-fg" % key, "bg": "tag-%s-bg" % key, "min": 4.5, "themes": both})
+    live = tokens.data.get("live")
+    if live:
+        for i in range(len(live["light"])):
+            for ground in ("card", "bg"):
+                out.append({"fg": "live-%d" % i, "bg": ground, "min": 4.5, "themes": both})
+            if "frame" in tokens.color:
+                out.append({"fg": "live-%d" % i, "bg": "frame", "min": 4.5, "themes": [live["frame"]]})
+    return out
+
+
 def contrast_failures(tokens):
     """Each pair below its minimum, in each theme it names, in the base
     palette and in the more-contrast one where that changes the pair."""
     out = []
-    for pair in tokens.data.get("contrast", []):
+    for pair in pairs(tokens):
         for theme in pair["themes"]:
             seen = None
             for more in (False, True):
-                colours = (tokens.value(pair["fg"], theme, more), tokens.value(pair["bg"], theme, more))
+                colours = (tokens.colour(pair["fg"], theme, more), tokens.colour(pair["bg"], theme, more))
                 page = tokens.value("bg", theme, more)
                 if (colours, page) == seen:
                     continue
@@ -177,56 +236,166 @@ def contrast_failures(tokens):
     return out
 
 
-# theme.css's app-mode colours
+# The source's own rules
 
 
-def css_block(css, selector):
-    """The declarations of the first block whose opening line starts with selector."""
-    lines = css.split("\n")
-    for i, line in enumerate(lines):
-        if line.startswith(selector):
-            body = []
-            for rest in lines[i + 1 :]:
-                if rest.startswith("}"):
-                    return "\n".join(body)
-                body.append(rest)
-    return None
-
-
-def declarations(block):
-    return {m.group(1): m.group(2).strip() for m in re.finditer(r"--([a-z0-9-]+)\s*:\s*([^;]+);", block or "")}
-
-
-def check_app_mode(tokens, theme_css):
-    light = declarations(css_block(theme_css, ":root {"))
-    darks = [
-        declarations(css_block(theme_css, ':root:not([data-theme="light"])')),
-        declarations(css_block(theme_css, ':root[data-theme="dark"]')),
-    ]
+def schema_problems(tokens):
+    """Problems with the source itself: an over-the-artifact colour with a
+    value per theme (the tier has one value, since the artifact under it is
+    the same in every theme) or that is also a semantic colour; and an
+    *-ink or on-* colour in no contrast pair (an ink is text, so some
+    ground must be named for it)."""
     out = []
-
-    def same(css_value, token_value):
-        try:
-            return parse_color(css_value) == parse_color(token_value)
-        except ValueError:
-            return False
-
-    for name in tokens.data.get("appMode", []):
-        want_light, want_dark = tokens.value(name, "light"), tokens.value(name, "dark")
-        got = light.get(name)
-        if got is None:
-            out.append("theme.css: --%s is missing, design/tokens.json says %s" % (name, want_light))
-            continue
-        if not same(got, want_light):
-            out.append("theme.css: --%s is %s, design/tokens.json says %s" % (name, got, want_light))
-        for dark in darks:
-            got_dark = dark.get(name, got)
-            if not same(got_dark, want_dark):
-                out.append(
-                    "theme.css: --%s is %s (dark), design/tokens.json says %s" % (name, got_dark, want_dark)
-                )
-                break
+    for name, v in tokens.over.items():
+        if not isinstance(v, str):
+            out.append("design/tokens.json: over.%s is one value for every theme, a string, not %s" % (name, json.dumps(v)))
+        if name in tokens.data["color"]:
+            out.append("design/tokens.json: %s is in both color and over" % name)
+    if out:
+        return out
+    paired = {tokens.resolve(p["fg"]) for p in pairs(tokens) if p["fg"] in tokens.color}
+    for name in tokens.color:
+        if (name.endswith("-ink") or name.startswith("on-")) and tokens.resolve(name) not in paired:
+            out.append("design/tokens.json: %s is an ink in no contrast pair" % name)
     return out
+
+
+# Generated regions: the text between /* tokens:begin */ and /* tokens:end */
+
+
+class RegionError(Exception):
+    pass
+
+
+def with_region(label, text, body, indent=""):
+    """text with the lines of body (each indented by indent) between its
+    markers, under the generated header."""
+    if text is None:
+        raise RegionError("%s: missing" % label)
+    begin = text.find(KIT_BEGIN)
+    if begin < 0:
+        raise RegionError("%s: tokens:begin marker missing" % label)
+    end = text.find(KIT_END, begin)
+    if end < 0:
+        raise RegionError("%s: tokens:end marker missing" % label)
+    lines = (KIT_HEADER + body).rstrip("\n").split("\n")
+    region = "\n" + "".join((indent + l if l else l) + "\n" for l in lines) + indent
+    return text[: begin + len(KIT_BEGIN)] + region + text[end:]
+
+
+def theme_blocks(light, dark, indent="  "):
+    """:root with light, and dark under both dark paths: the system's (unless
+    the page chose light) and the page's choice (data-theme="dark")."""
+    return (
+        ":root {\n"
+        + "".join("%s%s;\n" % (indent, d) for d in light)
+        + "}\n"
+        + ':root:not([data-theme="light"]) { @media (prefers-color-scheme: dark) {\n'
+        + "".join("%s%s;\n" % (indent, d) for d in dark)
+        + "} }\n"
+        + ':root[data-theme="dark"] {\n'
+        + "".join("%s%s;\n" % (indent, d) for d in dark)
+        + "}\n"
+    )
+
+
+def curve_css(d, name):
+    c = d["motion"]["curves"].get(name)
+    return name if c is None else "cubic-bezier(%s)" % ",".join(num(x) for x in c)
+
+
+# The shell's names that differ from the home app's: its two shadows are
+# elevation levels 1 and 3, and its one duration, --t, is motion's t-fast
+# (the home app's --t is motion's t).
+SHELL_ELEVATION = {"elev": "1", "elev-lg": "3"}
+SHELL_T = "t-fast"
+
+
+def shell_value(tokens, name, theme):
+    """The shell's value of a non-colour custom property it shares with the
+    overlay: an elevation, a font, --t or a radius."""
+    d = tokens.data
+    if name in SHELL_ELEVATION:
+        return d["elevation"][SHELL_ELEVATION[name]][theme]
+    if name in ("font", "mono", "serif"):
+        return d["font"]["web"]["sans" if name == "font" else name]
+    if name == "t":
+        m = d["motion"][SHELL_T]
+        return "%sms %s" % (m["ms"], curve_css(d, m["curve"]))
+    if name == "radius":
+        return num(d["radius"]["md"]) + "px"
+    if name.startswith("radius-") and name[len("radius-") :] in d["radius"]:
+        return num(d["radius"][name[len("radius-") :]]) + "px"
+    raise RegionError("design/tokens.json: %s is no token" % name)
+
+
+def shell_region(tokens):
+    """web/shell/src/theme.css's tokens: every colour (aliases as var() of
+    their colour, so a theme sets the green once), the over tier in :root
+    only, the tag palette, the shadows, fonts, --t and radii."""
+    d = tokens.data
+    tags = d.get("tags", {})
+
+    def themed(theme):
+        out = ["--%s: %s" % (n, tokens.value(n, theme)) for n in tokens.themed()]
+        for key, parts in tags.items():
+            out += ["--tag-%s-%s: %s" % (key, p, parts[p][theme]) for p in ("bg", "fg", "bd")]
+        out += ["--%s: %s" % (n, shell_value(tokens, n, theme)) for n in SHELL_ELEVATION]
+        return out
+
+    light = themed("light")
+    light += ["--%s: var(--%s)" % (n, tokens.color[n]) for n in tokens.color if tokens.is_alias(n)]
+    light += ["--%s: %s" % (n, v) for n, v in tokens.over.items()]
+    light += ["--%s: %s" % (n, shell_value(tokens, n, "light")) for n in ("font", "mono", "serif", "t")]
+    light += ["--%s: %s" % (n, shell_value(tokens, n, "light")) for n in radius_names(d)]
+    return theme_blocks(light, themed("dark"))
+
+
+def radius_names(d):
+    return ["radius" if k == "md" else "radius-" + k for k in d["radius"] if k != "tile"]
+
+
+def overlay_region(tokens):
+    """web/overlay/src/tokens.css's tokens: exactly the names "overlayHost"
+    lists, on :host, colours as their values (an alias resolved), dark under
+    the system's dark scheme, since the overlay sits on a page that is not
+    Clax's and cannot see the shell's data-theme."""
+    names = tokens.data.get("overlayHost", [])
+
+    def value(n, theme):
+        if n in tokens.color:
+            return tokens.value(n, theme)
+        return shell_value(tokens, n, theme)
+
+    def themed(n):
+        return (n in tokens.color and n not in tokens.over) or n in SHELL_ELEVATION
+
+    light = "".join("  --%s: %s;\n" % (n, value(n, "light")) for n in names)
+    dark = "".join("    --%s: %s;\n" % (n, value(n, "dark")) for n in names if themed(n))
+    return ":host {\n" + light + "}\n@media (prefers-color-scheme: dark) {\n  :host {\n" + dark + "  }\n}\n"
+
+
+def live_region(tokens):
+    """LiveWriters.svelte's --live-<n>, one per person on the artifact."""
+    live = tokens.data["live"]
+    return theme_blocks(
+        ["--live-%d: %s" % (i, c) for i, c in enumerate(live["light"])],
+        ["--live-%d: %s" % (i, c) for i, c in enumerate(live["dark"])],
+    )
+
+
+def live_palette(tokens, ts):
+    """Problems with LIVE_PALETTE in web/shell/src/view/live-layers.ts: the
+    frame draws it, so it must be the "frame" theme's live colours."""
+    m = re.search(r"export const LIVE_PALETTE[^=]*=\s*\[([^\]]*)\]", ts or "")
+    if not m:
+        return ["%s: no `export const LIVE_PALETTE = [...]`" % LIVE_TS]
+    have = re.findall(r'"([^"]*)"', m.group(1))
+    live = tokens.data["live"]
+    want = live[live["frame"]]
+    if have == want:
+        return []
+    return ["%s: LIVE_PALETTE is %s; %s's live.%s is %s" % (LIVE_TS, have, SOURCE, live["frame"], want)]
 
 
 # The home app's CSS
@@ -238,7 +407,8 @@ def home_css(tokens):
 
     def colours(theme):
         lines = []
-        for name in tokens.concrete():
+        # The over tier has one value: :root sets it, the dark blocks do not.
+        for name in tokens.concrete() if theme == "light" else tokens.themed():
             lines.append("  --%s: %s;" % (name, tokens.color[name][theme]))
         for i, c in enumerate(d["surfaceContainers"][theme]):
             suffix = "-" + CONTAINER_NAMES[i] if CONTAINER_NAMES[i] else ""
@@ -248,10 +418,7 @@ def home_css(tokens):
         return lines
 
     def curve(name):
-        c = d["motion"]["curves"].get(name)
-        if c is None:
-            return name
-        return "cubic-bezier(%s)" % ",".join(num(x) for x in c)
+        return curve_css(d, name)
 
     root = colours("light")
     for name in tokens.color:
@@ -479,6 +646,31 @@ def dart(tokens):
         + "    return MediaQuery.disableAnimationsOf(context) && d > reduced ? reduced : d;\n"
         + "  }\n"
         + "}\n"
+        + live_dart(d)
+    )
+
+
+def live_dart(d):
+    """ClaxLive: the live colours, one per person on an artifact."""
+    live = d.get("live")
+    if not live:
+        return ""
+
+    def colours(theme):
+        return ", ".join(dart_color(c) for c in live[theme])
+
+    return (
+        "\n"
+        + "/// The live colours, one per person on an artifact, by brightness. %s\n" % live["rule"]
+        + "abstract final class ClaxLive {\n"
+        + "  static const List<Color> light = [%s];\n" % colours("light")
+        + "  static const List<Color> dark = [%s];\n\n" % colours("dark")
+        + "  /// Live colour [c] in brightness [b].\n"
+        + "  static Color of(int c, Brightness b) {\n"
+        + "    final set = b == Brightness.dark ? dark : light;\n"
+        + "    return set[c % set.length];\n"
+        + "  }\n"
+        + "}\n"
     )
 
 
@@ -626,9 +818,7 @@ def kit_region(tokens):
             more.append("    %s: var(%s);" % (k, next((s for s in stronger if s.startswith(k)), stronger[0])))
 
     return (
-        "\n"
-        + KIT_HEADER
-        + ":root {\n"
+        ":root {\n"
         + block("light", list(kit), "  ")
         + "\n}\n"
         + "@media (prefers-color-scheme: dark) {\n"
@@ -648,13 +838,10 @@ def kit_region(tokens):
 
 def kit_css(tokens, css):
     """kit.css with its generated region rewritten."""
-    begin = css.find(KIT_BEGIN)
-    if begin < 0:
-        raise KitError("kit.css: tokens:begin marker missing")
-    end = css.find(KIT_END, begin)
-    if end < 0:
-        raise KitError("kit.css: tokens:end marker missing")
-    return css[: begin + len(KIT_BEGIN)] + kit_region(tokens) + css[end:]
+    try:
+        return with_region("kit.css", css, kit_region(tokens))
+    except RegionError as e:
+        raise KitError(str(e))
 
 
 def css_walk(css):
@@ -766,11 +953,27 @@ def main(argv):
     root = repo_root()
     tokens = Tokens(json.loads(read(root, SOURCE)))
 
-    problems = contrast_failures(tokens) + check_app_mode(tokens, read(root, THEME_CSS))
-    outputs = {
+    problems = schema_problems(tokens)
+    if problems:
+        for p in problems:
+            print(p)
+        return 1
+    problems = contrast_failures(tokens)
+    problems += live_palette(tokens, read(root, LIVE_TS))
+    outputs = {}
+    for path, body, indent in (
+        (THEME_CSS, shell_region(tokens), ""),
+        (OVERLAY_CSS, overlay_region(tokens), ""),
+        (LIVE_SVELTE, live_region(tokens), "    "),
+    ):
+        try:
+            outputs[path] = with_region(path, read(root, path), body, indent).encode()
+        except RegionError as e:
+            problems.append(str(e))
+    outputs.update({
         HOME_CSS: home_css(tokens).encode(),
         HAIKU: read(root, HAIKU_SOURCE, binary=True),
-    }
+    })
     geometry = ""
     try:
         mark_css, geometry = mark_outputs(json.loads(read(root, MARK)), read(root, MARK_CSS))

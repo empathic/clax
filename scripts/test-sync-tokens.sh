@@ -2,8 +2,9 @@
 # Checks scripts/sync-tokens.py on a copy of its inputs and outputs: the
 # committed outputs are in step; an edited source makes the generated files
 # stale; a contrast pair below its minimum fails both modes; an edited haiku
-# copy is stale; an app-mode colour in web/shell/src/theme.css that differs
-# from the source fails; a plain run is stable (a second run changes no
+# copy is stale; an edited generated region of web/shell/src/theme.css,
+# web/overlay/src/tokens.css or LiveWriters.svelte is stale, and one without
+# its end marker fails; a plain run is stable (a second run changes no
 # byte); an edited value in kit.css's generated region is stale; a kit.css
 # without its end marker fails; a color-mix() in kit.css outside an
 # @supports block fails; an edited design/mark.css makes the home app's
@@ -12,8 +13,11 @@
 # that kit.css declares again outside its generated region fails (but not
 # inside @supports); a color-mix() outside @supports in the home app's
 # home.css or the map's stylesheet in map.js fails; a contrast pair
-# below its minimum in a more-contrast palette fails; and a reel curve in
-# web/reel/pace.ts that is not the motion curve fails.
+# below its minimum in a more-contrast palette fails; a reel curve in
+# web/reel/pace.ts that is not the motion curve fails; an over-the-artifact
+# colour with a value per theme, or in both tiers, fails; an ink in no
+# contrast pair fails; a live colour or tag text below its minimum fails;
+# and a LIVE_PALETTE that is not the source's live colours fails.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 d="$(mktemp -d)"
@@ -26,9 +30,12 @@ INPUTS=(
     design/mark.json
     design/tokens.json
     scripts/sync-tokens.py
+    web/overlay/src/tokens.css
     web/reel/pace.ts
     web/shell/src/view/haiku.json
+    web/shell/src/view/live-layers.ts
     web/shell/src/theme.css
+    web/shell/src/ui/LiveWriters.svelte
 )
 OUTPUTS=(
     apps/clax_app/home/tokens.css
@@ -103,12 +110,24 @@ echo "extra" >> "$d/w/apps/clax_app/assets/haiku.json"
 _run --check
 { [ "$st" = 1 ] && _has apps/clax_app/assets/haiku.json; } || _fail "an edited haiku copy is stale: $out"
 
-# 5. An app-mode colour in theme.css that differs from the source fails.
-_copy
-_sub "$d/w/web/shell/src/theme.css" '--you: #e0532f' '--you: #e0532e'
-_run --check
-{ [ "$st" = 1 ] && _has "theme.css: --you is #e0532e, design/tokens.json says #e0532f"; } ||
-    _fail "a drifted app-mode colour fails: $out"
+# 5. A value edited in a generated region of the shell's theme, the
+# overlay's tokens or the live colours is stale, and a plain run puts it
+# back; one of them without its end marker fails, naming it.
+for g in web/shell/src/theme.css web/overlay/src/tokens.css web/shell/src/ui/LiveWriters.svelte; do
+    _copy
+    case "$g" in
+        *LiveWriters*) _sub "$d/w/$g" '--live-0: #2f62d0;' '--live-0: #2f62d1;' ;;
+        *) _sub "$d/w/$g" '--you: #e0532f;' '--you: #e0532e;' ;;
+    esac
+    _run --check
+    { [ "$st" = 1 ] && _has "$g is stale"; } || _fail "an edited region of $g is stale: $out"
+    _run
+    { [ "$st" = 0 ] && cmp -s "$d/w/$g" "$g"; } || _fail "a plain run restores $g: $out"
+    _copy
+    _sub "$d/w/$g" '/* tokens:end */' ''
+    _run --check
+    { [ "$st" = 1 ] && _has "$g: tokens:end marker missing"; } || _fail "$g without its end marker fails: $out"
+done
 
 # 6. A plain run writes what --check accepts, and a second run changes no byte.
 _copy
@@ -223,5 +242,55 @@ _copy
 _sub "$d/w/web/reel/pace.ts" 'standard: [0.4, 0, 0.2, 1]' 'standard: [0.4, 0, 0.3, 1]'
 _run --check
 { [ "$st" = 1 ] && _has "web/reel/pace.ts: CURVES is" && _has "motion.curves are"; } || _fail "a drifted reel curve fails: $out"
+
+# _json PY: runs PY on the copy's design/tokens.json as `t`, and writes it back.
+_json() {
+    python3 - "$d/w/design/tokens.json" "$1" <<'EOF'
+import json, sys
+f, code = sys.argv[1:]
+t = json.load(open(f))
+exec(code)
+open(f, "w").write(json.dumps(t, indent=2) + "\n")
+EOF
+}
+
+# 18. An over-the-artifact colour with a value per theme fails: the tier
+# has one value, since the artifact under it is the same in every theme.
+_copy
+_json 't["over"]["pin"] = {"light": "#e0532f", "dark": "#ff7a57"}'
+_run --check
+{ [ "$st" = 1 ] && _has "design/tokens.json: over.pin is one value for every theme"; } || _fail "a themed over colour fails: $out"
+
+# 19. A colour in both tiers fails.
+_copy
+_json 't["color"]["frame"] = {"light": "#ffffff", "dark": "#141413"}'
+_run --check
+{ [ "$st" = 1 ] && _has "design/tokens.json: frame is in both color and over"; } || _fail "a colour in both tiers fails: $out"
+
+# 20. An ink, *-ink or on-*, in no contrast pair fails.
+_copy
+_json 't["color"]["muted-ink"] = {"light": "#5f5d58", "dark": "#a9a69f"}'
+_run --check
+{ [ "$st" = 1 ] && _has "design/tokens.json: muted-ink is an ink in no contrast pair"; } || _fail "an unpaired ink fails: $out"
+_copy
+_json 't["contrast"] = [p for p in t["contrast"] if p["fg"] != "on-pin"]'
+_run --check
+{ [ "$st" = 1 ] && _has "design/tokens.json: on-pin is an ink in no contrast pair"; } || _fail "an unpaired on- colour fails: $out"
+
+# 21. A live colour below 4.5:1 on --card fails, as does a tag's text on its tint.
+_copy
+_json 't["live"]["dark"][3] = "#3a1f1c"'
+_run --check
+{ [ "$st" = 1 ] && _has "contrast: live-3 on card (dark) is"; } || _fail "a low-contrast live colour fails: $out"
+_copy
+_json 't["tags"]["red"]["fg"]["light"] = "#eba8a3"'
+_run --check
+{ [ "$st" = 1 ] && _has "contrast: tag-red-fg on tag-red-bg (light) is"; } || _fail "a low-contrast tag fails: $out"
+
+# 22. A frame palette (LIVE_PALETTE) that is not the source's live colours fails.
+_copy
+_sub "$d/w/web/shell/src/view/live-layers.ts" '"#2f62d0"' '"#2f62d1"'
+_run --check
+{ [ "$st" = 1 ] && _has "web/shell/src/view/live-layers.ts: LIVE_PALETTE is"; } || _fail "a drifted LIVE_PALETTE fails: $out"
 
 if [ "$fails" = 0 ]; then echo "sync tokens tests: all passed"; else echo "sync tokens tests: $fails failed"; exit 1; fi

@@ -34,9 +34,17 @@ final class ClaxPalette {
     required this.dangerTint,
     required this.primaryHover,
     required this.scrim,
+    required this.shadow,
     required this.pin,
     required this.onPin,
     required this.pinRing,
+    required this.pinShadow,
+    required this.pinAddressed,
+    required this.pinAddressedInk,
+    required this.pinAddressedRing,
+    required this.pinOnit,
+    required this.onPinOnit,
+    required this.frame,
     required this.inversePrimary,
     required this.surfaceContainers,
   });
@@ -70,9 +78,17 @@ final class ClaxPalette {
   final Color dangerTint;
   final Color primaryHover;
   final Color scrim;
+  final Color shadow;
   final Color pin;
   final Color onPin;
   final Color pinRing;
+  final Color pinShadow;
+  final Color pinAddressed;
+  final Color pinAddressedInk;
+  final Color pinAddressedRing;
+  final Color pinOnit;
+  final Color onPinOnit;
+  final Color frame;
   final Color inversePrimary;
 
   /// Material's surface containers, lowest to highest.
@@ -112,9 +128,17 @@ abstract final class ClaxTokens {
     dangerTint: Color(0xFFFBECEB),
     primaryHover: Color(0xFF3A3935),
     scrim: Color(0x6614140F),
+    shadow: Color(0x1414140F),
     pin: Color(0xFFE0532F),
     onPin: Color(0xFF141413),
     pinRing: Color(0xFFFFFFFF),
+    pinShadow: Color(0x7314140F),
+    pinAddressed: Color(0xFFFFFFFF),
+    pinAddressedInk: Color(0xFF1C1B19),
+    pinAddressedRing: Color(0xFF2F6F2A),
+    pinOnit: Color(0xFF2F6F2A),
+    onPinOnit: Color(0xFFFFFFFF),
+    frame: Color(0xFFFFFFFF),
     inversePrimary: Color(0xFF7CC36F),
     surfaceContainers: [Color(0xFFFFFFFF), Color(0xFFFBFBF9), Color(0xFFF2F2EF), Color(0xFFECEBE7), Color(0xFFE6E5E1)],
   );
@@ -149,9 +173,17 @@ abstract final class ClaxTokens {
     dangerTint: Color(0xFF3A1F1C),
     primaryHover: Color(0xFFD6D4CE),
     scrim: Color(0x99000000),
+    shadow: Color(0x80000000),
     pin: Color(0xFFE0532F),
     onPin: Color(0xFF141413),
     pinRing: Color(0xFFFFFFFF),
+    pinShadow: Color(0x7314140F),
+    pinAddressed: Color(0xFFFFFFFF),
+    pinAddressedInk: Color(0xFF1C1B19),
+    pinAddressedRing: Color(0xFF2F6F2A),
+    pinOnit: Color(0xFF2F6F2A),
+    onPinOnit: Color(0xFFFFFFFF),
+    frame: Color(0xFFFFFFFF),
     inversePrimary: Color(0xFF2F6F2A),
     surfaceContainers: [Color(0xFF0F0F0E), Color(0xFF1C1C1A), Color(0xFF232321), Color(0xFF2A2A27), Color(0xFF32322F)],
   );
@@ -186,9 +218,17 @@ abstract final class ClaxTokens {
     dangerTint: Color(0xFFFBECEB),
     primaryHover: Color(0xFF3A3935),
     scrim: Color(0x6614140F),
+    shadow: Color(0x1414140F),
     pin: Color(0xFFE0532F),
     onPin: Color(0xFF141413),
     pinRing: Color(0xFFFFFFFF),
+    pinShadow: Color(0x7314140F),
+    pinAddressed: Color(0xFFFFFFFF),
+    pinAddressedInk: Color(0xFF1C1B19),
+    pinAddressedRing: Color(0xFF2F6F2A),
+    pinOnit: Color(0xFF2F6F2A),
+    onPinOnit: Color(0xFFFFFFFF),
+    frame: Color(0xFFFFFFFF),
     inversePrimary: Color(0xFF7CC36F),
     surfaceContainers: [Color(0xFFFFFFFF), Color(0xFFFBFBF9), Color(0xFFF2F2EF), Color(0xFFECEBE7), Color(0xFFE6E5E1)],
   );
@@ -223,9 +263,17 @@ abstract final class ClaxTokens {
     dangerTint: Color(0xFF3A1F1C),
     primaryHover: Color(0xFFD6D4CE),
     scrim: Color(0x99000000),
+    shadow: Color(0x80000000),
     pin: Color(0xFFE0532F),
     onPin: Color(0xFF141413),
     pinRing: Color(0xFFFFFFFF),
+    pinShadow: Color(0x7314140F),
+    pinAddressed: Color(0xFFFFFFFF),
+    pinAddressedInk: Color(0xFF1C1B19),
+    pinAddressedRing: Color(0xFF2F6F2A),
+    pinOnit: Color(0xFF2F6F2A),
+    onPinOnit: Color(0xFFFFFFFF),
+    frame: Color(0xFFFFFFFF),
     inversePrimary: Color(0xFF2F6F2A),
     surfaceContainers: [Color(0xFF0F0F0E), Color(0xFF1C1C1A), Color(0xFF232321), Color(0xFF2A2A27), Color(0xFF32322F)],
   );
@@ -363,6 +411,18 @@ abstract final class ClaxMotion {
   static Duration of(BuildContext context, Duration d) {
     const reduced = Duration(milliseconds: 120);
     return MediaQuery.disableAnimationsOf(context) && d > reduced ? reduced : d;
+  }
+}
+
+/// The live colours, one per person on an artifact, by brightness. A live colour is never the only cue: it always sits beside the person's name (LiveWriters.svelte, the frame's name tags).
+abstract final class ClaxLive {
+  static const List<Color> light = [Color(0xFF2F62D0), Color(0xFF8A3FD1), Color(0xFF0A757B), Color(0xFFBE2F7A), Color(0xFF975A00), Color(0xFF6B6500), Color(0xFF33708F), Color(0xFFA3445A)];
+  static const List<Color> dark = [Color(0xFF7FA6FF), Color(0xFFC39BFF), Color(0xFF4FD0D6), Color(0xFFFF8CC6), Color(0xFFF0B155), Color(0xFFD6CD4F), Color(0xFF7FC2E3), Color(0xFFFF9AAE)];
+
+  /// Live colour [c] in brightness [b].
+  static Color of(int c, Brightness b) {
+    final set = b == Brightness.dark ? dark : light;
+    return set[c % set.length];
   }
 }
 
