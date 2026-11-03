@@ -293,18 +293,59 @@ export interface ApiErrorBody {
   error: { code: string; message: string };
 }
 
-/** Error codes the queue routes answer. */
+/** Error codes the queue routes answer (`ApiError`'s `error.code`): the
+ * reporter routes, the service route that mints reporter tokens, the
+ * signed-request checks in front of both, and the triage routes.
+ * `web/sdk/test/queue-error-codes.json` lists the same codes, and
+ * Clax's own tests of the reporter routes fail on a code it lacks. */
 export type QueueErrorCode =
-  | "lease_lost"
-  | "thread_taken"
-  | "external_artifact"
-  | "wrong_origin"
+  // The credential and the signed request, on every queue route.
+  | "invalid_token"
   | "token_expired"
-  | "not_a_member"
-  | "not_fix_proposed"
-  | "not_claimable"
+  | "invalid_signature"
+  | "stale_request"
+  | "replayed_request"
+  | "forbidden_origin"
+  | "wrong_origin"
+  | "limit_reached"
+  | "body_too_large"
+  | "busy"
+  | "timeout"
+  // Minting a reporter token.
+  | "invalid_origin"
+  | "invalid_reporter_id"
+  | "invalid_key"
+  | "invalid_profile"
+  // Filing, reopening, commenting and reading.
+  | "invalid_args"
+  | "invalid_multipart"
+  | "invalid_anchor"
+  | "invalid_metadata"
+  | "metadata_too_large"
+  | "invalid_clip"
+  | "invalid_comment"
   | "invalid_context"
   | "invalid_diagnostics"
-  | "invalid_profile"
+  | "invalid_query"
+  | "external_artifact"
+  | "not_found"
+  | "not_fix_proposed"
+  // Triage.
+  | "not_a_member"
+  | "not_for_agents"
+  | "not_claimable"
+  | "claim_required"
+  | "lease_lost"
+  | "thread_taken"
+  | "invalid_state"
   | "invalid_fix"
-  | "invalid_query";
+  | "no_session";
+
+/** Error codes the SDK gives itself: `network` (status 0) when no answer
+ * came, `bad_response` for an answer that is not the JSON expected, and
+ * `unsupported_browser` (status 0) where WebCrypto lacks Ed25519. */
+export type SdkErrorCode = "network" | "bad_response" | "unsupported_browser";
+
+/** `ClaxError.code`: a queue route's code, the SDK's own, or another an
+ * instance answers (`http_<status>` for an answer without the error shape). */
+export type ClaxErrorCode = QueueErrorCode | SdkErrorCode | (string & {});

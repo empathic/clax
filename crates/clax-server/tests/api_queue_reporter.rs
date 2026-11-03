@@ -270,13 +270,23 @@ fn multipart(parts: &[(&str, Part<'_>)]) -> (Vec<u8>, String) {
     (b, format!("multipart/form-data; boundary={boundary}"))
 }
 
+/// The error codes the SDK's `QueueErrorCode` lists (web/sdk/src/types.ts).
+fn sdk_error_codes() -> Vec<String> {
+    serde_json::from_str(include_str!("../../../web/sdk/test/queue-error-codes.json")).unwrap()
+}
+
+/// A refusal's status and error code; fails on a code the SDK's
+/// `QueueErrorCode` does not list, so each refusal these tests reach keeps
+/// that list whole.
 async fn status_code(res: reqwest::Response) -> (u16, String) {
     let s = res.status().as_u16();
     let v: Value = res.json().await.unwrap_or_default();
-    (
-        s,
-        v["error"]["code"].as_str().unwrap_or_default().to_string(),
-    )
+    let code = v["error"]["code"].as_str().unwrap_or_default().to_string();
+    assert!(
+        code.is_empty() || sdk_error_codes().contains(&code),
+        "{code} is missing from web/sdk/test/queue-error-codes.json and the SDK's QueueErrorCode"
+    );
+    (s, code)
 }
 
 #[tokio::test]
