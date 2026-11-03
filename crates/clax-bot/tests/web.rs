@@ -685,7 +685,7 @@ async fn failed_calls_count_against_the_cap_uncharged_across_a_restart() {
     set(
         &env,
         &[
-            (Setting::WebMaxSearchesPerRun, json!(2)),
+            (Setting::WebMaxSearchesPerRun, json!(3)),
             (Setting::WebMaxFetchesPerRun, json!(1)),
         ],
     );
@@ -712,7 +712,9 @@ async fn failed_calls_count_against_the_cap_uncharged_across_a_restart() {
         "Again",
         &format!(
             "const out = [];
-             try {{ await clax.web.search('down'); }} catch (e) {{ out.push(e.code); }}
+             for (let i = 0; i < 2; i++) {{
+               try {{ await clax.web.search('down'); }} catch (e) {{ out.push(e.code); }}
+             }}
              for (let i = 0; i < 2; i++) {{
                try {{ await clax.web.fetch({a:?}); }} catch (e) {{ out.push(e.code); }}
              }}
@@ -742,20 +744,66 @@ async fn failed_calls_count_against_the_cap_uncharged_across_a_restart() {
         json!(["web_unavailable", "web_unavailable"])
     );
     // The two searches replayed after the restart count once each, so the
-    // third is refused; so is the second fetch, after one that failed.
+    // third still reaches the source (counted twice, it would be refused)
+    // and the fourth is refused; so is the second fetch, after one that
+    // failed.
     assert_eq!(
         script_result(&env, &run, 1)["value"],
-        json!(["web_cap", "web_unavailable", "web_cap"])
+        json!(["web_unavailable", "web_cap", "web_unavailable", "web_cap"])
     );
+    let search = ("search".to_string(), "down".to_string());
     assert_eq!(
         env.web().calls(),
         [
-            ("search".to_string(), "down".to_string()),
-            ("search".to_string(), "down".to_string()),
+            search.clone(),
+            search.clone(),
+            search,
             ("fetch".to_string(), a.to_string()),
         ]
     );
     assert!(web_rows(&env).is_empty(), "{:?}", web_rows(&env));
+}
+
+#[tokio::test]
+async fn an_unreadable_request_refuses_a_fetch_once_not_retryable() {
+    let env = Env::new().await;
+    let a = "https://example.com/a";
+    sender_says(&env, &format!("Read {a}"));
+    env.web().page(a, page_at(a, "# A", &[]));
+    env.api.push(env.script_turn(
+        "tu_1",
+        "Fetch",
+        &format!(
+            "const out = [];
+             for (let i = 0; i < 2; i++) {{
+               try {{ out.push((await clax.web.fetch({a:?})).text); }}
+               catch (e) {{ out.push([e.code, e.retryable, e.message]); }}
+             }}
+             return out;"
+        ),
+    ));
+    env.api.push(finish_turn("done"));
+    let run = env.run_with_web("fetch");
+    let deps = env.deps();
+    let d = DriverId::mint();
+    assert_eq!(env.tick(&deps, &run, &d).await.kind, Some(StepKind::Turn));
+    env.host.lock().fail_next.insert(
+        "context".into(),
+        clax_bot_sandbox::HostError::new("unavailable", "the store is busy"),
+    );
+    let out = env.drive(&deps, &run, &d).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    // Refused before the source: not retryable, not counted, not charged;
+    // the next call reads the request and fetches.
+    let v = &script_result(&env, &run, 0)["value"];
+    assert_eq!(v[0][0], "web_unavailable");
+    assert_eq!(v[0][1], false);
+    assert!(!v[0][2].as_str().unwrap().contains("retryable"), "{v}");
+    assert_eq!(v[1], "# A");
+    assert_eq!(env.web().calls(), fetches(&[a]));
+    assert_eq!(web_rows(&env), [LINE_WEB_FETCH]);
+    let calls = script_calls(&env, &run, 0);
+    assert_eq!(calls[1]["cost_milli"].as_i64().map(|c| c > 0), Some(true));
 }
 
 #[tokio::test]

@@ -19,12 +19,14 @@
 
 use super::Store;
 use crate::bot_runs::{
-    CallEntry, DriverId, Run, call_in, check_claim, insert_call, open_step_in, run_in, same_call,
+    CALL_COLS, CallEntry, DriverId, Run, call_in, check_claim, insert_call, open_step_in,
+    row_to_call, run_in, same_call,
 };
 use crate::credits::{Metered, charge_in};
 use clax_core::audit::{Actor, AuditCtx, AuditKind, AuditRecord};
 use clax_core::{CoreError, Result};
 use rusqlite::{Connection, OptionalExtension, Row, params};
+use std::collections::BTreeMap;
 
 /// One page of a run's page store: what a fetch at journal place
 /// `(step_n, seq)` received from `url` (normalised), its converted text cut
@@ -303,6 +305,47 @@ impl Store {
         })
     }
 
+    /// Every web call (an op starting `web.`) journaled for run `id`, in
+    /// all its steps, by step and then `seq`: in one read, where
+    /// [`Store::bot_calls`] takes one per step.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn bot_web_calls(&self, id: &str) -> Result<Vec<CallEntry>> {
+        self.with_read(|c| {
+            let mut q = c.prepare_cached(&format!(
+                "SELECT {CALL_COLS} FROM bot_calls
+                  WHERE run_id = ?1 AND op LIKE 'web.%'
+                  ORDER BY step_n, seq"
+            ))?;
+            let rows = q.query_map(params![id], row_to_call)?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// How many of run `id`'s journaled web calls each op made that its
+    /// entry marks `counted` (a result whose `counted` is true: the call
+    /// reached its source), by op; an op with none is absent. Counted in
+    /// the database, without reading the entries' results out.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn bot_web_counts(&self, id: &str) -> Result<BTreeMap<String, u32>> {
+        self.with_read(|c| {
+            let mut q = c.prepare_cached(
+                "SELECT op, COUNT(*) FROM bot_calls
+                  WHERE run_id = ?1 AND op LIKE 'web.%'
+                    AND json_extract(result_json, '$.counted') = 1
+                  GROUP BY op",
+            )?;
+            let rows = q.query_map(params![id], |r| {
+                let n: i64 = r.get(1)?;
+                Ok((r.get(0)?, u32::try_from(n).unwrap_or(u32::MAX)))
+            })?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
     /// Every page run `run_id` keeps, in the order its fetches made them.
     ///
     /// # Errors
@@ -505,6 +548,39 @@ mod tests {
         assert_eq!(st.bot_web_calls(&run.id).unwrap(), vec![a0, a2, b]);
         assert_eq!(st.bot_web_calls(&other.id).unwrap(), vec![theirs]);
         assert!(st.bot_web_calls("no-such-run").unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_runs_counted_web_calls_are_counted_by_op() {
+        let (_d, st) = store();
+        let (run, d) = running(&st);
+        let journal = |seq: i64, op: &str, result: serde_json::Value| {
+            let e = st
+                .call_entry(&run.id, &d, 1, 1, seq, op, &format!("h-{seq}"))
+                .unwrap()
+                .answered(false, result);
+            st.record_bot_call(&e).unwrap();
+        };
+        assert!(st.bot_web_counts(&run.id).unwrap().is_empty());
+        journal(
+            0,
+            "web.search",
+            json!({"code": "web_unavailable", "counted": true}),
+        );
+        journal(1, "web.search", json!({"code": "web_cap"}));
+        journal(2, "web.search", json!({"code": "x", "counted": false}));
+        journal(
+            3,
+            "web.fetch",
+            json!({"code": "web_timeout", "counted": true}),
+        );
+        journal(4, "web.search", json!({"value": {}, "counted": true}));
+        journal(5, "files.read", json!({"counted": true}));
+        let counts = st.bot_web_counts(&run.id).unwrap();
+        assert_eq!(
+            counts.into_iter().collect::<Vec<_>>(),
+            vec![("web.fetch".to_string(), 1), ("web.search".to_string(), 2)]
+        );
     }
 
     #[test]

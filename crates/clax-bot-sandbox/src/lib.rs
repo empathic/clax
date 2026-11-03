@@ -44,8 +44,9 @@
 //! record says [`CODE_INVALID_ARGS`]. Calls reach the host one at a time,
 //! in the order the script made them, and each settles its Promise:
 //! resolved with the returned value, or rejected with an `Error` whose
-//! `name` is `"HostError"`, whose `code` is [`HostError::code`] and whose
-//! `message` is [`HostError::message`]. The script may catch it; a host
+//! `name` is `"HostError"`, whose `code` is [`HostError::code`], whose
+//! `message` is [`HostError::message`] and whose `retryable` is
+//! [`HostError::retryable`] (always a boolean). The script may catch it; a host
 //! error it does not catch ends the run with [`ErrorKind::HostError`]
 //! (only the sandbox's own host errors count: a value made to look like one
 //! is a thrown value like any other).
@@ -596,7 +597,8 @@ pub const LOGS_TRUNCATED: &str = "[logs truncated]";
 ///   (compiled under the file name `file`, which it looks for in stack
 ///   traces to find the line) and reports its end through `done`;
 /// - `settle(id, ok, json)` settles a host call: `ok` true with the
-///   result's JSON, false with the JSON of a [`HostError`].
+///   result's JSON, false with a [`HostError`]'s
+///   [`HostError::reply_json`], `{code, message, retryable}`.
 pub const PRELUDE: &str = include_str!("prelude.js");
 
 /// What [`wrap`] puts before the code: its own line, as the `Function`

@@ -842,9 +842,10 @@ pub fn dts(shape: WebShape) -> String {
          // invalid_args, or replay_diverged (a script run again after a\n\
          // restart that did not make the calls it made before). Its\n\
          // `retryable` is true when the same call may succeed if made again\n\
-         // (a source that failed or timed out), false otherwise. files.* and\n\
-         // draft.* change only the run's draft, which the artifact gets on\n\
-         // draft.publish; db.* and threads.* writes take effect at once.\n\
+         // (a failure on the way, such as a source that failed or timed out),\n\
+         // false otherwise. files.* and draft.* change only the run's draft,\n\
+         // which the artifact gets on draft.publish; db.* and threads.* writes\n\
+         // take effect at once.\n\
          // A script's clock is its step's start for the whole run (measuring\n\
          // elapsed time reads 0), and Math.random() is seeded per step.\n",
     );

@@ -490,7 +490,14 @@ account. The admin's Pricing page lists them with the other lines.
   cap bounds attempts, so a script cannot retry a provider that is down
   without end. The count is of the run's journaled web calls marked as
   having reached the source, so a call answered from the journal after a
-  restart is not counted twice.
+  restart is not counted twice, and a call whose entry was never written
+  (the process stopped, or the store refused the write, after the source
+  answered) is neither counted nor charged: it is made again when its
+  script runs again, as it would be charged again.
+- A call refused before the source is not counted. Its error is not
+  retryable either when nothing would count the retries: a fetch whose
+  request context cannot be read answers `web_unavailable`, not
+  retryable, telling the script to do without the page.
 - A search that fails is not charged (as Anthropic and the gateway do),
   though it counts; every fetch that went out on the network is charged,
   whatever it answered (as Anthropic's `max_uses` counts failed fetches),

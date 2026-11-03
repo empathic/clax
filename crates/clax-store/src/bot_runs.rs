@@ -1166,24 +1166,6 @@ impl Store {
         })
     }
 
-    /// Every web call (an op starting `web.`) journaled for run `id`, in
-    /// all its steps, by step and then `seq`: in one read, where
-    /// [`Store::bot_calls`] takes one per step.
-    ///
-    /// # Errors
-    /// The store's.
-    pub fn bot_web_calls(&self, id: &str) -> Result<Vec<CallEntry>> {
-        self.with_read(|c| {
-            let mut q = c.prepare_cached(&format!(
-                "SELECT {CALL_COLS} FROM bot_calls
-                  WHERE run_id = ?1 AND substr(op, 1, 4) = 'web.'
-                  ORDER BY step_n, seq"
-            ))?;
-            let rows = q.query_map(params![id], row_to_call)?;
-            Ok(rows.collect::<rusqlite::Result<_>>()?)
-        })
-    }
-
     /// The journal entry of call `seq` (`op` on arguments hashing to
     /// `args_hash`) of attempt `attempt` of step `step_n` of run `run_id`:
     /// made only for the driver holding the run, so no one else can
@@ -1550,9 +1532,9 @@ impl CallEntry {
 /// rolls the write and its entry back.
 pub type Guard<'a> = &'a (dyn Fn(&Tx<'_>) -> Result<()> + Send + Sync);
 
-const CALL_COLS: &str = "run_id, step_n, seq, attempt, op, args_hash, ok, result_json";
+pub(crate) const CALL_COLS: &str = "run_id, step_n, seq, attempt, op, args_hash, ok, result_json";
 
-fn row_to_call(r: &Row<'_>) -> rusqlite::Result<CallEntry> {
+pub(crate) fn row_to_call(r: &Row<'_>) -> rusqlite::Result<CallEntry> {
     let result: String = r.get(7)?;
     Ok(CallEntry {
         run_id: r.get(0)?,

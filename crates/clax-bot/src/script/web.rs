@@ -18,14 +18,22 @@
 //!    is [`UrlRule::AnyPublic`], and a URL that looks credentialed
 //!    ([`looks_credentialed`]) is in the sender's own words; else
 //!    `url_not_allowed` or `url_not_in_prior_context`. When the request
-//!    cannot be read, `web_unavailable` (retryable).
+//!    cannot be read, `web_unavailable`, not retryable: it is refused
+//!    before the source and so not counted, and a flag inviting a retry
+//!    that nothing counts would invite a loop bounded only by the script's
+//!    own limits.
 //! 6. A fetch of a URL the run's page store keeps answers its window from
 //!    the store: free, and not counted against the cap. It must ask for
 //!    the format the page was fetched in, or `invalid_args`.
 //! 7. The run's cap for the operation has room, or `web_cap`. The count
 //!    is of the run's calls that reached the source (its journaled web
-//!    calls marked `counted`), charged or not: a search that failed and a
-//!    fetch that never went out count, though neither is charged.
+//!    calls marked `counted`, [`Store::bot_web_counts`]), charged or not:
+//!    a search that failed and a fetch that never went out count, though
+//!    neither is charged. A call is counted and charged only with its
+//!    journal entry: one whose entry was never written (the process
+//!    stopped, or the store refused the write, after the source answered)
+//!    is neither counted nor charged, and is made again when its script
+//!    runs again.
 //! 8. The operation's cost line exists (else `web_unavailable`: web
 //!    pricing is not configured), and the person can pay for one request
 //!    at its rate (at most their credits left this week, unless their
@@ -58,9 +66,11 @@
 //! the caps after the call, and the person's credits left this week as a
 //! number of credits. A script's error carries the [`WebError`]'s
 //! `retryable` flag ([`HostError::retryable`]), and a retryable error's
-//! message also says to try again, for a model that reads only the message.
+//! message also says to try again, for a model that reads only the message
+//! (both from the flag, in [`from_web`] alone).
 //!
 //! [`Store::spend_journaled`]: clax_store::Store::spend_journaled
+//! [`Store::bot_web_counts`]: clax_store::Store::bot_web_counts
 
 use super::{RunHost, recorded};
 use crate::api::CODE_BAD_ARGS;
@@ -247,7 +257,9 @@ fn page_value(p: &WebPageRow, offset: usize, left: Value) -> Value {
 }
 
 /// `e` as the script sees it: a retryable error is
-/// [`HostError::retryable`], and its message says to try again.
+/// [`HostError::retryable`], and its message says to try again. The only
+/// place a web error's flag and its words are made, so they cannot
+/// disagree.
 fn from_web(e: &WebError) -> HostError {
     if e.retryable {
         HostError::new(e.code, format!("{} (retryable: try again)", e.message)).retryable()
@@ -382,29 +394,14 @@ fn call_of(op: &str, args: &[Value], grant: &WebGrant) -> Result<Call, HostError
 }
 
 /// What the checks after the arguments read: the call's place, the grant
-/// now, the run's journaled web calls, its counted calls ([`counts`]) and
-/// its source.
+/// now, the run's counted calls (check 7) and its source.
 struct Ctx<'g> {
     op: &'g str,
     seq: i64,
     grant: WebGrant,
-    journal: Vec<CallEntry>,
     searches: u32,
     fetches: u32,
     source: &'g Arc<dyn WebSource>,
-}
-
-/// The searches and fetches in `journal` (a run's web calls) that reached
-/// the source, charged or not: the calls the run's caps count.
-fn counts(journal: &[CallEntry]) -> (u32, u32) {
-    let count = |op: &str| {
-        let n = journal
-            .iter()
-            .filter(|e| e.op() == op && e.result()["counted"] == json!(true))
-            .count();
-        u32::try_from(n).unwrap_or(u32::MAX)
-    };
-    (count(OP_SEARCH), count(OP_FETCH))
 }
 
 impl Ctx<'_> {
@@ -543,18 +540,17 @@ impl RunHost<'_> {
             Ok(c) => c,
             Err(e) => return Finish::refused(e),
         };
-        let journal = match tick.store.bot_web_calls(&run.id) {
-            Ok(j) => j,
+        let counted = match tick.store.bot_web_counts(&run.id) {
+            Ok(c) => c,
             Err(e) => return Finish::refused(host_error(&e)),
         };
-        let (searches, fetches) = counts(&journal);
+        let count = |op: &str| counted.get(op).copied().unwrap_or(0);
         let cx = Ctx {
             op,
             seq,
             grant,
-            journal,
-            searches,
-            fetches,
+            searches: count(OP_SEARCH),
+            fetches: count(OP_FETCH),
             source,
         };
         match call {
@@ -621,15 +617,18 @@ impl RunHost<'_> {
         let tick = self.tick;
         shown["url"] = json!(url.normalized());
         let own = cx.source.own_hosts();
-        let (src, pages) = match self.url_source(&g.rule, &own, url, &cx.journal).await {
+        let journal = match tick.store.bot_web_calls(&tick.run.id) {
+            Ok(j) => j,
+            Err(e) => return Finish::refused(host_error(&e)),
+        };
+        let (src, pages) = match self.url_source(&g.rule, &own, url, &journal).await {
             Ok(x) => x,
             Err(e) => return Finish::refused(e),
         };
         shown["source"] = json!(src.label());
         let refused = |e: HostError| Finish::refused(e).of_fetch(&src, format);
         if let Some(p) = pages.iter().find(|p| p.url == url.normalized()) {
-            let kept_as = cx
-                .journal
+            let kept_as = journal
                 .iter()
                 .find(|e| e.step_n() == p.step_n && e.seq() == p.seq)
                 .and_then(|e| e.result()["format"].as_str())
@@ -793,9 +792,9 @@ impl RunHost<'_> {
             );
             HostError::new(
                 CODE_WEB_UNAVAILABLE,
-                "the request this run answers could not be read (retryable: try again)",
+                "the request this run answers could not be read, so no URL can be checked \
+                 against it; do without this page",
             )
-            .retryable()
         })?;
         let pages = tick
             .store
