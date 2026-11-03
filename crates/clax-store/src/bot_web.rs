@@ -14,7 +14,8 @@
 //!   and never rewrites it.
 //! - The page store (§6.2): each page a fetch of the run received, in
 //!   `bot_web_pages` by normalised URL, removed with the run's call
-//!   journal ([`Store::prune_ended_runs`]).
+//!   journal ([`Store::prune_ended_runs`]). A URL the run keeps is served
+//!   from the store, so a second page of it is refused (`page_exists`).
 
 use super::Store;
 use crate::bot_runs::{
@@ -55,7 +56,7 @@ pub struct Spend {
     /// The page a fetch received, kept at the entry's journal place.
     pub page: Option<WebPageRow>,
     /// The call's `bot.web` record: the store sets its artifact, `run`,
-    /// `step` and, unless given, `credits_milli`.
+    /// `step` and `credits_milli`.
     pub audit: AuditRecord,
 }
 
@@ -89,9 +90,11 @@ fn row_to_page(r: &Row<'_>) -> rusqlite::Result<WebPageRow> {
     })
 }
 
-/// Keeps `page` for run `run_id` at journal place `(step_n, seq)` on `c`,
-/// unless the run already keeps a page of its URL: the first fetch of a URL
-/// stays the run's page of it.
+/// Keeps `page` for run `run_id` at journal place `(step_n, seq)` on `c`.
+///
+/// # Errors
+/// `page_exists` when the run already keeps a page of its URL (a fetch of
+/// it is answered from the store, never fetched again); the store's.
 fn insert_page(
     c: &Connection,
     run_id: &str,
@@ -99,7 +102,7 @@ fn insert_page(
     seq: i64,
     page: &WebPageRow,
 ) -> Result<()> {
-    c.execute(
+    let inserted = c.execute(
         "INSERT INTO bot_web_pages (run_id, url, step_n, seq, final_url, status, content_type,
             text, total_chars, links_json)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
@@ -117,6 +120,15 @@ fn insert_page(
             serde_json::to_string(&page.links).expect("serialisable links"),
         ],
     )?;
+    if inserted == 0 {
+        return Err(CoreError::invalid(
+            "page_exists",
+            format!(
+                "run {run_id} already keeps a page of {}; answer from the store",
+                page.url
+            ),
+        ));
+    }
     Ok(())
 }
 
@@ -179,17 +191,19 @@ impl Store {
     /// - Else charges `s.usage` to the run's person on the entry's step, as
     ///   a step's commit charges its rows (rates, free allowance, snapshot),
     ///   adds the charge to the run's `credits_milli`, keeps `s.page` at
-    ///   the entry's place (a URL the run already keeps keeps its first
-    ///   page), journals the entry, and records `s.audit` with the run's
-    ///   artifact, `run`, `step` and `credits_milli` set, as ClaxBot for the
+    ///   the entry's place, journals the entry, and records `s.audit` with
+    ///   the run's artifact, `run`, `step` and `credits_milli` (the charge
+    ///   just computed, over any the caller set) set, as ClaxBot for the
     ///   run's person.
     ///
     /// # Errors
     /// `NotFound`; `run_not_claimed` when `driver` does not hold the run;
-    /// `run_mismatch` for an entry of another run; `key_reused` when the
-    /// place holds another call; `step_mismatch` when the entry's step is
-    /// not the run's open step; the charge's (`unknown_cost_line`,
-    /// `invalid_usage`), which write nothing; the store's.
+    /// `run_invalid` when the run has ended; `run_mismatch` for an entry of
+    /// another run; `key_reused` when the place holds another call;
+    /// `step_mismatch` when the entry's step is not the run's open step;
+    /// `page_exists` when the run already keeps a page of `s.page`'s URL;
+    /// the charge's (`unknown_cost_line`, `invalid_usage`); the store's.
+    /// A refused Spend writes nothing.
     pub fn spend_journaled(&self, run: &Run, driver: &DriverId, s: Spend) -> Result<Spent> {
         let at = self.now_utc();
         let ov = self.bot_overrides();
@@ -202,6 +216,12 @@ impl Store {
         self.with_tx(|tx| {
             let run = run_in(tx, &run.id)?.ok_or(CoreError::NotFound)?;
             check_claim(&run, driver.as_str())?;
+            if run.status.is_terminal() {
+                return Err(CoreError::invalid(
+                    "run_invalid",
+                    format!("run {} has ended", run.id),
+                ));
+            }
             if entry.run_id() != run.id {
                 return Err(CoreError::invalid(
                     "run_mismatch",
@@ -253,9 +273,7 @@ impl Store {
             rec.ids.artifact = Some(run.artifact_id.clone());
             rec.body.insert("run".into(), run.id.as_str().into());
             rec.body.insert("step".into(), n.into());
-            rec.body
-                .entry("credits_milli".into())
-                .or_insert(credits.into());
+            rec.body.insert("credits_milli".into(), credits.into());
             let ctx = AuditCtx {
                 actor: Actor::Bot {
                     on_behalf_of: run.person.clone(),
@@ -303,7 +321,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bot_runs::{DriverId, NewRun, RequestKind, Run, StepCommit, StepKind};
+    use crate::bot_runs::{CallEntry, DriverId, NewRun, RequestKind, Run, StepCommit, StepKind};
     use crate::credits::{KeySource, LINE_HARNESS_FEE, LINE_WEB_FETCH, Metered};
     use crate::roles::OWNER;
     use crate::test_util::{DAEMON, artifact, store};
@@ -528,6 +546,97 @@ mod tests {
         assert_eq!(pages(&st, &run), 0);
         assert_eq!(st.run(&run.id).unwrap().unwrap().credits_milli, 0);
         assert_eq!(web_events(&st).len(), 1);
+    }
+
+    /// The code `s` is refused with, checking it wrote nothing: `run`'s
+    /// usage rows, pages, journal entries of steps 1 and 2, `bot.web`
+    /// records and credits are as they were.
+    fn refused(st: &Store, run: &Run, d: &DriverId, s: Spend) -> &'static str {
+        let counts = |st: &Store| {
+            (
+                st.usage_of_run(&run.id).unwrap().len(),
+                pages(st, run),
+                st.bot_calls(&run.id, 1).unwrap().len() + st.bot_calls(&run.id, 2).unwrap().len(),
+                web_events(st).len(),
+                st.run(&run.id).unwrap().unwrap().credits_milli,
+            )
+        };
+        let before = counts(st);
+        let code = match st.spend_journaled(run, d, s) {
+            Err(CoreError::Invalid { code, .. }) => code,
+            r => panic!("not refused: {r:?}"),
+        };
+        assert_eq!(counts(st), before, "{code}: nothing written");
+        code
+    }
+
+    #[test]
+    fn a_spend_on_an_ended_run_is_refused() {
+        let (_d, st) = store();
+        let (run, d) = running(&st);
+        // An ended run whose claim is still set: only the status refuses it.
+        st.with_write(|c| {
+            c.execute(
+                "UPDATE bot_runs SET status = 'finished' WHERE id = ?1",
+                rusqlite::params![run.id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let s = fetch(&st, &run, &d, 0, "https://example.com/a");
+        assert_eq!(refused(&st, &run, &d, s), "run_invalid");
+    }
+
+    #[test]
+    fn a_second_page_of_a_kept_url_is_refused() {
+        let (_d, st) = store();
+        let (run, d) = running(&st);
+        let url = "https://example.com/a";
+        st.spend_journaled(&run, &d, fetch(&st, &run, &d, 0, url))
+            .unwrap();
+        let again = fetch(&st, &run, &d, 1, url);
+        assert_eq!(refused(&st, &run, &d, again), "page_exists");
+        assert_eq!(st.web_page(&run.id, url).unwrap(), Some(page(url)));
+    }
+
+    #[test]
+    fn the_audit_record_carries_the_stores_charge() {
+        let (_d, st) = store();
+        let (run, d) = running(&st);
+        let mut s = fetch(&st, &run, &d, 0, "https://example.com/a");
+        s.audit = s.audit.with("credits_milli", 999_999);
+        let spent = st.spend_journaled(&run, &d, s).unwrap();
+        let body: serde_json::Value = serde_json::from_str(&web_events(&st)[0].body).unwrap();
+        assert_eq!(body["credits_milli"], spent.credits_milli);
+        assert_ne!(spent.credits_milli, 999_999);
+    }
+
+    #[test]
+    fn a_spend_off_the_open_step_is_refused() {
+        let (_d, st) = store();
+        let (run, d) = running(&st);
+        let mut ahead = fetch(&st, &run, &d, 0, "https://example.com/a");
+        ahead.entry = CallEntry {
+            step_n: 2,
+            ..ahead.entry
+        };
+        assert_eq!(refused(&st, &run, &d, ahead), "step_mismatch");
+
+        st.commit_bot_step(&bot(), &run.id, &d, 1, StepCommit::default())
+            .unwrap();
+        let behind = fetch(&st, &run, &d, 0, "https://example.com/a");
+        assert_eq!(refused(&st, &run, &d, behind), "step_mismatch");
+    }
+
+    #[test]
+    fn an_entry_of_another_run_is_refused() {
+        let (_d, st) = store();
+        let (run, d) = running(&st);
+        let (other, _) = running(&st);
+        let s = fetch(&st, &other, &d, 0, "https://example.com/a");
+        assert_eq!(refused(&st, &run, &d, s), "run_mismatch");
+        assert_eq!(pages(&st, &other), 0);
+        assert!(st.bot_calls(&other.id, 1).unwrap().is_empty());
     }
 
     #[test]

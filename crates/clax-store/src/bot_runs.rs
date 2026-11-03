@@ -26,7 +26,10 @@
 //! run's artifact and its `run` and `step`, fills a `bot.turn`'s or
 //! `bot.script`'s `credits_milli` with the step's charge, and records
 //! `bot.run_start` when a run is made and `bot.run_end` when a terminal
-//! step (`finish`, `give_up`, `stopped`) commits.
+//! step (`finish`, `give_up`, `stopped`) commits. A web call's usage row
+//! is the one charged before its step commits: it is written, and added
+//! to the run's total, in the call's own transaction
+//! ([`Store::spend_journaled`]).
 //!
 //! A run's **draft** is an overlay on the version it was based on
 //! (`base_version`): each path it wrote, with its content, or deleted.
@@ -952,7 +955,9 @@ impl Store {
     /// the run's claim, in one transaction (see the module documentation),
     /// events recorded under `ctx`. A terminal step ends the run and
     /// records `bot.run_end {run, outcome, reason, credits_milli}` with the
-    /// run's total. This is the only way usage is charged.
+    /// run's total. It charges the step's own usage rows on top of the
+    /// web calls' rows [`Store::spend_journaled`] charged during the step,
+    /// which it never rewrites.
     ///
     /// # Errors
     /// `NotFound`; `run_not_claimed` when `driver` does not hold the run

@@ -5,7 +5,9 @@
 /// migration, its marker) where no earlier one did, with triggers that
 /// refuse to change or remove a row of it, and inserts `$name`. Nothing
 /// else writes the table, so the marker stays as long as the database.
-/// Use: `concat!(migration_marker!("name"), "UPDATE …;")`.
+/// Use: `concat!(migration_marker!("name"), "UPDATE …;")`. No migration
+/// of this numbering uses it; the tests build earlier numberings with it.
+#[cfg(test)]
 macro_rules! migration_marker {
     ($name:literal) => {
         concat!(
