@@ -60,6 +60,7 @@ THEME_CSS = "web/shell/src/theme.css"
 OVERLAY_CSS = "web/overlay/src/tokens.css"
 LIVE_SVELTE = "web/shell/src/ui/LiveWriters.svelte"
 LIVE_TS = "web/shell/src/view/live-layers.ts"
+KIT_API = "design/kit-api.json"
 KIT_CSS = "apps/clax_app/assets/kit/kit.css"
 HOME_APP_CSS = "apps/clax_app/home/home.css"
 MAP_JS = "apps/clax_app/assets/kit/map.js"
@@ -125,6 +126,8 @@ class Tokens:
 
     def __init__(self, data):
         self.data = data
+        # The kit API's version (design/kit-api.json), which kit.css stamps.
+        self.kit_version = None
         self.over = data.get("over", {})
         self.color = dict(data["color"])
         for name, v in self.over.items():
@@ -817,9 +820,14 @@ def kit_region(tokens):
                 raise KitError("design/tokens.json: kit has %s for %s but nothing for %s" % (k, weak, strong))
             more.append("    %s: var(%s);" % (k, next((s for s in stronger if s.startswith(k)), stronger[0])))
 
+    aliases = tokens.data.get("kitAliases", {})
+    head = "  --k-version: %s;\n" % num(tokens.kit_version) if tokens.kit_version is not None else ""
+    tail = "".join("\n  %s: var(%s);" % (old, new) for old, new in aliases.items())
     return (
         ":root {\n"
+        + head
         + block("light", list(kit), "  ")
+        + tail
         + "\n}\n"
         + "@media (prefers-color-scheme: dark) {\n"
         + '  :root:not([data-theme="light"]) {\n'
@@ -834,6 +842,37 @@ def kit_region(tokens):
         + "\n".join(more)
         + "\n  }\n}\n"
     )
+
+
+def kit_api_problems(tokens, ledger):
+    """Problems with the kit's public API against design/kit-api.json, the
+    append-only ledger of every --k-* name a published page may read: a
+    published name the source no longer sets (keep it in kitAliases), a name
+    the ledger lacks, an alias to no kit name, a name newer than the
+    ledger's version, and a version no name carries."""
+    if ledger is None:
+        return ["%s: missing" % KIT_API]
+    kit, aliases = tokens.data["kit"], tokens.data.get("kitAliases", {})
+    names, version = ledger["names"], ledger["version"]
+    have = set(kit) | set(aliases) | {"--k-version"}
+    out = []
+    for name in names:
+        if name not in have:
+            out.append(
+                "kit: %s is published (kit API v%s) and design/tokens.json no longer sets it: map it in kitAliases"
+                % (name, num(names[name]))
+            )
+    for name in list(kit) + list(aliases):
+        if name not in names:
+            out.append("kit: %s is not in %s: add it at version %s and set version to that" % (name, KIT_API, num(version + 1)))
+    for old, new in aliases.items():
+        if new not in kit:
+            out.append("kit: alias %s names %s, which the kit map does not set" % (old, new))
+    if any(v > version for v in names.values()):
+        out.append("%s: a name is newer than version %s" % (KIT_API, num(version)))
+    elif names and max(names.values()) != version:
+        out.append("%s: version is %s, and no name was added at it" % (KIT_API, num(version)))
+    return out
 
 
 def kit_css(tokens, css):
@@ -898,7 +937,7 @@ def kit_redeclared(tokens, css):
         return []
     # The region blanked, its lines kept.
     rest = css[:begin] + re.sub(r"[^\n]", " ", css[begin:end]) + css[end:]
-    names = set(tokens.data["kit"])
+    names = set(tokens.data["kit"]) | set(tokens.data.get("kitAliases", {})) | {"--k-version"}
     return [
         "kit.css: %s is declared outside its generated region at line %d" % (name, line)
         for kind, name, line, supports in css_walk(rest)
@@ -960,6 +999,11 @@ def main(argv):
         return 1
     problems = contrast_failures(tokens)
     problems += live_palette(tokens, read(root, LIVE_TS))
+    ledger_text = read(root, KIT_API)
+    ledger = json.loads(ledger_text) if ledger_text is not None else None
+    if ledger is not None:
+        tokens.kit_version = ledger["version"]
+    problems += kit_api_problems(tokens, ledger)
     outputs = {}
     for path, body, indent in (
         (THEME_CSS, shell_region(tokens), ""),

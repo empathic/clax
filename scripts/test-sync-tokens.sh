@@ -26,6 +26,7 @@ fails=0
 _fail() { echo "FAIL: $1" >&2; fails=$((fails + 1)); }
 
 INPUTS=(
+    design/kit-api.json
     design/mark.css
     design/mark.json
     design/tokens.json
@@ -292,5 +293,27 @@ _copy
 _sub "$d/w/web/shell/src/view/live-layers.ts" '"#2f62d0"' '"#2f62d1"'
 _run --check
 { [ "$st" = 1 ] && _has "web/shell/src/view/live-layers.ts: LIVE_PALETTE is"; } || _fail "a drifted LIVE_PALETTE fails: $out"
+
+# 23. The kit's API is additive: a published --k-* name taken out of the kit
+# map fails, unless kitAliases keeps it (then kit.css sets it as var() of
+# its replacement); a new name design/kit-api.json lacks fails; a ledger
+# whose version no name carries fails; kit.css carries the version.
+_copy
+_json 'del t["kit"]["--k-bar"]'
+_run --check
+{ [ "$st" = 1 ] && _has "kit: --k-bar is published (kit API v1) and design/tokens.json no longer sets it"; } || _fail "a removed kit name fails: $out"
+_copy
+_json 'del t["kit"]["--k-bar"]; t["kitAliases"]["--k-bar"] = "--k-surface"'
+_run
+{ [ "$st" = 0 ] && grep -qF -- '--k-bar: var(--k-surface);' "$d/w/$KIT"; } || _fail "a removed kit name kept as an alias passes: $out"
+_copy
+_json 't["kit"]["--k-new"] = "bg"'
+_run --check
+{ [ "$st" = 1 ] && _has "kit: --k-new is not in design/kit-api.json: add it at version 2"; } || _fail "a kit name the ledger lacks fails: $out"
+_copy
+_sub "$d/w/design/kit-api.json" '"version": 1' '"version": 2'
+_run --check
+{ [ "$st" = 1 ] && _has "design/kit-api.json: version is 2, and no name was added at it"; } || _fail "a bare version bump fails: $out"
+grep -qF -- '--k-version: 1;' "$KIT" || _fail "kit.css carries the kit API version"
 
 if [ "$fails" = 0 ]; then echo "sync tokens tests: all passed"; else echo "sync tokens tests: $fails failed"; exit 1; fi

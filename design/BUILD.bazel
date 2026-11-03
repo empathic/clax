@@ -5,6 +5,7 @@ load("@rules_shell//shell:sh_test.bzl", "sh_test")
 filegroup(
     name = "tokens",
     srcs = [
+        "kit-api.json",
         "mark.css",
         "mark.json",
         "tokens.json",
