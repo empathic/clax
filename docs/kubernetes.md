@@ -557,7 +557,7 @@ sets the filter (`info`).
 | `POD_NAME` | `--pod` | this pod's name in the fleet |
 | `POD_IP`, `CLAX_FLEET_ADVERTISE` | `--pod-ip`, `--advertise` | where other pods reach this one (`$POD_IP:<listen port>`) |
 | `CLAX_FLEET_ORDINAL` | `--ordinal` | this process's shard, outside a StatefulSet (by default, its name's suffix; one that disagrees with it is refused) |
-| `CLAX_FLEET_PEER` | `--peer` | where shard `{shard}` is reached: refused without `{shard}` when there are several shards, and a warning at start when this shard's host does not begin with the pod's name (a kustomize `namePrefix` renames the pods, not this value) |
+| `CLAX_FLEET_PEER` | `--peer` | where shard `{shard}` is reached, as `host:port` (no scheme): refused without `{shard}` when there are several shards, or without a port, and a warning at start when this shard's host does not begin with the pod's name (a kustomize `namePrefix` renames the pods, not this value) |
 | `CLAX_FLEET_PEER_KEY` | `--peer-key` | the key forwards carry (required, the same on every shard) |
 | `CLAX_FLEET_SQLITE_HEAP_MIB` | `--sqlite-heap-mib` | the memory all of a pod's SQLite databases aim to stay under (1024; 0 for none) |
 | `CLAX_KEK` | | the key secrets are sealed under (64 hex digits; optional) |

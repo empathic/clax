@@ -105,9 +105,11 @@ impl Peers {
 
 /// What is wrong with `peers` for a fleet of `shards` whose process
 /// `pod` is shard `ordinal`: an error when a template names one host for
-/// every shard of several, and a warning when this shard's host, a name
-/// not an address, does not begin with the pod's name (a StatefulSet
-/// renamed by a kustomize namePrefix, the template left as it was).
+/// every shard of several, or when what it names for this shard is not a
+/// `host:port` (a scheme, a path, no port: a forward would reach no
+/// process), and a warning when this shard's host, a name not an address,
+/// does not begin with the pod's name (a StatefulSet renamed by a
+/// kustomize namePrefix, the template left as it was).
 fn check_peers(
     peers: &Peers,
     shards: u32,
@@ -125,7 +127,16 @@ fn check_peers(
     let Some(addr) = peers.addr(ordinal) else {
         return Ok(None);
     };
-    let host = addr.rsplit_once(':').map_or(addr.as_str(), |(h, _)| h);
+    let authority = addr
+        .parse::<axum::http::uri::Authority>()
+        .ok()
+        .filter(|a| a.port_u16().is_some() && !a.as_str().contains('@'));
+    let Some(authority) = authority else {
+        return Err(format!(
+            "the peer template {t} (CLAX_FLEET_PEER) names {addr} for shard {ordinal}, which is not host:port: give it as clax-{{shard}}.clax-peers:7480, with the port and without a scheme"
+        ));
+    };
+    let host = authority.host();
     let host = host.trim_start_matches('[').trim_end_matches(']');
     if host.parse::<IpAddr>().is_ok() || host.eq_ignore_ascii_case("localhost") {
         return Ok(None);
@@ -1157,9 +1168,10 @@ mod tests {
     }
 
     /// A peer template is refused without `{shard}` when there is more than
-    /// one shard, and a template whose host for this shard does not begin
-    /// with this pod's name (a StatefulSet renamed by a namePrefix) is
-    /// named in a warning.
+    /// one shard, or when it is not `host:port` (no port, a scheme, a
+    /// path), and a template whose host for this shard does not begin with
+    /// this pod's name (a StatefulSet renamed by a namePrefix) is named in
+    /// a warning.
     #[test]
     fn a_peer_template_is_checked_against_the_shards_and_the_pod() {
         let t = |s: &str| Peers::Template(s.into());
@@ -1180,6 +1192,19 @@ mod tests {
         assert_eq!(check_peers(&t("[::1]:748{shard}"), 3, 1, "x"), Ok(None));
         let list = Peers::List(vec!["a:1".into(), "b:1".into()]);
         assert_eq!(check_peers(&list, 2, 0, "x"), Ok(None));
+        for bad in [
+            "clax-{shard}.clax-peers",
+            "http://clax-{shard}.clax-peers:7480",
+            "clax-{shard}.clax-peers:7480/",
+            "clax-{shard}.clax-peers:port",
+            "user@clax-{shard}.clax-peers:7480",
+        ] {
+            let err = check_peers(&t(bad), 3, 1, "clax-1").unwrap_err();
+            assert!(
+                err.contains("CLAX_FLEET_PEER") && err.contains("host:port"),
+                "{bad}: {err}"
+            );
+        }
     }
 
     /// A drain waits for a start under way at most [`STOP_TIMEOUT`], so a
