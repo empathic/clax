@@ -1033,42 +1033,114 @@ impl Drop for BodyHold<'_> {
 
 /// The most bytes of the body of a request: [`MAX_ANONYMOUS_BODY`] for one
 /// that presents no credential, else [`MAX_BODY`].
-fn body_limit(authorization: bool, cookie: bool) -> usize {
-    if authorization || cookie {
+fn body_limit(credential: bool) -> usize {
+    if credential {
         MAX_BODY
     } else {
         MAX_ANONYMOUS_BODY
     }
 }
 
-/// `req`'s body limit ([`body_limit`]) and its declared length, when it
-/// declares one; `None` for a request without a body (`GET`, `HEAD`).
-fn declared_body(req: &Request) -> Result<Option<(usize, Option<u64>)>> {
-    if matches!(req.method(), worker::Method::Get | worker::Method::Head) {
-        return Ok(None);
+/// What the object takes of a request's body: at most `limit` bytes
+/// ([`body_limit`]), `declared` when the request declares a length, and
+/// whether the request presents a credential.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BodyShape {
+    limit: usize,
+    declared: Option<u64>,
+    credential: bool,
+}
+
+impl BodyShape {
+    /// `req`'s, or `None` for a request without a body (`GET`, `HEAD`).
+    fn of(req: &Request) -> Result<Option<BodyShape>> {
+        if matches!(req.method(), worker::Method::Get | worker::Method::Head) {
+            return Ok(None);
+        }
+        let headers = req.headers();
+        let credential = headers.has("authorization")? || headers.has("cookie")?;
+        let declared = headers
+            .get("content-length")?
+            .and_then(|v| v.trim().parse::<u64>().ok());
+        Ok(Some(BodyShape::new(credential, declared)))
     }
-    let headers = req.headers();
-    let limit = body_limit(headers.has("authorization")?, headers.has("cookie")?);
-    let declared = headers
-        .get("content-length")?
-        .and_then(|v| v.trim().parse::<u64>().ok());
-    Ok(Some((limit, declared)))
+
+    fn new(credential: bool, declared: Option<u64>) -> BodyShape {
+        BodyShape {
+            limit: body_limit(credential),
+            declared,
+            credential,
+        }
+    }
+
+    /// Whether the body declares a length past its limit.
+    fn declared_too_large(&self) -> bool {
+        self.declared.is_some_and(|n| n > self.limit as u64)
+    }
+
+    /// Whether a refusal of this body reads it on to its end first
+    /// ([`crate::refused`]): a request that presents a credential, its
+    /// declared length (if any) within
+    /// [`crate::refused::REFUSED_READ_BYTES`]. One with no credential is
+    /// answered at once, its body unread: what such a request sends (setup,
+    /// sign-in, naming a guest) is small, so a larger body is no Clax
+    /// client's, and reading it on would spend the instance's reads on a
+    /// stranger's bytes.
+    fn read_on(&self) -> bool {
+        self.credential && self.declared.is_none_or(crate::refused::drains)
+    }
+
+    /// `refusal`, for `req` before any of its body was read: answered once
+    /// the body was read to its end, when [`BodyShape::read_on`].
+    async fn refuse_unread(&self, refusal: Response, req: &mut Request) -> Response {
+        if self.read_on()
+            && let Ok(mut body) = req.stream()
+        {
+            read_rest(&mut body, 0).await;
+        }
+        refusal
+    }
+
+    /// `refusal`, for a request `seen` bytes into its `body`: answered once
+    /// the rest was read, when [`BodyShape::read_on`].
+    async fn refuse_part_read(
+        &self,
+        refusal: Response,
+        body: &mut worker::ByteStream,
+        seen: usize,
+    ) -> Response {
+        if self.read_on() {
+            read_rest(body, seen).await;
+        }
+        refusal
+    }
+}
+
+/// Reads `body`, `seen` bytes in, on to its end within the bound, keeping
+/// nothing ([`crate::refused::drain`]); past it, what is left is cancelled
+/// as `body` is dropped.
+async fn read_rest(body: &mut worker::ByteStream, seen: usize) {
+    use futures_util::StreamExt;
+    crate::refused::drain(body.map(|chunk| chunk.map(|c| c.len())), seen).await;
 }
 
 /// Whether `req` has a body that declares no length (chunked): one the
 /// Worker relays to the object itself (`forward_undeclared` in the crate
 /// root), which then refuses it past its limit as it reads.
 pub(crate) fn undeclared_body(req: &Request) -> Result<bool> {
-    Ok(matches!(declared_body(req)?, Some((_, None))) && req.inner().body().is_some())
+    Ok(BodyShape::of(req)?.is_some_and(|b| b.declared.is_none()) && req.inner().body().is_some())
 }
 
 /// 413 for a request whose declared body is over its limit, which the
 /// Worker answers before handing it to the object (an object's answer to a
 /// body it never read breaks the next request on that connection under
-/// `wrangler dev`); `None` otherwise.
-pub(crate) fn refuse_declared(req: &Request) -> Result<Option<Response>> {
-    match declared_body(req)? {
-        Some((limit, Some(n))) if n > limit as u64 => Ok(Some(too_large()?)),
+/// `wrangler dev`), once it has read the body on to its end
+/// ([`BodyShape::read_on`]); `None` otherwise.
+pub(crate) async fn refuse_declared(req: &mut Request) -> Result<Option<Response>> {
+    match BodyShape::of(req)? {
+        Some(shape) if shape.declared_too_large() => {
+            Ok(Some(shape.refuse_unread(too_large()?, req).await))
+        }
         _ => Ok(None),
     }
 }
@@ -1076,9 +1148,11 @@ pub(crate) fn refuse_declared(req: &Request) -> Result<Option<Response>> {
 /// The runtime's request as the router takes it, its body read whole
 /// first: the router may read a body after the response it answers with
 /// is built, and the runtime's stream cannot be read once the response
-/// has been sent. A body over its limit ([`body_limit`]) is not read past
-/// it: the answer is 413 (`Err`), before anything else sees the request;
-/// one that would take the object past [`BODY_BUDGET`] is 429. The body's
+/// has been sent. A body over its limit ([`body_limit`]) is kept no
+/// further than it: the answer is 413 (`Err`), before anything else sees
+/// the request; one that would take the object past [`BODY_BUDGET`] is
+/// 429. Either refusal is answered once the rest of the body was read and
+/// dropped, for a request [`BodyShape::read_on`] says so of. The body's
 /// bytes stay held in `hold` until it is dropped.
 async fn http_request(
     mut req: Request,
@@ -1088,15 +1162,16 @@ async fn http_request(
     let method = req.method().to_string();
     let url = req.url()?;
     let mut body = Vec::new();
-    if let Some((limit, declared)) = declared_body(&req)? {
-        if declared.is_some_and(|n| n > limit as u64) {
-            return Ok(Err(too_large()?));
+    if let Some(shape) = BodyShape::of(&req)? {
+        if shape.declared_too_large() {
+            return Ok(Err(shape.refuse_unread(too_large()?, &mut req).await));
         }
         // The declared length is held before any of it is read, so a body
-        // that would not fit is refused unread, and the buffer never grows.
-        let declared = declared.unwrap_or(0) as usize;
+        // that would not fit is refused before it is kept, and the buffer
+        // never grows.
+        let declared = shape.declared.unwrap_or(0) as usize;
         if !hold.grow_to(declared) {
-            return Ok(Err(busy()?));
+            return Ok(Err(shape.refuse_unread(busy()?, &mut req).await));
         }
         body.reserve_exact(declared);
         // No stream: the request has no body.
@@ -1104,15 +1179,17 @@ async fn http_request(
             while let Some(chunk) = chunks.next().await {
                 let chunk = chunk?;
                 let len = body.len() + chunk.len();
-                if len > limit {
-                    return Ok(Err(too_large()?));
+                if len > shape.limit {
+                    let refusal = too_large()?;
+                    return Ok(Err(shape.refuse_part_read(refusal, &mut chunks, len).await));
                 }
                 // The buffer grows as a Vec would, within the limit, and
                 // what it takes is held first.
                 if len > body.capacity() {
-                    let grown = len.max(body.capacity() * 2).min(limit);
+                    let grown = len.max(body.capacity() * 2).min(shape.limit);
                     if !hold.grow_to(grown) {
-                        return Ok(Err(busy()?));
+                        let refusal = busy()?;
+                        return Ok(Err(shape.refuse_part_read(refusal, &mut chunks, len).await));
                     }
                     body.reserve_exact(grown - body.len());
                 }
@@ -1980,11 +2057,30 @@ mod tests {
 
     #[test]
     fn a_body_without_a_credential_is_small() {
-        assert_eq!(body_limit(false, false), MAX_ANONYMOUS_BODY);
-        assert_eq!(body_limit(true, false), MAX_BODY);
-        assert_eq!(body_limit(false, true), MAX_BODY);
+        assert_eq!(body_limit(false), MAX_ANONYMOUS_BODY);
+        assert_eq!(body_limit(true), MAX_BODY);
         // Within the isolate's 128 MB, beside what the body is made into.
         const { assert!(BODY_BUDGET <= 32 << 20 && MAX_BODY * 2 <= BODY_BUDGET) };
+    }
+
+    #[test]
+    fn a_refusal_reads_on_a_credentialed_body_that_ends_within_the_bound() {
+        use crate::refused::REFUSED_READ_BYTES;
+        let declared = |credential, n: usize| BodyShape::new(credential, Some(n as u64));
+        // Chunked, or declared past the limit but within the bound.
+        assert!(BodyShape::new(true, None).read_on());
+        assert!(declared(true, MAX_BODY + 1).declared_too_large());
+        assert!(declared(true, MAX_BODY + 1).read_on());
+        assert!(declared(true, REFUSED_READ_BYTES).read_on());
+        // Declared past the bound: refused unread.
+        assert!(!declared(true, REFUSED_READ_BYTES + 1).read_on());
+        // No credential: refused unread, whatever its length.
+        assert!(!BodyShape::new(false, None).read_on());
+        assert!(declared(false, MAX_ANONYMOUS_BODY + 1).declared_too_large());
+        assert!(!declared(false, MAX_ANONYMOUS_BODY + 1).read_on());
+        // The budget's refusal of a body within its limit reads it on too.
+        assert!(!declared(true, MAX_BODY).declared_too_large());
+        assert!(declared(true, MAX_BODY).read_on());
     }
 
     #[test]

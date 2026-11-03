@@ -50,11 +50,10 @@ use super::api::{
 use super::artifacts::{ArtifactsHost, ArtifactsTokens};
 use super::assets::BucketAssets;
 use super::git_http::{GitHttpRequest, authorize, serve_git, serve_options};
-use super::js::{
-    FetchTransport, JsArtifacts, R2Objects, REFUSED_READ_BYTES, StubTransport, read_body_capped,
-};
+use super::js::{FetchTransport, JsArtifacts, R2Objects, StubTransport, read_body_capped};
 use super::local::LocalHost;
 use super::tokens::{self, GitToken, Holder, LocalTokens, Minted, Scope, TokenHost};
+use crate::refused::REFUSED_READ_BYTES;
 use crate::store::DoPageStore;
 
 /// The `RepoDO` namespace's binding, and the one instance's name.

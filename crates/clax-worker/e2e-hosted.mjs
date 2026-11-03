@@ -6,7 +6,8 @@
 // `http://<ID>.localhost:<port>`), and one people seat. It checks that
 //
 // - a request body over 96 MiB, over 16 MiB, or over 256 KiB with no
-//   credential, declared or chunked, is refused 413;
+//   credential, declared or chunked, is refused 413, one with a
+//   credential that ends within 32 MiB once it was read to its end;
 // - the first person sets up with the secret, invites Sam, who joins in a
 //   second browser in a space of their own, and Sam signs a third browser
 //   in with a sign-in link;
@@ -127,9 +128,11 @@ async function tool(base, token, name, args) {
   return { error: r.result?.isError === true, text, json };
 }
 
-/** The status of a POST to `path` whose body is `mib` MiB: declared so by
+/** The answer to a POST to `path` whose body is `mib` MiB: declared so by
  * its `Content-Length`, or chunked with no length, written 1 MiB at a time
- * until the answer comes; `extra` headers beside. */
+ * until the answer comes; `extra` headers beside. Its `status`, and
+ * whether every byte of the body had been written when it came (`whole`):
+ * an answer to a body read to its end comes after the last. */
 function oversized(base, path, chunked, mib = 97, extra = {}) {
   const total = mib * 1024 * 1024;
   const chunk = Buffer.alloc(1024 * 1024, 0x20);
@@ -139,7 +142,7 @@ function oversized(base, path, chunked, mib = 97, extra = {}) {
     const req = request({ host: u.hostname, port: u.port, path: u.pathname, method: "POST", headers }, (res) => {
       res.resume();
       req.destroy();
-      resolve(res.statusCode);
+      resolve({ status: res.statusCode, whole: sent >= total });
     });
     req.on("error", (e) => (answered ? undefined : reject(e)));
     let answered = false;
@@ -301,22 +304,33 @@ async function main() {
 
     // A body over the largest any route takes, or than the isolate could
     // hold beside what it is made into (past 16 MiB with a credential, past
-    // 256 KiB without one), is refused before it is read whole, and the
+    // 256 KiB without one), is refused without being kept, and the
     // instance keeps answering. The Worker refuses a declared length; the
-    // object, a chunked body once it is past the limit. Under `wrangler
-    // dev` the request after an answer to a body still being sent can fail
-    // (its proxy loses the connection), so one that may fail follows each.
+    // object, a chunked body once it is past the limit. A body with a
+    // credential that ends within 32 MiB is read to its end first, so the
+    // client that is still sending it hears the answer; one past that, or
+    // with no credential, is answered while it is still being sent. Under
+    // `wrangler dev` the request after such an answer can fail (its proxy
+    // loses the connection), so one that may fail follows each.
     const settle = () => fetch(`${origin}/healthz`).catch(() => undefined);
     const bearer = { authorization: `Bearer ${TOKEN}` };
     const anonymous = await oversized(origin, "/api/hosted/setup", false, 1);
-    check(anonymous === 413, "a body declared over 256 KiB with no credential is refused 413", anonymous);
-    check((await oversized(origin, "/api/artifacts", false, 17, bearer)) === 413, "a body declared over 16 MiB is refused 413");
-    check((await oversized(origin, "/api/hosted/setup", false)) === 413, "a body declared over 96 MiB is refused 413");
-    const chunked16 = await oversized(origin, "/api/artifacts", true, 17, bearer);
-    check(chunked16 === 413, "a chunked body past 16 MiB is refused 413", chunked16);
+    check(anonymous.status === 413, "a body declared over 256 KiB with no credential is refused 413", anonymous);
     await settle();
+    const declared16 = await oversized(origin, "/api/artifacts", false, 17, bearer);
+    check(declared16.status === 413 && declared16.whole, "a body declared over 16 MiB is refused 413 once it was read to its end", declared16);
+    const declared32 = await oversized(origin, "/api/artifacts", false, 33, bearer);
+    check(declared32.status === 413, "a body declared past 32 MiB is refused 413 unread", declared32);
+    await settle();
+    check((await oversized(origin, "/api/hosted/setup", false)).status === 413, "a body declared over 96 MiB is refused 413");
+    await settle();
+    // Well past the limit, so the answer would come mid-body unless the
+    // rest is read first (`wrangler dev` reads a declared body whole
+    // itself, and a little past the limit may already be sent).
+    const chunked16 = await oversized(origin, "/api/artifacts", true, 30, bearer);
+    check(chunked16.status === 413 && chunked16.whole, "a chunked body past 16 MiB is refused 413 once it was read to its end", chunked16);
     const chunked96 = await oversized(origin, "/api/hosted/setup", true);
-    check(chunked96 === 413, "a chunked body past 96 MiB is refused 413", chunked96);
+    check(chunked96.status === 413, "a chunked body past 96 MiB is refused 413", chunked96);
     await settle();
     check((await fetch(`${origin}/healthz`)).ok, "the instance answers after the oversized bodies");
 

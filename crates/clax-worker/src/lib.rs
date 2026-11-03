@@ -105,6 +105,7 @@ mod app_data;
 pub mod bot;
 pub mod diag;
 mod instance;
+mod refused;
 pub mod repos;
 pub mod sandbox;
 mod store;
@@ -221,10 +222,11 @@ async fn fetch(req: Request, env: Env, _ctx: worker::Context) -> Result<Response
     to_instance(&env, req).await
 }
 
-/// `req` for the instance's object, unless its declared body is too large;
-/// a body of no declared length goes through [`forward_undeclared`].
-async fn to_instance(env: &Env, req: Request) -> Result<Response> {
-    if let Some(res) = instance::refuse_declared(&req)? {
+/// `req` for the instance's object, unless its declared body is too large
+/// (`instance::refuse_declared`); a body of no declared length goes
+/// through [`forward_undeclared`].
+async fn to_instance(env: &Env, mut req: Request) -> Result<Response> {
+    if let Some(res) = instance::refuse_declared(&mut req).await? {
         return Ok(res);
     }
     if instance::undeclared_body(&req)? {
@@ -236,11 +238,13 @@ async fn to_instance(env: &Env, req: Request) -> Result<Response> {
 /// `req`, whose body declares no length, for the instance's object, its
 /// body relayed by the Worker ([`Relay`]) rather than handed on whole. The
 /// object may answer before it has read the whole body (413 past its
-/// limit, or 429), and the runtime fails any read of the Worker's request
-/// stream once the Worker's response is sent, dropping the connection: a
-/// body handed on whole is still being copied then. So once the object
-/// answers, the Worker lets go of the request stream (which cancels it)
-/// before it returns, and the relay ends.
+/// limit, or 429, read on to the body's end first when it ends within
+/// `refused::REFUSED_READ_BYTES`), and the runtime fails any read of the
+/// Worker's request stream once the Worker's response is sent, dropping
+/// the connection: a body handed on whole is still being copied then. So
+/// once the object answers, the Worker lets go of the request stream
+/// (which cancels what is left of it) before it returns, and the relay
+/// ends.
 async fn forward_undeclared(env: &Env, mut req: Request) -> Result<Response> {
     let held = Rc::new(std::cell::RefCell::new(Some(Box::pin(req.stream()?))));
     let body = wasm_streams::ReadableStream::from_stream(Relay(held.clone()));
