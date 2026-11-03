@@ -777,7 +777,8 @@
   const sending = $derived.by(() => {
     if (!outgoing) return [];
     const rows: [string, string][] = [["Note", outgoing.body.trim() || "(nothing yet)"]];
-    if ("url" in outgoing) rows.push(["Page", outgoing.url]);
+    const page = (outgoing as { url?: unknown }).url;
+    if (typeof page === "string") rows.push(["Page", page]);
     const release = outgoing.context?.release as { version?: string } | undefined;
     if (release?.version) rows.push(["Version", release.version]);
     for (const r of attachRows) if (attachOn.includes(r.id)) rows.push([r.label, r.preview.split("\n")[0] ?? ""]);

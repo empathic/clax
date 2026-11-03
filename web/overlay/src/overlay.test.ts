@@ -990,22 +990,22 @@ describe("the dialog (Addendum 10: Changeling's Send feedback as the reference) 
       note.value = "The total is wrong";
       note.dispatchEvent(new Event("input", { bubbles: true }));
       await settle();
-      const seen = everything(host);
+      const strings = everything(host);
       host.querySelector<HTMLFormElement>(".composer")!.requestSubmit();
       await settle();
-      seen.push(...everything(host));
+      strings.push(...everything(host));
       comp.showReports();
       await settle();
-      seen.push(...everything(host));
+      strings.push(...everything(host));
       // A failure's words too.
       client.fileReport = async () => { throw Object.assign(new Error("offline"), { code: "network" }); };
       (r.component as unknown as { report(o?: { mode?: string }): void }).report({ mode: "note" });
       await settle();
       const n = host.querySelector<HTMLTextAreaElement>("#cx-note");
       if (n) { n.value = "again"; n.dispatchEvent(new Event("input", { bubbles: true })); await settle(); host.querySelector<HTMLFormElement>(".composer")?.requestSubmit(); await settle(); }
-      seen.push(...everything(host));
-      expect(seen.join("\n")).toMatch(/Send feedback/);
-      expect(seen.filter(s => /clax/i.test(s))).toEqual([]);
+      strings.push(...everything(host));
+      expect(strings.join("\n")).toMatch(/Send feedback/);
+      expect(strings.filter(s => /clax/i.test(s))).toEqual([]);
     } finally { r.unmount(); }
   });
 });
