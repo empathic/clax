@@ -91,6 +91,54 @@ fn wrong_origin() -> Refusal {
     .into()
 }
 
+/// Whether a request that carries no `Origin` is a browser's from a page
+/// of `origin` on this very host: a browser leaves `Origin` off a
+/// same-origin `GET` or `HEAD`, and says so in the one
+/// `Sec-Fetch-Site: same-origin` (a header no page can set); the request's
+/// one `Host`, which the signature covers, must then be `origin`'s host and
+/// port, and `origin`'s scheme the one the instance serves at that `Host`
+/// (`own`, [`own_scheme`]).
+fn same_origin_as(method: &Method, headers: &HeaderMap, origin: &str, own: &str) -> bool {
+    if method != Method::GET && method != Method::HEAD {
+        return false;
+    }
+    let one = |name: &str| {
+        let mut v = headers.get_all(name).iter();
+        match (v.next(), v.next()) {
+            (Some(v), None) => v.to_str().ok(),
+            _ => None,
+        }
+    };
+    let scheme = |o: &str| {
+        o.split_once("://")
+            .map(|(s, rest)| (s.to_ascii_lowercase(), rest.to_string()))
+    };
+    let (Some((scheme_of, authority)), Some((own_scheme, _))) = (scheme(origin), scheme(own))
+    else {
+        return false;
+    };
+    scheme_of == own_scheme
+        && one("sec-fetch-site") == Some("same-origin")
+        && one(header::HOST.as_str()).is_some_and(|h| h.eq_ignore_ascii_case(&authority))
+}
+
+/// The origin, as `<scheme>://`, the instance serves its pages under at
+/// the request's `Host`: on a `[serve] trusted_hosts` name (not an
+/// artifact's), `https://`, as a TLS front such as `tailscale serve` ends
+/// TLS before a local daemon and proxies it plain (`Host` kept); else the
+/// scheme of its public origin ([`crate::site_access::public_origin`]).
+fn own_scheme(s: &AppState, headers: &HeaderMap) -> String {
+    let mut hosts = headers.get_all(header::HOST).iter();
+    if s.hosted.is_none()
+        && let (Some(Ok(host)), None) = (hosts.next().map(HeaderValue::to_str), hosts.next())
+        && crate::auth::trusted_host(host, &s.trusted_hosts)
+        && crate::host::artifact_host(host).is_none()
+    {
+        return "https://".to_string();
+    }
+    crate::site_access::public_origin(s)
+}
+
 /// The one `Authorization` value of the request, when its scheme is
 /// `scheme` (ignoring case) and its token is not empty.
 fn token_of(headers: &HeaderMap, scheme: &str) -> Result<Secret, Refusal> {
@@ -264,11 +312,18 @@ impl<const LIMIT: usize> FromRequest<AppState> for ReporterCaller<LIMIT> {
             .await?;
         let (t, origins) = found.ok_or_else(invalid_token)?;
         let mut sent = parts.headers.get_all(header::ORIGIN).iter();
-        let origin = match (sent.next(), sent.next()) {
-            (Some(o), None) => o.to_str().ok(),
-            _ => None,
+        let from_origin = match (sent.next(), sent.next()) {
+            (Some(o), None) => o.to_str().ok() == Some(t.origin.as_str()),
+            (None, _) => same_origin_as(
+                &parts.method,
+                &parts.headers,
+                &t.origin,
+                &own_scheme(s, &parts.headers),
+            ),
+            _ => false,
         };
-        if origin != Some(t.origin.as_str()) || !origins.contains(&t.origin) {
+        if !from_origin || !origins.contains(&t.origin) {
+            tracing::debug!(queue = %t.queue_id, "reporter request refused: wrong_origin");
             return Err(wrong_origin());
         }
         let key = sig::decode_public(&t.public_key).map_err(|e| grant_auth::refuse(e, &s.store))?;
