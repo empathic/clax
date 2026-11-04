@@ -66,7 +66,14 @@ async fn world() -> (TestServer, String, String, String) {
 #[tokio::test]
 async fn an_install_is_made_listed_changed_and_deleted_in_the_browser() {
     let (ts, owner, qid, iid) = world().await;
-    let (s, v) = browser(&ts, &owner, Method::GET, &format!("/api/queues/{qid}/installs"), None).await;
+    let (s, v) = browser(
+        &ts,
+        &owner,
+        Method::GET,
+        &format!("/api/queues/{qid}/installs"),
+        None,
+    )
+    .await;
     assert_eq!(s, 200, "{v}");
     let i = &v["installs"][0];
     assert_eq!(i["id"], iid.as_str());
@@ -109,7 +116,14 @@ async fn an_install_is_made_listed_changed_and_deleted_in_the_browser() {
     )
     .await;
     assert_eq!(s, 204);
-    let (s, v) = browser(&ts, &owner, Method::GET, &format!("/api/queues/{qid}/installs"), None).await;
+    let (s, v) = browser(
+        &ts,
+        &owner,
+        Method::GET,
+        &format!("/api/queues/{qid}/installs"),
+        None,
+    )
+    .await;
     assert_eq!((s, v["installs"].clone()), (200, json!([])));
     let r = ts
         .client
@@ -172,33 +186,77 @@ async fn a_queue_and_its_install_follow_the_app_home_declares_with_no_hand_edit(
 
     // Nothing declared: the tailnet bridge is another site, and the config
     // names no origin of Clax's.
-    let r = ts.client.get(&config).header("origin", bridge).send().await.unwrap();
+    let r = ts
+        .client
+        .get(&config)
+        .header("origin", bridge)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(allowed(&r), None);
     let v: Value = r.json().await.unwrap();
     assert_eq!(v["origin"], Value::Null);
-    let r = ts.client.get(&container).header("origin", bridge).send().await.unwrap();
+    let r = ts
+        .client
+        .get(&container)
+        .header("origin", bridge)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(allowed(&r), None);
 
     // Home declares app:changeling: the same rows now admit every address.
     ts.store
         .set_apps(clax_core::apps::Apps::parse(APPS).unwrap());
-    for o in [bridge, "https://changeling.tail556f5b.ts.net", "http://127.0.0.1:7700"] {
-        let r = ts.client.get(&config).header("origin", o).send().await.unwrap();
+    for o in [
+        bridge,
+        "https://changeling.tail556f5b.ts.net",
+        "http://127.0.0.1:7700",
+    ] {
+        let r = ts
+            .client
+            .get(&config)
+            .header("origin", o)
+            .send()
+            .await
+            .unwrap();
         assert_eq!(allowed(&r).as_deref(), Some(o), "install config from {o}");
-        let r = ts.client.get(&container).header("origin", o).send().await.unwrap();
+        let r = ts
+            .client
+            .get(&container)
+            .header("origin", o)
+            .send()
+            .await
+            .unwrap();
         assert_eq!(allowed(&r).as_deref(), Some(o), "container from {o}");
         let r = ts
             .client
-            .request(Method::OPTIONS, format!("{}/api/queues/{qid}/reporter/reports", ts.base))
+            .request(
+                Method::OPTIONS,
+                format!("{}/api/queues/{qid}/reporter/reports", ts.base),
+            )
             .header("origin", o)
             .header("access-control-request-method", "POST")
             .send()
             .await
             .unwrap();
-        assert_eq!(allowed(&r).as_deref(), Some(o), "reporter preflight from {o}");
+        assert_eq!(
+            allowed(&r).as_deref(),
+            Some(o),
+            "reporter preflight from {o}"
+        );
     }
-    for o in ["https://clax.tail556f5b.ts.net", "https://phobos.tail556f5b.ts.net"] {
-        let r = ts.client.get(&config).header("origin", o).send().await.unwrap();
+    for o in [
+        "https://clax.tail556f5b.ts.net",
+        "https://phobos.tail556f5b.ts.net",
+    ] {
+        let r = ts
+            .client
+            .get(&config)
+            .header("origin", o)
+            .send()
+            .await
+            .unwrap();
         assert_eq!(allowed(&r), None, "{o} is not Changeling's");
     }
     // The pages are on Clax's own Service origin, whatever Host was asked.
@@ -225,7 +283,13 @@ async fn a_queue_and_its_install_follow_the_app_home_declares_with_no_hand_edit(
     .await;
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["queue"]["origins"], json!(["app:changeling"]));
-    let r = ts.client.get(&container).header("origin", bridge).send().await.unwrap();
+    let r = ts
+        .client
+        .get(&container)
+        .header("origin", bridge)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(allowed(&r).as_deref(), Some(bridge));
     let (s, v) = browser(
         &ts,
@@ -235,7 +299,10 @@ async fn a_queue_and_its_install_follow_the_app_home_declares_with_no_hand_edit(
         Some(json!({"origins": ["app:Not A Name"]})),
     )
     .await;
-    assert_eq!((s, v["error"]["code"].clone()), (400, json!("invalid_origin")));
+    assert_eq!(
+        (s, v["error"]["code"].clone()),
+        (400, json!("invalid_origin"))
+    );
 }
 
 #[tokio::test]
@@ -244,7 +311,13 @@ async fn the_config_is_public_with_an_etag_and_cors_for_the_installs_origins_alo
     let url = format!("{}/api/installs/{iid}/config", ts.base);
 
     // From the install's own site, with no credential.
-    let r = ts.client.get(&url).header("origin", SITE).send().await.unwrap();
+    let r = ts
+        .client
+        .get(&url)
+        .header("origin", SITE)
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status().as_u16(), 200);
     let h = r.headers().clone();
     assert_eq!(h["access-control-allow-origin"], SITE);
@@ -260,7 +333,10 @@ async fn the_config_is_public_with_an_etag_and_cors_for_the_installs_origins_alo
     assert_eq!(v["queue"]["page"], format!("/queues/{qid}"));
     assert_eq!(v["queue"]["reporter_page"], format!("/reporter/{qid}"));
     assert_eq!(v["config"]["queue_label"], "Sends to");
-    assert!(!v.to_string().contains("origins"), "the config lists no origins");
+    assert!(
+        !v.to_string().contains("origins"),
+        "the config lists no origins"
+    );
 
     // Unchanged: 304, the same tag.
     let r = ts
@@ -336,7 +412,14 @@ async fn only_the_queues_admin_changes_its_installs() {
     let sam_client = ts.connect_person("Sam", "clax:collaborator").await;
     let v = ts.store.viewer_of_grant(&sam_client.grant_id()).unwrap();
     let sam = format!("clax_viewer={}", ts.browser_cookie(&v.id));
-    let (s, v) = browser(&ts, &sam, Method::GET, &format!("/api/queues/{qid}/installs"), None).await;
+    let (s, v) = browser(
+        &ts,
+        &sam,
+        Method::GET,
+        &format!("/api/queues/{qid}/installs"),
+        None,
+    )
+    .await;
     assert_eq!(s, 404, "{v}");
     assert_eq!(v["error"]["code"], "not_a_member");
     let (s, _) = browser(

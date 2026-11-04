@@ -54,10 +54,11 @@ pub(super) fn forget_in(tx: &Transaction<'_>, column: &'static str, value: &str)
 
 /// The names queue `qid`'s app gave its reporters, by reporter ID, on `c`.
 fn names_in(c: &Connection, qid: &str) -> Result<HashMap<String, String>> {
-    Ok(c
-        .prepare_cached("SELECT reporter_id, name FROM queue_reporters WHERE queue_id = ?1")?
-        .query_map(params![qid], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?)
+    Ok(
+        c.prepare_cached("SELECT reporter_id, name FROM queue_reporters WHERE queue_id = ?1")?
+            .query_map(params![qid], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?,
+    )
 }
 
 /// `r` as reporter `viewer` of queue `q` may read it, `names` being the
@@ -109,24 +110,23 @@ fn project(
 
 /// A view session's row on `c`, by its token's SHA-256, for queue `qid`.
 fn session_in(c: &Connection, qid: &str, sha256: &str) -> Result<Option<ViewSession>> {
-    Ok(c
-        .prepare_cached(
-            "SELECT s.queue_id, s.service_grant_id, s.reporter_id, s.expires_at
+    Ok(c.prepare_cached(
+        "SELECT s.queue_id, s.service_grant_id, s.reporter_id, s.expires_at
              FROM queue_view_sessions s
              JOIN queue_service_grants g ON g.id = s.service_grant_id
              JOIN queues q ON q.id = s.queue_id
              WHERE s.token_sha256 = ?1 AND s.queue_id = ?2
                AND g.revoked_at IS NULL AND q.deleted_at IS NULL",
-        )?
-        .query_row(params![sha256, qid], |r| {
-            Ok(ViewSession {
-                queue_id: r.get(0)?,
-                service_grant_id: r.get(1)?,
-                reporter_id: r.get(2)?,
-                expires_at: r.get(3)?,
-            })
+    )?
+    .query_row(params![sha256, qid], |r| {
+        Ok(ViewSession {
+            queue_id: r.get(0)?,
+            service_grant_id: r.get(1)?,
+            reporter_id: r.get(2)?,
+            expires_at: r.get(3)?,
         })
-        .optional()?)
+    })
+    .optional()?)
 }
 
 impl Store {
@@ -381,7 +381,10 @@ mod tests {
     #[test]
     fn under_own_another_reporters_report_is_not_read_and_no_submitter_is_named() {
         let q = queue(ReportersSee::Own);
-        let a = report("emp-a", vec![comment(AUTHOR_REPORTER, "emp-a", Some("emp-a"))]);
+        let a = report(
+            "emp-a",
+            vec![comment(AUTHOR_REPORTER, "emp-a", Some("emp-a"))],
+        );
         assert_eq!(project(a.clone(), "emp-b", &q, &names()), None);
         let mine = project(a, "emp-a", &q, &names()).unwrap();
         assert_eq!(mine.submitter, None);

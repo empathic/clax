@@ -261,7 +261,10 @@ async fn calls_name_clax_and_carry_the_session_label_but_not_the_key() {
     assert!(!format!("{labelled:?}").contains(KEY));
     for s in &seen {
         for h in ["user-agent", "x-llm-session"] {
-            assert!(!s.header(h).unwrap_or("").contains(KEY), "{h} carries the key");
+            assert!(
+                !s.header(h).unwrap_or("").contains(KEY),
+                "{h} carries the key"
+            );
         }
     }
     // Unlabelled: the user agent still names Clax, and no session header.

@@ -30,7 +30,8 @@ pub struct InstallPatch {
     pub config: Option<InstallConfig>,
 }
 
-const INSTALL_SELECT: &str = "SELECT id, queue_id, name, origins_json, config_json, created_at, updated_at
+const INSTALL_SELECT: &str =
+    "SELECT id, queue_id, name, origins_json, config_json, created_at, updated_at
      FROM installs";
 
 fn install_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Install> {
@@ -166,7 +167,10 @@ impl Store {
                 .with("install_id", iid);
             let mut changed = false;
             if let Some(n) = name.filter(|n| *n != i.name) {
-                tx.execute("UPDATE installs SET name = ?2 WHERE id = ?1", params![iid, n])?;
+                tx.execute(
+                    "UPDATE installs SET name = ?2 WHERE id = ?1",
+                    params![iid, n],
+                )?;
                 rec = rec.with("name", n);
                 changed = true;
             }
@@ -183,7 +187,10 @@ impl Store {
                     "UPDATE installs SET config_json = ?2 WHERE id = ?1",
                     params![iid, config_json(&c)],
                 )?;
-                rec = rec.with("config", serde_json::to_value(&c).expect("config serialises"));
+                rec = rec.with(
+                    "config",
+                    serde_json::to_value(&c).expect("config serialises"),
+                );
                 changed = true;
             }
             if changed {
@@ -256,14 +263,19 @@ mod tests {
     fn an_install_is_made_listed_changed_and_deleted() {
         let (_d, st) = store();
         let qid = queue(&st);
-        let i = st.create_install(DAEMON, &qid, new(" Changelist ")).unwrap();
+        let i = st
+            .create_install(DAEMON, &qid, new(" Changelist "))
+            .unwrap();
         assert_eq!(i.name, "Changelist");
         assert_eq!(i.origins, vec!["https://app.example.com".to_string()]);
         assert_eq!(i.config.product_name.as_deref(), Some("Acme"));
         assert_eq!(st.installs_of_queue(&qid).unwrap(), vec![i.clone()]);
 
         let (got, q) = st.install_with_queue(&i.id).unwrap().unwrap();
-        assert_eq!((got.id.as_str(), q.id.as_str()), (i.id.as_str(), qid.as_str()));
+        assert_eq!(
+            (got.id.as_str(), q.id.as_str()),
+            (i.id.as_str(), qid.as_str())
+        );
 
         let changed = st
             .update_install(

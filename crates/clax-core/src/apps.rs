@@ -80,9 +80,10 @@ pub struct Apps {
 pub fn is_designator(d: &str) -> bool {
     !d.is_empty()
         && d.len() <= 63
-        && d.bytes().next().is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-        && d
-            .bytes()
+        && d.bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        && d.bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
@@ -164,10 +165,9 @@ impl Apps {
     pub fn load(path: &Path) -> Result<Apps> {
         match std::fs::read_to_string(path) {
             Ok(text) => Apps::parse(&text).map_err(|e| match e {
-                CoreError::Invalid { message, .. } => CoreError::invalid(
-                    "bad_config",
-                    format!("{}: {message}", path.display()),
-                ),
+                CoreError::Invalid { message, .. } => {
+                    CoreError::invalid("bad_config", format!("{}: {message}", path.display()))
+                }
                 other => other,
             }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Apps::default()),
@@ -327,8 +327,14 @@ mod tests {
         assert_eq!(a.resolve(phobos, "/fold/x"), Some("basis"));
         assert_eq!(a.resolve(phobos, "/folder"), Some("clax"));
         assert_eq!(a.resolve(phobos, "/a/f4s6pxhbs8bg"), Some("clax"));
-        assert_eq!(a.resolve("https://PHOBOS.tail556f5b.ts.net:443", "/"), Some("clax"));
-        assert_eq!(a.resolve("http://127.0.0.1:7700", "/settings"), Some("changeling"));
+        assert_eq!(
+            a.resolve("https://PHOBOS.tail556f5b.ts.net:443", "/"),
+            Some("clax")
+        );
+        assert_eq!(
+            a.resolve("http://127.0.0.1:7700", "/settings"),
+            Some("changeling")
+        );
         assert_eq!(a.resolve("http://127.0.0.1:5173", "/"), None);
         assert_eq!(a.resolve("http://127.0.0.1:9999", "/"), None, "retired");
     }
@@ -399,7 +405,11 @@ mod tests {
         assert!(Apps::parse(r#"{"x": {"addresses": [{"origin": "nope"}]}}"#).is_err());
         assert!(Apps::parse(r#"{"x": {"addresses": [{"origin": "https://a.b/path"}]}}"#).is_err());
         let dir = tempfile::tempdir().unwrap();
-        assert!(Apps::load(&dir.path().join("apps.json")).unwrap().is_empty());
+        assert!(
+            Apps::load(&dir.path().join("apps.json"))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

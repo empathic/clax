@@ -5441,10 +5441,7 @@ mod tests {
             super::REPORTER_VIEW_MIGRATION + 1
         );
         assert!(MIGRATIONS[first + 23].contains("CREATE TABLE installs ("));
-        assert_eq!(
-            super::RESPONDERS_MIGRATION,
-            super::INSTALLS_MIGRATION + 1
-        );
+        assert_eq!(super::RESPONDERS_MIGRATION, super::INSTALLS_MIGRATION + 1);
         assert!(MIGRATIONS[first + 24].contains("CREATE TABLE queue_responders ("));
         assert_eq!(MIGRATIONS.len() as u32, super::RESPONDERS_MIGRATION);
     }
@@ -7695,8 +7692,17 @@ mod tests {
         drop(st);
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
-        for table in ["owner_browser_sessions", "report_fixes", "price_catalog", "queue_reporters"] {
-            assert_eq!(table_count(&c, table), 1, "main's 60 to 62 and 64 ran: {table}");
+        for table in [
+            "owner_browser_sessions",
+            "report_fixes",
+            "price_catalog",
+            "queue_reporters",
+        ] {
+            assert_eq!(
+                table_count(&c, table),
+                1,
+                "main's 60 to 62 and 64 ran: {table}"
+            );
         }
     }
 }

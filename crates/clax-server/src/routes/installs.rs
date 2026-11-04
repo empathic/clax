@@ -281,11 +281,7 @@ pub async fn config(
     let mut res = if fresh {
         StatusCode::NOT_MODIFIED.into_response()
     } else {
-        (
-            [(header::CONTENT_TYPE, "application/json")],
-            text,
-        )
-            .into_response()
+        ([(header::CONTENT_TYPE, "application/json")], text).into_response()
     };
     let h = res.headers_mut();
     h.insert(

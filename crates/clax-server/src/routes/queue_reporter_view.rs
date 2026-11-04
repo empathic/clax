@@ -85,17 +85,21 @@ impl FromRequestParts<AppState> for ViewCaller {
         let token = clax_http::hosted::cookie_value(&parts.headers, COOKIE)
             .ok_or_else(ApiError::unauthorized)?;
         let sha = clax_core::secret::sha256_hex(&token);
-        let found = s
-            .store_call(move |st| st.view_session(&qid, &sha))
-            .await?;
+        let found = s.store_call(move |st| st.view_session(&qid, &sha)).await?;
         found.map(ViewCaller).ok_or_else(ApiError::unauthorized)
     }
 }
 
 fn no_store(mut r: Response) -> Response {
     let h = r.headers_mut();
-    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
-    h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+    h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    h.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
     r
 }
 

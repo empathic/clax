@@ -440,7 +440,13 @@ pub async fn file_report(
     let (report, woken) = s
         .store_call_async(move |st| async move {
             let (r, woken) = st
-                .file_report_touched_async(&reporter_ctx(&qid, &rid), &qid, Some(&token), scope, new)
+                .file_report_touched_async(
+                    &reporter_ctx(&qid, &rid),
+                    &qid,
+                    Some(&token),
+                    scope,
+                    new,
+                )
                 .await?;
             Ok((st.as_reporter(&qid, &rid, r)?, woken))
         })
@@ -770,7 +776,12 @@ pub async fn view_link(
     let q = qid.clone();
     let (code, expires_at) = s
         .store_call(move |st| {
-            st.mint_view_code(&q, &t.service_grant_id, &t.reporter_id, b.report_id.as_deref())
+            st.mint_view_code(
+                &q,
+                &t.service_grant_id,
+                &t.reporter_id,
+                b.report_id.as_deref(),
+            )
         })
         .await?;
     let path = super::queue_reporter_view::enter_path(&qid, code.expose());

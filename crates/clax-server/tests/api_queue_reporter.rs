@@ -1169,7 +1169,10 @@ async fn under_all_a_reporter_reads_and_comments_on_anothers_report() {
     assert_eq!(cs[0]["author_name"], "another reporter");
     assert_eq!(v["report"]["reporter_id"], Value::Null);
     assert_eq!(v["report"]["metadata"], Value::Null);
-    assert_eq!(v["report"]["submitter"], json!({"name": null, "you": false}));
+    assert_eq!(
+        v["report"]["submitter"],
+        json!({"name": null, "you": false})
+    );
 }
 
 /// Mints a reporter token for `reporter_id` named `name` on [`ORIGIN`].
@@ -1214,10 +1217,9 @@ async fn api_list(s: &Setup, r: &Reporter) -> Value {
 
 /// The owner's reports of `s`'s queue.
 async fn owner_list(s: &Setup) -> Value {
-    let res = s
-        .ts
-        .get_authed(&format!("/api/queues/{}/reports", s.qid))
-        .await;
+    let res =
+        s.ts.get_authed(&format!("/api/queues/{}/reports", s.qid))
+            .await;
     assert_eq!(res.status(), 200);
     res.json().await.unwrap()
 }
@@ -1311,13 +1313,24 @@ async fn two_reporters_see_what_reporters_see_allows_and_the_owner_sees_every_re
         assert_eq!(&reports[0]["id"], mine);
         assert_eq!(reports[0]["metadata"], json!({"order": 7}));
         assert!(reports[0].get("submitter").is_none(), "{api}");
-        assert_eq!(view_json(&s, c, "api/reports").await, api, "the view reads the same");
+        assert_eq!(
+            view_json(&s, c, "api/reports").await,
+            api,
+            "the view reads the same"
+        );
         let q = view_json(&s, c, "api/queue").await;
         assert_eq!(q["queue"]["reporters_see"], "own");
         assert_eq!(q["queue"]["name"], "Orders");
-        assert_eq!(view_get(&s, c, &format!("api/reports/{theirs}")).await.status(), 404);
         assert_eq!(
-            view_get(&s, c, &format!("api/reports/{theirs}/clip")).await.status(),
+            view_get(&s, c, &format!("api/reports/{theirs}"))
+                .await
+                .status(),
+            404
+        );
+        assert_eq!(
+            view_get(&s, c, &format!("api/reports/{theirs}/clip"))
+                .await
+                .status(),
             404
         );
         let one = view_json(&s, c, &format!("api/reports/{mine}")).await;
@@ -1346,13 +1359,19 @@ async fn two_reporters_see_what_reporters_see_allows_and_the_owner_sees_every_re
         assert_eq!(o["comments"][0]["author_kind"], "reporter");
         let theirs_id = if me == "alice-gh" { "emp-b" } else { "emp-a" };
         assert!(!api.to_string().contains(theirs_id), "{api}");
-        assert_eq!(view_json(&s, c, "api/reports").await, api, "the view reads the same");
+        assert_eq!(
+            view_json(&s, c, "api/reports").await,
+            api,
+            "the view reads the same"
+        );
         let q = view_json(&s, c, "api/queue").await;
         assert_eq!(q["queue"]["reporters_see"], "all");
         let one = view_json(&s, c, &format!("api/reports/{theirs}")).await;
         assert_eq!(one["report"], o);
         assert_eq!(
-            view_get(&s, c, &format!("api/reports/{theirs}/clip")).await.status(),
+            view_get(&s, c, &format!("api/reports/{theirs}/clip"))
+                .await
+                .status(),
             200
         );
     }
@@ -1369,13 +1388,19 @@ async fn two_reporters_see_what_reporters_see_allows_and_the_owner_sees_every_re
             assert_eq!(r["metadata"], json!({"order": 7}));
             (
                 r["reporter_id"].as_str().unwrap().to_string(),
-                r["comments"][0]["author_name"].as_str().unwrap().to_string(),
+                r["comments"][0]["author_name"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
             )
         })
         .collect();
     assert_eq!(
         reporters,
-        [("emp-a".into(), "emp-a".into()), ("emp-b".into(), "emp-b".into())]
+        [
+            ("emp-a".into(), "emp-a".into()),
+            ("emp-b".into(), "emp-b".into())
+        ]
     );
 }
 
@@ -1391,12 +1416,18 @@ async fn a_view_link_is_single_use_short_lived_and_of_its_queue() {
     assert_eq!(res.status(), 200);
     let v: Value = res.json().await.unwrap();
     let path = v["path"].as_str().unwrap().to_string();
-    assert!(path.starts_with(&format!("/reporter/{}/enter?code=cxrc_", s.qid)), "{path}");
+    assert!(
+        path.starts_with(&format!("/reporter/{}/enter?code=cxrc_", s.qid)),
+        "{path}"
+    );
     let (to, cookie) = enter(&s, &path).await;
     assert_eq!(to, format!("/reporter/{}/{ta}", s.qid), "the link's report");
     let cookie = cookie.unwrap();
     // Spent.
-    assert_eq!(enter(&s, &path).await, (format!("/reporter/{}", s.qid), None));
+    assert_eq!(
+        enter(&s, &path).await,
+        (format!("/reporter/{}", s.qid), None)
+    );
     // Expired.
     let v: Value = view_link(&s, &a, None).await.json().await.unwrap();
     s.clock.advance(61);
@@ -1410,7 +1441,9 @@ async fn a_view_link_is_single_use_short_lived_and_of_its_queue() {
     // No cookie, a made-up one, or another queue's path: no session.
     assert_eq!(view_get(&s, "x=y", "api/reports").await.status(), 401);
     assert_eq!(
-        view_get(&s, "clax_reporter=cxrv_nope", "api/reports").await.status(),
+        view_get(&s, "clax_reporter=cxrv_nope", "api/reports")
+            .await
+            .status(),
         401
     );
     let other = Setup::on_existing(s, None);
@@ -1437,7 +1470,10 @@ async fn a_view_session_comments_as_its_reporter_and_ends_with_its_queue() {
     let res = s
         .send("POST", &pq, &[("cookie", c.clone())], body.clone())
         .await;
-    assert_eq!(status_code(res).await, (415, "unsupported_media_type".into()));
+    assert_eq!(
+        status_code(res).await,
+        (415, "unsupported_media_type".into())
+    );
     let res = s
         .send(
             "POST",
