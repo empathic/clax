@@ -75,25 +75,6 @@ case "$1" in
             cp bazel/workspace.bzl MODULE.bazel.lock
         fi
         echo "fake bazel-sync" ;;
-    ci)
-        # $FAKE_STATE/ci-advance: seconds each run moves the clock on.
-        if [ -s "$FAKE_STATE/ci-advance" ]; then
-            echo $(( $(cat "$CLAX_RELEASE_NOW_FILE") + $(cat "$FAKE_STATE/ci-advance") )) > "$CLAX_RELEASE_NOW_FILE"
-        fi
-        # $FAKE_STATE/ci-heartbeat: the next run prints Bazel's progress and
-        # waits, at most a minute, for a heartbeat telling it in release.sh's
-        # output ($FAKE_OUT).
-        if [ -e "$FAKE_STATE/ci-heartbeat" ]; then
-            rm "$FAKE_STATE/ci-heartbeat"
-            echo "[1,000 / 2,000] 40 / 56 tests; Testing //scripts:release_script; 3s darwin-sandbox"
-            i=0
-            while [ "$i" -lt 1200 ] && ! grep -F "40/56 tests" "$FAKE_OUT" >/dev/null 2>&1; do
-                sleep 0.05
-                i=$((i + 1))
-            done
-        fi
-        if [ -e "$FAKE_STATE/ci-fail" ]; then echo "fake ci: a gate failed"; exit 1; fi
-        echo "fake ci: every gate passed" ;;
     *) echo "fake just: unexpected: $*" >&2; exit 2 ;;
 esac
 SH
@@ -340,6 +321,27 @@ new_case() {
     cat > "$r/scripts/check-version.sh" <<'SH'
 #!/usr/bin/env bash
 cd "$(dirname "$0")/.." || exit 1
+if [ "${1:-}" != --print ]; then
+    echo "check-version" >> "$FAKE_STATE/calls"
+    # $FAKE_STATE/check-advance: seconds each run moves the clock on, but
+    # for the carry's check (step 18), in its worktree under target/release/.
+    case "$PWD" in */target/release/*) ;; *) false ;; esac
+    if [ "$?" != 0 ] && [ -s "$FAKE_STATE/check-advance" ]; then
+        echo $(( $(cat "$CLAX_RELEASE_NOW_FILE") + $(cat "$FAKE_STATE/check-advance") )) > "$CLAX_RELEASE_NOW_FILE"
+    fi
+    # $FAKE_STATE/check-heartbeat: the next run waits, at most a minute, for
+    # a heartbeat of its step in release.sh's output ($FAKE_OUT).
+    if [ -e "$FAKE_STATE/check-heartbeat" ]; then
+        rm "$FAKE_STATE/check-heartbeat"
+        i=0
+        while [ "$i" -lt 1200 ] && ! grep -F "Check the version files: 3m12s" "$FAKE_OUT" >/dev/null 2>&1; do
+            sleep 0.05
+            i=$((i + 1))
+        done
+    fi
+    if [ -e "$FAKE_STATE/check-fail" ]; then echo "fake check-version: plugins/x/VERSION is 0.5.0, not 0.6.0" >&2; exit 1; fi
+    echo "fake check-version: the versions agree"
+fi
 v="$(sed -n 's/^CLAX_VERSION="\(.*\)"$/\1/p' scripts/ensure-clax.sh)"
 [ -n "$v" ] || { echo "versions differ" >&2; exit 1; }
 bad=0
@@ -541,28 +543,36 @@ case_2() {
     # --- a full release, in order ------------------------------------------------------
     new_case
     act; rc=$?
-    want="$(printf '%s\n' "bump 0.6.0" "just bazel-sync" "just bazel-sync" "just bazel-sync" "just ci" "gh pr create")"
-    got="$(grep -E '^(bump|pin|just|gh pr create|gh workflow run|gh run view)' "$FAKE_STATE/calls" | sed 's/^gh pr create .*/gh pr create/')"
+    want="$(printf '%s\n' "bump 0.6.0" "just bazel-sync" "just bazel-sync" "just bazel-sync" "check-version" "gh pr create")"
+    got="$(grep -E '^(bump|pin|just|check-version|gh pr create|gh workflow run|gh run view)' "$FAKE_STATE/calls" | sed 's/^gh pr create .*/gh pr create/')"
     if [ "$rc" = 0 ] && [ "$got" = "$want" ] && prepared_ok \
         && has "The release is prepared: the pull request https://github.com/empathic/clax-test/pull/7 into prod." \
         && has "  the pull request: https://github.com/empathic/clax-test/pull/7" \
         && ! has "step 10/21" && logs "== step 6 of 21 ran 0s"; then
-        pass "the first run cuts the release branch from prod, merges main, bumps, tests, pushes it and opens its pull request"
+        pass "the first run cuts the release branch from prod, merges main, bumps, checks the versions, pushes it and opens its pull request"
     else fail "the first run prepares the release (rc=$rc; calls: $got; $(cat "$C/out"))"; fi
     if has "  4. [todo] Bump the version: scripts/bump-version.sh 0.6.0" \
-        && has "Estimated: about 40m in all, about 40m for the steps to do (typical durations" \
+        && has "Estimated: about 25m in all, about 25m for the steps to do (typical durations" \
         && has "[0%] step 2/21 Cut the release branch: git switch -c release/0.6.0 origin/prod" \
-        && has "[2%] step 6/21 Run the gates: just ci" && has "[21%] step 9/21 Open the pull request into prod: " \
+        && has "[3%] step 6/21 Check the version files: scripts/check-version.sh" && has "[5%] step 9/21 Open the pull request into prod: " \
         && [ "$(grep -c '^\[[0-9]*%\] step [0-9]*/21 ' "$C/out")" = 8 ] \
-        && ! has "fake ci: every gate passed" && ! has "fake bazel-sync" && logs "fake ci: every gate passed"; then
+        && ! has "fake check-version: the versions agree" && ! has "fake bazel-sync" && logs "fake check-version: the versions agree"; then
         pass "a run shows the steps, then one line per step; the steps' output goes to the log alone"
     else fail "a run's terminal output ($(cat "$C/out"))"; fi
 
-    # Again before the merge, on the release branch or on prod: refused.
-    refuse "a release whose pull request is not merged yet" \
-        "the pull request https://github.com/empathic/clax-test/pull/7 into prod is not merged yet: once CI passes, merge it on GitHub (Create a merge commit)"
-    git -C "$C/repo" switch -q prod
-    refuse "a release whose pull request is not merged yet, on prod" "into prod is not merged yet"
+    # Again before the merge, on the release branch or on prod: the run
+    # says where the pull request is, and changes nothing.
+    for at in release/0.6.0 prod; do
+        git -C "$C/repo" switch -q "$at"
+        : > "$FAKE_STATE/calls"
+        before="$(snapshot)"
+        act; rc=$?
+        if [ "$rc" = 0 ] && [ -z "$(actions)" ] && [ "$before" = "$(snapshot)" ] \
+            && has "The release is prepared: the pull request https://github.com/empathic/clax-test/pull/7 into prod." \
+            && ! has "FAIL"; then
+            pass "a run with its pull request open, on $at, names the pull request and changes nothing"
+        else fail "a run with its pull request open, on $at (rc=$rc: $(actions); $(cat "$C/out"))"; fi
+    done
 
     merge_pr
     git -C "$C/repo" pull -q --ff-only origin prod
@@ -572,10 +582,10 @@ case_2() {
     printf 'queued \nin_progress \ncompleted success\n' > "$FAKE_STATE/101"
     act; rc=$?
     pin="$(o rev-parse prod)"
-    want="$(printf '%s\n' "gh run view 101" "pin v0.6.0" "just ci" "gh run view 201" \
+    want="$(printf '%s\n' "gh run view 101" "pin v0.6.0" "check-version" "check-version" "gh run view 201" \
         "gh workflow run publish-pi.yml --ref prod -f dry_run=false -f sha=$pin" "gh run view 301")"
     # Each run's polls, as one line.
-    got="$(grep -E '^(bump|pin|just|gh pr create|gh workflow run|gh run view)' "$FAKE_STATE/calls" \
+    got="$(grep -E '^(bump|pin|just|check-version|gh pr create|gh workflow run|gh run view)' "$FAKE_STATE/calls" \
         | sed 's/^\(gh run view [0-9]*\) .*/\1/' | awk '!($0 ~ /^gh run view/ && $0 == prev) { print } { prev = $0 }')"
     if [ "$rc" = 0 ] && [ "$got" = "$want" ] && released && has "[100%] Clax 0.6.0 is released." \
         && logs "Release v0.6.0: in_progress" && has "ok: cutting 0.6.0 on prod at origin/prod" \
@@ -585,9 +595,9 @@ case_2() {
         && has "just release-sdk 0.1.0 (docs/usage.md, \"Releasing the SDK package\")"; then
         pass "once merged, a run on prod tags, waits, pins, pushes prod, carries both commits to main and publishes, in order"
     else fail "the cut, in order (rc=$rc; calls: $got; $(cat "$C/out"))"; fi
-    # Steps 2-10 (530s of 2390s) count in full.
-    if has "[22%] step 10/21 Merge the pull request (you, on GitHub): done already" \
-        && has "[22%] step 11/21 Tag the release: " && has "[94%] step 20/21 Publish the Pi package: " \
+    # Steps 2-10 (75s of 1500s) count in full.
+    if has "[5%] step 10/21 Merge the pull request (you, on GitHub): done already" \
+        && has "[5%] step 11/21 Tag the release: " && has "[91%] step 20/21 Publish the Pi package: " \
         && [ "$(grep -c '^\[[0-9]*%\] step [0-9]*/21 ' "$C/out")" = 20 ]; then
         pass "the run on prod shows the preparation done and one line per step"
     else fail "the run on prod's terminal output ($(cat "$C/out"))"; fi
@@ -604,28 +614,28 @@ case_2() {
 }
 case_3() {
 
-    # --- resume after a failure in just ci ---------------------------------------------
+    # --- resume after a failing version check ------------------------------------------
     new_case
-    : > "$FAKE_STATE/ci-fail"
+    : > "$FAKE_STATE/check-fail"
     act; rc=$?
-    if [ "$rc" = 1 ] && has "step 6 (Run the gates) failed" && has "scripts/release.sh 0.6.0 --i-know-what-i-am-doing" \
-        && has "The last 50 lines of $C/repo/target/release/0.6.0.log:" && has "fake ci: a gate failed" \
+    if [ "$rc" = 1 ] && has "step 6 (Check the version files) failed" && has "scripts/release.sh 0.6.0 --i-know-what-i-am-doing" \
+        && has "The last 50 lines of $C/repo/target/release/0.6.0.log:" && has "fake check-version: plugins/x/VERSION is 0.5.0, not 0.6.0" \
         && has "The log: $C/repo/target/release/0.6.0.log" \
         && grep -x 'CLAX_VERSION="0.6.0"' "$C/repo/scripts/ensure-clax.sh" >/dev/null \
         && [ "$(git -C "$C/repo" log -1 --format=%s)" = "Merge origin/main into release/0.6.0" ] \
         && [ -z "$(o branch --list release/0.6.0)" ]; then
-        pass "a failing just ci stops the run before the release commit, naming the step and how to resume"
-    else fail "a failing just ci stops the run (rc=$rc: $(cat "$C/out"))"; fi
+        pass "a failing version check stops the run before the release commit, naming the step and how to resume"
+    else fail "a failing version check stops the run (rc=$rc: $(cat "$C/out"))"; fi
     release 0.6.0; rc=$?
     if [ "$rc" = 0 ] && has "4. [done] Bump the version" && has "5. [todo] Sync Bazel" && has "starts at step 5"; then
         pass "a dry run after it shows the bump done and the rest to do"
-    else fail "a dry run after a failing just ci (rc=$rc: $(cat "$C/out"))"; fi
-    rm "$FAKE_STATE/ci-fail"
+    else fail "a dry run after a failing version check (rc=$rc: $(cat "$C/out"))"; fi
+    rm "$FAKE_STATE/check-fail"
     act; rc=$?
     if [ "$rc" = 0 ] && prepared_ok && [ "$(count "bump 0.6.0")" = 1 ] && has "step 4/21 Bump the version: done already" \
         && has "step 3/21 Merge main into it: done already"; then
-        pass "the next run resumes at the gates and prepares the release, bumping once"
-    else fail "resume after a failing just ci (rc=$rc: $(cat "$C/out"))"; fi
+        pass "the next run resumes at the version check and prepares the release, bumping once"
+    else fail "resume after a failing version check (rc=$rc: $(cat "$C/out"))"; fi
 }
 case_3b() {
     # A refused push of the release branch; the next run, from main, switches
@@ -641,7 +651,7 @@ case_3b() {
     git -C "$C/repo" switch -q main
     act; rc=$?
     if [ "$rc" = 0 ] && prepared_ok && has "step 2/21 Cut the release branch: git switch" \
-        && has "step 7/21 Commit the release: done already" && [ "$(count "just ci")" = 1 ]; then
+        && has "step 7/21 Commit the release: done already" && [ "$(count "check-version")" = 1 ]; then
         pass "the next run, from main, switches to the release branch and pushes it"
     else fail "resume at the release branch from main (rc=$rc: $(cat "$C/out"))"; fi
 }
@@ -711,9 +721,9 @@ case_4() {
     else fail "a wait that runs out of polls stops at step 13 (rc=$rc: $(cat "$C/out"))"; fi
     echo "completed success" > "$FAKE_STATE/101"
     act; rc=$?
-    if [ "$rc" = 0 ] && released && [ "$(count "just ci")" = 1 ] && has "step 11/21 Tag the release: done already"; then
-        pass "the next run resumes at the wait and finishes the release, tagging and testing once"
-    else fail "resume after a failed wait (rc=$rc: $(grep '^just' "$FAKE_STATE/calls"); $(cat "$C/out"))"; fi
+    if [ "$rc" = 0 ] && released && [ "$(count "check-version")" = 2 ] && has "step 11/21 Tag the release: done already"; then
+        pass "the next run resumes at the wait and finishes the release, tagging once and checking the versions at the pin and the carry"
+    else fail "resume after a failed wait (rc=$rc: $(grep '^check-version' "$FAKE_STATE/calls"); $(cat "$C/out"))"; fi
 }
 case_5() {
 
@@ -1224,7 +1234,7 @@ case_36() {
     : > "$FAKE_STATE/sync-forever"
     act; rc=$?
     if [ "$rc" = 1 ] && [ "$(count "just bazel-sync")" = 4 ] && has "just bazel-sync still changed files on its 4th run" \
-        && has "step 5 (Sync Bazel with Cargo) failed" && [ "$(count "just ci")" = 0 ]; then
+        && has "step 5 (Sync Bazel with Cargo) failed" && [ "$(count "check-version")" = 0 ]; then
         pass "bazel-sync still changing files after 4 runs stops at step 5"
     else fail "bazel-sync that never settles (rc=$rc: $(cat "$C/out"))"; fi
 }
@@ -1239,7 +1249,7 @@ case_38() {
 
     # --- progress --------------------------------------------------------------------
     # Steps a run finds done count in full: with typical durations (no
-    # earlier log), steps 1-12 are 545s of 2390s.
+    # earlier log), steps 1-12 are 100s of 1500s.
     new_case
     ready_to_cut
     echo "completed failure" > "$FAKE_STATE/101"
@@ -1248,10 +1258,10 @@ case_38() {
     echo "completed success" > "$FAKE_STATE/101"
     act; rc=$?
     if [ "$rc" = 0 ] && released && has "  12. [done] Push the tag" && has "  13. [todo] Wait for the Release workflow" \
-        && has "Estimated: about 40m in all, about 31m for the steps to do (typical durations" \
-        && has "[0%] step 2/21 Cut the release branch: done already" \
-        && has "[22%] step 12/21 Push the tag: done already" \
-        && has "[22%] step 13/21 Wait for the Release workflow: gh run list" \
+        && has "Estimated: about 25m in all, about 23m for the steps to do (typical durations" \
+        && has "[1%] step 2/21 Cut the release branch: done already" \
+        && has "[6%] step 12/21 Push the tag: done already" \
+        && has "[6%] step 13/21 Wait for the Release workflow: gh run list" \
         && has "Starting at step 13."; then
         pass "a resumed run counts the steps done in its percentage"
     else fail "a resumed run's percentage (rc=$rc: $(cat "$C/out"))"; fi
@@ -1260,9 +1270,9 @@ case_39() {
     # The durations a run records in its log make the next estimate: step
     # 15 takes 300s, the rest that ran none (counted as 1s); 2-10, found
     # done, keep their typical durations, and so does 19 (CI on the fake is
-    # done at once): 1370s.
+    # done at once): 925s.
     new_case
-    echo 300 > "$FAKE_STATE/ci-advance"
+    echo 300 > "$FAKE_STATE/check-advance"
     ready_to_cut
     act; rc=$?
     if [ "$rc" = 0 ] && logs "== step 15 of 21 ran 300s" && logs "== step 13 of 21 ran 0s" \
@@ -1270,38 +1280,39 @@ case_39() {
         pass "a run records each step's duration in its log"
     else fail "a run records each step's duration (rc=$rc: $(cat "$C/out"))"; fi
     release 0.6.0; rc=$?
-    if [ "$rc" = 0 ] && has "Estimated: about 23m in all, under a minute for the steps to do (the steps' durations in 1 earlier run log(s)"; then
+    if [ "$rc" = 0 ] && has "Estimated: about 15m in all, under a minute for the steps to do (the steps' durations in 1 earlier run log(s)"; then
         pass "the estimate comes from earlier runs' logs"
     else fail "the estimate from earlier runs' logs (rc=$rc: $(cat "$C/out"))"; fi
     # A log of the earlier numbering is not read.
     printf '== step 4 ran 9999s\n' > "$C/repo/target/release/0.5.0.log"
     release 0.6.0; rc=$?
-    if [ "$rc" = 0 ] && has "Estimated: about 23m in all"; then
+    if [ "$rc" = 0 ] && has "Estimated: about 15m in all"; then
         pass "a log of the earlier step numbering does not count"
     else fail "a log of the earlier step numbering (rc=$rc: $(cat "$C/out"))"; fi
 }
 case_40() {
-    # A heartbeat while just ci runs, its clock moved on by 3m12s: Bazel's
-    # tests from the log, the share done ((55 + 192) / 2390) and the time left.
+    # A heartbeat while the version check runs, its clock moved on by 3m12s:
+    # the share done (55s of 1500s, the step counted for no more than its
+    # weight) and the time left.
     new_case
-    echo 192 > "$FAKE_STATE/ci-advance"
-    : > "$FAKE_STATE/ci-heartbeat"
+    echo 192 > "$FAKE_STATE/check-advance"
+    : > "$FAKE_STATE/check-heartbeat"
     CLAX_RELEASE_HEARTBEAT_SECONDS=0.05 act; rc=$?
-    if [ "$rc" = 0 ] && prepared_ok && has "[10%] step 6/21 Run the gates: 40/56 tests, 3m12s (about 36m left)"; then
-        pass "a heartbeat tells the share done, Bazel's tests, the time taken and the time left"
+    if [ "$rc" = 0 ] && prepared_ok && has "[4%] step 6/21 Check the version files: 3m12s (about 24m left)"; then
+        pass "a heartbeat tells the share done, the time taken and the time left"
     else fail "a heartbeat (rc=$rc: $(cat "$C/out"))"; fi
 }
 case_41() {
     # --verbose streams the steps' output too, still logging it.
     new_case
     release 0.6.0 --i-know-what-i-am-doing --verbose; rc=$?
-    if [ "$rc" = 0 ] && prepared_ok && has "fake ci: every gate passed" \
-        && has "[2%] step 6/21 Run the gates: just ci" && logs "fake ci: every gate passed"; then
+    if [ "$rc" = 0 ] && prepared_ok && has "fake check-version: the versions agree" \
+        && has "[3%] step 6/21 Check the version files: scripts/check-version.sh" && logs "fake check-version: the versions agree"; then
         pass "--verbose streams the steps' output and logs it"
     else fail "--verbose (rc=$rc: $(cat "$C/out"))"; fi
     merge_pr && to_prod
     release 0.6.0 --i-know-what-i-am-doing --verbose; rc=$?
-    if [ "$rc" = 0 ] && released && has "Release v0.6.0: completed success" && has "fake ci: every gate passed"; then
+    if [ "$rc" = 0 ] && released && has "Release v0.6.0: completed success" && has "fake check-version: the versions agree"; then
         pass "--verbose streams the cut's output too"
     else fail "--verbose on the cut (rc=$rc: $(cat "$C/out"))"; fi
 }

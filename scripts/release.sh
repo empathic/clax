@@ -34,7 +34,8 @@
 #       release/X.Y.Z" (none when it has origin/main already)
 #    4  scripts/bump-version.sh X.Y.Z
 #    5  just bazel-sync, until it changes nothing (at most 4 runs)
-#    6  just ci
+#    6  scripts/check-version.sh: the version files agree (the gates run
+#       in CI, on the pull request)
 #    7  a signed commit "Release X.Y.Z" (git commit -S -a)
 #    8  git push origin release/X.Y.Z
 #    9  gh pr create --base prod --head release/X.Y.Z; the run stops here,
@@ -49,7 +50,7 @@
 #       release lists SHA256SUMS and was built from the tag commit's tree
 #       (scripts/release-exists-check.sh --tree)
 #   14  scripts/pin-release.sh vX.Y.Z
-#   15  just ci
+#   15  scripts/check-version.sh, as step 6
 #   16  a signed commit "Pin the plugins to Clax X.Y.Z"
 #   17  git push origin prod (the owner bypasses prod's pull request rule);
 #       the push deploys clax.dev again, with no server change
@@ -85,13 +86,11 @@
 # Before the first step it lists every step, done or to do, with an
 # estimate of the time in all and still to run: the steps' durations in
 # earlier runs' logs (target/release/*.log), averaged, or else typical
-# ones (just ci 7m30s, the Release workflow 11m30s, CI on prod 9m, the Pi
-# publish 2m); the pull request's review is not counted. Each step then
+# ones (the Release workflow 11m30s, CI on prod 9m, the Pi publish 2m); the pull request's review is not counted. Each step then
 # prints one line, with the share of the estimate done ([42%]; steps found
 # done count in full), and a step that runs longer prints a heartbeat about
 # every 30 seconds: the time it has taken, the time left, and what is cheap
-# to tell (Bazel's tests done out of the total, the workflow run's state
-# and jobs done). Everything a step prints goes to target/release/X.Y.Z.log
+# to tell (the workflow run's state and jobs done). Everything a step prints goes to target/release/X.Y.Z.log
 # only; a failed step's last 50 lines are printed with the log's path. With
 # --verbose the steps' output streams to the terminal too, as well as to
 # the log, and there is no heartbeat. The pull request's URL, the npm
@@ -197,8 +196,8 @@ about() {
 # Each step's expected seconds: typical durations, replaced by the average
 # of the durations earlier runs' logs recorded ("== step N of 21 ran Ss";
 # logs of the earlier numbering, "== step N ran Ss", are not read).
-WEIGHTS=([1]=10 [2]=5 [3]=5 [4]=5 [5]=30 [6]=450 [7]=5 [8]=10 [9]=5 [10]=5 [11]=5 [12]=10
-    [13]=690 [14]=5 [15]=450 [16]=5 [17]=10 [18]=20 [19]=540 [20]=120 [21]=5)
+WEIGHTS=([1]=10 [2]=5 [3]=5 [4]=5 [5]=30 [6]=5 [7]=5 [8]=10 [9]=5 [10]=5 [11]=5 [12]=10
+    [13]=690 [14]=5 [15]=5 [16]=5 [17]=10 [18]=20 [19]=540 [20]=120 [21]=5)
 LEARNED_FROM=0
 learn_weights() {
     local f n s
@@ -232,13 +231,8 @@ TICKER=""
 detail() { if [ -n "$HB_DIR" ]; then printf '%s\n' "$*" > "$HB_DIR/detail"; fi; }
 # What a heartbeat can tell of the step under way.
 step_detail() {
-    local d="" tests id jobs
+    local d="" id jobs
     if [ -s "$HB_DIR/detail" ]; then d="$(cat "$HB_DIR/detail")"; fi
-    # Bazel's progress line ("[1,234 / 2,345] 40 / 56 tests; ..."), in what
-    # this step logged.
-    tests="$(tail -c "+$((STEP_OFFSET + 1))" "$LOG" 2>/dev/null | tail -c 200000 | tr '\r' '\n' \
-        | grep -oE '[0-9,]+ / [0-9,]+ tests' | tail -n 1 | tr -d ', ' | sed 's/tests$/ tests/')" || tests=""
-    if [ -n "$tests" ]; then d="${d:+$d, }$tests"; fi
     if [ -s "$HB_DIR/run" ]; then
         id="$(cat "$HB_DIR/run")"
         jobs="$(gh run view "$id" --json jobs \
@@ -247,8 +241,9 @@ step_detail() {
     fi
     printf '%s' "$d"
 }
-# One heartbeat line: "[42%] step 6/21 Run the gates: 40/56 tests, 3m12s
-# (about 18m left)". The step counts for no more than its weight.
+# One heartbeat line: "[42%] step 13/21 Wait for the Release workflow: 3/7
+# jobs done, 3m12s (about 18m left)". The step counts for no more than its
+# weight.
 heartbeat() {
     local e cur d left p
     e=$(($(now) - STEP_START))
@@ -407,7 +402,7 @@ check_tools() {
         command -v "$t" >/dev/null 2>&1 || problem "$t is not on PATH"
     done
     command -v bazelisk >/dev/null 2>&1 || command -v bazel >/dev/null 2>&1 \
-        || problem "neither bazelisk nor bazel is on PATH (just ci and just bazel-sync run Bazel)"
+        || problem "neither bazelisk nor bazel is on PATH (just bazel-sync runs Bazel)"
 }
 
 check_version() {
@@ -496,7 +491,6 @@ check_prepare() {
         esac
     done < <(g log --reverse --topo-order --format=%s "$PROD_TIP..$RB_REF" --not origin/main)
     case "$PR_STATE" in
-        OPEN) problem "the pull request $PR_URL into $PROD is not merged yet: once CI passes, merge it on GitHub (Create a merge commit), then run this again on a $PROD checkout at origin/$PROD's tip (git switch $PROD; git pull --ff-only)" ;;
         MERGED) problem "the pull request $PR_URL is merged, but origin/$PROD is at ${PROD_VERSION:-an unknown version}, not $V" ;;
     esac
 }
@@ -586,7 +580,7 @@ TITLES=(
     [3]="Merge main into it"
     [4]="Bump the version"
     [5]="Sync Bazel with Cargo"
-    [6]="Run the gates"
+    [6]="Check the version files"
     [7]="Commit the release"
     [8]="Push the release branch"
     [9]="Open the pull request into $PROD"
@@ -595,7 +589,7 @@ TITLES=(
     [12]="Push the tag"
     [13]="Wait for the Release workflow"
     [14]="Pin the plugins to the release"
-    [15]="Run the gates"
+    [15]="Check the version files"
     [16]="Commit the pin"
     [17]="Push $PROD"
     [18]="Carry the release to main"
@@ -608,7 +602,7 @@ COMMANDS=(
     [3]="git merge -S origin/main -m \"$MERGE_SUBJECT\""
     [4]="scripts/bump-version.sh $V"
     [5]="just bazel-sync, until it changes nothing (at most 4 runs)"
-    [6]="just ci"
+    [6]="scripts/check-version.sh"
     [7]="git commit -S -a -m \"$REL_SUBJECT\""
     [8]="git push origin $RB"
     [9]="gh pr create --base $PROD --head $RB"
@@ -617,7 +611,7 @@ COMMANDS=(
     [12]="git push origin refs/tags/$TAG"
     [13]="gh run list --workflow release.yml (the run on $TAG), wait; gh release view $TAG lists SHA256SUMS"
     [14]="scripts/pin-release.sh $TAG"
-    [15]="just ci"
+    [15]="scripts/check-version.sh"
     [16]="git commit -S -a -m \"$PIN_SUBJECT\""
     [17]="git push origin $PROD"
     [18]="git cherry-pick -S -x <the release commit> <the pin commit> onto origin/main; git push origin main"
@@ -720,7 +714,9 @@ step_5() {
     say "  just bazel-sync still changed files on its 4th run"
     return 1
 }
-step_6() { (cd "$ROOT" && logged just ci); }
+# The gates run in CI, on the pull request; this checks only that the
+# version files agree before they are committed.
+step_6() { (cd "$ROOT" && logged bash scripts/check-version.sh); }
 step_7() {
     say "  committing:"
     g status --short | sed 's/^/    /'
@@ -743,7 +739,7 @@ pr_body() {
     cat <<EOF
 Clax $V: \`origin/$PROD\` with \`origin/main\` merged in and the version bumped (\`scripts/release.sh $V\`).
 
-Merge with a merge commit (not squash or rebase) once CI passes: the push to \`$PROD\` deploys clax.dev. Then, on a \`$PROD\` checkout at \`origin/$PROD\`'s tip, \`just release $V $ACT_FLAG\` tags the release, pins the plugins to it, carries both commits to \`main\` and publishes the Pi package (docs/usage.md, "Releasing").
+CI runs every gate on this pull request. Merge with a merge commit (not squash or rebase) once it passes: the push to \`$PROD\` deploys clax.dev. Then, on a \`$PROD\` checkout at \`origin/$PROD\`'s tip, \`just release $V $ACT_FLAG\` tags the release, pins the plugins to it, carries both commits to \`main\` and publishes the Pi package (docs/usage.md, "Releasing").
 EOF
 }
 step_11() {
@@ -1002,6 +998,12 @@ else
     say "  ok: cutting $V on $PROD at origin/$PROD ($GH_REPO), clean, gh signed in, $V newer than every tag, signing works"
 fi
 for note in ${NOTES[@]+"${NOTES[@]}"}; do say "  note: $note"; done
+# Its pull request open already: the release waits for the owner, and a
+# run says where, changing nothing.
+if [ "${#PROBLEMS[@]}" = 0 ] && [ "$PHASE" = 1 ] && [ "$PR_STATE" = OPEN ]; then
+    prepared
+    exit 0
+fi
 PREFLIGHT_S=$(($(now) - T0))
 
 if [ "$ACT" = 0 ]; then
