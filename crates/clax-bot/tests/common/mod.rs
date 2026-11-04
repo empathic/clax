@@ -532,8 +532,17 @@ impl Env {
         )
         .unwrap();
         store.set_bot_overrides(ov);
-        let sandbox: Arc<dyn Sandbox> =
-            Arc::new(clax_bot_js::QuickJs::new(clax_bot::api::op_names()));
+        // The watchdog's floor is the hang guard: a script ends by itself or
+        // by the CPU budget the engine measures, never by the wall time a
+        // loaded machine takes to run it.
+        let sandbox: Arc<dyn Sandbox> = Arc::new(
+            clax_bot_js::QuickJs::new(clax_bot::api::op_names()).with_watchdog(
+                clax_bot_js::Watchdog {
+                    factor: 1,
+                    floor: HANG,
+                },
+            ),
+        );
         let host = Arc::new(FakeBotHost::new(store.clone(), thread_context(&aid, &t1)));
         Env {
             _dir: dir,
