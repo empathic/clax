@@ -883,6 +883,10 @@ impl Call {
 /// first whole frame (a blank line) that is not `event: ready`
 /// (`ready` carries no content). Fails when none comes within the
 /// [`HANG`](crate::HANG) guard.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the HANG guard on the first frame, whose bytes the failure names"
+)]
 async fn first_frame(mut res: reqwest::Response, name: &str, until: Option<&str>) -> String {
     let mut out = Vec::new();
     let got = tokio::time::timeout(crate::HANG, async {
