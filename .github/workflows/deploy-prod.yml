@@ -74,18 +74,19 @@ jobs:
     # One deploy at a time, and a running one is never cancelled. GitHub
     # keeps at most one waiting run per group, the newest, which is the tip.
     concurrency: { group: deploy-prod, cancel-in-progress: false }
-    # The deploy's settings (none of them secret), for the build and the
-    # deploy alike.
+    # The deploy's settings, for the build and the deploy alike.
     env:
       PUBLIC_HOST: ${{ vars.PUBLIC_HOST }}
       SITE_DOMAIN: ${{ vars.SITE_DOMAIN }}
       STORE: ${{ vars.STORE }}
-      # The GitHub OAuth App's client ID (GitHub refuses a variable named
-      # GITHUB_*).
-      OAUTH_CLIENT_ID: ${{ vars.OAUTH_CLIENT_ID }}
-      OWNER_GITHUB: ${{ vars.OWNER_GITHUB }}
       RETIRED_CONTENT_ORIGIN: ${{ vars.RETIRED_CONTENT_ORIGIN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      # Secrets, not variables, kept out of the repository's settings and
+      # masked in its logs: the GitHub OAuth App's client ID (GitHub refuses
+      # a name starting GITHUB_), the owner's login and the Cloudflare
+      # account's ID. None is a credential, so the build step has them too.
+      OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
+      OWNER_GITHUB: ${{ secrets.OWNER_GITHUB }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { ref: "${{ github.sha }}", fetch-depth: 0, persist-credentials: false }

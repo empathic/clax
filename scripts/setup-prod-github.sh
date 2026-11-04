@@ -47,13 +47,18 @@
 #    alone merge into prod (anyone with write access opens pull requests)
 #    and push to it directly (scripts/release.sh pushes the pin commit);
 # 3. creates the environment `production`, deployable from `prod` only, and
-#    sets its variables;
+#    sets its variables (PUBLIC_HOST, SITE_DOMAIN, STORE and
+#    RETIRED_CONTENT_ORIGIN), removing any variable named as one of its
+#    secrets;
 # 4. sets the repository variable PUBLIC_HOST, which the hourly drift check
 #    (.github/workflows/deploy-prod.yml) reads outside the environment;
 # 5. makes the environment `npm` deployable from `prod` and `main` alone
 #    (publish-pi.yml runs in it from prod, publish-sdk.yml from main);
 # 6. prints the `gh secret set` commands for the production environment's
-#    two secrets, which it never runs: their values are yours to paste.
+#    secrets, which it never runs: CLOUDFLARE_ACCOUNT_ID, OAUTH_CLIENT_ID
+#    and OWNER_GITHUB with their values from the deploy configuration, and
+#    CLOUDFLARE_API_TOKEN and CLAX_SMOKE_TOKEN, whose values are yours to
+#    paste.
 #
 # The REST API shapes are GitHub's:
 #   refs          https://docs.github.com/en/rest/git/refs#create-a-reference
@@ -75,10 +80,11 @@ set -euo pipefail
 act=0
 repo="empathic/clax"
 commit=""
-# The production environment's variables, which the deploy workflow passes
-# to scripts/cloudflare-setup.sh; step 3 reads them by name. The GitHub
-# OAuth App's client ID is OAUTH_CLIENT_ID: GitHub refuses a variable whose
-# name starts with GITHUB_.
+# The production environment's settings, which the deploy workflow passes
+# to scripts/cloudflare-setup.sh; steps 3 and 6 read them by name. The
+# first four are variables; OWNER_GITHUB, OAUTH_CLIENT_ID and
+# CLOUDFLARE_ACCOUNT_ID are secrets. The GitHub OAuth App's client ID is
+# OAUTH_CLIENT_ID: GitHub refuses a secret whose name starts with GITHUB_.
 PUBLIC_HOST=""
 SITE_DOMAIN=""
 STORE=""
@@ -280,8 +286,16 @@ set_var() {
 
 say "3. Environment production"
 branch_policy production prod
-for name in CLOUDFLARE_ACCOUNT_ID OAUTH_CLIENT_ID OWNER_GITHUB PUBLIC_HOST RETIRED_CONTENT_ORIGIN SITE_DOMAIN STORE; do
+for name in PUBLIC_HOST RETIRED_CONTENT_ORIGIN SITE_DOMAIN STORE; do
     [ -z "${!name}" ] || set_var "repos/$repo/environments/production/variables" "$name" "${!name}"
+done
+# The deploy reads these as secrets (step 6); a variable of the same name is
+# an earlier setup's, and is removed.
+for name in CLOUDFLARE_ACCOUNT_ID OAUTH_CLIENT_ID OWNER_GITHUB; do
+    if get "repos/$repo/environments/production/variables/$name" >/dev/null; then
+        info "$name is a variable; removed (it is a secret, step 6)"
+        write DELETE "repos/$repo/environments/production/variables/$name"
+    fi
 done
 [ -n "$RETIRED_CONTENT_ORIGIN" ] || info "RETIRED_CONTENT_ORIGIN: not given, so left as it is (pass --retired-content-origin when the instance's deploy record names one)"
 
@@ -293,6 +307,11 @@ say "5. Environment npm"
 branch_policy npm prod main
 
 say "6. Secrets (yours to run; this script never sets them)"
+info "gh secret set CLOUDFLARE_ACCOUNT_ID --env production --repo $repo --body $CLOUDFLARE_ACCOUNT_ID"
+if [ -n "$OAUTH_CLIENT_ID" ]; then
+    info "gh secret set OAUTH_CLIENT_ID --env production --repo $repo --body $OAUTH_CLIENT_ID"
+    info "gh secret set OWNER_GITHUB --env production --repo $repo --body $OWNER_GITHUB"
+fi
 info "gh secret set CLOUDFLARE_API_TOKEN --env production --repo $repo   # the token docs/prod.md describes"
 info "gh secret set CLAX_SMOKE_TOKEN --env production --repo $repo       # an agent token named smoke, from https://$public_host's settings"
 [ "$act" = 1 ] && echo "setup-prod-github: done" || echo "setup-prod-github: dry run done; run again with --i-know-what-i-am-doing to act"

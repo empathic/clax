@@ -62,10 +62,13 @@ differs (the ruleset it writes whole each time). It
   approve the release pull request `just release` opens as them;
 - creates the environment `production`, deployable from `prod` only, with
   the variables the deploy reads: `PUBLIC_HOST`, `SITE_DOMAIN`, `STORE`,
+  and `RETIRED_CONTENT_ORIGIN` when the instance has one. The deploy reads
+  three more settings as the environment's secrets, so that they stay out
+  of the repository's settings and its logs: `CLOUDFLARE_ACCOUNT_ID`,
   `OAUTH_CLIENT_ID` (the GitHub OAuth App's client ID; GitHub refuses
-  variable names starting with `GITHUB_`), `OWNER_GITHUB`,
-  `CLOUDFLARE_ACCOUNT_ID`, and `RETIRED_CONTENT_ORIGIN` when the instance
-  has one. It takes their values from your deploy configuration, the one
+  names starting with `GITHUB_`) and `OWNER_GITHUB`. A variable left with
+  one of those names by an earlier setup is removed. It takes all their
+  values from your deploy configuration, the one
   `scripts/cloudflare-setup.sh` keeps in `~/.config/clax/deploy`:
   `setup.env` (only the settings above; never its client secret) and the
   deploy record's `account` and `retired_content_origin`. A flag replaces
@@ -75,9 +78,13 @@ differs (the ruleset it writes whole each time). It
   drift check, which runs outside the environment;
 - makes the environment `npm` deployable from `prod` and `main` alone:
   `publish-pi.yml` runs in it from `prod`, `publish-sdk.yml` from `main`;
-- prints the two commands that set the secrets, which it never runs:
+- prints the commands that set the secrets, which it never runs: the
+  first three with their values, the last two for you to paste into:
 
 ```
+gh secret set CLOUDFLARE_ACCOUNT_ID --env production --repo empathic/clax --body <account ID>
+gh secret set OAUTH_CLIENT_ID --env production --repo empathic/clax --body <client ID>
+gh secret set OWNER_GITHUB --env production --repo empathic/clax --body <login>
 gh secret set CLOUDFLARE_API_TOKEN --env production --repo empathic/clax
 gh secret set CLAX_SMOKE_TOKEN --env production --repo empathic/clax
 ```
@@ -243,7 +250,9 @@ scripts/cloudflare-setup.sh --legal bundled --public "$PUBLIC_HOST" --site-domai
 ... --ci --production --no-build --smoke --i-know-what-i-am-doing                            # deploy
 ```
 
-The first, a dry run in a step that has neither secret, installs the
+The first, a dry run in a step that has neither token (it has the
+account ID, client ID and owner login, which are secrets only to keep
+them out of sight), installs the
 packages and builds the web UI and the Worker from the commit, so no
 package's install script and no crate's build script runs with the
 Cloudflare token. The second, the one step given `CLOUDFLARE_API_TOKEN`
