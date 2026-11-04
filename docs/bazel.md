@@ -199,6 +199,13 @@ which declares, with `<lib>` the library's crate name:
   module made a clax-core edit compile eight times as much. The root gates
   each module with `#[cfg(any(not(clax_split), clax_split = "<module>"))]`;
   Cargo sets no `clax_split` and builds them all into one binary, as before;
+- for clax-store's unit tests, one test binary run as several targets
+  (`split_lib_test`): `//crates/clax-store:clax_store_lib_test` and
+  `clax_store_lib_test__2` … `__6`, each given its share of the modules by
+  libtest's filters and `--skip`, so that every test runs in exactly one;
+  and the same shares again on one connection,
+  `clax_store_one_connection_test__1` … `__6`. `//crates/clax-store:all`
+  runs them all;
 - `build_script` when the crate has one;
 - for a crate the hosted Worker builds, `<lib>_wasm` (and, with `cdylib`,
   `<lib>_wasm_shared`): the library for wasm32, its third-party
