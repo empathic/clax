@@ -145,7 +145,7 @@ void main() {
     api.sendComment(a, 'make it red');
     await until(() => api.waitingPolls == 1, reason: 'the comment is taken');
     // Several turns: the change stays queued behind the build.
-    // ignore: timing_turn_count -- an absence window (record 31835deb): late work makes it pass, never fail
+    // ignore: timing_turn_count -- an absence window (record a5e3bf91): late work makes it pass, never fail
     for (var i = 0; i < 20; i++) {
       await Future<void>.delayed(Duration.zero);
     }
@@ -169,7 +169,7 @@ void main() {
       api.sendComment(aid, 'go');
     }
     await until(() => loop.going.length == 3, reason: 'three run');
-    // ignore: timing_turn_count -- an absence window (record 31835deb): late work makes it pass, never fail
+    // ignore: timing_turn_count -- an absence window (record a5e3bf91): late work makes it pass, never fail
     for (var i = 0; i < 20; i++) {
       await Future<void>.delayed(Duration.zero);
     }
