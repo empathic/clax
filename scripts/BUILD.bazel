@@ -169,6 +169,33 @@ sh_test(
     data = [":all"],
 )
 
+# scripts/find-candidate.sh (Deploy prod's candidate job) in a scratch
+# repository with a fake gh: the merge's tested head, its staging run and
+# pull request, and every refusal.
+sh_test(
+    name = "find_candidate",
+    srcs = ["test-find-candidate.sh"],
+    data = [":all"],
+)
+
+# scripts/verify-candidate.sh (Deploy prod's candidate job) with a fake gh
+# attestation verify: each file tied to its workflow at the head commit.
+sh_test(
+    name = "verify_candidate",
+    srcs = ["test-verify-candidate.sh"],
+    data = [":all"],
+)
+
+# scripts/carry-release.sh (Deploy prod's carry job), with
+# scripts/wait-ci.sh, in a scratch repository with a fake gh that makes
+# GitHub's blobs, trees and commits with git: the carry's one commit on
+# main, its modes, the squash, a rerun, and every refusal.
+sh_test(
+    name = "carry_release",
+    srcs = ["test-carry-release.sh"],
+    data = [":all"],
+)
+
 # scripts/check-version-bump.sh (CI's `version` job on pull requests into
 # prod) in a scratch repository of the release files.
 sh_test(

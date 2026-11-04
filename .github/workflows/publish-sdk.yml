@@ -18,7 +18,7 @@ name: Publish SDK package
 # this repository, this workflow and the environment `npm` as its trusted
 # publisher. Only the `publish` job runs in that environment, whose
 # deployment branches the repository's settings limit to main and prod
-# (publish-pi.yml runs in it from prod), so npm refuses a token from a run
+# (publish-pi.yml runs in it too), so npm refuses a token from a run
 # dispatched on any other ref; and only it may request the token, so no
 # build or test code (the web workspace's dependencies) runs where the
 # token can be had: the `build` job packs the tarball, and `publish` runs

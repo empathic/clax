@@ -2,10 +2,12 @@
 
 What clax.dev runs and what users download is one known commit: the tip of
 the branch `prod`. Every change to `prod` is a release that arrives by pull
-request, and every push to `prod` deploys clax.dev from GitHub Actions.
-The design, and the calls it made, are in
-[`docs/superpowers/specs/2026-10-27-prod-releases-design.md`](superpowers/specs/2026-10-27-prod-releases-design.md);
-cutting a release is `docs/usage.md`, "Releasing". The `dev` environment
+request; while it is open it is staging, and merging it releases it from
+GitHub Actions. The design, and the calls it made, are in
+[`docs/superpowers/specs/2026-11-04-release-by-pr-merge-design.md`](superpowers/specs/2026-11-04-release-by-pr-merge-design.md)
+(which replaced the flow of
+[`2026-10-27-prod-releases-design`](superpowers/specs/2026-10-27-prod-releases-design.md));
+the runbook is `docs/usage.md`, "Releasing". The `dev` environment
 (from `main`) and the pull requests' previews are
 [docs/environments.md](environments.md).
 
@@ -22,17 +24,20 @@ cutting a release is `docs/usage.md`, "Releasing". The `dev` environment
    (`scripts/check-version.sh`) and the version is greater than `prod`'s.
 3. The owner merges it (only a repository admin can merge into `prod`)
    with a merge commit (the only method the ruleset allows: the next release branch's merge of `main` needs `main`'s
-   commits in `prod`'s history). The push to `prod` runs Deploy prod
-   (`.github/workflows/deploy-prod.yml`).
-4. `just release X.Y.Z` again, on `prod`, tags, pins the plugins, pushes
-   the pin commit to `prod` (the owner bypasses the ruleset for it, which
-   deploys again with no server change), carries both commits to `main`
-   and publishes the Pi package from `prod`.
+   commits in `prod`'s history). While it is open, each push to its branch
+   deploys staging ("Staging", below) from the release candidate, built
+   once and attested.
+4. The push to `prod` runs Deploy prod (`.github/workflows/deploy-prod.yml`,
+   "The deploy workflow" below): it checks the candidate staging tested,
+   waits for the owner's approval, deploys clax.dev from it, publishes the
+   GitHub release `vX.Y.Z` from its files, carries the release and the
+   plugins' pin to `main` as the release App ("The release App", below),
+   publishes the Pi package from `main` and tears staging down. Nothing
+   else pushes to `prod`, which never holds the pin.
 5. The SDK package, `@empathic/clax-client-sdk`, is not part of this:
    `just release-sdk X.Y.Z`, run by hand, tags `sdk-vX.Y.Z` on `main` and
    publishes it from there (docs/usage.md, "Releasing the SDK package"),
-   whether or not `prod` exists. The release's last step, "Left by hand",
-   names the command while npm lacks the SDK version `prod` carries.
+   whether or not `prod` exists.
 
 ## One-time GitHub setup
 
@@ -55,10 +60,9 @@ differs (the rulesets it writes whole each time). It
   signed commits (GitHub signs the merge commits it makes), and updates
   restricted (GitHub's "Restrict updates" rule): only the ruleset's bypass
   actors, the repository admin role, update `prod`. Anyone with write
-  access can open a pull request into `prod`, but only an admin merges it,
-  and an admin pushes the release's pin commit directly. GitHub cannot
-  narrow a bypass to one person, so the repository's other admin can merge
-  into and push to `prod` too. No approval is required: the owner cannot
+  access can open a pull request into `prod`, but only an admin merges it.
+  GitHub cannot narrow a bypass to one person, so the repository's other
+  admin can merge into and push to `prod` too. No approval is required: the owner cannot
   approve the release pull request `just release` opens as them;
 - creates the environment `production`, deployable from `prod` only, with
   the variables the deploy reads: `PUBLIC_HOST`, `SITE_DOMAIN`, `STORE`,
@@ -77,7 +81,7 @@ differs (the rulesets it writes whole each time). It
 - sets the repository variable `PUBLIC_HOST` to the same host, for the
   drift check, which runs outside the environment;
 - makes the environment `npm` deployable from `prod` and `main` alone:
-  `publish-pi.yml` runs in it from `prod`, `publish-sdk.yml` from `main`;
+  `publish-pi.yml` and `publish-sdk.yml` run in it from `main`;
 - creates or updates the repository ruleset `release` on
   `refs/heads/release/*`: only its bypass actors, the repository admins,
   create, update or delete a release branch. `just release` cuts each
@@ -233,6 +237,24 @@ zone's SSL/TLS, Edge Certificates): a site host is two levels below the
 zone, beyond what the universal certificate covers, as on the previews'
 site zone.
 
+### The release App
+
+Deploy prod's `carry` job carries each release to `main` as a GitHub App
+of its own: a workflow's own token starts no workflow with what it
+pushes or opens, so `main`'s CI would never run on the carry. Create it
+once (GitHub, the organization's Settings, Developer settings, GitHub
+Apps, New GitHub App): no webhook, no callback; repository permissions
+Contents: Read and write and Pull requests: Read and write, nothing else;
+installed on `empathic/clax` alone. Its App ID is the `release`
+environment's secret `RELEASE_APP_ID`, and a private key it generates
+(the `.pem` file) `RELEASE_APP_PRIVATE_KEY`; the job mints a token from
+them (`actions/create-github-app-token`) that lasts the job. The App is on
+no ruleset's bypass list: its commit on `main`, made through GitHub's Git
+Data API, is signed by GitHub, which `main`'s signed-commit rule takes, and
+it merges only once CI's `bazel` job passed on its pull request. The
+`release` environment admits `prod` alone, so only Deploy prod's runs on
+`prod` read the key.
+
 ## Feedback: clax.dev's own report queue
 
 clax.dev's people report problems with Clax itself through a report
@@ -325,37 +347,67 @@ loop runs locally end to end.
 
 ## The deploy workflow
 
-Deploy prod runs on every push to `prod` and by hand (Actions, Deploy
-prod, Run workflow, branch `prod`), which redeploys `prod`'s tip. One
-deploy runs at a time and a running one is never cancelled; GitHub keeps
-only the newest waiting run. It checks out the pushed commit and refuses
-unless it is still `origin/prod`'s tip, sets up Node 26, pnpm, the Rust
-toolchain of `rust-toolchain.toml` with `wasm32-unknown-unknown`, and
-clang, lld and llvm, then runs `scripts/cloudflare-setup.sh` twice, with
-`CLAX_DEPLOY_HOME` in the runner's temporary directory:
+Deploy prod runs on every push to `prod`, which is a release pull
+request's merge, and by hand (Actions, Deploy prod, Run workflow, branch
+`prod`), which runs it again for `prod`'s tip. It builds nothing that
+ships; its jobs, in order:
 
-```
-scripts/cloudflare-setup.sh --legal bundled --public "$PUBLIC_HOST" --site-domain "$SITE_DOMAIN" --store "$STORE" \
-  [--github-client-id "$OAUTH_CLIENT_ID" --owner-github "$OWNER_GITHUB"] [--retired-content-origin "$RETIRED_CONTENT_ORIGIN"] \
-  --account "$CLOUDFLARE_ACCOUNT_ID" --ci --production                                         # build
-... --ci --production --no-build --smoke --i-know-what-i-am-doing                            # deploy
-```
+- **candidate**, with no environment and no secret:
+  `scripts/find-candidate.sh <merge commit>` names the merge's second
+  parent (the release branch's head, which staging tested), refusing a
+  commit that is no merge, a merge whose tree is not the head's (`prod`
+  moved while the pull request was open) and a head with no successful
+  `staging.yml` run; it downloads that run's `release-dist` and `worker`
+  artifacts, and `scripts/verify-candidate.sh` checks each file with `gh
+  attestation verify --repo empathic/clax --signer-workflow
+  empathic/clax/.github/workflows/<release.yml or staging.yml>
+  --source-digest <head>`, refusing the candidate if one file fails, or
+  any file is not one a candidate has. The verified files become this
+  run's artifacts.
+- **reel**, beside it: the landing page's reel, built from the commit
+  with no secret; the deploy puts it on Cloudflare Stream, and a reel
+  that fails to build or upload never fails the deploy.
+- **deploy**, in the `production` environment, so once the owner
+  approves: it refuses unless the commit is still `origin/prod`'s tip
+  (GitHub keeps only the newest waiting run, and one deploy runs at a
+  time, never cancelled), installs the deploy's packages before any
+  secret is in the environment, unpacks the candidate Worker and runs
 
-The first, a dry run in a step that has neither token (it has the
-account ID, client ID and owner login, which are secrets only to keep
-them out of sight), installs the
-packages and builds the web UI and the Worker from the commit, so no
-package's install script and no crate's build script runs with the
-Cloudflare token. The second, the one step given `CLOUDFLARE_API_TOKEN`
-and `CLAX_SMOKE_TOKEN`, installs and builds nothing (`--no-build`; it
-refuses a Worker not built from the checked-out commit), deploys, waits
-for `/healthz` to report the build, checks a site host and runs the
-smoke. Both run in one job, so the build step could still change files
-the deploy step runs. The deploy record stays on the
-runner. The job summary gives the commit, the record's build, the Cloudflare
-Worker version the deploy made (the record's `version_id`, from `wrangler
-deploy`'s "Current Version ID") and what `/healthz` answers. A failure fails the run and GitHub notifies the owner;
-nothing is rolled back.
+  ```
+  scripts/cloudflare-setup.sh --legal bundled --public "$PUBLIC_HOST" --site-domain "$SITE_DOMAIN" --store "$STORE" \
+    [--github-client-id "$OAUTH_CLIENT_ID" --owner-github "$OWNER_GITHUB"] [--retired-content-origin "$RETIRED_CONTENT_ORIGIN"] \
+    [--reel-url … --reel-poster-url …] --account "$CLOUDFLARE_ACCOUNT_ID" \
+    --ci --production --no-build --smoke --i-know-what-i-am-doing
+  ```
+
+  with `CLAX_DEPLOY_HOME` in the runner's temporary directory, the one
+  step given `CLOUDFLARE_API_TOKEN` and `CLAX_SMOKE_TOKEN`. `--no-build`
+  installs and builds nothing and refuses a Worker whose `built-from.json`
+  names a commit with another tree than the checkout's (the candidate was
+  built from the release branch's head; the checkout is the merge commit,
+  with the same tree); it deploys, waits for `/healthz` to report the
+  build, checks a site host and runs the smoke. The deploy record stays on
+  the runner. The job summary gives the commit, the head it was built
+  from, the record's build, the Cloudflare Worker version the deploy made
+  (the record's `version_id`, from `wrangler deploy`'s "Current Version
+  ID") and what `/healthz` answers.
+- **publish:** the GitHub release `vX.Y.Z`, tagged on the merge commit,
+  from `release-dist`, once its `SOURCE_TREE` is the merge commit's tree;
+  a release of the version from that tree already is kept, one from
+  another tree fails the job (`scripts/release-exists-check.sh --tree`).
+  The tag, made with the workflow's token, runs no workflow.
+- **carry**, in the `release` environment: `scripts/carry-release.sh`, as
+  the release App ("The release App", above).
+- **pi:** once CI's `bazel` job passed on the carry's commit of `main`
+  (`scripts/wait-ci.sh`), Publish Pi package from it, unless npm has the
+  version.
+- **teardown:** the reaper, dispatched on `main` (where the `staging`
+  environment admits it), removes the staging instance of the merged pull
+  request.
+
+A failure fails the run and GitHub notifies the owner; nothing is rolled
+back. Each job finds what an earlier run did, so a failed run is rerun
+once its cause is fixed.
 
 ## CLAX_KEK
 
@@ -403,10 +455,13 @@ read -rs CLAX_KEK && printf %s "$CLAX_KEK" | just wrangler secret put CLAX_KEK -
 
 ## Drift
 
-Every hour the same workflow's `drift` job compares the `commit` that
-`https://$PUBLIC_HOST/healthz` reports (the repository variable the setup
-script sets; `clax.dev` when it is unset) with `prod`'s tip, and fails when they differ, unless
-a Deploy prod run of the tip is still running or waiting. It also fails
+Every hour the same workflow's `drift` job compares the tree of the
+`commit` that `https://$PUBLIC_HOST/healthz` reports (the repository
+variable the setup script sets) with `prod`'s tip's, and fails when they
+differ, unless a Deploy prod run of the tip is still running or waiting.
+Trees, not commits: clax.dev runs the Worker built from the release
+branch's head, which reports that commit, and `prod`'s tip is its merge,
+with the same tree. It also fails
 when `/healthz` reports `"kek": false`: the instance has lost its
 `CLAX_KEK` ("CLAX_KEK" above). It holds no
 deploy credential and deploys nothing. When it fails: open the latest
@@ -417,9 +472,13 @@ of the workflow.
 ## Rollback
 
 A rollback is a release: revert the change on `main`, then
-`just release X.Y.Z+1`. The patch release's pull request into `prod`
-deploys when merged. Until it does, the drift check keeps failing whenever
-clax.dev runs something other than `prod`'s tip.
+`just release X.Y.Z+1`. The patch release's pull request is staging like
+any other, and deploys when merged and approved. Until it does, the drift
+check keeps failing whenever clax.dev runs something other than `prod`'s
+tip. In an emergency, `wrangler rollback <version ID>` (the Cloudflare
+version a Deploy prod run's summary names) returns the Worker to an
+earlier deploy at once; the drift check then fails until the patch
+release is out.
 
 ## Deploying from a laptop
 

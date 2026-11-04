@@ -48,7 +48,8 @@
 #    and `version` checks passed; no deletion, no force push, signed commits;
 #    updates restricted to the bypass actors, the repository admins, who
 #    alone merge into prod (anyone with write access opens pull requests)
-#    and push to it directly (scripts/release.sh pushes the pin commit);
+#    and may push to it directly (no release step does: a release reaches it
+#    by its pull request's merge alone);
 # 3. creates the environment `production`, deployable from `prod` only, and
 #    sets its variables (PUBLIC_HOST, SITE_DOMAIN, STORE and
 #    RETIRED_CONTENT_ORIGIN), removing any variable named as one of its
@@ -56,7 +57,7 @@
 # 4. sets the repository variable PUBLIC_HOST, which the hourly drift check
 #    (.github/workflows/deploy-prod.yml) reads outside the environment;
 # 5. makes the environment `npm` deployable from `prod` and `main` alone
-#    (publish-pi.yml runs in it from prod, publish-sdk.yml from main);
+#    (publish-pi.yml and publish-sdk.yml run in it from main);
 # 6. creates, or updates, the repository ruleset `release` on
 #    refs/heads/release/*: only its bypass actors, the repository admins,
 #    create, update or delete a release branch, so only they run code with
