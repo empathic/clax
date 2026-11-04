@@ -138,7 +138,8 @@ pub struct AnswerBody {
 
 /// `POST /api/confirmations/<id> {approve, assertion?}` (the owner's
 /// browser) → `{confirmation}`: approves (`true`) or declines confirmation
-/// `id`. An owner browser session or the in-process app's frame answers
+/// `id`; approving a held passkey registration adds that passkey
+/// ([`crate::routes::passkeys::add_held`]). An owner browser session or the in-process app's frame answers
 /// one: 403 `browser_required` for the token and the extension. While
 /// passkeys are required, approving from a browser
 /// session takes `assertion`, over a challenge issued for `confirm:<id>`
@@ -179,7 +180,13 @@ pub async fn answer(
                 };
                 confirm::check_assertion(&st, db, &format!("confirm:{id}"), a)?;
             }
-            let c = db.answer_confirmation(&audit.resolve(db)?, &id, b.approve)?;
+            let ctx = audit.resolve(db)?;
+            let c = db.answer_confirmation(&ctx, &id, b.approve)?;
+            // A held passkey registration takes effect as it is approved.
+            if c.status == "approved" {
+                crate::routes::passkeys::add_held(db, &ctx, &c)?;
+            }
+            let c = db.confirmation(&id)?.unwrap_or(c);
             confirm::view(&st, db, &c)
         })
         .await

@@ -705,8 +705,23 @@ async fn with_passkeys_required_approving_a_machine_asks() {
     assert_eq!(id.len(), 35);
 }
 
+/// The owner's passkey settings, as their browser reads them.
+async fn passkey_settings(ts: &TestServer) -> Value {
+    let (s, v) = ts
+        .as_browser(
+            &ts.owner_cookie(),
+            Method::GET,
+            "/api/passkeys",
+            Value::Null,
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    v
+}
+
 /// Registering a passkey while an agent is live is a confirmed decision,
-/// from any browser.
+/// from any browser: checked as it is asked, and added, required from then
+/// on, as its confirmation is approved, wherever that is answered.
 #[tokio::test]
 async fn registering_a_passkey_while_an_agent_is_live_is_confirmed() {
     let ts = TestServer::spawn().await;
@@ -726,7 +741,31 @@ async fn registering_a_passkey_while_an_agent_is_live_is_confirmed() {
         first.1["decision"],
         "add a passkey that confirms these decisions from now on"
     );
+    assert!(
+        passkey_settings(&ts).await["passkeys"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     ts.confirm(&id, true).await;
+    let v = passkey_settings(&ts).await;
+    assert_eq!(
+        v["passkeys"][0]["credential_id"],
+        key.credential_id(),
+        "{v}"
+    );
+    assert_eq!(v["required"], true, "{v}");
+    // Sending it again finds its challenge spent.
+    let (s, v) = ts
+        .as_browser_confirming(
+            &owner,
+            Method::POST,
+            "/api/passkeys",
+            reg.clone(),
+            Some(&id),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (403, "passkey_refused"), "{v}");
     // An agent holding the token reads the confirmation and the credential
     // ID it names, and posts its own key under that ID with the approved
     // confirmation: the registration it approved is another.
@@ -741,17 +780,20 @@ async fn registering_a_passkey_while_an_agent_is_live_is_confirmed() {
         .as_browser_confirming(&minted, Method::POST, "/api/passkeys", forged, Some(&id))
         .await;
     assert_eq!((s, code(&v)), (403, "confirmation_mismatch"), "{v}");
-    let (s, v) = ts
-        .as_browser_confirming(&owner, Method::POST, "/api/passkeys", reg, Some(&id))
-        .await;
-    assert_eq!(s, 201, "{v}");
-    assert_eq!(v["passkey"]["credential_id"], key.credential_id());
-    // A registration over another ceremony's challenge does not check.
+    assert_eq!(
+        passkey_settings(&ts).await["passkeys"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    // A registration over another ceremony's challenge does not check, so
+    // asks for no confirmation.
     let other = SoftPasskey::new();
     let c = ts
         .passkey_challenge(&owner, json!({"purpose": "disable"}))
         .await;
-    let first = ts
+    let (s, v) = ts
         .as_browser_confirming(
             &owner,
             Method::POST,
@@ -760,18 +802,35 @@ async fn registering_a_passkey_while_an_agent_is_live_is_confirmed() {
             None,
         )
         .await;
-    let id = pending(&ts, &first);
-    ts.confirm(&id, true).await;
-    let (s, v) = ts
-        .as_browser_confirming(
+    assert_eq!((s, code(&v)), (403, "passkey_refused"), "{v}");
+}
+
+/// A declined registration adds nothing.
+#[tokio::test]
+async fn a_declined_passkey_registration_adds_nothing() {
+    let ts = TestServer::spawn().await;
+    ts.register_session("claude", "c-p4").await;
+    let key = SoftPasskey::new();
+    let (origin, rp) = ts.passkey_rp().await;
+    let owner = ts.owner_cookie();
+    let c = ts
+        .passkey_challenge(&owner, json!({"purpose": "register"}))
+        .await;
+    let id = pending(
+        &ts,
+        &ts.as_browser_confirming(
             &owner,
             Method::POST,
             "/api/passkeys",
-            other.registration(&c, &origin, &rp),
-            Some(&id),
+            key.registration(&c, &origin, &rp),
+            None,
         )
-        .await;
-    assert_eq!((s, code(&v)), (403, "passkey_refused"), "{v}");
+        .await,
+    );
+    ts.confirm(&id, false).await;
+    let v = passkey_settings(&ts).await;
+    assert!(v["passkeys"].as_array().unwrap().is_empty(), "{v}");
+    assert_eq!(v["required"], false, "{v}");
 }
 
 /// A registration whose authenticator data attests another key than the
@@ -805,15 +864,12 @@ async fn a_registration_must_send_the_key_its_authenticator_attests() {
     let reg = a.registration(&c, &origin, &rp);
     let id = pending(
         &ts,
-        &ts.as_browser_confirming(&owner, Method::POST, "/api/passkeys", reg.clone(), None)
+        &ts.as_browser_confirming(&owner, Method::POST, "/api/passkeys", reg, None)
             .await,
     );
     ts.confirm(&id, true).await;
-    let (s, v) = ts
-        .as_browser_confirming(&owner, Method::POST, "/api/passkeys", reg, Some(&id))
-        .await;
-    assert_eq!(s, 201, "{v}");
-    let by = &v["settings"]["passkeys"][0]["added_by"];
+    let v = passkey_settings(&ts).await;
+    let by = &v["passkeys"][0]["added_by"];
     assert_eq!(by["via"], "a browser session", "{v}");
     assert!(
         by["agents_live"][0].as_str().unwrap().contains("claude"),

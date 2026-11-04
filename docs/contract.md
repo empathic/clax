@@ -2966,8 +2966,12 @@ no attestation. The first confirmation card offers it ("Require Touch ID or
 a passkey to confirm", **Set up** / **Don't ask again**, remembered), and
 Settings' Confirmations section turns it on or off and lists and removes
 the passkeys. While an agent is live, registering one is itself a
-confirmed decision: the setup line answers it in place (**Confirm adding
-it** / **Cancel**), and the page that started it leaves its card out.
+confirmed decision: the daemon checks the registration (spending its
+challenge), holds it with the confirmation, and adds it, requiring
+passkeys from then on, when that confirmation is approved, with no call
+made again. The shell shows a waiting registration on the first other
+open card's setup line (**Confirm adding it** / **Cancel**), and as a
+card of its own only when no other is open.
 While it is on and a passkey is registered:
 
 - approving a confirmation from a browser session takes an assertion over
@@ -3008,10 +3012,13 @@ printing what it removed: the recovery from a passkey the owner cannot use
   client_data_json}` (the owner's browser; each binary field base64url,
   `public_key` the SubjectPublicKeyInfo `getPublicKey()` gives) → 201
   `{passkey, settings}`. The authenticator data's attested COSE key must be
-  that public key. A confirmed decision while an agent is live, bound to
-  the SHA-256 of the whole registration, so an approved registration lets
-  in no other key under its credential ID. 403 `passkey_refused`, 409
-  `passkey_exists`.
+  that public key. A confirmed decision while an agent is live: checked
+  first, its challenge spent, it answers 202 `confirmation_pending` with
+  the checked key held in the confirmation's decision (`credential_id`,
+  `public_key`, `alg`, `sign_count`), and approving that confirmation adds
+  that key and no other and turns `required` on; nothing is sent again (a
+  second send finds its challenge spent: 403 `passkey_refused`). 403
+  `passkey_refused`, 409 `passkey_exists`.
 - `PUT /api/passkeys/settings {required?, offer_dismissed?, assertion?}`
   (the owner's browser) → the settings. 400 `no_passkey` for `required:
   true` with none registered; 403 `passkey_required` to turn it off

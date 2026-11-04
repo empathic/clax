@@ -11,16 +11,15 @@
   // width the stack spans the screen, inside its 16px gutter.
   import { after } from "../clock";
   import ConfirmationCard from "./ConfirmationCard.svelte";
-  import { heldHere } from "./PasskeySetup.svelte";
-  import { type ConfirmationFeed, type ConfirmationView, confirmations } from "./confirm.svelte";
+  import { type ConfirmationFeed, type ConfirmationView, cardsOf, confirmations } from "./confirm.svelte";
 
   let { feed }: { feed?: ConfirmationFeed } = $props();
   const f = $derived(feed ?? confirmations());
   /** How long an answered card stays, saying how. */
   const LEAVE_MS = 2500;
   let answered = $state<ConfirmationView[]>([]);
-  // A passkey registration this page started is answered on its setup line instead.
-  const shown = $derived([...f.open.filter(c => !heldHere(c.id) && !answered.some(a => a.id === c.id)), ...answered]);
+  // A passkey registration rides on another card's setup line.
+  const shown = $derived([...cardsOf(f.open).filter(c => !answered.some(a => a.id === c.id)), ...answered]);
   const done = (c: ConfirmationView) => {
     answered = [...answered, c];
     after(LEAVE_MS, () => { answered = answered.filter(a => a.id !== c.id); f.take(c); });

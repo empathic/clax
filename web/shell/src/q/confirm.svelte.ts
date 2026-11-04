@@ -24,7 +24,20 @@ export type ConfirmationView = {
   expires_at: string;
   confirm_url: string;
   agents: ConfirmAgent[];
+  /** The decision as recorded: its `kind` names it. */
+  decision?: { kind?: string };
 };
+
+/** Whether `c` adds a passkey: a registration the daemon holds, and adds once `c` is approved. */
+export const registersPasskey = (c: ConfirmationView) => c.decision?.kind === "register_passkey";
+
+/** The cards to show for `open`: a passkey registration is answered on
+ * the setup line of the first other card (`carriesSetup`), when there is
+ * one, rather than as a card of its own. */
+export const cardsOf = (open: ConfirmationView[]) => open.some(c => !registersPasskey(c)) ? open.filter(c => !registersPasskey(c)) : open;
+
+/** Whether card `c` carries the line for a passkey registration waiting in `open`. */
+export const carriesSetup = (open: ConfirmationView[], c: ConfirmationView) => open.some(registersPasskey) && open.find(x => !registersPasskey(x))?.id === c.id;
 
 /** The open confirmations, oldest first; "forbidden" for a browser that is not the owner's. */
 export async function listConfirmations(): Promise<ConfirmationView[] | "forbidden"> {

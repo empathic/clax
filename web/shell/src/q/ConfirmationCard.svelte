@@ -13,14 +13,16 @@
   // browser for one (Touch ID, or another) first. On first use, where a
   // passkey can be used here and none is set up, the card offers "Require
   // Touch ID or a passkey to confirm" (**Set up** / **Don't ask again**,
-  // remembered; Settings still sets one up). Wherever passkeys are named (the offer, a confirmation
+  // remembered; Settings still sets one up). While a passkey registration
+  // waits for its confirmation, the first other open card carries its line
+  // (**Confirm adding it** / **Cancel**) in place of its card. Wherever passkeys are named (the offer, a confirmation
   // that requires one), the card lists those registered and how each was
   // added, so one the owner did not add shows.
   import { relativeTime } from "../format";
-  import { type ConfirmationView, agentLabel, answerConfirmation } from "./confirm.svelte";
+  import { type ConfirmationView, agentLabel, answerConfirmation, carriesSetup, confirmations, registersPasskey } from "./confirm.svelte";
   import { type PasskeySettings, assertFor, passkeySettings, putSettings, unavailableHere } from "./passkey";
   import PasskeyList from "./PasskeyList.svelte";
-  import PasskeySetup, { finishSetup, setup } from "./PasskeySetup.svelte";
+  import PasskeySetup, { ended, setup } from "./PasskeySetup.svelte";
 
   let { c, now, onanswered }: {
     c: ConfirmationView;
@@ -40,6 +42,10 @@
   // A setup finished while this card is shown, wherever it was started.
   const seen = setup.finished;
   const setUp = $derived(setup.finished > seen);
+  // A passkey registration waiting: the first other open card carries its line, and no card offers another.
+  const open = $derived(confirmations().open);
+  const carries = $derived(status === "open" && carriesSetup(open, c));
+  const waiting = $derived(open.some(registersPasskey));
   const notNow = () => { void putSettings({ offer_dismissed: true }).then(s => { keys = s; }, () => {}); };
   const OUTCOME: Record<string, string> = { approved: "Confirmed", declined: "Declined", expired: "Expired: make the call again for a new one" };
 
@@ -55,8 +61,8 @@
       const after = await answerConfirmation(c.id, approve, assertion);
       made = after.status;
       onanswered?.(after);
-      // The passkey registration this confirmation held, sent again now.
-      if (after.status === "approved") void finishSetup(c.id);
+      // A passkey registration's: the daemon added it on approval.
+      void ended(after);
       queueMicrotask(() => self()?.focus({ preventScroll: true }));
     } catch (x) { err = x instanceof Error ? x.message : String(x); } finally { busy = false; }
   }
@@ -86,11 +92,13 @@
   {/if}
   {#if setUp}
     <p class="coffer" role="status">Passkey added: Confirm now asks for Touch ID or your passkey.</p>
-  {:else if offer && setup.pending?.held.id !== c.id}
+  {:else if carries}
+    <div class="coffer"><PasskeySetup onDone={s => { keys = s; }} /></div>
+  {:else if offer && !waiting && !registersPasskey(c)}
     <div class="coffer">
-      {#if !setup.pending}<span>Require Touch ID or a passkey to confirm</span>{/if}
+      <span>Require Touch ID or a passkey to confirm</span>
       <PasskeySetup onDone={s => { keys = s; }} />
-      {#if !setup.pending}<button type="button" class="ghost" onclick={notNow}>Don't ask again</button>{/if}
+      <button type="button" class="ghost" onclick={notNow}>Don't ask again</button>
     </div>
   {/if}
 </article>

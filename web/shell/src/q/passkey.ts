@@ -101,13 +101,14 @@ export async function makePasskey(): Promise<Registration> {
   return { credential_id: b64u(cred.rawId), public_key: b64u(key), alg: r.getPublicKeyAlgorithm(), authenticator_data: b64u(r.getAuthenticatorData()), client_data_json: b64u(r.clientDataJSON) };
 }
 
-/** What registering came to: the settings after, or, while an agent is live, the confirmation it waits for. */
+/** What registering came to: the settings after, or, while an agent is
+ * live, the confirmation it waits for, whose approval adds it. */
 export type Registered = { settings: PasskeySettings } | { held: Held };
 
-/** Registers `reg`, presenting confirmation `confirm` when it was held for one. */
-export async function register(reg: Registration, confirm?: string): Promise<Registered> {
+/** Registers `reg`. */
+export async function register(reg: Registration): Promise<Registered> {
   try {
-    const r = await call<{ settings: PasskeySettings }>("/api/passkeys", "POST", reg, confirm);
+    const r = await call<{ settings: PasskeySettings }>("/api/passkeys", "POST", reg);
     cached = Promise.resolve(r.settings);
     return { settings: r.settings };
   } catch (e) {
