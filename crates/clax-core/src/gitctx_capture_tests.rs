@@ -70,8 +70,23 @@ const HANG: Duration = Duration::from_secs(120);
 
 /// The deadline of a capture whose test is not about the deadline: the
 /// [`HANG`] guard, so no load turns a fixture into a `timeout`.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the HANG guard's deadline: it ends a stuck capture and decides no passing result"
+)]
 fn unhurried() -> Instant {
     Instant::now() + HANG
+}
+
+/// The deadline of a capture whose test is about that deadline passing:
+/// [`CAPTURE_DEADLINE`] from now. The test's git never answers before it,
+/// so `timeout` is the capture's only outcome, under any load.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the deadline passing is what the test checks, against a git that never answers"
+)]
+fn passing_deadline() -> Instant {
+    Instant::now() + CAPTURE_DEADLINE
 }
 
 fn ctx(field: GitField) -> GitContext {
@@ -299,7 +314,7 @@ fn capture_times_out_at_deadline() {
         // deadline, killing it.
         let got = capture(
             d.path(),
-            Instant::now() + CAPTURE_DEADLINE,
+            passing_deadline(),
             &Git::assume_supported(&wrapper),
         );
         assert_eq!(got, GitField::Capture("timeout"), "{block_at}");
@@ -342,6 +357,10 @@ fn header_has_no_paths_or_contents() {
 /// --ignored capture_latency_on_this_repo --nocapture`.
 #[test]
 #[ignore = "a measurement, not a check"]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a measurement run by hand: it prints wall time and decides nothing by it"
+)]
 fn capture_latency_on_this_repo() {
     let here = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut ms: Vec<f64> = (0..50)
@@ -631,6 +650,10 @@ fn flaky_git(dir: &Path) -> PathBuf {
 }
 
 /// A clock for the probe's retry waits that a test moves on by hand.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the manual clock's origin: its readings move only by hand"
+)]
 fn manual_clock() -> (
     std::sync::Arc<std::sync::atomic::AtomicU64>,
     Box<dyn Fn() -> Instant + Send + Sync>,
@@ -734,9 +757,11 @@ fn the_first_captures_wait_for_the_version_is_within_its_deadline() {
         "#!/bin/sh\nexec cat \"${0%/*}/answer\"\n",
     );
     // The probe's own deadline is the hang guard: a capture that waited for
-    // the probe would find it ended.
-    let probe = GitProbe::with_clock(&hung, Box::new(Instant::now), HANG);
-    let got = probe.capture(d.path(), Instant::now() + CAPTURE_DEADLINE);
+    // the probe would find it ended. Its retry clock stands still, so the
+    // probe that gets no answer is not run again here.
+    let (_clock, now) = manual_clock();
+    let probe = GitProbe::with_clock(&hung, now, HANG);
+    let got = probe.capture(d.path(), passing_deadline());
     let probing = probe.lock().running;
     // Opening the FIFO ends the hung git's read: the probe gets no answer.
     drop(
