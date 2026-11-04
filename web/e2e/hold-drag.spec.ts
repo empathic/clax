@@ -157,17 +157,21 @@ for (const mode of ["subdomain"] as const) {
     const { frame, cdp } = await openOnPhone(page, `Swipe ${mode}`, mode);
     const p = (await frame.locator("#p").boundingBox())!;
     const from = { x: p.x + 40, y: p.y + 400 };
+    // The page counts the ends of its scrolls: Chromium fires `scrollend`
+    // once a scroll, its fling included, has stopped.
+    await frame.evaluate(() => {
+      const w = window as unknown as { scrollEnds: number };
+      w.scrollEnds = 0;
+      addEventListener("scrollend", () => { w.scrollEnds++; });
+    });
     // The frames' time stands still through the swipe, so the hold cannot
     // arm before the finger moves, however slowly a loaded machine sends it.
     await pauseTime(page);
     await holdDrag(page, cdp, from, { x: from.x, y: from.y - 300 }, false, 10);
     await page.clock.resume();
-    await expect.poll(() => frame.evaluate(() => scrollY)).toBeGreaterThan(100);
-    // The swipe's fling has ended: the page holds still across two frames.
-    await expect.poll(() => frame.evaluate(() => new Promise<boolean>(r => {
-      const y = scrollY;
-      requestAnimationFrame(() => requestAnimationFrame(() => r(scrollY === y)));
-    }))).toBe(true);
+    // The swipe's scroll, its fling included, has ended.
+    await expect.poll(() => frame.evaluate(() => (window as unknown as { scrollEnds: number }).scrollEnds)).toBeGreaterThan(0);
+    expect(await frame.evaluate(() => scrollY)).toBeGreaterThan(100);
     expect(await picks(page)).toBe(0);
     // A tap afterwards still picks, so the swipe left nothing pending.
     await frame.evaluate(() => scrollTo(0, 0));
