@@ -273,8 +273,11 @@ input, select { line-height: 1.2; }
 .stage { position: relative; flex: 1; min-width: 0; min-height: 0; }
 /* The sidebar's box, which holds its width from the first paint (in the
    drawer wider than a phone: SidebarIsland.svelte); the rest of its rules
-   travel with its lazy chunk (Sidebar.svelte). */
-.sidebar { width: 392px; flex: none; overflow: auto; border-left: 1px solid var(--border); background: var(--bg); padding: 12px 14px 18px; display: flex; flex-direction: column; gap: 10px; }
+   travel with its lazy chunk (Sidebar.svelte). Positioned, it holds
+   what is placed absolutely inside it (a card's visually hidden text),
+   which its scroll then clips: unheld, that text lay far down the list
+   and made the whole window scroll. */
+.sidebar { position: relative; width: 392px; flex: none; overflow: auto; border-left: 1px solid var(--border); background: var(--bg); padding: 12px 14px 18px; display: flex; flex-direction: column; gap: 10px; }
 @media (max-width: 700px) { .sidebar { position: absolute; inset: 0; width: auto; z-index: 10; border-left: 0; } }
 /* A thread's number, on a pin over the frame and on its card. */
 .thread-num, .thread-pin { display: inline-grid; place-items: center; width: 22px; height: 22px; min-height: 0; border-radius: 50%; background: var(--you); color: var(--on-you); font: 600 11.5px/1 var(--font); font-variant-numeric: tabular-nums; flex: none; padding: 0; }
