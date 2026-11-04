@@ -1160,6 +1160,58 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     ctl.dispose();
   });
 
+  it("a linked reply's answer heard after the sync's acknowledgement event does not put back its Sending state", async () => {
+    const link = { remote_id: "r1", remote: "https://remote.example", remote_origin: "https://remote.example", url: "https://remote.example/a/x", origin: "local" as const, remote_version: 1, twin: true, unlinked: false, error: null };
+    const linked = thread("t1", { linked: { ...link, state: null } });
+    const { ctl, frame } = await started({ threads: [linked] });
+    const es = await streamOf(frame);
+    es.emit("ready", {});
+    await vi.waitFor(() => expect(ctl.state.get().threads).toHaveLength(1));
+    const reply = (state: "pending" | null) => ({ id: "c2", thread_id: "t1", author_kind: "viewer" as const, author_name: "alex", via_harness: null, body: "hi", created_at: "2026-09-30T12:00:00.000Z", linked: { origin: "local" as const, remote: link.remote, author_kind: null, author_name: null, state } });
+    const at = (state: "pending" | null): Thread => ({ ...linked, linked: { ...link, state }, comments: [...linked.comments, reply(state)] });
+    const base = fetch as unknown as ReturnType<typeof vi.fn>;
+    let answer: (r: Response) => void = () => {};
+    let sent = false;
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      if (!url.endsWith("/threads/t1/comments")) return base(url, init);
+      sent = true;
+      return new Promise<Response>(r => { answer = r; });
+    }));
+    ctl.reply(linked, "hi");
+    await vi.waitFor(() => expect(sent).toBe(true));
+    // The daemon committed the reply with its up-send pending, and built its
+    // answer; the sync then sent it up and published the acknowledgement,
+    // which this view hears before the answer.
+    es.emit("thread", { type: "thread", artifact_id: ID, thread: at("pending") });
+    es.emit("thread", { type: "thread", artifact_id: ID, thread: at(null) });
+    await vi.waitFor(() => expect(ctl.state.get().threads[0].comments.at(-1)?.linked?.state).toBe(null));
+    // The answer, once taken, sets the list (the same threads or not).
+    const heard = ctl.state.get().threads;
+    answer(new Response(JSON.stringify({ thread: at("pending") })));
+    await vi.waitFor(() => expect(ctl.state.get().threads).not.toBe(heard));
+    expect(ctl.state.get().busy).toBe(0);
+    const shown = ctl.state.get().threads[0];
+    expect(shown.comments.map(c => [c.id, c.linked?.state ?? null])).toEqual([["t1c", null], ["c2", null]]);
+    expect(shown.linked?.state).toBe(null);
+  });
+
+  it("a reply's answer replaces the thread events heard before it was sent", async () => {
+    const { ctl, frame } = await started({ threads: [thread("t1")] });
+    const es = await streamOf(frame);
+    es.emit("ready", {});
+    await vi.waitFor(() => expect(ctl.state.get().threads).toHaveLength(1));
+    const t1 = ctl.state.get().threads[0];
+    es.emit("thread", { type: "thread", artifact_id: ID, thread: { ...t1, status: "resolved" } });
+    await vi.waitFor(() => expect(ctl.state.get().threads[0].status).toBe("resolved"));
+    const base = fetch as unknown as ReturnType<typeof vi.fn>;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (!url.endsWith("/threads/t1/reopen")) return base(url, init);
+      return new Response(JSON.stringify({ thread: { ...t1, status: "open" } }));
+    }));
+    ctl.resolveThread({ ...t1, status: "resolved" });
+    await vi.waitFor(() => expect(ctl.state.get().threads[0].status).toBe("open"));
+  });
+
   it("asks a viewer with no name and no token for its name before a reopen, and reopens once it has one", async () => {
     const done = thread("t9", { status: "resolved", resolved_by: "viewer:u_1", resolved_at: "2026-09-30T11:00:00.000Z" });
     const reopened: string[] = [];

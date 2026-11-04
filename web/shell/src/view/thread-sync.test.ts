@@ -85,4 +85,19 @@ describe("ThreadSync ordering", () => {
     one(th("a"));
     expect(threads).toEqual([]);
   });
+
+  it("a write's answer goes under the events heard since the write was sent, and over those heard before", () => {
+    let threads: Thread[] = [th("a")];
+    const sync = new ThreadSync(f => { threads = f(threads); });
+    sync.change(upsertT(th("a", "resolved")));
+    const wrote = sync.beginThread("a");
+    sync.change(upsertT(th("b")));
+    wrote(th("a", "open"));
+    expect(threads).toEqual([th("a", "open"), th("b")]);
+
+    const again = sync.beginThread("a");
+    sync.change(upsertT(th("a", "resolved")));
+    again(th("a", "open"));
+    expect(threads).toEqual([th("a", "resolved"), th("b")]);
+  });
 });
