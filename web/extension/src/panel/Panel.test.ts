@@ -6,6 +6,7 @@ import * as fixtures from "../../../shell/src/q/fixtures";
 import type { InboxReq as InboxReqLike } from "./link.svelte";
 import Panel from "./Panel.svelte";
 import { PanelQuestions } from "./questions";
+import { CONFIRM_PAIRING } from "../sw/tabs";
 
 const thread = {
   id: "01J9AAAAAAAAAAAAAAAAAAAAAA", artifact_id: "7q3k9mzx2b4t", version_n: 1, status: "open", sent_to_agent: false, has_clip: false,
@@ -67,6 +68,15 @@ describe("Panel", () => {
       expect(l.sent).toContainEqual({ t: "retry" });
       cleanup();
     }
+  });
+
+  it("asks for the pairing's confirmation with a button that opens it in Clax", async () => {
+    const l = link(state({ error: { code: "confirm_pairing", message: CONFIRM_PAIRING } }));
+    render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z") } });
+    expect(screen.getByRole("alert").textContent).toContain("An agent is running");
+    expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "Confirm in Clax" }));
+    expect(l.sent).toContainEqual({ t: "confirm-pairing" });
   });
 
   it("opens Open in Clax through the worker's login link, with no plain address to follow past it", async () => {

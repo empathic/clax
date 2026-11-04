@@ -105,6 +105,17 @@ describe("Pairer", () => {
     expect(again.sent).toEqual([{ ...pair, confirmation: "cf_ab12" }]);
     expect(told).toEqual([true, false]);
     expect(again.store.held).toBeUndefined();
+    expect(await p.held()).toBeNull();
+  });
+
+  it("names the confirmation a pairing is held for while it waits", async () => {
+    const held = { type: "error", v: 1, code: "confirmation_pending", message: "Confirm pairing", confirmation_id: "cf_ab12", confirm_url: "http://localhost:7480/inbox?confirm=cf_ab12" };
+    const e = env([held, () => new Promise(() => {})]);
+    const p = new Pairer(e as unknown as PairEnv);
+    expect(await p.held()).toBeNull();
+    void p.pair();
+    await vi.waitFor(() => expect(e.sent).toHaveLength(2));
+    expect(await p.held()).toBe("cf_ab12");
   });
 
   it("keeps a held pairing's confirmation through a host that gave no answer, and drops it on the host's answer", async () => {

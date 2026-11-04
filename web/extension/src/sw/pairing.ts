@@ -134,8 +134,7 @@ export class Pairer {
         // A confirmation an earlier pairing was held for, kept until a host
         // answers with it: a worker restarted while the person decided asks
         // with the one they answer, never for a new one.
-        const kept = (await this.env.session.get("held")).held;
-        let held = typeof kept === "string" ? kept : null;
+        let held = await this.held();
         let p: Pairing | null = null;
         if (!held) {
           try {
@@ -168,6 +167,13 @@ export class Pairer {
       }
     })();
     return this.inflight;
+  }
+
+  /** The confirmation a pairing is held for, until a host answers with
+   * it; null for none. */
+  async held(): Promise<string | null> {
+    const kept = (await this.env.session.get("held")).held;
+    return typeof kept === "string" ? kept : null;
   }
 
   /** Drops the stored pairing; the next request pairs again. */

@@ -57,6 +57,7 @@ function setup(over: { closed?: boolean; remaining?: number; page?: typeof page 
     open: {
       daemon: async () => "http://127.0.0.1:7480",
       login: async (path: string) => `http://127.0.0.1:7480/login?code=c&next=${encodeURIComponent(path)}`,
+      confirmation: async () => `http://localhost:7480/login?code=c&next=${encodeURIComponent("/inbox?confirm=cf_ab12")}`,
       create: async (url: string) => { calls.push(`create ${url}`); },
       focus: async (tabId: number) => { calls.push(`focus ${tabId}`); },
       find: async (url: string) => { calls.push(`find ${url}`); return url === "http://localhost:5173/other" ? 12 : null; },
@@ -477,6 +478,12 @@ describe("panelAction for the owner's questions and inbox", () => {
     const s = setup();
     await s.run({ t: "open-clax", path: `/a/${AID}` }, null);
     expect(s.calls).toEqual([`create http://127.0.0.1:7480/login?code=c&next=${encodeURIComponent(`/a/${AID}`)}`]);
+  });
+
+  it("opens the held pairing's confirmation in a new tab, the browser signed in on the way", async () => {
+    const s = setup();
+    await s.run({ t: "confirm-pairing" }, null);
+    expect(s.calls).toEqual([`create http://localhost:7480/login?code=c&next=${encodeURIComponent("/inbox?confirm=cf_ab12")}`]);
   });
 
   it("brings a tab showing the live page with Clax off in it to the front, else opens the item on the daemon", async () => {

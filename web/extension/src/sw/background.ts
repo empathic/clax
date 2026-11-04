@@ -223,6 +223,14 @@ export function startBackground(c: typeof chrome) {
         const r = await c.runtime.sendNativeMessage(HOST, { type: "login", v: 1, next: path }).catch(() => null) as { type?: unknown; url?: unknown } | null;
         return r?.type === "login" && typeof r.url === "string" && r.url.startsWith(`${daemon}/login?`) ? r.url : daemon + path;
       },
+      // No paired daemon to check the link against: the host's own address for it, on localhost.
+      confirmation: async () => {
+        const held = await pairer.held();
+        const next = held ? `/inbox?confirm=${encodeURIComponent(held)}` : "/inbox";
+        const r = await c.runtime.sendNativeMessage(HOST, { type: "login", v: 1, next }) as { type?: unknown; url?: unknown } | null;
+        if (r?.type === "login" && typeof r.url === "string" && /^http:\/\/localhost:[1-9]\d{0,4}\/login\?/.test(r.url)) return r.url;
+        throw new Error("Clax could not open its inbox to confirm pairing");
+      },
       create: async url => { await c.tabs.create({ url }); },
       // Matches only tabs whose address the extension may read (an origin it holds).
       find: async url => (await c.tabs.query({ url: url.split("#")[0] }).catch(() => []))[0]?.id ?? null,

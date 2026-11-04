@@ -30,6 +30,10 @@ export type PanelDeps = {
      * native host makes with the token, so the tab's browser is the
      * owner's there; the path on the paired daemon when none can be had. */
     login(path: string): Promise<string>;
+    /** Where a new tab opens the confirmation a pairing is held for: a
+     * login link to its card in Clax's inbox, made without the pairing,
+     * which waits on that confirmation. */
+    confirmation(): Promise<string>;
     /** A tab at `url` (any of them), among the tabs whose address the extension may read; null for none. */
     find(url: string): Promise<number | null>;
   };
@@ -134,8 +138,9 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: 
   // A restarted worker reads its tabs back first: an action before then would find no tab.
   await d.tabs.ready();
   if (await inboxAction(d, m, reply)) return;
-  // Neither needs a tab: the name is the owner's, the ping keeps the worker up.
+  // None needs a tab: the name is the owner's, the pairing is the worker's, the ping keeps the worker up.
   if (m.t === "set-name") { d.tabs.setViewer((await d.api.setName(m.name)).viewer); return; }
+  if (m.t === "confirm-pairing") { await d.open.create(await d.open.confirmation()); return; }
   // A request (`req`) is always answered: a step or a failure.
   if (tabId === null && "req" in m) throw new PanelFailure("no_tab", "The panel shows no tab.");
   if (m.t === "ping" || m.t === "visible" || tabId === null) return;
