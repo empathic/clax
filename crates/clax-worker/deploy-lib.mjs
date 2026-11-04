@@ -135,6 +135,31 @@ export function envOf(name = "prod") {
   return { env: name, worker: `clax-${name}`, bucket: PREVIEW_BUCKET, queue: `clax-artifacts-events-${name}`, namespace: `clax-${name}`, ephemeral: true };
 }
 
+/** What `--staging` requires: the environment of a release pull request
+ * into `prod` (`pr-<N>`, an ephemeral instance), a CI deploy (the runner
+ * alone holds the owner token it makes: `secretsToMake`), and not
+ * `--production` (staging is configured as production is, but is never
+ * the production instance). Throws naming what is wrong. */
+export function checkStaging({ staging, production, env, ci }) {
+  if (!staging) return;
+  if (production) throw new Error("--staging is not --production: staging is a release pull request's own instance");
+  if (!/^pr-[1-9][0-9]*$/.test(String(env ?? ""))) throw new Error(`--staging takes --env pr-<N>, the release pull request's number, not ${env ?? "none"}`);
+  if (!ci) throw new Error("--staging goes with --ci: its owner token is made for the runner's smoke");
+}
+
+/** The secrets a deploy generates, given `have`, the names the Worker
+ * has: a staging deploy (`staging`) a new CLAX_TOKEN every time, for its
+ * smoke to make an owner sign-in link and mint an agent token with (no
+ * run can read the last one back), and no SETUP_SECRET (the owner signs in
+ * with GitHub); a preview deployed by CI neither; any other deploy
+ * SETUP_SECRET and CLAX_TOKEN when the Worker lacks them, or both with
+ * `rotate`. */
+export function secretsToMake({ have, ci, ephemeral, staging = false, rotate = false }) {
+  if (staging) return ["CLAX_TOKEN"];
+  if (ci && ephemeral) return [];
+  return ["SETUP_SECRET", "CLAX_TOKEN"].filter((n) => rotate || !have.includes(n));
+}
+
 /** The zone a site domain's wildcard route is on: `zone` when given (the
  * site domain itself, or a domain it is under, as a preview's
  * `pr-12.<zone>` is), else the site domain. Throws when the site domain is
@@ -254,10 +279,11 @@ export function kekPlan({ have, given, ephemeral = false, dryRun = false }) {
 
 /** What deploy.mjs prints when it is done. The first-time setup text (the
  * secrets shown once, the setup URL, the next steps) only when this deploy
- * generated SETUP_SECRET or CLAX_TOKEN (`generated`, the secrets it made);
- * every deploy names the record and the logs. */
-export function doneText({ pub, name, diag, generated, record, smoke }) {
-  const first = Boolean(generated?.SETUP_SECRET || generated?.CLAX_TOKEN);
+ * generated SETUP_SECRET or CLAX_TOKEN (`generated`, the secrets it made),
+ * and never for a CI deploy (`ci`), whose log may be public: its record
+ * keeps them; every deploy names the record and the logs. */
+export function doneText({ pub, name, diag, generated, record, smoke, ci = false }) {
+  const first = !ci && Boolean(generated?.SETUP_SECRET || generated?.CLAX_TOKEN);
   const lines = [];
   if (first) {
     lines.push("", "   Shown once (also in the record below, 0600; delete the record once set up):");

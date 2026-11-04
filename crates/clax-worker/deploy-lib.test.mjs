@@ -10,6 +10,7 @@ import {
   buildId,
   builtFromRefusal,
   checkCiOptions,
+  checkStaging,
   ciSecretsRefusal,
   doneText,
   envOf,
@@ -19,6 +20,7 @@ import {
   prodTipOf,
   productionGate,
   reelVars,
+  secretsToMake,
   siteZoneOf,
   smokeCannot,
   smokeCredential,
@@ -278,6 +280,27 @@ test("a preview's first --ci deploy makes no first-time secrets, and still needs
   assert.match(ciSecretsRefusal(["GITHUB_CLIENT_SECRET"], e), /would turn GitHub sign-in off/);
 });
 
+test("staging is a pull request's environment, deployed by CI, and not production", () => {
+  const s = { staging: true, production: false, env: "pr-12", ci: true };
+  assert.doesNotThrow(() => checkStaging(s));
+  assert.doesNotThrow(() => checkStaging({ staging: false, production: true, env: "prod", ci: true }));
+  assert.throws(() => checkStaging({ ...s, production: true }), /--staging is not --production/);
+  for (const env of ["prod", "dev", "pr-0", "pr-12a", "feature", undefined]) {
+    assert.throws(() => checkStaging({ ...s, env }), /--staging takes --env pr-<N>/, String(env));
+  }
+  assert.throws(() => checkStaging({ ...s, ci: false }), /--staging goes with --ci/);
+});
+
+test("staging gets a new owner token on every deploy and no setup secret; a preview from CI gets neither", () => {
+  const all = ["SETUP_SECRET", "CLAX_TOKEN", "CLAX_KEK"];
+  assert.deepEqual(secretsToMake({ have: [], ci: true, ephemeral: true, staging: true }), ["CLAX_TOKEN"]);
+  assert.deepEqual(secretsToMake({ have: all, ci: true, ephemeral: true, staging: true }), ["CLAX_TOKEN"]);
+  assert.deepEqual(secretsToMake({ have: [], ci: true, ephemeral: true }), []);
+  assert.deepEqual(secretsToMake({ have: [], ci: false, ephemeral: false }), ["SETUP_SECRET", "CLAX_TOKEN"]);
+  assert.deepEqual(secretsToMake({ have: all, ci: true, ephemeral: false }), []);
+  assert.deepEqual(secretsToMake({ have: all, ci: false, ephemeral: false, rotate: true }), ["SETUP_SECRET", "CLAX_TOKEN"]);
+});
+
 const DONE = { pub: "clax.example.com", name: "clax", diag: false, record: "/r/clax.example.com.json", smoke: "node smoke-remote.mjs --deploy /r/clax.example.com.json" };
 const FIRST_TIME = [/Shown once/, /Setup: +https:\/\/clax\.example\.com\/setup/, /Next:/, /Smoke the platform first/];
 
@@ -299,6 +322,12 @@ test("a redeploy prints no first-time setup text, whatever else it uploaded", ()
     // Its backup is its operator's, never a file the deploy keeps.
     assert.doesNotMatch(t, /CLAX_KEK|\.kek/);
   }
+});
+
+test("a CI deploy prints no secret it generated: its log may be public", () => {
+  const t = doneText({ ...DONE, ci: true, generated: { CLAX_TOKEN: "t0ken", SETUP_SECRET: "s3cret" } });
+  assert.doesNotMatch(t, /t0ken|s3cret|Shown once/);
+  assert.match(t, /Record: +\/r\/clax\.example\.com\.json/);
 });
 
 test("the smoke's credential: a session, then an agent token, then setup, then the owner token", () => {

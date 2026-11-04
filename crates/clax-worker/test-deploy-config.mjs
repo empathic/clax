@@ -183,6 +183,18 @@ try {
     assert.equal("queues" in r.config, false);
   });
   check("--production goes with prod alone", () => refused(["--env", "dev", "--production", "--public", "dev.example.com", "--site-domain", "dev-example.run"], /--production is the prod environment's/));
+  const STAGING = ["--public", "pr-12.clax-staging.dev", "--site-domain", "pr-12.clax-staging.run", "--site-zone", "clax-staging.run"];
+  check("--staging is a release pull request's instance, from CI", () => {
+    const r = deploy(["--staging", "--ci", "--env", "pr-12", ...STAGING]);
+    assert.equal(r.status, 0, r.text);
+    assert.equal(r.config.name, "clax-pr-12");
+    assert.deepEqual(r.config.routes, [
+      { pattern: "pr-12.clax-staging.dev", custom_domain: true },
+      { pattern: "*.pr-12.clax-staging.run/*", zone_name: "clax-staging.run" },
+    ]);
+  });
+  check("--staging without --ci is refused", () => refused(["--staging", "--env", "pr-12", ...STAGING], /--staging goes with --ci/));
+  check("--staging outside a pull request's environment is refused", () => refused(["--staging", "--ci", "--env", "dev", ...STAGING], /--staging takes --env pr-<N>/));
   check("an unknown environment is refused", () => refused(["--env", "Staging!", "--public", "x.example.com", "--site-domain", "x.run"], /--env takes prod, dev or a preview's name/));
   check("a site domain outside --site-zone is refused", () =>
     refused(["--env", "pr-12", "--public", "pr-12.preview.dev", "--site-domain", "pr-12.preview.run", "--site-zone", "other.run"], /not in the zone other\.run/));

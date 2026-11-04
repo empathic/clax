@@ -41,6 +41,11 @@
 # --site-zone <zone> names the zone a site domain is under (a preview's
 # pr-12.<zone>), kept like the other settings.
 #
+# --staging deploys a release pull request's instance (with --env pr-<N>
+# and --ci: deploy.mjs --staging, docs/prod.md "Staging"); its smoke mints
+# an agent token with the owner token the deploy made, and needs no
+# CLAX_SMOKE_TOKEN.
+#
 # --ci runs headless, as the deploy workflow does: it neither reads nor
 # writes setup.env and asks nothing (settings come from the flags alone;
 # deploy.mjs fails naming any it needs), never starts `wrangler login` (the
@@ -97,6 +102,7 @@ login_only=0
 ci=0
 no_build=0
 set_production=0
+staging=0
 args=()
 set_public="" set_site="" set_store="" set_gh_id="" set_owner="" set_zone=""
 env_name="prod"
@@ -109,6 +115,7 @@ while [ $# -gt 0 ]; do
     --ci) ci=1; args+=("$1") ;;
     --no-build) no_build=1; args+=("$1") ;;
     --production) set_production=1 ;;
+    --staging) staging=1; args+=("$1") ;;
     --i-know-what-i-am-doing) dry=0 ;;
     --dry-run) ;;
     --public) set_public="$2"; shift ;;
@@ -139,8 +146,9 @@ if [ "$set_production" = 1 ] && [ "$env_name" != prod ]; then
 fi
 args+=(--env "$env_name")
 
-# Before anything is deployed: a CI smoke has nothing but an agent token.
-if [ "$ci" = 1 ] && [ "$smoke" = 1 ] && [ -z "${CLAX_SMOKE_TOKEN:-}" ]; then
+# Before anything is deployed: a CI smoke has nothing but an agent token,
+# which staging's mints with the owner token its deploy made.
+if [ "$ci" = 1 ] && [ "$smoke" = 1 ] && [ "$staging" = 0 ] && [ -z "${CLAX_SMOKE_TOKEN:-}" ]; then
   fail "--ci --smoke runs as an agent token: set CLAX_SMOKE_TOKEN"
 fi
 
@@ -272,7 +280,12 @@ if [ "$smoke" = 1 ] && [ "$dry" = 0 ]; then
   record="$records/$PUBLIC_HOST.json"
   [ -f "$record" ] || fail "no deploy record $record to smoke"
   smoke_status=0
-  if [ -n "${CLAX_SMOKE_TOKEN:-}" ]; then
+  if [ "$staging" = 1 ]; then
+    # Staging's deploy gave the Worker a new owner token, in the record:
+    # the smoke mints an agent token with it and acts as that alone.
+    say "Smoking the deployment as an agent token minted with the record's owner token"
+    (cd "$worker" && node smoke-remote.mjs --deploy "$record" --mint-agent-token) || smoke_status=$?
+  elif [ -n "${CLAX_SMOKE_TOKEN:-}" ]; then
     # An agent token takes no diagnostics: the smoke runs on what was deployed.
     say "Smoking the deployment as the agent token in CLAX_SMOKE_TOKEN"
     (cd "$worker" && node smoke-remote.mjs --deploy "$record") || smoke_status=$?

@@ -102,6 +102,13 @@
 // Worker's secrets, and fails when the health wait, the instance's
 // CLAX_KEK (/healthz's `kek`) or the site host check does.
 //
+// --staging: a release pull request's instance (--env pr-<N>, with --ci;
+// docs/prod.md, "Staging"), configured as production is but never the
+// production instance: an ephemeral one, as a preview, whose every deploy
+// uploads a new CLAX_TOKEN, kept in the record and never shown, so that
+// smoke-remote.mjs --mint-agent-token can sign in as the owner and run as
+// an agent token, as the production smoke does.
+//
 // --production: this is the production instance. A deploy refuses unless
 // the checkout is clean and its HEAD is origin's prod tip (`git ls-remote
 // origin refs/heads/prod`, checked again before the upload), and unless it
@@ -135,7 +142,7 @@ import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { dirname, join, resolve } from "node:path";
 import { cloudflare, expiryRule, hasRule } from "./cloudflare-api.mjs";
-import { PREVIEW_ASSET_DAYS, buildId, builtFromRefusal, checkCiOptions, ciSecretsRefusal, doneText, envOf, healthOf, kekPlan, partialTriggerUpdate, prodTipOf, productionGate, reelVars, siteZoneOf, versionIdOf, wildcardRecordOf, wranglerError } from "./deploy-lib.mjs";
+import { PREVIEW_ASSET_DAYS, buildId, builtFromRefusal, checkCiOptions, checkStaging, ciSecretsRefusal, doneText, envOf, healthOf, kekPlan, partialTriggerUpdate, prodTipOf, productionGate, reelVars, secretsToMake, siteZoneOf, versionIdOf, wildcardRecordOf, wranglerError } from "./deploy-lib.mjs";
 import { BUILD, BUILT_FROM, HERE, baseConfig, embedsWebUi } from "./harness.mjs";
 
 const WRANGLER = join(HERE, "node_modules/.bin/wrangler");
@@ -164,7 +171,7 @@ function moveOldRecords() {
 const PAID_LIMIT_KIB = 10 * 1024;
 
 export function parseArgs(argv) {
-  const o = { store: "artifacts", storeGiven: false, wait: 600, diag: false, build: true, dryRun: false, yes: false, rotate: false, configOnly: false, ci: false, production: false, fromLaptop: false };
+  const o = { store: "artifacts", storeGiven: false, wait: 600, diag: false, build: true, dryRun: false, yes: false, rotate: false, configOnly: false, ci: false, production: false, staging: false, fromLaptop: false };
   const takes = new Set(["--public", "--site-domain", "--zone", "--store", "--name", "--account", "--wait", "--out", "--github-client-id", "--owner-github", "--legal", "--terms-url", "--privacy-url", "--legal-version", "--retired-content-origin", "--reel-url", "--reel-poster-url", "--env", "--site-zone"]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -181,6 +188,7 @@ export function parseArgs(argv) {
     } else if (flag === "--dry-run") o.dryRun = true;
     else if (flag === "--ci") o.ci = o.yes = true;
     else if (flag === "--production") o.production = true;
+    else if (flag === "--staging") o.staging = true;
     else if (flag === "--from-laptop") o.fromLaptop = true;
     else if (flag === "--yes" || flag === "-y") o.yes = true;
     else if (flag === "--diag") o.diag = true;
@@ -198,6 +206,7 @@ export function parseArgs(argv) {
   o.ephemeral = o.res.ephemeral;
   o.name ??= o.res.worker;
   if (o.production && o.res.env !== "prod") throw new Error(`--production is the prod environment's: it takes no --env ${o.res.env}`);
+  checkStaging({ staging: o.staging, production: o.production, env: o.env, ci: o.ci });
   if (o["retired-content-origin"] !== undefined && !retiredContentOrigin({ retired_content_origin: o["retired-content-origin"] })) {
     throw new Error(`--retired-content-origin takes an https:// origin (e.g. https://content.example.com), not ${o["retired-content-origin"]}`);
   }
@@ -833,8 +842,10 @@ async function main() {
   const have = who ? await secretNames(account, configPath, o.name) : [];
   let secrets = null;
   // A preview deployed by CI gets neither: setup stays closed, the instance
-  // makes its own owner token, and the owner signs in with GitHub.
-  const needed = o.ci && o.ephemeral ? [] : ["SETUP_SECRET", "CLAX_TOKEN"].filter((n) => o.rotate || !have.includes(n));
+  // makes its own owner token, and the owner signs in with GitHub. Staging
+  // gets a new owner token on every deploy, for its smoke alone
+  // (deploy-lib.mjs secretsToMake).
+  const needed = secretsToMake({ have, ci: o.ci, ephemeral: o.ephemeral, staging: o.staging, rotate: o.rotate });
   if (o.ci && who) {
     // First-time setup stays on a laptop: a --ci deploy changes no secret
     // but the GitHub client secret it is given (and a preview's CLAX_KEK).
@@ -843,7 +854,8 @@ async function main() {
     if (refusal) info(`a deploy would refuse: ${refusal}`);
   }
   if (!who) info("skipped (no login): wrangler secret list; a deploy generates SETUP_SECRET and CLAX_TOKEN when the Worker has neither");
-  else if (o.ci && o.ephemeral) info("a preview: no SETUP_SECRET (setup stays closed) and no CLAX_TOKEN (the instance makes its own); the owner signs in with GitHub");
+  else if (o.ci && o.ephemeral && !o.staging) info("a preview: no SETUP_SECRET (setup stays closed) and no CLAX_TOKEN (the instance makes its own); the owner signs in with GitHub");
+  else if (o.staging && o.dryRun) info("staging: would make a new CLAX_TOKEN for the smoke (kept in the record, never shown); no SETUP_SECRET: the owner signs in with GitHub");
   else if (needed.length === 0) {
     info(`the Worker has SETUP_SECRET and CLAX_TOKEN; kept${record.setup_secret ? ` (in ${recordPath(pub)})` : " (not shown: --rotate-secrets makes new ones)"}`);
   } else if (o.dryRun) info(`would generate ${needed.join(" and ")} and upload them with the deploy`);
@@ -851,7 +863,7 @@ async function main() {
     secrets = {};
     if (needed.includes("SETUP_SECRET")) secrets.SETUP_SECRET = randomBytes(24).toString("base64url");
     if (needed.includes("CLAX_TOKEN")) secrets.CLAX_TOKEN = randomBytes(32).toString("hex");
-    info(`generated ${needed.join(" and ")}; uploaded with the deploy`);
+    info(`generated ${needed.join(" and ")}; uploaded with the deploy${o.staging ? " (staging: a new CLAX_TOKEN each deploy, for the smoke; kept in the record, never shown)" : ""}`);
   }
   // CLAX_KEK seals the model keys ClaxBot stores (README.md, "ClaxBot"):
   // the Worker's is kept, never rotated; one without gets the key given in
@@ -1006,7 +1018,7 @@ async function main() {
 
   step("Done");
   // The first-time setup text only when this deploy generated the secrets.
-  console.log(doneText({ pub, name: o.name, diag: o.diag, generated: secrets, record: recordPath(pub), smoke: `node smoke-remote.mjs --deploy ${recordPath(pub)}` }));
+  console.log(doneText({ pub, name: o.name, diag: o.diag, generated: secrets, record: recordPath(pub), smoke: `node smoke-remote.mjs --deploy ${recordPath(pub)}`, ci: o.ci }));
   if (o.diag) diagReminder(pub);
   // A --ci deploy passes only when the instance answers as this build on
   // the public host, with its CLAX_KEK, and on a site host.
