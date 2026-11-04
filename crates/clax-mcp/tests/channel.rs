@@ -241,7 +241,7 @@ impl FakeClaude {
 
     /// Returns once `ready` holds of the daemon's answer to `path`, asked
     /// again every 50 ms.
-    #[allow(
+    #[expect(
         clippy::disallowed_methods,
         reason = "until_get polls the daemon under the HANG guard; nothing is decided by how long it takes"
     )]

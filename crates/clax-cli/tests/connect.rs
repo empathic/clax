@@ -408,7 +408,7 @@ async fn approve(ts: &TestServer, gid: &str, code: &str, name: &str) {
 /// A daemon on every interface whose clock the test moves (the
 /// continuation's `wait` is 5 s of it), set to now so signed times fall
 /// within its window.
-#[allow(
+#[expect(
     clippy::disallowed_methods,
     reason = "the CLI signs with the system's time, so the daemon's clock starts at it"
 )]

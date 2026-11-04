@@ -165,7 +165,7 @@ fn with_guard(text: &str) -> String {
 /// first run takes. On Linux a file just written can briefly be "busy" to
 /// exec while a forked child of another thread still holds its write
 /// descriptor; that is waited out.
-#[allow(
+#[expect(
     clippy::disallowed_methods,
     reason = "retries a first run that met ETXTBSY, at most 1000 times; the operating system decides when it ends"
 )]

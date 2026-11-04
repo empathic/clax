@@ -70,7 +70,7 @@ const HANG: Duration = Duration::from_secs(120);
 
 /// The deadline of a capture whose test is not about the deadline: the
 /// [`HANG`] guard, so no load turns a fixture into a `timeout`.
-#[allow(
+#[expect(
     clippy::disallowed_methods,
     reason = "the HANG guard's deadline: it ends a stuck capture and decides no passing result"
 )]
@@ -81,7 +81,7 @@ fn unhurried() -> Instant {
 /// The deadline of a capture whose test is about that deadline passing:
 /// [`CAPTURE_DEADLINE`] from now. The test's git never answers before it,
 /// so `timeout` is the capture's only outcome, under any load.
-#[allow(
+#[expect(
     clippy::disallowed_methods,
     reason = "the deadline passing is what the test checks, against a git that never answers"
 )]
@@ -357,7 +357,7 @@ fn header_has_no_paths_or_contents() {
 /// --ignored capture_latency_on_this_repo --nocapture`.
 #[test]
 #[ignore = "a measurement, not a check"]
-#[allow(
+#[expect(
     clippy::disallowed_methods,
     reason = "a measurement run by hand: it prints wall time and decides nothing by it"
 )]
@@ -650,7 +650,7 @@ fn flaky_git(dir: &Path) -> PathBuf {
 }
 
 /// A clock for the probe's retry waits that a test moves on by hand.
-#[allow(
+#[expect(
     clippy::disallowed_methods,
     reason = "the manual clock's origin: its readings move only by hand"
 )]

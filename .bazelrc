@@ -85,18 +85,13 @@ common --@rules_dart//dart:analysis_config=//apps/clax_app:analysis_config
 build:clippy --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
 build:clippy --output_groups=+clippy_checks
 build:clippy --@rules_rust//rust/settings:clippy_flag=-Dwarnings
-
-# --config=timing: the timing rules for test code (docs/usage.md,
-# "Developing Clax") fail instead of reporting. With --config=clippy,
-# clippy lints with bazel/timing/clippy.toml (clippy.toml plus
-# disallowed-methods on real time), the lint allowed here so that product code is never
-# flagged, and turned back on in test code by its attributes; the other
-# rules' tests (//scripts:test_timing, //web:lint, the Dart check) fail on
-# a finding. scripts/bazel-test.sh --ci runs them so and prints what they
-# find without failing the run.
-build:timing --@rules_rust//rust/settings:clippy.toml=//bazel/timing:clippy.toml
-build:timing --@rules_rust//rust/settings:clippy_flag=-Aclippy::disallowed_methods
-test:timing --test_env=CLAX_TIMING=deny
+# clippy.toml's timing rules are for test code only: the lint is allowed
+# here, so product code is never flagged, and test code turns it back on
+# by attribute (scripts/check-rust-test-timing.sh). A crate linted alone
+# with a clippy.toml of its own (clax-commands) turns it back on with
+# --@rules_rust//rust/settings:clippy_flag=-Wclippy::disallowed_methods,
+# so its own disallowed methods stay errors everywhere in it.
+build:clippy --@rules_rust//rust/settings:clippy_flag=-Aclippy::disallowed_methods
 
 # --config=fmt: check formatting, as `cargo fmt --all -- --check` does.
 build:fmt --aspects=@rules_rust//rust:defs.bzl%rustfmt_aspect

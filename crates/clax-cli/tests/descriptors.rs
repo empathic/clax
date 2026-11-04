@@ -108,7 +108,7 @@ fn a_foreground_daemon_closes_inherited_descriptors() {
             == Some(u64::from(pid))
     };
     let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-    #[allow(
+    #[expect(
         clippy::disallowed_methods,
         reason = "the watchdog is the HANG guard on the daemon's log, which it ends by killing the daemon"
     )]

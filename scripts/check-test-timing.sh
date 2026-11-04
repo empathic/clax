@@ -24,10 +24,7 @@
 # or alone on the line before it, with its reason. An exemption on a line
 # with nothing to exempt is a finding too.
 #
-# Report mode (docs/usage.md, "Developing Clax"): exits 0 whatever it
-# prints, unless CLAX_TIMING=deny (bazel test --config=timing), when a
-# finding fails it. scripts/check-test-timing.py's DEFAULT makes deny the
-# default. No linter reads shell, so this is the shell's linter: a line
+# A finding fails it (docs/usage.md, "Developing Clax"). No linter reads shell, so this is the shell's linter: a line
 # scanner, as scripts/check-pipefail-pipes.sh is. With file arguments,
 # checks those files instead; with --list, prints the files it checks.
 set -euo pipefail

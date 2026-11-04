@@ -31,7 +31,7 @@ pub fn as_clax(text: &str) -> String {
 ///
 /// # Panics
 /// Past the [`clax_testkit::HANG`] guard, naming `what`.
-#[allow(
+#[expect(
     clippy::disallowed_methods,
     reason = "wait_until polls its condition under the HANG guard; nothing is decided by how long it takes"
 )]

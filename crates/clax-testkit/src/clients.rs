@@ -443,7 +443,7 @@ impl<'a> RealClients<'a> {
     /// `env`: one prompt its scripted model answers by calling `calls`
     /// (`[tool name, arguments]`) in turn, then each of `commands` as a
     /// prompt; what Pi handed out, one line each (see [`RealClients::pi`]).
-    #[allow(
+    #[expect(
         clippy::disallowed_methods,
         reason = "the HANG guard on a real Pi, whose output the panic names"
     )]

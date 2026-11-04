@@ -765,7 +765,7 @@ async fn answers_are_cached_per_viewer() {
 /// The answer cache ages its entries by the wall clock
 /// (`clax_rt::wall::Instant`, `clax_sample::cache`): the test waits until
 /// 50 ms of it have passed since the answer was stored.
-#[allow(
+#[expect(
     clippy::disallowed_methods,
     reason = "the answer cache ages by the wall clock: waits until the window has passed"
 )]

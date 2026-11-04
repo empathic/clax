@@ -920,7 +920,7 @@ mod tests {
 
     /// The time on tokio's paused clock: every test here runs under
     /// `start_paused`, so this is the test's own time, never the wall's.
-    #[allow(
+    #[expect(
         clippy::disallowed_methods,
         reason = "reads tokio's paused clock (start_paused), not real time"
     )]

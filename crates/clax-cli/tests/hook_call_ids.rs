@@ -51,7 +51,7 @@ fn post_tool_use(hsid: &str, tool_use_id: &str, tool_input: Value) -> String {
 
 /// A call's `started_at` and `ended_at` for one that ended now, by the
 /// wall clock the daemon matches a report's arrival against.
-#[allow(
+#[expect(
     clippy::disallowed_methods,
     reason = "the daemon names a call only when it ended within 5 s of the report's arrival by its wall clock, which a spawned daemon reads as the test does"
 )]

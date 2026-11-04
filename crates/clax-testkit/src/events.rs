@@ -65,7 +65,7 @@ impl EventReader {
     /// The names of the events (keep-alive comments aside) until the body
     /// ends; panics when it has not ended within the [`HANG`](crate::HANG)
     /// guard.
-    #[allow(
+    #[expect(
         clippy::disallowed_methods,
         reason = "the stream's end is waited for under one HANG guard across reads"
     )]

@@ -20,10 +20,8 @@ dart_test(
     deps = [":timing_lint"],
 )
 
-# The rules over apps/clax_app/test and integration_test. Report mode: it
-# prints every finding and passes, unless CLAX_TIMING=deny
-# (`bazel test --config=timing`). Setting
-# `env = {"CLAX_TIMING": "deny"}` here makes them binding.
+# The rules over apps/clax_app/test and integration_test: it fails on a
+# finding, naming each.
 dart_test(
     name = "test_timing",
     size = "small",

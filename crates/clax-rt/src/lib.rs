@@ -110,7 +110,7 @@ pub use worker::{
 mod tests {
     use super::time::{self, Duration, Instant};
 
-    #[allow(
+    #[expect(
         clippy::disallowed_methods,
         reason = "tests clax_rt::time itself, on tokio's paused clock"
     )]
@@ -123,7 +123,7 @@ mod tests {
         assert_eq!(fast.unwrap(), 7);
     }
 
-    #[allow(
+    #[expect(
         clippy::disallowed_methods,
         reason = "tests clax_rt::time itself, on tokio's paused clock"
     )]
