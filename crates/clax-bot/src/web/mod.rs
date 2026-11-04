@@ -53,6 +53,7 @@
 
 pub mod access;
 pub mod fake;
+pub mod markdown;
 pub mod page;
 pub mod url;
 
