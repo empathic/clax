@@ -372,6 +372,10 @@ async fn a_hosted_comment_reaches_a_local_agent_and_its_reply_and_resolve_go_bac
         (ts.iter().find(|t| t["id"] == tid.as_str())?["status"] == "open").then_some(())
     })
     .await;
+    assert!(
+        p.local.store.outbox_of(&p.remote).unwrap().is_empty(),
+        "the remote's reopen is not queued back up"
+    );
     let (s, v) = p
         .public
         .browser(
@@ -387,6 +391,10 @@ async fn a_hosted_comment_reaches_a_local_agent_and_its_reply_and_resolve_go_bac
         (ts.iter().find(|t| t["id"] == tid.as_str())?["status"] == "resolved").then_some(())
     })
     .await;
+    assert!(
+        p.local.store.outbox_of(&p.remote).unwrap().is_empty(),
+        "the remote's resolve is not queued back up"
+    );
     // Nothing went up twice.
     assert_eq!(p.hosted_threads().await.len(), 1);
     assert_eq!(bodies(&p.hosted_thread_by(&rtid).await).len(), 2);
@@ -940,6 +948,108 @@ async fn a_reply_on_a_linked_thread_reads_as_sending_from_its_own_answer() {
         "{thread}"
     );
     assert_eq!(reply_state(&p).await, "pending");
+}
+
+/// The owner's thread `tid` made here with status `status`: its next
+/// `thread` event (subscribed to as `events`) and its view read now, each
+/// checked to say it is sending.
+async fn reads_as_sending(
+    p: &Pair,
+    events: &mut tokio::sync::broadcast::Receiver<clax_core::events::Stamped>,
+    tid: &str,
+    status: &str,
+) {
+    let thread = loop {
+        let ev = events.recv().await.unwrap();
+        if let clax_core::Event::Thread { thread, .. } = ev.event
+            && thread["id"] == tid
+            && thread["status"] == status
+        {
+            break thread;
+        }
+    };
+    assert_eq!(thread["linked"]["state"], "pending", "{thread}");
+    let t = p
+        .local_threads()
+        .await
+        .into_iter()
+        .find(|t| t["id"] == tid)
+        .unwrap();
+    assert_eq!(t["linked"]["state"], "pending", "{t}");
+}
+
+/// A new thread, a resolve and a reopen made here on a linked artifact are
+/// queued for the remote in their own transactions, as a reply is: each
+/// answer, the thread event it publishes and any read after it say it is
+/// sending, with nothing done by the sync in between (the remote cannot be
+/// reached, so the sync sends nothing).
+#[tokio::test]
+async fn a_thread_resolve_or_reopen_here_reads_as_sending_from_its_own_answer() {
+    let p = Pair::new().await;
+    let t = p.owner_thread(1, "before", whole()).await;
+    let tid = t["id"].as_str().unwrap().to_string();
+    until("the thread goes up", || async {
+        (!p.hosted_threads().await.is_empty()).then_some(())
+    })
+    .await;
+    // Resolved here, sent up, and then reopened here.
+    let (s, v) = p
+        .local_req(
+            reqwest::Method::POST,
+            &format!("/api/artifacts/{}/threads/{tid}/resolve", p.aid),
+            json!({}),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let rtid = p.hosted_threads().await[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    until("the public thread is resolved", || async {
+        (p.hosted_thread_by(&rtid).await["status"] == "resolved").then_some(())
+    })
+    .await;
+    p.settled().await;
+    p.local.state.linked.set_offline(true);
+    let mut events = p.local.state.events.subscribe();
+    let (s, v) = p
+        .local_req(
+            reqwest::Method::POST,
+            &format!("/api/artifacts/{}/threads/{tid}/reopen", p.aid),
+            json!({}),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["thread"]["linked"]["state"], "pending", "{v}");
+    reads_as_sending(&p, &mut events, &tid, "open").await;
+
+    // A second thread, made and resolved while the remote is away.
+    let t2 = p.owner_thread(1, "after", whole()).await;
+    let t2id = t2["id"].as_str().unwrap().to_string();
+    assert_eq!(t2["linked"]["state"], "pending", "{t2}");
+    reads_as_sending(&p, &mut events, &t2id, "open").await;
+    let (s, v) = p
+        .local_req(
+            reqwest::Method::POST,
+            &format!("/api/artifacts/{}/threads/{t2id}/resolve", p.aid),
+            json!({}),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["thread"]["linked"]["state"], "pending", "{v}");
+    reads_as_sending(&p, &mut events, &t2id, "resolved").await;
+    let kinds: Vec<String> = p
+        .local
+        .store
+        .outbox_of(&p.remote)
+        .unwrap()
+        .into_iter()
+        .map(|o| o.kind)
+        .collect();
+    assert_eq!(kinds, ["reopen", "thread", "resolve"]);
 }
 
 /// A reply on a thread already up, made here while every request to the

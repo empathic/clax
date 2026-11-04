@@ -1075,6 +1075,9 @@ impl Store {
             for rec in after {
                 self.record_audit(tx, ctx, rec)?;
             }
+            // Its up-send to each remote the artifact is linked to commits
+            // with it: no view of the thread lacks its sending state.
+            super::linked::queue_artifact_writes_in(tx, id.as_str(), &now)?;
             Ok(())
         });
         if made.is_err() || before.is_some() {
@@ -1942,7 +1945,9 @@ impl Store {
 
     /// [`Store::resolve_thread_touched`], running `then` with the thread in
     /// the resolve's transaction; an error from `then` writes nothing. `then`
-    /// answers the version it linked the thread to, if any.
+    /// answers the version it linked the thread to, if any. The resolve's
+    /// up-send to the remotes its artifact is linked to is queued in its
+    /// transaction ([`Store::scan_linked`]'s rules).
     fn resolve_thread_then(
         &self,
         ctx: &AuditCtx,
@@ -1951,8 +1956,11 @@ impl Store {
         person: Option<&str>,
         then: impl FnOnce(&rusqlite::Transaction<'_>, &Thread) -> Result<Option<u32>>,
     ) -> Result<(Thread, clax_core::feedback::Touched)> {
-        let touched =
-            self.with_tx(|tx| self.resolve_thread_in(tx, ctx, thread_id, by, person, then))?;
+        let touched = self.with_tx(|tx| {
+            let touched = self.resolve_thread_in(tx, ctx, thread_id, by, person, then)?;
+            super::linked::queue_thread_writes_in(tx, thread_id, &self.now())?;
+            Ok(touched)
+        })?;
         Ok((
             self.get_thread(thread_id)?.ok_or(CoreError::NotFound)?,
             touched,
@@ -1960,7 +1968,10 @@ impl Store {
     }
 
     /// [`Store::resolve_thread_then`] inside the caller's transaction:
-    /// what it changed.
+    /// what it changed. It queues no up-send to a linked remote: a caller
+    /// making a local change queues it at the end of its transaction
+    /// (`linked::queue_thread_writes_in`), while [`Store::mirror_status`],
+    /// applying the remote's own change, records it as agreed instead.
     pub(crate) fn resolve_thread_in(
         &self,
         tx: &rusqlite::Transaction<'_>,
@@ -2059,16 +2070,23 @@ impl Store {
     /// Reopens a thread: status `open`, `resolved_at` and `resolved_by`
     /// cleared (and a report's `verified` phase and resolve reason),
     /// recorded as `thread.reopen` under `ctx` in the same transaction.
-    /// Reopening an open thread records nothing.
+    /// Reopening an open thread records nothing. The reopen's up-send to
+    /// the remotes its artifact is linked to is queued in its transaction
+    /// ([`Store::scan_linked`]'s rules).
     ///
     /// # Errors
     /// `NotFound` when the thread or its artifact is gone.
     pub fn reopen_thread(&self, ctx: &AuditCtx, thread_id: &str) -> Result<Thread> {
-        self.with_tx(|tx| self.reopen_thread_in(tx, ctx, thread_id))?;
+        self.with_tx(|tx| {
+            self.reopen_thread_in(tx, ctx, thread_id)?;
+            super::linked::queue_thread_writes_in(tx, thread_id, &self.now())?;
+            Ok(())
+        })?;
         self.get_thread(thread_id)?.ok_or(CoreError::NotFound)
     }
 
-    /// [`Store::reopen_thread`] inside the caller's transaction.
+    /// [`Store::reopen_thread`] inside the caller's transaction, queueing
+    /// no up-send ([`Store::resolve_thread_in`]).
     pub(crate) fn reopen_thread_in(
         &self,
         tx: &rusqlite::Transaction<'_>,

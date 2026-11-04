@@ -311,6 +311,14 @@ fn link_holds_in(c: &Connection, l: &RemoteLink) -> Result<bool> {
 /// a write made in the same transaction commits with its up-send rows, so
 /// every view of it read after the commit says it is sending. How many
 /// rows it queued.
+///
+/// Called at the end of a local write's own transaction (a new thread, a
+/// comment, a resolve, a reopen), never inside the helpers a remote's
+/// change shares with them when it is applied here: a change that came
+/// down is recorded as the remote's (its `linked_threads` or
+/// `linked_comments` row, or its `synced_status`) in the transaction that
+/// applies it, so these rules never take it for a local one, and nothing
+/// is sent back up.
 pub(crate) fn queue_artifact_writes_in(c: &Connection, aid: &str, now: &str) -> Result<usize> {
     let mut stmt = c.prepare_cached(&format!(
         "SELECT {} FROM remote_links WHERE artifact_id = ?1 ORDER BY created_at, remote_id",
@@ -334,6 +342,22 @@ pub(crate) fn queue_artifact_writes_in(c: &Connection, aid: &str, now: &str) -> 
         }
     }
     Ok(queued)
+}
+
+/// [`queue_artifact_writes_in`] for the artifact of thread `tid`: nothing
+/// when the thread is gone.
+pub(crate) fn queue_thread_writes_in(c: &Connection, tid: &str, now: &str) -> Result<usize> {
+    let aid: Option<String> = c
+        .query_row(
+            "SELECT artifact_id FROM threads WHERE id = ?1",
+            params![tid],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match aid {
+        Some(aid) => queue_artifact_writes_in(c, &aid, now),
+        None => Ok(0),
+    }
 }
 
 /// Queues the local writes on link `l` (of remote `rname` at `rorigin`)
@@ -2032,9 +2056,9 @@ mod tests {
             public_id: w.owner.clone(),
         };
         w.st.reopen_thread(&owner, &t.id).unwrap();
-        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 1);
         let out = w.st.outbox_of(&w.rid).unwrap();
-        assert_eq!(out.last().unwrap().kind, "reopen");
+        assert_eq!(out.last().unwrap().kind, "reopen", "queued with the reopen");
+        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 0);
     }
 
     #[test]
@@ -2339,7 +2363,11 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 1);
+        assert_eq!(
+            w.st.scan_linked(&w.rid).unwrap(),
+            0,
+            "queued with the thread"
+        );
         let seq = w.st.outbox_of(&w.rid).unwrap()[0].seq;
         // Deleted here while the up-send is out; then its answer arrives.
         w.st.delete_thread(&AuditCtx::DAEMON, &t.id).unwrap();
@@ -2407,9 +2435,9 @@ mod tests {
         .unwrap();
         w.st.resolve_thread(&AuditCtx::DAEMON, &t.id, &format!("viewer:{}", w.owner))
             .unwrap();
-        // The comments were queued with themselves (and the thread with
-        // the first of them); the resolve, here.
-        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 1);
+        // The thread, each comment and the resolve were queued with
+        // themselves.
+        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 0);
         let out = w.st.outbox_of(&w.rid).unwrap();
         let kinds: Vec<&str> = out.iter().map(|o| o.kind.as_str()).collect();
         assert_eq!(kinds, ["thread", "comment", "comment", "resolve"]);
@@ -2459,9 +2487,9 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 1);
         let out = w.st.outbox_of(&w.rid).unwrap();
         assert_eq!(out.last().unwrap().thread_id, later.id);
+        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 0);
         w.st.ack_outbox(
             out.last().unwrap().seq,
             Some((&later.id, "rt9")),
@@ -2475,6 +2503,129 @@ mod tests {
         assert!(w.st.linked_views(std::slice::from_ref(&t)).unwrap()[&t.id].unlinked);
         assert_eq!(w.st.drop_unsent(&w.aid).unwrap(), 4);
         assert!(w.st.unsent_of(&w.aid).unwrap().is_empty());
+    }
+
+    /// A local new thread, resolve and reopen on a linked artifact commit
+    /// with their up-sends: the first read after each call returns (with
+    /// no scan in between) shows it pending. What comes down from the
+    /// remote (a thread, a comment, a status) queues nothing.
+    #[test]
+    fn local_thread_writes_read_as_pending_from_their_own_commit() {
+        let w = world();
+        let l = link(&w, (1, 1));
+        w.clock.advance(1);
+        let id = ArtifactId::parse(&w.aid).unwrap();
+        let state = |tid: &str| {
+            let t = w.st.get_thread(tid).unwrap().unwrap();
+            w.st.linked_views(&[t]).unwrap()[tid].state
+        };
+        let mut owner = AuditCtx::DAEMON;
+        owner.actor = clax_core::audit::Actor::Owner {
+            public_id: w.owner.clone(),
+        };
+        let ack_all = || {
+            for o in w.st.outbox_of(&w.rid).unwrap() {
+                let made = (o.kind == "thread").then_some((o.thread_id.as_str(), "rt1"));
+                let rcid = (o.kind == "thread").then_some("rc1");
+                w.st.ack_outbox(o.seq, made, rcid, Some(1)).unwrap();
+            }
+        };
+        let t =
+            w.st.create_thread(
+                &owner,
+                &id,
+                NewThread {
+                    version_n: 1,
+                    anchor: whole(),
+                    author_name: "Owner".into(),
+                    author_public_id: Some(w.owner.clone()),
+                    body: "bluer".into(),
+                    clip: None,
+                    via_page: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(state(&t.id), Some("pending"), "the new thread");
+        ack_all();
+        assert_eq!(state(&t.id), None);
+        w.clock.advance(1);
+        w.st.resolve_thread(&owner, &t.id, &format!("viewer:{}", w.owner))
+            .unwrap();
+        assert_eq!(state(&t.id), Some("pending"), "the resolve");
+        assert_eq!(w.st.outbox_of(&w.rid).unwrap()[0].kind, "resolve");
+        ack_all();
+        w.clock.advance(1);
+        w.st.reopen_thread(&owner, &t.id).unwrap();
+        assert_eq!(state(&t.id), Some("pending"), "the reopen");
+        assert_eq!(w.st.outbox_of(&w.rid).unwrap()[0].kind, "reopen");
+        ack_all();
+        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 0, "nothing left");
+
+        // Down from the remote: its status on this thread, a comment on
+        // it, and a thread of its own, each followed by a local write that
+        // queues whatever is left to queue.
+        let none_queued = |what: &str| {
+            assert!(w.st.outbox_of(&w.rid).unwrap().is_empty(), "{what}");
+        };
+        w.clock.advance(1);
+        w.st.mirror_status(&AuditCtx::DAEMON, &t.id, "resolved")
+            .unwrap();
+        w.st.reopen_thread(&owner, &t.id).unwrap();
+        assert_eq!(
+            w.st.outbox_of(&w.rid).unwrap()[0].kind,
+            "reopen",
+            "only the reopen made here"
+        );
+        ack_all();
+        w.st.mirror_status(&AuditCtx::DAEMON, &t.id, "resolved")
+            .unwrap();
+        none_queued("the remote's resolve");
+        w.st.mirror_comment(&AuditCtx::DAEMON, &t.id, &w.rid, &mirror("yes", "rc2"))
+            .unwrap()
+            .unwrap();
+        none_queued("the remote's comment");
+        let theirs =
+            w.st.mirror_thread(
+                &AuditCtx::DAEMON,
+                &l,
+                ("clax.example", "https://clax.example"),
+                1,
+                true,
+                MirrorThread {
+                    remote_thread_id: "rt2".into(),
+                    remote_version: 1,
+                    anchor: whole(),
+                    first: mirror("smaller", "rc3"),
+                },
+            )
+            .unwrap();
+        none_queued("the remote's thread");
+        w.st.mirror_status(&AuditCtx::DAEMON, &theirs.id, "resolved")
+            .unwrap();
+        w.st.mirror_status(&AuditCtx::DAEMON, &theirs.id, "open")
+            .unwrap();
+        none_queued("the remote's resolve and reopen of its thread");
+        w.st.create_thread(
+            &owner,
+            &id,
+            NewThread {
+                version_n: 1,
+                anchor: whole(),
+                author_name: "Owner".into(),
+                author_public_id: Some(w.owner.clone()),
+                body: "and this".into(),
+                clip: None,
+                via_page: false,
+            },
+        )
+        .unwrap();
+        let kinds: Vec<String> =
+            w.st.outbox_of(&w.rid)
+                .unwrap()
+                .into_iter()
+                .map(|o| o.kind)
+                .collect();
+        assert_eq!(kinds, ["thread"], "only the thread made here");
     }
 
     #[test]

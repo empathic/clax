@@ -1552,9 +1552,10 @@ the threads changed since the link's cursor (`since`, below), and every
   `<name> (on <remote>)`.
 - Threads made here on a linked artifact after its first push, and every
   reply, resolve and reopen on a linked thread, go up in order (an outbox,
-  per thread) with an idempotency key made here. A comment is queued in its
-  own transaction, so its answer and every read after it carry its
-  `pending` state. Comments the owner wrote go
+  per thread) with an idempotency key made here. Each is queued in its own
+  transaction, so its answer, its event and every read after it carry its
+  `pending` state; a thread, comment or status brought down from the
+  remote is never queued back up. Comments the owner wrote go
   up as the token's person; an agent's reply or resolve goes up as that
   person's agent in a session named as the local agent (the sync hands the
   thread to that session first), or as the person on a thread not sent to an
