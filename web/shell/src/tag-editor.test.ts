@@ -8,6 +8,7 @@ import type { TagRef } from "./api";
 import { flush } from "./test/svelte";
 import { ArtifactController } from "./view/artifact-controller";
 import { Store } from "./view/store";
+import { settled } from "./test/settled";
 
 const ID = "7q3k9mzx2b4t";
 const TAGS: TagRef[] = [{ id: "t_aaaaaaaaaa", name: "design", colour: "purple" }, { id: "t_bbbbbbbbbb", name: "q4", colour: "blue" }];
@@ -25,7 +26,7 @@ function fakeCtl() {
   };
   return ctl;
 }
-const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(r => setTimeout(r, 0)); flush(); };
+const settle = settled;
 const boxes = () => [...document.querySelectorAll<HTMLInputElement>(".tag-pop input[type=checkbox]")];
 
 /** `fetch` answering the tag list, and each PATCH when the test says (`answer`). */

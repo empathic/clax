@@ -11,6 +11,7 @@ import type { CaptureDeps } from "./capture";
 import { PAGE_ANCHOR, POLL_MS, type ReporterApi, Session, type Timers } from "./model";
 import Overlay from "./Overlay.svelte";
 import type { Picked, Picker } from "./picker";
+import { settled } from "../../shell/src/test/settled";
 
 const anchor: Anchor = { kind: "element", selector: "#total", quote: "Total: $12", prefix: "Items: 3", suffix: null, html_hash: "h:4f2a", rect: { x: 10, y: 20, w: 100, h: 20, scrollX: 0, scrollY: 40, viewportW: 1024 }, custom_name: null, file: "index.html", label: "Total: $12", name: "Total" };
 /** An element pick at `anchor` whose clip `render` draws, leaving nothing out. */
@@ -43,7 +44,7 @@ function manualTimers() {
     pending: () => due.map(d => d.ms),
   } satisfies Timers & Record<string, unknown>;
 }
-const settle = async () => { for (let i = 0; i < 8; i++) await new Promise(r => setTimeout(r, 0)); flushSync(); };
+const settle = settled;
 
 /** Flattening as a canvas would, without one: the marks' count is the PNG. */
 let drawn: number[];

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flush, mount } from "./test/svelte";
 import Publish from "./ui/Publish.svelte";
+import { settled } from "./test/settled";
 
 type Reply = [number, unknown];
 
@@ -57,7 +58,7 @@ const devPending = {
 };
 const dev = { id: "r_2", origin: "https://clax.dev", name: "clax.dev", status: "connected", person_name: "Ada" };
 
-const settle = async () => { for (let i = 0; i < 5; i++) { await new Promise(r => setTimeout(r)); flush(); } };
+const settle = settled;
 const remote = { id: "r_1", origin: "https://clax.example", name: "clax.example", status: "connected", person_name: "Ada" };
 
 describe("the Publish button", () => {

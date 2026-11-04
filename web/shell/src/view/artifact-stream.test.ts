@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StreamEvent } from "../stream";
 import type { Thread } from "../threads";
+import { settled } from "../test/settled";
 import { ThreadSync } from "./thread-sync";
 
 let on: ((e: StreamEvent) => void) | null = null;
@@ -71,7 +72,8 @@ describe("the artifact stream", () => {
     answers[1]({ id: "t1", status: "resolved", comments: [comment("c1"), comment("c2")] });
     await vi.waitFor(() => expect(threads[0].comments).toHaveLength(2));
     answers[0]({ id: "t1", status: "open", comments: [comment("c1"), comment("c2")] });
-    await new Promise(r => setTimeout(r, 10));
+    // Once the late answer's body is read and handled.
+    await settled();
     expect(threads).toHaveLength(1);
     expect(threads[0].status).toBe("resolved");
     s.stop();

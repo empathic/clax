@@ -3,6 +3,7 @@ import type { HubMsg, TabMsg } from "../../../shell/src/stream-hub";
 import { MAX_FAR, type PageView, type SiteView, type WorkerToOverlay, type WorkerToPanel } from "../messages";
 import { FakeEvent } from "../../test/fake-chrome";
 import { type TabState, Tabs, applyEvent, emptyTab, type TabsApi, CLOSED_MS, CONFIRM_PAIRING, HOST_SLOW } from "./tabs";
+import { settled } from "../../../shell/src/test/settled";
 
 const AID = "7q3k9mzx2b4t";
 const AID2 = "8r4m0nzy3c5v";
@@ -106,7 +107,7 @@ function port(name = "panel:1") {
   const onDisconnect = new FakeEvent<[]>();
   return { name, sent, onMessage, onDisconnect, postMessage: (m: WorkerToPanel) => sent.push(m) };
 }
-const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+const settle = settled;
 const URL1 = "http://localhost:5173/";
 function hold() { let release!: () => void; const p = new Promise<void>(r => { release = r; }); return { p, release }; }
 const here = (id: string) => ({ public_id: id, display_name: id, state: "here" as const, where: null, since: "t" });

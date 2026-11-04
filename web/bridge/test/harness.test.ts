@@ -88,11 +88,13 @@ describe("ui", () => {
   });
 
   it("waitFor returns the first truthy value, or gives up after its limit with the last error", async () => {
-    let n = 0;
-    vexpect(await ui().waitFor(() => (++n >= 3 ? "ready" : null), 1000)).toBe("ready");
-    vexpect(n).toBe(3);
     vi.useFakeTimers();
     try {
+      let n = 0;
+      const ready = ui().waitFor(() => (++n >= 3 ? "ready" : null), 1000);
+      await vi.advanceTimersByTimeAsync(2 * POLL_MS);
+      vexpect(await ready).toBe("ready");
+      vexpect(n).toBe(3);
       const gave = ui().waitFor(() => { throw new Error("not yet"); }, 200);
       const caught = gave.catch((e: Error) => e.message);
       await vi.advanceTimersByTimeAsync(200 + POLL_MS);
