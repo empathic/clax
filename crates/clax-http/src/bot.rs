@@ -86,15 +86,16 @@ pub struct Bot {
     pub catalog_url: Option<String>,
     /// The price catalog refresh in flight, so concurrent ones share it.
     pub catalog_flight: Arc<CatalogFlight>,
-    /// The host's web source is configured whatever the stored settings
-    /// hold: the Worker's AI binding, the daemon's test fixtures
-    /// (`CLAX_TEST_WEB_FIXTURES`). The daemon's own source depends on the
-    /// Cloudflare account ID and token an admin sets, which it reads at
-    /// each call (`clax_server::bot::web_configured`), so on the daemon
-    /// this is false outside test mode. False (the default) and no such
-    /// credentials: every run's web use is off, not configured
+    /// The operations the host's web source performs whatever the stored
+    /// settings hold: both for the Worker's AI binding and the daemon's
+    /// test fixtures (`CLAX_TEST_WEB_FIXTURES`); fetch for the daemon's
+    /// own source (set by its run driver, `clax_server::bot::driver`),
+    /// which searches once the instance holds the Cloudflare
+    /// account ID and token an admin sets, read at each call
+    /// (`clax_server::bot::web_configured`). Neither (the default) for a
+    /// host without a source: every run's web use is off, not configured
     /// (`clax_bot::web::WebAccess::now`).
-    pub web_configured: bool,
+    pub web_configured: clax_bot::web::WebShape,
     /// What the host knows of whether its web source can be used
     /// (`clax_bot::web::HostCheck`): unusable once the instance's
     /// configured public origin or site domain names no host (set at
@@ -147,7 +148,7 @@ impl Default for Bot {
             events: Arc::default(),
             catalog_url: None,
             catalog_flight: Arc::default(),
-            web_configured: false,
+            web_configured: clax_bot::web::WebShape::default(),
             web_check: Arc::default(),
             admin_web_check: None,
         }

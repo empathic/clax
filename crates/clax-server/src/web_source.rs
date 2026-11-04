@@ -75,6 +75,29 @@ const CONVERSION_ANSWER_BYTES: u64 = 16 << 20;
 /// What a search answers on a daemon without a Cloudflare account.
 const NO_ACCOUNT: &str = "web search is not configured on this instance: an admin sets the Cloudflare account ID and API token";
 
+/// `body`, an HTML page served as `declared`, from `at`: as Markdown, and
+/// its links. Decoding, the link scan and the conversion are linear in the
+/// page, but a page is up to 5 MB, so they run on a blocking thread, not
+/// on the run driver's task, and a conversion that fails there answers
+/// `web_unavailable` rather than ending that task.
+async fn convert_html(
+    body: Vec<u8>,
+    declared: String,
+    at: PublicUrl,
+) -> Result<(String, Vec<String>), WebError> {
+    tokio::task::spawn_blocking(move || {
+        let html = decode_html(&body, &declared);
+        (html_to_markdown(&html, &at), links_of_html(&html, &at))
+    })
+    .await
+    .map_err(|e| {
+        unavailable(
+            format!("the page could not be converted to Markdown ({e})"),
+            false,
+        )
+    })
+}
+
 /// Whether `ip` is a public unicast address a fetch may connect to: not
 /// in any range [`is_local_addr`] refuses, the one list the URL check and
 /// the DNS check share.
@@ -560,9 +583,9 @@ impl RestSource {
         let (text, links) = match handling(&content_type, format) {
             Handling::Unsupported => return Err(unsupported(&content_type, format)),
             Handling::Html => {
-                let html = decode_html(&body, &declared);
-                let links = links_of_html(&html, &at);
-                let md = html_to_markdown(&html, &at);
+                let (md, links) = convert_html(body, declared.clone(), at.clone())
+                    .await
+                    .map_err(gone)?;
                 // An error page whose conversion is empty has nothing to
                 // read, as on the Worker.
                 if status >= 400 && md.trim().is_empty() {

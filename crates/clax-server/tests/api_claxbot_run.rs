@@ -1194,7 +1194,7 @@ async fn a_run_keeps_the_web_shape_its_person_had_when_it_started() {
         .unwrap();
     let bot = clax_http::bot::Bot {
         kek: ts.state.bot.kek.clone(),
-        web_configured: true,
+        web_configured: clax_bot::web::WebShape::BOTH,
         ..Default::default()
     };
     let sender = Sender {
@@ -1260,7 +1260,7 @@ async fn a_host_source_that_cannot_run_here_reads_not_configured_and_says_why() 
     let fake = FakeMessages::start(vec![]).await;
     let ts = daemon(&fake).await;
     let bot = clax_http::bot::Bot {
-        web_configured: true,
+        web_configured: clax_bot::web::WebShape::BOTH,
         ..Default::default()
     };
     // With web use off, deciding it asks for no check of the source.

@@ -145,7 +145,8 @@ pub fn can_export(st: &Store, who: &Identity, caller: &Caller) -> clax_core::Res
 }
 
 /// `GET /api/me/bot`'s `web`: `on` is the person's own choice; `offered`
-/// when the admin turned on an operation the host's source can perform;
+/// when the admin turned on an operation the host's source can perform,
+/// and `operations {search, fetch}` which;
 /// `why_off` names why web use is off for them now (`admin_off`,
 /// `person_off`, `not_configured`) or is null. `prices` is what one search
 /// (on the active provider's line) and one fetch cost them, in
@@ -154,8 +155,10 @@ fn web_view(st: &Store, bot: &Bot, person: &str) -> clax_core::Result<Value> {
     let on =
         |s: Setting| -> clax_core::Result<bool> { Ok(st.bot_setting(s)?.as_bool() == Some(true)) };
     let configured = crate::bot::web_configured(st, bot)?;
-    let offered = (on(Setting::WebSearchEnabled)? && configured.search)
-        || (on(Setting::WebFetchEnabled)? && configured.fetch);
+    let operations = clax_bot::web::WebShape {
+        search: on(Setting::WebSearchEnabled)? && configured.search,
+        fetch: on(Setting::WebFetchEnabled)? && configured.fetch,
+    };
     let why_off = match clax_bot::web::WebAccess::now(st, person, configured)? {
         clax_bot::web::WebAccess::Off(why) => json!(why.as_str()),
         clax_bot::web::WebAccess::On(_) => Value::Null,
@@ -174,7 +177,8 @@ fn web_view(st: &Store, bot: &Bot, person: &str) -> clax_core::Result<Value> {
     ))?;
     Ok(json!({
         "on": st.web_choice(person)?,
-        "offered": offered,
+        "offered": operations.any(),
+        "operations": {"search": operations.search, "fetch": operations.fetch},
         "why_off": why_off,
         "prices": {"search_milli": search, "fetch_milli": price("web.fetch".into())?},
     }))

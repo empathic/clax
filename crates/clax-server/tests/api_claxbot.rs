@@ -75,7 +75,22 @@ struct People {
 }
 
 async fn people() -> People {
-    let ts = TestServer::spawn().await;
+    people_on(TestServer::spawn().await).await
+}
+
+/// [`people`] on a daemon whose run driver is installed (not started), so
+/// its web source is the daemon's own.
+async fn people_with_driver() -> People {
+    people_on(
+        TestServer::spawn_with(|s| {
+            let _ = clax_server::bot::driver(s);
+        })
+        .await,
+    )
+    .await
+}
+
+async fn people_on(ts: TestServer) -> People {
     let ana = ts.person("Ana").await;
     let sam = ts.person("Sam").await;
     let lan = ts.viewer(Some("Lou")).await;
@@ -2403,7 +2418,7 @@ const CF_TOKEN: &str = "cf-TOPSECRETTOKENVALUE-wxyz";
 
 #[tokio::test]
 async fn admin_web_round_trips() {
-    let p = people().await;
+    let p = people_with_driver().await;
     let ts = &p.ts;
     let owner = Who::OwnerBrowser;
     let (s, v) = call(ts, &owner, Method::GET, "/api/admin/web", Value::Null).await;
@@ -2619,7 +2634,7 @@ async fn the_token_is_write_only() {
 
 #[tokio::test]
 async fn web_is_configured_once_the_account_and_token_are_set() {
-    let p = people().await;
+    let p = people_with_driver().await;
     let ts = &p.ts;
     let owner = Who::OwnerBrowser;
     let sam = Who::Person(p.sam.0.clone());
@@ -2688,8 +2703,16 @@ async fn web_is_configured_once_the_account_and_token_are_set() {
     assert_eq!(s, 200, "{v}");
     let (_, me) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
     assert_eq!(
-        (&me["web"]["offered"], &me["web"]["why_off"]),
-        (&json!(true), &Value::Null)
+        (
+            &me["web"]["offered"],
+            &me["web"]["operations"],
+            &me["web"]["why_off"]
+        ),
+        (
+            &json!(true),
+            &json!({"search": false, "fetch": true}),
+            &Value::Null
+        )
     );
 }
 
@@ -2840,7 +2863,7 @@ async fn only_an_admins_web_view_checks_the_web_source() {
     let hook = check.clone();
     let ts = TestServer::spawn_with(move |s| {
         s.bot = std::sync::Arc::new(clax_http::bot::Bot {
-            web_configured: true,
+            web_configured: clax_bot::web::WebShape::BOTH,
             admin_web_check: Some(hook),
             ..Default::default()
         });
@@ -2885,7 +2908,7 @@ async fn the_admin_web_view_says_why_web_is_unavailable() {
     let why = "the site domain \"https://sites.example/x\" is not a bare host name";
     let ts = TestServer::spawn_with(|s| {
         s.bot = std::sync::Arc::new(clax_http::bot::Bot {
-            web_configured: true,
+            web_configured: clax_bot::web::WebShape::BOTH,
             web_check: std::sync::Arc::new(clax_bot::web::HostCheck::unusable(why)),
             ..Default::default()
         });
@@ -2910,7 +2933,7 @@ async fn the_admin_web_view_says_why_web_is_unavailable() {
     // Without the reason the same host is configured, and says nothing.
     let ts = TestServer::spawn_with(|s| {
         s.bot = std::sync::Arc::new(clax_http::bot::Bot {
-            web_configured: true,
+            web_configured: clax_bot::web::WebShape::BOTH,
             ..Default::default()
         });
     })

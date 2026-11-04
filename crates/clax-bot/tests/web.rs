@@ -582,7 +582,7 @@ async fn a_source_that_can_only_fetch_refuses_search_and_fetches() {
         "tu_1",
         "Web",
         &format!(
-            "let s; try {{ await clax.web.search('a'); s = 'searched'; }} catch (e) {{ s = e.code; }}
+            "let s; try {{ await clax.web.search('a'); s = 'searched'; }} catch (e) {{ s = e.code + ': ' + e.message; }}
              const p = await clax.web.fetch('{a}');
              return {{s, read: JSON.stringify(p).includes('# A')}};"
         ),
@@ -599,7 +599,10 @@ async fn a_source_that_can_only_fetch_refuses_search_and_fetches() {
     )));
     env.drive(&deps, &run, &DriverId::mint()).await;
     let v = &script_result(&env, &run, 0)["value"];
-    assert_eq!(v["s"], "web_disabled");
+    assert_eq!(
+        v["s"],
+        "web_disabled: clax.web.search was turned off (not_configured) since this run started; do without it"
+    );
     assert_eq!(v["read"], true, "{v}");
     assert_eq!(env.web().calls(), [("fetch".to_string(), a.to_string())]);
 }

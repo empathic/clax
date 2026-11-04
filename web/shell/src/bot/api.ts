@@ -56,10 +56,10 @@ export type MeBot = {
 };
 /** Whether ClaxBot may search and read the web for this person (`GET
  * /api/me/bot`): `on` their own choice (on by default), `offered` whether
- * the admin turned a web operation on and the host has a source, `why_off`
- * why their runs have none now, else `null`. */
+ * the admin turned on a web operation the host's source can perform, and
+ * `operations` which, `why_off` why their runs have none now, else `null`. */
 export type MeWeb = {
-  on: boolean; offered: boolean; why_off: "admin_off" | "person_off" | "not_configured" | null;
+  on: boolean; offered: boolean; operations: { search: boolean; fetch: boolean }; why_off: "admin_off" | "person_off" | "not_configured" | null;
   /** Milli-credits one request costs them: a search on the active provider's line, a fetch (null for a line that does not exist). */
   prices: { search_milli: number | null; fetch_milli: number | null };
 };

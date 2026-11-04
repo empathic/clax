@@ -3,28 +3,50 @@
 //! one needs no outside service and the page goes nowhere else.
 
 use super::PublicUrl;
+use super::page::{MAX_TARGET_BYTES, STORE_BYTES};
 use html5ever::tokenizer::states::RawKind;
 use html5ever::tokenizer::{
     BufferQueue, Tag, TagKind, Token, TokenSink, TokenSinkResult, Tokenizer, TokenizerOpts,
 };
 use std::cell::RefCell;
+use std::collections::HashMap;
 
-/// `html` as Markdown: headings, paragraphs, lists (nested, ordered from
-/// their `start`), links and images with their targets resolved against
-/// the document's base URL (its first `<base href>`, else `base`),
-/// emphasis, inline code, preformatted blocks as fenced code, block quotes,
-/// rules and tables as pipe tables. What a reader does not see is dropped:
-/// `head`, scripts, styles, `template`, `noscript`, `svg`, forms' controls
-/// and comments. A link or image whose target is not an `http` or `https`
-/// URL keeps only its text; an image without an `alt` is dropped. Text
-/// that Markdown would read as markup (`*`, `_`, `` ` ``, `[`, `]`, `\`, a
-/// leading `#`, `>` or list marker) is escaped.
+/// `html` as Markdown (CommonMark, with GitHub's tables and
+/// strikethrough): headings, paragraphs, lists (nested, ordered from their
+/// `start`), block quotes, links and images with their targets resolved
+/// against the document's base URL, emphasis, strikethrough, inline code,
+/// preformatted blocks as fenced code, rules and tables as pipe tables.
 ///
-/// A tokenizer pass, not a tree: unclosed elements end where HTML's
-/// implied ends would put them only roughly (a paragraph at the next
-/// block, a list item at the next item of its list, the rest at the end
-/// of the page), so what a malformed page reads as may differ from a
-/// browser's rendering; its text is all there. Linear in `html`'s length.
+/// - **The base URL** is the document's first `<base href>`, wherever it
+///   is, when it is at most four bytes per character of
+///   [`MAX_URL_CHARS`](super::url::MAX_URL_CHARS) long, else `base`: the
+///   rule [`links_of_html`](super::page::links_of_html) reads a page's
+///   links by, so the Markdown's targets are the page's links.
+/// - **Dropped**: what a reader does not see: `script`, `style`, `title`,
+///   `noscript`, `template` (but a declarative shadow root's, which a
+///   browser shows), `svg` and `math` (up to their end, or the next tag
+///   that ends foreign content in a browser, such as `<p>` or `<div>`),
+///   `select`, `textarea`, `iframe`, `object`, `noembed`, `noframes` and
+///   comments. A link or image whose target is not an `http` or `https`
+///   URL, or whose resolved target is longer than
+///   [`MAX_URL_CHARS`](super::url::MAX_URL_CHARS), keeps only its text;
+///   an image without an `alt` is dropped.
+/// - **Inside a link or a table cell** blocks are spaces: the text of a
+///   card link is one line, and a cell's content stays in its cell.
+/// - **Escaped**: text Markdown would read as markup (`\`, `*`, `_`,
+///   `` ` ``, `[`, `]`, `~`, `<`, an `&` that would start a character
+///   reference, a `!` before a link, and a heading, quote, list or rule
+///   marker that starts a line). Code is written as it is, between
+///   backtick runs longer than any inside it.
+///
+/// A tokenizer pass, not a tree: where HTML implies an end the converter
+/// reads one only roughly (a new `<a>` ends the open link, a new item of a
+/// list ends the item before it, a block ends the inline elements open in
+/// it; inline elements nested more than [`MAX_SPANS`] deep, and table rows
+/// wider than [`MAX_COLUMNS`] cells, are read flatter), so a malformed
+/// page may read differently from a browser's rendering, with its visible
+/// text all there. Linear in `html`'s length, and at most [`STORE_BYTES`]
+/// of output, as much of a page's text as the page store keeps.
 #[must_use]
 pub fn html_to_markdown(html: &str, base: &PublicUrl) -> String {
     let input = BufferQueue::default();
@@ -38,15 +60,69 @@ pub fn html_to_markdown(html: &str, base: &PublicUrl) -> String {
     tok.sink.0.into_inner().finish()
 }
 
-/// The most bytes of a link or image target kept: a URL of
-/// [`MAX_URL_CHARS`](super::url::MAX_URL_CHARS) characters is at most four
-/// bytes each. A longer one (a `data:` image, say) keeps only its text.
-const MAX_TARGET_BYTES: usize = super::url::MAX_URL_CHARS * 4;
-
-/// The most levels of block quotes and of lists a line's prefix shows:
+/// The most levels of block quotes and list items a line's prefix shows:
 /// deeper nesting reads as this deep, so a line costs at most this much
 /// prefix however deep a page nests.
-const MAX_DEPTH: usize = 8;
+pub const MAX_DEPTH: usize = 8;
+
+/// The most inline elements (links, emphasis, strikethrough) open at
+/// once: one opened inside more is read as text.
+pub const MAX_SPANS: usize = 16;
+
+/// The most cells of a table's row: those after are joined into the last.
+pub const MAX_COLUMNS: usize = 32;
+
+/// The largest list number written: CommonMark reads at most nine digits.
+const MAX_NUMBER: u64 = 999_999_999;
+
+/// The tags that end foreign content (`svg`, `math`) in a browser's tree
+/// builder: one of these opens HTML again.
+const BREAKOUT: &[&str] = &[
+    "b",
+    "big",
+    "blockquote",
+    "body",
+    "br",
+    "center",
+    "code",
+    "dd",
+    "div",
+    "dl",
+    "dt",
+    "em",
+    "embed",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "head",
+    "hr",
+    "i",
+    "img",
+    "li",
+    "listing",
+    "menu",
+    "meta",
+    "nobr",
+    "ol",
+    "p",
+    "pre",
+    "ruby",
+    "s",
+    "small",
+    "span",
+    "strike",
+    "strong",
+    "sub",
+    "sup",
+    "table",
+    "tt",
+    "u",
+    "ul",
+    "var",
+];
 
 struct Sink(RefCell<Writer>);
 
@@ -54,15 +130,22 @@ impl TokenSink for Sink {
     type Handle = ();
     fn process_token(&self, token: Token, _line: u64) -> TokenSinkResult<()> {
         let mut w = self.0.borrow_mut();
+        // The tokenizer splits text at character references: a run of it
+        // is read whole, so what it escapes sees all of it.
+        if let Token::CharacterTokens(t) = &token {
+            w.run.push_str(t);
+            return TokenSinkResult::Continue;
+        }
+        let run = std::mem::take(&mut w.run);
+        w.text(&run);
         match token {
             Token::TagToken(tag) => {
-                let raw = w.tag(&tag);
-                if let Some(kind) = raw {
+                if let Some(kind) = w.tag(&tag) {
                     return TokenSinkResult::RawData(kind);
                 }
             }
-            Token::CharacterTokens(t) => w.text(&t),
-            Token::NullCharacterToken
+            Token::CharacterTokens(_)
+            | Token::NullCharacterToken
             | Token::CommentToken(_)
             | Token::DoctypeToken(_)
             | Token::EOFToken
@@ -72,69 +155,121 @@ impl TokenSink for Sink {
     }
 }
 
-/// A list being written: its items' marker and the next item's number.
+/// A block a line is inside of, in the order they opened: each adds to
+/// the prefix of every line written inside it.
+enum Container {
+    /// A block quote: `> `, once its first line is written (a blank line
+    /// before it is outside it).
+    Quote { started: bool },
+    /// A list item: its marker (`- `, `3. `) on its first line, then as
+    /// many spaces as the marker is wide. `pending` until the item's first
+    /// line is written.
+    Item { marker: String, pending: bool },
+}
+
+/// A list being written: its items' kind, the next item's number, and
+/// how many containers were open outside it.
 struct List {
     ordered: bool,
     next: u64,
+    outside: usize,
+}
+
+/// An inline element whose mark is written before its first text, and
+/// closed after its last.
+struct Span {
+    /// The element that opened it (`b`, `em`, `a`).
+    name: &'static str,
+    kind: SpanKind,
+    /// Its opening mark is written.
+    written: bool,
+}
+
+enum SpanKind {
+    /// Emphasis or strikethrough: the same mark opens and closes it.
+    Mark(&'static str),
+    /// A link to its resolved target.
+    Link(String),
 }
 
 /// A table being written: its rows, each a list of cells, the row being
-/// read, the cell being read (where it starts in the output), and whether
-/// the first row was a header row.
+/// read, and the cell being read: where it starts in the output, and how
+/// many spans were open outside it.
 #[derive(Default)]
 struct Table {
     rows: Vec<Vec<String>>,
     row: Vec<String>,
-    cell: Option<usize>,
+    cell: Option<(usize, usize)>,
+}
+
+/// Content dropped until its element ends.
+struct Hidden {
+    name: String,
+    /// How many elements of that name opened inside it.
+    nested: usize,
 }
 
 struct Writer {
+    /// Text read since the last tag.
+    run: String,
     base: url::Url,
     base_seen: bool,
     out: String,
-    /// Inside an element whose content is dropped, how deep.
-    hidden: usize,
-    /// The element that opened the hidden content, so only its own end
-    /// closes it (its name, and how many of it are open inside it).
-    hidden_by: Option<(String, usize)>,
-    lists: Vec<List>,
+    hidden: Option<Hidden>,
+    containers: Vec<Container>,
+    /// How many of `containers` are quotes.
     quotes: usize,
-    /// Inside `pre`: its text so far, kept verbatim.
-    pre: Option<String>,
-    pre_depth: usize,
-    /// An open link's target, and where its text starts in `out`.
-    link: Option<(String, usize)>,
+    lists: Vec<List>,
+    spans: Vec<Span>,
+    /// Inline elements opened past [`MAX_SPANS`] and read as text, by
+    /// name: as many of their ends are skipped.
+    deep_spans: HashMap<&'static str, usize>,
+    /// Inside `pre`: its text so far, kept verbatim, and how many `pre`
+    /// opened inside it.
+    pre: Option<(String, usize)>,
+    /// Inside inline code: its text so far, and the element that opened
+    /// it.
+    code: Option<(String, String)>,
     tables: Vec<Table>,
-    /// Tables opened inside a cell, read as that cell's text, how deep.
+    /// Tables opened inside a cell or a link, read as text, how deep.
     flat_tables: usize,
+    /// A heading's level, written before the line's first text.
+    heading: Option<usize>,
     /// A space is owed before the next text on this line.
     space: bool,
-    /// Nothing has been written on this line yet (its prefix not either).
-    line_start: bool,
-    /// The blank lines owed before the next text: 1 a line break, 2 a
-    /// paragraph break.
+    /// Nothing has been written on this line yet but its prefix.
+    line_empty: bool,
+    /// The line breaks owed before the next text: 1 a new line, 2 a blank
+    /// line between.
     breaks: u8,
 }
 
 impl Writer {
     fn new(base: &PublicUrl) -> Writer {
         Writer {
+            run: String::new(),
             base: base.as_url().clone(),
             base_seen: false,
             out: String::new(),
-            hidden: 0,
-            hidden_by: None,
-            lists: Vec::new(),
+            hidden: None,
+            containers: Vec::new(),
             quotes: 0,
+            lists: Vec::new(),
+            spans: Vec::new(),
+            deep_spans: HashMap::new(),
             pre: None,
-            pre_depth: 0,
-            link: None,
+            code: None,
             tables: Vec::new(),
             flat_tables: 0,
+            heading: None,
             space: false,
-            line_start: true,
+            line_empty: true,
             breaks: 0,
         }
+    }
+
+    fn full(&self) -> bool {
+        self.out.len() >= STORE_BYTES
     }
 
     fn attr<'t>(tag: &'t Tag, name: &str) -> Option<&'t str> {
@@ -151,101 +286,226 @@ impl Writer {
             return None;
         }
         let u = self.base.join(href.trim()).ok()?;
-        matches!(u.scheme(), "http" | "https").then(|| u.to_string())
+        (matches!(u.scheme(), "http" | "https")
+            && u.as_str().chars().count() <= super::url::MAX_URL_CHARS)
+            .then(|| u.to_string())
     }
 
-    /// Whether a cell is being read: inside it, line and paragraph breaks
-    /// are spaces.
-    fn in_cell(&self) -> bool {
+    /// Whether blocks are spaces here: inside a cell or a link.
+    fn inline_only(&self) -> bool {
         self.tables.last().is_some_and(|t| t.cell.is_some())
+            || self
+                .spans
+                .iter()
+                .any(|s| matches!(s.kind, SpanKind::Link(_)))
     }
 
-    /// Owes a break of `n` (1 a line, 2 a paragraph) before the next text.
+    /// Where the open cell starts in the output, else 0: nothing before it
+    /// is taken back.
+    fn floor(&self) -> usize {
+        self.tables
+            .last()
+            .and_then(|t| t.cell)
+            .map_or(0, |(at, _)| at)
+    }
+
+    /// How many spans were open outside the open cell: those it does not
+    /// close.
+    fn cell_spans(&self) -> usize {
+        self.tables
+            .last()
+            .and_then(|t| t.cell)
+            .map_or(0, |(_, spans)| spans)
+    }
+
+    /// Owes a break of `n` (1 a new line, 2 a blank line) before the next
+    /// text, and ends the open spans: none crosses a block. Before a list
+    /// item's first text no more is owed than its item asked for, so an
+    /// item that starts with a block keeps its marker on its first line.
     fn block(&mut self, n: u8) {
-        if self.in_cell() {
+        if self.inline_only() {
             self.space = true;
             return;
         }
-        if !self.out.is_empty() {
+        self.close_spans(0);
+        let pending = matches!(
+            self.containers.last(),
+            Some(Container::Item { pending: true, .. })
+        );
+        if !self.out.is_empty() && !pending {
             self.breaks = self.breaks.max(n);
         }
         self.space = false;
     }
 
-    /// What starts each line: the open lists' indentation and the block
-    /// quotes' markers.
-    fn prefix(&self) -> String {
-        let enclosing = self.lists.len().saturating_sub(1);
-        let mut p = self.quote_marks();
-        p.push_str(&" ".repeat(indent_of(&self.lists[..enclosing])));
+    /// The prefix of a line inside the open containers, of at most
+    /// [`MAX_DEPTH`] of them and the innermost. For a blank line (`blank`)
+    /// without the quotes not yet started and its trailing spaces;
+    /// otherwise the quotes are started and a pending item's marker is
+    /// written (and no longer pending).
+    fn prefix(&mut self, blank: bool) -> String {
+        let n = self.containers.len();
+        let last = (n > MAX_DEPTH).then(|| n - 1);
+        let mut p = String::new();
+        for i in (0..n.min(MAX_DEPTH)).chain(last) {
+            match &mut self.containers[i] {
+                Container::Quote { started } if blank && !*started => {}
+                Container::Quote { started } => {
+                    p.push_str("> ");
+                    if !blank {
+                        *started = true;
+                    }
+                }
+                Container::Item { marker, pending } if *pending && !blank => {
+                    p.push_str(marker);
+                    *pending = false;
+                }
+                Container::Item { marker, .. } => {
+                    p.extend(std::iter::repeat_n(' ', marker.len()));
+                }
+            }
+        }
+        if blank {
+            let end = p.trim_end().len();
+            p.truncate(end);
+        }
         p
     }
 
-    /// The block quotes' markers, at most [`MAX_DEPTH`] of them.
-    fn quote_marks(&self) -> String {
-        "> ".repeat(self.quotes.min(MAX_DEPTH))
-    }
-
-    /// Pays the breaks owed and the line's prefix, before text.
+    /// Pays the breaks owed and the line's prefix (and heading marker), or
+    /// the space owed, then the open spans' marks, before text.
     fn start_text(&mut self) {
-        if self.breaks > 0 {
-            while self.out.ends_with(' ') {
-                self.out.pop();
-            }
-            let quote = self.quote_marks();
-            for i in 0..self.breaks {
+        let pending = matches!(
+            self.containers.last(),
+            Some(Container::Item { pending: true, .. })
+        );
+        if self.breaks > 0 || (self.line_empty && (pending || self.out.is_empty())) {
+            if !self.out.is_empty() {
+                let floor = self.floor();
+                trim_spaces(&mut self.out, floor);
                 self.out.push('\n');
-                // A blank line inside a block quote stays inside it.
-                if i + 1 < self.breaks && self.quotes > 0 {
-                    self.out.push_str(quote.trim_end());
+                for _ in 1..self.breaks {
+                    let blank = self.prefix(true);
+                    self.out.push_str(&blank);
+                    self.out.push('\n');
                 }
             }
             self.breaks = 0;
-            self.line_start = true;
-            self.space = false;
-        }
-        if self.line_start {
-            let p = self.prefix();
-            // A list item's continuation lines line up under its text.
-            let item = if self.lists.is_empty() { "" } else { "  " };
-            if !self.out.is_empty() && !self.out.ends_with('\n') {
-                self.out.push('\n');
-            }
+            let p = self.prefix(false);
             self.out.push_str(&p);
-            if !self.out.ends_with("- ") && !ends_with_number(&self.out) {
-                self.out.push_str(item);
-            }
-            self.line_start = false;
-        } else if self.space {
+            self.line_empty = true;
+        } else if self.space && !self.line_empty {
             self.out.push(' ');
         }
         self.space = false;
+        if let Some(level) = self.heading.take() {
+            self.out.push_str(&"#".repeat(level));
+            self.out.push(' ');
+        }
+        self.write_spans();
     }
 
-    fn push_markup(&mut self, s: &str) {
-        self.start_text();
-        self.out.push_str(s);
+    /// Writes the opening marks of the open spans not yet written.
+    fn write_spans(&mut self) {
+        let floor = self.floor();
+        for i in 0..self.spans.len() {
+            if self.spans[i].written {
+                continue;
+            }
+            match &self.spans[i].kind {
+                SpanKind::Mark(m) => self.out.push_str(m),
+                SpanKind::Link(_) => {
+                    // A `!` before it would make it an image.
+                    if self.out.len() > floor
+                        && self.out.ends_with('!')
+                        && !self.out.ends_with("\\!")
+                    {
+                        self.out.pop();
+                        self.out.push_str("\\!");
+                    }
+                    self.out.push('[');
+                }
+            }
+            self.spans[i].written = true;
+        }
+    }
+
+    /// Closes the spans above the first `keep`, innermost first.
+    fn close_spans(&mut self, keep: usize) {
+        while self.spans.len() > keep {
+            let s = self.spans.pop().expect("a span is open");
+            if !s.written {
+                continue;
+            }
+            let floor = self.floor();
+            if trim_spaces(&mut self.out, floor) {
+                self.space = true;
+            }
+            match s.kind {
+                SpanKind::Mark(m) => self.out.push_str(m),
+                SpanKind::Link(t) => {
+                    self.out.push_str("](");
+                    self.out.push_str(&link_url(&t));
+                    self.out.push(')');
+                }
+            }
+        }
+    }
+
+    fn open_span(&mut self, name: &'static str, kind: SpanKind) {
+        if self.spans.len() >= MAX_SPANS {
+            *self.deep_spans.entry(name).or_default() += 1;
+            return;
+        }
+        self.spans.push(Span {
+            name,
+            kind,
+            written: false,
+        });
+    }
+
+    /// Ends the innermost open span `name` opened, and the spans inside
+    /// it; an end with no such span open (or one outside the open cell) is
+    /// skipped.
+    fn end_span(&mut self, name: &str) {
+        if let Some(n) = self.deep_spans.get_mut(name)
+            && *n > 0
+        {
+            *n -= 1;
+            return;
+        }
+        let keep = self.cell_spans();
+        if let Some(i) = self.spans.iter().rposition(|s| s.name == name)
+            && i >= keep
+        {
+            self.close_spans(i);
+        }
     }
 
     fn text(&mut self, t: &str) {
-        if self.hidden > 0 {
+        if self.hidden.is_some() || self.full() {
             return;
         }
-        if let Some(pre) = self.pre.as_mut() {
-            pre.push_str(t);
+        if let Some((pre, _)) = self.pre.as_mut() {
+            if pre.len() < STORE_BYTES {
+                pre.push_str(t);
+            }
             return;
         }
-        let mut words = t.split(|c: char| c.is_ascii_whitespace()).peekable();
+        if let Some((code, _)) = self.code.as_mut() {
+            if code.len() < STORE_BYTES {
+                code.push_str(t);
+            }
+            return;
+        }
         if t.starts_with(|c: char| c.is_ascii_whitespace()) {
             self.space = true;
         }
+        let mut words = t.split_ascii_whitespace().peekable();
         while let Some(w) = words.next() {
-            if w.is_empty() {
-                continue;
-            }
-            let at_line = self.line_start || self.breaks > 0;
             self.start_text();
-            escape_into(&mut self.out, w, at_line);
+            escape_into(&mut self.out, w, self.line_empty);
+            self.line_empty = false;
             if words.peek().is_some() {
                 self.space = true;
             }
@@ -266,179 +526,229 @@ impl Writer {
             "title" | "textarea" => Some(RawKind::Rcdata),
             _ => None,
         };
-        if let Some((by, nested)) = self.hidden_by.as_mut() {
-            if by == name {
-                if start && !tag.self_closing {
-                    *nested += 1;
-                } else if !start {
-                    if *nested == 0 {
-                        self.hidden_by = None;
-                        self.hidden = 0;
-                    } else {
-                        *nested -= 1;
-                    }
+        // The first base with an `href` counts, wherever it is, hidden or
+        // not, as for the page's links.
+        if name == "base" && start && !self.base_seen {
+            if let Some(h) = Writer::attr(tag, "href") {
+                self.base_seen = true;
+                if h.len() <= MAX_TARGET_BYTES
+                    && let Ok(b) = self.base.join(h.trim())
+                {
+                    self.base = b;
                 }
             }
-            return if start { raw } else { None };
+            return None;
         }
-        if start
-            && matches!(
-                name,
-                "head"
-                    | "script"
-                    | "style"
-                    | "template"
-                    | "noscript"
-                    | "svg"
-                    | "math"
-                    | "select"
-                    | "textarea"
-                    | "button"
-                    | "iframe"
-                    | "object"
-                    | "noembed"
-                    | "noframes"
-                    | "title"
-            )
-        {
-            if name == "head" || !tag.self_closing || raw.is_some() {
-                self.hidden = 1;
-                self.hidden_by = Some((name.to_string(), 0));
+        if let Some(h) = self.hidden.as_mut() {
+            let foreign = h.name == "svg" || h.name == "math";
+            if h.name == name {
+                if start && !tag.self_closing {
+                    h.nested += 1;
+                } else if !start {
+                    if h.nested == 0 {
+                        self.hidden = None;
+                    } else {
+                        h.nested -= 1;
+                    }
+                }
+                return if start { raw } else { None };
+            }
+            if !(foreign && start && BREAKOUT.contains(&name)) {
+                return if start { raw } else { None };
+            }
+            // HTML again: the foreign content has ended.
+            self.hidden = None;
+        }
+        if start && hides(name, tag) {
+            // A self-closing `<svg/>` hides nothing; a raw element is
+            // never self-closing (HTML ignores the `/`).
+            if !tag.self_closing || raw.is_some() {
+                self.hidden = Some(Hidden {
+                    name: name.to_string(),
+                    nested: 0,
+                });
             }
             return raw;
         }
-        if name == "base" && start && !self.base_seen {
-            self.base_seen = true;
-            if let Some(b) = Writer::attr(tag, "href").and_then(|h| self.base.join(h.trim()).ok()) {
-                self.base = b;
-            }
+        if self.full() {
             return None;
         }
         if self.pre.is_some() {
-            match (name, start) {
-                ("pre", true) => self.pre_depth += 1,
-                ("pre", false) if self.pre_depth > 0 => self.pre_depth -= 1,
-                ("pre", false) => self.end_pre(),
-                ("br", _) if start => self.pre.as_mut().expect("in pre").push('\n'),
-                _ => {}
+            self.in_pre(name, start, tag.self_closing);
+            return None;
+        }
+        if self.code.is_some() {
+            if !start && self.code.as_ref().is_some_and(|(_, by)| by == name) {
+                self.end_code();
+            } else if name == "br" {
+                self.code.as_mut().expect("in code").0.push(' ');
             }
             return None;
         }
+        self.element(name, start, tag);
+        None
+    }
+
+    fn in_pre(&mut self, name: &str, start: bool, self_closing: bool) {
+        let (text, depth) = self.pre.as_mut().expect("in pre");
+        match (name, start) {
+            ("pre" | "listing", true) if !self_closing => *depth += 1,
+            ("pre" | "listing", false) if *depth > 0 => *depth -= 1,
+            ("pre" | "listing", false) => self.end_pre(),
+            ("br", _) => text.push('\n'),
+            _ => {}
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn element(&mut self, name: &str, start: bool, tag: &Tag) {
         match (name, start) {
             (
                 "p" | "div" | "section" | "article" | "header" | "footer" | "main" | "aside"
                 | "nav" | "figure" | "figcaption" | "address" | "details" | "summary" | "form"
-                | "fieldset" | "dl" | "center",
+                | "fieldset" | "dl" | "center" | "body" | "html" | "head",
                 _,
             ) => self.block(2),
             ("dt" | "dd", _) => self.block(1),
             ("h1" | "h2" | "h3" | "h4" | "h5" | "h6", true) => {
                 self.block(2);
-                if !self.in_cell() {
-                    let level = usize::from(name.as_bytes()[1] - b'0');
-                    self.push_markup(&format!("{} ", "#".repeat(level)));
+                if !self.inline_only() {
+                    self.heading = Some(usize::from(name.as_bytes()[1] - b'0'));
                 }
             }
-            ("h1" | "h2" | "h3" | "h4" | "h5" | "h6", false) => self.block(2),
-            ("br", _) if start => self.block(1),
-            ("hr", _) if start => {
+            ("h1" | "h2" | "h3" | "h4" | "h5" | "h6", false) => {
+                self.heading = None;
                 self.block(2);
-                if !self.in_cell() {
-                    self.push_markup("---");
+            }
+            ("br", _) => self.block(1),
+            ("hr", true) => {
+                self.block(2);
+                if !self.inline_only() {
+                    self.start_text();
+                    self.out.push_str("---");
+                    self.line_empty = false;
                     self.block(2);
                 }
             }
             ("blockquote", true) => {
                 self.block(2);
-                self.quotes += 1;
+                if !self.inline_only() {
+                    self.containers.push(Container::Quote { started: false });
+                    self.quotes += 1;
+                }
             }
             ("blockquote", false) => {
-                self.block(2);
-                self.quotes = self.quotes.saturating_sub(1);
+                if self.inline_only() {
+                    self.space = true;
+                } else if self.quotes > 0
+                    && let Some(i) = self
+                        .containers
+                        .iter()
+                        .rposition(|c| matches!(c, Container::Quote { .. }))
+                {
+                    self.block(2);
+                    self.truncate_containers(i);
+                }
             }
             ("ul" | "ol" | "menu", true) => {
-                self.block(if self.lists.is_empty() { 2 } else { 1 });
+                if self.inline_only() {
+                    self.space = true;
+                    return;
+                }
+                self.block(if self.containers.is_empty() { 2 } else { 1 });
                 let next = Writer::attr(tag, "start")
-                    .and_then(|s| s.trim().parse().ok())
-                    .unwrap_or(1);
+                    .and_then(|s| s.trim().parse::<u64>().ok())
+                    .unwrap_or(1)
+                    .min(MAX_NUMBER);
                 self.lists.push(List {
                     ordered: name == "ol",
                     next,
+                    outside: self.containers.len(),
                 });
             }
             ("ul" | "ol" | "menu", false) => {
-                self.lists.pop();
-                self.block(if self.lists.is_empty() { 2 } else { 1 });
+                if self.inline_only() {
+                    self.space = true;
+                    return;
+                }
+                if let Some(l) = self.lists.pop() {
+                    self.block(1);
+                    self.truncate_containers(l.outside);
+                    if self.containers.is_empty() {
+                        self.block(2);
+                    }
+                }
             }
             ("li", true) => {
+                if self.inline_only() {
+                    self.space = true;
+                    return;
+                }
                 self.block(1);
-                if self.in_cell() {
-                    return None;
-                }
-                let marker = match self.lists.last_mut() {
-                    Some(l) if l.ordered => {
-                        let m = format!("{}. ", l.next);
-                        l.next += 1;
-                        m
+                let (marker, outside) = match self.lists.last_mut() {
+                    Some(l) => {
+                        let m = if l.ordered {
+                            let m = format!("{}. ", l.next);
+                            l.next = l.next.saturating_add(1).min(MAX_NUMBER);
+                            m
+                        } else {
+                            "- ".to_string()
+                        };
+                        (m, Some(l.outside))
                     }
-                    _ => "- ".to_string(),
+                    None => ("- ".to_string(), None),
                 };
-                if self.lists.is_empty() {
-                    self.push_markup(&marker);
-                } else {
-                    // The marker goes at the list's own indentation.
-                    self.start_marker(&marker);
+                // The item before it in its list ends here.
+                if let Some(outside) = outside {
+                    self.truncate_containers(outside);
+                }
+                self.containers.push(Container::Item {
+                    marker,
+                    pending: true,
+                });
+            }
+            ("li", false) => {
+                if self.inline_only() {
+                    self.space = true;
+                    return;
+                }
+                self.block(1);
+                let outside = self.lists.last().map_or(0, |l| l.outside);
+                if self.containers.len() > outside
+                    && matches!(self.containers.last(), Some(Container::Item { .. }))
+                {
+                    self.containers.pop();
                 }
             }
-            ("li", false) => self.block(1),
-            ("pre", true) => {
+            ("pre" | "listing", true) => {
+                if self.inline_only() {
+                    self.code = Some((String::new(), name.to_string()));
+                    return;
+                }
                 self.block(2);
-                self.pre = Some(String::new());
-                self.pre_depth = 0;
+                self.pre = Some((String::new(), 0));
             }
-            ("a", true) if self.link.is_none() => {
+            ("a", true) => {
+                // A new link ends the open one, as in HTML.
+                self.end_span("a");
                 if let Some(t) = Writer::attr(tag, "href").and_then(|h| self.target(h)) {
-                    self.start_text();
-                    self.out.push('[');
-                    self.link = Some((t, self.out.len()));
+                    self.open_span("a", SpanKind::Link(t));
                 }
             }
-            ("a", false) => {
-                if let Some((t, at)) = self.link.take() {
-                    if self.out.len() == at {
-                        // No text: no link.
-                        self.out.pop();
-                    } else {
-                        while self.out.ends_with(' ') {
-                            self.out.pop();
-                        }
-                        self.out.push_str("](");
-                        self.out.push_str(&link_url(&t));
-                        self.out.push(')');
-                    }
-                }
+            ("img", true) => self.image(tag),
+            ("strong" | "b", true) => self.open_span(static_name(name), SpanKind::Mark("**")),
+            ("em" | "i", true) => self.open_span(static_name(name), SpanKind::Mark("*")),
+            ("del" | "s" | "strike", true) => {
+                self.open_span(static_name(name), SpanKind::Mark("~~"));
             }
-            ("img", true) => {
-                let alt = Writer::attr(tag, "alt").map(str::trim).unwrap_or("");
-                let src = Writer::attr(tag, "src").and_then(|s| self.target(s));
-                if let (false, Some(src)) = (alt.is_empty(), src) {
-                    self.start_text();
-                    self.out.push_str("![");
-                    escape_into(&mut self.out, &collapse(alt), false);
-                    self.out.push_str("](");
-                    self.out.push_str(&link_url(&src));
-                    self.out.push(')');
-                } else if !alt.is_empty() {
-                    self.start_text();
-                    escape_into(&mut self.out, &collapse(alt), false);
-                }
+            ("a" | "strong" | "b" | "em" | "i" | "del" | "s" | "strike", false) => {
+                self.end_span(name);
             }
-            ("strong" | "b", _) => self.inline_mark("**", start),
-            ("em" | "i", _) => self.inline_mark("*", start),
-            ("del" | "s" | "strike", _) => self.inline_mark("~~", start),
-            ("code" | "kbd" | "samp" | "tt", _) => self.inline_mark("`", start),
-            ("table", true) if self.in_cell() || self.flat_tables > 0 => {
-                // A table in a cell is that cell's text, so nesting costs
+            ("code" | "kbd" | "samp" | "tt", true) => {
+                self.code = Some((String::new(), name.to_string()));
+            }
+            ("table", true) if self.inline_only() || self.flat_tables > 0 => {
+                // A table in a cell or a link is its text, so nesting costs
                 // nothing more.
                 self.flat_tables += 1;
                 self.space = true;
@@ -453,80 +763,82 @@ impl Writer {
                 self.tables.push(Table::default());
             }
             ("table", false) => self.end_table(),
-            ("tr", true) => self.end_row(),
-            ("tr", false) => self.end_row(),
+            ("tr", _) => self.end_row(),
             ("td" | "th", true) => {
+                if self.tables.is_empty() {
+                    self.space = true;
+                    return;
+                }
                 self.end_cell();
+                self.space = false;
+                self.line_empty = false;
+                self.breaks = 0;
+                let (at, spans) = (self.out.len(), self.spans.len());
                 if let Some(t) = self.tables.last_mut() {
-                    self.space = false;
-                    self.line_start = false;
-                    self.breaks = 0;
-                    t.cell = Some(self.out.len());
+                    t.cell = Some((at, spans));
                 }
             }
             ("td" | "th", false) => self.end_cell(),
             _ => {}
         }
-        None
     }
 
-    /// Writes a list item's marker at its list's indentation.
-    fn start_marker(&mut self, marker: &str) {
-        if self.breaks > 0 || self.line_start {
-            let saved = self.lists.pop();
-            // The prefix of the enclosing lists, with this one's marker.
-            let pushed = saved.is_some();
-            self.breaks = self.breaks.max(1);
-            if pushed {
-                // Pay the breaks and the enclosing lists' prefix only.
-                let breaks = self.breaks;
-                self.breaks = 0;
-                while self.out.ends_with(' ') {
-                    self.out.pop();
-                }
-                if !self.out.is_empty() {
-                    let quote = self.quote_marks();
-                    for i in 0..breaks {
-                        self.out.push('\n');
-                        if i + 1 < breaks && self.quotes > 0 {
-                            self.out.push_str(quote.trim_end());
-                        }
-                    }
-                }
-                let mut p = self.quote_marks();
-                p.push_str(&" ".repeat(indent_of(&self.lists)));
-                self.out.push_str(&p);
-                self.out.push_str(marker);
-                self.line_start = false;
-                self.space = false;
+    /// Ends the containers from the `keep`th on.
+    fn truncate_containers(&mut self, keep: usize) {
+        while self.containers.len() > keep {
+            if let Some(Container::Quote { .. }) = self.containers.pop() {
+                self.quotes -= 1;
             }
-            if let Some(l) = saved {
-                self.lists.push(l);
-            }
-        } else {
-            self.push_markup(marker);
         }
     }
 
-    fn inline_mark(&mut self, mark: &str, start: bool) {
-        if start {
-            self.start_text();
-            self.out.push_str(mark);
-        } else if self.out.ends_with(mark) {
-            // Empty: write nothing.
-            let n = self.out.len() - mark.len();
-            self.out.truncate(n);
-        } else {
-            while self.out.ends_with(' ') {
-                self.out.pop();
-                self.space = true;
-            }
-            self.out.push_str(mark);
+    fn image(&mut self, tag: &Tag) {
+        let alt = collapse(Writer::attr(tag, "alt").unwrap_or(""));
+        if alt.is_empty() {
+            return;
         }
+        let src = Writer::attr(tag, "src").and_then(|s| self.target(s));
+        self.start_text();
+        match src {
+            Some(src) => {
+                self.out.push_str("![");
+                escape_into(&mut self.out, &alt, false);
+                self.out.push_str("](");
+                self.out.push_str(&link_url(&src));
+                self.out.push(')');
+            }
+            None => escape_into(&mut self.out, &alt, self.line_empty),
+        }
+        self.line_empty = false;
+    }
+
+    fn end_code(&mut self) {
+        let Some((code, _)) = self.code.take() else {
+            return;
+        };
+        let code = collapse(&code);
+        if code.is_empty() {
+            return;
+        }
+        let fence = "`".repeat(longest_run(&code, '`') + 1);
+        // A space each side when the code starts or ends with a backtick,
+        // which CommonMark strips.
+        let pad = if code.starts_with('`') || code.ends_with('`') {
+            " "
+        } else {
+            ""
+        };
+        self.start_text();
+        self.out.push_str(&fence);
+        self.out.push_str(pad);
+        self.out.push_str(&code);
+        self.out.push_str(pad);
+        self.out.push_str(&fence);
+        self.line_empty = false;
     }
 
     fn end_pre(&mut self) {
-        let Some(code) = self.pre.take() else {
+        let Some((code, _)) = self.pre.take() else {
             return;
         };
         let code = code.strip_prefix('\n').unwrap_or(&code);
@@ -535,14 +847,11 @@ impl Writer {
             return;
         }
         // A fence longer than any run of backticks in the code.
-        let longest = longest_run(code, '`');
-        let fence = "`".repeat(longest.max(2) + 1);
+        let fence = "`".repeat(longest_run(code, '`').max(2) + 1);
         self.block(2);
         self.start_text();
-        let p = self.prefix();
-        let item = if self.lists.is_empty() { "" } else { "  " };
-        let lead = format!("{p}{item}");
         self.out.push_str(&fence);
+        let lead = self.prefix(false);
         for line in code.split('\n') {
             self.out.push('\n');
             self.out.push_str(&lead);
@@ -551,19 +860,23 @@ impl Writer {
         self.out.push('\n');
         self.out.push_str(&lead);
         self.out.push_str(&fence);
+        self.line_empty = false;
         self.block(2);
     }
 
     fn end_cell(&mut self) {
-        let Some(t) = self.tables.last_mut() else {
+        let keep = self.cell_spans();
+        let Some((at, _)) = self.tables.last().and_then(|t| t.cell) else {
             return;
         };
-        let Some(at) = t.cell.take() else {
-            return;
-        };
+        self.close_spans(keep);
+        let at = at.min(self.out.len());
         let cell = collapse(&self.out[at..]).replace('|', "\\|");
         self.out.truncate(at);
-        t.row.push(cell);
+        if let Some(t) = self.tables.last_mut() {
+            t.cell = None;
+            t.row.push(cell);
+        }
         self.space = false;
     }
 
@@ -572,7 +885,11 @@ impl Writer {
         if let Some(t) = self.tables.last_mut()
             && !t.row.is_empty()
         {
-            let row = std::mem::take(&mut t.row);
+            let mut row = std::mem::take(&mut t.row);
+            if row.len() > MAX_COLUMNS {
+                let rest = row.split_off(MAX_COLUMNS - 1).join(" ");
+                row.push(rest);
+            }
             t.rows.push(row);
         }
     }
@@ -582,20 +899,24 @@ impl Writer {
         let Some(t) = self.tables.pop() else {
             return;
         };
-        if t.rows.is_empty() {
+        let Some(width) = t.rows.iter().map(Vec::len).max() else {
             return;
-        }
-        let width = t.rows.iter().map(Vec::len).max().unwrap_or(0);
+        };
         self.block(2);
         for (i, row) in t.rows.iter().enumerate() {
             self.block(1);
             self.start_text();
-            let cells: Vec<&str> = (0..width)
-                .map(|j| row.get(j).map_or("", String::as_str))
-                .collect();
             self.out.push_str("| ");
-            self.out.push_str(&cells.join(" | "));
+            self.out.push_str(&row.join(" | "));
+            // Only the header row is padded to the table's width: GitHub
+            // fills a short body row itself.
+            if i == 0 {
+                for _ in row.len()..width {
+                    self.out.push_str(" | ");
+                }
+            }
             self.out.push_str(" |");
+            self.line_empty = false;
             if i == 0 {
                 self.block(1);
                 self.start_text();
@@ -607,41 +928,60 @@ impl Writer {
     }
 
     fn finish(mut self) -> String {
+        let run = std::mem::take(&mut self.run);
+        self.text(&run);
+        self.hidden = None;
+        if self.code.is_some() {
+            self.end_code();
+        }
         if self.pre.is_some() {
             self.end_pre();
         }
         while !self.tables.is_empty() {
             self.end_table();
         }
-        if let Some((t, at)) = self.link.take()
-            && self.out.len() > at
-        {
-            self.out.push_str("](");
-            self.out.push_str(&link_url(&t));
-            self.out.push(')');
+        self.close_spans(0);
+        let mut end = self.out.trim_end().len().min(STORE_BYTES);
+        while !self.out.is_char_boundary(end) {
+            end -= 1;
         }
-        let trimmed = self.out.trim_end().len();
-        self.out.truncate(trimmed);
+        self.out.truncate(end);
         self.out
     }
 }
 
-/// The indentation of a line inside `lists`: each list's marker width,
-/// for at most [`MAX_DEPTH`] of them.
-fn indent_of(lists: &[List]) -> usize {
-    lists
-        .iter()
-        .take(MAX_DEPTH)
-        .map(|l| if l.ordered { 3 } else { 2 })
-        .sum()
+/// Whether an element `name` opened by `tag` hides its content.
+fn hides(name: &str, tag: &Tag) -> bool {
+    match name {
+        "template" => Writer::attr(tag, "shadowrootmode").is_none(),
+        "script" | "style" | "noscript" | "svg" | "math" | "select" | "textarea" | "iframe"
+        | "object" | "noembed" | "noframes" | "title" | "xmp" => true,
+        _ => false,
+    }
 }
 
-/// Whether `out` ends with an ordered list marker (`12. `).
-fn ends_with_number(out: &str) -> bool {
-    let Some(rest) = out.strip_suffix(". ") else {
-        return false;
-    };
-    rest.bytes().last().is_some_and(|b| b.is_ascii_digit())
+/// `name` as one of the inline element names [`Span`] keeps.
+fn static_name(name: &str) -> &'static str {
+    match name {
+        "strong" => "strong",
+        "b" => "b",
+        "em" => "em",
+        "i" => "i",
+        "del" => "del",
+        "s" => "s",
+        _ => "strike",
+    }
+}
+
+/// Removes the spaces `out` ends with, down to `floor` at most; whether
+/// it removed any.
+fn trim_spaces(out: &mut String, floor: usize) -> bool {
+    let mut any = false;
+    while out.len() > floor && out.ends_with(' ') {
+        out.pop();
+        any = true;
+    }
+    any
 }
 
 /// `u` as a Markdown link destination: in angle brackets when it holds a
@@ -673,20 +1013,29 @@ fn longest_run(s: &str, c: char) -> usize {
     best
 }
 
-/// Appends `word`, escaping what Markdown would read as markup; at a
-/// line's start (`at_line`), also a heading, quote or list marker.
+/// Appends `word`, escaping what Markdown would read as markup; as a
+/// line's first word (`at_line`), also a heading, quote, list or rule
+/// marker.
 fn escape_into(out: &mut String, word: &str, at_line: bool) {
-    if at_line {
-        let lead = matches!(
+    if at_line
+        && (matches!(
             word.as_bytes().first(),
             Some(b'#' | b'>' | b'+' | b'-' | b'=')
-        ) || ordered_marker(word);
-        if lead {
-            out.push('\\');
-        }
+        ) || ordered_marker(word))
+    {
+        out.push('\\');
     }
-    for c in word.chars() {
-        if matches!(c, '\\' | '*' | '_' | '`' | '[' | ']') {
+    let mut chars = word.chars().peekable();
+    while let Some(c) = chars.next() {
+        let escape = match c {
+            '\\' | '*' | '_' | '`' | '[' | ']' | '~' | '<' => true,
+            // A character reference (`&amp;`, `&#1;`) would be decoded.
+            '&' => chars
+                .peek()
+                .is_some_and(|n| n.is_ascii_alphanumeric() || *n == '#'),
+            _ => false,
+        };
+        if escape {
             out.push('\\');
         }
         out.push(c);
@@ -696,21 +1045,22 @@ fn escape_into(out: &mut String, word: &str, at_line: bool) {
 /// Whether `word` would start an ordered list item (`1.` or `1)`).
 fn ordered_marker(word: &str) -> bool {
     let digits = word.bytes().take_while(u8::is_ascii_digit).count();
-    digits > 0
-        && digits <= 9
+    (1..=9).contains(&digits)
         && matches!(word.as_bytes().get(digits), Some(b'.' | b')'))
         && word.len() == digits + 1
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::page::links_of_html;
     use super::*;
 
+    fn page() -> PublicUrl {
+        PublicUrl::parse("https://site.test/a/b.html").unwrap()
+    }
+
     fn md(html: &str) -> String {
-        html_to_markdown(
-            html,
-            &PublicUrl::parse("https://site.test/a/b.html").unwrap(),
-        )
+        html_to_markdown(html, &page())
     }
 
     #[test]
@@ -719,6 +1069,8 @@ mod tests {
             md("<h1>Title</h1><p>One\n  two</p><p>Three<br>four</p><h3>Sub</h3>"),
             "# Title\n\nOne two\n\nThree\nfour\n\n### Sub"
         );
+        // A heading with nothing to show writes no marker.
+        assert_eq!(md("<h1><img src=/logo.png></h1><p>a</p>"), "a");
     }
 
     #[test]
@@ -726,8 +1078,29 @@ mod tests {
         let page = "<html><head><title>T</title><style>p{}</style></head>\
             <body><script>var a = '<p>no</p>';</script><noscript>nojs</noscript>\
             <p>Seen<!-- hidden --></p><template><p>tpl</p></template>\
-            <svg><text>svg</text></svg><button>Click</button></body></html>";
+            <svg><text>svg</text></svg><select><option>o</select></body></html>";
         assert_eq!(md(page), "Seen");
+        // A button's label and a declarative shadow root are seen.
+        assert_eq!(
+            md("<button>Read more</button><template shadowrootmode=open><p>Shadow</p></template>"),
+            "Read more\n\nShadow"
+        );
+    }
+
+    #[test]
+    fn a_head_left_open_hides_nothing_but_its_own() {
+        assert_eq!(
+            md("<html><head><meta charset=utf-8><title>T</title><body><p>Hello</p>"),
+            "Hello"
+        );
+        assert_eq!(md("<p>a</p><head><p>b</p>"), "a\n\nb");
+    }
+
+    #[test]
+    fn foreign_content_ends_where_a_browser_ends_it() {
+        assert_eq!(md(r#"<svg><path d=""/><p>Body</p>"#), "Body");
+        assert_eq!(md("<math><mi>x</mi></math><p>After</p>"), "After");
+        assert_eq!(md("<svg/><p>a</p>"), "a");
     }
 
     #[test]
@@ -739,23 +1112,36 @@ mod tests {
             "See [the page](https://site.test/c?x=1) and [o](https://o.test/)."
         );
         assert_eq!(
-            md(r#"<base href="https://cdn.test/d/"><a href="e">e</a>"#),
-            "[e](https://cdn.test/d/e)"
-        );
-        assert_eq!(
             md(r#"<img src="/i.png" alt="A cat"> <img src="/x.png">"#),
             "![A cat](https://site.test/i.png)"
         );
     }
 
     #[test]
-    fn a_link_that_is_not_http_keeps_its_text() {
+    fn the_base_is_read_as_the_pages_links_read_it() {
+        let html = r#"<head><base target=_blank><base href="https://cdn.test/d/"></head><a href="e">e</a>"#;
+        assert_eq!(md(html), "[e](https://cdn.test/d/e)");
+        assert_eq!(links_of_html(html, &page()), ["https://cdn.test/d/e"]);
+        // A first base too long to read leaves the page's own, for both,
+        // whatever base follows it.
+        let long = format!(
+            r#"<base href="https://cdn.test/{}"><base href="https://o.test/"><a href="e">e</a>"#,
+            "x".repeat(MAX_TARGET_BYTES)
+        );
+        assert_eq!(md(&long), "[e](https://site.test/a/e)");
+        assert_eq!(links_of_html(&long, &page()), ["https://site.test/a/e"]);
+    }
+
+    #[test]
+    fn a_link_that_is_not_http_or_too_long_keeps_its_text() {
         assert_eq!(
             md(
                 r#"<a href="javascript:go()">Go</a> <a href="mailto:a@b.test">mail</a> <a href="/x"></a>"#
             ),
             "Go mail"
         );
+        let far = format!(r#"<a href="/{}">far</a>"#, "x".repeat(2_000));
+        assert_eq!(md(&far), "far");
     }
 
     #[test]
@@ -767,12 +1153,51 @@ mod tests {
     }
 
     #[test]
-    fn emphasis_and_inline_code() {
+    fn a_new_link_ends_the_open_one() {
         assert_eq!(
-            md("<p><strong>bold</strong> <em>it</em> <code>x()</code> <del>gone</del></p>"),
-            "**bold** *it* `x()` ~~gone~~"
+            md(r#"<a href="/1">one <a href="/2">two</a> three"#),
+            "[one](https://site.test/1) [two](https://site.test/2) three"
+        );
+    }
+
+    #[test]
+    fn a_card_link_is_one_line() {
+        assert_eq!(
+            md(r#"<a href="https://x.test/"><h3>Title</h3><p>Desc</p></a><p>next</p>"#),
+            "[Title Desc](https://x.test/)\n\nnext"
+        );
+    }
+
+    #[test]
+    fn a_bang_before_a_link_is_not_an_image() {
+        assert_eq!(
+            md(r#"<p>Wow!<a href="https://x.test/">pic</a></p>"#),
+            "Wow\\![pic](https://x.test/)"
+        );
+    }
+
+    #[test]
+    fn emphasis_and_strikethrough() {
+        assert_eq!(
+            md("<p><strong>bold</strong> <em>it</em> <del>gone</del></p>"),
+            "**bold** *it* ~~gone~~"
         );
         assert_eq!(md("<p>a<b></b>b</p>"), "ab");
+        assert_eq!(md("<i><b>x</b></i>"), "***x***");
+        assert_eq!(md("<i>a*</i>"), "*a\\**");
+        // Spaces at an element's edges go outside its marks.
+        assert_eq!(
+            md("<p>Hello<b> world </b>again</p>"),
+            "Hello **world** again"
+        );
+    }
+
+    #[test]
+    fn code_is_written_as_it_is() {
+        assert_eq!(md("<code>a_b*c</code>"), "`a_b*c`");
+        assert_eq!(md("<code>a`b</code>"), "``a`b``");
+        assert_eq!(md("<code>`x</code>"), "`` `x ``");
+        assert_eq!(md("<p>run <kbd>ls  -l</kbd> now</p>"), "run `ls -l` now");
     }
 
     #[test]
@@ -785,6 +1210,41 @@ mod tests {
         );
         // Unclosed items end at the next item.
         assert_eq!(md("<ul><li>a<li>b</ul>"), "- a\n- b");
+        // CommonMark reads at most nine digits as a number.
+        assert_eq!(
+            md("<ol start=18446744073709551615><li>a<li>b</ol>"),
+            "999999999. a\n999999999. b"
+        );
+    }
+
+    #[test]
+    fn an_item_that_starts_with_a_block_keeps_its_marker() {
+        assert_eq!(
+            md("<ul><li><p>a</p><p>b</p></li><li><h3>c</h3></li></ul>"),
+            "- a\n\n  b\n\n- ### c"
+        );
+        assert_eq!(md("<ul><li><ul><li>x</li></ul></li></ul>"), "- - x");
+    }
+
+    #[test]
+    fn content_under_an_item_lines_up_with_its_text() {
+        assert_eq!(md("<ol><li>a<p>b</p></li></ol>"), "1. a\n\n   b");
+        assert_eq!(
+            md("<ol start=10><li>a<ul><li>b</li></ul></li></ol>"),
+            "10. a\n    - b"
+        );
+        assert_eq!(
+            md("<ul><li>x<blockquote>q</blockquote></li></ul>"),
+            "- x\n\n  > q"
+        );
+    }
+
+    #[test]
+    fn item_text_that_reads_as_a_marker_is_escaped() {
+        assert_eq!(
+            md("<ul><li>1. Install</li><li># Title</li><li>- x</li></ul>"),
+            "- \\1. Install\n- \\# Title\n- \\- x"
+        );
     }
 
     #[test]
@@ -793,10 +1253,13 @@ mod tests {
             md("<p>x</p><pre><code>fn  a() {\n    b(`c`);\n}\n</code></pre><p>y</p>"),
             "x\n\n```\nfn  a() {\n    b(`c`);\n}\n```\n\ny"
         );
-        // A fence longer than any backtick run inside.
         assert_eq!(md("<pre>a ``` b</pre>"), "````\na ``` b\n````");
-        // Markup inside pre is not converted; its text is kept.
         assert_eq!(md("<pre><b>*x*</b></pre>"), "```\n*x*\n```");
+        // In a list item, its lines line up with the item's text.
+        assert_eq!(
+            md("<ul><li>a<pre>b\nc</pre></li></ul>"),
+            "- a\n\n  ```\n  b\n  c\n  ```"
+        );
     }
 
     #[test]
@@ -804,6 +1267,21 @@ mod tests {
         assert_eq!(
             md("<blockquote><p>a</p><p>b</p></blockquote><p>c</p>"),
             "> a\n>\n> b\n\nc"
+        );
+    }
+
+    #[test]
+    fn tables_become_pipe_tables() {
+        assert_eq!(
+            md(
+                "<table><tr><th>Name</th><th>Qty</th></tr><tr><td>a|b</td><td>2<br>pcs</td></tr><tr><td>c</td></tr></table>"
+            ),
+            "| Name | Qty |\n| --- | --- |\n| a\\|b | 2 pcs |\n| c |"
+        );
+        // A short header row is padded to the widest row.
+        assert_eq!(
+            md("<table><tr><td>a</td></tr><tr><td>b</td><td>c</td></tr></table>"),
+            "| a |  |\n| --- | --- |\n| b | c |"
         );
     }
 
@@ -818,37 +1296,38 @@ mod tests {
     }
 
     #[test]
-    fn tables_become_pipe_tables() {
+    fn marks_and_links_left_open_across_a_cell_end_at_it() {
+        assert_eq!(md("<b><table><td></b>x"), "| x |\n| --- |");
+        assert_eq!(md(r#"<a href="/x"><table><td></a>y"#), "y");
         assert_eq!(
-            md(
-                "<table><tr><th>Name</th><th>Qty</th></tr><tr><td>a|b</td><td>2<br>pcs</td></tr><tr><td>c</td></tr></table>"
-            ),
-            "| Name | Qty |\n| --- | --- |\n| a\\|b | 2 pcs |\n| c |  |"
+            md("<table><td><b>x</td><td>y</b></td></table>"),
+            "| **x** | y |\n| --- | --- |"
         );
     }
 
     #[test]
     fn text_that_reads_as_markup_is_escaped() {
         assert_eq!(
-            md("<p># not a heading</p><p>a*b*c [x] _y_ `z`</p><p>1. no list</p>"),
-            "\\# not a heading\n\na\\*b\\*c \\[x\\] \\_y\\_ \\`z\\`\n\n\\1. no list"
+            md("<p># not a heading</p><p>a*b*c [x] _y_ `z` ~w~</p><p>1. no list</p>"),
+            "\\# not a heading\n\na\\*b\\*c \\[x\\] \\_y\\_ \\`z\\` \\~w\\~\n\n\\1. no list"
+        );
+        // Decoded `<` and `&` stay text: no autolink, raw HTML or reference.
+        assert_eq!(
+            md("<p>&lt;javascript:alert(1)&gt; &amp;amp; a & b</p>"),
+            "\\<javascript:alert(1)> \\&amp; a & b"
         );
     }
 
     #[test]
     fn character_references_are_decoded() {
-        assert_eq!(
-            md("<p>caf&eacute; &amp; &lt;tag&gt; &#x1F600;</p>"),
-            "café & <tag> 😀"
-        );
+        assert_eq!(md("<p>caf&eacute; &#x1F600;</p>"), "café 😀");
     }
 
     #[test]
     fn hostile_pages_are_converted_in_one_pass() {
-        // Unclosed everything: still linear, still all the text.
-        let n = 50_000;
-        let page = "<ul><li><a href=x><b><table><tr><td><blockquote>w ".repeat(n);
-        let out = md(&page);
+        let n = 20_000;
+        // Unclosed everything: still all the text.
+        let out = md(&"<ul><li><a href=x><b><table><tr><td><blockquote>w ".repeat(n));
         assert_eq!(out.matches('w').count(), n);
         // Deep quotes and lists: each line's prefix stays short.
         let deep = md(&"<blockquote><ul><li>q ".repeat(n));
@@ -857,10 +1336,39 @@ mod tests {
             deep.lines().all(|l| l.len() < 100),
             "a prefix grew with depth"
         );
+        // Deep inline elements and their ends.
+        let spans = md(&format!("{}x{}", "<b><i>".repeat(n), "</i></b>".repeat(n)));
+        assert!(spans.contains('x'));
         let nested = md(&"<table><tr><td>t ".repeat(n));
         assert_eq!(nested.matches('t').count(), n);
+        // One wide row and many short ones: rows are not padded.
+        let wide = format!(
+            "<table><tr>{}<tr>{}</table>",
+            "<td>c".repeat(n),
+            "<td>r<tr>".repeat(n)
+        );
+        assert!(md(&wide).len() < 10 * wide.len());
+        // A target is the page's URL at most, however short its href.
+        let links = md(&r#"<a href="">x</a>"#.repeat(10_000));
+        assert_eq!(
+            links.matches("[x](https://site.test/a/b.html)").count(),
+            10_000
+        );
+        // The output stops at what the page store keeps.
+        let big = md(&"<p>word ".repeat(STORE_BYTES / 2));
+        assert!(big.len() <= STORE_BYTES);
         let pre = format!("<pre>{}", "`".repeat(n));
         assert!(md(&pre).contains(&"`".repeat(n)));
         assert_eq!(md(""), "");
+        // Nothing here panics.
+        for page in [
+            "<b><table><td></b>",
+            r#"<a href="/x"><table><td></a>"#,
+            "<td>é</td><table><td>é<b>é</td></b>",
+            "é!<table><td><a href=/x>a</a>",
+            "</ul></li></blockquote></table></td></a></b></pre></code>",
+        ] {
+            md(page);
+        }
     }
 }

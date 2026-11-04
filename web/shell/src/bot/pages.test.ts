@@ -108,7 +108,7 @@ describe("You", () => {
     const calls = stubFetch({
       "GET /api/me/bot": () => me,
       "GET /api/me/usage": { week: { start: "2026-10-19T00:00:00Z", end: "2026-10-26T00:00:00Z" }, totals: [], runs: [] },
-      "PUT /api/me/bot": (b: { web: boolean }) => { me = meBot({ web: { on: b.web, offered: true, why_off: b.web ? null : "person_off", prices: { search_milli: 25, fetch_milli: 50 } } }); return me; },
+      "PUT /api/me/bot": (b: { web: boolean }) => { me = meBot({ web: { on: b.web, offered: true, operations: { search: true, fetch: true }, why_off: b.web ? null : "person_off", prices: { search_milli: 25, fetch_milli: 50 } } }); return me; },
     });
     const m = mount(MePage, { now: () => new Date("2026-10-21T14:05:00Z") });
     await settle();
@@ -125,10 +125,24 @@ describe("You", () => {
     expect([off.getAttribute("aria-checked"), off.getAttribute("aria-disabled")]).toEqual(["false", null]);
   });
 
+  it("me_offers_only_reading_where_the_instance_cannot_search", async () => {
+    stubFetch({
+      "GET /api/me/bot": meBot({ web: { on: true, offered: true, operations: { search: false, fetch: true }, why_off: null, prices: { search_milli: 25, fetch_milli: 50 } } }),
+      "GET /api/me/usage": { week: { start: "2026-10-19T00:00:00Z", end: "2026-10-26T00:00:00Z" }, totals: [], runs: [] },
+    });
+    const m = mount(MePage, {});
+    await settle();
+    const sw = m.root.querySelector<HTMLElement>('[role="switch"][aria-label="Let ClaxBot read web pages"]')!;
+    expect(sw.getAttribute("aria-checked")).toBe("true");
+    const note = m.root.querySelector(".mew-web")!.textContent!;
+    expect(note).toContain("ClaxBot may read web pages for you; the pages a run reads can carry data out. Reading a page 50 credits, per thousand requests.");
+    expect(note).not.toContain("Searches");
+  });
+
   it("me_disables_the_switch_when_off_on_the_instance", async () => {
     for (const [why, text] of [["admin_off", "Off on this instance"], ["not_configured", "Not configured"]] as const) {
       stubFetch({
-        "GET /api/me/bot": meBot({ web: { on: true, offered: false, why_off: why, prices: { search_milli: null, fetch_milli: null } } }),
+        "GET /api/me/bot": meBot({ web: { on: true, offered: false, operations: { search: false, fetch: false }, why_off: why, prices: { search_milli: null, fetch_milli: null } } }),
         "GET /api/me/usage": { week: { start: "2026-10-19T00:00:00Z", end: "2026-10-26T00:00:00Z" }, totals: [], runs: [] },
       });
       const m = mount(MePage, {});

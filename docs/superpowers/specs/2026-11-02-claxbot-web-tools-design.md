@@ -424,9 +424,10 @@ clax.web.fetch(url: string, opts?: { offset?: number; format?: "auto" | "raw" })
   WHATWG's order (`clax_bot::web::page::html_encoding`): a byte-order
   mark, else the header's charset, else the first `<meta charset>` or
   `<meta http-equiv="Content-Type">` in its first 1,024 bytes, with UTF-8
-  as the fallback (where a browser would take its locale's default). HTML
-  goes to conversion decoded, as UTF-8 with `<meta charset="utf-8">` put
-  first (`html_for_conversion`), so the converter reads it as UTF-8
+  as the fallback (where a browser would take its locale's default). The
+  daemon converts the decoded text itself; the Worker sends it to
+  conversion as UTF-8 with `<meta charset="utf-8">` put first
+  (`html_for_conversion`), so Cloudflare's converter reads it as UTF-8
   whatever meta the page carries.
 - A readable HTTP error page (4xx or 5xx with a text body) is returned with
   its `status`, not as an error.
@@ -467,7 +468,7 @@ only the message.
 | `url_not_allowed` | the URL rule or the host check refuses it, on the URL or a redirect | on the URL no; on a redirect, fetch: when it went out |
 | `web_timeout` | the deadline passed (30 s by default, conversion included) | search no; fetch: when it went out |
 | `web_too_large` | the body passed the byte limit (5 MB) | fetch: when it went out |
-| `web_unsupported_content_type` | images, audio, video, binary in raw mode | fetch: when it went out |
+| `web_unsupported_content_type` | images, audio, video, binary; anything but text in raw mode; a PDF or Office document on a daemon without a Cloudflare account | fetch: when it went out |
 | `web_blocked` | a bot challenge answered the fetch | fetch: when it went out |
 | `web_unavailable` | the source failed (Cloudflare 5xx, rate limit, payment required at the gateway, more than 5 redirects), or its host found it cannot run here (§10: refused before the source, not counted) | search no; fetch: when it went out |
 
