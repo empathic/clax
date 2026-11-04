@@ -1,6 +1,6 @@
-use clax_testkit::TestServer;
+use clax_realtime::feedback::FollowKind;
+use clax_testkit::{TestServer, until, within};
 use serde_json::{Value, json};
-use std::time::{Duration, Instant};
 
 /// Registers a Grok session and returns its ID.
 async fn grok_session(ts: &TestServer) -> String {
@@ -34,6 +34,15 @@ async fn sent_comment(ts: &TestServer, sid: &str) -> (String, String) {
     let aid = published(ts, sid).await;
     let tid = send_comment(ts, &aid).await;
     (aid, tid)
+}
+
+/// Returns once a notices poll of `sid` counts as its follower (or, for
+/// `FollowKind::Channel`, its channel): it is in progress.
+async fn following(ts: &TestServer, sid: &str, kind: FollowKind) {
+    until(&format!("a notices poll of {sid} in progress"), || async {
+        ts.state.followers.has(sid, kind).then_some(())
+    })
+    .await;
 }
 
 async fn notices(ts: &TestServer, sid: &str, wait: u64) -> Value {
@@ -74,6 +83,8 @@ async fn a_notice_points_at_the_comment_once_and_delivers_nothing() {
     assert_eq!(f["feedback"].as_array().unwrap().len(), 1, "{f}");
 }
 
+/// The poll waits 600 s, past the HANG guard: an answer at all is the new
+/// comment ending it.
 #[tokio::test]
 async fn a_waiting_notices_poll_wakes_on_a_new_comment() {
     let ts = TestServer::spawn().await;
@@ -81,17 +92,15 @@ async fn a_waiting_notices_poll_wakes_on_a_new_comment() {
     let aid = published(&ts, &sid).await;
     let req = ts.authed(
         ts.client
-            .get(format!("{}/api/sessions/{sid}/notices?wait=10", ts.base)),
+            .get(format!("{}/api/sessions/{sid}/notices?wait=600", ts.base)),
     );
     let waiter = tokio::spawn(async move {
         let body: Value = req.send().await.unwrap().json().await.unwrap();
-        (Instant::now(), body)
+        body
     });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    following(&ts, &sid, FollowKind::Follower).await;
     let tid = send_comment(&ts, &aid).await;
-    let sent = Instant::now();
-    let (answered, body) = waiter.await.unwrap();
-    assert!(answered.saturating_duration_since(sent) < Duration::from_secs(2));
+    let body = within("the woken notices poll", waiter).await.unwrap();
     assert_eq!(body["notices"].as_array().unwrap().len(), 1, "{body}");
     assert_eq!(body["notices"][0]["thread_id"], tid);
 }
@@ -102,18 +111,18 @@ async fn notices_stay_quiet_while_the_session_waits_for_feedback() {
     let sid = grok_session(&ts).await;
     let aid = published(&ts, &sid).await;
     let wait = ts.authed(ts.client.get(format!(
-        "{}/api/sessions/{sid}/feedback?tier=wait&wait=5",
+        "{}/api/sessions/{sid}/feedback?tier=wait&wait=600",
         ts.base
     )));
     let waiter = tokio::spawn(async move {
         let body: Value = wait.send().await.unwrap().json().await.unwrap();
         body
     });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    ts.wait_feedback_waiters(&sid, 1).await;
     let quiet = notices(&ts, &sid, 0).await;
     assert_eq!(quiet, json!({"notices": [], "lines": [], "waited_s": 0}));
     let tid = send_comment(&ts, &aid).await;
-    let got = waiter.await.unwrap();
+    let got = within("the wait poll's answer", waiter).await.unwrap();
     assert_eq!(got["feedback"][0]["thread_id"], tid, "{got}");
     // Delivered by the wait: never announced afterwards.
     let after = notices(&ts, &sid, 0).await;
@@ -141,10 +150,10 @@ async fn grok_push_reports_whether_a_follower_is_connected() {
     );
     let req = ts.authed(
         ts.client
-            .get(format!("{}/api/sessions/{sid}/notices?wait=5", ts.base)),
+            .get(format!("{}/api/sessions/{sid}/notices?wait=600", ts.base)),
     );
     let follower = tokio::spawn(async move { req.send().await.unwrap().status() });
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    following(&ts, &sid, FollowKind::Follower).await;
     let during: Value = ts
         .get_authed(&format!("/api/sessions/{sid}"))
         .await
@@ -173,14 +182,12 @@ async fn notices_of_an_unknown_or_ended_session_are_errors() {
         .await
         .unwrap();
     assert_eq!(ended.status(), 200);
-    let started = Instant::now();
-    let res = ts
-        .get_authed(&format!("/api/sessions/{sid}/notices?wait=30"))
-        .await;
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "answered before any wait"
-    );
+    // Answered before any wait: a 600 s wait outlasts the HANG guard.
+    let res = within(
+        "the ended session's notices poll",
+        ts.get_authed(&format!("/api/sessions/{sid}/notices?wait=600")),
+    )
+    .await;
     assert_eq!(res.status(), 400);
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["error"]["code"], "unknown_session", "{body}");
@@ -188,9 +195,11 @@ async fn notices_of_an_unknown_or_ended_session_are_errors() {
     assert_eq!(unauthed.status(), 401);
 }
 
+/// The follower's poll waits 600 s and is ended by the daemon's shutdown.
 #[tokio::test]
 async fn claude_push_reports_a_notice_follower() {
-    let ts = TestServer::spawn().await;
+    let (stop, stopping) = tokio::sync::watch::channel(false);
+    let ts = TestServer::spawn_with(move |s| s.shutdown = stopping).await;
     let sid = claude_session(&ts).await;
     let push = |ts: &TestServer, sid: &str| {
         let path = format!("/api/sessions/{sid}");
@@ -218,16 +227,17 @@ async fn claude_push_reports_a_notice_follower() {
     // A notices poll in progress counts as a follower.
     let req = ts.authed(
         ts.client
-            .get(format!("{}/api/sessions/{sid}/notices?wait=3", ts.base)),
+            .get(format!("{}/api/sessions/{sid}/notices?wait=600", ts.base)),
     );
     let poll = tokio::spawn(async move { req.send().await.unwrap().status() });
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let following = push(&ts, &sid).await;
+    following(&ts, &sid, FollowKind::Follower).await;
+    let now = push(&ts, &sid).await;
     assert_eq!(
-        following,
+        now,
         json!({"tier": "notice", "available": true, "reason": null})
     );
-    assert_eq!(poll.await.unwrap(), 200);
+    stop.send(true).unwrap();
+    assert_eq!(within("the follower's poll", poll).await.unwrap(), 200);
 }
 
 /// The page's agent list says whether each live agent is woken by a
@@ -313,14 +323,13 @@ async fn a_follower_poll_marks_its_agent_woken_on_the_page() {
     );
     let req = ts.authed(
         ts.client
-            .get(format!("{}/api/sessions/{sid}/notices?wait=30", ts.base)),
+            .get(format!("{}/api/sessions/{sid}/notices?wait=600", ts.base)),
     );
     let poll = tokio::spawn(async move { req.send().await.unwrap().status() });
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while wakes(&ts, &aid).await != true {
-        assert!(Instant::now() < deadline, "the follower never counted");
-        tokio::task::yield_now().await;
-    }
+    until("the follower counted", || async {
+        (wakes(&ts, &aid).await == true).then_some(())
+    })
+    .await;
     poll.abort();
     // A Pi session is woken only while its extension's injection loop
     // polls: a client merely named pi is not.
@@ -329,18 +338,14 @@ async fn a_follower_poll_marks_its_agent_woken_on_the_page() {
     let paid = published(&ts, &pid).await;
     assert_eq!(wakes(&ts, &paid).await, false);
     let req = ts.authed(ts.client.get(format!(
-        "{}/api/sessions/{pid}/feedback?tier=inject&wait=30",
+        "{}/api/sessions/{pid}/feedback?tier=inject&wait=600",
         ts.base
     )));
     let inject = tokio::spawn(async move { req.send().await.unwrap().status() });
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while wakes(&ts, &paid).await != true {
-        assert!(
-            Instant::now() < deadline,
-            "the injection loop never counted"
-        );
-        tokio::task::yield_now().await;
-    }
+    until("the injection loop counted", || async {
+        (wakes(&ts, &paid).await == true).then_some(())
+    })
+    .await;
     inject.abort();
 }
 
@@ -366,12 +371,11 @@ async fn a_channel_is_unsure_and_yields_its_notices_to_a_follower() {
         )));
         async move { req.send().await.unwrap().json::<Value>().await.unwrap() }
     };
-    let poll = tokio::spawn(channel(&ts, &sid, 30));
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while wakes(&ts, &aid).await != "unsure" {
-        assert!(Instant::now() < deadline, "the channel never counted");
-        tokio::task::yield_now().await;
-    }
+    let poll = tokio::spawn(channel(&ts, &sid, 600));
+    until("the channel counted", || async {
+        (wakes(&ts, &aid).await == "unsure").then_some(())
+    })
+    .await;
     let push: Value = ts
         .get_authed(&format!("/api/sessions/{sid}"))
         .await
@@ -391,18 +395,17 @@ async fn a_channel_is_unsure_and_yields_its_notices_to_a_follower() {
     // A follower connects: the channel takes nothing, the follower all.
     let req = ts.authed(
         ts.client
-            .get(format!("{}/api/sessions/{sid}/notices?wait=30", ts.base)),
+            .get(format!("{}/api/sessions/{sid}/notices?wait=600", ts.base)),
     );
     let follower =
         tokio::spawn(async move { req.send().await.unwrap().json::<Value>().await.unwrap() });
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while wakes(&ts, &aid).await != true {
-        assert!(Instant::now() < deadline, "the follower never counted");
-        tokio::task::yield_now().await;
-    }
+    until("the follower counted", || async {
+        (wakes(&ts, &aid).await == true).then_some(())
+    })
+    .await;
     send_comment(&ts, &aid).await;
     let quiet = channel(&ts, &sid, 0).await;
     assert!(quiet["notices"].as_array().unwrap().is_empty(), "{quiet}");
-    let got = follower.await.unwrap();
+    let got = within("the follower's notice", follower).await.unwrap();
     assert_eq!(got["notices"].as_array().unwrap().len(), 1, "{got}");
 }
