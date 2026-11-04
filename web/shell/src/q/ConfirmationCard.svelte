@@ -20,7 +20,7 @@
   import { type ConfirmationView, agentLabel, answerConfirmation } from "./confirm.svelte";
   import { type PasskeySettings, assertFor, passkeySettings, putSettings, unavailableHere } from "./passkey";
   import PasskeyList from "./PasskeyList.svelte";
-  import PasskeySetup from "./PasskeySetup.svelte";
+  import PasskeySetup, { finishSetup, setup } from "./PasskeySetup.svelte";
 
   let { c, now, onanswered }: {
     c: ConfirmationView;
@@ -37,7 +37,9 @@
   void passkeySettings().then(s => { keys = s; });
   // The first-use offer: passkeys can be used here, none is required, and it was not put off.
   const offer = $derived(!!keys && keys.available && !keys.require_passkey && !keys.offer_dismissed && unavailableHere() === null);
-  let offered = $state<string | null>(null);
+  // A setup finished while this card is shown, wherever it was started.
+  const seen = setup.finished;
+  const setUp = $derived(setup.finished > seen);
   const notNow = () => { void putSettings({ offer_dismissed: true }).then(s => { keys = s; }, () => {}); };
   const OUTCOME: Record<string, string> = { approved: "Confirmed", declined: "Declined", expired: "Expired: make the call again for a new one" };
 
@@ -53,6 +55,8 @@
       const after = await answerConfirmation(c.id, approve, assertion);
       made = after.status;
       onanswered?.(after);
+      // The passkey registration this confirmation held, sent again now.
+      if (after.status === "approved") void finishSetup(c.id);
       queueMicrotask(() => self()?.focus({ preventScroll: true }));
     } catch (x) { err = x instanceof Error ? x.message : String(x); } finally { busy = false; }
   }
@@ -80,12 +84,12 @@
   {#if keys?.passkeys.length && (offer || keys.required)}
     <div class="ckeys"><span>{keys.required ? "Confirming asks for one of these passkeys:" : "Passkeys registered:"}</span><PasskeyList keys={keys.passkeys} {now} /></div>
   {/if}
-  {#if offered}
-    <p class="coffer" role="status">{offered}</p>
-  {:else if offer}
+  {#if setUp}
+    <p class="coffer" role="status">Touch ID or a passkey now confirms these decisions.</p>
+  {:else if offer && setup.pending?.held.id !== c.id}
     <div class="coffer">
       <span>Require Touch ID or a passkey to confirm</span>
-      <PasskeySetup onDone={s => { keys = s; offered = "Touch ID or a passkey now confirms these decisions."; }} />
+      <PasskeySetup onDone={s => { keys = s; }} />
       <button type="button" class="ghost" onclick={notNow}>Not now</button>
     </div>
   {/if}

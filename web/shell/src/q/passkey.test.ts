@@ -85,6 +85,51 @@ describe("passkeys for confirmations", () => {
     expect(m.root.querySelector(".coffer")!.textContent).toBe("Touch ID or a passkey now confirms these decisions.");
   });
 
+  it("keeps a registration held for a confirmation past the card that offered it, and finishes it once that confirmation is approved", async () => {
+    const REG = "cf_fedcba9876543210fedcba9876543210";
+    let posts = 0;
+    const calls = stubFetch({
+      "GET /api/passkeys": settings(),
+      "POST /api/passkeys/challenge": challenge,
+      // Held while an agent is live; presented with its confirmation, registered.
+      "POST /api/passkeys": () => posts++ === 0
+        ? [202, { status: "confirmation_pending", confirmation_id: REG, confirm_url: `http://localhost:7480/inbox?confirm=${REG}` }]
+        : [201, { passkey: { credential_id: "AQ" }, settings: settings({ passkeys: [{ credential_id: "AQ", alg: -7, created_at: "2026-10-30T10:00:00.000Z" }] }) }],
+      [`POST /api/confirmations/${ID}`]: { confirmation: { ...card(), status: "approved" } },
+      [`POST /api/confirmations/${REG}`]: { confirmation: { ...card(), id: REG, status: "approved" } },
+      "PUT /api/passkeys/settings": settings({ require_passkey: true, required: true }),
+    });
+    await passkeySettings(true);
+    const offering = mount(ConfirmationCard, { c: card(), now });
+    await settle();
+    click(byText(offering.root, "Set up"));
+    await settle();
+    expect(offering.root.querySelector(".pk-held")!.textContent).toContain(REG);
+    // Answering the card that offered it drops the card from the inbox.
+    click(byText(offering.root, "Confirm"));
+    await settle();
+    offering.unmount();
+    // The registration's own card offers nothing; another card shows the setup still waiting.
+    const reg = mount(ConfirmationCard, { c: { ...card(), id: REG }, now });
+    const other = mount(ConfirmationCard, { c: { ...card(), id: "cf_other" }, now });
+    await settle();
+    expect(reg.root.querySelector(".coffer")).toBeNull();
+    expect(byText(other.root, "Set up")).toBeUndefined();
+    expect(byText(other.root, "Finish setup")).toBeDefined();
+    // Approving the registration's confirmation finishes the setup, with no further click.
+    click(byText(reg.root, "Confirm"));
+    await settle();
+    expect(calls.filter(c => c.method !== "GET").map(c => [c.method, c.url])).toEqual([
+      ["POST", "/api/passkeys/challenge"],
+      ["POST", "/api/passkeys"],
+      ["POST", `/api/confirmations/${ID}`],
+      ["POST", `/api/confirmations/${REG}`],
+      ["POST", "/api/passkeys"],
+      ["PUT", "/api/passkeys/settings"],
+    ]);
+    expect(other.root.querySelector(".coffer")!.textContent).toBe("Touch ID or a passkey now confirms these decisions.");
+  });
+
   it("confirms with an assertion where passkeys are required", async () => {
     const calls = stubFetch({
       "GET /api/passkeys": settings({ require_passkey: true, required: true, passkeys: [{ credential_id: "AQ", alg: -7, created_at: "2026-10-30T10:00:00.000Z", added_by: { via: "a browser session", agents_live: ["ada (claude)"] } }] }),
