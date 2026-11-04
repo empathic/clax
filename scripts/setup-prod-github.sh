@@ -31,8 +31,11 @@
 #   --public-host <host>
 #   --site-domain <domain>
 #   --store <artifacts|memory>      (artifacts when setup.env names none)
-#   --owner-github <login>          with --github-client-id, or neither
-#   --github-client-id <ID>         (no GitHub sign-in without them)
+#   --owner-github <login>          the owner, who approves production
+#                                   deploys; with --github-client-id
+#   --github-client-id <ID>
+#   --staging-host-zone <zone>      clax-staging.dev
+#   --staging-site-zone <zone>      clax-staging.run
 #   --cloudflare-account-id <ID>
 #   --retired-content-origin <URL>  the record's `retired_content_origin`, else
 #                                   none (an existing variable is kept)
@@ -47,13 +50,29 @@
 #    alone merge into prod (anyone with write access opens pull requests)
 #    and push to it directly (scripts/release.sh pushes the pin commit);
 # 3. creates the environment `production`, deployable from `prod` only, and
-#    sets its variables;
+#    sets its variables (PUBLIC_HOST, SITE_DOMAIN, STORE and
+#    RETIRED_CONTENT_ORIGIN), removing any variable named as one of its
+#    secrets;
 # 4. sets the repository variable PUBLIC_HOST, which the hourly drift check
 #    (.github/workflows/deploy-prod.yml) reads outside the environment;
 # 5. makes the environment `npm` deployable from `prod` and `main` alone
 #    (publish-pi.yml runs in it from prod, publish-sdk.yml from main);
-# 6. prints the `gh secret set` commands for the production environment's
-#    two secrets, which it never runs: their values are yours to paste.
+# 6. creates, or updates, the repository ruleset `release` on
+#    refs/heads/release/*: only its bypass actors, the repository admins,
+#    create, update or delete a release branch, so only they run code with
+#    the staging environment's secrets;
+# 7. makes a production deploy wait for the owner's approval (the
+#    environment's required reviewer, OWNER_GITHUB);
+# 8. creates the environment `staging`, deployable from release/* and main
+#    alone (GitHub matches the rule against a run's GITHUB_REF, which a
+#    pull_request run has as refs/pull/<N>/merge, so no pull request's run
+#    reaches it), with the variables STAGING_HOST_ZONE and STAGING_SITE_ZONE;
+# 9. creates the environment `release`, deployable from prod alone, for the
+#    release GitHub App's secrets;
+# 10. prints the `gh secret set` commands for the environments' secrets,
+#    which it never runs: production's CLOUDFLARE_ACCOUNT_ID,
+#    OAUTH_CLIENT_ID and OWNER_GITHUB with their values from the deploy
+#    configuration, and the rest, whose values are yours to paste.
 #
 # The REST API shapes are GitHub's:
 #   refs          https://docs.github.com/en/rest/git/refs#create-a-reference
@@ -75,10 +94,11 @@ set -euo pipefail
 act=0
 repo="empathic/clax"
 commit=""
-# The production environment's variables, which the deploy workflow passes
-# to scripts/cloudflare-setup.sh; step 3 reads them by name. The GitHub
-# OAuth App's client ID is OAUTH_CLIENT_ID: GitHub refuses a variable whose
-# name starts with GITHUB_.
+# The production environment's settings, which the deploy workflow passes
+# to scripts/cloudflare-setup.sh; steps 3 and 6 read them by name. The
+# first four are variables; OWNER_GITHUB, OAUTH_CLIENT_ID and
+# CLOUDFLARE_ACCOUNT_ID are secrets. The GitHub OAuth App's client ID is
+# OAUTH_CLIENT_ID: GitHub refuses a secret whose name starts with GITHUB_.
 PUBLIC_HOST=""
 SITE_DOMAIN=""
 STORE=""
@@ -86,6 +106,8 @@ OWNER_GITHUB=""
 OAUTH_CLIENT_ID=""
 CLOUDFLARE_ACCOUNT_ID=""
 RETIRED_CONTENT_ORIGIN=""
+STAGING_HOST_ZONE="clax-staging.dev"
+STAGING_SITE_ZONE="clax-staging.run"
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d'; }
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -100,6 +122,8 @@ while [ $# -gt 0 ]; do
         --github-client-id) OAUTH_CLIENT_ID="$2"; shift ;;
         --cloudflare-account-id) CLOUDFLARE_ACCOUNT_ID="$2"; shift ;;
         --retired-content-origin) RETIRED_CONTENT_ORIGIN="$2"; shift ;;
+        --staging-host-zone) STAGING_HOST_ZONE="$2"; shift ;;
+        --staging-site-zone) STAGING_SITE_ZONE="$2"; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "setup-prod-github: unknown option $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -133,7 +157,8 @@ missing=""
 [ -n "$PUBLIC_HOST" ] || missing="$missing --public-host"
 [ -n "$SITE_DOMAIN" ] || missing="$missing --site-domain"
 [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || missing="$missing --cloudflare-account-id"
-if [ -n "$OAUTH_CLIENT_ID" ] && [ -z "$OWNER_GITHUB" ]; then missing="$missing --owner-github"; fi
+# The owner approves production deploys (step 7), so there is one.
+[ -n "$OWNER_GITHUB" ] || missing="$missing --owner-github"
 if [ -n "$OWNER_GITHUB" ] && [ -z "$OAUTH_CLIENT_ID" ]; then missing="$missing --github-client-id"; fi
 if [ -n "$missing" ]; then
     echo "setup-prod-github: not in $deploy_home and not given:$missing" >&2
@@ -280,8 +305,16 @@ set_var() {
 
 say "3. Environment production"
 branch_policy production prod
-for name in CLOUDFLARE_ACCOUNT_ID OAUTH_CLIENT_ID OWNER_GITHUB PUBLIC_HOST RETIRED_CONTENT_ORIGIN SITE_DOMAIN STORE; do
+for name in PUBLIC_HOST RETIRED_CONTENT_ORIGIN SITE_DOMAIN STORE; do
     [ -z "${!name}" ] || set_var "repos/$repo/environments/production/variables" "$name" "${!name}"
+done
+# The deploy reads these as secrets (step 6); a variable of the same name is
+# an earlier setup's, and is removed.
+for name in CLOUDFLARE_ACCOUNT_ID OAUTH_CLIENT_ID OWNER_GITHUB; do
+    if get "repos/$repo/environments/production/variables/$name" >/dev/null; then
+        info "$name is a variable; removed (it is a secret, step 6)"
+        write DELETE "repos/$repo/environments/production/variables/$name"
+    fi
 done
 [ -n "$RETIRED_CONTENT_ORIGIN" ] || info "RETIRED_CONTENT_ORIGIN: not given, so left as it is (pass --retired-content-origin when the instance's deploy record names one)"
 
@@ -292,7 +325,57 @@ set_var "repos/$repo/actions/variables" PUBLIC_HOST "$PUBLIC_HOST"
 say "5. Environment npm"
 branch_policy npm prod main
 
-say "6. Secrets (yours to run; this script never sets them)"
+say "6. Ruleset release on refs/heads/release/*"
+# Creation, update and deletion of a release branch are the bypass
+# actors' alone: the repository admins (actor_id 5, RepositoryRole), as
+# prod's ruleset.
+release_ruleset='{"name":"release","target":"branch","enforcement":"active",'\
+'"conditions":{"ref_name":{"include":["refs/heads/release/*"],"exclude":[]}},'\
+'"bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}],'\
+'"rules":[{"type":"creation"},{"type":"update","parameters":{"update_allows_fetch_and_merge":false}},{"type":"deletion"}]}'
+id="$(get "repos/$repo/rulesets?includes_parents=false" | json 'next((r["id"] for r in j if r["name"] == "release"), None)')"
+if [ -n "$id" ]; then
+    info "exists (ID $id); set to the rules above"
+    write PUT "repos/$repo/rulesets/$id" "$release_ruleset"
+else
+    write POST "repos/$repo/rulesets" "$release_ruleset"
+fi
+
+say "7. Environment production: the owner approves each deploy"
+owner_id="$(get "users/$OWNER_GITHUB" | json 'j["id"]')" || die "GitHub has no user $OWNER_GITHUB"
+have="$(get "repos/$repo/environments/production" \
+    | json '[r["reviewer"]["id"] for p in j.get("protection_rules", []) if p["type"] == "required_reviewers" for r in p["reviewers"]]')" || have="[]"
+if [ "$have" = "[$owner_id]" ]; then
+    info "$OWNER_GITHUB (ID $owner_id) approves already"
+else
+    # The branch rule goes with it, so the write never leaves production
+    # deployable from other branches.
+    write PUT "repos/$repo/environments/production" \
+        "{\"reviewers\":[{\"type\":\"User\",\"id\":$owner_id}],\"prevent_self_review\":false,\"deployment_branch_policy\":{\"protected_branches\":false,\"custom_branch_policies\":true}}"
+fi
+
+say "8. Environment staging"
+branch_policy staging 'release/*' main
+for name in STAGING_HOST_ZONE STAGING_SITE_ZONE; do
+    set_var "repos/$repo/environments/staging/variables" "$name" "${!name}"
+done
+
+say "9. Environment release"
+branch_policy release prod
+
+say "10. Secrets (yours to run; this script never sets them)"
+info "gh secret set CLOUDFLARE_ACCOUNT_ID --env production --repo $repo --body $CLOUDFLARE_ACCOUNT_ID"
+if [ -n "$OAUTH_CLIENT_ID" ]; then
+    info "gh secret set OAUTH_CLIENT_ID --env production --repo $repo --body $OAUTH_CLIENT_ID"
+    info "gh secret set OWNER_GITHUB --env production --repo $repo --body $OWNER_GITHUB"
+fi
 info "gh secret set CLOUDFLARE_API_TOKEN --env production --repo $repo   # the token docs/prod.md describes"
-info "gh secret set CLAX_SMOKE_TOKEN --env production --repo $repo       # an agent token named smoke, from https://$public_host's settings"
+info "gh secret set CLAX_SMOKE_TOKEN --env production --repo $repo       # an agent token named smoke, from https://$public_host/people (Agent tokens)"
+info "gh secret set CLOUDFLARE_API_TOKEN --env staging --repo $repo      # prod's account, zones $STAGING_HOST_ZONE and $STAGING_SITE_ZONE (docs/prod.md, \"Staging\")"
+info "gh secret set CLOUDFLARE_ACCOUNT_ID --env staging --repo $repo --body $CLOUDFLARE_ACCOUNT_ID"
+info "gh secret set OAUTH_CLIENT_ID --env staging --repo $repo           # the staging GitHub OAuth App's client ID"
+info "gh secret set OAUTH_CLIENT_SECRET --env staging --repo $repo       # its client secret"
+info "gh secret set OWNER_GITHUB --env staging --repo $repo --body $OWNER_GITHUB"
+info "gh secret set RELEASE_APP_ID --env release --repo $repo            # the release GitHub App's ID"
+info "gh secret set RELEASE_APP_PRIVATE_KEY --env release --repo $repo < <the App's private key, .pem>"
 [ "$act" = 1 ] && echo "setup-prod-github: done" || echo "setup-prod-github: dry run done; run again with --i-know-what-i-am-doing to act"

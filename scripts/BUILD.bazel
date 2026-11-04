@@ -161,6 +161,14 @@ sh_test(
     data = [":all"],
 )
 
+# scripts/check-release-head.sh (CI's `version` job on pull requests into
+# prod): the head branch a release pull request may come from.
+sh_test(
+    name = "check_release_head",
+    srcs = ["test-check-release-head.sh"],
+    data = [":all"],
+)
+
 # scripts/check-version-bump.sh (CI's `version` job on pull requests into
 # prod) in a scratch repository of the release files.
 sh_test(

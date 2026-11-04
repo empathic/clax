@@ -58,6 +58,8 @@ if os.path.exists(os.path.join(state, "fail-" + path.replace("/", "_"))):
     print("gh: Resource not accessible by integration (HTTP 403)", file=sys.stderr)
     sys.exit(1)
 p = path.split("?")[0]
+if method == "GET" and (m := re.fullmatch(r"users/([\w-]+)", p)):
+    out({"login": m.group(1), "id": 4242})
 m = re.fullmatch(r"repos/[^/]+/[^/]+/(.*)", p)
 if not m: missing()
 rest = m.group(1)
@@ -75,7 +77,8 @@ if method == "GET":
         out([{"id": r["id"], "name": r["name"]} for r in db.get("rulesets", [])])
     if (m := re.fullmatch(r"environments/([^/]+)", rest)):
         e = envs.get(m.group(1))
-        out({"name": m.group(1), "deployment_branch_policy": e.get("policy")}) if e else missing()
+        rules = [{"type": "required_reviewers", "reviewers": [{"type": r["type"], "reviewer": {"id": r["id"]}} for r in e["reviewers"]]}] if e and e.get("reviewers") else []
+        out({"name": m.group(1), "deployment_branch_policy": e.get("policy"), "protection_rules": rules}) if e else missing()
     if (m := re.fullmatch(r"environments/([^/]+)/deployment-branch-policies", rest)):
         e = envs.get(m.group(1)) or missing()
         out({"total_count": len(e["branches"]), "branch_policies": e["branches"]})
@@ -94,7 +97,9 @@ if method == "PUT" and (m := re.fullmatch(r"rulesets/(\d+)", rest)):
     db["rulesets"] = [dict(body, id=r["id"]) if r["id"] == int(m.group(1)) else r for r in db["rulesets"]]; save()
 if method == "PUT" and (m := re.fullmatch(r"environments/([^/]+)", rest)):
     e = envs.setdefault(m.group(1), {"branches": [], "vars": {}})
-    e["policy"] = body["deployment_branch_policy"]; save()
+    e["policy"] = body["deployment_branch_policy"]
+    if "reviewers" in body: e["reviewers"] = body["reviewers"]
+    save()
 if method == "POST" and (m := re.fullmatch(r"environments/([^/]+)/deployment-branch-policies", rest)):
     e = envs[m.group(1)]
     e["branches"].append(dict(body, id=100 + len(e["branches"]))); save()
@@ -105,6 +110,8 @@ if method == "POST" and (m := re.fullmatch(r"environments/([^/]+)/variables", re
     envs[m.group(1)].setdefault("vars", {})[body["name"]] = body["value"]; save()
 if method == "PATCH" and (m := re.fullmatch(r"environments/([^/]+)/variables/(\w+)", rest)):
     envs[m.group(1)]["vars"][m.group(2)] = body["value"]; save()
+if method == "DELETE" and (m := re.fullmatch(r"environments/([^/]+)/variables/(\w+)", rest)):
+    del envs[m.group(1)]["vars"][m.group(2)]; save()
 if method == "POST" and rest == "actions/variables":
     db.setdefault("repo_vars", {})[body["name"]] = body["value"]; save()
 if method == "PATCH" and (m := re.fullmatch(r"actions/variables/(\w+)", rest)):
@@ -169,12 +176,18 @@ for want in \
     "would run: gh api --method PUT repos/$R/environments/production --input -" \
     "would run: gh api --method POST repos/$R/environments/production/deployment-branch-policies --input - <<< '{\"name\":\"prod\",\"type\":\"branch\"}'" \
     "would run: gh api --method POST repos/$R/environments/production/variables --input - <<< '{\"name\":\"PUBLIC_HOST\",\"value\":\"pub.example\"}'" \
-    "would run: gh api --method POST repos/$R/environments/production/variables --input - <<< '{\"name\":\"CLOUDFLARE_ACCOUNT_ID\",\"value\":\"$ACC\"}'" \
     "would run: gh api --method POST repos/$R/actions/variables --input - <<< '{\"name\":\"PUBLIC_HOST\",\"value\":\"pub.example\"}'" \
     "would run: gh api --method POST repos/$R/environments/npm/deployment-branch-policies --input - <<< '{\"name\":\"prod\",\"type\":\"branch\"}'" \
     "npm: branch main is allowed" \
+    "gh secret set CLOUDFLARE_ACCOUNT_ID --env production --repo $R --body $ACC" \
+    "gh secret set OAUTH_CLIENT_ID --env production --repo $R --body Iv1.testclient" \
+    "gh secret set OWNER_GITHUB --env production --repo $R --body octo-owner" \
     "gh secret set CLOUDFLARE_API_TOKEN --env production --repo $R" \
-    "gh secret set CLAX_SMOKE_TOKEN --env production --repo $R"; do
+    "gh secret set CLAX_SMOKE_TOKEN --env production --repo $R" \
+    "gh secret set CLOUDFLARE_API_TOKEN --env staging --repo $R" \
+    "gh secret set OAUTH_CLIENT_SECRET --env staging --repo $R" \
+    "gh secret set RELEASE_APP_ID --env release --repo $R" \
+    "gh secret set RELEASE_APP_PRIVATE_KEY --env release --repo $R"; do
     if grep -qF -- "$want" "$C/out"; then pass "the dry run prints: ${want:0:90}"; else fail "the dry run prints: $want ($(cat "$C/out"))"; fi
 done
 # npm keeps main, which publish-sdk.yml is dispatched on.
@@ -185,40 +198,58 @@ else pass "the dry run keeps npm's main"; fi
 new_case act
 if run --i-know-what-i-am-doing; then pass "acting succeeds"; else fail "acting succeeds ($(cat "$C/out"))"; fi
 if [ "$(q 'g["refs"].get("prod")')" = "$FULL" ]; then pass "prod starts at the instance's commit, in full"; else fail "prod starts at the instance's commit ($(q 'g["refs"]'))"; fi
-rules="$(q 'sorted(r["type"] for r in g["rulesets"][0]["rules"])')"
-if [ "$(q 'len(g["rulesets"])')" = 1 ] && [ "$(q 'g["rulesets"][0]["conditions"]["ref_name"]["include"]')" = "['refs/heads/prod']" ] \
+rules="$(q 'sorted(r["type"] for r in next(r for r in g["rulesets"] if r["name"] == "prod")["rules"])')"
+if [ "$(q 'len([r for r in g["rulesets"] if r["name"] == "prod"])')" = 1 ] && [ "$(q 'next(r for r in g["rulesets"] if r["name"] == "prod")["conditions"]["ref_name"]["include"]')" = "['refs/heads/prod']" ] \
     && [ "$rules" = "['deletion', 'non_fast_forward', 'pull_request', 'required_signatures', 'required_status_checks', 'update']" ] \
-    && [ "$(q 'g["rulesets"][0]["enforcement"]')" = active ]; then
+    && [ "$(q 'next(r for r in g["rulesets"] if r["name"] == "prod")["enforcement"]')" = active ]; then
     pass "the ruleset on refs/heads/prod: pull request, checks, signatures, updates restricted, no deletion, no force push"
 else fail "the ruleset on refs/heads/prod ($rules)"; fi
 # Only the bypass actors update prod: they alone merge its pull requests.
 # No approval is required: the owner cannot approve the pull request
 # scripts/release.sh opens as them.
-if [ "$(q '[r.get("parameters") for r in g["rulesets"][0]["rules"] if r["type"] == "update"]')" = "[{'update_allows_fetch_and_merge': False}]" ] \
-    && [ "$(q '[r["parameters"]["required_approving_review_count"] for r in g["rulesets"][0]["rules"] if r["type"] == "pull_request"]')" = "[0]" ]; then
+if [ "$(q '[r.get("parameters") for r in next(r for r in g["rulesets"] if r["name"] == "prod")["rules"] if r["type"] == "update"]')" = "[{'update_allows_fetch_and_merge': False}]" ] \
+    && [ "$(q '[r["parameters"]["required_approving_review_count"] for r in next(r for r in g["rulesets"] if r["name"] == "prod")["rules"] if r["type"] == "pull_request"]')" = "[0]" ]; then
     pass "only the bypass actors update prod, and no approval is required"
-else fail "the ruleset's update restriction and approvals ($(q 'g["rulesets"][0]["rules"]'))"; fi
-if [ "$(q '[c["context"] for r in g["rulesets"][0]["rules"] if r["type"] == "required_status_checks" for c in r["parameters"]["required_status_checks"]]')" = "['bazel', 'worker', 'version']" ] \
-    && [ "$(q '[r["parameters"]["allowed_merge_methods"] for r in g["rulesets"][0]["rules"] if r["type"] == "pull_request"]')" = "[['merge']]" ] \
-    && [ "$(q 'g["rulesets"][0]["bypass_actors"]')" = "[{'actor_id': 5, 'actor_type': 'RepositoryRole', 'bypass_mode': 'always'}]" ]; then
+else fail "the ruleset's update restriction and approvals ($(q 'next(r for r in g["rulesets"] if r["name"] == "prod")["rules"]'))"; fi
+if [ "$(q '[c["context"] for r in next(r for r in g["rulesets"] if r["name"] == "prod")["rules"] if r["type"] == "required_status_checks" for c in r["parameters"]["required_status_checks"]]')" = "['bazel', 'worker', 'version']" ] \
+    && [ "$(q '[r["parameters"]["allowed_merge_methods"] for r in next(r for r in g["rulesets"] if r["name"] == "prod")["rules"] if r["type"] == "pull_request"]')" = "[['merge']]" ] \
+    && [ "$(q 'next(r for r in g["rulesets"] if r["name"] == "prod")["bypass_actors"]')" = "[{'actor_id': 5, 'actor_type': 'RepositoryRole', 'bypass_mode': 'always'}]" ]; then
     pass "the ruleset requires bazel, worker and version, merges with a merge commit, and admins bypass it"
-else fail "the ruleset's checks, merge method and bypass ($(q 'g["rulesets"][0]'))"; fi
+else fail "the ruleset's checks, merge method and bypass ($(q 'next(r for r in g["rulesets"] if r["name"] == "prod")'))"; fi
 if [ "$(q 'g["envs"]["production"]["policy"]["custom_branch_policies"]')" = True ] \
     && [ "$(q '[b["name"] for b in g["envs"]["production"]["branches"]]')" = "['prod']" ]; then
     pass "production deploys from prod only"; else fail "production deploys from prod only ($(q 'g["envs"]["production"]'))"; fi
-if [ "$(q 'sorted(g["envs"]["production"]["vars"].items())')" = "[('CLOUDFLARE_ACCOUNT_ID', '$ACC'), ('OAUTH_CLIENT_ID', 'Iv1.testclient'), ('OWNER_GITHUB', 'octo-owner'), ('PUBLIC_HOST', 'pub.example'), ('SITE_DOMAIN', 'sites.example'), ('STORE', 'artifacts')]" ]; then
-    pass "production's variables are the deploy configuration's"; else fail "production's variables ($(q 'g["envs"]["production"]["vars"]'))"; fi
+if [ "$(q 'sorted(g["envs"]["production"]["vars"].items())')" = "[('PUBLIC_HOST', 'pub.example'), ('SITE_DOMAIN', 'sites.example'), ('STORE', 'artifacts')]" ]; then
+    pass "production's variables are the deploy configuration's, its IDs and owner login not among them"
+else fail "production's variables ($(q 'g["envs"]["production"]["vars"]'))"; fi
 if [ "$(q 'g.get("repo_vars")')" = "{'PUBLIC_HOST': 'pub.example'}" ]; then pass "the repository variable PUBLIC_HOST is the instance's, for the drift check"
 else fail "the repository variable PUBLIC_HOST ($(q 'g.get("repo_vars")'))"; fi
 if [ "$(q 'sorted(b["name"] for b in g["envs"]["npm"]["branches"])')" = "['main', 'prod']" ]; then pass "npm deploys from prod and main"
 else fail "npm deploys from prod and main ($(q 'g["envs"]["npm"]'))"; fi
 if grep -q "UNEXPECTED\|secret" "$C/calls"; then fail "no gh call but gh api, and no secret set ($(cat "$C/calls"))"; else pass "no gh call but gh api, and no secret set"; fi
+if [ "$(q '[(r["name"], r["conditions"]["ref_name"]["include"], sorted(x["type"] for x in r["rules"]), r["bypass_actors"]) for r in g["rulesets"] if r["name"] == "release"]')" \
+    = "[('release', ['refs/heads/release/*'], ['creation', 'deletion', 'update'], [{'actor_id': 5, 'actor_type': 'RepositoryRole', 'bypass_mode': 'always'}])]" ]; then
+    pass "only admins create, update or delete release/* branches"
+else fail "the release ruleset ($(q 'g["rulesets"]'))"; fi
+if [ "$(q 'g["envs"]["production"].get("reviewers")')" = "[{'type': 'User', 'id': 4242}]" ] \
+    && [ "$(q '[b["name"] for b in g["envs"]["production"]["branches"]]')" = "['prod']" ]; then
+    pass "a production deploy waits for the owner's approval, and production still deploys from prod only"
+else fail "production's approval ($(q 'g["envs"]["production"]'))"; fi
+if [ "$(q 'g["envs"]["staging"]["policy"]["custom_branch_policies"]')" = True ] \
+    && [ "$(q 'sorted(b["name"] for b in g["envs"]["staging"]["branches"])')" = "['main', 'release/*']" ] \
+    && [ "$(q 'sorted(g["envs"]["staging"]["vars"].items())')" = "[('STAGING_HOST_ZONE', 'clax-staging.dev'), ('STAGING_SITE_ZONE', 'clax-staging.run')]" ]; then
+    pass "staging deploys from release/* and main only, with its zones"
+else fail "the staging environment ($(q 'g["envs"].get("staging")'))"; fi
+if [ "$(q 'sorted(b["name"] for b in g["envs"]["release"]["branches"])')" = "['prod']" ] \
+    && [ "$(q 'g["envs"]["release"]["policy"]["custom_branch_policies"]')" = True ]; then
+    pass "release deploys from prod only"
+else fail "the release environment ($(q 'g["envs"].get("release")'))"; fi
 
-# Again: only the ruleset is written.
+# Again: only the rulesets are written.
 : > "$C/calls"
-if run --i-know-what-i-am-doing && [ "$(writes)" = "$(writes | grep "^PUT repos/$R/rulesets/40 ")" ] && [ "$(writes | wc -l | tr -d ' ')" = 1 ] \
+if run --i-know-what-i-am-doing && [ "$(writes)" = "$(writes | grep -E "^PUT repos/$R/rulesets/4[01] ")" ] && [ "$(writes | wc -l | tr -d ' ')" = 2 ] \
     && ! grep -q '^curl ' "$C/calls"; then
-    pass "a second run changes nothing but writing the ruleset again"
+    pass "a second run changes nothing but writing the two rulesets again"
 else fail "a second run changes nothing ($(writes))"; fi
 
 # Settings from flags: a variable changed, the retired origin added, an
@@ -243,6 +274,45 @@ if run --i-know-what-i-am-doing --public-host other.example --cloudflare-account
     && [ "$(q 'g["envs"]["production"]["vars"]["PUBLIC_HOST"]')" = other.example ]; then
     pass "--public-host updates the environment's and the repository's PUBLIC_HOST"
 else fail "--public-host updates both PUBLIC_HOSTs ($(writes))"; fi
+
+# An earlier setup's variables named as the environment's secrets: removed,
+# the other variables kept, and a second run removes nothing.
+new_case stale-vars
+python3 -c 'import json, sys; p = sys.argv[1]; g = json.load(open(p)); g["envs"]["production"] = {"policy": {"protected_branches": False, "custom_branch_policies": True}, "branches": [{"id": 21, "name": "prod", "type": "branch"}], "vars": {"CLOUDFLARE_ACCOUNT_ID": "x", "OAUTH_CLIENT_ID": "y", "OWNER_GITHUB": "z", "STORE": "artifacts"}}; json.dump(g, open(p, "w"))' \
+    "$C/github.json"
+if run --i-know-what-i-am-doing \
+    && [ "$(writes | grep -c "^DELETE repos/$R/environments/production/variables/")" = 3 ] \
+    && [ "$(q 'sorted(g["envs"]["production"]["vars"])')" = "['PUBLIC_HOST', 'SITE_DOMAIN', 'STORE']" ]; then
+    pass "variables named as the environment's secrets are removed, the others kept"
+else fail "variables named as secrets are removed ($(writes); $(q 'g["envs"]["production"]["vars"]'))"; fi
+: > "$C/calls"
+if run --i-know-what-i-am-doing && ! writes | grep "^DELETE " >/dev/null; then pass "a second run removes no variable"
+else fail "a second run removes no variable ($(writes))"; fi
+
+# A staging environment made by hand, deploying from every branch, and one
+# allowing another branch too: each is narrowed to release/* and main.
+new_case staging-open
+python3 -c 'import json, sys; p = sys.argv[1]; g = json.load(open(p)); g["envs"]["staging"] = {"policy": None, "branches": [], "vars": {}}; json.dump(g, open(p, "w"))' \
+    "$C/github.json"
+if run --i-know-what-i-am-doing && [ "$(q 'g["envs"]["staging"]["policy"]["custom_branch_policies"]')" = True ] \
+    && [ "$(q 'sorted(b["name"] for b in g["envs"]["staging"]["branches"])')" = "['main', 'release/*']" ]; then
+    pass "a staging environment deploying from every branch is narrowed to release/* and main"
+else fail "an open staging environment is narrowed ($(writes); $(q 'g["envs"]["staging"]'))"; fi
+python3 -c 'import json, sys; p = sys.argv[1]; g = json.load(open(p)); g["envs"]["staging"]["branches"].append({"id": 31, "name": "feature/*", "type": "branch"}); json.dump(g, open(p, "w"))' \
+    "$C/github.json"
+: > "$C/calls"
+if run --i-know-what-i-am-doing && writes | grep -F "DELETE repos/$R/environments/staging/deployment-branch-policies/31" >/dev/null \
+    && [ "$(q 'sorted(b["name"] for b in g["envs"]["staging"]["branches"])')" = "['main', 'release/*']" ]; then
+    pass "a branch staging should not deploy from is removed"
+else fail "staging's extra branch is removed ($(writes); $(q 'g["envs"]["staging"]'))"; fi
+
+# No owner login: the production approval has no one to name.
+new_case noowner
+sed -i.bak '/^OWNER_GITHUB=/d; /^GITHUB_CLIENT_ID=/d' "$C/deploy/setup.env" && rm "$C/deploy/setup.env.bak"
+if run; then fail "with no owner login the run is refused"
+elif grep -q "not given: --owner-github" "$C/out" && [ ! -s "$C/calls" ]; then
+    pass "with no owner login the run is refused before any write, naming --owner-github"
+else fail "with no owner login the run is refused ($(cat "$C/out"))"; fi
 
 # npm allowing a branch besides main and prod: it is removed, main kept.
 new_case npm-extra
@@ -293,10 +363,10 @@ elif grep -q "not given: --public-host --site-domain --cloudflare-account-id" "$
     pass "with no deploy configuration the run names the missing flags, before any call"
 else fail "with no deploy configuration the run names the missing flags ($(cat "$C/out"))"; fi
 : > "$C/calls"
-if run --public-host flags.example --site-domain sites.flags --cloudflare-account-id f1a65 \
-    && grep -qF '{"name":"CLOUDFLARE_ACCOUNT_ID","value":"f1a65"}' "$C/out" \
-    && ! grep -q OAUTH_CLIENT_ID "$C/out"; then
-    pass "flags alone set it up, GitHub sign-in off without a client ID"
+if run --public-host flags.example --site-domain sites.flags --cloudflare-account-id f1a65 --owner-github octo-owner --github-client-id Iv1.x \
+    && grep -qF "gh secret set CLOUDFLARE_ACCOUNT_ID --env production --repo $R --body f1a65" "$C/out" \
+    && grep -qF "gh secret set OAUTH_CLIENT_ID --env production --repo $R --body Iv1.x" "$C/out"; then
+    pass "flags alone set it up"
 else fail "flags alone set it up ($(cat "$C/out"))"; fi
 : > "$C/calls"
 if run --public-host flags.example --site-domain sites.flags --cloudflare-account-id f1a65 --github-client-id Iv1.x; then

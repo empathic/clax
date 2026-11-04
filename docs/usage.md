@@ -1521,11 +1521,13 @@ checkout: it switches to `release/<version>`, cut from `origin/prod`
 `origin/main` into it, "Merge origin/main into release/<version>" (`main`
 carries every earlier release's version and pin, carried there in step
 18, so the version files merge cleanly); runs `scripts/bump-version.sh`,
-`just bazel-sync` until it changes nothing, and `just ci`; makes the
-signed commit "Release <version>"; pushes the branch; and opens its pull
-request into `prod` with `gh pr create`, printing its URL. Then it stops
-(step 10 is yours): CI runs on the pull request, including the check that
-it raises the version. Merge it with a merge commit (Create a merge
+`just bazel-sync` until it changes nothing, and `scripts/check-version.sh`
+(the version files agree); makes the signed commit "Release <version>";
+pushes the branch; and opens its pull request into `prod` with `gh pr
+create`, printing its URL. It runs no build and no tests: CI runs every
+gate on the pull request, including the check that it raises the
+version. Then it stops (step 10 is yours); a run while the pull request
+is open prints its URL again and changes nothing. Merge it with a merge commit (Create a merge
 commit, not squash or rebase: the cut finds the release commit in
 `prod`'s history to carry it to `main`); the push to `prod` deploys
 clax.dev. The bump lives on the release branch, never on `main`, until its
@@ -1537,7 +1539,7 @@ from a `prod` checkout at `origin/prod`'s tip: it signs the tag
 `v<version>` on `prod`'s tip and pushes the tag alone; waits for the
 Release workflow on it and checks that the release lists `SHA256SUMS` and
 was built from the tag commit's tree; runs `scripts/pin-release.sh` and
-`just ci`; makes the signed commit "Pin the plugins to Clax <version>"
+`scripts/check-version.sh`; makes the signed commit "Pin the plugins to Clax <version>"
 and pushes `prod` (your bypass of `prod`'s pull request rule; the push
 deploys clax.dev again, with no server change). Right after, so that
 `main` is red as briefly as possible (`scripts/test-plugins.sh` fails on
@@ -1559,8 +1561,7 @@ refuses to start unless: the version is `X.Y.Z` and newer than every `v*`
 tag here and on origin; preparing, `origin/prod` is older than it, the
 checkout is clean (no untracked file), the release branch holds
 `origin/prod`'s tip and adds only merges of `origin/main` and the release
-commit, and its pull request is not open already (an open one is refused
-with its URL: merge it first); cutting, the checkout is on `prod`, not
+commit; cutting, the checkout is on `prod`, not
 behind `origin/prod` and ahead of it only by the pin commit, and
 `origin/prod` has a "Release <version>" commit `main` lacks (a squashed
 pull request is refused). It also needs `gh` signed in (`gh auth status`);
@@ -1575,8 +1576,8 @@ an estimate of the time in all and still to run (the review not counted),
 from the steps' durations in earlier runs' logs or else typical ones. Each
 step then prints one line with the share of the estimate done (steps found
 done count in full), and a long step a heartbeat about every 30 seconds
-with its time so far, the time left, and Bazel's tests done or the
-workflow run's state and jobs done. The steps' own output goes only to
+with its time so far, the time left, and the workflow run's state and
+jobs done. The steps' own output goes only to
 `target/release/<version>.log`; a failed step prints the log's last 50
 lines and its path. `--verbose` streams the steps' output to the terminal
 as well.
@@ -1623,7 +1624,7 @@ git switch -c release/0.4.0 origin/prod
 git merge -S origin/main -m "Merge origin/main into release/0.4.0"
 scripts/bump-version.sh 0.4.0     # every version, both Cargo.lock files and the skills' tool blocks
 just bazel-sync                   # bazel/workspace.bzl and MODULE.bazel.lock follow the new version; again until it changes nothing
-just ci
+scripts/check-version.sh          # the version files agree; CI runs the gates on the pull request
 git commit -S -am "Release 0.4.0"
 git push origin release/0.4.0
 gh pr create --base prod --head release/0.4.0 --title "Release 0.4.0"
@@ -1632,7 +1633,7 @@ git tag -s v0.4.0 -m "Clax 0.4.0"
 git push origin v0.4.0            # the tag alone
 # wait for the Release workflow to publish v0.4.0, then:
 scripts/pin-release.sh v0.4.0     # PINNED_VERSION and the four SHA256 values, in every wrapper copy
-just ci
+scripts/check-version.sh
 git commit -S -am "Pin the plugins to Clax 0.4.0"
 git push origin prod
 # carry both commits to main, in a worktree of origin/main:
@@ -1648,8 +1649,9 @@ in scratch repositories with a bare origin holding `main` and `prod` (which
 refuses merge commits on `main`, as GitHub does), fakes of `gh` (the pull
 request included), `just` and Bazel, and an SSH signing key of its own. It
 covers the dry run (also mid-release), both halves of a release in order
-and a rerun of it, the refusal while the pull request is open, and
-resuming after: a failed `just ci`; a refused push of the release branch
+and a rerun of it, a run while the pull request is open (it names the
+pull request and changes nothing), and resuming after: a failed version
+check; a refused push of the release branch
 (from another branch); a refused pull request; a merge of `main` that
 conflicts; a failed, never-listed or unfinished Release run; a release of
 the version from another build; a refused push of `prod` and an unsigned
