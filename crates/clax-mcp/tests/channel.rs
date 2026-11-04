@@ -6,11 +6,12 @@
 use clax_core::Home;
 use clax_core::daemon::read_daemon_info;
 use clax_fake_exe::clax_bin;
+use clax_testkit::{HANG, recv_within};
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 /// The harness variables a test run may inherit; every process here clears them.
@@ -39,6 +40,17 @@ fn scratch_env(cmd: &mut Command, dir: &Path) {
         .env("RUST_LOG", "error");
 }
 
+/// What the shim or a follower (`FakeClaude::follow`) wrote, in the order
+/// the test received it.
+enum Out {
+    /// A JSON-RPC message from the shim.
+    Shim(Value),
+    /// A line from the follower.
+    Follower(String),
+    /// The follower closed its stdout.
+    FollowerEnd,
+}
+
 /// A stand-in for `claude`: `<dir>/claude <flags…>` runs `clax mcp --agent
 /// claude` as its child, with stdin and stdout passed through, so the shim's
 /// parent command line carries the flags. Driven over raw JSON-RPC lines.
@@ -46,8 +58,12 @@ struct FakeClaude {
     dir: tempfile::TempDir,
     child: Child,
     stdin: ChildStdin,
-    rx: Receiver<Value>,
-    pending: Vec<Value>,
+    /// The shim's and its followers' output, one channel, so a test can
+    /// take whichever comes first.
+    tx: Sender<Out>,
+    rx: Receiver<Out>,
+    /// What arrived while the test waited for something else.
+    pending: Vec<Out>,
     next_id: u64,
 }
 
@@ -85,13 +101,14 @@ impl FakeClaude {
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
         let (tx, rx) = channel();
+        let shim = tx.clone();
         std::thread::spawn(move || {
             for line in std::io::BufReader::new(stdout)
                 .lines()
                 .map_while(Result::ok)
             {
                 if let Ok(v) = serde_json::from_str::<Value>(&line)
-                    && tx.send(v).is_err()
+                    && shim.send(Out::Shim(v)).is_err()
                 {
                     break;
                 }
@@ -101,6 +118,7 @@ impl FakeClaude {
             dir,
             child,
             stdin,
+            tx,
             rx,
             pending: Vec::new(),
             next_id: 1,
@@ -120,7 +138,7 @@ impl FakeClaude {
     /// arrive meanwhile.
     fn request(&mut self, method: &str, params: Value) -> Value {
         let id = self.send_request(method, params);
-        self.response(id, Duration::from_secs(30))
+        self.response(id)
     }
 
     fn send_request(&mut self, method: &str, params: Value) -> u64 {
@@ -130,20 +148,30 @@ impl FakeClaude {
         id
     }
 
-    fn response(&mut self, id: u64, within: Duration) -> Value {
-        if let Some(i) = self.pending.iter().position(|v| v["id"] == id) {
+    /// The first output `wanted` picks, waited for under the HANG guard
+    /// and naming `what` past it, keeping the rest for later takes.
+    fn take(&mut self, what: &str, wanted: impl Fn(&Out) -> bool) -> Out {
+        if let Some(i) = self.pending.iter().position(&wanted) {
             return self.pending.remove(i);
         }
-        let end = Instant::now() + within;
         loop {
-            let v = self
-                .rx
-                .recv_timeout(end.saturating_duration_since(Instant::now()))
-                .expect("response");
-            if v["id"] == id {
-                return v;
+            let out = recv_within(what, &self.rx);
+            if wanted(&out) {
+                return out;
             }
-            self.pending.push(v);
+            self.pending.push(out);
+        }
+    }
+
+    /// The response to request `id`, keeping notifications that arrive
+    /// meanwhile.
+    fn response(&mut self, id: u64) -> Value {
+        match self.take(
+            &format!("the response to request {id}"),
+            |o| matches!(o, Out::Shim(v) if v["id"] == id),
+        ) {
+            Out::Shim(v) => v,
+            _ => unreachable!("take gives what it was asked for"),
         }
     }
 
@@ -158,20 +186,75 @@ impl FakeClaude {
         r
     }
 
-    /// Every channel event received within `within`.
-    fn channel_events(&mut self, within: Duration) -> Vec<Value> {
-        let end = Instant::now() + within;
-        while let Ok(v) = self
-            .rx
-            .recv_timeout(end.saturating_duration_since(Instant::now()))
-        {
-            self.pending.push(v);
+    /// The next channel event's params, keeping other messages.
+    fn next_event(&mut self) -> Value {
+        match self.take("a channel event", is_event) {
+            Out::Shim(v) => v["params"].clone(),
+            _ => unreachable!("take gives what it was asked for"),
         }
-        let (events, rest): (Vec<Value>, Vec<Value>) = std::mem::take(&mut self.pending)
+    }
+
+    /// The channel events already received, taken.
+    fn events_so_far(&mut self) -> Vec<Value> {
+        while let Ok(out) = self.rx.try_recv() {
+            self.pending.push(out);
+        }
+        let (events, rest): (Vec<Out>, Vec<Out>) = std::mem::take(&mut self.pending)
             .into_iter()
-            .partition(|v| v["method"] == "notifications/claude/channel");
+            .partition(is_event);
         self.pending = rest;
-        events.into_iter().map(|v| v["params"].clone()).collect()
+        events
+            .into_iter()
+            .map(|o| match o {
+                Out::Shim(v) => v["params"].clone(),
+                _ => unreachable!("partitioned on is_event"),
+            })
+            .collect()
+    }
+
+    /// Every line the follower printed until it closed its stdout: once it
+    /// has exited, or been killed.
+    fn follower_lines_to_the_end(&mut self) -> Vec<String> {
+        let mut lines = Vec::new();
+        loop {
+            match self.take("the end of the follower's output", |o| {
+                matches!(o, Out::Follower(_) | Out::FollowerEnd)
+            }) {
+                Out::Follower(l) => lines.push(l),
+                _ => return lines,
+            }
+        }
+    }
+
+    /// The ID of the shim's live session.
+    fn session_id(&self) -> String {
+        let live = self.get("/api/sessions?live=true");
+        live["sessions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|s| s["harness_session_id"] == "fake-sess")
+            .and_then(|s| s["id"].as_str())
+            .unwrap_or_else(|| panic!("{live}"))
+            .to_string()
+    }
+
+    /// Returns once `ready` holds of the daemon's answer to `path`, asked
+    /// again every 50 ms.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "until_get polls the daemon under the HANG guard; nothing is decided by how long it takes"
+    )]
+    fn until_get(&self, path: &str, ready: impl Fn(&Value) -> bool) {
+        let end = Instant::now() + HANG;
+        loop {
+            let v = self.get(path);
+            if ready(&v) {
+                return;
+            }
+            assert!(Instant::now() < end, "{path}: {v} (hang guard)");
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     /// The JSON body of a `tools/call` response.
@@ -220,8 +303,9 @@ impl FakeClaude {
     }
 
     /// Starts `clax feedback follow --once` for this session, with its stdout
-    /// lines sent to the returned receiver.
-    fn follow(&self, poll_secs: u64) -> (Child, Receiver<String>) {
+    /// lines among the shim's output ([`Out::Follower`], then
+    /// [`Out::FollowerEnd`]). One follower at a time.
+    fn follow(&self, poll_secs: u64) -> Child {
         let mut cmd = Command::new(clax_bin(None));
         cmd.args([
             "feedback",
@@ -240,18 +324,19 @@ impl FakeClaude {
         scratch_env(&mut cmd, self.dir.path());
         let mut child = cmd.spawn().expect("spawn clax feedback follow");
         let stdout = child.stdout.take().unwrap();
-        let (tx, rx) = channel();
+        let tx = self.tx.clone();
         std::thread::spawn(move || {
             for line in std::io::BufReader::new(stdout)
                 .lines()
                 .map_while(Result::ok)
             {
-                if tx.send(line).is_err() {
-                    break;
+                if tx.send(Out::Follower(line)).is_err() {
+                    return;
                 }
             }
+            let _ = tx.send(Out::FollowerEnd);
         });
-        (child, rx)
+        child
     }
 }
 
@@ -292,14 +377,9 @@ fn send_comment(c: &FakeClaude, aid: &str, text: &str) -> String {
     v["thread"]["id"].as_str().expect("thread ID").to_string()
 }
 
-/// Every line `rx` yields within `within`.
-fn lines_within(rx: &Receiver<String>, within: Duration) -> Vec<String> {
-    let end = Instant::now() + within;
-    let mut out = Vec::new();
-    while let Ok(l) = rx.recv_timeout(end.saturating_duration_since(Instant::now())) {
-        out.push(l);
-    }
-    out
+/// Whether `o` is a channel event from the shim.
+fn is_event(o: &Out) -> bool {
+    matches!(o, Out::Shim(v) if v["method"] == "notifications/claude/channel")
 }
 
 const FLAG: &[&str] = &[
@@ -367,8 +447,7 @@ fn forwards_one_channel_event_per_comment_when_launched_with_the_channel() {
     c.initialize("2025-11-25");
     let aid = c.publish();
     let tid = send_comment(&c, &aid, "please make it blue");
-    let events = c.channel_events(Duration::from_secs(5));
-    assert_eq!(events.len(), 1, "{events:?}");
+    let events = [c.next_event()];
     let content = events[0]["content"].as_str().unwrap();
     assert!(
         content.starts_with("[clax] New comment on \"Push\"") && content.contains(&tid),
@@ -393,10 +472,9 @@ fn forwards_one_channel_event_per_comment_when_launched_with_the_channel() {
             "{k}"
         );
     }
-    assert!(
-        c.channel_events(Duration::from_secs(3)).is_empty(),
-        "announced once"
-    );
+    // Announced once: the next event is the next comment's.
+    let next = send_comment(&c, &aid, "and the footer");
+    assert_eq!(c.next_event()["meta"]["thread_id"], next.as_str());
 }
 
 #[test]
@@ -405,17 +483,9 @@ fn a_channel_notice_delivers_nothing() {
     c.initialize("2025-11-25");
     let aid = c.publish();
     let tid = send_comment(&c, &aid, "please make it blue");
-    assert_eq!(c.channel_events(Duration::from_secs(5)).len(), 1);
+    assert_eq!(c.next_event()["meta"]["thread_id"], tid.as_str());
     // Over REST: any tool call would deliver the comment (tier 1).
-    let live = c.get("/api/sessions?live=true");
-    let sid = live["sessions"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|s| s["harness_session_id"] == "fake-sess")
-        .and_then(|s| s["id"].as_str())
-        .unwrap_or_else(|| panic!("{live}"))
-        .to_string();
+    let sid = c.session_id();
     let path = format!("/api/sessions/{sid}/feedback?tier=stop_hook&wait=0");
     let v = c.get(&path);
     let items = v["feedback"].as_array().expect("feedback");
@@ -432,20 +502,22 @@ fn sends_nothing_without_the_launch_flag() {
     c.initialize("2025-11-25");
     let aid = c.publish();
     let tid = send_comment(&c, &aid, "please make it blue");
-    assert!(c.channel_events(Duration::from_secs(4)).is_empty());
-    let (mut follower, rx) = c.follow(2);
-    let lines = lines_within(&rx, Duration::from_secs(5));
+    let mut follower = c.follow(2);
+    // `--once`: one line, then it exits.
+    let lines = c.follower_lines_to_the_end();
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(lines[0].contains(&tid), "{lines:?}");
-    let end = Instant::now() + Duration::from_secs(5);
-    let status = loop {
-        if let Some(s) = follower.try_wait().unwrap() {
-            break s;
-        }
-        assert!(Instant::now() < end, "follow --once did not exit");
-        std::thread::sleep(Duration::from_millis(50));
-    };
+    let status = follower.wait().unwrap();
     assert!(status.success(), "{status:?}");
+    // A response follows every event the shim sent before it: none.
+    c.call("status", json!({}));
+    assert_eq!(c.events_so_far(), Vec::<Value>::new());
+}
+
+/// Who announced a comment first.
+enum Announced {
+    Channel(Value),
+    Follower(String),
 }
 
 #[test]
@@ -453,20 +525,43 @@ fn a_comment_is_announced_once_across_channel_and_follow() {
     let mut c = FakeClaude::launch(FLAG);
     c.initialize("2025-11-25");
     let aid = c.publish();
+    let sid = c.session_id();
     for text in ["first", "second"] {
-        let (mut follower, rx) = c.follow(1);
-        std::thread::sleep(Duration::from_millis(500));
-        send_comment(&c, &aid, text);
-        let events = c.channel_events(Duration::from_secs(5));
-        let lines = lines_within(&rx, Duration::from_millis(100));
-        let _ = follower.kill();
+        let mut follower = c.follow(1);
+        // Both poll: the session's push is the follower's.
+        c.until_get(&format!("/api/sessions/{sid}"), |v| {
+            v["push"]["tier"] == "notice"
+        });
+        let tid = send_comment(&c, &aid, text);
+        let first = match c.take(&format!("{text}: announced"), |o| {
+            is_event(o) || matches!(o, Out::Follower(_))
+        }) {
+            Out::Shim(v) => Announced::Channel(v["params"].clone()),
+            Out::Follower(l) => Announced::Follower(l),
+            Out::FollowerEnd => unreachable!("take gives what it was asked for"),
+        };
+        match first {
+            Announced::Channel(e) => {
+                assert_eq!(e["meta"]["thread_id"], tid.as_str(), "{text}: {e}");
+                let _ = follower.kill();
+                let lines = c.follower_lines_to_the_end();
+                assert!(!lines.iter().any(|l| l.contains(&tid)), "{text}: {lines:?}");
+            }
+            Announced::Follower(l) => {
+                assert!(l.contains(&tid), "{text}: {l}");
+                assert_eq!(
+                    c.follower_lines_to_the_end(),
+                    Vec::<String>::new(),
+                    "{text}"
+                );
+            }
+        }
         let _ = follower.wait();
-        assert_eq!(
-            events.len() + lines.len(),
-            1,
-            "{text}: {events:?} {lines:?}"
-        );
     }
+    // Neither was announced again on the channel: the next event is a new
+    // comment's.
+    let last = send_comment(&c, &aid, "third");
+    assert_eq!(c.next_event()["meta"]["thread_id"], last.as_str());
 }
 
 #[test]
@@ -474,16 +569,25 @@ fn no_channel_event_while_waiting_for_feedback() {
     let mut c = FakeClaude::launch(FLAG);
     c.initialize("2025-11-25");
     let aid = c.publish();
+    let sid = c.session_id();
+    // The longest wait: the comment ends it.
     let id = c.send_request(
         "tools/call",
-        json!({"name": "wait_for_feedback", "arguments": {"timeout_s": 10}}),
+        json!({"name": "wait_for_feedback", "arguments": {"timeout_s": 600}}),
     );
-    std::thread::sleep(Duration::from_millis(500));
-    send_comment(&c, &aid, "and the footer");
-    let r = c.response(id, Duration::from_secs(5));
+    c.until_get(
+        &format!("/api/_test/sessions/{sid}/feedback/waiters"),
+        |v| v["count"] == 1,
+    );
+    let tid = send_comment(&c, &aid, "and the footer");
+    let r = c.response(id);
     let v = FakeClaude::result_body(&r);
     assert_eq!(v["feedback"].as_array().map(Vec::len), Some(1), "{v}");
-    assert!(c.channel_events(Duration::from_secs(3)).is_empty());
+    assert!(v.to_string().contains(&tid), "{v}");
+    // The channel took no notice of it: the next event is the next
+    // comment's.
+    let next = send_comment(&c, &aid, "and the header");
+    assert_eq!(c.next_event()["meta"]["thread_id"], next.as_str());
 }
 
 #[test]
@@ -593,9 +697,8 @@ fn channel_events_flow_after_a_discover_fallback() {
     c.initialize("2025-11-25");
     let aid = c.publish();
     let tid = send_comment(&c, &aid, "please make it blue");
-    let events = c.channel_events(Duration::from_secs(5));
-    assert_eq!(events.len(), 1, "{events:?}");
-    assert_eq!(events[0]["meta"]["thread_id"], tid.as_str(), "{events:?}");
+    let event = c.next_event();
+    assert_eq!(event["meta"]["thread_id"], tid.as_str(), "{event}");
 }
 
 #[test]

@@ -471,6 +471,7 @@ pub(crate) fn main() {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

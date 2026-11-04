@@ -176,6 +176,7 @@ fn tool_error(value: &serde_json::Value) -> anyhow::Error {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

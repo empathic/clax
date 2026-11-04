@@ -213,6 +213,7 @@ pub fn run_tags(cli: &crate::Cli, home: &Home, a: &TagsArgs) -> anyhow::Result<(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

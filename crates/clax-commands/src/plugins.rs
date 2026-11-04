@@ -86,6 +86,7 @@ fn write_tree(dir: &Path, files: &[(String, Vec<u8>)]) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

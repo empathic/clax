@@ -1250,7 +1250,7 @@ fn the_shim_serves_only_claude_and_codex() {
     e.cmd()
         .args(["mcp", "--agent", "pi"])
         .write_stdin("")
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(clax_testkit::HANG)
         .assert()
         .failure()
         .code(1)
@@ -1948,16 +1948,12 @@ fn an_interrupted_toolpath_export_removes_its_partial_file() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    // Wait (bounded) until the export has started writing the file.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while std::fs::metadata(&dest).map_or(true, |m| m.len() == 0) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the export never started writing"
-        );
+    crate::common::wait_until("the export to start writing", || {
         assert!(child.try_wait().unwrap().is_none(), "the export exited");
-        std::thread::yield_now();
-    }
+        std::fs::metadata(&dest)
+            .is_ok_and(|m| m.len() > 0)
+            .then_some(())
+    });
     kill(
         nix::unistd::Pid::from_raw(child.id() as i32),
         Signal::SIGINT,
