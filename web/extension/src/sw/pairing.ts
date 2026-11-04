@@ -97,7 +97,7 @@ export class Pairer {
   /** Called after each pairing that succeeds and is stored (the first one too). */
   onPaired: ((p: Pairing) => void) | null = null;
   /** Told `true` when the pairing in flight waits for the person to
-   * confirm it in their Clax browser tab (the daemon holds an extension's
+   * confirm it in Clax's inbox (the daemon holds an extension's
    * pairing for that while an agent session is live), and `false` once
    * that pairing ends, however it ends. */
   onConfirm: ((waiting: boolean) => void) | null = null;
