@@ -1,5 +1,6 @@
 //! Adversarial checks of the VFS's durability contract against an in-memory
 //! page store that can refuse chosen commits.
+#![warn(clippy::disallowed_methods)]
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};

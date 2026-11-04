@@ -6,17 +6,29 @@ Usage: fake-anthropic.py <scratch dir>
 
 Binds 127.0.0.1 on a port the kernel picks and prints it on stdout (one line).
 Every request is appended to <scratch dir>/requests.jsonl as one JSON line
-{"t", "path", "body", "stop_reason"}: `t` is the Unix time it was answered,
-`stop_reason` that of the answer (null for paths other than /v1/messages).
+{"t", "path", "body", "stop_reason", "tool"}: `t` is the Unix time it was
+answered, `stop_reason` that of the answer (null for paths other than
+/v1/messages), `tool` the name of the tool the answer calls (else null).
 
 POST /v1/messages:
   - a request offering the AskUserQuestion tool whose messages after the
     last assistant message hold the person's prompt (no tool_result; Claude
     Code may add a `system` message after it) is answered with one tool_use
     block calling AskUserQuestion (id "toolu_smoke1", the question below) and
-    stop_reason "tool_use";
-  - a request whose messages after the last assistant message carry that
-    call's tool_result is answered
+    stop_reason "tool_use". While <scratch dir>/watch.id holds an artifact
+    ID, it is answered instead with a call of the Clax plugin's `watch` tool
+    on that artifact, replies off (id "toolu_smoke_watch"), so the session
+    has a page before it asks; while that tool is not offered yet, it first
+    calls WaitForMcpServers (id "toolu_smoke_mcp") and, given its result,
+    the watch tool (when the tool is still not offered, or the call fails,
+    it says so in its text and in <scratch dir>/ask.unwatched);
+  - a request carrying that watch call's tool_result is held: the fake
+    creates <scratch dir>/ask.held and reads the FIFO <scratch dir>/ask.go
+    until the script writes to it (what the script does meanwhile happens
+    after the watch and before the question), then answers with the
+    AskUserQuestion call;
+  - a request whose messages after the last assistant message carry the
+    AskUserQuestion call's tool_result is answered
     with a text block echoing the result, and stop_reason "end_turn";
   - any other request (a title or summary request) gets the text "ok".
 Answers are server-sent events in the Messages streaming format when the body
@@ -34,6 +46,12 @@ SCRATCH = sys.argv[1]
 LOG = os.path.join(SCRATCH, "requests.jsonl")
 LOG_LOCK = threading.Lock()
 TOOL_ID = "toolu_smoke1"
+WATCH_TOOL_ID = "toolu_smoke_watch"
+MCP_WAIT_ID = "toolu_smoke_mcp"
+WATCH_FILE = os.path.join(SCRATCH, "watch.id")
+HELD = os.path.join(SCRATCH, "ask.held")
+UNWATCHED = os.path.join(SCRATCH, "ask.unwatched")
+GO = os.path.join(SCRATCH, "ask.go")
 QUESTION = {
     "questions": [{
         "question": "Which layout?",
@@ -60,15 +78,56 @@ def text_of(content):
     return "\n".join(out)
 
 
-def tool_result(message):
-    """The tool_result block for TOOL_ID in `message`, or None."""
+def tool_result(message, tool_id=TOOL_ID):
+    """The tool_result block for `tool_id` in `message`, or None."""
     content = message.get("content")
     if not isinstance(content, list):
         return None
     for block in content:
-        if block.get("type") == "tool_result" and block.get("tool_use_id") == TOOL_ID:
+        if block.get("type") == "tool_result" and block.get("tool_use_id") == tool_id:
             return block
     return None
+
+
+def page_to_watch():
+    """The artifact ID in WATCH_FILE, or None."""
+    try:
+        with open(WATCH_FILE) as f:
+            return f.read().strip() or None
+    except FileNotFoundError:
+        return None
+
+
+def unwatched(text):
+    """The answer when the watch cannot be made, also written to UNWATCHED
+    for the script."""
+    with open(UNWATCHED, "w") as f:
+        f.write(text + "\n")
+    return [{"type": "text", "text": text}], "end_turn"
+
+
+def hold():
+    """Blocks until the script writes to the FIFO GO, having created HELD to
+    say it waits."""
+    open(HELD, "w").close()
+    with open(GO) as f:
+        f.read()
+
+
+ASK = [{"type": "tool_use", "id": TOOL_ID, "name": "AskUserQuestion", "input": QUESTION}]
+
+
+def watch_call(tools, page, waited):
+    """The call of the Clax `watch` tool on `page`; while it is not offered
+    yet, one call of WaitForMcpServers first (Claude Code may send the
+    person's prompt before the plugin's MCP server has connected)."""
+    watch = next((t for t in tools if t and "clax" in t and t.endswith("__watch")), None)
+    if watch is not None:
+        return [{"type": "tool_use", "id": WATCH_TOOL_ID, "name": watch,
+                 "input": {"url_or_id": page, "replies": False}}], "tool_use"
+    if not waited and "WaitForMcpServers" in tools:
+        return [{"type": "tool_use", "id": MCP_WAIT_ID, "name": "WaitForMcpServers", "input": {}}], "tool_use"
+    return unwatched("The Clax watch tool was not offered: " + ", ".join(t for t in tools if t))
 
 
 def reply_for(body):
@@ -85,11 +144,23 @@ def reply_for(body):
         if result is not None:
             prefix = "ERROR " if result.get("is_error") else ""
             return [{"type": "text", "text": "Tool result: " + prefix + text_of(result.get("content"))}], "end_turn"
+    for message in tail:
+        watched = tool_result(message, WATCH_TOOL_ID)
+        if watched is not None:
+            if watched.get("is_error"):
+                return unwatched("Watch failed: " + text_of(watched.get("content")))
+            hold()
+            return ASK, "tool_use"
+    page = page_to_watch()
+    if page is not None and any(tool_result(m, MCP_WAIT_ID) is not None for m in tail):
+        return watch_call(tools, page, True)
     prompt = any(m.get("role") == "user" and tool_result(m) is None and not any(
         isinstance(b, dict) and b.get("type") == "tool_result" for b in (m.get("content") if isinstance(m.get("content"), list) else []))
         for m in tail)
     if "AskUserQuestion" in tools and prompt:
-        return [{"type": "tool_use", "id": TOOL_ID, "name": "AskUserQuestion", "input": QUESTION}], "tool_use"
+        if page is None:
+            return ASK, "tool_use"
+        return watch_call(tools, page, False)
     return [{"type": "text", "text": "ok"}], "end_turn"
 
 
@@ -108,9 +179,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             parsed = raw.decode("utf-8", "replace")
         return parsed
 
-    def log(self, body, stop):
+    def log(self, body, stop, tool=None):
         with LOG_LOCK, open(LOG, "a") as f:
-            f.write(json.dumps({"t": time.time(), "path": self.path, "body": body, "stop_reason": stop}) + "\n")
+            f.write(json.dumps({"t": time.time(), "path": self.path, "body": body, "stop_reason": stop, "tool": tool}) + "\n")
 
     def json(self, value):
         data = json.dumps(value).encode()
@@ -132,7 +203,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.log(raw, None)
             return self.json({"input_tokens": 1} if path == "/v1/messages/count_tokens" else {})
         content, stop = reply_for(body)
-        self.log(raw, stop)
+        self.log(raw, stop, next((b["name"] for b in content if b["type"] == "tool_use"), None))
         model = body.get("model") or "claude-fake"
         usage = {"input_tokens": 1, "output_tokens": 1}
         msg_id = "msg_fake_%d" % threading.get_ident()

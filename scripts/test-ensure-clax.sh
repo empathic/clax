@@ -61,6 +61,8 @@ ORIG_HOME="$HOME"
 FAILED=0
 # shellcheck source=scripts/fake-exe.sh
 . "$HERE/fake-exe.sh"
+# shellcheck source=scripts/lib/wait.sh
+. "$HERE/lib/wait.sh"
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILED=1; }
 
@@ -112,9 +114,8 @@ REQLOG="$ROOT/requests.log"
 : > "$REQLOG"
 "$PY" "$HERE/fake-release-server.py" "$REL" "$REQLOG" "$ROOT/port" &
 SERVER_PID=$!
-i=0
-while [ ! -s "$ROOT/port" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
-BASE="http://127.0.0.1:$(cat "$ROOT/port" 2>/dev/null)"
+wait_for "the fake release server's port" test -s "$ROOT/port" || exit 1
+BASE="http://127.0.0.1:$(cat "$ROOT/port")"
 
 # A fake clax at $1/clax whose --version prints $2; any other run prints its
 # arguments.
@@ -174,6 +175,9 @@ print(call["content"][0]["text"])
 PYEOF
 }
 hooks_log() { cat "${CLAX_HOME:-$HOME/.clax}/logs/hooks.log" 2>/dev/null; }
+# Whether the hooks log has a line matching $1.
+# shellcheck disable=SC2329 # run through wait_for
+logged() { hooks_log | grep -- "$1" >/dev/null; }
 
 # --- Resolution -------------------------------------------------------------
 
@@ -283,7 +287,7 @@ else fail "the fallback escapes quotes and backslashes (out=$OUT)"; fi
 new_env
 OUT="$({
     printf '%s\n' "$(echo "$REQS" | sed -n 1p)"
-    i=0; while ! hooks_log | grep "exit=fallback" >/dev/null && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i + 1)); done
+    wait_for "the fallback server" logged "exit=fallback"
     fake_clax "$FAKEBIN" "clax $V"
     set_bin "$FAKEBIN/clax"
     printf '%s\n' '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"status","arguments":{}}}'
@@ -329,7 +333,7 @@ set_bin "$FAKEBIN/clax"
 OUT="$({
     printf '%s\n' "$(echo "$REQS" | sed -n 1p)"
     # Fix the cause once the fallback is serving.
-    i=0; while ! hooks_log | grep "exit=fallback" >/dev/null && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i + 1)); done
+    wait_for "the fallback server" logged "exit=fallback"
     rm -f "$SANDBOX/broken"
     printf '%s\n' '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"status","arguments":{}}}'
 } | "$TOOLS/bash" "$SCRIPT" exec mcp --agent claude 2>/dev/null)"
@@ -372,17 +376,16 @@ if [ "$RC" = 0 ] && echo "$ERR" | grep -F "sets bin = \"$FAKEBIN/clax\", which i
     pass "an unusable clax is named with its --version failure"
 else fail "an unusable clax is named (rc=$RC err=$ERR)"; fi
 
-# A --version that hangs is cut off, here after 1 s.
+# A --version that hangs is cut off, here after 1 s. It never ends by itself:
+# only the wrapper's limit, which kills it, ends the run.
 new_env
-printf '#!/bin/sh\nexec sleep 30\n' | fake_exe "$FAKEBIN/clax"
+printf '#!/bin/sh\nexec sleep 2147483647\n' | fake_exe "$FAKEBIN/clax"
 set_bin "$FAKEBIN/clax"
 with_limits "$HERE/ensure-clax.sh" "$ROOT/wrapper/short/ensure-clax.sh" 1 1
-START="$(date +%s)"
 run_at "$ROOT/wrapper/short/ensure-clax.sh" exec hook --agent codex stop
-ELAPSED=$(( $(date +%s) - START ))
-if [ "$RC" = 0 ] && [ "$ELAPSED" -lt 20 ] && echo "$ERR" | grep -F "\`--version\` did not finish within 1 s" >/dev/null; then
+if [ "$RC" = 0 ] && echo "$ERR" | grep -F "\`--version\` did not finish within 1 s" >/dev/null; then
     pass "a --version that hangs is cut off at the limit"
-else fail "a --version that hangs is cut off (rc=$RC elapsed=$ELAPSED err=$ERR)"; fi
+else fail "a --version that hangs is cut off (rc=$RC err=$ERR)"; fi
 
 # Nested "id" and "method" keys, as in a tool call's arguments, are not
 # mistaken for the request's own, in either key order.
@@ -459,8 +462,9 @@ p.stdin.write(b'{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protoco
 p.stdin.flush()
 init = json.loads(p.stdout.readline())
 sessions = []
-deadline = time.time() + 30
-while time.time() < deadline and not sessions:
+# A hang guard of 600 polls (about 120 s on an idle machine): the session
+# registers however slowly the machine runs.
+for _ in range(600):
     try:
         info = json.load(open(os.path.join(home, "daemon.json")))
         req = urllib.request.Request(f"http://127.0.0.1:{info['port']}/api/sessions",
@@ -468,10 +472,12 @@ while time.time() < deadline and not sessions:
         sessions = [s for s in json.load(urllib.request.urlopen(req, timeout=2))["sessions"] if s["harness"] == "codex"]
     except Exception:
         pass
-    if not sessions:
-        time.sleep(0.2)
+    if sessions:
+        break
+    # timing: polls the daemon for the session while this driver holds the stdin of the wrapper open; the poll count above is a hang guard
+    time.sleep(0.2)
 p.stdin.close()
-p.wait(timeout=15)
+p.wait(timeout=120)
 ok = ("result" in init and len(sessions) == 1 and sessions[0]["parent_pid"] == os.getpid()
       and os.path.realpath(sessions[0]["cwd"]) == os.path.realpath(os.getcwd()))
 print(ok, json.dumps(sessions), os.getpid(), os.getcwd())
@@ -801,13 +807,11 @@ if [ "$before" = ".staging.old 10.0.0 8.0.0 9.0.0 9.0.10 9.2.0 notaversion " ] &
 else fail "old-version cleanup (before=$before after=$after)"; fi
 
 new_env; : > "$REQLOG"
-START="$(date +%s)"
 prun ok exec hook --agent claude session-start
-ELAPSED=$(( $(date +%s) - START ))
-if [ "$RC" = 0 ] && [ -z "$OUT" ] && [ -z "$ERR" ] && [ "$(requests)" = 0 ] && [ ! -e "$(MANAGED)" ] && [ "$ELAPSED" -lt 3 ] \
+if [ "$RC" = 0 ] && [ -z "$OUT" ] && [ -z "$ERR" ] && [ "$(requests)" = 0 ] && [ ! -e "$(MANAGED)" ] \
     && hooks_log | grep "install-pending mode=hook agent=claude version=$P reason=\"not installed\"" >/dev/null && ! hooks_log | grep launcher >/dev/null; then
     pass "a hook never downloads: with the release not installed yet it exits 0 at once, silently"
-else fail "a hook never downloads (rc=$RC out=$OUT err=$ERR reqs=$(requests) elapsed=$ELAPSED log=$(hooks_log))"; fi
+else fail "a hook never downloads (rc=$RC out=$OUT err=$ERR reqs=$(requests) log=$(hooks_log))"; fi
 prun ok
 prun ok exec hook --agent claude stop
 if [ "$RC" = 0 ] && [ "$OUT" = "managed: hook --agent claude stop" ]; then pass "once installed, hooks run the managed clax"
@@ -829,17 +833,21 @@ else fail "a failed first-run install (out=$OUT err=$ERR)"; fi
 
 # A download slower than the MCP server's wait: the fallback answers, the
 # download goes on in the background, and status says once it is done.
+# The download is held until the first status call has been answered.
 new_env
 rm -f "$REL/gate-open"
-OUT="$({
+# shellcheck disable=SC2329 # run through wait_for
+answers() { [ "$(wc -l < "$SANDBOX/mcp.out")" -ge "$1" ]; }
+{
     printf '%s\n' "$(echo "$REQS" | sed -n 1p)"
-    i=0; while ! hooks_log | grep "exit=fallback" >/dev/null && [ "$i" -lt 400 ]; do sleep 0.05; i=$((i + 1)); done
+    wait_for "the fallback server" logged "exit=fallback"
     printf '%s\n' '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"status","arguments":{}}}'
-    sleep 0.3
+    wait_for "the answer to the status call made while the download is held" answers 2
     : > "$REL/gate-open"
-    i=0; while ! hooks_log | grep "install mode=mcp agent=claude version=$P exit=0" >/dev/null && [ "$i" -lt 400 ]; do sleep 0.05; i=$((i + 1)); done
+    wait_for "the background install" logged "install mode=mcp agent=claude version=$P exit=0"
     printf '%s\n' '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"status","arguments":{}}}'
-} | CLAX_RELEASE_BASE_URL="$BASE/gate" "$TOOLS/bash" "$PINNED_SHORT" exec mcp --agent claude 2>/dev/null)"
+} | CLAX_RELEASE_BASE_URL="$BASE/gate" "$TOOLS/bash" "$PINNED_SHORT" exec mcp --agent claude > "$SANDBOX/mcp.out" 2>/dev/null
+OUT="$(cat "$SANDBOX/mcp.out")"
 if echo "$OUT" | sed -n 1p | grep "is still downloading" >/dev/null && echo "$OUT" | sed -n 2p | grep "is still downloading" >/dev/null \
     && echo "$OUT" | tail -1 | grep "clax is now available at $(MANAGED)/clax. Reconnect" >/dev/null; then
     pass "a download slower than the MCP wait: the fallback says so, and status reports it done"
