@@ -172,17 +172,42 @@ each owner-only step it skips.
 
 ### Staging
 
-A release pull request into `prod` is to be staging while it is open: a
-fresh instance, `clax-pr-<N>` at `https://pr-<N>.clax-staging.dev` with
-its sites at `<ID>.pr-<N>.clax-staging.run`, on prod's Cloudflare account
-and configured as clax.dev is (design:
+A release pull request into `prod` is staging while it is open: a fresh
+instance, `clax-pr-<N>` at `https://pr-<N>.clax-staging.dev` with its
+sites at `<ID>.pr-<N>.clax-staging.run`, on prod's Cloudflare account and
+configured as clax.dev is (design:
 [`2026-11-04-release-by-pr-merge-design`](superpowers/specs/2026-11-04-release-by-pr-merge-design.md)).
-This section is its setup; the workflow that deploys it,
-`.github/workflows/staging.yml`, is the design's next part.
 It runs on prod's account so that the plan, the features turned on and
 the limits are prod's own. `clax-staging.dev` and `clax-staging.run` are
 two registrable domains of their own, as `clax.dev` and `clax.run` are,
 so neither is the same site as clax.dev to a browser.
+
+`.github/workflows/staging.yml` deploys it on every push to the release
+branch (the run finds `<N>` from the branch's open pull request into
+`prod`, waiting up to two minutes for `just release` to open it):
+
+- **the candidate**, built once in jobs with no environment: the release
+  binaries with `SHA256SUMS`, `install.sh` and `SOURCE_TREE`
+  (`release.yml`, called with `candidate: true`; the workflow artifact
+  `release-dist`), and the Worker with the web UI it embeds (the
+  artifact `worker`, one `worker.tar`). Each file is attested
+  (`actions/attest-build-provenance`) as made by this repository's
+  workflow at the pushed commit;
+- **the deploy**, in the `staging` environment: that Worker
+  (`cloudflare-setup.sh --env pr-<N> --staging --ci --no-build --smoke`),
+  with the bundled legal pages, Cloudflare Stream's newest reel and
+  GitHub sign-in through the staging OAuth App, `OWNER_GITHUB` signing
+  in as the owner. Each deploy gives the Worker a new owner token, kept in
+  the runner's deploy record and never printed; the smoke turns it into
+  an owner sign-in link, mints an agent token with the session and runs
+  as that token alone, as the production smoke runs as
+  `CLAX_SMOKE_TOKEN` (`smoke-remote.mjs --mint-agent-token`), revoking it
+  at the end. The run then comments the address on the pull request.
+
+A release pull request gets no preview (`preview.yml`); its staging is
+torn down by the reaper's `reap-staging` job (`preview-reaper.yml`, daily
+from `main`, in the `staging` environment) once the pull request is
+closed.
 
 Its credentials, in the `staging` environment:
 

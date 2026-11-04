@@ -8,6 +8,12 @@ name: Preview reaper
 # fail. It lists the account's clax-pr-<N> Workers and keeps those whose
 # pull request is open. Scheduled runs use main's copy of this file; the
 # schedule is in UTC.
+#
+# The second job does the same for staging, the release pull requests'
+# instances on prod's account (docs/prod.md, "Staging"), with the staging
+# environment's token: Deploy prod tears a merged one down, and this
+# catches one closed without merging. On that account every clax-pr-<N> is
+# a staging instance; teardown.mjs touches no other Worker.
 on:
   schedule:
     - cron: "0 12 * * *"
@@ -42,3 +48,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DRY_RUN: ${{ inputs.dry_run && '--dry-run' || '' }}
         run: cd crates/clax-worker && node teardown.mjs --reap --site-zone "$PREVIEW_SITE_ZONE" --repo "$GITHUB_REPOSITORY" $DRY_RUN
+
+  reap-staging:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # The staging credentials, which the environment admits from main.
+    environment: staging
+    permissions: { contents: read, pull-requests: read }
+    concurrency: { group: staging-reaper, cancel-in-progress: false }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: 26 }
+      - name: Reap staging (crates/clax-worker/teardown.mjs --reap)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          STAGING_SITE_ZONE: ${{ vars.STAGING_SITE_ZONE }}
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run && '--dry-run' || '' }}
+        run: cd crates/clax-worker && node teardown.mjs --reap --site-zone "$STAGING_SITE_ZONE" --repo "$GITHUB_REPOSITORY" $DRY_RUN
