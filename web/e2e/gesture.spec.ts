@@ -1019,10 +1019,10 @@ async function expectRefused(page: Page, f: Frame | null, id: string, verb: "sen
       // has loaded: input sent at a frame of another site while its process
       // is still starting can wait for that frame indefinitely, and nothing
       // can find a frame in a closed shadow root to wait on it later.
-      await page.evaluate(({ url, r, how }) => new Promise<void>((resolve, reject) => {
+      // The wait for its load has no bound but the test's.
+      await page.evaluate(({ url, r, how }) => new Promise<void>(resolve => {
         const i = document.createElement("iframe");
         i.addEventListener("load", () => resolve(), { once: true });
-        setTimeout(() => reject(new Error("the injected frame did not load in 20 s")), 20_000);
         i.src = url;
         Object.assign(i.style, { display: "block", width: `${r.w}px`, height: `${r.h}px`, background: "white" });
         const box = document.createElement(how === "plain" ? "div" : "x-menu");
