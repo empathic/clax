@@ -836,15 +836,10 @@ impl clax_core::content::ContentStore for Gate {
     }
 }
 
-/// The next `jobs_owner` event `events` hears: a bound for a hang (the
-/// event never coming), not a time budget.
+/// The next `jobs_owner` event `events` hears, bounded by the
+/// [`clax_testkit::HANG`] guard.
 async fn next_owner_event(events: &mut EventReader) -> Value {
-    tokio::time::timeout(
-        std::time::Duration::from_secs(20),
-        events.next_named("jobs_owner"),
-    )
-    .await
-    .expect("a jobs_owner event")
+    clax_testkit::within("a jobs_owner event", events.next_named("jobs_owner")).await
 }
 
 #[tokio::test]
@@ -975,13 +970,11 @@ async fn a_claimant_refused_owner_held_hears_the_release() {
     );
     let (s, _) = send(owned(&ts, Method::DELETE, "/api/jobs/owner", &holder)).await;
     assert_eq!(s, 204);
-    // A bound for a hang (the event never coming), not a time budget.
-    let heard = tokio::time::timeout(
-        std::time::Duration::from_secs(20),
+    let heard = clax_testkit::within(
+        "the release at the refused claimant's stream",
         waiting.next_named("jobs_owner"),
     )
-    .await
-    .expect("the release reaches the refused claimant's stream");
+    .await;
     assert_eq!(
         heard,
         json!({"topic": "jobs", "client": "app", "held": false})

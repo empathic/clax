@@ -1268,13 +1268,14 @@ fn wrap(state: AppState, inner: axum::Router) -> axum::Router {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     /// A Worker builds this router too, debug test routes included, and has
     /// no tokio timer: the routes sleep on `clax_rt::time` (crate docs).
     #[test]
     fn the_routes_sleep_on_clax_rt() {
         let src = include_str!("router.rs");
-        let src = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        let src = &src[..src.find("\nmod tests {").unwrap()];
         assert!(!src.contains(concat!("tokio", "::time::")));
     }
 }

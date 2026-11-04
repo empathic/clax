@@ -2611,9 +2611,8 @@ async fn room_clears(site: &Site, aid: &str) -> Value {
         .expect("upgrade");
     let (mut tx, mut rx) = ws.split();
     let mut next = async || loop {
-        let m = tokio::time::timeout(std::time::Duration::from_secs(5), rx.next())
+        let m = clax_testkit::within("a frame", rx.next())
             .await
-            .expect("a frame within 5 s")
             .expect("open")
             .expect("readable");
         if let Message::Text(t) = m {
@@ -4036,9 +4035,8 @@ async fn live_socket(site: &Site, b: &Browser, aid: &str) -> Result<Value, u16> 
     }
     match tokio_tungstenite::connect_async(req).await {
         Ok((mut ws, _)) => loop {
-            let m = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+            let m = clax_testkit::within("a frame", ws.next())
                 .await
-                .expect("a frame within 5 s")
                 .expect("open")
                 .expect("readable");
             if let Message::Text(t) = m {
@@ -4689,12 +4687,7 @@ async fn held_body(site: &Site, path: &str, token: &str, len: usize) -> tokio::n
 async fn held_response(mut stream: tokio::net::TcpStream) -> (u16, String) {
     use tokio::io::AsyncReadExt;
     let mut buf = Vec::new();
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        stream.read_to_end(&mut buf),
-    )
-    .await
-    .expect("a response within 10 s");
+    let _ = clax_testkit::within("a response", stream.read_to_end(&mut buf)).await;
     let text = String::from_utf8_lossy(&buf);
     let status = text
         .split(' ')
@@ -6388,9 +6381,8 @@ async fn batch_naming(ws: &mut Ws, person: &str) -> Value {
     use futures::StreamExt;
     use tokio_tungstenite::tungstenite::Message;
     loop {
-        let m = tokio::time::timeout(std::time::Duration::from_secs(10), ws.next())
+        let m = clax_testkit::within("a batch", ws.next())
             .await
-            .expect("a batch within 10 s")
             .unwrap()
             .unwrap();
         if let Message::Text(t) = m {
@@ -6655,18 +6647,11 @@ async fn a_browser_holds_at_most_its_cap_of_streams_and_sockets() {
         .await
         .unwrap();
     drop(ws);
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-    let r = loop {
+    let r = clax_testkit::until("the closed socket's place", || async {
         let r = stream(&sam).await.unwrap();
-        if r.status() == 200 {
-            break r;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the closed socket's place within 10 s"
-        );
-        tokio::task::yield_now().await;
-    };
+        (r.status() == 200).then_some(r)
+    })
+    .await;
     held.push(r);
     assert_eq!(held.len(), MAX_PER_SESSION);
 }

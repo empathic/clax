@@ -471,7 +471,7 @@ async fn a_deleted_live_page_is_made_afresh_by_the_next_comment() {
 }
 
 /// The next SSE event of `stream` other than keep-alive comments, as
-/// (name, data), within 20 s; `ready` too when `with_ready`.
+/// (name, data); `ready` too when `with_ready`.
 async fn next_block(
     stream: &mut (impl futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Unpin),
     buf: &mut String,
@@ -496,9 +496,8 @@ async fn next_block(
                 .unwrap_or("null");
             return (name, serde_json::from_str(data).unwrap());
         }
-        let chunk = tokio::time::timeout(std::time::Duration::from_secs(20), stream.next())
+        let chunk = clax_testkit::within("an SSE event", stream.next())
             .await
-            .expect("an event within 20 s")
             .expect("stream open")
             .unwrap();
         buf.push_str(std::str::from_utf8(&chunk).unwrap());

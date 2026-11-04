@@ -451,6 +451,7 @@ fn instance(v: Value, origin: &str) -> Option<Instance> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use serde_json::json;

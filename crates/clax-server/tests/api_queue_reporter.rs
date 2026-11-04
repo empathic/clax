@@ -8,7 +8,7 @@ use clax_core::queue::ReportersSee;
 use clax_core::sig::{self, KeyPair, SignInput};
 use clax_core::working::ManualClock;
 use clax_store::queues::NewQueue;
-use clax_testkit::TestServer;
+use clax_testkit::{TestServer, within};
 use serde_json::{Value, json};
 use sha2::Digest;
 use std::sync::Arc;
@@ -1967,9 +1967,8 @@ async fn watch_then_file_wakes_a_waiting_watcher() {
     assert_eq!(res.status(), 201);
     let v: Value = res.json().await.unwrap();
     let tid = v["report"]["id"].as_str().unwrap().to_string();
-    let got = tokio::time::timeout(clax_testkit::HANG, waiter)
+    let got = within("the filing's wake of the watcher's wait", waiter)
         .await
-        .expect("the filing wakes the watcher's wait")
         .unwrap();
     let items = got["feedback"].as_array().unwrap();
     assert_eq!(items.len(), 1, "{got}");
@@ -1996,11 +1995,7 @@ async fn a_filing_and_a_reporters_comment_reach_the_queues_topic() {
         )
     };
     assert_eq!(
-        next(
-            tokio::time::timeout(clax_testkit::HANG, owner.next_named("report"))
-                .await
-                .expect("a report event")
-        ),
+        next(within("a report event", owner.next_named("report")).await),
         (tid.clone(), "open".into())
     );
     let res = s
@@ -2011,9 +2006,7 @@ async fn a_filing_and_a_reporters_comment_reach_the_queues_topic() {
         )
         .await;
     assert_eq!(res.status(), 200);
-    let got = tokio::time::timeout(clax_testkit::HANG, owner.next_named("report"))
-        .await
-        .expect("a report event");
+    let got = within("a report event", owner.next_named("report")).await;
     assert_eq!(next(got.clone()), (tid.clone(), "open".into()));
     assert!(
         got.get("body").is_none() && got.get("comment").is_none(),

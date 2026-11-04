@@ -2,17 +2,14 @@ use clax_testkit::TestServer;
 use futures::StreamExt;
 use std::time::Duration;
 
-const READ_TIMEOUT: Duration = Duration::from_secs(20);
-
-/// Appends the next body chunk to `buf`, failing the test if none arrives within
-/// `READ_TIMEOUT` or the stream ends.
+/// Appends the next body chunk to `buf`, failing the test if the stream
+/// ends (or past the hang guard).
 async fn read_chunk(
     stream: &mut (impl StreamExt<Item = Result<bytes::Bytes, reqwest::Error>> + Unpin),
     buf: &mut String,
 ) {
-    let chunk = tokio::time::timeout(READ_TIMEOUT, stream.next())
+    let chunk = clax_testkit::within("an SSE chunk", stream.next())
         .await
-        .expect("SSE chunk within 20 s")
         .expect("stream still open")
         .unwrap();
     buf.push_str(std::str::from_utf8(&chunk).unwrap());
@@ -134,13 +131,12 @@ async fn delete_emits_artifact_deleted() {
 async fn idle_stream_sends_keep_alive_comments() {
     let ts = TestServer::spawn_with(|s| s.sse_keep_alive = Duration::from_millis(200)).await;
     let (mut stream, mut buf) = open_stream(&ts, "").await;
-    tokio::time::timeout(Duration::from_secs(20), async {
+    clax_testkit::within("a keep-alive comment", async {
         while !buf.contains(": keep-alive\n\n") {
             read_chunk(&mut stream, &mut buf).await;
         }
     })
-    .await
-    .expect("keep-alive comment within 20 s");
+    .await;
 }
 
 #[tokio::test]

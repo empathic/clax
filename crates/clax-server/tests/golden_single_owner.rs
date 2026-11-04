@@ -48,13 +48,12 @@ use clax_core::Tier;
 use clax_core::model::Session;
 use clax_core::working::ManualClock;
 use clax_mcp::{ClaxTools, DaemonClient};
-use clax_testkit::TestServer;
+use clax_testkit::{TestServer, within};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 /// The fixture's file name in `tests/fixtures/`.
 pub const FIXTURE: &str = "single-owner-21.sql";
@@ -72,8 +71,6 @@ pub const TIERS: [Tier; 6] = [
     Tier::Queue,
     Tier::Inject,
 ];
-/// Longest a client process may run before the collection fails.
-const CLIENT_LIMIT: Duration = Duration::from_secs(30);
 
 fn fixtures_dir() -> PathBuf {
     clax_testkit::fixtures_dir()
@@ -158,7 +155,7 @@ impl Minted {
     }
 
     /// Runs `cmd` with `stdin`, recording its PID; its stdout, after
-    /// asserting it exited 0 within [`CLIENT_LIMIT`].
+    /// asserting it exited 0 within the [`clax_testkit::HANG`] guard.
     async fn run(&mut self, mut cmd: tokio::process::Command, stdin: &str) -> String {
         use tokio::io::AsyncWriteExt;
         let mut child = cmd.spawn().expect("spawn clax");
@@ -168,9 +165,8 @@ impl Minted {
         let mut input = child.stdin.take().unwrap();
         input.write_all(stdin.as_bytes()).await.unwrap();
         drop(input);
-        let out = tokio::time::timeout(CLIENT_LIMIT, child.wait_with_output())
+        let out = within("the client's exit", child.wait_with_output())
             .await
-            .expect("the client finished in time")
             .unwrap();
         assert!(
             out.status.success(),
