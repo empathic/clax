@@ -350,6 +350,7 @@ impl Sampler {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use clax_core::config::SampleConfig;

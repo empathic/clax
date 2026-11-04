@@ -65,6 +65,7 @@ pub fn plain_host<'a>(req: &'a HeaderMap, fallback: &'a str) -> &'a str {
 pub struct ContentPolicySet;
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

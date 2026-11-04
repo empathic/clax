@@ -319,6 +319,7 @@ impl Drop for Membership {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 
@@ -343,9 +344,7 @@ mod tests {
         }
         assert_eq!(stay.snapshot().len(), 1);
         // The evicted socket is woken to end.
-        tokio::time::timeout(std::time::Duration::from_secs(1), claim.replaced.notified())
-            .await
-            .unwrap();
+        crate::test_util::within("the evicted socket's wake", claim.replaced.notified()).await;
         assert_eq!(rooms.evict_viewer("u_old"), 0);
     }
 

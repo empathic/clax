@@ -2184,6 +2184,7 @@ impl Tick<'_> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

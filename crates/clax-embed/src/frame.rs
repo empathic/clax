@@ -134,6 +134,7 @@ pub fn tag(tag: i64) -> [u8; 8] {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

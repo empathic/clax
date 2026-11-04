@@ -2,6 +2,7 @@
 //! exports of `src/ffi.rs` call after making slices of their pointers, with
 //! a collector in place of Dart's `NativeApi.postCObject`; and the two
 //! exports that take no pointer, called directly.
+#![warn(clippy::disallowed_methods)]
 
 use clax_embed::frame::{self, As, RequestHead, ResponseHead};
 use clax_embed::{Post, ffi_call, ffi_close, ffi_open, ffi_subscribe};
