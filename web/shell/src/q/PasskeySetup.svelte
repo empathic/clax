@@ -2,8 +2,8 @@
 
 <script module lang="ts">
   import type { Held } from "../held";
-  import { type ConfirmationView, confirmations } from "./confirm.svelte";
-  import { type PasskeySettings, type Registration, makePasskey, putSettings, register } from "./passkey";
+  import { type ConfirmationView, answerConfirmation, confirmations } from "./confirm.svelte";
+  import { type PasskeySettings, type Registration, assertFor, makePasskey, passkeySettings, putSettings, register } from "./passkey";
 
   /** The page's passkey setup, one for every card and setting that offers
    * it: a registration held for its confirmation (`pending`) outlives the
@@ -41,13 +41,24 @@
     setup.finished++;
   }
 
-  /** Brings the held registration's confirmation card into view, focused. */
-  function showCard() {
-    const id = setup.pending?.held.id;
-    const card = id ? [...document.querySelectorAll<HTMLElement>(".cfcard")].find(e => e.dataset.confirmation === id) : undefined;
-    card?.scrollIntoView({ block: "center", behavior: "smooth" });
-    card?.focus({ preventScroll: true });
-  }
+  /** Whether confirmation `id` holds the registration this page started:
+   * the setup line answers it, so lists leave its card out. */
+  export const heldHere = (id: string) => setup.pending?.held.id === id;
+
+  /** Answers the held registration's confirmation from the setup line, as
+   * its card would (with a passkey, where one is required); approved, the
+   * registration is sent again and the setup finishes. */
+  const answerHeld = (approve: boolean) => {
+    const p = setup.pending;
+    if (!p) return Promise.resolve();
+    return run(async () => {
+      if (!approve) { wait(null); await answerConfirmation(p.held.id, false); return; }
+      const s = await passkeySettings(true);
+      await answerConfirmation(p.held.id, true, s?.required ? await assertFor({ purpose: "confirm", confirmation_id: p.held.id }) : undefined);
+      // A refused answer (Touch ID cancelled) keeps the wait; a refused registration ends it.
+      try { await finish(p.reg, p.held.id); } catch (e) { wait(null); throw e; }
+    });
+  };
 
   async function run(f: () => Promise<void>, refused?: () => void) {
     if (setup.busy) return;
@@ -74,9 +85,10 @@
   // Setting up a passkey for confirmations: the browser makes one (Touch
   // ID, or another passkey, user verified), the daemon registers it, and
   // confirming then requires it. While an agent is live the registration
-  // is itself a confirmed decision: the line names its card as the next
-  // step (**Show card** brings it into view), and approving that card,
-  // here or anywhere this page hears of, finishes the setup. `onDone`
+  // is itself a confirmed decision: the line says so and answers it in
+  // place (**Confirm adding it** / **Cancel**), standing in for its card,
+  // which this page's lists leave out (`heldHere`). Approving that card
+  // anywhere else this page hears of finishes the setup too. `onDone`
   // hears the settings after a setup that finishes while this is shown.
   let { label = "Set up", onDone }: { label?: string; onDone?: (s: PasskeySettings) => void } = $props();
   const seen = setup.finished;
@@ -85,8 +97,9 @@
 
 <span class="pk-setup">
   {#if setup.pending}
-    <span class="pk-held" role="status">Next: confirm “add a passkey” in its card. Setup finishes when you do.</span>
-    <button type="button" class="primary" onclick={showCard}>Show card</button>
+    <span class="pk-held" role="status">Agents are running, so adding this passkey needs your confirmation too.</span>
+    <button type="button" class="primary" disabled={setup.busy} onclick={() => answerHeld(true)}>Confirm adding it</button>
+    <button type="button" class="ghost" disabled={setup.busy} onclick={() => answerHeld(false)}>Cancel</button>
   {:else}
     <button type="button" class="primary" disabled={setup.busy} onclick={startSetup}>{label}</button>
   {/if}

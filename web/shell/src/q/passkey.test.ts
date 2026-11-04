@@ -3,7 +3,8 @@ import { dispatchTrusted } from "../../../bridge/test/trusted";
 import { settle, stubFetch } from "../people/fixtures";
 import { flush, mount } from "../test/svelte";
 import ConfirmationCard from "./ConfirmationCard.svelte";
-import { type ConfirmationView, confirmations } from "./confirm.svelte";
+import ConfirmToasts from "./ConfirmToasts.svelte";
+import { ConfirmationFeed, type ConfirmationView, confirmations } from "./confirm.svelte";
 import { type PasskeySettings as Settings, b64u, fromB64u, passkeySettings } from "./passkey";
 import PasskeySettings from "./PasskeySettings.svelte";
 
@@ -50,13 +51,13 @@ describe("passkeys for confirmations", () => {
     expect(b64u(fromB64u("AQID_-8"))).toBe("AQID_-8");
   });
 
-  it("offers a passkey on first use, and Not now is remembered", async () => {
+  it("offers a passkey on first use, and Don't ask again is remembered", async () => {
     const calls = stubFetch({ "GET /api/passkeys": settings(), "PUT /api/passkeys/settings": settings({ offer_dismissed: true }) });
     await passkeySettings(true);
     const m = mount(ConfirmationCard, { c: card(), now });
     await settle();
     expect(m.root.querySelector(".coffer")!.textContent).toContain("Require Touch ID or a passkey to confirm");
-    click(byText(m.root, "Not now"));
+    click(byText(m.root, "Don't ask again"));
     await settle();
     expect(calls.filter(c => c.method === "PUT")).toEqual([{ url: "/api/passkeys/settings", method: "PUT", body: { offer_dismissed: true } }]);
     expect(m.root.querySelector(".coffer")).toBeNull();
@@ -82,7 +83,7 @@ describe("passkeys for confirmations", () => {
       ["POST", "/api/passkeys", { credential_id: "AQ", public_key: "Bg", alg: -7, authenticator_data: "Bw", client_data_json: "BQ" }],
       ["PUT", "/api/passkeys/settings", { required: true }],
     ]);
-    expect(m.root.querySelector(".coffer")!.textContent).toBe("Touch ID or a passkey now confirms these decisions.");
+    expect(m.root.querySelector(".coffer")!.textContent).toBe("Passkey added: Confirm now asks for Touch ID or your passkey.");
   });
 
   it("keeps a registration held for a confirmation past the card that offered it, and finishes it once that confirmation is approved", async () => {
@@ -104,9 +105,16 @@ describe("passkeys for confirmations", () => {
     await settle();
     click(byText(offering.root, "Set up"));
     await settle();
-    // The next step is named: the registration's own card, with a way to it.
-    expect(offering.root.querySelector(".pk-held")!.textContent).toBe("Next: confirm “add a passkey” in its card. Setup finishes when you do.");
-    expect(byText(offering.root, "Show card")).toBeDefined();
+    // The next step is on the line itself, which stands in for the registration's card.
+    expect(offering.root.querySelector(".pk-held")!.textContent).toBe("Agents are running, so adding this passkey needs your confirmation too.");
+    expect([...offering.root.querySelectorAll(".coffer button")].map(b => b.textContent!.trim())).toEqual(["Confirm adding it", "Cancel"]);
+    // So the page lists every open confirmation but that one.
+    const feed = new ConfirmationFeed({ list: async () => [card(), { ...card(), id: REG }] });
+    await feed.refresh();
+    const toasts = mount(ConfirmToasts, { feed });
+    await settle();
+    expect([...toasts.root.querySelectorAll<HTMLElement>(".confirm-toasts .cfcard")].map(e => e.dataset.confirmation)).toEqual([ID]);
+    toasts.unmount();
     // Answering the card that offered it drops the card from the inbox.
     click(byText(offering.root, "Confirm"));
     await settle();
@@ -117,10 +125,10 @@ describe("passkeys for confirmations", () => {
     await settle();
     expect(reg.root.querySelector(".coffer")).toBeNull();
     expect(byText(other.root, "Set up")).toBeUndefined();
-    expect(byText(other.root, "Show card")).toBeDefined();
-    // Approving the registration's confirmation finishes the setup, with no further click.
-    click(byText(reg.root, "Confirm"));
+    // Confirming it there answers the registration's confirmation and finishes the setup.
+    click(byText(other.root, "Confirm adding it"));
     await settle();
+    expect(other.root.querySelector(".pk-held")).toBeNull();
     expect(calls.filter(c => c.method !== "GET").map(c => [c.method, c.url])).toEqual([
       ["POST", "/api/passkeys/challenge"],
       ["POST", "/api/passkeys"],
@@ -129,7 +137,28 @@ describe("passkeys for confirmations", () => {
       ["POST", "/api/passkeys"],
       ["PUT", "/api/passkeys/settings"],
     ]);
-    expect(other.root.querySelector(".coffer")!.textContent).toBe("Touch ID or a passkey now confirms these decisions.");
+    expect(other.root.querySelector(".coffer")!.textContent).toBe("Passkey added: Confirm now asks for Touch ID or your passkey.");
+  });
+
+  it("Cancel declines a held registration's confirmation and ends the setup", async () => {
+    const REG = "cf_99998888777766665555444433332222";
+    const calls = stubFetch({
+      "GET /api/passkeys": settings(),
+      "POST /api/passkeys/challenge": challenge,
+      "POST /api/passkeys": [202, { status: "confirmation_pending", confirmation_id: REG, confirm_url: `http://localhost:7480/inbox?confirm=${REG}` }],
+      [`POST /api/confirmations/${REG}`]: { confirmation: { ...card(), id: REG, status: "declined" } },
+    });
+    await passkeySettings(true);
+    const m = mount(ConfirmationCard, { c: card(), now });
+    await settle();
+    click(byText(m.root, "Set up"));
+    await settle();
+    click(byText(m.root, "Cancel"));
+    await settle();
+    expect(calls.filter(c => c.method === "POST").at(-1)).toEqual({ url: `/api/confirmations/${REG}`, method: "POST", body: { approve: false } });
+    expect(m.root.querySelector(".pk-held")).toBeNull();
+    expect(byText(m.root, "Set up")).toBeDefined();
+    expect(m.root.querySelector(".pk-setup .err")).toBeNull();
   });
 
   it("finishes a held registration when the page hears its confirmation approved elsewhere, and ends it when declined", async () => {

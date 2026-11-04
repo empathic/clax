@@ -2963,9 +2963,12 @@ required) say where to confirm instead of showing a result.
 The owner may require Touch ID or another passkey to confirm: WebAuthn
 with user verification (`userVerification: "required"`), ES256 or EdDSA,
 no attestation. The first confirmation card offers it ("Require Touch ID or
-a passkey to confirm", **Set up** / **Not now**, remembered), and Settings'
-Confirmations section turns it on or off and lists and removes the
-passkeys. While it is on and a passkey is registered:
+a passkey to confirm", **Set up** / **Don't ask again**, remembered), and
+Settings' Confirmations section turns it on or off and lists and removes
+the passkeys. While an agent is live, registering one is itself a
+confirmed decision: the setup line answers it in place (**Confirm adding
+it** / **Cancel**), and the page that started it leaves its card out.
+While it is on and a passkey is registered:
 
 - approving a confirmation from a browser session takes an assertion over
   a challenge issued for that confirmation (`confirm:<id>`), spent once;

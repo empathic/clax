@@ -12,8 +12,8 @@
   // show it. Where the owner requires a passkey, **Confirm** asks the
   // browser for one (Touch ID, or another) first. On first use, where a
   // passkey can be used here and none is set up, the card offers "Require
-  // Touch ID or a passkey to confirm" (**Set up** / **Not now**, which is
-  // remembered). Wherever passkeys are named (the offer, a confirmation
+  // Touch ID or a passkey to confirm" (**Set up** / **Don't ask again**,
+  // remembered; Settings still sets one up). Wherever passkeys are named (the offer, a confirmation
   // that requires one), the card lists those registered and how each was
   // added, so one the owner did not add shows.
   import { relativeTime } from "../format";
@@ -85,12 +85,12 @@
     <div class="ckeys"><span>{keys.required ? "Confirming asks for one of these passkeys:" : "Passkeys registered:"}</span><PasskeyList keys={keys.passkeys} {now} /></div>
   {/if}
   {#if setUp}
-    <p class="coffer" role="status">Touch ID or a passkey now confirms these decisions.</p>
+    <p class="coffer" role="status">Passkey added: Confirm now asks for Touch ID or your passkey.</p>
   {:else if offer && setup.pending?.held.id !== c.id}
     <div class="coffer">
-      <span>Require Touch ID or a passkey to confirm</span>
+      {#if !setup.pending}<span>Require Touch ID or a passkey to confirm</span>{/if}
       <PasskeySetup onDone={s => { keys = s; }} />
-      <button type="button" class="ghost" onclick={notNow}>Not now</button>
+      {#if !setup.pending}<button type="button" class="ghost" onclick={notNow}>Don't ask again</button>{/if}
     </div>
   {/if}
 </article>
