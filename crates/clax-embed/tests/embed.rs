@@ -1,5 +1,6 @@
 //! The embedded core answering request frames through the router, by who
 //! each frame speaks for (spec 2026-10-19 §2.3, §2.5).
+#![warn(clippy::disallowed_methods)]
 
 use clax_embed::frame::{self, As, RequestHead, ResponseHead};
 use clax_embed::{Embed, OpenError, OpenEvent, OpenOptions};

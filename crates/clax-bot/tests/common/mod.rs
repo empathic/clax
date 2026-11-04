@@ -749,5 +749,24 @@ impl Env {
     }
 }
 
-/// How long a test waits for something that happens promptly.
-pub const PROMPTLY: Duration = Duration::from_secs(30);
+/// How long a test's wait on something that will happen may take before
+/// the test calls it a hang: `clax_testkit::HANG`. A hang guard only: a
+/// loaded machine reaches every condition far sooner, so it never decides
+/// whether a test passes.
+pub const HANG: Duration = Duration::from_secs(120);
+
+/// `fut`'s output, bounded by the [`HANG`] guard: panics naming `what`
+/// when `fut` has none by then (`clax_testkit::within`, which these tests
+/// do not reach).
+///
+/// # Panics
+/// Past the [`HANG`] guard.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "within is the HANG guard on a wait"
+)]
+pub async fn within<F: std::future::IntoFuture>(what: &str, fut: F) -> F::Output {
+    tokio::time::timeout(HANG, fut)
+        .await
+        .unwrap_or_else(|_| panic!("{what}: not after {HANG:?} (hang guard)"))
+}

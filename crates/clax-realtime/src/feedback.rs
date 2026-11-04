@@ -645,6 +645,7 @@ pub fn decision_parties(approver: Option<&str>, author: &str) -> Vec<String> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::FeedbackWaiters;
     use std::sync::Arc;

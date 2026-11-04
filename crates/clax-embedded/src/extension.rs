@@ -25,6 +25,7 @@ pub fn extension_files() -> Vec<(String, Vec<u8>)> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

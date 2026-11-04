@@ -106,9 +106,14 @@ pub use worker::{
 };
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::time::{self, Duration, Instant};
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "tests clax_rt::time itself, on tokio's paused clock"
+    )]
     #[tokio::test(start_paused = true)]
     async fn a_timeout_ends_a_future_that_outlasts_it() {
         let slow = time::sleep(Duration::from_secs(10));
@@ -118,6 +123,10 @@ mod tests {
         assert_eq!(fast.unwrap(), 7);
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "tests clax_rt::time itself, on tokio's paused clock"
+    )]
     #[tokio::test(start_paused = true)]
     async fn a_spawned_task_hands_back_its_output_and_an_aborted_one_is_cancelled() {
         let done = super::spawn(async { 3 });

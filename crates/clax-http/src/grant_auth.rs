@@ -1014,6 +1014,7 @@ fn gnap_token(headers: &HeaderMap) -> Option<Secret> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

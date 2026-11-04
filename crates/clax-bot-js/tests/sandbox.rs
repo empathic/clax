@@ -10,9 +10,23 @@ use std::cell::Cell;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-/// A bound on waiting for an engine thread to end: generous, as only a
-/// condition ends the wait.
-const THREAD_END: Duration = Duration::from_secs(60);
+/// The hang guard (`clax_testkit::HANG`): the bound on waiting for an
+/// engine thread to end, and on a run that must not be stopped for time.
+/// It never decides whether a test passes.
+const HANG: Duration = Duration::from_secs(120);
+
+/// `fut`'s output, bounded by the [`HANG`] guard: panics naming `what`
+/// when `fut` has none by then (`clax_testkit::within`, which these tests
+/// do not reach).
+#[allow(
+    clippy::disallowed_methods,
+    reason = "within is the HANG guard on a wait"
+)]
+async fn within<F: std::future::IntoFuture>(what: &str, fut: F) -> F::Output {
+    tokio::time::timeout(HANG, fut)
+        .await
+        .unwrap_or_else(|_| panic!("{what}: not after {HANG:?} (hang guard)"))
+}
 
 /// A clock whose every reading is `step` later than the one before, so a
 /// script's CPU time is the number of times the engine looked at it.
@@ -115,11 +129,13 @@ fn sandbox() -> QuickJs {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_conformance_suite_passes() {
     let sandbox = sandbox();
-    let failures: Vec<String> = conformance::run_all(&sandbox)
-        .await
-        .into_iter()
-        .filter_map(|(name, r)| r.err().map(|e| format!("{name}: {e}")))
-        .collect();
+    // The engine's own polls stop every case: the watchdog never fires.
+    let failures: Vec<String> =
+        within("the conformance suite ends", conformance::run_all(&sandbox))
+            .await
+            .into_iter()
+            .filter_map(|(name, r)| r.err().map(|e| format!("{name}: {e}")))
+            .collect();
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
@@ -187,7 +203,7 @@ async fn the_watchdog_ends_a_run_whose_engine_does_not_stop_and_abandons_it() {
     // Billing takes the engine's own figure: a clock that stands still.
     assert_eq!(outcome.cpu_us, 0);
     assert_eq!(sandbox.abandoned().total, 1);
-    assert!(sandbox.wait_abandoned_at_most(0, THREAD_END));
+    assert!(sandbox.wait_abandoned_at_most(0, HANG));
     assert_eq!(sandbox.abandoned(), Abandoned { live: 0, total: 1 });
 }
 
@@ -232,7 +248,7 @@ async fn past_its_cap_of_abandoned_threads_the_sandbox_refuses_scripts() {
     let refused = run(&sandbox, "return 1", Limits::default()).await;
     assert_eq!(kind(&refused), Some(ErrorKind::Unavailable), "{refused:?}");
     gate.open();
-    assert!(sandbox.wait_abandoned_at_most(0, THREAD_END));
+    assert!(sandbox.wait_abandoned_at_most(0, HANG));
     // Real time again, so the watchdog gives the next run its due.
     tokio::time::resume();
     let fine = run(&sandbox, "return 1", Limits::default()).await;
@@ -267,7 +283,7 @@ async fn a_cancelled_run_returns_what_it_did_so_far() {
     assert_eq!(outcome.calls.len(), 1);
     assert!(outcome.calls[0].ok);
     assert!(outcome.wall_us > 0);
-    assert!(sandbox.wait_abandoned_at_most(0, THREAD_END));
+    assert!(sandbox.wait_abandoned_at_most(0, HANG));
 }
 
 #[tokio::test(start_paused = true)]
@@ -287,7 +303,7 @@ async fn dropping_a_run_stops_its_engine() {
             .is_err()
     );
     assert_eq!(sandbox.abandoned().total, 1);
-    assert!(sandbox.wait_abandoned_at_most(0, THREAD_END));
+    assert!(sandbox.wait_abandoned_at_most(0, HANG));
 }
 
 #[tokio::test]
@@ -387,7 +403,14 @@ async fn the_call_past_the_limit_never_reaches_the_host() {
 async fn refused_arguments_never_reach_the_host() {
     let host = EchoHost::default();
     let code = "let a = [0]; for (let i = 0; i < 17; i++) a = [a, a];\ntry { await clax.echo(a) } catch (e) { return [e.name, e.message] }";
+    // Measuring the refused arguments takes real CPU time, which this test
+    // is not about: neither the CPU limit nor the watchdog ends it.
     let outcome = sandbox()
+        .with_clock(still())
+        .with_watchdog(Watchdog {
+            factor: 1,
+            floor: HANG,
+        })
         .run(
             &Script::new("t", code),
             &host,

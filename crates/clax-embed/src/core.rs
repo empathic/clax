@@ -131,6 +131,7 @@ thread_local! {
 
 /// Tests: panics when the core was opened to panic `here`.
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 fn panic_if(sh: &Shared, here: PanicAt) {
     if sh.panic_at == Some(here) {
         panic!("a panic injected at {here:?}");
@@ -457,6 +458,7 @@ impl Embed {
 
     /// Tests: the calls counted in flight.
     #[cfg(test)]
+    #[warn(clippy::disallowed_methods)]
     pub(crate) fn in_flight(&self) -> usize {
         *self.inner.shared.in_flight.borrow()
     }
@@ -1016,6 +1018,7 @@ pub fn error_frame_after(prefix: &[u8], status: u16, code: &str, message: &str) 
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 
