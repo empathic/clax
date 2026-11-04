@@ -108,9 +108,10 @@ jobs:
         if: ${{ always() }}
         run: bazelisk shutdown || true
 
-  # On a pull request into prod: the head's version is X.Y.Z, every version
-  # file agrees, and it is greater than prod's (scripts/check-version-bump.sh).
-  # The full fetch brings origin/prod.
+  # On a pull request into prod: it comes from a release branch of this
+  # repository (scripts/check-release-head.sh), and the head's version is
+  # X.Y.Z, every version file agrees, and it is greater than prod's
+  # (scripts/check-version-bump.sh). The full fetch brings origin/prod.
   version:
     if: ${{ github.event_name == 'pull_request' && github.base_ref == 'prod' }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -118,6 +119,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { fetch-depth: 0, persist-credentials: false }
+      - name: Check the pull request comes from a release branch
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: scripts/check-release-head.sh "$HEAD_REF" "$HEAD_REPO" "$GITHUB_REPOSITORY"
       - name: Check the version is raised over prod's
         run: scripts/check-version-bump.sh origin/prod
 
