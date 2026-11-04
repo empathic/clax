@@ -1,4 +1,4 @@
-use clax_testkit::TestServer;
+use clax_testkit::{TestServer, within};
 
 /// How long the tests here hold a request they mean to time out: the test
 /// routes' longest sleep, far past every timeout they set, so only the
@@ -17,6 +17,8 @@ async fn slow_api_requests_time_out_with_json_408() {
     assert_eq!(body["error"]["code"], "timeout");
 }
 
+/// The stream opens before a timed request that the timeout cuts: it has
+/// outlived the timeout when the publish comes.
 #[tokio::test]
 async fn events_stream_is_exempt_from_the_timeout() {
     let ts = TestServer::spawn_with(|state| {
@@ -26,7 +28,9 @@ async fn events_stream_is_exempt_from_the_timeout() {
     let res = ts.get("/api/events").await;
     assert_eq!(res.status(), 200);
     let mut stream = res.bytes_stream();
-    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    assert!(saw_event(&mut stream, "event: ready").await);
+    let cut = ts.get_authed(&format!("/api/_test/sleep/{HOLD_MS}")).await;
+    assert_eq!(cut.status(), 408, "a timed request outliving the timeout");
     ts.publish("late", &[("index.html", "<p>")]).await;
     assert!(
         saw_event(&mut stream, "event: version").await,
@@ -34,7 +38,8 @@ async fn events_stream_is_exempt_from_the_timeout() {
     );
 }
 
-/// Reads the stream until `needle` appears, within 20 s.
+/// Reads the stream until `needle` appears (true), or the stream ends
+/// (false).
 async fn saw_event(
     stream: &mut (impl futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Unpin),
     needle: &str,
@@ -50,9 +55,7 @@ async fn saw_event(
         }
         false
     };
-    tokio::time::timeout(std::time::Duration::from_secs(20), read)
-        .await
-        .unwrap_or(false)
+    within(&format!("{needle} on the stream"), read).await
 }
 
 #[tokio::test]
