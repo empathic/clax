@@ -1546,6 +1546,7 @@ pub fn router() -> Router<AppState> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     /// Every route [`super::router`] mounts is one the gate takes as hosted
     /// mode's own (`clax_http::hosted::own_route`), so none is sent through

@@ -477,6 +477,7 @@ pub fn inject(template: &str, i: Option<&Injected>) -> String {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

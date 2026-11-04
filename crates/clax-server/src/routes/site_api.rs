@@ -617,6 +617,7 @@ fn no_store(mut res: Response<Body>) -> Response<Body> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

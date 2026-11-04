@@ -614,9 +614,8 @@ async fn room(ts: &TestServer, aid: &str, peer: &str, cookie: &str) -> Ws {
 async fn frame(ws: &mut Ws) -> Value {
     use futures::StreamExt;
     loop {
-        let m = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+        let m = clax_testkit::within("a room frame", ws.next())
             .await
-            .expect("a frame within 5 s")
             .expect("open")
             .expect("readable");
         if let tokio_tungstenite::tungstenite::Message::Text(t) = m {

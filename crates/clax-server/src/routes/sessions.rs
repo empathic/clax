@@ -788,6 +788,7 @@ pub async fn tool_call_ids(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 
