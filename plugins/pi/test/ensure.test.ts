@@ -50,7 +50,7 @@ describe("ensure", () => {
     } finally {
       execFileSync(claxBin, ["stop"], { env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "" }, stdio: "ignore" });
     }
-  }, 30_000);
+  });
 
   it("waits for `clax serve` while another client's daemon replacement holds the start lock", async () => {
     // A replacement holds daemon.lock for up to about 32 s, and `clax serve`
@@ -71,7 +71,7 @@ describe("ensure", () => {
       let settled = false;
       const ensuring = ensure(home, { env: withBin(claxBin), port: 0, wrapper }).finally(() => { settled = true; });
       // `clax serve` creates (truncates) the lock file just before it waits on the lock.
-      await expect.poll(() => statSync(lock).size, { timeout: 15_000 }).toBe(0);
+      await expect.poll(() => statSync(lock).size).toBe(0);
       expect(settled).toBe(false);
       expect(existsSync(join(home, "daemon.json"))).toBe(false);
       holder.stdin!.end();
@@ -81,7 +81,7 @@ describe("ensure", () => {
       holder.kill();
       execFileSync(claxBin, ["stop"], { env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "" }, stdio: "ignore" });
     }
-  }, 60_000);
+  });
 
   it("runs the binary the home's bin setting names, never a clax on PATH", async () => {
     const home = join(scratch, "setting");

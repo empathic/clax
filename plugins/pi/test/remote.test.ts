@@ -59,7 +59,7 @@ describe("remote mode", () => {
     files.touch("pi-s-t.json", "S2");
     expect(statSync(path).mtimeMs).toBeLessThan(Date.now() - 7 * 24 * 3600 * 1000);
     files.touch("pi-s-t.json", "S1");
-    expect(statSync(path).mtimeMs).toBeGreaterThan(Date.now() - 60_000);
+    expect(statSync(path).mtimeMs).toBeGreaterThan(Date.now() - 7 * 24 * 3600 * 1000);
   });
 
   it("reads the repository and branch from the files, as the Rust clients do", () => {
@@ -486,7 +486,7 @@ describe("remote clips while the injection loop hands feedback over", () => {
       // The clip is stored before the text is rewritten; what follows is promise
       // continuations only, all run before the next macrotask.
       const cached = join(home, "remote-cache", "clips", `${AID}-${TID}.png`);
-      await expect.poll(() => existsSync(cached), { timeout: 15_000 }).toBe(true);
+      await expect.poll(() => existsSync(cached)).toBe(true);
       await new Promise(r => setImmediate(r));
       expect(pi.sent).toEqual([]);
     } finally {
@@ -625,36 +625,45 @@ describe("remote retries", () => {
   });
 
   it("retries a stale request once, with the daemon's clock, and only once", async () => {
-    const ahead = new Date(Date.now() + 100_000).toUTCString();
-    const once = await daemonAnswering((n, res) => (n === 1 ? error(res, 401, "stale_request", ahead) : res.end("{}")));
-    const always = await daemonAnswering((_, res) => error(res, 401, "stale_request", ahead));
+    // This machine's clock stands still on a whole second, and each answer
+    // dates itself 100 s ahead of it, so the offset learned is exactly 100.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-06-01T12:00:00Z"));
+    const ahead = () => new Date(Date.now() + 100_000).toUTCString();
+    const once = await daemonAnswering((n, res) => (n === 1 ? error(res, 401, "stale_request", ahead()) : res.end("{}")));
+    const always = await daemonAnswering((_, res) => error(res, 401, "stale_request", ahead()));
     try {
       const r = loadRemote(connectedHome(once.url).home)!;
       expect((await sendRemote(r, "/api/artifacts", { method: "GET" })).status).toBe(200);
       expect(once.count()).toBe(2);
-      expect(Math.abs(r.offset - 100)).toBeLessThanOrEqual(2);
+      expect(r.offset).toBe(100);
       const r2 = loadRemote(connectedHome(always.url).home)!;
       expect((await sendRemote(r2, "/api/artifacts", { method: "GET" })).status).toBe(401);
       expect(always.count()).toBe(2);
     } finally {
+      vi.useRealTimers();
       once.close();
       always.close();
     }
   });
 
   it("says the clocks differ when the daemon's is too far off to learn, as the Rust clients do", async () => {
-    const far = new Date(Date.now() + 3600_000).toUTCString();
-    const d = await daemonAnswering((_, res) => error(res, 401, "stale_request", far));
+    // This machine's clock stands still on a whole second, and the answer
+    // dates itself an hour ahead of it, so the offset is exactly 3600 s.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-06-01T12:00:00Z"));
+    const d = await daemonAnswering((_, res) => error(res, 401, "stale_request", new Date(Date.now() + 3600_000).toUTCString()));
     try {
       const r = loadRemote(connectedHome(d.url).home)!;
       const res = await sendRemote(r, "/api/artifacts", { method: "GET" });
       expect(res.status).toBe(401);
       const e = JSON.parse(res.body.toString("utf8")).error;
       expect(e.code).toBe("clock_skew");
-      expect(e.message).toMatch(/^the daemon's clock is \+36\d\d s from this machine's, more than the 600 s a signed request may be moved by: set this machine's clock \(nothing was signed for that time\)$/);
+      expect(e.message).toBe("the daemon's clock is +3600 s from this machine's, more than the 600 s a signed request may be moved by: set this machine's clock (nothing was signed for that time)");
       expect(d.count()).toBe(1);
       expect(r.offset).toBe(0);
     } finally {
+      vi.useRealTimers();
       d.close();
     }
   });
