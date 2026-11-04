@@ -832,6 +832,9 @@ impl WebSource for RestSource {
     }
 }
 
+/// A Cloudflare account ID and its opened token.
+type Credentials = (String, Secret);
+
 /// The daemon's [`WebSource`]: at each call, a [`RestSource`] for the
 /// account ID and sealed Cloudflare token the instance holds now, or one
 /// without an account when it holds neither, kept while they stay the
@@ -853,7 +856,7 @@ pub struct DaemonWeb {
     lookup: Arc<dyn Lookup>,
     user_agent: String,
     /// The last credentials (none: no account), and their source.
-    current: Mutex<Option<(Option<(String, Secret)>, Arc<RestSource>)>>,
+    current: Mutex<Option<(Option<Credentials>, Arc<RestSource>)>>,
 }
 
 impl DaemonWeb {

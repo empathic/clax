@@ -424,7 +424,7 @@ async function main() {
     check(r.status === 400, "fixtures that are not fixtures are refused", r);
     await ok(base, "POST", "/_worker/web-fixtures", WEB_FIXTURES);
     const web = await ok(base, "PUT", "/api/admin/web", { search: { enabled: true }, fetch: { enabled: true } });
-    check(web.configured === true && web.search.enabled === true && web.fetch.enabled === true, "with the test web source the host's web use is configured, and the admin turns it on", web);
+    check(web.configured?.search === true && web.configured?.fetch === true && web.search.enabled === true && web.fetch.enabled === true, "with the test web source the host's web use is configured, and the admin turns it on", web);
     await ok(base, "PUT", "/api/me/bot", { web: true });
     r = await call(base, "POST", "/api/bot/runs", { thread_ids: [tid], artifact_id: aid });
     check(r.status === 201, "a thread is sent to ClaxBot", r);
@@ -605,7 +605,7 @@ async function main() {
     });
     check(me.web.offered === false, "a decision on web use alone has the binding checked: the person's view says web is not configured", me.web);
     const view = await ok(base, "GET", "/api/admin/web");
-    check(view.configured === false && view.checking === false && /needs to be run remotely/.test(view.unavailable ?? ""),
+    check(view.configured?.search === false && view.configured?.fetch === false && view.checking === false && /needs to be run remotely/.test(view.unavailable ?? ""),
       "the admin's view reports web not configured, with the binding's reason", view);
     openLocal();
     const bdone = await until("the local binding run ends", async () => {
@@ -626,7 +626,7 @@ async function main() {
     base = w.base;
     await ok(base, "PUT", "/api/admin/web", { search: { enabled: true }, fetch: { enabled: true } });
     const oview = await ok(base, "GET", "/api/admin/web");
-    check(oview.configured === false && oview.checking === false && (oview.unavailable ?? "").includes('"not an origin"')
+    check(oview.configured?.search === false && oview.configured?.fetch === false && oview.checking === false && (oview.unavailable ?? "").includes('"not an origin"')
       && !/run remotely/.test(oview.unavailable), "a bad PUBLIC_ORIGIN turns web off, and the admin's view gives that reason", oview);
   } finally {
     await stop();
