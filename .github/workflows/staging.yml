@@ -1,0 +1,236 @@
+name: Staging
+
+# A release pull request into prod is staging (docs/prod.md, "Staging"): on
+# every push to its release branch, this builds the release candidate and
+# deploys it as the pull request's own instance, `clax-pr-<N>` at
+# https://pr-<N>.<STAGING_HOST_ZONE>, its sites at
+# <ID>.pr-<N>.<STAGING_SITE_ZONE>, on prod's Cloudflare account and
+# configured as clax.dev is: the bundled legal pages, the reel, GitHub
+# sign-in with OWNER_GITHUB as the owner, and the smoke as an agent token.
+# It starts empty, at the pull request's first push.
+#
+# The candidate is built once, in jobs with no environment and no secrets:
+# the release binaries with SHA256SUMS (release.yml, called with
+# `candidate: true`) and the Worker, each file attested as made by this
+# repository's workflows at the pushed commit. Staging deploys that Worker,
+# and merging the pull request ships these same files (Deploy prod verifies
+# their attestations and builds nothing).
+#
+# It runs on push, not pull_request: the `staging` environment's branch rule
+# admits `release/*`, and GitHub matches it against the run's GITHUB_REF,
+# which a pull_request run has as refs/pull/<N>/merge. Only the repository
+# admins push release branches (the ruleset `release`), so only they run
+# code with the staging token (scripts/setup-prod-github.sh).
+on:
+  push:
+    branches: ["release/*"]
+
+permissions: {}
+
+# A newer push to the branch supersedes the older run.
+concurrency:
+  group: staging-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The pull request's number names the instance. `just release` opens the
+  # pull request right after its first push, so this waits for it up to
+  # two minutes.
+  pull-request:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: { contents: read, pull-requests: read }
+    outputs:
+      number: ${{ steps.n.outputs.number }}
+    steps:
+      - id: n
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 24); do
+            n="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --base prod --state open --json number --jq '.[0].number // empty')"
+            if [ -n "$n" ]; then
+              echo "number=$n" >> "$GITHUB_OUTPUT"
+              echo "$BRANCH is #$n"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::$BRANCH has no open pull request into prod: open one (just release X.Y.Z does), then push again"
+          exit 1
+
+  # The release binaries, SHA256SUMS, install.sh and SOURCE_TREE, attested,
+  # as the workflow artifact release-dist.
+  binaries:
+    uses: ./.github/workflows/release.yml
+    with: { candidate: true }
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+
+  # The Worker, built as deploy.mjs builds it, with no secret in the
+  # environment, so no package's install script and no crate's build script
+  # runs near a credential: the web UI, then the Worker with the commit
+  # /healthz reports and built-from.json (deploy.mjs --no-build checks it).
+  # One file, worker.tar, attested.
+  worker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with: { package_json_file: web/package.json }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: 26 }
+      - name: Install Rust toolchain
+        run: rustup toolchain install && rustup target add wasm32-unknown-unknown
+      - name: Install clang, lld and llvm
+        run: sudo apt-get update -q && sudo apt-get install -y -q clang lld llvm
+      - name: Build the web UI and the Worker
+        env:
+          CLAX_BUILD_COMMIT: ${{ github.sha }}
+          CARGO_INCREMENTAL: "0"
+        run: |
+          set -euo pipefail
+          scripts/pnpm-install-stamped.sh web
+          scripts/pnpm-install-stamped.sh crates/clax-worker
+          scripts/build-web.sh
+          crates/clax-worker/build.sh
+          tar -cf "$RUNNER_TEMP/worker.tar" target/clax-worker/build target/clax-worker/built-from.json web/dist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: worker, path: "${{ runner.temp }}/worker.tar", if-no-files-found: error }
+      - name: Attest the Worker
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with: { subject-path: "${{ runner.temp }}/worker.tar" }
+
+  deploy:
+    needs: [pull-request, binaries, worker]
+    # GitHub's runner: the environment's secrets go to no third-party runner.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # Its branch rule admits release/* and main; its variables and secrets
+    # are what scripts/setup-prod-github.sh sets and docs/prod.md describes.
+    environment: staging
+    permissions: { contents: read, pull-requests: write }
+    env:
+      NUMBER: ${{ needs.pull-request.outputs.number }}
+      STAGING_HOST_ZONE: ${{ vars.STAGING_HOST_ZONE }}
+      STAGING_SITE_ZONE: ${{ vars.STAGING_SITE_ZONE }}
+      OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
+      OWNER_GITHUB: ${{ secrets.OWNER_GITHUB }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      # Before anything is installed: every setting the staging environment
+      # needs.
+      - name: Check the staging environment is set up
+        env:
+          HAVE_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+          HAVE_OAUTH_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET != '' }}
+        run: |
+          missing=""
+          for v in STAGING_HOST_ZONE STAGING_SITE_ZONE; do
+            [ -n "${!v}" ] || missing="$missing variable:$v"
+          done
+          for v in OAUTH_CLIENT_ID OWNER_GITHUB CLOUDFLARE_ACCOUNT_ID; do
+            [ -n "${!v}" ] || missing="$missing secret:$v"
+          done
+          [ "$HAVE_TOKEN" = true ] || missing="$missing secret:CLOUDFLARE_API_TOKEN"
+          [ "$HAVE_OAUTH_SECRET" = true ] || missing="$missing secret:OAUTH_CLIENT_SECRET"
+          if [ -n "$missing" ]; then
+            echo "::error::the staging environment is not set up; missing:$missing (docs/prod.md, \"Staging\")"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with: { package_json_file: web/package.json }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: 26 }
+      # The tools scripts/cloudflare-setup.sh checks for, though it builds
+      # nothing here.
+      - name: Install Rust toolchain
+        run: rustup toolchain install && rustup target add wasm32-unknown-unknown
+      - name: Install clang, lld and llvm
+        run: sudo apt-get update -q && sudo apt-get install -y -q clang lld llvm
+      # wrangler and the deploy's own packages, with no secret in the
+      # environment.
+      - name: Install the deploy's packages
+        run: scripts/pnpm-install-stamped.sh crates/clax-worker
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with: { name: worker, path: "${{ runner.temp }}" }
+      - name: Unpack the Worker
+        run: tar -xf "$RUNNER_TEMP/worker.tar"
+
+      # The newest reel on Cloudflare Stream, the one clax.dev shows
+      # (scripts/reel-stream.mjs; the token has Stream: Read). When it
+      # fails, the deploy goes on and the landing page shows no player.
+      - name: Find the reel on Cloudflare Stream
+        id: reel
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: node scripts/reel-stream.mjs --latest >> "$GITHUB_OUTPUT"
+
+      # A release pull request closed while this run waited is not deployed
+      # again: the reaper (preview-reaper.yml) tears its instance down.
+      - name: Check the pull request is still open
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          state="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$NUMBER" --jq .state)"
+          if [ "$state" != open ]; then
+            echo "::error::#$NUMBER is $state: not deploying its staging"
+            exit 1
+          fi
+
+      # Deploys the candidate Worker (--no-build refuses one built from
+      # another commit), waits for /healthz, checks a site host, and smokes
+      # it as an agent token minted with the owner token this deploy made
+      # (cloudflare-setup.sh --staging).
+      - name: Deploy (scripts/cloudflare-setup.sh --env pr-<N> --staging --ci --no-build --smoke)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
+          # The deploy record, with the owner token, stays in the runner's
+          # temporary directory, never uploaded.
+          CLAX_DEPLOY_HOME: ${{ runner.temp }}/clax-deploy
+          REEL_URL: ${{ steps.reel.outputs.reel_url }}
+          REEL_POSTER_URL: ${{ steps.reel.outputs.reel_poster_url }}
+        run: |
+          set -euo pipefail
+          name="pr-$NUMBER"
+          args=(--env "$name" --staging --legal bundled
+            --public "$name.$STAGING_HOST_ZONE" --site-domain "$name.$STAGING_SITE_ZONE" --site-zone "$STAGING_SITE_ZONE"
+            --github-client-id "$OAUTH_CLIENT_ID" --owner-github "$OWNER_GITHUB" --account "$CLOUDFLARE_ACCOUNT_ID")
+          if [ -n "$REEL_URL" ]; then
+            args+=(--reel-url "$REEL_URL" --reel-poster-url "$REEL_POSTER_URL")
+          else
+            echo "::warning::no reel on Cloudflare Stream: staging's landing page shows no player (see the reel step)"
+          fi
+          scripts/cloudflare-setup.sh "${args[@]}" --ci --no-build --smoke --i-know-what-i-am-doing
+
+      # One comment per pull request, updated on every deploy.
+      - name: Comment staging's address
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const url = `https://pr-${process.env.NUMBER}.${process.env.STAGING_HOST_ZONE}`;
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `**Staging:** ${url} (commit ${context.sha.slice(0, 12)}, the release candidate of [this run](${run}); sign in with GitHub as the owner)`;
+            const issue_number = Number(process.env.NUMBER);
+            const { data: comments } = await github.rest.issues.listComments({ ...context.repo, issue_number, per_page: 100 });
+            const mine = comments.find((c) => c.user?.type === "Bot" && c.body.startsWith("**Staging:**"));
+            if (mine) await github.rest.issues.updateComment({ ...context.repo, comment_id: mine.id, body });
+            else await github.rest.issues.createComment({ ...context.repo, issue_number, body });
