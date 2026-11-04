@@ -49,6 +49,21 @@ fn post_tool_use(hsid: &str, tool_use_id: &str, tool_input: Value) -> String {
     .to_string()
 }
 
+/// A call's `started_at` and `ended_at` for one that ended now, by the
+/// wall clock the daemon matches a report's arrival against.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the daemon names a call only when it ended within 5 s of the report's arrival by its wall clock, which a spawned daemon reads as the test does"
+)]
+fn just_ended() -> (String, String) {
+    let now = chrono::Utc::now();
+    let ms = chrono::SecondsFormat::Millis;
+    (
+        (now - chrono::Duration::milliseconds(500)).to_rfc3339_opts(ms, true),
+        now.to_rfc3339_opts(ms, true),
+    )
+}
+
 #[test]
 fn the_hook_records_the_tool_use_id_of_a_clax_call() {
     let e = Env::new();
@@ -64,10 +79,7 @@ fn the_hook_records_the_tool_use_id_of_a_clax_call() {
     let call_id = "01JBC0000000000000000000H1";
     // The call has just ended: a report names only a call that ended
     // within 5 s of its arrival.
-    let now = chrono::Utc::now();
-    let ms = chrono::SecondsFormat::Millis;
-    let ended_at = now.to_rfc3339_opts(ms, true);
-    let started_at = (now - chrono::Duration::milliseconds(500)).to_rfc3339_opts(ms, true);
+    let (started_at, ended_at) = just_ended();
     api(
         &e,
         &format!("/api/sessions/{sid}/tool-calls"),
