@@ -8,7 +8,7 @@ import type { Locator, Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { advance, settle } from "./time";
+import { advance, pauseTime, settle } from "./time";
 
 const PAGE = { "index.html": "<main><h2>Quarterly goals</h2></main>" };
 
@@ -24,8 +24,14 @@ test("focus the person moved while Skip was pending stays where they put it, aft
   let release!: () => void;
   const held = new Promise<void>(r => { release = r; });
   await page.route(`**/api/questions/${qid}/decline`, async route => { await held; await route.continue(); });
+  await page.clock.install();
   await page.goto(`${d.base}/`);
   const card = page.locator(`.inbox-sum .qcard[data-question="${qid}"]`);
+  await expect(card).toBeVisible();
+  // The page's time stands still but for the shell's clock, which the test
+  // advances: the closed card's label stays until the test moves past its
+  // time on screen, however long a loaded machine takes to check it.
+  await pauseTime(page);
   await card.getByRole("button", { name: "Skip" }).click();
   const search = page.getByRole("searchbox", { name: "Search artifacts" });
   await search.click();
@@ -33,6 +39,7 @@ test("focus the person moved while Skip was pending stays where they put it, aft
   await expect(card.locator(".closed")).toHaveText("Skipped");
   await expect(search).toBeFocused();
   await advance(page, 4000);
+  await page.clock.resume();
   await expect(card).toHaveCount(0);
   await expect(search).toBeFocused();
 });
@@ -41,13 +48,20 @@ test("a card that closes with focus keeps it, and the block around it takes it w
   const s = await registerSession(d.base, d.token);
   const { artifact } = await publishAs(d.base, d.token, s.id, "Quarterly Review", PAGE);
   const qid = await ask(d.base, d.token, s.id, artifact.id, "Legend");
+  await page.clock.install();
   await page.goto(`${d.base}/`);
   const card = page.locator(`.inbox-sum .qcard[data-question="${qid}"]`);
+  await expect(card).toBeVisible();
+  // The page's time stands still but for the shell's clock, which the test
+  // advances: the closed card's label stays until the test moves past its
+  // time on screen, however long a loaded machine takes to check it.
+  await pauseTime(page);
   await card.getByRole("button", { name: "Skip" }).focus();
   await page.keyboard.press("Enter");
   await expect(card.locator(".closed")).toHaveText("Skipped");
   await expect(card).toBeFocused();
   await advance(page, 4000);
+  await page.clock.resume();
   await expect(card).toHaveCount(0);
   // The summary still lists the artifact's published item, and takes focus.
   await expect(page.locator(".inbox-sum")).toBeFocused();

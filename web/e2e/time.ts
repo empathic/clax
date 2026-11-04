@@ -73,6 +73,31 @@ export async function activationLapsed(page: Page): Promise<void> {
   await until("the shell's user activation to lapse", async () => !(await quietEval<boolean>(page, "navigator.userActivation.isActive")));
 }
 
+/** Stops time in every frame of `page`'s context, until the test moves it
+ * (`page.clock.runFor`) or lets it run again (`page.clock.resume()`):
+ * Playwright's clock, installed (`page.clock.install()`) before the pages
+ * load, so the timers they start are its own. It reaches the main world of
+ * each frame of each page, the artifact's cross-origin frame too, each frame
+ * on a clock of its own moved in step; it does not reach workers (the
+ * shell's stream hub, a page's own workers, an extension's service worker).
+ * While it stands still no timer runs: not a frame's animation frames
+ * either, so the shell does not boot paused, and a page loaded meanwhile
+ * starts paused. Each of its calls evaluates in every frame as Playwright's
+ * evaluate does, with a user gesture. No frame's clock may stop at a time
+ * it has passed, so the stop is set a little ahead of the page's clock,
+ * further on each try that some frame had passed it. */
+export async function pauseTime(page: Page): Promise<void> {
+  for (let ahead = 20; ; ahead *= 2) {
+    const at = await quietEval<number>(page, "Date.now()");
+    try {
+      await page.clock.pauseAt(at + ahead);
+      return;
+    } catch (e) {
+      if (!String(e).includes("Cannot fast-forward to the past")) throw e;
+    }
+  }
+}
+
 /** The shell's clock now (`performance.now()` plus what tests advanced it). */
 export async function shellNow(page: Page): Promise<number> {
   return quietEval<number>(page, "performance.now() + globalThis.claxTestClock.skew");
