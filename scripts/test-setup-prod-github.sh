@@ -286,7 +286,7 @@ if run --i-know-what-i-am-doing \
     pass "variables named as the environment's secrets are removed, the others kept"
 else fail "variables named as secrets are removed ($(writes); $(q 'g["envs"]["production"]["vars"]'))"; fi
 : > "$C/calls"
-if run --i-know-what-i-am-doing && ! writes | grep -q "^DELETE "; then pass "a second run removes no variable"
+if run --i-know-what-i-am-doing && ! writes | grep "^DELETE " >/dev/null; then pass "a second run removes no variable"
 else fail "a second run removes no variable ($(writes))"; fi
 
 # A staging environment made by hand, deploying from every branch, and one
