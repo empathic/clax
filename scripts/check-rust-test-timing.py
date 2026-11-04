@@ -4,10 +4,10 @@ rules' lint back on, and fails if there is any.
 
     scripts/check-rust-test-timing.py ROOT
 
-Clippy's timing rules (bazel/timing/clippy.toml, `--config=timing`) are
-for test code only: the command line allows `clippy::disallowed_methods`,
-so product code is never flagged, and test code warns again by its own
-attribute. A scope that does not carry it would leave its tests out of
+Clippy's timing rules (clippy.toml's disallowed-methods) are for test
+code only: the command line allows `clippy::disallowed_methods` (.bazelrc's
+build:clippy), so product code is never flagged, and test code warns
+again by its own attribute, which `-D warnings` makes an error. A scope that does not carry it would leave its tests out of
 the rule unnoticed, so each must:
 
 - an item under `#[cfg(test)]` that is a `mod` or a `fn`: the attribute

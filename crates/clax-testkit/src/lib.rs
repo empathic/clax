@@ -45,7 +45,7 @@ pub const HANG: std::time::Duration = std::time::Duration::from_secs(120);
 ///
 /// # Panics
 /// Past the [`HANG`] guard.
-#[allow(
+#[expect(
     clippy::disallowed_methods,
     reason = "within is the HANG guard on a wait"
 )]
@@ -62,7 +62,7 @@ pub async fn within<F: std::future::IntoFuture>(what: &str, fut: F) -> F::Output
 /// # Panics
 /// Past the [`HANG`] guard, or when every sender is gone first, naming
 /// `what`.
-#[allow(
+#[expect(
     clippy::disallowed_methods,
     reason = "recv_within is the HANG guard on a wait"
 )]
@@ -82,7 +82,7 @@ pub fn recv_within<T>(what: &str, rx: &std::sync::mpsc::Receiver<T>) -> T {
 /// limit: a load that slows the daemons only delays it, and a condition
 /// that never holds is ended by the test runner's timeout, whose output
 /// names `what`.
-#[allow(
+#[expect(
     clippy::disallowed_methods,
     reason = "until polls its condition; nothing is decided by how long it takes"
 )]

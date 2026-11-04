@@ -85,7 +85,7 @@ fn hook_request(hsid: &str, sid: &str, stdin: &str) -> (String, Value) {
 /// call ID. The daemon matches a call by its `ended_at` against the wall
 /// clock at a report's arrival (`routes::sessions::tool_call_ids`), so the
 /// call ends on that clock too.
-#[allow(
+#[expect(
     clippy::disallowed_methods,
     reason = "the daemon matches ended_at against its wall-clock arrival: the call ends on that clock"
 )]
@@ -350,7 +350,7 @@ async fn a_call_that_ended_long_ago_or_has_a_harness_id_is_not_matched() {
     assert_eq!((code, &v["call_id"]), (201, &Value::Null), "{v}");
 }
 
-#[allow(
+#[expect(
     clippy::disallowed_methods,
     reason = "back-dates an event on the wall clock the daemon records and matches by"
 )]

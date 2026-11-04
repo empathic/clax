@@ -1431,7 +1431,7 @@ mod tests {
     /// time.
     #[test]
     #[ignore]
-    #[allow(
+    #[expect(
         clippy::disallowed_methods,
         reason = "a measurement run by hand: it prints wall time and decides nothing by it"
     )]

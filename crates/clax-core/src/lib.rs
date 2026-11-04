@@ -116,7 +116,7 @@ pub(crate) mod test_util {
     /// # Panics
     /// Past the [`HANG`] guard, or when every sender is gone first, naming
     /// `what`.
-    #[allow(
+    #[expect(
         clippy::disallowed_methods,
         reason = "recv_within is the HANG guard on a wait"
     )]

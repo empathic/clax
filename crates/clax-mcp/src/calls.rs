@@ -312,7 +312,7 @@ mod measure {
     /// call_scope_cost --nocapture`.
     #[test]
     #[ignore = "a measurement, not a check"]
-    #[allow(
+    #[expect(
         clippy::disallowed_methods,
         reason = "measures the real time a call scope costs, run by hand; it gates nothing"
     )]

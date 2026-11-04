@@ -4,11 +4,7 @@
   // condition, no wall-clock budgets in any check), on test files only, in
   // their own oxlint run (package.json's "lint": the second oxlint).
   //
-  // Report mode: the rules warn, which prints them and passes; the run
-  // fails on them only when CLAX_TIMING=deny (`bazel test --config=timing
-  // //web:lint`, CI's report step), which adds --deny-warnings. To enforce
-  // them for good, set them to "error" here: an error fails //web:lint
-  // whatever CLAX_TIMING says.
+  // The rules are errors: a finding fails //web:lint.
   //
   // An exemption is one site, with its reason:
   //   // oxlint-disable-next-line clax-timing/<rule> -- <why real time is the contract here>
@@ -45,14 +41,14 @@
       "excludeFiles": ["**/perf/**", "**/reel/**"],
       "rules": {
         "no-restricted-properties": [
-          "warn",
+          "error",
           { "property": "waitForTimeout", "message": "a fixed wait in a test: wait on the condition itself (expect, expect.poll, until), or advance a clock" }
         ],
-        "clax-timing/timer-delay": "warn",
-        "clax-timing/literal-timeout": "warn",
-        "clax-timing/clock-arithmetic": "warn",
-        "clax-timing/disabled-test": "warn",
-        "clax-timing/counted-turns": "warn"
+        "clax-timing/timer-delay": "error",
+        "clax-timing/literal-timeout": "error",
+        "clax-timing/clock-arithmetic": "error",
+        "clax-timing/disabled-test": "error",
+        "clax-timing/counted-turns": "error"
       }
     }
   ]

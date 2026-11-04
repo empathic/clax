@@ -1102,7 +1102,7 @@ impl Surface {
     ///
     /// # Panics
     /// Past the [`HANG`] guard.
-    #[allow(
+    #[expect(
         clippy::disallowed_methods,
         reason = "next is the HANG guard on a wait for an event: clax-testkit's recv_within, which these tests do not depend on"
     )]
