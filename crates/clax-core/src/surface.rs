@@ -336,6 +336,7 @@ pub fn line(s: &Suggestion) -> String {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

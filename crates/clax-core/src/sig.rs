@@ -723,6 +723,7 @@ impl NonceCache {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use rand::{Rng as _, SeedableRng as _, rngs::StdRng};
@@ -1430,6 +1431,10 @@ mod tests {
     /// time.
     #[test]
     #[ignore]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a measurement run by hand: it prints wall time and decides nothing by it"
+    )]
     fn cost() {
         use std::time::Instant;
         /// Heap bytes the buckets' tables hold: a `u128` and a control

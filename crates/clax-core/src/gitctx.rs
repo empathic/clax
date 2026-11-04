@@ -411,6 +411,7 @@ impl Git {
     /// `path`, trusted without a probe: for tests whose fake git answers
     /// only the commands under test.
     #[cfg(test)]
+    #[warn(clippy::disallowed_methods)]
     pub(crate) fn assume_supported(path: &std::path::Path) -> Git {
         Git {
             path: path.to_path_buf(),
@@ -1139,10 +1140,12 @@ mod capture_impl {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 #[path = "gitctx_capture_tests.rs"]
 mod capture_tests;
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

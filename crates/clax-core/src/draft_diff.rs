@@ -507,6 +507,7 @@ pub fn mark_changed_counting(draft: &str, base: Option<&str>, stats: &mut DiffSt
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

@@ -326,6 +326,7 @@ impl<'a> Docs<'a> {
 
     /// How many rows artifact `id`'s store's `table` holds.
     #[cfg(test)]
+    #[warn(clippy::disallowed_methods)]
     pub fn count(&self, id: &ArtifactId, table: &str) -> i64 {
         self.with_data(id, |c| {
             Ok(c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?)

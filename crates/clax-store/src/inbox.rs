@@ -335,6 +335,7 @@ impl Driver {
 
     /// The index name (or plan words) a plan driven by it names.
     #[cfg(test)]
+    #[warn(clippy::disallowed_methods)]
     pub(super) fn plan_word(self) -> &'static str {
         self.index().unwrap_or("VIRTUAL TABLE INDEX")
     }
@@ -792,6 +793,7 @@ pub(super) const SAM: &str = "u_0000000000000000000000s";
 /// [`Store::inbox_mark_all`] build them, for the query-plan checks: the
 /// owner's, and a connected person's.
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 pub(super) fn shapes() -> Vec<(String, Built)> {
     let now = "2026-01-01T00:00:00.000Z";
     let base = InboxQuery::default();
@@ -2431,6 +2433,7 @@ impl Store {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::NewThread;

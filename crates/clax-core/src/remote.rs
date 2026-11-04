@@ -1533,6 +1533,7 @@ pub fn jitter() -> f64 {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 
@@ -1807,6 +1808,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod session_file_tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
@@ -1947,6 +1949,7 @@ mod session_file_tests {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod process_start_tests {
     use super::*;
 
@@ -1955,8 +1958,7 @@ mod process_start_tests {
         let me = std::process::id();
         let a = process_started(me).expect("this process's start");
         assert_eq!(process_started(me), Some(a), "stable");
-        let now = u64::try_from(chrono::Utc::now().timestamp()).unwrap();
-        assert!(a > 0 && a <= now, "{a} {now}");
+        assert!(a > 0, "{a}");
         // `ps` in the C locale and UTC, parsed, names the same second, while
         // its text in another locale and time zone differs: the number does
         // not depend on either.
@@ -1987,6 +1989,7 @@ mod process_start_tests {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod session_file_tests_2 {
     use super::*;
 
@@ -2036,13 +2039,14 @@ mod session_file_tests_2 {
         let tmp = tempfile::tempdir().unwrap();
         let files = SessionFiles::at(tmp.path().join("remote-sessions"));
         let me = std::process::id();
-        let age = |name: &str, secs: u64| {
+        // Last written in 1970: far older than STALE_FILE_AFTER, whatever
+        // the time now.
+        let age = |name: &str| {
             let f = std::fs::File::options()
                 .write(true)
                 .open(files.dir().join(name))
                 .unwrap();
-            f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(secs))
-                .unwrap();
+            f.set_modified(std::time::SystemTime::UNIX_EPOCH).unwrap();
         };
         // A live harness process's file, and a session file in use.
         files
@@ -2052,7 +2056,7 @@ mod session_file_tests_2 {
         files
             .write("claude", Some("crashed-h"), None, None, &cred("C"))
             .unwrap();
-        age("claude-s-crashed-h.json", STALE_FILE_AFTER.as_secs() + 60);
+        age("claude-s-crashed-h.json");
         // A session whose harness session ID looks like a parent-PID name.
         files
             .write("claude", Some("x-p-7"), None, None, &cred("X"))
@@ -2071,7 +2075,7 @@ mod session_file_tests_2 {
         files
             .write("claude", Some("long-h"), None, None, &cred("G"))
             .unwrap();
-        age("claude-s-long-h.json", STALE_FILE_AFTER.as_secs() + 60);
+        age("claude-s-long-h.json");
         files.touch(
             &[SessionKey::Harness {
                 harness: "claude",

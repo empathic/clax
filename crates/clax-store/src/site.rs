@@ -1431,6 +1431,7 @@ static STAGED_HOOKS: std::sync::Mutex<Vec<(std::path::PathBuf, StagedHook)>> =
     std::sync::Mutex::new(Vec::new());
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 fn staged_hook(db: &std::path::Path) -> Option<StagedHook> {
     STAGED_HOOKS
         .lock()
@@ -1442,6 +1443,7 @@ fn staged_hook(db: &std::path::Path) -> Option<StagedHook> {
 
 /// Sets (or with `None` removes) the staging hook of `st`'s store.
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 pub(crate) fn set_staged_hook(st: &Store, hook: Option<StagedHook>) {
     let db = st.home().db_path();
     let mut hooks = STAGED_HOOKS
@@ -1507,10 +1509,11 @@ pub fn resolve_with(rules: &[LiveRule], key: &PageKey) -> Resolved {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::test_util::DAEMON;
-    use crate::test_util::{anchor, session, store};
+    use crate::test_util::{anchor, recv_within, session, store};
     use crate::threads::NewThread;
     use clax_core::publish::INDEX;
 
@@ -2328,19 +2331,13 @@ mod tests {
             &st,
             Some(std::sync::Arc::new(move || {
                 staged_tx.send(()).unwrap();
-                go_rx
-                    .lock()
-                    .unwrap()
-                    .recv_timeout(std::time::Duration::from_secs(10))
-                    .unwrap();
+                recv_within("the go to finish the move", &go_rx.lock().unwrap());
             })),
         );
         std::thread::scope(|s| {
             let mover =
                 s.spawn(|| st.refile_threads(DAEMON, &[to(&b, &t.id)], &by(KIND_MOVE), &[]));
-            staged_rx
-                .recv_timeout(std::time::Duration::from_secs(10))
-                .unwrap();
+            recv_within("the move's staging", &staged_rx);
             // The copies are staged and the move waits: a comment is
             // written meanwhile.
             st.add_comment(
@@ -2376,23 +2373,22 @@ mod tests {
         let (staged_tx, staged_rx) = std::sync::mpsc::channel::<()>();
         let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
         let go_rx = std::sync::Mutex::new(go_rx);
-        let wait = std::time::Duration::from_secs(10);
         set_staged_hook(
             &st,
             Some(std::sync::Arc::new(move || {
                 staged_tx.send(()).unwrap();
-                go_rx.lock().unwrap().recv_timeout(wait).unwrap();
+                recv_within("the go to finish the staging", &go_rx.lock().unwrap());
             })),
         );
         std::thread::scope(|s| {
             let mover =
                 s.spawn(|| st.refile_threads(DAEMON, &[to(&b, &t.id)], &by(KIND_MOVE), &[]));
-            staged_rx.recv_timeout(wait).unwrap();
+            recv_within("the move's first staging", &staged_rx);
             // A snapshot of /b lands after the first staging.
             st.ensure_live_page(DAEMON, &key("/b"), "/b", Some(b"<p>b2"))
                 .unwrap();
             go_tx.send(()).unwrap();
-            staged_rx.recv_timeout(wait).unwrap();
+            recv_within("the move's second staging", &staged_rx);
             go_tx.send(()).unwrap();
             mover.join().unwrap().unwrap();
         });

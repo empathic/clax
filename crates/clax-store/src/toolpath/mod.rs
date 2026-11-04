@@ -1902,8 +1902,10 @@ pub fn unrenderable_step(row: &AuditRow, prev: Option<i64>, env: &RenderEnv) -> 
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 #[path = "../../../clax-core/tests/toolpath/seal.rs"]
 mod seal;
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests;

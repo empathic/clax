@@ -382,6 +382,7 @@ pub fn first_unheld_port(start: u16) -> Option<u16> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use std::process::{ChildStdin, Command, ExitStatus, Stdio};

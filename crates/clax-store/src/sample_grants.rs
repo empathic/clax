@@ -120,6 +120,7 @@ impl Store {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use crate::test_util::{DAEMON, artifact_with_caps, store};
     use clax_core::CoreError;

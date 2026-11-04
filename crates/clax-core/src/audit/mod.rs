@@ -713,6 +713,7 @@ pub fn content_manifest_sha256(files: &BTreeMap<String, crate::model::FileMeta>)
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::gitctx::MAX_HEADER_BYTES;

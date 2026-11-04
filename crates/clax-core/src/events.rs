@@ -507,6 +507,7 @@ impl Default for EventBus {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::feedback::{FeedbackPhase, Tier};

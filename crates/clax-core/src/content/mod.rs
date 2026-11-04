@@ -825,6 +825,7 @@ impl ArtifactLocks {
     }
 
     #[cfg(test)]
+    #[warn(clippy::disallowed_methods)]
     fn entries(&self) -> usize {
         self.map.lock().unwrap().len()
     }
@@ -852,8 +853,10 @@ impl Drop for ArtifactLock<'_> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+    use crate::test_util::recv_within;
 
     #[test]
     fn ready_runs_a_future_that_needs_no_waiting_and_gives_up_on_one_that_does() {
@@ -909,7 +912,7 @@ mod tests {
             });
             assert!(rx.try_recv().is_err());
             drop(first);
-            rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            recv_within("the second holder's lock, once the first is dropped", &rx);
         });
         assert_eq!(locks.entries(), 0);
     }

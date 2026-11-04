@@ -809,6 +809,7 @@ pub fn effective(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -1197,17 +1198,11 @@ mod tests {
             ),
         ];
         for (shape, [p, g, s, e]) in shapes {
-            let started = std::time::Instant::now();
             let r = effective(&p, Some(&g), Some(&s), Some(&e));
-            let built = started.elapsed();
-            let started = std::time::Instant::now();
             assert!(!r.allows(RightType::Comments, "read", Some("nowhere"), &own));
-            let checked = started.elapsed();
             let objects = r.iter().count();
             let locations: usize = r.iter().map(|a| a.locations().len()).sum();
-            eprintln!(
-                "{shape}: {objects} objects, {locations} locations, built in {built:?}, a miss checked in {checked:?}"
-            );
+            eprintln!("{shape}: {objects} objects, {locations} locations");
             assert!(
                 objects <= 63,
                 "{shape}: at most one object per comment action set: {objects}"
