@@ -1665,7 +1665,35 @@ pub(crate) mod tests {
     /// How long a wait of these tests on a condition may take before it is
     /// called a hang: a guard only, never what decides a result (as
     /// `clax_testkit::HANG`, which unit tests do not depend on).
-    const HANG: Duration = Duration::from_secs(120);
+    pub(crate) const HANG: Duration = Duration::from_secs(120);
+
+    /// The next value on `rx`, bounded by the [`HANG`] guard: panics naming
+    /// `what` past it, or when every sender is gone first.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "recv_within is the HANG guard on a wait"
+    )]
+    pub(crate) fn recv_within<T>(what: &str, rx: &std::sync::mpsc::Receiver<T>) -> T {
+        rx.recv_timeout(HANG)
+            .unwrap_or_else(|e| panic!("{what}: {e} (hang guard {HANG:?})"))
+    }
+
+    /// Returns once `done` holds, checked every 50 ms; panics naming `what`
+    /// past the [`HANG`] guard.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "wait_until polls its condition under the HANG guard; nothing is decided by how long it takes"
+    )]
+    pub(crate) fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+        let started = Instant::now();
+        while !done() {
+            assert!(
+                started.elapsed() < HANG,
+                "{what}: not after {HANG:?} (hang guard)"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
 
     /// Reinstalls the file of its own at `exe` with `text`, as a rebuild
     /// does, its modification time a second past the old one's: a new
@@ -2006,10 +2034,7 @@ srv.serve_forever()
     fn stop(home: &Home) {
         if let Some(c) = Client::discover(home) {
             let _ = c.shutdown();
-            let deadline = Instant::now() + HANG;
-            while Instant::now() < deadline && pid_alive(c.info.pid) {
-                std::thread::sleep(Duration::from_millis(50));
-            }
+            wait_until("the fake daemon's exit", || !pid_alive(c.info.pid));
         }
     }
 
@@ -2277,7 +2302,7 @@ srv.serve_forever()
             })
             .map(drop)
         });
-        let said = rx.recv_timeout(HANG).expect("the lock-wait message");
+        let said = recv_within("the lock-wait message", &rx);
         assert!(
             said.contains("waiting for the daemon's first start"),
             "{said}"
