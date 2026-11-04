@@ -58,15 +58,22 @@ describe("sameVersion from the shell", () => {
   });
 
   it("scrolls to an area of the version shown, and not to one of another version", async () => {
-    const wait = () => new Promise(r => setTimeout(r, 450));
-    send({ type: "clax:scroll-to", anchor: area, sameVersion: false });
-    await wait();
-    expect(focusBox().style.display).toBe("none");
-    send({ type: "clax:scroll-to", anchor: area, sameVersion: true });
-    await wait();
-    expect(focusBox().style.display).toBe("block");
-    // No thread is focused: the outline goes once its flash ends.
-    await vi.waitFor(() => expect(focusBox().style.display).toBe("none"), { timeout: 10_000 });
+    vi.useFakeTimers();
+    try {
+      // Another version's area: no flash, however long the wait.
+      send({ type: "clax:scroll-to", anchor: area, sameVersion: false });
+      await vi.advanceTimersByTimeAsync(2500);
+      expect(focusBox().style.display).toBe("none");
+      // The version shown: the outline flashes 350 ms after the scroll...
+      send({ type: "clax:scroll-to", anchor: area, sameVersion: true });
+      await vi.advanceTimersByTimeAsync(450);
+      expect(focusBox().style.display).toBe("block");
+      // ...and, no thread being focused, goes once its flash ends, 1800 ms later.
+      await vi.advanceTimersByTimeAsync(1800);
+      expect(focusBox().style.display).toBe("none");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a second scroll-to during the first one's flash flashes in full", async () => {
