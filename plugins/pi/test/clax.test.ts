@@ -66,11 +66,15 @@ afterAll(async () => {
   if (scratch) rmSync(scratch, { recursive: true, force: true });
 });
 
+/** A session_start budget that never runs out: session_start registers
+ * however slowly the daemon answers, and so starts the injection loop. */
+const unbounded = () => new AbortController().signal;
+
 /** A fresh extension instance for a Pi session `sessionId` in `cwd`, talking
  * to the daemon in `home`. */
 function load(home: string, sessionId: string, cwd = scratch) {
   const pi = new FakePi();
-  claxExtension({ home, env: withBin(claxBin) })(pi.api);
+  claxExtension({ home, env: withBin(claxBin), startBudget: unbounded })(pi.api);
   const built = { pi, ...fakeContext(cwd, sessionId) };
   loaded.push({ pi, ctx: built.ctx });
   return built;
@@ -579,7 +583,7 @@ describe("clax Pi extension", () => {
     try {
       for (const [id, file] of [["pi-file", "/sessions/pi-file.jsonl"], ["pi-no-file", undefined]] as const) {
         const pi = new FakePi();
-        claxExtension({ home: hung.home, env: withBin(join(scratch, "no-such-clax")) })(pi.api);
+        claxExtension({ home: hung.home, env: withBin(join(scratch, "no-such-clax")), startBudget: unbounded })(pi.api);
         const { ctx } = fakeContext(scratch, id, file);
         loaded.push({ pi, ctx });
         await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
@@ -597,12 +601,23 @@ describe("clax Pi extension", () => {
     const hung = await hungHome("patch");
     try {
       const pi = new FakePi();
-      // The daemon never answers the PATCH, so session_shutdown returns only by giving up.
-      claxExtension({ home: hung.home, env: withBin(join(scratch, "no-such-clax")), endTimeoutMs: 50 })(pi.api);
+      claxExtension({ home: hung.home, env: withBin(join(scratch, "no-such-clax")), startBudget: unbounded })(pi.api);
       const { ctx } = fakeContext(scratch, "pi-hung-end");
       await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
-      await pi.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
-      expect(hung.seen).toContain("PATCH /api/sessions/s1");
+      expect(hung.registrations).toHaveLength(1);
+      // The daemon never answers the PATCH, so session_shutdown returns only
+      // by giving up, which it does when the PATCH's time runs out: here,
+      // once the daemon has the PATCH.
+      const timeouts = holdTimeouts();
+      let returned = false;
+      const ended = pi.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx).then(() => { returned = true; });
+      await hung.saw("PATCH /api/sessions/s1");
+      await new Promise(r => setImmediate(r));
+      expect(returned).toBe(false);
+      expect(timeouts.ms.length).toBeGreaterThan(0);
+      for (const ms of timeouts.ms) expect(ms).toBeLessThanOrEqual(END_TIMEOUT_MS);
+      timeouts.expire();
+      await ended;
     } finally {
       hung.close();
     }
@@ -1051,7 +1066,7 @@ describe("comments", () => {
       const polls = trackPolls(`pi-inject-hold-${parkedMs}`);
       let clock = 0;
       const pi = new FakePi();
-      claxExtension({ home: fake.home, env: withBin(join(scratch, "no-such-clax")), now: () => clock })(pi.api);
+      claxExtension({ home: fake.home, env: withBin(join(scratch, "no-such-clax")), now: () => clock, startBudget: unbounded })(pi.api);
       const { ctx } = fakeContext(scratch, `pi-inject-hold-${parkedMs}`);
       loaded.push({ pi, ctx });
       await pi.emit("session_start", {}, ctx);
@@ -1098,7 +1113,7 @@ describe("comments", () => {
       const polls = trackPolls("pi-inject-epoch");
       const pi = new FakePi();
       // A clock that never moves: an empty answer looks early.
-      claxExtension({ home: fake.home, env: withBin(join(scratch, "no-such-clax")), now: () => 0 })(pi.api);
+      claxExtension({ home: fake.home, env: withBin(join(scratch, "no-such-clax")), now: () => 0, startBudget: unbounded })(pi.api);
       const { ctx } = fakeContext(scratch, "pi-inject-epoch");
       loaded.push({ pi, ctx });
       await pi.emit("session_start", {}, ctx);
@@ -1137,7 +1152,7 @@ describe("comments", () => {
       const pauses = trackTimers(INJECT_RETRY_MS);
       const polls = trackPolls("pi-inject-abort");
       const pi = new FakePi();
-      claxExtension({ home: fake.home, env: withBin(join(scratch, "no-such-clax")), now: () => 0 })(pi.api);
+      claxExtension({ home: fake.home, env: withBin(join(scratch, "no-such-clax")), now: () => 0, startBudget: unbounded })(pi.api);
       const { ctx } = fakeContext(scratch, "pi-inject-abort");
       loaded.push({ pi, ctx });
       await pi.emit("session_start", {}, ctx);
@@ -1397,7 +1412,7 @@ describe("comments", () => {
     try {
       const pi = new FakePi();
       // A clock that never moves: every empty answer came back at once.
-      claxExtension({ home: fake.home, env: withBin(join(scratch, "no-such-clax")), injectRetryMs, now: () => 0 })(pi.api);
+      claxExtension({ home: fake.home, env: withBin(join(scratch, "no-such-clax")), injectRetryMs, now: () => 0, startBudget: unbounded })(pi.api);
       const { ctx } = fakeContext(scratch, "pi-inject-empty");
       loaded.push({ pi, ctx });
       await pi.emit("session_start", {}, ctx);
@@ -1426,7 +1441,7 @@ describe("comments", () => {
       let refused = 0;
       // Pi's sendUserMessage throws once the extension's runtime is stale.
       const api = { ...pi.api, on: pi.api.on, sendUserMessage: () => { refused++; throw new Error("This extension instance is stale"); } } as typeof pi.api;
-      claxExtension({ home: fake.home, env: withBin(join(scratch, "no-such-clax")) })(api);
+      claxExtension({ home: fake.home, env: withBin(join(scratch, "no-such-clax")), startBudget: unbounded })(api);
       const { ctx } = fakeContext(scratch, "pi-inject-refused");
       loaded.push({ pi, ctx });
       await pi.emit("session_start", {}, ctx);
@@ -1484,7 +1499,7 @@ describe("comments", () => {
     try {
       const { pid } = await ensure(home, { env, port: 0 });
       const pi = new FakePi();
-      claxExtension({ home, env, port: 0, injectRetryMs })(pi.api);
+      claxExtension({ home, env, port: 0, injectRetryMs, startBudget: unbounded })(pi.api);
       const { ctx } = fakeContext(scratch, "pi-inject-restart");
       loaded.push({ pi, ctx });
       await pi.emit("session_start", {}, ctx);
@@ -1788,6 +1803,26 @@ function holdTimers(ms: number) {
       const [t, run] = held.entries().next().value!;
       held.delete(t);
       run();
+    },
+  };
+}
+
+/** Holds every `AbortSignal.timeout` made from here on, until the test ends
+ * (fake timers do not reach them): `ms` lists the time each was given, and
+ * `expire` aborts each held one as its timeout would. */
+function holdTimeouts() {
+  const ms: number[] = [];
+  const held: AbortController[] = [];
+  vi.spyOn(AbortSignal, "timeout").mockImplementation((wait: number) => {
+    ms.push(wait);
+    const c = new AbortController();
+    held.push(c);
+    return c.signal;
+  });
+  return {
+    ms,
+    expire: () => {
+      for (const c of held.splice(0)) c.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
     },
   };
 }
