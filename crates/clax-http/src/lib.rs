@@ -53,6 +53,9 @@ pub mod site_access;
 pub mod socket_caps;
 pub mod state;
 pub mod surface;
+#[cfg(test)]
+#[warn(clippy::disallowed_methods)]
+mod test_util;
 pub mod viewer;
 pub mod views;
 pub mod wrap_cache;

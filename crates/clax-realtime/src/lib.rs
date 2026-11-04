@@ -18,4 +18,7 @@ pub mod questions;
 pub mod room;
 pub mod seats;
 pub mod stream;
+#[cfg(test)]
+#[warn(clippy::disallowed_methods)]
+mod test_util;
 pub mod working;
