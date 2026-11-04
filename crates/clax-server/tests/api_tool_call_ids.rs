@@ -13,7 +13,7 @@ use clax_hooks::events::{self, Daemon};
 use clax_hooks::input::HookInput;
 use clax_mcp::calls::CallScope;
 use clax_realtime::call_ids::{CALL_ID_CAP, CallIdWait};
-use clax_testkit::TestServer;
+use clax_testkit::{TestServer, within};
 use serde_json::{Map, Value, json};
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -82,7 +82,13 @@ fn hook_request(hsid: &str, sid: &str, stdin: &str) -> (String, Value) {
 
 /// Makes a tool call as the shim does, ending `ended_ago` before now, and
 /// reports it for session `sid`, naming `artifact` when given; returns its
-/// call ID.
+/// call ID. The daemon matches a call by its `ended_at` against the wall
+/// clock at a report's arrival (`routes::sessions::tool_call_ids`), so the
+/// call ends on that clock too.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the daemon matches ended_at against its wall-clock arrival: the call ends on that clock"
+)]
 async fn report_call(
     ts: &TestServer,
     sid: &str,
@@ -153,12 +159,11 @@ fn send_later(ts: &TestServer, path: &str, body: Value) -> tokio::task::JoinHand
 
 /// Returns once `n` call-ID reports wait.
 async fn parked(wait: &CallIdWait, n: usize) {
-    tokio::time::timeout(
-        Duration::from_secs(60),
+    within(
+        &format!("{n} reports wait"),
         wait.parked.subscribe().wait_for(|p| *p == n),
     )
     .await
-    .unwrap_or_else(|_| panic!("{n} reports wait"))
     .unwrap();
 }
 
@@ -345,6 +350,10 @@ async fn a_call_that_ended_long_ago_or_has_a_harness_id_is_not_matched() {
     assert_eq!((code, &v["call_id"]), (201, &Value::Null), "{v}");
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "back-dates an event on the wall clock the daemon records and matches by"
+)]
 #[tokio::test]
 async fn a_clock_step_back_hides_no_call() {
     let ts = no_grace().await;
@@ -481,10 +490,12 @@ async fn a_call_reported_while_the_hook_waits_is_matched() {
         .await
         .unwrap();
     assert_eq!(res.status(), 201);
-    let (code, v) = tokio::time::timeout(Duration::from_secs(60), hook)
-        .await
-        .expect("the hook's request was answered once the call was reported")
-        .unwrap();
+    let (code, v) = within(
+        "the hook's request answered once the call was reported",
+        hook,
+    )
+    .await
+    .unwrap();
     assert_eq!(code, 201, "{v}");
     assert_eq!(v["call_id"], scope.header().call_id.as_str());
 }
@@ -500,13 +511,10 @@ async fn reports_for_identical_calls_that_both_arrive_early_record_null() {
     // The second report cannot tell its call from the first's: both
     // record null at once, without waiting for either call.
     let (path, second) = hook_request("cc-early", &sid, &stdin("cc-early", read, "toolu_e2", A));
-    let (code, v) = tokio::time::timeout(Duration::from_secs(60), send(&ts, &path, &second))
-        .await
-        .expect("the second report does not wait");
+    let (code, v) = within("the second report, at once", send(&ts, &path, &second)).await;
     assert_eq!((code, &v["call_id"]), (201, &Value::Null), "{v}");
-    let (code, v) = tokio::time::timeout(Duration::from_secs(60), first)
+    let (code, v) = within("the first report stops waiting", first)
         .await
-        .expect("the first report stops waiting")
         .unwrap();
     assert_eq!((code, &v["call_id"]), (201, &Value::Null), "{v}");
     // The calls, reported afterwards, are named by neither.
@@ -541,9 +549,8 @@ async fn two_reports_woken_by_one_call_never_both_claim_it() {
             .collect();
         let call = shim_call(&ts, &sid, "open", &args).await;
         for r in reports {
-            let (code, v) = tokio::time::timeout(Duration::from_secs(60), r)
+            let (code, v) = within("each report answered after its grace", r)
                 .await
-                .expect("each report is answered within its grace")
                 .unwrap();
             assert_eq!(code, 201, "round {round}: {v}");
         }
@@ -564,9 +571,7 @@ async fn past_the_cap_a_report_records_null_at_once() {
     let _first = send_later(&ts, &path, body);
     parked(&wait, 1).await;
     let (path, body) = hook_request("cc-cap2", &s2, &stdin("cc-cap2", list, "toolu_c2", "{}"));
-    let (code, v) = tokio::time::timeout(Duration::from_secs(60), send(&ts, &path, &body))
-        .await
-        .expect("a report past the cap does not wait");
+    let (code, v) = within("a report past the cap, at once", send(&ts, &path, &body)).await;
     assert_eq!((code, &v["call_id"]), (201, &Value::Null), "{v}");
     assert_eq!(*wait.parked.borrow(), 1);
 }
