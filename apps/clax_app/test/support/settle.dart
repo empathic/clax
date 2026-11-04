@@ -25,6 +25,7 @@ Future<void> settleUntil(
   FutureOr<bool> Function() until, {
   String what = 'the condition',
 }) async {
+  // ignore: timing_wall_clock -- the stuckAfter hang guard's own deadline
   final watch = Stopwatch()..start();
   while (true) {
     await tester.runAsync(() => Future<void>.delayed(Duration.zero));
@@ -44,9 +45,27 @@ Future<void> waitUntil(
   FutureOr<bool> Function() until, {
   String what = 'the condition',
 }) async {
+  // ignore: timing_wall_clock -- the stuckAfter hang guard's own deadline
   final watch = Stopwatch()..start();
   while (!await until()) {
     if (watch.elapsed > stuckAfter) fail('Waited $stuckAfter for $what');
     await Future<void>.delayed(Duration.zero);
+  }
+}
+
+/// Pumps frames, with no fake time passing, until [until] holds: for work
+/// in a widget test's fake zone (microtasks, and the frames they ask
+/// for), where a count of pumps would say how many steps the work takes
+/// instead of what it ends in.
+Future<void> pumpFramesUntil(
+  WidgetTester tester,
+  bool Function() until, {
+  String what = 'the condition',
+}) async {
+  // ignore: timing_wall_clock -- the stuckAfter hang guard's own deadline
+  final watch = Stopwatch()..start();
+  while (!until()) {
+    if (watch.elapsed > stuckAfter) fail('Waited $stuckAfter for $what');
+    await tester.pump();
   }
 }
