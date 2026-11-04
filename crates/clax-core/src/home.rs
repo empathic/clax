@@ -55,6 +55,12 @@ impl Home {
     pub fn daemon_lock(&self) -> PathBuf {
         self.root.join("daemon.lock")
     }
+    /// `store-open.lock`: held by a process while it opens the store and
+    /// does its one-time work (migrations, the audit backfill), so the
+    /// opens of one home take turns.
+    pub fn store_open_lock(&self) -> PathBuf {
+        self.root.join("store-open.lock")
+    }
     pub fn log_path(&self) -> PathBuf {
         self.root.join("logs").join("daemon.log")
     }
