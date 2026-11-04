@@ -87,7 +87,7 @@
         <h3 id="me-web">Web</h3>
         <div class="mek mew-web">
           <Switch checked={web.why_off === null} label={`Let ClaxBot ${ops.search && ops.fetch ? "search and read the web" : what}`} disabled={!!instanceWhy} busy={busy} describedby="me-web-why" onchange={on => change(() => setWebChoice(on))} />
-          <small id="me-web-why" class="note">{instanceWhy ? `${instanceWhy}.` : `ClaxBot may ${what} for you; ${ops.search && ops.fetch ? "what a run searches for and the pages it reads" : ops.search ? "what a run searches for" : "the pages a run reads"} can carry data out.`}{#if cost} {cost}{/if}</small>
+          <small id="me-web-why" class="note">{instanceWhy ? `${instanceWhy}.` : `ClaxBot may ${what} for you; ${ops.search && ops.fetch ? "what a run searches for and the pages it reads" : ops.search ? "what a run searches for" : "the pages a run reads"} can carry data out.`}{#if cost}{` ${cost}`}{/if}</small>
         </div>
       </section>
     {/if}

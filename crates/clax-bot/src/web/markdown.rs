@@ -26,8 +26,8 @@ use std::collections::HashMap;
 ///   `noscript`, `template` (but a declarative shadow root's, which a
 ///   browser shows), `svg` and `math` (up to their end, or the next tag
 ///   that ends foreign content in a browser, such as `<p>` or `<div>`),
-///   `select`, `textarea`, `iframe`, `object`, `noembed`, `noframes` and
-///   comments. A link or image whose target is not an `http` or `https`
+///   `select`, `textarea`, `iframe`, `object`, `noembed`, `noframes`,
+///   `xmp` and comments. A link or image whose target is not an `http` or `https`
 ///   URL, or whose resolved target is longer than
 ///   [`MAX_URL_CHARS`](super::url::MAX_URL_CHARS), keeps only its text;
 ///   an image without an `alt` is dropped.
@@ -40,10 +40,13 @@ use std::collections::HashMap;
 ///   backtick runs longer than any inside it.
 ///
 /// A tokenizer pass, not a tree: where HTML implies an end the converter
-/// reads one only roughly (a new `<a>` ends the open link, a new item of a
-/// list ends the item before it, a block ends the inline elements open in
-/// it; inline elements nested more than [`MAX_SPANS`] deep, and table rows
-/// wider than [`MAX_COLUMNS`] cells, are read flatter), so a malformed
+/// reads one only roughly (a new `<a>` ends the open link, as does the end
+/// of the block it opened in; a new item ends the item before it, a new
+/// cell the cell, a new paragraph the paragraph; a block ends the inline
+/// elements open in it, and inline code; inline elements nested more than
+/// [`MAX_SPANS`] deep, and table rows wider than [`MAX_COLUMNS`] cells, are
+/// read flatter; only the innermost [`SCAN`] open blocks are looked through
+/// for the one an end closes), so a malformed
 /// page may read differently from a browser's rendering, with its visible
 /// text all there. Linear in `html`'s length, and at most [`STORE_BYTES`]
 /// of output, as much of a page's text as the page store keeps.
@@ -71,6 +74,11 @@ pub const MAX_SPANS: usize = 16;
 
 /// The most cells of a table's row: those after are joined into the last.
 pub const MAX_COLUMNS: usize = 32;
+
+/// How many of the innermost open blocks an end tag, or an implied end, is
+/// looked for among: one opened further out is not ended by it, so an end
+/// costs at most this much however deep a page nests.
+pub const SCAN: usize = 64;
 
 /// The largest list number written: CommonMark reads at most nine digits.
 const MAX_NUMBER: u64 = 999_999_999;
@@ -183,6 +191,10 @@ struct Span {
     kind: SpanKind,
     /// Its opening mark is written.
     written: bool,
+    /// How many blocks and containers were open, and tables flattened,
+    /// when it opened: a link ends when the block it opened in does, and
+    /// takes the tables it flattened with it.
+    at: (usize, usize, usize),
 }
 
 enum SpanKind {
@@ -193,13 +205,15 @@ enum SpanKind {
 }
 
 /// A table being written: its rows, each a list of cells, the row being
-/// read, and the cell being read: where it starts in the output, and how
-/// many spans were open outside it.
+/// read, the cell being read (where it starts in the output, and how many
+/// spans were open outside it), and the breaks owed and whether the line
+/// was empty where the table began, which its rows start from.
 #[derive(Default)]
 struct Table {
     rows: Vec<Vec<String>>,
     row: Vec<String>,
     cell: Option<(usize, usize)>,
+    before: (u8, bool),
 }
 
 /// Content dropped until its element ends.
@@ -216,6 +230,8 @@ struct Writer {
     base_seen: bool,
     out: String,
     hidden: Option<Hidden>,
+    /// The block elements open, innermost last, by name.
+    blocks: Vec<&'static str>,
     containers: Vec<Container>,
     /// How many of `containers` are quotes.
     quotes: usize,
@@ -239,6 +255,9 @@ struct Writer {
     space: bool,
     /// Nothing has been written on this line yet but its prefix.
     line_empty: bool,
+    /// Where the line's own text starts in the output, after its prefix:
+    /// a word written there could start a block.
+    line_at: usize,
     /// The line breaks owed before the next text: 1 a new line, 2 a blank
     /// line between.
     breaks: u8,
@@ -252,6 +271,7 @@ impl Writer {
             base_seen: false,
             out: String::new(),
             hidden: None,
+            blocks: Vec::new(),
             containers: Vec::new(),
             quotes: 0,
             lists: Vec::new(),
@@ -264,6 +284,7 @@ impl Writer {
             heading: None,
             space: false,
             line_empty: true,
+            line_at: 0,
             breaks: 0,
         }
     }
@@ -328,6 +349,7 @@ impl Writer {
             return;
         }
         self.close_spans(0);
+        self.deep_spans.clear();
         let pending = matches!(
             self.containers.last(),
             Some(Container::Item { pending: true, .. })
@@ -394,6 +416,7 @@ impl Writer {
             let p = self.prefix(false);
             self.out.push_str(&p);
             self.line_empty = true;
+            self.line_at = self.out.len();
         } else if self.space && !self.line_empty {
             self.out.push(' ');
         }
@@ -434,6 +457,9 @@ impl Writer {
     fn close_spans(&mut self, keep: usize) {
         while self.spans.len() > keep {
             let s = self.spans.pop().expect("a span is open");
+            if matches!(s.kind, SpanKind::Link(_)) {
+                self.flat_tables = s.at.2;
+            }
             if !s.written {
                 continue;
             }
@@ -461,7 +487,74 @@ impl Writer {
             name,
             kind,
             written: false,
+            at: (self.blocks.len(), self.containers.len(), self.flat_tables),
         });
+    }
+
+    /// Ends the links whose block or container has ended, and the spans
+    /// inside them.
+    fn end_links_outside(&mut self) {
+        let (blocks, containers) = (self.blocks.len(), self.containers.len());
+        if let Some(i) = self.spans.iter().position(|s| {
+            matches!(s.kind, SpanKind::Link(_)) && (s.at.0 > blocks || s.at.1 > containers)
+        }) {
+            self.close_spans(i);
+        }
+    }
+
+    /// Whether the next word written starts the line's own text, where it
+    /// could start a block.
+    fn at_line(&self) -> bool {
+        self.line_empty && self.out.len() == self.line_at
+    }
+
+    /// Ends the innermost of the open blocks named `names`, among the
+    /// innermost [`SCAN`], with the blocks inside it; whether one was.
+    fn end_block(&mut self, names: &[&str]) -> bool {
+        let n = self.blocks.len();
+        let from = n.saturating_sub(SCAN);
+        match self.blocks[from..].iter().rposition(|b| names.contains(b)) {
+            Some(i) => {
+                self.blocks.truncate(from + i);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Keeps the stack of open blocks for a block element's start or end
+    /// tag, with the ends HTML implies (a new item, cell, row or paragraph
+    /// ends the open one), and ends the links whose block ended.
+    fn track_block(&mut self, name: &str, start: bool, self_closing: bool) {
+        let Some(name) = block_name(name) else {
+            return;
+        };
+        if start {
+            match name {
+                "li" => {
+                    self.end_block(&["li"]);
+                }
+                "dt" | "dd" => {
+                    self.end_block(&["dt", "dd"]);
+                }
+                "td" | "th" => {
+                    self.end_block(&["td", "th"]);
+                }
+                "tr" => {
+                    self.end_block(&["tr"]);
+                }
+                "p" => {
+                    self.end_block(&["p"]);
+                }
+                _ => {}
+            }
+            if !self_closing {
+                self.blocks.push(name);
+            }
+        } else {
+            self.end_block(&[name]);
+        }
+        self.end_links_outside();
     }
 
     /// Ends the innermost open span `name` opened, and the spans inside
@@ -504,7 +597,8 @@ impl Writer {
         let mut words = t.split_ascii_whitespace().peekable();
         while let Some(w) = words.next() {
             self.start_text();
-            escape_into(&mut self.out, w, self.line_empty);
+            let at_line = self.at_line();
+            escape_into(&mut self.out, w, at_line);
             self.line_empty = false;
             if words.peek().is_some() {
                 self.space = true;
@@ -580,11 +674,29 @@ impl Writer {
         if self.code.is_some() {
             if !start && self.code.as_ref().is_some_and(|(_, by)| by == name) {
                 self.end_code();
-            } else if name == "br" {
-                self.code.as_mut().expect("in code").0.push(' ');
+                return None;
             }
-            return None;
+            if name == "br" {
+                self.code.as_mut().expect("in code").0.push(' ');
+                return None;
+            }
+            if name == "a" {
+                // A link in code (an API reference's type): the code so far,
+                // the link, and the code after it, each a span.
+                let by = self.code.as_ref().map(|(_, by)| by.clone());
+                self.end_code();
+                self.track_block(name, start, tag.self_closing);
+                self.element(name, start, tag);
+                self.code = by.map(|by| (String::new(), by));
+                return None;
+            }
+            if block_name(name).is_none() {
+                return None;
+            }
+            // A block ends inline code.
+            self.end_code();
         }
+        self.track_block(name, start, tag.self_closing);
         self.element(name, start, tag);
         None
     }
@@ -698,10 +810,22 @@ impl Writer {
                     }
                     None => ("- ".to_string(), None),
                 };
-                // The item before it in its list ends here.
-                if let Some(outside) = outside {
-                    self.truncate_containers(outside);
+                // The item before it in its list ends here; outside a list,
+                // the innermost open item does.
+                match outside {
+                    Some(outside) => self.truncate_containers(outside),
+                    None => {
+                        let n = self.containers.len();
+                        let from = n.saturating_sub(SCAN);
+                        if let Some(i) = self.containers[from..]
+                            .iter()
+                            .rposition(|c| matches!(c, Container::Item { .. }))
+                        {
+                            self.truncate_containers(from + i);
+                        }
+                    }
                 }
+                self.end_links_outside();
                 self.containers.push(Container::Item {
                     marker,
                     pending: true,
@@ -760,7 +884,10 @@ impl Writer {
             ("tr" | "td" | "th" | "caption", _) if self.flat_tables > 0 => self.space = true,
             ("table", true) => {
                 self.block(2);
-                self.tables.push(Table::default());
+                self.tables.push(Table {
+                    before: (self.breaks, self.line_empty),
+                    ..Table::default()
+                });
             }
             ("table", false) => self.end_table(),
             ("tr", _) => self.end_row(),
@@ -770,6 +897,9 @@ impl Writer {
                     return;
                 }
                 self.end_cell();
+                // Spans opened in the table outside any cell have no text
+                // in this one.
+                self.spans.retain(|s| s.written);
                 self.space = false;
                 self.line_empty = false;
                 self.breaks = 0;
@@ -807,7 +937,10 @@ impl Writer {
                 self.out.push_str(&link_url(&src));
                 self.out.push(')');
             }
-            None => escape_into(&mut self.out, &alt, self.line_empty),
+            None => {
+                let at_line = self.at_line();
+                escape_into(&mut self.out, &alt, at_line);
+            }
         }
         self.line_empty = false;
     }
@@ -853,6 +986,9 @@ impl Writer {
         self.out.push_str(&fence);
         let lead = self.prefix(false);
         for line in code.split('\n') {
+            if self.full() {
+                break;
+            }
             self.out.push('\n');
             self.out.push_str(&lead);
             self.out.push_str(line);
@@ -877,6 +1013,7 @@ impl Writer {
             t.cell = None;
             t.row.push(cell);
         }
+        self.flat_tables = 0;
         self.space = false;
     }
 
@@ -902,8 +1039,13 @@ impl Writer {
         let Some(width) = t.rows.iter().map(Vec::len).max() else {
             return;
         };
-        self.block(2);
+        // The rows start where the table began: its cells took nothing
+        // from the line.
+        (self.breaks, self.line_empty) = t.before;
         for (i, row) in t.rows.iter().enumerate() {
+            if self.full() {
+                break;
+            }
             self.block(1);
             self.start_text();
             self.out.push_str("| ");
@@ -958,6 +1100,52 @@ fn hides(name: &str, tag: &Tag) -> bool {
         | "object" | "noembed" | "noframes" | "title" | "xmp" => true,
         _ => false,
     }
+}
+
+/// `name` as one of the block elements [`Writer::track_block`] keeps,
+/// or none for another element.
+fn block_name(name: &str) -> Option<&'static str> {
+    const BLOCKS: &[&str] = &[
+        "address",
+        "article",
+        "aside",
+        "blockquote",
+        "body",
+        "center",
+        "dd",
+        "details",
+        "div",
+        "dl",
+        "dt",
+        "fieldset",
+        "figcaption",
+        "figure",
+        "footer",
+        "form",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "header",
+        "li",
+        "listing",
+        "main",
+        "menu",
+        "nav",
+        "ol",
+        "p",
+        "pre",
+        "section",
+        "summary",
+        "table",
+        "td",
+        "th",
+        "tr",
+        "ul",
+    ];
+    BLOCKS.iter().find(|b| **b == name).copied()
 }
 
 /// `name` as one of the inline element names [`Span`] keeps.
@@ -1018,23 +1206,27 @@ fn longest_run(s: &str, c: char) -> usize {
 /// marker.
 fn escape_into(out: &mut String, word: &str, at_line: bool) {
     if at_line
-        && (matches!(
+        && matches!(
             word.as_bytes().first(),
             Some(b'#' | b'>' | b'+' | b'-' | b'=')
-        ) || ordered_marker(word))
+        )
     {
         out.push('\\');
     }
-    let mut chars = word.chars().peekable();
-    while let Some(c) = chars.next() {
-        let escape = match c {
-            '\\' | '*' | '_' | '`' | '[' | ']' | '~' | '<' => true,
-            // A character reference (`&amp;`, `&#1;`) would be decoded.
-            '&' => chars
-                .peek()
-                .is_some_and(|n| n.is_ascii_alphanumeric() || *n == '#'),
-            _ => false,
-        };
+    // An ordered list marker's `.` or `)` is escaped: a backslash before a
+    // digit is no escape, and would show.
+    let marker = (at_line && ordered_marker(word)).then(|| word.len() - 1);
+    let mut chars = word.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        let escape = Some(i) == marker
+            || match c {
+                '\\' | '*' | '_' | '`' | '[' | ']' | '~' | '<' => true,
+                // A character reference (`&amp;`, `&#1;`) would be decoded.
+                '&' => chars
+                    .peek()
+                    .is_some_and(|(_, n)| n.is_ascii_alphanumeric() || *n == '#'),
+                _ => false,
+            };
         if escape {
             out.push('\\');
         }
@@ -1243,7 +1435,7 @@ mod tests {
     fn item_text_that_reads_as_a_marker_is_escaped() {
         assert_eq!(
             md("<ul><li>1. Install</li><li># Title</li><li>- x</li></ul>"),
-            "- \\1. Install\n- \\# Title\n- \\- x"
+            "- 1\\. Install\n- \\# Title\n- \\- x"
         );
     }
 
@@ -1309,13 +1501,86 @@ mod tests {
     fn text_that_reads_as_markup_is_escaped() {
         assert_eq!(
             md("<p># not a heading</p><p>a*b*c [x] _y_ `z` ~w~</p><p>1. no list</p>"),
-            "\\# not a heading\n\na\\*b\\*c \\[x\\] \\_y\\_ \\`z\\` \\~w\\~\n\n\\1. no list"
+            "\\# not a heading\n\na\\*b\\*c \\[x\\] \\_y\\_ \\`z\\` \\~w\\~\n\n1\\. no list"
         );
         // Decoded `<` and `&` stay text: no autolink, raw HTML or reference.
         assert_eq!(
             md("<p>&lt;javascript:alert(1)&gt; &amp;amp; a & b</p>"),
             "\\<javascript:alert(1)> \\&amp; a & b"
         );
+    }
+
+    #[test]
+    fn a_marker_after_a_heading_or_a_mark_is_not_escaped() {
+        assert_eq!(md("<h2>1. Introduction</h2>"), "## 1. Introduction");
+        assert_eq!(md("<p><b>1.</b> first</p>"), "**1.** first");
+    }
+
+    #[test]
+    fn a_table_first_in_an_item_or_a_quote_keeps_its_lines() {
+        assert_eq!(
+            md(
+                "<p>intro</p><ul><li><table><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table></li></ul>"
+            ),
+            "intro\n\n- | a | b |\n  | --- | --- |\n  | c | d |"
+        );
+        assert_eq!(
+            md("<blockquote><table><tr><td>a</td></tr></table></blockquote>"),
+            "> | a |\n> | --- |"
+        );
+    }
+
+    #[test]
+    fn a_link_left_open_ends_with_its_block() {
+        assert_eq!(
+            md(r#"<p><a href="/x">Home</p><h1>Title</h1><ul><li>a</li><li>b</li></ul>"#),
+            "[Home](https://site.test/x)\n\n# Title\n\n- a\n- b"
+        );
+        assert_eq!(
+            md("<ul><li><a href=/1>one</li><li><a href=/2>two</li></ul>"),
+            "- [one](https://site.test/1)\n- [two](https://site.test/2)"
+        );
+        // A table it flattened ends with it.
+        assert_eq!(
+            md("<a href=/x><table><td></a>y<table><tr><td>a</td><td>b</td></tr></table>"),
+            "y\n\n| a | b |\n| --- | --- |"
+        );
+    }
+
+    #[test]
+    fn inline_code_ends_at_a_block_and_keeps_its_links() {
+        assert_eq!(
+            md("<p><code>x</p><ul><li>a</li></ul><p>After <a href=/y>link</a></p>"),
+            "`x`\n\n- a\n\nAfter [link](https://site.test/y)"
+        );
+        assert_eq!(
+            md(r#"<code><a href="/struct.Vec.html">Vec</a>&lt;T&gt;</code>"#),
+            "[`Vec`](https://site.test/struct.Vec.html)`<T>`"
+        );
+        assert_eq!(md("<code><pre>a\nb</pre></code>"), "```\na\nb\n```");
+    }
+
+    #[test]
+    fn marks_opened_outside_a_cell_are_not_written_in_it() {
+        assert_eq!(
+            md("<table><tr><b><td>x</td><td>y</td></tr></table>"),
+            "| x | y |\n| --- | --- |"
+        );
+        assert_eq!(
+            md("<table><tr><a href=/1><td><a href=/2>x</a></td></tr></table>"),
+            "| [x](https://site.test/2) |\n| --- |"
+        );
+    }
+
+    #[test]
+    fn deep_marks_are_forgotten_at_a_block() {
+        let page = format!("{}<p><b>x</b> y</p>", "<b>".repeat(MAX_SPANS + 1));
+        assert_eq!(md(&page), "**x** y");
+    }
+
+    #[test]
+    fn items_outside_a_list_are_siblings() {
+        assert_eq!(md("<li>a<li>b<li>c"), "- a\n- b\n- c");
     }
 
     #[test]
@@ -1354,9 +1619,16 @@ mod tests {
             links.matches("[x](https://site.test/a/b.html)").count(),
             10_000
         );
-        // The output stops at what the page store keeps.
+        // The output stops at what the page store keeps, however a page
+        // makes its lines long.
         let big = md(&"<p>word ".repeat(STORE_BYTES / 2));
         assert!(big.len() <= STORE_BYTES);
+        let lines = md(&format!(
+            "{}<pre>{}",
+            "<ol start=123456789><li>".repeat(9),
+            "\n".repeat(STORE_BYTES)
+        ));
+        assert!(lines.len() <= STORE_BYTES);
         let pre = format!("<pre>{}", "`".repeat(n));
         assert!(md(&pre).contains(&"`".repeat(n)));
         assert_eq!(md(""), "");
