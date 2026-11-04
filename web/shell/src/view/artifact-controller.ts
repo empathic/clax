@@ -16,7 +16,7 @@ import { APPROVE_FAILED, LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REO
 import { nav } from "../nav";
 import { type SiteHosts, artifactOrigin, pageSrc, startSrc } from "../origin";
 import { appQuery, inspectQuery, parseShellPath, shellPath } from "../route";
-import { type Thread, type Viewer, addComment, createThread, currentViewer, fetchThread, getViewer, listThreads, onViewer, reopenThread, resolveThread, seedViewer, sendBatch, sendToAgent, upsert } from "../threads";
+import { type Thread, type Viewer, addComment, createThread, currentViewer, getViewer, listThreads, onViewer, reopenThread, resolveThread, seedViewer, sendBatch, sendToAgent, upsert } from "../threads";
 import { after } from "../clock";
 import { afterPaint, nextFrame } from "./after-paint";
 import { EMPTY_SELECTION, type Selection, prune, toggle, unsent } from "./batch-model";
@@ -1684,14 +1684,17 @@ export class ArtifactController {
     throw e;
   }
 
-  private saveThread(p: Promise<Thread>, prefix: string): void {
-    void report(this.whileBusy(p.catch(e => this.refused(e))), prefix, this.noticeFor(prefix)).then(t => {
-      if (!t) return;
-      this.changeThreads(ts => upsert(ts, t));
-      // A linked thread's write is queued to go up beside this answer; the
-      // event saying so may have come first, so the thread is read again.
-      if (t.linked && !t.linked.unlinked) void fetchThread(this.id, t.id).then(now => this.changeThreads(ts => upsert(ts, now)), () => {});
-    });
+  /** Posts of new threads so far (`submitDraft`). */
+  private posts = 0;
+
+  /** Shows the answer `p` of a write to thread `tid`, under the thread
+   * events heard since it was sent (a one-thread load, `ThreadSync`): a
+   * linked thread's write is queued to go up in its own transaction, so its
+   * answer says it is sending, and the sync's acknowledgement can be heard
+   * first. */
+  private saveThread(tid: string, p: Promise<Thread>, prefix: string): void {
+    const done = this.threadLoad.beginThread(tid);
+    void report(this.whileBusy(p.catch(e => this.refused(e))), prefix, this.noticeFor(prefix)).then(done);
   }
 
   // ---- intents ----
@@ -1935,7 +1938,7 @@ export class ArtifactController {
     this.openPage(t.anchor.file);
   }
 
-  sendThread(t: Thread): void { const to = this.s.sendTo; this.saveThread(this.sendTracked(sendToAgent(this.id, t.id, to), to), SEND_FAILED); }
+  sendThread(t: Thread): void { const to = this.s.sendTo; this.saveThread(t.id, this.sendTracked(sendToAgent(this.id, t.id, to), to), SEND_FAILED); }
   /** Ticks or unticks `t`; with `shift`, every card between the last one
    * ticked and `t` in `order`, the sidebar's order of its cards (the
    * threads' order without it). */
@@ -1953,14 +1956,14 @@ export class ArtifactController {
    * asked for its name (the people menu, `askName`), and the thread reopens
    * once it has one. */
   resolveThread(t: Thread): void {
-    if (t.status === "open") { this.saveThread(resolveThread(this.id, t.id), RESOLVE_FAILED); return; }
+    if (t.status === "open") { this.saveThread(t.id, resolveThread(this.id, t.id), RESOLVE_FAILED); return; }
     void getToken().then(k => {
-      if (k || this.s.me?.display_name) { this.saveThread(reopenThread(this.id, t.id, k), REOPEN_FAILED); return; }
+      if (k || this.s.me?.display_name) { this.saveThread(t.id, reopenThread(this.id, t.id, k), REOPEN_FAILED); return; }
       this.reopenAfterName = { id: t.id, until: Date.now() + REOPEN_NAME_MS };
       this.set({ menu: "people", askName: t.id });
     });
   }
-  reply(t: Thread, body: string): void { this.saveThread(addComment(this.id, t.id, body), POST_FAILED); }
+  reply(t: Thread, body: string): void { this.saveThread(t.id, addComment(this.id, t.id, body), POST_FAILED); }
   composerInput(text: string): void { this.composerText = text; this.liveView?.text(null, text); }
   /** The composer for `pickId` has focus: the bridge may render its clip now. */
   composerFocused(pickId: string): void { if (this.pendingPick?.pickId === pickId) this.send({ type: "clax:composer-ready", pickId }); }
@@ -1971,14 +1974,18 @@ export class ArtifactController {
    * and is rethrown so the composer stays. */
   async submitDraft(body: string, draft: Draft | null = this.s.draft): Promise<void> {
     if (!draft) return;
+    // Under the thread's events heard meanwhile, as `saveThread`'s answers,
+    // keyed as no thread ID is until the answer names the thread.
+    const done = this.threadLoad.beginThread(`new:${++this.posts}`);
     try {
       const { thread, clip_error: clipError } = await this.whileBusy(createThread(this.id, { anchor: draft.anchor, body, version: draft.version, clip: draft.clip }));
       this.noticeFor(POST_FAILED)(null);
       this.noticeFor(CLIP_DROPPED)(clipError ? `${CLIP_DROPPED}: ${clipError}` : null);
-      this.changeThreads(ts => upsert(ts, thread));
+      done(thread);
       this.set({ selected: thread.id, draft: null, panel: true });
       this.app?.posted(thread);
     } catch (e) {
+      done(undefined);
       void report(Promise.reject(e), POST_FAILED, this.noticeFor(POST_FAILED));
       // A hosted daemon's visitor comments once named (a guest): the people
       // menu holds the name field.

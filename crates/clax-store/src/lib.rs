@@ -165,7 +165,7 @@ pub use artifacts::{CorruptRow, MetaPatch};
 pub use attention::{AgentPerson, AgentView, Attention, AttentionSummary, Participants, Person};
 pub use audit::AuditRow;
 pub use bot_runs::{CallEntry, Guard, Journaled, Tx};
-pub use feedback::{Delivery, DeliveryViewer, SendTarget, TakeFeedback, Taken};
+pub use feedback::{Delivery, DeliveryViewer, SendTarget, TakeFeedback, TakeLease, Taken};
 pub use quickstart::{Quickstart, Seeded, Updated};
 pub use sessions::{
     EndReason, EndedSession, JoinSession, NameSource, Proved, Reaped, RegisterSession, Registered,
@@ -316,12 +316,18 @@ impl Store {
     /// to `report` as [`Store::open_reporting`] does. A
     /// [`CoreError::MigrationFailed`] after the database was copied names
     /// the copy.
+    ///
+    /// Opens of one home, in this process or any other, take turns
+    /// ([`Home::store_open_lock`]): each waits for the one before it to
+    /// finish its open, however long its migrations and backfill take,
+    /// rather than for SQLite's busy timeout.
     pub fn open_with(
         home: &Home,
         clock: Arc<dyn Clock>,
         report: &mut dyn FnMut(&backfill::Progress),
     ) -> Result<Store> {
         home.ensure_dirs()?;
+        let _turn = open_turn(home)?;
         let path = home.db_path();
         let conn = exec::open_writer(&path)?;
         // A copy of the database before any migration changes it; the
@@ -783,6 +789,20 @@ impl Store {
     }
 }
 
+/// This open's turn at `home`'s store: its open lock, held until dropped
+/// ([`clax_core::daemon::FileLock`], waiting for as long as another open
+/// holds it). A Worker opens no home's files, so it takes none.
+#[cfg(not(target_arch = "wasm32"))]
+fn open_turn(home: &Home) -> Result<clax_core::daemon::FileLock> {
+    let f = std::fs::File::create(home.store_open_lock())?;
+    Ok(clax_core::daemon::FileLock::exclusive(f)?)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn open_turn(_home: &Home) -> Result<()> {
+    Ok(())
+}
+
 /// `changes` with one entry per `seq`, in the order each `seq` first
 /// changed, made when any of its changes made it.
 fn once_per_seq(changes: Vec<InboxChange>) -> Vec<InboxChange> {
@@ -1237,6 +1257,55 @@ mod tests {
                 .any(|p| matches!(p.phase, Phase::Migrating | Phase::BackingUp)),
             "{again:?}"
         );
+    }
+
+    /// An open holds its home's open lock from before its migrations until
+    /// it is done, so an open of the same home beside it, here or in
+    /// another process, waits its turn on that lock instead of meeting the
+    /// first one's write transaction in SQLite and failing once the busy
+    /// timeout runs out. Here the first open is stopped inside its first
+    /// migration's write transaction while a second open starts.
+    #[test]
+    fn an_open_holds_its_homes_open_lock_until_it_is_done() {
+        use crate::backfill::Phase;
+        use clax_core::daemon::FileLock;
+        use std::sync::mpsc;
+        // A hang guard only: the first open reaches its migration at once.
+        const HANG: std::time::Duration = std::time::Duration::from_secs(120);
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let free = |home: &Home| {
+            let f = std::fs::File::create(home.store_open_lock()).unwrap();
+            FileLock::try_exclusive(f).unwrap().is_some()
+        };
+        let (reached, migrating) = mpsc::channel();
+        let (go, gate) = mpsc::channel::<()>();
+        let first = std::thread::spawn({
+            let home = home.clone();
+            move || {
+                let mut stopped = false;
+                Store::open_reporting(&home, &mut |p| {
+                    if p.phase == Phase::Migrating && !stopped {
+                        stopped = true;
+                        reached.send(()).unwrap();
+                        gate.recv().unwrap();
+                    }
+                })
+                .map(|st| st.shutdown())
+            }
+        });
+        migrating
+            .recv_timeout(HANG)
+            .expect("the first open migrates (hang guard)");
+        assert!(!free(&home), "held through the migration");
+        let second = std::thread::spawn({
+            let home = home.clone();
+            move || Store::open(&home).map(|st| st.shutdown())
+        });
+        go.send(()).unwrap();
+        first.join().unwrap().unwrap();
+        second.join().unwrap().unwrap();
+        assert!(free(&home), "let go once each open is done");
     }
 
     /// The store's tests and the journal's (`toolpath::tests`), which open

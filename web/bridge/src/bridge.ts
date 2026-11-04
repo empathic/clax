@@ -383,7 +383,7 @@ type PartName = keyof Parts;
       // URL up to `#` is the page's own (absolute, so no <base> moves it).
       case "clax:hash": location.replace(location.href.split("#")[0] + "#" + m.hash.slice(1)); break;
       case "clax:greet": post({ ...helloFor(meta), again: true }); routes?.report(); break;
-      case "clax:back": routes?.back(m.depth); break;
+      case "clax:back": routes?.back(m.depth, m.seq); break;
       // After this page reported clax:no-cookie: granted, the shell starts
       // the handshake again.
       case "clax:storage-access":

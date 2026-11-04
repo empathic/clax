@@ -7,6 +7,9 @@ cargo_package(
         "//plugins:embedded",
         "//plugins/pi:embedded",
     ],
+    # The hooks' unit tests drive a test daemon in process
+    # (src/commands/hook.rs).
+    lib_test_uses_testkit = True,
     # The launcher the unit tests' bundle carries (src/lib.rs) and the shell
     # cases `clax haiku` is checked against (src/commands/haiku.rs).
     test_compile_data = [

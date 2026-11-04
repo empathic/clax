@@ -11,16 +11,20 @@
 // `popstate`, which its router follows. Loaded with the caps part on the app
 // shell's welcome, so a page outside the app loads none of it.
 
-export type RouteReport = { type: "clax:route"; depth: number; hash: string };
+export type RouteReport = { type: "clax:route"; depth: number; hash: string; back: number };
 
 /** One route the page pushed (or loaded at): its URL and its state. */
 type Route = { href: string; state: unknown };
 
 export type Routes = {
-  /** Takes the page to the route at `depth`, below the one it shows. */
-  back(depth: number): void;
+  /** Takes the page to the route at `depth`, below the one it shows: the
+   * shell's back numbered `seq`. Each report after carries that number, so
+   * the shell knows a report made before it from one made after. */
+  back(depth: number, seq: number): void;
   /** Reports the route the page shows again: the page greeted again, and a
-   * report the shell got while it awaited that hello was not taken. */
+   * report the shell got while it awaited that hello was not taken. While
+   * the shell's back is under way, the report waits until it lands: the
+   * entry the page leaves is a route the shell has already left. */
   report(): void;
 };
 
@@ -36,7 +40,11 @@ export function appRoutes(win: Window, post: (m: RouteReport) => void): Routes {
   // the one the shell last asked for.
   let landing: number | null = null;
   let target = 0;
-  const report = () => post({ type: "clax:route", depth, hash: win.location.hash });
+  // A report the shell asked for while its back was under way.
+  let owed = false;
+  // The number of the shell's last back taken.
+  let backs = 0;
+  const report = () => post({ type: "clax:route", depth, hash: win.location.hash, back: backs });
   const push = h.pushState.bind(h);
   const replace = h.replaceState.bind(h);
   const go = () => { landing = target; h.go(target - depth); };
@@ -45,6 +53,7 @@ export function appRoutes(win: Window, post: (m: RouteReport) => void): Routes {
     routes.splice(depth + 1, routes.length, { href: win.location.href, state });
     depth++;
     landing = null;
+    owed = false;
     report();
   };
   h.replaceState = (state: unknown, unused: string, url?: string | URL | null) => {
@@ -59,6 +68,7 @@ export function appRoutes(win: Window, post: (m: RouteReport) => void): Routes {
       depth = landing;
       landing = null;
       if (target < depth) go();
+      else if (owed) { owed = false; report(); }
       return;
     }
     const href = win.location.href;
@@ -74,8 +84,12 @@ export function appRoutes(win: Window, post: (m: RouteReport) => void): Routes {
     if (win.location.href !== routes[depth].href) plain = false;
   });
   return {
-    report,
-    back(to: number) {
+    report() {
+      if (landing === null) report();
+      else owed = true;
+    },
+    back(to: number, seq: number) {
+      if (Number.isInteger(seq) && seq > backs) backs = seq;
       if (!Number.isInteger(to) || to < 0 || to >= (landing ?? depth)) return;
       target = to;
       if (landing !== null) return;

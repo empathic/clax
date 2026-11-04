@@ -53,6 +53,7 @@ use super::git_http::{GitHttpRequest, authorize, serve_git, serve_options};
 use super::js::{FetchTransport, JsArtifacts, R2Objects, StubTransport, read_body_capped};
 use super::local::LocalHost;
 use super::tokens::{self, GitToken, Holder, LocalTokens, Minted, Scope, TokenHost};
+use crate::refused::REFUSED_READ_BYTES;
 use crate::store::DoPageStore;
 
 /// The `RepoDO` namespace's binding, and the one instance's name.
@@ -162,7 +163,8 @@ pub fn content_store(env: &Env) -> Result<Arc<dyn ContentStore>> {
 /// The Worker's `/git/` route, served by `RepoDO` while the stand-in is
 /// served (else 404). The Worker asks `RepoDO` whether the request's token
 /// is live first (401 unread when not), then reads the body, at most the
-/// path's limit (413 past it), and forwards it whole: `RepoDO` never
+/// path's limit (413 past it, once the body has ended, within
+/// [`REFUSED_READ_BYTES`]), and forwards it whole: `RepoDO` never
 /// answers while a body is still streaming to it, which the runtime takes
 /// for a lost connection.
 pub async fn forward_git(env: &Env, req: Request) -> Result<Response> {
@@ -353,15 +355,17 @@ fn http_response(r: clax_git::http::HttpResponse) -> Result<Response> {
         .with_headers(headers))
 }
 
-/// The body of `req`, or `None` once it runs past `limit` bytes: a
-/// declared `Content-Length` over it is refused unread, and a chunked body
-/// is read only until it passes it.
+/// The body of `req`, or `None` once it runs past `limit` bytes. A body
+/// refused is read on to its end, kept nowhere, when that comes within
+/// [`REFUSED_READ_BYTES`] (so the refusal reaches a client that is still
+/// sending it), else cut short: a declared `Content-Length` past that
+/// bound is refused unread.
 async fn read_capped(req: &Request, limit: usize) -> Result<Option<Vec<u8>>> {
     let declared = req
         .headers()
         .get("content-length")?
         .and_then(|n| n.parse::<usize>().ok());
-    if declared.is_some_and(|n| n > limit) {
+    if declared.is_some_and(|n| n > limit.max(REFUSED_READ_BYTES)) {
         return Ok(None);
     }
     read_body_capped(req, limit).await

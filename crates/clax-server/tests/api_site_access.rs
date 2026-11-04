@@ -753,6 +753,82 @@ async fn a_frame_starts_its_handshake_with_a_state_the_shell_binds_its_code_to()
     assert_eq!(r.status(), 200);
 }
 
+/// Two tabs of a browser with no handshake state yet open the site at once:
+/// each frame's start mints a state and sets it in the one state cookie, the
+/// later replacing the earlier's, so the earlier frame's code, bound to its
+/// own state, does not redeem beside the cookie. That frame is told it has
+/// no session (it cannot be framed on sign-in), and the handshake it starts
+/// again shares the state the browser now holds.
+#[tokio::test]
+async fn a_frame_whose_state_another_tab_replaced_starts_its_handshake_again() {
+    let ts = TestServer::spawn().await;
+    let aid = ts.publish("Doc", &[("index.html", "<p>doc")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let raw = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let framed = |path: &str, cookie: Option<String>| {
+        let mut req = raw
+            .get(format!("{}{path}", ts.base))
+            .header(HOST, ts.site_host(&aid))
+            .header("sec-fetch-dest", "iframe");
+        if let Some(c) = cookie {
+            req = req.header(COOKIE, c);
+        }
+        async move { req.send().await.unwrap() }
+    };
+    let state_set = |r: &reqwest::Response| {
+        r.headers()[SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .strip_prefix("clax_site_state=")
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string()
+    };
+    let start = "/_clax/session/start?next=%2F_clax%2Fv%2F1%2F";
+    let first = state_set(&framed(start, None).await);
+    let second = state_set(&framed(start, None).await);
+    assert_ne!(first, second, "neither start saw a state to share");
+    let code = |state: String| {
+        let req = ts
+            .authed(
+                ts.client
+                    .post(format!("{}/api/artifacts/{aid}/site-code", ts.base)),
+            )
+            .json(&json!({"next": "/_clax/v/1/", "partitioned": true, "state": state}));
+        async move {
+            let src: Value = req.send().await.unwrap().json().await.unwrap();
+            let src = src["src"].as_str().unwrap().to_string();
+            src[src.find("/_clax/session").unwrap()..].to_string()
+        }
+    };
+    let holds = Some(format!("clax_site_state={second}"));
+    // The first frame's code, beside the cookie the second start set.
+    let r = framed(&code(first).await, holds.clone()).await;
+    assert_eq!(r.status(), 200);
+    assert!(!sets_session(&r));
+    assert!(
+        r.text()
+            .await
+            .unwrap()
+            .contains("parent.postMessage({type:\"clax:no-cookie\"},o);")
+    );
+    // Its handshake again: the start shares the browser's state, and the
+    // code bound to it redeems.
+    let again = framed(start, holds.clone()).await;
+    assert_eq!(state_set(&again), second);
+    let r = framed(&code(second).await, holds).await;
+    assert_eq!(r.status(), 302);
+    assert_eq!(r.headers()[LOCATION], "/_clax/v/1/");
+    assert!(sets_session(&r));
+}
+
 #[tokio::test]
 async fn a_frame_without_the_sites_cookies_is_told_so_rather_than_sent_to_sign_in() {
     let ts = TestServer::spawn().await;

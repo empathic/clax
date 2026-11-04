@@ -61,10 +61,6 @@ async function ok<T>(res: Response): Promise<T> {
 const post = (url: string, body?: unknown) =>
   fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
 
-/** One thread of the artifact, with all its comments. */
-export async function fetchThread(aid: string, tid: string): Promise<Thread> {
-  return (await ok<{ thread: Thread }>(await fetch(`/api/artifacts/${aid}/threads/${tid}`))).thread;
-}
 /** Every thread of the artifact, resolved ones included, oldest first. */
 export async function listThreads(aid: string): Promise<Thread[]> {
   const out: Thread[] = [];

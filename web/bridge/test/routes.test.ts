@@ -24,7 +24,37 @@ describe("appRoutes", () => {
     history.pushState({ run: 3 }, "", "/c/a1/v/1/runs/3#laps");
     posted.length = 0;
     routes.report();
-    expect(posted).toEqual([{ type: "clax:route", depth: 1, hash: "#laps" }]);
+    expect(posted).toEqual([{ type: "clax:route", depth: 1, hash: "#laps", back: 0 }]);
+    stop();
+  });
+
+  it("stamps each report with the shell's last back it took, so the shell can tell one made before its back", async () => {
+    const { posted, routes, stop } = watch("/c/a6/v/1/");
+    history.pushState({ n: 1 }, "", "/c/a6/v/1/1");
+    // Asked before the shell's back reached the page: the route it shows then.
+    routes.report();
+    routes.back(0, 1);
+    await vi.waitFor(() => expect(location.pathname).toBe("/c/a6/v/1/"));
+    history.pushState({ n: 2 }, "", "/c/a6/v/1/2");
+    expect(posted).toEqual([
+      { type: "clax:route", depth: 1, hash: "", back: 0 },
+      { type: "clax:route", depth: 1, hash: "", back: 0 },
+      { type: "clax:route", depth: 1, hash: "", back: 1 },
+    ]);
+    stop();
+  });
+
+  it("asked to report while the shell's back is under way, reports the route it lands on once it lands", async () => {
+    // Chromium fires a load at the frame for that traversal, and the shell
+    // asks the page to greet again before the page's popstate.
+    const { posted, routes, stop } = watch("/c/a5/v/1/");
+    history.pushState({ n: 1 }, "", "/c/a5/v/1/1");
+    posted.length = 0;
+    routes.back(0, 1);
+    routes.report();
+    expect(posted).toEqual([]);
+    await vi.waitFor(() => expect(posted).toEqual([{ type: "clax:route", depth: 0, hash: "", back: 1 }]));
+    expect(location.pathname).toBe("/c/a5/v/1/");
     stop();
   });
 
@@ -34,8 +64,8 @@ describe("appRoutes", () => {
     history.pushState({ run: 3 }, "", "/c/a1/v/1/runs/3");
     history.pushState({ run: 4 }, "", "/c/a1/v/1/runs/4#laps");
     expect(posted).toEqual([
-      { type: "clax:route", depth: 1, hash: "" },
-      { type: "clax:route", depth: 2, hash: "#laps" },
+      { type: "clax:route", depth: 1, hash: "", back: 0 },
+      { type: "clax:route", depth: 2, hash: "#laps", back: 0 },
     ]);
     // A replace is the same route.
     history.replaceState({ run: 4, tab: "map" }, "", "/c/a1/v/1/runs/4?tab=map");
@@ -44,16 +74,16 @@ describe("appRoutes", () => {
     // The page's own back.
     history.back();
     await vi.waitFor(() => expect(posted).toHaveLength(3));
-    expect(posted[2]).toEqual({ type: "clax:route", depth: 1, hash: "" });
+    expect(posted[2]).toEqual({ type: "clax:route", depth: 1, hash: "", back: 0 });
     expect(location.pathname).toBe("/c/a1/v/1/runs/3");
 
     // The page pushes again, then the shell goes back: to the route's own
     // entry, with its state, and no entry made.
     history.pushState({ run: 5 }, "", "/c/a1/v/1/runs/5");
-    expect(posted.at(-1)).toEqual({ type: "clax:route", depth: 2, hash: "" });
+    expect(posted.at(-1)).toEqual({ type: "clax:route", depth: 2, hash: "", back: 0 });
     const entries = history.length;
     pops.length = 0;
-    routes.back(1);
+    routes.back(1, 1);
     await vi.waitFor(() => expect(location.pathname).toBe("/c/a1/v/1/runs/3"));
     expect(history.state).toEqual({ run: 3 });
     await vi.waitFor(() => expect(pops).toEqual([{ run: 3 }]));
@@ -64,12 +94,12 @@ describe("appRoutes", () => {
     history.back();
     await vi.waitFor(() => expect(location.pathname).toBe("/c/a1/v/1/"));
     expect(history.state).toBeNull();
-    expect(posted.at(-1)).toEqual({ type: "clax:route", depth: 0, hash: "" });
+    expect(posted.at(-1)).toEqual({ type: "clax:route", depth: 0, hash: "", back: 1 });
 
     // Nothing below the first, and no report for the shell's own moves.
     const reports = posted.length;
-    routes.back(0);
-    routes.back(-1);
+    routes.back(0, 2);
+    routes.back(-1, 3);
     expect(pops).toHaveLength(2);
     expect(posted).toHaveLength(reports);
     stop();
@@ -81,15 +111,15 @@ describe("appRoutes", () => {
     history.pushState({ n: 2 }, "", "/c/a2/v/1/2");
     history.pushState({ n: 3 }, "", "/c/a2/v/1/3");
     const reports = posted.length;
-    routes.back(2);
-    routes.back(1);
-    routes.back(0);
+    routes.back(2, 1);
+    routes.back(1, 2);
+    routes.back(0, 3);
     await vi.waitFor(() => expect(location.pathname).toBe("/c/a2/v/1/"));
     expect(history.state).toBeNull();
     expect(posted).toHaveLength(reports);
     // The page's forward is the route above, as after its own back.
     history.forward();
-    await vi.waitFor(() => expect(posted.at(-1)).toEqual({ type: "clax:route", depth: 1, hash: "" }));
+    await vi.waitFor(() => expect(posted.at(-1)).toEqual({ type: "clax:route", depth: 1, hash: "", back: 3 }));
     expect(location.pathname).toBe("/c/a2/v/1/1");
     stop();
   });
@@ -104,7 +134,7 @@ describe("appRoutes", () => {
     history.pushState({ n: 2 }, "", "/c/a3/v/1/2");
     const entries = history.length;
     pops.length = 0;
-    routes.back(1);
+    routes.back(1, 1);
     expect(location.pathname).toBe("/c/a3/v/1/1");
     expect(history.state).toEqual({ n: 1 });
     expect(pops).toEqual([{ n: 1 }]);

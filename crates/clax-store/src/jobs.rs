@@ -2281,6 +2281,9 @@ fn reply_step_tx(
         .map_err(refused)?;
     st.acknowledge_comments_in(tx, ctx, &sess.id, &s.ack, vis, &mut made.touched)
         .map_err(refused)?;
+    // The replies' and resolves' up-sends to each remote the artifact is
+    // linked to commit with them.
+    super::linked::queue_artifact_writes_in(tx, &aid, &st.now()).map_err(refused)?;
     let result = serde_json::json!({
         "comments": made.comments.iter().map(|c| serde_json::json!({
             "thread_id": c.thread_id, "comment_id": c.id,

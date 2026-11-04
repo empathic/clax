@@ -127,8 +127,9 @@ export type ShellToBridge =
   /** After a welcome with `app: true`: return to the page's route at
    * `depth` (below the one it shows, as its `clax:route` reported), back
    * through the page's own entries, or in place once a fragment entry lies
-   * among them (`routes.ts`), with a `popstate` the page's router follows. */
-  | { type: "clax:back"; depth: number }
+   * among them (`routes.ts`), with a `popstate` the page's router follows.
+   * `seq` counts the shell's backs in this document, 1 first. */
+  | { type: "clax:back"; depth: number; seq: number }
   /** `sameVersion`: the thread was made on the version the frame shows (an
    * area's element fingerprint is then not checked: its content may be live). */
   /** `highlight`: an open thread, whose quote the page highlights while its anchor resolves to text. */
@@ -270,9 +271,10 @@ export type BridgeToShell =
   | { type: "clax:scroll"; file: string; y: number }
   /** The page moved among its own `history.pushState` routes, after a
    * welcome with `app: true` (`routes.ts`): `depth` is the number of the
-   * page's pushes above the entry it loaded at, `hash` its fragment; only the
-   * app shell reads it, for its back. */
-  | { type: "clax:route"; depth: number; hash: string }
+   * page's pushes above the entry it loaded at, `hash` its fragment, and
+   * `back` the `seq` of the last `clax:back` the page had taken when it made
+   * the report (0 before any); only the app shell reads it, for its back. */
+  | { type: "clax:route"; depth: number; hash: string; back: number }
   /** The page's background colours (`#rrggbb`) at the middle of the
    * viewport's top and bottom edges, after a welcome with `app: true`
    * (`chrome.ts`): the first opaque background from the element there up

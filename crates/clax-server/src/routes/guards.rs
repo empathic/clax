@@ -230,6 +230,7 @@ mod l10 {
         ("watches::remote_put", Owner),
         ("watches::remote_delete", Owner),
         ("feedback::ack", AgentPath),
+        ("feedback::receipt", AgentPath),
         ("toolpath::session_tool_call", AgentPath),
         ("toolpath::tool_call", Token),
         ("feedback::poll", AgentPath),
@@ -1585,6 +1586,12 @@ mod agents {
                 Some((Comments, "watch")),
             ),
             (
+                "POST",
+                "/api/sessions/{id}/feedback/receipt",
+                Own,
+                Some((Comments, "watch")),
+            ),
+            (
                 "GET",
                 "/api/sessions/{id}/working",
                 Own,
@@ -2021,9 +2028,13 @@ mod agents {
                 {
                     assert!(
                         h.src.contains("vis.filter_")
-                            || ["st.take_feedback_readable(", "st.take_notices("]
-                                .iter()
-                                .any(|t| h.src.contains(t)),
+                            || [
+                                "st.take_feedback_readable(",
+                                "st.take_feedback_leased(",
+                                "st.take_notices(",
+                            ]
+                            .iter()
+                            .any(|t| h.src.contains(t)),
                         "{name}: a Filtered route open to agents must pass its response through vis.filter_"
                     );
                 }

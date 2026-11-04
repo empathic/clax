@@ -306,6 +306,206 @@ fn link_holds_in(c: &Connection, l: &RemoteLink) -> Result<bool> {
     Ok(raid.as_deref() == Some(l.remote_artifact_id.as_str()))
 }
 
+/// Queues, in the caller's transaction, the local writes on artifact
+/// `aid`'s synced links not queued yet, by [`Store::scan_linked`]'s rules:
+/// a write made in the same transaction commits with its up-send rows, so
+/// every view of it read after the commit says it is sending. How many
+/// rows it queued.
+///
+/// Called at the end of a local write's own transaction (a new thread, a
+/// comment, a resolve, a reopen), never inside the helpers a remote's
+/// change shares with them when it is applied here: a change that came
+/// down is recorded as the remote's (its `linked_threads` or
+/// `linked_comments` row, or its `synced_status`) in the transaction that
+/// applies it, so these rules never take it for a local one, and nothing
+/// is sent back up.
+pub(crate) fn queue_artifact_writes_in(c: &Connection, aid: &str, now: &str) -> Result<usize> {
+    let mut stmt = c.prepare_cached(&format!(
+        "SELECT {} FROM remote_links WHERE artifact_id = ?1 ORDER BY created_at, remote_id",
+        super::remotes::LINK_COLS
+    ))?;
+    let links: Vec<RemoteLink> = stmt
+        .query_map(params![aid], super::remotes::row_link)?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(stmt);
+    let mut queued = 0;
+    for l in links.iter().filter(|l| l.synced()) {
+        let remote: Option<(String, String)> = c
+            .query_row(
+                "SELECT name, origin FROM remotes WHERE id = ?1",
+                params![l.remote_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((rname, rorigin)) = remote {
+            queued += queue_link_in(c, l, &rname, &rorigin, now)?;
+        }
+    }
+    Ok(queued)
+}
+
+/// [`queue_artifact_writes_in`] for the artifact of thread `tid`: nothing
+/// when the thread is gone.
+pub(crate) fn queue_thread_writes_in(c: &Connection, tid: &str, now: &str) -> Result<usize> {
+    let aid: Option<String> = c
+        .query_row(
+            "SELECT artifact_id FROM threads WHERE id = ?1",
+            params![tid],
+            |r| r.get(0),
+        )
+        .optional()?;
+    match aid {
+        Some(aid) => queue_artifact_writes_in(c, &aid, now),
+        None => Ok(0),
+    }
+}
+
+/// Queues the local writes on link `l` (of remote `rname` at `rorigin`)
+/// not queued yet, on `tx`, inside a transaction: for a two-way link, each
+/// thread the owner or an agent of the owner's started since it was linked
+/// (or last made two-way again), with its first comment; on each linked
+/// thread still linked, each comment of theirs not linked yet, and each
+/// change from the status both sides agreed on (a resolve only when
+/// theirs). How many rows it queued.
+fn queue_link_in(
+    tx: &Connection,
+    l: &RemoteLink,
+    rname: &str,
+    rorigin: &str,
+    now: &str,
+) -> Result<usize> {
+    let rid = l.remote_id.as_str();
+    let mut queued = 0;
+    if !l.download_only {
+        let mut stmt = tx.prepare(&format!(
+            "SELECT t.id FROM threads t WHERE t.artifact_id = ?1
+               AND t.created_at >= COALESCE((SELECT threads_since FROM remote_links
+                     WHERE artifact_id = ?1 AND remote_id = ?3), ?2)
+               AND NOT EXISTS (SELECT 1 FROM linked_threads lt WHERE lt.thread_id = t.id)
+               AND EXISTS (SELECT 1 FROM comments c WHERE c.id = (
+                     SELECT id FROM comments WHERE thread_id = t.id
+                     ORDER BY created_at, id LIMIT 1) AND {BY_OWNER})
+             ORDER BY t.created_at, t.id"
+        ))?;
+        let fresh: Vec<String> = stmt
+            .query_map(params![l.artifact_id, l.created_at, rid], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        drop(stmt);
+        for tid in fresh {
+            tx.execute(
+                &format!(
+                    "INSERT INTO linked_threads ({LT_COLS}, created_at)
+                     VALUES (?1, ?2, ?3, ?4, NULL, 'local', NULL, 1, 'open', ?5, ?6, NULL, ?7)"
+                ),
+                params![
+                    tid,
+                    rid,
+                    l.artifact_id,
+                    l.remote_artifact_id,
+                    rname,
+                    rorigin,
+                    now
+                ],
+            )?;
+            let first: Option<String> = tx
+                .query_row(
+                    "SELECT id FROM comments WHERE thread_id = ?1 ORDER BY created_at, id LIMIT 1",
+                    params![tid],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(first) = first else { continue };
+            let key = enqueue(
+                tx,
+                rid,
+                &l.artifact_id,
+                &tid,
+                "thread",
+                Some(&first),
+                agent_of_comment(tx, &first)?,
+                now,
+            )?;
+            tx.execute(
+                "INSERT INTO linked_comments (comment_id, thread_id, remote_id, idem_key, origin, created_at)
+                 VALUES (?1, ?2, ?3, ?4, 'local', ?5)",
+                params![first, tid, rid, key, now],
+            )?;
+            queued += 1;
+        }
+    }
+    // Comments on linked threads not linked yet.
+    let mut stmt = tx.prepare(&format!(
+        "SELECT c.id, c.thread_id FROM comments c
+           JOIN linked_threads lt ON lt.thread_id = c.thread_id
+         WHERE lt.remote_id = ?1 AND lt.artifact_id = ?2 AND lt.unlinked_at IS NULL
+           AND NOT EXISTS (SELECT 1 FROM linked_comments lc WHERE lc.comment_id = c.id)
+           AND {BY_OWNER}
+         ORDER BY c.created_at, c.id"
+    ))?;
+    let fresh: Vec<(String, String)> = stmt
+        .query_map(params![rid, l.artifact_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(stmt);
+    for (cid, tid) in fresh {
+        let key = enqueue(
+            tx,
+            rid,
+            &l.artifact_id,
+            &tid,
+            "comment",
+            Some(&cid),
+            agent_of_comment(tx, &cid)?,
+            now,
+        )?;
+        tx.execute(
+            "INSERT INTO linked_comments (comment_id, thread_id, remote_id, idem_key, origin, created_at)
+             VALUES (?1, ?2, ?3, ?4, 'local', ?5)",
+            params![cid, tid, rid, key, now],
+        )?;
+        queued += 1;
+    }
+    // Status changes made here.
+    let mut stmt = tx.prepare(
+        "SELECT t.id, t.status, t.resolved_by FROM threads t
+           JOIN linked_threads lt ON lt.thread_id = t.id
+         WHERE lt.remote_id = ?1 AND lt.artifact_id = ?2 AND lt.unlinked_at IS NULL
+           AND t.status != lt.synced_status
+           AND ((t.status = 'open'
+                 AND COALESCE(t.reopened_by_person, '*owner') IN
+                     ('*owner', (SELECT public_id FROM viewers WHERE owner = 1)))
+                OR (t.resolved_by LIKE 'agent:%'
+                    AND COALESCE(t.resolved_by_person, '*owner') = '*owner')
+                OR t.resolved_by = 'viewer:' ||
+                     (SELECT public_id FROM viewers WHERE owner = 1))
+         ORDER BY t.created_at, t.id",
+    )?;
+    let changed: Vec<(String, String, Option<String>)> = stmt
+        .query_map(params![rid, l.artifact_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(stmt);
+    for (tid, status, by) in changed {
+        let kind = if status == "resolved" {
+            "resolve"
+        } else {
+            "reopen"
+        };
+        let agent = match by.as_deref().and_then(|b| b.strip_prefix("agent:")) {
+            Some(h) => (Some(h.to_string()), Some(h.to_string())),
+            None => (None, None),
+        };
+        enqueue(tx, rid, &l.artifact_id, &tid, kind, None, agent, now)?;
+        tx.execute(
+            "UPDATE linked_threads SET synced_status = ?2 WHERE thread_id = ?1",
+            params![tid, status],
+        )?;
+        queued += 1;
+    }
+
+    Ok(queued)
+}
+
 /// The idempotency key of a local write's up-send: made here, once.
 fn new_key(kind: &str) -> String {
     format!("clax-linked:{kind}:{}", new_ulid().to_lowercase())
@@ -953,122 +1153,8 @@ impl Store {
             for l in &links {
                 // Read before this transaction: a link ended (or moved)
                 // since queues nothing.
-                if !link_holds_in(tx, l)? {
-                    continue;
-                }
-                if !l.download_only {
-                    let mut stmt = tx.prepare(&format!(
-                        "SELECT t.id FROM threads t WHERE t.artifact_id = ?1
-                           AND t.created_at >= COALESCE((SELECT threads_since FROM remote_links
-                                 WHERE artifact_id = ?1 AND remote_id = ?3), ?2)
-                           AND NOT EXISTS (SELECT 1 FROM linked_threads lt WHERE lt.thread_id = t.id)
-                           AND EXISTS (SELECT 1 FROM comments c WHERE c.id = (
-                                 SELECT id FROM comments WHERE thread_id = t.id
-                                 ORDER BY created_at, id LIMIT 1) AND {BY_OWNER})
-                         ORDER BY t.created_at, t.id"
-                    ))?;
-                    let fresh: Vec<String> = stmt
-                        .query_map(params![l.artifact_id, l.created_at, rid], |r| r.get(0))?
-                        .collect::<rusqlite::Result<_>>()?;
-                    drop(stmt);
-                    for tid in fresh {
-                        tx.execute(
-                            &format!(
-                                "INSERT INTO linked_threads ({LT_COLS}, created_at)
-                                 VALUES (?1, ?2, ?3, ?4, NULL, 'local', NULL, 1, 'open', ?5, ?6, NULL, ?7)"
-                            ),
-                            params![tid, rid, l.artifact_id, l.remote_artifact_id, rname, rorigin, now],
-                        )?;
-                        let first: Option<String> = tx
-                            .query_row(
-                                "SELECT id FROM comments WHERE thread_id = ?1 ORDER BY created_at, id LIMIT 1",
-                                params![tid],
-                                |r| r.get(0),
-                            )
-                            .optional()?;
-                        let Some(first) = first else { continue };
-                        let key = enqueue(
-                            tx,
-                            rid,
-                            &l.artifact_id,
-                            &tid,
-                            "thread",
-                            Some(&first),
-                            agent_of_comment(tx, &first)?,
-                            &now,
-                        )?;
-                        tx.execute(
-                            "INSERT INTO linked_comments (comment_id, thread_id, remote_id, idem_key, origin, created_at)
-                             VALUES (?1, ?2, ?3, ?4, 'local', ?5)",
-                            params![first, tid, rid, key, now],
-                        )?;
-                        queued += 1;
-                    }
-                }
-                // Comments on linked threads not linked yet.
-                let mut stmt = tx.prepare(&format!(
-                    "SELECT c.id, c.thread_id FROM comments c
-                       JOIN linked_threads lt ON lt.thread_id = c.thread_id
-                     WHERE lt.remote_id = ?1 AND lt.artifact_id = ?2 AND lt.unlinked_at IS NULL
-                       AND NOT EXISTS (SELECT 1 FROM linked_comments lc WHERE lc.comment_id = c.id)
-                       AND {BY_OWNER}
-                     ORDER BY c.created_at, c.id"
-                ))?;
-                let fresh: Vec<(String, String)> = stmt
-                    .query_map(params![rid, l.artifact_id], |r| Ok((r.get(0)?, r.get(1)?)))?
-                    .collect::<rusqlite::Result<_>>()?;
-                drop(stmt);
-                for (cid, tid) in fresh {
-                    let key = enqueue(
-                        tx,
-                        rid,
-                        &l.artifact_id,
-                        &tid,
-                        "comment",
-                        Some(&cid),
-                        agent_of_comment(tx, &cid)?,
-                        &now,
-                    )?;
-                    tx.execute(
-                        "INSERT INTO linked_comments (comment_id, thread_id, remote_id, idem_key, origin, created_at)
-                         VALUES (?1, ?2, ?3, ?4, 'local', ?5)",
-                        params![cid, tid, rid, key, now],
-                    )?;
-                    queued += 1;
-                }
-                // Status changes made here.
-                let mut stmt = tx.prepare(
-                    "SELECT t.id, t.status, t.resolved_by FROM threads t
-                       JOIN linked_threads lt ON lt.thread_id = t.id
-                     WHERE lt.remote_id = ?1 AND lt.artifact_id = ?2 AND lt.unlinked_at IS NULL
-                       AND t.status != lt.synced_status
-                       AND ((t.status = 'open'
-                             AND COALESCE(t.reopened_by_person, '*owner') IN
-                                 ('*owner', (SELECT public_id FROM viewers WHERE owner = 1)))
-                            OR (t.resolved_by LIKE 'agent:%'
-                                AND COALESCE(t.resolved_by_person, '*owner') = '*owner')
-                            OR t.resolved_by = 'viewer:' ||
-                                 (SELECT public_id FROM viewers WHERE owner = 1))
-                     ORDER BY t.created_at, t.id",
-                )?;
-                let changed: Vec<(String, String, Option<String>)> = stmt
-                    .query_map(params![rid, l.artifact_id], |r| {
-                        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-                    })?
-                    .collect::<rusqlite::Result<_>>()?;
-                drop(stmt);
-                for (tid, status, by) in changed {
-                    let kind = if status == "resolved" { "resolve" } else { "reopen" };
-                    let agent = match by.as_deref().and_then(|b| b.strip_prefix("agent:")) {
-                        Some(h) => (Some(h.to_string()), Some(h.to_string())),
-                        None => (None, None),
-                    };
-                    enqueue(tx, rid, &l.artifact_id, &tid, kind, None, agent, &now)?;
-                    tx.execute(
-                        "UPDATE linked_threads SET synced_status = ?2 WHERE thread_id = ?1",
-                        params![tid, status],
-                    )?;
-                    queued += 1;
+                if link_holds_in(tx, l)? {
+                    queued += queue_link_in(tx, l, &rname, &rorigin, &now)?;
                 }
             }
             Ok(queued)
@@ -1970,9 +2056,9 @@ mod tests {
             public_id: w.owner.clone(),
         };
         w.st.reopen_thread(&owner, &t.id).unwrap();
-        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 1);
         let out = w.st.outbox_of(&w.rid).unwrap();
-        assert_eq!(out.last().unwrap().kind, "reopen");
+        assert_eq!(out.last().unwrap().kind, "reopen", "queued with the reopen");
+        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 0);
     }
 
     #[test]
@@ -2123,7 +2209,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 1);
+        assert_eq!(
+            w.st.scan_linked(&w.rid).unwrap(),
+            0,
+            "queued with the comment"
+        );
         w.st.delete_thread(&AuditCtx::DAEMON, &t.id).unwrap();
         let lt =
             w.st.linked_thread_by_remote(&w.rid, "rt1")
@@ -2172,7 +2262,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 1);
+        assert_eq!(
+            w.st.scan_linked(&w.rid).unwrap(),
+            0,
+            "queued with the comment"
+        );
         w.st.unlink_remote(&w.aid, &w.rid).unwrap();
         assert_eq!(w.st.unsent_of(&w.aid).unwrap().len(), 1);
         // Pushed to the same remote again: the old write is still the
@@ -2218,8 +2312,11 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 1);
-        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 0, "queued once");
+        assert_eq!(
+            w.st.scan_linked(&w.rid).unwrap(),
+            0,
+            "queued once, with the comment"
+        );
         let out = w.st.outbox_of(&w.rid).unwrap();
         assert_eq!(out[0].comment_id.as_deref(), Some(reply.id.as_str()));
         let key = out[0].idem_key.clone();
@@ -2266,7 +2363,11 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 1);
+        assert_eq!(
+            w.st.scan_linked(&w.rid).unwrap(),
+            0,
+            "queued with the thread"
+        );
         let seq = w.st.outbox_of(&w.rid).unwrap()[0].seq;
         // Deleted here while the up-send is out; then its answer arrives.
         w.st.delete_thread(&AuditCtx::DAEMON, &t.id).unwrap();
@@ -2334,7 +2435,9 @@ mod tests {
         .unwrap();
         w.st.resolve_thread(&AuditCtx::DAEMON, &t.id, &format!("viewer:{}", w.owner))
             .unwrap();
-        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 4);
+        // The thread, each comment and the resolve were queued with
+        // themselves.
+        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 0);
         let out = w.st.outbox_of(&w.rid).unwrap();
         let kinds: Vec<&str> = out.iter().map(|o| o.kind.as_str()).collect();
         assert_eq!(kinds, ["thread", "comment", "comment", "resolve"]);
@@ -2384,9 +2487,9 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 1);
         let out = w.st.outbox_of(&w.rid).unwrap();
         assert_eq!(out.last().unwrap().thread_id, later.id);
+        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 0);
         w.st.ack_outbox(
             out.last().unwrap().seq,
             Some((&later.id, "rt9")),
@@ -2400,6 +2503,129 @@ mod tests {
         assert!(w.st.linked_views(std::slice::from_ref(&t)).unwrap()[&t.id].unlinked);
         assert_eq!(w.st.drop_unsent(&w.aid).unwrap(), 4);
         assert!(w.st.unsent_of(&w.aid).unwrap().is_empty());
+    }
+
+    /// A local new thread, resolve and reopen on a linked artifact commit
+    /// with their up-sends: the first read after each call returns (with
+    /// no scan in between) shows it pending. What comes down from the
+    /// remote (a thread, a comment, a status) queues nothing.
+    #[test]
+    fn local_thread_writes_read_as_pending_from_their_own_commit() {
+        let w = world();
+        let l = link(&w, (1, 1));
+        w.clock.advance(1);
+        let id = ArtifactId::parse(&w.aid).unwrap();
+        let state = |tid: &str| {
+            let t = w.st.get_thread(tid).unwrap().unwrap();
+            w.st.linked_views(&[t]).unwrap()[tid].state
+        };
+        let mut owner = AuditCtx::DAEMON;
+        owner.actor = clax_core::audit::Actor::Owner {
+            public_id: w.owner.clone(),
+        };
+        let ack_all = || {
+            for o in w.st.outbox_of(&w.rid).unwrap() {
+                let made = (o.kind == "thread").then_some((o.thread_id.as_str(), "rt1"));
+                let rcid = (o.kind == "thread").then_some("rc1");
+                w.st.ack_outbox(o.seq, made, rcid, Some(1)).unwrap();
+            }
+        };
+        let t =
+            w.st.create_thread(
+                &owner,
+                &id,
+                NewThread {
+                    version_n: 1,
+                    anchor: whole(),
+                    author_name: "Owner".into(),
+                    author_public_id: Some(w.owner.clone()),
+                    body: "bluer".into(),
+                    clip: None,
+                    via_page: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(state(&t.id), Some("pending"), "the new thread");
+        ack_all();
+        assert_eq!(state(&t.id), None);
+        w.clock.advance(1);
+        w.st.resolve_thread(&owner, &t.id, &format!("viewer:{}", w.owner))
+            .unwrap();
+        assert_eq!(state(&t.id), Some("pending"), "the resolve");
+        assert_eq!(w.st.outbox_of(&w.rid).unwrap()[0].kind, "resolve");
+        ack_all();
+        w.clock.advance(1);
+        w.st.reopen_thread(&owner, &t.id).unwrap();
+        assert_eq!(state(&t.id), Some("pending"), "the reopen");
+        assert_eq!(w.st.outbox_of(&w.rid).unwrap()[0].kind, "reopen");
+        ack_all();
+        assert_eq!(w.st.scan_linked(&w.rid).unwrap(), 0, "nothing left");
+
+        // Down from the remote: its status on this thread, a comment on
+        // it, and a thread of its own, each followed by a local write that
+        // queues whatever is left to queue.
+        let none_queued = |what: &str| {
+            assert!(w.st.outbox_of(&w.rid).unwrap().is_empty(), "{what}");
+        };
+        w.clock.advance(1);
+        w.st.mirror_status(&AuditCtx::DAEMON, &t.id, "resolved")
+            .unwrap();
+        w.st.reopen_thread(&owner, &t.id).unwrap();
+        assert_eq!(
+            w.st.outbox_of(&w.rid).unwrap()[0].kind,
+            "reopen",
+            "only the reopen made here"
+        );
+        ack_all();
+        w.st.mirror_status(&AuditCtx::DAEMON, &t.id, "resolved")
+            .unwrap();
+        none_queued("the remote's resolve");
+        w.st.mirror_comment(&AuditCtx::DAEMON, &t.id, &w.rid, &mirror("yes", "rc2"))
+            .unwrap()
+            .unwrap();
+        none_queued("the remote's comment");
+        let theirs =
+            w.st.mirror_thread(
+                &AuditCtx::DAEMON,
+                &l,
+                ("clax.example", "https://clax.example"),
+                1,
+                true,
+                MirrorThread {
+                    remote_thread_id: "rt2".into(),
+                    remote_version: 1,
+                    anchor: whole(),
+                    first: mirror("smaller", "rc3"),
+                },
+            )
+            .unwrap();
+        none_queued("the remote's thread");
+        w.st.mirror_status(&AuditCtx::DAEMON, &theirs.id, "resolved")
+            .unwrap();
+        w.st.mirror_status(&AuditCtx::DAEMON, &theirs.id, "open")
+            .unwrap();
+        none_queued("the remote's resolve and reopen of its thread");
+        w.st.create_thread(
+            &owner,
+            &id,
+            NewThread {
+                version_n: 1,
+                anchor: whole(),
+                author_name: "Owner".into(),
+                author_public_id: Some(w.owner.clone()),
+                body: "and this".into(),
+                clip: None,
+                via_page: false,
+            },
+        )
+        .unwrap();
+        let kinds: Vec<String> =
+            w.st.outbox_of(&w.rid)
+                .unwrap()
+                .into_iter()
+                .map(|o| o.kind)
+                .collect();
+        assert_eq!(kinds, ["thread"], "only the thread made here");
     }
 
     #[test]

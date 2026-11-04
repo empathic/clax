@@ -370,9 +370,10 @@ pub fn port_held(port: u16) -> bool {
 }
 
 /// The ports a daemon asked for `start` tries, in order: `start` and the
-/// next [`PORT_ATTEMPTS`]` - 1`.
-pub fn port_range(start: u16) -> std::ops::Range<u16> {
-    start..start.saturating_add(PORT_ATTEMPTS)
+/// next [`PORT_ATTEMPTS`]` - 1`, as many of them as there are up to 65535
+/// (`start` alone for 65535, a port the system may hand out for port 0).
+pub fn port_range(start: u16) -> std::ops::RangeInclusive<u16> {
+    start..=start.saturating_add(PORT_ATTEMPTS - 1)
 }
 
 /// The first port of [`port_range`]`(start)` that [`port_held`] does not
@@ -386,6 +387,17 @@ mod tests {
     use super::*;
     use std::process::{ChildStdin, Command, ExitStatus, Stdio};
     use std::thread::JoinHandle;
+
+    /// A daemon asked for a port near the top of the range tries the ports
+    /// up to 65535, that one included: a replacement asked for 65535 (the
+    /// port 0 gave its predecessor) tries it.
+    #[test]
+    fn the_ports_tried_end_at_the_last_port() {
+        assert_eq!(port_range(7480), 7480..=7500);
+        assert_eq!(port_range(7480).count(), usize::from(PORT_ATTEMPTS));
+        assert_eq!(port_range(65530), 65530..=65535);
+        assert_eq!(port_range(65535).collect::<Vec<_>>(), [65535]);
+    }
 
     /// A `clax serve` that says `ready`, then blocks on its standard input
     /// until a signal ends it; with `trap '' TERM`, one that a SIGTERM

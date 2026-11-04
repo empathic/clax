@@ -18,10 +18,9 @@ pub const START_FEEDBACK_TIMEOUT: Duration = Duration::from_secs(1);
 pub const SIGN_IN_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// A request that takes feedback is not made with less than this left
-/// before the hook's deadline ([`Daemon::time_left`]): the daemon marks
-/// what it hands over delivered before it answers, so a take whose answer
-/// comes too late to print loses it. Left undelivered, it waits for the
-/// next hook.
+/// before the hook's deadline ([`Daemon::time_left`]): left undelivered, it
+/// waits for the next hook, where a take that comes too late to print
+/// would hold it for the length of its lease ([`Daemon::lease`]).
 pub const MIN_TAKE_TIME: Duration = Duration::from_millis(500);
 
 /// The daemon operations hooks need.
@@ -32,6 +31,18 @@ pub trait Daemon {
     fn time_left(&self) -> Option<Duration> {
         None
     }
+    /// How long the daemon is to hold what a take hands over for this
+    /// hook's word on it ([`Daemon::settle`]): until the hook has printed
+    /// it and said so. `None` (the default) takes without a lease, and the
+    /// daemon counts what it hands over delivered as it answers.
+    fn lease(&self) -> Option<Duration> {
+        None
+    }
+    /// Notes the hook's word on its take of session `sid` under lease
+    /// `id`: `received` when its answer came, else given up. The hook says
+    /// it once its output is printed, and says not received for anything
+    /// it did not print, so the daemon hands it over again.
+    fn settle(&self, _sid: &str, _id: &str, _received: bool) {}
     fn browser_url(&self, path: &str) -> String;
     fn get(&self, path: &str) -> anyhow::Result<Value>;
     /// [`Daemon::get`], abandoned with an error after `timeout`.
@@ -199,7 +210,8 @@ pub fn session_start_with(
     if let Some(sid) = joined["session"]["id"].as_str()
         && let Ok(Some(res)) = take(
             daemon,
-            &format!("/api/sessions/{sid}/feedback?tier=prompt_hook"),
+            sid,
+            "tier=prompt_hook",
             Some(START_FEEDBACK_TIMEOUT),
         )
         && let Some(text) = rendered_text(&res)
@@ -217,7 +229,7 @@ pub fn session_start_with(
 /// opens its cold-browser page. None when the daemon cannot say in time,
 /// or at all (a hosted daemon, or one from before the route).
 fn sign_in_line(daemon: &dyn Daemon, wake: Option<&StartWake>) -> Option<String> {
-    let state = take(daemon, "/api/browser-login", Some(SIGN_IN_TIMEOUT)).ok()??;
+    let state = get_within(daemon, "/api/browser-login", Some(SIGN_IN_TIMEOUT)).ok()??;
     if state["signed_in"] != false {
         return None;
     }
@@ -320,11 +332,15 @@ pub(crate) fn live_session(
         .map(str::to_string))
 }
 
-/// `GET path` for a request that takes feedback: made only while at least
+/// `GET path` within the hook's time: made only while at least
 /// [`MIN_TAKE_TIME`] is left before the hook's deadline, and abandoned
 /// once what is left, or `cap`, runs out, so an answer that arrives is
 /// printed. `Ok(None)` when it was not made.
-fn take(daemon: &dyn Daemon, path: &str, cap: Option<Duration>) -> anyhow::Result<Option<Value>> {
+fn get_within(
+    daemon: &dyn Daemon,
+    path: &str,
+    cap: Option<Duration>,
+) -> anyhow::Result<Option<Value>> {
     let timeout = match (daemon.time_left(), cap) {
         (Some(left), _) if left < MIN_TAKE_TIME => return Ok(None),
         (Some(left), Some(c)) => Some(left.min(c)),
@@ -338,6 +354,37 @@ fn take(daemon: &dyn Daemon, path: &str, cap: Option<Duration>) -> anyhow::Resul
     .map(Some)
 }
 
+/// `GET /api/sessions/<sid>/feedback?<query>`, a request that takes
+/// feedback, made as [`get_within`] makes it. With a [`Daemon::lease`],
+/// taken under a lease of its own, whose rows the daemon hands over again
+/// unless the hook says it received them ([`Daemon::settle`]): an abandoned
+/// take loses nothing. `Ok(None)` when it was not made.
+fn take(
+    daemon: &dyn Daemon,
+    sid: &str,
+    query: &str,
+    cap: Option<Duration>,
+) -> anyhow::Result<Option<Value>> {
+    let mut path = format!("/api/sessions/{sid}/feedback?{query}");
+    let lease = daemon.lease().map(|held| {
+        let id = clax_core::new_ulid();
+        path.push_str(&format!("&lease={id}&lease_ms={}", held.as_millis()));
+        id
+    });
+    let res = get_within(daemon, &path, cap);
+    if let Some(id) = &lease {
+        match &res {
+            // Not made, nothing leased, or a daemon from before leases: no
+            // word owed.
+            Ok(None) => {}
+            Ok(Some(v)) if v["lease"] != id.as_str() => {}
+            Ok(Some(_)) => daemon.settle(sid, id, true),
+            Err(_) => daemon.settle(sid, id, false),
+        }
+    }
+    res
+}
+
 /// The rendered feedback the daemon hands over for `query`, as the agent
 /// is handed it ([`Daemon::agent_text`]: a remote daemon's clips fetched
 /// and their lines rewritten; otherwise the daemon's text as it is):
@@ -348,12 +395,7 @@ fn feedback_text(
     sid: &str,
     query: &str,
 ) -> anyhow::Result<Option<Option<String>>> {
-    let Some(res) = take(
-        daemon,
-        &format!("/api/sessions/{sid}/feedback?{query}"),
-        None,
-    )?
-    else {
+    let Some(res) = take(daemon, sid, query, None)? else {
         return Ok(None);
     };
     Ok(Some(rendered_text(&res).map(|t| daemon.agent_text(t))))
@@ -1103,6 +1145,94 @@ mod tests {
                 )
             ]
         );
+    }
+
+    /// A daemon that leases what its takes hand over: it answers `echo`'s
+    /// lease (the take's own, or none, as a daemon from before leases),
+    /// or fails every take.
+    struct Leasing {
+        echo: bool,
+        fail: bool,
+        takes: RefCell<Vec<String>>,
+        settled: RefCell<Vec<(String, String, bool)>>,
+    }
+    impl Leasing {
+        fn new(echo: bool, fail: bool) -> Leasing {
+            Leasing {
+                echo,
+                fail,
+                takes: RefCell::new(vec![]),
+                settled: RefCell::new(vec![]),
+            }
+        }
+    }
+    impl Daemon for Leasing {
+        fn lease(&self) -> Option<Duration> {
+            Some(Duration::from_millis(4500))
+        }
+        fn settle(&self, sid: &str, id: &str, received: bool) {
+            self.settled
+                .borrow_mut()
+                .push((sid.to_string(), id.to_string(), received));
+        }
+        fn browser_url(&self, path: &str) -> String {
+            format!("http://h:1{path}")
+        }
+        fn get(&self, path: &str) -> anyhow::Result<Value> {
+            if path.starts_with("/api/sessions?") {
+                return Ok(json!({"sessions": [
+                    {"id": "S", "harness": "claude", "harness_session_id": "s1"},
+                ]}));
+            }
+            self.takes.borrow_mut().push(path.to_string());
+            if self.fail {
+                bail!("timed out");
+            }
+            let lease = path
+                .split_once("&lease=")
+                .and_then(|(_, r)| r.split('&').next())
+                .filter(|_| self.echo);
+            Ok(json!({"feedback": [{}], "text": "PENDING", "lease": lease}))
+        }
+        fn get_with_timeout(&self, path: &str, _: Duration) -> anyhow::Result<Value> {
+            self.get(path)
+        }
+        fn post(&self, _: &str, _: &Value) -> anyhow::Result<Value> {
+            Ok(json!({"session": {"id": "S"}}))
+        }
+        fn patch(&self, _: &str, _: &Value) -> anyhow::Result<Value> {
+            Ok(json!({}))
+        }
+    }
+
+    /// Each take names a lease of its own and its length; the hook notes
+    /// that it received a take whose answer leased rows, and that it gave
+    /// up one that failed. An answer that leased nothing owes no word.
+    #[test]
+    fn a_hook_takes_under_a_lease_and_notes_what_it_received() {
+        let d = Leasing::new(true, false);
+        let out = prompt("claude", &input("s1"), &d).unwrap();
+        assert!(out.to_line().unwrap().contains("PENDING"));
+        let takes = d.takes.borrow();
+        let (head, id) = takes[0].split_once("&lease=").unwrap();
+        assert_eq!(
+            head,
+            "/api/sessions/S/feedback?tier=prompt_hook&prompt=true"
+        );
+        let id = id.strip_suffix("&lease_ms=4500").unwrap();
+        assert!(clax_core::is_ulid(id), "{id}");
+        assert_eq!(*d.settled.borrow(), [("S".into(), id.into(), true)]);
+
+        let d = Leasing::new(true, true);
+        assert!(stop("claude", &input("s1"), &d).is_err());
+        let settled = d.settled.borrow();
+        assert_eq!(settled.len(), 1);
+        assert_eq!((settled[0].0.as_str(), settled[0].2), ("S", false));
+        assert!(d.takes.borrow()[0].contains(&format!("&lease={}&", settled[0].1)));
+
+        let d = Leasing::new(false, false);
+        session_start("claude", 1, &[], &input("s1"), None, &d).unwrap();
+        assert!(d.settled.borrow().is_empty());
     }
 
     #[test]

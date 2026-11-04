@@ -16,6 +16,13 @@ export const dedupe = (ts: Thread[]): Thread[] => [...new Map(ts.map(t => [t.id,
  * writes): a load's answer may predate them, so they are replayed on top of
  * it, in the order they happened.
  *
+ * A write's answer is a one-thread load begun as the write is sent: the
+ * daemon publishes every change to a thread as an event after it commits,
+ * so an event heard after the write was sent may be newer than the write's
+ * answer (a linked thread's up-send acknowledged before the answer arrived),
+ * and is replayed on top of it. One heard before was published before the
+ * write committed, and the answer replaces it.
+ *
  * Every load and every change takes a ticket from one clock. A whole-list
  * load (`begin`) applies only when no newer list load began; a one-thread
  * load (`beginThread`) applies only when no newer load of that thread began
@@ -47,8 +54,9 @@ export class ThreadSync {
     return this.load("", (a: Thread[]) => () => dedupe(a));
   }
 
-  /** Starts a load of thread `tid` alone; call the result with its answer,
-   * or undefined when it failed. */
+  /** Starts a load of thread `tid` alone, or a write to it (any key no
+   * thread ID takes for a new thread); call the result with its answer, or
+   * undefined when it failed. */
   beginThread(tid: string): (answer: Thread | undefined) => void {
     return this.load(tid, (t: Thread) => ts => upsert(ts, t));
   }

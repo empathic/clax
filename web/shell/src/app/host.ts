@@ -498,6 +498,11 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
   // `clax:hash` has not come back yet: each is the page reporting that move,
   // not a new entry, even after a later `back()` left it.
   let echoes: string[] = [];
+  // The shell's route backs (`clax:back`) in this document. A route report
+  // stamped with an earlier one was made before the page took the latest:
+  // it names a route the shell has left (the page may report on a greeting
+  // the shell asked for just before its back), and is dropped.
+  let backs = 0;
   const postHistory = () => {
     const back = trail.length > 1;
     if (nonce === null || back === toldBack) return;
@@ -517,6 +522,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
    * to, so they leave the trail. */
   const newDocument = () => {
     depth = 0;
+    backs = 0;
     echoes = [];
     trail = trail.filter(e => e.route === 0);
   };
@@ -531,21 +537,25 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
     visit(file, hash);
   };
   /** Moves the frame to the entry before the newest, in place: the shell URL
-   * is replaced and the controller's own back (`popstate`) moves the frame,
-   * to another page without a history entry, or to the fragment, which the
-   * page takes in place. */
+   * is replaced, and either the page goes back to its lower route itself
+   * (`clax:back`), or the controller's own back (`popstate`) moves the
+   * frame, to another page without a history entry, or to the fragment,
+   * which the page takes in place. A route's back is the page's alone: the
+   * controller, whose page and fragment a route does not change, would
+   * otherwise move the frame as well, reloading it while it greets again. */
   const goBack = () => {
     if (trail.length < 2) return;
     const from = trail.at(-1)!;
     trail = trail.slice(0, -1);
     const to = trail.at(-1)!;
     postHistory();
-    if (from.route > to.route) {
+    const routeBack = from.route > to.route;
+    if (routeBack) {
       depth = to.route;
-      if (ctl.gate.open) ctl.send({ type: "clax:back", depth: to.route });
+      if (ctl.gate.open) ctl.send({ type: "clax:back", depth: to.route, seq: ++backs });
     } else if (from.route === to.route && from.file === to.file && from.hash !== to.hash) echoes.push(to.hash);
     setUrl(shellPath(ctl.id, s().pinnedVersion, to.file, ctl.shown()) + appQuery(location.search) + to.hash);
-    win.dispatchEvent(new PopStateEvent("popstate"));
+    if (!routeBack) win.dispatchEvent(new PopStateEvent("popstate"));
   };
   // The latest pick start's element description (the bridge's), by pick ID.
   const picked = new Map<string, PickDesc>();
@@ -779,7 +789,7 @@ export function installHost(win: Window, ctl: ArtifactController): () => void {
           echoes = [];
           visit(file, m.hash);
         }
-      } else if (Number.isInteger(m.depth) && m.depth >= 0) route(file, m.depth, m.hash);
+      } else if (Number.isInteger(m.depth) && m.depth >= 0 && (typeof m.back === "number" ? m.back : 0) === backs) route(file, m.depth, m.hash);
       return;
     }
     if (m?.type === "clax:chrome") {

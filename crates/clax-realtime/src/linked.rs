@@ -136,8 +136,9 @@ impl Linked {
         }
     }
 
-    /// Ends remote `rid`'s backoff now: its task tries again at once (the
-    /// owner's Retry). A local write during an outage only queues.
+    /// Ends remote `rid`'s backoff now: its task tries again at once, its
+    /// backoff started over (the owner's Retry). A local write during an
+    /// outage only queues.
     pub fn retry(&self, rid: &str) {
         let tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(t) = tasks.get(rid) {

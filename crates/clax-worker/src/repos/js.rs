@@ -17,6 +17,7 @@ use super::artifacts::{
 };
 use super::assets::{Objects, Page};
 use super::tokens::{Scope, parse_rfc3339_ms};
+use crate::refused::drain;
 
 fn js_message(e: &JsValue) -> String {
     e.dyn_ref::<js_sys::Error>()
@@ -387,9 +388,10 @@ impl Objects for R2Objects {
 // ── Request bodies ──────────────────────────────────────────────────────────
 
 /// The body of `req`, or `None` once it runs past `limit` bytes, read
-/// through the stream's own reader: every call is caught, and a body
-/// refused part-way is cancelled, so nothing the stream throws escapes
-/// into the module.
+/// through the stream's own reader: every call is caught. A body refused
+/// part-way is read on to its end, kept nowhere, while it ends within
+/// [`crate::refused::REFUSED_READ_BYTES`], and cancelled past that, so
+/// nothing the stream throws escapes into the module.
 pub async fn read_body_capped(
     req: &worker::Request,
     limit: usize,
@@ -409,9 +411,31 @@ pub async fn read_body_capped(
         }
         let chunk = Uint8Array::new(&get(&step, "value"));
         if body.len() + chunk.length() as usize > limit {
-            let _ = call(&reader, "cancel", &[]).await;
+            discard(&reader, body.len() + chunk.length() as usize).await;
             return Ok(None);
         }
         body.extend_from_slice(&chunk.to_vec());
+    }
+}
+
+/// Reads `reader`'s stream, `seen` bytes in, to its end while that comes
+/// within [`crate::refused::REFUSED_READ_BYTES`], dropping every chunk
+/// ([`drain`]); cancels it past that, or once a read fails.
+async fn discard(reader: &JsValue, seen: usize) {
+    let chunks = futures_util::stream::unfold(reader, |reader| async move {
+        let step = match call(reader, "read", &[]).await {
+            Ok(step) => step,
+            Err(e) => return Some((Err(e), reader)),
+        };
+        if get(&step, "done").as_bool().unwrap_or(false) {
+            return None;
+        }
+        let n = get(&get(&step, "value"), "byteLength")
+            .as_f64()
+            .unwrap_or(0.0) as usize;
+        Some((Ok(n), reader))
+    });
+    if !drain(chunks, seen).await {
+        let _ = call(reader, "cancel", &[]).await;
     }
 }

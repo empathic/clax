@@ -28,16 +28,24 @@ impl Drop for Daemon {
 }
 
 impl Daemon {
-    // The child is reaped by `Daemon`'s `Drop`, which the lint cannot see.
-    #[allow(clippy::zombie_processes)]
+    /// [`Daemon::spawn`] with its stdout and stderr appended to
+    /// `dir/daemon.log`.
     fn start(dir: &Path) -> Daemon {
-        let home = dir.join("ax");
-        let _ = std::fs::remove_file(home.join("daemon.json"));
         let log = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(dir.join("daemon.log"))
             .unwrap();
+        Daemon::spawn(dir, log.try_clone().unwrap().into(), log.into())
+    }
+
+    /// A foreground daemon on `dir/ax` with its stdout and stderr as given,
+    /// once its daemon.json names it.
+    // The child is reaped by `Daemon`'s `Drop`, which the lint cannot see.
+    #[allow(clippy::zombie_processes)]
+    fn spawn(dir: &Path, stdout: Stdio, stderr: Stdio) -> Daemon {
+        let home = dir.join("ax");
+        let _ = std::fs::remove_file(home.join("daemon.json"));
         let child = Command::new(crate::common::clax())
             .args(["serve", "--foreground", "--port", "0"])
             .env("CLAX_HOME", &home)
@@ -46,8 +54,8 @@ impl Daemon {
             .env("CLAX_NO_OPEN", "1")
             .env_remove("CLAX_CONFIG_DIR")
             .stdin(Stdio::null())
-            .stdout(log.try_clone().unwrap())
-            .stderr(log)
+            .stdout(stdout)
+            .stderr(stderr)
             .spawn()
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(60);
@@ -135,4 +143,50 @@ fn shutdown_leaves_a_store_call_that_does_not_finish_to_the_exit() {
     let (code, body) = answer(again.send("GET", "/api/artifacts")).unwrap();
     assert_eq!(code, 200, "{body}");
     assert!(!body.contains("\"slow\""), "{body}");
+}
+
+/// A daemon whose stdout and stderr are gone (the terminal or the pipes
+/// that held them closed) goes on answering and stops as asked: a line it
+/// can no longer write is dropped, where reporting the failure on the
+/// closed stderr would panic the thread that logged it.
+#[test]
+fn a_daemon_whose_stdout_and_stderr_closed_logs_without_failing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut d = Daemon::spawn(tmp.path(), Stdio::piped(), Stdio::piped());
+    let child = d.child.as_mut().unwrap();
+    let mut stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+    let stderr = child.stderr.take().unwrap();
+    // Read up to the line saying it listens, then both pipes closed.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        let mut line = String::new();
+        while stdout.read_line(&mut line).is_ok_and(|n| n > 0) {
+            if line.contains("clax daemon listening") {
+                let _ = tx.send(stdout);
+                return;
+            }
+            line.clear();
+        }
+    });
+    let stdout = rx
+        .recv_timeout(Duration::from_secs(120))
+        .expect("no listening line (hang guard)");
+    drop((stdout, stderr));
+    // Ending the owner's browser sessions logs a line at info.
+    let (code, body) = answer(d.send("DELETE", "/api/browser-login")).expect("no answer");
+    assert_eq!(code, 200, "{body}");
+    let (code, body) = answer(d.send("POST", "/api/admin/shutdown")).expect("no answer");
+    assert_eq!(code, 202, "{body}");
+    // The hang guard only: the exit itself comes from the shutdown's bounds.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut child = d.child.take().unwrap();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait());
+    });
+    let status = rx
+        .recv_timeout(Duration::from_secs(300))
+        .expect("the daemon did not exit (hang guard)")
+        .unwrap();
+    assert!(status.success(), "{status}");
 }

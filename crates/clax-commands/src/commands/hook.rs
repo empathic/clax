@@ -55,6 +55,9 @@ const ASK_SETUP_DEADLINE: Duration = Duration::from_secs(2);
 /// ([`HookDaemon::time_left`]), and a remote daemon's clips are fetched
 /// only until it.
 const CLIP_MARGIN: Duration = Duration::from_millis(750);
+/// A take's lease lasts until the hook's deadline plus this: the time its
+/// word on the take ([`HookDaemon::say_received`]) has after the deadline.
+const RECEIPT_TIMEOUT: Duration = Duration::from_millis(500);
 /// Each `ask` daemon request other than the long poll is abandoned after this long.
 const ASK_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
 /// After the setup, `ask` gives up waiting on its worker this long after the
@@ -495,30 +498,66 @@ fn join_attempts<T>(
 /// session with its secret (spec 2026-10-08 §6.8); a hook with no
 /// credential for its session fails, saying which files it looked for,
 /// except the join, which makes the session when none is live.
-struct HookDaemon<'a> {
-    client: &'a Client,
+///
+/// Its takes are leased until its deadline plus [`RECEIPT_TIMEOUT`], and it
+/// keeps its word on each for [`HookDaemon::say_received`].
+struct HookDaemon {
+    client: Client,
     /// When the hook must have printed what it took.
     deadline: Instant,
     git: Option<HookGit>,
     remote: Option<RemoteSession>,
+    /// Each leased take's session, lease ID and whether its answer came.
+    settles: Mutex<Vec<(String, String, bool)>>,
 }
 
-impl<'a> HookDaemon<'a> {
+impl HookDaemon {
     fn new(
-        client: &'a Client,
+        client: Client,
         event: Event,
         input: &HookInput,
         agent: Agent,
         parent_pid: u32,
         deadline: Instant,
-    ) -> HookDaemon<'a> {
+    ) -> HookDaemon {
+        let remote = client
+            .remote()
+            .map(|r| RemoteSession::new(r.sessions.clone(), agent.harness(), input, parent_pid));
         HookDaemon {
             client,
             deadline,
             git: captures_git(event).then(|| HookGit::new(input.cwd.as_deref())),
-            remote: client.remote().map(|r| {
-                RemoteSession::new(r.sessions.clone(), agent.harness(), input, parent_pid)
-            }),
+            remote,
+            settles: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// What is left of the hook's time until its deadline.
+    fn until_deadline(&self) -> Duration {
+        self.deadline.saturating_duration_since(Instant::now())
+    }
+
+    /// Tells the daemon its word on each leased take, once the hook's
+    /// output is `printed` or not: received for an answer that came and
+    /// was printed, not received for any other, so the daemon hands those
+    /// rows over again. The words are sent while the leases last (until
+    /// the deadline plus [`RECEIPT_TIMEOUT`]); one that does not arrive by
+    /// then leaves the rows to the lease's end, when they are handed over
+    /// again.
+    fn say_received(&self, printed: bool) {
+        let settles = std::mem::take(&mut *self.settles.lock().unwrap_or_else(|e| e.into_inner()));
+        let leased_until = self.deadline + RECEIPT_TIMEOUT;
+        for (sid, id, received) in settles {
+            let left = leased_until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return;
+            }
+            let _ = self.send(
+                reqwest::Method::POST,
+                &format!("/api/sessions/{sid}/feedback/receipt"),
+                Some(&serde_json::json!({"lease": id, "received": received && printed})),
+                Some(left),
+            );
         }
     }
 
@@ -626,10 +665,7 @@ impl<'a> HookDaemon<'a> {
                 clax_core::clips::store(&dir, aid, tid, &bytes)
                     .map_err(|e| format!("could not be cached: {e}"))
             });
-        let within = self
-            .deadline
-            .saturating_duration_since(Instant::now())
-            .saturating_sub(CLIP_MARGIN);
+        let within = self.until_deadline().saturating_sub(CLIP_MARGIN);
         let got = clax_core::clips::fetch_within(&refs, within, fetch);
         clax_core::clips::rewrite_text(&text, &mut |aid, tid| {
             got.get(&(aid.to_string(), tid.to_string()))
@@ -669,13 +705,18 @@ fn wait_for_credential(
     }
 }
 
-impl Daemon for HookDaemon<'_> {
+impl Daemon for HookDaemon {
     fn time_left(&self) -> Option<Duration> {
-        Some(
-            self.deadline
-                .saturating_duration_since(Instant::now())
-                .saturating_sub(CLIP_MARGIN),
-        )
+        Some(self.until_deadline().saturating_sub(CLIP_MARGIN))
+    }
+    fn lease(&self) -> Option<Duration> {
+        Some(self.until_deadline() + RECEIPT_TIMEOUT)
+    }
+    fn settle(&self, sid: &str, id: &str, received: bool) {
+        self.settles
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((sid.to_string(), id.to_string(), received));
     }
     fn browser_url(&self, path: &str) -> String {
         self.client.browser_url(path)
@@ -758,19 +799,22 @@ pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
             started + deadline,
         ));
     });
-    let (out, error) = match rx.recv_timeout(deadline) {
+    let (out, error, daemon) = match rx.recv_timeout(deadline) {
         // Stood down: logged by `handle`, nothing to print or log here.
         Ok(Ok(None)) => std::process::exit(0),
-        Ok(Ok(Some(out))) => (out, None),
+        Ok(Ok(Some((out, daemon)))) => (out, None, daemon),
         // `asked` carries the terminal's answers: its log keeps only the
         // error code, never a message that could quote them.
-        Ok(Err(e)) if matches!(event, Event::Asked) => {
-            (HookOutput::none(), Some(error_code(&format!("{e:#}"))))
-        }
-        Ok(Err(e)) => (HookOutput::none(), Some(format!("{e:#}"))),
+        Ok(Err(e)) if matches!(event, Event::Asked) => (
+            HookOutput::none(),
+            Some(error_code(&format!("{e:#}"))),
+            None,
+        ),
+        Ok(Err(e)) => (HookOutput::none(), Some(format!("{e:#}")), None),
         Err(_) => (
             HookOutput::none(),
             Some(format!("timed out after {deadline:?}")),
+            None,
         ),
     };
     let notice = notice_rx.and_then(|rx| {
@@ -782,11 +826,16 @@ pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         Some(n) => out.with_system_message(&n.text),
         None => out,
     };
-    if let Some(line) = out.to_line()
-        && writeln!(std::io::stdout(), "{line}").is_ok()
-        && let Some(n) = &notice
-    {
+    let printed = out.to_line().is_some_and(|line| {
+        let mut stdout = std::io::stdout();
+        writeln!(stdout, "{line}").is_ok() && stdout.flush().is_ok()
+    });
+    if printed && let Some(n) = &notice {
         n.record();
+    }
+    // What its takes handed over stays delivered only once printed.
+    if let Some(d) = &daemon {
+        d.say_received(printed);
     }
     if let Some(e) = &error {
         eprintln!("clax hook: {e}");
@@ -1015,14 +1064,16 @@ fn wake_ledger(home: &Home, agent: Agent, input: &HookInput) -> Option<std::path
     )
 }
 
-/// Handles one hook run; `None` means it stood down.
+/// Handles one hook run: its output, with the daemon it talked to, if any,
+/// which still owes its word on what its takes handed over
+/// ([`HookDaemon::say_received`]); `None` when it stood down.
 fn handle(
     agent: Agent,
     event: Event,
     parent_pid: u32,
     home: &Home,
     deadline: Instant,
-) -> anyhow::Result<Option<HookOutput>> {
+) -> anyhow::Result<Option<(HookOutput, Option<HookDaemon>)>> {
     let mut stdin = String::new();
     let _ = std::io::stdin().read_to_string(&mut stdin);
     let input = HookInput::parse(&stdin);
@@ -1038,14 +1089,14 @@ fn handle(
     // prompt_hook request marks comments delivered, so Grok's prompt hook
     // does nothing (the plugin does not wire it).
     if matches!((agent, event), (Agent::Grok, Event::Prompt)) {
-        return Ok(Some(HookOutput::none()));
+        return Ok(Some((HookOutput::none(), None)));
     }
     let client = Client::discover(home)
         .ok_or_else(|| anyhow::anyhow!("no clax daemon is running"))?
         .agent_channel()
         .with_timeout(request_timeout(agent, event, |k| std::env::var(k).ok()))
         .with_via(VIA);
-    let client = HookDaemon::new(&client, event, &input, agent, parent_pid, deadline);
+    let client = HookDaemon::new(client, event, &input, agent, parent_pid, deadline);
     // Codex's `codex queue` finds its app-server socket under CODEX_HOME, which
     // the daemon's own environment may lack.
     let codex_home = std::env::var("CODEX_HOME")
@@ -1117,7 +1168,7 @@ fn handle(
         // `ask` runs in `run_ask`; neither is wired for other harnesses.
         Event::Ask | Event::Asked => Ok(HookOutput::none()),
     };
-    out.map(Some)
+    out.map(|o| Some((o, Some(client))))
 }
 
 /// What `run_ask`'s worker reports.
@@ -1135,7 +1186,7 @@ enum AskMsg {
 
 /// A [`Daemon`] that reports when the long poll starts.
 struct Reporting<'a> {
-    client: &'a HookDaemon<'a>,
+    client: &'a HookDaemon,
     tx: mpsc::Sender<AskMsg>,
 }
 
@@ -1228,7 +1279,7 @@ fn ask_worker(agent: Agent, home: &Home, tx: mpsc::Sender<AskMsg>) -> AskMsg {
         .with_timeout(ASK_REQUEST_TIMEOUT)
         .with_via(VIA);
     let client = HookDaemon::new(
-        &client,
+        client,
         Event::Ask,
         &input,
         agent,
@@ -1245,6 +1296,195 @@ fn ask_worker(agent: Agent, home: &Home, tx: mpsc::Sender<AskMsg>) -> AskMsg {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clax_core::working::ManualClock;
+    use clax_testkit::{HANG, TestServer};
+    use std::sync::Arc;
+
+    /// A test daemon whose store reads a clock the test moves, with
+    /// session `h1` sent one comment ([`COMMENT`]), and the hooks of that
+    /// session talking to it.
+    struct Leasing {
+        ts: TestServer,
+        clock: Arc<ManualClock>,
+        sid: String,
+        /// Dropped last: the daemon runs on it.
+        rt: tokio::runtime::Runtime,
+    }
+
+    const COMMENT: &str = "Leased?";
+
+    /// The deadline of each hook these tests run: long enough that its
+    /// takes are always made. A hang guard, not a budget: a held take is
+    /// given up by its own bound ([`events::START_FEEDBACK_TIMEOUT`]).
+    const DEADLINE: Duration = Duration::from_secs(30);
+
+    /// Longer than any lease a hook with [`DEADLINE`] takes.
+    const PAST_THE_LEASE: i64 = 31;
+
+    impl Leasing {
+        fn new() -> Leasing {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap();
+            let clock = Arc::new(ManualClock::at("2026-10-01T12:00:00Z"));
+            let (ts, sid) = rt.block_on(async {
+                let ts = TestServer::spawn_with_clock(clock.clone()).await;
+                let sid = ts.register_session("claude", "h1").await["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string();
+                let a = ts.publish_as(&sid, "T", "<h2>x</h2>").await;
+                let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+                let t = ts.thread(&aid, 1, COMMENT).await;
+                ts.send_thread(&aid, t["id"].as_str().unwrap()).await;
+                (ts, sid)
+            });
+            clax_core::daemon::write_daemon_info(
+                &ts.home,
+                &clax_core::daemon::DaemonInfo {
+                    port: ts.addr.port(),
+                    pid: std::process::id(),
+                    token: ts.token.clone(),
+                    started_at: ts.store.now(),
+                    bind: "127.0.0.1".into(),
+                    version: env!("CARGO_PKG_VERSION").into(),
+                    exe: None,
+                    commit: None,
+                },
+            )
+            .unwrap();
+            Leasing { ts, clock, sid, rt }
+        }
+
+        /// The daemon as `event`'s hook of session `h1` talks to it, its
+        /// deadline [`DEADLINE`] from now.
+        fn hook(&self, event: Event) -> HookDaemon {
+            let client = Client::discover(&self.ts.home)
+                .unwrap()
+                .agent_channel()
+                .with_timeout(HANG)
+                .with_via(VIA);
+            HookDaemon::new(
+                client,
+                event,
+                &input(),
+                Agent::Claude,
+                1,
+                Instant::now() + DEADLINE,
+            )
+        }
+
+        /// What a prompt hook prints now, its word on its take said as
+        /// once printed.
+        fn prompt(&self) -> String {
+            let d = self.hook(Event::Prompt);
+            let out = events::prompt("claude", &input(), &d).unwrap();
+            d.say_received(true);
+            out.to_line().unwrap_or_default()
+        }
+
+        /// The lease the comment is held under, if any.
+        fn leased(&self) -> Option<String> {
+            let db = rusqlite::Connection::open(self.ts.home.db_path()).unwrap();
+            db.query_row("SELECT lease_id FROM feedback", [], |r| r.get(0))
+                .unwrap()
+        }
+
+        /// A session-start hook that gave its take up once its bound passed
+        /// while the daemon, which had taken the comment under the hook's
+        /// lease, held the answer. What it would print, and its daemon, its
+        /// word on its take not yet said.
+        ///
+        /// A run whose hook gave up before its take reached the daemon
+        /// took nothing under its own lease, and is run again until one
+        /// gives up after the take. A take of such a run that reached the
+        /// daemon later holds the comment under that run's lease: the
+        /// clock is moved past it, so the next run's take returns it first.
+        fn given_up_start(&self) -> (String, HookDaemon) {
+            let started = Instant::now();
+            loop {
+                if self.leased().is_some() {
+                    self.clock.advance(PAST_THE_LEASE);
+                }
+                self.rt.block_on(self.ts.hold_feedback(&self.sid, true));
+                let d = self.hook(Event::SessionStart);
+                let run = std::thread::spawn(move || {
+                    let out = events::session_start("claude", 1, &[], &input(), None, &d).unwrap();
+                    (out.to_line().unwrap(), d)
+                });
+                let (start, d) = run.join().unwrap();
+                // No later poll is held. The held one, if any, was dropped
+                // with the connection its hook closed.
+                self.rt.block_on(self.ts.hold_feedback(&self.sid, false));
+                let given_up = d
+                    .settles
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|(_, _, received)| !received)
+                    .map(|(_, id, _)| id.clone());
+                if given_up.is_some() && given_up == self.leased() {
+                    return (start, d);
+                }
+                assert!(
+                    started.elapsed() < HANG,
+                    "no hook gave its take up after the daemon took it (hang guard)"
+                );
+            }
+        }
+    }
+
+    fn input() -> HookInput {
+        HookInput::parse(r#"{"session_id":"h1","cwd":"/w"}"#)
+    }
+
+    /// A session-start hook gives its take up while the daemon, which took
+    /// the comment, has not answered. Its word, not received, hands the
+    /// comment to the very next hook, once.
+    #[test]
+    fn a_take_given_up_after_its_bound_hands_its_comment_to_the_next_hook() {
+        let l = Leasing::new();
+        let (start, d) = l.given_up_start();
+        assert!(!start.contains(COMMENT), "{start}");
+        d.say_received(true);
+        let prompt = l.prompt();
+        assert!(prompt.contains(COMMENT), "{prompt}");
+        assert!(!l.prompt().contains(COMMENT), "handed over once");
+    }
+
+    /// A hook that gave its take up and never said so (it was stopped)
+    /// holds the comment only for its lease, on the daemon's clock: then
+    /// the next take gets it.
+    #[test]
+    fn a_take_whose_hook_never_says_lapses_back_to_pending() {
+        let l = Leasing::new();
+        let (start, _unsaid) = l.given_up_start();
+        assert!(!start.contains(COMMENT), "{start}");
+        let prompt = l.prompt();
+        assert!(!prompt.contains(COMMENT), "still leased: {prompt}");
+        l.clock.advance(PAST_THE_LEASE);
+        let prompt = l.prompt();
+        assert!(prompt.contains(COMMENT), "{prompt}");
+    }
+
+    /// A take the hook printed stays delivered once it says so, past its
+    /// lease; one it could not print is handed over again.
+    #[test]
+    fn a_printed_take_stays_delivered_and_an_unprinted_one_does_not() {
+        let l = Leasing::new();
+        let printed = |received| {
+            let d = l.hook(Event::Prompt);
+            let out = events::prompt("claude", &input(), &d).unwrap();
+            d.say_received(received);
+            out.to_line().unwrap_or_default()
+        };
+        assert!(printed(false).contains(COMMENT));
+        assert!(printed(true).contains(COMMENT), "handed over again");
+        l.clock.advance(PAST_THE_LEASE);
+        assert!(!l.prompt().contains(COMMENT));
+    }
 
     /// Command lines as `ps -o args=` showed them for a Codex TUI, `codex
     /// exec` and the app server.

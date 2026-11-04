@@ -29,6 +29,45 @@ pub struct TakeFeedback {
     pub include_resends: bool,
 }
 
+/// A hook's lease on what its take hands over (docs/contract.md, "Leased
+/// takes"): the hook's own ID, held for `ms` by the store's clock. The
+/// feedback rows the take delivers first and the question answers it takes
+/// carry it in `lease_id` and `lease_until` until the hook's word
+/// ([`Store::settle_lease`]); a lease whose time is up, or whose session
+/// ends, is returned to pending ([`Store::take_feedback_leased`],
+/// [`Store::end_session`](crate::Store)).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TakeLease {
+    pub id: String,
+    pub ms: u64,
+}
+
+/// Which of a session's leases [`Store::return_leases_in`] returns.
+#[derive(Clone, Copy)]
+pub(crate) enum Leases<'a> {
+    /// Those whose time is up at this store time.
+    LapsedBy(&'a str),
+    /// The one with this ID.
+    Named(&'a str),
+    /// Every one (the session ended).
+    All,
+}
+
+impl Leases<'_> {
+    /// The condition on a table's `lease_id` and `lease_until`, its
+    /// parameter `?2`.
+    fn condition(self) -> (&'static str, Option<String>) {
+        match self {
+            Leases::LapsedBy(now) => (
+                "lease_id IS NOT NULL AND lease_until <= ?2",
+                Some(now.to_string()),
+            ),
+            Leases::Named(id) => ("lease_id = ?2", Some(id.to_string())),
+            Leases::All => ("lease_id IS NOT NULL AND ?2 IS NULL", None),
+        }
+    }
+}
+
 /// `secs_ago` seconds before `now`, as the store writes times.
 fn ts(now: chrono::DateTime<chrono::Utc>, secs_ago: i64) -> String {
     clax_core::time::stamp(now - chrono::Duration::seconds(secs_ago))
@@ -547,6 +586,9 @@ pub struct Taken {
     /// the take's transaction began: nothing was taken; refresh it and
     /// take again.
     pub stale: bool,
+    /// Rows it delivered first are held under its lease
+    /// ([`Store::take_feedback_leased`]).
+    pub leased: bool,
 }
 
 /// What [`Store::take_notices`] announced, or `stale` (nothing announced)
@@ -1488,7 +1530,30 @@ impl Store {
         vis: &Visibility,
         readable: Reach<'_>,
     ) -> Result<Taken> {
+        self.take_feedback_leased(ctx, q, browser_base, vis, readable, None)
+    }
+
+    /// [`Store::take_feedback_readable`], with a hook's `lease`. In its
+    /// transaction it first returns the session's leases whose time is up
+    /// to pending ([`Store::return_leases_in`]), so it may hand their rows
+    /// over itself. With a lease, each row it delivers first carries the
+    /// lease until `lease.ms` from now, and the result is `leased`.
+    pub fn take_feedback_leased(
+        &self,
+        ctx: &AuditCtx,
+        q: &TakeFeedback,
+        browser_base: &str,
+        vis: &Visibility,
+        readable: Reach<'_>,
+        lease: Option<&TakeLease>,
+    ) -> Result<Taken> {
         let cutoff = ts(self.now_utc(), Self::RESEND_AFTER_SECS);
+        let lease_until = lease.map(|l| {
+            clax_core::time::stamp(
+                self.now_utc()
+                    + chrono::Duration::milliseconds(i64::try_from(l.ms).unwrap_or(i64::MAX)),
+            )
+        });
         let resends = q.include_resends && q.tier.resends();
         let now = self.now();
         let base = browser_base.trim_end_matches('/').to_string();
@@ -1496,6 +1561,8 @@ impl Store {
             if stale_view(self, vis) {
                 return Ok(None);
             }
+            let returned =
+                self.return_leases_in(tx, &AuditCtx::DAEMON, &q.session_id, Leases::LapsedBy(&now), "lease_lapsed")?;
             let remote: bool = tx
                 .query_row(
                     "SELECT grant_id IS NOT NULL FROM sessions WHERE id = ?1",
@@ -1678,6 +1745,7 @@ impl Store {
                 });
                 good.push((p, anchor_shown.then_some(anchor), clip_path, live, withheld));
             }
+            let mut leased = false;
             for (p, _, _, _, _) in &good {
                 if p.delivered {
                     tx.execute(
@@ -1691,6 +1759,13 @@ impl Store {
                             acknowledged_at = CASE WHEN ?4 THEN ?2 ELSE acknowledged_at END WHERE id = ?1",
                         params![p.id, now, q.tier.as_str(), q.tier.in_band()],
                     )?;
+                    if let (Some(l), Some(until)) = (lease, &lease_until) {
+                        tx.execute(
+                            "UPDATE feedback SET lease_id = ?2, lease_until = ?3 WHERE id = ?1",
+                            params![p.id, l.id, until],
+                        )?;
+                        leased = true;
+                    }
                     let rec = delivered_record(
                         &now,
                         &p.artifact_id,
@@ -1707,7 +1782,7 @@ impl Store {
             // (M23, O8); a held row makes none, and neither does a queue's
             // wake: a report is taken by its claim, and every session the
             // queue woke keeps its wake.
-            let mut took = Touched::default();
+            let mut took = returned;
             let mut first: Vec<(&str, Vec<String>)> = Vec::new();
             for (p, _, _, _, _) in &good {
                 if p.delivered || p.queue_event.is_some() {
@@ -1732,9 +1807,9 @@ impl Store {
                 )?;
             }
             let placeholders = held.finish(&mut sight, vis, &now)?;
-            Ok(Some((good, placeholders, took)))
+            Ok(Some((good, placeholders, took, leased)))
         })?;
-        let Some((pending, placeholders, took)) = taken else {
+        let Some((pending, placeholders, took, leased)) = taken else {
             return Ok(Taken {
                 stale: true,
                 ..Taken::default()
@@ -1818,51 +1893,149 @@ impl Store {
             placeholders,
             touched,
             stale: false,
+            leased,
         })
     }
 
-    /// Returns `queue` hand-overs that were not confirmed to undelivered, so
-    /// another tier can deliver them, and marks them push-failed: `queue` does
-    /// not take them again and [`Store::feedback_state`] reports them waiting
-    /// on the in-band tiers, until the row is retargeted to another session.
-    /// Each released row is recorded as `feedback.release {feedback_id,
-    /// tier: "queue", reason}` under `ctx` (the target in the `session_id`
-    /// column), in the release's transaction, so its later delivery by
-    /// another tier follows a recorded release.
+    /// Session `sid`'s leases that `which` names, returned to pending in
+    /// `tx`: each leased feedback row still unacknowledged is undelivered
+    /// again ([`Store::release_feedback`]'s rules, recorded as
+    /// `feedback.release` with `reason` under `ctx`), each leased question
+    /// answer untaken; every lease named is cleared.
+    pub(crate) fn return_leases_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        sid: &str,
+        which: Leases<'_>,
+        reason: &str,
+    ) -> Result<Touched> {
+        let (cond, arg) = which.condition();
+        let rows: Vec<(String, Option<String>)> = {
+            let mut stmt = tx.prepare(&format!(
+                "SELECT id, delivery_tier FROM feedback WHERE target_session_id = ?1 AND {cond}"
+            ))?;
+            stmt.query_map(params![sid, arg], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut touched = Touched::default();
+        for (id, tier) in rows {
+            if let Some(tier) = tier.as_deref().and_then(Tier::parse) {
+                self.release_in(tx, ctx, tier, &id, reason, &mut touched)?;
+            }
+        }
+        tx.execute(
+            &format!(
+                "UPDATE feedback SET lease_id = NULL, lease_until = NULL
+                 WHERE target_session_id = ?1 AND {cond}"
+            ),
+            params![sid, arg],
+        )?;
+        tx.execute(
+            &format!(
+                "UPDATE questions SET taken_at = NULL, lease_id = NULL, lease_until = NULL
+                 WHERE session_id = ?1 AND {cond}"
+            ),
+            params![sid, arg],
+        )?;
+        Ok(touched)
+    }
+
+    /// A hook's word on its take of session `sid` under lease `id`.
+    /// Received: what the lease holds stays delivered (and taken), and the
+    /// lease is cleared. Not received: it is returned to pending now, each
+    /// row recorded as `feedback.release` with reason `not_received` under
+    /// `ctx`. A lease that holds nothing (returned already, or never
+    /// leased) changes nothing.
+    pub fn settle_lease(
+        &self,
+        ctx: &AuditCtx,
+        sid: &str,
+        id: &str,
+        received: bool,
+    ) -> Result<Touched> {
+        self.with_tx(|tx| {
+            if !received {
+                return self.return_leases_in(tx, ctx, sid, Leases::Named(id), "not_received");
+            }
+            tx.execute(
+                "UPDATE feedback SET lease_id = NULL, lease_until = NULL
+                 WHERE target_session_id = ?1 AND lease_id = ?2",
+                params![sid, id],
+            )?;
+            tx.execute(
+                "UPDATE questions SET lease_id = NULL, lease_until = NULL
+                 WHERE session_id = ?1 AND lease_id = ?2",
+                params![sid, id],
+            )?;
+            Ok(Touched::default())
+        })
+    }
+
+    /// Returns `tier`'s hand-overs that were not confirmed to undelivered,
+    /// so a later take delivers them: each of `ids` that `tier` delivered,
+    /// never resent and not acknowledged. A `queue` claim that failed is
+    /// also marked push-failed: `queue` does not take it again and
+    /// [`Store::feedback_state`] reports it waiting on the in-band tiers,
+    /// until the row is retargeted to another session. A hook's take whose
+    /// hook did not receive it (`stop_hook`, `prompt_hook`) is pending
+    /// again for every tier. Each released row is recorded as
+    /// `feedback.release {feedback_id, tier, reason}` under `ctx` (the
+    /// target in the `session_id` column), in the release's transaction,
+    /// so its later delivery follows a recorded release.
     pub fn release_feedback(
         &self,
         ctx: &AuditCtx,
+        tier: Tier,
         ids: &[String],
         reason: &str,
     ) -> Result<Touched> {
         let mut touched = Touched::default();
-        let now = self.now();
         self.with_tx(|tx| {
             for id in ids {
-                let n = tx.execute(
-                    "UPDATE feedback SET delivered_at = NULL, delivery_tier = NULL, last_sent_at = NULL, push_failed_at = ?2
-                     WHERE id = ?1 AND delivery_tier = 'queue' AND acknowledged_at IS NULL",
-                    params![id, now],
-                )?;
-                if n > 0 {
-                    let (aid, tid, target): (String, String, Option<String>) = tx.query_row(
-                        "SELECT t.artifact_id, f.thread_id, f.target_session_id FROM feedback f JOIN threads t ON t.id = f.thread_id WHERE f.id = ?1",
-                        params![id],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                    )?;
-                    let mut rec = thread_record(AuditKind::FeedbackRelease, &now, &aid, &tid)
-                        .with("feedback_id", id.as_str())
-                        .with("tier", Tier::Queue.as_str())
-                        .with("reason", reason);
-                    rec.ids.session = target.clone();
-                    self.record_audit(tx, ctx, rec)?;
-                    touched.threads.insert((aid, tid));
-                    touched.targets.extend(target);
-                }
+                self.release_in(tx, ctx, tier, id, reason, &mut touched)?;
             }
             Ok(())
         })?;
         Ok(touched)
+    }
+
+    /// [`Store::release_feedback`] of one row, `id`, in `tx`, adding what
+    /// it changed to `touched`. Its lease, if any, goes with it.
+    fn release_in(
+        &self,
+        tx: &Transaction<'_>,
+        ctx: &AuditCtx,
+        tier: Tier,
+        id: &str,
+        reason: &str,
+        touched: &mut Touched,
+    ) -> Result<()> {
+        let now = self.now();
+        let n = tx.execute(
+            "UPDATE feedback SET delivered_at = NULL, delivery_tier = NULL, last_sent_at = NULL,
+                lease_id = NULL, lease_until = NULL,
+                push_failed_at = CASE WHEN ?3 = 'queue' THEN ?2 ELSE push_failed_at END
+             WHERE id = ?1 AND delivery_tier = ?3 AND resend_count = 0 AND acknowledged_at IS NULL",
+            params![id, now, tier.as_str()],
+        )?;
+        if n == 0 {
+            return Ok(());
+        }
+        let (aid, tid, target): (String, String, Option<String>) = tx.query_row(
+            "SELECT t.artifact_id, f.thread_id, f.target_session_id FROM feedback f JOIN threads t ON t.id = f.thread_id WHERE f.id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        let mut rec = thread_record(AuditKind::FeedbackRelease, &now, &aid, &tid)
+            .with("feedback_id", id)
+            .with("tier", tier.as_str())
+            .with("reason", reason);
+        rec.ids.session = target.clone();
+        self.record_audit(tx, ctx, rec)?;
+        touched.threads.insert((aid, tid));
+        touched.targets.extend(target);
+        Ok(())
     }
 
     /// Records that `session_id` has seen the threads (it read, replied to, or
@@ -2914,6 +3087,8 @@ mod tests {
     use crate::threads::{AUTHOR_AGENT, AUTHOR_VIEWER, NewComment, NewThread};
     use clax_core::ArtifactId;
     use clax_core::feedback::{FeedbackPhase, QueueEvent, Tier};
+    use clax_core::working::ManualClock;
+    use std::sync::Arc;
 
     const BASE: &str = "http://localhost:7480";
 
@@ -4375,14 +4550,147 @@ mod tests {
         st.send_to_agent(DAEMON, &tid).unwrap();
         let claimed = take(&st, &owner, Tier::Queue);
         assert_eq!(claimed.len(), 1);
-        st.release_feedback(DAEMON, &[claimed[0].feedback_id.clone()], "test")
-            .unwrap();
+        st.release_feedback(
+            DAEMON,
+            Tier::Queue,
+            &[claimed[0].feedback_id.clone()],
+            "test",
+        )
+        .unwrap();
         let row = &st.feedback_rows(&tid).unwrap()[0];
         assert_eq!(
             (row.delivered_at.clone(), row.delivery_tier.clone()),
             (None, None)
         );
         assert_eq!(take(&st, &owner, Tier::Piggyback).len(), 1);
+    }
+
+    /// A hook's take released goes back to pending for every tier, its
+    /// release recorded; a release names only rows its tier delivered.
+    #[test]
+    fn release_returns_a_hooks_take_to_pending() {
+        let (_d, st) = store();
+        let owner = session(&st, "claude", "c1");
+        let aid = artifact(&st, Some(&owner));
+        st.ensure_watch(DAEMON, &owner, &aid).unwrap();
+        let tid = thread(&st, &aid, "hi");
+        st.send_to_agent(DAEMON, &tid).unwrap();
+        let taken = take(&st, &owner, Tier::PromptHook);
+        let ids = vec![taken[0].feedback_id.clone()];
+        st.release_feedback(DAEMON, Tier::StopHook, &ids, "test")
+            .unwrap();
+        assert!(
+            take(&st, &owner, Tier::PromptHook).is_empty(),
+            "another tier's release leaves the row delivered"
+        );
+        let touched = st
+            .release_feedback(DAEMON, Tier::PromptHook, &ids, "not_received")
+            .unwrap();
+        assert!(touched.threads.iter().any(|(_, t)| *t == tid));
+        let s = st.feedback_state(&tid, true).unwrap().unwrap();
+        assert_eq!(s.state, FeedbackPhase::Sent);
+        let again = take(&st, &owner, Tier::PromptHook);
+        assert_eq!(again.len(), 1);
+        assert!(!again[0].resent, "handed over as new");
+        let released: i64 = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT COUNT(*) FROM audit_events WHERE kind = 'feedback.release'
+                       AND json_extract(body, '$.tier') = 'prompt_hook'
+                       AND json_extract(body, '$.reason') = 'not_received'",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(released, 1);
+    }
+
+    /// A store on `home` reading `clock`, and its owner session with one
+    /// comment sent to it: (store, session, thread).
+    fn leasing(home: &clax_core::Home, clock: &Arc<ManualClock>) -> (Store, String, String) {
+        let st = Store::open_with_clock(home, clock.clone()).unwrap();
+        let owner = session(&st, "claude", "c1");
+        let aid = artifact(&st, Some(&owner));
+        st.ensure_watch(DAEMON, &owner, &aid).unwrap();
+        let tid = thread(&st, &aid, "hi");
+        st.send_to_agent(DAEMON, &tid).unwrap();
+        (st, owner, tid)
+    }
+
+    /// `sid`'s take at `tier`, under `lease` when given.
+    fn take_leased(st: &Store, sid: &str, tier: Tier, lease: Option<&str>) -> Taken {
+        let q = TakeFeedback {
+            session_id: sid.into(),
+            tier,
+            artifact_id: None,
+            include_resends: true,
+        };
+        let lease = lease.map(|id| TakeLease {
+            id: id.into(),
+            ms: 5000,
+        });
+        st.take_feedback_leased(
+            DAEMON,
+            &q,
+            BASE,
+            &Visibility::all(),
+            Reach::ALL,
+            lease.as_ref(),
+        )
+        .unwrap()
+    }
+
+    /// A lease is kept in the database: a store reopened while it holds
+    /// rows hands them over again once its time is up, not before.
+    #[test]
+    fn a_lease_outlives_a_restart_and_lapses_back_to_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = clax_core::Home::at(dir.path().join("ax"));
+        let clock = Arc::new(ManualClock::at("2026-11-03T10:00:00Z"));
+        let (st, owner, tid) = leasing(&home, &clock);
+        let first = take_leased(&st, &owner, Tier::PromptHook, Some("a"));
+        assert!(first.leased && first.items.len() == 1);
+        drop(st);
+        let st = Store::open_with_clock(&home, clock.clone()).unwrap();
+        clock.advance(4);
+        assert!(
+            take_leased(&st, &owner, Tier::Piggyback, None)
+                .items
+                .is_empty()
+        );
+        clock.advance(1);
+        let again = take_leased(&st, &owner, Tier::Piggyback, None);
+        assert_eq!(again.items.len(), 1);
+        assert!(!again.items[0].resent, "handed over as new");
+        assert!(again.touched.threads.iter().any(|(_, t)| *t == tid));
+        // Received, a lease is gone: nothing comes back.
+        let (st2, owner2, _) = leasing(&clax_core::Home::at(dir.path().join("bx")), &clock);
+        take_leased(&st2, &owner2, Tier::PromptHook, Some("b"));
+        st2.settle_lease(DAEMON, &owner2, "b", true).unwrap();
+        clock.advance(60);
+        assert!(
+            take_leased(&st2, &owner2, Tier::Piggyback, None)
+                .items
+                .is_empty()
+        );
+    }
+
+    /// A session that ends while a lease holds its rows releases them as
+    /// rows never handed over: untargeted, for the next session.
+    #[test]
+    fn a_session_ending_mid_lease_releases_its_leased_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let clock = Arc::new(ManualClock::at("2026-11-03T10:00:00Z"));
+        let (st, owner, tid) = leasing(&clax_core::Home::at(dir.path().join("ax")), &clock);
+        assert!(take_leased(&st, &owner, Tier::StopHook, Some("a")).leased);
+        st.end_session(DAEMON, &owner).unwrap();
+        let row = &st.feedback_rows(&tid).unwrap()[0];
+        assert_eq!(
+            (row.delivered_at.clone(), row.target_session_id.clone()),
+            (None, None),
+            "pending, untargeted"
+        );
     }
 
     #[test]
@@ -4398,8 +4706,13 @@ mod tests {
             Some(Tier::Queue)
         );
         let claimed = take(&st, &owner, Tier::Queue);
-        st.release_feedback(DAEMON, &[claimed[0].feedback_id.clone()], "test")
-            .unwrap();
+        st.release_feedback(
+            DAEMON,
+            Tier::Queue,
+            &[claimed[0].feedback_id.clone()],
+            "test",
+        )
+        .unwrap();
         let s = st.feedback_state(&tid, true).unwrap().unwrap();
         assert_eq!(
             (s.state, s.tier),

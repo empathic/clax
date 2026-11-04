@@ -434,10 +434,21 @@ show();
   await expect.poll(back).toBe(false);
   await f.locator("#go").click();
   await expect.poll(back).toBe(true);
-  // Back to where the page loaded, then out of the app.
-  for (let i = 0; i < 10 && await back(); i++) await host(page, "back()");
+  // Back to where the page loaded: one press, in the same document (what its
+  // window holds is kept), and the history says there is nothing before.
+  const routes = () => page.evaluate(() => (window as unknown as { claxMsgs: { type: string; depth?: number }[] }).claxMsgs.filter(m => m.type === "clax:route").map(m => m.depth));
+  const heard = (await routes()).length;
+  await f.evaluate(() => { (window as unknown as { kept?: boolean }).kept = true; });
+  await host(page, "back()");
   await expect(view).toHaveText(start!);
   await expect.poll(back).toBe(false);
+  // A fragment the page moves to afterwards reaches the shell after every
+  // route the page reported since the press: each was the start's, so the
+  // history never again had an entry before the start.
+  await f.evaluate(() => { location.hash = "#fence"; });
+  await expect.poll(() => page.evaluate(() => (window as unknown as { claxMsgs: { type: string; hash?: string }[] }).claxMsgs.some(m => m.type === "clax:hash" && m.hash === "#fence"))).toBe(true);
+  expect((await routes()).slice(heard).filter(depth => depth !== 0)).toEqual([]);
+  expect(await f.evaluate(() => (window as unknown as { kept?: boolean }).kept)).toBe(true);
 });
 
 

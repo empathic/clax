@@ -297,7 +297,7 @@ pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
                 let error = outcome.failure();
                 if let Some(reason) = &error {
                     tracing::warn!(session = %sid, reason = %reason, "codex queue failed; leaving the rows to the other tiers");
-                    match store.release_feedback(&clax_core::audit::AuditCtx::DAEMON, &ids, reason) {
+                    match store.release_feedback(&clax_core::audit::AuditCtx::DAEMON, Tier::Queue, &ids, reason) {
                         Ok(t) => touched.merge(t),
                         Err(e) => tracing::warn!(error = %e, "releasing feedback failed"),
                     }

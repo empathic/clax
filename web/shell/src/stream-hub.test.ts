@@ -231,6 +231,29 @@ describe("the stream hub", () => {
     expect(net.conns).toHaveLength(2);
   });
 
+  it("reopens for no ask while the stream is the owner's browser's, at either level", async () => {
+    hub.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
+    await tick();
+    // Asked while the first stream opens; it is opened as the owner (a
+    // browser that sends the token itself), which no ask changes.
+    hub.receive("t1", { t: "reconnect", caller: "u_1false" });
+    net.ready(net.conns[0], S1, false, [], { level: "owner", viewer: null });
+    await tick();
+    expect(net.conns).toHaveLength(1);
+    for (const caller of ["u_1true", "admin", "u_2false"]) hub.receive("t1", { t: "reconnect", caller });
+    await tick();
+    expect(net.conns).toHaveLength(1);
+    // A reopen a tab asks for without naming a caller still opens one.
+    hub.receive("t1", { t: "reconnect" });
+    await tick();
+    expect(net.conns).toHaveLength(2);
+    net.ready(net.conns[1], S2, false, [], { level: "admin", viewer: "u_0" });
+    await tick();
+    hub.receive("t1", { t: "reconnect", caller: "u_1true" });
+    await tick();
+    expect(net.conns).toHaveLength(2);
+  });
+
   it("reopens when the stream that answers an ask is opened as another caller", async () => {
     hub.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
     await tick();

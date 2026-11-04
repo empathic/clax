@@ -242,6 +242,7 @@ need!(DocsAcquire, Db, "write", Filtered, DEFAULT_LIMIT);
 need!(FeedbackPoll, Comments, "watch", Filtered, DEFAULT_LIMIT);
 need!(FeedbackNotices, Comments, "watch", Filtered, DEFAULT_LIMIT);
 need!(FeedbackAck, Comments, "watch", Own, DEFAULT_LIMIT);
+need!(FeedbackReceipt, Comments, "watch", Own, DEFAULT_LIMIT);
 need!(WorkingForSession, Comments, "watch", Own, DEFAULT_LIMIT);
 need!(WorkingRenew, Comments, "watch", Own, DEFAULT_LIMIT);
 need!(WorkingEnd, Comments, "watch", Own, DEFAULT_LIMIT);
@@ -434,6 +435,11 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
     ("GET", "/api/sessions/{id}/feedback", FeedbackPoll::INFO),
     ("GET", "/api/sessions/{id}/notices", FeedbackNotices::INFO),
     ("POST", "/api/sessions/{id}/feedback/ack", FeedbackAck::INFO),
+    (
+        "POST",
+        "/api/sessions/{id}/feedback/receipt",
+        FeedbackReceipt::INFO,
+    ),
     ("GET", "/api/sessions/{id}/working", WorkingForSession::INFO),
     (
         "POST",
@@ -651,6 +657,7 @@ pub const ROUTE_NEEDS: &[RouteNeed] = &[
     route_need!("feedback::poll", FeedbackPoll),
     route_need!("feedback::notices", FeedbackNotices),
     route_need!("feedback::ack", FeedbackAck),
+    route_need!("feedback::receipt", FeedbackReceipt),
     route_need!("working::for_session", WorkingForSession),
     route_need!("working::renew", WorkingRenew),
     route_need!("working::end", WorkingEnd),
