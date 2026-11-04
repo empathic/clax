@@ -122,8 +122,14 @@ fn kind(outcome: &ScriptOutcome) -> Option<ErrorKind> {
     outcome.error.as_ref().map(|e| e.kind)
 }
 
+/// The sandbox under test, its watchdog's floor the [`HANG`] guard: a run
+/// ends by itself or by the CPU the engine measures, never by the wall time
+/// a loaded machine takes. A test of the watchdog sets its own.
 fn sandbox() -> QuickJs {
-    QuickJs::new(OPS.iter().copied())
+    QuickJs::new(OPS.iter().copied()).with_watchdog(Watchdog {
+        factor: 1,
+        floor: HANG,
+    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -182,7 +188,9 @@ async fn the_watchdog_ends_a_run_whose_engine_does_not_stop_and_abandons_it() {
     // A clock that stands still: the engine's own CPU check never fires,
     // as for a builtin that runs between two polls. Paused time runs the
     // watchdog's timer out as soon as the runtime is idle.
-    let sandbox = sandbox().with_clock(still());
+    let sandbox = sandbox()
+        .with_clock(still())
+        .with_watchdog(Watchdog::default());
     let outcome = run(
         &sandbox,
         "for (;;) {}",
@@ -296,12 +304,12 @@ async fn dropping_a_run_stops_its_engine() {
     let limits = Limits::default();
     let cancel = CancelToken::new();
     let script = Script::new("t", "for (;;) {}");
-    let run = sandbox.run(&script, &host, &limits, &cancel);
-    assert!(
-        tokio::time::timeout(Duration::from_secs(1), run)
-            .await
-            .is_err()
-    );
+    let mut run = Box::pin(sandbox.run(&script, &host, &limits, &cancel));
+    // One poll starts the engine on its loop, which never ends: the run is
+    // still pending when it is dropped.
+    let first = std::future::poll_fn(|cx| std::task::Poll::Ready(run.as_mut().poll(cx))).await;
+    assert!(first.is_pending());
+    drop(run);
     assert_eq!(sandbox.abandoned().total, 1);
     assert!(sandbox.wait_abandoned_at_most(0, HANG));
 }
