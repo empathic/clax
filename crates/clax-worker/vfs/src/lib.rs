@@ -974,6 +974,7 @@ pub fn stats(name: &str) -> Option<FileStats> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use std::cell::Cell;
 

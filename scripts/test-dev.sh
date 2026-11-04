@@ -18,6 +18,8 @@ trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$T"' EXIT
 FOREVER=2147483647
 # shellcheck source=scripts/fake-exe.sh
 . "$HERE/fake-exe.sh"
+# shellcheck source=scripts/lib/wait.sh
+. "$HERE/lib/wait.sh"
 FAILED=0
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILED=1; }
@@ -94,10 +96,11 @@ kept=$!
 mkdir -p "$T/o1" "$T/o2"
 printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$orphan" "$T/gone/clax" > "$T/o1/daemon.json"
 printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$kept" "$HERE/dev.sh" > "$T/o2/daemon.json"
+# Each call decides before it returns: the orphan is signalled (its exit is
+# waited for), the other left alone.
 stop_orphan_daemon "$T/o1" >/dev/null
 stop_orphan_daemon "$T/o2" >/dev/null
-sleep 0.3
-if ! kill -0 "$orphan" 2>/dev/null && kill -0 "$kept" 2>/dev/null; then
+if wait_for "the orphaned daemon to exit" gone "$orphan" 2>&3 && kill -0 "$kept" 2>/dev/null; then
     pass "only a dev daemon whose binary is gone is stopped"
 else fail "only a dev daemon whose binary is gone is stopped"; fi
 # A recorded PID now held by an unrelated process (PID reuse) is left alone.
@@ -106,7 +109,6 @@ reused=$!
 mkdir -p "$T/o3"
 printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$reused" "$T/gone/clax" > "$T/o3/daemon.json"
 stop_orphan_daemon "$T/o3" >/dev/null
-sleep 0.3
 if kill -0 "$reused" 2>/dev/null; then pass "stop_orphan_daemon leaves a reused PID alone"
 else fail "stop_orphan_daemon signalled a process that is not the recorded daemon"; fi
 kill "$reused" 2>/dev/null
@@ -115,7 +117,6 @@ agents=$!
 mkdir -p "$HOME/.clax"
 printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$agents" "$T/gone/clax" > "$HOME/.clax/daemon.json"
 stop_orphan_daemon "$HOME/.clax" >/dev/null
-sleep 0.3
 if kill -0 "$agents" 2>/dev/null; then pass "stop_orphan_daemon never stops the daemon of ~/.clax"
 else fail "stop_orphan_daemon stopped the daemon of ~/.clax"; fi
 
@@ -135,14 +136,12 @@ mkdir -p "$T/i1"
 printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$same" "$T/cargo/bin/clax" > "$T/i1/daemon.json"
 : > "$T/inst/calls"
 stop_installed_daemon "$T/i1" "$T/cargo/bin/clax" > "$T/inst/out"
-sleep 0.3
-if ! kill -0 "$same" 2>/dev/null && [ "$(cat "$T/inst/calls")" = "clax stop home=$T/i1" ] \
+if wait_for "the installed clax's daemon to exit" gone "$same" 2>&3 && [ "$(cat "$T/inst/calls")" = "clax stop home=$T/i1" ] \
     && grep -q "stopping the daemon of $T/i1 (pid $same)" "$T/inst/out"; then
     pass "stop_installed_daemon stops a daemon that runs the installed clax, with clax stop"
 else fail "stop_installed_daemon, same exe ($(cat "$T/inst/calls" "$T/inst/out"))"; fi
 : > "$T/inst/calls"
 stop_installed_daemon "$T/o2" "$T/cargo/bin/clax" > "$T/inst/out"
-sleep 0.3
 if kill -0 "$kept" 2>/dev/null && [ ! -s "$T/inst/calls" ] && grep -q "runs $HERE/dev.sh, not $T/cargo/bin/clax; left running" "$T/inst/out"; then
     pass "stop_installed_daemon leaves a daemon of another executable running and names it"
 else fail "stop_installed_daemon, other exe ($(cat "$T/inst/calls" "$T/inst/out"))"; fi
@@ -320,8 +319,7 @@ mkdir -p "$HOME/.clax"
 printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$left" "$T/gone/clax" > "$HOME/.clax-dev/daemon.json"
 printf '{\n  "port": 7480,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$agents" "$T/gone/clax" > "$HOME/.clax/daemon.json"
 CLAX_DEV_PORT=1 devrun
-sleep 0.3
-if ! kill -0 "$left" 2>/dev/null && grep -q "stopping the daemon of $HOME/.clax-dev (pid $left)" "$T/out" \
+if wait_for "the orphaned dev daemon to exit" gone "$left" 2>&3 && grep -q "stopping the daemon of $HOME/.clax-dev (pid $left)" "$T/out" \
     && grep -q "cargo-watch is required" "$T/err"; then
     pass "just watch stops an orphaned just dev daemon in its dev home, and says so"
 else fail "just watch and an orphaned dev daemon ($(cat "$T/out" "$T/err"))"; fi
@@ -371,8 +369,7 @@ if command -v just >/dev/null 2>&1; then
         printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$agent_pid" "$T/cargo/bin/clax" > "$HOME/.clax/daemon.json"
         : > "$T/inst/calls"
         CARGO_HOME="$T/cargo" PATH="$T/fake-cargo:$PATH" "${J[@]}" "$@" >"$T/out" 2>&1
-        sleep 0.3
-        agent_alive=0; kill -0 "$agent_pid" 2>/dev/null && agent_alive=1
+        agent_alive=1; wait_for "the agents' daemon to exit" gone "$agent_pid" 2>&3 && agent_alive=0
         kill "$agent_pid" 2>/dev/null; wait "$agent_pid" 2>/dev/null
         exec 2>&3 3>&-
         rm -rf "$HOME/.clax"
