@@ -130,8 +130,8 @@ async fn a_queue_is_made_listed_changed_and_deleted_in_the_browser() {
     )
     .await;
     assert_eq!((s, code(&v)), (400, "invalid_origin"), "{v}");
-    // Origin patterns are listed, normalized as an origin is; a bare `*`
-    // host, or one label after the last `*`, is refused.
+    // Origin patterns are listed, normalized as an origin is, as broad as
+    // the owner wants; a malformed one is refused.
     let (s, v) = browser(
         &w.ts,
         &w.owner,
@@ -142,6 +142,10 @@ async fn a_queue_is_made_listed_changed_and_deleted_in_the_browser() {
             "HTTPS://PathBase-PR-*.Fly.Dev:443/",
             "https://*.fly.dev",
             "https://web.*.example.com",
+            "https://*",
+            "https://*.dev",
+            "https://pr-*.dev",
+            "https://a.*.com",
         ]})),
     )
     .await;
@@ -153,25 +157,22 @@ async fn a_queue_is_made_listed_changed_and_deleted_in_the_browser() {
             "https://pathbase-pr-*.fly.dev",
             "https://*.fly.dev",
             "https://web.*.example.com",
+            "https://*",
+            "https://*.dev",
+            "https://pr-*.dev",
+            "https://a.*.com",
         ])
     );
-    for broad in [
-        "https://*",
-        "https://*.dev",
-        "https://pr-*.dev",
-        "https://a.*.com",
-        "https://a**.fly.dev",
-        "https://*.fly.dev:*",
-    ] {
+    for bad in ["https://a**.fly.dev", "https://*.fly.dev:*"] {
         let (s, v) = browser(
             &w.ts,
             &w.owner,
             Method::PATCH,
             &format!("/api/queues/{qid}"),
-            Some(json!({"origins": [broad]})),
+            Some(json!({"origins": [bad]})),
         )
         .await;
-        assert_eq!((s, code(&v)), (400, "invalid_origin"), "{broad}: {v}");
+        assert_eq!((s, code(&v)), (400, "invalid_origin"), "{bad}: {v}");
     }
     let (s, v) = browser(
         &w.ts,

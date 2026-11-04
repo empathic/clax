@@ -39,7 +39,7 @@
   <label class="field">Name <input name="name" autocomplete="off" required maxlength="80" value={name} oninput={e => { name = e.currentTarget.value; }} /></label>
   <label class="field">Origins, one per line
     <textarea name="origins" rows="3" spellcheck="false" placeholder="https://app.example" value={origins} oninput={e => { origins = e.currentTarget.value; }}></textarea>
-    <span class="hint">The sites whose pages may file reports into this queue. A * stands for whole host labels (https://*.example.com) or part of one (https://app-pr-*.example.com), for preview sites.</span>
+    <span class="hint">The sites whose pages may file reports into this queue. A * stands for whole host labels (https://*.example.com) or part of one (https://pr-*.example.com), as broad as you want.</span>
   </label>
   <fieldset class="see">
     <legend>A reporter sees</legend>

@@ -671,15 +671,60 @@ fn a_pattern_mints_a_token_bound_to_the_exact_origin_it_matched() {
         st.mint_reporter_token(&wide_grant, "emp-1", "https://fly.dev", &key, None),
         Err(CoreError::WrongOrigin)
     ));
-    // A bare `*` host, or one label after the last `*`, is refused, made
-    // or changed.
-    for broad in ["https://*", "https://*.dev", "https://pr-*.com"] {
+    // A pattern may be as broad as its writer wants, made or changed, and
+    // a token from it is still bound to the one origin minted for.
+    for (broad, inside, outside) in [
+        ("https://*", "https://a.example.com", "http://a.example.com"),
+        ("https://*.dev", "https://a.dev", "https://dev"),
+        ("https://pr-*.com", "https://pr-1.com", "https://pr-1.a.com"),
+    ] {
+        let made = st
+            .create_queue(
+                DAEMON,
+                None,
+                NewQueue {
+                    name: "Broad".into(),
+                    origins: vec![broad.into()],
+                    reporters_see: ReportersSee::Own,
+                },
+            )
+            .unwrap();
+        assert_eq!(made.origins, [broad]);
+        let (grant, _, _) = st
+            .create_service_grant(DAEMON, &made.id, "backend")
+            .unwrap();
+        let (rt, _) = st
+            .mint_reporter_token(&grant, "emp-1", inside, &key, None)
+            .unwrap();
+        let t = st.reporter_by_token(&rt.sha256_hex()).unwrap().unwrap();
+        assert_eq!(t.origin, inside, "{broad}");
+        assert!(
+            matches!(
+                st.mint_reporter_token(&grant, "emp-1", outside, &key, None),
+                Err(CoreError::WrongOrigin)
+            ),
+            "{broad} {outside}"
+        );
+        let changed = st
+            .update_queue(
+                DAEMON,
+                &q.id,
+                super::QueuePatch {
+                    origins: Some(vec![broad.into()]),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(changed.origins, [broad]);
+    }
+    // A malformed pattern is refused, made or changed.
+    for bad in ["https://**.example.com", "https://*.example.com:*"] {
         let made = st.create_queue(
             DAEMON,
             None,
             NewQueue {
-                name: "Too broad".into(),
-                origins: vec![broad.into()],
+                name: "Malformed".into(),
+                origins: vec![bad.into()],
                 reporters_see: ReportersSee::Own,
             },
         );
@@ -691,13 +736,13 @@ fn a_pattern_mints_a_token_bound_to_the_exact_origin_it_matched() {
                     ..
                 })
             ),
-            "{broad}"
+            "{bad}"
         );
         let changed = st.update_queue(
             DAEMON,
             &q.id,
             super::QueuePatch {
-                origins: Some(vec![broad.into()]),
+                origins: Some(vec![bad.into()]),
                 ..Default::default()
             },
         );
@@ -709,7 +754,7 @@ fn a_pattern_mints_a_token_bound_to_the_exact_origin_it_matched() {
                     ..
                 })
             ),
-            "{broad}"
+            "{bad}"
         );
     }
 }

@@ -90,10 +90,10 @@ impl OriginPattern {
     ///   stands for that label with one or more of `a`-`z`, `0`-`9` and `-`
     ///   in place of the `*`, never a `.`.
     ///
-    /// At least two labels without a `*` follow the last label holding one.
-    /// So `https://*.example.com`, `https://a.*.example.com` and
-    /// `https://app-pr-*.example.com` are patterns, and `https://*`,
-    /// `https://*.com`, `https://pr-*.com` and `https://a.*.com` are not.
+    /// A pattern may be as broad as its writer wants: `https://*`,
+    /// `https://*.dev`, `https://pr-*.com` and `https://*.example.com` are
+    /// all patterns, and `https://*` matches every `https` origin with a
+    /// DNS name for its host on the default port ([`OriginPattern::matches`]).
     ///
     /// # Errors
     /// `invalid_origin` for anything else.
@@ -110,7 +110,7 @@ impl OriginPattern {
                 format!(
                     "{raw:?} is not an origin pattern: scheme://host[:port] with a * only in the \
                      host, as a whole label (https://*.example.com) or part of one \
-                     (https://app-pr-*.example.com), followed by at least two labels without one"
+                     (https://app-pr-*.example.com), at most one per label"
                 ),
             )
         })?;
@@ -207,7 +207,6 @@ fn pattern_parts(s: &str) -> Option<(&'static str, String, Option<u16>)> {
         return None;
     }
     let mut wild = false;
-    let mut tail = 0;
     for label in host.split('.') {
         let stars = label.bytes().filter(|&b| b == b'*').count();
         if label.is_empty()
@@ -217,14 +216,9 @@ fn pattern_parts(s: &str) -> Option<(&'static str, String, Option<u16>)> {
         {
             return None;
         }
-        if stars == 1 {
-            wild = true;
-            tail = 0;
-        } else {
-            tail += 1;
-        }
+        wild |= stars == 1;
     }
-    if !wild || tail < 2 {
+    if !wild {
         return None;
     }
     Some((scheme, host, port.filter(|&p| p != default_port)))
@@ -366,7 +360,7 @@ mod tests {
             n("https://web.pr-*.xn--bcher-kva.example"),
             "https://web.pr-*.xn--bcher-kva.example"
         );
-        // Wildcard labels anywhere before the last two, any number of them.
+        // Wildcard labels anywhere, any number of them, as broad as wanted.
         for kept in [
             "https://*.fly.dev",
             "https://a.*.example.com",
@@ -374,20 +368,8 @@ mod tests {
             "https://*.a.*.example.com",
             "https://*.api-*.example.com",
             "https://a-*.b-*.example.com",
-        ] {
-            assert_eq!(n(kept), kept);
-        }
-        // An exact origin is normalized as before.
-        assert_eq!(n("https://App.Example.com:443/"), "https://app.example.com");
-    }
-
-    #[test]
-    fn a_bare_star_host_or_a_one_label_tail_is_refused_and_so_is_a_malformed_pattern() {
-        for bad in [
-            // A bare `*` host.
             "https://*",
             "http://*:8080",
-            // One label, or none, after the last label holding a `*`.
             "https://*.dev",
             "https://pr-*.com",
             "https://a.*.com",
@@ -396,6 +378,16 @@ mod tests {
             "https://*.example.*",
             "https://app.pr-*",
             "https://example.com-*",
+        ] {
+            assert_eq!(n(kept), kept);
+        }
+        // An exact origin is normalized as before.
+        assert_eq!(n("https://App.Example.com:443/"), "https://app.example.com");
+    }
+
+    #[test]
+    fn a_malformed_pattern_is_refused() {
+        for bad in [
             // Two `*`s in one label.
             "https://**.example.com",
             "https://a**.example.com",
@@ -582,12 +574,68 @@ mod tests {
     }
 
     #[test]
+    fn a_pattern_as_broad_as_its_writer_wants_still_keeps_its_scheme_port_and_labels() {
+        let any = "https://*";
+        assert!(allows(any, "https://a.example.com"));
+        assert!(allows(any, "https://a.b.c.dev"));
+        assert!(allows(any, "https://localhost"));
+        for not in [
+            "http://a.example.com",
+            "https://a.example.com:8443",
+            "https://A.example.com",
+            "https://a.example.com/",
+            "https://*",
+            "null",
+            "",
+        ] {
+            assert!(!allows(any, not), "{any} {not}");
+        }
+
+        let ported = "http://*:8080";
+        assert!(allows(ported, "http://localhost:8080"));
+        assert!(allows(ported, "http://a.example.com:8080"));
+        assert!(!allows(ported, "http://localhost"));
+        assert!(!allows(ported, "https://localhost:8080"));
+
+        let tld = "https://*.dev";
+        assert!(allows(tld, "https://a.dev"));
+        assert!(allows(tld, "https://a.b.dev"));
+        assert!(!allows(tld, "https://dev"));
+        assert!(!allows(tld, "https://a.dev.com"));
+
+        let partial = "https://pr-*.com";
+        assert!(allows(partial, "https://pr-1.com"));
+        assert!(!allows(partial, "https://pr-1.a.com"));
+        assert!(!allows(partial, "https://a.pr-1.com"));
+
+        let middle = "https://a.*.com";
+        assert!(allows(middle, "https://a.b.com"));
+        assert!(allows(middle, "https://a.b.c.com"));
+        assert!(!allows(middle, "https://a.com"));
+        assert!(!allows(middle, "https://b.c.com"));
+
+        let last = "https://app.pr-*";
+        assert!(allows(last, "https://app.pr-7"));
+        assert!(!allows(last, "https://app.pr-7.com"));
+
+        let ends = "https://*.example.*";
+        assert!(allows(ends, "https://a.example.com"));
+        assert!(allows(ends, "https://a.b.example.co.uk"));
+        assert!(!allows(ends, "https://example.com"));
+        assert!(!allows(ends, "https://a.example"));
+    }
+
+    #[test]
     fn a_pattern_matches_dns_names_never_an_ip_address() {
-        // Two labels follow the `*`, so the pattern is kept, but an
-        // origin whose host is an IP address is not a name it matches.
+        // The pattern is kept, but an origin whose host is an IP address
+        // is not a name it matches.
         let pattern = "https://10.*.0.1";
         assert!(!allows(pattern, "https://10.1.0.1"));
         assert!(!allows(pattern, "https://10.1.2.0.1"));
+        // Nor is it for a bare `*` host.
+        for ip in ["https://10.0.0.1", "https://127.0.0.1", "https://[::1]"] {
+            assert!(!allows("https://*", ip), "{ip}");
+        }
     }
 
     #[test]

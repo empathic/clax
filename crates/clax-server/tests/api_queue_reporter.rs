@@ -806,6 +806,82 @@ async fn a_whole_label_pattern_matches_deeper_names_and_never_itself() {
     }
 }
 
+/// A pattern may be as broad as the queue's owner wants: a queue listing
+/// `https://*` mints for any `https` origin with a DNS name for its host
+/// on the default port, the token still bound to that one origin and CORS
+/// still naming the request's exact origin. The pattern is never matched
+/// as text.
+#[tokio::test]
+async fn a_bare_star_host_mints_for_any_https_name_and_binds_the_one_minted_for() {
+    const PATTERN: &str = "https://*";
+    const SOME: &str = "https://shop.example.com";
+    let s = Setup::new().await;
+    s.ts.store
+        .update_queue(
+            &AuditCtx::DAEMON,
+            &s.qid,
+            clax_store::queues::QueuePatch {
+                origins: Some(vec![PATTERN.into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let mint = format!("/api/queues/{}/reporter-tokens", s.qid);
+    let key = sig::encode_public(&KeyPair::generate().public());
+
+    let r = s.reporter_on("emp-1", SOME).await;
+    let res = s
+        .as_reporter(&r, Some(SOME), "GET", &s.reports(), None, vec![])
+        .await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.headers()["access-control-allow-origin"], SOME);
+    let res = s
+        .as_reporter(
+            &r,
+            Some("https://other.example.com"),
+            "GET",
+            &s.reports(),
+            None,
+            vec![],
+        )
+        .await;
+    assert_eq!(status_code(res).await, (403, "wrong_origin".into()));
+
+    for (origin, status) in [
+        ("http://shop.example.com", 403),
+        ("https://shop.example.com:8443", 403),
+        ("https://10.0.0.1", 403),
+        (PATTERN, 400),
+    ] {
+        let res = s
+            .service(
+                &mint,
+                &json!({"reporter_id": "emp-1", "origin": origin, "public_key": key}),
+            )
+            .await;
+        assert_eq!(res.status(), status, "{origin}");
+    }
+    for (origin, named) in [
+        (SOME, Some(SOME)),
+        ("http://shop.example.com", None),
+        (PATTERN, None),
+    ] {
+        let res = s
+            .send(
+                "OPTIONS",
+                &s.reports(),
+                &[
+                    ("origin", origin.into()),
+                    ("access-control-request-method", "POST".into()),
+                ],
+                vec![],
+            )
+            .await;
+        let allowed = res.headers().get("access-control-allow-origin");
+        assert_eq!(allowed.map(|v| v.to_str().unwrap()), named, "{origin}");
+    }
+}
+
 /// A page the instance serves at the token's own origin reads with no
 /// `Origin`, as a browser sends a same-origin `GET`: taken as from that
 /// origin when the browser marks it `Sec-Fetch-Site: same-origin` and its

@@ -4493,11 +4493,14 @@ is not one it matches. So `https://app-pr-*.example.com` matches
 `https://*.example.com` matches `https://a.example.com` and
 `https://a.b.example.com`, not `https://example.com`; and
 `https://a.*.example.com` matches `https://a.x.y.example.com`, not
-`https://a.example.com`. Too broad, and refused: a bare `*` host
-(`https://*`), and fewer than two labels without a `*` after the last
-label holding one (`https://*.dev`, `https://pr-*.com`,
-`https://a.*.com`). Anything else is 400 `invalid_origin`. A queue allows
-an origin it lists, and one a pattern of it matches.
+`https://a.example.com`. A pattern may be as broad as the queue's owner
+wants: `https://*.dev` and `https://pr-*.com` are patterns, and
+`https://*` matches every `https` origin with a DNS name for its host on
+the default port: a pattern only widens the origins the deployer's own
+backend may mint reporter tokens for, and filing still needs a token
+minted for one exact origin (below). Anything that is neither an origin
+nor a pattern as above is 400 `invalid_origin`. A queue allows an origin
+it lists, and one a pattern of it matches.
 
 A reporter token is always bound to one exact origin: a mint
 (`…/reporter-tokens`) names an exact origin the queue allows (a pattern is

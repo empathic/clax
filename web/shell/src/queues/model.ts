@@ -9,9 +9,10 @@ import type { StateFilter } from "./api";
  * `bad` holds the lines that are not an http or https origin (a path, a
  * query or another scheme). A line holding a `*` is an origin pattern
  * (`https://app-pr-*.example.com`), kept with its host lowercased and a
- * default port left out; which patterns a queue may list (not a bare
- * `*` host, nor one with a single label after its last `*`) is the
- * server's to say. Blank lines are skipped. */
+ * default port left out. A pattern may be as broad as the queue's owner
+ * wants, since filing still needs a reporter token their backend mints
+ * for one exact origin; whether a pattern is well formed is the server's
+ * to say. Blank lines are skipped. */
 export function parseOrigins(text: string): { origins: string[]; bad: string[] } {
   const origins: string[] = [];
   const bad: string[] = [];

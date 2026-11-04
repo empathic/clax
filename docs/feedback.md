@@ -86,8 +86,10 @@ pattern matches `https://pathbase-pr-538.fly.dev` and not
 another scheme or port. A label that is only `*` stands for one or more
 whole labels: `https://*.preview.example.com` matches
 `https://pr-538.preview.example.com` and `https://a.b.preview.example.com`.
-A bare `*` host and a pattern with one label after its last `*`
-(`https://*`, `https://*.dev`, `https://pr-*.com`) are refused.
+A pattern can be as broad as you want, up to `https://*` for every
+`https` origin: it only widens the origins your backend may mint for, and
+filing still needs a reporter token your backend minted for one exact
+origin.
 
 Each preview's backend still mints for its own exact origin (the page's,
 never the pattern), and the token is bound to it: a page on another
