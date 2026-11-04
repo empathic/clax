@@ -6,6 +6,7 @@
 //! calibration's, on its own in-memory database (`perf`).
 
 pub mod anchor;
+pub mod apps;
 pub mod audit;
 pub mod brief;
 pub mod capabilities;

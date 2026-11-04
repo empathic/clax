@@ -12,7 +12,8 @@
 //!   anyone: no credential, mounted with the reporter routes in front of
 //!   the credential layers. It carries an `ETag` (a quoted SHA-256 of the
 //!   answer) and answers `If-None-Match` with 304; it names
-//!   `Access-Control-Allow-Origin` for the install's own origins alone,
+//!   `Access-Control-Allow-Origin` for the install's own origins alone (as
+//!   the declared apps expand them, `clax_core::apps::Apps::expand`),
 //!   so another site's page cannot read it. 404 `not_found` for no such
 //!   live install, or one whose queue is deleted.
 
@@ -184,11 +185,16 @@ pub fn public_router() -> axum::Router<AppState> {
 
 /// The config an install's overlay reads: its queue's name and pages (the
 /// queue page for its members, the reporter page for reporters, both
-/// paths on this Clax) and the install's settings.
-pub fn public_config(i: &Install, q: &QueueRow) -> Value {
+/// paths on this Clax), the install's settings, and `origin`, the origin
+/// those paths are on: Clax's own as home declares it
+/// (`clax_core::apps::Apps::service_origin` of `app:clax`), never the
+/// request's `Host`; `null` when home declares none, and the overlay then
+/// takes the instance it was given.
+pub fn public_config(i: &Install, q: &QueueRow, origin: Option<&str>) -> Value {
     json!({
         "install_id": i.id,
         "name": i.name,
+        "origin": origin,
         "queue": {
             "id": q.id,
             "name": q.name,
@@ -264,7 +270,9 @@ pub async fn config(
             return Ok(res);
         }
     };
-    let text = public_config(&i, &q).to_string();
+    let apps = s.store.apps();
+    let own = apps.service_origin(clax_core::apps::SELF);
+    let text = public_config(&i, &q, own.as_deref()).to_string();
     let etag = format!("\"{}\"", clax_core::audit::sha256_hex(text.as_bytes()));
     let fresh = headers
         .get(header::IF_NONE_MATCH)
@@ -285,7 +293,7 @@ pub async fn config(
         HeaderValue::from_str(&etag).expect("hex is a header value"),
     );
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-    allow(&mut res, &i.origins, origin.as_deref(), false);
+    allow(&mut res, &apps.expand(&i.origins), origin.as_deref(), false);
     Ok(res)
 }
 
@@ -300,7 +308,7 @@ pub async fn config_preflight(
     let origin = origin_of(&headers);
     let origins = live(&s, iid)
         .await
-        .map(|(i, _)| i.origins)
+        .map(|(i, _)| s.store.admitted_origins(&i.origins))
         .unwrap_or_default();
     let mut res = StatusCode::NO_CONTENT.into_response();
     allow(&mut res, &origins, origin.as_deref(), true);

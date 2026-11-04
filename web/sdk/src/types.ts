@@ -67,6 +67,8 @@ export interface Install {
 export interface PublicInstallConfig {
   install_id: string;
   name: string;
+  /** The origin the queue's pages are on: Clax's own as home declares it (apps.json), never the request's Host; absent or null when none is declared. */
+  origin?: string | null;
   queue: { id: string; name: string; reporters_see: ReportersSee; page: string; reporter_page: string };
   config: InstallConfig;
 }
@@ -294,6 +296,8 @@ export interface Submitter {
 /** `POST /api/queues/{qid}/reporter/view-link`'s answer: a path on the Clax instance, single-use, until `expires_at`. */
 export interface ViewLink {
   path: string;
+  /** `path` on Clax's own origin as home declares it (apps.json); absent or null when none is declared. */
+  url?: string | null;
   expires_at: string;
 }
 

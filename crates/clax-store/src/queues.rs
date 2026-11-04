@@ -390,7 +390,12 @@ fn normalize_origins(origins: &[String]) -> Result<Vec<String>> {
     }
     let mut out = Vec::with_capacity(origins.len());
     for o in origins {
-        let n = normalize_origin(o)?;
+        // `app:<designator>`: every origin of a declared app
+        // (`clax_core::apps`), resolved at each check.
+        let n = match clax_core::apps::app_ref(o) {
+            Some(d) => format!("{}{d}", clax_core::apps::APP_REF),
+            None => normalize_origin(o)?,
+        };
         if !out.contains(&n) {
             out.push(n);
         }
@@ -965,6 +970,22 @@ fn reporter_filter<'a>(q: &QueueRow, vis: Visibility<'a>) -> (&'static str, Opti
 }
 
 impl Store {
+    /// Sets the apps home declares, which every later check of a queue's or
+    /// an install's origins expands them by ([`clax_core::apps::Apps::expand`]).
+    pub fn set_apps(&self, apps: clax_core::apps::Apps) {
+        *self.apps.write().unwrap_or_else(|e| e.into_inner()) = std::sync::Arc::new(apps);
+    }
+
+    /// The apps home declares ([`Store::set_apps`]); none until set.
+    pub fn apps(&self) -> std::sync::Arc<clax_core::apps::Apps> {
+        self.apps.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// The origins origin list `listed` admits, by the declared apps.
+    pub fn admitted_origins(&self, listed: &[String]) -> Vec<String> {
+        self.apps().expand(listed)
+    }
+
     /// Makes a queue of `person` (`None`: the owner), who is its admin,
     /// recorded as `queue.create {queue_id, name, origins, reporters_see}`
     /// under `ctx`.
@@ -1628,7 +1649,7 @@ impl Store {
             let (true, Some(q)) = (live, q) else {
                 return Err(CoreError::NotFound);
             };
-            if !q.origins.contains(&origin) {
+            if !self.apps().admits(&q.origins, &origin) {
                 return Err(CoreError::WrongOrigin);
             }
             tx.execute(

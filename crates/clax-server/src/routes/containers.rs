@@ -37,7 +37,8 @@ pub fn answer(id: &str, overlay: Option<(String, String)>) -> Value {
 }
 
 /// The `Access-Control-Allow-Origin` for a request from `origin`: that
-/// origin when the queue lists it, else none.
+/// origin when the queue admits it (`origins`, as the declared apps expand
+/// the queue's list), else none.
 pub fn allowed_origin<'a>(origin: Option<&'a str>, origins: &[String]) -> Option<&'a str> {
     let o = origin?;
     let n = clax_core::queue::normalize_origin(o).ok()?;
@@ -73,7 +74,7 @@ pub async fn config(
         return Err(ApiError::not_found());
     };
     let body = answer(&q.id, crate::shell::overlay_pin(&*s.web)).to_string();
-    let allow = allowed_origin(origin, &q.origins);
+    let allow = allowed_origin(origin, &s.store.admitted_origins(&q.origins));
     let mut res = http_cache::tagged(&req, body.as_bytes(), REVALIDATE, || {
         (
             StatusCode::OK,

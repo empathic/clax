@@ -336,7 +336,10 @@ impl<const LIMIT: usize> FromRequest<AppState> for ReporterCaller<LIMIT> {
                 if t.queue_id != qid {
                     return Ok(None);
                 }
-                let origins = st.queue(&qid)?.map(|q| q.origins).unwrap_or_default();
+                let origins = st
+                    .queue(&qid)?
+                    .map(|q| st.admitted_origins(&q.origins))
+                    .unwrap_or_default();
                 Ok(Some((t, origins)))
             })
             .await?;
@@ -385,7 +388,8 @@ fn reporter_qid(path: &str) -> Option<&str> {
 
 /// Route layer of the reporter routes: CORS (spec §5.3). Every answer
 /// varies on `Origin`. When the request's one `Origin` is among the path's
-/// queue's origins, the answer names it in `Access-Control-Allow-Origin`
+/// queue's origins (as the declared apps expand them,
+/// `clax_core::apps::Apps::expand`), the answer names it in `Access-Control-Allow-Origin`
 /// (never `*`, and no credentials mode), and a preflight's answer also
 /// names [`ALLOW_METHODS`] and [`ALLOW_HEADERS`]; for any other origin it
 /// names none, and the browser keeps the answer from the page.
@@ -404,7 +408,12 @@ pub async fn cors(State(s): State<AppState>, req: Request, next: Next) -> Respon
         return res;
     };
     let listed = s
-        .store_call(move |st| Ok(st.queue(&qid)?.map(|q| q.origins).unwrap_or_default()))
+        .store_call(move |st| {
+            Ok(st
+                .queue(&qid)?
+                .map(|q| st.admitted_origins(&q.origins))
+                .unwrap_or_default())
+        })
         .await
         .is_ok_and(|origins| origins.contains(&origin));
     if !listed {

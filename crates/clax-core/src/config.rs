@@ -808,6 +808,45 @@ impl HomeConfig {
         Ok(on)
     }
 
+    /// `[serve] apps_file`: the apps home declares (`crate::apps`), read
+    /// from that file (an absolute path, or `~/…`); none when the key is
+    /// absent or the file does not exist.
+    ///
+    /// # Errors
+    /// `Invalid { code: "bad_config" }` naming the file (or the variable)
+    /// and the key when `[serve]` is not a table or the key is not an
+    /// absolute path; [`crate::apps::Apps::load`]'s. The daemon does not
+    /// start on it.
+    pub fn serve_apps(&self) -> Result<crate::apps::Apps> {
+        if let Some(serve) = self.value("serve")
+            && serve.as_dict().is_none()
+        {
+            return Err(self.bad(
+                "serve",
+                "[serve]",
+                format!("must be a table, not {}", kind_of(&serve)),
+            ));
+        }
+        let Some(v) = self.value("serve.apps_file") else {
+            return Ok(crate::apps::Apps::default());
+        };
+        let bad = |what: String| self.bad("serve.apps_file", "[serve]", what);
+        let path = match v.as_str() {
+            Some(p) if p.starts_with('/') => std::path::PathBuf::from(p),
+            Some(p) if p.starts_with("~/") => match std::env::var_os("HOME") {
+                Some(h) if !h.is_empty() => std::path::PathBuf::from(h).join(&p[2..]),
+                _ => return Err(bad("apps_file names ~ but HOME is not set".to_string())),
+            },
+            _ => {
+                return Err(bad(format!(
+                    "apps_file must be an absolute path or ~/…, not {}",
+                    shown(&v)
+                )));
+            }
+        };
+        crate::apps::Apps::load(&path)
+    }
+
     /// `[serve] routed_artifacts`: the artifacts whose comments another
     /// daemon reads and answers (such as an adapter that hands each comment
     /// to one chosen agent over its own transport), so Clax sends them to no
@@ -1393,6 +1432,7 @@ const SERVE_KEYS: &[&str] = &[
     "tailscale_cli",
     "trusted_host_frames",
     "routed_artifacts",
+    "apps_file",
 ];
 
 /// The owner's tailnet devices (`[serve] owner_tailscale_nodes`) and the

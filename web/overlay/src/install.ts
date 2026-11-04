@@ -100,7 +100,9 @@ export function settingsOf(cfg: PublicInstallConfig | null, opts: Pick<OverlayOp
   const c: Partial<InstallConfig> = cfg.config;
   const same = !opts.queue || opts.queue === cfg.queue.id;
   if (!same) console.warn(`Clax.overlay: the page's queue ${opts.queue} is not install ${cfg.install_id}'s (${cfg.queue.id}); filing into the page's`);
-  const base = (opts.instance ?? "").replace(/\/+$/, "");
+  // The pages are on Clax's declared origin when the install config names one; else on the instance.
+  const declared = typeof cfg.origin === "string" && /^https?:\/\/[^/]+$/.test(cfg.origin) ? cfg.origin : null;
+  const base = (declared ?? opts.instance ?? "").replace(/\/+$/, "");
   return {
     queue: opts.queue || cfg.queue.id,
     reports: c.reports_button === false ? "off" : "button",

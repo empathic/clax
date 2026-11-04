@@ -265,8 +265,9 @@ export class ReporterClient {
    * followed, not when it is drawn. */
   async viewLink(reportId?: string): Promise<string> {
     const bytes = new TextEncoder().encode(JSON.stringify(reportId === undefined ? {} : { report_id: reportId }));
-    const { path } = await readJson<ViewLink>(
+    const { path, url } = await readJson<ViewLink>(
       await this.send("POST", queuePath(this.opts.queue, "reporter", "view-link"), bytes, "application/json"));
+    if (typeof url === "string" && /^https?:\/\//.test(url)) return new URL(url).toString();
     return new URL(path, this.opts.instance.replace(/\/?$/, "/")).toString();
   }
 

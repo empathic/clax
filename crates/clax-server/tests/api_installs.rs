@@ -120,6 +120,124 @@ async fn an_install_is_made_listed_changed_and_deleted_in_the_browser() {
     assert_eq!(r.status().as_u16(), 404, "a deleted install has no config");
 }
 
+/// The apps home declares (`~/.config/clax/apps.json`), before Clax's own
+/// Service is live and with Changeling's bridge port and Service.
+const APPS: &str = r#"{
+  "clax": {"id": "app:clax", "service": "clax", "addresses": [
+    {"origin": "http://127.0.0.1:7480", "prefix": "/", "network": "loopback"},
+    {"origin": "https://phobos.tail556f5b.ts.net", "prefix": "/", "network": "tailnet"},
+    {"origin": "https://clax.tail556f5b.ts.net", "prefix": "/", "network": "tailnet"}]},
+  "basis": {"id": "app:basis", "addresses": [
+    {"origin": "http://127.0.0.1:7484", "prefix": "/", "network": "loopback"},
+    {"origin": "https://phobos.tail556f5b.ts.net", "prefix": "/fold", "network": "tailnet"}]},
+  "changeling": {"id": "app:changeling", "service": "changeling", "addresses": [
+    {"origin": "http://127.0.0.1:7700", "prefix": "/", "network": "loopback"},
+    {"origin": "https://phobos.tail556f5b.ts.net:8444", "prefix": "/", "network": "tailnet"},
+    {"origin": "https://changeling.tail556f5b.ts.net", "prefix": "/", "network": "tailnet"}]}
+}"#;
+
+#[tokio::test]
+async fn a_queue_and_its_install_follow_the_app_home_declares_with_no_hand_edit() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let owner = ts.owner_cookie();
+    // The Changeling queue as it is stored today: its loopback origin alone.
+    let (s, v) = browser(
+        &ts,
+        &owner,
+        Method::POST,
+        "/api/queues",
+        Some(json!({"name": "Changeling", "origins": ["http://127.0.0.1:7700"]})),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    let qid = v["queue"]["id"].as_str().unwrap().to_string();
+    let (s, v) = browser(
+        &ts,
+        &owner,
+        Method::POST,
+        &format!("/api/queues/{qid}/installs"),
+        Some(json!({"name": "Changeling", "origins": ["http://127.0.0.1:7700"]})),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    let iid = v["install"]["id"].as_str().unwrap().to_string();
+    let config = format!("{}/api/installs/{iid}/config", ts.base);
+    let container = format!("{}/_clax/containers/{qid}/config.json", ts.base);
+    let bridge = "https://phobos.tail556f5b.ts.net:8444";
+    let allowed = |r: &reqwest::Response| {
+        r.headers()
+            .get("access-control-allow-origin")
+            .map(|v| v.to_str().unwrap().to_string())
+    };
+
+    // Nothing declared: the tailnet bridge is another site, and the config
+    // names no origin of Clax's.
+    let r = ts.client.get(&config).header("origin", bridge).send().await.unwrap();
+    assert_eq!(allowed(&r), None);
+    let v: Value = r.json().await.unwrap();
+    assert_eq!(v["origin"], Value::Null);
+    let r = ts.client.get(&container).header("origin", bridge).send().await.unwrap();
+    assert_eq!(allowed(&r), None);
+
+    // Home declares app:changeling: the same rows now admit every address.
+    ts.store
+        .set_apps(clax_core::apps::Apps::parse(APPS).unwrap());
+    for o in [bridge, "https://changeling.tail556f5b.ts.net", "http://127.0.0.1:7700"] {
+        let r = ts.client.get(&config).header("origin", o).send().await.unwrap();
+        assert_eq!(allowed(&r).as_deref(), Some(o), "install config from {o}");
+        let r = ts.client.get(&container).header("origin", o).send().await.unwrap();
+        assert_eq!(allowed(&r).as_deref(), Some(o), "container from {o}");
+        let r = ts
+            .client
+            .request(Method::OPTIONS, format!("{}/api/queues/{qid}/reporter/reports", ts.base))
+            .header("origin", o)
+            .header("access-control-request-method", "POST")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(allowed(&r).as_deref(), Some(o), "reporter preflight from {o}");
+    }
+    for o in ["https://clax.tail556f5b.ts.net", "https://phobos.tail556f5b.ts.net"] {
+        let r = ts.client.get(&config).header("origin", o).send().await.unwrap();
+        assert_eq!(allowed(&r), None, "{o} is not Changeling's");
+    }
+    // The pages are on Clax's own Service origin, whatever Host was asked.
+    let r = ts
+        .client
+        .get(&config)
+        .header("origin", bridge)
+        .header("host", "evil.example.com")
+        .send()
+        .await
+        .unwrap();
+    let v: Value = r.json().await.unwrap();
+    assert_eq!(v["origin"], "https://clax.tail556f5b.ts.net", "{v}");
+    assert_eq!(v["queue"]["page"], format!("/queues/{qid}"));
+
+    // A queue may name the app itself; the list keeps the reference.
+    let (s, v) = browser(
+        &ts,
+        &owner,
+        Method::PATCH,
+        &format!("/api/queues/{qid}"),
+        Some(json!({"origins": ["app:changeling"]})),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["queue"]["origins"], json!(["app:changeling"]));
+    let r = ts.client.get(&container).header("origin", bridge).send().await.unwrap();
+    assert_eq!(allowed(&r).as_deref(), Some(bridge));
+    let (s, v) = browser(
+        &ts,
+        &owner,
+        Method::PATCH,
+        &format!("/api/queues/{qid}"),
+        Some(json!({"origins": ["app:Not A Name"]})),
+    )
+    .await;
+    assert_eq!((s, v["error"]["code"].clone()), (400, json!("invalid_origin")));
+}
+
 #[tokio::test]
 async fn the_config_is_public_with_an_etag_and_cors_for_the_installs_origins_alone() {
     let (ts, owner, qid, iid) = world().await;

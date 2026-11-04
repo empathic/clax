@@ -207,6 +207,16 @@ impl Core {
                 tracing::info!(artifacts = ?artifacts, released = touched.threads.len(), "comments of these artifacts go to no agent session");
             }
         }
+        // `[serve] apps_file`: the apps home declares, which queue and
+        // install origins and Clax's own origin follow. A bad file stops the
+        // daemon rather than admit by a table it cannot read.
+        if let (None, Ok(c)) = (&state.hosted, &config) {
+            let apps = c.serve_apps()?;
+            if !apps.is_empty() {
+                tracing::info!(own = ?apps.service_origin(clax_core::apps::SELF), "queue origins follow the apps home declares");
+            }
+            state.store.set_apps(apps);
+        }
         // `[sign]`: a bad table stops the daemon, as `[serve]`'s owner keys do.
         state.sign = match (&state.hosted, &config) {
             (None, Ok(c)) => c.sign()?.map(Arc::new),

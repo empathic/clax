@@ -747,9 +747,11 @@ struct ViewLinkBody {
 /// `POST /api/queues/<qid>/reporter/view-link {report_id?}`: a link that
 /// opens the token's reporter's view of the queue in Clax
 /// ([`super::queue_reporter_view`]), on report `report_id` when given.
-/// Answers `{path, expires_at}`: `path` is on this Clax, carries a
+/// Answers `{path, url, expires_at}`: `path` is on this Clax, carries a
 /// single-use code and lasts until `expires_at`, so the app asks for it
-/// when the link is followed.
+/// when the link is followed. `url` is `path` on Clax's own origin as home
+/// declares it (`clax_core::apps::Apps::service_origin` of `app:clax`),
+/// never the request's `Host`; `null` when home declares none.
 ///
 /// # Errors
 /// [`ReporterCaller`]'s; 404 `not_found` for a report the reporter does
@@ -771,8 +773,15 @@ pub async fn view_link(
             st.mint_view_code(&q, &t.service_grant_id, &t.reporter_id, b.report_id.as_deref())
         })
         .await?;
+    let path = super::queue_reporter_view::enter_path(&qid, code.expose());
+    let url = s
+        .store
+        .apps()
+        .service_origin(clax_core::apps::SELF)
+        .map(|o| format!("{o}{path}"));
     Ok(Json(json!({
-        "path": super::queue_reporter_view::enter_path(&qid, code.expose()),
+        "path": path,
+        "url": url,
         "expires_at": expires_at,
     })))
 }

@@ -61,6 +61,17 @@ describe("settingsOf", () => {
     });
   });
 
+  it("puts the queue's pages on the origin the config declares, not the instance it was given", () => {
+    const s = settingsOf({ ...CFG, origin: "https://clax.tail556f5b.ts.net" }, { instance: "https://phobos.tail556f5b.ts.net" }, document);
+    expect(s.queueInfo).toEqual({
+      name: "Changelist bugs",
+      page: "https://clax.tail556f5b.ts.net/queues/q1",
+      reporterPage: "https://clax.tail556f5b.ts.net/reporter/q1",
+    });
+    const bad = settingsOf({ ...CFG, origin: "javascript:alert(1)" }, { instance: INSTANCE }, document);
+    expect(bad.queueInfo?.page).toBe("https://clax.example/queues/q1");
+  });
+
   it("falls back to the page's options and metas without a config", () => {
     meta(REPORTS_META, "off");
     expect(settingsOf(null, { instance: INSTANCE, queue: "q2" }, document)).toEqual({
