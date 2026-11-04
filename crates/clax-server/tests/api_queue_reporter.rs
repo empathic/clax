@@ -729,6 +729,83 @@ async fn a_pattern_mints_tokens_bound_to_the_exact_origin_it_matched() {
     assert_eq!(status_code(res).await, (403, "wrong_origin".into()));
 }
 
+/// A `*` label stands for one or more whole labels: a queue listing
+/// `https://*.fly.dev` mints for a name any depth under `fly.dev`, the
+/// token bound to that one origin, and CORS names the request's exact
+/// origin. The pattern is never matched as text: an `Origin` equal to it
+/// gets no CORS answer.
+#[tokio::test]
+async fn a_whole_label_pattern_matches_deeper_names_and_never_itself() {
+    const PATTERN: &str = "https://*.fly.dev";
+    const DEEP: &str = "https://a.b.fly.dev";
+    let s = Setup::new().await;
+    s.ts.store
+        .update_queue(
+            &AuditCtx::DAEMON,
+            &s.qid,
+            clax_store::queues::QueuePatch {
+                origins: Some(vec![PATTERN.into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let mint = format!("/api/queues/{}/reporter-tokens", s.qid);
+    let key = sig::encode_public(&KeyPair::generate().public());
+
+    let r = s.reporter_on("emp-1", DEEP).await;
+    let t =
+        s.ts.store
+            .reporter_by_token(&clax_core::secret::sha256_hex(&r.token))
+            .unwrap()
+            .unwrap();
+    assert_eq!(t.origin, DEEP);
+    let res = s
+        .as_reporter(&r, Some(DEEP), "GET", &s.reports(), None, vec![])
+        .await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.headers()["access-control-allow-origin"], DEEP);
+    let res = s
+        .as_reporter(
+            &r,
+            Some("https://c.fly.dev"),
+            "GET",
+            &s.reports(),
+            None,
+            vec![],
+        )
+        .await;
+    assert_eq!(status_code(res).await, (403, "wrong_origin".into()));
+
+    for (origin, status) in [("https://fly.dev", 403), (PATTERN, 400)] {
+        let res = s
+            .service(
+                &mint,
+                &json!({"reporter_id": "emp-1", "origin": origin, "public_key": key}),
+            )
+            .await;
+        assert_eq!(res.status(), status, "{origin}");
+    }
+    for (origin, named) in [
+        (DEEP, Some(DEEP)),
+        (PATTERN, None),
+        ("https://fly.dev", None),
+    ] {
+        let res = s
+            .send(
+                "OPTIONS",
+                &s.reports(),
+                &[
+                    ("origin", origin.into()),
+                    ("access-control-request-method", "POST".into()),
+                ],
+                vec![],
+            )
+            .await;
+        let allowed = res.headers().get("access-control-allow-origin");
+        assert_eq!(allowed.map(|v| v.to_str().unwrap()), named, "{origin}");
+    }
+}
+
 /// A page the instance serves at the token's own origin reads with no
 /// `Origin`, as a browser sends a same-origin `GET`: taken as from that
 /// origin when the browser marks it `Sec-Fetch-Site: same-origin` and its

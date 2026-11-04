@@ -645,33 +645,73 @@ fn a_pattern_mints_a_token_bound_to_the_exact_origin_it_matched() {
             ..
         })
     ));
-    // A pattern as broad as a shared domain is refused, made or changed.
-    let broad = || NewQueue {
-        name: "Too broad".into(),
-        origins: vec!["https://*.fly.dev".into()],
-        reporters_see: ReportersSee::Own,
-    };
+    // A `*` label covers whole labels, and the token is still bound to
+    // the one origin minted for.
+    let wide = st
+        .create_queue(
+            DAEMON,
+            None,
+            NewQueue {
+                name: "Every fly.dev app".into(),
+                origins: vec!["https://*.fly.dev".into()],
+                reporters_see: ReportersSee::Own,
+            },
+        )
+        .unwrap();
+    assert_eq!(wide.origins, ["https://*.fly.dev"]);
+    let (wide_grant, _, _) = st
+        .create_service_grant(DAEMON, &wide.id, "backend")
+        .unwrap();
+    let (rt, _) = st
+        .mint_reporter_token(&wide_grant, "emp-1", "https://a.b.fly.dev", &key, None)
+        .unwrap();
+    let t = st.reporter_by_token(&rt.sha256_hex()).unwrap().unwrap();
+    assert_eq!(t.origin, "https://a.b.fly.dev");
     assert!(matches!(
-        st.create_queue(DAEMON, None, broad()),
-        Err(CoreError::Invalid {
-            code: "invalid_origin",
-            ..
-        })
+        st.mint_reporter_token(&wide_grant, "emp-1", "https://fly.dev", &key, None),
+        Err(CoreError::WrongOrigin)
     ));
-    assert!(matches!(
-        st.update_queue(
+    // A bare `*` host, or one label after the last `*`, is refused, made
+    // or changed.
+    for broad in ["https://*", "https://*.dev", "https://pr-*.com"] {
+        let made = st.create_queue(
+            DAEMON,
+            None,
+            NewQueue {
+                name: "Too broad".into(),
+                origins: vec![broad.into()],
+                reporters_see: ReportersSee::Own,
+            },
+        );
+        assert!(
+            matches!(
+                made,
+                Err(CoreError::Invalid {
+                    code: "invalid_origin",
+                    ..
+                })
+            ),
+            "{broad}"
+        );
+        let changed = st.update_queue(
             DAEMON,
             &q.id,
             super::QueuePatch {
-                origins: Some(broad().origins),
+                origins: Some(vec![broad.into()]),
                 ..Default::default()
             },
-        ),
-        Err(CoreError::Invalid {
-            code: "invalid_origin",
-            ..
-        })
-    ));
+        );
+        assert!(
+            matches!(
+                changed,
+                Err(CoreError::Invalid {
+                    code: "invalid_origin",
+                    ..
+                })
+            ),
+            "{broad}"
+        );
+    }
 }
 
 #[test]

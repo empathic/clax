@@ -14,6 +14,8 @@ describe("parseOrigins", () => {
   it("keeps an origin pattern as the server normalizes it", () => {
     expect(parseOrigins("HTTPS://PathBase-PR-*.Fly.Dev:443/\nhttp://dev-*.example.com:8080\nhttps://pathbase-pr-*.fly.dev").origins)
       .toEqual(["https://pathbase-pr-*.fly.dev", "http://dev-*.example.com:8080"]);
+    expect(parseOrigins("HTTPS://*.Fly.Dev/\nhttps://a.*.example.com:443\nhttp://*.*.example.com:80").origins)
+      .toEqual(["https://*.fly.dev", "https://a.*.example.com", "http://*.*.example.com"]);
   });
 
   it("names a pattern line with a * outside the host, a path or another scheme", () => {

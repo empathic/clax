@@ -4478,19 +4478,26 @@ exact origin is `scheme://host[:port]` of `http` or `https`, nothing after
 it, stored as a browser's `Origin` header names it: the host lowercased
 (an internationalized one in its `xn--` form) and a default port left out.
 A pattern holds a `*` in its host and is stored the same way
-(`HTTPS://App-PR-*.Example.com:443/` is `https://app-pr-*.example.com`):
-its scheme and port are exact; its host is ASCII, of labels of `a`-`z`,
-`0`-`9`, `-` and `*`; a `*` stands for one or more of `a`-`z`, `0`-`9` and
-`-` within its own label, never a `.`; a label holds at most one `*` and
-at least one other character beside it; and the labels after the last one
-holding a `*` are at least two, none holding one, the last starting with
-a letter. So `https://app-pr-*.example.com` matches
+(`HTTPS://App-PR-*.Example.com:443/` is `https://app-pr-*.example.com`).
+Its scheme and port are exact, never a `*`; its host, at most 253 bytes,
+is ASCII, of labels of `a`-`z`, `0`-`9`, `-` and `*`, each holding at most
+one `*`. A label that is only `*` stands for one or more whole labels, at
+any place in the host; a `*` beside other characters of its label
+(`pr-*`, `*-eu`) stands for one or more of `a`-`z`, `0`-`9` and `-` within
+that label, never a `.`. A pattern matches DNS names, never an IP
+address, and is never compared as text: an `Origin` equal to a pattern
+is not one it matches. So `https://app-pr-*.example.com` matches
 `https://app-pr-42.example.com`, and not `https://app-pr-.example.com`,
 `https://app-pr-1.evil.example.com`, `https://app-pr-1.example.com.evil.dev`,
 `http://app-pr-1.example.com` or `https://app-pr-1.example.com:8443`;
-`https://*.example.com`, `https://app-*.com` and `https://a**.example.com`
-are refused. Anything else is 400 `invalid_origin`. A queue allows an
-origin it lists, and one a pattern of it matches.
+`https://*.example.com` matches `https://a.example.com` and
+`https://a.b.example.com`, not `https://example.com`; and
+`https://a.*.example.com` matches `https://a.x.y.example.com`, not
+`https://a.example.com`. Too broad, and refused: a bare `*` host
+(`https://*`), and fewer than two labels without a `*` after the last
+label holding one (`https://*.dev`, `https://pr-*.com`,
+`https://a.*.com`). Anything else is 400 `invalid_origin`. A queue allows
+an origin it lists, and one a pattern of it matches.
 
 A reporter token is always bound to one exact origin: a mint
 (`…/reporter-tokens`) names an exact origin the queue allows (a pattern is

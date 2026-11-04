@@ -445,21 +445,30 @@ pub fn normalize_origin(raw: &str) -> Result<String> {
     }
 }
 
+/// The longest host an origin pattern names, and the longest it matches,
+/// in bytes: a DNS name's, so at most 127 labels.
+const MAX_PATTERN_HOST_BYTES: usize = 253;
+
 /// `raw` as a queue lists it: an exact origin ([`normalize_origin`]), or,
 /// when it holds a `*`, an origin pattern normalized the same way (the
 /// host lowercased, a default port left out, nothing after
 /// `host[:port]`).
 ///
-/// A pattern's scheme (`http` or `https`) and port are exact; its host is
-/// ASCII (an internationalized label written as its `xn--` form), of
-/// labels of `a`-`z`, `0`-`9`, `-` and `*`. A `*` stands for one or more
-/// of `a`-`z`, `0`-`9` and `-` within its label, never a `.`; a label
-/// holds at most one `*` and at least one other character beside it, and
-/// the labels after the last one holding a `*` are at least two, none
-/// holding one, the last starting with a letter (a pattern names DNS
-/// names, never an IP address). So `https://app-pr-*.example.com` is a
-/// pattern, and `https://*.example.com`, `https://app-*.com` and
-/// `https://app.*-x.com` are not.
+/// A pattern's scheme (`http` or `https`) and port are exact, never a
+/// `*`. Its host, at most 253 bytes, is ASCII (an internationalized label
+/// written as its `xn--` form), of labels of `a`-`z`, `0`-`9`, `-` and
+/// `*`, each holding at most one `*`:
+///
+/// - a label that is only `*` stands for one or more whole labels, at
+///   any place in the host;
+/// - a label holding a `*` beside other characters (`pr-*`, `*-eu`)
+///   stands for that label with one or more of `a`-`z`, `0`-`9` and `-`
+///   in place of the `*`, never a `.`.
+///
+/// At least two labels without a `*` follow the last label holding one.
+/// So `https://*.example.com`, `https://a.*.example.com` and
+/// `https://app-pr-*.example.com` are patterns, and `https://*`,
+/// `https://*.com`, `https://pr-*.com` and `https://a.*.com` are not.
 ///
 /// # Errors
 /// `invalid_origin` for anything else.
@@ -471,9 +480,9 @@ pub fn normalize_queue_origin(raw: &str) -> Result<String> {
         CoreError::invalid(
             "invalid_origin",
             format!(
-                "{raw:?} is not an origin pattern: a * stands for part of one label of the host, \
-                 beside at least one other character of that label, and is followed by at least \
-                 two labels with none (https://app-pr-*.example.com)"
+                "{raw:?} is not an origin pattern: scheme://host[:port] with a * only in the \
+                 host, as a whole label (https://*.example.com) or part of one \
+                 (https://app-pr-*.example.com), followed by at least two labels without one"
             ),
         )
     })?;
@@ -503,25 +512,28 @@ fn pattern_parts(s: &str) -> Option<(&'static str, String, Option<u16>)> {
         None => (rest, None),
     };
     let host = host.to_ascii_lowercase();
-    let labels: Vec<&str> = host.split('.').collect();
-    let mut after_star = 0;
-    for label in &labels {
+    if host.len() > MAX_PATTERN_HOST_BYTES {
+        return None;
+    }
+    let mut wild = false;
+    let mut tail = 0;
+    for label in host.split('.') {
         let stars = label.bytes().filter(|&b| b == b'*').count();
-        if *label == "*"
-            || label.is_empty()
+        if label.is_empty()
             || label.len() > 63
             || stars > 1
             || !label.bytes().all(|b| label_byte(b) || b == b'*')
         {
             return None;
         }
-        after_star = if stars == 1 { 0 } else { after_star + 1 };
+        if stars == 1 {
+            wild = true;
+            tail = 0;
+        } else {
+            tail += 1;
+        }
     }
-    let starred = labels.iter().any(|l| l.contains('*'));
-    let last_is_name = labels
-        .last()
-        .is_some_and(|l| l.as_bytes()[0].is_ascii_lowercase());
-    if !starred || after_star < 2 || !last_is_name {
+    if !wild || tail < 2 {
         return None;
     }
     Some((scheme, host, port.filter(|&p| p != default_port)))
@@ -534,11 +546,13 @@ fn label_byte(b: u8) -> bool {
 
 /// Whether a queue listing `listed` (each normalized by
 /// [`normalize_queue_origin`]) allows exact origin `origin`: `origin` is
-/// one of them, or, written as [`normalize_origin`] writes it, matched by
-/// one of its patterns (the same scheme and port, and as many labels,
-/// each equal to the pattern's or, for a label holding a `*`, its text
-/// around the `*` with one or more of `a`-`z`, `0`-`9` and `-` in place
-/// of it).
+/// one of its exact origins, or, written as [`normalize_origin`] writes
+/// it with a DNS name for its host (never an IP address), matched by one
+/// of its patterns: the same scheme and port, and a host whose labels,
+/// each of `a`-`z`, `0`-`9` and `-`, are the pattern's, with one or more
+/// whole labels in place of each `*` label and one or more of those
+/// characters in place of each other `*`. A pattern is never compared
+/// as text: `origin` equal to a pattern is not allowed by it.
 pub fn queue_allows_origin(listed: &[String], origin: &str) -> bool {
     listed.iter().any(|l| {
         if l.contains('*') {
@@ -564,20 +578,64 @@ fn pattern_matches(pattern: &str, origin: &str) -> bool {
     let Some(url::Host::Domain(o_host)) = u.host() else {
         return false;
     };
-    let (p_labels, o_labels): (Vec<&str>, Vec<&str>) =
-        (host.split('.').collect(), o_host.split('.').collect());
-    u.scheme() == scheme
-        && u.port() == port
-        && p_labels.len() == o_labels.len()
-        && p_labels
-            .iter()
-            .zip(&o_labels)
-            .all(|(p, o)| label_matches(p, o))
+    if o_host.len() > MAX_PATTERN_HOST_BYTES {
+        return false;
+    }
+    let o_labels: Vec<&str> = o_host.split('.').collect();
+    if !o_labels
+        .iter()
+        .all(|l| !l.is_empty() && l.bytes().all(label_byte))
+    {
+        return false;
+    }
+    let p_labels: Vec<&str> = host.split('.').collect();
+    u.scheme() == scheme && u.port() == port && labels_match(&p_labels, &o_labels)
 }
 
-/// Whether label `o` is pattern label `p`: equal to it, or, when `p`
-/// holds a `*`, its text before and after the `*` around one or more
-/// [`label_byte`]s.
+/// Whether host labels `o` are pattern labels `p`: each `*` label of `p`
+/// in place of one or more labels of `o`, and each other label of `p` in
+/// place of one ([`label_matches`]).
+///
+/// Greedy, without recursion: a `*` label first takes one label, and
+/// when what follows fails, the last `*` met takes one label more and
+/// the labels after it are tried again. The labels between two `*`s each
+/// take exactly one, so the first place they fit is never worse than a
+/// later one, and only the last `*` ever needs to grow. Each retry grows
+/// it by one label, so the work is at most `p.len()` label comparisons
+/// per label of `o`: 127 × 127 for the longest hosts
+/// ([`MAX_PATTERN_HOST_BYTES`]).
+fn labels_match(p: &[&str], o: &[&str]) -> bool {
+    let (mut i, mut j) = (0, 0);
+    // The pattern label after the last `*` met, and the label of `o`
+    // after the labels it takes.
+    let mut star: Option<(usize, usize)> = None;
+    while j < o.len() {
+        match p.get(i) {
+            Some(&"*") => {
+                i += 1;
+                j += 1;
+                star = Some((i, j));
+            }
+            Some(l) if label_matches(l, o[j]) => {
+                i += 1;
+                j += 1;
+            }
+            _ => match star {
+                Some((after, taken)) => {
+                    i = after;
+                    j = taken + 1;
+                    star = Some((after, j));
+                }
+                None => return false,
+            },
+        }
+    }
+    i == p.len()
+}
+
+/// Whether label `o` is pattern label `p`, not a `*` label: equal to it,
+/// or, when `p` holds a `*`, its text before and after the `*` around one
+/// or more [`label_byte`]s.
 fn label_matches(p: &str, o: &str) -> bool {
     match p.split_once('*') {
         None => p == o,
@@ -686,7 +744,11 @@ mod tests {
 
     #[test]
     fn an_exact_origin_holds_no_star() {
-        for bad in ["https://pr-*.fly.dev", "https://pr-%2A.fly.dev"] {
+        for bad in [
+            "https://pr-*.fly.dev",
+            "https://*.fly.dev",
+            "https://pr-%2A.fly.dev",
+        ] {
             assert!(normalize_origin(bad).is_err(), "{bad}");
         }
     }
@@ -702,65 +764,78 @@ mod tests {
             n(" HTTPS://PathBase-PR-*.Fly.Dev/ "),
             "https://pathbase-pr-*.fly.dev"
         );
+        assert_eq!(n("HTTPS://*.Fly.Dev:443/"), "https://*.fly.dev");
         assert_eq!(n("https://pr-*.fly.dev:443"), "https://pr-*.fly.dev");
-        assert_eq!(n("http://pr-*.fly.dev:80/"), "http://pr-*.fly.dev");
+        assert_eq!(n("http://*.fly.dev:80/"), "http://*.fly.dev");
         assert_eq!(n("https://pr-*.fly.dev:8443"), "https://pr-*.fly.dev:8443");
-        assert_eq!(n("http://pr-*.fly.dev:443"), "http://pr-*.fly.dev:443");
-        assert_eq!(n("https://*-app.example.com"), "https://*-app.example.com");
+        assert_eq!(n("http://*.fly.dev:443"), "http://*.fly.dev:443");
+        assert_eq!(n("https://*-eu.example.com"), "https://*-eu.example.com");
         assert_eq!(n("https://a*b.example.com"), "https://a*b.example.com");
         assert_eq!(
             n("https://web.pr-*.xn--bcher-kva.example"),
             "https://web.pr-*.xn--bcher-kva.example"
         );
-        assert_eq!(
-            n("https://a-*.b-*.example.com"),
-            "https://a-*.b-*.example.com"
-        );
+        // Wildcard labels anywhere before the last two, any number of them.
+        for kept in [
+            "https://*.fly.dev",
+            "https://a.*.example.com",
+            "https://*.*.example.com",
+            "https://*.a.*.example.com",
+            "https://*.api-*.example.com",
+            "https://a-*.b-*.example.com",
+        ] {
+            assert_eq!(n(kept), kept);
+        }
         // An exact origin is normalized as before.
         assert_eq!(n("https://App.Example.com:443/"), "https://app.example.com");
     }
 
     #[test]
-    fn broad_or_malformed_patterns_are_refused() {
+    fn a_bare_star_host_or_a_one_label_tail_is_refused_and_so_is_a_malformed_pattern() {
         for bad in [
-            // A label that is only a `*`, or a bare `*` host.
+            // A bare `*` host.
             "https://*",
-            "https://*.fly.dev",
-            "https://*.*.example.com",
-            "https://app.*.example.com",
-            // Fewer than two labels without one after the last `*`.
-            "https://pr-*.dev",
+            "http://*:8080",
+            // One label, or none, after the last label holding a `*`.
+            "https://*.dev",
+            "https://pr-*.com",
+            "https://a.*.com",
+            "https://*.*",
             "https://pr-*.fly-*.dev",
+            "https://*.example.*",
             "https://app.pr-*",
             "https://example.com-*",
             // Two `*`s in one label.
             "https://**.example.com",
             "https://a**.example.com",
             "https://a*b*.example.com",
+            "https://*a*.example.com",
             // A `*` outside the host.
             "http*://pr-*.example.com",
             "*://pr-*.example.com",
             "https://pr-*.example.com:*",
             "https://pr-*.example.com:84*",
             "https://pr-*.example.com/*",
+            "https://example.com:*",
+            "https://example.com/*",
+            // Anything after host[:port], userinfo.
             "https://pr-*.example.com/path",
             "https://pr-*.example.com?q=1",
             "https://pr-*.example.com#f",
             "https://u@pr-*.example.com",
             "https://pr-*.example.com//",
             // Another scheme, no scheme, a bad port.
-            "ftp://pr-*.example.com",
-            "pr-*.example.com",
+            "ftp://*.example.com",
+            "*.example.com",
             "https://pr-*.example.com:",
             "https://pr-*.example.com:65536",
             // Characters a DNS label does not hold, non-ASCII, empty labels.
             "https://pr_*.example.com",
             "https://pr-*.bücher.example",
-            "https://pr-*..example.com",
-            "https://.pr-*.example.com",
-            // An IP address.
-            "https://1*.0.0.1",
-            "https://10.0.*1.1",
+            "https://*..example.com",
+            "https://.*.example.com",
+            "https://*.example.com.",
+            "https://[*::1]",
         ] {
             let e = normalize_queue_origin(bad).expect_err(bad);
             assert!(
@@ -778,10 +853,15 @@ mod tests {
         assert!(normalize_queue_origin(&long).is_err());
         let longest = format!("https://{}*.example.com", "a".repeat(62));
         assert!(normalize_queue_origin(&longest).is_ok());
+        // 253 bytes of host at most.
+        let host = |labels: usize| format!("https://{}example.com", "*.".repeat(labels));
+        assert_eq!(host(121).len() - "https://".len(), 253);
+        assert!(normalize_queue_origin(&host(121)).is_ok());
+        assert!(normalize_queue_origin(&host(122)).is_err());
     }
 
     #[test]
-    fn a_pattern_matches_one_label_of_name_characters_and_nothing_else() {
+    fn a_partial_star_matches_within_its_label_and_nothing_else() {
         let listed = vec![normalize_queue_origin("https://pathbase-pr-*.fly.dev").unwrap()];
         let allows = |o: &str| queue_allows_origin(&listed, o);
         assert!(allows("https://pathbase-pr-538.fly.dev"));
@@ -815,7 +895,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pattern_keeps_its_port_and_its_text_around_the_star() {
+    fn a_partial_star_keeps_its_port_and_its_text_around_the_star() {
         let listed = vec![
             normalize_queue_origin("http://dev-*.example.com:8080").unwrap(),
             normalize_queue_origin("https://*-web.a-*.example.com").unwrap(),
@@ -828,6 +908,127 @@ mod tests {
         assert!(!allows("https://pr-9-web.a-.example.com"));
         assert!(!allows("https://-web.a-x.example.com"));
         assert!(!allows("https://pr-9-web.b-x.example.com"));
+    }
+
+    #[test]
+    fn a_bare_star_matches_one_or_more_whole_labels_where_it_stands() {
+        let allows = |pattern: &str, o: &str| {
+            queue_allows_origin(&[normalize_queue_origin(pattern).unwrap()], o)
+        };
+        let first = "https://*.example.com";
+        assert!(allows(first, "https://a.example.com"));
+        assert!(allows(first, "https://a.b.example.com"));
+        assert!(allows(first, "https://xn--bcher-kva.example.com"));
+        for not in [
+            "https://example.com",
+            "https://aexample.com",
+            "https://a.example.com.evil.dev",
+            "https://a.example.org",
+            "http://a.example.com",
+            "https://a.example.com:8443",
+            "https://A.example.com",
+            "https://a_b.example.com",
+            "https://*.example.com",
+        ] {
+            assert!(!allows(first, not), "{first} {not}");
+        }
+
+        let middle = "https://a.*.example.com";
+        assert!(allows(middle, "https://a.x.example.com"));
+        assert!(allows(middle, "https://a.x.y.example.com"));
+        for not in [
+            "https://a.example.com",
+            "https://b.x.example.com",
+            "https://x.a.x.example.com",
+            "https://a.x.example.org",
+        ] {
+            assert!(!allows(middle, not), "{middle} {not}");
+        }
+
+        let ported = "http://*.example.com:8080";
+        assert!(allows(ported, "http://a.b.example.com:8080"));
+        assert!(!allows(ported, "http://a.example.com"));
+        assert!(!allows(ported, "https://a.example.com:8080"));
+
+        // A later literal that first fits too early: the `*` grows past it.
+        let regrow = "https://*.a.b.example.com";
+        assert!(allows(regrow, "https://a.a.b.a.b.example.com"));
+        assert!(!allows(regrow, "https://a.b.example.com"));
+    }
+
+    #[test]
+    fn several_bare_stars_each_take_at_least_one_label() {
+        let allows = |pattern: &str, o: &str| {
+            queue_allows_origin(&[normalize_queue_origin(pattern).unwrap()], o)
+        };
+        let two = "https://*.*.example.com";
+        assert!(allows(two, "https://a.b.example.com"));
+        assert!(allows(two, "https://a.b.c.d.example.com"));
+        assert!(!allows(two, "https://a.example.com"));
+
+        let apart = "https://*.a.*.example.com";
+        assert!(allows(apart, "https://x.a.y.example.com"));
+        assert!(allows(apart, "https://x.y.a.z.w.example.com"));
+        assert!(allows(apart, "https://a.a.a.example.com"));
+        assert!(!allows(apart, "https://a.y.example.com"));
+        assert!(!allows(apart, "https://x.a.example.com"));
+        assert!(!allows(apart, "https://x.b.y.example.com"));
+    }
+
+    #[test]
+    fn bare_and_partial_stars_mix() {
+        let allows = |pattern: &str, o: &str| {
+            queue_allows_origin(&[normalize_queue_origin(pattern).unwrap()], o)
+        };
+        let mixed = "https://web.*.pr-*.example.com";
+        assert!(allows(mixed, "https://web.eu.pr-7.example.com"));
+        assert!(allows(mixed, "https://web.eu.west.pr-7.example.com"));
+        for not in [
+            "https://web.pr-7.example.com",
+            "https://web.eu.pr-.example.com",
+            "https://web.eu.pr-7.x.example.com",
+            "https://api.eu.pr-7.example.com",
+        ] {
+            assert!(!allows(mixed, not), "{mixed} {not}");
+        }
+        let suffix = "https://*.api-*.example.com";
+        assert!(allows(suffix, "https://a.b.api-eu.example.com"));
+        assert!(!allows(suffix, "https://api-eu.example.com"));
+        let fly = "https://*.fly.dev";
+        assert!(allows(fly, "https://pathbase-pr-538.fly.dev"));
+        assert!(allows(fly, "https://pathbase-pr-1.evil.fly.dev"));
+        assert!(!allows(fly, "https://fly.dev"));
+    }
+
+    #[test]
+    fn a_pattern_matches_dns_names_never_an_ip_address() {
+        // Two labels follow the `*`, so the pattern is kept, but an
+        // origin whose host is an IP address is not a name it matches.
+        let listed = vec![normalize_queue_origin("https://10.*.0.1").unwrap()];
+        assert!(!queue_allows_origin(&listed, "https://10.1.0.1"));
+        assert!(!queue_allows_origin(&listed, "https://10.1.2.0.1"));
+    }
+
+    #[test]
+    fn matching_stays_bounded_on_a_pathological_host() {
+        // 60 `*` labels against 120 labels before `example.com`: a matcher
+        // that tried every split of the labels among the `*`s would not
+        // finish; this one makes at most a pattern's labels of comparisons
+        // per label of the host.
+        let pattern = format!("https://{}x.example.com", "*.".repeat(60));
+        let listed = vec![normalize_queue_origin(&pattern).unwrap()];
+        let miss = format!("https://{}example.com", "b.".repeat(120));
+        assert!(!queue_allows_origin(&listed, &miss));
+        let hit = format!("https://{}x.example.com", "b.".repeat(118));
+        assert!(queue_allows_origin(&listed, &hit));
+        let short = format!("https://{}x.example.com", "b.".repeat(59));
+        assert!(!queue_allows_origin(&listed, &short));
+        // A host longer than a DNS name is matched by nothing.
+        let any = vec![normalize_queue_origin("https://*.example.com").unwrap()];
+        let long = format!("https://{}example.com", "b.".repeat(122));
+        assert!(!queue_allows_origin(&any, &long));
+        let longest = format!("https://{}example.com", "b.".repeat(121));
+        assert!(queue_allows_origin(&any, &longest));
     }
 
     #[test]

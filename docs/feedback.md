@@ -79,12 +79,15 @@ own report queue".
 A preview deployment per branch or pull request has an origin of its own
 (`https://pathbase-pr-538.fly.dev`, `https://pathbase-pr-539.fly.dev`, …).
 List one origin pattern for all of them, `https://pathbase-pr-*.fly.dev`,
-beside your exact origins: a `*` stands for one or more letters, digits
-and `-` within one label of the host, never a `.`, so it matches
-`https://pathbase-pr-538.fly.dev` and not `https://pathbase-pr-1.evil.fly.dev`,
-`https://pathbase-pr-.fly.dev` or another scheme or port. The label holding
-the `*` needs other characters beside it, and at least two labels without
-one must follow it: `https://*.fly.dev` and `https://pr-*.dev` are refused.
+beside your exact origins. A `*` beside other characters stands for one or
+more letters, digits and `-` within its label, never a `.`, so this
+pattern matches `https://pathbase-pr-538.fly.dev` and not
+`https://pathbase-pr-1.evil.fly.dev`, `https://pathbase-pr-.fly.dev` or
+another scheme or port. A label that is only `*` stands for one or more
+whole labels: `https://*.preview.example.com` matches
+`https://pr-538.preview.example.com` and `https://a.b.preview.example.com`.
+A bare `*` host and a pattern with one label after its last `*`
+(`https://*`, `https://*.dev`, `https://pr-*.com`) are refused.
 
 Each preview's backend still mints for its own exact origin (the page's,
 never the pattern), and the token is bound to it: a page on another
