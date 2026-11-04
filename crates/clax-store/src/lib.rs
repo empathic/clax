@@ -982,7 +982,7 @@ pub(crate) mod test_util {
     ///
     /// # Panics
     /// Past the [`HANG`] guard, naming `what`.
-    #[allow(
+    #[expect(
         clippy::disallowed_methods,
         reason = "within is the HANG guard on a wait"
     )]
@@ -997,7 +997,7 @@ pub(crate) mod test_util {
     /// # Panics
     /// Past the [`HANG`] guard, or when every sender is gone first, naming
     /// `what`.
-    #[allow(
+    #[expect(
         clippy::disallowed_methods,
         reason = "recv_within is the HANG guard on a wait"
     )]
@@ -1012,7 +1012,7 @@ pub(crate) mod test_util {
     ///
     /// # Panics
     /// Past the [`HANG`] guard, naming `what`.
-    #[allow(
+    #[expect(
         clippy::disallowed_methods,
         reason = "wait_until polls its condition under the HANG guard; nothing is decided by how long it takes"
     )]
@@ -1029,7 +1029,7 @@ pub(crate) mod test_util {
     ///
     /// # Panics
     /// Past the [`HANG`] guard, naming `what`.
-    #[allow(
+    #[expect(
         clippy::disallowed_methods,
         reason = "until polls its condition under the HANG guard; nothing is decided by how long it takes"
     )]

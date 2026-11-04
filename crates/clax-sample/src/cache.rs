@@ -86,7 +86,7 @@ mod tests {
         }
     }
 
-    #[allow(
+    #[expect(
         clippy::disallowed_methods,
         reason = "t0 is an origin only: the cache is given each time, t0 plus a fixed offset"
     )]

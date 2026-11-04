@@ -8,8 +8,8 @@
 # a `-c` script) is a finding, and a reading printed, a name reassigned, a
 # poll bounded by a count and a redirection are not; an exemption with its
 # reason (on the line or alone before it) passes, one without a reason or
-# with nothing to exempt is a finding; report mode exits 0 with its
-# findings printed, CLAX_TIMING=deny exits 1; with no file it scans every
+# with nothing to exempt is a finding, and a finding fails it, printed;
+# with no file it scans every
 # script an sh_test in scripts/BUILD.bazel runs, the smoke and other test
 # scripts, and not the perf benchmarks, product scripts or itself.
 # shellcheck disable=SC2016 # the cases are script text, never expanded here
@@ -20,7 +20,7 @@ trap 'rm -rf "$d"' EXIT
 fails=0
 expect() { # expect flagged|pass NAME CONTENT
     printf '%s\n' "$3" > "$d/$2"
-    if CLAX_TIMING=deny scripts/check-test-timing.sh "$d/$2" > "$d/out" 2>&1; then got=pass; else got=flagged; fi
+    if scripts/check-test-timing.sh "$d/$2" > "$d/out" 2>&1; then got=pass; else got=flagged; fi
     if [ "$got" = "$1" ]; then echo "PASS: $2 $1"; else echo "FAIL: $2 expected $1, got $got"; cat "$d/out"; fails=1; fi
 }
 expect flagged sleep.sh 'sleep 1'
@@ -115,10 +115,10 @@ expect pass marked-above.sh '# timing: the poll of a condition with a hang guard
 sleep 0.05'
 
 printf 'sleep 1\n' > "$d/report.sh"
-out="$(env -u CLAX_TIMING scripts/check-test-timing.sh "$d/report.sh" 2>&1)" && rc=0 || rc=$?
+out="$(scripts/check-test-timing.sh "$d/report.sh" 2>&1)" && rc=0 || rc=$?
 case "$rc:$out" in
-    0:*"$d/report.sh:1: sleep:"*) echo "PASS: report mode prints and passes" ;;
-    *) echo "FAIL: report mode: exit $rc, output: $out"; fails=1 ;;
+    1:*"$d/report.sh:1: sleep:"*) echo "PASS: a finding prints and fails" ;;
+    *) echo "FAIL: a finding: exit $rc, output: $out"; fails=1 ;;
 esac
 
 # --sh-tests: the srcs of each sh_test call in a BUILD file, and no other
@@ -173,11 +173,8 @@ else
     fails=1
 fi
 
-if out="$(env -u CLAX_TIMING scripts/check-test-timing.sh 2>&1)"; then
-    case "$out" in
-        *"timing finding"*) echo "PASS: the repository's scripts are scanned (findings: report mode)" ;;
-        *) echo "PASS: the repository's scripts are scanned and clean" ;;
-    esac
+if out="$(scripts/check-test-timing.sh 2>&1)"; then
+    echo "PASS: the repository's scripts are scanned and clean"
 else
     echo "FAIL: scanning the repository's scripts failed: $out"
     fails=1

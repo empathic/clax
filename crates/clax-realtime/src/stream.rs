@@ -2258,7 +2258,7 @@ mod tests {
     /// The wall clock the hub stamps a detach with, read before and after
     /// one to bracket its stamp: a sweep placed against those readings
     /// holds however long each step takes.
-    #[allow(
+    #[expect(
         clippy::disallowed_methods,
         reason = "brackets the hub's own wall-clock stamp; no check depends on how long a step takes"
     )]

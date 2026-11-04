@@ -365,8 +365,7 @@ sh_test(
 # The test scripts' timing rule (scripts/check-test-timing.sh): no sleep
 # standing in for a condition, no clock reading judged, in the scripts
 # this file's sh_tests run (it reads their srcs here) and the other test
-# and smoke scripts. Report mode: it prints its findings and passes;
-# --config=timing (CLAX_TIMING=deny) fails on one. And its test.
+# and smoke scripts: a finding fails it. And its test.
 sh_test(
     name = "test_timing",
     srcs = ["check-test-timing.sh"],
@@ -386,8 +385,8 @@ sh_test(
 )
 
 # Every piece of Rust test code turns clippy's timing lint back on
-# (scripts/check-rust-test-timing.sh): --config=timing allows it on the
-# command line, so that product code is never flagged. And its test.
+# (scripts/check-rust-test-timing.sh): .bazelrc's build:clippy allows it
+# on the command line, so that product code is never flagged. And its test.
 sh_test(
     name = "rust_test_timing",
     srcs = ["check-rust-test-timing.sh"],

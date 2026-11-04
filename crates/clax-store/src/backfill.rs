@@ -1641,7 +1641,7 @@ pub(crate) mod tests {
     /// A reporter that drops what it is told, for driving a batch by hand.
     /// Its times pace only those reports and the tracing log, which no
     /// test reads.
-    #[allow(
+    #[expect(
         clippy::disallowed_methods,
         reason = "a Reporter's times start at a real Instant; they pace only reports and logs no test reads"
     )]
@@ -2429,7 +2429,7 @@ pub(crate) mod tests {
     /// (default 10). Run in release, alone, under `/usr/bin/time -l`.
     #[test]
     #[ignore = "a measurement, not a check"]
-    #[allow(
+    #[expect(
         clippy::disallowed_methods,
         reason = "a measurement run by hand: it prints wall time and decides nothing by it"
     )]
@@ -2478,7 +2478,7 @@ pub(crate) mod tests {
     /// release, alone, under `/usr/bin/time -l`.
     #[test]
     #[ignore = "a measurement, not a check"]
-    #[allow(
+    #[expect(
         clippy::disallowed_methods,
         reason = "a measurement run by hand: it prints wall time and decides nothing by it"
     )]
@@ -3124,7 +3124,7 @@ pub(crate) mod tests {
     /// all (default 500). Run in release, alone, under `/usr/bin/time -l`.
     #[test]
     #[ignore = "a measurement, not a check"]
-    #[allow(
+    #[expect(
         clippy::disallowed_methods,
         reason = "a measurement run by hand: it prints wall time and decides nothing by it"
     )]

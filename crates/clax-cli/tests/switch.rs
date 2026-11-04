@@ -325,7 +325,7 @@ fn serve_replaces_a_real_older_daemon_and_ends_its_event_streams() {
 
 /// Records, as a rolled-back upgrade does, that upgrading to this binary
 /// failed just now.
-#[allow(
+#[expect(
     clippy::disallowed_methods,
     reason = "the CLI ages a failed upgrade on the system's clock, so it is recorded at the system's time"
 )]

@@ -883,7 +883,7 @@ impl Call {
 /// first whole frame (a blank line) that is not `event: ready`
 /// (`ready` carries no content). Fails when none comes within the
 /// [`HANG`](crate::HANG) guard.
-#[allow(
+#[expect(
     clippy::disallowed_methods,
     reason = "the HANG guard on the first frame, whose bytes the failure names"
 )]

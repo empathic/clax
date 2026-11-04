@@ -812,7 +812,7 @@ pub const HANG: Duration = Duration::from_secs(120);
 ///
 /// # Panics
 /// Past the [`HANG`] guard.
-#[allow(
+#[expect(
     clippy::disallowed_methods,
     reason = "within is the HANG guard on a wait"
 )]

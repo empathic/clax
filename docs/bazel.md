@@ -90,7 +90,9 @@ never runs `cargo check` into a `target/`; for VS Code, in
 
 Use `scripts/bazel-test.sh` rather than `--config=clippy` by hand: it gives
 `crates/clax-commands` its own `clippy.toml`, which Bazel takes only one of per
-command. It holds off idle sleep on macOS while it runs; a plain
+command, with the `clippy::disallowed_methods` lint that `--config=clippy`
+allows for the timing rules (the root `clippy.toml`'s, for test code only:
+docs/usage.md, "Developing Clax") turned back on. It holds off idle sleep on macOS while it runs; a plain
 `bazelisk test` does not (`caffeinate -i bazelisk test …` does).
 
 ## Keeping Bazel in step with Cargo
@@ -630,7 +632,7 @@ Performance gates nothing in either (`just perf` measures on demand).
 | build clax, build tests | the build of `//crates/...` in the one `bazel test` |
 | cargo nextest (or cargo test) | every Rust test target, `tests(//crates/...)`, the integration tests in a few targets per crate |
 | cargo fmt --check | `--config=fmt` over `//crates/...` |
-| cargo clippy | `--config=clippy` over `//crates/...`: each library, binary and test target; `crates/clax-commands` again with its own `clippy.toml` |
+| cargo clippy | `--config=clippy` over `//crates/...`: each library, binary and test target, the timing rules in test code only; `crates/clax-commands` again with its own `clippy.toml` and its disallowed methods errors |
 | release build | `//crates/clax-cli:clax_opt` |
 | justfile | `scripts/test-justfile.sh`, outside Bazel |
 | release scripts | `//scripts:release` |

@@ -231,7 +231,7 @@ fn pointed(pointer: &Path) -> Option<PathBuf> {
 
 /// Marks the kept copy's directory used, as `stable-bin.sh` does, so its
 /// pruning keeps a copy runs still take.
-#[allow(
+#[expect(
     clippy::disallowed_methods,
     reason = "a directory's modification time is the real time, as stable-bin.sh's pruning reads it"
 )]

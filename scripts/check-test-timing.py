@@ -6,8 +6,7 @@ exemption.
     scripts/check-test-timing.py FILE...
     scripts/check-test-timing.py --sh-tests BUILD
 
-The first form exits 1 when it printed anything and CLAX_TIMING is
-`deny` (DEFAULT when unset), 0 otherwise (report mode). The second
+The first form exits 1 when it printed anything. The second
 prints the scripts the `sh_test` targets of the BUILD file BUILD run
 (each one's `srcs`), one per line. scripts/check-test-timing.sh, which
 lists the files, describes the contract.
@@ -48,9 +47,6 @@ SHELL_ASSIGN = re.compile(r"(?:^|(?<=[\s;(]))([A-Za-z_]\w*)=(?!=)", re.A)
 SHELL_COMPARE = re.compile(r"\s-(?:lt|le|gt|ge)\s", re.A)
 NOT_COMPARE = re.compile(r"\d?>&\d?|&>|\d>|>>|<<-?|<<<|[<>]\(|->|=>|[<>]\s*[\"$/]", re.A)
 COMPARE = re.compile(r"(?<![<>=!])(?:<=?|>=?)(?![<>=])", re.A)
-# Report mode until the scripts are clean: "deny" here makes a finding
-# fail every run, as CLAX_TIMING=deny (--config=timing) does now.
-DEFAULT = "report"
 # The exemption, at the end of the line or alone on the line before it.
 MARK = re.compile(r"#\s*timing:\s*(.*)$", re.A)
 HINT = {
@@ -203,11 +199,9 @@ def main(args):
     found = [f for path in args for f in check(path)]
     for f in found:
         print(f)
-    deny = os.environ.get("CLAX_TIMING", DEFAULT) == "deny"
     if found:
-        mode = "failing (CLAX_TIMING=deny)" if deny else "report mode: CLAX_TIMING=deny makes them fail"
-        print(f"{len(found)} timing finding(s) in the test scripts ({mode})", file=sys.stderr)
-    return 1 if found and deny else 0
+        print(f"{len(found)} timing finding(s) in the test scripts", file=sys.stderr)
+    return 1 if found else 0
 
 
 if __name__ == "__main__":

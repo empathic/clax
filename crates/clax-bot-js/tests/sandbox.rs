@@ -18,7 +18,7 @@ const HANG: Duration = Duration::from_secs(120);
 /// `fut`'s output, bounded by the [`HANG`] guard: panics naming `what`
 /// when `fut` has none by then (`clax_testkit::within`, which these tests
 /// do not reach).
-#[allow(
+#[expect(
     clippy::disallowed_methods,
     reason = "within is the HANG guard on a wait"
 )]
