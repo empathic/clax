@@ -654,7 +654,7 @@ void main() {
 
       flows.publisher.waiting.addListener(check);
       check();
-      await waits.future.timeout(const Duration(minutes: 1));
+      await waits.future.timeout(stuckAfter);
       flows.publisher.waiting.removeListener(check);
     });
     expect(flows.publisher.waiting.value, {aid});

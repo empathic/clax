@@ -40,6 +40,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
+import 'held_clock.dart';
 import 'rig.dart';
 import 'tool_script.dart' show RecordingRunner, scriptIcon;
 
@@ -51,8 +52,11 @@ void main() {
   ) async {
     final runner = RecordingRunner([_makeRun]);
     late final Rig rig;
+    final held = HeldClock();
+    addTearDown(held.release);
     final inspector = WebViewInspector(
       surface: (_) => Rig.coreSurface(rig.schemes),
+      clock: held,
     );
     rig = await Rig.create(
       backend: ScriptedBackend(const []),
@@ -577,10 +581,13 @@ Future<T> _wait<T>(WidgetTester tester, String what, Future<T> f) async {
       },
     ),
   );
+  // ignore: timing_wall_clock -- the hang guard's deadline: it ends a stuck wait, never decides a result
   final end = DateTime.now().add(const Duration(minutes: 3));
   while (!done) {
     await tester.pump();
+    // ignore: timing_wall_clock -- the hang guard's deadline: it ends a stuck wait, never decides a result
     if (DateTime.now().isAfter(end)) fail('timed out waiting for $what');
+    // ignore: timing_delay -- the poll interval of a condition wait under a hang guard
     await Future<void>.delayed(const Duration(milliseconds: 50));
   }
   if (error case final e?) Error.throwWithStackTrace(e, trace!);

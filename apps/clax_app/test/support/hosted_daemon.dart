@@ -5,12 +5,25 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'paths.dart';
+import 'settle.dart' show stuckAfter, waitUntil;
+
+/// The `sh -c` script the daemon runs under (`sh -c _held sh <clax> serve
+/// …`), as web/e2e/fixtures.ts runs its daemons: a background reader of the
+/// shell's standard input (a pipe this process holds and never writes; fd
+/// 3, since a background job's own input is /dev/null) sends the daemon
+/// SIGTERM when that input ends, and the shell execs the daemon, which
+/// keeps the shell's PID (so [Process.kill] and the exit code are the
+/// daemon's). The input ends when the system closes this process's end of
+/// it, as this process ends, however it ends.
+const _held =
+    r'exec 3<&0; (cat <&3; kill -TERM $$) >/dev/null 2>&1 & exec "$@" </dev/null 3<&-';
 
 /// A hosted Clax (a public Clax): the `clax` binary CLAX_TEST_BIN names,
 /// served in hosted mode on a scratch home under [scratchRoot] and a free
 /// port of 127.0.0.1, its owner set up as "Ada" by the setup secret, and
 /// stopped by its PID, then its home deleted, in tear-downs that run on a
-/// failure or a timeout too.
+/// failure or a timeout too. It runs under [_held], so a test process that
+/// ends without its tear-downs leaves no daemon behind.
 class HostedDaemon {
   HostedDaemon._(this.origin, this._cookie);
 
@@ -44,8 +57,19 @@ class HostedDaemon {
       'setup_secret_env = "CLAX_E2E_SETUP_SECRET"\n',
     );
     final p = await Process.start(
-      claxBin()!,
-      ['serve', '--foreground', '--bind', '127.0.0.1', '--port', '$port'],
+      '/bin/sh',
+      [
+        '-c',
+        _held,
+        'sh',
+        claxBin()!,
+        'serve',
+        '--foreground',
+        '--bind',
+        '127.0.0.1',
+        '--port',
+        '$port',
+      ],
       environment: {
         'CLAX_HOME': home.path,
         'CLAX_CODEX_BIN': '',
@@ -61,40 +85,37 @@ class HostedDaemon {
     });
     var exited = false;
     unawaited(p.exitCode.then((_) => exited = true));
-    String? token;
     addTearDown(() async {
-      if (token != null) {
-        await _send(
-          'POST',
-          Uri.parse('$origin/api/admin/shutdown'),
-          headers: {'authorization': 'Bearer $token'},
-        ).catchError((_) => (0, '', <String, String>{}));
-      }
-      final ended = await p.exitCode
-          .timeout(const Duration(seconds: 10), onTimeout: () => -1);
+      // SIGTERM to its PID; SIGKILL if its drain does not end.
+      p.kill();
+      final ended = await p.exitCode.timeout(stuckAfter, onTimeout: () => -1);
       if (ended == -1) {
         p.kill(ProcessSignal.sigkill);
-        await p.exitCode.timeout(const Duration(seconds: 10), onTimeout: () => -1);
+        await p.exitCode;
       }
     });
     // Up when its daemon.json names its token and /healthz answers.
     final info = File('${home.path}/daemon.json');
-    final deadline = DateTime.now().add(const Duration(minutes: 1));
-    while (true) {
-      if (exited) {
-        throw StateError('the hosted daemon exited before it started: $stderr');
-      }
-      if (DateTime.now().isAfter(deadline)) {
-        throw StateError('the hosted daemon did not start: $stderr');
-      }
-      try {
-        token ??= (jsonDecode(info.readAsStringSync()) as Map)['token'] as String;
-        final (s, _, _) = await _send('GET', Uri.parse('$origin/healthz'));
-        if (s == 200) break;
-      } on Object {
-        // Not written, not whole, or not listening yet.
-      }
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+    try {
+      await waitUntil(() async {
+        if (exited) {
+          throw StateError(
+            'the hosted daemon exited before it started: $stderr',
+          );
+        }
+        try {
+          final json = jsonDecode(info.readAsStringSync()) as Map;
+          if (json['token'] is! String) return false;
+          final (s, _, _) = await _send('GET', Uri.parse('$origin/healthz'));
+          if (s == 200) return true;
+        } on Object {
+          // Not written, not whole, or not listening yet.
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        return false;
+      }, what: 'the hosted daemon to start');
+    } on TestFailure {
+      throw StateError('the hosted daemon did not start: $stderr');
     }
     final (s, body, headers) = await _send(
       'POST',
@@ -137,7 +158,7 @@ class HostedDaemon {
         r.headers.contentType = ContentType.json;
         r.write(jsonEncode(body));
       }
-      final res = await r.close().timeout(const Duration(seconds: 30));
+      final res = await r.close().timeout(stuckAfter);
       final text = await res.transform(utf8.decoder).join();
       final h = <String, String>{};
       res.headers.forEach((k, v) => h[k] = v.join(', '));

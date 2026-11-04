@@ -27,6 +27,7 @@ import '../agent/tools/support.dart';
 import '../support/fake_core.dart';
 import '../support/fake_core_jobs.dart';
 import '../support/paths.dart';
+import '../support/settle.dart' show stuckAfter;
 
 /// The effect runner over [FakeCore]'s job routes: here, and not in
 /// `update`'s tests, the routes, the owner's header and the bodies are
@@ -999,7 +1000,7 @@ void main() {
           '/api/jobs/k/questions/h1',
           headers: {'content-type': 'application/json', EffectRunner.ownerHeader: token},
           body: Uint8List.fromList(utf8.encode('{}')),
-          timeout: const Duration(seconds: 5),
+          timeout: stuckAfter,
         );
         expect(a.status, 400);
         expect(utf8.decode(a.body), contains('invalid_question'));
@@ -1013,7 +1014,7 @@ void main() {
           '/api/jobs/j',
           headers: {'content-type': 'application/json', EffectRunner.ownerHeader: token},
           body: Uint8List.fromList(utf8.encode(jsonEncode({'if_rev': 2, 'state': 'sleeping'}))),
-          timeout: const Duration(seconds: 5),
+          timeout: stuckAfter,
         );
         expect(a.status, 422);
         expect(jobs.row('j')['rev'], 2);

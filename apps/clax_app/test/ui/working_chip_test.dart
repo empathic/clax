@@ -493,10 +493,12 @@ void main() {
               rig.build(brightness: b, textScale: scale, boundary: key),
             );
             await tester.pump(const Duration(seconds: 1));
-            // Let the thumbnail decode.
-            await tester.runAsync(
-              () => Future<void>.delayed(const Duration(milliseconds: 50)),
-            );
+            // Decode the thumbnail before the capture.
+            await tester.runAsync(() async {
+              for (final e in find.byType(Image).evaluate()) {
+                await precacheImage((e.widget as Image).image, e);
+              }
+            });
             await tester.pump();
             expect(tester.takeException(), isNull);
             final boundary = tester.renderObject<RenderRepaintBoundary>(
@@ -522,8 +524,10 @@ void main() {
 /// A screenshot of the page for the render's thumbnail, drawn once.
 Uint8List? _screenshot;
 
-/// Flutter's Roboto and Material Icons, so renders look as on a phone.
+/// The thumbnail's screenshot, and Flutter's Roboto and Material Icons so
+/// renders look as on a phone.
 Future<void> _loadFonts() async {
+  _screenshot ??= await _drawScreenshot();
   final root = Platform.environment['FLUTTER_ROOT'];
   // The renders are drawn with the test's own fonts where the SDK's are not
   // at hand (a Bazel test has no FLUTTER_ROOT).
@@ -540,7 +544,6 @@ Future<void> _loadFonts() async {
 
   await load('Roboto', ['Roboto-Regular.ttf', 'Roboto-Medium.ttf']);
   await load('MaterialIcons', ['MaterialIcons-Regular.otf']);
-  _screenshot = await _drawScreenshot();
 }
 
 /// A phone-shaped picture of a page: a title, three rows and a total.
