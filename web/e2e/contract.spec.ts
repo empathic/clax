@@ -168,6 +168,9 @@ const CASES: Record<string, Case> = {
       await expect(page.getByText("Red square")).toBeVisible();
       await page.locator("textarea").fill("Make it blue.");
       await post.click();
+      // Posted, and the composer closed: a page's openComposer while one is
+      // open closes it instead (shell/src/caps/comments.ts).
+      await expect(post).toHaveCount(0);
       // Out of comment mode, openComposer: the composer opens on the card; the viewer posts.
       await page.getByRole("button", { name: "Comment", exact: true }).click();
       await expect(f.locator("#status")).toHaveText("mode false");

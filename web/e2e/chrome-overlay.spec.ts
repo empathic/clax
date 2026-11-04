@@ -10,7 +10,6 @@
 // what only a person can check.
 import type { CDPSession, Locator, Page } from "@playwright/test";
 import { spawnSync } from "node:child_process";
-import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -250,29 +249,20 @@ test("comment on a dev server page, reach the agent, and follow a hot reload", a
   // A hot update keeps the pin; removing the button detaches it.
   const main = join(live.siteDir, "main.js");
   const found = async () => (await h.state(tabId))?.resolved[tid]?.found;
-  // macOS can drop a file event under load: the edit is written again
-  // (the same text) every few seconds until Vite's watcher reports it.
-  const edit = async (from: string, to: string) => {
-    const text = readFileSync(main, "utf8").replace(from, to);
-    const heard = once(live.site.watcher, "change").then(() => true);
-    const given = { up: false };
-    try {
-      await within((async () => {
-        while (!given.up) {
-          writeFileSync(main, text);
-          if (await Promise.race([heard, new Promise<false>(r => setTimeout(() => r(false), 3000))])) return;
-        }
-      })(), "Vite's watcher did not report the edit");
-    } finally {
-      given.up = true;
-    }
+  // The dev server watches no files (extension-fixtures.ts): the edit
+  // tells it of the change, as its file watcher would have.
+  const edit = (from: string, to: string) => {
+    const text = readFileSync(main, "utf8");
+    expect(text).toContain(from);
+    writeFileSync(main, text.replace(from, to));
+    live.site.watcher.emit("change", main);
   };
   // A marker a full reload would lose: the update must be Vite's hot one.
   await page.evaluate(() => { (window as unknown as { claxHot: boolean }).claxHot = true; });
-  await edit('const LABEL = "Save"', 'const LABEL = "Save changes"');
+  edit('const LABEL = "Save"', 'const LABEL = "Save changes"');
   await expect(page.locator("#save")).toHaveText("Save changes");
   await expect.poll(found).toBe(true);
-  await edit('const LABEL = "Save changes"', 'const LABEL = ""');
+  edit('const LABEL = "Save changes"', 'const LABEL = ""');
   await expect(page.locator("#save")).toHaveCount(0);
   await expect.poll(found).toBe(false);
   await expect.poll(() => panel.text()).toContain("Detached");
@@ -463,10 +453,11 @@ test("the panel lists the site's other pages, answers and resolves their threads
   const panel = await SidePanel.open(live, page, tabId);
   // An agent session is live, so the pairing this tab started waits for the person.
   await confirmPairing(live);
-  // This page's thread, then both other pages under their paths.
-  await expect.poll(() => panel.text()).toContain("Elsewhere on this site");
-  const text = await panel.text();
-  expect(text.indexOf("Home button note")).toBeLessThan(text.indexOf("Elsewhere on this site"));
+  // This page's thread, then both other pages under their paths. Until the
+  // panel knows the tab's page (its state's `page`), every page of the site,
+  // this one too, is listed elsewhere.
+  const homeFirst = (t: string) => t.includes("Home button note") && t.indexOf("Home button note") < t.indexOf("Elsewhere on this site");
+  const text = await until(async () => { const t = await panel.text(); return homeFirst(t) ? t : null; });
   for (const s of ["/users/1.html", "/users/2.html", "User one heading note", "User two heading note"]) expect(text).toContain(s);
 
   // The other pages' threads whose anchors are on this screen are pinned here too.
@@ -555,8 +546,10 @@ test("two ports of one app join into one site: suggested, joined, listed and pin
   const h = hook(live);
   // The same app on a second port, as a dev server that moved would serve it.
   const port = await freePort();
-  // Bound on the host name its URL uses, so the probe and the navigation reach it as named.
-  const second = await createServer({ root: live.siteDir, configFile: false, logLevel: "silent", server: { port, host: "localhost", strictPort: true } });
+  // Bound on the host name its URL uses, so the probe and the navigation
+  // reach it as named. It watches no files, as the first does
+  // (extension-fixtures.ts): no late file event reloads its page.
+  const second = await createServer({ root: live.siteDir, configFile: false, logLevel: "silent", server: { port, host: "localhost", strictPort: true, watch: null } });
   await second.listen();
   const O1 = new URL(live.siteUrl).origin;
   const O2 = `http://localhost:${port}`;
@@ -1220,10 +1213,15 @@ test.describe("with a person connected on the LAN", () => {
       await expect.poll(() => panel.eval<number>("document.querySelectorAll('.irow[data-unread]').length")).toBe(1);
       expect(await panel.eval<boolean>(`document.querySelector('[data-item="${approval.id}"] .dot').disabled`)).toBe(true);
       await shots("inbox-approval");
+      // The tab it opens asks for the card's address, heard as its
+      // navigation: once its tags load, the inbox rewrites its URL to its
+      // filter's, without `?approval=`.
+      const opened = live.ctx.waitForEvent("request", r => r.isNavigationRequest() && r.url().endsWith(approval.url));
       await panel.click(/Sam wants to reach your agent/);
-      const shell = await until(() => live.ctx.pages().find(p => p.url().endsWith(approval.url)) ?? null);
+      const asked = await opened;
       // On the paired daemon, as the owner.
-      expect(new URL(shell.url()).port).toBe(String(d.port));
+      expect(new URL(asked.url()).port).toBe(String(d.port));
+      const shell = await until(() => live.ctx.pages().find(p => { const u = new URL(p.url()); return u.port === String(d.port) && u.pathname === "/inbox"; }));
       await expect(shell.locator(".acard")).toBeFocused();
       await expect(shell.locator(".acard .ahead")).toContainText("Sam wants to reach your agent");
       // Unread until decided.

@@ -21,7 +21,6 @@
 //
 // CLAX_E2E_SHOTS=1 writes screenshots to target/hosted-shots/ (for looking
 // at, not compared).
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,7 +29,7 @@ import { runDemo } from "../../demo/lib/agents";
 import { acceptInvite, type PersonSession } from "../../demo/lib/http";
 import { HEADING_ANCHOR, seed } from "../../demo/lib/seed";
 import { freePort, gitToken, startWorker, type RunningWorker } from "../../demo/lib/worker";
-import { expect, setName, test } from "./fixtures";
+import { expect, run, setName, test } from "./fixtures";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const SECRET = "e2e worker demo secret";
@@ -46,7 +45,7 @@ async function signedIn(ctx: BrowserContext, origin: string, who: PersonSession)
 /** Shows the newest version on `p`: the top bar offers an agent's new version as Reload. */
 async function showLatest(p: Page) {
   const reload = p.getByRole("button", { name: "Reload" });
-  await expect(reload).toBeVisible({ timeout: 20_000 });
+  await expect(reload).toBeVisible();
   await reload.click();
   await expect(reload).toHaveCount(0);
 }
@@ -94,11 +93,9 @@ async function wave(p: Page, frame: FrameLocator) {
 }
 
 /** Runs git with no user or system configuration and no prompts; answers its stdout. */
-function git(cwd: string, args: string[]): string {
-  const r = spawnSync("git", args, {
+async function git(cwd: string, args: string[]): Promise<string> {
+  const r = await run("git", args, {
     cwd,
-    encoding: "utf8",
-    timeout: 60_000,
     env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" },
   });
   if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.status ?? r.signal} ${r.stderr}`);
@@ -117,7 +114,9 @@ const BUILT = existsSync(join(ROOT, "target/clax-worker/build/index.js")) && exi
 test("the demo on the Worker: two people live, agents drafting and publishing, comments answered and held, a spectator, a fork and a git clone", async ({ browser }) => {
   test.skip(process.env.CLAX_E2E_WORKER !== "1", "runs with CLAX_E2E_WORKER=1, once the Worker is built");
   test.skip(!BUILT, "build the web UI and the Worker first: scripts/build-web.sh, then crates/clax-worker/build.sh");
-  test.setTimeout(240_000);
+  // Its hang guard is three times the suite's: it starts the Worker and
+  // goes through the whole demo, with a git clone.
+  test.slow();
   const port = await freePort();
   pruneRuns(join(ROOT, "target/e2e-demo-worker"));
   const dir = join(ROOT, `target/e2e-demo-worker/run-${Date.now()}-${process.pid}`);
@@ -142,7 +141,7 @@ test("the demo on the Worker: two people live, agents drafting and publishing, c
       await expect.poll(async () => {
         await wave(from, from.frameLocator("iframe.frame"));
         return arrows(to).count();
-      }, { timeout: 20_000 }).toBeGreaterThan(0);
+      }).toBeGreaterThan(0);
     }
     await shot(rae, "two-live-1280-light");
     await shot(mia, "two-live-1280-dark");
@@ -156,7 +155,7 @@ test("the demo on the Worker: two people live, agents drafting and publishing, c
     });
     // The agents draft live: the bar above the page names one drafting.
     const drafting = rae.locator(".banner.draft");
-    await expect(drafting).toContainText(/-writer.* drafting/, { timeout: 30_000 });
+    await expect(drafting).toContainText(/-writer.* drafting/);
     await shot(rae, "drafting-1280-light");
     // Their last drafts land in both browsers, each round's conflicts merged.
     await ready;
@@ -207,7 +206,7 @@ test("the demo on the Worker: two people live, agents drafting and publishing, c
     const dialog = rae.getByRole("dialog", { name: "Clone with git or jj" });
     await expect(dialog.locator("input[type=radio]")).toHaveCount(2);
     await dialog.getByRole("button", { name: "Make a token" }).click();
-    const command = (await dialog.locator("pre[aria-label=git]").textContent({ timeout: 20_000 })) ?? "";
+    const command = (await dialog.locator("pre[aria-label=git]").textContent()) ?? "";
     await shot(rae, "clone-1280-light");
     await rae.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
@@ -216,12 +215,12 @@ test("the demo on the Worker: two people live, agents drafting and publishing, c
     const [, token, remote] = shown!;
     expect(remote).toBe(`${origin}/git/a-${brief}.git`);
     const clone = join(dir, "brief");
-    git(dir, ["-c", `http.extraHeader=Authorization: Bearer ${token}`, "clone", "-q", remote, clone]);
+    await git(dir, ["-c", `http.extraHeader=Authorization: Bearer ${token}`, "clone", "-q", remote, clone]);
     // The demo's printed token: the same route, as Rae.
     const printed = await gitToken(s.owner.session, brief, "read");
     expect(printed.scope).toBe("read");
-    git(dir, ["-c", `http.extraHeader=Authorization: Bearer ${printed.token}`, "clone", "-q", printed.remote, join(dir, "brief-printed")]);
-    const commits = git(clone, ["log", "--format=%(trailers:key=Clax-Version,valueonly,separator=)|%(trailers:key=Clax-Publisher,valueonly,separator=)|%(trailers:key=Clax-Agent,valueonly,separator=)"])
+    await git(dir, ["-c", `http.extraHeader=Authorization: Bearer ${printed.token}`, "clone", "-q", printed.remote, join(dir, "brief-printed")]);
+    const commits = (await git(clone, ["log", "--format=%(trailers:key=Clax-Version,valueonly,separator=)|%(trailers:key=Clax-Publisher,valueonly,separator=)|%(trailers:key=Clax-Agent,valueonly,separator=)"]))
       .trim().split("\n").map((l) => l.split("|"));
     const current = (await s.owner.session.call<{ artifact: { current_version: number } }>("GET", `/api/artifacts/${brief}`)).artifact.current_version;
     expect(commits.map((c) => Number(c[0]))).toEqual(Array.from({ length: current }, (_, i) => current - i));
@@ -237,12 +236,12 @@ test("the demo on the Worker: two people live, agents drafting and publishing, c
     await guest.goto(`${origin}/a/${brief}`);
     await setName(guest, "Sam");
     await expect(guest.getByRole("button", { name: /^Comment/ })).toBeEnabled();
-    await expect.poll(async () => (await (await guest.request.get(`${origin}/api/artifacts/${brief}/snapshot`)).json()).seats_free, { timeout: 20_000 }).toBe(0);
+    await expect.poll(async () => (await (await guest.request.get(`${origin}/api/artifacts/${brief}/snapshot`)).json()).seats_free).toBe(0);
     // Jo, an editor of the checklist only, holds no reserved seat here: a spectator.
     const jo = await signedIn(await browser.newContext({ viewport: { width: 1280, height: 800 } }), origin, await acceptInvite(origin, s.invite.url));
     await jo.goto(`${origin}/a/${brief}`);
     const banner = jo.locator(".banner.spectate");
-    await expect(banner).toContainText(BANNER, { timeout: 20_000 });
+    await expect(banner).toContainText(BANNER);
     await expect(jo.getByRole("button", { name: /^Comment/ })).toBeDisabled();
     await shot(jo, "spectator-1280-light");
     await expect(rae.getByRole("button", { name: /^Comment/ })).toBeEnabled();
@@ -251,7 +250,7 @@ test("the demo on the Worker: two people live, agents drafting and publishing, c
     // stream asks after the seat is free) and is live.
     await guest.context().close();
     const joinLive = banner.getByRole("button", { name: "Join live" });
-    await expect.poll(async () => (await joinLive.isVisible()) || (await banner.count()) === 0, { timeout: 30_000 }).toBe(true);
+    await expect.poll(async () => (await joinLive.isVisible()) || (await banner.count()) === 0).toBe(true);
     if (await banner.count()) {
       await shot(jo, "join-live-1280-light");
       await joinLive.click();

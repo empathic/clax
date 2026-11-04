@@ -39,7 +39,7 @@ async function signedIn(ctx: BrowserContext, origin: string, who: PersonSession)
  * an agent's new version as Reload. */
 async function showLatest(p: Page) {
   const reload = p.getByRole("button", { name: "Reload" });
-  await expect(reload).toBeVisible({ timeout: 20_000 });
+  await expect(reload).toBeVisible();
   await reload.click();
   await expect(reload).toHaveCount(0);
 }
@@ -57,7 +57,6 @@ async function card(p: Page, text: string) {
 }
 
 test("the seeded demo: agents' versions and a live comment in two people's browsers, then a spectator with one seat", async ({ browser }) => {
-  test.setTimeout(120_000);
   const port = await freePort();
   const origin = `http://localhost:${port}`;
   const config = `${NO_KEY_CONFIG}[hosted]\npublic_origin = "${origin}"\nsetup_secret_env = "CLAX_E2E_SETUP_SECRET"\n`;
@@ -148,12 +147,12 @@ test("the seeded demo: agents' versions and a live comment in two people's brows
     await guest.goto(`${origin}/a/${brief}`);
     await setName(guest, "Sam");
     await expect(guest.getByRole("button", { name: /^Comment/ })).toBeEnabled();
-    await expect.poll(async () => (await (await guest.request.get(`${origin}/api/artifacts/${brief}/snapshot`)).json()).seats_free, { timeout: 20_000 }).toBe(0);
+    await expect.poll(async () => (await (await guest.request.get(`${origin}/api/artifacts/${brief}/snapshot`)).json()).seats_free).toBe(0);
     // Jo, an editor of the checklist only, holds no reserved seat here: a spectator.
     const jo = await signedIn(await browser.newContext(), origin, await acceptInvite(origin, s.invite.url));
     await jo.goto(`${origin}/a/${brief}`);
     const banner = jo.locator(".banner.spectate");
-    await expect(banner).toContainText(BANNER, { timeout: 20_000 });
+    await expect(banner).toContainText(BANNER);
     await expect(jo.getByRole("button", { name: /^Comment/ })).toBeDisabled();
     await shot(jo, "jo-spectator");
     // Rae and Mia stay live meanwhile.
@@ -166,7 +165,7 @@ test("the seeded demo: agents' versions and a live comment in two people's brows
     // spec §16.1), and Jo is live with no Join live offered.
     await guest.context().close();
     const join = banner.getByRole("button", { name: "Join live" });
-    await expect.poll(async () => (await join.isVisible()) || (await banner.count()) === 0, { timeout: 30_000 }).toBe(true);
+    await expect.poll(async () => (await join.isVisible()) || (await banner.count()) === 0).toBe(true);
     if (await banner.count()) {
       await shot(jo, "jo-join-live");
       await join.click();

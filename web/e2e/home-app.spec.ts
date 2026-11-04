@@ -49,7 +49,7 @@ test.describe("its tests in the inspect view", () => {
     await initHost(page);
     await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
     await host(page, `runTests({ files: ["tests/home.test.js"], testMs: 10000, totalMs: 60000 })`);
-    await expect.poll(async () => (await ofType(page, "tests")).length, { timeout: 60_000 }).toBeGreaterThan(0);
+    await expect.poll(async () => (await ofType(page, "tests")).length).toBeGreaterThan(0);
     const tests = (await ofType(page, "tests"))[0] as HostMessage & { passed: number; failed: unknown[]; skipped: number };
     expect(tests.failed).toEqual([]);
     expect(tests.skipped).toBe(0);
@@ -159,6 +159,26 @@ async function serve(page: Page, fake?: Record<string, unknown>) {
   await page.goto(`${ORIGIN}/index.html`);
 }
 
+/** Stops the page's clock (installed with `page.clock.install()`, which
+ * runs with real time) where it stands: from then on only the test's
+ * `runFor` moves it. A drag's steps then reach the page at one moment of its
+ * time however long a loaded machine takes to send them, and its timers (a
+ * slot's 120 ms before the neighbours make room, a hover's 600 ms before it
+ * groups, the hold, the frames that scroll the page) run when and in the
+ * order the test says. The page's time is read and then paused a little
+ * past it, again if real time has passed that meanwhile. */
+async function pauseClock(page: Page): Promise<void> {
+  for (;;) {
+    const at = await page.evaluate(() => Date.now()) + 50;
+    try {
+      await page.clock.pauseAt(at);
+      return;
+    } catch (e) {
+      if (!String(e).includes("to the past")) throw e;
+    }
+  }
+}
+
 const calls = (page: Page) => page.evaluate(() => (window as unknown as { fakeHome: { calls: unknown[] } }).fakeHome.calls);
 
 test.describe("over a fake host", () => {
@@ -209,6 +229,7 @@ test.describe("over a fake host", () => {
     await page.clock.install();
     await serve(page, { makes: [] });
     await expect(page.locator(".h-tile[data-id]")).toHaveCount(8);
+    await pauseClock(page);
     const box = async (sel: string) => (await page.locator(sel).boundingBox())!;
     const from = await box('[data-id="app-run"]');
     const to = await box('[data-id="app-budget"]');
@@ -252,6 +273,7 @@ test.describe("over a fake host", () => {
     await page.clock.install();
     await serve(page, { makes: [] });
     await expect(page.locator(".h-tile[data-id]")).toHaveCount(8);
+    await pauseClock(page);
     const box = async (sel: string) => (await page.locator(sel).boundingBox())!;
     const from = await box('[data-id="app-mood"]');
     const to = await box('[data-id="app-habits"]');
@@ -289,6 +311,7 @@ test.describe("over a fake host", () => {
     const layout = { v: 1, starred: ["app-run"], order: ["app-habits", "app-recipes", "app-budget", "g:g1", "app-plants", "app-mood"], groups: { g1: { name: "Lists", apps: ["app-groceries", "app-notes"] } }, seen: ids };
     await serve(page, { makes: [], docs: { "layout/main": layout } });
     await expect(page.locator(".h-group")).toHaveCount(1);
+    await pauseClock(page);
     await page.evaluate(() => {
       const w = window as unknown as { flew: boolean };
       w.flew = false;

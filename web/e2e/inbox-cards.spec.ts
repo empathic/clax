@@ -12,13 +12,13 @@
 // person, and Kim's `clax connect` finishes. The daemon listens on every
 // interface; on a machine with no LAN address it refuses invites
 // (`not_on_lan`) and the test says so and skips.
-import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Locator, Page } from "@playwright/test";
-import { expect, publish, startDaemon, test } from "./fixtures";
+import { expect, publish, run, startDaemon, test } from "./fixtures";
 import { ownerCookie } from "./questions-helpers";
 import { settle } from "./time";
 
@@ -97,7 +97,7 @@ test("a connected person decides an approval and answers a question in their own
     test.skip(made.status === 409 && invite.error?.code === "not_on_lan", `no LAN address here: ${invite.error?.message}`);
     expect(made.status, JSON.stringify(invite)).toBe(201);
     // No terminal and no --yes: the owner's content does not reach Sam's agents.
-    const out = spawnSync(bin, ["connect", invite.invite.command.replace(/^clax connect /, ""), "--name", "sam-laptop", "--no-browser"], { env: personEnv(sam), encoding: "utf8", timeout: 20_000 });
+    const out = await run(bin, ["connect", invite.invite.command.replace(/^clax connect /, ""), "--name", "sam-laptop", "--no-browser"], { env: personEnv(sam) });
     expect(out.status, out.stderr).toBe(0);
     const link = /http:\/\/\S+\/connect\/b\/\S+/.exec(out.stdout + out.stderr)![0];
     const lan = new URL(link).origin;
@@ -167,7 +167,7 @@ test("a connected person decides an approval and answers a question in their own
     kimConnect.stdout.on("data", b => { kimOut += b; });
     kimConnect.stderr.on("data", b => { kimOut += b; });
     const kimDone = new Promise<number | null>(r => kimConnect!.on("exit", r));
-    await expect.poll(() => /request ([0-9A-Z]{4}-[0-9]{4})/.exec(kimOut)?.[1] ?? null, { timeout: 20_000 }).not.toBeNull();
+    await expect.poll(() => /request ([0-9A-Z]{4}-[0-9]{4})/.exec(kimOut)?.[1] ?? null).not.toBeNull();
     const code = /request ([0-9A-Z]{4}-[0-9]{4})/.exec(kimOut)![1];
     const o = await ownerCtx.newPage();
     await o.goto(`${d.base}/inbox`);

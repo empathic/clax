@@ -1,9 +1,31 @@
 import { readFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { test, expect, type Daemon, api, openArtifact, postThread, publishAs, publishWith, reach, registerSession, setWorking, skewWorking, setName } from "./fixtures";
 import { advance } from "./time";
 
 let d: Daemon;
-test.beforeEach(({ daemon }) => { d = daemon; });
+// The trail of each test's page (the shell's console, its frames'
+// navigations and its site handshake's answers), attached when the test
+// fails: a content frame that never shows its page says why there.
+let trail: string[] = [];
+test.beforeEach(({ daemon, page }) => {
+  d = daemon;
+  trail = [];
+  const at = () => new Date().toISOString().slice(11, 23);
+  page.on("console", m => trail.push(`${at()} console ${m.type()}: ${m.text()}`));
+  page.on("pageerror", e => trail.push(`${at()} pageerror: ${e.message}`));
+  page.on("framenavigated", f => trail.push(`${at()} frame ${f === page.mainFrame() ? "main" : "child"}: ${f.url()}`));
+  page.on("requestfailed", r => trail.push(`${at()} failed ${r.method()} ${r.url()}: ${r.failure()?.errorText}`));
+  page.on("response", r => { if (r.status() >= 400 || /\/site-code$|\/_clax\/session/.test(new URL(r.url()).pathname)) trail.push(`${at()} ${r.status()} ${r.request().method()} ${r.url()}`); });
+});
+test.afterEach(async ({ page }, info) => {
+  if (info.status === info.expectedStatus) return;
+  const stage = await page.evaluate(() => ({ frames: [...document.querySelectorAll("iframe")].map(f => f.src), text: document.body.innerText.slice(0, 2000) })).catch(e => String(e));
+  // A file in the test's output folder, which CI keeps (ci.yml's test logs).
+  const path = info.outputPath("trail.json");
+  await writeFile(path, JSON.stringify({ trail, frames: page.frames().map(f => f.url()), stage }, null, 1));
+  await info.attach("trail", { path, contentType: "application/json" });
+});
 const PAGE = "<main><h2>Quarterly goals</h2></main>";
 
 {
@@ -61,7 +83,7 @@ const PAGE = "<main><h2>Quarterly goals</h2></main>";
     await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads/${t.id}/comments`, { method: "POST", session: s.id, body: JSON.stringify({ body: "Done.", author_kind: "agent" }) });
     await expect(card.locator(".st.ag")).toHaveCount(0);
     await expect(line1).toHaveText("Nobody working");
-    await expect(galleryCard.locator(".chip.ag")).toHaveCount(0, { timeout: 10_000 });
+    await expect(galleryCard.locator(".chip.ag")).toHaveCount(0);
   });
 
   test(`a record lapses 2 minutes after its last renewal`, async ({ page }) => {

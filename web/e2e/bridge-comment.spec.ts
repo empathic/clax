@@ -1,5 +1,5 @@
 import { type Page } from "@playwright/test";
-import { test, expect, type Daemon, commentModeIn, expectVisibleClip, last, publish, record } from "./fixtures";
+import { test, expect, type Daemon, commentModeIn, contentFrame, expectVisibleClip, last, publish, record } from "./fixtures";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -8,12 +8,6 @@ const PAGE = `<main><h2>Quarterly goals</h2><p>Grow revenue and keep costs flat 
 
 async function toFrame(page: Page, msg: unknown) {
   await page.evaluate(m => (document.querySelector("iframe.frame") as HTMLIFrameElement).contentWindow!.postMessage(m, "*"), msg);
-}
-
-async function contentFrame(page: Page, id: string, n: number) {
-  const url = new RegExp(`(${id}\\.localhost:\\d+/_clax/v/${n}/)$`);
-  await expect.poll(() => page.frame({ url }) !== null).toBe(true);
-  return page.frame({ url })!;
 }
 
 {
@@ -64,6 +58,8 @@ async function contentFrame(page: Page, id: string, n: number) {
     await expect(toggle).toHaveAttribute("aria-pressed", "true");
     await toggle.click();
     await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    // Hovered once the frame has left comment mode, not while it still outlines.
+    await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).not.toBe("crosshair");
     await frame.locator("h2").hover();
     await expect(frame.locator("clax-overlay .o")).toBeHidden();
   });

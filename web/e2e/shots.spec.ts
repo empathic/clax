@@ -44,7 +44,7 @@ test.describe("seeded", () => {
   test.skip(EMPTY, "CLAX_SHOTS_EMPTY=1 photographs the empty gallery only");
   let d: Awaited<ReturnType<typeof startDaemon>>;
   let s: Seeded;
-  test.beforeAll(async () => { test.setTimeout(240_000); d = await startDaemon(); s = await seed(d.base, d.token); mkdirSync(out, { recursive: true }); });
+  test.beforeAll(async () => { d = await startDaemon(); s = await seed(d.base, d.token); mkdirSync(out, { recursive: true }); });
   test.afterAll(async () => { await d?.stop(); });
   shoot(SCENES, () => s, () => d.base);
 });
@@ -54,7 +54,7 @@ test.describe("seeded", () => {
 test.describe("empty", () => {
   test.skip(!EMPTY, "set CLAX_SHOTS_EMPTY=1 to photograph the empty gallery");
   let d: Awaited<ReturnType<typeof startDaemon>>;
-  test.beforeAll(async () => { test.setTimeout(240_000); d = await startDaemon(); mkdirSync(out, { recursive: true }); });
+  test.beforeAll(async () => { d = await startDaemon(); mkdirSync(out, { recursive: true }); });
   test.afterAll(async () => { await d?.stop(); });
   const none: Seeded = { base: "", token: "", aid: "", sid: "", threads: [] };
   shoot([{ name: "gallery-empty", path: () => "/" }], () => none, () => d.base);

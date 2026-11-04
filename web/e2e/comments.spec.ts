@@ -1,17 +1,11 @@
 import { type Page } from "@playwright/test";
-import { test, expect, type Daemon, api, commentModeIn, publish, publishAs, registerSession, setName } from "./fixtures";
+import { test, expect, type Daemon, api, bridgeFence, commentModeIn, contentFrame, publish, publishAs, registerSession, setName } from "./fixtures";
 import { settle } from "./time";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
 
 const PAGE = `<main><h2>Quarterly goals</h2><p>Grow revenue and keep costs flat this quarter.</p></main>`;
-
-async function contentFrame(page: Page, id: string, n: number) {
-  const url = new RegExp(`(${id}\\.localhost:\\d+/_clax/v/${n}/)$`);
-  await expect.poll(() => page.frame({ url }) !== null).toBe(true);
-  return page.frame({ url })!;
-}
 
 async function pickHeading(page: Page, id: string, n: number) {
   const frame = await contentFrame(page, id, n);
@@ -184,7 +178,9 @@ test("Escape in the shell cancels comment mode", async ({ page }) => {
   await page.keyboard.press("Escape");
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
   // The bridge left comment mode too: a click in the frame picks nothing.
+  await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).not.toBe("crosshair");
   await frame.locator("h2").click();
+  await bridgeFence(page);
   await settle(page);
   await expect(page.locator(".composer")).toHaveCount(0);
 });
