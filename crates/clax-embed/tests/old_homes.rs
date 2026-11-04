@@ -1,6 +1,7 @@
 //! Homes that installed builds of the Clax app wrote, opened through the
 //! embedded core (spec 2026-10-19 §10.2): each is backed up, adopted into
 //! this build's numbering and migrated to its end, and keeps every row.
+#![warn(clippy::disallowed_methods)]
 
 use clax_embed::frame::{self, As, RequestHead, ResponseHead};
 use clax_embed::{Embed, OpenEvent, OpenOptions};

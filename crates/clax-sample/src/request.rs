@@ -376,6 +376,7 @@ pub fn limits_json(images: bool) -> Value {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::SampleSettings;

@@ -429,6 +429,7 @@ pub fn daemon_net(home: &Path) -> crate::net::Net {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::net::{Hop, HopResponse, Net, NetError, Resolver, Transport};

@@ -184,6 +184,7 @@ pub fn micro_usd(dollars: f64) -> i64 {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use serde_json::json;

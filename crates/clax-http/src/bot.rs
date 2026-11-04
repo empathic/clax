@@ -753,6 +753,7 @@ pub fn problem_words(class: &str) -> &'static str {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

@@ -1380,6 +1380,7 @@ impl Hub {
     /// [`Hub::open_for`] a stream of no person's, which holds no
     /// `questions` or `inbox` channel.
     #[cfg(test)]
+    #[warn(clippy::disallowed_methods)]
     pub fn open(
         &self,
         caller: Caller,
@@ -2250,6 +2251,7 @@ impl Drop for Conn {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

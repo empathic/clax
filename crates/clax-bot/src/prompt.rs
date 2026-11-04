@@ -911,6 +911,7 @@ pub fn request_message(request: RequestKind, cx: &RequestContext) -> String {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::golden::{expect_none, golden, mismatch};
