@@ -545,6 +545,7 @@ fn ids_at(v: Option<&Value>, at: &str, own: Option<&str>) -> Result<Vec<String>>
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use serde_json::json;

@@ -1807,6 +1807,7 @@ impl Store {
     /// links and the artifact's row are written, with the new version's
     /// number; an error from `then` rolls the version back.
     #[cfg(test)]
+    #[warn(clippy::disallowed_methods)]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn write_version_then<T>(
         &self,
@@ -2341,6 +2342,7 @@ impl Store {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use crate::Store;
     use crate::artifacts::MetaPatch;
@@ -3397,9 +3399,9 @@ mod tests {
     async fn reads_keep_running_while_publishes_of_one_artifact_wait_for_its_content_lock() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::time::{Duration, Instant};
         // The pool's workers: one connection has none to hold.
         let (_d, st) = crate::test_util::pool_store();
+        crate::test_util::patient_writer(&st);
         let st = Arc::new(st);
         let (a, _) = st
             .create_artifact(DAEMON, publish(&[("index.html", Some("v1"))], None), None)
@@ -3430,22 +3432,19 @@ mod tests {
             })
             .collect();
         // More publishes than base workers all start: those waiting for the
-        // content lock do not hold the workers reads need.
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while started.load(Ordering::SeqCst) < n {
-            assert!(
-                Instant::now() < deadline,
-                "publishes waiting for the content lock hold every worker"
-            );
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-        let read =
-            tokio::time::timeout(Duration::from_secs(1), st.call(|s| s.integrity_check())).await;
-        assert_eq!(
-            read.expect("the read ran behind the waiting publishes")
-                .unwrap(),
-            "ok"
-        );
+        // content lock do not hold the workers reads need. The write lock
+        // is held until the read is answered, so the read runs beside them.
+        crate::test_util::until(
+            "every publish started (those waiting for the content lock hold no worker reads need)",
+            || started.load(Ordering::SeqCst) == n,
+        )
+        .await;
+        let read = crate::test_util::within(
+            "the read behind the waiting publishes",
+            st.call(|s| s.integrity_check()),
+        )
+        .await;
+        assert_eq!(read.unwrap(), "ok");
         other.execute_batch("COMMIT").unwrap();
         let mut wins = 0;
         for p in publishes {

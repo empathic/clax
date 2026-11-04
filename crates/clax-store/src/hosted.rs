@@ -966,6 +966,7 @@ impl Store {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::people::{EndedBy, InvitePerson};

@@ -435,6 +435,7 @@ fn user_sha256(code: &str) -> Option<String> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use clax_core::Home;

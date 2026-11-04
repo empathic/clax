@@ -118,6 +118,7 @@ pub fn is_credential(c: &str) -> bool {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

@@ -893,6 +893,7 @@ impl Source for StoreSource<'_> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 pub(crate) mod tests {
     use super::*;
     use clax_core::CoreError;

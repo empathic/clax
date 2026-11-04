@@ -2600,6 +2600,7 @@ pub(crate) fn has_mark(conn: &rusqlite::Connection, mark: &Mark<'_>) -> clax_cor
 /// Runs the Rust part of the migration that brings the schema to
 /// `version`, in that migration's transaction, after its SQL.
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 pub(super) fn rust_step(tx: &rusqlite::Transaction<'_>, version: u32) -> clax_core::Result<()> {
     rust_step_of(tx, MIGRATIONS, version)
 }
@@ -3045,6 +3046,7 @@ fn install_id(tx: &rusqlite::Transaction<'_>) -> clax_core::Result<()> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::{
         APP_MIGRATION, ASSET_KEYS_MIGRATION, AUDIT_MIGRATION, INBOX_MIGRATION, MAIN_MARKS_ABOVE_38,

@@ -1865,6 +1865,7 @@ pub fn public_address(ip: std::net::IpAddr) -> bool {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

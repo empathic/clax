@@ -377,6 +377,7 @@ fn remove_file_if_present(p: &Path) -> Result<()> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::content::{NewFile, wait};

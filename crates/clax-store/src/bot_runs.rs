@@ -379,6 +379,7 @@ impl DriverId {
 
     /// A driver of a fixed name, for the store's tests.
     #[cfg(test)]
+    #[warn(clippy::disallowed_methods)]
     pub(crate) fn named(name: &str) -> DriverId {
         DriverId(name.to_string())
     }
@@ -1632,6 +1633,7 @@ pub fn call_record(at: impl Into<String>, op: &str, target: Option<&str>, ok: bo
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::credits::{LINE_HARNESS_FEE, Unit, token_line};
