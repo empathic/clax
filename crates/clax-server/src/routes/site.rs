@@ -100,9 +100,14 @@ pub fn site_routes(state: &AppState) -> Router<AppState> {
 /// a path on this host ([`clax_http::site_access::safe_next`]). A top-level
 /// redemption clears the state; a frame's keeps it, as another tab's frame
 /// may be signing in with it ([`clax_http::site_access::state_for`]). A
-/// code that does not redeem sets no session and sends the browser to
-/// `/site-signin` for `next` ([`clax_http::site_access::signin`]: a frame
-/// that sent none of the site's cookies gets the no-cookie page instead).
+/// code that does not redeem sets no session. A top-level visit is sent to
+/// `/site-signin` for `next` ([`clax_http::site_access::signin`]); a frame,
+/// which that sign-in refuses to be framed in, gets the no-cookie page
+/// ([`clax_http::site_access::no_cookie_page`]), so the shell starts the
+/// handshake once more and then offers the page in a tab. A frame's code
+/// can fail beside a state cookie the browser holds: two of its tabs that
+/// started with no state yet each set one, and the later replaced the
+/// earlier's; the handshake started again shares the one it holds now.
 async fn session(
     State(s): State<AppState>,
     site: Extension<SiteRequest>,
@@ -120,6 +125,9 @@ async fn session(
         .store_call(move |st| st.site_code_redeem(&code, &aid, state.as_deref()))
         .await?;
     let Some((id, _, partitioned)) = redeemed else {
+        if sa::framed(&headers) {
+            return Ok(sa::no_cookie_page(&s, &headers));
+        }
         return Ok(sa::signin(&s, &headers, &next));
     };
     let mut res = (StatusCode::FOUND, [(header::LOCATION, next)]).into_response();
