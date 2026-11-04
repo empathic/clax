@@ -1436,7 +1436,9 @@ impl Store {
 
     /// [`Store::add_comment_then`] keyed `key`
     /// ([`Store::add_comment_keyed`]): a key recorded already writes nothing
-    /// and runs no `then`.
+    /// and runs no `then`. The comment's up-sends to the remotes its
+    /// artifact is linked to are queued in its transaction
+    /// ([`Store::scan_linked`]'s rules).
     fn add_comment_keyed_then(
         &self,
         ctx: &AuditCtx,
@@ -1456,6 +1458,9 @@ impl Store {
             }
             let (comment, t) = self.add_comment_keyed_in(tx, ctx, thread_id, c, key)?;
             then(tx, &t, &comment)?;
+            // Its up-send to each remote the artifact is linked to commits
+            // with it: no view of the comment lacks its sending state.
+            super::linked::queue_artifact_writes_in(tx, &t.artifact_id, &self.now())?;
             Ok(Keyed::Made(comment))
         })
     }

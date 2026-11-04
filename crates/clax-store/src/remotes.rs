@@ -189,10 +189,11 @@ pub struct FollowWatcher {
     pub harness: String,
 }
 
-const LINK_COLS: &str = "artifact_id, remote_id, remote_artifact_id, url, pushed_n, remote_n,
+pub(crate) const LINK_COLS: &str =
+    "artifact_id, remote_id, remote_artifact_id, url, pushed_n, remote_n,
     auto, created_at, pushed_at, download_only, sync_cursor, followed, unwatched_at";
 
-fn row_link(r: &Row<'_>) -> rusqlite::Result<RemoteLink> {
+pub(crate) fn row_link(r: &Row<'_>) -> rusqlite::Result<RemoteLink> {
     Ok(RemoteLink {
         artifact_id: r.get(0)?,
         remote_id: r.get(1)?,

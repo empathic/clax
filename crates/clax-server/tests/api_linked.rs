@@ -897,6 +897,51 @@ async fn an_outage_queues_marks_rows_not_sent_at_the_cap_then_drains_in_order() 
     .await;
 }
 
+/// A reply on a linked thread is queued for the remote in its own
+/// transaction: its answer, the thread event it publishes and any read of
+/// the thread after it say it is sending, with nothing done by the sync in
+/// between (here the remote cannot be reached, so the sync sends nothing).
+#[tokio::test]
+async fn a_reply_on_a_linked_thread_reads_as_sending_from_its_own_answer() {
+    let p = Pair::new().await;
+    let t = p.owner_thread(1, "before", whole()).await;
+    let tid = t["id"].as_str().unwrap().to_string();
+    until("the thread goes up", || async {
+        (!p.hosted_threads().await.is_empty()).then_some(())
+    })
+    .await;
+    p.sleeper.wait_for(BACKSTOP, 1).await;
+    p.local.state.linked.set_offline(true);
+    let mut events = p.local.state.events.subscribe();
+    let (s, v) = p
+        .local_req(
+            reqwest::Method::POST,
+            &format!("/api/artifacts/{}/threads/{tid}/comments", p.aid),
+            json!({"body": "one"}),
+            None,
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(
+        v["thread"]["comments"][1]["linked"]["state"], "pending",
+        "{v}"
+    );
+    let thread = loop {
+        let ev = events.recv().await.unwrap();
+        if let clax_core::Event::Thread { thread, .. } = ev.event
+            && thread["id"] == tid.as_str()
+            && thread["comments"].as_array().map_or(0, Vec::len) == 2
+        {
+            break thread;
+        }
+    };
+    assert_eq!(
+        thread["comments"][1]["linked"]["state"], "pending",
+        "{thread}"
+    );
+    assert_eq!(reply_state(&p).await, "pending");
+}
+
 /// A reply on a thread already up, made here while every request to the
 /// remote fails as unreachable: the sync has backed off, at
 /// [`BACKOFF_FIRST`], and the reply reads as sending.
