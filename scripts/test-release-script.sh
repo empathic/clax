@@ -70,6 +70,22 @@ case "$1" in
     *) echo "fake just: unexpected: $*" >&2; exit 2 ;;
 esac
 SH
+# A `sleep` first on PATH ($T/heartbeat-bin) in the case that checks the
+# heartbeat: a sleep of 30 s, release.sh's ticker's there, ends when
+# it reads a line the fake check-version writes into the FIFO
+# $FAKE_STATE/tick, so release.sh prints one heartbeat per line written,
+# whatever the time. A writer closing the FIFO without a line for this wait
+# ends nothing: the wait opens it again. release.sh kills a wait it no longer
+# needs. Any other sleep is the system's.
+mkdir -p "$T/heartbeat-bin"
+fake_exe "$T/heartbeat-bin/sleep" <<'SH'
+#!/bin/sh
+if [ "$*" = 30 ] && [ -p "$FAKE_STATE/tick" ]; then
+    until read -r _ < "$FAKE_STATE/tick"; do :; done
+    exit 0
+fi
+exec /bin/sleep "$@"
+SH
 fake_exe "$T/bin/gh" <<'SH'
 #!/bin/sh
 S="$FAKE_STATE"
@@ -164,15 +180,18 @@ if [ "${1:-}" != --print ]; then
     if [ -s "$FAKE_STATE/check-advance" ]; then
         echo $(( $(cat "$CLAX_RELEASE_NOW_FILE") + $(cat "$FAKE_STATE/check-advance") )) > "$CLAX_RELEASE_NOW_FILE"
     fi
-    # $FAKE_STATE/check-heartbeat: the next run waits, at most a minute, for
-    # a heartbeat of its step in release.sh's output ($FAKE_OUT).
+    # $FAKE_STATE/check-heartbeat: the next run ends one wait of the fake
+    # heartbeat sleep (a line into the FIFO $FAKE_STATE/tick) and waits for
+    # the heartbeat of its step in release.sh's output ($FAKE_OUT), failing
+    # if none comes.
     if [ -e "$FAKE_STATE/check-heartbeat" ]; then
         rm "$FAKE_STATE/check-heartbeat"
-        i=0
-        while [ "$i" -lt 1200 ] && ! grep -F "Check the version files: 3m12s" "$FAKE_OUT" >/dev/null 2>&1; do
-            sleep 0.05
-            i=$((i + 1))
-        done
+        echo tick > "$FAKE_STATE/tick" &
+        tick=$!
+        # shellcheck source=scripts/lib/wait.sh
+        . "$WAIT_LIB"
+        wait_for "release.sh's heartbeat" grep -sqF "Check the version files: 3m12s" "$FAKE_OUT" \
+            || { kill "$tick" 2>/dev/null; echo "fake check-version: no heartbeat came" >&2; exit 1; }
     fi
     if [ -e "$FAKE_STATE/check-fail" ]; then echo "fake check-version: plugins/x/VERSION is 0.5.0, not 0.6.0" >&2; exit 1; fi
     echo "fake check-version: the versions agree"
@@ -673,12 +692,15 @@ case_39() {
 case_40() {
     # A heartbeat while the version check runs, its clock moved on by 3m12s:
     # the share done (60s of 85s, the step counted for no more than its
-    # weight) and the time left (25s).
+    # weight) and the time left (25s). The fake heartbeat sleep ends once,
+    # when the fake check says, so there is exactly one heartbeat.
     new_case
     echo 192 > "$FAKE_STATE/check-advance"
     : > "$FAKE_STATE/check-heartbeat"
-    CLAX_RELEASE_HEARTBEAT_SECONDS=0.05 act; rc=$?
-    if [ "$rc" = 0 ] && prepared_ok && has "[70%] step 6/10 Check the version files: 3m12s (under a minute left)"; then
+    mkfifo "$FAKE_STATE/tick"
+    CASE_PATH="$T/heartbeat-bin:$FAKE_PATH" CLAX_RELEASE_HEARTBEAT_SECONDS=30 act; rc=$?
+    if [ "$rc" = 0 ] && prepared_ok && has "[70%] step 6/10 Check the version files: 3m12s (under a minute left)" \
+        && [ "$(grep -c "Check the version files: 3m12s" "$C/out")" = 1 ]; then
         pass "a heartbeat tells the share done, the time taken and the time left"
     else fail "a heartbeat (rc=$rc: $(cat "$C/out"))"; fi
 }
