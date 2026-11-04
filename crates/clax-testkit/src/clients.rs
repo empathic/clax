@@ -106,9 +106,8 @@ impl<'a> RealClients<'a> {
         let mut input = child.stdin.take().unwrap();
         input.write_all(stdin.as_bytes()).await.unwrap();
         drop(input);
-        let out = tokio::time::timeout(LIMIT, child.wait_with_output())
+        let out = crate::within(&format!("{what} to finish"), child.wait_with_output())
             .await
-            .unwrap_or_else(|_| panic!("{what} did not finish within {LIMIT:?} (hang guard)"))
             .unwrap();
         let text = format!(
             "{}\n{}",
@@ -444,6 +443,10 @@ impl<'a> RealClients<'a> {
     /// `env`: one prompt its scripted model answers by calling `calls`
     /// (`[tool name, arguments]`) in turn, then each of `commands` as a
     /// prompt; what Pi handed out, one line each (see [`RealClients::pi`]).
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the HANG guard on a real Pi, whose output the panic names"
+    )]
     pub async fn run_pi(
         &self,
         calls: &[Value],
@@ -564,9 +567,8 @@ impl<'a> RealClients<'a> {
             .await
             .unwrap_or_else(|_| panic!("pi did not finish within {LIMIT:?} (hang guard): {out:?}"));
         drop(stdin);
-        let status = tokio::time::timeout(LIMIT, child.wait())
+        let status = crate::within("pi to exit once its input ends", child.wait())
             .await
-            .expect("pi exits once its input ends")
             .unwrap();
         let errors = errors.await.unwrap();
         assert!(status.success(), "pi exited with {status}: {errors}");
@@ -628,9 +630,9 @@ async fn rpc_over_stdio(mut cmd: tokio::process::Command, lines: &[Value], n: us
             }
         }
     };
-    let _ = tokio::time::timeout(LIMIT, talk).await;
+    crate::within("the shim's answers", talk).await;
     drop(stdin);
-    let _ = tokio::time::timeout(LIMIT, child.wait()).await;
+    let _ = crate::within("the shim to exit once its input ends", child.wait()).await;
     assert_eq!(answered, n, "the shim answered every call: {text}");
     text
 }
