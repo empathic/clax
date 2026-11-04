@@ -3,6 +3,8 @@ analyzer:
     - build/**
     - android/**
     - macos/**
+    # Its own package, on package:analyzer (timing_lint/BUILD.bazel).
+    - timing_lint/**
 include: package:flutter_lints/flutter.yaml
 
 linter:

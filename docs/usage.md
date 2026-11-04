@@ -638,6 +638,73 @@ uninstall` takes it away again.
   and gates nothing: no check runs them, and they report a measure over its
   budget without failing.
 
+Tests wait on conditions, never on time: no sleep stands in for a
+condition, no wall-clock budget decides a result, and timed rules run on
+an injected clock (a hang guard such as `clax_testkit::HANG`, `HANG_MS`,
+`WAIT_MS` or Dart's `stuckAfter` only ends a test that is stuck). The
+languages' linters hold the rule in test code (product code keeps real
+time where it is the contract, and is never flagged), each with its own
+narrow exemption, which names why real time is the contract at that one
+site:
+
+- Rust: clippy's `disallowed-methods` in `bazel/timing/clippy.toml`
+  refuse real time (sleeps, intervals, timeouts, `Instant::now`,
+  `SystemTime::now`, chrono's `now`, `recv_timeout`) in test code: a test bounds a wait with
+  `clax_testkit::{within, recv_within, until}` and moves time with
+  tokio's paused clock or a manual clock the code under test already
+  takes (`ManualSleeper`, `ManualClock`).
+  `--config=timing` lints with that file and allows the lint on the
+  command line, so product code is never flagged; test code turns it back
+  on with `#[warn(clippy::disallowed_methods)]` on each `#[cfg(test)]`
+  module and function and `#![warn(clippy::disallowed_methods)]` at each
+  test crate root (`tests/`, `benches/`, clax-testkit, clax-fake-exe),
+  which `//scripts:rust_test_timing` checks. Exemption:
+  `#[allow(clippy::disallowed_methods, reason = "…")]` on the one function
+  (the HANG helpers, a test-support wait on a real process).
+- TypeScript and JavaScript: oxlint, with the in-repo plugin
+  `web/lint/timing.mjs` (`clax-timing/*`) and the built-in
+  `no-restricted-properties` for `waitForTimeout`, configured for test
+  files only in `web/lint/timing.json` and run by `//web:lint` over web's,
+  Pi's, the home app's and the Worker's tests: timers with a delay outside
+  fake timers, literal timeouts that are no named hang guard (`timeout: 0`
+  is one), clock differences that decide something, disabled tests and
+  counted turns. Exemption: `// oxlint-disable-next-line
+  clax-timing/<rule> -- <why>`.
+- Dart: `//apps/clax_app/timing_lint:test_timing` reads the app's
+  `test/` and `integration_test/` with package:analyzer's parser (an
+  analyzer plugin would need pub at analysis time, which Bazel's sandbox
+  does not give): `sleep`, real `Future.delayed` and `pump(d)` (inside
+  `runAsync`, or anywhere in `integration_test/`), `DateTime.now()` and
+  `Stopwatch` outside a `Clock`, literal timeouts below `stuckAfter`, and
+  counted loops of event-loop turns. Exemption: `// ignore:
+  timing_<rule> -- <why>` on the line or the line before.
+- Shell: no linter reads it, so `scripts/check-test-timing.sh`
+  (`//scripts:test_timing`) refuses a foreground `sleep <delay>`,
+  Python's `time.sleep(`, and a comparison that judges a clock reading
+  (`time.time()`, `time.monotonic()`, `Date.now()`, `date +%s`,
+  `$SECONDS`, or a name computed from one: a budget, or a deadline ending
+  a wait) in the scripts every sh_test in `scripts/BUILD.bazel` runs and
+  in `scripts/test-*.sh`, `scripts/*.test.sh`, `scripts/fake-*`,
+  `scripts/smoke-*.sh` and `scripts/*-smoke.sh`, with the Python and Node
+  they embed (not the perf benchmarks, which measure and gate nothing); a
+  test uses `scripts/lib/wait.sh`'s `wait_for` (in Python, a poll bounded
+  by a count), asserts the outcome rather than its duration, and a hang
+  is a process that never ends by itself (`exec sleep`, `sleep N &`),
+  killed by its PID. Exemption: `# timing: <why>`.
+
+An exemption without a reason, or one with nothing left to exempt, is a
+finding too (but in Rust, whose exemption is an `allow`, and oxlint's
+timing run: neither can tell a stale one). The rules are in report mode
+while the last sites move to clocks: they print and fail nothing, and
+`--config=timing` (with `--config=clippy` for clippy) makes them fail;
+`scripts/bazel-test.sh --ci` runs them so, printing what they find,
+without failing the run. Each language is made binding with one edit:
+moving `build:timing`'s two clippy lines into `build:clippy` in
+`.bazelrc` (clax-commands, linted again with a clippy.toml of its own,
+then repeats the timing entries there), setting the rules to `"error"`
+in `web/lint/timing.json`, setting `CLAX_TIMING=deny` in the Dart
+target's `env`, and `DEFAULT = "deny"` in `scripts/check-test-timing.py`.
+
 Each crate's integration tests are one test binary, `tests/integration.rs`, with
 a module per file in `tests/`; the few that must not share a process with
 the rest have a second binary (`clax-cli/tests/descriptors.rs`). On macOS every new test

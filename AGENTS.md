@@ -48,6 +48,12 @@ run it through the command the plugin's session context gives.
 - Never create hard links, in code, tests or scripts.
 - Tests are fast and load-tolerant: no sleeps standing in for a condition,
   no wall-clock budgets in any check, injected clocks for timing rules.
+  The languages' linters enforce it in test code, never in product code
+  (clippy's `disallowed-methods` in `bazel/timing/clippy.toml`, oxlint's
+  `clax-timing` rules, `//apps/clax_app/timing_lint`,
+  `scripts/check-test-timing.sh`; docs/usage.md, "Developing Clax", has
+  the rules and the one-site exemption forms). A new `#[cfg(test)]`
+  module carries `#[warn(clippy::disallowed_methods)]`.
   Performance is measured on demand (`just perf`) and gates nothing. The whole check suite stays under two
   minutes on a warm cache.
 - Never wait on processes by `pgrep -f`/`pkill -f` patterns: use the PID

@@ -1,0 +1,5 @@
+# The timing rules are a package of their own on package:analyzer, outside
+# the app (whose options include flutter_lints).
+linter:
+  rules:
+    prefer_final_locals: true

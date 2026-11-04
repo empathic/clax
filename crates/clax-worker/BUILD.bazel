@@ -51,7 +51,7 @@ worker_bundle(
 js_test(
     name = "deploy_lib_test",
     data = [":scripts"],
-    entry_point = "deploy-lib.test.mjs",
+    entry_point = ":deploy-lib.test_mjs",
     node_options = ["--test"],
     patch_node_fs = False,
 )
@@ -62,7 +62,7 @@ js_test(
 js_test(
     name = "teardown_test",
     data = [":scripts"],
-    entry_point = "test-teardown.mjs",
+    entry_point = ":test-teardown_mjs",
     node_options = ["--test"],
     patch_node_fs = False,
 )
@@ -77,6 +77,28 @@ npm_link_all_packages(name = "node_modules")
 # configuration directory).
 wrangler_bin.wrangler_binary(name = "wrangler")
 
+# The tests' entry points, each in bazel-bin by a target of its own
+# (`:test-wasm_mjs` for test-wasm.mjs), so that one copy serves both its
+# js_test and the web lint's test-timing rules (//web:lint, js_sources).
+ENTRIES = [
+    "deploy-lib.test.mjs",
+    "e2e.mjs",
+    "e2e-github.mjs",
+    "e2e-hosted.mjs",
+    "test-bot.mjs",
+    "test-deploy-config.mjs",
+    "test-feedback.mjs",
+    "test-sandbox.mjs",
+    "test-smoke-minted.mjs",
+    "test-teardown.mjs",
+    "test-wasm.mjs",
+]
+
+[copy_to_bin(
+    name = entry.replace(".mjs", "_mjs"),
+    srcs = [entry],
+) for entry in ENTRIES]
+
 # What the checks run under `wrangler dev --local` read: the scripts, the
 # harness and wrangler.jsonc, beside the Worker as Bazel built it
 # (CLAX_WORKER_BUNDLE) and the web UI it serves (web/dist, which
@@ -85,21 +107,16 @@ copy_to_bin(
     name = "scripts",
     srcs = glob(
         ["*.mjs"],
-        # The tests' entry points, which js_test places itself.
-        exclude = [
-            "deploy-lib.test.mjs",
-            "e2e.mjs",
-            "e2e-github.mjs",
-            "e2e-hosted.mjs",
-            "test-bot.mjs",
-            "test-deploy-config.mjs",
-            "test-feedback.mjs",
-            "test-sandbox.mjs",
-            "test-smoke-minted.mjs",
-            "test-teardown.mjs",
-            "test-wasm.mjs",
-        ],
+        exclude = ENTRIES,
     ) + ["wrangler.jsonc"],
+)
+
+# The Worker's scripts, for the web lint's test-timing rules
+# (web/lint/timing.json), which read its test scripts and harness.
+filegroup(
+    name = "js_sources",
+    srcs = [":scripts"] + [":" + entry.replace(".mjs", "_mjs") for entry in ENTRIES],
+    visibility = ["//web:__pkg__"],
 )
 
 # Each under `wrangler dev --local` on the Worker Bazel built: the wasm
@@ -116,7 +133,7 @@ copy_to_bin(
         ":scripts",
         "//web:dist",
     ],
-    entry_point = "test-%s.mjs" % name,
+    entry_point = ":test-%s_mjs" % name,
     env = {"CLAX_WORKER_BUNDLE": "$(rootpath :bundle)"},
     patch_node_fs = False,
     # Each starts wrangler and workerd, more than once across a restart.
@@ -140,7 +157,7 @@ js_test(
         ":scripts",
         "//web:dist",
     ],
-    entry_point = "test-smoke-minted.mjs",
+    entry_point = ":test-smoke-minted_mjs",
     env = {"CLAX_WORKER_BUNDLE": "$(rootpath :bundle)"},
     patch_node_fs = False,
     tags = ["cpu:2"],
@@ -159,7 +176,7 @@ js_test(
         "//web:dist",
         "//web:sdk_sign",
     ],
-    entry_point = "test-feedback.mjs",
+    entry_point = ":test-feedback_mjs",
     env = {"CLAX_WORKER_BUNDLE": "$(rootpath :bundle)"},
     patch_node_fs = False,
     # It starts wrangler and workerd twice, across a restart.
@@ -201,16 +218,16 @@ js_test(
     ] + (["manual"] if name == "e2e_github" else []),
     timeout = "long",
 ) for name, entry in [
-    ("e2e", "e2e.mjs"),
-    ("e2e_hosted", "e2e-hosted.mjs"),
-    ("e2e_github", "e2e-github.mjs"),
+    ("e2e", ":e2e_mjs"),
+    ("e2e_hosted", ":e2e-hosted_mjs"),
+    ("e2e_github", ":e2e-github_mjs"),
 ]]
 
 # The config deploy.mjs generates, without wrangler.
 js_test(
     name = "deploy_config_test",
     data = [":scripts"],
-    entry_point = "test-deploy-config.mjs",
+    entry_point = ":test-deploy-config_mjs",
     patch_node_fs = False,
 )
 
