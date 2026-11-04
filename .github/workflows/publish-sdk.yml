@@ -170,7 +170,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tarballs=(sdk-package/*.tgz)
+          tarballs=(./sdk-package/*.tgz)
           if [ "${#tarballs[@]}" != 1 ]; then
             echo "expected one tarball, found: ${tarballs[*]}" >&2
             exit 1
