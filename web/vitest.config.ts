@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { configDefaults, defineConfig } from "vitest/config";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { svelteTesting } from "@testing-library/svelte/vite";
-import { MOUNT_TIMEOUT_MS } from "./shell/src/test/timeouts";
+import { MOUNT_TIMEOUT_MS, WAIT_MS } from "./shell/src/test/timeouts";
 export default defineConfig({
   // svelteTesting() resolves Svelte's browser build under jsdom and unmounts after each test.
   plugins: [svelte(), svelteTesting()],
@@ -15,8 +15,11 @@ export default defineConfig({
   server: { fs: { allow: [fileURLToPath(new URL("..", import.meta.url))] } },
   // Every test and hook may take up to MOUNT_TIMEOUT_MS: a limit that ends a
   // test that hangs, well above what a loaded machine takes to load a fresh
-  // module registry, so it never decides whether a test passes.
-  test: { environment: "jsdom", testTimeout: MOUNT_TIMEOUT_MS, hookTimeout: MOUNT_TIMEOUT_MS, setupFiles: ["shell/test-setup.ts"], include: ["bridge/test/**/*.test.ts", "extension/src/**/*.test.ts", "shell/src/**/*.test.ts", "scripts/**/*.test.ts", "reel/**/*.test.ts", "sdk/**/*.test.ts", "overlay/**/*.test.ts", "../apps/clax_app/home_unit/**/*.test.js"],
+  // module registry, so it never decides whether a test passes. `expect.poll`
+  // waits up to WAIT_MS unless told otherwise, as `vi.waitFor` does
+  // (shell/test-setup.ts), so a poll fails on a condition that never comes,
+  // naming it, rather than on one that comes late.
+  test: { environment: "jsdom", testTimeout: MOUNT_TIMEOUT_MS, hookTimeout: MOUNT_TIMEOUT_MS, expect: { poll: { timeout: WAIT_MS } }, setupFiles: ["shell/test-setup.ts"], include: ["bridge/test/**/*.test.ts", "extension/src/**/*.test.ts", "shell/src/**/*.test.ts", "scripts/**/*.test.ts", "reel/**/*.test.ts", "sdk/**/*.test.ts", "overlay/**/*.test.ts", "lint/**/*.test.ts", "../apps/clax_app/home_unit/**/*.test.js"],
     // The SDK package's test reads its build (vitest.sdk.config.ts).
     exclude: [...configDefaults.exclude, "sdk/package.test.ts"] },
 });
