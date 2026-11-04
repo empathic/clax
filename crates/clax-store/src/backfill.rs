@@ -1639,6 +1639,12 @@ pub(crate) mod tests {
     use clax_core::audit::sha256_hex;
 
     /// A reporter that drops what it is told, for driving a batch by hand.
+    /// Its times pace only those reports and the tracing log, which no
+    /// test reads.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a Reporter's times start at a real Instant; they pace only reports and logs no test reads"
+    )]
     fn quiet(report: &mut dyn FnMut(&Progress)) -> Reporter<'_> {
         let now = Instant::now();
         Reporter {
