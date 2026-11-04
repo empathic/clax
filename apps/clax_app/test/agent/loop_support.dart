@@ -10,6 +10,8 @@ import 'package:clax_app/agent/scripted_backend.dart';
 import 'package:clax_app/agent/timings.dart';
 import 'package:clax_app/agent/tools/toolbox.dart';
 
+import '../support/settle.dart' show waitUntil;
+
 /// A [ScriptedBackend] under another [name], whose calls can be held at a
 /// gate until the test opens it, and which honours
 /// [AgentRequest.cancelled] while held.
@@ -95,21 +97,10 @@ EditResult change({
 TextEdit edit(String oldStr, String newStr, {String path = 'index.html'}) =>
     TextEdit(path: path, oldStr: oldStr, newStr: newStr);
 
-/// Turns the event loop until [condition] holds; fails after [turns] turns
-/// without it. Every step of the code under test is a fake call that
-/// completes in a turn or two, so the bound is never reached by a working
-/// implementation.
-Future<void> until(
-  bool Function() condition, {
-  String? reason,
-  int turns = 2000,
-}) async {
-  for (var i = 0; i < turns; i++) {
-    if (condition()) return;
-    await Future<void>.delayed(Duration.zero);
-  }
-  throw StateError('condition not reached: ${reason ?? condition}');
-}
+/// Turns the event loop until [condition] holds ([waitUntil], under its
+/// hang guard).
+Future<void> until(bool Function() condition, {String? reason}) =>
+    waitUntil(condition, what: reason ?? '$condition');
 
 /// A [ScriptedRunner] of [runs] whose runs can be held at a gate until the
 /// test opens it, and which ends a held run cancelled when its cancel

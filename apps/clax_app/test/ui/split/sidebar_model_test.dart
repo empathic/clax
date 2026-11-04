@@ -9,6 +9,8 @@ import 'package:clax_app/ui/make_service.dart';
 import 'package:clax_app/ui/split/sidebar_model.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../support/settle.dart' show waitUntil;
+
 const _page = {'index.html': '<!doctype html><title>x</title>'};
 
 class _Actions implements HomeActions {
@@ -54,12 +56,6 @@ void main() {
   late SidebarModel model;
   late String home;
   final ids = <String, String>{};
-
-  Future<void> settle() async {
-    for (var i = 0; i < 5; i++) {
-      await pumpEventQueue();
-    }
-  }
 
   setUp(() async {
     var t = 0;
@@ -112,7 +108,7 @@ void main() {
     );
     makes.start('A tide table');
     model = SidebarModel(host: host);
-    await settle();
+    await waitUntil(() => model.canArrange, what: 'the apps listed and arranged');
   });
 
   tearDown(() {
@@ -158,7 +154,7 @@ void main() {
     ]);
     makes.dismiss(makes.makes.single);
     await host.layout!.load(host.state.apps);
-    await settle();
+    await waitUntil(() => host.state.makes.isEmpty, what: 'the make gone');
     final rows = describe(model.rows);
     expect(rows.first, 'Home');
     expect(rows, isNot(contains('STARRED')));
@@ -173,17 +169,17 @@ void main() {
     final make = MakeSelected(host.state.makes.single.id);
     model.select(make);
     makes.dismiss(makes.makes.single);
-    await settle();
+    await waitUntil(() => host.state.makes.isEmpty, what: 'the make gone');
     expect(model.selection, const HomeSelected());
 
     makes.start('A tide table');
-    await settle();
+    await waitUntil(() => host.state.makes.isNotEmpty, what: 'the make listed');
     final again = MakeSelected(host.state.makes.single.id);
     final kept = SidebarModel(host: host, keeps: (s) => s == again);
     addTearDown(kept.dispose);
     kept.select(again);
     makes.dismiss(makes.makes.single);
-    await settle();
+    await waitUntil(() => host.state.makes.isEmpty, what: 'the make gone');
     expect(kept.selection, again);
   });
 
@@ -214,8 +210,8 @@ void main() {
 
   test('drop into Starred stars the app at that place, in one pinned write', () async {
     final before = (await api.getDoc(home, 'layout/main'))!;
+    // The drop ends once its write is made and the arrangement read back.
     await model.drop(ids['Budget']!, index: 0, toStarred: true);
-    await settle();
     final now = (await api.getDoc(home, 'layout/main'))!;
     expect(now.version, before.version + 1);
     expect(now.data['starred'], [ids['Budget'], ids['Runs'], ids['Notes']]);
@@ -230,7 +226,6 @@ void main() {
 
   test('drop into Apps moves the app there, out of Starred', () async {
     await model.drop(ids['Runs']!, index: 1);
-    await settle();
     final rows = describe(model.rows);
     expect(rows.sublist(1, 4), ['STARRED', 'Notes', 'APPS']);
     expect(rows.sublist(4, 7), ['Groceries', 'Runs', '▸ Tools (2)']);
@@ -255,7 +250,10 @@ void main() {
     model.select(AppSelected(ids['Weather']!));
     await api.deleteArtifact(ids['Weather']!);
     await host.load();
-    await settle();
+    await waitUntil(
+      () => !host.state.apps.any((a) => a.id == ids['Weather']),
+      what: 'Weather no longer listed',
+    );
     expect(model.selection, const HomeSelected());
   });
 

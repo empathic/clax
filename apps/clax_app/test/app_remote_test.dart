@@ -290,16 +290,12 @@ void main() {
     );
     expect(replies().where((r) => r.startsWith('$ta:')), isEmpty);
 
-    // clax.dev recovers: the publish lands by itself, and the reply goes.
-    for (var i = 0; i < 2; i++) {
-      await tester.runAsync(() => fake.advance(const Duration(minutes: 5)));
-      await tester.pump();
-    }
-    await settleUntil(
-      tester,
-      () => replies().contains('$ta: Made this change in version 2.'),
-      what: 'the held reply went out after the publish landed',
-    );
+    // clax.dev recovers: the publish lands by itself on a retry, however
+    // many the backoff takes, and the reply goes.
+    await settleUntil(tester, () async {
+      await fake.advance(const Duration(minutes: 5));
+      return replies().contains('$ta: Made this change in version 2.');
+    }, what: 'the held reply went out after the publish landed');
     await settleUntil(tester, () => kept.written, what: 'the writes are done');
     await tester.runAsync(() async {
       expect((await LineageStore(dir).entry(a))!.link!.published, [1, 2]);

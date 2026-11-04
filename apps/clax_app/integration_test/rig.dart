@@ -47,8 +47,14 @@ const _scratchParent = String.fromEnvironment('CLAX_F10_DIR');
 /// The debug Runner's test input (`macos/Runner/MainFlutterWindow.swift`).
 const _input = MethodChannel('dev.empathic.clax/test-input');
 
-/// The longest any one step may take.
-const _cap = Duration(seconds: 45);
+/// The hang guard on each step ([Rig.until], [Rig.untilShellAge],
+/// [closeCore]): it ends a step that never happens, with the screen's and
+/// the shell's state in its failure, and never decides whether one passes.
+/// A loaded machine has taken longer than 45 s for steps that then happened
+/// (a version landing, the composer, the launcher), so a step may take some
+/// minutes; this sits under the tests' own 5 minute `Timeout`, so a stuck
+/// step early in a test fails here, with that report, rather than there.
+const _cap = Duration(minutes: 3);
 
 /// The app's page: the WebView in the app screen, not the inspector's.
 final _appWeb = find.descendant(
@@ -155,9 +161,11 @@ class Rig {
   /// The app's lifecycle states since the rig was made, with the seconds
   /// since then (an occluded macOS window reports `hidden`).
   final lifecycle = <String>[];
+  // ignore: timing_wall_clock -- the lifecycle log's time origin; it decides nothing
   final _born = DateTime.now();
   late final _lifecycleListener = AppLifecycleListener(
     onStateChange: (s) => lifecycle.add(
+      // ignore: timing_wall_clock -- a time in the lifecycle log; it decides nothing
       '${s.name}@${DateTime.now().difference(_born).inMilliseconds / 1000}',
     ),
   );
@@ -222,6 +230,7 @@ class Rig {
     String what,
     FutureOr<Object?> Function() probe,
   ) async {
+    // ignore: timing_wall_clock -- the hang guard's deadline: it ends a stuck wait, never decides a result
     final end = DateTime.now().add(_cap);
     while (true) {
       await tester.pump();
@@ -239,6 +248,7 @@ class Rig {
         _ => true,
       };
       if (done) return v as T;
+      // ignore: timing_wall_clock -- the hang guard's deadline: it ends a stuck wait, never decides a result
       if (DateTime.now().isAfter(end)) {
         final shown = [
           for (final e in find.byType(Text).evaluate())
@@ -258,6 +268,7 @@ class Rig {
           'the shell said: ${[for (final m in messages) m.runtimeType]}',
         );
       }
+      // ignore: timing_delay -- the poll interval of a condition wait under a hang guard
       await Future<void>.delayed(const Duration(milliseconds: 50));
     }
   }
@@ -289,6 +300,7 @@ class Rig {
             'frame:!!document.querySelector("iframe.frame"),'
             'body:document.body.innerText.slice(0,400)})})()',
           )
+          // ignore: timing_short_timeout -- bounds a diagnostic read inside a failure message
           .timeout(const Duration(seconds: 5));
       return '$raw';
     } on Object catch (e) {
@@ -297,17 +309,13 @@ class Rig {
   }
 
   /// Waits until the shell document has existed for [age], by its own
-  /// clock (`performance.now()`).
-  Future<void> untilShellAge(WidgetTester tester, Duration age) async {
-    final end = DateTime.now().add(age + _cap);
-    while (true) {
-      await tester.pump();
-      final ms = num.parse('${await surface!.evaluate('performance.now()')}');
-      if (ms >= age.inMilliseconds) return;
-      if (DateTime.now().isAfter(end)) fail('the shell never reached $age');
-      await Future<void>.delayed(const Duration(milliseconds: 250));
-    }
-  }
+  /// clock (`performance.now()`), which the embedded shell does not let a
+  /// test move.
+  Future<void> untilShellAge(WidgetTester tester, Duration age) =>
+      until<bool>(tester, 'the shell document $age old', () async {
+        final ms = num.parse('${await surface!.evaluate('performance.now()')}');
+        return ms >= age.inMilliseconds;
+      });
 
   /// Waits for the shell's latest state to satisfy [test].
   Future<StateMsg> untilState(
@@ -329,14 +337,16 @@ class Rig {
       () => newerSeen(messages, version),
     );
     if (seen == NewerSeen.shown) return;
+    // Tapped once a tap at its centre reaches it: the toast has come in.
     final reload = await until<Finder>(tester, 'the New version toast', () {
-      final f = find.descendant(
-        of: find.byKey(const ValueKey('newer-toast')),
-        matching: find.text('Reload'),
-      );
+      final f = find
+          .descendant(
+            of: find.byKey(const ValueKey('newer-toast')),
+            matching: find.text('Reload'),
+          )
+          .hitTestable();
       return f.evaluate().isEmpty ? null : f;
     });
-    await tester.pump(const Duration(milliseconds: 500));
     await tester.tap(reload);
     await tester.pump();
   }
@@ -514,7 +524,10 @@ abstract final class MacChrome {
   }) async {
     final scratch = '$path.next';
     List<int>? last;
-    for (var i = 0; i < 60; i++) {
+    // ignore: timing_wall_clock -- the hang guard's deadline: it ends a stuck wait, never decides a result
+    final end = DateTime.now().add(_cap);
+    // ignore: timing_wall_clock -- the hang guard's deadline: it ends a stuck wait, never decides a result
+    while (DateTime.now().isBefore(end)) {
       await tester.pump();
       final size = await captureWindow(scratch, window: window);
       if (size == null) fail('no capture of the ${window ?? 'main'} window');
@@ -524,6 +537,7 @@ abstract final class MacChrome {
         return size;
       }
       last = bytes;
+      // ignore: timing_delay -- the interval between the two captures compared for stillness
       await Future<void>.delayed(const Duration(milliseconds: 60));
     }
     File(scratch).renameSync(path);
@@ -735,15 +749,18 @@ final class ChildApp {
   }) async {
     int? exited;
     unawaited(p.exitCode.then((c) => exited = c));
+    // ignore: timing_wall_clock -- the hang guard's deadline: it ends a stuck wait, never decides a result
     final end = DateTime.now().add(cap);
     while (!done()) {
       if (exited != null) {
         fail('the app exited ($exited) before $what; its log: $tail');
       }
+      // ignore: timing_wall_clock -- the hang guard's deadline: it ends a stuck wait, never decides a result
       if (DateTime.now().isAfter(end)) {
         Process.killPid(p.pid, ProcessSignal.sigkill);
         fail('no $what within ${cap.inSeconds} s; its log: $tail');
       }
+      // ignore: timing_delay -- the poll interval of a condition wait under a hang guard
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
   }

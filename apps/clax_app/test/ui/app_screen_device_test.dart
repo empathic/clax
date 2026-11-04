@@ -31,6 +31,7 @@ import '../platform/device/device_host_test.dart'
         FakeShare;
 import '../support/fake_surface.dart';
 import '../support/fake_voice.dart';
+import '../support/settle.dart' show pumpFramesUntil;
 
 void main() {
   /// A phone's window: from medium width an app shows in a pane, with
@@ -119,6 +120,19 @@ void main() {
   final locationPill = find.byWidgetPredicate(
     (w) => w is ClaxPill && w.state == ClaxPillState.location,
   );
+
+  /// Pumps until the location pill shows or goes, as [shown] says (the
+  /// device host has answered the watch or the unwatch), then one frame
+  /// more: the one in which the strip's slide, if it starts, takes its
+  /// first step.
+  Future<void> untilPill(WidgetTester tester, {bool shown = true}) async {
+    await pumpFramesUntil(
+      tester,
+      () => locationPill.evaluate().isNotEmpty == shown,
+      what: shown ? 'the location pill' : 'the location pill gone',
+    );
+    await tester.pump();
+  }
 
   /// Past a dialog's open or close; the loading cover never settles.
   Future<void> settle(WidgetTester tester) async {
@@ -227,9 +241,7 @@ void main() {
           ),
         );
         surface.push(watch('w'));
-        for (var i = 0; i < 4; i++) {
-          await tester.pump();
-        }
+        await untilPill(tester);
         // Past the strip's slide.
         await tester.pump(const Duration(milliseconds: 300));
         await expectLater(
@@ -272,9 +284,7 @@ void main() {
         ),
       );
       surface.push(watch('w'));
-      for (var i = 0; i < 4; i++) {
-        await tester.pump();
-      }
+      await untilPill(tester);
       // Past the strip's slide.
       await tester.pump(const Duration(milliseconds: 300));
       expect(locationPill, findsOneWidget);
@@ -476,11 +486,13 @@ void main() {
     tester.view.physicalSize = const Size(1280, 800);
     await tester.pump();
     surface.push(watch('w'));
-    for (var i = 0; i < 4; i++) {
-      await tester.pump();
-    }
-    expect(locationPill, findsNothing);
     final item = find.byKey(const ValueKey('pane-location'));
+    await pumpFramesUntil(
+      tester,
+      () => item.evaluate().isNotEmpty,
+      what: 'Location in the top app bar',
+    );
+    expect(locationPill, findsNothing);
     expect(item, findsOneWidget);
     await tester.tap(item);
     await settle(tester);
@@ -528,18 +540,24 @@ void main() {
       ],
     );
 
-    /// Lets the device host answer, then the strip slide (200 ms) end.
-    Future<void> slide(WidgetTester tester) async {
-      for (var i = 0; i < 3; i++) {
-        await tester.pump();
-      }
+    /// Pumps until [shown] holds (what the device host's answer, or the
+    /// clock, changes on screen), then a frame, in which the strip's slide
+    /// (200 ms) starts if it moves, then past the slide's end.
+    Future<void> slide(WidgetTester tester, bool Function() shown) async {
+      await pumpFramesUntil(tester, shown, what: 'the pill\'s change');
+      await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
     }
+
+    bool pillShown() => locationPill.evaluate().isNotEmpty;
+    bool pillGone() => locationPill.evaluate().isEmpty;
+    bool pillFolded() => find.text('Location').evaluate().isEmpty;
+    bool atOnce() => true;
 
     testWidgets('while nothing goes on there is no strip and the page is at '
         'the top', (tester) async {
       await rig(tester, _StepClock());
-      await slide(tester);
+      await slide(tester, atOnce);
       expect(locationPill, findsNothing);
       expect(tester.getRect(page), full);
       expect(tester.getSize(strip).height, 0);
@@ -583,7 +601,7 @@ void main() {
       final clock = _StepClock();
       final surface = await rig(tester, clock);
       surface.push(watch('w'));
-      await slide(tester);
+      await slide(tester, pillShown);
       expect(find.text('Location'), findsOneWidget);
       expect(tester.getRect(page), open);
       clock.advance(ClaxPill.foldAfter);
@@ -602,7 +620,7 @@ void main() {
       final clock = _StepClock();
       final surface = await rig(tester, clock);
       surface.push(watch('w'));
-      await slide(tester);
+      await slide(tester, pillShown);
       final pill = find.byKey(const ValueKey('clax-pill'));
       final target = find.byKey(const ValueKey('clax-pill-target'));
       final opened = tester.getRect(page);
@@ -612,7 +630,7 @@ void main() {
       for (final folded in [false, true]) {
         if (folded) {
           clock.advance(ClaxPill.foldAfter);
-          await slide(tester);
+          await slide(tester, pillFolded);
           expect(find.text('Location'), findsNothing, reason: 'folded');
         }
         expect(tester.getRect(page), opened);
@@ -629,10 +647,10 @@ void main() {
       final clock = _StepClock();
       final surface = await rig(tester, clock);
       surface.push(watch('w'));
-      await slide(tester);
+      await slide(tester, pillShown);
       expect(tester.getRect(page), open);
       surface.push(unwatch('w'));
-      await slide(tester);
+      await slide(tester, pillGone);
       expect(locationPill, findsNothing);
       expect(tester.getRect(page), open, reason: 'within the grace');
       clock.advance(PillStrip.grace);
@@ -655,17 +673,15 @@ void main() {
       final clock = _StepClock();
       final surface = await rig(tester, clock);
       surface.push(watch('w'));
-      await slide(tester);
+      await slide(tester, pillShown);
       expect(tester.getRect(page), open);
       surface.push(unwatch('w'));
-      await slide(tester);
+      await slide(tester, pillGone);
       clock.advance(PillStrip.grace ~/ 2);
       await tester.pump();
       expect(tester.getRect(page), open);
       surface.push(watch('w2'));
-      for (var i = 0; i < 3; i++) {
-        await tester.pump();
-      }
+      await untilPill(tester);
       expect(locationPill, findsOneWidget);
       clock.advance(PillStrip.grace);
       for (var i = 0; i < 6; i++) {
@@ -679,17 +695,15 @@ void main() {
       final clock = _StepClock();
       final surface = await rig(tester, clock);
       surface.push(watch('w'));
-      await slide(tester);
+      await slide(tester, pillShown);
       surface.push(unwatch('w'));
-      await slide(tester);
+      await slide(tester, pillGone);
       // The grace ends and the close starts; before it moves the page,
       // the pill is back.
       clock.advance(PillStrip.grace);
       await tester.pump();
       surface.push(watch('w2'));
-      for (var i = 0; i < 3; i++) {
-        await tester.pump();
-      }
+      await untilPill(tester);
       expect(locationPill, findsOneWidget);
       for (var i = 0; i < 6; i++) {
         await tester.pump(const Duration(milliseconds: 100));
@@ -706,15 +720,11 @@ void main() {
       final clock = _StepClock();
       final surface = await rig(tester, clock);
       surface.push(watch('w'));
-      for (var i = 0; i < 3; i++) {
-        await tester.pump();
-      }
+      await untilPill(tester);
       expect(locationPill, findsOneWidget);
       expect(tester.getRect(page), open);
       surface.push(unwatch('w'));
-      for (var i = 0; i < 3; i++) {
-        await tester.pump();
-      }
+      await untilPill(tester, shown: false);
       clock.advance(PillStrip.grace);
       await tester.pump();
       await tester.pump();
@@ -726,7 +736,7 @@ void main() {
       final clock = _StepClock();
       final surface = await rig(tester, clock);
       surface.push(watch('w'));
-      await slide(tester);
+      await slide(tester, pillShown);
       final details = find.text('Plants is using this device’s location.');
       final surfaceBox = tester.renderObject(page);
       Future<void> tapBeside(double x) async {
@@ -774,7 +784,7 @@ void main() {
       final clock = _StepClock();
       final surface = await rig(tester, clock);
       surface.push(watch('w'));
-      await slide(tester);
+      await slide(tester, pillShown);
       clock.advance(ClaxPill.foldAfter);
       await settle(tester);
       expect(find.text('Location'), findsNothing, reason: 'folded');
@@ -789,7 +799,7 @@ void main() {
       expect(surface.hostCalls.whereType<DeviceEvent>().last.code, 'stopped');
       expect(locationPill, findsNothing);
       clock.advance(PillStrip.grace);
-      await slide(tester);
+      await slide(tester, atOnce);
       expect(tester.getRect(page), full);
       // Past the toast's time.
       clock.advance(const Duration(seconds: 10));
