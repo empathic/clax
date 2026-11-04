@@ -356,6 +356,7 @@ async fn serve(tools: ClaxTools, client: DaemonClient, forward: bool) -> anyhow:
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

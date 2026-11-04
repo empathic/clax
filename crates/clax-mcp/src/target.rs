@@ -208,6 +208,7 @@ fn is_local(host: &url::Host<&str>) -> bool {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     const BASE: &str = "http://localhost:7480";

@@ -5,10 +5,10 @@
 //! byte for byte the one a daemon writing the same events from scratch
 //! makes: no step lost, none twice, and no line differing.
 
+use clax_testkit::HANG;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
 
 /// A foreground daemon on `home`, on a port the OS picks.
 struct Daemon {
@@ -50,35 +50,28 @@ impl Daemon {
             .stderr(log)
             .spawn()
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(60);
-        loop {
-            if let Ok(text) = std::fs::read_to_string(home.join("daemon.json"))
-                && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
-                && v["pid"] == child.id()
-            {
-                return Daemon {
-                    port: v["port"].as_u64().unwrap() as u16,
-                    token: v["token"].as_str().unwrap().to_string(),
-                    child,
-                };
-            }
-            if Instant::now() >= deadline {
-                drop(Daemon {
-                    child,
-                    port: 0,
-                    token: String::new(),
-                });
-                panic!("the daemon did not start");
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        // Killed and reaped on drop, should it never start.
+        let mut d = Daemon {
+            child,
+            port: 0,
+            token: String::new(),
+        };
+        let pid = d.child.id();
+        let v = crate::common::wait_until("the daemon to start", || {
+            let text = std::fs::read_to_string(home.join("daemon.json")).ok()?;
+            let v = serde_json::from_str::<serde_json::Value>(&text).ok()?;
+            (v["pid"] == pid).then_some(v)
+        });
+        d.port = v["port"].as_u64().unwrap() as u16;
+        d.token = v["token"].as_str().unwrap().to_string();
+        d
     }
 
     /// One HTTP request; the status and body. `None` when the daemon is
     /// gone.
     fn request(&self, method: &str, path: &str, body: &str) -> Option<(u16, String)> {
         let mut s = std::net::TcpStream::connect(("127.0.0.1", self.port)).ok()?;
-        s.set_read_timeout(Some(Duration::from_secs(30))).ok()?;
+        s.set_read_timeout(Some(HANG)).ok()?;
         write!(
             s,
             "{method} {path} HTTP/1.1\r\nHost: localhost:{}\r\nAuthorization: Bearer {}\r\n\
@@ -115,18 +108,10 @@ impl Daemon {
 
     /// Waits until the journal holds every recorded event.
     fn caught_up(&self) -> serde_json::Value {
-        let deadline = Instant::now() + Duration::from_secs(60);
-        loop {
+        crate::common::wait_until("the journal to catch up", || {
             let v = self.status();
-            if v["journal"] == true && v["cursor"] == v["newest_seq"] {
-                return v;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the journal did not catch up: {v}"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
+            (v["journal"] == true && v["cursor"] == v["newest_seq"]).then_some(v)
+        })
     }
 
     /// SIGTERM, the graceful stop: the journal closes its segment.
@@ -186,11 +171,9 @@ fn a_killed_daemon_resumes_its_journal_byte_for_byte() {
         })
     };
     // Kill once the journal is moving under the burst.
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while d.status()["newest_seq"].as_i64().unwrap() < before + 20 {
-        assert!(Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    crate::common::wait_until("the journal to move under the burst", || {
+        (d.status()["newest_seq"].as_i64().unwrap() >= before + 20).then_some(())
+    });
     let pid = d.child.id().to_string();
     assert!(
         Command::new("kill")

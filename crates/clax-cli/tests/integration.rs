@@ -12,6 +12,7 @@
 //! do; the rule that commands reach the daemon only through the marked
 //! clients (`clippy.toml`) is for the crate's own code.
 #![allow(clippy::disallowed_methods, clippy::disallowed_types)]
+#![warn(clippy::disallowed_methods)]
 
 #[cfg(any(not(clax_split), clax_split = "bin"))]
 mod bin;

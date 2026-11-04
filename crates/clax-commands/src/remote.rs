@@ -104,6 +104,7 @@ impl SignedClient {
 
     /// This client waiting with `sleep`.
     #[cfg(test)]
+    #[warn(clippy::disallowed_methods)]
     pub fn with_sleep(mut self, sleep: Sleep) -> SignedClient {
         self.sleep = sleep;
         self
@@ -111,6 +112,7 @@ impl SignedClient {
 
     /// This client drawing its jitter from `jitter`.
     #[cfg(test)]
+    #[warn(clippy::disallowed_methods)]
     pub fn with_jitter(mut self, jitter: Jitter) -> SignedClient {
         self.jitter = jitter;
         self
@@ -235,6 +237,7 @@ impl SignedClient {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 #[allow(clippy::disallowed_methods, clippy::disallowed_types)]
 pub(crate) mod tests {
     use super::*;

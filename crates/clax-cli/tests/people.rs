@@ -5,12 +5,9 @@
 //! link and exit 2.
 
 use clax_testkit::people::World;
+use clax_testkit::within;
 use serde_json::Value;
 use std::process::{Command, Output, Stdio};
-use std::time::Duration;
-
-/// Longest a `clax` run may take.
-const LIMIT: Duration = Duration::from_secs(60);
 
 /// The harness environment a test inherits from the agent running it.
 const HARNESS_ENV: [&str; 9] = [
@@ -68,13 +65,12 @@ impl<'a> Owner<'a> {
         for (k, v) in env {
             c.env(k, v);
         }
-        let label = args.join(" ");
-        tokio::time::timeout(
-            LIMIT,
+        let label = format!("clax {} to finish", args.join(" "));
+        within(
+            &label,
             tokio::task::spawn_blocking(move || c.output().unwrap()),
         )
         .await
-        .unwrap_or_else(|_| panic!("clax {label} did not finish"))
         .unwrap()
     }
 

@@ -378,13 +378,15 @@ async fn binary_over_the_cap_returns_no_content() {
 
 #[tokio::test]
 async fn list_is_pinned_first_then_most_recent_and_honours_limit() {
-    let ts = TestServer::spawn().await;
+    let clock = std::sync::Arc::new(clax_core::working::ManualClock::at("2026-10-12T10:00:00Z"));
+    let ts = TestServer::spawn_with_clock(clock.clone()).await;
     let t = tools_for(&ts);
     let mut ids = Vec::new();
     for title in ["one", "two", "three"] {
         let p = ok(t.publish(Parameters(html(title, "<p>"))).await);
         ids.push(p["artifact_id"].as_str().unwrap().to_string());
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        // Each published a second after the last.
+        clock.advance(1);
     }
     let pinned = ok(t
         .pin(Parameters(TargetArgs {

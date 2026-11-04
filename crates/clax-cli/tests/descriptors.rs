@@ -3,6 +3,7 @@
 //! check reads whether any other copy of a socket is still open, and under
 //! `cargo test`, where the tests of one binary are threads of one process,
 //! another test's fork could catch a copy of it (see [`other_ends_closed`]).
+#![warn(clippy::disallowed_methods)]
 
 mod common;
 use common::Env;
@@ -93,10 +94,10 @@ fn a_foreground_daemon_closes_inherited_descriptors() {
     // to stdout, and goes on logging after it has written daemon.json. Its log
     // is read a line at a time until daemon.json names it, or to its end if it
     // exits first, so the wait is on the daemon, not on a clock. A watchdog
-    // kills it only if it neither does so nor exits within HANG_GUARD, which
-    // ends the log too, so a daemon that never serves fails the test rather
-    // than hanging it.
-    const HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(90);
+    // kills it only if it neither does so nor exits within the HANG guard,
+    // which ends the log too, so a daemon that never serves fails the test
+    // rather than hanging it.
+    use clax_testkit::HANG;
     let home = e.dir.path().join("ax");
     let pid = child.id();
     let names_child = || {
@@ -107,8 +108,12 @@ fn a_foreground_daemon_closes_inherited_descriptors() {
             == Some(u64::from(pid))
     };
     let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the watchdog is the HANG guard on the daemon's log, which it ends by killing the daemon"
+    )]
     let guard = std::thread::spawn(move || {
-        if done_rx.recv_timeout(HANG_GUARD) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+        if done_rx.recv_timeout(HANG) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
             use nix::sys::signal::{Signal, kill};
             let _ = kill(nix::unistd::Pid::from_raw(pid as i32), Signal::SIGKILL);
             return true;
@@ -138,7 +143,7 @@ fn a_foreground_daemon_closes_inherited_descriptors() {
     let hung = guard.join().unwrap();
     assert!(
         !hung,
-        "the daemon neither wrote daemon.json naming it nor exited within {HANG_GUARD:?}; its log:\n{seen}"
+        "the daemon neither wrote daemon.json naming it nor exited within {HANG:?}; its log:\n{seen}"
     );
     assert!(
         ready,

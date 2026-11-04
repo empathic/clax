@@ -1,12 +1,14 @@
 //! End-to-end tests of `clax feedback follow` against a daemon in a
 //! temporary `CLAX_HOME`.
 
+use clax_server::routes::feedback::MAX_WAIT_SECS;
+use clax_testkit::{HANG, recv_within};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
-use std::time::{Duration, Instant};
+use std::sync::mpsc::{Receiver, channel};
+use std::time::Duration;
 
 /// A viewer cookie of a browser of this machine's with no name, its viewer
 /// minted in the store of the home at `home` (reaching the daemon's port
@@ -185,14 +187,11 @@ impl Daemon {
         push["tier"] == "notice" || (push["tier"] == "monitor" && push["available"] == true)
     }
 
-    /// Waits until a follower of `sid` polls; a freshly started binary can
-    /// take a while to launch, so the bound is generous.
+    /// Waits until a follower of `sid` polls.
     fn wait_following(&self, sid: &str) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while !self.following(sid) {
-            assert!(Instant::now() < deadline, "no follower of {sid} polled");
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        crate::common::wait_until(&format!("a follower of {sid} to poll"), || {
+            self.following(sid).then_some(())
+        });
     }
 
     fn end(&self, sid: &str) {
@@ -219,7 +218,8 @@ impl Drop for Daemon {
 /// A running `clax feedback follow` whose stdout lines arrive on a channel.
 struct Follower {
     child: Child,
-    lines: Receiver<String>,
+    /// Its stdout's lines, then `None` once it closes.
+    lines: Receiver<Option<String>>,
 }
 
 impl Follower {
@@ -239,37 +239,26 @@ impl Follower {
         std::thread::spawn(move || {
             for line in BufReader::new(out).lines() {
                 let Ok(line) = line else { break };
-                if tx.send(line).is_err() {
-                    break;
+                if tx.send(Some(line)).is_err() {
+                    return;
                 }
             }
+            let _ = tx.send(None);
         });
         Follower { child, lines }
     }
 
-    fn line(&self, within: Duration) -> String {
-        self.lines
-            .recv_timeout(within)
-            .expect("a line from the follower")
+    /// Its next line.
+    fn line(&self) -> String {
+        recv_within("a line from the follower", &self.lines)
+            .expect("a line from the follower, not the end of its output")
     }
 
-    fn quiet_for(&self, d: Duration) {
-        match self.lines.recv_timeout(d) {
-            Err(RecvTimeoutError::Timeout) => {}
-            other => panic!("unexpected output: {other:?}"),
-        }
-    }
-
-    /// Waits up to `within` for the process to exit; its exit code.
-    fn exit(&mut self, within: Duration) -> Option<i32> {
-        let start = Instant::now();
-        while start.elapsed() < within {
-            if let Some(st) = self.child.try_wait().unwrap() {
-                return st.code();
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        panic!("the follower did not exit within {within:?}");
+    /// Waits for the process to exit; its exit code.
+    fn exit(&mut self) -> Option<i32> {
+        crate::common::wait_until("the follower to exit", || {
+            self.child.try_wait().unwrap().map(|st| st.code())
+        })
     }
 
     fn stderr(&mut self) -> String {
@@ -316,16 +305,17 @@ fn it_prints_one_line_per_new_comment_and_nothing_else() {
         &[],
     );
     let t1 = d.sent_thread(&aid, "first");
-    let line = f.line(Duration::from_secs(5));
+    let line = f.line();
     assert_notice(&line, &t1);
     assert!(
         !line.contains("first"),
         "the line never carries the comment"
     );
-    f.quiet_for(Duration::from_millis(500));
+    // Each next line is the next comment's: nothing else came between.
     let t2 = d.sent_thread(&aid, "second");
-    assert_notice(&f.line(Duration::from_secs(5)), &t2);
-    f.quiet_for(Duration::from_secs(3));
+    assert_notice(&f.line(), &t2);
+    let t3 = d.sent_thread(&aid, "third");
+    assert_notice(&f.line(), &t3);
     assert_eq!(f.stderr(), "");
 }
 
@@ -336,7 +326,7 @@ fn it_finds_the_grok_session_from_the_environment() {
     let aid = d.publish_as(&sid);
     let mut f = Follower::spawn(&d, &["--poll-secs", "2"], &[("GROK_SESSION_ID", "g1")]);
     let tid = d.sent_thread(&aid, "hello");
-    assert_notice(&f.line(Duration::from_secs(5)), &tid);
+    assert_notice(&f.line(), &tid);
     assert_eq!(f.stderr(), "");
 }
 
@@ -363,7 +353,7 @@ fn it_survives_a_daemon_restart() {
     let sid = d.grok_session("g1");
     let aid = d.publish_as(&sid);
     let tid = d.sent_thread(&aid, "after the restart");
-    assert_notice(&f.line(Duration::from_secs(10)), &tid);
+    assert_notice(&f.line(), &tid);
 }
 
 #[test]
@@ -387,21 +377,24 @@ fn it_exits_cleanly_when_the_session_ends() {
     );
     d.wait_following(&sid);
     d.end(&sid);
-    assert_eq!(f.exit(Duration::from_secs(5)), Some(0));
-    assert!(f.lines.try_recv().is_err(), "printed nothing");
+    assert_eq!(f.exit(), Some(0));
+    assert!(all_lines(&f).is_empty(), "printed nothing");
 }
 
 #[test]
 fn it_exits_at_once_when_a_followed_clax_session_ends() {
     let d = Daemon::start();
     let sid = d.grok_session("g1");
-    let mut f = Follower::spawn(&d, &["--session", &sid], &[]);
+    // A poll of the longest wait the daemon allows, past the hang guard:
+    // an exit before then is the daemon ending the poll when the session
+    // ends.
+    assert!(Duration::from_secs(MAX_WAIT_SECS) > HANG);
+    let poll = MAX_WAIT_SECS.to_string();
+    let mut f = Follower::spawn(&d, &["--session", &sid, "--poll-secs", &poll], &[]);
     d.wait_following(&sid);
     d.end(&sid);
-    // The default poll waits 50 s: an exit within this bound is the
-    // daemon ending the poll when the session ends.
-    assert_eq!(f.exit(Duration::from_secs(15)), Some(0));
-    assert!(f.lines.try_recv().is_err(), "printed nothing");
+    assert_eq!(f.exit(), Some(0));
+    assert!(all_lines(&f).is_empty(), "printed nothing");
 }
 
 #[test]
@@ -435,10 +428,11 @@ const ONCE_C1: [&str; 7] = [
     "2",
 ];
 
-/// Every line a follower that has exited printed.
+/// Every line a follower that has exited printed, to the end of its
+/// output.
 fn all_lines(f: &Follower) -> Vec<String> {
     let mut out = Vec::new();
-    while let Ok(line) = f.lines.recv_timeout(Duration::from_secs(2)) {
+    while let Some(line) = recv_within("the end of the follower's output", &f.lines) {
         out.push(line);
     }
     out
@@ -453,13 +447,13 @@ fn once_exits_after_the_first_poll_that_printed() {
     d.wait_following(&sid);
     let t1 = d.sent_thread(&aid, "first");
     let t2 = d.sent_thread(&aid, "second");
-    assert_eq!(f.exit(Duration::from_secs(5)), Some(0));
+    assert_eq!(f.exit(), Some(0));
     let mut lines = all_lines(&f);
     assert!((1..=2).contains(&lines.len()), "{lines:?}");
     assert_eq!(f.stderr(), "");
     if lines.len() == 1 {
         let mut g = Follower::spawn(&d, &ONCE_C1, &[]);
-        assert_eq!(g.exit(Duration::from_secs(5)), Some(0));
+        assert_eq!(g.exit(), Some(0));
         lines.extend(all_lines(&g));
         assert_eq!(g.stderr(), "");
     }
@@ -479,7 +473,7 @@ fn once_exits_cleanly_when_the_session_ends() {
     let mut f = Follower::spawn(&d, &[&ONCE_C1[..], &["--grace-secs", "1"]].concat(), &[]);
     d.wait_following(&sid);
     d.end(&sid);
-    assert_eq!(f.exit(Duration::from_secs(5)), Some(0));
+    assert_eq!(f.exit(), Some(0));
     assert!(all_lines(&f).is_empty(), "printed nothing");
 }
 
@@ -505,9 +499,7 @@ fn once_does_not_exit_on_an_empty_poll() {
     // Each poll answers empty: a second poll is the follower still running
     // after an empty one.
     for n in ["a first", "a second"] {
-        polled
-            .recv_timeout(Duration::from_secs(30))
-            .unwrap_or_else(|_| panic!("{n} notices poll"));
+        recv_within(&format!("{n} notices poll"), &polled);
     }
     assert!(child.try_wait().unwrap().is_none(), "still running");
     let _ = child.kill();
@@ -516,9 +508,9 @@ fn once_does_not_exit_on_an_empty_poll() {
 
 /// A stand-in daemon in `home` whose notices route answers empty at once,
 /// as the real one does while the session is inside `wait_for_feedback`;
-/// every other route answers `{}`. Each notices poll's start arrives on the
+/// every other route answers `{}`. Each notices poll arrives on the
 /// channel. The binary has run once when it returns.
-fn stand_in(home: &Path) -> Receiver<Instant> {
+fn stand_in(home: &Path) -> Receiver<()> {
     use std::io::Write as _;
     use std::net::TcpListener;
     std::fs::create_dir_all(home).unwrap();
@@ -527,7 +519,7 @@ fn stand_in(home: &Path) -> Receiver<Instant> {
     let info = json!({"port": port, "pid": std::process::id(), "token": "t",
         "started_at": "2026-10-08T00:00:00Z", "bind": "127.0.0.1", "version": "test"});
     std::fs::write(home.join("daemon.json"), info.to_string()).unwrap();
-    let (polls, polled) = channel::<Instant>();
+    let (polls, polled) = channel::<()>();
     std::thread::spawn(move || {
         for conn in listener.incoming() {
             let Ok(mut conn) = conn else { return };
@@ -541,7 +533,7 @@ fn stand_in(home: &Path) -> Receiver<Instant> {
             }
             let line = String::from_utf8_lossy(&head);
             let body = if line.contains("/notices") {
-                if polls.send(Instant::now()).is_err() {
+                if polls.send(()).is_err() {
                     return;
                 }
                 r#"{"notices":[],"lines":[],"waited_s":0}"#
@@ -568,10 +560,12 @@ fn stand_in(home: &Path) -> Receiver<Instant> {
     polled
 }
 
-/// `follow` paces notices polls that answer empty at once (one poll a
-/// second) rather than asking again at once.
+/// `follow` keeps polling notices polls that answer empty at once. How
+/// it paces them is a unit test's, on a clock it moves
+/// (`follow_paces_polls_that_answer_empty_at_once` in
+/// `clax_commands::commands::feedback`).
 #[test]
-fn it_paces_notices_polls_that_answer_empty_at_once() {
+fn it_keeps_polling_after_notices_polls_that_answer_empty_at_once() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("ax");
     let polled = stand_in(&home);
@@ -581,20 +575,10 @@ fn it_paces_notices_polls_that_answer_empty_at_once() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let first = polled
-        .recv_timeout(Duration::from_secs(20))
-        .expect("a first notices poll");
-    // Polls whose start falls within 2.5 s of the first one's.
-    let window = first + Duration::from_millis(2500);
-    let mut n = 1;
-    while let Ok(at) = polled.recv_timeout(window.saturating_duration_since(Instant::now())) {
-        if at > window {
-            break;
-        }
-        n += 1;
+    for n in ["a first", "a second", "a third"] {
+        recv_within(&format!("{n} notices poll"), &polled);
     }
+    assert!(child.try_wait().unwrap().is_none(), "still running");
     let _ = child.kill();
     let _ = child.wait();
-    assert!(n <= 4, "{n} notices polls in about 2.5 s");
-    assert!(n >= 2, "it kept polling");
 }
