@@ -508,51 +508,64 @@ impl Writer {
         self.line_empty && self.out.len() == self.line_at
     }
 
-    /// Ends the innermost of the open blocks named `names`, among the
-    /// innermost [`SCAN`], with the blocks inside it; whether one was.
-    fn end_block(&mut self, names: &[&str]) -> bool {
+    /// Ends the innermost of the open blocks named `names`, with the blocks
+    /// inside it, unless one of `stops` (the element's scope in HTML: the
+    /// table or list it belongs to) is open inside it, or it is not among
+    /// the innermost [`SCAN`]; whether one was.
+    fn end_block(&mut self, names: &[&str], stops: &[&str]) -> bool {
         let n = self.blocks.len();
         let from = n.saturating_sub(SCAN);
-        match self.blocks[from..].iter().rposition(|b| names.contains(b)) {
-            Some(i) => {
+        match self.blocks[from..]
+            .iter()
+            .rposition(|b| names.contains(b) || stops.contains(b))
+        {
+            Some(i) if names.contains(&self.blocks[from + i]) => {
                 self.blocks.truncate(from + i);
                 true
             }
-            None => false,
+            _ => false,
         }
     }
 
     /// Keeps the stack of open blocks for a block element's start or end
-    /// tag, with the ends HTML implies (a new item, cell, row or paragraph
-    /// ends the open one), and ends the links whose block ended.
-    fn track_block(&mut self, name: &str, start: bool, self_closing: bool) {
+    /// tag, with the ends HTML implies within their scope (a new item ends
+    /// the open item of its list, a new cell or row the open one of its
+    /// table, a block the paragraph it opens in), and ends the links whose
+    /// block ended. A block's `/>` is ignored, as in HTML.
+    fn track_block(&mut self, name: &str, start: bool) {
         let Some(name) = block_name(name) else {
             return;
         };
         if start {
+            // A block opened in a paragraph ends it (no block opens in
+            // one, so it is the innermost when it is open).
+            if name != "td" && name != "th" && name != "tr" && self.blocks.last() == Some(&"p") {
+                self.blocks.pop();
+            }
             match name {
                 "li" => {
-                    self.end_block(&["li"]);
+                    self.end_block(&["li"], &["ul", "ol", "menu"]);
                 }
                 "dt" | "dd" => {
-                    self.end_block(&["dt", "dd"]);
+                    self.end_block(&["dt", "dd"], &["dl"]);
                 }
                 "td" | "th" => {
-                    self.end_block(&["td", "th"]);
+                    self.end_block(&["td", "th"], &["table"]);
                 }
                 "tr" => {
-                    self.end_block(&["tr"]);
-                }
-                "p" => {
-                    self.end_block(&["p"]);
+                    self.end_block(&["tr"], &["table"]);
                 }
                 _ => {}
             }
-            if !self_closing {
-                self.blocks.push(name);
-            }
+            self.blocks.push(name);
         } else {
-            self.end_block(&[name]);
+            let stops: &[&str] = match name {
+                "table" => &[],
+                "td" | "th" | "tr" => &["table"],
+                "li" => &["ul", "ol", "menu", "table", "td", "th"],
+                _ => &["table", "td", "th"],
+            };
+            self.end_block(&[name], stops);
         }
         self.end_links_outside();
     }
@@ -680,21 +693,31 @@ impl Writer {
                 self.code.as_mut().expect("in code").0.push(' ');
                 return None;
             }
-            if name == "a" {
+            let link = if start {
+                Writer::attr(tag, "href")
+                    .and_then(|h| self.target(h))
+                    .is_some()
+            } else {
+                self.spans
+                    .iter()
+                    .any(|s| matches!(s.kind, SpanKind::Link(_)))
+            };
+            if name == "a" && link {
                 // A link in code (an API reference's type): the code so far,
                 // the link, and the code after it, each a span.
                 let by = self.code.as_ref().map(|(_, by)| by.clone());
                 self.end_code();
-                self.track_block(name, start, tag.self_closing);
+                self.track_block(name, start);
                 self.element(name, start, tag);
                 self.code = by.map(|by| (String::new(), by));
                 return None;
             }
-            // Other inline markup in code is skipped; a block ends it.
+            // Other inline markup in code (an anchor without a target too)
+            // is skipped; a block ends it.
             block_name(name)?;
             self.end_code();
         }
-        self.track_block(name, start, tag.self_closing);
+        self.track_block(name, start);
         self.element(name, start, tag);
         None
     }
@@ -947,6 +970,11 @@ impl Writer {
         let Some((code, _)) = self.code.take() else {
             return;
         };
+        // White space at its edges is a space owed outside it.
+        if code.starts_with(|c: char| c.is_ascii_whitespace()) {
+            self.space = true;
+        }
+        let trailing = code.ends_with(|c: char| c.is_ascii_whitespace());
         let code = collapse(&code);
         if code.is_empty() {
             return;
@@ -966,6 +994,7 @@ impl Writer {
         self.out.push_str(pad);
         self.out.push_str(&fence);
         self.line_empty = false;
+        self.space = trailing;
     }
 
     fn end_pre(&mut self) {
@@ -1556,6 +1585,40 @@ mod tests {
             "[`Vec`](https://site.test/struct.Vec.html)`<T>`"
         );
         assert_eq!(md("<code><pre>a\nb</pre></code>"), "```\na\nb\n```");
+        // An anchor without a target does not split it; the spaces around
+        // a link in it stay.
+        assert_eq!(md("<code>a<a name=x>b</a>c</code>"), "`abc`");
+        assert_eq!(
+            md("<code><a href=/f>foo</a> bar</code>"),
+            "[`foo`](https://site.test/f) `bar`"
+        );
+    }
+
+    #[test]
+    fn implied_ends_stay_in_their_scope() {
+        // A block ends the paragraph it opens in, so an inner paragraph
+        // does not end the link that opened in the block.
+        assert_eq!(
+            md("<p>Intro<div class=card><a href=/x><h3>T</h3><p>Desc</p></a></div></p>"),
+            "Intro\n\n[T Desc](https://site.test/x)"
+        );
+        // A table's rows do not end a link in the cell around it.
+        assert_eq!(
+            md(
+                "<table><tr><td><a href=/x>Card<table><tr><td>inner</td></tr></table></a></td></tr></table>"
+            ),
+            "| [Card inner](https://site.test/x) |\n| --- |"
+        );
+        // A nested list's item does not end the outer item's link.
+        assert_eq!(
+            md("<ul><li><a href=/x>a<ul><li>b</li></ul>c</a></li></ul>"),
+            "- [a b c](https://site.test/x)"
+        );
+        // `/>` on a block is ignored, as in HTML.
+        assert_eq!(
+            md("<div><a href=/x><div/>Title</div> more</a></div>"),
+            "[Title more](https://site.test/x)"
+        );
     }
 
     #[test]
