@@ -204,8 +204,10 @@ function rawPost(base, path, host, body) {
 
 /**
  * A POST of `mb` MiB to `url` as a chunked stream (no Content-Length), with
- * `headers`, on a connection of its own: the server answers before the body
- * is sent and closes the connection, which a pooled one would be reused after.
+ * `headers`, on a connection of its own: the server may answer before the
+ * body is sent and close the connection, which a pooled one would be reused
+ * after. Its `status`, `text`, and whether every byte of the body had been
+ * written when the answer came (`whole`).
  */
 function chunkedPost(url, mb, headers = {}) {
   return new Promise((ok, fail) => {
@@ -215,13 +217,15 @@ function chunkedPost(url, mb, headers = {}) {
       headers: { "content-type": "application/x-git-receive-pack-request", "transfer-encoding": "chunked", ...headers },
     });
     let left = mb << 4;
+    let ended = false;
     req.on("response", (res) => {
+      const whole = ended;
       left = 0;
       let text = "";
       res.setEncoding("utf8");
       res.on("data", (d) => (text += d));
       const done = () => {
-        ok({ status: res.statusCode, text });
+        ok({ status: res.statusCode, text, whole });
         req.destroy();
       };
       res.on("end", done);
@@ -234,6 +238,7 @@ function chunkedPost(url, mb, headers = {}) {
         left--;
         if (!req.write(chunk)) return void req.once("drain", pump);
       }
+      ended = true;
       req.end();
     };
     pump();
@@ -572,7 +577,7 @@ async function main() {
     const anon = await chunkedPost(pushUrl, 20);
     check(anon.status === 401, "a chunked push without a token is refused 401", anon);
     const big = await chunkedPost(pushUrl, 20, { authorization: `Bearer ${write.token}` });
-    check(big.status === 413, "a chunked push body over the stand-in's bound is refused 413", big);
+    check(big.status === 413 && big.whole, "a chunked push body over the stand-in's bound is refused 413 once it was read to its end", big);
     const id2 = newArtifactId();
     await post(w.base, `publish?artifact=${id2}&n=1&body=x`);
     const w2 = await post(w.base, `token?artifact=${id2}&scope=write`);

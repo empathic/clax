@@ -386,10 +386,20 @@ impl Objects for R2Objects {
 
 // ── Request bodies ──────────────────────────────────────────────────────────
 
+/// How far into a body refused past its limit it is still read, to its
+/// end, before the refusal is answered. An answer sent while the client is
+/// still sending can reach it as a reset rather than as the answer, and
+/// under `wrangler dev` its proxy loses the connection to the Worker (a
+/// 500, "Network connection lost", for that request or the next one on
+/// it). A body that ends within this many bytes is read to its end and
+/// dropped as it streams in; a longer one is cancelled once past it.
+pub const REFUSED_READ_BYTES: usize = 32 << 20;
+
 /// The body of `req`, or `None` once it runs past `limit` bytes, read
-/// through the stream's own reader: every call is caught, and a body
-/// refused part-way is cancelled, so nothing the stream throws escapes
-/// into the module.
+/// through the stream's own reader: every call is caught. A body refused
+/// part-way is read on to its end, kept nowhere, while it ends within
+/// [`REFUSED_READ_BYTES`], and cancelled past that, so nothing the stream
+/// throws escapes into the module.
 pub async fn read_body_capped(
     req: &worker::Request,
     limit: usize,
@@ -409,9 +419,27 @@ pub async fn read_body_capped(
         }
         let chunk = Uint8Array::new(&get(&step, "value"));
         if body.len() + chunk.length() as usize > limit {
-            let _ = call(&reader, "cancel", &[]).await;
+            discard(&reader, body.len() + chunk.length() as usize).await;
             return Ok(None);
         }
         body.extend_from_slice(&chunk.to_vec());
     }
+}
+
+/// Reads `reader`'s stream, `seen` bytes in, to its end while that comes
+/// within [`REFUSED_READ_BYTES`], dropping every chunk; cancels it past
+/// that, or once a read fails.
+async fn discard(reader: &JsValue, mut seen: usize) {
+    while seen <= REFUSED_READ_BYTES {
+        let Ok(step) = call(reader, "read", &[]).await else {
+            break;
+        };
+        if get(&step, "done").as_bool().unwrap_or(false) {
+            return;
+        }
+        seen += get(&get(&step, "value"), "byteLength")
+            .as_f64()
+            .unwrap_or(0.0) as usize;
+    }
+    let _ = call(reader, "cancel", &[]).await;
 }
