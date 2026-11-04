@@ -1,0 +1,26 @@
+shards = 2
+
+# `create = true` makes an instance's empty home on its first start; remove it
+# once the instance has started (the fleet warns until you do).
+
+[[instance]]
+name = "alpha"
+shard = 0
+create = true
+config = '''
+[hosted]
+public_origin = "https://alpha.clax.localhost"
+site_domain = "alpha-sites.localhost"
+setup_secret_env = "CLAX_SETUP_SECRET_ALPHA"
+'''
+
+[[instance]]
+name = "beta"
+shard = 1
+create = true
+config = '''
+[hosted]
+public_origin = "https://beta.clax.localhost"
+site_domain = "beta-sites.localhost"
+setup_secret_env = "CLAX_SETUP_SECRET_BETA"
+'''

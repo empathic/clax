@@ -1,0 +1,19 @@
+# The example overlay the Tiltfile deploys by default: deploy/k8s/release from
+# this checkout, two shards, two instances (alpha.clax.localhost and
+# beta.clax.localhost), in namespace clax-dev. Copy it to start your own.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: clax-dev
+resources:
+  - namespace.yaml
+  - ../../k8s/release
+images:
+  # A candidate image from main (docs/kubernetes.md, Candidates from main).
+  - name: ghcr.io/empathic/clax-fleet
+    newTag: sha-ed2062c
+configMapGenerator:
+  - name: clax-fleet-catalog
+    files:
+      - fleet.toml
+    options:
+      disableNameSuffixHash: true
