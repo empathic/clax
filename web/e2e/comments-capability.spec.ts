@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { type Frame, type Page } from "@playwright/test";
 import { test, expect, type Daemon, reach, contentFrame, openArtifact, publishWith, nameField } from "./fixtures";
-import { advance } from "./time";
+import { advance, pauseTime } from "./time";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -86,19 +86,26 @@ test(`create asks once, then posts as the viewer`, async ({ page, freshDaemon })
   // needs it unnamed.
   d = freshDaemon;
   const { artifact } = await publishWith(d.base, d.token, `Notes`, BOARD, { comments: {} });
+  await page.clock.install();
   const f = await openArtifact(page, d.base, artifact.id, 1);
   // The page's script has set up its buttons.
   await expect(f.locator("#status")).not.toHaveText("waiting");
   await f.locator(".note").click();
-  await page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true }).click();
-  const allowed = Date.now();
+  const allow = page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true });
+  await expect(allow).toBeEnabled();
+  // From the Allow click on, the page's time stands still but for the
+  // shell's clock, which the test advances: the 5.5 s after it end only
+  // when the test moves past them, however long a loaded machine takes.
+  await pauseTime(page);
+  await allow.click();
   await expect(f.locator("#status")).toHaveText("created string");
   // Every write as the viewer needs their click in the page 5.5 s clear of
   // their input to the shell (the Allow click): within it, click again.
   await reach(page, f.locator(".note"));
   await f.locator(".note").click();
   await expect(f.locator("#status")).toHaveText("shell_input_recent");
-  await advance(page, Math.max(0, 5_700 - (Date.now() - allowed)));
+  await advance(page, 5_700);
+  await page.clock.resume();
   await f.locator(".note").click();
   await expect(f.locator("#status")).toHaveText("created string");
   await expect(page.getByRole("dialog")).toHaveCount(0);

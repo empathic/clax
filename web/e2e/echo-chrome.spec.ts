@@ -5,7 +5,7 @@
 // still be typing for the page (spec §8, "Keys"; decisions Q2 and Q6).
 import { type Frame, type Locator, type Page } from "@playwright/test";
 import { test, expect, type Daemon, api, contentFrame, openArtifact, postThread, publishWith } from "./fixtures";
-import { fence, quietEval, settle } from "./time";
+import { fence, pauseTime, quietEval, settle } from "./time";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -259,6 +259,7 @@ for (const closer of ["Space", "Enter", "Escape"]) {
 async function promptRaised(page: Page, title: string) {
   const { artifact } = await publishWith(d.base, d.token, title, CONSENT, { comments: {} });
   const t = await postThread(d.base, artifact.id, "Check this", "#t");
+  await page.clock.install();
   const frame = await openArtifact(page, d.base, artifact.id, 1);
   const card = page.locator(`[data-thread="${t.id}"]`);
   await card.locator(".card-head").click();
@@ -269,13 +270,19 @@ async function promptRaised(page: Page, title: string) {
   // The page listens for keys.
   await expect(frame.locator("body")).toHaveAttribute("data-ready", "yes");
   await frame.locator("p").click();
+  // The page's time stands still while the prompt is open: its Allow arms
+  // 500 ms after it shows, and a Tab while the viewer types would otherwise
+  // reach Allow once a loaded machine has taken that long.
+  await pauseTime(page);
   await page.keyboard.type("h");
   const dialog = page.getByRole("dialog");
   const deny = dialog.getByRole("button", { name: "Don't allow" });
   await expect(deny).toBeFocused();
   const writes = threadWrites(page, artifact.id);
-  /** Nothing the viewer typed acted in the shell: no mode, panel, sheet, send or resolve. */
+  /** Nothing the viewer typed acted in the shell: no mode, panel, sheet, send
+   * or resolve. Called once the prompt has closed: time runs again. */
   const unchanged = async () => {
+    await page.clock.resume();
     await settle(page);
     expect(writes()).toEqual([]);
     await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
