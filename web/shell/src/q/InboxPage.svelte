@@ -491,7 +491,7 @@
   {#if confirming.open.length}
     <section class="sec" aria-label="Waiting for your confirmation">
       <h3 class="pinned-h">Confirm in your browser<span class="c">{fmt(confirming.open.length)}</span></h3>
-      <div class="dlist">{#each confirming.open as c (c.id)}<ConfirmationCard {c} now={p.now} />{/each}</div>
+      <div class="dlist" {@attach () => confirming.listHere()}>{#each confirming.open as c (c.id)}<ConfirmationCard {c} now={p.now} />{/each}</div>
     </section>
   {/if}
 

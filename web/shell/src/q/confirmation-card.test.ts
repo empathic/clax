@@ -3,6 +3,7 @@ import { dispatchTrusted } from "../../../bridge/test/trusted";
 import { settle, stubFetch } from "../people/fixtures";
 import { flush, mount } from "../test/svelte";
 import ConfirmationCard from "./ConfirmationCard.svelte";
+import ConfirmToasts from "./ConfirmToasts.svelte";
 import { ConfirmationFeed, type ConfirmationView } from "./confirm.svelte";
 
 const click = (el: Element) => flush(() => { dispatchTrusted(el, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })); });
@@ -91,6 +92,20 @@ describe("ConfirmationFeed", () => {
     expect(feed.open.map(c => c.id)).toEqual([ID, "cf_ff"]);
     on!({ type: "confirmation", confirmation: view({ status: "approved" }) });
     expect(feed.open.map(c => c.id)).toEqual(["cf_ff"]);
+  });
+
+  it("shows no toasts while the page lists the open ones itself, as the inbox does", async () => {
+    const feed = new ConfirmationFeed({ list: async () => [view()] });
+    await feed.refresh();
+    const m = mount(ConfirmToasts, { feed });
+    await settle();
+    expect(m.root.querySelectorAll(".confirm-toasts .cfcard")).toHaveLength(1);
+    const unlist = feed.listHere();
+    await settle();
+    expect(m.root.querySelector(".confirm-toasts")).toBeNull();
+    unlist();
+    await settle();
+    expect(m.root.querySelectorAll(".confirm-toasts .cfcard")).toHaveLength(1);
   });
 
   it("stops for a browser that is not the owner's", async () => {

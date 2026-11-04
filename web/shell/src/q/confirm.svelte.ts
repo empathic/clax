@@ -56,21 +56,38 @@ type Source = { hear(f: (e: StreamEvent) => void): () => void };
 
 /** The page's open confirmations, following the owner's `inbox` topic. */
 export class ConfirmationFeed {
-  declare private s: { open: ConfirmationView[] };
+  declare private s: { open: ConfirmationView[]; listed: number };
   declare private unwatch: (() => void) | null;
   declare private changed: Set<() => void>;
+  declare private ended: Set<(c: ConfirmationView) => void>;
   declare private readonly list: typeof listConfirmations;
 
   constructor(opts: { list?: typeof listConfirmations } = {}) {
-    const s = $state({ open: [] as ConfirmationView[] });
+    const s = $state({ open: [] as ConfirmationView[], listed: 0 });
     this.s = s;
     this.unwatch = null;
     this.changed = new Set();
+    this.ended = new Set();
     this.list = opts.list ?? listConfirmations;
   }
 
   /** The open confirmations, oldest first. */
   get open(): ConfirmationView[] { return this.s.open; }
+
+  /** Whether the page lists the open ones itself (the inbox does), so the toasts need not. */
+  get listed(): boolean { return this.s.listed > 0; }
+
+  /** Marks the open ones listed on the page until the returned function runs. */
+  listHere(): () => void {
+    this.s.listed++;
+    return () => { this.s.listed--; };
+  }
+
+  /** Calls `f` with each confirmation heard answered or expired, until the returned function runs. */
+  onEnded(f: (c: ConfirmationView) => void): () => void {
+    this.ended.add(f);
+    return () => { this.ended.delete(f); };
+  }
   private set open(v: ConfirmationView[]) {
     this.s.open = v;
     for (const f of [...this.changed]) f();
@@ -105,6 +122,7 @@ export class ConfirmationFeed {
   take(c: ConfirmationView): void {
     const rest = this.s.open.filter(x => x.id !== c.id);
     this.open = c.status === "open" ? [...rest, c].sort((a, b) => a.created_at.localeCompare(b.created_at)) : rest;
+    if (c.status !== "open") for (const f of [...this.ended]) f(c);
   }
 
   private on(e: StreamEvent): void {
