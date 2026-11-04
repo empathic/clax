@@ -50,9 +50,9 @@
     w = x; searchOn = x.search.enabled; fetchOn = x.fetch.enabled; provider = x.search.provider; gateway = x.search.gateway; alias = x.search.byok_alias; limit = String(x.search.limit); rule = x.fetch.url_rule;
     allow = x.fetch.allowlist.join("\n"); maxSearch = String(x.search.max_per_run); maxFetch = String(x.fetch.max_per_run); account = x.cloudflare.account_id;
   }
-  // Setting or clearing the token changes the token alone: edits not yet saved stay.
+  // Setting or clearing the token changes the token, and which operations are configured, alone: edits not yet saved stay.
   function takeToken(x: WebSettings) {
-    if (w) w = { ...w, cloudflare: { ...w.cloudflare, token: x.cloudflare.token }, sources: x.sources };
+    if (w) w = { ...w, configured: x.configured, cloudflare: { ...w.cloudflare, token: x.cloudflare.token }, sources: x.sources };
   }
   async function save() {
     if (!w || busy) return;
@@ -103,7 +103,7 @@
     <p class="note">Web content can try to steer ClaxBot. It fetches only URLs from the sender's words, searches and pages it read, but which links it follows and what it searches for can still carry data out.</p>
     {#if w.unavailable}<p class="note">Web access is off: {w.unavailable}</p>
     {:else if w.checking}<p class="note">Checking whether web access can run here. Reload in a moment.</p>
-    {:else if !w.configured && local}<p class="note">Not configured: web access needs the Cloudflare account ID and API token below.</p>{/if}
+    {:else if !w.configured.search && local}<p class="note">Search needs the Cloudflare account ID and API token below. Fetch works without them, except for PDF and Office documents.</p>{/if}
   </section>
   <section class="bcard" aria-labelledby="aw-s">
     <h3 id="aw-s">Search</h3>

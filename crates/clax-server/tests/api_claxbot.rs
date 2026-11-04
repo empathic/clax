@@ -2417,7 +2417,8 @@ async fn admin_web_round_trips() {
     assert_eq!(v["fetch"]["max_per_run"], 20);
     assert_eq!(v["cloudflare"]["account_id"], "");
     assert_eq!(v["cloudflare"]["token"]["set"], false);
-    assert_eq!(v["configured"], false);
+    // A daemon fetches without a Cloudflare account; it searches with one.
+    assert_eq!(v["configured"], json!({"search": false, "fetch": true}));
     assert_eq!(v["sources"]["search.provider"], "default");
     let (s, v) = call(
         ts,
@@ -2632,9 +2633,15 @@ async fn web_is_configured_once_the_account_and_token_are_set() {
     )
     .await;
     assert_eq!(s, 200, "{v}");
-    assert_eq!(v["configured"], false, "an account ID without a token");
+    assert_eq!(
+        v["configured"],
+        json!({"search": false, "fetch": true}),
+        "an account ID without a token"
+    );
+    // Search alone on, which needs the token: not configured.
     let (_, me) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
     assert_eq!(me["web"]["why_off"], "not_configured");
+    assert_eq!(me["web"]["offered"], false);
     let (s, v) = call(
         ts,
         &owner,
@@ -2645,7 +2652,11 @@ async fn web_is_configured_once_the_account_and_token_are_set() {
     .await;
     assert_eq!(s, 200, "{v}");
     // Taken at once, without a restart.
-    assert_eq!(v["configured"], true, "{v}");
+    assert_eq!(
+        v["configured"],
+        json!({"search": true, "fetch": true}),
+        "{v}"
+    );
     let (_, me) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
     assert_eq!(
         (
@@ -2664,7 +2675,22 @@ async fn web_is_configured_once_the_account_and_token_are_set() {
     )
     .await;
     assert_eq!(s, 200, "{v}");
-    assert_eq!(v["configured"], false);
+    assert_eq!(v["configured"], json!({"search": false, "fetch": true}));
+    // Fetch on too: offered without the token, for fetch alone.
+    let (s, v) = call(
+        ts,
+        &owner,
+        Method::PUT,
+        "/api/admin/web",
+        json!({"fetch": {"enabled": true}}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let (_, me) = call(ts, &sam, Method::GET, "/api/me/bot", Value::Null).await;
+    assert_eq!(
+        (&me["web"]["offered"], &me["web"]["why_off"]),
+        (&json!(true), &Value::Null)
+    );
 }
 
 #[tokio::test]
@@ -2874,7 +2900,11 @@ async fn the_admin_web_view_says_why_web_is_unavailable() {
     )
     .await;
     assert_eq!(s, 200, "{v}");
-    assert_eq!(v["configured"], false, "{v}");
+    assert_eq!(
+        v["configured"],
+        json!({"search": false, "fetch": false}),
+        "{v}"
+    );
     assert_eq!(v["unavailable"], why, "{v}");
     assert_eq!(v["checking"], false, "{v}");
     // Without the reason the same host is configured, and says nothing.
@@ -2893,6 +2923,10 @@ async fn the_admin_web_view_says_why_web_is_unavailable() {
         Value::Null,
     )
     .await;
-    assert_eq!(v["configured"], true, "{v}");
+    assert_eq!(
+        v["configured"],
+        json!({"search": true, "fetch": true}),
+        "{v}"
+    );
     assert!(v["unavailable"].is_null(), "{v}");
 }

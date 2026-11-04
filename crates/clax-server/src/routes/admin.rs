@@ -24,7 +24,9 @@
 //! - `GET/PUT /api/admin/web`: the web tools' settings, `{search: {enabled,
 //!   provider, gateway, byok_alias, limit, max_per_run}, fetch: {enabled,
 //!   url_rule, allowlist, max_per_run}, cloudflare: {account_id, token}}`,
-//!   with `configured` (whether the host has a source at all) and `sources`
+//!   with `configured {search, fetch}` (which operations the host's
+//!   source can perform now: on a daemon, fetch always and search with a
+//!   Cloudflare account ID and token) and `sources`
 //!   keyed `search.provider`, `fetch.url_rule` and so on; `PUT` takes the
 //!   same shape without `configured`, `sources` or `token`, any field may
 //!   be left out and a null puts it back to its default. A value the
@@ -510,8 +512,8 @@ const WEB: &[(&str, &str, Setting)] = &[
     ("cloudflare", "account_id", Setting::WebCloudflareAccountId),
 ];
 
-/// The web settings as `GET /api/admin/web` shows them, with whether web
-/// use is configured, when the host found its own source cannot run
+/// The web settings as `GET /api/admin/web` shows them, with which
+/// operations are configured, when the host found its own source cannot run
 /// where it runs why (`unavailable`, else null), and whether that check
 /// is still running (`checking`).
 ///
@@ -544,8 +546,9 @@ pub fn web_view(st: &Store, bot: &Bot) -> clax_core::Result<Value> {
         clax_store::secrets::CLOUDFLARE_ORIGIN,
         "the Cloudflare token",
     )?;
+    let configured = crate::bot::web_configured(st, bot)?;
     let mut v = json!({
-        "configured": crate::bot::web_configured(st, bot)?,
+        "configured": {"search": configured.search, "fetch": configured.fetch},
         "unavailable": bot.web_check.why(),
         "checking": bot.web_check.state() == clax_bot::web::WebCheck::Checking,
         "sources": sources,

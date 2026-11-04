@@ -24,9 +24,12 @@ This gives ClaxBot two abilities, built on Cloudflare's web tools
   out, through the Cloudflare Web Search API
   (https://developers.cloudflare.com/agents/tools/web-search/).
 - **Fetch**: a URL in, readable text out (HTML, PDF and Office documents
-  converted to Markdown by Workers AI, JSON pretty-printed, other text as
-  is), in windows a script can page through
-  (https://developers.cloudflare.com/agents/tools/web-fetch/).
+  converted to Markdown, by Workers AI on the Worker; on the daemon HTML
+  by the daemon itself and PDF and Office documents by Workers AI; JSON
+  pretty-printed, other text as is), in windows a script can page through
+  (https://developers.cloudflare.com/agents/tools/web-fetch/). A daemon
+  fetches without a Cloudflare account **(owner)**; it searches, and reads
+  PDF and Office documents, only with one.
 
 Both cost money, so both consume the person's credits **(owner)**, and both
 have admin controls and a per-person control for people who do not want to
@@ -193,7 +196,7 @@ redirect target before following it.
 | Source | Crate | Search | Fetch |
 |---|---|---|---|
 | `BindingSource` | `clax-worker` | `env.AI.websearch({gatewayId, query, provider, limit, byokAlias})` | the Worker's `fetch`, then `env.AI.toMarkdown()` for HTML, PDF and Office types |
-| `RestSource` | `clax-server` | `POST /client/v4/accounts/{id}/ai/websearch/` with the admin's token | the daemon's own HTTP client, with the DNS check (§5.3), then `POST /client/v4/accounts/{id}/ai/tomarkdown` |
+| `RestSource` | `clax-server` | `POST /client/v4/accounts/{id}/ai/websearch/` with the admin's token; without an account ID and token, none (search is not configured) | the daemon's own HTTP client, with the DNS check (§5.3); HTML converted by the daemon (`clax_bot::web::markdown`, with or without an account: the page goes nowhere else) **(design)**; PDF and Office documents through `POST /client/v4/accounts/{id}/ai/tomarkdown`, and without an account refused `web_unsupported_content_type` once fetched |
 | `FakeWebSource` | `clax-bot` (beside `FakeBotHost`) | scripted | scripted |
 
 Cloudflare's npm `agents` package is not used **(design)**: the Worker is
@@ -221,6 +224,12 @@ struct WebGrant {
 struct SearchGrant { provider: Provider, max_per_run: u32, limit: u8 }
 struct FetchGrant  { rule: UrlRule, max_per_run: u32, limits: FetchLimits }
 ```
+
+A source says which operations it can perform now
+(`WebSource::configured`, a `WebShape`): the Worker's both, the daemon's
+fetch always and search with a Cloudflare account. A grant carries only
+the operations the admin turned on that the source can perform, and web
+use is `Off(NotConfigured)` when that leaves none.
 
 The prompt's API declaration is generated from it: `api::dts()` takes the
 grant and declares `clax.web.search` only with a `SearchGrant`,
@@ -593,9 +602,10 @@ take it first):
 | sealed `web.cloudflare.token` | unset | the daemon's API token, Workers AI Read and AI Gateway Read (check against your account), sealed under the KEK like model keys |
 
 The daemon's `[bot]` config may set the same keys, laid over the database
-as the other `[bot]` settings are. On the daemon, web use without an
-account ID and token is `Off(NotConfigured)`, and the Settings page says
-so. The Worker reads no Cloudflare credentials: the AI binding is the
+as the other `[bot]` settings are. On the daemon, search without an
+account ID and token is not configured (so web use with search alone on is
+`Off(NotConfigured)`), while fetch is, and the Settings page says search
+needs them. The Worker reads no Cloudflare credentials: the AI binding is the
 account's own.
 
 ### 9.2 The person **(owner; placement by design)**
@@ -653,13 +663,14 @@ choice", "off on this instance", "not configured").
     conversion (HTML, PDF, Office), answer `web_unavailable`, uncharged
     (§6.3), though such a fetch's request reached the site; its Markdown,
     JSON, text and `raw` fetches are answered.
-- **Daemon**: `RestSource` in `clax-server`, Cloudflare's REST endpoints and
-  the daemon's own HTTP client with the host check (§5.3).
+- **Daemon**: `RestSource` in `clax-server`, the daemon's own HTTP client
+  with the host check (§5.3) and its own HTML conversion, and, with an
+  account, Cloudflare's REST endpoints.
 - **Embedded and other hosts** take `Off(NotConfigured)` until they provide
   a source.
 - **Why web is off, on every host**: `GET /api/admin/web` answers
   `unavailable`, null or the one reason web use is off whatever the
-  credentials (with `configured: false`), and `checking`, whether a check
+  credentials (with both of `configured {search, fetch}` false), and `checking`, whether a check
   of the source (the Worker's, above) is still running. The reason is a
   configured public origin or site domain that names no host (§5.3, known
   at start and kept), or a source that cannot run where the host runs

@@ -1213,21 +1213,25 @@ pub fn driver_with_web(
     driver
 }
 
-/// Whether ClaxBot's web use is configured on this host now: never once
-/// the host knows its source cannot be used (its origin or site domain
-/// names no host, or the source cannot run where it runs:
-/// [`clax_http::bot::Bot::web_check`]); else the host says so
+/// Which of ClaxBot's web operations are configured on this host now:
+/// neither once the host knows its source cannot be used (its origin or
+/// site domain names no host, or the source cannot run where it runs:
+/// [`clax_http::bot::Bot::web_check`]); else both when the host says so
 /// ([`clax_http::bot::Bot::web_configured`]: the Worker's AI binding, the
-/// daemon's test fixtures), or, on a native daemon, the
-/// instance holds a key-encryption key, a Cloudflare account ID and a
-/// sealed token ([`crate::web_source::has_credentials`]), read at each
-/// call so an admin's change takes effect without a restart.
+/// daemon's test fixtures); else, on a native daemon, fetch, and search
+/// when the instance holds a key-encryption key, a Cloudflare account ID
+/// and a sealed token ([`crate::web_source::has_credentials`]), read at
+/// each call so an admin's change takes effect without a restart.
 ///
 /// # Errors
 /// The store's.
-pub fn web_configured(st: &Store, bot: &clax_http::bot::Bot) -> clax_core::Result<bool> {
+pub fn web_configured(
+    st: &Store,
+    bot: &clax_http::bot::Bot,
+) -> clax_core::Result<clax_bot::web::WebShape> {
+    use clax_bot::web::WebShape;
     if bot.web_check.why().is_some() {
-        return Ok(false);
+        return Ok(WebShape::default());
     }
     if bot.web_configured {
         // Every decision on web use (a run's start, the person's and the
@@ -1236,16 +1240,19 @@ pub fn web_configured(st: &Store, bot: &clax_http::bot::Bot) -> clax_core::Resul
         if web_on(st)? {
             bot.web_check.want();
         }
-        return Ok(true);
+        return Ok(WebShape::BOTH);
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        crate::web_source::has_credentials(st, bot.kek.as_ref())
+        Ok(WebShape {
+            search: crate::web_source::has_credentials(st, bot.kek.as_ref())?,
+            fetch: true,
+        })
     }
     #[cfg(target_arch = "wasm32")]
     {
         let _ = st;
-        Ok(false)
+        Ok(WebShape::default())
     }
 }
 

@@ -1239,9 +1239,17 @@ async fn a_daemons_driver_keeps_why_its_own_hosts_cannot_be_named() {
     })
     .await;
     let bot = bot.unwrap();
-    assert!(!clax_server::bot::web_configured(&ts.store, &bot).unwrap());
+    assert!(
+        !clax_server::bot::web_configured(&ts.store, &bot)
+            .unwrap()
+            .any()
+    );
     let v = clax_server::routes::admin::web_view(&ts.store, &bot).unwrap();
-    assert_eq!(v["configured"], false, "{v}");
+    assert_eq!(
+        v["configured"],
+        json!({"search": false, "fetch": false}),
+        "{v}"
+    );
     let why = v["unavailable"].as_str().unwrap_or_default();
     assert!(why.contains("\"not an origin\""), "{v}");
 }
@@ -1256,7 +1264,10 @@ async fn a_host_source_that_cannot_run_here_reads_not_configured_and_says_why() 
         ..Default::default()
     };
     // With web use off, deciding it asks for no check of the source.
-    assert!(clax_server::bot::web_configured(&ts.store, &bot).unwrap());
+    assert_eq!(
+        clax_server::bot::web_configured(&ts.store, &bot).unwrap(),
+        clax_bot::web::WebShape::BOTH
+    );
     assert!(!bot.web_check.take_wanted(), "no check while web is off");
     // With search on, every decision asks for one, until one answers.
     ts.store
@@ -1265,18 +1276,25 @@ async fn a_host_source_that_cannot_run_here_reads_not_configured_and_says_why() 
             &[(Setting::WebSearchEnabled, Some(json!(true)))],
         )
         .unwrap();
-    assert!(clax_server::bot::web_configured(&ts.store, &bot).unwrap());
+    assert_eq!(
+        clax_server::bot::web_configured(&ts.store, &bot).unwrap(),
+        clax_bot::web::WebShape::BOTH
+    );
     assert!(bot.web_check.take_wanted(), "a check is asked for");
     let v = clax_server::routes::admin::web_view(&ts.store, &bot).unwrap();
     assert_eq!(
         (&v["configured"], &v["unavailable"], &v["checking"]),
-        (&json!(true), &Value::Null, &json!(false))
+        (
+            &json!({"search": true, "fetch": true}),
+            &Value::Null,
+            &json!(false)
+        )
     );
     bot.web_check.set(WebCheck::Checking);
     let v = clax_server::routes::admin::web_view(&ts.store, &bot).unwrap();
     assert_eq!(
         (&v["configured"], &v["checking"]),
-        (&json!(true), &json!(true))
+        (&json!({"search": true, "fetch": true}), &json!(true))
     );
     // Once the host found its source cannot run where it runs (the
     // Worker's AI binding under `wrangler dev --local`), it is not
@@ -1284,11 +1302,15 @@ async fn a_host_source_that_cannot_run_here_reads_not_configured_and_says_why() 
     bot.web_check.set(WebCheck::Unusable(
         "the AI binding needs to be run remotely".into(),
     ));
-    assert!(!clax_server::bot::web_configured(&ts.store, &bot).unwrap());
+    assert!(
+        !clax_server::bot::web_configured(&ts.store, &bot)
+            .unwrap()
+            .any()
+    );
     let v = clax_server::routes::admin::web_view(&ts.store, &bot).unwrap();
     assert_eq!(
         (&v["configured"], &v["checking"]),
-        (&json!(false), &json!(false))
+        (&json!({"search": false, "fetch": false}), &json!(false))
     );
     assert_eq!(v["unavailable"], "the AI binding needs to be run remotely");
 }

@@ -334,13 +334,14 @@ pub trait WebSource: MaybeSendSync {
         cancel: &CancelToken,
     ) -> Result<FetchedPage, WebError>;
 
-    /// Whether the source can reach its provider now. A host whose
+    /// Which operations the source can perform now. A host whose
     /// credentials can be removed while runs are going (the daemon's
-    /// Cloudflare token) answers false once they are, and a run's web
-    /// calls are then refused `web_disabled` ([`WebAccess::now`], not
-    /// configured), as when an admin turns web use off. True by default.
-    fn configured(&self) -> bool {
-        true
+    /// Cloudflare token, which search needs) answers without the
+    /// operations that need them once they are, and a run's calls of those
+    /// are then refused `web_disabled` ([`WebAccess::now`], not
+    /// configured), as when an admin turns web use off. Both by default.
+    fn configured(&self) -> WebShape {
+        WebShape::BOTH
     }
 
     /// Why the source cannot be used here, once its host knows (the
@@ -499,7 +500,7 @@ impl WebSource for WithOwnHosts {
         self.source.fetch(url, format, limits, hop, cancel).await
     }
 
-    fn configured(&self) -> bool {
+    fn configured(&self) -> WebShape {
         self.source.configured()
     }
 

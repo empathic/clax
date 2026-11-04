@@ -35,8 +35,10 @@ use clax_store::bot_web::WebPageRow;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-/// Which web operations a run declares: kept on the run as `""`,
-/// `"search"`, `"fetch"` or `"search,fetch"` ([`WebShape::as_str`]).
+/// Which web operations: those a run declares, kept on the run as `""`,
+/// `"search"`, `"fetch"` or `"search,fetch"` ([`WebShape::as_str`]), or
+/// those a host's source can perform now
+/// ([`WebSource::configured`](super::WebSource::configured)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct WebShape {
     pub search: bool,
@@ -44,6 +46,12 @@ pub struct WebShape {
 }
 
 impl WebShape {
+    /// Both operations.
+    pub const BOTH: WebShape = WebShape {
+        search: true,
+        fetch: true,
+    };
+
     /// The shape `s` names: its comma-separated parts `search` and
     /// `fetch`; anything else names neither, so an unknown value declares
     /// nothing.
@@ -87,8 +95,9 @@ pub enum WebOff {
     /// The person turned web use off for themselves ("off by your
     /// choice").
     PersonOff,
-    /// The host has no source: the daemon without a Cloudflare account ID
-    /// and token ("not configured").
+    /// The host's source can perform none of the operations the admin
+    /// turned on: search alone on, on a daemon without a Cloudflare
+    /// account ID and token ("not configured").
     NotConfigured,
 }
 
@@ -327,22 +336,25 @@ pub fn sources(
 
 impl WebAccess {
     /// Now, for `person`: off when the admin turned both operations off
-    /// ([`WebOff::AdminOff`]), when `configured` is false (the host has no
-    /// source, [`WebOff::NotConfigured`]), or when the person chose off
-    /// ([`WebOff::PersonOff`]), in that order: the instance's reasons come
-    /// first, since the person's switch would not turn web use on. Else
-    /// the operations the admin turned on, with their settings.
+    /// ([`WebOff::AdminOff`]), when the host's source can perform none of
+    /// those the admin turned on (`configured`, [`WebOff::NotConfigured`]),
+    /// or when the person chose off ([`WebOff::PersonOff`]), in that
+    /// order: the instance's reasons come first, since the person's switch
+    /// would not turn web use on. Else the operations the admin turned on
+    /// that the source can perform, with their settings.
     ///
     /// # Errors
     /// The store's.
-    pub fn now(store: &Store, person: &str, configured: bool) -> Result<WebAccess> {
+    pub fn now(store: &Store, person: &str, configured: WebShape) -> Result<WebAccess> {
         let on = |s: Setting| -> Result<bool> { Ok(store.bot_setting(s)?.as_bool() == Some(true)) };
         let search_on = on(Setting::WebSearchEnabled)?;
         let fetch_on = on(Setting::WebFetchEnabled)?;
         if !search_on && !fetch_on {
             return Ok(WebAccess::Off(WebOff::AdminOff));
         }
-        if !configured {
+        let search_on = search_on && configured.search;
+        let fetch_on = fetch_on && configured.fetch;
+        if !search_on && !fetch_on {
             return Ok(WebAccess::Off(WebOff::NotConfigured));
         }
         if !store.web_choice(person)? {
@@ -459,11 +471,11 @@ mod tests {
     fn web_is_off_until_the_admin_turns_it_on() {
         let (_d, st) = store();
         assert_eq!(
-            WebAccess::now(&st, OWNER, true).unwrap(),
+            WebAccess::now(&st, OWNER, WebShape::BOTH).unwrap(),
             WebAccess::Off(WebOff::AdminOff)
         );
         set(&st, &[(Setting::WebSearchEnabled, json!(true))]);
-        let a = WebAccess::now(&st, OWNER, true).unwrap();
+        let a = WebAccess::now(&st, OWNER, WebShape::BOTH).unwrap();
         assert_eq!(
             a,
             WebAccess::On(WebGrant {
@@ -490,7 +502,7 @@ mod tests {
                 (Setting::WebFetchAllowlist, json!(["example.com"])),
             ],
         );
-        let WebAccess::On(g) = WebAccess::now(&st, OWNER, true).unwrap() else {
+        let WebAccess::On(g) = WebAccess::now(&st, OWNER, WebShape::BOTH).unwrap() else {
             panic!("on");
         };
         let s = g.search.unwrap();
@@ -508,7 +520,10 @@ mod tests {
         );
         set(&st, &[(Setting::WebSearchEnabled, json!(false))]);
         assert_eq!(
-            WebAccess::now(&st, OWNER, true).unwrap().shape().as_str(),
+            WebAccess::now(&st, OWNER, WebShape::BOTH)
+                .unwrap()
+                .shape()
+                .as_str(),
             "fetch"
         );
     }
@@ -524,11 +539,14 @@ mod tests {
             ],
         );
         assert_eq!(
-            WebAccess::now(&st, OWNER, true).unwrap().shape().as_str(),
+            WebAccess::now(&st, OWNER, WebShape::BOTH)
+                .unwrap()
+                .shape()
+                .as_str(),
             "search,fetch"
         );
         st.set_web_choice(&AuditCtx::DAEMON, OWNER, false).unwrap();
-        let a = WebAccess::now(&st, OWNER, true).unwrap();
+        let a = WebAccess::now(&st, OWNER, WebShape::BOTH).unwrap();
         assert_eq!(a, WebAccess::Off(WebOff::PersonOff));
         assert_eq!(a.shape(), WebShape::default());
     }
@@ -538,13 +556,39 @@ mod tests {
         let (_d, st) = store();
         set(&st, &[(Setting::WebFetchEnabled, json!(true))]);
         assert_eq!(
-            WebAccess::now(&st, OWNER, false).unwrap(),
+            WebAccess::now(&st, OWNER, WebShape::default()).unwrap(),
             WebAccess::Off(WebOff::NotConfigured)
         );
         // The instance's reason comes before the person's.
         st.set_web_choice(&AuditCtx::DAEMON, OWNER, false).unwrap();
         assert_eq!(
-            WebAccess::now(&st, OWNER, false).unwrap(),
+            WebAccess::now(&st, OWNER, WebShape::default()).unwrap(),
+            WebAccess::Off(WebOff::NotConfigured)
+        );
+    }
+
+    #[test]
+    fn only_what_the_source_can_perform_is_granted() {
+        let (_d, st) = store();
+        set(
+            &st,
+            &[
+                (Setting::WebSearchEnabled, json!(true)),
+                (Setting::WebFetchEnabled, json!(true)),
+            ],
+        );
+        let fetch_only = WebShape {
+            search: false,
+            fetch: true,
+        };
+        let WebAccess::On(g) = WebAccess::now(&st, OWNER, fetch_only).unwrap() else {
+            panic!("fetch is on and the source can fetch");
+        };
+        assert!(g.search.is_none() && g.fetch.is_some());
+        // Search alone on, and the source cannot search: not configured.
+        set(&st, &[(Setting::WebFetchEnabled, json!(false))]);
+        assert_eq!(
+            WebAccess::now(&st, OWNER, fetch_only).unwrap(),
             WebAccess::Off(WebOff::NotConfigured)
         );
     }
@@ -567,7 +611,7 @@ mod tests {
             .unwrap()
             .0
             .id;
-        let shape = WebAccess::now(&st, OWNER, true).unwrap().shape();
+        let shape = WebAccess::now(&st, OWNER, WebShape::BOTH).unwrap().shape();
         let run = st
             .create_run(
                 &crate::run::bot_ctx(OWNER),
@@ -586,7 +630,7 @@ mod tests {
             .unwrap();
         set(&st, &[(Setting::WebSearchEnabled, json!(false))]);
         assert_eq!(
-            WebAccess::now(&st, OWNER, true).unwrap(),
+            WebAccess::now(&st, OWNER, WebShape::BOTH).unwrap(),
             WebAccess::Off(WebOff::AdminOff)
         );
         let kept = st.run(&run.id).unwrap().unwrap();

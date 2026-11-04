@@ -92,7 +92,7 @@ export const run = (o: Partial<BotRun> = {}): BotRun => ({
 });
 /** As `GET /api/admin/web` answers: search and fetch off, the defaults, a daemon without its Cloudflare account. */
 export const webSettings = (o: Partial<WebSettings> = {}): WebSettings => ({
-  configured: false,
+  configured: { search: false, fetch: true },
   unavailable: null,
   checking: false,
   search: { enabled: false, provider: "ceramic", gateway: "default", byok_alias: "", limit: 5, max_per_run: 10 },
