@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Artifact, AttentionSummary } from "./api";
 import { CardSync } from "./ui/card-sync";
 import { WorkingFeed } from "./ui/working-feed.svelte";
+import { settled } from "./test/settled";
 
 const art = (id: string, v = 1): Artifact => ({ id, title: id, description: null, icon: null, updated_at: "x", current_version: v, pinned: false });
 const mark = (open: string[]): AttentionSummary => ({ addressed: [], addressed_v: null, new_replies: [], open_in: open, seen: null });
@@ -31,7 +32,7 @@ function gallery(list: Artifact[], att: Record<string, AttentionSummary>) {
   const sync = new CardSync({ list: () => g.list, att: () => g.att, setList: l => { g.list = l; }, setAtt: a => { g.att = a; } }, feed);
   return { g, feed, sync };
 }
-const settle = () => new Promise(r => setTimeout(r, 0));
+const settle = settled;
 
 describe("CardSync", () => {
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });

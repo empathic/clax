@@ -36,6 +36,7 @@ export async function workerWith(...topics: string[]): Promise<FakeWorker> {
     const w = [...FakeWorker.all].reverse().find((x: FakeWorker) => !x.closed && topics.every(t => x.topics.includes(t)));
     if (w) return w;
     if (Date.now() > deadline) throw new Error(`no stream with ${topics.join(", ")}; topics: ${FakeWorker.all.map(x => x.topics.join(",")).join(" | ")}`);
+    // oxlint-disable-next-line clax-timing/timer-delay -- the polling helper's pause between checks: the condition decides, not the delay
     await new Promise(r => setTimeout(r, 5));
   }
 }

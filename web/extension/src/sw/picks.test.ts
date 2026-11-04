@@ -3,6 +3,7 @@ import type { WorkerToOverlay } from "../messages";
 import { ApiFailure } from "./api";
 import { URL_TOO_LONG } from "../messages";
 import { COMPOSER_WAIT_MS, NO_SNAPSHOT, Picks, SNAPSHOT_WAIT_MS } from "./picks";
+import { settled } from "../../../shell/src/test/settled";
 
 // jsdom's Blob has no `arrayBuffer` or `text` (a worker's has both): read through FileReader.
 const read = (b: Blob, as: "text" | "buffer") => new Promise<unknown>((ok, fail) => {
@@ -38,7 +39,7 @@ function port(name: string, tabId: number) {
   return p;
 }
 /** Lets the turns settle: FileReader (the clip's data URL) answers on a later task. */
-const flush = async () => { for (let i = 0; i < 10; i++) await new Promise(r => setTimeout(r, 0)); };
+const flush = settled;
 const capture = (pickId: string, rect = RECT) => ({ t: "capture", pickId, anchor: anchor as never, rect, dpr: 1 }) as const;
 const pick = (pickId: string, extra: Record<string, unknown> = {}) =>
   ({ t: "pick", pickId, url: "http://localhost:5173/", title: "Home", snapshot: "<p>", snapshotError: null, ...extra }) as never;

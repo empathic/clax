@@ -3,17 +3,8 @@
 import { afterEach, beforeEach, vi } from "vitest";
 import { dispatchTrusted } from "../../../bridge/test/trusted";
 import { FakeWorker, artifactStreams } from "./fake-worker";
-import { WAIT_MS } from "./timeouts";
 
-export async function waitFor<T>(check: () => T | null | undefined | false, what: string): Promise<T> {
-  const deadline = Date.now() + WAIT_MS;
-  for (;;) {
-    const v = check();
-    if (v) return v;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await new Promise(r => setTimeout(r, 10));
-  }
-}
+export { waitFor } from "./wait-for";
 
 export const ID = "7q3k9mzx2b4t";
 /** The view's stream, driven by event name. */

@@ -35,8 +35,8 @@ describe("the bridge in the migration view", () => {
 
   it("runs the test part's migration on clax:migrate and answers clax:migration with the requestId; runs no tests", async () => {
     send({ type: "clax:test", requestId: "t1", files: [] });
-    send({ type: "clax:migrate", requestId: "m1", file: "no-such-migrate.js", from: 1, to: 2, totalMs: 2000 });
-    await vi.waitFor(() => expect(posted.filter(m => m.type === "clax:migration")).toHaveLength(1), { timeout: 3000 });
+    send({ type: "clax:migrate", requestId: "m1", file: "no-such-migrate.js", from: 1, to: 2, totalMs: 10 ** 9 });
+    await vi.waitFor(() => expect(posted.filter(m => m.type === "clax:migration")).toHaveLength(1));
     expect(posted.find(m => m.type === "clax:migration")).toEqual({ type: "clax:migration", requestId: "m1", ok: false, error: expect.stringContaining("no-such-migrate.js did not load") });
     expect(posted.filter(m => m.type === "clax:tests")).toEqual([]);
   });

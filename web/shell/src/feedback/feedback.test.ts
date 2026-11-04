@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Component } from "svelte";
 import type { OverlayHandle, OverlayOptions } from "../../../overlay/overlay";
 import type { ClaxGlobal, FeedbackConfig } from "./feedback";
+import { settled } from "../test/settled";
 
 type Call = { url: string; method: string; body: unknown; credentials?: RequestCredentials };
 
@@ -55,7 +56,7 @@ function fakeClax() {
 // Each test loads the shell's modules afresh (`vi.resetModules`), Svelte's
 // runtime and the test mount helper with them, so a component and its mount share one runtime.
 const svelteKit = () => import("../test/svelte");
-const settle = async () => { for (let i = 0; i < 8; i++) await new Promise(r => setTimeout(r, 0)); (await svelteKit()).flush(); };
+const settle = async () => { await settled(); (await svelteKit()).flush(); };
 /** What each test started, ended after it (the shortcut listens on the window). */
 const running: { close(): void }[] = [];
 /** The entry point, the headers' slot and the running state, as one. */

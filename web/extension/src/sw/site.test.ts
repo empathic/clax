@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { HubMsg, TabMsg } from "../../../shell/src/stream-hub";
 import type { PageView, SiteView } from "../messages";
 import { Sites, applySite } from "./site";
+import { settled } from "../../../shell/src/test/settled";
 
 const O = "http://localhost:5173";
 const A1 = "7q3k9mzx2b4t";
@@ -142,7 +143,7 @@ describe("Sites", () => {
     }
     h.hold(null);
     open();
-    for (let i = 0; i < 5; i++) await tick();
+    await settled();
     expect(h.loads.length).toBeLessThanOrEqual(4);
   });
 

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { freshModules } from "./test/modules";
+import { settled } from "./test/settled";
 import { MOUNT_TIMEOUT_MS } from "./test/timeouts";
 import { artifactViewHooks, waitFor, ID, FakeES, artifact, page, viewer, mountView, stubMedia, buttonNamed, fromFrame, gestureIn, SITE } from "./test/artifact-view";
 
@@ -75,7 +76,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => answer, "the publish request");
     const es = await waitFor(() => FakeES.last, "event stream");
     es.emit("version", { type: "version", artifact_id: ID, n: 2, by_page: true });
-    await new Promise(r => setTimeout(r, 30));
+    await settled();
     expect(assign).not.toHaveBeenCalled();
     answer(new Response(JSON.stringify({ error: { code: "internal", message: "down" } }), { status: 500 }));
     await waitFor(() => posted.some(m => m.type === "clax:call-result" && m.id === "p1" && m.ok === false), "the publish result");
@@ -138,7 +139,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     // Leaving the artifact ends its own publish; the held reload belonged to it.
     view.unmount();
     answer(new Response(JSON.stringify({ error: { code: "internal", message: "down" } }), { status: 500 }));
-    await new Promise(r => setTimeout(r, 30));
+    await settled();
     expect(assign).not.toHaveBeenCalled();
   });
 
@@ -162,7 +163,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => root.querySelector("iframe.frame"), "viewer");
     expect(root.querySelector("button.reload")).toBeNull();
     (await waitFor(() => FakeES.last, "event stream")).emit("resync", {});
-    await new Promise(r => setTimeout(r, 30));
+    await settled();
     expect(root.querySelector("button.reload")).toBeNull();
     current = 4;
     (await waitFor(() => FakeES.last, "event stream")).emit("resync", {});
@@ -200,7 +201,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
         : new Promise<Response>(r => { answerViewer = () => r(new Response(JSON.stringify(viewer))); }));
     const root = view.root;
     await waitFor(() => root.querySelector("iframe.frame"), "viewer");
-    await new Promise(r => setTimeout(r, 30));
+    await settled();
     expect(FakeES.last).toBeUndefined();
     answerViewer();
     const es = await waitFor(() => FakeES.last, "event stream");
@@ -222,7 +223,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     (await waitFor(() => FakeES.last, "event stream")).emit("thread", { type: "thread", artifact_id: ID, thread: t });
     await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads 1", "thread from the event");
     answerList();
-    await new Promise(r => setTimeout(r, 30));
+    await settled();
     expect(buttonNamed(root, /^Threads/).textContent).toBe("Threads 1");
   });
 
@@ -280,7 +281,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     win.postMessage = ((m: unknown) => { posted.push(m); }) as typeof win.postMessage;
     fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
     fromFrame(win, { type: "clax:hello", artifact: "9zzzzzzzzzzz", version: 2, file: "index.html" });
-    await new Promise(r => setTimeout(r, 20));
+    await settled();
     expect(posted.filter(m => (m as { type: string }).type === "clax:welcome")).toHaveLength(0);
     fromFrame(win, { type: "clax:hello", artifact: ID, version: 2, file: "index.html" });
     await waitFor(() => posted.some(m => (m as { type: string }).type === "clax:welcome"), "welcome");
@@ -312,9 +313,9 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const posted: { type: string; id?: string }[] = [];
     win.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof win.postMessage;
     const results = () => posted.filter(m => m.type === "clax:use-result").map(m => m.id);
-    await new Promise(r => setTimeout(r, 30));
+    await settled();
     fromFrame(win, { type: "clax:use", id: "before", name: "permissions" });
-    await new Promise(r => setTimeout(r, 30));
+    await settled();
     expect(results()).toEqual([]);
     fromFrame(win, { type: "clax:hello", artifact: ID, version: 2, file: "index.html" });
     fromFrame(win, { type: "clax:use", id: "matched", name: "permissions" });
@@ -323,7 +324,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     fromFrame(win, { type: "clax:hello", artifact: "9zzzzzzzzzzz", version: 2, file: "index.html" });
     fromFrame(win, { type: "clax:use", id: "foreign", name: "permissions" });
     fromFrame(win, { type: "clax:call", id: "foreign-call", ns: "permissions", method: "state", args: [] });
-    await new Promise(r => setTimeout(r, 30));
+    await settled();
     expect(results()).toEqual(["matched"]);
     expect(posted.some(m => m.type === "clax:call-result")).toBe(false);
   });
@@ -400,9 +401,8 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const posted: { type: string; hash?: string }[] = [];
     win.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof win.postMessage;
     const depth = history.length;
-    const settle = () => new Promise(r => setTimeout(r, 20));
     fromFrame(win, { type: "clax:hash", hash: "#early" });
-    await settle();
+    await settled();
     expect(location.hash).toBe("#docs%2Fcontract.md");
     fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "about.html" });
     // The page moves to the URL's fragment once it greets, ahead of its welcome.
@@ -411,7 +411,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => location.hash === "#crates%2Fa.rs", "the frame's fragment in the address bar");
     expect([location.pathname, history.length]).toEqual([`/a/${ID}/about.html`, depth]);
     for (const bad of ["no-hash", 42, `#${"x".repeat(512)}`]) fromFrame(win, { type: "clax:hash", hash: bad });
-    await settle();
+    await settled();
     expect(location.hash).toBe("#crates%2Fa.rs");
     fromFrame(win, { type: "clax:hash", hash: "" });
     await waitFor(() => location.hash === "", "no fragment");
@@ -425,7 +425,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const win = frame.contentWindow!;
     win.postMessage = (() => {}) as typeof win.postMessage;
     fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
-    await new Promise(r => setTimeout(r, 20));
+    await settled();
     const replace = vi.spyOn(history, "replaceState");
     try {
       for (let i = 0; i < 40; i++) fromFrame(win, { type: "clax:hash", hash: `#h${i}` });
@@ -452,8 +452,10 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     try {
       fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
       await waitFor(() => posted.some(m => m.type === "clax:welcome"), "the welcome");
+      // The fragment's copy into the address bar (at the next frame) is refused.
+      const refused = replace.mock.calls.length;
       fromFrame(win, { type: "clax:hash", hash: "#x" });
-      await new Promise(r => setTimeout(r, 40));
+      await waitFor(() => replace.mock.calls.length > refused, "the refused copy of the fragment");
       fromFrame(win, { type: "clax:navigate", file: "about.html" });
       await waitFor(() => frame.getAttribute("src") === `http://${ID}.localhost:3000/_clax/v/1/about.html`, "the frame on the about page");
       expect(push).toHaveBeenCalled();
@@ -475,7 +477,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const posted: { type: string; id?: string }[] = [];
     win.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof win.postMessage;
     fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
-    await new Promise(r => setTimeout(r, 20));
+    await settled();
     expect(location.pathname).toBe(`/a/${ID}`);
     fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "about.html" });
     await waitFor(() => location.pathname === `/a/${ID}/about.html`, "the about page's URL");
@@ -484,7 +486,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     // A page the shown version does not hold: no address change, and no answers.
     fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "forged.html" });
     fromFrame(win, { type: "clax:use", id: "forged", name: "permissions" });
-    await new Promise(r => setTimeout(r, 30));
+    await settled();
     expect(location.pathname).toBe(`/a/${ID}`);
     expect(posted.some(m => m.type === "clax:use-result" && m.id === "forged")).toBe(false);
   });
@@ -505,7 +507,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(handle).not.toBe("tI");
     // A result naming the store ID (which the frame never learns) places nothing.
     fromFrame(win, { type: "clax:anchors", requestId: "r0", results: [{ id: "tI", found: true, method: "exact", rect: { x: 10, y: 40, w: 100, h: 20 } }] });
-    await new Promise(r => setTimeout(r, 20));
+    await settled();
     expect(root.querySelector("button.thread-pin")).toBeNull();
     fromFrame(win, { type: "clax:anchors", requestId: "r1", results: [{ id: handle, found: true, method: "exact", rect: { x: 10, y: 40, w: 100, h: 20 } }] });
     await waitFor(() => root.querySelector("button.thread-pin"), "the pin");
@@ -534,7 +536,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const card = await waitFor(() => root.querySelector('.section-detached [data-thread="tG"]'), "the detached card");
     card.querySelector<HTMLButtonElement>("button.card-head")!.click();
-    await new Promise(r => setTimeout(r, 30));
+    await settled();
     expect(frame.getAttribute("src")).toBe(`${SITE}/_clax/session/start?next=${encodeURIComponent("/_clax/v/1/")}`);
     expect(location.pathname).toBe(`/a/${ID}`);
   });
@@ -547,9 +549,8 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     // jsdom gives the frame a new window when its src changes; a browser keeps one WindowProxy.
     const tap = () => { const w = frame.contentWindow!; w.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof w.postMessage; return w; };
     let win = tap();
-    const settle = () => new Promise(r => setTimeout(r, 20));
     fromFrame(win, { type: "clax:navigate", file: "about.html" });
-    await settle();
+    await settled();
     expect(location.pathname).toBe(`/a/${ID}`);
     const depth = history.length;
     fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
@@ -559,11 +560,11 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     // The outgoing document is no longer answered: a burst of links, a capability request.
     fromFrame(win, { type: "clax:navigate", file: "index.html" });
     fromFrame(win, { type: "clax:use", id: "stale", name: "permissions" });
-    await settle();
+    await settled();
     expect([location.pathname, history.length]).toEqual([`/a/${ID}/about.html`, depth + 1]);
     expect(posted.some(m => m.id === "stale")).toBe(false);
     fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "about.html" });
-    await settle();
+    await settled();
     expect(location.hash).toBe("#team");
     // Not an HTML page: the frame loads it in place, the URL stays.
     fromFrame(win, { type: "clax:navigate", file: "doc.pdf" });
@@ -573,7 +574,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     // Malformed requests are ignored: a non-string, a path outside the version, a missing page.
     fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "about.html" });
     for (const bad of [{ file: 42 }, { file: "../index.html" }, { file: "missing.html" }]) fromFrame(win, { type: "clax:navigate", ...bad });
-    await settle();
+    await settled();
     expect([location.pathname, history.length]).toEqual([`/a/${ID}/about.html`, depth + 1]);
     // A fragment that is not one, or is too long, is dropped.
     fromFrame(win, { type: "clax:navigate", file: "index.html", hash: "team" });
@@ -596,7 +597,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     // The wait for the page runs on the shell's clock: each step moves it past.
     const pastTheWait = async () => {
       (globalThis as unknown as { claxTestClock: { advance(ms: number): void } }).claxTestClock.advance(wait.ms);
-      await new Promise(r => setTimeout(r, 0));
+      await settled();
     };
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
@@ -632,7 +633,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const posted: { type: string; id?: string }[] = [];
     win.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof win.postMessage;
     const results = () => posted.filter(m => m.type === "clax:use-result").map(m => m.id);
-    await new Promise(r => setTimeout(r, 30));
+    await settled();
     fromFrame(win, { type: "clax:hello", artifact: ID, version: 2, file: "index.html" });
     frame.dispatchEvent(new Event("load"));
     fromFrame(win, { type: "clax:use", id: "greeted", name: "permissions" });
@@ -640,7 +641,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     // The frame navigated to a document without a bridge: it loads without greeting.
     frame.dispatchEvent(new Event("load"));
     fromFrame(win, { type: "clax:use", id: "silent", name: "permissions" });
-    await new Promise(r => setTimeout(r, 30));
+    await settled();
     expect(results()).toEqual(["greeted"]);
   });
 
@@ -660,7 +661,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => root.querySelector("iframe.frame"), "viewer");
     const es = await waitFor(() => FakeES.last, "event stream");
     await waitFor(() => lists >= 1, "initial list");
-    await new Promise(r => setTimeout(r, 20));
+    await settled();
     // Answered: an event now is not replayed onto the next list, which no longer has it.
     es.emit("thread", { type: "thread", artifact_id: ID, thread: t("01JA") });
     await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads 1", "event thread");
