@@ -690,10 +690,8 @@ impl Writer {
                 self.code = by.map(|by| (String::new(), by));
                 return None;
             }
-            if block_name(name).is_none() {
-                return None;
-            }
-            // A block ends inline code.
+            // Other inline markup in code is skipped; a block ends it.
+            block_name(name)?;
             self.end_code();
         }
         self.track_block(name, start, tag.self_closing);
