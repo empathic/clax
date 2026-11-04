@@ -99,7 +99,7 @@ jobs:
           version="$(node -p 'require("./package.json").version')"
           pinned="$(sed -n 's/^PINNED_VERSION="\(.*\)"$/\1/p' scripts/ensure-clax.sh)"
           if [ "$pinned" != "$version" ]; then
-            echo "plugins/pi/scripts/ensure-clax.sh pins $pinned, not $version: run this after the 'Pin the plugins to Clax $version' commit" >&2
+            echo "plugins/pi/scripts/ensure-clax.sh pins $pinned, not $version: publish from a commit that pins it: a release's carry on main" >&2
             exit 1
           fi
           if npm view "@empathic/clax-pi@$version" version >/dev/null 2>&1; then

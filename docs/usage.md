@@ -1496,128 +1496,139 @@ Only a person cuts one. Its downloads work only while the repository is
 public.
 
 Releases come from the `prod` branch, and so does clax.dev: production
-deploys from GitHub Actions on every push to `prod`, never from a laptop
-(`docs/prod.md`). Every change reaches `prod` as a release, through a pull
-request that raises the version. One command, run twice, does all of it:
+deploys from GitHub Actions, never from a laptop (`docs/prod.md`). Every
+change reaches `prod` as a release: a pull request from
+`release/<version>` that raises the version. While it is open it is
+staging; merging it releases it. The only local step is cutting it.
 
-```
-just release 0.6.0                              # a dry run: the checks, and every step with whether it is done
-just release 0.6.0 --i-know-what-i-am-doing     # prepare: the release branch and its pull request into prod
-# review the pull request; once CI passes, merge it on GitHub with a merge commit (this deploys clax.dev)
-git switch prod && git pull --ff-only
-just release 0.6.0 --i-know-what-i-am-doing     # cut: tag, release, pin, carry to main, Pi package
-```
+### The runbook
+
+1. **Cut** the release pull request, from any branch with a clean
+   checkout:
+
+   ```
+   just release 0.6.0                              # a dry run: the checks, and every step with whether it is done
+   just release 0.6.0 --i-know-what-i-am-doing     # the release branch and its pull request into prod
+   ```
+
+2. **Try staging.** On every push to `release/<version>`, `staging.yml`
+   builds the release candidate once (the binaries with `SHA256SUMS`, and
+   the Worker, each file attested), deploys that Worker as the pull
+   request's own instance, `https://pr-<N>.clax-staging.dev`, configured
+   as clax.dev is but starting empty, smokes it, and comments its address
+   on the pull request (`docs/prod.md`, "Staging"). Sign in there with
+   GitHub as the owner; the candidate's binaries are the run's
+   `release-dist` artifact, for `CLAX_BIN`. A fix is a commit pushed to
+   the release branch (signed, by an admin: the `release` ruleset), which
+   builds and deploys staging again.
+
+3. **Merge** the pull request once CI and staging pass, with a merge
+   commit (Create a merge commit, not squash or rebase: the merge
+   commit's second parent is the tested head). Deploy prod then waits for
+   your approval of its `deploy` job (the `production` environment's
+   required reviewer); approve it.
+
+4. **Watch Deploy prod** finish (`gh run list --workflow deploy-prod.yml`,
+   or the link `just release 0.6.0` prints once `prod` is at the
+   version). It builds nothing that ships:
+   - **candidate:** `scripts/find-candidate.sh` takes the merge commit's
+     second parent, refuses a merge whose tree is not that head's
+     (`prod` moved while the pull request was open: cut the release
+     again), and finds the latest successful `staging.yml` run of the
+     head; `scripts/verify-candidate.sh` checks every file of its
+     artifacts with `gh attestation verify`, as made by `release.yml` or
+     `staging.yml` at that commit, and refuses the whole candidate if one
+     fails.
+   - **deploy**, once approved: clax.dev from the candidate Worker
+     (`--no-build`, which refuses a Worker built from another tree), then
+     `/healthz`, a site host and the smoke.
+   - **publish:** the tag `v<version>` on the merge commit and the GitHub
+     release, from the candidate's files.
+   - **carry:** as the release GitHub App, `scripts/carry-release.sh`
+     cherry-picks the release branch's own commits onto `main`'s tip,
+     pins the plugins to the new release (`scripts/pin-release.sh`),
+     makes that one commit through GitHub's API (so GitHub signs it),
+     opens the pull request `carry/<version>` into `main`, waits for CI's
+     `bazel` job on it (`scripts/wait-ci.sh`) and squash merges it. The
+     marketplaces see the version and its pin in one push, after the
+     release they pin exists.
+   - **pi:** once CI passes on that commit of `main`, Publish Pi package
+     from it.
+   - **teardown:** the reaper (`preview-reaper.yml`), run on `main`, which
+     removes the staging instance of the now closed pull request.
+
+5. **What is left by hand:** the crates.io package ("The crates.io
+   package", below), and the SDK package when `main` carries a version npm
+   lacks ("Releasing the SDK package").
+
+Each Deploy prod job finds what an earlier run of it did, so a failed run
+is rerun (`gh run rerun <ID> --failed`) once its cause is fixed: a release
+of the version made from the merge commit's tree is kept (one from
+another tree fails the job), a merged carry is found and an open one
+waited for and merged, and a Pi version npm has is not published again. A
+carry whose commits do not apply to `main` (`main` changed a line the
+bump changes) fails, naming the commit: carry it by hand, as below. A
+failed deploy rolls nothing back (`docs/prod.md`, "Rollback").
+
+### What `just release` does
 
 `just release` runs `scripts/release.sh` as it is (no build system in
-between), and releases Clax and all four plugins: the Claude Code, Codex
-and Grok plugins update through this repository's marketplaces once
-`main` carries the new version and its pin, and the Pi package is
-published to npm from the pin commit on `prod`.
-
-Which half a run does follows from `origin/prod`. Until `prod`'s version
-is the release's, it **prepares** (steps 2-9), from any branch with a clean
-checkout: it switches to `release/<version>`, cut from `origin/prod`
-(or the branch as it stands, here or on origin); makes a signed merge of
-`origin/main` into it, "Merge origin/main into release/<version>" (`main`
-carries every earlier release's version and pin, carried there in step
-18, so the version files merge cleanly); runs `scripts/bump-version.sh`,
+between). Until `origin/prod`'s version is the release's, it prepares the
+pull request (steps 2-9): it switches to `release/<version>`, cut from
+`origin/prod` (or the branch as it stands, here or on origin); makes a
+signed merge of `origin/main` into it, "Merge origin/main into
+release/<version>" (`main` carries every earlier release's version and
+pin, so the version files merge cleanly); runs `scripts/bump-version.sh`,
 `just bazel-sync` until it changes nothing, and `scripts/check-version.sh`
 (the version files agree); makes the signed commit "Release <version>";
 pushes the branch; and opens its pull request into `prod` with `gh pr
-create`, printing its URL. It runs no build and no tests: CI runs every
-gate on the pull request, including the check that it raises the
-version. Then it stops (step 10 is yours); a run while the pull request
-is open prints its URL again and changes nothing. Merge it with a merge commit (Create a merge
-commit, not squash or rebase: the cut finds the release commit in
-`prod`'s history to carry it to `main`); the push to `prod` deploys
-clax.dev. The bump lives on the release branch, never on `main`, until its
-release exists: harnesses update a plugin when its version changes, so
-`main` must get the version and the pin to its release in one push.
-
-Once `prod` is at the release's version, a run **cuts** (steps 11-21),
-from a `prod` checkout at `origin/prod`'s tip: it signs the tag
-`v<version>` on `prod`'s tip and pushes the tag alone; waits for the
-Release workflow on it and checks that the release lists `SHA256SUMS` and
-was built from the tag commit's tree; runs `scripts/pin-release.sh` and
-`scripts/check-version.sh`; makes the signed commit "Pin the plugins to Clax <version>"
-and pushes `prod` (your bypass of `prod`'s pull request rule; the push
-deploys clax.dev again, with no server change). Right after, so that
-`main` is red as briefly as possible (`scripts/test-plugins.sh` fails on
-`main` while its pin is not the newest tag), it **carries** the release to
-`main`: the release commit and the pin commit, cherry-picked (`git
-cherry-pick -S -x`) onto `origin/main`'s tip in a temporary worktree under
-`target/release/`, as two signed commits, pushed to `main`, which refuses
-merge commits. Last it waits for CI's gate (ci.yml's `bazel` job, not the
-perf-log job, which is cancelled when pushes pile up) on the pin commit on
-`prod`, runs Publish Pi package from that commit with `dry_run` off and
-waits for it, and prints what is left by hand: checking that the deploys
-of `prod` succeeded (`gh run list --workflow deploy-prod.yml`), and the
-crates.io package, which it does not publish. It deploys nothing itself.
+create`, with the release's checklist, printing its URL. It runs no build
+and no tests: CI runs every gate on the pull request, including the check
+that it raises the version and that its head is a `release/X.Y.Z` branch
+of this repository. Then it stops (step 10, the merge, is yours). A run
+while the pull request is open prints its URL again and changes nothing;
+one once `origin/prod` is at the version prints the Deploy prod run of
+`prod`'s tip and changes nothing. The bump lives on the release branch,
+never on `main`, until its release exists: harnesses update a plugin when
+its version changes, so `main` must get the version and the pin to its
+release in one push.
 
 The dry run changes nothing (it fetches `main` and `prod` from origin, and
 the release branch when origin has it, which moves only the
 remote-tracking refs). It checks first, and so does every run, which
 refuses to start unless: the version is `X.Y.Z` and newer than every `v*`
-tag here and on origin; preparing, `origin/prod` is older than it, the
-checkout is clean (no untracked file), the release branch holds
-`origin/prod`'s tip and adds only merges of `origin/main` and the release
-commit; cutting, the checkout is on `prod`, not
-behind `origin/prod` and ahead of it only by the pin commit, and
-`origin/prod` has a "Release <version>" commit `main` lacks (a squashed
-pull request is refused). It also needs `gh` signed in (`gh auth status`);
-commit signing working (a signed commit written to a scratch object
-directory); `just`, Bazelisk or Bazel, `python3`, `curl` and `npm` on
-`PATH`; npm reachable (and signed in, with `pnpm`, for a first Pi
-publish); and the `npm` environment set up (below). It signs every commit
-and the tag with your signing key, never force-pushes, never deletes a
-tag, and checks that each commit and the tag it pushes carries a
-signature. Before the first step it lists every step, done or to do, with
-an estimate of the time in all and still to run (the review not counted),
-from the steps' durations in earlier runs' logs or else typical ones. Each
-step then prints one line with the share of the estimate done (steps found
-done count in full), and a long step a heartbeat about every 30 seconds
-with its time so far, the time left, and the workflow run's state and
-jobs done. The steps' own output goes only to
-`target/release/<version>.log`; a failed step prints the log's last 50
-lines and its path. `--verbose` streams the steps' output to the terminal
-as well.
+tag here and on origin, with no tag of it yet; `origin/prod` is older
+than it; the checkout is clean (no untracked file); the release branch
+holds `origin/prod`'s tip and adds only merges of `origin/main` and the
+release commit. It also needs `gh` signed in (`gh auth status`); commit
+signing working (a signed commit written to a scratch object directory);
+and `just`, Bazelisk or Bazel, `python3` and `curl` on `PATH`. It signs
+every commit with your signing key, never force-pushes, and checks that
+each commit it pushes carries a signature. Before the first step it lists
+every step, done or to do, with an estimate of the time in all and still
+to run (the review not counted), from the steps' durations in earlier
+runs' logs or else typical ones. Each step then prints one line with the
+share of the estimate done (steps found done count in full), and a long
+step a heartbeat about every 30 seconds with its time so far and the time
+left. The steps' own output goes only to `target/release/<version>.log`;
+a failed step prints the log's last 50 lines and its path. `--verbose`
+streams the steps' output to the terminal as well.
 
 A step that fails stops the run, which names the step and changes nothing
 after it. Fix the cause and run the same command again: each step's state
-is read from git, GitHub and npm (the version files, the commits by
-subject, the release branch here and on origin and its pull request's
-state, the tag here and on origin, the release's assets, the workflow
-runs, the versions npm has), so the run resumes at the first step not
-done. Uncommitted changes are accepted only while the step that made them
-waits for its commit (the bump, 4-6, on the release branch; the pin,
-14-15, on `prod`). A merge of `origin/main` that conflicts stops step 3
-with the files: merge by hand with the same subject (`git merge -S
-origin/main -m "Merge origin/main into release/<version>"`, resolve, then
-`git commit -S`: git does not carry `-S` past a conflict) and run the
-command again. A carry that conflicts (`main` changed a line the bump or
-the pin changes) stops step 18 with `prod` pushed and `main` untouched,
-naming the files and the commits: cherry-pick them by hand in a worktree
-of `origin/main`, keeping their subjects and signing each, push `main`,
-and run the command again, which finds both subjects on `main` and goes
-on. Before pushing `main`, step 18 also runs `scripts/check-version.sh` on
-the cherry-picked tree: a version file `main` gained after step 3 merged
-it still names the old version, and the run stops the same way, naming
-it; carry by hand, then run `scripts/bump-version.sh <version>` and `just
-bazel-sync` there and amend the pin copy (`git commit -S -a --amend
---no-edit`) before the push. A refused push of `main` (it moved meanwhile) is carried onto its new
-tip by the next run. A commit amended unsigned is refused with how to sign
-it (`git commit --amend -S --no-edit`). A failed workflow run is rerun on
-GitHub (`gh run rerun <ID> --failed`), then the command again picks it up;
-a failed Publish Pi package run is dispatched anew. Publish Pi package
-takes the pin commit as its `sha` input and titles its run after it,
-which is how the script finds the run again. A wait gives up after
-`CLAX_RELEASE_MAX_POLLS` polls (270) `CLAX_RELEASE_POLL_SECONDS` apart
-(20), 90 minutes. The cut is known by its tag and its pin commit on
-`prod`, so `main` moving on after the carry does not matter, and a
-finished release reports every step done.
+is read from git and GitHub (the version files, the commits by subject,
+the release branch here and on origin and its pull request's state), so
+the run resumes at the first step not done. Uncommitted changes are
+accepted only while the bump (steps 4-6) waits for its commit. A merge of
+`origin/main` that conflicts stops step 3 with the files: merge by hand
+with the same subject (`git merge -S origin/main -m "Merge origin/main
+into release/<version>"`, resolve, then `git commit -S`: git does not
+carry `-S` past a conflict) and run the command again. A commit amended
+unsigned is refused with how to sign it (`git commit --amend -S
+--no-edit`).
 
-What it runs, which is also the procedure by hand when a release needs
-recovering outside the script:
+What the cut and the carry run, which is also the procedure by hand when
+a release needs recovering:
 
 ```
 git switch -c release/0.4.0 origin/prod
@@ -1628,85 +1639,36 @@ scripts/check-version.sh          # the version files agree; CI runs the gates o
 git commit -S -am "Release 0.4.0"
 git push origin release/0.4.0
 gh pr create --base prod --head release/0.4.0 --title "Release 0.4.0"
-# once CI passes, merge it with a merge commit; then, on prod at origin/prod's tip:
-git tag -s v0.4.0 -m "Clax 0.4.0"
-git push origin v0.4.0            # the tag alone
-# wait for the Release workflow to publish v0.4.0, then:
+# once CI and staging pass, merge it with a merge commit; Deploy prod does the rest.
+# A carry by hand, once v0.4.0 is published, in a worktree of origin/main:
+git cherry-pick -x <each commit of release/0.4.0 that main and the previous prod lack>
 scripts/pin-release.sh v0.4.0     # PINNED_VERSION and the four SHA256 values, in every wrapper copy
 scripts/check-version.sh
-git commit -S -am "Pin the plugins to Clax 0.4.0"
-git push origin prod
-# carry both commits to main, in a worktree of origin/main:
-git cherry-pick -S -x <the "Release 0.4.0" commit> <the pin commit>
-git push origin HEAD:refs/heads/main
-# once CI passes on the pin commit on prod: Actions, Publish Pi package, Run workflow
-# (on prod, dry_run off, sha the pin commit), or:
-gh workflow run publish-pi.yml --ref prod -f dry_run=false -f sha=<pin commit>
+git commit -S -am "chore(release): 0.4.0, with the plugins pinned to it"
+# then a pull request into main, squash merged once CI passes, and Publish Pi package from its commit:
+gh workflow run publish-pi.yml --ref main -f dry_run=false -f sha=<main's commit>
 ```
 
-`scripts/test-release-script.sh` (gate "release command") runs the script
-in scratch repositories with a bare origin holding `main` and `prod` (which
-refuses merge commits on `main`, as GitHub does), fakes of `gh` (the pull
-request included), `just` and Bazel, and an SSH signing key of its own. It
-covers the dry run (also mid-release), both halves of a release in order
-and a rerun of it, a run while the pull request is open (it names the
-pull request and changes nothing), and resuming after: a failed version
-check; a refused push of the release branch
-(from another branch); a refused pull request; a merge of `main` that
-conflicts; a failed, never-listed or unfinished Release run; a release of
-the version from another build; a refused push of `prod` and an unsigned
-pin commit; a refused push of `main`; a carry that conflicts, carried by
-hand; versions that disagree after the carry, bumped by hand; a failed
-CI run on the pin commit, also once `main` has moved on;
-and a failed Publish Pi package run. It also checks `bazel-sync` that
-never settles, `gh` failing during a wait, `main` moving during the
-Release wait, a release of the version from an earlier build of the same
-tree or of another tree, the Pi package's first version published from
-here (a fake `npm`), a package on npm published through the workflow, a
-version npm has already, and each preflight refusal but a missing Bazel,
-`python3`, `curl`, `npm` or `pnpm`: among them a cut from another branch
-than `prod` or behind `origin/prod`, a squashed pull request, and a
-release branch that `origin/prod` has moved past.
+`scripts/test-release-script.sh` (gate "release command") runs
+`release.sh` in scratch repositories with a bare origin holding `main` and
+`prod`, fakes of `gh` (the pull request included), `just` and Bazel, and
+an SSH signing key of its own: the dry run, the cut in order and a rerun
+while the pull request is open, a run once `prod` is at the version, and
+resuming after each failure of the preparation, with the preflight's
+refusals. `//scripts:find_candidate`, `//scripts:verify_candidate` and
+`//scripts:carry_release` test Deploy prod's scripts the same way, against
+scratch repositories and a fake `gh`.
 
-The Pi package, `@empathic/clax-pi` on npm, is published from the pin
-commit on `prod`, not the tag: its wrapper must pin the release that
-shares its version, which `.github/workflows/publish-pi.yml` checks, with
-that the commit (its `sha` input, the tip of the ref it runs on by
-default) is on `prod` and CI's `bazel` job passed on it, before it
-typechecks, packs and publishes with provenance through npm trusted
-publishing. npm lets a package name a trusted publisher only once it
-exists, so while `npm view @empathic/clax-pi` finds nothing, `just
-release` publishes the first version from your machine instead: its
-preflight then needs `npm whoami` to succeed (`npm login`) and `pnpm`, and
-the dry run says so. Step 20 checks out the pin commit in a temporary
-worktree under `target/release/`, makes the checks `publish-pi.yml` makes
-(the wrapper pins the package's version, npm lacks that version, `pnpm
-install --frozen-lockfile` and `pnpm run typecheck` pass), runs `npm
-publish --access public` on your terminal, so npm's one-time-password
-prompt reaches you, waits for npm to list the version, removes the
-worktree, and prints the one-time setup: on npmjs.com, the package's
-Settings, Trusted Publisher, GitHub Actions, organization `empathic`,
-repository `clax`, workflow `publish-pi.yml`, environment `npm`. Later
-releases publish through the workflow.
-
-The workflow's job runs in the GitHub environment `npm`, which the
-repository's settings limit to `prod` and `main` (`publish-sdk.yml` runs
-in it from `main`), so npm refuses a token from a run dispatched on any
-other ref, whatever that ref's copy of the workflow checks. The
-environment is a repository setting, made once by the owner
-(`scripts/setup-prod-github.sh` sets it, `docs/prod.md`): Settings,
-Environments, New environment (or `npm`), name `npm`; Deployment branches
-and tags: Selected branches and tags; Add deployment branch or tag rule,
-branch `prod`, and another, branch `main`. `just release` reads it (`gh
-api repos/empathic/clax/environments/npm`) and, until npm has the
-version, warns in a dry run and refuses to start a release when it is
-missing, does not allow `prod`, or allows a branch besides `prod` and
-`main`; it never changes it.
-Step 20 is done whenever npm has the version. After that first publish,
-step 21 lists the trusted-publisher setup and switching `README.md` and
-`plugins/pi/README.md` to lead their Pi install with `pi install
-npm:@empathic/clax-pi`; until the package exists they keep their current
-install instructions. `scripts/test-plugins.sh` keeps the package
+The Pi package, `@empathic/clax-pi` on npm, is published from the carry's
+commit on `main`: its wrapper must pin the release that shares its
+version, which `.github/workflows/publish-pi.yml` checks, with that the
+commit (its `sha` input) is on `main` and CI's `bazel` job passed on it,
+before it typechecks, packs and publishes with provenance through npm
+trusted publishing. The workflow's job runs in the GitHub environment
+`npm`, which the repository's settings limit to `prod` and `main`
+(`scripts/setup-prod-github.sh` sets it, `docs/prod.md`), so npm refuses a
+token from a run dispatched on any other ref, whatever that ref's copy of
+the workflow checks. `scripts/test-plugins.sh` keeps the package
 publishable: public, tagged `pi-package` for Pi's gallery, Pi's own
 modules as optional `"*"` peers (Pi provides them; installed, they would
 add a second Pi of about 200 MB), no `.qual` files, and a `LICENSE`.
@@ -1715,36 +1677,30 @@ A plugin pins the release its wrapper names (`PINNED_VERSION` and one
 `SHA256_*` per target in `scripts/ensure-clax.sh`; `scripts/pin-release.sh`
 writes them, from the release's `SHA256SUMS`, into that file and into every
 plugin's copy, Pi's included). A release cannot pin itself, since its
-checksums exist only once it is built, so the tagged commit pins the
-previous release and the pin follows in the next commit. `scripts/test-plugins.sh`
-(and so `just ci` and CI, which fetches the tags) fails while the pin is
-older than the newest `v*` tag or newer than every tag; with no tag at all,
-nothing may be pinned. Harnesses update an installed plugin only when its
-version changes, so main gets the new version and its pin in one push,
-the carry of the cut (above), after the tag and the pin. The binary a release builds
-carries plugins that pin the previous release; `clax init` points them at
-that binary through the `bin` setting.
+checksums exist only once it is built, so `prod` never holds the pin: the
+plugins install from `main`, which gets the pin in the carry.
+`scripts/test-plugins.sh` (and so `just ci` and CI, which fetches the
+tags) fails while the pin is older than the newest `v*` tag or newer than
+every tag; with no tag at all, nothing may be pinned. The binary a release
+builds carries plugins that pin the previous release; `clax init` points
+them at that binary through the `bin` setting.
 
-The tag runs `.github/workflows/release.yml`. It checks that the tag matches
-every version. A release records the tree it was built from in a
-`SOURCE_TREE` asset, which `SHA256SUMS` covers. When the tag's release
-exists already, the run builds nothing: it finishes if the release was
-built from the tree the tag names now (a tag moved to a re-signed copy of
-its commit), and fails otherwise, saying to delete the release and rerun.
-For a release made before `SOURCE_TREE`, its tree is that of the newest
-successful Release run on the tag created before the release: the run that
-uploaded it. `scripts/release-exists-check.sh` holds that rule, and
-`scripts/release.sh` uses the same script, so both judge a release by
-trees, not commits: a moved tag with the same tree keeps its release, and
-a release built from another tree is never pinned. Otherwise the
-workflow builds macOS arm64 and x86_64 and Linux x86_64 and arm64
-(static musl) binaries on native runners, each with the web UI embedded. It
-smoke-tests each binary and packs `clax-<version>-<target>.tar.gz`. It
-installs one with `install.sh` from a local copy of the release, and
-another through the plugins' wrapper pinned to that copy, and publishes the archives, `install.sh` and `SHA256SUMS`. Running the workflow
-by hand (Actions, Release, Run workflow), or a pull request that touches the
-release path, does everything except publish, and keeps the result as the
-`release-dist` artifact.
+The release binaries are built by `.github/workflows/release.yml`, called
+by `staging.yml` with `candidate: true`: it checks every version, builds
+macOS arm64 and x86_64 and Linux x86_64 and arm64 (static musl) binaries
+on native runners, each with the web UI embedded, smoke-tests each binary
+and packs `clax-<version>-<target>.tar.gz`; it installs one with
+`install.sh` from a local copy of the release, and another through the
+plugins' wrapper pinned to that copy; and it keeps the archives,
+`install.sh`, `SHA256SUMS` and a `SOURCE_TREE` asset (the tree it was
+built from, which `SHA256SUMS` covers) as the `release-dist` artifact,
+each file attested. Deploy prod publishes those files; the tag it makes
+runs no workflow. Running the workflow by hand (Actions, Release, Run
+workflow), or a pull request that touches the release path, does the same
+without attesting. A `v*` tag pushed by a person still builds and
+publishes a release the old way; `scripts/release-exists-check.sh` judges
+an existing release by its `SOURCE_TREE`, so a release built from another
+tree is never published over or pinned.
 
 ### Releasing the SDK package
 
