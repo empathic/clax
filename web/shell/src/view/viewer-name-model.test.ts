@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { freshModules } from "../test/modules";
+import { settled } from "../test/settled";
 
 describe("NameSaver", () => {
   afterEach(async () => { vi.unstubAllGlobals(); await freshModules(); });
@@ -18,14 +19,14 @@ describe("NameSaver", () => {
     s.load(n => shown.push(n));
     s.edit();
     s.save("Ada");
-    await new Promise(r => setTimeout(r, 10));
+    await settled();
     expect(calls).toEqual(["GET /api/viewers/me"]);
     answer(new Response(JSON.stringify({ viewer: { public_id: "u_1", display_name: "Bo", created_at: "x" } })));
-    await new Promise(r => setTimeout(r, 10));
+    await settled();
     expect(shown).toEqual([]);
     expect(calls).toEqual(["GET /api/viewers/me", "PUT /api/viewers/me"]);
     s.save("Ada");
-    await new Promise(r => setTimeout(r, 10));
+    await settled();
     expect(calls).toHaveLength(2);
   });
   /** A daemon whose lookup answers an unnamed visitor at once and whose
@@ -98,11 +99,11 @@ describe("NameSaver", () => {
     const viewers: string[] = [];
     const s = new NameSaver(() => {}, v => viewers.push(v.display_name ?? ""));
     s.load(n => shown.push(n));
-    await new Promise(r => setTimeout(r, 10));
+    await settled();
     expect(shown).toEqual(["Bo"]);
     expect(viewers).toEqual(["Bo"]);
     s.save(" Cy ");
-    await new Promise(r => setTimeout(r, 10));
+    await settled();
     expect(viewers).toEqual(["Bo", "Cy"]);
   });
 });

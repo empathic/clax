@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeEvent } from "../../test/fake-chrome";
 import { PanelLink, REQUEST_MS } from "./link.svelte";
+import { settled } from "../../../shell/src/test/settled";
 
 function fakes() {
   const ports: { name: string; sent: unknown[]; onMessage: FakeEvent<[unknown]>; onDisconnect: FakeEvent<[]> }[] = [];
@@ -13,7 +14,7 @@ function fakes() {
   };
   return { ports, runtime };
 }
-const settle = async () => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
+const settle = settled;
 let link: PanelLink | null = null;
 afterEach(() => { link?.close(); link = null; vi.useRealTimers(); });
 

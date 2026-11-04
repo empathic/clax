@@ -8,6 +8,7 @@ import {
   buildContext, canSend, carryShapes, clipOf, clipStatus, contextPreview, defaultShapes, externalIdOf, failureText, newDraft, quoteOf, reopenOf, repliesOf, reportOf,
   safeLink, stateLabel, summaryOf, waitingFix,
 } from "./model";
+import { settled } from "../../shell/src/test/settled";
 
 const anchor: Anchor = { kind: "element", selector: "#save", quote: "Save   the\nform", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
 
@@ -23,7 +24,7 @@ function manualTimers() {
   };
   return t;
 }
-const settle = async () => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
+const settle = settled;
 const at = new Date("2026-10-29T07:12:03.120Z");
 const now = () => at;
 const lines: DiagLine[] = [{ at: "2026-10-29T07:12:00Z", level: "error", kind: "error", text: "TypeError: x is undefined" }];

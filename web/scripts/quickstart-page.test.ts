@@ -6,6 +6,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { settled } from "../shell/src/test/settled";
 
 const html = readFileSync(join(__dirname, "../quickstart/index.html"), "utf8");
 const doc = new DOMParser().parseFromString(html, "text/html");
@@ -60,8 +61,8 @@ const at = (origin: string) => shellAt({ origin, url: `${origin}/a/abcd1234efgh`
 
 const toast = () => document.getElementById("toast")!;
 const saved = () => JSON.parse(localStorage.getItem("clax-quickstart") ?? "null");
-/** Lets the page's capability calls settle: they are promises alone, no timers. */
-const settle = async () => { for (let i = 0; i < 100; i++) await Promise.resolve(); };
+/** Lets the page's capability calls settle. */
+const settle = settled;
 
 // The page draws its edges on an animation frame. jsdom runs frames from an
 // interval while one is pending, which a test that ends first would leave
@@ -70,6 +71,7 @@ const frames: ReturnType<typeof setTimeout>[] = [];
 
 beforeEach(() => {
   vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
+    // oxlint-disable-next-line clax-timing/timer-delay -- requestAnimationFrame's stand-in under jsdom: a frame is a later task, as in a browser, and no check waits on its length
     const id = setTimeout(() => cb(performance.now()), 16);
     frames.push(id);
     return id;
