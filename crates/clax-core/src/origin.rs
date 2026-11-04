@@ -4,7 +4,8 @@
 //! one. An origin pattern is written the same way with one or more `*`s in
 //! its host, each standing for whole labels or for part of one
 //! ([`OriginPattern`]); it matches exact origins and is never one itself.
-//! Both are kept and served in their normalized text form.
+//! Both are kept and served in their normalized text form. A loopback
+//! origin names this machine ([`is_loopback_origin`]).
 
 use crate::{CoreError, Result};
 use std::fmt;
@@ -44,6 +45,22 @@ pub fn normalize_origin(raw: &str) -> Result<String> {
             Ok(o)
         }
         url::Origin::Opaque(_) => Err(bad()),
+    }
+}
+
+/// Whether `origin` names this machine by a loopback host: `localhost` or
+/// any name under it (`app.localhost`, which RFC 6761 reserves for
+/// loopback), an address in `127.0.0.0/8`, or `[::1]`. Browsers treat
+/// such an origin as a secure context over `http` too.
+pub fn is_loopback_origin(origin: &str) -> bool {
+    let Ok(u) = url::Url::parse(origin) else {
+        return false;
+    };
+    match u.host() {
+        Some(url::Host::Domain(d)) => d == "localhost" || d.ends_with(".localhost"),
+        Some(url::Host::Ipv4(a)) => a.is_loopback(),
+        Some(url::Host::Ipv6(a)) => a.is_loopback(),
+        None => false,
     }
 }
 
@@ -341,6 +358,39 @@ mod tests {
             "https://pr-%2A.fly.dev",
         ] {
             assert!(normalize_origin(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn loopback_origins_name_this_machine() {
+        for o in [
+            "http://localhost:7702",
+            "http://app.localhost:3000",
+            "http://a.b.localhost",
+            "http://LOCALHOST:7702",
+            "http://127.0.0.1:7703",
+            "http://127.0.0.2",
+            "http://127.1.2.3",
+            "http://127.255.255.255:80",
+            "http://[::1]:8080",
+            "http://[0:0:0:0:0:0:0:1]",
+            "https://localhost",
+        ] {
+            assert!(is_loopback_origin(o), "{o}");
+        }
+        for o in [
+            "http://example.com",
+            "http://localhost.example.com",
+            "http://notlocalhost",
+            "http://xlocalhost:7702",
+            "http://10.0.0.1:7702",
+            "http://128.0.0.1",
+            "http://0.0.0.0",
+            "http://[::2]",
+            "http://[::]",
+            "not a url",
+        ] {
+            assert!(!is_loopback_origin(o), "{o}");
         }
     }
 
