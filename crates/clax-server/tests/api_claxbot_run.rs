@@ -15,6 +15,17 @@ use serde_json::{Value, json};
 
 const KEY: &str = "sk-ant-api03-FAKEKEYFORTESTS-wxyz";
 
+/// The settings of a daemon driving runs against the fake at `base`. A
+/// script's watchdog runs on real time, four times its CPU budget while
+/// the engine is busy (`clax_bot_js::Watchdog`): the budget is set far past
+/// the HANG guard, so a loaded machine never has the watchdog end a run.
+fn on_fake(base: &str) -> [(Setting, Option<Value>); 2] {
+    [
+        (Setting::BaseUrl, Some(json!(base))),
+        (Setting::ScriptCpuMs, Some(json!(600_000))),
+    ]
+}
+
 /// A daemon driving runs against `fake`, its instance key set.
 async fn daemon(fake: &FakeMessages) -> TestServer {
     let ts = TestServer::spawn_with(|s| {
@@ -23,10 +34,7 @@ async fn daemon(fake: &FakeMessages) -> TestServer {
     })
     .await;
     ts.store
-        .set_bot_settings(
-            &AuditCtx::DAEMON,
-            &[(Setting::BaseUrl, Some(json!(fake.base)))],
-        )
+        .set_bot_settings(&AuditCtx::DAEMON, &on_fake(&fake.base))
         .unwrap();
     let res = ts
         .client
@@ -354,10 +362,7 @@ async fn a_run_edits_publishes_and_replies_as_claxbot_for_its_person() {
     ])
     .await;
     ts.store
-        .set_bot_settings(
-            &AuditCtx::DAEMON,
-            &[(Setting::BaseUrl, Some(json!(fake.base)))],
-        )
+        .set_bot_settings(&AuditCtx::DAEMON, &on_fake(&fake.base))
         .unwrap();
     // A new base URL drops the stored key: the admin enters it again.
     let res = ts
@@ -437,10 +442,7 @@ async fn held_daemon(fake: &FakeMessages) -> (TestServer, std::sync::Arc<clax_bo
     })
     .await;
     ts.store
-        .set_bot_settings(
-            &AuditCtx::DAEMON,
-            &[(Setting::BaseUrl, Some(json!(fake.base)))],
-        )
+        .set_bot_settings(&AuditCtx::DAEMON, &on_fake(&fake.base))
         .unwrap();
     let res = ts
         .client
