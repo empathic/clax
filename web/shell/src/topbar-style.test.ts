@@ -3,7 +3,8 @@
 // island would drop their style without failing anything else.
 import { readFileSync } from "node:fs";
 import { FakeWorker } from "./test/fake-worker";
-import { MOUNT_TIMEOUT_MS, WAIT_MS } from "./test/timeouts";
+import { MOUNT_TIMEOUT_MS } from "./test/timeouts";
+import { waitFor } from "./test/wait-for";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -34,13 +35,11 @@ it("styles the topbar controls through the island: a 3px red-orange rule under t
   const root = document.createElement("div");
   document.body.append(root);
   const view = (await import("./artifact")).mountArtifactView(root, { id: ID, pinnedVersion: null });
-  const deadline = Date.now() + WAIT_MS;
-  while (!root.querySelector(".topbar button.comment") && Date.now() < deadline) await new Promise(r => setTimeout(r, 10));
+  const comment = await waitFor(() => root.querySelector<HTMLButtonElement>(".topbar button.comment"), "the topbar's comment button");
   const topbar = root.querySelector<HTMLElement>(".topbar")!;
-  const comment = root.querySelector<HTMLButtonElement>(".topbar button.comment")!;
   expect(comment.closest(".topbar > .island")).not.toBeNull();
   comment.click();
-  while ((comment.getAttribute("aria-pressed") !== "true" || !topbar.classList.contains("commenting")) && Date.now() < deadline) await new Promise(r => setTimeout(r, 10));
+  await waitFor(() => comment.getAttribute("aria-pressed") === "true" && topbar.classList.contains("commenting"), "comment mode on in the topbar");
   expect(rulesFor(topbar).some(b => /box-shadow:\s*inset 0 -3px 0 var\(--you\)/.test(b))).toBe(true);
   expect(rulesFor(comment).some(b => /background:\s*var\(--comment-hl\)/.test(b) && /color:\s*var\(--you-ink\)/.test(b))).toBe(true);
   const inIsland = Array.from(topbar.querySelectorAll(".island *"));

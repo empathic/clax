@@ -11,17 +11,16 @@
 // listens on every interface, so its invites name this machine's LAN
 // address; on a machine with none the daemon refuses invites
 // (`not_on_lan`) and the test says so and skips.
-import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { api, expect, publish, startDaemon, test } from "./fixtures";
+import { api, expect, publish, run, startDaemon, test } from "./fixtures";
 
 /** Runs the CLI as the person, on their scratch home, outside any agent channel. */
 function asPerson(home: string, args: string[], input?: string, cwd?: string) {
   const env: NodeJS.ProcessEnv = { ...process.env, CLAX_HOME: home };
   for (const k of ["CLAX_CHANNEL", "CLAUDECODE", "CODEX_SESSION_ID", "CLAX_PORT"]) delete env[k];
-  return spawnSync(process.env.CLAX_E2E_BIN!, args, { env, input, cwd, encoding: "utf8", timeout: 20_000 });
+  return run(process.env.CLAX_E2E_BIN!, args, { env, input, cwd });
 }
 
 test("the owner invites a person who connects, narrows their machine from their own People, and is revoked", async ({ browser }) => {
@@ -54,7 +53,7 @@ test("the owner invites a person who connects, narrows their machine from their 
     await expect(owner.getByRole("switch")).toHaveCount(1);
 
     // Sam connects from a scratch home, as `clax connect` on Sam's machine.
-    const out = asPerson(sam, ["connect", command.replace(/^clax connect /, ""), "--name", "sam-laptop", "--yes", "--no-browser"]);
+    const out = await asPerson(sam, ["connect", command.replace(/^clax connect /, ""), "--name", "sam-laptop", "--yes", "--no-browser"]);
     expect(out.status, out.stderr).toBe(0);
     const link = /http:\/\/\S+\/connect\/b\/\S+/.exec(out.stdout + out.stderr)?.[0];
     expect(link, out.stdout + out.stderr).toBeTruthy();
@@ -69,7 +68,7 @@ test("the owner invites a person who connects, narrows their machine from their 
     const project = join(sam, "work", "sam-notes");
     mkdirSync(join(project, ".git"), { recursive: true });
     writeFileSync(join(project, ".git", "HEAD"), "ref: refs/heads/main\n");
-    const hook = asPerson(sam, ["hook", "--agent", "claude", "session-start"], JSON.stringify({ session_id: "e2e-sam-1", cwd: project, hook_event_name: "SessionStart", source: "startup" }), project);
+    const hook = await asPerson(sam, ["hook", "--agent", "claude", "session-start"], JSON.stringify({ session_id: "e2e-sam-1", cwd: project, hook_event_name: "SessionStart", source: "startup" }), project);
     expect(hook.status, hook.stderr).toBe(0);
     await expect(card.locator(".agent .aname")).toHaveText("sam-notes");
     await expect(card.locator(".agent")).toContainText("sam-laptop");
@@ -135,7 +134,7 @@ test("the owner invites a person who connects, narrows their machine from their 
     await owner.getByRole("textbox", { name: "Name", exact: true }).fill(long);
     await owner.getByRole("button", { name: "Create invite" }).click();
     const longCommand = (await owner.locator(".invite code").textContent())!;
-    const joined = asPerson(wes, ["connect", longCommand.replace(/^clax connect /, ""), "--name", "wes-laptop", "--yes", "--no-browser"]);
+    const joined = await asPerson(wes, ["connect", longCommand.replace(/^clax connect /, ""), "--name", "wes-laptop", "--yes", "--no-browser"]);
     expect(joined.status, joined.stderr).toBe(0);
     await owner.getByRole("button", { name: "Done" }).click();
     const longCard = owner.locator("article.person[data-person]").filter({ has: owner.locator("h3", { hasText: long }) });

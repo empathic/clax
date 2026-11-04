@@ -22,7 +22,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { HERE, STATE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { HANG_MS, HERE, STATE, build, freePort, pruneRuns, start, until, writeConfig } from "./harness.mjs";
 
 const require = createRequire(join(HERE, "../../web/package.json"));
 const { chromium } = require("@playwright/test");
@@ -30,7 +30,6 @@ const { chromium } = require("@playwright/test");
 const ROOT = join(STATE, "e2e-clone");
 const TOKEN = "clone-owner-token-" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 const SECRET = "clone setup secret " + Math.random().toString(36).slice(2);
-const LIMIT = 15_000;
 
 function check(ok, what, detail) {
   if (!ok) throw new Error(`FAIL ${what}: ${JSON.stringify(detail)}`);
@@ -78,7 +77,7 @@ function sh(cwd, command, home) {
   const r = spawnSync("sh", ["-c", command], {
     cwd,
     encoding: "utf8",
-    timeout: 120_000,
+    timeout: HANG_MS,
     env: { PATH: process.env.PATH, HOME: home, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" },
   });
   return { status: r.status, stderr: r.stderr };
@@ -125,7 +124,7 @@ async function main() {
         await shot(p, shots, `clone-${width}-${scheme}-open`);
         await dialog.getByRole("button", { name: "Make a token" }).click();
         const git = dialog.locator("pre[aria-label=git]");
-        await git.waitFor({ timeout: LIMIT });
+        await git.waitFor({ timeout: HANG_MS });
         const command = (await git.textContent()) ?? "";
         check(command.startsWith('git -c http.extraHeader="Authorization: Bearer cxm_read_') && command.endsWith(`/git/a-${id}.git`), `${label}: the dialog shows the git clone command`, command);
         const jj = (await dialog.locator("pre[aria-label=jj]").textContent()) ?? "";
@@ -149,7 +148,7 @@ async function main() {
           await p.evaluate(() => document.activeElement?.tagName),
         );
         await p.keyboard.press("Escape");
-        await dialog.waitFor({ state: "detached", timeout: LIMIT });
+        await dialog.waitFor({ state: "detached", timeout: HANG_MS });
         await ctx.close();
       }
     }
@@ -168,13 +167,13 @@ async function main() {
     await shctx.close();
     const sctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, storageState: samState });
     const sp = await sctx.newPage();
-    const offered = sp.waitForResponse((r) => r.url().endsWith(`/api/artifacts/${id}/git-token`), { timeout: LIMIT });
+    const offered = sp.waitForResponse((r) => r.url().endsWith(`/api/artifacts/${id}/git-token`), { timeout: HANG_MS });
     await sp.goto(`${origin}/a/${id}`);
     const options = await (await offered).json();
     check(options.available === true && options.scopes.join(",") === "read", "Sam is offered a read token only", options);
     await sp.locator("button.clone").click();
     const sd = sp.getByRole("dialog", { name: "Clone with git or jj" });
-    await sd.waitFor({ timeout: LIMIT });
+    await sd.waitFor({ timeout: HANG_MS });
     const sr = await sd.locator("input[type=radio]").evaluateAll((els) => els.map((e) => e.value));
     check(sr.join(",") === "read", "and his dialog offers read alone", sr);
     const pushed = await sp.evaluate(async (aid) => {
@@ -215,7 +214,7 @@ async function main() {
       await shot(p, shots, `clone-link-${width}-${scheme}-open`);
       await dialog.getByRole("button", { name: "Make a token" }).click();
       const git = dialog.locator("pre[aria-label=git]");
-      await git.waitFor({ timeout: LIMIT });
+      await git.waitFor({ timeout: HANG_MS });
       const command = (await git.textContent()) ?? "";
       const meta = (await dialog.locator(".meta").textContent()) ?? "";
       check(/expires in about (14|15) min/.test(meta), `${label}: the token lives 15 minutes`, meta);
@@ -244,27 +243,25 @@ async function main() {
 async function openDialog(p, width, label) {
   if (width > 700) {
     const clone = p.locator("button.clone");
-    await clone.waitFor({ timeout: LIMIT });
+    await clone.waitFor({ timeout: HANG_MS });
     check(await clone.isVisible(), `${label}: the top bar shows Clone`, null);
     await clone.click();
   } else {
     check(!(await p.locator("button.clone").isVisible()), `${label}: the bar keeps no Clone button at phone width`, null);
     const more = p.getByRole("button", { name: "More" });
-    await more.waitFor({ timeout: LIMIT });
+    await more.waitFor({ timeout: HANG_MS });
     const item = p.getByRole("menuitem", { name: "Clone with git…" });
     // The menu lists Clone once the options are in.
-    const end = Date.now() + LIMIT;
-    for (;;) {
+    await until(`${label}: the more menu lists Clone with git`, async () => {
       await more.click();
-      if (await item.isVisible()) break;
+      if (await item.isVisible()) return true;
       await p.keyboard.press("Escape");
-      if (Date.now() > end) throw new Error(`FAIL ${label}: the more menu lists no Clone with git`);
-      await p.waitForTimeout(100);
-    }
+      return false;
+    });
     await item.click();
   }
   const dialog = p.getByRole("dialog", { name: "Clone with git or jj" });
-  await dialog.waitFor({ timeout: LIMIT });
+  await dialog.waitFor({ timeout: HANG_MS });
   return dialog;
 }
 

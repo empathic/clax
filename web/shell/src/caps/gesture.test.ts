@@ -24,6 +24,11 @@ describe("frame gestures", () => {
   const clickShell = (at = BUTTON) => { notePointerOver(button, at.x, at.y); notePointerAt(at.x, at.y); button.focus(); noteShellInput(); };
   /** The pointer really moves onto the frame at (x, y), from the shell. */
   const arrive = (x = 250, y = 200) => { notePointerAt(x + 300, y); notePointerOver(frame, x, y); };
+  /** Starts the watcher again on fake timers, so the test runs its check for
+   * focus on something foreign (every `FOCUS_POLL_MS`, 100 ms, on the page's
+   * interval) by moving the clock: `focusCheck` runs it once. */
+  const watchOnFakeTimers = () => { stop(); vi.useFakeTimers(); stop = watchGestures(document); };
+  const focusCheck = () => vi.advanceTimersByTime(100);
   beforeEach(() => {
     forgetGestures();
     stop = watchGestures(document);
@@ -39,6 +44,7 @@ describe("frame gestures", () => {
     active(true);
   });
   afterEach(async () => {
+    vi.useRealTimers();
     // The watcher reads a blur on the next tick: let it, in this test's state.
     await nextTask();
     stop();
@@ -347,7 +353,8 @@ describe("frame gestures", () => {
   });
 
   for (const mode of ["none", "open", "closed"] as const) {
-    it(`takes focus sitting in a foreign frame (${mode === "none" ? "plain" : `in a ${mode} shadow root`}) as shell input, however it got there (N14)`, async () => {
+    it(`takes focus sitting in a foreign frame (${mode === "none" ? "plain" : `in a ${mode} shadow root`}) as shell input, however it got there (N14)`, () => {
+      watchOnFakeTimers();
       clickShell();
       arrive();
       frame.focus();
@@ -358,19 +365,20 @@ describe("frame gestures", () => {
       if (mode === "none") host.append(other); else host.attachShadow({ mode }).append(other);
       document.body.append(host);
       other.focus();
-      await new Promise(r => setTimeout(r, 150));
+      focusCheck();
       frame.focus();
       expect(frameGesture()).toBe(false);
       host.remove();
     });
   }
 
-  it("takes nothing inside the shell's own root, body or html as foreign", async () => {
+  it("takes nothing inside the shell's own root, body or html as foreign", () => {
+    watchOnFakeTimers();
     clickShell();
     arrive();
     frame.focus();
     button.focus();
-    await new Promise(r => setTimeout(r, 150));
+    focusCheck();
     frame.focus();
     // Only the one click: the focus check saw nothing foreign.
     expect(frameGesture()).toBe(true);

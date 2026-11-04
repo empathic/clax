@@ -1630,6 +1630,7 @@ fn question_close(c: &Connection, at: &str, qid: &str) -> Result<Option<AuditRec
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 pub(crate) mod tests {
     use super::*;
     use crate::audit::AuditRow;
@@ -1638,6 +1639,12 @@ pub(crate) mod tests {
     use clax_core::audit::sha256_hex;
 
     /// A reporter that drops what it is told, for driving a batch by hand.
+    /// Its times pace only those reports and the tracing log, which no
+    /// test reads.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a Reporter's times start at a real Instant; they pace only reports and logs no test reads"
+    )]
     fn quiet(report: &mut dyn FnMut(&Progress)) -> Reporter<'_> {
         let now = Instant::now();
         Reporter {
@@ -2422,6 +2429,10 @@ pub(crate) mod tests {
     /// (default 10). Run in release, alone, under `/usr/bin/time -l`.
     #[test]
     #[ignore = "a measurement, not a check"]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a measurement run by hand: it prints wall time and decides nothing by it"
+    )]
     fn backfill_at_scale() {
         let scale = std::env::var("CLAX_BACKFILL_SCALE")
             .ok()
@@ -2467,6 +2478,10 @@ pub(crate) mod tests {
     /// release, alone, under `/usr/bin/time -l`.
     #[test]
     #[ignore = "a measurement, not a check"]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a measurement run by hand: it prints wall time and decides nothing by it"
+    )]
     fn export_at_scale() {
         use crate::toolpath::RenderEnv;
         use crate::toolpath::project::{Export, ExportEnv, Shape};
@@ -3109,6 +3124,10 @@ pub(crate) mod tests {
     /// all (default 500). Run in release, alone, under `/usr/bin/time -l`.
     #[test]
     #[ignore = "a measurement, not a check"]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "a measurement run by hand: it prints wall time and decides nothing by it"
+    )]
     fn backfill_hash_heavy() {
         let var = |k: &str, d: usize| {
             std::env::var(k)

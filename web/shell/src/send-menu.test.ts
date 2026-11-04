@@ -3,6 +3,7 @@ import type { Participants } from "./api";
 import { flush, mount } from "./test/svelte";
 import SendButton from "./ui/SendButton.svelte";
 import { ownTarget, sendGroups } from "./view/send-menu";
+import { settled } from "./test/settled";
 
 type A = Participants["agents"][number];
 const ALEX = { public_id: "u_alex", name: "Alex", owner: true };
@@ -11,7 +12,7 @@ const MIA = { public_id: "u_mia", name: "Mia", owner: false };
 const agent = (handle: string, name: string, person: typeof ALEX, live = true): A => ({ handle, harness: "claude", live, name, person });
 // Sam's agent comes first in the daemon's order (most recently active): the menu still leads with yours.
 const AGENTS = [agent("a_sam", "sam-web", SAM), agent("a_cl", "clax-claude", ALEX), agent("a_mp", "clax-multi-person", ALEX), agent("a_mia", "mia-docs", MIA), agent("a_gone", "old", SAM, false)];
-const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0)); flush(); };
+const settle = settled;
 // The menu loads on first open: loaded here first, it opens a few microtasks after the press.
 await import("./ui/SendMenu.svelte");
 const names = new Map(AGENTS.map(a => [a.handle, a.name!]));

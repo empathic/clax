@@ -9,8 +9,8 @@
 // nothing.
 import { type CDPSession, type Frame, type Page } from "@playwright/test";
 import { host, hostChannel, initHost, ofType } from "./app-host";
-import { test, expect, type Daemon, api, contentFrame, expectVisibleClip, last, openArtifact, publish, publishAs, record, registerSession } from "./fixtures";
-import { quietEval } from "./time";
+import { test, expect, type Daemon, api, contentFrame, expectVisibleClip, last, openArtifact, publish, publishAs, record, registerSession, until } from "./fixtures";
+import { pauseTime, quietEval } from "./time";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -21,21 +21,25 @@ const PAGE = `<!doctype html><html><head><title>Drag</title><style>body{margin:0
 </head>
 <body><main><p id="p">${PARA}</p><img id="pic" src="${IMG}" width="300" height="200"><div id="tail"></div></main></body></html>`;
 
-/** How long the finger rests before it moves: past the bridge's hold
- * (450 ms). Input with a duration, as a key schedule is. */
-const HOLD_MS = 800;
 const PHONE = { hasTouch: true, isMobile: true, viewport: { width: 390, height: 800 } };
 
 type Pt = { x: number; y: number };
 
-/** One finger down at `from`, held `holdMs`, moved to `to` in `steps` (each
- * `stepMs` apart), lifted; `beforeEnd` runs just before the lift. */
-async function holdDrag(cdp: CDPSession, from: Pt, to: Pt, holdMs: number, steps = 8, stepMs = 0, beforeEnd?: () => Promise<unknown>) {
+/** The shell's count of `clax:hover` messages (`record`): the bridge reports
+ * one when a held finger arms. */
+const hovers = (page: Page) => page.evaluate(() => (window as unknown as { claxMsgs: { type: string }[] }).claxMsgs.filter(m => m.type === "clax:hover").length);
+
+/** One finger down at `from`, resting until the bridge's hold (450 ms) has
+ * armed if `hold`, moved to `to` in `steps` (each `stepMs` apart), lifted;
+ * `beforeEnd` runs just before the lift. */
+async function holdDrag(page: Page, cdp: CDPSession, from: Pt, to: Pt, hold: boolean, steps = 8, stepMs = 0, beforeEnd?: () => Promise<unknown>) {
+  const before = await hovers(page);
   await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [from] });
-  if (holdMs) await new Promise(r => setTimeout(r, holdMs));
+  if (hold) await until("the bridge's hold to arm", async () => (await hovers(page)) > before);
   for (let i = 1; i <= steps; i++) {
     const p = { x: from.x + (to.x - from.x) * i / steps, y: from.y + (to.y - from.y) * i / steps };
     await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [p] });
+    // oxlint-disable-next-line clax-timing/timer-delay -- a slow drag's pace is the input under test (the frame's pick start racing the host's attestation); the checks wait on the pick, none on time
     if (stepMs) await new Promise(r => setTimeout(r, stepMs));
   }
   await beforeEnd?.();
@@ -81,7 +85,7 @@ for (const mode of ["subdomain"] as const) {
     const { frame, cdp, aid } = await openOnPhone(page, `Hold drag text ${mode}`, mode);
     const p = (await frame.locator("#p").boundingBox())!;
     const y = p.y + 14;
-    await holdDrag(cdp, { x: p.x + 2, y }, { x: p.x + 160, y }, HOLD_MS);
+    await holdDrag(page, cdp, { x: p.x + 2, y }, { x: p.x + 160, y }, true);
     // Offered, not yet picked: the selection stays, with the chip.
     await expect.poll(() => frame.evaluate(() => String(getSelection()))).not.toBe("");
     expect(await picks(page)).toBe(0);
@@ -110,7 +114,7 @@ for (const mode of ["subdomain"] as const) {
     const pic = (await frame.locator("#pic").boundingBox())!;
     const fb = (await page.locator("iframe.frame").boundingBox())!;
     const from = { x: pic.x + 90, y: pic.y + 50 };
-    await holdDrag(cdp, from, { x: from.x + 120, y: from.y + 100 }, HOLD_MS);
+    await holdDrag(page, cdp, from, { x: from.x + 120, y: from.y + 100 }, true);
     await tapChip(page, frame);
     const pick = await last(page, "clax:pick");
     expect(pick.anchor).toMatchObject({ kind: "area", selector: "#pic", quote: null, file: "index.html" });
@@ -132,7 +136,7 @@ for (const mode of ["subdomain"] as const) {
     const page = await ctx.newPage();
     const { frame, cdp } = await openOnPhone(page, `Drop offer ${mode}`, mode);
     const p = (await frame.locator("#p").boundingBox())!;
-    await holdDrag(cdp, { x: p.x + 2, y: p.y + 14 }, { x: p.x + 160, y: p.y + 14 }, HOLD_MS);
+    await holdDrag(page, cdp, { x: p.x + 2, y: p.y + 14 }, { x: p.x + 160, y: p.y + 14 }, true);
     await expect(frame.locator("clax-overlay .c")).toBeVisible();
     const pic = (await frame.locator("#pic").boundingBox())!;
     await page.touchscreen.tap(pic.x + 150, pic.y + 100);
@@ -149,16 +153,25 @@ for (const mode of ["subdomain"] as const) {
   test(`${mode}: a swipe before the hold arms scrolls the page and picks nothing`, async ({ browser }) => {
     const ctx = await browser.newContext(PHONE);
     const page = await ctx.newPage();
+    await page.clock.install();
     const { frame, cdp } = await openOnPhone(page, `Swipe ${mode}`, mode);
     const p = (await frame.locator("#p").boundingBox())!;
     const from = { x: p.x + 40, y: p.y + 400 };
-    await holdDrag(cdp, from, { x: from.x, y: from.y - 300 }, 0, 10);
-    await expect.poll(() => frame.evaluate(() => scrollY)).toBeGreaterThan(100);
-    // The swipe's fling has ended: the page holds still across two frames.
-    await expect.poll(() => frame.evaluate(() => new Promise<boolean>(r => {
-      const y = scrollY;
-      requestAnimationFrame(() => requestAnimationFrame(() => r(scrollY === y)));
-    }))).toBe(true);
+    // The page counts the ends of its scrolls: Chromium fires `scrollend`
+    // once a scroll, its fling included, has stopped.
+    await frame.evaluate(() => {
+      const w = window as unknown as { scrollEnds: number };
+      w.scrollEnds = 0;
+      addEventListener("scrollend", () => { w.scrollEnds++; });
+    });
+    // The frames' time stands still through the swipe, so the hold cannot
+    // arm before the finger moves, however slowly a loaded machine sends it.
+    await pauseTime(page);
+    await holdDrag(page, cdp, from, { x: from.x, y: from.y - 300 }, false, 10);
+    await page.clock.resume();
+    // The swipe's scroll, its fling included, has ended.
+    await expect.poll(() => frame.evaluate(() => (window as unknown as { scrollEnds: number }).scrollEnds)).toBeGreaterThan(0);
+    expect(await frame.evaluate(() => scrollY)).toBeGreaterThan(100);
     expect(await picks(page)).toBe(0);
     // A tap afterwards still picks, so the swipe left nothing pending.
     await frame.evaluate(() => scrollTo(0, 0));
@@ -199,7 +212,7 @@ test.describe("app mode", () => {
       const from = { x: p.x + 2, y: p.y + 14 };
       const to = { x: from.x + 160, y: from.y };
       await attest(page, "down", from);
-      await holdDrag(cdp, from, to, 600, 8, stepMs, upFirst ? () => attest(page, "up", to) : undefined);
+      await holdDrag(page, cdp, from, to, true, 8, stepMs, upFirst ? () => attest(page, "up", to) : undefined);
       if (!upFirst) await attest(page, "up", to);
       const pick = await last(page, "clax:pick");
       expect(pick.anchor.kind).toBe("range");
@@ -219,7 +232,7 @@ test.describe("app mode", () => {
     const from = { x: tail.x + 40, y: tail.y + 60 };
     const to = { x: from.x + 150, y: from.y + 120 };
     await attest(page, "down", from);
-    await holdDrag(cdp, from, to, 600, 8, 0);
+    await holdDrag(page, cdp, from, to, true, 8, 0);
     await attest(page, "up", to);
     const pick = await last(page, "clax:pick");
     expect(pick.anchor).toMatchObject({ kind: "area", quote: null, file: "index.html" });
@@ -248,7 +261,7 @@ test.describe("app mode", () => {
     await expect.poll(() => page.evaluate(() => document.querySelector("iframe.frame:hover") !== null)).toBe(true);
     const p = (await frame.locator("#p").boundingBox())!;
     const from = { x: p.x + 2, y: p.y + 14 };
-    await holdDrag(cdp, from, { x: from.x + 160, y: from.y }, 600);
+    await holdDrag(page, cdp, from, { x: from.x + 160, y: from.y }, true);
     const pick = await last(page, "clax:pick");
     expect(pick.clipError).toBe("it was not taken");
     expect(await page.evaluate(() => !!document.querySelector(".composer"))).toBe(false);
@@ -258,7 +271,7 @@ test.describe("app mode", () => {
     const { frame, cdp } = await appView(page, "App drag unattested");
     const p = (await frame.locator("#p").boundingBox())!;
     const from = { x: p.x + 2, y: p.y + 14 };
-    await holdDrag(cdp, from, { x: from.x + 160, y: from.y }, 600);
+    await holdDrag(page, cdp, from, { x: from.x + 160, y: from.y }, true);
     // Only a release, unpaired: it attests nothing.
     await attest(page, "up", { x: from.x + 160, y: from.y });
     const pick = await last(page, "clax:pick");

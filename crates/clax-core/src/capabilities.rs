@@ -305,6 +305,7 @@ pub fn declaration_sha256(caps: &Value) -> String {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::{
         Added, added, declaration_sha256, describe, in_force, narrow, net_hosts, pending, validate,

@@ -121,9 +121,7 @@ void main() {
         model.dispose();
         f.dispose();
       });
-      for (var i = 0; i < 5; i++) {
-        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
-      }
+      await tester.runAsync(() => f.arranged(model));
       final menus = <(String, Rect)>[];
       await _pumpChromebook(
         tester,
@@ -255,9 +253,7 @@ void main() {
         model.dispose();
         f.dispose();
       });
-      for (var i = 0; i < 5; i++) {
-        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
-      }
+      await tester.runAsync(() => f.arranged(model));
       await _pumpMac(
         tester,
         SizedBox(width: 220, child: ClaxSidebar(model: model)),
@@ -486,9 +482,7 @@ void main() {
         model.dispose();
         f.dispose();
       });
-      for (var i = 0; i < 5; i++) {
-        await tester.runAsync(() => Future<void>.delayed(Duration.zero));
-      }
+      await tester.runAsync(() => f.arranged(model));
       await pump(
         tester,
         SizedBox(width: 220, height: 600, child: ClaxSidebar(model: model)),

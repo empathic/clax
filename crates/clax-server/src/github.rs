@@ -396,6 +396,7 @@ footer{{margin-top:16px;text-align:center;font-size:12.5px;color:var(--muted)}}f
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

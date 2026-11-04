@@ -643,11 +643,11 @@ async fn revoking_a_person_revokes_grants_and_invites_and_keeps_history() {
     };
     // The revocation wakes the agent's wait: it returns, well before its
     // ten minutes.
-    let (_, (status, v)) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        tokio::join!(waiting, revoke)
-    })
-    .await
-    .expect("the parked wait returns once its person is revoked");
+    let (_, (status, v)) = clax_testkit::within(
+        "the parked wait's return once its person is revoked",
+        async { tokio::join!(waiting, revoke) },
+    )
+    .await;
     assert!(status == 200 || status == 401, "{status}: {v}");
     // Its working record ended, and People heard the grant end.
     assert_eq!(

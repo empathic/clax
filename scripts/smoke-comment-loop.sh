@@ -32,6 +32,8 @@ trap cleanup EXIT
 # shim that starts it, so the real codex on PATH is never run.
 # shellcheck source=scripts/fake-exe.sh
 . scripts/fake-exe.sh
+# shellcheck source=scripts/lib/wait.sh
+. scripts/lib/wait.sh
 fake_exe "$FAKE/codex" <<'SH'
 #!/bin/sh
 printf '%s\n' "$@" > "${0%/*}/../codex-args.txt"
@@ -56,6 +58,39 @@ def fail(msg):
 
 def ok(msg):
     print(f"PASS: {msg}", flush=True)
+
+# A hang guard, in seconds: it ends a step that is stuck and never decides
+# one that passes.
+HANG = 120
+
+def until(what, check):
+    """check()'s first truthy result, polled every 0.05 s. A hang guard of
+    2400 polls (about HANG seconds on an idle machine, longer on a loaded
+    one) fails a condition that never comes."""
+    for _ in range(2400):
+        got = check()
+        if got:
+            return got
+        time.sleep(0.05)  # timing: the poll of a condition, bounded by until's poll count
+    fail(f"timed out waiting for {what}")
+
+def in_thread(f):
+    """Runs f() in a thread; join() returns its result, or fails the run
+    when it raised or did not end within HANG."""
+    out = {}
+    def run():
+        try:
+            out["r"] = f()
+        except BaseException as e:  # fail() exits with SystemExit
+            out["e"] = e
+    t = threading.Thread(target=run)
+    t.start()
+    def join():
+        t.join(HANG)
+        if t.is_alive() or "r" not in out:
+            fail(f"{f.__name__} did not return: {out.get('e', 'still running')!r}")
+        return out["r"]
+    return join
 
 def png(w=8, h=6):
     raw = b"".join(b"\x00" + b"\xc2\x41\x0c\xff" * w for _ in range(h))
@@ -103,7 +138,7 @@ class Shim:
 
     def close(self):
         self.p.stdin.close()
-        code = self.p.wait(timeout=10)
+        code = self.p.wait(timeout=HANG)
         if code != 0:
             fail(f"the shim exited with code {code}")
 
@@ -127,10 +162,10 @@ def owner_cookie(base, tok):
         req = urllib.request.Request(base + "/api/browser-login", data=b'{"next": "/"}', method="POST")
         req.add_header("authorization", f"Bearer {tok}")
         req.add_header("content-type", "application/json")
-        with OPENER.open(req, timeout=20) as r:
+        with OPENER.open(req, timeout=HANG) as r:
             path = json.loads(r.read())["path"]
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
-        with opener.open(base + path, timeout=20) as r:
+        with opener.open(base + path, timeout=HANG) as r:
             page = r.read().decode()
             port = base.rsplit(":", 1)[1]
             cookie = next(c.split(";")[0] for c in r.headers.get_all("set-cookie") if c.startswith(f"clax_owner_{port}="))
@@ -155,7 +190,7 @@ def http(method, path, body=None, ctype="application/json", token=False, session
         req.add_header("origin", base)
     if session:
         req.add_header("x-clax-session", session)
-    with OPENER.open(req, timeout=20) as r:
+    with OPENER.open(req, timeout=HANG) as r:
         raw = r.read()
         return json.loads(raw) if raw else {}
 
@@ -232,7 +267,7 @@ def stop(active):
     event["session_id"], event["cwd"] = "smoke-loop-1", SCRATCH
     env = {k: v for k, v in os.environ.items() if k not in ("CLAX_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR")}
     r = subprocess.run([BIN, "hook", "--agent", "claude", "stop"], input=json.dumps(event), env=env,
-                       capture_output=True, text=True, timeout=10)
+                       capture_output=True, text=True, timeout=HANG)
     return r.returncode, r.stdout.strip()
 code, out = stop(False)
 if code != 0 or json.loads(out)["decision"] != "block" or "tighten the spacing" not in json.loads(out)["reason"]:
@@ -257,36 +292,41 @@ if before["state"] != "delivered" or before["tier"] != "stop_hook" or [t["thread
     fail(f"comments_read: {before} {read} {after}")
 ok("comments_read returned the thread and acknowledged it (delivered via stop_hook -> acknowledged)")
 
-# 5. Tier 4: wait_for_feedback returns as soon as a comment is sent.
-sent_at = {}
-def later():
-    time.sleep(0.5)
-    sent_at["t"] = time.monotonic()  # before the POST: the lag is an upper bound
-    sent_at["thread"] = browser_thread(aid, "@agent one more thing")["id"]
-sender = threading.Thread(target=later)
-sender.start()
-# A wait that the comment did not wake still returns it, at timeout_s, so
-# the check is that it came back well before then: no tighter budget, which
-# a loaded machine would miss.
-WAIT_S = 60
-waited, _ = shim.call("wait_for_feedback", {"url_or_id": aid, "timeout_s": WAIT_S})
-returned = time.monotonic()
-sender.join()
-if "thread" not in sent_at:
-    fail(f"wait_for_feedback returned before the @agent comment was posted: {waited}")
-lag = returned - sent_at["t"]
-if len(waited["feedback"]) != 1 or waited["call_again"] or not 0 <= lag < WAIT_S / 2 \
-        or waited["feedback"][0]["thread_id"] != sent_at["thread"] or waited["feedback"][0]["body"] != "@agent one more thing":
-    fail(f"wait_for_feedback: {waited} after {lag:.2f}s (expected thread {sent_at.get('thread')})")
-ok(f"tier 4: wait_for_feedback returned {lag * 1000:.0f} ms after the @agent comment was posted")
+# 5. Tier 4: a wait_for_feedback in progress returns the comment sent to it.
+# The comment is posted once the daemon counts the wait in progress (its
+# debug route), so it lands during the wait whatever the machine's load.
+sid = next(x["id"] for x in http("GET", "/api/sessions?live=true", token=True)["sessions"]
+           if x.get("harness_session_id") == "smoke-loop-1")
+def waits(n):
+    """Whether n wait_for_feedback polls of the session are in progress (the
+    route answers once they are, or after its own 5 s)."""
+    return http("GET", f"/api/_test/sessions/{sid}/feedback/waiters?until={n}", token=True)["count"] == n
+def wait_on_page():
+    return shim.call("wait_for_feedback", {"url_or_id": aid, "timeout_s": 600})[0]
+waiting = in_thread(wait_on_page)
+until("wait_for_feedback to be in progress", lambda: waits(1))
+t3 = browser_thread(aid, "@agent one more thing")
+waited = waiting()
+if len(waited["feedback"]) != 1 or waited["call_again"] or not waited["waited_s"] < 600 \
+        or waited["feedback"][0]["thread_id"] != t3["id"] or waited["feedback"][0]["body"] != "@agent one more thing":
+    fail(f"wait_for_feedback: {waited} (expected thread {t3['id']})")
+ok("tier 4: a wait_for_feedback in progress returned the @agent comment sent during it, before its timeout")
 w = working(aid)
-if [x["thread_ids"] for x in w] != [[sent_at["thread"]]]:
+if [x["thread_ids"] for x in w] != [[t3["id"]]]:
     fail(f"working after wait_for_feedback: {w}")
 ok("working: wait_for_feedback returning a comment marked its thread")
-idle, _ = shim.call("wait_for_feedback", {"timeout_s": 1})
-if idle != {"feedback": [], "waited_s": 1, "call_again": True}:
-    fail(f"idle wait: {idle}")
-ok("tier 4: an idle wait returns call_again after timeout_s")
+# A wait that runs out with nothing sent: the debug route ends it as its
+# timeout would, so no test time passes.
+def wait_idle():
+    return shim.call("wait_for_feedback", {"timeout_s": 600})[0]
+idling = in_thread(wait_idle)
+until("the idle wait_for_feedback to be in progress", lambda: waits(1))
+expired = http("POST", f"/api/_test/sessions/{sid}/feedback/expire", {}, token=True)
+idle = idling()
+if expired != {"expired": 1} or idle.get("feedback") != [] or idle.get("call_again") is not True \
+        or set(idle) != {"feedback", "waited_s", "call_again"}:
+    fail(f"idle wait: {idle} (expire answered {expired})")
+ok("tier 4: an idle wait that runs out returns call_again and no feedback")
 
 # 6. Reply and resolve as the agent; a plain thread returns guidance.
 set_, _ = shim.call("working", {"url_or_id": aid, "thread_ids": [t1["id"]], "message": "Two columns"})
@@ -313,13 +353,13 @@ if len(http("GET", f"/api/artifacts/{aid}/threads/{plain['id']}")["thread"]["com
 ok("a reply on a plain thread returns guidance and writes nothing")
 
 # 6b. Every HTML page is commentable: a thread on a second page names it in the payload.
-shim.call("working", {"url_or_id": aid, "thread_ids": [sent_at["thread"]]})
+shim.call("working", {"url_or_id": aid, "thread_ids": [t3["id"]]})
 v2, _ = shim.call("publish", {"id": aid, "html": page, "note": "Added the team page",
                               "addresses": [plain["id"]],
                               "files": {"about.html": {"content": "<main><h2>Our team</h2></main>"}}})
-if v2["note"] != "Added the team page" or v2["addressed"] != [plain["id"], sent_at["thread"]]:
+if v2["note"] != "Added the team page" or v2["addressed"] != [plain["id"], t3["id"]]:
     fail(f"publish note and addresses: {v2}")
-for tid in (plain["id"], sent_at["thread"]):
+for tid in (plain["id"], t3["id"]):
     linked = http("GET", f"/api/artifacts/{aid}/threads/{tid}")["thread"]
     if linked["addressed_in"] != [v2["version"]] or linked["status"] != "open":
         fail(f"addressed_in after publish: {linked}")
@@ -370,13 +410,16 @@ cpub = http("POST", "/api/artifacts", {"title": "Codex page", "files": {"index.h
 caid = cpub["artifact"]["id"]
 ct = browser_thread(caid, "@agent from the browser to Codex")
 args_path = os.path.join(SCRATCH, "codex-args.txt")
-# The daemon claims the row (delivered by queue) before it runs `codex queue`,
-# so wait for the fake to have recorded its call, then read the settled state.
-for _ in range(200):
-    if os.path.exists(args_path) and open(args_path).read().endswith("\n"):
-        break
-    time.sleep(0.05)
-time.sleep(0.2)
+# The daemon claims the row (delivered by queue) before it runs `codex queue`
+# and settles it when the fake exits: on success it marks the session working
+# on the thread, on a failure it records the error and releases the row. So
+# wait for the fake's recorded call and for either, then read the state.
+def queued():
+    if not (os.path.exists(args_path) and open(args_path).read().endswith("\n")):
+        return False
+    marked = any(ct["id"] in x["thread_ids"] for x in working(caid))
+    return marked or http("GET", f"/api/sessions/{csid}", token=True)["push"]["last_error"] is not None
+until("the daemon to settle its `codex queue` run", queued)
 st = http("GET", f"/api/artifacts/{caid}/threads/{ct['id']}")["thread"]["feedback_state"]
 args = open(args_path).read().split("\n") if os.path.exists(args_path) else []
 if st["state"] != "delivered" or st["tier"] != "queue" or len(args) < 5 or args[:4] != ["queue", "--thread", "cx-smoke", "--message"] or args[4] != "[clax] 1 comment sent to you:":
@@ -390,7 +433,6 @@ PY
 INFO="$CLAX_HOME/daemon.json"
 PID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$INFO")"
 "$BIN" stop >/dev/null
-for _ in $(seq 1 50); do kill -0 "$PID" 2>/dev/null || break; sleep 0.1; done
-if kill -0 "$PID" 2>/dev/null; then echo "smoke: FAIL: daemon $PID still running" >&2; exit 1; fi
+wait_for "daemon $PID to exit" gone "$PID" || { echo "smoke: FAIL: daemon $PID still running" >&2; exit 1; }
 echo "PASS: no daemon left running (pid $PID gone)"
 echo "comment loop smoke passed"

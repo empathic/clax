@@ -10,6 +10,8 @@ import 'package:clax_app/agent/request.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/fake_messages_api.dart';
+import '../support/held_timers.dart';
+import '../support/settle.dart' show waitUntil;
 
 const _key = 'sk-ant-test-0123456789abcdef';
 
@@ -365,9 +367,15 @@ void main() {
 
   test('a server that never answers times out, without a retry', () async {
     await serve([FakeReply.never, FakeReply.text(jsonEncode(_resultJson()))]);
-    final e = await runFails(
-      backend(timeout: const Duration(milliseconds: 200)),
-    );
+    // The request's timeout is held, and fires once the server has the
+    // request (and never answers it).
+    final timeout = HeldTimers(const Duration(days: 1));
+    final arrived = api.received.first;
+    final run = timeout.run(() => runFails(backend(timeout: timeout.duration)));
+    await arrived;
+    await waitUntil(() => timeout.pending == 1, what: "the request's timeout");
+    timeout.fire();
+    final e = await run;
     expect(e.retryable, isTrue);
     expect(e.message, contains('timed out'));
     expect(api.seen, hasLength(1));

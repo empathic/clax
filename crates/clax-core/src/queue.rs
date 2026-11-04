@@ -499,6 +499,7 @@ pub fn external_placeholder_html(title: &str, url: &str) -> String {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

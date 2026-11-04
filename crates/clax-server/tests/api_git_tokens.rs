@@ -55,19 +55,19 @@ impl FakeRemotes {
         self.rows().into_iter().find(|r| r.id == id).unwrap()
     }
 
-    /// Waits until token `id` is revoked (a bound for a lost wake-up, not
-    /// a time budget).
+    /// Waits until token `id` is revoked, bounded by the
+    /// [`clax_testkit::HANG`] guard.
     async fn until_revoked(&self, id: &str) {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-        loop {
-            let wake = self.revoked.notified();
-            if self.row(id).revoked {
-                return;
+        clax_testkit::within(&format!("token {id}'s revocation"), async {
+            loop {
+                let wake = self.revoked.notified();
+                if self.row(id).revoked {
+                    return;
+                }
+                wake.await;
             }
-            tokio::time::timeout_at(deadline, wake)
-                .await
-                .unwrap_or_else(|_| panic!("token {id} is revoked within 20 s"));
-        }
+        })
+        .await;
     }
 }
 

@@ -47,6 +47,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'held_clock.dart';
 import 'newer.dart';
 
 /// The Swift side's paths and the debug runner's test hooks
@@ -54,8 +55,11 @@ import 'newer.dart';
 const _native = MethodChannel('dev.empathic.clax/native');
 const _test = MethodChannel('dev.empathic.clax/test');
 
-/// The longest any one step may take.
-const _cap = Duration(seconds: 60);
+/// The hang guard on each step ([IosRig.until], [IosRig.waitFor]): it ends
+/// a step that never happens, with the screen's state in its failure, and
+/// never decides whether one passes. It sits under the tests' own 5 minute
+/// `Timeout`, so a stuck step fails here, with that report.
+const _cap = Duration(minutes: 3);
 
 /// The made app's title, which its page's `document.title` is.
 const pageTitle = 'Tally';
@@ -241,6 +245,9 @@ class IosRig {
   /// Every message the shell posted, on every app surface, in order.
   final messages = <HostMessage>[];
 
+  /// The inspector's deadlines, held until [end] ([HeldClock]).
+  final inspectorClock = HeldClock();
+
   /// The app's lifecycle states since the rig was made.
   final lifecycle = <AppLifecycleState>[];
   late final _lifecycleListener = AppLifecycleListener(
@@ -280,7 +287,10 @@ class IosRig {
     supportDir: _support.path,
     prompts: PromptBuilder(rootBundle),
     ledger: FileChangeLedger(File('${_support.path}/change-ledger.json')),
-    inspector: WebViewInspector(surface: (_) => _surface()),
+    inspector: WebViewInspector(
+      surface: (_) => _surface(),
+      clock: inspectorClock,
+    ),
     runner: () => runner,
     background: _QuietNotices(notices),
     bundleKey: BundleKey(FlutterBundleSeedStorage()),
@@ -324,7 +334,6 @@ class IosRig {
     return waitFor(
       'the runner to do $request',
       () => _doneCount(request) > before,
-      cap: const Duration(minutes: 3),
     );
   }
 
@@ -371,11 +380,14 @@ class IosRig {
     FutureOr<bool> Function() probe, {
     Duration cap = _cap,
   }) async {
+    // ignore: timing_wall_clock -- the hang guard's deadline: it ends a stuck wait, never decides a result
     final end = DateTime.now().add(cap);
     while (!await probe()) {
+      // ignore: timing_wall_clock -- the hang guard's deadline: it ends a stuck wait, never decides a result
       if (DateTime.now().isAfter(end)) {
         fail('timed out waiting for $what; lifecycle $lifecycle');
       }
+      // ignore: timing_delay -- the poll interval of a condition wait under a hang guard
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
   }
@@ -387,6 +399,7 @@ class IosRig {
     String what,
     FutureOr<Object?> Function() probe,
   ) async {
+    // ignore: timing_wall_clock -- the hang guard's deadline: it ends a stuck wait, never decides a result
     final end = DateTime.now().add(_cap);
     while (true) {
       await tester.pump();
@@ -404,6 +417,7 @@ class IosRig {
         _ => true,
       };
       if (done) return v as T;
+      // ignore: timing_wall_clock -- the hang guard's deadline: it ends a stuck wait, never decides a result
       if (DateTime.now().isAfter(end)) {
         final shown = [
           for (final e in find.byType(Text).evaluate())
@@ -415,6 +429,7 @@ class IosRig {
           'the shell said: ${[for (final m in messages) m.runtimeType]}',
         );
       }
+      // ignore: timing_delay -- the poll interval of a condition wait under a hang guard
       await Future<void>.delayed(const Duration(milliseconds: 50));
     }
   }
@@ -427,6 +442,7 @@ class IosRig {
   /// count as one the test left open.
   Future<void> end(WidgetTester tester) async {
     await tester.pumpWidget(const SizedBox());
+    inspectorClock.release();
     final dispatcher = tester.binding.platformDispatcher;
     if (dispatcher.semanticsEnabled) {
       debugPrint('ios rig: the platform turned semantics on; turning it off');
@@ -486,14 +502,16 @@ class IosRig {
       () => newerSeen(messages, version),
     );
     if (seen == NewerSeen.shown) return;
+    // Tapped once a tap at its centre reaches it: the toast has come in.
     final reload = await until<Finder>(tester, 'the New version toast', () {
-      final f = find.descendant(
-        of: find.byKey(const ValueKey('newer-toast')),
-        matching: find.text('Reload'),
-      );
+      final f = find
+          .descendant(
+            of: find.byKey(const ValueKey('newer-toast')),
+            matching: find.text('Reload'),
+          )
+          .hitTestable();
       return f.evaluate().isEmpty ? null : f;
     });
-    await tester.pump(const Duration(milliseconds: 500));
     await tester.tap(reload);
     await tester.pump();
   }

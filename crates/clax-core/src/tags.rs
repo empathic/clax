@@ -170,6 +170,7 @@ pub fn check_description(raw: &str) -> Result<Option<String>> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

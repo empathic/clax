@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import PeoplePanel from "./ui/PeoplePanel.svelte";
 import { flush, mount } from "./test/svelte";
+import { settled } from "./test/settled";
 
 const resolvedThread = { id: "t9", status: "resolved", comments: [] };
 function view(askName: string | null, status = "resolved") {
@@ -53,9 +54,8 @@ describe("PeoplePanel asking for a name to reopen", () => {
 
 describe("PeoplePanel's agents", () => {
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); document.body.replaceChildren(); });
-  // A few turns of the event loop: the stubbed fetch's Response body is read
-  // through more microtasks on some Node versions (22) than on others (26).
-  const settle = async () => { for (let i = 0; i < 3; i++) await new Promise(r => setTimeout(r, 0)); flush(); };
+  // Until the stubbed fetches' Response bodies are read and their updates applied.
+  const settle = settled;
   const ALEX = { public_id: "u_1", name: "Alex", owner: true };
   const SAM = { public_id: "u_sam", name: "Sam", owner: false };
 
@@ -112,7 +112,7 @@ describe("PeoplePanel's agents", () => {
 
 describe("PeoplePanel's agents that comments do not wake", () => {
   afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
-  const settle = async () => { for (let i = 0; i < 5; i++) await Promise.resolve(); flush(); };
+  const settle = settled;
 
   it("says under an idle live agent that no comment wakes it until it next acts, and nothing under one that is woken", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(url === "/api/agents" ? { agents: [] } : { viewer: { public_id: "u_1", display_name: "Alex", created_at: "x" } }))));
@@ -137,7 +137,7 @@ describe("PeoplePanel's agents that comments do not wake", () => {
 
 describe("PeoplePanel's raise for the artifact's creator", () => {
   afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
-  const settle = async () => { for (let i = 0; i < 12; i++) await new Promise(r => setTimeout(r, 0)); flush(); };
+  const settle = settled;
   const SAM = { public_id: "u_sam", name: "Sam", owner: false };
   const MIA = { public_id: "u_mia", name: "Mia", owner: false };
   const HOLDS = [
@@ -230,7 +230,7 @@ describe("PeoplePanel's raise for the artifact's creator", () => {
 
 describe("PeoplePanel's raise when someone else changed it", () => {
   afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
-  const settle = async () => { for (let i = 0; i < 12; i++) await new Promise(r => setTimeout(r, 0)); flush(); };
+  const settle = settled;
 
   it("is refused when the raise it was built on was removed since, and then shows the raise as it stands", async () => {
     const MIA = { public_id: "u_mia", name: "Mia", owner: false };

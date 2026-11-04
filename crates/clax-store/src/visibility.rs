@@ -109,6 +109,7 @@ impl Visibility {
     /// production path needs a view that sees everything, and an agent
     /// channel can only be handed [`Visibility::for_reader`]'s.
     #[cfg(test)]
+    #[warn(clippy::disallowed_methods)]
     pub(crate) fn all() -> Visibility {
         Visibility {
             generation: 0,
@@ -368,6 +369,7 @@ pub(crate) const APPROVALS_OF: &str = "SELECT author, scope, artifact_id, thread
      WHERE COALESCE(approver, '') = ?1 AND revoked_at IS NULL";
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use clax_core::model::{Thread, Version};

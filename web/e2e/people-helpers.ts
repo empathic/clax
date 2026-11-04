@@ -4,13 +4,13 @@
 // on their home. The daemon listens on every interface; on a machine with
 // no LAN address it refuses invites (`not_on_lan`) and `invite` says so,
 // for the test to skip.
-import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Browser, BrowserContext, Page } from "@playwright/test";
-import { type Daemon, proofHeaders } from "./fixtures";
+import { type Daemon, proofHeaders, run } from "./fixtures";
 import { ownerCookie } from "./questions-helpers";
 
 /**
@@ -61,7 +61,7 @@ export type Person = { name: string; home: string; ctx: BrowserContext; page: Pa
 export async function connect(browser: Browser, command: string, name: string, yes = true): Promise<Person> {
   const home = mkdtempSync(join(tmpdir(), `clax-e2e-${name.toLowerCase()}-`));
   const args = ["connect", command.replace(/^clax connect /, ""), "--name", `${name.toLowerCase()}-laptop`, "--no-browser", ...(yes ? ["--yes"] : [])];
-  const out = spawnSync(process.env.CLAX_E2E_BIN!, args, { env: personEnv(home), input: "n\n", encoding: "utf8", timeout: 20_000 });
+  const out = await run(process.env.CLAX_E2E_BIN!, args, { env: personEnv(home), input: "n\n" });
   if (out.status !== 0) throw new Error(`clax connect as ${name}: ${out.status} ${out.stderr}`);
   const link = /http:\/\/\S+\/connect\/b\/\S+/.exec(out.stdout + out.stderr)?.[0];
   if (!link) throw new Error(`clax connect printed no browser link: ${out.stdout}${out.stderr}`);

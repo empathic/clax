@@ -27,6 +27,7 @@ pub fn status_of(e: &(dyn std::error::Error + 'static)) -> i32 {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::CoreError;

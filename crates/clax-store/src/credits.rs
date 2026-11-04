@@ -1841,6 +1841,7 @@ impl Store {
     /// alone: usage is charged only with a step's commit
     /// ([`Store::commit_bot_step`]), which records its events.
     #[cfg(test)]
+    #[warn(clippy::disallowed_methods)]
     pub(crate) fn charge(
         &self,
         person: &str,
@@ -1966,6 +1967,7 @@ impl Store {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::bot_settings::Setting;

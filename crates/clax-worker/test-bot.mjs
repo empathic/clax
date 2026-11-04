@@ -38,16 +38,13 @@ import { mkdirSync } from "node:fs";
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { HERE, STATE, build, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { HERE, STATE, build, pruneRuns, start, until, writeConfig } from "./harness.mjs";
 
 const ROOT = join(STATE, "bot-test");
 const KEEP_RUNS = 3;
 const TOKEN = "bot-test-token-0123456789abcdef0123456789abcdef";
 const KEK = randomBytes(32).toString("hex");
 const KEY = "sk-ant-api03-WORKERTESTKEY-wxyz";
-// The longest any one condition is waited for: a run's steps here take well
-// under a second each; this only bounds a hang.
-const LIMIT_MS = 60_000;
 // How far ahead the instance keeps its alarm while ClaxBot drives
 // (CLAX_TEST_RESUME_AFTER_MS; a minute but in tests), so a resume from the
 // alarm alone is waited for in seconds.
@@ -61,22 +58,6 @@ function check(cond, what, detail) {
     throw new Error(`FAIL ${what}${detail === undefined ? "" : `: ${JSON.stringify(detail).slice(0, 1500)}`}`);
   }
   console.log(`ok   ${what}`);
-}
-
-/** Polls `f` until it returns a value other than undefined. */
-async function until(what, f) {
-  const end = Date.now() + LIMIT_MS;
-  let last;
-  for (;;) {
-    try {
-      const v = await f();
-      if (v !== undefined) return v;
-    } catch (e) {
-      last = e instanceof Error ? e.message : e;
-    }
-    if (Date.now() > end) throw new Error(`FAIL ${what} within ${LIMIT_MS / 1000} s${last ? `: ${last}` : ""}`);
-    await new Promise((r) => setTimeout(r, 100));
-  }
 }
 
 async function call(base, method, path, body) {
@@ -275,10 +256,15 @@ async function run(base, rid) {
   return ok(base, "GET", `/api/bot/runs/${rid}`);
 }
 
-/** How far ahead the object's alarm is set, in ms; `null` with none. */
-async function alarmIn(base) {
-  const { alarm, now } = await ok(base, "GET", "/_worker/alarm");
-  return alarm === null ? null : alarm - now;
+/** The object's alarm as `GET /_worker/alarm` reads it: when it is set
+ * (`at`, ms since the epoch, `null` with none), how far ahead of the
+ * object's now (`in`), and how far ahead ClaxBot's driver wants it
+ * (`bot`, `null` for never). `bot` is exact (RESUME_MS while a driver
+ * drives); `in` shrinks as time passes, and is past due on a machine slow
+ * enough to delay the driver's renewal. */
+async function alarm(base) {
+  const { alarm: at, now, bot } = await ok(base, "GET", "/_worker/alarm");
+  return { at, in: at === null ? null : at - now, bot: bot === null ? null : bot - now };
 }
 
 const ENDED = ["finished", "failed", "gave_up", "stopped"];
@@ -337,21 +323,28 @@ async function main() {
     check(threads.includes("Changed it to 06:15."), "ClaxBot's reply is on the thread", threads.slice(0, 500));
     check(fake.seen.every((s) => s.key === KEY), "every model request carried the instance key");
     // The alarm drives; it is kept RESUME_MS ahead, and renewed.
-    const a1 = await alarmIn(base);
-    check(a1 !== null && a1 > 0 && a1 <= RESUME_MS + 1_000, "while the alarm drives, it is kept a resume interval ahead", a1);
-    const firstAt = (await ok(base, "GET", "/_worker/alarm")).alarm;
+    const a1 = await alarm(base);
+    check(a1.bot === RESUME_MS && a1.in !== null && a1.in <= RESUME_MS, "while the alarm drives, it is kept a resume interval ahead", a1);
+    const firstAt = a1.at;
     const renewed = await until("the alarm is renewed while the turn is held", async () => {
       const { alarm, now } = await ok(base, "GET", "/_worker/alarm");
       return alarm !== null && alarm !== firstAt && alarm > now ? alarm - now : undefined;
     });
-    check(renewed <= RESUME_MS + 1_000, "the renewed alarm is again a resume interval ahead", renewed);
+    check(renewed <= RESUME_MS, "the renewed alarm is again a resume interval ahead", renewed);
     // A run started while the alarm drives (one person's runs go one at a
     // time: it waits for the first, in this alarm or the next).
+    // Set again for now, the alarm would be earlier than it was before the
+    // run started; driven on, it is where it was, or renewed later.
     const tid2 = await thread(base, aid, "Hold this one");
+    const before2 = await alarm(base);
     const r2 = await ok(base, "POST", "/api/bot/runs", { thread_ids: [tid2], artifact_id: aid });
     const rid2 = r2.run.id;
-    const a2 = await alarmIn(base);
-    check(a2 !== null && a2 > 0 && a2 <= RESUME_MS + 1_000, "a run started while the alarm drives leaves it driving, not set again for now", a2);
+    const a2 = await alarm(base);
+    check(
+      a2.bot === RESUME_MS && a2.at !== null && a2.in <= RESUME_MS && (before2.at === null || a2.at >= before2.at),
+      "a run started while the alarm drives leaves it driving, not set again for now",
+      { before: before2, after: a2 },
+    );
     // The live stream's events up to here; its last ID is where it resumes.
     await until("the stream has the script step's end", () => (live.got.some((e) => e.event === "step_done" && e.data?.step?.kind === "script") ? true : undefined));
     live.abort();

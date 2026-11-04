@@ -1,6 +1,7 @@
 //! A core opened through the C functions writes its log to
 //! `<home>/logs/core.log`. Alone in its binary: the log is the process's
 //! one tracing subscriber, installed by the first open.
+#![warn(clippy::disallowed_methods)]
 
 use clax_embed::{Post, ffi_close, ffi_open};
 use serde_json::{Value, json};

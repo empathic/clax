@@ -38,6 +38,7 @@ pub fn web_ui_dir() -> Option<&'static str> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod watched {
     /// `build.rs` names every directory a web UI file comes from, so a new
     /// file in the web build rebuilds the crate.

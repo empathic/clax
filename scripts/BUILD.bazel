@@ -362,6 +362,43 @@ sh_test(
     data = [":all"],
 )
 
+# The test scripts' timing rule (scripts/check-test-timing.sh): no sleep
+# standing in for a condition, no clock reading judged, in the scripts
+# this file's sh_tests run (it reads their srcs here) and the other test
+# and smoke scripts: a finding fails it. And its test.
+sh_test(
+    name = "test_timing",
+    srcs = ["check-test-timing.sh"],
+    data = [
+        "BUILD.bazel",
+        ":all",
+    ],
+)
+
+sh_test(
+    name = "test_timing_test",
+    srcs = ["test-check-test-timing.sh"],
+    data = [
+        "BUILD.bazel",
+        ":all",
+    ],
+)
+
+# Every piece of Rust test code turns clippy's timing lint back on
+# (scripts/check-rust-test-timing.sh): .bazelrc's build:clippy allows it
+# on the command line, so that product code is never flagged. And its test.
+sh_test(
+    name = "rust_test_timing",
+    srcs = ["check-rust-test-timing.sh"],
+    data = RUST_SOURCES + CRATE_MANIFESTS + ["check-rust-test-timing.py"],
+)
+
+sh_test(
+    name = "rust_test_timing_test",
+    srcs = ["test-check-rust-test-timing.sh"],
+    data = [":all"] + RUST_SOURCES + CRATE_MANIFESTS,
+)
+
 # The checks' own tests; the scans of every tracked file read git and run
 # outside Bazel (scripts/bazel-test.sh).
 sh_test(
@@ -443,7 +480,10 @@ sh_test(
 sh_test(
     name = "app_android_emulator_test",
     srcs = ["test-app-android-emulator.sh"],
-    data = ["app-android-emulator.sh"],
+    data = [
+        "app-android-emulator.sh",
+        "lib/wait.sh",
+    ],
 )
 
 # scripts/app-iphone.sh (just app-iphone) on a PATH of stub xcrun and

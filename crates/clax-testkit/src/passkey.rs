@@ -203,6 +203,7 @@ fn client_data(kind: &str, challenge: &str, origin: &str) -> Vec<u8> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use clax_core::webauthn::{EDDSA, Expect, verify_assertion, verify_registration};

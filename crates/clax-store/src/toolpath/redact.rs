@@ -506,6 +506,7 @@ pub(crate) fn is_local_remote(url: &str) -> bool {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

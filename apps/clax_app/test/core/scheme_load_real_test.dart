@@ -31,6 +31,7 @@ final _page = {
 /// How long this isolate's event loop was held while [run] ran: the sum
 /// of each 1 ms tick's lateness.
 Future<({double busyMs, double wallMs})> _held(Future<void> Function() run) async {
+  // ignore: timing_wall_clock -- a measurement, printed and never asserted
   final clock = Stopwatch()..start();
   var last = 0;
   var busy = 0;
@@ -169,6 +170,7 @@ void main() {
       onFault: (_) {},
     );
     expect(await link.attach(7), isTrue);
+    // ignore: timing_wall_clock -- a measurement, printed and never asserted
     final clock = Stopwatch()..start();
     for (final (i, u) in urls.indexed) {
       native.emit('request', args(1000 + i, u));

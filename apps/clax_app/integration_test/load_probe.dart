@@ -22,6 +22,7 @@ class LoadProbe {
   LoadProbe({this.period = const Duration(milliseconds: 4)});
 
   final Duration period;
+  // ignore: timing_wall_clock -- load_timing_test's measurement, reported and never asserted
   final _clock = Stopwatch();
   Timer? _timer;
   Ticker? _ticker;

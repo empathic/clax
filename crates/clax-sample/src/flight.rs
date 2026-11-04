@@ -369,6 +369,7 @@ pub async fn drive(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use futures::StreamExt;

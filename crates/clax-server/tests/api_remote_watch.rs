@@ -12,7 +12,6 @@ use reqwest::Method;
 use reqwest::header::{COOKIE, HOST, ORIGIN};
 use serde_json::{Value, json};
 use std::sync::Arc;
-use std::time::Duration;
 
 /// A local daemon connected to a hosted one, on whose owner's artifact
 /// `raid` its agents comment; the sync's timers on `sleeper`, the local
@@ -252,7 +251,7 @@ async fn stopping_the_sync_ends_the_followers_sessions_there() {
         let _ = h.await;
     }
     assert!(
-        clax_server::linked::end_followers(&t.local.state, Duration::from_secs(30)).await,
+        clax_server::linked::end_followers(&t.local.state, clax_testkit::HANG).await,
         "the followers' sessions ended"
     );
     assert!(

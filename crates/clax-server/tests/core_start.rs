@@ -301,9 +301,8 @@ async fn a_core_takes_its_price_catalog_url_from_bot_and_fetches_it_at_start() {
     given.catalog_url = Some(Some(url.clone()));
     let core = Core::start(given, &mut |_| {}).await.unwrap();
     assert_eq!(core.state().bot.catalog_url.as_deref(), Some(url.as_str()));
-    tokio::time::timeout(std::time::Duration::from_secs(30), hits.recv())
+    clax_testkit::within("a catalog request at start", hits.recv())
         .await
-        .expect("a catalog request at start")
         .unwrap();
     core.stop().await;
 }

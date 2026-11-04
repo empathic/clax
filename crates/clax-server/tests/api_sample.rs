@@ -2,7 +2,7 @@ use clax_sample::provider::{Block, Role};
 use clax_sample::sse::SseParser;
 use clax_sample::stub::StubProvider;
 use clax_sample::{SampleSettings, Sampler};
-use clax_testkit::TestServer;
+use clax_testkit::{TestServer, until, within};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,10 +22,54 @@ async fn stub_server_with(
     delay: Duration,
 ) -> (TestServer, StubProvider, Arc<Sampler>) {
     let stub = StubProvider::new(images, delay);
-    let sampler = Arc::new(Sampler::new(Arc::new(stub.clone()), settings));
+    let (ts, sampler) = server_on(Arc::new(stub.clone()), settings).await;
+    (ts, stub, sampler)
+}
+
+async fn server_on(
+    provider: Arc<dyn clax_sample::provider::SampleProvider>,
+    settings: SampleSettings,
+) -> (TestServer, Arc<Sampler>) {
+    let sampler = Arc::new(Sampler::new(provider, settings));
     let s = sampler.clone();
     let ts = TestServer::spawn_with(move |st| st.sample = s).await;
-    (ts, stub, sampler)
+    (ts, sampler)
+}
+
+/// The stub, each round holding every event after its first until the
+/// gate is closed (`Semaphore::close`): a call stays in flight until the
+/// test lets it end.
+struct Gated {
+    stub: StubProvider,
+    gate: Arc<tokio::sync::Semaphore>,
+}
+
+impl clax_sample::provider::SampleProvider for Gated {
+    fn name(&self) -> &'static str {
+        self.stub.name()
+    }
+
+    fn supports_images(&self) -> bool {
+        self.stub.supports_images()
+    }
+
+    fn stream(
+        &self,
+        req: clax_sample::provider::ProviderRequest,
+    ) -> clax_sample::provider::EventStream {
+        use futures::StreamExt;
+        let gate = self.gate.clone();
+        Box::pin(self.stub.stream(req).enumerate().then(move |(i, ev)| {
+            let gate = gate.clone();
+            async move {
+                if i > 0 {
+                    // No permit is ever added: this returns once closed.
+                    let _ = gate.acquire().await;
+                }
+                ev
+            }
+        }))
+    }
 }
 
 /// A new artifact declaring `caps`, its declaration approved; one that
@@ -91,16 +135,15 @@ struct Call {
 }
 
 impl Call {
-    /// The next frame within 10 s, keep-alives skipped.
+    /// The next frame, keep-alives skipped.
     async fn next(&mut self) -> (String, Value) {
         use futures::StreamExt;
         loop {
             if let Some(f) = self.queued.pop_front() {
                 return f;
             }
-            let chunk = tokio::time::timeout(Duration::from_secs(10), self.body.next())
+            let chunk = within("the call's next frame", self.body.next())
                 .await
-                .expect("a frame within 10 s")
                 .expect("open")
                 .unwrap();
             for e in self.parser.push(&chunk) {
@@ -334,11 +377,10 @@ async fn dropping_the_stream_cancels_the_call() {
     assert_eq!(sampler.open_calls(), 2);
     drop(waiting);
     drop(slow);
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    while sampler.open_calls() > 0 && tokio::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert_eq!(sampler.open_calls(), 0);
+    until("both calls cancelled", || async {
+        (sampler.open_calls() == 0).then_some(())
+    })
+    .await;
     assert_eq!(stub.requests().len(), 2, "no further round was asked for");
 }
 
@@ -720,6 +762,13 @@ async fn answers_are_cached_per_viewer() {
     assert_eq!(s["cached"], false);
 }
 
+/// The answer cache ages its entries by the wall clock
+/// (`clax_rt::wall::Instant`, `clax_sample::cache`): the test waits until
+/// 50 ms of it have passed since the answer was stored.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the answer cache ages by the wall clock: waits until the window has passed"
+)]
 #[tokio::test]
 async fn a_short_window_expires_and_refresh_asks_again_and_overwrites() {
     let (ts, stub, _) = stub_server(false, SampleSettings::default()).await;
@@ -731,7 +780,12 @@ async fn a_short_window_expires_and_refresh_asks_again_and_overwrites() {
         None,
     )
     .await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Stored before its call answered: 50 ms from now is past the window.
+    let expired = std::time::Instant::now() + Duration::from_millis(50);
+    until("the 50 ms window past", || async {
+        (std::time::Instant::now() >= expired).then_some(())
+    })
+    .await;
     let (s, _) = done_of(&ts, &aid, json!({"input": "q"}), None).await;
     assert_eq!(s["cached"], false);
     let (s, _) = done_of(
@@ -769,10 +823,17 @@ async fn failures_and_invalid_json_are_never_stored() {
     assert_eq!(stub.requests().len(), 4);
 }
 
+/// The first call is held in flight (the [`Gated`] stub) until the second
+/// has joined it and the first has left.
 #[tokio::test]
 async fn identical_calls_in_flight_share_one_answer_even_if_the_first_leaves() {
-    let (ts, stub, _) =
-        stub_server_with(false, SampleSettings::default(), Duration::from_millis(200)).await;
+    let stub = StubProvider::new(false, Duration::from_millis(5));
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let gated = Gated {
+        stub: stub.clone(),
+        gate: gate.clone(),
+    };
+    let (ts, _) = server_on(Arc::new(gated), SampleSettings::default()).await;
     let aid = artifact(&ts, json!({"sample": {}})).await;
     let mut first = start(&ts, &aid, json!({"input": "shared"}), None)
         .await
@@ -784,6 +845,7 @@ async fn identical_calls_in_flight_share_one_answer_even_if_the_first_leaves() {
         .unwrap();
     assert_eq!(second.next().await.1["cached"], true);
     drop(first);
+    gate.close();
     let frames = second.rest().await;
     assert_eq!(text_of(&frames), "echo: shared");
     assert_eq!(frames.last().unwrap().1["text"], "echo: shared");
@@ -839,18 +901,15 @@ async fn the_daily_cap_counts_calls_that_reach_the_provider() {
 /// requests can take a place in between.
 async fn until_queue_full(sampler: &Sampler, viewer: &str) {
     use futures::FutureExt as _;
-    let start = std::time::Instant::now();
-    loop {
-        if let Some(None) = Box::pin(sampler.queues.enter(viewer)).now_or_never() {
-            return;
-        }
-        assert!(
-            start.elapsed() < clax_testkit::HANG,
-            "{viewer}'s queue never filled (hang guard)"
-        );
-        // A poll interval, not a deadline: the loop ends on the condition.
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
+    let what = format!("{viewer}'s queue full");
+    let full = clax_testkit::until(&what, || async {
+        matches!(
+            Box::pin(sampler.queues.enter(viewer)).now_or_never(),
+            Some(None)
+        )
+        .then_some(())
+    });
+    clax_testkit::within(&what, full).await;
 }
 
 #[tokio::test]

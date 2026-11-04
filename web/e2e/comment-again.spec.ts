@@ -1,5 +1,5 @@
 import { type Frame, type Page } from "@playwright/test";
-import { test, expect, type Daemon, reach, api, commentModeIn, openArtifact, publish } from "./fixtures";
+import { test, expect, type Daemon, reach, api, commentModeIn, frameAt, openArtifact, publish } from "./fixtures";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -83,8 +83,7 @@ async function backOn(page: Page, frame: Frame, sel: string) {
     // A second page of the artifact behaves the same.
     await frame.locator("#to-about").click();
     const aboutUrl = new RegExp(`(${id}\\.localhost:\\d+/_clax/v/1/about\\.html)$`);
-    await expect.poll(() => page.frame({ url: aboutUrl }) !== null).toBe(true);
-    const about = page.frame({ url: aboutUrl })!;
+    const about = await frameAt(page, aboutUrl);
     await expect(about.locator("#team")).toHaveText("Our team");
     await toggle.click();
     await expect(toggle).toHaveAttribute("aria-pressed", "true");

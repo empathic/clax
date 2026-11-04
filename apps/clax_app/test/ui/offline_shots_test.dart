@@ -88,9 +88,7 @@ void main() {
     await s.tester.runAsync(f.start);
     final model = SidebarModel(host: f.host);
     f.report!(MakeStage.offline);
-    for (var i = 0; i < 5; i++) {
-      await s.tester.runAsync(() => Future<void>.delayed(Duration.zero));
-    }
+    await s.tester.runAsync(() => f.arranged(model));
     await s.tester.pumpWidget(
       s.app(
         SplitShell(

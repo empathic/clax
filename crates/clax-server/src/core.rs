@@ -636,6 +636,7 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     #[cfg(unix)]
     #[test]

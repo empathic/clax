@@ -1,13 +1,14 @@
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { dispatchTrusted } from "../../../bridge/test/trusted";
 import { workerWith } from "../test/fake-worker";
+import { settled } from "../test/settled";
 import { MOUNT_TIMEOUT_MS } from "../test/timeouts";
 import { FakeES, ID, SITE, artifact, artifactViewHooks, buttonNamed, fromFrame, gesture, gestureIn, mountView, page, pick, startOf, viewerPick, waitFor } from "../test/artifact-view";
 import { view as questionView } from "../q/fixtures";
 import type { HostMessage } from "./host";
 
 type Posted = { type: string; [k: string]: unknown };
-const settle = () => new Promise(r => setTimeout(r, 30));
+const settle = settled;
 const thread = (id: string, body = "make it blue", over: Record<string, unknown> = {}) => ({
   id, artifact_id: ID, version_n: 1, status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "2026-10-12T10:00:00.000Z",
   resolved_at: null, resolved_by: null, feedback_state: null,
@@ -1227,7 +1228,7 @@ describe("app mode's host channel", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const posted = framePosts(frame);
     host.composeArtifact();
     await waitFor(() => ofType("state").at(-1)?.draft, "a draft");
-    await new Promise(r => setTimeout(r, 0));
+    await settled();
     expect(posted.some(m => m.type === "clax:resolve-anchors" && (m as unknown as { anchors: { anchor: { kind: string } }[] }).anchors.some(a => a.anchor.kind === "artifact"))).toBe(false);
     expect(ofType("state").at(-1)!.draft!.at).toBeUndefined();
   });
@@ -1663,9 +1664,9 @@ describe("app mode's inspect view", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(ctl.dbJournal).toBeNull();
     host.runMigration({ file: "migrate.js", from: 1, to: 2, journal: true });
     const journal = ctl.dbJournal!;
-    const settled: string[] = [];
-    const one = journal({ path: "data/users/me/profile", before: { v: 1 } }).then(() => settled.push("one"), () => settled.push("one refused"));
-    const two = journal({ path: "a/2", before: null }).then(() => settled.push("two"), () => settled.push("two refused"));
+    const done: string[] = [];
+    const one = journal({ path: "data/users/me/profile", before: { v: 1 } }).then(() => done.push("one"), () => done.push("one refused"));
+    const two = journal({ path: "a/2", before: null }).then(() => done.push("two"), () => done.push("two refused"));
     expect(ofType("journal")).toEqual([
       { type: "journal", seq: 1, path: "data/users/me/profile", before: { v: 1 } },
       { type: "journal", seq: 2, path: "a/2", before: null },
@@ -1674,7 +1675,7 @@ describe("app mode's inspect view", { timeout: MOUNT_TIMEOUT_MS }, () => {
     host.journalAck({ seq: 1, ok: true });
     host.journalAck({ seq: 1, ok: true });
     await Promise.all([one, two]);
-    expect(settled).toEqual(["two refused", "one"]);
+    expect(done).toEqual(["two refused", "one"]);
     const three = journal({ path: "a/3", before: null });
     const ask = framed.filter(m => m.type === "clax:migrate").at(-1)!;
     fromFrame(frame.contentWindow!, { type: "clax:migration", requestId: ask.requestId, ok: false, error: "boom" });

@@ -13,7 +13,7 @@ import 'package:clax_app/ui/render_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart' hide Retry;
 
-import '../support/fake_clock.dart' show settle;
+import '../support/fake_clock.dart' show nextTurn;
 import '../support/fake_inspector.dart';
 import 'core_answers.dart';
 
@@ -97,7 +97,7 @@ void main() {
       end.asks.listen(asks.add);
       const spec = RenderSpec(draftId: 'd', revision: 1);
       final answered = port.render(const RenderRequest(1, 'j', 'r', spec));
-      await settle();
+      await nextTurn();
       expect(asks, [const UiRender(RenderRequest(1, 'j', 'r', spec))]);
       end.answer(const RenderAnswered(9, 'j', RenderOutcome(clean: true)));
       end.answer(const RenderAnswered(1, 'j', RenderOutcome(clean: true)));
@@ -106,13 +106,13 @@ void main() {
         await answered,
         const RenderAnswered(1, 'j', RenderOutcome(clean: true)),
       );
-      await settle();
+      await nextTurn();
       expect(loop.single, isA<CanRender>().having((m) => m.can, 'can', false));
 
       final cancelled = port.render(const RenderRequest(2, 'j', 'r', spec));
       port.cancel('j');
       expect(await cancelled, const RenderGone(2, 'j'));
-      await settle();
+      await nextTurn();
       expect(asks.last, const UiRenderCancel('j'));
 
       final pending = port.render(const RenderRequest(3, 'k', 'r', spec));
@@ -294,10 +294,10 @@ void main() {
     test('the app going away mid-render loses it and stops the page', () async {
       inspector.hang();
       final f = service.render(req(1));
-      await settle();
+      await nextTurn();
       available.value = false;
       expect(await f, const RenderGone(1, 'j'));
-      await settle();
+      await nextTurn();
       expect(inspector.calls.single.cancelled, isNotNull);
     });
 
@@ -307,7 +307,7 @@ void main() {
         ..hang()
         ..hang();
       final first = service.render(req(1));
-      await settle();
+      await nextTurn();
       final second = service.render(req(2));
       expect(await first, const RenderGone(1, 'j'));
       service.cancel('j');
@@ -321,7 +321,7 @@ void main() {
         toLoop: (m) => news.add((m as CanRender).can),
       );
       final serving = service.serve(end);
-      await settle();
+      await nextTurn();
       expect(news, [true]);
 
       final r5 = await port.render(req(5));
@@ -329,16 +329,16 @@ void main() {
 
       available.value = false;
       available.value = false;
-      await settle();
+      await nextTurn();
       expect(news, [true, false]);
 
       inspector.hang();
       available.value = true;
       final r6 = port.render(req(6));
-      await settle();
+      await nextTurn();
       port.cancel('j');
       expect(await r6, const RenderGone(6, 'j'));
-      await settle();
+      await nextTurn();
       expect(inspector.calls.last.cancelled, isNotNull);
       serving.close();
     });
@@ -463,7 +463,7 @@ class _RenderWorld extends World {
     for (var i = 0; i < 100; i++) {
       run(until: until);
       if (until != null && until()) return;
-      await settle();
+      await nextTurn();
       if (inbox.isEmpty && core.events.isEmpty) return;
     }
     throw StateError('the worker and the UI isolate did not settle');

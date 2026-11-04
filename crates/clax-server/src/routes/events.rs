@@ -345,6 +345,7 @@ async fn reads(s: &AppState, reader: ArtifactId, source: &str) -> bool {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::resume_point;
 

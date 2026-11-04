@@ -1,5 +1,6 @@
 //! End-to-end tests of `clax hook`: the built binary is run with fixture
 //! stdin against a daemon in a temporary `CLAX_HOME`.
+#![warn(clippy::disallowed_methods)]
 
 use clax_fake_exe::clax_bin;
 use serde_json::Value;
@@ -16,6 +17,11 @@ fn fixture(name: &str) -> Vec<u8> {
     )
     .unwrap()
 }
+
+/// How long a wait on something that will happen may take before the test
+/// calls it a hang: `clax_testkit::HANG`. A hang guard only: it never
+/// decides whether a test passes.
+const HANG: Duration = Duration::from_secs(120);
 
 /// The harness environment a test inherits from the agent running it; every
 /// `clax` run here starts without it.
@@ -441,7 +447,9 @@ fn stalled_daemon() -> tempfile::TempDir {
                     );
                     let _ = sock.write_all(res.as_bytes());
                 } else {
-                    std::thread::sleep(Duration::from_secs(10));
+                    // No answer, ever: the socket is held until the client
+                    // gives up and closes it.
+                    while sock.read(&mut buf).is_ok_and(|n| n > 0) {}
                 }
             });
         }
@@ -1090,13 +1098,20 @@ impl Surface {
         s
     }
 
-    /// The data of the next `name` event, within 10 s.
+    /// The data of the next `name` event.
+    ///
+    /// # Panics
+    /// Past the [`HANG`] guard.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "next is the HANG guard on a wait for an event: clax-testkit's recv_within, which these tests do not depend on"
+    )]
     fn next(&self, name: &str) -> Value {
         loop {
             let (e, data) = self
                 .rx
-                .recv_timeout(Duration::from_secs(10))
-                .unwrap_or_else(|_| panic!("no {name} event"));
+                .recv_timeout(HANG)
+                .unwrap_or_else(|_| panic!("no {name} event after {HANG:?} (hang guard)"));
             if e == name {
                 return data;
             }

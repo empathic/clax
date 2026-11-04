@@ -68,7 +68,7 @@ describe("the bridge's inspection", () => {
   it("runs the test part's harness on clax:test and answers clax:tests with the requestId; runs no migration", async () => {
     send({ type: "clax:migrate", requestId: "m1", file: "migrate.js", from: 1, to: 2 });
     send({ type: "clax:test", requestId: "t1", files: [] });
-    await vi.waitFor(() => expect(posted.filter(m => m.type === "clax:tests")).toHaveLength(1), { timeout: 3000 });
+    await vi.waitFor(() => expect(posted.filter(m => m.type === "clax:tests")).toHaveLength(1));
     expect(posted.find(m => m.type === "clax:tests")).toEqual({ type: "clax:tests", requestId: "t1", passed: 0, failed: [], skipped: 0 });
     expect(typeof (window as unknown as { test?: unknown }).test).toBe("function");
     expect(posted.filter(m => m.type === "clax:migration")).toEqual([]);
@@ -77,8 +77,10 @@ describe("the bridge's inspection", () => {
   it("takes the order only from the shell, and only with a requestId", async () => {
     send({ type: "clax:inspect", requestId: "i3", settleMs: 0 }, page);
     send({ type: "clax:inspect", settleMs: 0 });
+    // The shell's own order after them, answered: they were handled before it.
+    send({ type: "clax:inspect", requestId: "i4", settleMs: 0 });
+    await vi.waitFor(() => expect(answerTo("i4")).toHaveLength(1));
     await settle();
-    await new Promise(r => setTimeout(r, 50));
     expect(posted.filter(m => m.type === "clax:inspection" && (m.requestId === "i3" || m.requestId === undefined))).toEqual([]);
   });
 });

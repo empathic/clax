@@ -10,7 +10,6 @@
 // what only a person can check.
 import type { CDPSession, Locator, Page } from "@playwright/test";
 import { spawnSync } from "node:child_process";
-import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +17,7 @@ import { createServer } from "vite";
 import { type Live, expect as baseExpect, freePort, test } from "./extension-fixtures";
 import { publishAs } from "./fixtures";
 import { ownerCookie } from "./questions-helpers";
+import { until } from "./time";
 
 // Each test here runs Chromium, a daemon and a dev server of its own, and
 // most waits are a round trip through all three, the first through the
@@ -25,11 +25,13 @@ import { ownerCookie } from "./questions-helpers";
 // other work, starting a process can stall for tens of seconds (a pairing
 // was seen to take 50 s), far beyond the suite's 5 s. The waits are on
 // their conditions, so a stall slows the suite rather than failing it: each
-// may take up to WAIT_MS, and a test up to TEST_MS beyond the daemon's start.
+// may take up to WAIT_MS, and a test up to HANG_MS beyond the daemon's
+// start (a wait on `until` has no bound of its own but the test's). Both are
+// hang guards: they end a stuck test and decide no passing one.
 const WAIT_MS = 90_000;
-const TEST_MS = 300_000;
+const HANG_MS = 300_000;
 const expect = baseExpect.configure({ timeout: WAIT_MS });
-test.describe.configure({ timeout: TEST_MS });
+test.describe.configure({ timeout: HANG_MS });
 
 type Hook = {
   comment(tabId: number, url: string): Promise<void>;
@@ -50,17 +52,6 @@ async function within<T>(p: Promise<T>, what: string): Promise<T> {
     return await Promise.race([p, new Promise<never>((_, fail) => { timer = setTimeout(() => fail(new Error(`${what} in ${WAIT_MS} ms`)), WAIT_MS); })]);
   } finally {
     clearTimeout(timer);
-  }
-}
-
-/** Polls `fn` until it returns a value other than null or undefined; fails after `ms` (WAIT_MS). */
-async function until<T>(fn: () => Promise<T | null | undefined> | T | null | undefined, ms = WAIT_MS): Promise<T> {
-  const deadline = Date.now() + ms;
-  for (;;) {
-    const v = await fn();
-    if (v !== null && v !== undefined) return v;
-    if (Date.now() > deadline) throw new Error("timed out");
-    await new Promise(r => setTimeout(r, 20));
   }
 }
 
@@ -90,7 +81,7 @@ async function api(live: Live, path: string, init: RequestInit = {}, session?: s
  * host waits on the confirmation and mints again once it is approved. */
 async function confirmPairing(live: Live): Promise<void> {
   const d = live.daemon;
-  const c = await until(async () => ((await api(live, "/api/confirmations")).confirmations as { id: string; decision: { kind: string } }[]).find(x => x.decision.kind === "extension_mint"));
+  const c = await until("the extension's pairing to ask for confirmation", async () => ((await api(live, "/api/confirmations")).confirmations as { id: string; decision: { kind: string } }[]).find(x => x.decision.kind === "extension_mint"));
   const res = await fetch(`${d.base}/api/confirmations/${c.id}`, { method: "POST", headers: { cookie: ownerCookie(d.base), origin: d.base, "content-type": "application/json" }, body: JSON.stringify({ approve: true }) });
   expect(res.status, await res.text()).toBe(200);
 }
@@ -126,7 +117,7 @@ class SidePanel {
     await opener.close();
     await site.bringToFront();
     const cdp = await live.ctx.newCDPSession(site);
-    const target = await until(async () => (await cdp.send("Target.getTargets")).targetInfos.find(t => t.url.includes("/sidepanel.html")));
+    const target = await until("the side panel's target", async () => (await cdp.send("Target.getTargets")).targetInfos.find(t => t.url.includes("/sidepanel.html")));
     const { sessionId } = await cdp.send("Target.attachToTarget", { targetId: target.targetId, flatten: false });
     return new SidePanel(cdp, sessionId);
   }
@@ -197,7 +188,7 @@ test("comment on a dev server page, reach the agent, and follow a hot reload", a
   const tabId = await tabIdOf(live, siteUrl);
   const t0 = Date.now();
   await h.comment(tabId, siteUrl);
-  await until(async () => ((await h.state(tabId))?.commentMode ? true : null));
+  await until("comment mode on in the tab", async () => ((await h.state(tabId))?.commentMode ? true : null));
   console.log(`icon → comment mode on: ${Date.now() - t0} ms (reported, not judged)`);
   const panel = await SidePanel.open(live, page, tabId);
   // An agent session is live, so the pairing this tab started waits for the
@@ -211,7 +202,7 @@ test("comment on a dev server page, reach the agent, and follow a hot reload", a
 
   const t1 = Date.now();
   await page.locator("#save").click();
-  const composer = await until(() => page.frames().find(f => f.url().includes("/composer.html")));
+  const composer = await until("the composer's frame", () => page.frames().find(f => f.url().includes("/composer.html")));
   await composer.locator("textarea").waitFor();
   console.log(`pick → composer: ${Date.now() - t1} ms (reported, not judged)`);
   await composer.locator("textarea").fill("The save button needs more room");
@@ -219,9 +210,9 @@ test("comment on a dev server page, reach the agent, and follow a hot reload", a
   await clickClosingFrame(composer.getByRole("button", { name: "Post" }));
 
   // The thread, its clip and its snapshot are stored.
-  const lookup = await until(async () => (await fetch(`${live.daemon.base}/api/live/pages?url=${encodeURIComponent(siteUrl)}`).then(r => r.json())).page);
+  const lookup = await until("the daemon's live page for the site", async () => (await fetch(`${live.daemon.base}/api/live/pages?url=${encodeURIComponent(siteUrl)}`).then(r => r.json())).page);
   const aid: string = lookup.artifact_id;
-  const thread = await until(async () => (await api(live, `/api/artifacts/${aid}/threads`)).threads[0]);
+  const thread = await until("the page's first thread", async () => (await api(live, `/api/artifacts/${aid}/threads`)).threads[0]);
   const tid: string = thread.id;
   expect(thread.has_clip).toBe(true);
   // The watch made the page's placeholder version 1; the comment's snapshot is the next.
@@ -250,29 +241,20 @@ test("comment on a dev server page, reach the agent, and follow a hot reload", a
   // A hot update keeps the pin; removing the button detaches it.
   const main = join(live.siteDir, "main.js");
   const found = async () => (await h.state(tabId))?.resolved[tid]?.found;
-  // macOS can drop a file event under load: the edit is written again
-  // (the same text) every few seconds until Vite's watcher reports it.
-  const edit = async (from: string, to: string) => {
-    const text = readFileSync(main, "utf8").replace(from, to);
-    const heard = once(live.site.watcher, "change").then(() => true);
-    const given = { up: false };
-    try {
-      await within((async () => {
-        while (!given.up) {
-          writeFileSync(main, text);
-          if (await Promise.race([heard, new Promise<false>(r => setTimeout(() => r(false), 3000))])) return;
-        }
-      })(), "Vite's watcher did not report the edit");
-    } finally {
-      given.up = true;
-    }
+  // The dev server watches no files (extension-fixtures.ts): the edit
+  // tells it of the change, as its file watcher would have.
+  const edit = (from: string, to: string) => {
+    const text = readFileSync(main, "utf8");
+    expect(text).toContain(from);
+    writeFileSync(main, text.replace(from, to));
+    live.site.watcher.emit("change", main);
   };
   // A marker a full reload would lose: the update must be Vite's hot one.
   await page.evaluate(() => { (window as unknown as { claxHot: boolean }).claxHot = true; });
-  await edit('const LABEL = "Save"', 'const LABEL = "Save changes"');
+  edit('const LABEL = "Save"', 'const LABEL = "Save changes"');
   await expect(page.locator("#save")).toHaveText("Save changes");
   await expect.poll(found).toBe(true);
-  await edit('const LABEL = "Save changes"', 'const LABEL = ""');
+  edit('const LABEL = "Save changes"', 'const LABEL = ""');
   await expect(page.locator("#save")).toHaveCount(0);
   await expect.poll(found).toBe(false);
   await expect.poll(() => panel.text()).toContain("Detached");
@@ -345,7 +327,7 @@ test("the panel recovers when the daemon restarts on another port", async ({ liv
   // pairs again. A machine slow enough that the restart took longer pairs
   // again on its own, which is right too, and leaves nothing to retry.
   const settled = async () => ((await pairedTo()) === live.daemon.base ? "paired" : ((await h.state(tabId))?.error as { code?: string } | null)?.code ?? null);
-  const outcome = await until(settled);
+  const outcome = await until("the panel to pair again or say the daemon is unreachable", settled);
   expect(["daemon_unreachable", "paired"]).toContain(outcome);
   if (outcome === "paired") return;
   await expect.poll(() => panel.text()).toContain("Retry");
@@ -384,7 +366,7 @@ test("Clax is on only in the tab it was turned on in, stays on through a reload,
   // The first tab keeps working: a pick opens its composer.
   await first.bringToFront();
   await first.locator("#save").click();
-  const composer = await until(() => first.frames().find(f => f.url().includes("/composer.html")));
+  const composer = await until("the composer's frame", () => first.frames().find(f => f.url().includes("/composer.html")));
   await composer.locator("textarea").waitFor();
   expect(await overlays(second)).toBe(0);
 
@@ -463,10 +445,11 @@ test("the panel lists the site's other pages, answers and resolves their threads
   const panel = await SidePanel.open(live, page, tabId);
   // An agent session is live, so the pairing this tab started waits for the person.
   await confirmPairing(live);
-  // This page's thread, then both other pages under their paths.
-  await expect.poll(() => panel.text()).toContain("Elsewhere on this site");
-  const text = await panel.text();
-  expect(text.indexOf("Home button note")).toBeLessThan(text.indexOf("Elsewhere on this site"));
+  // This page's thread, then both other pages under their paths. Until the
+  // panel knows the tab's page (its state's `page`), every page of the site,
+  // this one too, is listed elsewhere.
+  const homeFirst = (t: string) => t.includes("Home button note") && t.indexOf("Home button note") < t.indexOf("Elsewhere on this site");
+  const text = await until("the panel to list this page's thread before the site's other pages", async () => { const t = await panel.text(); return homeFirst(t) ? t : null; });
   for (const s of ["/users/1.html", "/users/2.html", "User one heading note", "User two heading note"]) expect(text).toContain(s);
 
   // The other pages' threads whose anchors are on this screen are pinned here too.
@@ -501,7 +484,7 @@ test("the panel lists the site's other pages, answers and resolves their threads
   await expect.poll(async () => (await threadB()).status).toBe("open");
   // Send names that page's agent, and its picker sends to another.
   // The first live agent of that page, as there; the picker names the other.
-  const first = await until(() => inCard(b, `[...card.querySelectorAll(".send button.primary")][0]?.textContent.match(/^Send to (claude|codex)$/)?.[1] ?? null`)) as string;
+  const first = await until("the card's Send button", () => inCard(b, `[...card.querySelectorAll(".send button.primary")][0]?.textContent.match(/^Send to (claude|codex)$/)?.[1] ?? null`)) as string;
   const other = first === "claude" ? "codex" : "claude";
   await inCard(b, `(card.querySelector("button[aria-label='Choose the agent']").click(), true)`);
   await expect.poll(() => inCard(b, `(() => { const x = [...card.querySelectorAll("[role=menuitemradio]")].find(x => x.textContent === ${JSON.stringify(other)}); x?.click(); return !!x; })()`)).toBe(true);
@@ -555,8 +538,10 @@ test("two ports of one app join into one site: suggested, joined, listed and pin
   const h = hook(live);
   // The same app on a second port, as a dev server that moved would serve it.
   const port = await freePort();
-  // Bound on the host name its URL uses, so the probe and the navigation reach it as named.
-  const second = await createServer({ root: live.siteDir, configFile: false, logLevel: "silent", server: { port, host: "localhost", strictPort: true } });
+  // Bound on the host name its URL uses, so the probe and the navigation
+  // reach it as named. It watches no files, as the first does
+  // (extension-fixtures.ts): no late file event reloads its page.
+  const second = await createServer({ root: live.siteDir, configFile: false, logLevel: "silent", server: { port, host: "localhost", strictPort: true, watch: null } });
   await second.listen();
   const O1 = new URL(live.siteUrl).origin;
   const O2 = `http://localhost:${port}`;
@@ -665,7 +650,7 @@ test("the panel's Comment puts the overlay back in a page that lost it, rather t
   await expect.poll(pressed).toBe("true");
   await expect.poll(() => overlays(page)).toBe(1);
   await page.locator("#save").click();
-  const composer = await until(() => page.frames().find(f => f.url().includes("/composer.html")));
+  const composer = await until("the composer's frame", () => page.frames().find(f => f.url().includes("/composer.html")));
   await composer.locator("textarea").waitFor();
 });
 
@@ -681,7 +666,7 @@ test("after Escape or Cancel in the composer, the panel's Comment turns comment 
   const composerFrame = () => page.frames().find(f => f.url().includes("/composer.html")) ?? null;
   const pick = async () => {
     await page.locator("#save").click();
-    const f = await until(composerFrame);
+    const f = await until("the composer's frame", composerFrame);
     await f.locator("textarea").waitFor();
     return f;
   };
@@ -716,10 +701,13 @@ test("after Escape or Cancel in the composer, the panel's Comment turns comment 
 test("a native host slow to start: the panel says Clax is taking a while, with Retry, and Clax carries on once it answers", async ({ live }) => {
   const { siteUrl } = live;
   const h = hook(live);
-  // The host Chrome starts takes longer than PAIR_SLOW_MS (15 s) to answer, as on a stalled machine.
+  // The host Chrome starts answers only once the test lets it (it waits for
+  // the file `go`): longer than PAIR_SLOW_MS (15 s, the worker's own clock),
+  // as on a stalled machine, however long a loaded one takes to get there.
   // A file of its own: the installed launcher is a link to a kept copy (extension-fixtures.ts).
   const launcher = join(live.daemon.home, "extension", "host", "launch.sh");
-  const slow = readFileSync(launcher, "utf8").replace("\nexec ", "\nsleep 18\nexec ");
+  const go = join(live.daemon.home, "extension", "host", "go");
+  const slow = readFileSync(launcher, "utf8").replace("\nexec ", `\nuntil [ -e '${go}' ]; do sleep 0.1; done\nexec `);
   rmSync(launcher);
   writeFileSync(launcher, slow, { mode: 0o755 });
   const page = await live.ctx.newPage();
@@ -731,11 +719,13 @@ test("a native host slow to start: the panel says Clax is taking a while, with R
   expect(await panel.text()).toContain("Retry");
   // Retry waits for the same start: no second host.
   await panel.click(/^ ?Retry$/);
+  // The host starts at last, and answers.
+  writeFileSync(go, "");
   await expect.poll(async () => (await live.sw.evaluate(() => chrome.storage.session.get("pairing"))).pairing?.daemon ?? null).toBe(live.daemon.base);
   await expect.poll(() => panel.text()).not.toContain("taking a while");
   await expect.poll(async () => (await h.state(tabId))?.error ?? null).toBeNull();
   await page.locator("#save").click();
-  const composer = await until(() => page.frames().find(f => f.url().includes("/composer.html")));
+  const composer = await until("the composer's frame", () => page.frames().find(f => f.url().includes("/composer.html")));
   await composer.locator("textarea").waitFor();
   const log = readFileSync(join(live.daemon.home, "logs", "native-host.log"), "utf8");
   expect(log.match(/native-host paired/g)).toHaveLength(1);
@@ -776,7 +766,7 @@ test.describe("holding only the dev server's origin, as the release build does o
       for (const el of document.querySelectorAll("clax-overlay")) new MutationObserver(() => w.hostChanges.push(el.getAttribute("style") ?? "")).observe(el, { attributes: true });
     });
     await page.locator("#save").click();
-    const composer = await until(() => page.frames().find(f => f.url().includes("/composer.html")));
+    const composer = await until("the composer's frame", () => page.frames().find(f => f.url().includes("/composer.html")));
     await composer.locator("textarea").waitFor();
     // The page can see the moment of capture: the host hides, then shows again (spec §10.4).
     const seen = await page.evaluate(() => (window as unknown as { hostChanges: string[] }).hostChanges.map(s => (/visibility: ?hidden/.test(s) ? "hidden" : "shown")));
@@ -790,8 +780,8 @@ test.describe("holding only the dev server's origin, as the release build does o
     await page.keyboard.type("Bigger");
     await expect(composer.locator("textarea")).toHaveValue("Bigger");
     await clickClosingFrame(composer.getByRole("button", { name: "Post" }));
-    const lookup = await until(async () => (await fetch(`${live.daemon.base}/api/live/pages?url=${encodeURIComponent(siteUrl)}`).then(r => r.json())).page);
-    const thread = await until(async () => (await api(live, `/api/artifacts/${lookup.artifact_id}/threads`)).threads[0]);
+    const lookup = await until("the daemon's live page for the site", async () => (await fetch(`${live.daemon.base}/api/live/pages?url=${encodeURIComponent(siteUrl)}`).then(r => r.json())).page);
+    const thread = await until("the page's first thread", async () => (await api(live, `/api/artifacts/${lookup.artifact_id}/threads`)).threads[0]);
     // captureVisibleTab needs activeTab or <all_urls>; the origin's permission is not enough (spec L8).
     expect(thread.has_clip).toBe(false);
     expect(thread.comments[0].body).toBe("Bigger");
@@ -851,7 +841,7 @@ test.describe("holding only the dev server's origin, as the release build does o
     await expect.poll(pressed).toBe("true");
     expect(await panel.text()).not.toContain("to comment with a screenshot");
     await page.locator("#save").click();
-    const composer = await until(() => page.frames().find(f => f.url().includes("/composer.html")));
+    const composer = await until("the composer's frame", () => page.frames().find(f => f.url().includes("/composer.html")));
     await composer.locator("textarea").waitFor();
   });
 
@@ -868,7 +858,7 @@ test.describe("holding only the dev server's origin, as the release build does o
     await expect.poll(pressed).toBe("true");
     const keys = await panel.eval<string>(`chrome.commands.getAll().then(c => c.find(x => x.name === "comment")?.shortcut ?? "")`);
     await page.locator("#save").click();
-    const composer = await until(() => page.frames().find(f => f.url().includes("/composer.html")));
+    const composer = await until("the composer's frame", () => page.frames().find(f => f.url().includes("/composer.html")));
     const how = keys ? `press ${keys} on the page` : "right-click the page and choose Comment with Clax";
     await expect(composer.locator("body")).toContainText(`No screenshot: ${how} before your next pick to include one`);
     await expect.poll(async () => (await h.state(tabId))?.active).toBe(false);
@@ -905,7 +895,7 @@ test.describe("holding only the dev server's origin, as the release build does o
     await h.comment(tabId, siteUrl);
     await expect.poll(async () => (await h.state(tabId))?.commentMode).toBe(true);
     await page.locator("#save").click();
-    const composer = await until(() => page.frames().find(f => f.url().includes("/composer.html")));
+    const composer = await until("the composer's frame", () => page.frames().find(f => f.url().includes("/composer.html")));
     await composer.locator("textarea").waitFor();
     // The page cannot reach the frame (closed root, not in window.frames); a navigation of it is simulated over CDP.
     await composer.goto("about:blank").catch(() => {});
@@ -930,7 +920,7 @@ test.describe("holding only the dev server's origin, as the release build does o
       d.showModal();
     });
     await page.locator("#ok").click();
-    const composer = await until(() => page.frames().find(f => f.url().includes("/composer.html")));
+    const composer = await until("the composer's frame", () => page.frames().find(f => f.url().includes("/composer.html")));
     await composer.locator("textarea").waitFor();
     const box = (await (await composer.frameElement()).boundingBox())!;
     const top = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.tagName ?? null, [box.x + box.width / 2, box.y + box.height / 2] as const);
@@ -940,8 +930,8 @@ test.describe("holding only the dev server's origin, as the release build does o
     await expect(composer.locator("textarea")).toHaveValue("Under a dialog");
     // The composer's own shortcut posts it.
     await page.keyboard.press("ControlOrMeta+Enter");
-    const lookup = await until(async () => (await fetch(`${live.daemon.base}/api/live/pages?url=${encodeURIComponent(siteUrl)}`).then(r => r.json())).page);
-    const thread = await until(async () => (await api(live, `/api/artifacts/${lookup.artifact_id}/threads`)).threads[0]);
+    const lookup = await until("the daemon's live page for the site", async () => (await fetch(`${live.daemon.base}/api/live/pages?url=${encodeURIComponent(siteUrl)}`).then(r => r.json())).page);
+    const thread = await until("the page's first thread", async () => (await api(live, `/api/artifacts/${lookup.artifact_id}/threads`)).threads[0]);
     expect(thread.comments[0].body).toBe("Under a dialog");
   });
 });
@@ -971,12 +961,12 @@ test.describe("a real click on the toolbar icon, holding no site's permission (t
     await panel.click(/^ ?Comment$/);
     await expect.poll(pressed).toBe("true");
     await page.locator("#save").click();
-    const composer = await until(() => page.frames().find(f => f.url().includes("/composer.html")));
+    const composer = await until("the composer's frame", () => page.frames().find(f => f.url().includes("/composer.html")));
     await composer.locator("textarea").fill("After a reload");
     await expect(composer.locator("img.clip")).toHaveCount(1);
     await clickClosingFrame(composer.getByRole("button", { name: "Post" }));
-    const lookup = await until(async () => (await fetch(`${live.daemon.base}/api/live/pages?url=${encodeURIComponent(siteUrl)}`).then(r => r.json())).page);
-    const thread = await until(async () => (await api(live, `/api/artifacts/${lookup.artifact_id}/threads`)).threads[0]);
+    const lookup = await until("the daemon's live page for the site", async () => (await fetch(`${live.daemon.base}/api/live/pages?url=${encodeURIComponent(siteUrl)}`).then(r => r.json())).page);
+    const thread = await until("the page's first thread", async () => (await api(live, `/api/artifacts/${lookup.artifact_id}/threads`)).threads[0]);
     expect(thread.has_clip).toBe(true);
   });
 
@@ -1161,7 +1151,7 @@ test.describe("with a person connected on the LAN", () => {
       const handle = (await api(live, `/api/artifacts/${artifact.id}`)).artifact.participants.agents.find((a: { harness: string }) => a.harness === "codex").handle as string;
       const sent = await fetch(`${d.base}/api/artifacts/${artifact.id}/threads/${samThread}/send`, { method: "POST", headers: asOwner, body: JSON.stringify({ to: handle }) });
       expect(sent.status, await sent.text()).toBe(200);
-      const approval = await until(async () => ((await api(live, "/api/inbox")).items as { kind: string; id: string; url: string; read: boolean }[]).find(i => i.kind === "approval"));
+      const approval = await until("the approval in the inbox", async () => ((await api(live, "/api/inbox")).items as { kind: string; id: string; url: string; read: boolean }[]).find(i => i.kind === "approval"));
       expect(approval.url).toMatch(/^\/inbox\?approval=[0-9A-Z]{26}$/);
 
       // The live page, with a thread of the owner's, in the panel.
@@ -1220,10 +1210,15 @@ test.describe("with a person connected on the LAN", () => {
       await expect.poll(() => panel.eval<number>("document.querySelectorAll('.irow[data-unread]').length")).toBe(1);
       expect(await panel.eval<boolean>(`document.querySelector('[data-item="${approval.id}"] .dot').disabled`)).toBe(true);
       await shots("inbox-approval");
+      // The tab it opens asks for the card's address, heard as its
+      // navigation: once its tags load, the inbox rewrites its URL to its
+      // filter's, without `?approval=`.
+      const opened = live.ctx.waitForEvent("request", r => r.isNavigationRequest() && r.url().endsWith(approval.url));
       await panel.click(/Sam wants to reach your agent/);
-      const shell = await until(() => live.ctx.pages().find(p => p.url().endsWith(approval.url)) ?? null);
+      const asked = await opened;
       // On the paired daemon, as the owner.
-      expect(new URL(shell.url()).port).toBe(String(d.port));
+      expect(new URL(asked.url()).port).toBe(String(d.port));
+      const shell = await until("the paired daemon's inbox tab", () => live.ctx.pages().find(p => { const u = new URL(p.url()); return u.port === String(d.port) && u.pathname === "/inbox"; }));
       await expect(shell.locator(".acard")).toBeFocused();
       await expect(shell.locator(".acard .ahead")).toContainText("Sam wants to reach your agent");
       // Unread until decided.

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { relativeTime } from "./format";
 import { FakeWorker, workerWith } from "./test/fake-worker";
 import { freshModules } from "./test/modules";
+import { settled } from "./test/settled";
 import { MOUNT_TIMEOUT_MS, WAIT_MS } from "./test/timeouts";
 
 describe("relativeTime", () => {
@@ -281,7 +282,7 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const root = await mountGallery();
     await workerWith("gallery");
     await waitFor(() => calls.some(c => c.url === "/api/viewers/me"), "the viewer lookup");
-    await new Promise(r => setTimeout(r, 50));
+    await settled();
     expect(root.querySelector(".inbox-sum, .inbox-link")).toBeNull();
     expect(FakeWorker.all.some(w => w.topics.includes("inbox"))).toBe(false);
     expect(calls.some(c => /^\/api\/(inbox|questions)/.test(c.url))).toBe(false);
@@ -594,8 +595,7 @@ describe("Gallery tags", { timeout: MOUNT_TIMEOUT_MS }, () => {
         vi.stubGlobal("confirm", () => true);
         const loads = calls.filter(c => c.url === "/api/tags").length;
         rows[0].querySelector<HTMLButtonElement>("button.tdel")!.click();
-        await waitFor(() => calls.filter(c => c.url === "/api/tags").length > loads && m.root.querySelector(".terr"), "the refusal after the reload");
-        await new Promise(r => setTimeout(r, 20));
+        await waitFor(() => calls.filter(c => c.url === "/api/tags").length > loads && m.root.querySelector(".terr")?.textContent === "Could not delete Q4: no such tag", "the refusal after the reload");
         expect(m.root.querySelector(".terr")!.textContent).toBe("Could not delete Q4: no such tag");
       }
       unmountGallery(); unmountGallery = null; await freshModules(); vi.unstubAllGlobals();

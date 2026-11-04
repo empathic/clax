@@ -4,7 +4,9 @@ import { dispatchTrusted } from "../../bridge/test/trusted";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SKELETON_HTML } from "./view/skeleton";
-import { MOUNT_TIMEOUT_MS, WAIT_MS } from "./test/timeouts";
+import { settled } from "./test/settled";
+import { MOUNT_TIMEOUT_MS } from "./test/timeouts";
+import { waitFor } from "./test/wait-for";
 
 const ID = "7q3k9mzx2b4t";
 const loaded = { artifact: { id: ID, title: "T", description: null, icon: null, updated_at: "x", current_version: 2, pinned: false }, versions: [{ artifact_id: ID, n: 2, label: null, created_at: "x", files: {} }] };
@@ -22,19 +24,7 @@ const SERVED = `<iframe class="frame" title="artifact content" src="${START}" al
 const HELLO = { type: "clax:hello", artifact: ID, version: 2, file: "index.html" };
 const CODE = `${SITE}/_clax/session?code=c1&next=%2F_clax%2Fv%2F2%2F`;
 
-
-async function waitFor<T>(check: () => T | null | undefined | false, what: string): Promise<T> {
-  const deadline = Date.now() + WAIT_MS;
-  for (;;) {
-    const v = check();
-    if (v) return v;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await new Promise(r => setTimeout(r, 10));
-  }
-}
-
 const fromFrame = (win: Window, data: unknown, origin = SITE) => dispatchTrusted(window, new MessageEvent("message", { data, origin, source: win }));
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 /** The page as the daemon sends it, with `frame` in the stage. */
 function served(frame: string): HTMLElement {
@@ -142,7 +132,7 @@ describe("the first load from the daemon's HTML", { timeout: MOUNT_TIMEOUT_MS },
     fromFrame(frame.contentWindow!, { type: "clax:use", id: "too-soon", name: "permissions" });
     await mountServed(root, boot());
     fromFrame(frame.contentWindow!, { type: "clax:use", id: "still-too-soon", name: "permissions" });
-    await sleep(30);
+    await settled();
     expect(answered(posted)).toEqual([]);
     fromFrame(frame.contentWindow!, HELLO);
     await waitFor(() => posted.some(m => m.type === "clax:welcome"), "the welcome");
@@ -163,7 +153,7 @@ describe("the first load from the daemon's HTML", { timeout: MOUNT_TIMEOUT_MS },
     // hello since the previous one, closes the gate.
     frame.dispatchEvent(new Event("load"));
     fromFrame(frame.contentWindow!, { type: "clax:use", id: "after", name: "permissions" });
-    await sleep(30);
+    await settled();
     expect(posted.some(m => m.type === "clax:use-result")).toBe(false);
   });
 
@@ -180,7 +170,7 @@ describe("the first load from the daemon's HTML", { timeout: MOUNT_TIMEOUT_MS },
     fromFrame(frame.contentWindow!, HELLO, "null");
     fromFrame(frame.contentWindow!, HELLO, `http://9zzzzzzzzzzz.localhost${location.port ? `:${location.port}` : ""}`);
     await mountServed(root, boot());
-    await sleep(30);
+    await settled();
     expect(answered(posted)).toEqual([]);
   });
 
@@ -245,7 +235,7 @@ describe("the first load from the daemon's HTML", { timeout: MOUNT_TIMEOUT_MS },
     const posted = posts(frame);
     window.dispatchEvent(new MessageEvent("message", { data: HELLO, origin: SITE, source: frame.contentWindow }));
     await mountServed(root, boot());
-    await sleep(30);
+    await settled();
     expect(answered(posted)).toEqual([]);
   });
 

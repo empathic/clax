@@ -10,6 +10,7 @@
 /// or `/api/live/…`) or its handler is listed in [`l10::GUARDS`] with the
 /// guard its source shows.
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod l10 {
     /// How a handler of a route outside the path rule keeps live pages hidden.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1268,6 +1269,7 @@ mod l10 {
 /// builds a view of others' content or streams events refuses the owner's
 /// agents; and every plugin runs `clax` through its wrapper.
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod agents {
     use super::l10::{
         function, handlers, method_handlers, module_source, module_source_opt, routes,
@@ -2451,6 +2453,7 @@ mod agents {
 /// [`crate::router::held_open`] is the router's block of routes that hold
 /// their connection open, read from its source, and rmcp's `/mcp`.
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod held_open {
     use crate::router::held_open::{ALL, MCP, matches};
 

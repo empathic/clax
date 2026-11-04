@@ -6,6 +6,7 @@ import QuestionCard from "./QuestionCard.svelte";
 import { view } from "./fixtures";
 import { loadMarkdown } from "../view/md-load.svelte";
 import { useTrail } from "./trail";
+import { settled } from "../test/settled";
 
 const buttons = (root: Element, text: string) => [...root.querySelectorAll("button")].filter(b => b.textContent === text);
 /** A trusted pointer's click (`detail` 1), or Enter or Space on a button (`detail` 0). */
@@ -149,7 +150,7 @@ describe("QuestionCard", () => {
     ] });
     const selected = (root: Element) => [...root.querySelectorAll('[role="tab"]')].findIndex(t => t.getAttribute("aria-selected") === "true");
     // Lets the card's focus move (after the DOM update) run.
-    const settle = async () => { flush(); await Promise.resolve(); await Promise.resolve(); flush(); };
+    const settle = settled;
 
     it("moves on to the next unanswered question after a single choice is picked, and not after a multi choice or Other", async () => {
       const m = mount(QuestionCard, { q: four(), onAnswer: vi.fn(), onDecline: vi.fn() });

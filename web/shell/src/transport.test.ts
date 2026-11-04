@@ -1,11 +1,14 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { MOUNT_TIMEOUT_MS } from "./test/timeouts";
 import { CHUNK, CHUNKED_OVER, type Channel, type HostReceivers, hostEmbed, installTransport, onHost, readEmbed, transport } from "./transport";
 
 const ORIGIN = "https://app.clax.invalid";
-/** For the cases that encode or decode megabytes: they wait on no condition, so only the machine's load bounds them. */
-const HEAVY = { timeout: 120_000 };
+/** For the cases that encode or decode megabytes: they wait on no condition,
+ * so only the machine's load bounds them. A hang guard of twice the mount
+ * limit, which ends a run that hangs and judges no speed. */
+const HEAVY = { timeout: MOUNT_TIMEOUT_MS * 2 };
 const NONCE = "N".repeat(16);
 
 /** A transport over a channel that records what it posts, given `NONCE`. */

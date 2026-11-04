@@ -629,6 +629,7 @@ pub fn prompt(harness: &str, input: &HookInput, daemon: &dyn Daemon) -> anyhow::
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use std::cell::RefCell;
@@ -1276,9 +1277,13 @@ mod tests {
         assert!(text.ends_with("\n\nPENDING"), "{text}");
     }
 
-    /// A daemon whose feedback route answers only after `FEEDBACK_DELAY`; like
-    /// the real client, a bounded request gives up after its timeout.
-    struct SlowFeedback;
+    /// A daemon whose feedback route answers only after `FEEDBACK_DELAY`;
+    /// like the real client, a request bounded below it gives up (here at
+    /// once, recording each path's bound).
+    #[derive(Default)]
+    struct SlowFeedback {
+        bounds: RefCell<Vec<(String, Duration)>>,
+    }
     const FEEDBACK_DELAY: Duration = Duration::from_secs(5);
     impl Daemon for SlowFeedback {
         fn browser_url(&self, path: &str) -> String {
@@ -1287,8 +1292,8 @@ mod tests {
         fn get(&self, path: &str) -> anyhow::Result<Value> {
             self.get_with_timeout(path, Duration::MAX)
         }
-        fn get_with_timeout(&self, _: &str, timeout: Duration) -> anyhow::Result<Value> {
-            std::thread::sleep(timeout.min(FEEDBACK_DELAY));
+        fn get_with_timeout(&self, path: &str, timeout: Duration) -> anyhow::Result<Value> {
+            self.bounds.borrow_mut().push((path.to_string(), timeout));
             if timeout < FEEDBACK_DELAY {
                 bail!("timed out");
             }
@@ -1304,13 +1309,18 @@ mod tests {
 
     #[test]
     fn session_start_returns_the_join_context_when_feedback_is_slow() {
-        let started = std::time::Instant::now();
-        let out = session_start("claude", 1, &[], &input("s1"), None, &SlowFeedback).unwrap();
-        assert!(
-            started.elapsed() < Duration::from_millis(1500),
-            "{:?}",
-            started.elapsed()
-        );
+        let daemon = SlowFeedback::default();
+        let out = session_start("claude", 1, &[], &input("s1"), None, &daemon).unwrap();
+        // The feedback read was bounded by the start's limit, not left to
+        // wait for the slow answer.
+        let feedback: Vec<Duration> = daemon
+            .bounds
+            .borrow()
+            .iter()
+            .filter(|(path, _)| path.contains("/feedback"))
+            .map(|(_, bound)| *bound)
+            .collect();
+        assert_eq!(feedback, [START_FEEDBACK_TIMEOUT]);
         let text = out.value().unwrap()["hookSpecificOutput"]["additionalContext"]
             .as_str()
             .unwrap()

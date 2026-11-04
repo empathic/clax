@@ -398,6 +398,7 @@ pub async fn cors(State(s): State<AppState>, req: Request, next: Next) -> Respon
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

@@ -4,7 +4,6 @@ use clax_testkit::TestViewer;
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
 
 type Ws =
@@ -22,12 +21,11 @@ impl Client {
             .unwrap();
     }
 
-    /// The next frame within 5 s; a close is `{"t": "_close", code}`.
+    /// The next frame; a close is `{"t": "_close", code}`.
     async fn next(&mut self) -> Value {
         loop {
-            let m = tokio::time::timeout(Duration::from_secs(5), self.ws.next())
+            let m = clax_testkit::within("a frame", self.ws.next())
                 .await
-                .expect("a frame within 5 s")
                 .expect("open");
             match m.expect("readable") {
                 Message::Text(t) if t.as_str() == "pong" => return json!({"t": "_pong"}),
@@ -379,20 +377,18 @@ async fn a_spectators_socket_is_closed_and_relays_nothing() {
     assert_eq!(ts.live_layers.sockets(&aid), 1);
     // Ann leaves; her seat frees, and Ben's next socket is seated.
     drop(a);
-    let mut tries = 0;
-    loop {
+    clax_testkit::until("Ann's seat frees for Ben", || async {
         let mut c = try_connect(&ts, &aid, &[cookie(&ben)])
             .await
             .expect("upgrade");
         let f = c.next().await;
         if f["t"] == "welcome" {
-            break;
+            return Some(());
         }
         assert_eq!(f["code"], 4429, "{f}");
-        tries += 1;
-        assert!(tries < 200, "Ann's seat never freed");
-        tokio::task::yield_now().await;
-    }
+        None
+    })
+    .await;
 }
 
 /// A socket's seat released for want of input closes it 4429 with reason

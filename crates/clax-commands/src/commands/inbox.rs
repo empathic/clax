@@ -506,6 +506,7 @@ fn show(cli: &crate::Cli, c: &Client, id: &str) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use chrono::{DateTime, Local, NaiveDate};

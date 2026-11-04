@@ -155,6 +155,7 @@ pub fn is_public_id(s: &str) -> bool {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

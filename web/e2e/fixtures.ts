@@ -2,11 +2,13 @@ import { test as playwrightTest, expect as playwrightExpect, type Browser, type 
 import { spawn, type ChildProcess } from "node:child_process";
 import { request as httpRequest } from "node:http";
 import { createServer } from "node:net";
-import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { advance, quietEval } from "./time";
+import { advance, fence, quietEval, until } from "./time";
+
+export { fence, until } from "./time";
 
 /** Playwright's `expect`, whose `poll` checks again after 10, 20 and 50 ms,
  * then every 100 ms (Playwright's own waits 100, 250, 500 ms, then every
@@ -233,12 +235,36 @@ export function trustBrowser(browser: Browser): Browser {
  * titles and judges only those. `freshDaemon` is a daemon of the test's own,
  * for a test that judges the daemon's global state (its open streams). Every
  * browser context a test uses is a browser of the owner's on every daemon
- * the worker runs ([`trustContext`]). */
-export const test = playwrightTest.extend<{ freshDaemon: Daemon }, { daemon: Daemon }>({
-  context: async ({ context }, use) => {
+ * the worker runs ([`trustContext`]). Each test closes, once it has ended,
+ * every browser context it opened (`closesContexts`). */
+export const test = playwrightTest.extend<{ freshDaemon: Daemon; closesContexts: void }, { daemon: Daemon }>({
+  context: async ({ context }, use, testInfo) => {
     await trustContext(context);
+    // A part of the bridge that fails to load (the shell says only that it
+    // "could not load in this page") is told in the test's output, with why,
+    // and so is any failed request for a script or for the daemon's /_clax/
+    // files (a shell that never ran shows only its skeleton).
+    const tell = (what: string) => process.stderr.write(`[${testInfo.titlePath.join(" > ")}] ${what}\n`);
+    context.on("console", m => { if (m.text().includes("part of the bridge could not load")) tell(m.text()); });
+    context.on("requestfailed", r => { if (r.resourceType() === "script" || new URL(r.url()).pathname.startsWith("/_clax/")) tell(`request failed: ${r.url()}: ${r.failure()?.errorText}`); });
     await use(context);
   },
+  /** Closes, once the test has ended (after its failure screenshot), every
+   * browser context it opened on the worker's browser
+   * (`browser.newContext()`, directly or through a helper; its own
+   * `context` closes just before, as Playwright closes it), and with them
+   * their pages: one left open keeps its pages, their streams and their
+   * timers running beside the worker's later tests. Contexts open before
+   * the test began stay open. Closing one keeps its failure artifacts
+   * (Playwright saves them as a context closes). The Chrome overlay's tests
+   * (e2e/extension-fixtures.ts) run Chromium of their own on a persistent
+   * context their `live` fixture owns and closes: they do not use this
+   * `test`. */
+  closesContexts: [async ({ browser }, use) => {
+    const before = new Set(browser.contexts());
+    await use();
+    await Promise.all(browser.contexts().filter(c => !before.has(c)).map(c => c.close()));
+  }, { auto: true }],
   browser: [async ({ browser }, use) => {
     trustBrowser(browser);
     await use(browser);
@@ -249,7 +275,7 @@ export const test = playwrightTest.extend<{ freshDaemon: Daemon }, { daemon: Dae
     const d = await startDaemon();
     await use(d);
     await d.stop();
-  }, { scope: "worker", timeout: 30_000 }],
+  }, { scope: "worker" }],
   // oxlint-disable-next-line no-empty-pattern
   freshDaemon: async ({}, use) => {
     const d = await startDaemon();
@@ -258,8 +284,20 @@ export const test = playwrightTest.extend<{ freshDaemon: Daemon }, { daemon: Dae
   },
 });
 
-/** Sleeps `ms` of real time; only for polling a state with no event of its own. */
+/** Sleeps `ms` of real time: the pause between health checks, and the
+ * escalation of a stop the daemon does not heed. */
+// oxlint-disable-next-line clax-timing/timer-delay -- the pause between a real daemon's health checks and a stop's escalation: neither decides a result
 const tick = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
+/** The `sh -c` script a test daemon runs under (`sh -c HELD sh <clax> serve …`):
+ * a background reader of the shell's standard input (a pipe this process
+ * holds and never writes; fd 3, since a background job's own input is
+ * /dev/null) sends the daemon SIGTERM when that input ends, and the shell
+ * execs the daemon, which keeps the shell's PID (so `child.pid`,
+ * `child.kill()` and the exit are the daemon's). The input ends when
+ * `stop()` closes the pipe, or when the system does as this process ends,
+ * however it ends (SIGKILL included). */
+const HELD = 'exec 3<&0; (cat <&3; kill -TERM $$) >/dev/null 2>&1 & exec "$@" </dev/null 3<&-';
 
 /** Starts a daemon on a fresh home whose config.toml is `opts.config` (`NO_KEY_CONFIG` by default);
  * with `opts.home`, on that home (which it does not create); with `opts.port` too, on that port (a restart);
@@ -268,11 +306,15 @@ const tick = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
  * with `opts.args`, with those arguments added to `clax serve`'s.
  * `stop({ keepHome: true })` leaves the home; `ended()` says whether the daemon has exited.
  * It runs the binary daemon-setup.ts built, on a port the system picks, and
- * waits for its daemon.json and its health check until the daemon answers or
- * exits, bounded only by the test's (or fixture's) own timeout, so a loaded
- * machine's slow start is waited out; `opts.startMs` caps the wait for a
- * caller that wants its own bound. A start that fails says so with the end
- * of the daemon's stderr.
+ * waits until the daemon says it listens (its daemon.json is written then)
+ * and answers its health check, or exits, bounded only by the test's (or
+ * fixture's) own timeout, so a loaded machine's slow start is waited out. A
+ * start that fails says so with the end of the daemon's stderr.
+ * `stop()` stops it by its PID when the shutdown route does not. It runs
+ * under [`HELD`], so a daemon whose worker ends without stopping it (a
+ * worker killed included) is sent SIGTERM when the system closes the
+ * worker's end of its standard input: no daemon outlives the tests that
+ * started it.
  * `localhost` resolves to `::1` first, and another process (a Bazel server)
  * may listen on `[::1]` at the port the system gave the daemon on
  * `127.0.0.1`, where every request to `http://localhost:<port>` would reach
@@ -285,7 +327,7 @@ export async function startDaemon(opts: StartOpts = {}) {
   }
 }
 
-type StartOpts = { config?: string; home?: string; port?: number; startMs?: number; bind?: string; env?: Record<string, string>; args?: string[] };
+type StartOpts = { config?: string; home?: string; port?: number; bind?: string; env?: Record<string, string>; args?: string[] };
 
 /** Whether another process listens on `[::1]` at `port` (false on a machine without IPv6). */
 export function v6Taken(port: number): Promise<boolean> {
@@ -307,13 +349,25 @@ async function startOnce(opts: StartOpts) {
   writeFileSync(join(home, "config.toml"), opts.config ?? NO_KEY_CONFIG);
   rmSync(join(home, "daemon.json"), { force: true });
   // No test daemon fetches tokenulator.dev's price catalog (`off` turns it off).
-  const child: ChildProcess = spawn(bin, ["serve", "--foreground", "--bind", opts.bind ?? "127.0.0.1", "--port", String(opts.port ?? 0), ...(dist ? ["--web-dist", dist] : []), ...(opts.args ?? [])],
-    { cwd: repoRoot, env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "", CLAX_E2E_UNSET_KEY: "", CLAX_GALLERY__QUICKSTART: "false", CLAX_BOT__PRICE_CATALOG_URL: "off", ...opts.env }, stdio: ["ignore", "inherit", "pipe"] });
-  // The daemon's stderr goes on to the test's, and its end is kept for a failed start.
+  const child: ChildProcess = spawn("/bin/sh", ["-c", HELD, "sh", bin, "serve", "--foreground", "--bind", opts.bind ?? "127.0.0.1", "--port", String(opts.port ?? 0), ...(dist ? ["--web-dist", dist] : []), ...(opts.args ?? [])],
+    { cwd: repoRoot, env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "", CLAX_E2E_UNSET_KEY: "", CLAX_GALLERY__QUICKSTART: "false", CLAX_BOT__PRICE_CATALOG_URL: "off", ...opts.env }, stdio: ["pipe", "pipe", "pipe"] });
+  // The daemon's stdout and stderr go on to the test's; the end of its
+  // stderr is kept for a failed start, and its stdout is read for the line
+  // that says it listens (`clax daemon listening`, crates/clax-server/src/serve.rs).
   let stderr = "";
   child.stderr?.on("data", (b: Buffer) => { process.stderr.write(b); stderr = (stderr + b.toString()).slice(-4000); });
   const failed = (why: string) => new Error(`${why}${stderr ? `; the daemon's stderr ends:\n${stderr}` : " (no stderr)"}`);
   const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
+  const listening = new Promise<boolean>(resolve => {
+    let out = "";
+    const on = (b: Buffer) => {
+      out = (out + b.toString()).slice(-4000);
+      if (out.includes("clax daemon listening")) { child.stdout?.off("data", on); resolve(true); }
+    };
+    child.stdout?.on("data", on);
+    void exited.then(() => resolve(false));
+  });
+  child.stdout?.on("data", (b: Buffer) => { process.stdout.write(b); });
   const infoPath = join(home, "daemon.json");
   let base = "";
   let token = "";
@@ -324,43 +378,39 @@ async function startOnce(opts: StartOpts) {
     if (live) liveDaemons.delete(live);
     if (base && token) await fetch(`${base}/api/admin/shutdown`, { method: "POST", headers: { authorization: `Bearer ${token}` } }).catch(() => {});
     if (!ended()) {
-      // The shutdown lets the daemon end on its own; it is sent SIGTERM if it
-      // has not within 5 s, and SIGKILL if that has not ended it within 5 s more.
+      // The shutdown lets the daemon end on its own; it is sent SIGTERM (by
+      // its PID) if it has not within 5 s, and SIGKILL if that has not ended
+      // it within 5 s more.
       await Promise.race([exited, tick(5000)]);
       if (!ended()) child.kill();
       await Promise.race([exited, tick(5000)]);
       if (!ended()) child.kill("SIGKILL");
       await Promise.race([exited, tick(5000)]);
     }
+    child.stdin?.destroy();
     if (!o.keepHome) {
       rmSync(home, { recursive: true, force: true });
       homeSessions.delete(home);
     }
   };
   try {
-    const deadline = opts.startMs === undefined ? Infinity : Date.now() + opts.startMs;
     let gone = false;
     void exited.then(() => { gone = true; });
-    while (!existsSync(infoPath)) {
-      if (gone) throw failed(`the daemon exited (${child.exitCode ?? child.signalCode}) before it started`);
-      if (Date.now() > deadline) throw failed("daemon did not start");
-      await tick(10);
-    }
-    // The daemon may be writing the file still: read it until it parses.
-    let info: { token: string; port: number } | null = null;
-    while (!info) {
-      try { info = JSON.parse(readFileSync(infoPath, "utf8")); } catch { if (Date.now() > deadline) throw failed("daemon.json never parsed"); await tick(10); }
-    }
+    if (!(await listening)) throw failed(`the daemon exited (${child.exitCode ?? child.signalCode}) before it started`);
+    // Written before the daemon says it listens.
+    let info: { token: string; port: number };
+    try { info = JSON.parse(readFileSync(infoPath, "utf8")); } catch (e) { throw failed(`the daemon listens but its daemon.json does not read: ${e}`); }
     token = info.token as string;
     port = info.port as number;
     // Stopped there, the daemon is told to shut down on 127.0.0.1, which only it holds.
     base = `http://127.0.0.1:${info.port}`;
     if (!opts.port && await v6Taken(port)) { await stop({ keepHome: !!opts.home }); return null; }
     base = `http://localhost:${info.port}`;
+    // It listens already; a check that fails is tried again until one
+    // passes or the daemon exits, bounded only by the test's timeout.
     for (;;) {
-      try { if ((await fetch(`${base}/healthz`)).ok) break; } catch { /* retry */ }
+      try { if ((await fetch(`${base}/healthz`)).ok) break; } catch { /* again */ }
       if (gone) throw failed(`the daemon exited (${child.exitCode ?? child.signalCode}) before it answered its health check`);
-      if (Date.now() > deadline) throw failed("daemon did not become healthy");
       await tick(10);
     }
     // The worker's browsers are the owner's here too.
@@ -376,6 +426,28 @@ async function startOnce(opts: StartOpts) {
     for (const c of liveContexts) await signIn(c, live);
   } catch (e) { await stop({ keepHome: !!opts.home }); throw e; }
   return { base, token, stop, home, port, ended };
+}
+
+/** What a run of `cmd` ([`run`]) printed and how it ended. */
+export type Ran = { status: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string };
+
+/** Runs `cmd` with `args` to its exit, `opts.input` written to its standard
+ * input, without blocking the worker (`spawnSync` would, and with it the
+ * test's timeout): a run slowed by load is waited out, and only the test's
+ * hang guard ends one that never exits. */
+export function run(cmd: string, args: string[], opts: { env?: NodeJS.ProcessEnv; input?: string; cwd?: string } = {}): Promise<Ran> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { env: opts.env ?? process.env, cwd: opts.cwd, stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (b: Buffer) => { stdout += b.toString(); });
+    child.stderr.on("data", (b: Buffer) => { stderr += b.toString(); });
+    child.once("error", reject);
+    child.once("close", (status, signal) => resolve({ status, signal, stdout, stderr }));
+    // A command that exits before reading its input closes the pipe first.
+    child.stdin.on("error", () => {});
+    child.stdin.end(opts.input ?? "");
+  });
 }
 
 export async function publish(base: string, token: string, title: string, files: Record<string, string>, ifVersion?: number, id?: string) {
@@ -476,11 +548,25 @@ export function siteGet(base: string, id: string, path: string): Promise<{ statu
  * has landed on the page and its document has been parsed (a test that
  * reads or scrolls the page at once would otherwise race the parser). */
 export async function contentFrame(page: Page, id: string, n: number): Promise<Frame> {
-  const url = new RegExp(`${id}\\.localhost:\\d+/_clax/v/${n}/(#.*)?$`);
-  await expect.poll(() => page.frame({ url }) !== null, { timeout: 10_000 }).toBe(true);
-  const frame = page.frame({ url })!;
+  const frame = await frameAt(page, new RegExp(`${id}\\.localhost:\\d+/_clax/v/${n}/(#.*)?$`));
   await frame.waitForLoadState("domcontentloaded");
   return frame;
+}
+
+/** The frame of `page` whose URL matches `url`: one there now, or the first
+ * to navigate there, heard as its `framenavigated` event (no polling, and
+ * no deadline but the test's). It fails, naming `url`, when the page closes
+ * first, as it does when the test's timeout ends it. */
+export function frameAt(page: Page, url: RegExp): Promise<Frame> {
+  return new Promise((resolve, reject) => {
+    const navigated = (f: Frame) => { if (url.test(f.url())) { done(); resolve(f); } };
+    const closed = () => { done(); reject(new Error(`the page closed before a frame showed ${url}`)); };
+    const done = () => { page.off("framenavigated", navigated); page.off("close", closed); };
+    page.on("framenavigated", navigated);
+    page.on("close", closed);
+    const now = page.frame({ url });
+    if (now) { done(); resolve(now); } else if (page.isClosed()) closed();
+  });
 }
 
 /** Waits until `page`'s view hears the daemon's events as they happen: its
@@ -491,6 +577,33 @@ export async function contentFrame(page: Page, id: string, n: number): Promise<F
  * waits for this before causing it. */
 export async function streamLive(page: Page): Promise<void> {
   await expect.poll(() => quietEval<number>(page, "window.claxStreamLive ?? 0")).toBeGreaterThan(0);
+}
+
+let fences = 0;
+
+/** The fence for an absence check on what `page`'s content frame
+ * (`iframe.frame`) posts its shell: a request of the test's own through the
+ * bridge's channel (`clax:resolve-anchors`, with no anchors), sent from the
+ * shell's window with no user gesture, waited on until the bridge's answer
+ * has reached that window. Whatever the bridge posted before answering (a
+ * pick, a hover) has arrived by then; a `settle(page)` after this covers the
+ * shell's own handling of it. */
+export async function bridgeFence(page: Page): Promise<void> {
+  const id = JSON.stringify(`e2e-fence-${++fences}`);
+  await quietEval(page, `void addEventListener("message", e => { if (e.data?.type === "clax:anchors" && e.data.requestId === ${id}) (globalThis.e2eFenced ??= []).push(${id}); })`);
+  await fence(`the frame's bridge answering ${id}`,
+    () => quietEval(page, `void document.querySelector("iframe.frame").contentWindow.postMessage({ type: "clax:resolve-anchors", requestId: ${id}, anchors: [] }, "*")`),
+    () => quietEval<boolean>(page, `(globalThis.e2eFenced ?? []).includes(${id})`));
+}
+
+/** The fence for an absence check on the requests `page`'s shell makes: a
+ * GET of the test's own (`/healthz?fence=<n>`) from the shell's window, waited
+ * on until `heard` (what the test's `page.on("request")` listener collected,
+ * each as path and query) has it. Every request the shell made before it has
+ * been heard by then. */
+export async function requestFence(page: Page, heard: () => string[]): Promise<void> {
+  const mark = `/healthz?fence=${++fences}`;
+  await fence(`a request of the test's own, ${mark}`, () => quietEval(page, `fetch(${JSON.stringify(mark)}).then(r => r.status)`), () => heard().includes(mark));
 }
 
 /** Waits until the bridge in `frame` is in comment mode (its crosshair):
@@ -534,7 +647,7 @@ export async function record(page: Page) {
 }
 
 export async function last(page: Page, type: string): Promise<any> {
-  await expect.poll(() => page.evaluate(t => (window as any).claxMsgs.some((m: any) => m.type === t), type), { timeout: 10_000 }).toBe(true);
+  await until(`a ${type} message`, () => page.evaluate(t => (window as any).claxMsgs.some((m: any) => m.type === t), type));
   return page.evaluate(t => (window as any).claxMsgs.filter((m: any) => m.type === t).at(-1), type);
 }
 
@@ -656,6 +769,9 @@ export async function setName(page: Page, name: string) {
   await field.fill(name);
   await field.press("Enter");
   await page.keyboard.press("Escape");
+  // The field saves once the viewer's lookup has answered: waited on here,
+  // so what the test does next (a comment, a reply) goes under the name.
+  await until(`the viewer named ${name}`, () => quietEval<boolean>(page, `fetch("/api/viewers/me").then(r => r.ok && r.json()).then(b => !!b && b.viewer.display_name === ${JSON.stringify(name)})`));
 }
 
 /** The name field, in the open people panel: the shell text control the gesture tests click. */

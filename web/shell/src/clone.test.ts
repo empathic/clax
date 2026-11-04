@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { settled } from "./test/settled";
 import { flush, mount } from "./test/svelte";
 import Clone from "./ui/Clone.svelte";
 import CloneDialog from "./ui/CloneDialog.svelte";
@@ -38,15 +39,13 @@ function serve(options: unknown, posted: string[] = []) {
   }));
 }
 
-const until = async <T,>(f: () => T | null | undefined | false): Promise<T> => {
-  for (let i = 0; i < 200; i++) {
-    flush();
-    const v = f();
-    if (v) return v;
-    await new Promise(r => setTimeout(r, 5));
-  }
-  throw new Error("not reached");
-};
+/** `f`'s first truthy value, applying updates before each look. */
+const until = <T,>(f: () => T | null | undefined | false): Promise<T> => vi.waitFor(() => {
+  flush();
+  const v = f();
+  if (!v) throw new Error("not reached");
+  return v;
+});
 
 afterEach(() => { vi.unstubAllGlobals(); document.body.innerHTML = ""; });
 
@@ -54,15 +53,13 @@ describe("Clone", () => {
   it("shows nothing where Clax keeps no repositories, or for a viewer with no scope", async () => {
     serve({ available: false, scopes: [] });
     const m = mount(Clone, { id: ID });
-    await new Promise(r => setTimeout(r, 20));
-    flush();
+    await settled();
     expect(m.root.querySelector("button.clone")).toBeNull();
     expect(cloneOpen.current).toBeNull();
     m.unmount();
     serve({ available: true, scopes: [], reason: { code: "sign_in_required", message: "…" } });
     const g = mount(Clone, { id: ID });
-    await new Promise(r => setTimeout(r, 20));
-    flush();
+    await settled();
     expect(g.root.querySelector("button.clone")).toBeNull();
     g.unmount();
   });

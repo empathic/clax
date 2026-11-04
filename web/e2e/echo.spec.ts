@@ -1,4 +1,5 @@
 import { test, expect, type Daemon, contentFrame, openArtifact, publishAs, publishNext, registerSession } from "./fixtures";
+import { until } from "./time";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -129,9 +130,14 @@ test("the sidebar holds its width from the first paint, so the page is laid out 
   const page1 = `<main><h2>Goals</h2></main><script>window.widths = [innerWidth]; addEventListener("resize", () => widths.push(innerWidth));</script>`;
   const { artifact } = await publishAs(d.base, d.token, s.id, "Echo reserve", { "index.html": page1 });
   await page.setViewportSize({ width: 1440, height: 900 });
-  // The thread list's chunk arrives 300 ms late.
-  await page.route("**/ShellSidebar-*.js", async r => { await new Promise(f => setTimeout(f, 300)); await r.continue(); });
+  // The thread list's chunk is held until the page has been laid out.
+  let release!: () => void;
+  const held = new Promise<void>(r => { release = r; });
+  await page.route("**/ShellSidebar-*.js", async r => { await held; await r.continue(); });
   const frame = await openArtifact(page, d.base, artifact.id, 1);
+  await until("the page's first layout", () => frame.evaluate(() => ((window as unknown as { widths?: number[] }).widths?.length ?? 0) > 0));
+  await expect(page.locator("aside.sidebar .gh")).toHaveCount(0);
+  release();
   await expect(page.locator("aside.sidebar .gh")).toHaveCount(3);
   const widths = await frame.evaluate(() => (window as unknown as { widths: number[] }).widths);
   expect(new Set(widths).size, JSON.stringify(widths)).toBe(1);

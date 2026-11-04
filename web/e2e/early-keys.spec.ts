@@ -1,6 +1,6 @@
 import { type CDPSession, type Frame, type Page } from "@playwright/test";
 import { test, expect, type Daemon, openArtifact, publish } from "./fixtures";
-import { settle } from "./time";
+import { fence } from "./time";
 
 // The viewer types right after they pick, on a heavy page: every key typed
 // after the click (or the drag's release) that opens the composer lands in
@@ -60,13 +60,17 @@ async function instrument(page: Page) {
 }
 
 async function commentMode(page: Page, f: Frame) {
-  // Fork, which comes with the more menu after the first paint, moves
-  // Comment left as it arrives: Comment is measured once it is in, so the
-  // press lands on it.
-  await expect(page.getByRole("button", { name: "Fork", exact: true })).toBeVisible();
+  // The top bar fills in after the first paint (Fork with the more menu,
+  // presence, the agent strip) and moves Comment as it does: the press
+  // waits until the pointer is over Comment, moving there again if it
+  // moved meanwhile.
   const toggle = page.getByRole("button", { name: "Comment", exact: true });
-  const b = (await toggle.boundingBox())!;
-  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 5 });
+  for (;;) {
+    const b = (await toggle.boundingBox())!;
+    const at = { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+    await page.mouse.move(at.x, at.y, { steps: 5 });
+    if (await toggle.evaluate((el, p) => el.contains(document.elementFromPoint(p.x, p.y)), at)) break;
+  }
   await page.mouse.down();
   await page.mouse.up();
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
@@ -80,11 +84,13 @@ const composer = (page: Page) => page.locator(".composer");
  * session answers one input command at a time, so each key has its own. */
 async function typeAsAHand(keys: CDPSession[], text: readonly string[] = Array.from(SENTENCE)) {
   const sent: Promise<unknown>[] = [];
+  // oxlint-disable-next-line clax-timing/timer-delay -- a hand's key schedule is the input under test (keys arriving while the page stalls); every check waits on where the keys landed, none on time
   await new Promise(r => setTimeout(r, 60));
   for (const [i, ch] of text.entries()) {
     const cdp = keys[i];
     const k = KEYS[ch] ?? { key: ch, text: ch, unmodifiedText: ch };
     sent.push(cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...k }).then(() => cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: k.key, code: k.code, windowsVirtualKeyCode: k.windowsVirtualKeyCode })));
+    // oxlint-disable-next-line clax-timing/timer-delay -- a hand's key schedule is the input under test (keys arriving while the page stalls); every check waits on where the keys landed, none on time
     await new Promise(r => setTimeout(r, 30));
   }
   await Promise.all(sent);
@@ -119,9 +125,10 @@ async function expectAllInComposer(page: Page, f: Frame, heavy = true) {
   const textarea = composer(page).locator("textarea");
   await expect(textarea).toBeFocused();
   await expect(textarea).toHaveValue(SENTENCE);
-  // Let any key still in flight arrive before checking the page heard none.
-  await settle(page);
-  await expect(textarea).toHaveValue(SENTENCE);
+  // One more key, awaited in the composer: every key before it has been
+  // handled where it went by then, so the page heard any that reached it.
+  await fence("a key typed after the sentence", () => page.keyboard.press("!"), async () => (await textarea.inputValue()) === `${SENTENCE}!`);
+  await expect(textarea).toHaveValue(`${SENTENCE}!`);
   expect(await f.evaluate(() => (window as any).pageKeys as string[]), "keys the page heard").toEqual([]);
   expect(await f.evaluate(() => (document.getElementById("field") as HTMLInputElement).value)).toBe("");
   // The screenshot's copy of the heavy element did stall the page.

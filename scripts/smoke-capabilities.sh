@@ -3,12 +3,14 @@
 # Not a quality gate. It starts a daemon in a scratch CLAX_HOME on an
 # ephemeral port (Codex push off), publishes the tracker sample page, seeds
 # and reads it with the db_* tools over the daemon's /mcp endpoint, checks
-# caller levels, private subtrees, SSE doc events, PATCH capabilities, and the
-# REST publish a page's `artifact.publish` makes; with the stub sample
-# provider it checks sample's status route (sample-status), a streamed call
-# (sample-call), the owner gate (sample-owner-only) and the doctor's line
-# (sample-doctor), and two room sockets seeing each other join and leave
-# (room-socket); then (unless --no-browser) it runs the claude.ai-page suite,
+# caller levels (with viewers minted by the debug-build route POST
+# /api/_test/viewers, so CLAX_TEST_BIN must be a debug build), private
+# subtrees, SSE doc events, a new declaration (PATCH refused while clax.json
+# owns it), and the REST publish a page's `artifact.publish` makes; with the
+# stub sample provider (its declaration approved) it checks sample's status
+# route (sample-status), a streamed call (sample-call), the owner gate
+# (sample-owner-only) and the doctor's line (sample-doctor), and two room
+# sockets seeing each other join and leave (room-socket); then (unless --no-browser) it runs the claude.ai-page suite,
 # room.spec.ts and sample.spec.ts in both frame modes against the built web UI.
 # It never builds the web UI (a build rewrites web/dist, which `just dev` and
 # the quality gates serve): when web/dist is older than its sources it stops
@@ -16,6 +18,7 @@
 # `smoke: all checks passed`.
 #
 # Usage: scripts/smoke-capabilities.sh [--no-browser] [scratch-dir]
+# CLAX_TEST_BIN=<path> uses that debug binary instead of building one.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO="$PWD"
@@ -34,7 +37,10 @@ export CLAX_HOME="$SCRATCH/home"
 unset CLAX_PORT
 export CLAX_CODEX_BIN=
 export CLAX_NO_OPEN=1
-BIN="$REPO/target/debug/clax"
+BIN="${CLAX_TEST_BIN:-$REPO/target/debug/clax}"
+case "$BIN" in /*) ;; *) BIN="$REPO/$BIN" ;; esac
+# shellcheck source=scripts/lib/wait.sh
+. scripts/lib/wait.sh
 
 die() { echo "smoke: FAIL: $1" >&2; exit 1; }
 DAEMON_PID=""
@@ -47,12 +53,13 @@ trap cleanup EXIT
 rm -rf "$CLAX_HOME"
 mkdir -p "$CLAX_HOME"
 printf '[sample]\nprovider = "stub"\nstub_delay_ms = 20\n' >"$CLAX_HOME/config.toml"
-echo "smoke: building clax"
-cargo build -q -p clax-cli
+if [ -z "${CLAX_TEST_BIN:-}" ]; then
+    echo "smoke: building clax"
+    cargo build -q -p clax-cli
+fi
 "$BIN" serve --foreground --bind 127.0.0.1 --port 0 >"$SCRATCH/daemon.log" 2>&1 &
 DAEMON_PID=$!
-for _ in $(seq 1 100); do [ -f "$CLAX_HOME/daemon.json" ] && break; sleep 0.1; done
-[ -f "$CLAX_HOME/daemon.json" ] || die "the daemon did not start (see $SCRATCH/daemon.log)"
+wait_for "the daemon's daemon.json" test -f "$CLAX_HOME/daemon.json" || die "the daemon did not start (see $SCRATCH/daemon.log)"
 
 python3 - "$CLAX_HOME/daemon.json" "$REPO/web/e2e/pages/tracker.html" <<'PY'
 import json, sys, time, threading, urllib.request, urllib.error
@@ -65,6 +72,21 @@ PAGE = open(sys.argv[2]).read()
 def ok(msg): print(f"smoke: ok {msg}", flush=True)
 def fail(msg): print(f"smoke: FAIL: {msg}", file=sys.stderr, flush=True); sys.exit(1)
 
+# A hang guard, in seconds: it ends a step that is stuck and never decides
+# one that passes.
+HANG = 120
+
+def until(what, check):
+    """check()'s first truthy result, polled every 0.05 s. A hang guard of
+    2400 polls (about HANG seconds on an idle machine) fails a condition
+    that never comes."""
+    for _ in range(2400):
+        got = check()
+        if got:
+            return got
+        time.sleep(0.05)  # timing: the poll of a condition, bounded by until's poll count
+    fail(f"timed out waiting for {what}")
+
 def call(method, path, body=None, token=False, cookie=None, headers=None):
     h = {"content-type": "application/json", **(headers or {})}
     if token: h["authorization"] = f"Bearer {TOKEN}"
@@ -72,19 +94,17 @@ def call(method, path, body=None, token=False, cookie=None, headers=None):
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(BASE + path, data=data, method=method, headers=h)
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=HANG) as r:
             raw = r.read()
             return r.status, (json.loads(raw) if raw else None), r.headers
     except urllib.error.HTTPError as e:
         raw = e.read()
         return e.code, (json.loads(raw) if raw else None), e.headers
 
-for _ in range(50):
-    try:
-        if call("GET", "/healthz")[0] == 200: break
-    except OSError: time.sleep(0.1)
-else:
-    fail("the daemon never answered /healthz")
+def healthy():
+    try: return call("GET", "/healthz")[0] == 200
+    except OSError: return False
+until("the daemon to answer /healthz", healthy)
 
 caps = {"db": {"rules": [{"path": "settings", "write": "admin"}]}, "user": {}}
 s, v, _ = call("POST", "/api/artifacts", {"title": "Team Tracker", "capabilities": caps, "files": {"index.html": {"content": PAGE, "encoding": "utf8"}}}, token=True)
@@ -98,7 +118,7 @@ session = {}
 def rpc(payload):
     h = {"content-type": "application/json", **mcp_headers, **session}
     req = urllib.request.Request(BASE + "/mcp", data=json.dumps(payload).encode(), method="POST", headers=h)
-    with urllib.request.urlopen(req, timeout=10) as r:
+    with urllib.request.urlopen(req, timeout=HANG) as r:
         if "mcp-session-id" in r.headers: session["mcp-session-id"] = r.headers["mcp-session-id"]
         text = r.read().decode()
     try: return json.loads(text) if text else None
@@ -131,11 +151,16 @@ out, err = tool("db_get", {"url_or_id": AID, "collection": "data/users/me", "doc
 if not err or out["error"]["code"] != "invalid_args": fail(f"data/users/me was not refused: {out}")
 ok("db tools seed and read the tracker; unpinned writes, as_level, and data/users/me are refused")
 
-# Caller levels.
+# Caller levels. A viewer is minted by the daemon's debug-build route
+# (reaching the port alone mints none): a browser of this machine's with no
+# name, which PUT /api/viewers/me then names.
 def viewer(name=None):
-    s, v, h = call("GET", "/api/viewers/me")
-    cookie = h.get("set-cookie").split(";")[0].split("=", 1)[1]
-    if name: s, v, _ = call("PUT", "/api/viewers/me", {"display_name": name}, cookie=cookie)
+    s, v, _ = call("POST", "/api/_test/viewers", token=True)
+    if s != 200: fail(f"POST /api/_test/viewers (a debug build's route): {s} {v}")
+    cookie = v["cookie"]
+    if name:
+        s, v, _ = call("PUT", "/api/viewers/me", {"display_name": name}, cookie=cookie)
+        if s != 200: fail(f"naming a viewer: {s} {v}")
     return cookie, v["viewer"]["public_id"]
 anon, anon_id = viewer()
 sam, sam_id = viewer("Sam")
@@ -148,39 +173,49 @@ ok("caller levels: unnamed view, named interact, token owner")
 
 # Private subtrees and SSE.
 events = []
+# Set once the stream's response has begun: the daemon subscribes it before
+# it answers, so a write after this reaches it.
+listening = threading.Event()
 def listen(cookie):
     req = urllib.request.Request(f"{BASE}/api/events?artifact={AID}", headers={"cookie": f"clax_viewer={cookie}"})
-    with urllib.request.urlopen(req, timeout=15) as r:
+    with urllib.request.urlopen(req, timeout=HANG) as r:
+        listening.set()
         name = None
         for raw in r:
             line = raw.decode().rstrip("\n")
             if line.startswith("event: "): name = line[7:]
             elif line.startswith("data: ") and name == "doc": events.append(json.loads(line[6:]))
             if len(events) >= 1: return
-t = threading.Thread(target=listen, args=(anon,), daemon=True); t.start(); time.sleep(0.5)
+t = threading.Thread(target=listen, args=(anon,), daemon=True); t.start()
+if not listening.wait(HANG): fail("the event stream did not open")
 if put(f"data/users/{sam_id}/prefs", cookie=sam) != 200: fail("a viewer could not write their own subtree")
 put("tasks/after", cookie=sam)
-t.join(10)
+t.join(HANG)
 if not events or events[0]["path"] != "tasks/after" or "data" in events[0]: fail(f"SSE doc events: {events}")
 if sam in json.dumps(events): fail("a cookie reached SSE")
 if call("GET", f"/api/artifacts/{AID}/docs/data/users/{sam_id}/prefs", cookie=anon)[0] != 404: fail("a sibling read a private document")
 if call("GET", f"/api/artifacts/{AID}/docs/data/users/{sam_id}/prefs", token=True)[0] != 404: fail("the owner read a private document")
 ok("private subtrees stay private over HTTP and SSE; doc events carry no bodies")
 
-# PATCH capabilities (full set) and a page publish.
-s, v, _ = call("PATCH", f"/api/artifacts/{AID}", {"capabilities": {"db": {}, "user": {}, "artifact": {}}}, token=True)
-if s != 200 or v["artifact"]["capabilities"] != {"db": {}, "user": {}, "artifact": {}}: fail(f"PATCH capabilities: {s} {v}")
-if put("settings/board2", cookie=sam) != 200: fail("dropping the admin rule by PATCH did not apply to the next call")
-ok("PATCH capabilities replaces the declaration and the rules apply at once")
-s, v, _ = call("POST", f"/api/artifacts/{AID}/versions", {"if_version": 1, "files": {"index.html": {"content": PAGE, "encoding": "utf8"}}}, token=True, headers={"x-clax-via": "page"})
+# A new declaration (a full set) and a page publish. The publish declared its
+# capabilities, so the version's clax.json owns them: PATCH may not change
+# them, and a version that declares others does.
+full = {"db": {}, "user": {}, "artifact": {}}
+s, v, _ = call("PATCH", f"/api/artifacts/{AID}", {"capabilities": full}, token=True)
+if s != 400 or v["error"]["code"] != "manifest_owned": fail(f"PATCH changed a declaration clax.json owns: {s} {v}")
+s, v, _ = call("POST", f"/api/artifacts/{AID}/versions", {"if_version": 1, "capabilities": full, "files": {"index.html": {"content": PAGE, "encoding": "utf8"}}}, token=True)
+if s != 201 or v["artifact"]["capabilities"] != full: fail(f"a version declaring capabilities: {s} {v}")
+if put("settings/board2", cookie=sam) != 200: fail("dropping the admin rule in a new version did not apply to the next call")
+ok("PATCH is refused while clax.json owns the declaration; a version declaring a full set replaces it and the rules apply at once")
+s, v, _ = call("POST", f"/api/artifacts/{AID}/versions", {"if_version": 2, "files": {"index.html": {"content": PAGE, "encoding": "utf8"}}}, token=True, headers={"x-clax-via": "page"})
 if s != 201: fail(f"page publish: {s} {v}")
-s, v, _ = call("POST", f"/api/artifacts/{AID}/versions", {"if_version": 1, "files": {"index.html": {"content": PAGE, "encoding": "utf8"}}}, token=True)
-if s != 409 or v["error"]["current"] != 2: fail(f"a stale republish was not a conflict: {s} {v}")
-ok("a REST publish marked as the page's (X-Clax-Via: page) creates v2, and a stale one is a conflict naming v2")
+s, v, _ = call("POST", f"/api/artifacts/{AID}/versions", {"if_version": 2, "files": {"index.html": {"content": PAGE, "encoding": "utf8"}}}, token=True)
+if s != 409 or v["error"]["current"] != 3: fail(f"a stale republish was not a conflict: {s} {v}")
+ok("a REST publish marked as the page's (X-Clax-Via: page) creates v3, and a stale one is a conflict naming v3")
 PY
 
 # sample (the stub provider) and room. The viewer cookie must be one the
-# daemon issued (a ULID), so it comes from GET /api/viewers/me.
+# daemon issued, so it comes from the debug-build route POST /api/_test/viewers.
 read -r PORT TOKEN < <(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["port"], d["token"])' "$CLAX_HOME/daemon.json")
 BASE="http://127.0.0.1:$PORT"
 publish_page() { # title, capabilities JSON, page file; prints the artifact ID
@@ -189,18 +224,26 @@ publish_page() { # title, capabilities JSON, page file; prints the artifact ID
         | python3 -c 'import json,sys; print(json.load(sys.stdin)["artifact"]["id"])'
 }
 SAMPLE_AID="$(publish_page "Sample smoke" '{"sample": {}}' web/e2e/pages/sample.html)" || die "could not publish the sample page"
+# `sample` is gated: approving the declaration, as the owner by hand, grants
+# the call the page waits for.
+curl -sf "$BASE/api/artifacts/$SAMPLE_AID" -H "authorization: Bearer $TOKEN" \
+    | python3 -c 'import json,sys; p=json.load(sys.stdin)["artifact"]["pending_capabilities"]; print(json.dumps({"version": p["version"], "declaration_sha256": p["declaration_sha256"]}))' \
+    | curl -sf -o /dev/null -X PUT "$BASE/api/artifacts/$SAMPLE_AID/capability-approval" -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' --data-binary @- \
+    || die "could not approve the sample page's declaration"
 ROOM_AID="$(publish_page "Room smoke" '{"room": {}}' web/e2e/pages/room.html)" || die "could not publish the room page"
-COOKIE="$(curl -s -D - -o /dev/null "$BASE/api/viewers/me" | sed -n 's/^[Ss]et-[Cc]ookie: clax_viewer=\([^;]*\).*/\1/p' | tr -d '\r')"
-[ -n "$COOKIE" ] || die "GET /api/viewers/me set no viewer cookie"
+COOKIE="$(curl -sf -X POST "$BASE/api/_test/viewers" -H "authorization: Bearer $TOKEN" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["cookie"])')" || die "POST /api/_test/viewers minted no viewer (is $BIN a debug build?)"
 
 status="$(curl -s -H "authorization: Bearer $TOKEN" "$BASE/api/artifacts/$SAMPLE_AID/sample")"
-anon="$(curl -s "$BASE/api/artifacts/$SAMPLE_AID/sample")"
+# Without the token: a viewer's cookie (a local daemon answers a request
+# with no credential at all 401 no_credential).
+anon="$(curl -s -H "cookie: clax_viewer=$COOKIE" "$BASE/api/artifacts/$SAMPLE_AID/sample")"
 python3 -c '
 import json, sys
 a, b = json.loads(sys.argv[1]), json.loads(sys.argv[2])
 sys.exit(0 if a["available"] is True and a["provider"] == "stub" and b["available"] is False and b["provider"] is None else 1)
-' "$status" "$anon" || die "sample-status: with the token $status; without it $anon"
-echo "smoke: ok sample-status: available with the stub to the token, unavailable without it"
+' "$status" "$anon" || die "sample-status: with the token $status; with a viewer cookie and no token $anon"
+echo "smoke: ok sample-status: available with the stub to the token, unavailable to a viewer without it"
 
 stream="$(curl -sN -X POST "$BASE/api/artifacts/$SAMPLE_AID/sample" -H "authorization: Bearer $TOKEN" \
     -H "cookie: clax_viewer=$COOKIE" -H 'content-type: application/json' --data '{"input": "hello"}')"
@@ -230,11 +273,16 @@ echo "smoke: ok sample-doctor: clax doctor's sample line names stub"
 
 # shellcheck disable=SC2016 # the Node script's ${...} are JavaScript, not shell
 node --input-type=module -e '
-const [base, aid] = process.argv.slice(1);
+const [base, aid, token] = process.argv.slice(1);
 const fail = m => { console.error(`smoke: FAIL: room-socket: ${m}`); process.exit(1); };
-const timer = setTimeout(() => fail("timed out"), 10000);
+// A hang guard: it ends a run that is stuck, never one that passes.
+const HANG_MS = 120000;
+const timer = setTimeout(() => fail("timed out"), HANG_MS);
+// A WebSocket sends no Authorization header: the token rides in the query, as
+// the shell of the owner sends it (a local daemon opens no socket without a
+// credential).
 const open = label => new Promise((resolve, reject) => {
-  const s = { ws: new WebSocket(`${base.replace(/^http/, "ws")}/api/artifacts/${aid}/room?peer=${label}`), frames: [], waiters: [] };
+  const s = { ws: new WebSocket(`${base.replace(/^http/, "ws")}/api/artifacts/${aid}/room?peer=${label}&token=${token}`), frames: [], waiters: [] };
   s.ws.onmessage = e => { s.frames.push(JSON.parse(e.data)); for (const w of [...s.waiters]) w(); };
   s.ws.onopen = () => resolve(s);
   s.ws.onerror = () => reject(new Error(`socket ${label} failed`));
@@ -253,7 +301,7 @@ a.ws.close();
 await until(b, f => f.t === "left" && f.peer === "aaaaaaaaaaaaaaaa");
 clearTimeout(timer);
 b.ws.close();
-' "$BASE" "$ROOM_AID" || die "room-socket"
+' "$BASE" "$ROOM_AID" "$TOKEN" || die "room-socket"
 echo "smoke: ok room-socket: the second socket's first peers frame lists both, and it hears the first leave"
 
 if [ "$BROWSER" = 1 ]; then

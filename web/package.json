@@ -12,7 +12,7 @@
     "dev": "vite -c vite.shell.config.ts",
     "test": "vitest run",
     "test:sdk": "vitest run -c vitest.sdk.config.ts",
-    "lint": "oxlint --deny-warnings shell bridge extension sdk overlay e2e perf reel scripts vite.shell.config.ts vite.bridge.config.ts vite.bridge-parts.config.ts vite.transport.config.ts vite.overlay.config.ts vitest.config.ts vitest.sdk.config.ts svelte.config.js playwright.config.ts",
+    "lint": "oxlint --deny-warnings shell bridge extension sdk overlay e2e perf reel scripts lint vite.shell.config.ts vite.bridge.config.ts vite.bridge-parts.config.ts vite.transport.config.ts vite.overlay.config.ts vitest.config.ts vitest.sdk.config.ts svelte.config.js playwright.config.ts && cd .. && oxlint -c web/lint/timing.json --disable-nested-config web/shell web/bridge web/extension web/sdk web/overlay web/e2e web/perf web/reel web/scripts plugins/pi/test apps/clax_app/home apps/clax_app/home_unit crates/clax-worker",
     "typecheck": "tsc --noEmit && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "e2e": "playwright test",
     "perf": "playwright test -c perf/playwright.config.ts",

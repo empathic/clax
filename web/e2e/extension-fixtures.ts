@@ -6,8 +6,6 @@
 // Chromium derives its ID from the path, as for a person's Load unpacked
 // (spec L15).
 import { type BrowserContext, chromium, type Worker, test as base } from "@playwright/test";
-import { spawnSync } from "node:child_process";
-import { once } from "node:events";
 import { type AddressInfo, createServer as createNetServer } from "node:net";
 import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
@@ -15,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer, type ViteDevServer } from "vite";
-import { type Daemon, NO_KEY_CONFIG, startDaemon, trustContext, v6Taken } from "./fixtures";
+import { type Daemon, NO_KEY_CONFIG, run, startDaemon, trustContext, v6Taken } from "./fixtures";
 
 const web = fileURLToPath(new URL("..", import.meta.url));
 export const EXT_DIR = join(web, "dist-extension-test");
@@ -27,7 +25,10 @@ export const EXT_DIR = join(web, "dist-extension-test");
 export type Variant = "all-urls" | "origin" | "none";
 
 export type Live = {
-  daemon: Daemon; ctx: BrowserContext; sw: Worker; extId: string; site: ViteDevServer; siteDir: string; siteUrl: string;
+  daemon: Daemon; ctx: BrowserContext; sw: Worker; extId: string; siteDir: string; siteUrl: string;
+  /** The dev server on `siteDir`. It watches no files: a test that edits
+   * one emits `change` on its `watcher` with the file's path. */
+  site: ViteDevServer;
   /** The extension's ID the daemon admits (`GET /api/extension`). */
   daemonExtId: string;
   /** Stops the daemon and starts another on the same home and a new port. */
@@ -65,11 +66,6 @@ async function launch(profile: string, extDir: string, gesture: boolean): Promis
   await trustContext(ctx);
   return { ctx, sw };
 }
-
-/** How long a daemon of these tests may take to start: each test launches a
- * daemon and a browser of its own, often right after the binary was built,
- * when its first runs are slow (macOS scans a new binary at its first exec). */
-const DAEMON_START_MS = 60_000;
 
 /** This worker's Clax home, the same path for each of its tests (emptied
  * before each), so the launcher `clax extension install` writes there, which
@@ -123,19 +119,14 @@ function keep(file: string): boolean {
   return fresh;
 }
 
-/** How long one CDP command to the browser endpoint may take, connecting included. */
-const CDP_MS = 10_000;
-
 /** Sends one CDP command to the browser endpoint Chromium wrote to the
- * profile's DevToolsActivePort; fails after CDP_MS, or when the socket
- * errs or closes before the answer. */
+ * profile's DevToolsActivePort; fails when the socket errs or closes before
+ * the answer. A browser that never answers is the test's timeout's. */
 async function browserCdp(profile: string, method: string, params: object): Promise<Record<string, unknown>> {
   const [port, path] = readFileSync(join(profile, "DevToolsActivePort"), "utf8").trim().split("\n");
   const ws = new WebSocket(`ws://127.0.0.1:${port}${path}`);
-  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await new Promise((ok, fail) => {
-      timer = setTimeout(() => fail(new Error(`${method}: no answer in ${CDP_MS} ms`)), CDP_MS);
       ws.onerror = () => fail(new Error(`${method}: the browser endpoint's socket failed`));
       ws.onclose = () => fail(new Error(`${method}: the browser endpoint closed before answering`));
       ws.onopen = () => ws.send(JSON.stringify({ id: 1, method, params }));
@@ -147,7 +138,6 @@ async function browserCdp(profile: string, method: string, params: object): Prom
       };
     });
   } finally {
-    clearTimeout(timer);
     ws.onclose = null;
     ws.close();
   }
@@ -155,21 +145,22 @@ async function browserCdp(profile: string, method: string, params: object): Prom
 
 export const test = base.extend<{ live: Live; variant: Variant; gesture: boolean; bind: string }, { warm: void }>({
   // Once per worker, before any daemon starts: the binary's first run, so
-  // the first-exec scan is not paid inside a daemon's start.
+  // the first-exec scan is not paid inside a daemon's start. Bounded only
+  // by the worker fixture's timeout (the suite's hang guard).
   // oxlint-disable-next-line no-empty-pattern
   warm: [async ({}, use) => {
-    const r = spawnSync(process.env.CLAX_E2E_BIN!, ["--version"], { encoding: "utf8", timeout: DAEMON_START_MS });
+    const r = await run(process.env.CLAX_E2E_BIN!, ["--version"]);
     if (r.status !== 0) throw new Error(`clax --version failed (${r.status ?? r.signal}): ${r.stderr}`);
     await use();
-  }, { scope: "worker", auto: true, timeout: DAEMON_START_MS + 5000 }],
+  }, { scope: "worker", auto: true }],
   variant: ["all-urls", { option: true }],
   /** Chromium takes real toolbar clicks over CDP (`iconClick`). */
   gesture: [false, { option: true }],
   /** The address the daemon listens on: every interface for a test that invites a person on the LAN. */
   bind: ["127.0.0.1", { option: true }],
-  live: async ({ variant, gesture, bind }, use, testInfo) => {
-    // The daemon's start has its own bound, beyond the test's.
-    testInfo.setTimeout(testInfo.timeout + DAEMON_START_MS);
+  // Its daemon's start, the host's warm-up and the browser's launch count
+  // against the test's timeout, the only bound on each.
+  live: async ({ variant, gesture, bind }, use) => {
     if (!existsSync(join(EXT_DIR, "manifest.json"))) throw new Error("web/dist-extension-test is missing: run `pnpm run build` in web/");
     // The native host's wrapper runs the `bin` setting's clax: this run's.
     const config = `bin = ${JSON.stringify(process.env.CLAX_E2E_BIN)}\n${NO_KEY_CONFIG}`;
@@ -183,31 +174,29 @@ export const test = base.extend<{ live: Live; variant: Variant; gesture: boolean
     const profile = mkdtempSync(join(tmpdir(), "clax-chrome-"));
     const hostDir = join(profile, "NativeMessagingHosts");
     mkdirSync(hostDir, { recursive: true });
-    const install = spawnSync(process.env.CLAX_E2E_BIN!, ["extension", "install", "--json"], { env: { ...process.env, CLAX_HOME: WORKER_HOME, CLAX_NATIVE_HOST_DIRS: `chromium=${hostDir}` }, encoding: "utf8" });
+    const install = await run(process.env.CLAX_E2E_BIN!, ["extension", "install", "--json"], { env: { ...process.env, CLAX_HOME: WORKER_HOME, CLAX_NATIVE_HOST_DIRS: `chromium=${hostDir}` } });
     if (install.status !== 0) throw new Error(`clax extension install: ${install.stderr}`);
     const host = join(WORKER_HOME, "extension", "host");
     if ([keep(join(host, "launch.sh")), keep(join(host, "ensure-clax.sh"))].some(Boolean)) {
       // New copies run once here, before the daemon and outside the test's
       // waits. With no origin the host only answers wrong_origin; the logs
       // directory it may make goes, so the test starts on a home as before.
-      spawnSync(join(host, "launch.sh"), [], { stdio: "ignore", timeout: DAEMON_START_MS });
+      await run(join(host, "launch.sh"), []);
       rmSync(join(WORKER_HOME, "logs"), { recursive: true, force: true });
     }
-    const daemon = await startDaemon({ home: WORKER_HOME, config, startMs: DAEMON_START_MS, bind });
-    // The real path: macOS reports file changes under /private/var, not /var.
+    const daemon = await startDaemon({ home: WORKER_HOME, config, bind });
+    // The real path (/private/var, not /var, on macOS): Vite's module graph
+    // names files by it, and a test reports its edits by that name.
     const siteDir = realpathSync(mkdtempSync(join(tmpdir(), "clax-live-site-")));
     cpSync(join(web, "e2e/live-site"), siteDir, { recursive: true });
     // A port the system picks: Vite reads 0 as its default, 5173, where a person's own dev server may run.
-    // The tests edit main.js only. macOS may report the copy's own writes
-    // late, after the watcher's first scan, as changes, and a page's change
-    // is a full reload that a test following a hot update would see: the
-    // pages are not watched.
-    const site = await createServer({ root: siteDir, configFile: false, logLevel: "silent", server: { port: await freePort(), host: "127.0.0.1", strictPort: true, watch: { ignored: ["**/*.html"] } } });
+    // The server watches no files (`watch: null`): it hears of a change
+    // only when a test emits one on `site.watcher` after its own edit, once
+    // and at once. A file watcher hears the OS, which may report the copy's
+    // own writes late, after its first scan, as changes (a page's change is
+    // a full reload), and may drop or delay a test's edit.
+    const site = await createServer({ root: siteDir, configFile: false, logLevel: "silent", server: { port: await freePort(), host: "127.0.0.1", strictPort: true, watch: null } });
     await site.listen();
-    // A file written before the watcher's first scan ends is not reported:
-    // wait for it (chokidar has no public flag for a scan already done).
-    // oxlint-disable-next-line no-underscore-dangle
-    if (!(site.watcher as unknown as { _readyEmitted?: boolean })._readyEmitted) await once(site.watcher, "ready");
     const siteUrl = site.resolvedUrls!.local[0].replace("127.0.0.1", "localhost");
     const extDir = join(daemon.home, "extension");
     cpSync(EXT_DIR, extDir, { recursive: true });
@@ -226,7 +215,7 @@ export const test = base.extend<{ live: Live; variant: Variant; gesture: boolean
         await l.daemon.stop({ keepHome: true });
         // A daemon that exits fails the start at once; one still starting is
         // waited on for as long as the test may run, not a deadline of its own.
-        l.daemon = await startDaemon({ home: l.daemon.home, config, startMs: Infinity, bind });
+        l.daemon = await startDaemon({ home: l.daemon.home, config, bind });
       },
       async restartBrowser() {
         await l.ctx.close();

@@ -1,8 +1,8 @@
 //! Agent questions: the session routes (spec 2026-10-06-agent-questions-and-inbox
 //! §6.1), their waiters and the `question` event.
 
-use clax_testkit::TestServer;
 use clax_testkit::where_to_ask::{clocked, owner_tab, paged as paged_at, typed};
+use clax_testkit::{TestServer, within};
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -1243,20 +1243,15 @@ async fn a_held_answer_left_untaken_wakes_the_feedback_poll_when_the_hold_ends()
         )
         .unwrap();
     ask.abort();
-    let got = tokio::time::timeout(clax_testkit::HANG, waiter)
+    let got = within("the feedback poll's wake when the hold ended", waiter)
         .await
-        .expect("the feedback poll was woken when the hold ended")
         .unwrap();
     assert_eq!(got["answers"][0]["id"], qid.as_str());
 }
 
 #[tokio::test]
 async fn a_late_answers_age_is_read_from_the_question_clock() {
-    let clock = std::sync::Arc::new(clax_core::working::ManualClock::at(
-        &clax_core::time::stamp(chrono::Utc::now()),
-    ));
-    let c = clock.clone();
-    let ts = TestServer::spawn_with(move |s| s.question_clock = c).await;
+    let (clock, ts) = clocked().await;
     let sid = session(&ts, "h1").await;
     let qid = ts.ask(&sid, body()).await["question"]["id"]
         .as_str()
@@ -1436,10 +1431,7 @@ async fn the_test_expire_routes_end_question_and_feedback_polls_at_once() {
         expire(format!("/api/_test/questions/{qid}/expire")).await,
         1
     );
-    let v = tokio::time::timeout(clax_testkit::HANG, poll)
-        .await
-        .expect("the poll ends at once")
-        .unwrap();
+    let v = within("the question poll's end", poll).await.unwrap();
     assert_eq!(v["question"]["status"], "open");
     assert_eq!(v["waited_s"], 0);
 
@@ -1469,10 +1461,7 @@ async fn the_test_expire_routes_end_question_and_feedback_polls_at_once() {
         expire(format!("/api/_test/sessions/{sid}/feedback/expire")).await,
         1
     );
-    let v = tokio::time::timeout(clax_testkit::HANG, poll)
-        .await
-        .expect("the poll ends at once")
-        .unwrap();
+    let v = within("the feedback poll's end", poll).await.unwrap();
     assert_eq!(v["feedback"], json!([]));
     assert_eq!(v["waited_s"], 0);
 }
@@ -1506,11 +1495,10 @@ async fn shutting_down_withdraws_the_hook_questions_polls_hold() {
     ts.wait_question_waiters(&aq, 1).await;
     let seq = ts.store.newest_seq().unwrap();
     stop.send(true).unwrap();
-    let (h, a) = tokio::time::timeout(clax_testkit::HANG, async {
+    let (h, a) = within("the polls' end at shutdown", async {
         (hook_poll.await.unwrap(), ask_poll.await.unwrap())
     })
-    .await
-    .expect("shutting down ends the polls at once");
+    .await;
     assert_eq!(h["question"]["status"], "withdrawn");
     assert_eq!(a["question"]["status"], "open");
     assert_eq!(ts.question_status(&hq).await, "withdrawn");

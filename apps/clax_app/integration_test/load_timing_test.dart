@@ -132,6 +132,7 @@ void main() {
 
     // --- Home: from the app's start to the home app's first ready.
     var probe = LoadProbe()..start();
+    // ignore: timing_wall_clock -- a measurement, printed and never asserted
     final home = Stopwatch()..start();
     await runClaxApp(rig.services);
     final homeReady = await rig.until<Ready>(
@@ -155,11 +156,13 @@ void main() {
       'the app in the sidebar',
       () => find.byKey(ValueKey('sidebar-app-$aid')),
     );
+    // ignore: timing_pump -- a quiet stretch before a measured pass, part of the measurement
     await tester.pump(const Duration(milliseconds: 500));
     await trace();
     for (final pass in ['cold', 'warm']) {
       final before = rig.messages.length;
       probe = LoadProbe()..start();
+      // ignore: timing_wall_clock -- a measurement, printed and never asserted
       final open = Stopwatch()..start();
       _tap(tester, row);
       await rig.until<Ready>(
@@ -187,10 +190,11 @@ void main() {
           if (r['by'] == 'native') r['url']! as String,
       ];
       expect(native, isNotEmpty, reason: 'no request was answered natively');
-      if (pass == 'cold') await _sameAsCore(rig, native.first);
+      if (pass == 'cold') await _sameAsCore(tester, rig, native.first);
       // Back home between the passes, so the second opens the app anew.
       final homeRow = find.byKey(const ValueKey('sidebar-home'));
       _tap(tester, homeRow);
+      // ignore: timing_pump -- a quiet stretch between measured passes, part of the measurement
       await tester.pump(const Duration(seconds: 1));
       await trace();
     }
@@ -202,7 +206,7 @@ void main() {
 /// Fetches [url] in the app's shell document, which the scheme host
 /// answers natively, and checks the status, headers and bytes are what the
 /// core answers the same request with.
-Future<void> _sameAsCore(Rig rig, String url) async {
+Future<void> _sameAsCore(WidgetTester tester, Rig rig, String url) async {
   final s = rig.surface!;
   await s.evaluate(
     'window.__golden = null; fetch(${jsonEncode(url)}).then(async (r) => {'
@@ -212,15 +216,15 @@ Future<void> _sameAsCore(Rig rig, String url) async {
     ' window.__golden = JSON.stringify({status: r.status, headers: hs,'
     ' length: b.length, hash: h}); }); 0',
   );
-  Map<String, Object?>? got;
-  for (var i = 0; i < 200 && got == null; i++) {
-    await Future<void>.delayed(const Duration(milliseconds: 10));
-    final v = '${await s.evaluate('window.__golden ?? ""')}';
-    if (v.isNotEmpty && v != 'null') {
-      got = (jsonDecode(v) as Map).cast<String, Object?>();
-    }
-  }
-  expect(got, isNotNull, reason: 'the fetch of $url never finished');
+  final got = await rig.until<Map<String, Object?>>(
+    tester,
+    'the fetch of $url to finish',
+    () async {
+      final v = '${await s.evaluate('window.__golden ?? ""')}';
+      if (v.isEmpty || v == 'null') return null;
+      return (jsonDecode(v) as Map).cast<String, Object?>();
+    },
+  );
   final want = await SchemeAnswerer(
     rig.core.calls,
     Rig.origins,
@@ -236,7 +240,7 @@ Future<void> _sameAsCore(Rig rig, String url) async {
   for (final x in want.body) {
     h = (h * 31 + x) & 0xffffffff;
   }
-  expect(got!['status'], want.status, reason: url);
+  expect(got['status'], want.status, reason: url);
   expect(got['length'], want.body.length, reason: url);
   expect(got['hash'], h, reason: url);
   final headers = (got['headers']! as Map).cast<String, Object?>();
