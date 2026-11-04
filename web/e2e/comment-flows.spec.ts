@@ -1,6 +1,6 @@
 import { type Frame, type Page } from "@playwright/test";
 import { test, expect, type Daemon, api, commentModeIn, openArtifact, registerSession, nameField } from "./fixtures";
-import { advance, settle, shellNow } from "./time";
+import { advance, pauseTime, settle, shellNow } from "./time";
 
 // Commenting several times in a row, as a viewer does it: each flow is driven
 // with page.mouse in steps (so the shell sees realistic moves) and ends either
@@ -232,6 +232,7 @@ async function firstPick(page: Page, f: Frame) {
 
   test(`flow 6, the page's buttons after the name field: openComposer works; sendToClaude asks to click again within 5.5 s, then sends`, async ({ page }) => {
     const id = await publishLive(`Flow 6`);
+    await page.clock.install();
     const f = await open(page, id);
     const name = await nameField(page);
     await clickShell(page, name);
@@ -240,11 +241,16 @@ async function firstPick(page: Page, f: Frame) {
     const typed = await shellNow(page);
     await clickIn(page, f, "#open");
     await expect(f.locator("#result")).toHaveText(JSON.stringify({ opened: true }));
+    // From the Cancel click on, the page's time stands still but for the
+    // shell's clock, which the test advances: the 5.5 s after it end only
+    // when the test moves past them, however long a loaded machine takes.
+    await pauseTime(page);
     await clickShell(page, composer(page).getByRole("button", { name: "Cancel" }));
     await clickIn(page, f, "#send");
     await expect(f.locator("#result")).toHaveText("shell_input_recent");
     // The Cancel click was shell input too: 5.5 s after it, a click sends.
     await advance(page, 5_700);
+    await page.clock.resume();
     expect(await shellNow(page) - typed).toBeGreaterThan(5_500);
     await clickIn(page, f, "#p2");
     await clickIn(page, f, "#send");
