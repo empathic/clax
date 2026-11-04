@@ -541,14 +541,17 @@ impl Writer {
             // one, so it is the innermost when it is open).
             if name != "td" && name != "th" && name != "tr" && self.blocks.last() == Some(&"p") {
                 self.blocks.pop();
-                // A link opened in that paragraph goes on in the block, as
-                // a browser carries it into the blocks that follow.
+                // A link opened in that paragraph with no text yet (a card
+                // around blocks) goes on in the block, as a browser carries
+                // it into the blocks that follow; one with text ends with
+                // the paragraph.
                 let depth = self.blocks.len();
                 for sp in &mut self.spans {
-                    if matches!(sp.kind, SpanKind::Link(_)) && sp.at.0 > depth {
+                    if matches!(sp.kind, SpanKind::Link(_)) && !sp.written && sp.at.0 > depth {
                         sp.at.0 = depth;
                     }
                 }
+                self.end_links_outside();
             }
             match name {
                 "li" => {
@@ -1626,6 +1629,11 @@ mod tests {
         assert_eq!(
             md("<p><a href=/x><div>T</div><div>D</div></a></p><p>next</p>"),
             "[T D](https://site.test/x)\n\nnext"
+        );
+        // One that has text ends with its paragraph.
+        assert_eq!(
+            md("<div><p><a href=/x>Home<h1>Title</h1><ul><li>a</li><li>b</li></ul></div>"),
+            "[Home](https://site.test/x)\n\n# Title\n\n- a\n- b"
         );
         // `/>` on a block is ignored, as in HTML.
         assert_eq!(
