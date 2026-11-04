@@ -143,6 +143,7 @@ async function main() {
     const approve = await browser("POST", `/api/hosted/device/${add.body.user_code}/approve`, {});
     check(approve.status === 200, "the owner approves it", approve.body);
     const connected = await until("the local daemon's sign-in is no longer pending", async () => {
+      // oxlint-disable-next-line clax-timing/timer-delay -- the grant's poll interval is real time on the Worker (a sooner poll is refused slow_down), which no clock of this process reaches: each poll waits it out, and the answer decides
       await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
       const r = await local.api("POST", "/api/remotes/tides/poll", {});
       return r.body.status !== "pending" && r;
