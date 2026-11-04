@@ -1,15 +1,16 @@
-import { describe, expect, it } from "vitest";
-import { PAIR_SLOW_MS, PairError, Pairer, REPAIR_MS, type PairEnv } from "./pairing";
+import { describe, expect, it, vi } from "vitest";
+import { PAIR_SLOW_MS, PairError, Pairer, REPAIR_MS, type PairEnv, askNative } from "./pairing";
 
 const CRED = `cxe_${"A".repeat(43)}`;
-function env(replies: unknown[], version = "0.9.0") {
-  const store: Record<string, unknown> = {};
+// A reply that is a function is called for its send: a promise that never
+// settles is a host the browser stopped with the worker.
+function env(replies: unknown[], version = "0.9.0", store: Record<string, unknown> = {}) {
   const local: Record<string, unknown> = {};
   let now = 0;
   const e = {
     sent: [] as unknown[], reloads: 0, store,
     tick(ms: number) { now += ms; },
-    sendNative: async (_h: string, m: object) => { e.sent.push(m); return replies.shift(); },
+    sendNative: async (_h: string, m: object) => { e.sent.push(m); const r = replies.shift(); return typeof r === "function" ? r() : r; },
     session: { get: async (k: string) => (k in store ? { [k]: store[k] } : {}), set: async (v: Record<string, unknown>) => { Object.assign(store, v); }, remove: async (k: string) => { delete store[k]; } },
     local: { get: async (k: string) => (k in local ? { [k]: local[k] } : {}), set: async (v: Record<string, unknown>) => { Object.assign(local, v); }, remove: async (k: string) => { delete local[k]; } },
     manifestVersion: version,
@@ -44,7 +45,7 @@ describe("Pairer", () => {
     // The person's Retry waits for the same pairing: no second native host.
     const retry = p.pair(true);
     expect(retry).toBe(first);
-    expect(sent).toHaveLength(1);
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
     // The host answers late: the pairing is kept, and the slowness is over.
     answer(paired());
     expect((await first).daemon).toBe("http://localhost:7480");
@@ -86,6 +87,40 @@ describe("Pairer", () => {
     const bad = env([{ ...held, confirmation_id: null }]);
     await expect(new Pairer(bad as unknown as PairEnv).pair()).rejects.toMatchObject({ code: "confirmation_pending", confirmation: null });
     expect(bad.sent).toHaveLength(1);
+  });
+
+  it("keeps a held pairing's confirmation across a restarted worker, so the person's answer to it pairs", async () => {
+    const held = { type: "error", v: 1, code: "confirmation_pending", message: "Confirm pairing", confirmation_id: "cf_ab12", confirm_url: "http://localhost:7480/inbox?confirm=cf_ab12" };
+    const pair = { type: "pair", v: 1, extension_version: "0.9.0" };
+    // The worker stops while the host waits for the person: neither answers.
+    const first = env([held, () => new Promise(() => {})]);
+    void new Pairer(first as unknown as PairEnv).pair();
+    await vi.waitFor(() => expect(first.sent).toHaveLength(2));
+    // The restarted worker presents the same confirmation, never a new one.
+    const again = env([paired()], "0.9.0", first.store);
+    const p = new Pairer(again as unknown as PairEnv);
+    const told: boolean[] = [];
+    p.onConfirm = w => told.push(w);
+    expect((await p.pair()).daemon).toBe("http://localhost:7480");
+    expect(again.sent).toEqual([{ ...pair, confirmation: "cf_ab12" }]);
+    expect(told).toEqual([true, false]);
+    expect(again.store.held).toBeUndefined();
+  });
+
+  it("keeps a held pairing's confirmation through a host that gave no answer, and drops it on the host's answer", async () => {
+    const pair = { type: "pair", v: 1, extension_version: "0.9.0" };
+    const e = env([
+      () => Promise.reject(new PairError("host_failed", "Native host has exited.")),
+      { type: "error", v: 1, code: "pairing_expired", message: "The pairing confirmation expired. Post again to try again." },
+      paired(),
+    ], "0.9.0", { held: "cf_ab12" });
+    const p = new Pairer(e as unknown as PairEnv);
+    await expect(p.pair()).rejects.toMatchObject({ code: "host_failed" });
+    expect(e.store.held).toBe("cf_ab12");
+    await expect(p.pair(true)).rejects.toMatchObject({ code: "pairing_expired" });
+    expect(e.store.held).toBeUndefined();
+    await p.pair(true);
+    expect(e.sent).toEqual([{ ...pair, confirmation: "cf_ab12" }, { ...pair, confirmation: "cf_ab12" }, pair]);
   });
 
   it("pairs once and keeps the pairing in session storage", async () => {
@@ -166,5 +201,41 @@ describe("Pairer", () => {
     const e = env([paired(undefined, "0.9.0-dev+abc")]);
     await new Pairer(e as unknown as PairEnv).pair();
     expect(e.reloads).toBe(0);
+  });
+});
+
+describe("askNative", () => {
+  // A port as Chrome's: the reply arrives on onMessage; a host gone without
+  // one disconnects, with the reason in runtime.lastError.
+  function runtime() {
+    const port = {
+      sent: [] as unknown[], closed: false,
+      onMessage: { l: null as ((m: unknown) => void) | null, addListener(f: (m: unknown) => void) { this.l = f; } },
+      onDisconnect: { l: null as (() => void) | null, addListener(f: () => void) { this.l = f; } },
+      postMessage(m: unknown) { this.sent.push(m); },
+      disconnect() { this.closed = true; },
+    };
+    const rt = { hosts: [] as string[], lastError: undefined as { message?: string } | undefined, connectNative(h: string) { rt.hosts.push(h); return port; } };
+    return { rt: rt as typeof rt & Parameters<typeof askNative>[0], port };
+  }
+
+  it("asks over a port, which keeps the worker running while the host waits, and closes it on the answer", async () => {
+    const { rt, port } = runtime();
+    const asked = askNative(rt, "dev.empathic.clax", { type: "pair", v: 1 });
+    expect(rt.hosts).toEqual(["dev.empathic.clax"]);
+    expect(port.sent).toEqual([{ type: "pair", v: 1 }]);
+    port.onMessage.l?.(paired());
+    expect(await asked).toEqual(paired());
+    expect(port.closed).toBe(true);
+  });
+
+  it("fails with host_missing for a host not installed, and host_failed for one gone without an answer", async () => {
+    for (const [message, code] of [["Specified native messaging host not found.", "host_missing"], ["Native host has exited.", "host_failed"]]) {
+      const { rt, port } = runtime();
+      const asked = askNative(rt, "dev.empathic.clax", { type: "pair", v: 1 });
+      rt.lastError = { message };
+      port.onDisconnect.l?.();
+      await expect(asked).rejects.toMatchObject({ code, message });
+    }
   });
 });

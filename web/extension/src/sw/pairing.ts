@@ -21,6 +21,32 @@ export class PairError extends Error {
   constructor(readonly code: string, message: string, readonly confirmation: string | null = null) { super(message); }
 }
 
+type NativeRuntime = Pick<typeof chrome.runtime, "connectNative" | "lastError">;
+
+/** Sends `msg` to native host `host` and answers its one reply. It asks
+ * over a port: Chrome keeps the worker running while a native port is
+ * open, so a host that waits for the person (a held pairing) is not
+ * stopped with an idle worker, as a `sendNativeMessage` host is. A host
+ * that is not installed fails with `host_missing`; one gone without a
+ * reply, `host_failed`. */
+export function askNative(rt: NativeRuntime, host: string, msg: object): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const port = rt.connectNative(host);
+    let answered = false;
+    port.onMessage.addListener((m: unknown) => {
+      answered = true;
+      resolve(m);
+      port.disconnect();
+    });
+    port.onDisconnect.addListener(() => {
+      if (answered) return;
+      const why = rt.lastError?.message ?? "the native host ended without an answer";
+      reject(new PairError(/not found/i.test(why) ? "host_missing" : "host_failed", why));
+    });
+    port.postMessage(msg);
+  });
+}
+
 
 type Area = { get(k: string): Promise<Record<string, unknown>>; set(v: Record<string, unknown>): Promise<void>; remove(k: string): Promise<void> };
 export interface PairEnv {
@@ -105,16 +131,30 @@ export class Pairer {
     this.inflight = (async () => {
       try {
         const msg = { type: "pair", v: 1, extension_version: this.env.manifestVersion };
-        let p: Pairing;
-        try {
-          p = parse(await this.env.sendNative(HOST, msg));
-        } catch (e) {
+        // A confirmation an earlier pairing was held for, kept until a host
+        // answers with it: a worker restarted while the person decided asks
+        // with the one they answer, never for a new one.
+        const kept = (await this.env.session.get("held")).held;
+        let held = typeof kept === "string" ? kept : null;
+        let p: Pairing | null = null;
+        if (!held) {
+          try {
+            p = parse(await this.env.sendNative(HOST, msg));
+          } catch (e) {
+            if (!(e instanceof PairError) || !e.confirmation) throw e;
+            held = e.confirmation;
+            await this.env.session.set({ held });
+          }
+        }
+        if (!p) {
           // Held for the person's confirmation: say so, and ask again with
-          // it; the host waits for their answer, then pairs.
-          if (!(e instanceof PairError) || !e.confirmation) throw e;
+          // it; the host waits for their answer, then pairs. A host gone
+          // without a reply leaves it kept for the next pairing.
           confirming = true;
           this.onConfirm?.(true);
-          p = parse(await this.env.sendNative(HOST, { ...msg, confirmation: e.confirmation }));
+          const reply = await this.env.sendNative(HOST, { ...msg, confirmation: held });
+          await this.env.session.remove("held");
+          p = parse(reply);
         }
         await this.env.session.set({ pairing: p });
         this.onPaired?.(p);

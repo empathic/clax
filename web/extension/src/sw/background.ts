@@ -20,7 +20,7 @@
 import { type OverlayToWorker, type WorkerToOverlay, isComposerNote, isFromOverlay, isFromPanel } from "../messages";
 import { captureClip, chromeCapture } from "./capture";
 import * as origins from "./origins";
-import { HOST, PairError } from "./pairing";
+import { HOST, askNative } from "./pairing";
 import { type PanelDeps, panelAction } from "./panel";
 import { composerFrameTab, composerTab, createWorker } from "./worker";
 
@@ -53,10 +53,7 @@ export function startBackground(c: typeof chrome) {
   };
   const { pairer, api, tabs, picks, sites, inbox, fromOverlay } = createWorker({
     pair: {
-      sendNative: async (host, msg) => {
-        try { return await c.runtime.sendNativeMessage(host, msg); }
-        catch (e) { throw new PairError(/not found/i.test(String(e)) ? "host_missing" : "host_failed", String(e)); }
-      },
+      sendNative: (host, msg) => askNative(c.runtime, host, msg),
       session: c.storage.session, local: c.storage.local,
       manifestVersion: c.runtime.getManifest().version,
       // Not mid-request, and not while a pick is open: a reload tears down the
