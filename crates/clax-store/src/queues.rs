@@ -37,12 +37,13 @@ use clax_core::anchor::Anchor;
 use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
 use clax_core::feedback::{QueueEvent, Touched};
 use clax_core::model::{Comment, Session, Thread};
+use clax_core::origin::{OriginPattern, normalize_origin};
 use clax_core::queue::{
     AUTHOR_REPORTER, Claim, LEASE_SECS, Lease, MAX_ARTIFACT_METADATA_BYTES,
     MAX_THREAD_METADATA_BYTES, Queue, REPORT_PAGE, REPORTER_TOKEN_PREFIX, REPORTER_TOKEN_SECS,
     Report, ReportComment, ReportOrder, ReportersSee, Role, SERVICE_TOKEN_PREFIX, State,
     StateFilter, check_queue_name, check_reporter_id, metadata_json, metadata_sha256,
-    normalize_origin, normalize_queue_origin, queue_allows_origin,
+    queue_allows_origin,
 };
 use clax_core::report::{
     DiagLine, FixAttempt, FixOutcome, NewFix, ProposerKind, ReportContext, ReporterProfile,
@@ -58,7 +59,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 pub struct NewQueue {
     pub name: String,
     /// Origins and origin patterns as given; each is normalized
-    /// ([`normalize_queue_origin`]).
+    /// ([`OriginPattern::parse`]).
     pub origins: Vec<String>,
     pub reporters_see: ReportersSee,
 }
@@ -393,7 +394,7 @@ fn normalize_origins(origins: &[String]) -> Result<Vec<String>> {
     }
     let mut out = Vec::with_capacity(origins.len());
     for o in origins {
-        let n = normalize_queue_origin(o)?;
+        let n = OriginPattern::parse(o)?.to_string();
         if !out.contains(&n) {
             out.push(n);
         }

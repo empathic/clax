@@ -133,7 +133,7 @@ fn own() -> ReportersSee {
 /// `POST /api/queues {name, origins?, reporters_see?}` → 201 `{queue}`:
 /// makes a queue whose admin is the caller (`reporters_see` `own` when not
 /// given). Each of `origins` is an exact origin or an origin pattern
-/// (`https://app-pr-*.example.com`, [`clax_core::queue::normalize_queue_origin`]).
+/// (`https://app-pr-*.example.com`, [`clax_core::origin::OriginPattern::parse`]).
 /// 400 `invalid_name` (blank or over 120 characters) or `invalid_origin`
 /// (neither `scheme://host[:port]` of `http` or `https` nor such a pattern,
 /// or over 32 of them).
