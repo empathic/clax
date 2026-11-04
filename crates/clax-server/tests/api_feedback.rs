@@ -277,6 +277,112 @@ async fn feedback_route_errors() {
     assert_eq!(missing.status(), 404);
 }
 
+/// `POST .../feedback/receipt` for lease `id` of session `sid`.
+async fn receipt(ts: &TestServer, sid: &str, id: &str, received: bool) -> reqwest::Response {
+    ts.post_json(
+        &format!("/api/sessions/{sid}/feedback/receipt"),
+        serde_json::json!({"lease": id, "received": received}),
+    )
+    .await
+}
+
+/// How many feedback items a `tier=piggyback` take of `sid` hands over.
+async fn piggyback(ts: &TestServer, sid: &str) -> usize {
+    poll(ts, sid, "?tier=piggyback").await["feedback"]
+        .as_array()
+        .unwrap()
+        .len()
+}
+
+/// A hook's leased take holds what it handed over: it is handed over again
+/// at once when its hook gives it up, and to the session's next take once
+/// its lease is up on the store's clock without a word; received, it
+/// stays delivered, and a later word changes nothing.
+#[tokio::test]
+async fn a_leased_take_is_handed_over_again_unless_received() {
+    let clock = Arc::new(clax_core::working::ManualClock::at("2026-10-01T12:00:00Z"));
+    let ts = TestServer::spawn_with_clock(clock.clone()).await;
+    let (sid, aid, tid) = sent_thread(&ts).await;
+    ts.send_thread(&aid, &tid).await;
+    let first = poll(&ts, &sid, "?tier=prompt_hook&lease=a&lease_ms=5000").await;
+    assert_eq!(first["lease"], "a", "{first}");
+    assert_eq!(first["feedback"].as_array().unwrap().len(), 1);
+    // No word: delivered until the lease is up, then for the next take.
+    assert_eq!(piggyback(&ts, &sid).await, 0);
+    clock.advance(4);
+    assert_eq!(piggyback(&ts, &sid).await, 0);
+    clock.advance(1);
+    let again = poll(&ts, &sid, "?tier=prompt_hook&lease=b&lease_ms=5000").await;
+    assert_eq!(again["lease"], "b", "{again}");
+    assert_eq!(again["feedback"][0]["resent"], false, "{again}");
+    // Given up: handed over again at once, its release recorded.
+    assert_eq!(receipt(&ts, &sid, "b", false).await.status(), 200);
+    let third = poll(&ts, &sid, "?tier=prompt_hook&lease=c&lease_ms=5000").await;
+    assert_eq!(third["feedback"].as_array().unwrap().len(), 1, "{third}");
+    // Received: delivered for good (short of the resends' two minutes).
+    assert_eq!(receipt(&ts, &sid, "c", true).await.status(), 200);
+    clock.advance(60);
+    assert_eq!(piggyback(&ts, &sid).await, 0);
+    // A take that hands nothing over leases nothing.
+    let none = poll(&ts, &sid, "?tier=prompt_hook&lease=d&lease_ms=5000").await;
+    assert!(none.get("lease").is_none(), "{none}");
+    // A word on a lease that holds nothing changes nothing.
+    let t2 = ts.thread(&aid, 1, "later").await;
+    ts.send_thread(&aid, t2["id"].as_str().unwrap()).await;
+    assert_eq!(receipt(&ts, &sid, "e", false).await.status(), 200);
+    assert_eq!(receipt(&ts, &sid, "c", false).await.status(), 200);
+    assert_eq!(piggyback(&ts, &sid).await, 1, "only the later comment");
+    let db = rusqlite::Connection::open(ts.home.db_path()).unwrap();
+    let released: Vec<String> = db
+        .prepare(
+            "SELECT json_extract(body, '$.tier') || ' ' || json_extract(body, '$.reason')
+               FROM audit_events WHERE kind = 'feedback.release' ORDER BY seq",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        released,
+        ["prompt_hook lease_lapsed", "prompt_hook not_received"]
+    );
+}
+
+/// A lease is the hooks' alone, named by a short ID, with its length,
+/// at most a minute.
+#[tokio::test]
+async fn a_lease_is_refused_where_it_does_not_fit() {
+    let ts = TestServer::spawn().await;
+    let (sid, _aid, _tid) = sent_thread(&ts).await;
+    for query in [
+        "tier=prompt_hook&lease=a",
+        "tier=prompt_hook&lease_ms=10",
+        "tier=wait&lease=a&lease_ms=10",
+        "tier=piggyback&lease=a&lease_ms=10",
+        "tier=stop_hook&lease=a%20b&lease_ms=10",
+        "tier=stop_hook&lease=a&lease_ms=60001",
+    ] {
+        let res = ts
+            .authed(
+                ts.client
+                    .get(format!("{}/api/sessions/{sid}/feedback?{query}", ts.base)),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400, "{query}");
+        assert_eq!(
+            res.json::<Value>().await.unwrap()["error"]["code"],
+            "invalid_query",
+            "{query}"
+        );
+    }
+    let bad = receipt(&ts, &sid, &"x".repeat(65), true).await;
+    assert_eq!(bad.status(), 400);
+    assert_eq!(receipt(&ts, "nope", "a", true).await.status(), 404);
+}
+
 /// The feedback long-poll is outside the request timeout: it stays in
 /// progress while a timed request made after it started is cut off by that
 /// timeout (408), and answers 200 when it ends. The session is made in the

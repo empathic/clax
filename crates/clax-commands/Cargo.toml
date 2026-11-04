@@ -33,4 +33,5 @@ sha2 = "0.11"
 [dev-dependencies]
 tempfile.workspace = true
 clax-fake-exe = { path = "../clax-fake-exe" }
+clax-testkit = { path = "../clax-testkit" }
 rusqlite.workspace = true

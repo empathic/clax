@@ -5068,6 +5068,29 @@ tiers 2, 3, or 5 and not acknowledged within 2 minutes is resent, marked
 `stop_hook_active` is set), at most three times. Then the thread shows
 "delivered, not acknowledged".
 
+**Leased takes (the hooks).** A hook may give up on its take before the
+answer arrives (a slow daemon), so the hooks take under a lease:
+`GET /api/sessions/<sid>/feedback?tier=prompt_hook&lease=<ID>&lease_ms=<ms>`
+(or `tier=stop_hook`), the ID the hook's own (1 to 64 letters, digits,
+`-` or `_`), `lease_ms` at most 60000; both or neither, on those tiers
+only (400 `invalid_query` otherwise). The rows the take hands over first
+are marked delivered as any take's are, the late answers it hands over
+taken, and each carries the lease in the database until `lease_ms` after
+the take by the daemon's clock; the answer carries `"lease": "<ID>"` when
+it leased any. They stay delivered once the hook says it received them:
+`POST /api/sessions/<sid>/feedback/receipt {"lease": "<ID>", "received":
+true}` once it has printed them. With `"received": false` (the hook gave
+up, or printed nothing) they are pending again at once. With no word by
+the lease's end, the session's next take returns them to pending first,
+and may hand them over itself; when the session ends first, they are
+pending again before its rows are released (below). Each returned row is
+a `feedback.release`, reason `not_received`, `lease_lapsed` or
+`session_ended`. A word on a lease that holds nothing changes nothing. So
+a comment or an answer a hook never printed reaches the next hook or tool
+result, however late the abandoned take answered, and across a daemon
+restart. `clax hook` leases its takes until its own deadline plus 0.5 s
+and says what it received after printing its output.
+
 When a session ends, each of its rows not yet handed over is deleted when
 another live session is a target of the same comment, and otherwise waits
 untargeted. Untargeted rows (also those of a comment sent while no target
@@ -6313,6 +6336,7 @@ router), and a test fails when it differs:
 | `GET /api/sessions/{id}/feedback` | Filtered | `clax-comments` `watch` | 2 MiB | yes |
 | `GET /api/sessions/{id}/notices` | Filtered | `clax-comments` `watch` | 2 MiB | yes |
 | `POST /api/sessions/{id}/feedback/ack` | Own | `clax-comments` `watch` | 2 MiB | yes |
+| `POST /api/sessions/{id}/feedback/receipt` | Own | `clax-comments` `watch` | 2 MiB | yes |
 | `GET /api/sessions/{id}/working` | Own | `clax-comments` `watch` | 2 MiB | yes |
 | `POST /api/sessions/{id}/working/renew` | Own | `clax-comments` `watch` | 2 MiB | yes |
 | `POST /api/sessions/{id}/working/end` | Own | `clax-comments` `watch` | 2 MiB | yes |
@@ -9424,7 +9448,7 @@ the body below.
 | `thread.delete` | `moved` | delete |
 | `thread.send` | `target ("watchers" \| {session_id, agent_handle}), feedback_ids[], batch_id?, thread_ids[]` | a send that changes something, automatic forwards included |
 | `feedback.delivered` | `feedback_id, tier` | a feedback row's first hand-over; `session_id` is the receiving session |
-| `feedback.release` | `feedback_id, tier (queue), reason` | a failed `codex queue` claim returned to undelivered (`system:daemon`) |
+| `feedback.release` | `feedback_id, tier (queue\|prompt_hook\|stop_hook), reason` | a failed `codex queue` claim returned to undelivered (`system:daemon`), or a hook's leased take its hook did not receive (`not_received`, by the hook's session; `lease_lapsed`, `system:daemon`; `session_ended`, as the session's end) |
 | `thread.addressed` | `version_n, source (resolve)` | a link no other event carries (the links ride `version.publish.addresses`, `live.snapshot.addresses` and `thread.resolve.addressed_version`) |
 | `live.page` | `origin, path` | a live page's creation |
 | `live.snapshot` | the `version.publish` body plus `origin, path`; `source{artifact_id, n}` on a copy a move or merge made | a live page's version |

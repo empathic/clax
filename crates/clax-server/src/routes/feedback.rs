@@ -1,5 +1,6 @@
 //! `GET /api/sessions/<sid>/feedback` (W): hands over feedback for a session by
-//! tier, long-polling up to `wait` seconds; `POST .../feedback/ack` (W); and
+//! tier, long-polling up to `wait` seconds; `POST .../feedback/ack` (W);
+//! `POST .../feedback/receipt` (W), a hook's word on a leased take; and
 //! `GET /api/sessions/<sid>/notices` (W), the notices `clax feedback follow`
 //! prints.
 
@@ -15,7 +16,7 @@ use clax_core::questions::render_late;
 use clax_core::surface::ActKind;
 use clax_core::working::Clock;
 use clax_core::{CoreError, Tier};
-use clax_http::agent::{FeedbackAck, FeedbackNotices, FeedbackPoll, TokenOrAgent};
+use clax_http::agent::{FeedbackAck, FeedbackNotices, FeedbackPoll, FeedbackReceipt, TokenOrAgent};
 #[cfg(debug_assertions)]
 use clax_http::auth::RequireToken;
 use clax_http::error::ApiError;
@@ -27,7 +28,7 @@ use clax_rt::time::Instant;
 use clax_store::feedback::Reach;
 use clax_store::questions::Status;
 use clax_store::visibility::Visibility;
-use clax_store::{Store, TakeFeedback};
+use clax_store::{Store, TakeFeedback, TakeLease};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -63,8 +64,9 @@ fn late_answers(
     sid: &str,
     held: &QuestionWaiters,
     clock: &dyn Clock,
+    lease: Option<&TakeLease>,
 ) -> clax_core::Result<(Vec<Value>, Vec<String>)> {
-    let rows = st.take_late_answers(sid, |qid| held.count(qid) > 0)?;
+    let rows = st.take_late_answers_leased(sid, |qid| held.count(qid) > 0, lease)?;
     let now = clock.now();
     let mut views = Vec::with_capacity(rows.len());
     let mut blocks = Vec::with_capacity(rows.len());
@@ -283,6 +285,46 @@ pub struct FeedbackQuery {
     resends: Option<bool>,
     /// The person typed a prompt (Claude Code's prompt hook).
     prompt: Option<bool>,
+    /// A hook's lease on what the take hands over, with `lease_ms`
+    /// ([`lease_of`]).
+    lease: Option<String>,
+    lease_ms: Option<u64>,
+}
+
+/// Longest accepted `lease_ms`.
+pub const MAX_LEASE_MS: u64 = 60_000;
+
+/// Whether `id` may name a lease: 1 to 64 ASCII letters, digits, `-` or
+/// `_`.
+fn lease_id_ok(id: &str) -> bool {
+    (1..=64).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// The lease a `tier` take asks for: `lease` and `lease_ms` together, on
+/// the hooks' tiers (`prompt_hook`, `stop_hook`) only, `lease` an ID
+/// [`lease_id_ok`] accepts and `lease_ms` at most [`MAX_LEASE_MS`]; 400
+/// `invalid_query` otherwise.
+fn lease_of(q: &FeedbackQuery, tier: Tier) -> Result<Option<TakeLease>, ApiError> {
+    let bad = |m: &str| Err(ApiError::bad_request("invalid_query", m.to_string()));
+    match (&q.lease, q.lease_ms) {
+        (None, None) => Ok(None),
+        (Some(id), Some(ms)) => {
+            if !matches!(tier, Tier::PromptHook | Tier::StopHook) {
+                return bad("only tier=prompt_hook and tier=stop_hook take a lease");
+            }
+            if !lease_id_ok(id) {
+                return bad("lease is 1 to 64 letters, digits, '-' or '_'");
+            }
+            if ms > MAX_LEASE_MS {
+                return bad("lease_ms is at most 60000");
+            }
+            Ok(Some(TakeLease { id: id.clone(), ms }))
+        }
+        _ => bad("lease and lease_ms go together"),
+    }
 }
 
 /// Returns `{feedback, answers, text, waited_s}` as soon as rows exist for
@@ -359,6 +401,7 @@ pub async fn poll(
             .ok_or_else(|| ApiError::bad_request("invalid_tier", format!("unknown tier '{t}'")))?,
     };
     let prompt = q.prompt.unwrap_or(false);
+    let lease = lease_of(&q, tier)?;
     let artifact = match q.artifact.as_deref() {
         Some(raw) => Some(a.named_artifact(&s, raw).await?.as_str().to_string()),
         None => None,
@@ -453,7 +496,8 @@ pub async fn poll(
         let audit = audit_now;
         let (view_now, readable_rights) = (view.clone(), rights_now.clone());
         let base = base.clone();
-        let (taken, (answers, late)) = s
+        let lease_now = lease.clone();
+        let (taken, (answers, late), leased) = s
             .store_call(move |st| {
                 let rights = readable_rights;
                 let readable = |a: &Artifact| rights.allows(a);
@@ -461,19 +505,30 @@ pub async fn poll(
                     artifacts: rights.filters().then_some(&readable),
                     reports: rights.reads_reports(),
                 };
-                let taken = st.take_feedback_readable(&audit, &t, &base, &view_now, readable)?;
+                // What it hands over stays delivered only once its hook says
+                // it received it; leases whose time is up are returned first.
+                let taken = st.take_feedback_leased(
+                    &audit,
+                    &t,
+                    &base,
+                    &view_now,
+                    readable,
+                    lease_now.as_ref(),
+                )?;
                 if taken.stale {
-                    return Ok((taken, Default::default()));
+                    return Ok((taken, Default::default(), false));
                 }
                 // Its states go out once the poll has answered (below).
                 clax_realtime::feedback::wake(&ctx, st, &taken.touched);
                 clax_realtime::working::renew_for_tier(&ctx, &t.session_id, t.tier);
                 if t.tier == Tier::Queue {
-                    return Ok((taken, Default::default()));
+                    let leased = taken.leased;
+                    return Ok((taken, Default::default(), leased));
                 }
                 clax_realtime::working::mark_items(&ctx, &audit, st, &t.session_id, &taken.items)?;
-                let late = late_answers(st, &t.session_id, &held, &*clock)?;
-                Ok((taken, late))
+                let late = late_answers(st, &t.session_id, &held, &*clock, lease_now.as_ref())?;
+                let leased = taken.leased || (lease_now.is_some() && !late.0.is_empty());
+                Ok((taken, late, leased))
             })
             .await?;
         vis = Some(view);
@@ -547,6 +602,9 @@ pub async fn poll(
             }
             if let Some(w) = &sugg {
                 out["where_to_ask"] = json!(w);
+            }
+            if let (true, Some(l)) = (leased, &lease) {
+                out["lease"] = json!(l.id);
             }
             return Ok(Json(out));
         }
@@ -806,6 +864,49 @@ pub async fn ack(
         })
         .await?;
     Ok(Json(json!({"acknowledged": n})))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReceiptBody {
+    lease: String,
+    received: bool,
+}
+
+/// `POST /api/sessions/<sid>/feedback/receipt {lease, received}`: a hook's
+/// word on its take under `lease` (`GET .../feedback?lease=…&lease_ms=…`).
+/// `received: true` once it printed what the take handed over: those rows
+/// stay delivered and its question answers taken. `received: false` when
+/// it gave the take up or printed nothing: they go back to pending now,
+/// each row recorded as `feedback.release {feedback_id, tier, reason:
+/// "not_received"}` ([`Store::settle_lease`]). A word on a lease that holds
+/// nothing (returned already, or not yet taken) changes nothing. `{}`; 400
+/// `invalid_json` for a lease ID [`lease_id_ok`] refuses. Unknown session:
+/// 404; ended session: 400 `unknown_session`.
+pub async fn receipt(
+    State(s): State<AppState>,
+    TokenOrAgent(_a): TokenOrAgent<FeedbackReceipt>,
+    audit: AuditCtx,
+    sid: Result<Path<String>, PathRejection>,
+    req: Result<Json<ReceiptBody>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let sid = path(sid)?;
+    let b = body(req)?;
+    if !lease_id_ok(&b.lease) {
+        return Err(ApiError::bad_request(
+            "invalid_json",
+            "lease is 1 to 64 letters, digits, '-' or '_'",
+        ));
+    }
+    let ctx = s.feedback_ctx();
+    s.store_call(move |st| {
+        live_session(st, &sid)?;
+        let touched = st.settle_lease(&audit, &sid, &b.lease, b.received)?;
+        apply(&ctx, st, &touched);
+        Ok(())
+    })
+    .await?;
+    Ok(Json(json!({})))
 }
 
 /// `POST /api/_test/sessions/<sid>/feedback/expire` (debug builds): ends

@@ -1709,7 +1709,11 @@ impl Store {
         let withdrawn_requests = super::approvals::withdraw_session_in(self, tx, ctx, id, now)?;
         let released = self.release_owned_in(tx, ctx, id, reason)?;
         self.clear_rights_in(tx, ctx, id)?;
-        let mut touched = super::feedback::release_session(tx, id, now)?;
+        // What its hooks took under a lease and never said they received
+        // is pending again, and so released with the rest.
+        let mut touched =
+            self.return_leases_in(tx, ctx, id, super::feedback::Leases::All, "session_ended")?;
+        touched.merge(super::feedback::release_session(tx, id, now)?);
         let withdrawn_questions = self.withdraw_session_questions(tx, ctx, id, now)?;
         let mut note = super::inbox::EndedNote {
             threads: Vec::new(),

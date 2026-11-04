@@ -547,6 +547,7 @@ dependencies = [
  "clax-hooks",
  "clax-mcp",
  "clax-store",
+ "clax-testkit",
  "http",
  "nix",
  "reqwest 0.12.28",

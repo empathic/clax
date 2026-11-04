@@ -312,6 +312,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         )
         .route("/api/sessions/{id}/feedback/ack", post(feedback::ack))
         .route(
+            "/api/sessions/{id}/feedback/receipt",
+            post(feedback::receipt),
+        )
+        .route(
             "/api/sessions/{id}/tool-calls",
             post(toolpath::session_tool_call),
         )

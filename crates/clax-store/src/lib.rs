@@ -165,7 +165,7 @@ pub use artifacts::{CorruptRow, MetaPatch};
 pub use attention::{AgentPerson, AgentView, Attention, AttentionSummary, Participants, Person};
 pub use audit::AuditRow;
 pub use bot_runs::{CallEntry, Guard, Journaled, Tx};
-pub use feedback::{Delivery, DeliveryViewer, SendTarget, TakeFeedback, Taken};
+pub use feedback::{Delivery, DeliveryViewer, SendTarget, TakeFeedback, TakeLease, Taken};
 pub use quickstart::{Quickstart, Seeded, Updated};
 pub use sessions::{
     EndReason, EndedSession, JoinSession, NameSource, Proved, Reaped, RegisterSession, Registered,

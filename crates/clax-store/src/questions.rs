@@ -1073,12 +1073,37 @@ impl Store {
         sid: &str,
         skip: impl Fn(&str) -> bool,
     ) -> Result<Vec<QuestionRow>> {
+        self.take_late_answers_leased(sid, skip, None)
+    }
+
+    /// [`Store::take_late_answers`], each question taken held under a
+    /// hook's `lease` until `lease.ms` from now
+    /// ([`crate::feedback::TakeLease`]): untaken again unless the hook says
+    /// it received them.
+    pub fn take_late_answers_leased(
+        &self,
+        sid: &str,
+        skip: impl Fn(&str) -> bool,
+        lease: Option<&crate::feedback::TakeLease>,
+    ) -> Result<Vec<QuestionRow>> {
+        let until = lease.map(|l| {
+            clax_core::time::stamp(
+                self.now_utc()
+                    + chrono::Duration::milliseconds(i64::try_from(l.ms).unwrap_or(i64::MAX)),
+            )
+        });
         self.with_tx(|tx| {
             let mut out = rows(tx, LATE_ANSWERS, params![sid])?;
             out.retain(|q| !skip(&q.id));
             let now = self.now();
             for q in &out {
                 tx.execute(TAKE, params![q.id, now])?;
+                if let (Some(l), Some(until)) = (lease, &until) {
+                    tx.execute(
+                        "UPDATE questions SET lease_id = ?2, lease_until = ?3 WHERE id = ?1",
+                        params![q.id, l.id, until],
+                    )?;
+                }
             }
             out.sort_unstable_by(|a, b| (&a.closed_at, &a.id).cmp(&(&b.closed_at, &b.id)));
             Ok(out)
@@ -1728,6 +1753,82 @@ mod tests {
         assert_eq!(late, vec![q.id.clone(), d.id.clone()]);
         assert!(st.take_late_answers(&s, |_| false).unwrap().is_empty());
         assert!(st.question(&q.id).unwrap().unwrap().taken_at.is_some());
+    }
+
+    /// Late answers taken under a lease the hook gave up are taken again by
+    /// the next take; under one whose time ran out, after the next feedback
+    /// take returns it; under one received, never.
+    #[test]
+    fn a_given_up_lease_leaves_its_late_answers_for_the_next_take() {
+        let clock =
+            std::sync::Arc::new(clax_core::working::ManualClock::at("2026-11-03T10:00:00Z"));
+        let (_d, st) = crate::test_util::store_with_clock(clock.clone());
+        let s = session(&st, "claude", "h1");
+        let answered = |st: &Store| {
+            let (q, _) = st
+                .create_question(DAEMON, new(&s, Source::Ask, None))
+                .unwrap();
+            st.close_question(
+                DAEMON,
+                &q.id,
+                Close::Answer {
+                    answers: a(),
+                    via: "shell",
+                },
+            )
+            .unwrap();
+            q.id
+        };
+        let lease = |id: &str| crate::feedback::TakeLease {
+            id: id.into(),
+            ms: 5000,
+        };
+        let ids = |v: Vec<QuestionRow>| v.into_iter().map(|q| q.id).collect::<Vec<_>>();
+        let q = answered(&st);
+        let taken = st
+            .take_late_answers_leased(&s, |_| false, Some(&lease("a")))
+            .unwrap();
+        assert_eq!(ids(taken), std::slice::from_ref(&q));
+        assert!(st.take_late_answers(&s, |_| false).unwrap().is_empty());
+        st.settle_lease(DAEMON, &s, "a", false).unwrap();
+        assert_eq!(
+            ids(st
+                .take_late_answers_leased(&s, |_| false, Some(&lease("b")))
+                .unwrap()),
+            std::slice::from_ref(&q)
+        );
+        // No word: the next feedback take after its time returns it.
+        clock.advance(5);
+        let poll = crate::TakeFeedback {
+            session_id: s.clone(),
+            tier: clax_core::Tier::Piggyback,
+            artifact_id: None,
+            include_resends: true,
+        };
+        st.take_feedback(
+            DAEMON,
+            &poll,
+            "http://h",
+            &crate::visibility::Visibility::all(),
+        )
+        .unwrap();
+        assert_eq!(
+            ids(st
+                .take_late_answers_leased(&s, |_| false, Some(&lease("c")))
+                .unwrap()),
+            [q]
+        );
+        // Received: kept taken past its time.
+        st.settle_lease(DAEMON, &s, "c", true).unwrap();
+        clock.advance(60);
+        st.take_feedback(
+            DAEMON,
+            &poll,
+            "http://h",
+            &crate::visibility::Visibility::all(),
+        )
+        .unwrap();
+        assert!(st.take_late_answers(&s, |_| false).unwrap().is_empty());
     }
 
     #[test]

@@ -133,7 +133,8 @@ CRATES = {
             "//crates/clax-store:clax_store"
         ],
         "dev_deps": [
-            "//crates/clax-fake-exe:clax_fake_exe"
+            "//crates/clax-fake-exe:clax_fake_exe",
+            "//crates/clax-testkit:clax_testkit"
         ],
         "edition": "2024",
         "features": [],
