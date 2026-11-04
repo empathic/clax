@@ -130,8 +130,7 @@ impl Mode {
 }
 
 /// The remote's origin as `clax remote add` takes it: an `https` origin,
-/// or `http` on a loopback host for development
-/// ([`clax_core::config::hosted_origin`]).
+/// or `http` on localhost for development.
 ///
 /// # Errors
 /// 400 `invalid_args` otherwise.

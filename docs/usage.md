@@ -216,7 +216,7 @@ To serve the internet (hosted mode), put the daemon behind a proxy that terminat
 
 ```toml
 [hosted]
-public_origin = "https://clax.example"   # https, or http on a loopback host (localhost, *.localhost, 127.0.0.0/8, [::1]) for development
+public_origin = "https://clax.example"   # https, or http on localhost for development
 site_domain = "clax-sites.example"       # each artifact is served at https://<artifact ID>.clax-sites.example; required to serve sites, no default
 setup_secret_env = "CLAX_SETUP_SECRET"   # the default: the variable the setup secret is read from
 behind_cloudflare = false                # true when Cloudflare is in front: clients are counted by CF-Connecting-IP

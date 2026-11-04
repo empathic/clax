@@ -746,7 +746,7 @@ impl HomeConfig {
             bad(
                 "public_origin",
                 format!(
-                    "public_origin must be an https:// origin with no path, or http:// on a loopback host (localhost, *.localhost, 127.0.0.0/8 or [::1]), not \"{}\"",
+                    "public_origin must be an https:// origin with no path, or http:// on localhost, 127.0.0.1 or [::1], not \"{}\"",
                     t.public_origin
                 ),
             )
@@ -894,7 +894,7 @@ impl HomeConfig {
             Some(o) => Some(hosted_origin(&o).ok_or_else(|| {
                 bad(
                     "origin",
-                    "origin must be an https:// origin with no path, or http:// on a loopback host (localhost, *.localhost, 127.0.0.0/8 or [::1])",
+                    "origin must be an https:// origin with no path, or http:// on localhost, 127.0.0.1 or [::1]",
                 )
             })?),
         };
@@ -1452,8 +1452,7 @@ pub const DEFAULT_MAX_ARTIFACTS: u64 = 200;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostedConfig {
     /// The origin people reach the daemon at, normalized (`https://host[:port]`;
-    /// `http://` only on a loopback host, for development:
-    /// [`hosted_origin`]).
+    /// `http://` only on `localhost`, `127.0.0.1` or `[::1]`, for development).
     pub public_origin: String,
     /// The environment variable the daemon reads the setup secret from, at
     /// start (`CLAX_SETUP_SECRET` when absent).
@@ -1808,12 +1807,24 @@ pub fn hosted_site_domain(
 }
 
 /// `origin` as hosted mode takes it ([`HostedConfig::public_origin`]): its
-/// normalized form ([`crate::origin::normalize_origin`]), or `None` when
-/// it is not a bare `https://` origin or an `http://` one on a loopback
-/// host ([`crate::origin::is_loopback_origin`]).
+/// normalized serialization, or `None` when it is not a bare `https://`
+/// origin or an `http://` one on a loopback name.
 pub fn hosted_origin(origin: &str) -> Option<String> {
-    let o = crate::origin::normalize_origin(origin).ok()?;
-    (o.starts_with("https://") || crate::origin::is_loopback_origin(&o)).then_some(o)
+    let u = url::Url::parse(origin).ok()?;
+    let bare = u.username().is_empty()
+        && u.password().is_none()
+        && matches!(u.path(), "" | "/")
+        && u.query().is_none()
+        && u.fragment().is_none();
+    let local = matches!(
+        u.host(),
+        Some(url::Host::Domain("localhost"))
+            | Some(url::Host::Ipv4(std::net::Ipv4Addr::LOCALHOST))
+            | Some(url::Host::Ipv6(std::net::Ipv6Addr::LOCALHOST))
+    );
+    let ok =
+        bare && u.host().is_some() && (u.scheme() == "https" || (u.scheme() == "http" && local));
+    ok.then(|| u.origin().ascii_serialization())
 }
 
 /// [`HomeConfig::questions_terminal_after_s`] when the key is absent.
@@ -2805,51 +2816,6 @@ mod tests {
         for good in ["clax.run", "ample.com", "example.co"] {
             assert!(site(good).is_ok(), "{good}");
         }
-    }
-
-    #[test]
-    fn any_loopback_host_may_serve_hosted_mode_over_http() {
-        for (given, kept) in [
-            ("http://app.localhost:7490", "http://app.localhost:7490"),
-            ("http://A.B.Localhost/", "http://a.b.localhost"),
-            ("http://127.0.0.2:7490", "http://127.0.0.2:7490"),
-            ("http://127.1.2.3", "http://127.1.2.3"),
-        ] {
-            let h = with(&format!("[hosted]\npublic_origin = \"{given}\"\n"))
-                .hosted()
-                .unwrap()
-                .unwrap();
-            assert_eq!(h.public_origin, kept, "{given}");
-            assert_eq!(hosted_origin(given).as_deref(), Some(kept), "{given}");
-        }
-        for bad in [
-            "http://example.com",
-            "http://localhost.example.com",
-            "http://10.0.0.1:7490",
-            "http://[::2]",
-            "http://app.localhost/app",
-            "http://u@app.localhost",
-            "http://app.localhost?x=1",
-            "http://app.localhost#f",
-            "https://*.example.com",
-            "ftp://localhost",
-        ] {
-            assert_eq!(hosted_origin(bad), None, "{bad}");
-            let e = with(&format!("[hosted]\npublic_origin = \"{bad}\"\n"))
-                .hosted()
-                .unwrap_err()
-                .to_string();
-            assert!(e.contains("public_origin"), "{bad}: {e}");
-        }
-        // A public host under `localhost` still nests with `localhost` as
-        // a site domain.
-        let e = with(
-            "[hosted]\npublic_origin = \"http://app.localhost:7490\"\nsite_domain = \"localhost\"\n",
-        )
-        .hosted()
-        .unwrap_err()
-        .to_string();
-        assert!(e.contains("site_domain"), "{e}");
     }
 
     #[test]
