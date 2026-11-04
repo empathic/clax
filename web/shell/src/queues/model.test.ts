@@ -1,8 +1,29 @@
 import { describe, expect, it } from "vitest";
 import type { Report, ReportPage, ReportState } from "../../../sdk/src/types";
-import { anchorText, browserOf, commitLink, countReports, countsText, parseOrigins, queuesRoute, reportHref, reporterName } from "./model";
+import { type Counts, anchorText, browserOf, changeText, commitLink, containerPath, countReports, countsText, deployments, installTag, parseOrigins, queuesRoute, reportHref, reporterName } from "./model";
 
-const report = (state: ReportState) => ({ state }) as Report;
+describe("installTag", () => {
+  it("is one async tag naming the container and the site's token route, pinned with integrity when it can be", () => {
+    expect(installTag("https://clax.example/", "q1", null)).toBe('<script async src="https://clax.example/_clax/overlay.js" data-container="q1" data-auth="/clax/token"></script>');
+    expect(installTag("https://clax.example", "q1", { src: "/_clax/overlay.js?v=0123456789ab", integrity: "sha256-AA+/=" })).toBe(
+      '<script async src="https://clax.example/_clax/overlay.js?v=0123456789ab" integrity="sha256-AA+/=" crossorigin="anonymous" data-container="q1" data-auth="/clax/token"></script>',
+    );
+    expect(installTag("https://clax.example", 'a"b', null)).toContain('data-container="a&quot;b"');
+    expect(containerPath("q 1")).toBe("/_clax/containers/q%201/config.json");
+  });
+  it("every deployment carries the same tag, naming itself", () => {
+    const d = deployments("https://clax.example", "q1", null);
+    expect(d.map(x => x.id)).toEqual(["render", "edge-cloudflare", "edge-caddy", "edge-nginx", "tag-manager"]);
+    const tag = (id: (typeof d)[number]["id"]) => installTag("https://clax.example", "q1", null, id);
+    expect(tag("render")).toBe('<script async src="https://clax.example/_clax/overlay.js" data-container="q1" data-auth="/clax/token" data-deployment="render"></script>');
+    expect(d.find(x => x.id === "edge-cloudflare")!.artifact).toContain(JSON.stringify(tag("edge-cloudflare")));
+    expect(d.find(x => x.id === "edge-nginx")!.artifact).toContain(`${tag("edge-nginx")}</head>`);
+    for (const x of d) expect(x.artifact.replace(/\\"/g, "\"")).toContain(`data-deployment="${x.id}"`);
+  });
+});
+
+const report = (state: ReportState, expires?: string) => ({ state, claim: expires ? { holder_name: "claude", expires_at: expires } : null }) as Report;
+const counts = (open: number, claimed: number, resolved: number, more = false): Counts => ({ open, claimed, fix_proposed: 0, verified: 0, resolved, more, lapses: null });
 
 describe("parseOrigins", () => {
   it("keeps each line's origin once, skipping blank lines", () => {
@@ -26,15 +47,23 @@ describe("countReports", () => {
     const asked: (string | null)[] = [];
     const c = await countReports(async cursor => { asked.push(cursor); return pages[cursor ?? ""]; });
     expect(asked).toEqual([null, "c2"]);
-    expect(c).toEqual({ open: 2, claimed: 1, fix_proposed: 1, verified: 1, resolved: 1, more: false });
+    expect(c).toEqual({ open: 2, claimed: 1, fix_proposed: 1, verified: 1, resolved: 1, more: false, lapses: null });
     expect(countsText(c)).toBe("2 open · 1 claimed · 1 fix proposed · 1 verified · 1 resolved");
+  });
+
+  it("keeps the soonest a claim's lease lapses", async () => {
+    const c = await countReports(async () => ({
+      reports: [report("claimed", "2026-11-02T10:05:00Z"), report("claimed", "2026-11-02T10:01:00Z"), report("open")],
+      next: null,
+    }));
+    expect(c.lapses).toBe(Date.parse("2026-11-02T10:01:00Z"));
   });
 
   it("stops at the page limit and says there are more", async () => {
     let n = 0;
     const c = await countReports(async () => { n++; return { reports: [report("open")], next: "again" }; }, 3);
     expect(n).toBe(3);
-    expect(c).toEqual({ open: 3, claimed: 0, fix_proposed: 0, verified: 0, resolved: 0, more: true });
+    expect(c).toEqual({ open: 3, claimed: 0, fix_proposed: 0, verified: 0, resolved: 0, more: true, lapses: null });
     expect(countsText(c)).toBe("3+ open · 0+ claimed · 0+ fix proposed · 0+ verified · 0+ resolved");
   });
 });
@@ -80,5 +109,26 @@ describe("a report's reporter, commit, browser and anchor", () => {
     expect(anchorText({ kind: "element", name: "Save button", selector: "#save" })).toBe("Element: Save button");
     expect(anchorText({ kind: "artifact" })).toBe("The whole page");
     expect(anchorText(null)).toBeNull();
+  });
+});
+
+describe("changeText", () => {
+  it("says what rose, the first with its noun", () => {
+    expect(changeText("Bugs", counts(2, 0, 0), counts(1, 1, 0))).toBe("1 report claimed in Bugs.");
+    expect(changeText("Bugs", counts(1, 1, 0), counts(1, 0, 1))).toBe("1 report resolved in Bugs.");
+    expect(changeText("Bugs", counts(0, 1, 0), counts(2, 0, 1))).toBe("2 reports filed, 1 resolved in Bugs.");
+    expect(changeText("Bugs", counts(0, 1, 0), counts(1, 0, 0))).toBe("1 report open again in Bugs.");
+    expect(changeText("Bugs", counts(0, 0, 1), counts(1, 0, 0))).toBe("1 report open again in Bugs.");
+  });
+
+  it("says a fix proposed and a fix verified, and counts neither as filed", () => {
+    const fixed: Counts = { ...counts(0, 0, 0), fix_proposed: 1 };
+    expect(changeText("Bugs", counts(0, 1, 0), fixed)).toBe("1 report fix proposed in Bugs.");
+    expect(changeText("Bugs", fixed, { ...counts(0, 0, 0), verified: 1 })).toBe("1 report verified in Bugs.");
+  });
+
+  it("says nothing when nothing rose or a count is cut short", () => {
+    expect(changeText("Bugs", counts(1, 1, 0), counts(1, 1, 0))).toBeNull();
+    expect(changeText("Bugs", counts(1, 0, 0, true), counts(0, 1, 0, true))).toBeNull();
   });
 });

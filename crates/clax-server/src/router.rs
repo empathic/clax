@@ -7,13 +7,13 @@ use crate::integrations::feedback as feedback_integration;
 use crate::routes::{
     admin, app_bundles, app_drafts, approvals, artifacts, assets, audit_trail, bot, client_imports,
     confirmations, connect, content, discovery, docs, drafts, extension, feedback, git_token,
-    grants, health, inbox, jobs, live, live_layers, login, mcp_http, passkeys, people, perf,
+    grants, health, inbox, installs, jobs, live, live_layers, login, mcp_http, passkeys, people, perf,
     permissions, questions, queue_agent, queue_reporter, queues, remote_apps, remote_artifacts,
     remote_requests, remotes, resolve, room, sample, sessions, settings, site_signin, sites,
     snapshot, stream, surface, tags, threads, token, toolpath, viewers, watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use crate::routes::{events, mcp, net, sign, web_push};
+use crate::routes::{containers, events, mcp, net, sign, web_push};
 use crate::shell;
 use crate::shell::get_page;
 use axum::{
@@ -158,6 +158,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         )
         .route("/api/queues/{qid}/members", get(queues::members))
         .route(
+            "/api/queues/{qid}/responders",
+            get(queues::responders).put(queues::put_responders),
+        )
+        .route(
             "/api/queues/{qid}/members/{public_id}",
             put(queues::put_member).delete(queues::delete_member),
         )
@@ -168,6 +172,16 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route(
             "/api/queues/{qid}/service-grants/{gid}",
             delete(queues::revoke_grant),
+        )
+        // A queue's installs; their public config is with the reporter
+        // routes, in front of the credential layers.
+        .route(
+            "/api/queues/{qid}/installs",
+            get(installs::list).post(installs::create),
+        )
+        .route(
+            "/api/queues/{qid}/installs/{iid}",
+            patch(installs::patch).delete(installs::delete),
         )
         .route("/api/queues/{qid}/reports", get(queue_agent::list))
         .route(
@@ -801,8 +815,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/inbox", get(shell::gallery_page))
         .route("/people", get(shell::gallery_page))
         .route("/queues", get(shell::gallery_page))
+        // A queue's own page and a report's own page; the shell reads the IDs from the path.
         .route("/queues/{qid}", get(shell::gallery_page))
         .route("/queues/{qid}/{tid}", get(shell::gallery_page))
+        .route("/reports", get(shell::gallery_page))
         .route("/tags", get(shell::gallery_page))
         .route("/admin", get(shell::gallery_page))
         .route("/settings", get(shell::gallery_page))
@@ -825,6 +841,8 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/.well-known/clax", get(discovery::get))
         // `/a/<id>[/v/<n>]/<file>`: the shell reads the version and page from the path.
         .route("/a/{aid}/{*rest}", get(shell::artifact_page))
+        // A site's container, read by the one-tag install and the extension.
+        .route("/_clax/containers/{id}/{file}", get(containers::config))
         .route("/_clax/{*path}", get(shell::static_file))
         .route("/sw.js", get(shell::service_worker))
         .layer(clax_http::http_cache::compression());

@@ -28,6 +28,10 @@ describe("ServiceClient", () => {
     expect(JSON.parse(new TextDecoder().decode(body))).toEqual(req);
     const m = /^t=1760000000, n=([\w-]{22}), s=([\w-]{86})$/.exec(headers["clax-signature"]);
     expect(m).not.toBeNull();
+    // A reporter's name goes with the request when given.
+    const named = { ...req, reporter_name: "octocat" };
+    await client.mintReporterToken(named);
+    expect(JSON.parse(new TextDecoder().decode(new Uint8Array(sent[1].init.body as Uint8Array)))).toEqual(named);
     const message = await canonical({
       method: "POST", pathAndQuery: "/api/queues/q1/reporter-tokens", host: "clax.example", t: 1_760_000_000, nonce: m![1], body, token: "cxq_grant",
     });

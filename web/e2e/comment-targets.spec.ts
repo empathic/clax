@@ -24,7 +24,7 @@ const lineRect = (frame: Frame, n: number) => frame.evaluate(line => {
 
 /** The comment-mode outline's rectangle in the frame's viewport, and the viewport height. */
 const outline = (frame: Frame) => frame.evaluate(() => {
-  const o = document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".o")!;
+  const o = document.querySelector("feedback-overlay")!.shadowRoot!.querySelector<HTMLElement>(".o")!;
   const b = o.getBoundingClientRect();
   return { shown: o.style.display === "block", top: b.top, bottom: b.bottom, height: b.height, vh: document.documentElement.clientHeight };
 });

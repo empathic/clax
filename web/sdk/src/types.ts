@@ -35,6 +35,44 @@ export interface Queue {
   role: QueueRole;
 }
 
+/** What an install's overlay is configured with. Wording left out (null)
+ * is the overlay's own default; it names no product unless `product_name`
+ * does. */
+export interface InstallConfig {
+  product_name: string | null;
+  /** The Report button's label (and below, the words before the queue's
+   * name in the Report panel); `reports_button` is "Your reports". */
+  report_label: string | null;
+  queue_label: string | null;
+  reports_button: boolean;
+  picker: boolean;
+  brand_color: string | null;
+}
+
+/** `Install`: one site that embeds the overlay and files into a queue,
+ * as `GET /api/queues/<qid>/installs` lists it. */
+export interface Install {
+  id: string;
+  queue_id: string;
+  name: string;
+  origins: string[];
+  config: InstallConfig;
+  created_at: string;
+  updated_at: string;
+}
+
+/** What `GET /api/installs/<id>/config` answers anyone: the install's
+ * queue (its name, and its pages' paths on the Clax that serves it) and
+ * its config. */
+export interface PublicInstallConfig {
+  install_id: string;
+  name: string;
+  /** The origin the queue's pages are on: Clax's own as home declares it (apps.json), never the request's Host; absent or null when none is declared. */
+  origin?: string | null;
+  queue: { id: string; name: string; reporters_see: ReportersSee; page: string; reporter_page: string };
+  config: InstallConfig;
+}
+
 /** The external artifact a report is filed on. */
 export interface ReportArtifact {
   id: string;
@@ -87,6 +125,13 @@ export interface Report {
   comments: ReportComment[];
   claim: ReportClaim | null;
   created_at: string;
+  /**
+   * Who filed it, in a reporter's answers under `reporters_see: "all"`: the
+   * name the app gave that reporter (null: none), and whether it is the
+   * reader's own. Absent under `"own"` and in a member's answers. Another
+   * reporter's report has `reporter_id` and `metadata` null.
+   */
+  submitter?: Submitter;
   /** What the reporter's browser said at capture; absent when none was
    * sent, and on a report served to a reporter that did not file it. */
   context?: ReportContext;
@@ -242,6 +287,20 @@ export interface Badge {
   report_ids: string[];
 }
 
+/** Who filed a report, as another reporter of its queue may see it. */
+export interface Submitter {
+  name: string | null;
+  you: boolean;
+}
+
+/** `POST /api/queues/{qid}/reporter/view-link`'s answer: a path on the Clax instance, single-use, until `expires_at`. */
+export interface ViewLink {
+  path: string;
+  /** `path` on Clax's own origin as home declares it (apps.json); absent or null when none is declared. */
+  url?: string | null;
+  expires_at: string;
+}
+
 /** `Lease`: what a claim or a renewal answers. */
 export interface Lease {
   lease_id: string;
@@ -259,6 +318,8 @@ export interface ReportPage {
 /** `POST /api/queues/{qid}/reporter-tokens`'s body. */
 export interface ReporterTokenRequest {
   reporter_id: string;
+  /** The name the queue's other reporters see for this one under `reporters_see: "all"`: a display name or handle, never an email; 1 to 120 characters on one line. */
+  reporter_name?: string;
   origin: string;
   /** The reporter key's 32 public bytes in unpadded base64url. */
   public_key: string;

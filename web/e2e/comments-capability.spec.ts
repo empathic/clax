@@ -170,7 +170,7 @@ test(`a custom anchor thread survives a republish`, async ({ page }) => {
   // The bridge's own hover outline stands down while the page anchors.
   await f.locator("#goals h2").hover();
   await f.locator("#goals p").hover();
-  await expect(f.locator("clax-overlay .o")).toBeHidden();
+  await expect(f.locator("feedback-overlay .o")).toBeHidden();
   await f.locator("#canvas").click({ position: { x: 50, y: 50 } });
   const composer = page.locator(".composer");
   await expect(composer.locator(".composer-quote")).toContainText("Red square");

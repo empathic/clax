@@ -1418,6 +1418,7 @@ pub fn guest_need(method: &Method, path: &str, query: Option<&str>) -> GuestNeed
         | ["queues"]
         | ["queues", _]
         | ["queues", _, _]
+        | ["reports"]
         | ["admin"]
         | ["settings"]
         | ["me"]
@@ -2424,6 +2425,26 @@ mod tests {
             (Method::GET, "/inbox", None, Gallery),
             (Method::GET, "/tags", None, Gallery),
             (Method::GET, "/queues", None, Gallery),
+            (
+                Method::GET,
+                "/queues/01M66XHDKTMTCVB95FE9BQN04V",
+                None,
+                Gallery,
+            ),
+            (
+                Method::GET,
+                "/queues/01M66XHDKTMTCVB95FE9BQN04V/01J9AAAAAAAAAAAAAAAAAAAAAA",
+                None,
+                Gallery,
+            ),
+            (
+                Method::POST,
+                "/queues/01M66XHDKTMTCVB95FE9BQN04V",
+                None,
+                Refused,
+            ),
+            (Method::GET, "/queues/a/b/c", None, Refused),
+            (Method::GET, "/reports", None, Gallery),
             (Method::GET, "/admin", None, Gallery),
             (Method::GET, "/settings", None, Gallery),
             (Method::GET, "/me", None, Gallery),

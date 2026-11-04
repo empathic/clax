@@ -189,6 +189,18 @@ pub async fn gallery_page(
     entry(&s, &req, "index.html")
 }
 
+/// `/reporter/<qid>[/<tid>]`: the gallery's entry, which shows a reporter's
+/// view of its queue by its path (`crate::routes::queue_reporter_view`).
+///
+/// # Errors
+/// 503 `ui_not_built` without a web build.
+pub fn reporter_page(
+    s: &clax_http::state::AppState,
+    req: &HeaderMap,
+) -> Result<Response, ApiError> {
+    entry(s, req, "index.html")
+}
+
 /// `/a/…`: `artifact.html` with the first-load data ([`boot`]), or the
 /// gallery for a path that names no artifact (the shell shows the gallery for
 /// it too).
@@ -513,7 +525,16 @@ pub async fn static_file(
         return Ok(ApiError::not_found().into_response());
     };
     if let Some(ty) = embed_file(&path) {
-        return Ok(embed_answer(ty, f.data.into_owned()));
+        let cc = if path == "overlay.d.ts" {
+            "public, max-age=3600"
+        } else {
+            versioned_cache_control(query.as_deref(), &short_hash(&f.sha256))
+        };
+        let mut res = http_cache::tagged(&req, &f.data, cc, || {
+            ([(header::CONTENT_TYPE, ty)], f.data.clone().into_owned()).into_response()
+        });
+        embed_headers(res.headers_mut());
+        return Ok(res);
     }
     let ct = static_type(&path);
     if file == BRIDGE || file == TRANSPORT {
@@ -572,19 +593,44 @@ pub fn embed_file(path: &str) -> Option<&'static str> {
     }
 }
 
-/// An embeddable overlay file's answer (`embed_file`): `body` as type
-/// `ty`, cached for an hour, readable from any origin, not sniffed.
-fn embed_answer(ty: &'static str, body: Vec<u8>) -> Response {
-    (
-        [
-            (header::CONTENT_TYPE, ty),
-            (header::CACHE_CONTROL, "public, max-age=3600"),
-            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
-            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-        ],
-        body,
-    )
-        .into_response()
+/// The headers of an embeddable overlay file's answer (`embed_file`), a
+/// `304` too: readable from any origin (so `<script crossorigin
+/// integrity=…>` checks it) and by a page that isolates itself
+/// (`Cross-Origin-Resource-Policy`), not sniffed. The script is cached
+/// like a CDN's: immutable at `?v=<its version>` ([`overlay_pin`]),
+/// revalidated with its `ETag` at the bare URL.
+fn embed_headers(h: &mut HeaderMap) {
+    h.insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        HeaderValue::from_static("*"),
+    );
+    h.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    h.insert(
+        "cross-origin-resource-policy",
+        HeaderValue::from_static("cross-origin"),
+    );
+}
+
+/// Where the overlay's classic script sits in the web UI.
+const OVERLAY: &str = "_clax/overlay.js";
+
+/// The overlay this instance serves, as a pinned install names it: its
+/// version (`/_clax/overlay.js?v=<version>`, immutable there) and its
+/// Subresource Integrity (`sha256-<base64>`). `None` when the UI is not
+/// built.
+pub fn overlay_pin(web: &dyn FileTree) -> Option<(String, String)> {
+    use base64::Engine as _;
+    let h = web.sha256(OVERLAY)?;
+    Some((
+        short_hash(&h),
+        format!(
+            "sha256-{}",
+            base64::engine::general_purpose::STANDARD.encode(h)
+        ),
+    ))
 }
 
 /// How [`static_file`] caches `/_clax/<path>` when another host serves the
@@ -593,7 +639,10 @@ fn embed_answer(ty: &'static str, body: Vec<u8>) -> Response {
 /// whose URLs are immutable only at the version they serve, and the
 /// contract's type definitions, which are built in.
 pub fn asset_cache(path: &str) -> Option<&'static str> {
-    if path == "bridge.js" || path == "transport.js" || path.starts_with("contract/") {
+    if matches!(path, "bridge.js" | "transport.js" | "overlay.js")
+        || path.starts_with("contract/")
+        || path.starts_with("containers/")
+    {
         return None;
     }
     let fixed = if cfg!(debug_assertions) {
@@ -776,7 +825,28 @@ mod tests {
     fn another_host_never_serves_the_files_named_by_version() {
         assert_eq!(asset_cache("bridge.js"), None);
         assert_eq!(asset_cache("transport.js"), None);
+        assert_eq!(asset_cache("overlay.js"), None);
+        assert_eq!(asset_cache("containers/q1/config.json"), None);
         assert_eq!(asset_cache("mark.svg"), Some("public, max-age=3600"));
+    }
+
+    #[test]
+    fn the_overlay_is_pinned_by_its_hash_and_integrity() {
+        use base64::Engine as _;
+        let tree = clax_core::embedded::MemTree([(OVERLAY.to_string(), b"x".to_vec())].into());
+        let (v, integrity) = overlay_pin(&tree).unwrap();
+        let h: [u8; 32] = {
+            use sha2::Digest;
+            sha2::Sha256::digest(b"x").into()
+        };
+        assert_eq!(v, short_hash(&h));
+        assert_eq!(
+            integrity,
+            format!(
+                "sha256-{}",
+                base64::engine::general_purpose::STANDARD.encode(h)
+            )
+        );
     }
 
     #[test]

@@ -24,7 +24,7 @@ function oneFileWithTypes(): Plugin {
   };
 }
 
-// The embeddable overlay (overlay/src/main.ts), one classic script a
+// The embeddable overlay and its loader (overlay/src/script.ts), one classic script a
 // deployer's page loads from the instance: `/_clax/overlay.js`, global
 // `Clax`; and the same entry as one ES module, `/_clax/overlay.mjs`, for
 // bundlers. Neither loads anything lazily. Its components' CSS is extracted and written into the script
@@ -35,7 +35,7 @@ export default defineConfig({
   define: { "process.env.NODE_ENV": JSON.stringify("production") },
   build: {
     outDir: "dist/_clax", emptyOutDir: false,
-    lib: { entry: "overlay/src/main.ts", formats: ["iife", "es"], name: "Clax", fileName: format => OUTPUTS[format as keyof typeof OUTPUTS] },
+    lib: { entry: "overlay/src/script.ts", formats: ["iife", "es"], name: "Clax", fileName: format => OUTPUTS[format as keyof typeof OUTPUTS] },
     rollupOptions: { output: { inlineDynamicImports: true } },
     minify: true, sourcemap: false, cssCodeSplit: false,
   },

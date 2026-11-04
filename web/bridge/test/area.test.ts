@@ -73,7 +73,7 @@ describe("the containing element", () => {
   });
   it("skips the Clax overlay", () => {
     document.body.innerHTML = `<p>x</p>`;
-    const overlay = document.createElement("clax-overlay");
+    const overlay = document.createElement("feedback-overlay");
     document.documentElement.appendChild(overlay);
     place(overlay, { left: 0, top: 0, width: 5000, height: 5000 });
     place(document.body, { left: 0, top: 0, width: 800, height: 600 });

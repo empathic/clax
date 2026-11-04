@@ -1,6 +1,6 @@
 {
   "targets": {
-    "drawn": "frame:clax-overlay .a, clax-overlay .f",
+    "drawn": "frame:feedback-overlay .a, feedback-overlay .f",
     "composer": ".stage .composer",
     "thread": ".thread-card[data-thread]",
     "strip": ".strip.ag",

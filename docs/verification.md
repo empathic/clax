@@ -669,7 +669,7 @@ turning Clax on in its tab, and the side panel is opened for that tab):
    (Chrome reports it to `tabs.onUpdated` as `loading`, then `complete`); a
    page's MutationObserver sees the host hide for the screenshot and show
    again; the composer takes focus (the page sees `blur` and
-   `document.activeElement` = `CLAX-OVERLAY`, and typed keys reach the
+   `document.activeElement` = `FEEDBACK-OVERLAY`, and typed keys reach the
    composer); `window.frames.length` is 0; the post has no clip
    (`captureVisibleTab` needs `activeTab` or `<all_urls>`, spec L8); and the
    page's own iframe of `chrome-extension://<ID>/composer.html` is refused
@@ -1316,7 +1316,7 @@ const frame = page.frame({ url: re }) ?? die("content frame never loaded");
 ok(`browser loaded the shell and the content frame at ${frame.url()}`);
 await page.getByRole("button", { name: "Comment", exact: true }).click();
 await frame.locator("h2").hover();
-await frame.locator("clax-overlay .o").waitFor({ state: "visible" });
+await frame.locator("feedback-overlay .o").waitFor({ state: "visible" });
 await frame.locator("h2").click();
 const composer = page.locator(".composer");
 await composer.locator("img.clip").waitFor({ state: "visible" });

@@ -9,6 +9,8 @@ const target = document.getElementById("app")!;
 // load their own chunk, as does its landing page (`/start/`); every other path is the gallery's.
 if (/^\/(setup$|device$|join\/|signin(\/|$))/.test(location.pathname)) void import("./hosted/SignIn.svelte").then(m => mount(m.default, { target }));
 else if (location.pathname === "/start/") void import("./hosted/Landing.svelte").then(m => mount(m.default, { target }));
+// A reporter's view of its queue (`/reporter/<qid>[/<tid>]`) is its own chunk too: a reporter has no session of the gallery.
+else if (/^\/reporter\//.test(location.pathname)) void import("./queues/ReporterRoute.svelte").then(m => mount(m.default, { target }));
 else {
   // Reporting a problem with Clax (`feedback/`), asked first so the
   // overlay's recorder starts as early as it can, whatever the gallery's

@@ -1,0 +1,256 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clax.dev/schemas/clax.config.schema.json",
+  "title": "Clax install configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "enabled": {
+      "type": "boolean",
+      "description": "Clax on or off on this site.",
+      "default": true
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "launcher": {
+          "type": "boolean",
+          "description": "The floating Report and Your reports buttons in the corner.",
+          "default": true
+        },
+        "targets": {
+          "type": "boolean",
+          "description": "Elements marked data-clax=\"report\" (or \"reports\"), and the `targets` selectors, start Clax.",
+          "default": true
+        },
+        "key": {
+          "type": "string",
+          "maxLength": 1,
+          "description": "A key that starts a report (such as \"f\"); empty for none. Never heard in a text field or with a modifier.",
+          "default": ""
+        },
+        "palette": {
+          "type": "boolean",
+          "description": "\"Send feedback\" and \"Your reports\" are offered to the site's command palette (handle.actions()).",
+          "default": false
+        },
+        "link": {
+          "type": "boolean",
+          "description": "?clax=report (or reports) in the page's address starts Clax on load.",
+          "default": true
+        }
+      }
+    },
+    "targets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "selector",
+          "action"
+        ],
+        "properties": {
+          "selector": {
+            "type": "string",
+            "minLength": 1
+          },
+          "action": {
+            "enum": [
+              "report",
+              "reports",
+              "close"
+            ]
+          }
+        }
+      },
+      "description": "More elements that start Clax: a selector each, and its action.",
+      "default": []
+    },
+    "presentation": {
+      "enum": [
+        "floating",
+        "dialog",
+        "drawer",
+        "sheet",
+        "window",
+        "extension"
+      ],
+      "description": "How the composer is shown: floating in the corner, a dialog, a side drawer, a bottom sheet, its own window, or the installed Clax extension (a dialog when it is not installed).",
+      "default": "floating"
+    },
+    "render": {
+      "enum": [
+        "native",
+        "embed"
+      ],
+      "description": "Clax pages (a report, its thread, Your reports) drawn by the SDK in the site's theme, or embedded from Clax.",
+      "default": "native"
+    },
+    "start": {
+      "enum": [
+        "note",
+        "screenshot",
+        "element"
+      ],
+      "description": "What a report starts with: the note, a screenshot of the page, or picking an element.",
+      "default": "element"
+    },
+    "attachments": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "screenshot": {
+          "type": "boolean",
+          "description": "A screenshot can be attached (off: capture is never downloaded).",
+          "default": true
+        },
+        "errors": {
+          "type": "boolean",
+          "description": "The page's recent errors start ticked.",
+          "default": false
+        },
+        "logs": {
+          "type": "boolean",
+          "description": "The app's log lines (from the site's log source) start ticked.",
+          "default": false
+        },
+        "version": {
+          "type": "boolean",
+          "description": "The app's version is sent.",
+          "default": true
+        },
+        "browser": {
+          "type": "boolean",
+          "description": "The browser, platform, language and time zone are sent.",
+          "default": true
+        }
+      }
+    },
+    "annotate": {
+      "type": "boolean",
+      "description": "The reporter can draw on the screenshot.",
+      "default": true
+    },
+    "filters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code-blur": {
+          "type": "boolean",
+          "description": "Code on the page is blurred in screenshots.",
+          "default": true
+        },
+        "code-selector": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "What counts as code, for the blur.",
+          "default": "pre, code, .cm-content, [data-clax-code]"
+        }
+      }
+    },
+    "pickers": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code-line": {
+          "type": "boolean",
+          "description": "A pick in code records its file and lines (from the site's code locator).",
+          "default": false
+        }
+      }
+    },
+    "pins": {
+      "type": "boolean",
+      "description": "Reports are pinned on what they are about.",
+      "default": false
+    },
+    "hooks": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "logs": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "The page's global (a dotted path) giving its recent log lines.",
+          "default": ""
+        },
+        "release": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "The page's global giving the app version: {version, commit?} or a string.",
+          "default": ""
+        },
+        "user": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "The page's global naming the signed-in person.",
+          "default": ""
+        }
+      }
+    },
+    "copy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "type": "string",
+          "maxLength": 80,
+          "description": "The dialog's heading.",
+          "default": "Send feedback"
+        },
+        "intro": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "The dialog's opening paragraph: whose operators read it, where it goes, which identity it is sent with, what is always sent.",
+          "default": ""
+        },
+        "retention": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "The line by the Send button on how long reports are kept.",
+          "default": ""
+        },
+        "reports-label": {
+          "type": "string",
+          "maxLength": 80,
+          "description": "The label of the link or button to the reporter's reports.",
+          "default": "Your reports"
+        },
+        "reports-url": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Where the reports link goes (an https URL, opened in a new tab); empty: the reports open in the dialog's own view.",
+          "default": ""
+        }
+      }
+    },
+    "theme": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^--clax-[a-z0-9-]+$"
+      },
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "--feedback-* (or --clax-*) custom properties: the site's look.",
+      "default": {}
+    },
+    "overrides": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "viewer": {
+          "enum": [
+            "local",
+            "always",
+            "never"
+          ],
+          "description": "Whether a viewer's cookie override applies: on local and tailnet origins only, everywhere, or nowhere. Never itself overridden by the cookie.",
+          "default": "local"
+        }
+      }
+    }
+  }
+}

@@ -199,7 +199,11 @@ export type WorkerToPanel =
   /** The answer to `inbox-page`. */
   | { t: "inbox-page"; req: number; page: InboxPage }
   /** The answer to `inbox-mark` and `inbox-mark-all`: the item when one was marked, how many were, and the unread count after. */
-  | { t: "marked"; req: number; item: InboxItem | null; marked: number; unread: number };
+  | { t: "marked"; req: number; item: InboxItem | null; marked: number; unread: number }
+  /** The answer to a `queue-*` request: the daemon's JSON for it (the DevTools panel's Queues view reads it). */
+  | { t: "queue-data"; req: number; data: unknown }
+  /** Some queue's reports may have changed (the `queues` ping, or the stream back), told to panels that `queue-watch`. */
+  | { t: "queue-ping" };
 /** Another page of the tab's site, as a thread of it opened in the panel needs it. */
 export type FarPage = { artifactId: string; agents: Participants["agents"]; versions: VersionTag[] };
 
@@ -260,6 +264,13 @@ export type PanelToWorker =
   | { t: "q-pull"; req: number; questionId: string }
   /** One page of the inbox matching `filter`, after cursor `before`. */
   | { t: "inbox-page"; req: number; filter: InboxFilter; before: string | null }
+  /** The DevTools panel's Queues view, on no tab: follow the `queues` ping (or stop), and the owner's
+   * queues' triage reads, replies and resolves (never a claim), each answered by `queue-data` or a `failed`. */
+  | { t: "queue-watch"; on: boolean }
+  | { t: "queue-list"; req: number }
+  | { t: "queue-reports"; req: number; qid: string; cursor: string | null }
+  | { t: "queue-report" | "queue-clip" | "queue-resolve"; req: number; qid: string; tid: string }
+  | { t: "queue-reply"; req: number; qid: string; tid: string; body: string }
   /** Marks items read, or one item unread (`ids` names one then). */
   | { t: "inbox-mark"; req: number; ids: string[]; read: boolean }
   /** Marks every unread item matching `filter` read, up to `upto` (the newest `seq` shown). */
@@ -426,6 +437,8 @@ export function isToPanel(m: unknown): m is WorkerToPanel {
     case "q-done": return has("req", "question", "closed") && count(m.req) && obj(m.question) && bool(m.closed);
     case "inbox-page": return has("req", "page") && count(m.req) && obj(m.page) && Array.isArray(m.page.items);
     case "marked": return has("req", "item", "marked", "unread") && count(m.req) && (m.item === null || obj(m.item)) && count(m.marked) && count(m.unread);
+    case "queue-data": return has("req", "data") && count(m.req);
+    case "queue-ping": return has();
     default: return false;
   }
 }
@@ -521,6 +534,11 @@ export function isFromPanel(m: unknown): m is PanelToWorker {
     case "inbox-mark-all": return has("req", "filter", "upto") && count(m.req) && (m.filter === null || filter(m.filter)) && (m.upto === null || count(m.upto));
     case "open-url": return has("url", "pageUrl") && daemonPath(m.url) && (m.pageUrl === null || url(m.pageUrl));
     case "open-clax": return has("path") && daemonPath(m.path);
+    case "queue-watch": return has("on") && bool(m.on);
+    case "queue-list": return has("req") && count(m.req);
+    case "queue-reports": return has("req", "qid", "cursor") && count(m.req) && ulid(m.qid) && (m.cursor === null || (typeof m.cursor === "string" && /^[\x21-\x7e]{1,200}$/.test(m.cursor)));
+    case "queue-report": case "queue-clip": case "queue-resolve": return has("req", "qid", "tid") && count(m.req) && ulid(m.qid) && ulid(m.tid);
+    case "queue-reply": return has("req", "qid", "tid", "body") && count(m.req) && ulid(m.qid) && ulid(m.tid) && text(m.body, MAX_BODY);
     case "retry": case "ping": return has();
     default: return false;
   }

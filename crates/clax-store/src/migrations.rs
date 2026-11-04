@@ -2087,6 +2087,56 @@ pub const MIGRATIONS: &[&str] = &[
     "ALTER TABLE viewers ADD COLUMN tailscale_login TEXT;
     CREATE UNIQUE INDEX viewers_tailscale_login ON viewers(tailscale_login)
         WHERE tailscale_login IS NOT NULL;",
+    // 64: a queue's reporters' names, as their app gave them at a token's
+    // minting, and a reporter's view of the queue in Clax: the single-use
+    // codes a view link carries and the sessions a code becomes
+    // (`crate::queues`). Codes and sessions are kept only as SHA-256.
+    "CREATE TABLE queue_reporters (
+        queue_id TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE,
+        reporter_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        PRIMARY KEY (queue_id, reporter_id)
+    ) WITHOUT ROWID;
+    CREATE TABLE queue_view_codes (
+        code_sha256 TEXT PRIMARY KEY,
+        queue_id TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE,
+        service_grant_id TEXT NOT NULL REFERENCES queue_service_grants(id) ON DELETE CASCADE,
+        reporter_id TEXT NOT NULL,
+        report_id TEXT,
+        expires_at TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE TABLE queue_view_sessions (
+        token_sha256 TEXT PRIMARY KEY,
+        queue_id TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE,
+        service_grant_id TEXT NOT NULL REFERENCES queue_service_grants(id) ON DELETE CASCADE,
+        reporter_id TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE INDEX queue_view_codes_by_expiry ON queue_view_codes(expires_at);
+    CREATE INDEX queue_view_sessions_by_expiry ON queue_view_sessions(expires_at);",
+    // 65: a queue's installs, one per site that embeds the overlay and
+    // files into it, with the config its overlay fetches
+    // (`clax_core::install`). A deleted install keeps its row.
+    "CREATE TABLE installs (
+        id TEXT PRIMARY KEY,
+        queue_id TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        origins_json TEXT NOT NULL CHECK (json_valid(origins_json)),
+        config_json TEXT NOT NULL CHECK (json_valid(config_json)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        deleted_at TEXT
+    );
+    CREATE INDEX installs_by_queue ON installs(queue_id) WHERE deleted_at IS NULL;",
+    // 66: who answers a report queue (`crate::queues::responders`): its
+    // ordered responders, the first the first responder, as one JSON list
+    // per queue (`clax_core::queue::Responder`, checked when written).
+    // Numbered after the installs lineage's 65.
+    "CREATE TABLE queue_responders (
+        queue_id TEXT PRIMARY KEY REFERENCES queues(id) ON DELETE CASCADE,
+        responders_json TEXT NOT NULL CHECK (json_valid(responders_json) AND json_type(responders_json) = 'array'),
+        updated_at TEXT NOT NULL
+    ) WITHOUT ROWID;",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -2147,9 +2197,21 @@ pub const FEEDBACK_LOOP_MIGRATION: u32 = BROWSER_LOGIN_MIGRATION + 1;
 /// `usage_rows.rate_source`, as a schema version.
 pub const PRICE_CATALOG_MIGRATION: u32 = FEEDBACK_LOOP_MIGRATION + 1;
 
-/// The migration that adds `viewers.tailscale_login`, as a schema version,
-/// and this build's last.
+/// The migration that adds `viewers.tailscale_login`, as a schema version.
 pub const TAILSCALE_LOGIN_MIGRATION: u32 = PRICE_CATALOG_MIGRATION + 1;
+
+/// The migration that adds reporters' names and their view of a queue
+/// (`queue_reporters`, `queue_view_codes`, `queue_view_sessions`), as a
+/// schema version.
+pub const REPORTER_VIEW_MIGRATION: u32 = TAILSCALE_LOGIN_MIGRATION + 1;
+
+/// The migration that adds a queue's installs (`installs`), as a schema
+/// version.
+pub const INSTALLS_MIGRATION: u32 = REPORTER_VIEW_MIGRATION + 1;
+
+/// The migration that adds who answers a queue (`queue_responders`), as
+/// a schema version, and this build's last.
+pub const RESPONDERS_MIGRATION: u32 = INSTALLS_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -2309,11 +2371,11 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 
 /// What each migration after the app's leaves in the schema, in order:
 /// ClaxBot's ([`CLAXBOT_MIGRATION`]), then [`LEGACY_PATHS_MIGRATION`] to
-/// [`TAILSCALE_LOGIN_MIGRATION`]. They follow the app's in every
+/// [`RESPONDERS_MIGRATION`]. They follow the app's in every
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 14] = [
+const MARKS_AFTER_APP: [Mark<'static>; 17] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
@@ -2328,6 +2390,9 @@ const MARKS_AFTER_APP: [Mark<'static>; 14] = [
     Mark::Table("report_fixes"),
     Mark::Table("price_catalog"),
     Mark::Column("viewers", "tailscale_login"),
+    Mark::Table("queue_reporters"),
+    Mark::Table("installs"),
+    Mark::Table("queue_responders"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -5366,7 +5431,22 @@ mod tests {
             super::PRICE_CATALOG_MIGRATION + 1
         );
         assert!(MIGRATIONS[first + 21].contains("ADD COLUMN tailscale_login"));
-        assert_eq!(MIGRATIONS.len() as u32, super::TAILSCALE_LOGIN_MIGRATION);
+        assert_eq!(
+            super::REPORTER_VIEW_MIGRATION,
+            super::TAILSCALE_LOGIN_MIGRATION + 1
+        );
+        assert!(MIGRATIONS[first + 22].contains("CREATE TABLE queue_reporters ("));
+        assert_eq!(
+            super::INSTALLS_MIGRATION,
+            super::REPORTER_VIEW_MIGRATION + 1
+        );
+        assert!(MIGRATIONS[first + 23].contains("CREATE TABLE installs ("));
+        assert_eq!(
+            super::RESPONDERS_MIGRATION,
+            super::INSTALLS_MIGRATION + 1
+        );
+        assert!(MIGRATIONS[first + 24].contains("CREATE TABLE queue_responders ("));
+        assert_eq!(MIGRATIONS.len() as u32, super::RESPONDERS_MIGRATION);
     }
 
     #[test]
@@ -5516,7 +5596,10 @@ mod tests {
         assert_eq!(super::FEEDBACK_LOOP_MIGRATION, 61);
         assert_eq!(super::PRICE_CATALOG_MIGRATION, 62);
         assert_eq!(super::TAILSCALE_LOGIN_MIGRATION, 63);
-        assert_eq!(user_version(&c), super::TAILSCALE_LOGIN_MIGRATION);
+        assert_eq!(super::REPORTER_VIEW_MIGRATION, 64);
+        assert_eq!(super::INSTALLS_MIGRATION, 65);
+        assert_eq!(super::RESPONDERS_MIGRATION, 66);
+        assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
@@ -6296,7 +6379,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::TAILSCALE_LOGIN_MIGRATION);
+        assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -6791,15 +6874,16 @@ mod tests {
         // migrations to 54, the return-to migration to 55, the version
         // declarations' to 56, the quickstart's to 57, the capability
         // approvals' to 58, the queues' to 59, the browser login's to 60,
-        // the feedback loop's to 61, the price catalog's to 62 and the
-        // tailnet login's to 63.
+        // the feedback loop's to 61, the price catalog's to 62, the
+        // tailnet login's to 63, the reporter view's to 64 and the
+        // installs' to 65.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::TAILSCALE_LOGIN_MIGRATION);
+            assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
             (columns_of(&c), every_row(&c))
         };
 
@@ -6807,8 +6891,8 @@ mod tests {
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(
             user_version(&c),
-            super::TAILSCALE_LOGIN_MIGRATION + 1,
-            "ClaxBot's 50 and the migrations 51 to 63 after it are one later now"
+            super::RESPONDERS_MIGRATION + 1,
+            "ClaxBot's 50 and the migrations 51 to 66 after it are one later now"
         );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
@@ -6827,7 +6911,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), super::TAILSCALE_LOGIN_MIGRATION);
+        assert_eq!(user_version(&copied), super::RESPONDERS_MIGRATION);
         assert_eq!(
             every_row(&copied),
             before,
@@ -6841,7 +6925,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (super::TAILSCALE_LOGIN_MIGRATION + 1, schema, rows)
+            (super::RESPONDERS_MIGRATION + 1, schema, rows)
         );
     }
 
@@ -7115,7 +7199,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, super::TAILSCALE_LOGIN_MIGRATION);
+        assert_eq!(last, super::RESPONDERS_MIGRATION);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));
@@ -7488,7 +7572,7 @@ mod tests {
         drop(st);
         {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::TAILSCALE_LOGIN_MIGRATION);
+            assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
             assert_eq!(table_count(&c, "briefs"), 1);
         }
         // Another wip database already holding that viewer and its login.
@@ -7524,7 +7608,7 @@ mod tests {
         );
         drop(st);
         let c = Connection::open(home2.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::TAILSCALE_LOGIN_MIGRATION);
+        assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
         assert_eq!(table_count(&c, "briefs"), 1, "main's 40 ran");
         assert_eq!(table_count(&c, "tags"), 1);
     }
@@ -7567,7 +7651,7 @@ mod tests {
         );
         drop(st);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::TAILSCALE_LOGIN_MIGRATION);
+        assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
         assert!(super::has_column(&c, "device_codes", "return_to").unwrap());
         assert_eq!(table_count(&c, "queues"), 1, "main's 59 ran");
     }
@@ -7610,9 +7694,9 @@ mod tests {
         );
         drop(st);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::TAILSCALE_LOGIN_MIGRATION);
-        for table in ["owner_browser_sessions", "report_fixes", "price_catalog"] {
-            assert_eq!(table_count(&c, table), 1, "main's 60 to 62 ran: {table}");
+        assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
+        for table in ["owner_browser_sessions", "report_fixes", "price_catalog", "queue_reporters"] {
+            assert_eq!(table_count(&c, table), 1, "main's 60 to 62 and 64 ran: {table}");
         }
     }
 }

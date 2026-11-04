@@ -15,7 +15,7 @@
 // overlay moves focus out of itself then, so Enter picks rather than
 // pressing a button.
 
-import { OVERLAY_TAG, UNRENDERED } from "../../bridge/src/anchor";
+import { isOverlayHost, UNRENDERED } from "../../bridge/src/anchor";
 
 /** What keyboard picking drives: the outline, the pick, and what to announce. */
 export interface KeyboardPickHooks {
@@ -71,7 +71,7 @@ export class KeyboardPick {
     const path = e.composedPath();
     const at = path[0];
     if (at instanceof HTMLElement && (at.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(at.tagName))) return;
-    if (path.some(n => n instanceof Element && n.localName === OVERLAY_TAG)) return;
+    if (path.some(n => n instanceof Element && isOverlayHost(n))) return;
     if (!this.key(e.key)) return;
     e.preventDefault();
     e.stopPropagation();

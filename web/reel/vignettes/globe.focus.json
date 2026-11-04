@@ -1,6 +1,6 @@
 {
   "targets": {
-    "drawn": "frame:clax-overlay .a, clax-overlay .f",
+    "drawn": "frame:feedback-overlay .a, feedback-overlay .f",
     "composer": ".composer",
     "thread": ".thread-card:has-text(\"Show these on a spinning 3D globe\")",
     "strip": ".strip.ag",

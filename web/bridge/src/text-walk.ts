@@ -3,18 +3,18 @@
 // the finer comment targets (`target.ts`) and region clips (`clip.ts`) work
 // from windows of text around the pointer or the picked range.
 
-import { OVERLAY_TAG } from "./anchor";
+import { OVERLAY_HOSTS, isOverlayHost } from "./anchor";
 
 const SKIP = /^(script|style|noscript|template)$/i;
 /** Characters a text window reaches in each direction from its starting point, at most. */
 export const WINDOW_CAP = 4000;
 
-const skipped = (n: Node) => n.nodeType === Node.ELEMENT_NODE && (SKIP.test((n as Element).localName) || (n as Element).localName === OVERLAY_TAG);
+const skipped = (n: Node) => n.nodeType === Node.ELEMENT_NODE && (SKIP.test((n as Element).localName) || isOverlayHost(n as Element));
 
 /** Whether `t` is text a reader sees. */
 export function readable(t: Text): boolean {
   const p = t.parentElement;
-  return !!p && !SKIP.test(p.localName) && !p.closest(OVERLAY_TAG);
+  return !!p && !SKIP.test(p.localName) && !p.closest(OVERLAY_HOSTS);
 }
 
 /** The node after `n` in document order inside `root`, not entering skipped elements. */

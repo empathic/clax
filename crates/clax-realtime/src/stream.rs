@@ -73,7 +73,9 @@ pub const MAX_DETACHED: usize = 4096;
 /// and `jobs` (the app's jobs and their queue owner, for the owner alone),
 /// and `queue:<qid>` (a `report` delta, IDs and state, whenever a report of
 /// report queue `qid` changes, to the queue's members alone; spec
-/// 2026-10-29-feedback-loop-design §8).
+/// 2026-10-29-feedback-loop-design §8),
+/// and `queues` (a bare `queues` ping whenever a queue's reports may have
+/// changed, for the owner and connected people).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Topic {
     Gallery,
@@ -114,6 +116,7 @@ pub enum Topic {
     Jobs,
     /// A report queue's changes, by queue ID.
     Queue(String),
+    Queues,
 }
 
 impl Topic {
@@ -147,6 +150,9 @@ impl Topic {
                 return Err(format!("'{qid}' is not a queue ID"));
             }
             return Ok(Topic::Queue(qid.to_string()));
+        }
+        if s == "queues" {
+            return Ok(Topic::Queues);
         }
         if let Some(origin) = s.strip_prefix("site:") {
             let normal = clax_core::live::parse_page_url(origin)
@@ -206,6 +212,7 @@ impl Topic {
             Topic::Agents => "agents".into(),
             Topic::Jobs => "jobs".into(),
             Topic::Queue(q) => format!("queue:{q}"),
+            Topic::Queues => "queues".into(),
         }
     }
 
@@ -222,7 +229,8 @@ impl Topic {
             | Topic::People
             | Topic::Agents
             | Topic::Jobs
-            | Topic::Queue(_) => None,
+            | Topic::Queue(_)
+            | Topic::Queues => None,
             Topic::Artifact(a)
             | Topic::ArtifactQuiet(a)
             | Topic::Presence(a)
@@ -321,6 +329,8 @@ impl Topic {
             Topic::Queue(q) => vec![Chan::Queue(q.clone())],
             // Every person sees every agent's name and state (§13, §18).
             Topic::Agents => person.map(|_| Chan::Agents).into_iter().collect(),
+            // A bare ping: each person's refetch shows only their own queues.
+            Topic::Queues => person.map(|_| Chan::Queues).into_iter().collect(),
             Topic::DocsRead { source, reader } => {
                 vec![Chan::DocsRead(source.clone(), reader.clone())]
             }
@@ -383,6 +393,9 @@ enum Chan {
     /// A report queue's report changes, by queue ID; each item reaches the
     /// streams of the queue's members at the change alone.
     Queue(String),
+    /// A queue's reports changed; the streams of the owner and connected
+    /// people subscribe. Every event on it is a bare `queues` ping.
+    Queues,
 }
 
 impl Chan {
@@ -396,6 +409,7 @@ impl Chan {
             Chan::Agents => "agents".into(),
             Chan::Jobs => "jobs".into(),
             Chan::Queue(q) => format!("queue:{q}"),
+            Chan::Queues => "queues".into(),
             Chan::Artifact(a) | Chan::ArtifactQuiet(a) => format!("artifact:{a}"),
             Chan::Presence(a) => format!("presence:{a}"),
             Chan::Working(a) | Chan::Drafts(a) => format!("working:{a}"),
@@ -619,9 +633,11 @@ pub enum SubError {
 /// Whether a live-only stream (one opened through the extension gateway) may
 /// take topic `t`: an `artifact`, `presence` or `working` topic of a live
 /// page in `live`, a `site` topic, `questions` or `inbox` (the extension acts
-/// as the owner); never `gallery`, a `docs` topic (spec
-/// 2026-10-05-chrome-overlay-design §9.5) or `people`, which the panel does
-/// not show.
+/// as the owner), or `queues` (the DevTools panel's Queues view: a bare ping
+/// naming no queue or report, after which the extension's refetch of `GET
+/// /api/queues` shows only the owner's own); never `gallery`, a `docs` topic
+/// (spec 2026-10-05-chrome-overlay-design §9.5) or `people`, which the panel
+/// does not show.
 pub fn live_only_admits(live: &crate::live::LiveIds, t: &Topic) -> bool {
     match t {
         Topic::Gallery
@@ -633,7 +649,7 @@ pub fn live_only_admits(live: &crate::live::LiveIds, t: &Topic) -> bool {
         | Topic::Agents
         | Topic::Jobs
         | Topic::Queue(_) => false,
-        Topic::Site(_) | Topic::Questions | Topic::Inbox => true,
+        Topic::Site(_) | Topic::Questions | Topic::Inbox | Topic::Queues => true,
         Topic::Artifact(a) | Topic::ArtifactQuiet(a) | Topic::Presence(a) | Topic::Working(a) => {
             live.contains(a)
         }
@@ -899,6 +915,7 @@ fn routes_loud(ev: &Event) -> Vec<(Chan, Gate)> {
             Chan::Queue(queue_id.clone()),
             Gate::People(members.clone().into()),
         )],
+        Event::Queues => vec![(Chan::Queues, Gate::Any)],
         // Tag names are the owner's, shown with every artifact anyone sees;
         // the event carries no name, only what to refetch.
         Event::Tags {
@@ -958,6 +975,10 @@ fn project(
     // (a question, request or working record is its person's alone).
     if matches!(chan, Chan::Agents) {
         return Some(("agents", json!({"topic": topic})));
+    }
+    // Nor does the queues channel: clients refetch `GET /api/queues`.
+    if matches!(chan, Chan::Queues) {
+        return Some(("queues", json!({"topic": topic})));
     }
     let data = match (ev, chan) {
         (
@@ -3630,6 +3651,43 @@ mod tests {
             drain(&mut lan).is_empty(),
             "a stream of no person holds no roster"
         );
+    }
+
+    #[test]
+    fn the_queues_topic_pings_every_person_and_names_nothing() {
+        assert_eq!(Topic::parse("queues"), Ok(Topic::Queues));
+        assert_eq!(Topic::Queues.name(), "queues");
+        assert_eq!(Topic::Queues.artifact(), None);
+        // The extension's live-only stream takes it too (the DevTools
+        // panel's Queues view): the ping names nothing.
+        assert!(live_only_admits(
+            &crate::live::LiveIds::default(),
+            &Topic::Queues
+        ));
+        let hub = Hub::new(Default::default());
+        let owner = viewer(Level::Owner, Some("u_o"));
+        let sam = viewer(Level::Interact, Some("u_sam"));
+        let mut o = hub.open_for(owner.clone(), true, None, None, Some(String::new()));
+        let mut s = hub.open_for(sam.clone(), true, None, None, Some("u_sam".into()));
+        let mut lan = hub.open_for(sam.clone(), true, None, None, None);
+        let mut g = hub.open_for(owner.clone(), true, None, None, Some(String::new()));
+        hub.update(&o.id, &owner, &[Topic::Queues], &[]).unwrap();
+        hub.update(&s.id, &sam, &[Topic::Queues], &[]).unwrap();
+        hub.update(&lan.id, &sam, &[Topic::Queues], &[]).unwrap();
+        hub.update(&g.id, &owner, &[Topic::Gallery], &[]).unwrap();
+        hub.dispatch(&Event::Queues);
+        for q in [&mut o, &mut s] {
+            let got = drain(q);
+            assert_eq!(got.len(), 1, "{got:?}");
+            let frame = &got[0].1;
+            assert!(frame.starts_with("event: queues\n"), "{frame}");
+            assert!(frame.contains(r#"data: {"topic":"queues"}"#), "{frame}");
+        }
+        assert!(
+            drain(&mut lan).is_empty(),
+            "a stream of no person holds no queues"
+        );
+        assert!(drain(&mut g).is_empty(), "only the queues topic carries it");
     }
 
     #[test]

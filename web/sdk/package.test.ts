@@ -31,8 +31,12 @@ interface Manifest {
 /** What each export gives at run time. */
 const RUNTIME: Record<string, string[]> = {
   ".": ["ClaxError", "ReporterClient"],
-  "./overlay": ["CONTEXT_TIMEOUT_MS", "diagnostics", "forgetReporter", "overlay"],
+  "./overlay": ["CONTEXT_TIMEOUT_MS", "diagnostics", "forgetReporter", "mountOverlay", "overlay"],
   "./service": ["ServiceClient"],
+  "./plugin": ["CANCELLABLE", "CAPABILITIES", "PLUGIN_API_VERSION", "PluginHost", "SLOTS", "definePlugin"],
+  "./config": ["ACTIONS", "FIELDS", "OVERRIDE_COOKIE", "PRESENTATIONS", "START_MODES", "check", "configSchema", "flatten", "isDevOrigin", "linkOverride", "parseContainer", "readOverride", "resolve", "writeOverride"],
+  "./plugins": ["ANNOTATE_TOOLS", "BROWSER_KEYS", "CODE_SELECTOR", "EXTENSION_ATTR", "EXTENSION_EVENT", "PLUGIN_API_VERSION", "PluginHost", "annotate", "appVersion", "areaPicker", "browser", "classic", "codeBlur", "codeLine", "codeRegions", "definePlugin", "diagOf", "displayCapture", "domCapture", "elementPicker", "extensionPresent", "extensionPresentation", "handToExtension", "locateCode", "logs", "pagePicker", "presentations", "theme", "windowPresentation"],
+  "./loader": ["REGISTRY", "authOf", "containerUrl", "install", "installQueued", "pluginsFor"],
 };
 
 let manifest: Manifest;
@@ -85,9 +89,12 @@ describe("the SDK package", () => {
     expect(Object.keys(manifest).sort()).toEqual([
       "author", "bugs", "description", "exports", "homepage", "keywords", "license", "name", "publishConfig", "repository", "sideEffects", "type", "types", "typesVersions", "version",
     ]);
-    expect(Object.keys(manifest.exports).sort()).toEqual([".", "./overlay", "./package.json", "./service"]);
+    expect(Object.keys(manifest.exports).sort()).toEqual([".", "./config", "./loader", "./overlay", "./package.json", "./plugin", "./plugins", "./service"]);
     expect(manifest.types).toBe("./types/sdk/src/index.d.ts");
-    expect(manifest.typesVersions).toEqual({ "*": { overlay: ["./types/overlay/src/main.d.ts"], service: ["./types/sdk/src/service.d.ts"] } });
+    expect(manifest.typesVersions).toEqual({ "*": {
+      overlay: ["./types/overlay/src/main.d.ts"], service: ["./types/sdk/src/service.d.ts"], plugin: ["./types/sdk/src/plugin.d.ts"], config: ["./types/sdk/src/config.d.ts"],
+      plugins: ["./types/overlay/src/plugins/index.d.ts"], loader: ["./types/overlay/src/loader.d.ts"],
+    } });
     for (const k of Object.keys(RUNTIME)) {
       const e = manifest.exports[k];
       if (typeof e === "string") throw new Error(`${k} has no conditions`);
@@ -132,13 +139,13 @@ console.log(JSON.stringify(out));
     expect({ html: document.documentElement.outerHTML, globals: Object.keys(globalThis).sort() }).toEqual(before);
 
     const handle = mod.overlay({ instance: "https://clax.example", queue: "q1", auth: async () => { throw new Error("no backend"); } });
-    const root = document.querySelector("clax-overlay")?.shadowRoot;
+    const root = document.querySelector("feedback-overlay")?.shadowRoot;
     if (!root) throw new Error("the overlay added no shadow root");
     // jsdom has no constructed sheets: the overlay falls back to a <style> (bridge/src/sheet.ts).
     const css = [...(root.adoptedStyleSheets ?? []).flatMap(s => [...s.cssRules].map(r => r.cssText)), ...[...root.querySelectorAll("style")].map(s => s.textContent)].join("\n");
     expect(css).toMatch(/\.launcher\.svelte-/);
     handle.close();
-    expect(document.querySelector("clax-overlay")).toBeNull();
+    expect(document.querySelector("feedback-overlay")).toBeNull();
     expect(readFileSync(join(pkg, "overlay.js"), "utf8")).not.toContain("__CLAX_OVERLAY_COMPONENT_CSS__");
   });
 

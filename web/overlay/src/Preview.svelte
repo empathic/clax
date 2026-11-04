@@ -3,11 +3,14 @@
   // values a send carries (`reportOf`, `reopenOf`): the page, and where on it
   // the report points (a summary, then the whole anchor as its JSON), the exact context JSON, the deployer's metadata, the
   // recent errors' lines when they are ticked, and whether the screenshot goes.
+  // The plugins' lines follow (`sentRows`): each attachment ticked, as it will
+  // be sent. A plugin's data with no line here is never sent (plugin.ts).
+  import type { SentRow } from "../../sdk/src/plugin";
   import type { NewReport, Reopening } from "../../sdk/src/reporter";
   import { contextPreview } from "./model";
 
-  type Props = { sent: NewReport | Reopening; marked: boolean };
-  let { sent, marked }: Props = $props();
+  type Props = { sent: NewReport | Reopening; marked: boolean; sentRows?: SentRow[]; filtered?: string[] };
+  let { sent, marked, sentRows = [], filtered = [] }: Props = $props();
 
   const page = $derived("url" in sent ? sent : null);
   /** The anchor's fields that say where it points, those it has. */
@@ -24,7 +27,7 @@
 
 <details class="sent">
   <summary>What's sent</summary>
-  <p class="small muted">{sent.clip ? (marked ? "The screenshot, with your marks drawn in." : "The screenshot.") : "No screenshot."}</p>
+  <p class="small muted">{sent.clip ? (marked ? "The screenshot, with your marks drawn in." : "The screenshot.") : "No screenshot."}{#if sent.clip && filtered.length}{" "}{filtered.join(". ")}.{/if}</p>
   {#if page}
     <h3>Page</h3>
     <dl class="page">
@@ -56,6 +59,11 @@
   {:else}
     <p class="small muted">Recent errors are not sent.</p>
   {/if}
+  {#each sentRows as r (r.id)}
+    <h3>{r.label}</h3>
+    <pre class="row" data-row={r.id}>{r.preview}</pre>
+    {#if r.privacyNote}<p class="small muted">{r.privacyNote}</p>{/if}
+  {/each}
 </details>
 
 <style>

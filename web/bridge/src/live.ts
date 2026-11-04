@@ -17,7 +17,7 @@
 // page's selectors, text and element paths are untouched; it takes no
 // pointer events.
 
-import { OVERLAY_TAG } from "./anchor";
+import { OVERLAY_HOSTS } from "./anchor";
 import { type AreaRect, areaFractions, boxOf, containingElement } from "./area";
 import { type BridgeToShell, type FramePeer, LIVE_CURSOR_MS, LIVE_DEPTH, type LivePoint, type LiveSelection, PEERS_MAX } from "./protocol";
 import { caretAt } from "./target";
@@ -140,7 +140,7 @@ function caretBox(node: Node, offset: number): DOMRect | null {
  * box; null over nothing of the body. */
 export function pointAt(doc: Document, x: number, y: number): LivePoint | null {
   const hit = typeof doc.elementFromPoint === "function" ? doc.elementFromPoint(x, y) : null;
-  if (!hit || hit.closest(`${LIVE_TAG}, ${OVERLAY_TAG}`)) return null;
+  if (!hit || hit.closest(`${LIVE_TAG}, ${OVERLAY_HOSTS}`)) return null;
   const el = hit === doc.documentElement ? bodyOf(doc) : hit;
   const path = pathOf(doc, el);
   if (!path) return null;

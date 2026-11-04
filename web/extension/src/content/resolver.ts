@@ -4,9 +4,9 @@
 // goes quiet still re-resolves), in the next animation frame, every open
 // thread of the current route (and of the site's other pages) is resolved again; one whose anchor is gone has no box and no number
 // (Detached). Scrolls and resizes only measure the elements found last time.
-// Mutations of Clax's own overlay hosts (every `clax-overlay` element, by
-// default) never start a resolution.
-import { OVERLAY_TAG, type Resolved, resolveAnchor, textIndex, type TextIndex } from "../../../bridge/src/anchor";
+// Mutations of Clax's own overlay hosts (every `feedback-overlay` element,
+// and the legacy `clax-overlay`, by default) never start a resolution.
+import { OVERLAY_HOSTS, type Resolved, resolveAnchor, textIndex, type TextIndex } from "../../../bridge/src/anchor";
 import { placeArea } from "../../../bridge/src/area";
 import { type Box, INDEX_FILE, type ResolveMethod } from "../../../bridge/src/protocol";
 import { rectOf } from "../../../bridge/src/target";
@@ -28,9 +28,9 @@ export const realTimers: Timers = {
   frame: fn => { requestAnimationFrame(() => fn()); },
 };
 
-/** Whether `n` is a `clax-overlay` element or inside one. */
+/** Whether `n` is an overlay host (`OVERLAY_HOSTS`) or inside one. */
 export const inOverlay = (n: Node): boolean =>
-  !!(n.nodeType === Node.ELEMENT_NODE ? (n as Element) : n.parentElement)?.closest(OVERLAY_TAG);
+  !!(n.nodeType === Node.ELEMENT_NODE ? (n as Element) : n.parentElement)?.closest(OVERLAY_HOSTS);
 
 export class Resolver {
   threads: OverlayThread[] = [];

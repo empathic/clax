@@ -4,18 +4,20 @@
   // What a report's reporter's browser said at capture (spec
   // 2026-10-29-feedback-loop-design §5.1), as a card: the release (its
   // commit a link when `app.repo` names the repository, else text), the
-  // feature flags as chips, the browser, the viewport, the page, the
+  // feature flags as chips, the browser, the viewport, the page, where in
+  // the code it points (`app.code`, from the SDK's code-line picker), the
   // capture, the time in the reader's zone and in the reporter's, and the
   // stamp of the server that received it. Every value is the reporter's
   // and shown as text. `zone` and `locale` are the reader's (the browser's
   // when absent).
   import type { ReportContext, ServerStamp } from "../../../sdk/src/types";
-  import { browserOf, commitLink, httpUrl, timeIn } from "./model";
+  import { browserOf, codeOf, commitLink, httpUrl, timeIn } from "./model";
 
   const p: { context?: ReportContext; server?: ServerStamp; zone?: string; locale?: string } = $props();
   const c = $derived(p.context);
   const rel = $derived(c?.release);
   const commit = $derived(commitLink(c));
+  const code = $derived(codeOf(c));
   const env = $derived(c?.environment);
   const flags = $derived(Object.entries(c?.flags ?? {}));
   const flagText = (v: unknown) => (v === true ? "on" : v === false ? "off" : String(v));
@@ -69,6 +71,10 @@
           {#if pageUrl}<a href={pageUrl} target="_blank" rel="noopener noreferrer">{env.url}</a>{:else if env.url}<code>{env.url}</code>{/if}
           {#if env.route}<code class="muted">{env.route}</code>{/if}
         </dd>
+      {/if}
+      {#if code}
+        <dt>Code</dt>
+        <dd>{#if code.href}<a class="code" href={code.href} target="_blank" rel="noopener noreferrer">{code.text}</a>{:else}<code>{code.text}</code>{/if}</dd>
       {/if}
       {#if c.capture}
         <dt>Capture</dt>

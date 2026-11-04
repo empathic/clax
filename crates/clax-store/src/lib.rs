@@ -265,6 +265,9 @@ pub struct Store {
     /// The artifacts whose comments an outside route carries
     /// ([`Store::set_routed_artifacts`]): sent to no agent session.
     routed: RwLock<clax_core::config::RoutedArtifacts>,
+    /// The apps home declares ([`Store::set_apps`]): what a queue's and an
+    /// install's origins expand to.
+    apps: RwLock<Arc<clax_core::apps::Apps>>,
     /// ClaxBot's settings the daemon's configuration sets, laid over the
     /// stored ones on every read ([`Store::set_bot_overrides`]).
     bot_overrides: RwLock<Arc<bot_settings::Overrides>>,
@@ -452,6 +455,7 @@ impl Store {
             resumed_at: Mutex::new(stamp(clock.now())),
             member_caps: RwLock::new(None),
             routed: RwLock::new(clax_core::config::RoutedArtifacts::Listed(Vec::new())),
+            apps: RwLock::default(),
             bot_overrides: RwLock::default(),
             base_url_policy: RwLock::default(),
             #[cfg(test)]

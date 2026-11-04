@@ -3,8 +3,8 @@
 // dist-extension-test/ (the browser tests' build, which adds
 // `host_permissions: ["<all_urls>"]` and the worker's test hook). The
 // worker is one ES module; the overlay is a classic script
-// (content scripts cannot be modules); the composer and the side panel are
-// HTML pages. The manifest is extension-manifest.mjs's. Nothing under
+// (content scripts cannot be modules); the composer, the side panel, the
+// DevTools page and the DevTools panel are HTML pages. The manifest is extension-manifest.mjs's. Nothing under
 // web/extension/key/ is copied: the key reaches a build only as the
 // manifest's `key`.
 import { writeFileSync } from "node:fs";
@@ -39,7 +39,7 @@ async function variant(out, test) {
   }
   await build({ ...shared, root, base: "./", plugins: [svelte({ configFile: `${web}svelte.config.js` })],
     build: { outDir: out, emptyOutDir: false, minify: true, sourcemap: false, modulePreload: { polyfill: false },
-      rollupOptions: { input: { composer: `${root}composer.html`, sidepanel: `${root}sidepanel.html` } } } });
+      rollupOptions: { input: { composer: `${root}composer.html`, sidepanel: `${root}sidepanel.html`, devtools: `${root}devtools.html`, "devtools-panel": `${root}devtools-panel.html` } } } });
   writeFileSync(`${out}/manifest.json`, `${JSON.stringify(extensionManifest(web, { test }), null, 2)}\n`);
   drawIcons(`${out}/icons`);
 }

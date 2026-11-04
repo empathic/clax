@@ -116,10 +116,11 @@ describe("serializeSnapshot", () => {
   });
 
   it("writes open shadow roots as declarative shadow DOM and skips Clax's own elements", () => {
-    const d = doc(`<my-card></my-card><clax-overlay></clax-overlay>`);
+    const d = doc(`<my-card></my-card><feedback-overlay></feedback-overlay><clax-overlay></clax-overlay>`);
     d.querySelector("my-card")!.attachShadow({ mode: "open" }).innerHTML = "<b>inside</b>";
     const html = snap(d);
     expect(html).toContain('<my-card><template shadowrootmode="open"><b>inside</b></template></my-card>');
+    expect(html).not.toContain("feedback-overlay");
     expect(html).not.toContain("clax-overlay");
   });
 

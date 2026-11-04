@@ -12,7 +12,7 @@ const press = (key: string, target: EventTarget = document.body) => {
 const at = () => outlined.at(-1);
 
 beforeEach(() => {
-  document.body.innerHTML = `<main id="m"><h2 id="h">Quarterly goals</h2><section id="s"><p id="p1">Grow revenue</p><p id="p2">Hire</p></section></main><input id="f"><clax-overlay id="o"></clax-overlay>`;
+  document.body.innerHTML = `<main id="m"><h2 id="h">Quarterly goals</h2><section id="s"><p id="p1">Grow revenue</p><p id="p2">Hire</p></section></main><input id="f"><feedback-overlay id="o"></feedback-overlay>`;
   outlined = [];
   picked = [];
   kb?.set(false);

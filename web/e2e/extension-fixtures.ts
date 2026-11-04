@@ -28,6 +28,8 @@ export type Variant = "all-urls" | "origin" | "none";
 
 export type Live = {
   daemon: Daemon; ctx: BrowserContext; sw: Worker; extId: string; site: ViteDevServer; siteDir: string; siteUrl: string;
+  /** The browser's endpoint, with `gesture` or `devtools` (its DevToolsActivePort): `http://127.0.0.1:<port>`. */
+  cdp(): string;
   /** The extension's ID the daemon admits (`GET /api/extension`). */
   daemonExtId: string;
   /** Stops the daemon and starts another on the same home and a new port. */
@@ -55,10 +57,11 @@ export async function freePort(): Promise<number> {
  * over CDP): the extensions domain, on a browser-wide endpoint of its own. */
 const GESTURE_ARGS = ["--enable-unsafe-extension-debugging", "--remote-debugging-port=0"];
 
-async function launch(profile: string, extDir: string, gesture: boolean): Promise<{ ctx: BrowserContext; sw: Worker }> {
+async function launch(profile: string, extDir: string, gesture: boolean, devtools = false): Promise<{ ctx: BrowserContext; sw: Worker }> {
   const ctx = await chromium.launchPersistentContext(profile, {
     channel: "chromium",
-    args: [`--disable-extensions-except=${extDir}`, `--load-extension=${extDir}`, ...(gesture ? GESTURE_ARGS : [])],
+    // `devtools`: each tab opens with DevTools, whose frontend the browser endpoint lists (the Clax DevTools panel's tests).
+    args: [`--disable-extensions-except=${extDir}`, `--load-extension=${extDir}`, ...(gesture || devtools ? GESTURE_ARGS : []), ...(devtools ? ["--auto-open-devtools-for-tabs"] : [])],
   });
   const sw = ctx.serviceWorkers()[0] ?? (await ctx.waitForEvent("serviceworker"));
   // The browser is the owner's on the daemons the worker runs.
@@ -153,7 +156,7 @@ async function browserCdp(profile: string, method: string, params: object): Prom
   }
 }
 
-export const test = base.extend<{ live: Live; variant: Variant; gesture: boolean; bind: string }, { warm: void }>({
+export const test = base.extend<{ live: Live; variant: Variant; gesture: boolean; devtools: boolean; bind: string }, { warm: void }>({
   // Once per worker, before any daemon starts: the binary's first run, so
   // the first-exec scan is not paid inside a daemon's start.
   // oxlint-disable-next-line no-empty-pattern
@@ -165,9 +168,11 @@ export const test = base.extend<{ live: Live; variant: Variant; gesture: boolean
   variant: ["all-urls", { option: true }],
   /** Chromium takes real toolbar clicks over CDP (`iconClick`). */
   gesture: [false, { option: true }],
+  /** Every tab opens with DevTools (the Clax DevTools panel's tests). */
+  devtools: [false, { option: true }],
   /** The address the daemon listens on: every interface for a test that invites a person on the LAN. */
   bind: ["127.0.0.1", { option: true }],
-  live: async ({ variant, gesture, bind }, use, testInfo) => {
+  live: async ({ variant, gesture, devtools, bind }, use, testInfo) => {
     // The daemon's start has its own bound, beyond the test's.
     testInfo.setTimeout(testInfo.timeout + DAEMON_START_MS);
     if (!existsSync(join(EXT_DIR, "manifest.json"))) throw new Error("web/dist-extension-test is missing: run `pnpm run build` in web/");
@@ -219,9 +224,10 @@ export const test = base.extend<{ live: Live; variant: Variant; gesture: boolean
     }
     const status = await fetch(`${daemon.base}/api/extension`, { headers: { authorization: `Bearer ${daemon.token}` } }).then(r => r.json());
     const daemonExtId: string = status.extension_id;
-    const first = await launch(profile, extDir, gesture);
+    const first = await launch(profile, extDir, gesture, devtools);
     const l: Live = {
       daemon, ctx: first.ctx, sw: first.sw, extId: new URL(first.sw.url()).host, site, siteDir, siteUrl, daemonExtId,
+      cdp: () => `http://127.0.0.1:${readFileSync(join(profile, "DevToolsActivePort"), "utf8").trim().split("\n")[0]}`,
       async restartDaemon() {
         await l.daemon.stop({ keepHome: true });
         // A daemon that exits fails the start at once; one still starting is
@@ -230,7 +236,7 @@ export const test = base.extend<{ live: Live; variant: Variant; gesture: boolean
       },
       async restartBrowser() {
         await l.ctx.close();
-        const next = await launch(profile, extDir, gesture);
+        const next = await launch(profile, extDir, gesture, devtools);
         l.ctx = next.ctx;
         l.sw = next.sw;
       },

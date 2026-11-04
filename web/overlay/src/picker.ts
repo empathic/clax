@@ -3,7 +3,7 @@
 // and the DOM-rendered clip of what it points at (`clip.ts`).
 import { buildElementAnchor, buildRangeAnchor } from "../../bridge/src/anchor";
 import { areaBox, boxOf, buildAreaAnchor, containingElement } from "../../bridge/src/area";
-import { type Rect, type RenderResult, renderAreaClipWithReport, renderTargetClipWithReport } from "../../bridge/src/clip";
+import type { Rect, RenderResult } from "../../bridge/src/clip";
 import { CommentMode } from "../../bridge/src/comment-mode";
 import { KeyboardPick } from "./keyboard-pick";
 import type { Anchor } from "../../bridge/src/protocol";
@@ -16,6 +16,8 @@ export interface Picked {
   mode: "element" | "range" | "area";
   rect(): Rect;
   render(): Promise<RenderResult>;
+  /** What was picked (an element, or a text range), for the picker plugins' refinements. */
+  target?: Element | Range;
 }
 
 /** Comment mode as the overlay drives it. */
@@ -31,6 +33,9 @@ export interface Picker {
   done(): void;
   destroy(): void;
 }
+
+/** The clip code, loaded when a pick is first rendered: a site with screenshots off never loads it. */
+const clip = () => import("../../bridge/src/clip");
 
 const boxRect = (b: { left: number; top: number; width: number; height: number }): Rect => ({ x: b.left, y: b.top, w: b.width, h: b.height });
 
@@ -51,13 +56,13 @@ export function describe(t: Element | Range | null): string | null {
  * outlined (`describe`). */
 export function commentPicker(doc: Document, onPick: (p: Picked) => void, onCancel: () => void, onHover: (what: string | null) => void = () => {}): Picker {
   const win = doc.defaultView ?? window;
-  const pickElement = (el: Element) => onPick({ anchor: buildElementAnchor(doc, el), mode: "element", rect: () => boxRect(el.getBoundingClientRect()), render: () => renderTargetClipWithReport(el, win) });
+  const pickElement = (el: Element) => onPick({ anchor: buildElementAnchor(doc, el), mode: "element", target: el, rect: () => boxRect(el.getBoundingClientRect()), render: () => clip().then(m => m.renderTargetClipWithReport(el, win)) });
   const mode = new CommentMode(doc, {
     hover: t => { keys.follow(t); onHover(describe(t)); },
     pickElement,
     pickRange: r => {
       const range = r.cloneRange();
-      onPick({ anchor: buildRangeAnchor(doc, range), mode: "range", rect: () => boxRect(range.getBoundingClientRect()), render: () => renderTargetClipWithReport(range, win) });
+      onPick({ anchor: buildRangeAnchor(doc, range), mode: "range", target: range, rect: () => boxRect(range.getBoundingClientRect()), render: () => clip().then(m => m.renderTargetClipWithReport(range, win)) });
     },
     // As the bridge does: the clip is the drawn rectangle placed on its
     // element at release, cropped out of a render of that element.
@@ -65,7 +70,7 @@ export function commentPicker(doc: Document, onPick: (p: Picked) => void, onCanc
       const el = containingElement(doc, r);
       const anchor = buildAreaAnchor(doc, r, undefined, el);
       const at = areaBox(anchor.area!, boxOf(el));
-      onPick({ anchor, mode: "area", rect: () => areaBox(anchor.area!, boxOf(el)), render: () => renderAreaClipWithReport(el, at, win) });
+      onPick({ anchor, mode: "area", target: el, rect: () => areaBox(anchor.area!, boxOf(el)), render: () => clip().then(m => m.renderAreaClipWithReport(el, at, win)) });
     },
     cancel: onCancel,
   });

@@ -236,6 +236,8 @@ export interface Draft {
   sending: boolean;
   /** Why the last send failed; the text stays for another try. */
   error: string | null;
+  /** The page (`pageUrl`) the capture and pick were taken on; null before either. */
+  page: string | null;
 }
 
 /** A new draft at `anchor` (none for the whole page), for `purpose`: a new
@@ -243,7 +245,7 @@ export interface Draft {
 export function newDraft(anchor: Anchor | null, purpose: Purpose = { kind: "new" }, includeDiagnostics = false): Draft {
   return {
     purpose, anchor, clip: purpose.kind === "new" ? { state: "taking" } : { state: "none" }, capture: null, shapes: [], marksNote: null, body: "",
-    includeClip: true, includeDiagnostics, diagnostics: [], context: null, metadata: undefined, sending: false, error: null,
+    includeClip: true, includeDiagnostics, diagnostics: [], context: null, metadata: undefined, sending: false, error: null, page: null,
   };
 }
 
@@ -374,7 +376,7 @@ export function contextPreview(ctx: ReportContext): string {
 /** A failure as the reporter reads it. */
 export function failureText(e: unknown): string {
   const code = (e as { code?: unknown } | null)?.code;
-  if (code === "network") return "Clax could not be reached. Try again.";
+  if (code === "network") return "The feedback service could not be reached. Try again.";
   if (code === "wrong_origin") return "This page may not report into this queue.";
   if (code === "not_a_member") return "The queue was not found.";
   if (code === "not_fix_proposed") return "No fix is waiting for your check any more.";
@@ -583,4 +585,6 @@ export interface ReporterApi {
   reopen(reportId: string, r: Reopening): Promise<Report>;
   badge(): Promise<Badge>;
   seen(reportId: string): Promise<void>;
+  /** The URL of the reporter's view of the queue (a single-use link). */
+  viewLink?(reportId?: string): Promise<string>;
 }

@@ -108,7 +108,7 @@ async function post(page: Page, text: string) {
     expect(Math.abs(pin.y - (fb.y + r.y - 12))).toBeLessThan(4);
     // The posted thread is selected, so its area is outlined dashed in the page.
     const focus = (f: Frame) => f.evaluate(() => {
-      const o = document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".f")!;
+      const o = document.querySelector("feedback-overlay")!.shadowRoot!.querySelector<HTMLElement>(".f")!;
       const b = o.getBoundingClientRect();
       return { shown: o.style.display === "block", x: b.x, y: b.y, w: b.width, h: b.height, dashed: getComputedStyle(o).borderTopStyle };
     });
@@ -193,7 +193,7 @@ async function post(page: Page, text: string) {
     await frame.evaluate(() => scrollTo(0, 2000));
     await commentMode(page, frame);
     const outline = () => frame.evaluate(() => {
-      const o = document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".o")!;
+      const o = document.querySelector("feedback-overlay")!.shadowRoot!.querySelector<HTMLElement>(".o")!;
       const b = o.getBoundingClientRect();
       return { shown: o.style.display === "block", h: b.height, vh: document.documentElement.clientHeight };
     });

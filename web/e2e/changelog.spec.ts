@@ -93,7 +93,7 @@ async function commentAs(page: Page, aid: string, name: string, body: string): P
     const card = page.locator(`.section-addressed .thread-card[data-thread="${tid}"]`);
     await reach(page, card.locator(".card-head"));
     await card.locator(".card-head").click();
-    await expect(frame.locator("clax-overlay .o.flash")).toHaveCount(1);
+    await expect(frame.locator("feedback-overlay .o.flash")).toHaveCount(1);
     await card.getByRole("button", { name: "Resolve" }).click();
     await expect(card.locator(".hist")).toContainText("alex resolved");
   });

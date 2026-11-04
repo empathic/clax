@@ -3,7 +3,7 @@
 // and its queue and report views, which alone load this module. Every
 // change is the browser's own session (`SameOrigin`), never the token. A
 // refusal throws `Refused` with the daemon's message and code.
-import type { DiagLine, Queue, QueueRole, Report, ReportPage, ReportState, ReportersSee, ResolveReason, ServiceGrantCreated } from "../../../sdk/src/types";
+import type { DiagLine, Install, InstallConfig, Queue, QueueRole, Report, ReportPage, ReportState, ReportersSee, ResolveReason, ServiceGrantCreated } from "../../../sdk/src/types";
 
 /** What a listing of reports filters by: a state, or `active` (`open` or `claimed`). */
 export type StateFilter = ReportState | "active";
@@ -16,7 +16,7 @@ export class Refused extends Error {
   }
 }
 
-export type { DiagLine, Queue, QueueRole, Report, ReportState, ReportersSee, ResolveReason, ServiceGrantCreated };
+export type { DiagLine, Install, InstallConfig, Queue, QueueRole, Report, ReportState, ReportersSee, ResolveReason, ServiceGrantCreated };
 /** What a queue's form sets. */
 export type QueueFields = { name: string; origins: string[]; reporters_see: ReportersSee };
 /** A queue's member, by public ID, with the name the daemon knows them by. */
@@ -82,3 +82,21 @@ export const listGrants = (qid: string) => call<{ grants: ServiceGrant[] }>(`${q
 export const createGrant = (qid: string, name: string) => call<ServiceGrantCreated>(`${q(qid)}/service-grants`, "POST", { name });
 /** Revokes a service grant, which ends every reporter token it minted. */
 export const revokeGrant = (qid: string, gid: string) => call<unknown>(`${q(qid)}/service-grants/${e(gid)}`, "DELETE");
+
+/** One who answers a queue's reports (Addendum 9): an outside agent by its chitin title, or a ClaxBot profile; the first is the first responder. */
+export type Responder =
+  | { kind: "agent"; name: string; service_grant_id?: string; escalate_after_secs?: number }
+  | { kind: "bot"; profile: { instructions: string; tier: "default" | "quick" | "complex"; max_runs_per_day?: number; tools: string[] }; escalate_after_secs?: number };
+/** Who answers the queue, first responder first. */
+export const listResponders = (qid: string) => call<{ responders: Responder[] }>(`${q(qid)}/responders`);
+/** Replaces who answers the queue, in order. */
+export const setResponders = (qid: string, responders: Responder[]) => call<{ responders: Responder[] }>(`${q(qid)}/responders`, "PUT", { responders });
+
+/** What an install's form sets; `config` is set whole. */
+export type InstallFields = { name: string; origins: string[]; config: InstallConfig };
+/** The queue's installs, oldest first: any member's read. */
+export const listInstalls = (qid: string) => call<{ installs: Install[] }>(`${q(qid)}/installs`);
+export const createInstall = (qid: string, f: InstallFields) => call<{ install: Install }>(`${q(qid)}/installs`, "POST", f);
+export const updateInstall = (qid: string, iid: string, f: Partial<InstallFields>) => call<{ install: Install }>(`${q(qid)}/installs/${e(iid)}`, "PATCH", f);
+/** Deletes an install: its config answers 404 from then on. */
+export const deleteInstall = (qid: string, iid: string) => call<unknown>(`${q(qid)}/installs/${e(iid)}`, "DELETE");

@@ -4,7 +4,7 @@
 // and turns them into words ("the button “Save”", "an image", “Mon 5 km”),
 // never a selector; and the name an anchor records for its element at pick
 // time (`nameOf`). Loaded with the comment part.
-import { OVERLAY_TAG, spacedText, textIndex } from "./anchor";
+import { OVERLAY_HOSTS, spacedText, textIndex } from "./anchor";
 import { KIND_WORDS, MAX_NAME, type PickDesc } from "./protocol";
 
 /** Characters of an element's text its description keeps, at most. */
@@ -52,7 +52,7 @@ function headingBefore(el: Element): Element | null {
   let best: Element | null = null;
   for (const h of el.ownerDocument.querySelectorAll(HEADINGS)) {
     if (!(h.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) break;
-    if (!h.contains(el) && !h.closest(OVERLAY_TAG)) best = h;
+    if (!h.contains(el) && !h.closest(OVERLAY_HOSTS)) best = h;
   }
   return best;
 }

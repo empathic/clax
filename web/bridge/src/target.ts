@@ -4,7 +4,7 @@
 // so the text under the pointer is targeted instead: its line in
 // preformatted text, else the block around it, else its sentence.
 
-import { OVERLAY_TAG } from "./anchor";
+import { OVERLAY_HOSTS } from "./anchor";
 import { type TextWindow, readable, trimmedRange, windowAround } from "./text-walk";
 
 /** An element covering more than this share of the viewport's area is oversized
@@ -275,7 +275,7 @@ export function chooseTarget(doc: Document, el: Element, x: number, y: number, v
   }
   const under = typeof doc.elementsFromPoint === "function" ? doc.elementsFromPoint(x, y) : [];
   for (const e of under) {
-    if (e !== el && el.contains(e) && !e.closest(OVERLAY_TAG) && !isOversized(e.getBoundingClientRect(), vp)) return e;
+    if (e !== el && el.contains(e) && !e.closest(OVERLAY_HOSTS) && !isOversized(e.getBoundingClientRect(), vp)) return e;
   }
   return el;
 }

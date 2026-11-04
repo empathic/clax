@@ -172,3 +172,25 @@ describe("moving a redaction", () => {
       .toEqual([{ kind: "redact", from: { x: 49, y: 10 }, to: { x: 50, y: 11 } }]);
   });
 });
+
+describe("a highlight", () => {
+  it("paints a translucent fill over its span, and moves onto another capture as a box does", async () => {
+    const { HIGHLIGHT_FILL, paint } = await import("./annotate");
+    const calls: [string, unknown][] = [];
+    const ink = new Proxy({} as Record<string, unknown>, {
+      get: (t, k) => (k === "fillRect" ? (...a: number[]) => calls.push(["fillRect", [t.fillStyle, ...a]]) : k === "measureText" ? () => ({ width: 1 }) : k in t ? t[k as string] : () => {}),
+      set: (t, k, v) => { t[k as string] = v; return true; },
+    });
+    paint(ink as never, [{ kind: "highlight", from: { x: 30, y: 20 }, to: { x: 10, y: 5 } }], 1);
+    expect(calls).toEqual([["fillRect", [HIGHLIGHT_FILL, 10, 5, 20, 15]]]);
+    const at = { x: 0, y: 0, w: 100, h: 100 };
+    const moved = remapShapes([{ kind: "highlight", from: { x: 10, y: 10 }, to: { x: 20, y: 20 } }], { at, scale: 1, w: 100, h: 100 }, { at: { x: 5, y: 5, w: 100, h: 100 }, scale: 2, w: 200, h: 200 });
+    expect(moved).toEqual({ shapes: [{ kind: "highlight", from: { x: 10, y: 10 }, to: { x: 30, y: 30 } }], dropped: 0 });
+  });
+
+  it("is drawn from the keyboard like a box", () => {
+    const r = keyStep({ cursor: { x: 5, y: 5 }, corner: { x: 1, y: 1 } }, "Enter", false, "highlight", { w: 40, h: 40 });
+    expect(r.add).toEqual({ kind: "highlight", from: { x: 1, y: 1 }, to: { x: 5, y: 5 } });
+    expect(r.say).toBe("Highlight added.");
+  });
+});

@@ -54,7 +54,7 @@ async function run() {
 /** Runs the timers of `ms`. */
 const elapse = (ms: number) => { const due = pending.filter(e => e.ms === ms); pending = pending.filter(e => e.ms !== ms); due.forEach(e => e.fn()); };
 const tell = (m: unknown) => listeners.forEach(l => l(m, WORKER));
-const host = () => document.querySelector("clax-overlay") as HTMLElement;
+const host = () => document.querySelector("feedback-overlay") as HTMLElement;
 const frames = () => roots.flatMap(r => [...r.querySelectorAll("iframe")]);
 const save = () => document.getElementById("save")!;
 const RECT = { x: 10, y: 20, w: 30, h: 40 };
@@ -67,7 +67,7 @@ async function opened() {
 }
 
 beforeEach(() => {
-  document.querySelectorAll("clax-overlay").forEach(n => n.remove());
+  document.querySelectorAll("feedback-overlay").forEach(n => n.remove());
   document.body.innerHTML = `<main><button id="save">Save</button></main>`;
   sent = []; listeners = []; roots = []; pending = [];
   mode.on = false; mode.visible = true; mode.captured = 0;

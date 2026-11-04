@@ -33,16 +33,22 @@ function originOf(s: string): string | null {
  * IDs and state, for its members alone). */
 export const queueTopic = (qid: string) => `queue:${qid}`;
 
-/** A queue's reports counted by state; `more` when the pages ran past the limit. */
-export type Counts = Record<ReportState, number> & { more: boolean };
+/** A queue's reports counted by state; `more` when the pages ran past the
+ * limit; `lapses` the soonest a claim counted ends (its lease's
+ * `expires_at`, in ms), when one does: no event says a lease lapsed. */
+export type Counts = Record<ReportState, number> & { more: boolean; lapses: number | null };
 
 /** Counts the reports `page` gives, following each page's `next` for at most `limit` pages. */
 export async function countReports(page: (cursor: string | null) => Promise<ReportPage>, limit = 20): Promise<Counts> {
-  const c: Counts = { open: 0, claimed: 0, fix_proposed: 0, verified: 0, resolved: 0, more: false };
+  const c: Counts = { open: 0, claimed: 0, fix_proposed: 0, verified: 0, resolved: 0, more: false, lapses: null };
   let cursor: string | null = null;
   for (let i = 0; i < limit; i++) {
     const p = await page(cursor);
-    for (const r of p.reports) if (r.state in c) c[r.state]++;
+    for (const r of p.reports) {
+      if (r.state in c) c[r.state]++;
+      const end = r.state === "claimed" && r.claim ? Date.parse(r.claim.expires_at) : NaN;
+      if (!Number.isNaN(end) && (c.lapses === null || end < c.lapses)) c.lapses = end;
+    }
     cursor = p.next;
     if (!cursor) return c;
   }
@@ -76,6 +82,8 @@ export const OUTCOME_LABEL: Record<FixOutcome, string> = {
 /** The queue view's tabs: the filter each lists by (`null`: every state). */
 export const TABS: readonly { key: string; label: string; state: StateFilter | null }[] = [
   { key: "active", label: "Active", state: "active" },
+  { key: "open", label: "Open", state: "open" },
+  { key: "claimed", label: "Claimed", state: "claimed" },
   { key: "fix_proposed", label: "Fix proposed", state: "fix_proposed" },
   { key: "verified", label: "Verified", state: "verified" },
   { key: "resolved", label: "Resolved", state: "resolved" },
@@ -91,8 +99,8 @@ export function queuesRoute(pathname: string): QueuesRoute {
   const d = (s: string) => { try { return decodeURIComponent(s); } catch { return s; } };
   return m[2] ? { view: "report", qid: d(m[1]), tid: d(m[2]) } : { view: "queue", qid: d(m[1]) };
 }
-/** The queue view's address, and a report's. */
-export const queueHref = (qid: string) => `/queues/${encodeURIComponent(qid)}`;
+/** The queue view's address (on the tab of `state` when given), and a report's. */
+export const queueHref = (qid: string, state?: string) => `/queues/${encodeURIComponent(qid)}${state && state !== "active" ? `?state=${encodeURIComponent(state)}` : ""}`;
 export const reportHref = (qid: string, tid: string) => `${queueHref(qid)}/${encodeURIComponent(tid)}`;
 
 /** Who filed `r`, as triage knows them: the profile's name or GitHub
@@ -103,6 +111,26 @@ export function reporterName(r: Pick<Report, "reporter_profile" | "reporter_id">
 }
 /** The note `r` was filed with: its first comment. */
 export const noteOf = (r: Pick<Report, "comments">): string => r.comments[0]?.body ?? "";
+
+/** The first line of `r`'s note with any text, trimmed. */
+export const firstLine = (r: Pick<Report, "comments">): string => noteOf(r).split(/\r?\n/).find(l => l.trim())?.trim() ?? "";
+/** How many comments followed `r`'s filing note. */
+export const replyCount = (r: Pick<Report, "comments">): number => Math.max(0, r.comments.length - 1);
+
+/** One queue's listing as far as it has been fetched, the latest filed first. */
+export type Feed = { reports: Report[]; next: string | null };
+const filed = (r: Pick<Report, "created_at">) => Date.parse(r.created_at) || 0;
+/** The reports of every feed, the latest filed first, that are certainly
+ * in order: none newer can come from a feed's next page, so a report
+ * older than the oldest fetched of a feed with more is held back until
+ * that feed is fetched further. */
+export function newestAcross(feeds: readonly Feed[]): Report[] {
+  const all = feeds.flatMap(f => f.reports).sort((a, b) => filed(b) - filed(a) || b.id.localeCompare(a.id));
+  const ends = feeds.filter(f => f.next && f.reports.length).map(f => filed(f.reports[f.reports.length - 1]));
+  if (!ends.length) return all;
+  const cutoff = Math.max(...ends);
+  return all.filter(r => filed(r) >= cutoff);
+}
 
 /** `s` as a link target when it is an http or https URL, else `null`. */
 export function httpUrl(s: string | null | undefined): string | null {
@@ -133,6 +161,26 @@ export function commitLink(ctx: ReportContext | undefined): { text: string; href
   const repo = repoUrl(ctx?.app);
   const href = repo && /^[0-9A-Za-z._-]+$/.test(c) ? `${repo}/commit/${c}` : null;
   return { text: c.length > 12 && /^[0-9a-f]+$/i.test(c) ? c.slice(0, 12) : c, href, host: href ? new URL(href).host : null };
+}
+
+/** Where in the code a report points (`context.app.code`, which the SDK's
+ * code-line picker sends: `{file, start, end, side?, sha?}`), as text and,
+ * when `app.repo` names the repository and a commit is given, a link to
+ * those lines at that commit; null when the context has none or it is not
+ * well formed. */
+export function codeOf(ctx: ReportContext | undefined): { text: string; href: string | null } | null {
+  const app = ctx?.app as { code?: unknown } | undefined;
+  const c = app && typeof app === "object" ? (app.code as Record<string, unknown> | undefined) : undefined;
+  if (!c || typeof c !== "object") return null;
+  const { file, start, end, side, sha } = c;
+  if (typeof file !== "string" || !file || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || (start as number) < 1 || (end as number) < (start as number)) return null;
+  const lines = start === end ? `line ${start}` : `lines ${start}–${end}`;
+  const commit = typeof sha === "string" && /^[0-9a-f]{7,64}$/i.test(sha) ? sha : null;
+  const text = `${file}, ${lines}${side === "LEFT" ? " (old side)" : ""}${commit ? ` at ${commit.slice(0, 12)}` : ""}`;
+  const repo = repoUrl(ctx?.app);
+  const path = file.split("/").map(encodeURIComponent).join("/");
+  const href = repo && commit && side !== "LEFT" ? `${repo}/blob/${commit}/${path}#L${start}${end !== start ? `-L${end}` : ""}` : null;
+  return { text, href };
 }
 
 /** A browser and its major version, read from a user agent: "Chrome 131",
@@ -172,6 +220,68 @@ export function anchorText(anchor: unknown): string | null {
 
 /** A diagnostics line's levels, most severe first. */
 export const LEVELS: readonly DiagLine["level"][] = ["error", "warn", "info", "debug"];
+
+/** The overlay a container's answer pins: `src` relative to the instance. */
+export interface OverlayPin { src: string; integrity: string }
+
+/** Where this instance serves queue `qid`'s container. */
+export const containerPath = (qid: string) => `/_clax/containers/${encodeURIComponent(qid)}/config.json`;
+
+const attr = (v: string) => v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+
+/** The one tag a site pastes to install queue `qid` from `instance`:
+ * pinned to `pin`'s version with its integrity, or the bare URL, which
+ * follows each deploy; `deployment` names the deployment that carries it,
+ * which the DevTools panel's Integration view shows. */
+export function installTag(instance: string, qid: string, pin: OverlayPin | null, deployment?: Deployment["id"]): string {
+  const base = instance.replace(/\/+$/, "");
+  const src = `${base}${pin?.src ?? "/_clax/overlay.js"}`;
+  const sri = pin ? ` integrity="${attr(pin.integrity)}" crossorigin="anonymous"` : "";
+  const dep = deployment ? ` data-deployment="${deployment}"` : "";
+  return `<script async src="${attr(src)}"${sri} data-container="${attr(qid)}" data-auth="/clax/token"${dep}></script>`;
+}
+
+/** A way an integration reaches pages: each with the artifact its owner pastes. */
+export interface Deployment { id: "render" | "edge-cloudflare" | "edge-caddy" | "edge-nginx" | "tag-manager"; label: string; where: string; artifact: string }
+
+/** The copy-paste artifact of each deployment of queue `qid`, each carrying
+ * the same tag (`installTag`) naming that deployment. The extension is the
+ * sixth carrier and needs no artifact: it installs on the pages its owner adds. */
+export function deployments(instance: string, qid: string, pin: OverlayPin | null): Deployment[] {
+  const tag = (d: Deployment["id"]) => installTag(instance, qid, pin, d);
+  return [
+    { id: "render", label: "Page or template", where: "In <head> of each page, or the site's third-party head-snippet setting", artifact: tag("render") },
+    {
+      id: "edge-cloudflare", label: "Cloudflare Worker", where: "A Worker on the site's route",
+      artifact: `export default {\n  async fetch(req, env) {\n    const res = await fetch(req);\n    if (!(res.headers.get("content-type") ?? "").includes("text/html")) return res;\n    return new HTMLRewriter()\n      .on("head", { element(e) { e.append(${JSON.stringify(tag("edge-cloudflare"))}, { html: true }); } })\n      .transform(res);\n  },\n};`,
+    },
+    { id: "edge-caddy", label: "Caddy", where: "In the site's block (needs the replace-response plugin)", artifact: `replace {\n\t"</head>" ${JSON.stringify(`${tag("edge-caddy")}</head>`)}\n}` },
+    { id: "edge-nginx", label: "nginx", where: "In the site's location (ngx_http_sub_module)", artifact: `sub_filter '</head>' '${tag("edge-nginx").replace(/'/g, "\\'")}</head>';\nsub_filter_once on;` },
+    { id: "tag-manager", label: "Tag manager", where: "A Custom HTML tag fired on all pages", artifact: tag("tag-manager") },
+  ];
+}
+
+/** What changed in queue `name` from counts `a` to `b`, as a sentence for
+ * a screen reader: "1 report claimed in Bugs.", "2 reports filed, 1
+ * resolved in Bugs."; `null` when nothing rose or either count is cut
+ * short (`more`). A report back in `open` (released, or reopened by a
+ * comment) is "open again". */
+export function changeText(name: string, a: Counts, b: Counts): string | null {
+  if (a.more || b.more) return null;
+  const total = (c: Counts) => STATES.reduce((n, s) => n + c[s], 0);
+  const added = Math.max(0, total(b) - total(a));
+  const parts: [number, string][] = [
+    [added, "filed"],
+    [b.claimed - a.claimed, "claimed"],
+    [b.fix_proposed - a.fix_proposed, "fix proposed"],
+    [b.verified - a.verified, "verified"],
+    [b.resolved - a.resolved, "resolved"],
+    [b.open - a.open - added, "open again"],
+  ];
+  const said = parts.filter(([n]) => n > 0).map(([n, what], i) => (i === 0 ? `${n} report${n === 1 ? "" : "s"} ${what}` : `${n} ${what}`));
+  if (!said.length) return null;
+  return `${said.join(", ")} in ${name}.`;
+}
 
 /** What to show for a refusal `e`: the daemon's message (lower case, no
  * full stop) as a sentence. */

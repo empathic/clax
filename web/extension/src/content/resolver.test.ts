@@ -27,7 +27,7 @@ const thread = (id: string, selector: string, quote: string | null, route?: stri
 
 let placed: Placed[] = [];
 beforeEach(() => {
-  document.querySelectorAll("clax-overlay").forEach(n => n.remove());
+  document.querySelectorAll("feedback-overlay, clax-overlay").forEach(n => n.remove());
   document.body.innerHTML = `<div id="app"><main><button id="save">Save</button></main></div>`;
   placed = [];
 });
@@ -131,7 +131,7 @@ describe("Resolver", () => {
 
   it("ignores mutations it is told to", async () => {
     const t = manual();
-    const host = document.createElement("clax-overlay");
+    const host = document.createElement("feedback-overlay");
     document.documentElement.appendChild(host);
     let runs = 0;
     const r = new Resolver(document, () => { runs++; }, t, n => host === n || host.contains(n));
@@ -144,15 +144,16 @@ describe("Resolver", () => {
     r.stop();
   });
 
-  it("by default ignores every clax-overlay element, including one moved or added", async () => {
+  it("by default ignores every overlay host, including one moved or added, and the legacy name", async () => {
     const t = manual();
-    const a = document.createElement("clax-overlay");
+    const a = document.createElement("feedback-overlay");
     document.documentElement.appendChild(a);
     let runs = 0;
     const r = new Resolver(document, () => { runs++; }, t);
     r.set([], null);
     t.advance(0);
     a.style.visibility = "hidden";
+    document.documentElement.appendChild(document.createElement("feedback-overlay"));
     document.documentElement.appendChild(document.createElement("clax-overlay"));
     document.documentElement.appendChild(a); // moved last, as comment mode does
     await flush();

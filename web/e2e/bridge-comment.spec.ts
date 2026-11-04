@@ -31,7 +31,7 @@ async function contentFrame(page: Page, id: string, n: number) {
     await expect(toggle).toHaveAttribute("aria-pressed", "true");
     await commentModeIn(frame);
     await frame.locator("h2").hover();
-    await expect(frame.locator("clax-overlay .o")).toBeVisible();
+    await expect(frame.locator("feedback-overlay .o")).toBeVisible();
     expect((await last(page, "clax:hover")).selector).toBe("body > main > h2");
 
     await frame.locator("h2").click();
@@ -65,7 +65,7 @@ async function contentFrame(page: Page, id: string, n: number) {
     await toggle.click();
     await expect(toggle).toHaveAttribute("aria-pressed", "false");
     await frame.locator("h2").hover();
-    await expect(frame.locator("clax-overlay .o")).toBeHidden();
+    await expect(frame.locator("feedback-overlay .o")).toBeHidden();
   });
 
   test(`over a page's modal dialog the outline and the pick reach inside it`, async ({ page }) => {
@@ -80,11 +80,11 @@ async function contentFrame(page: Page, id: string, n: number) {
     // The page's own modal: everything outside it is inert, and it sits in the top layer.
     await frame.evaluate(() => (document.getElementById("fb") as HTMLDialogElement).showModal());
     await expect.poll(() => frame.evaluate(() => {
-      const h = document.querySelector("clax-overlay");
+      const h = document.querySelector("feedback-overlay");
       return !!h && h.parentElement?.id === "fb" && h.matches(":popover-open");
     })).toBe(true);
     await frame.locator("#send").hover();
-    await expect(frame.locator("clax-overlay .o")).toBeVisible();
+    await expect(frame.locator("feedback-overlay .o")).toBeVisible();
     expect((await last(page, "clax:hover")).selector).toBe("#send");
     await frame.locator("#send").click();
     const pick = await last(page, "clax:pick");
@@ -92,6 +92,6 @@ async function contentFrame(page: Page, id: string, n: number) {
     // Closed, the overlay goes back to <html>.
     await page.locator(".composer").getByRole("button", { name: "Cancel" }).click();
     await frame.evaluate(() => (document.getElementById("fb") as HTMLDialogElement).close());
-    await expect.poll(() => frame.evaluate(() => document.querySelector("clax-overlay")?.parentElement === document.documentElement)).toBe(true);
+    await expect.poll(() => frame.evaluate(() => document.querySelector("feedback-overlay")?.parentElement === document.documentElement)).toBe(true);
   });
 }

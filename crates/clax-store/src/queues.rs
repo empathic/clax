@@ -390,7 +390,12 @@ fn normalize_origins(origins: &[String]) -> Result<Vec<String>> {
     }
     let mut out = Vec::with_capacity(origins.len());
     for o in origins {
-        let n = normalize_origin(o)?;
+        // `app:<designator>`: every origin of a declared app
+        // (`clax_core::apps`), resolved at each check.
+        let n = match clax_core::apps::app_ref(o) {
+            Some(d) => format!("{}{d}", clax_core::apps::APP_REF),
+            None => normalize_origin(o)?,
+        };
         if !out.contains(&n) {
             out.push(n);
         }
@@ -722,7 +727,7 @@ fn reports_of(
                 let reporter: Option<String> = r.get(5)?;
                 Ok(ReportComment {
                     id: r.get(0)?,
-                    author_kind: match reporter {
+                    author_kind: match &reporter {
                         Some(_) => AUTHOR_REPORTER.to_string(),
                         None => r.get(1)?,
                     },
@@ -733,6 +738,7 @@ fn reports_of(
                     has_clip: r.get(7)?,
                     diagnostics_lines: r.get::<_, Option<u32>>(8)?.unwrap_or(0),
                     triage_only: r.get(9)?,
+                    reporter_id: reporter,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -964,6 +970,22 @@ fn reporter_filter<'a>(q: &QueueRow, vis: Visibility<'a>) -> (&'static str, Opti
 }
 
 impl Store {
+    /// Sets the apps home declares, which every later check of a queue's or
+    /// an install's origins expands them by ([`clax_core::apps::Apps::expand`]).
+    pub fn set_apps(&self, apps: clax_core::apps::Apps) {
+        *self.apps.write().unwrap_or_else(|e| e.into_inner()) = std::sync::Arc::new(apps);
+    }
+
+    /// The apps home declares ([`Store::set_apps`]); none until set.
+    pub fn apps(&self) -> std::sync::Arc<clax_core::apps::Apps> {
+        self.apps.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// The origins origin list `listed` admits, by the declared apps.
+    pub fn admitted_origins(&self, listed: &[String]) -> Vec<String> {
+        self.apps().expand(listed)
+    }
+
     /// Makes a queue of `person` (`None`: the owner), who is its admin,
     /// recorded as `queue.create {queue_id, name, origins, reporters_see}`
     /// under `ctx`.
@@ -1122,6 +1144,7 @@ impl Store {
                 "DELETE FROM queue_reporter_tokens WHERE queue_id = ?1",
                 params![qid],
             )?;
+            reporter_view::forget_in(tx, "queue_id", qid)?;
             let rec = queue_record(AuditKind::QueueUpdate, &now, qid).with("op", "delete");
             self.record_audit(tx, ctx, rec)?;
             Ok(())
@@ -1438,6 +1461,66 @@ impl Store {
         })
     }
 
+    /// Queue `qid`'s responders, first responder first (none set: empty).
+    ///
+    /// # Errors
+    /// [`CoreError::NotAMember`] for no such queue; database errors.
+    pub fn responders(&self, qid: &str) -> Result<Vec<clax_core::queue::Responder>> {
+        self.with_read(|c| {
+            queue_in(c, qid)?.ok_or(CoreError::NotAMember)?;
+            let raw: Option<String> = c
+                .query_row(
+                    "SELECT responders_json FROM queue_responders WHERE queue_id = ?1",
+                    params![qid],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            Ok(match raw {
+                Some(j) => serde_json::from_str(&j).map_err(|_| CoreError::Corrupt {
+                    artifact_id: qid.to_string(),
+                    column: "queue_responders.responders_json",
+                    version: None,
+                })?,
+                None => Vec::new(),
+            })
+        })
+    }
+
+    /// Replaces queue `qid`'s responders with `rs`, in order, after
+    /// [`clax_core::queue::check_responders`] against its live service
+    /// grants; recorded as `queue.update {op: "responders", count}`.
+    ///
+    /// # Errors
+    /// [`CoreError::NotAMember`] for no such queue; `invalid_responders`.
+    pub fn set_responders(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        rs: &[clax_core::queue::Responder],
+    ) -> Result<()> {
+        let grants: Vec<String> = self
+            .service_grants(qid)?
+            .into_iter()
+            .map(|g| g.id)
+            .collect();
+        clax_core::queue::check_responders(rs, &grants)?;
+        let now = self.now();
+        let json = serde_json::to_string(rs).expect("responders serialise");
+        self.with_tx(|tx| {
+            queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
+            tx.execute(
+                "INSERT INTO queue_responders (queue_id, responders_json, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(queue_id) DO UPDATE SET responders_json = excluded.responders_json, updated_at = excluded.updated_at",
+                params![qid, json, now],
+            )?;
+            let rec = queue_record(AuditKind::QueueUpdate, &now, qid)
+                .with("op", "responders")
+                .with("count", rs.len());
+            self.record_audit(tx, ctx, rec)?;
+            Ok(())
+        })
+    }
+
     /// Queue `qid`'s service grants that are not revoked, oldest first.
     ///
     /// # Errors
@@ -1491,6 +1574,7 @@ impl Store {
                 "DELETE FROM queue_reporter_tokens WHERE service_grant_id = ?1",
                 params![gid],
             )?;
+            reporter_view::forget_in(tx, "service_grant_id", gid)?;
             let rec = queue_record(AuditKind::QueueUpdate, &now, qid)
                 .with("op", "revoke_grant")
                 .with("grant_id", gid);
@@ -1520,7 +1604,29 @@ impl Store {
         public_key: &str,
         profile: Option<&ReporterProfile>,
     ) -> Result<(Secret, String)> {
+        self.mint_named_reporter_token(grant, reporter_id, None, origin, public_key, profile)
+    }
+
+    /// [`Store::mint_reporter_token`], keeping `reporter_name` (when given)
+    /// as the name the queue's other reporters see for `reporter_id`
+    /// (`queue_reporters`; the latest given stands).
+    ///
+    /// # Errors
+    /// [`Store::mint_reporter_token`]'s; `invalid_reporter_name` for a bad
+    /// name.
+    pub fn mint_named_reporter_token(
+        &self,
+        grant: &ServiceGrant,
+        reporter_id: &str,
+        reporter_name: Option<&str>,
+        origin: &str,
+        public_key: &str,
+        profile: Option<&ReporterProfile>,
+    ) -> Result<(Secret, String)> {
         check_reporter_id(reporter_id)?;
+        let reporter_name = reporter_name
+            .map(clax_core::queue::reporter_name)
+            .transpose()?;
         let origin = normalize_origin(origin)?;
         clax_core::sig::decode_public(public_key)
             .map_err(|_| CoreError::invalid("invalid_key", "public_key is not an Ed25519 key"))?;
@@ -1543,7 +1649,7 @@ impl Store {
             let (true, Some(q)) = (live, q) else {
                 return Err(CoreError::NotFound);
             };
-            if !q.origins.contains(&origin) {
+            if !self.apps().admits(&q.origins, &origin) {
                 return Err(CoreError::WrongOrigin);
             }
             tx.execute(
@@ -1565,6 +1671,13 @@ impl Store {
                     profile_json
                 ],
             )?;
+            if let Some(name) = &reporter_name {
+                tx.execute(
+                    "INSERT INTO queue_reporters (queue_id, reporter_id, name) VALUES (?1, ?2, ?3)
+                     ON CONFLICT (queue_id, reporter_id) DO UPDATE SET name = excluded.name",
+                    params![grant.queue_id, reporter_id, name],
+                )?;
+            }
             Ok(())
         })?;
         Ok((token, expires_at))
@@ -3286,6 +3399,11 @@ fn live_session_in(c: &Connection, sid: &str, message: &'static str) -> Result<(
         Err(CoreError::invalid("unknown_session", message))
     }
 }
+
+mod installs;
+mod reporter_view;
+pub use installs::{InstallPatch, NewInstall};
+pub use reporter_view::ViewSession;
 
 #[cfg(test)]
 mod tests;
