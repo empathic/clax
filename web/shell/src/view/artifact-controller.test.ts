@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dispatchTrusted } from "../../../bridge/test/trusted";
 import { FakeWorker, artifactStreams } from "../test/fake-worker";
-import { MOUNT_TIMEOUT_MS, WAIT_MS } from "../test/timeouts";
+import { settled } from "../test/settled";
+import { MOUNT_TIMEOUT_MS } from "../test/timeouts";
 import type { Thread } from "../threads";
 
 const ID = "7q3k9mzx2b4t";
@@ -40,8 +41,7 @@ async function started(seed: Seed = {}) {
   controllers.push(ctl);
   ctl.frame = new FrameHost(stage, () => ctl.frameLoaded());
   ctl.start();
-  const deadline = Date.now() + WAIT_MS;
-  while (!stage.querySelector("iframe") && Date.now() < deadline) await new Promise(r => setTimeout(r, 5));
+  await vi.waitFor(() => expect(stage.querySelector("iframe")).not.toBeNull());
   return { ctl, frame: stage.querySelector("iframe")! };
 }
 
@@ -332,14 +332,15 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await Promise.resolve();
     expect(ui).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(ui).toHaveBeenCalledTimes(1));
-    await new Promise(r => setTimeout(r, 150));
+    // A second pass would wait on an animation frame, which settled() waits out.
+    await settled();
     expect(ui).toHaveBeenCalledTimes(1);
     ctl.dispose();
   });
 
   it("tells a capability host made by an update of the UI only in the pass after the paint", async () => {
     const { ctl } = await started();
-    await new Promise(r => setTimeout(r, 150));
+    await settled();
     const { CapabilityHost } = await import("../caps/host");
     const told: unknown[] = [];
     vi.spyOn(CapabilityHost.prototype, "uiChanged").mockImplementation(function (this: unknown) { told.push(this); });
@@ -348,7 +349,7 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await Promise.resolve();
     expect(told).toEqual([]);
     await vi.waitFor(() => expect(told).toHaveLength(1));
-    await new Promise(r => setTimeout(r, 150));
+    await settled();
     expect(told).toHaveLength(1);
     // The host the update made, not the one it replaced.
     expect((told[0] as { dead: boolean }).dead).toBe(false);
@@ -384,7 +385,7 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     ctl.commentsUi.upsert(t1 as Parameters<typeof upsert>[1]);
     ctl.toggleComment();
     fromFrame(win, { type: "clax:use", id: "u1", name: "storage" });
-    await new Promise(r => setTimeout(r, 50));
+    await settled();
     expect(posted.map(m => m.type)).not.toContain("clax:welcome");
     expect(posted.map(m => m.type)).not.toContain("clax:use-result");
     posted.length = 0;
@@ -408,7 +409,7 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     // The frame now shows another document, which has not loaded yet.
     ctl.toggleComment();
     fromFrame(win, { type: "clax:use", id: "u1", name: "storage" });
-    await new Promise(r => setTimeout(r, 50));
+    await settled();
     expect(posted.map(m => m.type)).not.toContain("clax:welcome");
     expect(posted.map(m => m.type)).not.toContain("clax:use-result");
     hello(win);
@@ -493,9 +494,12 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
   });
 
   it("opens the stream once the frame has loaded, so it never competes with the page's first paint", async () => {
+    // The fallback, `STREAM_WAIT_MS` after the start, runs on fake time: only the frame's load opens the stream here.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { STREAM_WAIT_MS } = await import("./artifact-controller");
     const { ctl } = await started();
     await vi.waitFor(() => expect(ctl.state.get().data).not.toBeNull());
-    await new Promise(r => setTimeout(r, 50));
+    await vi.advanceTimersByTimeAsync(STREAM_WAIT_MS - 1);
     expect(FakeES.last).toBeUndefined();
     ctl.frameLoaded();
     await vi.waitFor(() => expect(FakeES.last).toBeDefined());
@@ -521,14 +525,14 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
       // The topics go live: the view refetches the artifact.
       FakeES.last!.emit("ready", {});
       await vi.waitFor(() => expect(held).toHaveLength(1));
-      if (order === "after") { held[0](); await new Promise(r => setTimeout(r, 0)); }
+      if (order === "after") { held[0](); await settled(); }
       // The agent starts working; the delta arrives while the refetch is in flight (or after).
       FakeES.last!.emit("working", { type: "working", artifact_id: ID, working: [w] });
       expect(ctl.state.get().working).toEqual([w]);
       // The working event refetches the agents; both answers land now.
       await vi.waitFor(() => expect(held.length).toBeGreaterThanOrEqual(2));
       for (const r of held) r();
-      await new Promise(r => setTimeout(r, 10));
+      await settled();
       expect(ctl.state.get().working).toEqual([w]);
       // The roster's agents are the ones refetched, so the working agent shows as working.
       expect(ctl.state.get().agents.map(a => a.handle)).toEqual(["a_2222bbbb"]);
@@ -678,7 +682,7 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     posted.length = 0;
     fromFrame(win, { type: "clax:use", id: "u1", name: "storage" });
     fromFrame(win, { type: "clax:pick-start", pickId: "p1", anchor: { kind: "element", selector: "p", file: "index.html" }, version: 2 });
-    await new Promise(r => setTimeout(r, 50));
+    await settled();
     expect(posted).toEqual([]);
     ctl.dispose();
   });
