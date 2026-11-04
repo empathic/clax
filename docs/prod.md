@@ -44,7 +44,7 @@ scripts/setup-prod-github.sh --i-know-what-i-am-doing   # make them
 ```
 
 It is safe to run again; it reads what exists and changes only what
-differs (the ruleset it writes whole each time). It
+differs (the rulesets it writes whole each time). It
 
 - creates the branch `prod` at the commit clax.dev runs now (the `commit`
   of `https://clax.dev/healthz`, which must be on `main`; `--commit <sha>`
@@ -78,8 +78,28 @@ differs (the ruleset it writes whole each time). It
   drift check, which runs outside the environment;
 - makes the environment `npm` deployable from `prod` and `main` alone:
   `publish-pi.yml` runs in it from `prod`, `publish-sdk.yml` from `main`;
-- prints the commands that set the secrets, which it never runs: the
-  first three with their values, the last two for you to paste into:
+- creates or updates the repository ruleset `release` on
+  `refs/heads/release/*`: only its bypass actors, the repository admins,
+  create, update or delete a release branch. `just release` cuts each
+  release onto `release/X.Y.Z`, and CI refuses a pull request into `prod`
+  from any other branch (`scripts/check-release-head.sh`);
+- makes every `production` deploy wait for the owner's approval: the
+  environment's required reviewer is `OWNER_GITHUB`, which the run
+  therefore needs (`--owner-github`). The owner merges the release pull
+  request, then approves its deploy in the run (Review deployments);
+- creates the environment `staging`, deployable from `release/*` and
+  `main` alone, with the variables `STAGING_HOST_ZONE`
+  (`clax-staging.dev`) and `STAGING_SITE_ZONE` (`clax-staging.run`):
+  "Staging", below. GitHub matches an environment's branch rule against a
+  run's `GITHUB_REF`, which a `pull_request` run has as
+  `refs/pull/<N>/merge`, so no pull request's run reaches its secrets; a
+  `staging` environment that deploys from every branch, or from another
+  one, is narrowed;
+- creates the environment `release`, deployable from `prod` alone, for
+  the release GitHub App's secrets;
+- prints the commands that set the secrets, which it never runs: those
+  with `--body` take values from your deploy configuration, the others
+  are yours to paste into:
 
 ```
 gh secret set CLOUDFLARE_ACCOUNT_ID --env production --repo empathic/clax --body <account ID>
@@ -87,6 +107,13 @@ gh secret set OAUTH_CLIENT_ID --env production --repo empathic/clax --body <clie
 gh secret set OWNER_GITHUB --env production --repo empathic/clax --body <login>
 gh secret set CLOUDFLARE_API_TOKEN --env production --repo empathic/clax
 gh secret set CLAX_SMOKE_TOKEN --env production --repo empathic/clax
+gh secret set CLOUDFLARE_API_TOKEN --env staging --repo empathic/clax
+gh secret set CLOUDFLARE_ACCOUNT_ID --env staging --repo empathic/clax --body <account ID>
+gh secret set OAUTH_CLIENT_ID --env staging --repo empathic/clax
+gh secret set OAUTH_CLIENT_SECRET --env staging --repo empathic/clax
+gh secret set OWNER_GITHUB --env staging --repo empathic/clax --body <login>
+gh secret set RELEASE_APP_ID --env release --repo empathic/clax
+gh secret set RELEASE_APP_PRIVATE_KEY --env release --repo empathic/clax < <the App's private key, .pem>
 ```
 
 ### The Cloudflare API token
@@ -138,9 +165,48 @@ The token goes only to the `production` environment, which only runs on
 
 The deploy's smoke runs as an agent token, never the owner token, which
 never goes to GitHub. Signed in to clax.dev as the owner, make an agent
-token named `smoke` (settings, Agent tokens) and set it as
-`CLAX_SMOKE_TOKEN`. The smoke runs every step an agent can and names each
-owner-only step it skips.
+token named `smoke` (People, Agent tokens: Machine `smoke`, Create token;
+the token is the part after `Bearer ` in the command it shows) and set it
+as `CLAX_SMOKE_TOKEN`. The smoke runs every step an agent can and names
+each owner-only step it skips.
+
+### Staging
+
+A release pull request into `prod` is to be staging while it is open: a
+fresh instance, `clax-pr-<N>` at `https://pr-<N>.clax-staging.dev` with
+its sites at `<ID>.pr-<N>.clax-staging.run`, on prod's Cloudflare account
+and configured as clax.dev is (design:
+[`2026-11-04-release-by-pr-merge-design`](superpowers/specs/2026-11-04-release-by-pr-merge-design.md)).
+This section is its setup; the workflow that deploys it,
+`.github/workflows/staging.yml`, is the design's next part.
+It runs on prod's account so that the plan, the features turned on and
+the limits are prod's own. `clax-staging.dev` and `clax-staging.run` are
+two registrable domains of their own, as `clax.dev` and `clax.run` are,
+so neither is the same site as clax.dev to a browser.
+
+Its credentials, in the `staging` environment:
+
+- **The Cloudflare API token**, limited to prod's account and the zones
+  `clax-staging.dev` and `clax-staging.run`, with prod's permissions
+  (the table above) except Stream: Read in place of Stream: Edit, and
+  with DNS: Edit on `clax-staging.run` for each instance's
+  `*.pr-<N>.clax-staging.run` record. Cloudflare scopes Workers Scripts:
+  Edit to an account, not a script, so this token can change prod's
+  Worker too: only the repository admins, who can merge into `prod`
+  already, run code with it (the `release` ruleset and the environment's
+  branch rule, above).
+- **A GitHub OAuth App of its own** (GitHub, Settings, Developer settings,
+  OAuth Apps, New OAuth App): homepage `https://clax-staging.dev`,
+  authorization callback `https://clax-staging.dev/auth/github/callback`
+  with "Enable wildcard matching" on, so every `pr-<N>.clax-staging.dev`
+  host matches. Its client ID is `OAUTH_CLIENT_ID`, its client secret
+  `OAUTH_CLIENT_SECRET`.
+- `CLOUDFLARE_ACCOUNT_ID` and `OWNER_GITHUB`, prod's.
+
+`clax-staging.run` needs Total TLS (Advanced Certificate Manager; the
+zone's SSL/TLS, Edge Certificates): a site host is two levels below the
+zone, beyond what the universal certificate covers, as on the previews'
+site zone.
 
 ## Feedback: clax.dev's own report queue
 
