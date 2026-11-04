@@ -86,6 +86,10 @@ mod tests {
         }
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "t0 is an origin only: the cache is given each time, t0 plus a fixed offset"
+    )]
     #[test]
     fn an_answer_replays_while_younger_than_both_windows() {
         let c = AnswerCache::default();
