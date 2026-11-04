@@ -72,16 +72,32 @@ async function timed(f) {
   return Math.round(performance.now() - t);
 }
 
-/** Records the frames of every `/api/stream` WebSocket `page` opens. */
+/** Records the frames of every `/api/stream` WebSocket `page` opens, the
+ * stream each `ready` names (the newest last), and the topics each stream
+ * holds after its last subscription change. */
 function watchSockets(page) {
-  const seen = { opened: 0, frames: [] };
+  const seen = { opened: 0, frames: [], streams: [], topics: new Map() };
   page.on("websocket", (ws) => {
     if (!new URL(ws.url()).pathname.endsWith("/api/stream")) return;
     seen.opened += 1;
-    ws.on("framereceived", (f) => seen.frames.push(String(f.payload)));
+    ws.on("framereceived", (f) => {
+      const frame = String(f.payload);
+      seen.frames.push(frame);
+      const data = frame.startsWith("event: ready\n") && frame.match(/^data: (.*)$/m);
+      if (data) seen.streams.push(JSON.parse(data[1]).stream);
+    });
+  });
+  page.on("response", async (r) => {
+    const m = new URL(r.url()).pathname.match(/^\/api\/stream\/([0-9a-f]+)$/);
+    if (!m || r.request().method() !== "POST" || !r.ok()) return;
+    const body = await r.json().catch(() => null);
+    if (Array.isArray(body?.topics)) seen.topics.set(m[1], body.topics);
   });
   return seen;
 }
+
+/** Whether the newest stream `seen` heard of holds `topic`. */
+const holds = (seen, topic) => !!seen.topics.get(seen.streams.at(-1))?.includes(topic);
 
 /** The threads panel, open. */
 async function threads(page) {
@@ -222,13 +238,16 @@ async function main() {
       live,
     );
 
+    // A comment made before the stream holds the artifact's topic reaches
+    // the second browser only by its refetch.
+    await until("the second browser's newest stream holds the artifact's topic", () => holds(sb, `artifact:${id}`));
     await comment(pa, "Add the low water times too.");
     await cardWith(pb, "Add the low water times too.").waitFor({ timeout: LIMIT });
-    check(
-      sb.frames.some((f) => f.startsWith("event: thread") && f.includes(id)),
-      "the comment reaches the second browser live, over its WebSocket",
-      sb.frames.map((f) => f.slice(0, 60)),
-    );
+    const heard = () => sb.frames.some((f) => f.startsWith("event: thread") && f.includes(id));
+    await until("the thread event on the second browser's WebSocket", heard).catch(() => {});
+    check(heard(), "the comment reaches the second browser live, over its WebSocket", sb.frames.map((f) => f.slice(0, 60)));
+    // A resume keeps the stream; only a needless reopen makes another.
+    check(new Set(sb.streams).size === 1, "the second browser's stream is opened once, whatever reopen the tabs ask", sb.streams);
     await shot(pb, "live-comment");
 
     // As after hibernation: a new server on the same storage, the sockets kept.

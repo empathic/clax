@@ -294,7 +294,7 @@ export class Hub {
         // as, so the first ask reopens it and the others find it done.
         if (msg.caller !== undefined) {
           if (!this.up) { this.asked = msg.caller; break; }
-          if (msg.caller === this.caller) break;
+          if (this.answers(msg.caller)) break;
         }
         this.streamId = null;
         // A stream request in flight is left to answer: its `ready` reopens.
@@ -470,6 +470,16 @@ export class Hub {
     });
   }
 
+  /** Whether the open stream is opened as the caller a tab asks for (a
+   * key): the same caller, or any while the stream is the owner's browser's
+   * (`admin` by the events cookie, `owner` by a token the browser itself
+   * sends, which the tabs cannot see). An owner's stream ends by itself
+   * once its credential does, so no ask of a tab's (a viewer named, the
+   * token gained) is answered by another. */
+  private answers(caller: string): boolean {
+    return caller === this.caller || this.caller === "admin" || this.caller === "owner";
+  }
+
   /** Fails connection `ac` unless it is heard from within `ms`; never on the host. */
   private arm(ac: AbortController, ms: number): void {
     if (this.env.host) return;
@@ -489,7 +499,7 @@ export class Hub {
       this.asked = null;
       const reopen = this.reopenAtReady;
       this.reopenAtReady = false;
-      if (reopen || (asked !== null && asked !== this.caller)) {
+      if (reopen || (asked !== null && !this.answers(asked))) {
         // A tab asked for a new stream, or another caller, while this one
         // was being opened.
         this.streamId = null;
