@@ -81,9 +81,7 @@ impl Raw {
     /// The response's status and error code.
     async fn response(mut self) -> (u16, String) {
         let mut buf = Vec::new();
-        let _ = tokio::time::timeout(Duration::from_secs(10), self.stream.read_to_end(&mut buf))
-            .await
-            .expect("a response within 10 s");
+        let _ = clax_testkit::within("a response", self.stream.read_to_end(&mut buf)).await;
         let text = String::from_utf8_lossy(&buf);
         let status = text
             .split(' ')

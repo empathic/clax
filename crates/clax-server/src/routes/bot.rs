@@ -1748,6 +1748,7 @@ pub async fn events(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::{event_for_reader, for_reader, panel_event, quartiles, step_view};
     use serde_json::{Value, json};

@@ -2049,6 +2049,7 @@ fn outgoing_meta(artifact: &clax_core::model::Artifact) -> Value {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

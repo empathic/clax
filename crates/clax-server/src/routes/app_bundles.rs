@@ -470,6 +470,7 @@ pub fn stamp_capabilities(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::{is_lineage, slug};
 

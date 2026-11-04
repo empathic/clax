@@ -839,18 +839,15 @@ async fn the_daily_cap_counts_calls_that_reach_the_provider() {
 /// requests can take a place in between.
 async fn until_queue_full(sampler: &Sampler, viewer: &str) {
     use futures::FutureExt as _;
-    let start = std::time::Instant::now();
-    loop {
-        if let Some(None) = Box::pin(sampler.queues.enter(viewer)).now_or_never() {
-            return;
-        }
-        assert!(
-            start.elapsed() < clax_testkit::HANG,
-            "{viewer}'s queue never filled (hang guard)"
-        );
-        // A poll interval, not a deadline: the loop ends on the condition.
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
+    let what = format!("{viewer}'s queue full");
+    let full = clax_testkit::until(&what, || async {
+        matches!(
+            Box::pin(sampler.queues.enter(viewer)).now_or_never(),
+            Some(None)
+        )
+        .then_some(())
+    });
+    clax_testkit::within(&what, full).await;
 }
 
 #[tokio::test]

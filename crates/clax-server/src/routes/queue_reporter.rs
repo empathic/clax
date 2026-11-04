@@ -733,6 +733,7 @@ pub async fn preflight() -> StatusCode {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     /// These routes run before every credential layer of the daemon, so
     /// each handler but the preflight takes the credential extractor that
@@ -740,7 +741,7 @@ mod tests {
     #[test]
     fn every_handler_takes_its_credential() {
         let src = include_str!("queue_reporter.rs");
-        let src = &src[..src.find("#[cfg(test)]\nmod tests").unwrap()];
+        let src = &src[..src.find("\nmod tests {").unwrap()];
         let mut seen = 0;
         for part in src.split("\npub async fn ").skip(1) {
             let name = part.split('(').next().unwrap();

@@ -901,6 +901,7 @@ pub async fn waiters(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::{Woke, wait_for_change};
     use clax_core::Home;

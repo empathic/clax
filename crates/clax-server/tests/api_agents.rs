@@ -451,7 +451,7 @@ async fn an_agents_end_tells_the_send_menus_of_what_it_watched() {
         .json(&json!({"ended": true}));
     let mut ev = r.sams_stream(&[&format!("artifact:{aid}")]).await;
     assert_eq!(res.send().await.unwrap().status(), 200);
-    let heard = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    let heard = clax_testkit::within("an agents event on the artifact's topic", async {
         loop {
             let (name, data) = ev.next().await;
             if name == "agents" {
@@ -459,8 +459,7 @@ async fn an_agents_end_tells_the_send_menus_of_what_it_watched() {
             }
         }
     })
-    .await
-    .expect("no agents event on the artifact's topic within 10 s");
+    .await;
     assert_eq!(
         heard,
         json!({"topic": format!("artifact:{aid}")}),

@@ -586,8 +586,10 @@ async fn a_merged_viewer_leaves_presence_at_once() {
     assert_eq!(res.status(), 200);
     let mut ev = ts.events(&format!("?artifact={aid}&types=presence")).await;
     login(&ts, &format!("clax_viewer={}", safari.cookie)).await;
-    let e = tokio::time::timeout(std::time::Duration::from_secs(5), ev.next_named("presence"))
-        .await
-        .expect("the merged viewer's presence is dropped at once");
+    let e = clax_testkit::within(
+        "the merged viewer's presence, dropped at once",
+        ev.next_named("presence"),
+    )
+    .await;
     assert_eq!(e["people"], json!([]), "{e}");
 }

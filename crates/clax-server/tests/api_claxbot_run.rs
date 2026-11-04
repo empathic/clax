@@ -9,6 +9,7 @@ use clax_core::audit::AuditCtx;
 use clax_store::bot_settings::Setting;
 use clax_testkit::TestServer;
 use clax_testkit::fake_messages::{FakeMessages, Turn};
+use clax_testkit::within;
 use futures::StreamExt;
 use serde_json::{Value, json};
 
@@ -81,9 +82,7 @@ async fn events(ts: &TestServer, rid: &str, after: Option<&str>) -> Vec<(String,
             }
         }
     };
-    tokio::time::timeout(clax_testkit::HANG, read)
-        .await
-        .expect("the run ended");
+    within("the run's end", read).await;
     out
 }
 
@@ -550,7 +549,7 @@ async fn when<T>(
     mut find: impl FnMut() -> Option<T>,
 ) -> T {
     use tokio::sync::broadcast::error::RecvError;
-    tokio::time::timeout(clax_testkit::HANG, async {
+    within("the condition", async {
         loop {
             if let Some(v) = find() {
                 return v;
@@ -562,7 +561,6 @@ async fn when<T>(
         }
     })
     .await
-    .expect("the condition held")
 }
 
 #[tokio::test]
@@ -799,10 +797,7 @@ async fn a_reader_of_the_artifact_sees_a_runs_outline_alone_and_loses_it_with_th
         .send()
         .await
         .unwrap();
-    let body = tokio::time::timeout(clax_testkit::HANG, res.text())
-        .await
-        .unwrap()
-        .unwrap();
+    let body = within("the run's events", res.text()).await.unwrap();
     assert!(
         !body.contains("secret") && !body.contains("clax.artifact.get"),
         "{body}"
@@ -845,9 +840,8 @@ async fn a_reader_of_the_artifact_sees_a_runs_outline_alone_and_loses_it_with_th
             kind: clax_store::bot_runs::StepKind::Turn,
         },
     );
-    let first = tokio::time::timeout(clax_testkit::HANG, body.next())
+    let first = within("the first event", body.next())
         .await
-        .unwrap()
         .unwrap()
         .unwrap();
     assert!(String::from_utf8_lossy(&first).contains("step_started"));
@@ -874,15 +868,14 @@ async fn a_reader_of_the_artifact_sees_a_runs_outline_alone_and_loses_it_with_th
             summary: json!({}),
         },
     );
-    let rest = tokio::time::timeout(clax_testkit::HANG, async {
+    let rest = within("the stream's end", async {
         let mut out = Vec::new();
         while let Some(chunk) = body.next().await {
             out.extend_from_slice(&chunk.unwrap());
         }
         out
     })
-    .await
-    .expect("the stream ended");
+    .await;
     assert!(!String::from_utf8_lossy(&rest).contains("step_done"));
 }
 
@@ -1149,9 +1142,8 @@ async fn a_runs_events_end_when_the_owner_logs_out() {
             kind: clax_store::bot_runs::StepKind::Turn,
         },
     );
-    let first = tokio::time::timeout(clax_testkit::HANG, body.next())
+    let first = within("the first event", body.next())
         .await
-        .expect("the first event")
         .expect("open")
         .unwrap();
     assert!(String::from_utf8_lossy(&first).contains("step_started"));
@@ -1161,7 +1153,7 @@ async fn a_runs_events_end_when_the_owner_logs_out() {
         .await
         .unwrap();
     assert_eq!(res.status(), 200);
-    let ended = tokio::time::timeout(clax_testkit::HANG, async {
+    within("the run's events' end at logout", async {
         while let Some(chunk) = body.next().await {
             if chunk.is_err() {
                 break;
@@ -1169,7 +1161,6 @@ async fn a_runs_events_end_when_the_owner_logs_out() {
         }
     })
     .await;
-    assert!(ended.is_ok(), "the run's events end at logout");
 }
 
 #[tokio::test]
