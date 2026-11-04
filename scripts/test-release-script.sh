@@ -35,6 +35,8 @@ export GH_REPO=empathic/clax-test
 # No heartbeat but in the case that checks it; each case's clock stands
 # still at $C/now unless a fake moves it.
 export CLAX_RELEASE_HEARTBEAT_SECONDS=0
+# The fakes' wait for a condition (scripts/lib/wait.sh).
+export WAIT_LIB="$HERE/scripts/lib/wait.sh"
 # release.sh runs under the bash running this test (`/bin/bash
 # scripts/test-release-script.sh` tries macOS's bash 3.2).
 TEST_BASH="$BASH"

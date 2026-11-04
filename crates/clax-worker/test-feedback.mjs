@@ -34,7 +34,7 @@
 import { mkdirSync } from "node:fs";
 import { request } from "node:http";
 import { join } from "node:path";
-import { STATE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { HANG_MS, STATE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
 import { base64url, generateSigner, newNonce, signature } from "../../web/sdk/src/sign.ts";
 
 const ROOT = join(STATE, "feedback-test");
@@ -74,9 +74,6 @@ function send(port, method, path, headers, body) {
   });
 }
 
-/** How long a stream read waits for its event before the check fails: a
- * guard against a hang, not a budget (the event comes at once or never). */
-const STREAM_HANG_MS = 30_000;
 
 /** A WebSocket client over node:http, so the upgrade carries exactly
  * `headers` (the public `Host` included): it dispatches `message` (a text
@@ -200,7 +197,7 @@ function openStream(port, headers) {
     ended,
     next: (name) =>
       new Promise((resolve) => {
-        const w = { name, ok: resolve, timer: setTimeout(() => { waiters.splice(waiters.indexOf(w), 1); resolve(null); }, STREAM_HANG_MS) };
+        const w = { name, ok: resolve, timer: setTimeout(() => { waiters.splice(waiters.indexOf(w), 1); resolve(null); }, HANG_MS) };
         waiters.push(w);
         settle();
       }),

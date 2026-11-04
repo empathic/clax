@@ -71,7 +71,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SMOKE_CANNOT, smokeCannot, smokeCredential } from "./deploy-lib.mjs";
-import { HERE, STATE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { HANG_MS, HERE, STATE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
 
 const args = process.argv.slice(2);
 const flag = (n) => args.includes(n);
@@ -82,7 +82,6 @@ const opt = (n) => {
 };
 
 const RUN = Math.random().toString(36).slice(2, 8);
-const STEP_LIMIT = 30_000;
 const results = [];
 const failed = new Set();
 /** Who the smoke acts as, once the credential step chose
@@ -140,7 +139,9 @@ const skip = (why) => {
   throw new Skip(why);
 };
 
-async function until(what, f, ms) {
+/** Polls `f` each second until it answers something truthy; fails past
+ * `ms` (the hang guard unless the caller bounds the wait itself). */
+async function until(what, f, ms = HANG_MS) {
   const end = Date.now() + ms;
   let last;
   for (;;) {
@@ -170,7 +171,7 @@ function run(cmd, argv, opts = {}) {
 /** Fetches `url` (any origin; redirects not followed unless `init.redirect`
  * says so): {res, status, text, json}. */
 async function at(url, init = {}) {
-  const res = await fetch(url, { redirect: "manual", ...init, signal: AbortSignal.timeout(STEP_LIMIT) });
+  const res = await fetch(url, { redirect: "manual", ...init, signal: AbortSignal.timeout(HANG_MS) });
   const text = await res.text();
   let json = null;
   try {
@@ -723,7 +724,7 @@ async function smoke(c, o) {
     for (const service of ["git-upload-pack", "git-receive-pack"]) {
       const res = await fetch(`${remote.replace(/\/$/, "")}/info/refs?service=${service}`, {
         headers: { authorization: `Bearer ${gitToken}`, "user-agent": "git/2.45.0 (smoke-remote)" },
-        signal: AbortSignal.timeout(STEP_LIMIT),
+        signal: AbortSignal.timeout(HANG_MS),
       });
       const buf = Buffer.from(await res.arrayBuffer());
       if (res.status !== 200) throw new Error(`${service}: ${res.status} ${short(buf.toString(), 200)}`);
@@ -811,7 +812,7 @@ async function smoke(c, o) {
 
   await step("the push becomes a version", async () => {
     const queue = store.value === "artifacts";
-    const limit = queue ? Number(opt("--queue-wait") ?? 120) * 1000 : 20_000;
+    const limit = queue ? Number(opt("--queue-wait") ?? 120) * 1000 : HANG_MS;
     const version = async () => (await c.owner(`/api/artifacts/${aid}`)).json.artifact.current_version;
     try {
       const v = await until(queue ? "the pushed event's version" : "the pushed version", async () => ((await version()) >= 3 ? await version() : false), limit);
@@ -840,8 +841,8 @@ async function smoke(c, o) {
     ws.onmessage = (m) => frames.push(String(m.data));
     ws.onclose = (e) => (closed = `${e.code} ${e.reason}`);
     try {
-      await until("the socket opens", () => opened || (closed && Promise.reject(new Error(`closed ${closed}`))), 15_000);
-      const ready = await until("the stream's ready", () => frames.find((f) => f.includes("event: ready")), 15_000);
+      await until("the socket opens", () => opened || (closed && Promise.reject(new Error(`closed ${closed}`))));
+      const ready = await until("the stream's ready", () => frames.find((f) => f.includes("event: ready")));
       const data = JSON.parse(ready.split("\n").find((l) => l.startsWith("data:")).slice(5));
       await c.owner(`/api/stream/${data.stream}`, { method: "POST", body: JSON.stringify({ subscribe: [`artifact:${aid}`] }) });
       const form = new FormData();
@@ -851,7 +852,7 @@ async function smoke(c, o) {
       const t0 = performance.now();
       const posted = await c.owner(`/api/artifacts/${aid}/threads`, { method: "POST", body: form });
       const tid = posted.json?.thread?.id ?? posted.json?.id;
-      await until("the comment's frame", () => frames.some((f) => (tid && f.includes(tid)) || f.includes(`smoke-remote ${RUN}`)), 15_000);
+      await until("the comment's frame", () => frames.some((f) => (tid && f.includes(tid)) || f.includes(`smoke-remote ${RUN}`)));
       return { detail: `thread ${tid} arrived ${Math.round(performance.now() - t0)} ms after it was posted (stream ${data.stream})` };
     } finally {
       ws.close();

@@ -18,35 +18,18 @@
 import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { HERE, STATE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { HANG_MS, HERE, STATE, build, frameAt, freePort, pruneRuns, start, until, writeConfig } from "./harness.mjs";
 
 const require = createRequire(join(HERE, "../../web/package.json"));
 const { chromium } = require("@playwright/test");
 
 const ROOT = join(STATE, "e2e");
 const TOKEN = "e2e-owner-token-" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
-const LIMIT = 15_000;
 const SHOTS = process.env.CLAX_E2E_SHOTS ?? "";
 
 function check(ok, what, detail) {
   if (!ok) throw new Error(`FAIL ${what}: ${JSON.stringify(detail)}`);
   console.log(`ok   ${what}`);
-}
-
-/** Polls `f` until it returns something truthy, or fails after `ms`. */
-async function until(what, f, ms = LIMIT) {
-  const end = Date.now() + ms;
-  let last;
-  for (;;) {
-    try {
-      last = await f();
-      if (last) return last;
-    } catch (e) {
-      last = e instanceof Error ? e.message : e;
-    }
-    if (Date.now() > end) throw new Error(`FAIL ${what}: ${JSON.stringify(last)}`);
-    await new Promise((r) => setTimeout(r, 100));
-  }
 }
 
 async function api(base, path, init = {}) {
@@ -87,14 +70,19 @@ function watchSockets(page) {
 async function threads(page) {
   const toggle = page.locator("button.threads");
   if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
-  await page.locator(".new-comment-open").waitFor({ timeout: LIMIT });
+  await page.locator(".new-comment-open").waitFor({ timeout: HANG_MS });
 }
 
+/** Names the viewer `name` (a new name) in the people menu, once the
+ * name's save is answered: a comment posted sooner may reach the server
+ * from a viewer with no name yet. */
 async function setName(page, name) {
   await page.getByRole("button", { name: "People and agents" }).click();
   const field = page.getByRole("dialog", { name: "People and agents" }).getByLabel("Your name");
   await field.fill(name);
+  const saved = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/viewers/me" && r.request().method() === "PUT", { timeout: HANG_MS });
   await field.press("Enter");
+  await saved;
   await page.keyboard.press("Escape");
 }
 
@@ -105,15 +93,23 @@ async function comment(page, text) {
   const composer = page.locator(".new-comment .composer");
   await composer.locator("textarea").fill(text);
   await composer.getByRole("button", { name: "Post comment" }).click();
-  await composer.waitFor({ state: "detached", timeout: LIMIT });
+  await composer.waitFor({ state: "detached", timeout: HANG_MS });
 }
 
 const cardWith = (page, text) => page.locator(".thread-card", { hasText: text });
 
+/** `selector`'s text in the content frame of `id`'s version `n`, once the
+ * frame shows it; a frame replaced before it does, its successor's. */
 async function frameText(page, id, n, selector) {
   const url = new RegExp(`${id}\\.localhost:\\d+/_clax/v/${n}/$`);
-  const frame = await until(`the content frame of v${n}`, () => page.frame({ url }));
-  return until(`${selector} in the content frame`, () => frame.locator(selector).textContent({ timeout: 1000 }));
+  for (;;) {
+    const frame = await frameAt(page, url);
+    try {
+      return await frame.locator(selector).textContent({ timeout: HANG_MS });
+    } catch (e) {
+      if (!frame.isDetached()) throw e;
+    }
+  }
 }
 
 async function shot(page, name) {
@@ -199,7 +195,7 @@ async function main() {
     pages.push(pa, pb);
 
     await pa.goto(`${base}/`);
-    await pa.locator("a.card", { hasText: "Tide tables" }).waitFor({ timeout: LIMIT });
+    await pa.locator("a.card", { hasText: "Tide tables" }).waitFor({ timeout: HANG_MS });
     check(true, "the gallery shows the artifact");
     await shot(pa, "gallery");
 
@@ -223,7 +219,7 @@ async function main() {
     );
 
     await comment(pa, "Add the low water times too.");
-    await cardWith(pb, "Add the low water times too.").waitFor({ timeout: LIMIT });
+    await cardWith(pb, "Add the low water times too.").waitFor({ timeout: HANG_MS });
     check(
       sb.frames.some((f) => f.startsWith("event: thread") && f.includes(id)),
       "the comment reaches the second browser live, over its WebSocket",
@@ -241,7 +237,7 @@ async function main() {
     check(sb.opened === before, "the woken server opens the kept socket a new stream, on the same socket", { before, after: sb.opened });
     await until("the stream is live again", () => pb.evaluate(() => (window.claxStreamLive ?? 0) > 0));
     await comment(pa, "And the moon phase.");
-    await cardWith(pb, "And the moon phase.").waitFor({ timeout: LIMIT });
+    await cardWith(pb, "And the moon phase.").waitFor({ timeout: HANG_MS });
     check(true, "a comment after the rebuild still arrives live");
 
     // A restart on the same state.
@@ -253,20 +249,20 @@ async function main() {
     const list = await api(base, "/api/artifacts");
     check(list.artifacts.some((x) => x.id === id), "after the restart the API lists the artifact", list.artifacts.map((x) => x.id));
     await pb.goto(`${base}/`);
-    await pb.locator("a.card", { hasText: "Tide tables" }).waitFor({ timeout: LIMIT });
+    await pb.locator("a.card", { hasText: "Tide tables" }).waitFor({ timeout: HANG_MS });
     check(true, "after the restart the gallery shows the artifact");
     await pb.goto(`${base}/a/${id}`);
     check((await frameText(pb, id, 1, "#h")) === "Tide tables", "after the restart the content is served");
     await threads(pb);
     for (const text of ["Add the low water times too.", "And the moon phase."]) {
-      await cardWith(pb, text).waitFor({ timeout: LIMIT });
+      await cardWith(pb, text).waitFor({ timeout: HANG_MS });
     }
     check(true, "after the restart both comments are there");
     await pa.goto(`${base}/a/${id}`);
     await frameText(pa, id, 1, "#h");
     await until("the second browser's stream is live after the restart", () => pb.evaluate(() => (window.claxStreamLive ?? 0) > 0));
     await comment(pa, "Thanks!");
-    await cardWith(pb, "Thanks!").waitFor({ timeout: LIMIT });
+    await cardWith(pb, "Thanks!").waitFor({ timeout: HANG_MS });
     check(true, "after the restart a comment still arrives live");
     await shot(pb, "after-restart");
 
