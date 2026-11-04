@@ -1,15 +1,8 @@
-import { type Page } from "@playwright/test";
 import { readFileSync, existsSync } from "node:fs";
-import { test, expect, type Daemon, api, commentModeIn, publishAs, registerSession, setName } from "./fixtures";
+import { test, expect, type Daemon, api, commentModeIn, contentFrame, publishAs, registerSession, setName } from "./fixtures";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
-
-async function contentFrame(page: Page, id: string, n: number) {
-  const url = new RegExp(`(${id}\\.localhost:\\d+/_clax/v/${n}/)$`);
-  await expect.poll(() => page.frame({ url }) !== null).toBe(true);
-  return page.frame({ url })!;
-}
 
 test(`comment in the browser, the agent receives it, replies, and resolves`, async ({ page }) => {
   const s = await registerSession(d.base, d.token, "claude", `loop-e2e`);

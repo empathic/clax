@@ -5,7 +5,7 @@
 import type { Frame, Page } from "@playwright/test";
 import { hostChannel } from "./app-host";
 import { SHELL, content, startEmbedDaemon } from "./app-scheme";
-import { test as base, expect, type Daemon, publishWith } from "./fixtures";
+import { test as base, expect, type Daemon, frameAt, publishWith } from "./fixtures";
 
 const test = base.extend<object, { embed: Daemon }>({
   // oxlint-disable-next-line no-empty-pattern
@@ -13,7 +13,7 @@ const test = base.extend<object, { embed: Daemon }>({
     const d = await startEmbedDaemon();
     await use(d);
     await d.stop();
-  }, { scope: "worker", timeout: 30_000 }],
+  }, { scope: "worker" }],
 });
 
 let d: Daemon;
@@ -23,9 +23,7 @@ const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** The content frame showing version 1 of `id`, from its app origin, once parsed. */
 async function appFrame(page: Page, id: string): Promise<Frame> {
-  const url = new RegExp(`^${escape(content(id))}/_clax/v/1/`);
-  await expect.poll(() => page.frame({ url }) !== null, { timeout: 10_000 }).toBe(true);
-  const frame = page.frame({ url })!;
+  const frame = await frameAt(page, new RegExp(`^${escape(content(id))}/_clax/v/1/`));
   await frame.waitForLoadState("domcontentloaded");
   return frame;
 }

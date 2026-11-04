@@ -1,8 +1,8 @@
 import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { type Frame, type Page } from "@playwright/test";
-import { test, expect, type Daemon, api, commentModeIn, contentFrame, openArtifact, publish } from "./fixtures";
-import { settle } from "./time";
+import { test, expect, type Daemon, api, commentModeIn, contentFrame, fence, frameAt, openArtifact, publish, until } from "./fixtures";
+import { quietEval, settle } from "./time";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -13,8 +13,7 @@ const ABOUT = `<!doctype html><html><head><title>About</title></head><body><main
 /** The content frame once it shows `about.html` of version 1. */
 async function aboutFrame(page: Page, id: string): Promise<Frame> {
   const url = new RegExp(`(${id}\\.localhost:\\d+/_clax/v/1/about\\.html)(#.*)?$`);
-  await expect.poll(() => page.frame({ url }) !== null, { timeout: 15_000 }).toBe(true);
-  return page.frame({ url })!;
+  return frameAt(page, url);
 }
 
 test(`a thread on a second page pins there, is labelled elsewhere, and opens its page`, async ({ page }) => {
@@ -93,12 +92,18 @@ test(`a link's fragment is kept, and a link to the same page stays with the brow
   const { artifact } = await publish(d.base, d.token, `Fragments`, { "index.html": INDEX, "about.html": ABOUT });
   const id = artifact.id;
   const index = await openArtifact(page, d.base, id, 1);
+  await expect(page).toHaveURL(`${d.base}/a/${id}`);
   const depth = await page.evaluate(() => history.length);
+  // The link loads the page again in place: a document without this mark.
+  await index.evaluate(() => { (window as unknown as { before?: boolean }).before = true; });
   await index.locator("#self").click();
-  await settle(page);
+  const home = await until("index.html loaded again in place", async () => {
+    const f = await contentFrame(page, id, 1);
+    return !(await f.evaluate(() => (window as unknown as { before?: boolean }).before === true).catch(() => true)) && f;
+  });
+  await home.waitForLoadState("domcontentloaded");
   expect(await page.evaluate(() => history.length)).toBe(depth);
   await expect(page).toHaveURL(`${d.base}/a/${id}`);
-  const home = await contentFrame(page, id, 1);
   await home.locator("#to-team").click();
   await expect(page).toHaveURL(`${d.base}/a/${id}/about.html#people`);
   expect(await page.evaluate(() => history.length)).toBe(depth + 1);
@@ -186,11 +191,12 @@ test(`one link inside the frame is one history entry`, async ({ page }) => {
   await page.goto(`${d.base}/`);
   const index = await openArtifact(page, d.base, id, 1);
   const step = (fn: () => void) => page.evaluate(fn).catch(() => { /* the document may be replaced */ });
+  await expect(page).toHaveURL(`${d.base}/a/${id}`);
   const depth = await page.evaluate(() => history.length);
   await index.locator("#to-about").click();
   await expect((await aboutFrame(page, id)).locator("h2")).toHaveText("Our team");
   await expect(page).toHaveURL(`${d.base}/a/${id}/about.html`);
-  expect(await page.evaluate(() => history.length)).toBe(depth + 1);
+  await expect.poll(() => page.evaluate(() => history.length)).toBe(depth + 1);
   await step(() => history.back());
   await expect(page).toHaveURL(`${d.base}/a/${id}`);
   await expect.poll(() => page.frames().some(f => f !== page.mainFrame() && /\/v\/1\/$/.test(f.url()))).toBe(true);
@@ -239,15 +245,17 @@ test(`another site's page the frame moves to hears nothing from the shell, even 
     await toggle.click();
     await expect.poll(() => index.evaluate(() => document.documentElement.style.cursor)).not.toBe("crosshair");
     await index.locator("#out").click();
-    await expect.poll(() => page.frame({ url: spyUrl }) !== null).toBe(true);
-    const other = page.frame({ url: spyUrl })!;
+    const other = await frameAt(page, new RegExp(`^${spyUrl.replace(/[.]/g, "\\.")}$`));
     await expect(other.locator("#spy")).toHaveText("spy");
     expect(await other.evaluate(() => document.readyState)).not.toBe("complete");
     // The shell would send these to a page it still heard.
     await toggle.click();
     await toggle.click();
     await settle(page);
-    expect(await other.evaluate(() => (window as unknown as { got: unknown[] }).got)).toEqual([]);
+    // A message of the test's own from the shell's window, after anything
+    // the shell sent there: arrived, it has been preceded by those.
+    await fence("a message from the shell's window", () => quietEval(page, `document.querySelector("iframe.frame").contentWindow.postMessage("e2e-fence", "*")`), () => other.evaluate(() => (window as unknown as { got: unknown[] }).got.includes("e2e-fence")));
+    expect(await other.evaluate(() => (window as unknown as { got: unknown[] }).got)).toEqual(["e2e-fence"]);
   } finally {
     for (const r of hung) r.destroy();
     spy.closeAllConnections();

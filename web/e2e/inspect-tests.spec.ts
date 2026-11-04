@@ -117,7 +117,7 @@ async function runTests(page: Page, id: string, mode: "subdomain" | "sandbox", c
   await initHost(page);
   await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
   await host(page, call);
-  await expect.poll(async () => (await ofType(page, answer)).length, { timeout: 30_000 }).toBeGreaterThan(0);
+  await expect.poll(async () => (await ofType(page, answer)).length).toBeGreaterThan(0);
   return (await ofType(page, answer))[0] as Tests;
 }
 
@@ -192,7 +192,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
         await host(page, `journalAck({ seq: ${j.seq}, ok: true })`);
       }
       return (await ofType(page, "migration")).length;
-    }, { timeout: 30_000 }).toBeGreaterThan(0);
+    }).toBeGreaterThan(0);
     expect((await ofType(page, "migration"))[0]).toEqual({ type: "migration", ok: false, error: "the migration failed: half way" });
     expect(entries).toEqual([
       { path: `data/users/${me}/profile`, before: { v: 1 } },
@@ -202,10 +202,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // The app loads the view again and replays the journal.
     await reopen(page, id);
     await host(page, `restoreJournal(${JSON.stringify({ entries })})`);
-    await expect.poll(async () => ofType(page, "journalRestored"), { timeout: 30_000 }).toEqual([{ type: "journalRestored", ok: true }]);
+    await expect.poll(async () => ofType(page, "journalRestored")).toEqual([{ type: "journalRestored", ok: true }]);
     await reopen(page, id);
     await host(page, `runMigration({ file: "check.js", from: 1, to: 2 })`);
-    await expect.poll(async () => ofType(page, "migration"), { timeout: 30_000 }).toEqual([{ type: "migration", ok: true }]);
+    await expect.poll(async () => ofType(page, "migration")).toEqual([{ type: "migration", ok: true }]);
     const { doc } = await api(d.base, d.token, `/api/artifacts/${id}/docs/check/out`) as { doc: { data: unknown } };
     expect(doc.data).toEqual({ profile: { v: 1 }, extra: false, n: 1 });
   });
