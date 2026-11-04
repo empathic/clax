@@ -13,6 +13,9 @@
 //                                                # deploy (--without-token: and no owner token: a FAIL)
 //   node smoke-remote.mjs --local --as-agent     # the same, with an agent token the earlier owner minted,
 //                                                # and nothing else: as the deploy workflow's smoke
+//   node smoke-remote.mjs --deploy … --mint-agent-token   # mints an agent token with the owner token, then acts as
+//                                                # that alone: as a staging deploy's smoke (deploy.mjs --staging)
+//   node smoke-remote.mjs --local --as-minted-agent   # the same against a fresh local Worker no one set up
 //   node smoke-remote.mjs --local --remote-artifacts   # the same Worker locally on the account's real
 //                                                      # Artifacts (binding `remote: true`; needs the login)
 //
@@ -283,6 +286,32 @@ function sessionCookie(res) {
   const all = res.headers.getSetCookie?.() ?? [];
   const c = all.find((s) => /clax_session=/.test(s));
   return c ? c.split(";")[0] : "";
+}
+
+/** An agent token minted as the owner from the owner token alone, as a
+ * staging deploy's smoke does (deploy.mjs --staging gives it a new
+ * CLAX_TOKEN): an owner sign-in link (`POST
+ * /api/hosted/owner-signin-link`), redeemed for a browser session, which
+ * mints the token. Answers `{ token, revoke }`, `revoke` ending both; the
+ * caller prints neither the token nor the session. Throws naming the call
+ * that failed. */
+async function mintAsOwner(base, ownerToken) {
+  const origin = base.replace(/\/$/, "");
+  const link = await at(`${origin}/api/hosted/owner-signin-link`, { method: "POST", headers: { authorization: `Bearer ${ownerToken}` } });
+  const code = link.json?.url ? new URL(link.json.url).pathname.split("/").pop() : "";
+  if (link.status !== 200 || !code) throw new Error(`the owner sign-in link: ${link.status} ${short(link.json?.error ?? link.text, 160)}`);
+  const signin = await at(`${origin}/api/hosted/signin-links/${code}/accept`, { method: "POST", headers: { origin, "content-type": "application/json" }, body: "{}" });
+  const cookie = sessionCookie(signin.res);
+  if (signin.status >= 300 || !cookie) throw new Error(`redeeming the owner sign-in link: ${signin.status} ${short(signin.json?.error ?? signin.text, 160)}`);
+  const minted = await at(`${origin}/api/hosted/agent-tokens`, { method: "POST", headers: { origin, cookie, "content-type": "application/json" }, body: JSON.stringify({ label: `smoke ${RUN}` }) });
+  const token = minted.json?.token ?? "";
+  if (minted.status >= 300 || !token.startsWith("cxa_")) throw new Error(`minting an agent token: ${minted.status} ${short(minted.json?.error ?? minted.text, 160)}`);
+  const revoke = async () => {
+    const gone = await at(`${origin}/api/hosted/agent-tokens/${minted.json.id}`, { method: "DELETE", headers: { origin, cookie } }).catch((e) => ({ status: e.message }));
+    await at(`${origin}/api/hosted/signout`, { method: "POST", headers: { origin, cookie } }).catch(() => null);
+    return gone.status === 204 || gone.status === 200 ? "revoked" : `left (${gone.status})`;
+  };
+  return { token, revoke };
 }
 
 /** A smart HTTP advertisement's service, refs and capabilities. */
@@ -923,6 +952,12 @@ async function local(o) {
     if (!agent.startsWith("cxa_")) await fail(`minting an agent token answered ${minted.status}`);
     console.log("local: setup done and an agent token minted beforehand (--as-agent); the smoke has only that token");
   }
+  if (flag("--as-minted-agent")) {
+    // As staging's first deploy: no one has set up, and the smoke has only
+    // the owner token, which mints the agent token it runs as (main).
+    console.log("local: no setup; the smoke mints its agent token with the owner token (--as-minted-agent)");
+    return { base, secret: undefined, token, agent: "", mint: true, stop: w.stop, work: dir };
+  }
   return { base, secret, token: flag("--without-token") || agent ? "" : token, agent, stop: w.stop, work: dir };
 }
 
@@ -966,7 +1001,7 @@ async function main() {
     base = l.base;
     token = l.token;
     agent = l.agent || agent;
-    o.secret = l.agent ? undefined : l.secret;
+    o.secret = l.agent || l.mint ? undefined : l.secret;
     o.work = l.work;
     o.siteDomain = "localhost";
     o.store = flag("--remote-artifacts") ? "artifacts" : "memory";
@@ -977,6 +1012,22 @@ async function main() {
     o.work = join(STATE, "smoke-remote");
     mkdirSync(o.work, { recursive: true });
   }
+  // As staging's smoke (deploy.mjs --staging): an agent token minted with
+  // the owner token, which the smoke then puts away, so it acts as the
+  // agent token alone, as the production smoke does.
+  let revokeMinted = null;
+  if (flag("--mint-agent-token") || flag("--as-minted-agent")) {
+    if (!token) throw new Error("--mint-agent-token needs the owner token: --deploy <deploy.mjs's record>, --token or CLAX_TOKEN");
+    try {
+      ({ token: agent, revoke: revokeMinted } = await mintAsOwner(base, token));
+    } catch (e) {
+      await stop();
+      throw new Error(`--mint-agent-token: ${e.message}`);
+    }
+    token = "";
+    o.secret = undefined;
+    console.log("minted an agent token with the owner token (--mint-agent-token); the smoke acts as it alone");
+  }
   const c = new Client(base);
   c.token = token ?? "";
   c.agent = agent ?? "";
@@ -986,6 +1037,7 @@ async function main() {
   try {
     await smoke(c, o);
   } finally {
+    if (revokeMinted) console.log(`     the minted agent token: ${await revokeMinted()}`);
     await stop();
   }
   const counts = { ok: 0, fail: 0, skip: 0 };

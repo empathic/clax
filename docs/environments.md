@@ -9,7 +9,8 @@ from GitHub Actions:
 |---|---|---|---|---|---|
 | `prod` | `clax` | `clax.dev`, `<ID>.clax.run` | Artifacts (bucket `clax-assets`, queue `clax-artifacts-events`, namespace `clax`) | every push to `prod` (`deploy-prod.yml`, [docs/prod.md](prod.md)) | `production` |
 | `dev` | `clax-dev` | `dev.PREVIEW_HOST_ZONE`, `<ID>.dev.PREVIEW_SITE_ZONE` | Artifacts (bucket `clax-assets-dev`, queue `clax-artifacts-events-dev`, namespace `clax-dev`) | every push to `main` whose `ci` run passes (`deploy-dev.yml`) | `preview` |
-| `pr-<N>` | `clax-pr-<N>` | `pr-<N>.PREVIEW_HOST_ZONE`, `<ID>.pr-<N>.PREVIEW_SITE_ZONE` | Artifacts (queue `clax-artifacts-events-pr-<N>`, namespace `clax-pr-<N>`), assets in the shared bucket `clax-assets-preview` | every push to a pull request from a branch of this repository (`preview.yml`) | `preview` |
+| `pr-<N>` | `clax-pr-<N>` | `pr-<N>.PREVIEW_HOST_ZONE`, `<ID>.pr-<N>.PREVIEW_SITE_ZONE` | Artifacts (queue `clax-artifacts-events-pr-<N>`, namespace `clax-pr-<N>`), assets in the shared bucket `clax-assets-preview` | every push to a pull request from a branch of this repository, except a release pull request into `prod` (`preview.yml`) | `preview` |
+| staging, `pr-<N>` | `clax-pr-<N>`, on prod's account | `pr-<N>.clax-staging.dev`, `<ID>.pr-<N>.clax-staging.run` | as a preview's, on prod's account | every push to a release branch whose pull request into `prod` is open (`staging.yml`, [docs/prod.md](prod.md), "Staging") | `staging` |
 
 The `clax-dev` Worker is the dev environment, not clax.dev; clax.dev is
 `prod`'s Worker `clax` (and `just clax-dev-deploy` deploys it).

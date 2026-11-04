@@ -10,6 +10,9 @@ name: Preview
 # request tears it down (crates/clax-worker/teardown.mjs), and the
 # reaper (preview-reaper.yml) catches the closes GitHub sends no event for.
 #
+# A release pull request (base `prod`) gets no preview: staging is its
+# instance, under the same name on prod's account (staging.yml).
+#
 # Pull requests from forks get no preview: the `preview` environment's
 # secrets are not given to their runs. A branch of this repository is
 # pushed only by someone who can write to it, so the writers are who get
@@ -33,6 +36,7 @@ jobs:
       github.event.action != 'closed'
       && github.event.pull_request.head.repo.full_name == github.repository
       && github.event.pull_request.user.login != 'dependabot[bot]'
+      && github.event.pull_request.base.ref != 'prod'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     environment: preview
@@ -143,6 +147,7 @@ jobs:
       github.event.action == 'closed'
       && github.event.pull_request.head.repo.full_name == github.repository
       && github.event.pull_request.user.login != 'dependabot[bot]'
+      && github.event.pull_request.base.ref != 'prod'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: preview
