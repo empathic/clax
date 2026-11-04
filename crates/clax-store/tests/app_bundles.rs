@@ -1,5 +1,6 @@
 //! The bundles apps published from the Clax app carry on a hosted Clax,
 //! and the installs and forks it counts of them.
+#![warn(clippy::disallowed_methods)]
 
 use clax_core::audit::AuditCtx;
 use clax_core::publish::{PublishRequest, validate};

@@ -2906,6 +2906,7 @@ fn plain_state(thread_id: &str, all: &[&StateRow], codex_push: bool) -> Feedback
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::Store;
@@ -3864,7 +3865,7 @@ mod tests {
 
     /// Moves every row's `last_sent_at` back past the resend window.
     fn age(st: &Store) {
-        let old = (chrono::Utc::now() - std::time::Duration::from_secs(200))
+        let old = (st.now_utc() - std::time::Duration::from_secs(200))
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         st.with_write(|c| {
             c.execute(
@@ -4753,6 +4754,7 @@ mod tests {
 /// Delivery to an agent of another person, and to the owner's agents once
 /// people are connected (spec 2026-10-08 §8.3, §8.4, §9.4, M16, M17).
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod delivery {
     use super::*;
     use crate::approvals::{Scope, Via};
@@ -6121,6 +6123,7 @@ mod delivery {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod ownership {
     use super::*;
     use crate::test_util::{DAEMON, anchor, artifact, session, store};

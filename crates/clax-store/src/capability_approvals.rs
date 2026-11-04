@@ -381,6 +381,7 @@ impl Store {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::test_util::{DAEMON, artifact_declaring, artifact_with_caps, store};

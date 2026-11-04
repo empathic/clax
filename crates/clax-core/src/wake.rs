@@ -178,6 +178,7 @@ tool) to be woken; the `watch` result's `wake` says the same."
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

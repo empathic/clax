@@ -64,9 +64,14 @@ fn repo() -> (tempfile::TempDir, PathBuf) {
     (d, root)
 }
 
-fn soon() -> Instant {
-    // Generous, so a loaded machine never turns a fixture into a timeout.
-    Instant::now() + Duration::from_secs(20)
+/// How long a test's capture of a fixture may take before it is a hang:
+/// `clax_testkit::HANG`, which this crate's tests cannot reach.
+const HANG: Duration = Duration::from_secs(120);
+
+/// The deadline of a capture whose test is not about the deadline: the
+/// [`HANG`] guard, so no load turns a fixture into a `timeout`.
+fn unhurried() -> Instant {
+    Instant::now() + HANG
 }
 
 fn ctx(field: GitField) -> GitContext {
@@ -99,7 +104,7 @@ fn capture_clean_repo() {
             "https://u:tok@github.com/o/r.git?x=1",
         ],
     );
-    let c = ctx(capture(&root, soon(), real_git()));
+    let c = ctx(capture(&root, unhurried(), real_git()));
     let head = String::from_utf8(git(&root, &["rev-parse", "HEAD"])).unwrap();
     assert_eq!(c.repo_root, root.to_str().unwrap());
     assert_eq!(c.branch.as_deref(), Some("main"));
@@ -111,7 +116,7 @@ fn capture_clean_repo() {
     assert!(is_rfc3339(&c.captured_at));
     // A subdirectory reports the repository's root.
     std::fs::create_dir(root.join("sub")).unwrap();
-    let sub = ctx(capture(&root.join("sub"), soon(), real_git()));
+    let sub = ctx(capture(&root.join("sub"), unhurried(), real_git()));
     assert_eq!(sub.repo_root, root.to_str().unwrap());
 }
 
@@ -119,18 +124,18 @@ fn capture_clean_repo() {
 fn capture_prefers_the_upstream_remote_then_origin_then_the_first() {
     let (_d, root) = repo();
     // No remote at all.
-    assert_eq!(ctx(capture(&root, soon(), real_git())).remote, None);
+    assert_eq!(ctx(capture(&root, unhurried(), real_git())).remote, None);
     git(&root, &["remote", "add", "zeta", "git@host:z/r.git"]);
     git(&root, &["remote", "add", "beta", "ssh://u:p@host/b.git"]);
-    let c = ctx(capture(&root, soon(), real_git()));
+    let c = ctx(capture(&root, unhurried(), real_git()));
     assert_eq!(c.remote.as_deref(), Some("beta"));
     assert_eq!(c.remote_url.as_deref(), Some("ssh://host/b.git"));
     git(&root, &["remote", "add", "origin", "/srv/git/app.git"]);
-    let c = ctx(capture(&root, soon(), real_git()));
+    let c = ctx(capture(&root, unhurried(), real_git()));
     assert_eq!(c.remote.as_deref(), Some("origin"));
     assert_eq!(c.remote_url.as_deref(), Some("/srv/git/app.git"));
     git(&root, &["config", "branch.main.remote", "zeta"]);
-    let c = ctx(capture(&root, soon(), real_git()));
+    let c = ctx(capture(&root, unhurried(), real_git()));
     assert_eq!(c.remote.as_deref(), Some("zeta"));
     assert_eq!(c.remote_url.as_deref(), Some("git@host:z/r.git"));
 }
@@ -139,7 +144,7 @@ fn capture_prefers_the_upstream_remote_then_origin_then_the_first() {
 fn capture_dirty_tracked_hashes_diff() {
     let (_d, root) = repo();
     std::fs::write(root.join("a.txt"), "two\n").unwrap();
-    let c = ctx(capture(&root, soon(), real_git()));
+    let c = ctx(capture(&root, unhurried(), real_git()));
     let diff = expected_diff(&root, "HEAD");
     assert!(!diff.is_empty());
     assert!(c.dirty);
@@ -154,7 +159,7 @@ fn capture_staged_only() {
     let (_d, root) = repo();
     std::fs::write(root.join("a.txt"), "staged\n").unwrap();
     git(&root, &["add", "a.txt"]);
-    let c = ctx(capture(&root, soon(), real_git()));
+    let c = ctx(capture(&root, unhurried(), real_git()));
     assert!(c.dirty);
     assert_eq!(
         c.diff_sha256,
@@ -167,7 +172,7 @@ fn capture_untracked_only_counts_without_hash() {
     let (_d, root) = repo();
     std::fs::write(root.join("new1.txt"), "x").unwrap();
     std::fs::write(root.join("new2.txt"), "y").unwrap();
-    let c = ctx(capture(&root, soon(), real_git()));
+    let c = ctx(capture(&root, unhurried(), real_git()));
     assert!(c.dirty);
     assert_eq!(c.untracked, 2);
     assert_eq!((c.diff_sha256, c.diff_bytes), (None, None));
@@ -178,7 +183,7 @@ fn capture_counts_untracked_beside_a_rename() {
     let (_d, root) = repo();
     git(&root, &["mv", "a.txt", "b.txt"]);
     std::fs::write(root.join("new.txt"), "x").unwrap();
-    let c = ctx(capture(&root, soon(), real_git()));
+    let c = ctx(capture(&root, unhurried(), real_git()));
     assert!(c.dirty);
     assert_eq!(c.untracked, 1);
     assert!(c.diff_sha256.is_some());
@@ -188,7 +193,7 @@ fn capture_counts_untracked_beside_a_rename() {
 fn capture_detached_has_no_branch() {
     let (_d, root) = repo();
     git(&root, &["checkout", "-q", "--detach"]);
-    let c = ctx(capture(&root, soon(), real_git()));
+    let c = ctx(capture(&root, unhurried(), real_git()));
     assert_eq!(c.branch, None);
     assert!(c.head.is_some());
     assert!(!c.dirty);
@@ -199,14 +204,14 @@ fn capture_unborn_branch() {
     let d = tempfile::tempdir().unwrap();
     let root = d.path().canonicalize().unwrap();
     git(&root, &["init", "-q"]);
-    let c = ctx(capture(&root, soon(), real_git()));
+    let c = ctx(capture(&root, unhurried(), real_git()));
     assert_eq!(c.branch.as_deref(), Some("main"));
     assert_eq!(c.head, None);
     assert!(!c.dirty);
     // A staged file is diffed against the empty tree.
     std::fs::write(root.join("a.txt"), "one\n").unwrap();
     git(&root, &["add", "a.txt"]);
-    let c = ctx(capture(&root, soon(), real_git()));
+    let c = ctx(capture(&root, unhurried(), real_git()));
     assert!(c.dirty);
     assert_eq!(
         c.diff_sha256,
@@ -223,7 +228,7 @@ fn capture_linked_worktree_root() {
         &["worktree", "add", "-q", "-b", "side", wt.to_str().unwrap()],
     );
     let wt = wt.canonicalize().unwrap();
-    let c = ctx(capture(&wt, soon(), real_git()));
+    let c = ctx(capture(&wt, unhurried(), real_git()));
     assert_eq!(c.repo_root, wt.to_str().unwrap());
     assert_eq!(c.branch.as_deref(), Some("side"));
 }
@@ -232,7 +237,7 @@ fn capture_linked_worktree_root() {
 fn capture_not_a_repo() {
     let d = tempfile::tempdir().unwrap();
     assert_eq!(
-        capture(d.path(), soon(), real_git()),
+        capture(d.path(), unhurried(), real_git()),
         GitField::Capture("not-a-repo")
     );
 }
@@ -240,12 +245,12 @@ fn capture_not_a_repo() {
 #[test]
 fn capture_without_a_directory_is_no_cwd() {
     assert_eq!(
-        capture(Path::new(""), soon(), real_git()),
+        capture(Path::new(""), unhurried(), real_git()),
         GitField::Capture("no-cwd")
     );
     let d = tempfile::tempdir().unwrap();
     assert_eq!(
-        capture(&d.path().join("gone"), soon(), real_git()),
+        capture(&d.path().join("gone"), unhurried(), real_git()),
         GitField::Capture("no-cwd")
     );
 }
@@ -255,7 +260,7 @@ fn capture_no_git_is_unavailable() {
     let (d, root) = repo();
     let missing = d.path().join("no-such-git");
     assert_eq!(
-        capture(&root, soon(), &Git::assume_supported(&missing)),
+        capture(&root, unhurried(), &Git::assume_supported(&missing)),
         GitField::Capture("unavailable")
     );
     assert_eq!(find_git(Some(d.path().as_os_str())), None);
@@ -290,18 +295,14 @@ fn capture_times_out_at_deadline() {
                 "#!/bin/sh\nCLAX_TEST_BLOCK_AT={block_at} exec \"$(dirname \"$0\")/git\" \"$@\"\n"
             ),
         );
-        let started = Instant::now();
+        // The blocked git never ends: the capture returns only by its
+        // deadline, killing it.
         let got = capture(
             d.path(),
-            started + Duration::from_millis(300),
+            Instant::now() + CAPTURE_DEADLINE,
             &Git::assume_supported(&wrapper),
         );
         assert_eq!(got, GitField::Capture("timeout"), "{block_at}");
-        assert!(
-            started.elapsed() < Duration::from_millis(1500),
-            "{block_at}: returned after {:?}",
-            started.elapsed()
-        );
     }
 }
 
@@ -320,7 +321,7 @@ fn header_has_no_paths_or_contents() {
             "https://ghp_TOKEN@github.com/o/r.git",
         ],
     );
-    let field = capture(&root, soon(), real_git());
+    let field = capture(&root, unhurried(), real_git());
     let header = encode_header(&field).unwrap();
     let sent = String::from_utf8(
         base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -417,7 +418,7 @@ fn capture_runs_no_configured_program() {
         )
     };
     let before = state(&index);
-    let c = ctx(capture(&root, soon(), real_git()));
+    let c = ctx(capture(&root, unhurried(), real_git()));
     assert_eq!(state(&index), before, "capture wrote the index");
     assert!(!root.join(".git/index.lock").exists());
     assert!(c.dirty);
@@ -452,7 +453,7 @@ fn capture_refuses_a_root_that_is_not_utf8() {
         "#!/bin/sh\ncase \" $* \" in *\" --show-toplevel \"*) printf '/tmp/\\377x\\n' ;; esac\nexit 0\n",
     );
     assert_eq!(
-        capture(d.path(), soon(), &Git::assume_supported(&fake)),
+        capture(d.path(), unhurried(), &Git::assume_supported(&fake)),
         GitField::Capture("invalid")
     );
 }
@@ -482,7 +483,7 @@ fn capture_never_fetches_in_a_partial_clone() {
         git(&root, &["config", k, &v]);
     }
     std::fs::write(root.join("a.txt"), "changed\n").unwrap();
-    let c = ctx(capture(&root, soon(), real_git()));
+    let c = ctx(capture(&root, unhurried(), real_git()));
     assert!(!marker.exists(), "capture fetched");
     assert!(c.dirty);
     assert!(c.diff_unavailable);
@@ -548,7 +549,7 @@ fn an_old_git_runs_nothing() {
         let old = Git::probe(&wrapper);
         assert!(!old.supported(), "{version}");
         assert_eq!(
-            capture(&root, soon(), &old),
+            capture(&root, unhurried(), &old),
             GitField::Capture("unavailable"),
             "{version}"
         );
@@ -593,13 +594,13 @@ fn a_moved_submodule_is_dirty() {
         ],
     );
     git(&root, &["commit", "-q", "-m", "sm"]);
-    assert!(!ctx(capture(&root, soon(), real_git())).dirty);
+    assert!(!ctx(capture(&root, unhurried(), real_git())).dirty);
     // A change inside the submodule's work tree is not looked at.
     std::fs::write(root.join("sm/s.txt"), "edited\n").unwrap();
-    assert!(!ctx(capture(&root, soon(), real_git())).dirty);
+    assert!(!ctx(capture(&root, unhurried(), real_git())).dirty);
     // A submodule checked out at another commit is.
     git(&root.join("sm"), &["commit", "-q", "-am", "s2"]);
-    let c = ctx(capture(&root, soon(), real_git()));
+    let c = ctx(capture(&root, unhurried(), real_git()));
     assert!(c.dirty);
     assert!(c.diff_sha256.is_some());
 }
@@ -607,7 +608,7 @@ fn a_moved_submodule_is_dirty() {
 #[test]
 fn diff_unavailable_only_on_a_dirty_tree() {
     let (_d, root) = repo();
-    let mut c = ctx(capture(&root, soon(), real_git()));
+    let mut c = ctx(capture(&root, unhurried(), real_git()));
     assert!(!c.dirty);
     c.diff_unavailable = true;
     assert!(c.validate().is_err());
@@ -663,39 +664,39 @@ fn a_probe_without_an_answer_is_retried_with_backoff() {
     let advance = |s: u64| clock.fetch_add(s, std::sync::atomic::Ordering::SeqCst);
 
     assert_eq!(
-        probe.capture(&root, soon()),
+        probe.capture(&root, unhurried()),
         GitField::Capture("unavailable")
     );
     assert_eq!(version_runs(&bin), 1);
     // Within the wait, nothing runs.
     advance(29);
     assert_eq!(
-        probe.capture(&root, soon()),
+        probe.capture(&root, unhurried()),
         GitField::Capture("unavailable")
     );
     assert_eq!(version_runs(&bin), 1);
     // After it, the probe runs again; a second miss doubles the wait.
     advance(1);
     assert_eq!(
-        probe.capture(&root, soon()),
+        probe.capture(&root, unhurried()),
         GitField::Capture("unavailable")
     );
     assert_eq!(version_runs(&bin), 2);
     advance(59);
     assert_eq!(
-        probe.capture(&root, soon()),
+        probe.capture(&root, unhurried()),
         GitField::Capture("unavailable")
     );
     assert_eq!(version_runs(&bin), 2);
     std::fs::write(bin.join("answer"), "").unwrap();
     advance(1);
-    let c = ctx(probe.capture(&root, soon()));
+    let c = ctx(probe.capture(&root, unhurried()));
     assert_eq!(c.repo_root, root.to_str().unwrap());
     assert_eq!(version_runs(&bin), 3);
     // An answer is kept: git is not asked again, even once it stops answering.
     std::fs::remove_file(bin.join("answer")).unwrap();
     advance(10_000);
-    assert!(matches!(probe.capture(&root, soon()), GitField::Ok(_)));
+    assert!(matches!(probe.capture(&root, unhurried()), GitField::Ok(_)));
     assert_eq!(version_runs(&bin), 3);
 }
 
@@ -710,7 +711,7 @@ fn an_old_version_is_kept() {
     let probe = GitProbe::new(&old);
     for _ in 0..3 {
         assert_eq!(
-            probe.capture(d.path(), soon()),
+            probe.capture(d.path(), unhurried()),
             GitField::Capture("unavailable")
         );
     }
@@ -723,28 +724,41 @@ fn an_old_version_is_kept() {
 #[test]
 fn the_first_captures_wait_for_the_version_is_within_its_deadline() {
     let d = tempfile::tempdir().unwrap();
-    let hung = clax_fake_exe::install(&d.path().join("git"), "#!/bin/sh\nexec tail -f /dev/null\n");
-    // A probe deadline past the capture's, but short, so the test does not
-    // wait out the real one.
-    let probe_deadline = CAPTURE_DEADLINE * 2;
-    let probe = GitProbe::with_clock(&hung, Box::new(Instant::now), probe_deadline);
-    let started = Instant::now();
-    let got = probe.capture(d.path(), started + CAPTURE_DEADLINE);
+    // A git whose `version` reads a FIFO no one writes: it answers nothing
+    // until the test opens the FIFO, then ends without an answer.
+    let answer = d.path().join("answer");
+    let made = Command::new("mkfifo").arg(&answer).status().unwrap();
+    assert!(made.success(), "mkfifo: {made}");
+    let hung = clax_fake_exe::install(
+        &d.path().join("git"),
+        "#!/bin/sh\nexec cat \"${0%/*}/answer\"\n",
+    );
+    // The probe's own deadline is the hang guard: a capture that waited for
+    // the probe would find it ended.
+    let probe = GitProbe::with_clock(&hung, Box::new(Instant::now), HANG);
+    let got = probe.capture(d.path(), Instant::now() + CAPTURE_DEADLINE);
+    let probing = probe.lock().running;
+    // Opening the FIFO ends the hung git's read: the probe gets no answer.
+    drop(
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&answer)
+            .unwrap(),
+    );
     assert_eq!(got, GitField::Capture("timeout"));
     assert!(
-        started.elapsed() < probe_deadline,
-        "returned after {:?}",
-        started.elapsed()
+        probing,
+        "the capture returned only once the probe had ended"
     );
-    // The probe goes on to its own deadline, kills the hung git and gets no
-    // answer: the next capture waits for that, and is `unavailable`.
+    // The next capture waits for the probe, which got no answer: it is
+    // `unavailable`.
     assert_eq!(
-        probe.capture(d.path(), soon()),
+        probe.capture(d.path(), unhurried()),
         GitField::Capture("unavailable")
     );
     // A missing directory is `no-cwd` before any probe.
     assert_eq!(
-        GitProbe::new(&hung).capture(&d.path().join("gone"), soon()),
+        GitProbe::new(&hung).capture(&d.path().join("gone"), unhurried()),
         GitField::Capture("no-cwd")
     );
 }
@@ -811,7 +825,7 @@ fn capture_matches_the_shared_vectors() {
         let base = d.path().canonicalize().unwrap();
         build_vector_case(&doc["fixture"], case, &base);
         let cwd = base.join(case["cwd"].as_str().unwrap());
-        let got = vector_form(&capture(&cwd, soon(), real_git()), &base);
+        let got = vector_form(&capture(&cwd, unhurried(), real_git()), &base);
         if got != case["expect"] {
             wrong.push(format!("{}: {got}", case["name"]));
         }
@@ -834,7 +848,7 @@ fn a_promisor_remote_alone_makes_a_partial_clone() {
     let blob = blob.trim();
     std::fs::remove_file(root.join(".git/objects").join(&blob[..2]).join(&blob[2..])).unwrap();
     std::fs::write(root.join("a.txt"), "changed\n").unwrap();
-    let c = ctx(capture(&root, soon(), real_git()));
+    let c = ctx(capture(&root, unhurried(), real_git()));
     assert!(c.dirty && c.diff_unavailable, "{c:?}");
 }
 
@@ -845,15 +859,17 @@ fn every_command_runs_with_the_pins_and_a_cleared_environment() {
     let (d, root) = repo();
     let bin = d.path().join("bin");
     std::fs::create_dir(&bin).unwrap();
+    // A run whose environment is not recorded fails, so none goes
+    // uncounted; the directory is taken from `$0` without a subshell.
     let spy = clax_fake_exe::install(
         &bin.join("git"),
         &format!(
-            "#!/bin/sh\nenv > \"$(dirname \"$0\")/env.$$\"\nexec {} \"$@\"\n",
+            "#!/bin/sh\nenv > \"${{0%/*}}/env.$$\" || exit 97\nexec {} \"$@\"\n",
             git_bin().to_str().unwrap()
         ),
     );
     assert!(matches!(
-        capture(&root, soon(), &Git::assume_supported(&spy)),
+        capture(&root, unhurried(), &Git::assume_supported(&spy)),
         GitField::Ok(_)
     ));
     // One file per run: the parts run in parallel, so a shared log

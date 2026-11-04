@@ -179,6 +179,7 @@ pub fn canonical_user_code(code: &str) -> Option<String> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

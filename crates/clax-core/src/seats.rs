@@ -592,6 +592,7 @@ impl Seats {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod restore_tests {
     use super::*;
 
@@ -634,6 +635,7 @@ mod restore_tests {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

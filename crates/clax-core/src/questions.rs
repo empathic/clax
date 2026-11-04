@@ -436,6 +436,7 @@ pub fn render_late(head: &str, qs: &[Question], a: Option<&[Answer]>) -> String 
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use serde_json::json;

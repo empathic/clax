@@ -230,6 +230,7 @@ pub fn wrap_page_framed_by(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

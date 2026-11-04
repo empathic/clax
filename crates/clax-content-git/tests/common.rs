@@ -22,6 +22,20 @@ use clax_git::{CommitMeta, Object, ObjectId, Person, RefStatus, RefUpdate, Repo,
 /// A bound for a hung git, not a time budget.
 pub const HANG: Duration = Duration::from_secs(120);
 
+/// `fut`'s output, bounded by the [`HANG`] guard.
+///
+/// # Panics
+/// Past the [`HANG`] guard, naming `what`.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "within is the HANG guard on a wait"
+)]
+pub async fn within<F: std::future::IntoFuture>(what: &str, fut: F) -> F::Output {
+    tokio::time::timeout(HANG, fut)
+        .await
+        .unwrap_or_else(|_| panic!("{what}: not after {HANG:?} (hang guard)"))
+}
+
 pub fn committer() -> Person {
     Person {
         name: "Clax".into(),
@@ -156,9 +170,8 @@ impl Git {
             .env("TMPDIR", std::env::temp_dir())
             .kill_on_drop(true)
             .stdin(std::process::Stdio::null());
-        tokio::time::timeout(HANG, c.output())
+        within(&format!("git {args:?}"), c.output())
             .await
-            .unwrap_or_else(|_| panic!("git {args:?} hung"))
             .expect("run git")
     }
 
@@ -192,9 +205,8 @@ impl Git {
             .env("GIT_TERMINAL_PROMPT", "0")
             .kill_on_drop(true)
             .stdin(std::process::Stdio::from(file));
-        let out = tokio::time::timeout(HANG, c.output())
+        let out = within(&format!("git {args:?}"), c.output())
             .await
-            .unwrap_or_else(|_| panic!("git {args:?} hung"))
             .expect("run git");
         assert!(
             out.status.success(),
