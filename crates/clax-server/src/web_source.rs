@@ -254,7 +254,7 @@ impl RestSource {
             lookup,
             allow_loopback,
             tls: fetch_tls(),
-            user_agent: "ClaxBot/1".into(),
+            user_agent: user_agent(None),
         }
     }
 
@@ -2072,11 +2072,11 @@ mod tests {
         // A hosted daemon names its public origin.
         assert_eq!(
             ua(Some("https://clax.example/")).await,
-            "ClaxBot/1 (+https://clax.example)"
+            "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaxBot/1.0; +https://clax.example)"
         );
         // A local daemon names no address of its own.
-        assert_eq!(ua(None).await, "ClaxBot/1");
-        assert_eq!(ua(Some("")).await, "ClaxBot/1");
+        assert_eq!(ua(None).await, user_agent(None));
+        assert_eq!(ua(Some("")).await, user_agent(None));
     }
 
     #[tokio::test]
@@ -2167,7 +2167,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(p.text, "ClaxBot/1 (+https://clax.example)");
+        assert_eq!(
+            p.text,
+            "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaxBot/1.0; +https://clax.example)"
+        );
     }
 
     #[tokio::test]

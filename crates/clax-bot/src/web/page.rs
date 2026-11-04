@@ -1127,17 +1127,24 @@ pub fn sources_markdown(pages: &[clax_store::bot_web::WebPageRow]) -> Option<Str
     Some(out)
 }
 
-/// The `User-Agent` every source sends with a fetch: `ClaxBot/1
-/// (+<origin>)` with the instance's public origin (a trailing `/`
-/// dropped), so a site can tell whose bot it is and where to ask; plain
-/// `ClaxBot/1` with none (`None`), so an origin that is not public (a
-/// fallback such as `http://localhost`, a LAN address) is never disclosed.
-/// Pass `Some` only for an origin the instance is configured to publish.
+/// The `User-Agent` every source sends with a fetch: `Mozilla/5.0
+/// AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaxBot/1.0;
+/// +<origin>)` with the instance's public origin (a trailing `/` dropped),
+/// and without the `; +<origin>` with none (`None`), so an origin that is
+/// not public (a fallback such as `http://localhost`, a LAN address) is
+/// never disclosed. The browser prefix gets the page a browser gets; the
+/// `compatible; ClaxBot/1.0` token says it is a bot, not a person's
+/// browser, so a site can match it, and the origin says whose it is and
+/// where to ask. No browser version is claimed. Pass `Some` only for an
+/// origin the instance is configured to publish.
 #[must_use]
 pub fn user_agent(public_origin: Option<&str>) -> String {
     match public_origin.map(|o| o.trim_end_matches('/')) {
-        Some(o) if !o.is_empty() => format!("ClaxBot/1 (+{o})"),
-        _ => "ClaxBot/1".to_string(),
+        Some(o) if !o.is_empty() => format!(
+            "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaxBot/1.0; +{o})"
+        ),
+        _ => "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaxBot/1.0)"
+            .to_string(),
     }
 }
 
@@ -1474,11 +1481,14 @@ mod tests {
     fn the_user_agent_names_the_instance() {
         assert_eq!(
             user_agent(Some("https://clax.example.com/")),
-            "ClaxBot/1 (+https://clax.example.com)"
+            "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaxBot/1.0; +https://clax.example.com)"
         );
         // No public origin: nothing about the instance is disclosed.
-        assert_eq!(user_agent(None), "ClaxBot/1");
-        assert_eq!(user_agent(Some("")), "ClaxBot/1");
+        assert_eq!(
+            user_agent(None),
+            "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaxBot/1.0)"
+        );
+        assert_eq!(user_agent(Some("")), user_agent(None));
     }
 
     fn base(s: &str) -> PublicUrl {
