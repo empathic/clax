@@ -49,11 +49,8 @@
 //    HTML fetch answer web_unavailable, charged nothing;
 // 9. a Worker that is not hosted, with a PUBLIC_ORIGIN that names no host:
 //    the admin's view reports that reason (no source, so no check of the
-//    binding replaces it);
-// and, offline first, deploy.mjs's CLAX_KEK plan: kept when the Worker has
-// one (with a warning when this machine keeps no backup), the backup's
-// when it has none, else a new one, backed up before the deploy, never
-// printed.
+//    binding replaces it).
+// (deploy.mjs's CLAX_KEK plan is deploy-lib.test.mjs's.)
 //
 // Prints one line per check and a JSON summary; exits non-zero on the first
 // failure. `node test-bot.mjs --no-build` skips the build.
