@@ -394,6 +394,7 @@ fn add(cli: &crate::Cli, c: &Client, a: &AddArgs) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use serde_json::json;

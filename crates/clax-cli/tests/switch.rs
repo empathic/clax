@@ -2,10 +2,12 @@
 //! the start lock; a newer daemon is kept.
 
 use assert_cmd::Command;
-use std::io::{Read, Write};
+use clax_testkit::{HANG, recv_within};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
 struct Fake {
@@ -72,9 +74,13 @@ fn fake_daemon(home: &std::path::Path, version: &str) -> Fake {
             if req.starts_with("POST /api/admin/shutdown") {
                 s2.store(true, Ordering::SeqCst);
                 drop(s);
-                break; // drops the listener: the port is free again
+                break;
             }
         }
+        // As a daemon's exit does, free the port before the PID is gone:
+        // the replacement binds once the PID has exited, and a port still
+        // held then would move it to the next one.
+        drop(listener);
         let mut c = c2.lock().unwrap();
         let _ = c.kill();
         let _ = c.wait();
@@ -152,9 +158,15 @@ fn serve_keeps_a_newer_daemon() {
     drop(fake);
 }
 
-/// `clax serve` as a child process, for tests that act while it runs.
-fn serve_child(dir: &std::path::Path) -> Child {
-    std::process::Command::new(crate::common::clax())
+/// `clax serve` as a child process, for tests that act while it runs; its
+/// standard error's lines arrive on `stderr`.
+struct Serving {
+    child: Child,
+    stderr: Receiver<String>,
+}
+
+fn serve_child(dir: &std::path::Path) -> Serving {
+    let mut child = std::process::Command::new(crate::common::clax())
         .args(["serve", "--json", "--port", "0"])
         .env("HOME", dir)
         .env("CLAX_HOME", dir.join("ax"))
@@ -163,43 +175,52 @@ fn serve_child(dir: &std::path::Path) -> Child {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .unwrap()
+        .unwrap();
+    let err = child.stderr.take().unwrap();
+    let (tx, stderr) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(err).lines().map_while(Result::ok) {
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    Serving { child, stderr }
 }
 
-/// Takes the home's start lock. Only the home's root is created, so the
-/// `artifacts` directory appears when `clax serve` runs `ensure_dirs`, just
-/// before it waits for this lock.
+/// Takes the home's start lock.
 fn lock(dir: &std::path::Path) -> clax_core::daemon::DaemonLock {
     std::fs::create_dir_all(dir.join("ax")).unwrap();
     clax_core::daemon::DaemonLock::acquire(&clax_core::Home::at(dir.join("ax"))).unwrap()
 }
 
-/// Returns once `child` has reached the start lock (a freshly built binary
-/// can take a second to launch), and is still waiting there.
-fn wait_until_blocked_on_lock(dir: &std::path::Path, child: &mut Child) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    while !dir.join("ax/artifacts").is_dir() {
-        assert!(child.try_wait().unwrap().is_none(), "serve exited early");
-        assert!(
-            std::time::Instant::now() < deadline,
-            "serve never reached the lock"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    std::thread::sleep(std::time::Duration::from_millis(500));
+/// What `clax serve` says from inside its wait for the start lock while
+/// the lock's holder reports a daemon starting (`starting.json`).
+const WAITING: &str = "waiting for the daemon's first start";
+
+/// Returns once `s` is waiting for the start lock the test holds. The
+/// holder reports a start under way, as a daemon starting under the lock
+/// does (`starting.json`, naming this live process), so `serve` says
+/// [`WAITING`] from inside its wait; the report is removed again before
+/// this returns, so nothing after it sees a start under way.
+fn wait_until_blocked_on_lock(dir: &std::path::Path, s: &mut Serving) {
+    let starting = dir.join("ax/starting.json");
+    let report = serde_json::json!({"pid": std::process::id(), "phase": "recording",
+        "done": 0, "total": 1, "bytes": 0, "heartbeat_at": "t"});
+    std::fs::write(&starting, report.to_string()).unwrap();
+    while !recv_within("serve waiting for the start lock", &s.stderr).contains(WAITING) {}
+    std::fs::remove_file(&starting).unwrap();
     assert!(
-        child.try_wait().unwrap().is_none(),
+        s.child.try_wait().unwrap().is_none(),
         "serve waits for the lock"
     );
 }
 
-fn finish(child: Child) -> serde_json::Value {
-    let out = child.wait_with_output().unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+fn finish(s: Serving) -> serde_json::Value {
+    let out = s.child.wait_with_output().unwrap();
+    // Its standard error ends with the process.
+    let stderr: Vec<String> = s.stderr.iter().collect();
+    assert!(out.status.success(), "{}", stderr.join("\n"));
     serde_json::from_slice(&out.stdout).unwrap()
 }
 
@@ -208,12 +229,12 @@ fn serve_replaces_an_older_daemon_another_client_started_while_it_waited() {
     let dir = Scratch::new();
     let held = lock(dir.path());
     // No daemon yet: serve finds none and waits for the start lock.
-    let mut child = serve_child(dir.path());
-    wait_until_blocked_on_lock(dir.path(), &mut child);
+    let mut serving = serve_child(dir.path());
+    wait_until_blocked_on_lock(dir.path(), &mut serving);
     // An older binary wins the lock and starts its daemon.
     let fake = fake_daemon(&dir.path().join("ax"), "0.0.1");
     drop(held);
-    let v = finish(child);
+    let v = finish(serving);
     assert!(
         fake.shutdown_seen.load(Ordering::SeqCst),
         "the older daemon was replaced"
@@ -229,8 +250,8 @@ fn replace_waits_for_the_start_lock_and_keeps_a_daemon_another_client_put_in_pla
     let old = fake_daemon(&dir.path().join("ax"), "0.0.1");
     let held = lock(dir.path());
     // serve finds the older daemon and waits for the lock to replace it.
-    let mut child = serve_child(dir.path());
-    wait_until_blocked_on_lock(dir.path(), &mut child);
+    let mut serving = serve_child(dir.path());
+    wait_until_blocked_on_lock(dir.path(), &mut serving);
     assert!(
         !old.shutdown_seen.load(Ordering::SeqCst),
         "nothing is stopped without the lock"
@@ -238,7 +259,7 @@ fn replace_waits_for_the_start_lock_and_keeps_a_daemon_another_client_put_in_pla
     // Meanwhile another client replaced it with a newer daemon.
     let newer = fake_daemon(&dir.path().join("ax"), "999.0.0");
     drop(held);
-    let v = finish(child);
+    let v = finish(serving);
     assert_eq!(
         v["version"], "999.0.0",
         "the daemon found under the lock is used"
@@ -249,7 +270,6 @@ fn replace_waits_for_the_start_lock_and_keeps_a_daemon_another_client_put_in_pla
 
 #[test]
 fn serve_replaces_a_real_older_daemon_and_ends_its_event_streams() {
-    use std::time::{Duration, Instant};
     let dir = Scratch::new();
     let home = dir.path().join("ax");
     let mut old = std::process::Command::new(crate::common::clax())
@@ -269,17 +289,11 @@ fn serve_replaces_a_real_older_daemon_and_ends_its_event_streams() {
         .spawn()
         .unwrap();
     let old_pid = old.id();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let info = loop {
-        if let Ok(t) = std::fs::read_to_string(home.join("daemon.json"))
-            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&t)
-            && v["pid"].as_u64() == Some(u64::from(old_pid))
-        {
-            break v;
-        }
-        assert!(Instant::now() < deadline, "the old daemon did not start");
-        std::thread::sleep(Duration::from_millis(50));
-    };
+    let info = crate::common::wait_until("the old daemon to write daemon.json", || {
+        let t = std::fs::read_to_string(home.join("daemon.json")).ok()?;
+        let v = serde_json::from_str::<serde_json::Value>(&t).ok()?;
+        (v["pid"].as_u64() == Some(u64::from(old_pid))).then_some(v)
+    });
     assert_eq!(info["version"], "0.0.1");
     let port = info["port"].as_u64().unwrap() as u16;
     let mut sse = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
@@ -289,7 +303,7 @@ fn serve_replaces_a_real_older_daemon_and_ends_its_event_streams() {
         "GET /api/events?token={token} HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n"
     )
     .unwrap();
-    sse.set_read_timeout(Some(Duration::from_secs(15))).unwrap();
+    sse.set_read_timeout(Some(HANG)).unwrap();
     let mut first = [0u8; 64];
     let n = sse.read(&mut first).unwrap();
     assert!(String::from_utf8_lossy(&first[..n]).starts_with("HTTP/1.1 200"));
@@ -311,6 +325,10 @@ fn serve_replaces_a_real_older_daemon_and_ends_its_event_streams() {
 
 /// Records, as a rolled-back upgrade does, that upgrading to this binary
 /// failed just now.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the CLI ages a failed upgrade on the system's clock, so it is recorded at the system's time"
+)]
 fn hold_this_binary(dir: &std::path::Path) {
     let exe = std::fs::canonicalize(crate::common::clax()).unwrap();
     let mtime = std::fs::metadata(&exe)

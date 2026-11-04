@@ -2,10 +2,10 @@
 //! finish: the call is left to the process exit, so the write it would
 //! have made is never made.
 
+use clax_testkit::recv_within;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
 
 /// A foreground daemon on `home`, on a port the OS picks.
 struct Daemon {
@@ -50,28 +50,21 @@ impl Daemon {
             .stderr(log)
             .spawn()
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(60);
-        loop {
-            if let Ok(text) = std::fs::read_to_string(home.join("daemon.json"))
-                && let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
-                && v["pid"] == child.id()
-            {
-                return Daemon {
-                    port: v["port"].as_u64().unwrap() as u16,
-                    token: v["token"].as_str().unwrap().to_string(),
-                    child: Some(child),
-                };
-            }
-            if Instant::now() >= deadline {
-                drop(Daemon {
-                    child: Some(child),
-                    port: 0,
-                    token: String::new(),
-                });
-                panic!("the daemon did not start");
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        let pid = child.id();
+        // Killed and reaped on drop, should it never start.
+        let mut d = Daemon {
+            child: Some(child),
+            port: 0,
+            token: String::new(),
+        };
+        let v = crate::common::wait_until("the daemon to start", || {
+            let text = std::fs::read_to_string(home.join("daemon.json")).ok()?;
+            let v = serde_json::from_str::<serde_json::Value>(&text).ok()?;
+            (v["pid"] == pid).then_some(v)
+        });
+        d.port = v["port"].as_u64().unwrap() as u16;
+        d.token = v["token"].as_str().unwrap().to_string();
+        d
     }
 
     /// `method path` with the token, written on a connection of its own;
@@ -109,12 +102,11 @@ fn shutdown_leaves_a_store_call_that_does_not_finish_to_the_exit() {
     let slow = d.send("POST", "/api/_test/slow_publish/60000");
     // The call is in the store before the shutdown is asked for.
     let log = tmp.path().join("daemon.log");
-    let deadline = Instant::now() + Duration::from_secs(120);
-    let started = || std::fs::read_to_string(&log).is_ok_and(|t| t.contains(STARTED));
-    while !started() {
-        assert!(Instant::now() < deadline, "the slow publish never started");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    crate::common::wait_until("the slow publish to start", || {
+        std::fs::read_to_string(&log)
+            .is_ok_and(|t| t.contains(STARTED))
+            .then_some(())
+    });
     let (code, body) = answer(d.send("POST", "/api/admin/shutdown")).unwrap();
     assert_eq!(code, 202, "{body}");
     // The hang guard only: the exit itself comes from the shutdown's bounds.
@@ -123,10 +115,7 @@ fn shutdown_leaves_a_store_call_that_does_not_finish_to_the_exit() {
     std::thread::spawn(move || {
         let _ = tx.send(child.wait());
     });
-    let status = rx
-        .recv_timeout(Duration::from_secs(300))
-        .expect("the daemon did not exit")
-        .unwrap();
+    let status = recv_within("the daemon to exit", &rx).unwrap();
     assert!(status.success(), "{status}");
     drop(slow);
     drop(d);

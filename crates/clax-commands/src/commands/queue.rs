@@ -869,6 +869,7 @@ fn follow(home: &Home, a: &FollowArgs) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

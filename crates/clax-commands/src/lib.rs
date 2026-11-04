@@ -98,6 +98,7 @@ pub(crate) fn serve(home: &Home, args: ServeArgs) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod test_bundle {
     use clax_core::embedded::{Bundle, FileTree, MemTree};
 
