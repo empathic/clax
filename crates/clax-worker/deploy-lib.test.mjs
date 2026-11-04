@@ -8,6 +8,7 @@ import {
   PREVIEW_BUCKET,
   SMOKE_CANNOT,
   buildId,
+  builtCommitOf,
   builtFromRefusal,
   checkCiOptions,
   checkStaging,
@@ -400,6 +401,27 @@ test("--no-build deploys only a Worker built from the checked-out commit", () =>
   assert.match(builtFromRefusal(null, record(head), head), /no index_bg\.wasm/);
   // No commit to compare (not a git checkout): nothing to refuse on.
   assert.equal(builtFromRefusal(wasm, null, ""), null);
+});
+
+test("--no-build deploys a Worker built from another commit with the checked-out commit's tree", () => {
+  // The release candidate is built from the release branch's head; Deploy
+  // prod checks out the merge commit on prod, whose tree is the head's.
+  const merge = "1111111111111111111111111111111111111111";
+  const head = "2222222222222222222222222222222222222222";
+  const other = "3333333333333333333333333333333333333333";
+  const wasm = Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]);
+  const record = (commit) => JSON.stringify({ commit, wasm_sha256: createHash("sha256").update(wasm).digest("hex") });
+  assert.equal(builtCommitOf(record(head)), head);
+  assert.equal(builtCommitOf("not JSON"), null);
+  assert.equal(builtCommitOf(null), null);
+  // Only a commit ID: the deploy passes it to git.
+  assert.equal(builtCommitOf(JSON.stringify({ commit: "--output=x" })), null);
+  const trees = { [merge]: "aaaa", [head]: "aaaa", [other]: "bbbb" };
+  assert.equal(builtFromRefusal(wasm, record(head), merge, trees), null);
+  assert.match(builtFromRefusal(wasm, record(other), merge, trees), /not built from HEAD 111111111111 or a commit with its tree/);
+  // A tree that could not be read is no match.
+  assert.match(builtFromRefusal(wasm, record(head), merge, { [merge]: "aaaa" }), /not built from HEAD 111111111111/);
+  assert.match(builtFromRefusal(wasm, record(head), merge, {}), /not built from HEAD 111111111111/);
 });
 
 test("the reel's addresses become the Worker's REEL_URL and REEL_POSTER_URL, https:// alone", () => {

@@ -39,20 +39,31 @@ export function versionIdOf(text) {
  * commit and the sha256 of the index_bg.wasm it built. A build is `head`'s
  * only when its record names `head` and hashes these bytes, so a build
  * from another commit, from none, or rebuilt since is refused rather than
- * deployed as `head`'s. Without `head` (not a git checkout) there is
- * nothing to compare, and only a missing build is refused. */
-export function builtFromRefusal(wasm, record, head) {
+ * deployed as `head`'s. A build from another commit is `head`'s too when
+ * `trees` (commit to tree, as `git rev-parse <commit>^{tree}` names them)
+ * gives both the same tree: Deploy prod checks out the merge commit on
+ * prod and deploys the candidate built from the release branch's head,
+ * whose tree it is. Without `head` (not a git checkout) there is nothing
+ * to compare, and only a missing build is refused. */
+export function builtFromRefusal(wasm, record, head, trees = {}) {
   if (!wasm) return "no index_bg.wasm: build first (drop --no-build)";
   if (!head) return null;
-  let built = null;
-  try {
-    built = JSON.parse(record);
-  } catch {
-    // no record, or not its JSON
-  }
-  if (built?.commit !== head) return `the Worker was not built from HEAD ${head.slice(0, 12)}: build it from this checkout (drop --no-build)`;
-  if (built.wasm_sha256 !== createHash("sha256").update(wasm).digest("hex")) return `index_bg.wasm changed after it was built from HEAD ${head.slice(0, 12)}: build it again (drop --no-build)`;
+  const commit = builtCommitOf(record);
+  const sameTree = commit !== null && trees[head] !== undefined && trees[commit] === trees[head];
+  if (commit !== head && !sameTree) return `the Worker was not built from HEAD ${head.slice(0, 12)} or a commit with its tree: build it from this checkout (drop --no-build)`;
+  if (JSON.parse(record).wasm_sha256 !== createHash("sha256").update(wasm).digest("hex")) return `index_bg.wasm changed after it was built from HEAD ${head.slice(0, 12)}: build it again (drop --no-build)`;
   return null;
+}
+
+/** The commit built-from.json's text `record` names (lowercase hex), or
+ * null when there is no record, or it names none. */
+export function builtCommitOf(record) {
+  try {
+    const c = JSON.parse(record)?.commit;
+    return typeof c === "string" && /^[0-9a-f]{7,64}$/.test(c) ? c : null;
+  } catch {
+    return null;
+  }
 }
 
 /** What a 200 from `/healthz` says while waiting for build `want`:

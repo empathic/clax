@@ -142,7 +142,7 @@ import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { dirname, join, resolve } from "node:path";
 import { cloudflare, expiryRule, hasRule } from "./cloudflare-api.mjs";
-import { PREVIEW_ASSET_DAYS, buildId, builtFromRefusal, checkCiOptions, checkStaging, ciSecretsRefusal, doneText, envOf, healthOf, kekPlan, partialTriggerUpdate, prodTipOf, productionGate, reelVars, secretsToMake, siteZoneOf, versionIdOf, wildcardRecordOf, wranglerError } from "./deploy-lib.mjs";
+import { PREVIEW_ASSET_DAYS, buildId, builtCommitOf, builtFromRefusal, checkCiOptions, checkStaging, ciSecretsRefusal, doneText, envOf, healthOf, kekPlan, partialTriggerUpdate, prodTipOf, productionGate, reelVars, secretsToMake, siteZoneOf, versionIdOf, wildcardRecordOf, wranglerError } from "./deploy-lib.mjs";
 import { BUILD, BUILT_FROM, HERE, baseConfig, embedsWebUi } from "./harness.mjs";
 
 const WRANGLER = join(HERE, "node_modules/.bin/wrangler");
@@ -897,12 +897,22 @@ async function main() {
     await buildWorker();
   } else {
     step("Build: skipped (--no-build)");
-    // What an earlier run built, from this commit (deploy-lib.mjs
-    // builtFromRefusal): never a stale build, nor one from another commit.
+    // What an earlier run built, from this commit or one with its tree
+    // (deploy-lib.mjs builtFromRefusal): never a stale build, nor one from
+    // another tree.
     const wasm = join(BUILD, "index_bg.wasm");
-    const refusal = builtFromRefusal(existsSync(wasm) ? readFileSync(wasm) : null, existsSync(BUILT_FROM) ? readFileSync(BUILT_FROM, "utf8") : null, commit);
+    const record = existsSync(BUILT_FROM) ? readFileSync(BUILT_FROM, "utf8") : null;
+    const built = builtCommitOf(record);
+    const trees = {};
+    for (const c of commit && built ? new Set([commit, built]) : []) {
+      const t = await git(["rev-parse", "--verify", "--quiet", `${c}^{tree}`]);
+      if (t.code === 0) trees[c] = t.out.trim();
+    }
+    const refusal = builtFromRefusal(existsSync(wasm) ? readFileSync(wasm) : null, record, commit, trees);
     if (refusal) throw new Error(`${BUILD}: ${refusal}`);
-    info(commit ? `the Worker in ${BUILD} was built from HEAD ${commit.slice(0, 12)}` : `the Worker in ${BUILD} is deployed as it is (no commit to check it against)`);
+    if (!commit) info(`the Worker in ${BUILD} is deployed as it is (no commit to check it against)`);
+    else if (built === commit) info(`the Worker in ${BUILD} was built from HEAD ${commit.slice(0, 12)}`);
+    else info(`the Worker in ${BUILD} was built from ${built.slice(0, 12)}, whose tree is HEAD ${commit.slice(0, 12)}'s`);
   }
   if (!existsSync(config.main)) throw new Error(`no ${config.main}: build first (drop --no-build)`);
   // The Worker embeds web/dist when clax-worker compiles (rust-embed,

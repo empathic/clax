@@ -13,8 +13,8 @@ name: Deploy prod
 # REEL_URL at it (CLOUDFLARE_API_TOKEN needs Stream: Edit, and the account
 # Stream). A reel that fails to build or upload never fails the deploy.
 #
-# Hourly, the drift check compares the commit /healthz reports with prod's
-# tip and fails when they differ. It deploys nothing and holds no deploy
+# Hourly, the drift check compares the tree of the commit /healthz reports
+# with prod's tip's and fails when they differ. It deploys nothing and holds no deploy
 # credential. GitHub runs scheduled workflows from the default branch's
 # copy of this file.
 on:
@@ -239,8 +239,15 @@ jobs:
             echo "::error::https://$HOST reports no CLAX_KEK: put it back from its backup (docs/prod.md, \"CLAX_KEK\")"
             exit 1
           fi
-          # /healthz may name the commit in full or by a prefix of it.
-          if [ "${#commit}" -lt 7 ] || [ "${tip#"$commit"}" = "$tip" ]; then
+          # The Worker reports the commit it was built from, the release
+          # branch's head, not the merge commit on prod; the two have one
+          # tree. /healthz may name the commit in full or by a prefix of it.
+          tip_tree="$(gh api "repos/$GITHUB_REPOSITORY/commits/$tip" --jq .commit.tree.sha)"
+          run_tree=""
+          if [ "${#commit}" -ge 7 ]; then
+            run_tree="$(gh api "repos/$GITHUB_REPOSITORY/commits/$commit" --jq .commit.tree.sha 2>/dev/null || true)"
+          fi
+          if [ -z "$run_tree" ] || [ "$run_tree" != "$tip_tree" ]; then
             # A deploy of the tip still running or waiting is not drift.
             pending="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow deploy-prod.yml --commit "$tip" \
               --json status --jq '[.[] | select(.status != "completed")] | length')"
