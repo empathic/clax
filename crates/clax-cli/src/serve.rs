@@ -11,10 +11,14 @@ use std::time::Duration;
 /// Runs the daemon for `home` until it stops.
 pub fn run(home: &Home, a: ServeArgs) -> anyhow::Result<()> {
     close_inherited_fds();
+    // A line that fails to reach stdout (its reader gone) is dropped: by
+    // default the failure is reported with `eprintln!`, which panics the
+    // thread that logged it when stderr is gone too.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?),
         )
+        .log_internal_errors(false)
         .init();
     let web: Arc<dyn FileTree> = match a.web_dist {
         Some(dir) => Arc::new(DiskTree::new(dir)),
