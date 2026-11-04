@@ -3,7 +3,7 @@
 // §6.1, §7.1). Each call carries the daemon's token; the owner's are made as a
 // browser of the owner's (its owner cookie and the shell's Origin).
 
-import { api, ownerSessionOf } from "./fixtures";
+import { api, ownerSessionOf, until } from "./fixtures";
 
 export type QuestionView = {
   id: string;
@@ -29,9 +29,14 @@ export async function ask(base: string, token: string, sid: string, body: { sour
   return api(base, token, `/api/sessions/${sid}/questions`, { method: "POST", body: JSON.stringify({ ...body, questions }) }) as Promise<{ question: QuestionView; mode: string }>;
 }
 
-/** The question once it is no longer open, from the session's long poll (up to 10 s). */
+/** The question once it is no longer open, from the session's long poll
+ * (each holds up to 10 s), asked again while it answers the question still
+ * open: only the test's timeout bounds the wait. */
 export async function waitAnswer(base: string, token: string, sid: string, qid: string): Promise<QuestionView> {
-  return ((await api(base, token, `/api/sessions/${sid}/questions/${qid}?wait=10`)) as { question: QuestionView }).question;
+  return until(`question ${qid} to close`, async () => {
+    const q = ((await api(base, token, `/api/sessions/${sid}/questions/${qid}?wait=10`)) as { question: QuestionView }).question;
+    return q.status !== "open" && q;
+  });
 }
 
 /** The owner cookie a browser of the owner's carries: the owner browser

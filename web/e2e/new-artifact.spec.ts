@@ -8,7 +8,7 @@
 // dark, into CLAX_E2E_SHOTS_DIR (target/new-artifact-shots by default).
 import { mkdirSync } from "node:fs";
 import { type Page } from "@playwright/test";
-import { api, asLocalViewer, contentFrame, type Daemon, expect, registerSession, test } from "./fixtures";
+import { api, asLocalViewer, contentFrame, type Daemon, expect, registerSession, test, until } from "./fixtures";
 import { settle } from "./time";
 
 const BRIEF = "A bar chart of Q3 revenue by region, sorted high to low, with last quarter as a faint ghost bar.";
@@ -47,8 +47,8 @@ test("the owner starts an artifact from a brief, picks a live agent and lands on
   // The agent watches the artifact and its session holds the brief.
   const watches = await api(d.base, d.token, `/api/sessions/${s.id}/watches`) as { watches: { artifact_id: string }[] };
   expect(watches.watches.map(w => w.artifact_id)).toContain(aid);
-  const fb = await api(d.base, d.token, `/api/sessions/${s.id}/feedback?wait=5`);
-  expect(JSON.stringify(fb)).toContain("Q3 revenue by region");
+  // Each read holds up to 5 s; one that ends without the brief is followed by another.
+  await until("the brief in the agent's feedback", async () => JSON.stringify(await api(d.base, d.token, `/api/sessions/${s.id}/feedback?wait=5`)).includes("Q3 revenue by region"));
   // The brief is the artifact's one thread, on the whole artifact.
   const t = await api(d.base, d.token, `/api/artifacts/${aid}/threads`) as { threads: { anchor: { kind: string }; comments: { body: string }[] }[] };
   expect(t.threads).toHaveLength(1);
@@ -94,17 +94,19 @@ async function eachLook(browser: import("@playwright/test").Browser, d: Daemon, 
   for (const theme of ["light", "dark"] as const) {
     for (const [size, viewport] of Object.entries(SIZES)) {
       const ctx = await browser.newContext({ viewport, colorScheme: theme, reducedMotion: "reduce", hasTouch: size === "phone" });
-      const page = await ctx.newPage();
-      await page.goto(d.base);
-      await fn(page, `${theme}-${size}`);
-      await ctx.close();
+      try {
+        const page = await ctx.newPage();
+        await page.goto(d.base);
+        await fn(page, `${theme}-${size}`);
+      } finally {
+        await ctx.close();
+      }
     }
   }
 }
 
 test("shots: the dialog with agents to pick, and the placeholder page", async ({ browser, freshDaemon: d }) => {
   test.skip(!SHOTS, "set CLAX_E2E_SHOTS to take the screenshots");
-  test.setTimeout(120_000);
   await registerSession(d.base, d.token, "claude");
   await registerSession(d.base, d.token, "codex");
   await eachLook(browser, d, async (page, look) => {
@@ -128,7 +130,6 @@ test("shots: the dialog with agents to pick, and the placeholder page", async ({
 
 test("shots: the dialog with no agent live", async ({ browser, freshDaemon: d }) => {
   test.skip(!SHOTS, "set CLAX_E2E_SHOTS to take the screenshots");
-  test.setTimeout(120_000);
   await eachLook(browser, d, async (page, look) => {
     await create(page, "Launch notes");
     await expect(page.getByRole("dialog", { name: "Who builds it?" })).toContainText("No agent is connected.");

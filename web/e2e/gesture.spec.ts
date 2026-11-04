@@ -808,10 +808,13 @@ async function dropText(page: Page, x: number, y: number, text: string) {
   test(`a page posting pick starts cannot show the hint while the viewer is idle on a shell control, moves over the shell, or types in it (N10)`, async ({ page }) => {
     const id = await publishLive(`Hint`, ATTACKER(false), { comments: { composer_only: true } });
     await record(page);
-    /** Waits until the page has posted `n` more pick starts. */
+    /** Has the page post `n` more pick starts of its own (asked by a
+     * message from the shell's realm, with no gesture), and waits until the
+     * shell has them. */
     const spam = async (n: number) => {
       const count = () => quietEval<number>(page, `claxMsgs.filter(m => m.type === "clax:pick-start").length`);
       const from = await count();
+      await quietEval(page, `document.querySelector("iframe.frame").contentWindow.postMessage({ type: "attacker:post", n: ${n} }, "*")`);
       await expect.poll(count).toBeGreaterThanOrEqual(from + n);
     };
     await page.addInitScript(() => {
@@ -822,11 +825,12 @@ async function dropText(page: Page, x: number, y: number, text: string) {
         .observe(document, { childList: true, subtree: true });
     });
     const f = await openReady(page, id);
-    // On comment mode, the page posts a pick start of its own every 100 ms.
+    // The page posts pick starts of its own whenever the test asks: on
+    // comment mode, all through the viewer's idling, moving and typing.
     await f.evaluate(() => {
       let n = 0;
       addEventListener("message", e => {
-        if (e.data?.type === "clax:comment-mode" && e.data.on) setInterval(() => parent.postMessage({ type: "clax:pick-start", pickId: `spam${n++}` }, "*"), 100);
+        if (e.data?.type === "attacker:post") for (let i = 0; i < e.data.n; i++) parent.postMessage({ type: "clax:pick-start", pickId: `spam${n++}` }, "*");
       });
     });
     const comment = page.getByRole("button", { name: "Comment", exact: true });
@@ -837,17 +841,18 @@ async function dropText(page: Page, x: number, y: number, text: string) {
     await expect(comment).toHaveAttribute("aria-pressed", "true");
     // Idle on the Comment button while the page posts 15 starts.
     await spam(15);
-    // Moving over the shell's sidebar and header, the page posting on.
+    // Moving over the shell's sidebar and header, the page posting before each move.
     const name = await nameField(page);
     const nb = (await name.boundingBox())!;
-    for (let i = 0; i < 20; i++) { await page.mouse.move(nb.x + (i % 10) * 4, nb.y + nb.height / 2 + (i % 5) * 3); await settle(page); }
+    for (let i = 0; i < 20; i++) { await spam(1); await page.mouse.move(nb.x + (i % 10) * 4, nb.y + nb.height / 2 + (i % 5) * 3); await settle(page); }
     await spam(1);
     // Typing in the name field, with the pointer resting on the page.
     await page.mouse.down();
     await page.mouse.up();
     const fb = await frameBox(page);
     await page.mouse.move(fb.x + fb.width / 2, fb.y + fb.height - 40, { steps: 6 });
-    await name.pressSequentially("Sam Smith", { delay: 120 });
+    // The page posts before each key.
+    for (const ch of "Sam Smith") { await spam(1); await name.pressSequentially(ch); }
     await spam(5);
     await settle(page);
     expect(await page.evaluate(() => (window as unknown as { hints: number }).hints)).toBe(0);

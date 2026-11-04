@@ -1,5 +1,5 @@
 import { type Frame, type Page } from "@playwright/test";
-import { test, expect, type Daemon, api, openArtifact, registerSession, nameField } from "./fixtures";
+import { test, expect, type Daemon, api, commentModeIn, openArtifact, registerSession, nameField } from "./fixtures";
 import { advance, settle, shellNow } from "./time";
 
 // Commenting several times in a row, as a viewer does it: each flow is driven
@@ -66,10 +66,17 @@ async function clickIn(page: Page, f: Frame, sel: string) {
   await page.mouse.up();
 }
 
-/** Moves to a shell control in steps and clicks it. */
+/** Moves to a shell control in steps and clicks it. The shell's top bar
+ * may still be filling in (presence, agents) and moving its controls: the
+ * press waits until the pointer is over `loc`, moving to it again if it
+ * moved meanwhile. */
 async function clickShell(page: Page, loc: import("@playwright/test").Locator) {
-  const b = (await loc.boundingBox())!;
-  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 10 });
+  for (;;) {
+    const b = (await loc.boundingBox())!;
+    const at = { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+    await page.mouse.move(at.x, at.y, { steps: 10 });
+    if (await loc.evaluate((el, p) => el.contains(document.elementFromPoint(p.x, p.y)), at)) break;
+  }
   await page.mouse.down();
   await page.mouse.up();
 }
@@ -106,6 +113,8 @@ const hint = (page: Page) => page.locator(".gesture-hint");
  * (the composer's textarea has focus). */
 async function firstPick(page: Page, f: Frame) {
   await clickShell(page, page.getByRole("button", { name: "Comment", exact: true }));
+  // The frame's bridge in comment mode: a click before is the page's.
+  await commentModeIn(f);
   await clickIn(page, f, "#p1");
   await expect(quote(page)).toContainText("First paragraph");
   await expect(composer(page).locator("textarea")).toBeFocused();
@@ -194,6 +203,7 @@ async function firstPick(page: Page, f: Frame) {
     await expect(threads).toHaveText("Threads 1");
     if ((await threads.getAttribute("aria-pressed")) !== "true") await clickShell(page, threads);
     await clickShell(page, page.getByRole("button", { name: "Comment", exact: true }));
+    await commentModeIn(f);
     const reply = page.getByRole("textbox", { name: "Reply" }).first();
     await clickShell(page, reply);
     await page.keyboard.type("A reply.");
@@ -209,6 +219,7 @@ async function firstPick(page: Page, f: Frame) {
     await expect(threads).toHaveText("Threads 1");
     if ((await threads.getAttribute("aria-pressed")) !== "true") await clickShell(page, threads);
     await clickShell(page, page.getByRole("button", { name: "Comment", exact: true }));
+    await commentModeIn(f);
     const reply = page.getByRole("textbox", { name: "Reply" }).first();
     await clickShell(page, reply);
     await page.keyboard.type("A reply by shortcut.");

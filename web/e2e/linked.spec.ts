@@ -17,14 +17,12 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Page } from "@playwright/test";
-import { NO_KEY_CONFIG, api, expect as baseExpect, publish, registerSession, startDaemon, test } from "./fixtures";
+import { NO_KEY_CONFIG, api, expect, publish, registerSession, startDaemon, test, until as untilValue } from "./fixtures";
 import { ask, waitAnswer } from "./questions-helpers";
 
 // Each test runs two daemons of its own and goes through a sign-in, a
-// push, an outage and many reloads; each wait is on its condition, and on a
-// loaded machine one may take far past the suite's 5 s, so the test's own
-// timeout bounds the waits, and an expectation fails only after 60 s.
-const expect = baseExpect.configure({ timeout: 60_000 });
+// push, an outage and many reloads; each wait is on its condition, bounded
+// only by the suite's hang guards.
 
 const SECRET = "e2e setup secret";
 const SHOTS = !!process.env.CLAX_E2E_SHOTS;
@@ -42,15 +40,11 @@ function freePort(): Promise<number> {
   });
 }
 
-/** Waits until `f` answers something truthy, `what` naming it when the test
- * times out first. */
-async function until<T>(what: string, f: () => Promise<T | null | undefined | false>): Promise<T> {
-  test.info().annotations.push({ type: "waiting", description: what });
-  for (;;) {
-    const v = await f().catch(() => null);
-    if (v) return v;
-    await new Promise(r => setTimeout(r, 200));
-  }
+/** Waits until `f` answers something truthy ([`untilValue`]), an error it
+ * throws counting as no answer yet: a daemon stopped for an outage, or
+ * starting again, refuses its calls meanwhile. */
+function until<T>(what: string, f: () => Promise<T | null | undefined | false>): Promise<T> {
+  return untilValue(what, () => f().catch(() => null));
 }
 
 /** Photographs `page` in both themes at both sizes, `prep` run after each change. */
@@ -83,7 +77,6 @@ async function threads(page: Page) {
 }
 
 test("a public comment comes down tagged, a local reply goes up, and an outage shows pending then not sent", async ({ browser }) => {
-  test.setTimeout(180_000);
   const port = await freePort();
   const origin = `http://localhost:${port}`;
   const hosted = await startDaemon({ config: `${NO_KEY_CONFIG}[hosted]\npublic_origin = "${origin}"\nsetup_secret_env = "CLAX_E2E_SETUP_SECRET"\n`, port, env: { CLAX_E2E_SETUP_SECRET: SECRET }, home: undefined });
@@ -215,7 +208,6 @@ test("a public comment comes down tagged, a local reply goes up, and an outage s
 });
 
 test("a local agent's question is asked on the hosted copy, answered there, and the local card resolves tagged", async ({ browser }) => {
-  test.setTimeout(180_000);
   const port = await freePort();
   const origin = `http://localhost:${port}`;
   const hosted = await startDaemon({ config: `${NO_KEY_CONFIG}[hosted]\npublic_origin = "${origin}"\nsetup_secret_env = "CLAX_E2E_SETUP_SECRET"\n`, port, env: { CLAX_E2E_SETUP_SECRET: SECRET }, home: undefined });

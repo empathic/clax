@@ -1,5 +1,5 @@
 import { type Page } from "@playwright/test";
-import { test, expect, type Daemon, publishAs, publishNext, registerSession } from "./fixtures";
+import { test, expect, type Daemon, publishAs, publishNext, registerSession, requestFence } from "./fixtures";
 import { settle } from "./time";
 
 let d: Daemon;
@@ -41,6 +41,7 @@ test("a new version updates only its own card, in place from the stream's delta,
   await expect.poll(() => full("/api/viewers/me/attention")).toBe(2);
   await expect.poll(() => full("/api/artifacts")).toBe(2);
   await settle(page);
+  await requestFence(page, () => gets);
   const before = gets.length;
   // Mark both cards' nodes: an update in place keeps them.
   await cardA.evaluate(e => { e.dataset.mark = "a"; });
@@ -53,6 +54,7 @@ test("a new version updates only its own card, in place from the stream's delta,
   // The delta's own fetch has gone out; anything else it caused would have too.
   await expect.poll(() => gets.includes(`/api/viewers/me/attention?artifact=${a}`)).toBe(true);
   await settle(page);
+  await requestFence(page, () => gets);
 
   const after = gets.slice(before).filter(u => u.startsWith("/api/"));
   expect(after.filter(u => u === "/api/viewers/me/attention" || u === "/api/artifacts"), "no full refetch").toEqual([]);

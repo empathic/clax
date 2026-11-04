@@ -268,6 +268,9 @@ test("comments switch refuses a guest comment", async ({ browser }) => {
     // Off again with that thread open: the sidebar says why its card has no reply box.
     await owner.getByRole("dialog").locator("label.sw").click();
     await expect(owner.getByRole("dialog").getByRole("switch", { name: "Comments" })).not.toBeChecked();
+    // The switch moves as it is clicked; the note follows once the daemon
+    // holds the change, which the guest's reload must read.
+    await expect(owner.getByRole("dialog").getByTestId("comments-note")).toHaveText("Off: nobody can comment, whatever their access.");
     await guest.reload();
     await expect(guest.locator("button.threads")).toHaveAttribute("aria-pressed", /^(true|false)$/);
     if ((await guest.locator("button.threads").getAttribute("aria-pressed")) === "false") await guest.locator("button.threads").click();

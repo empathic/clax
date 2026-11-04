@@ -36,6 +36,7 @@ async function holdDrag(cdp: CDPSession, from: Pt, to: Pt, holdMs: number, steps
   for (let i = 1; i <= steps; i++) {
     const p = { x: from.x + (to.x - from.x) * i / steps, y: from.y + (to.y - from.y) * i / steps };
     await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [p] });
+    // oxlint-disable-next-line clax-timing/timer-delay -- a slow drag's pace is the input under test (the frame's pick start racing the host's attestation); the checks wait on the pick, none on time
     if (stepMs) await new Promise(r => setTimeout(r, stepMs));
   }
   await beforeEnd?.();

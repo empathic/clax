@@ -49,7 +49,7 @@ test.describe("its tests in the inspect view", () => {
     await initHost(page);
     await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
     await host(page, `runTests({ files: ["tests/home.test.js"], testMs: 10000, totalMs: 60000 })`);
-    await expect.poll(async () => (await ofType(page, "tests")).length, { timeout: 60_000 }).toBeGreaterThan(0);
+    await expect.poll(async () => (await ofType(page, "tests")).length).toBeGreaterThan(0);
     const tests = (await ofType(page, "tests"))[0] as HostMessage & { passed: number; failed: unknown[]; skipped: number };
     expect(tests.failed).toEqual([]);
     expect(tests.skipped).toBe(0);

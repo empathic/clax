@@ -21,7 +21,6 @@ import { agentOf, agentTokenOf, cspViolations, openReports, queueWithGrant, refo
 const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
 test("a site's user files a report through the overlay; an agent claims, replies and resolves; only that reporter reads it", async ({ browser }, info) => {
-  test.setTimeout(90_000);
   const { d, origin } = await hostedDaemon();
   const site = await startDeployerSite(origin);
   try {
@@ -112,7 +111,8 @@ test("a site's user files a report through the overlay; an agent claims, replies
     const lease = await agent.ok<Lease>("POST", `/api/queues/${qid}/reports/${report.id}/claim`);
     expect(lease.lease_id).toBeTruthy();
     expect(typeof lease.fence).toBe("number");
-    expect(Date.parse(lease.expires_at)).toBeGreaterThan(Date.now());
+    // Its expiry is after the report was filed, both on the daemon's clock.
+    expect(Date.parse(lease.expires_at)).toBeGreaterThan(Date.parse(lease.report.created_at));
     expect(lease.report).toMatchObject({ id: report.id, state: "claimed" });
     expect(lease.report.claim).not.toBeNull();
     const reply = "The request is for 3 to 6 November; the end date is fixed in the next deploy.";
@@ -217,7 +217,6 @@ test("the overlay's host has no style attribute, and the page's !important rules
 });
 
 test("a reporter files the visible page, says a fix is still broken with a new capture, then confirms the next fix", async ({ browser }) => {
-  test.setTimeout(90_000);
   const { d, origin } = await hostedDaemon();
   const site = await startDeployerSite(origin);
   try {
@@ -304,7 +303,6 @@ test("a reporter files the visible page, says a fix is still broken with a new c
 });
 
 test("a redaction drawn on a tall capture, scrolled in its stage, lands where it was drawn in the PNG sent", async ({ browser }) => {
-  test.setTimeout(90_000);
   const { d, origin } = await hostedDaemon();
   const site = await startDeployerSite(origin);
   try {
@@ -387,7 +385,6 @@ test("a redaction drawn on a tall capture, scrolled in its stage, lands where it
 });
 
 test("the triage views stay current: a filing, an agent's claim and a person's release show without a reload", async ({ browser }) => {
-  test.setTimeout(90_000);
   const { d, origin } = await hostedDaemon();
   const site = await startDeployerSite(origin);
   try {

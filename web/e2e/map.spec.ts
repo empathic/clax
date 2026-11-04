@@ -65,7 +65,13 @@ render(html\`<\${MapView} center=\${[48.8566, 2.3522]} zoom=\${12} height=\${360
 async function fakeTiles(page: Page, failFirst = false, failed: string[] = []): Promise<string[]> {
   const served: string[] = [];
   await page.route("**/net:fetch", async route => {
-    const res = await route.fetch();
+    // A tile the map asks for again on its timer as the test ends goes
+    // unanswered: its page is closing.
+    const res = await route.fetch().catch((e: unknown) => {
+      if (/Test ended|closed/.test(String(e))) return null;
+      throw e;
+    });
+    if (!res) return;
     if (res.status() !== 502) return route.fulfill({ response: res });
     const { url } = route.request().postDataJSON() as { url: string };
     const m = /\/(\d+)\/(\d+)\/(\d+)\.png$/.exec(url);
@@ -205,7 +211,7 @@ for (const scheme of ["light", "dark"] as const) {
     // What the agent's render sees: the inspection's PNG.
     await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
     await host(page, "inspect({ settleMs: 300 })");
-    await expect.poll(async () => (await ofType(page, "inspection")).length, { timeout: 20_000 }).toBeGreaterThan(0);
+    await expect.poll(async () => (await ofType(page, "inspection")).length).toBeGreaterThan(0);
     const r = (await ofType(page, "inspection")).at(-1) as HostMessage & { png?: string; error?: string };
     expect(r.error).toBeUndefined();
     mkdirSync(SHOTS, { recursive: true });
