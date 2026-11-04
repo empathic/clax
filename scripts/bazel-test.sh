@@ -141,6 +141,18 @@ _pass() {
     fi
 }
 
+# _report <name> <bazel command and arguments...>: a check in report mode,
+# whose findings print and fail nothing.
+_report() {
+    local name="$1" start=$SECONDS
+    shift
+    echo "── bazel: $name (report only) ──"
+    "${awake[@]+"${awake[@]}"}" "$bazel" "$1" "${flags[@]}" "${@:2}" 2>&1 | tee "$output"
+    [ "${PIPESTATUS[0]}" -eq 0 ] || echo "── $name: findings above; report mode fails nothing ──"
+    echo "── bazel: $name took $((SECONDS - start))s ──"
+    _summary "$name (report only)" $((SECONDS - start))
+}
+
 # _run <name> <command...>: a check that runs outside Bazel.
 _run() {
     local name="$1" start=$SECONDS
@@ -255,6 +267,14 @@ if [ "$ci" = 1 ]; then
     _run_keyed "bazel web" .bazelrc .bazelversion MODULE.bazel MODULE.bazel.lock bazel/js/ \
         web/BUILD.bazel web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml \
         scripts/bazel-web.test.sh -- ./scripts/bazel-web.test.sh
+    # The timing rules in report mode (docs/usage.md, "Developing Clax"):
+    # run failing (--config=timing), so that each finding prints, and
+    # failing nothing here. Clippy's are build errors; the others are the
+    # failed tests' logs.
+    timing_report=(//scripts:test_timing //web:lint //apps/clax_app/timing_lint:test_timing)
+    _report "timing rules: clippy" build --keep_going --config=clippy --config=timing \
+        --output_groups=clippy_checks //crates/...
+    _report "timing rules: tests" test --keep_going --config=timing --test_output=errors "${timing_report[@]}"
 else
     if [ "$rust" = 1 ]; then
         _pass "rust tests" 'tests(//crates/...)' "$@"

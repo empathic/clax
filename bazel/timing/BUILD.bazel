@@ -1,0 +1,4 @@
+# Clippy's configuration for the timing rules in test code
+# (`--config=timing`, .bazelrc): rules_rust takes a clippy config only by
+# the name clippy.toml, so it is the one in this package.
+exports_files(["clippy.toml"])
