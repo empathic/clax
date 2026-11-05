@@ -54,7 +54,7 @@ export async function listConfirmations(): Promise<ConfirmationView[] | "forbidd
  * `assertion` where passkeys are required: it as it is after. A refusal
  * throws `Refused`. */
 export async function answerConfirmation(id: string, approve: boolean, assertion?: Assertion): Promise<ConfirmationView> {
-  const b = await browserCall<{ confirmation: ConfirmationView }>(`/api/confirmations/${encodeURIComponent(id)}`, "POST", assertion ? { approve, assertion } : { approve });
+  const b = await browserCall<{ confirmation: ConfirmationView }>(`/api/confirmations/${encodeURIComponent(id)}`, "POST", assertion ? { approve, assertion } : { approve }, undefined, true);
   return b.confirmation;
 }
 

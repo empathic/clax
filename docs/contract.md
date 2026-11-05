@@ -2954,9 +2954,14 @@ The CLI waits on every such call the same way: it prints one line,
 /api/confirmations/<id>?wait=50` until the owner answers, and makes its
 call again with the confirmation's ID. The MCP tools hand the 202 to the
 agent as an error, code `confirmation_pending`, message `Confirm in your
-browser: <confirm_url>`, with `confirmation_id` and `confirm_url`. The
-shell's own decisions that wait (a browser session's, while passkeys are
-required) say where to confirm instead of showing a result.
+browser: <confirm_url>`, with `confirmation_id` and `confirm_url`. A
+decision the shell makes that waits (a browser session's, while passkeys
+are required) is confirmed where it was made: the page asks for the
+passkey, approves the confirmation with its assertion and makes the call
+again with the confirmation's ID, so it finishes with no card; a passkey
+not used declines it. Where no passkey confirms there (none required, or
+the browser offers none), it says where to confirm instead of showing a
+result.
 
 #### Passkeys
 

@@ -6,6 +6,9 @@ import RemoteMutes from "../bot/RemoteMutes.svelte";
 import { item } from "./fixtures";
 import RemoteRequestCard from "./RemoteRequestCard.svelte";
 
+/** Passkeys not required: a held answer is confirmed on its card. */
+const NO_PASSKEY = { available: true, require_passkey: false, required: false, passkeys: [] };
+
 const click = (el: Element) => flush(() => { dispatchTrusted(el, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })); });
 const button = (root: Element, text: string) => [...root.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent!.trim() === text) ?? null;
 const now = new Date("2026-10-07T09:17:03.120Z");
@@ -76,7 +79,8 @@ describe("RemoteRequestCard", () => {
     const URL = "http://localhost:7480/inbox?confirm=cf_01";
     for (const [label, answer, done] of [["Connect", "connect", { request: { status: "open" }, verification_url: "https://clax.example/device?code=ABCD-1234" }], ["Not now", "not_now", { request: { status: "dismissed" } }], ["Never for this instance", "never", { request: { status: "muted" } }]] as const) {
       const sent: { body: unknown; confirm: string | null }[] = [];
-      vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === "/api/passkeys") return new Response(JSON.stringify(NO_PASSKEY));
         const confirm = new Headers(init?.headers).get("x-clax-confirmation");
         sent.push({ body: JSON.parse(String(init?.body)), confirm });
         return confirm === "cf_01"
@@ -106,7 +110,8 @@ describe("RemoteRequestCard", () => {
   it("a held answer whose confirmation was declined says so, and the next press asks afresh", async () => {
     const URL = "http://localhost:7480/inbox?confirm=cf_01";
     const sent: (string | null)[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/passkeys") return new Response(JSON.stringify(NO_PASSKEY));
       const confirm = new Headers(init?.headers).get("x-clax-confirmation");
       sent.push(confirm);
       if (confirm) return new Response(JSON.stringify({ error: { code: "declined", message: "the owner declined this decision" } }), { status: 403 });

@@ -50,9 +50,11 @@ export function unavailableHere(): string | null {
   return null;
 }
 
-// Every write sends a JSON body, `{}` when it has none.
-const call = <T>(path: string, method = "GET", body?: unknown, confirm?: string) =>
-  browserCall<T>(path, method, method === "GET" ? undefined : body ?? {}, confirm);
+// Every write sends a JSON body, `{}` when it has none. None is confirmed
+// here: confirming here makes these calls, and a registration held is
+// finished by its approval.
+const call = <T>(path: string, method = "GET", body?: unknown) =>
+  browserCall<T>(path, method, method === "GET" ? undefined : body ?? {}, undefined, true);
 
 let cached: Promise<PasskeySettings | null> | null = null;
 
