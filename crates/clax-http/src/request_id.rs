@@ -2,7 +2,8 @@
 //!
 //! [`layer`] gives each request an id: the caller's `x-request-id` when it
 //! sent a well-formed one ([`valid`]), so a browser can name its request
-//! before sending it, or else a new one ([`mint`]). The handler then runs
+//! before sending it, or the trace ID of its `traceparent` ([`trace_id`]), or
+//! else a new one ([`mint`]). The handler then runs
 //! inside [`clax_core::cause::scope`] with that id, so every event it
 //! publishes carries it as its `cause` (`/api/events` frames show it beside
 //! the event's fields), and inside a `request` tracing span with the id, so
@@ -36,38 +37,72 @@ pub fn mint() -> String {
     let ms = clax_rt::wall::SystemTime::now()
         .duration_since(clax_rt::wall::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64);
-    format!("{:012x}{:016x}", ms & 0xffff_ffff_ffff, rand::random::<u64>())
+    format!(
+        "{:012x}{:016x}",
+        ms & 0xffff_ffff_ffff,
+        rand::random::<u64>()
+    )
+}
+
+/// The trace ID of a W3C `traceparent` value
+/// (`<version>-<trace id>-<parent id>-<flags>`, lowercase hex), when it is
+/// well formed and names a trace.
+pub fn trace_id(traceparent: &str) -> Option<&str> {
+    let hex =
+        |s: &str, len| s.len() == len && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    let nonzero = |s: &str| s.bytes().any(|b| b != b'0');
+    let mut parts = traceparent.split('-');
+    let (version, trace, parent, flags) =
+        (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    (hex(version, 2)
+        && version != "ff"
+        && hex(trace, 32)
+        && nonzero(trace)
+        && hex(parent, 16)
+        && nonzero(parent)
+        && hex(flags, 2))
+    .then_some(trace)
 }
 
 /// Names the request, runs it under its id as cause, and stamps the answer
 /// (see the module docs).
 pub async fn layer(mut req: Request, next: Next) -> Response {
-    let id = req
-        .headers()
-        .get(&X_REQUEST_ID)
-        .and_then(|v| v.to_str().ok())
-        .filter(|s| valid(s))
-        .map(str::to_owned)
-        .unwrap_or_else(mint);
+    let id = {
+        let header = |name: &str| req.headers().get(name).and_then(|v| v.to_str().ok());
+        header(X_REQUEST_ID.as_str())
+            .filter(|s| valid(s))
+            .or_else(|| header("traceparent").and_then(trace_id))
+            .map(str::to_owned)
+            .unwrap_or_else(mint)
+    };
     let value = HeaderValue::from_str(&id).expect("a valid id is a header value");
-    req.headers_mut().insert(X_REQUEST_ID.clone(), value.clone());
+    req.headers_mut()
+        .insert(X_REQUEST_ID.clone(), value.clone());
     let span = tracing::info_span!(
         "request",
         id = %id,
         method = %req.method(),
         path = %req.uri().path(),
+        status = tracing::field::Empty,
+        "otel.kind" = "server",
     );
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::otel::accept_parent(&span, req.headers());
     let started = clax_rt::wall::Instant::now();
     let cause: Arc<str> = id.as_str().into();
     let mut res = clax_core::cause::scope(cause, next.run(req))
-        .instrument(span)
+        .instrument(span.clone())
         .await;
+    span.record("status", res.status().as_u16());
     let ms = started.elapsed().as_secs_f64() * 1000.0;
     let h = res.headers_mut();
     h.insert(X_REQUEST_ID.clone(), value);
     let timing = format!("req;desc=\"{id}\", app;dur={ms:.1}");
     if let Ok(v) = HeaderValue::from_str(&timing) {
-        h.append(axum::http::header::HeaderName::from_static("server-timing"), v);
+        h.append(
+            axum::http::header::HeaderName::from_static("server-timing"),
+            v,
+        );
     }
     res
 }
@@ -103,7 +138,9 @@ mod tests {
     }
 
     async fn body(res: Response) -> String {
-        let b = axum::body::to_bytes(res.into_body(), 1 << 16).await.unwrap();
+        let b = axum::body::to_bytes(res.into_body(), 1 << 16)
+            .await
+            .unwrap();
         String::from_utf8(b.to_vec()).unwrap()
     }
 
@@ -116,7 +153,46 @@ mod tests {
         let res = app().oneshot(req).await.unwrap();
         assert_eq!(res.headers()["x-request-id"], "page-42");
         let timing = res.headers()["server-timing"].to_str().unwrap().to_owned();
-        assert!(timing.starts_with("req;desc=\"page-42\", app;dur="), "{timing}");
+        assert!(
+            timing.starts_with("req;desc=\"page-42\", app;dur="),
+            "{timing}"
+        );
+        assert_eq!(body(res).await, "page-42");
+    }
+
+    #[test]
+    fn a_traceparent_names_its_trace_only_when_well_formed() {
+        let trace = "4bf92f3577b34da6a3ce929d0e0e4736";
+        let good = format!("00-{trace}-00f067aa0ba902b7-01");
+        assert_eq!(trace_id(&good), Some(trace));
+        for bad in [
+            "",
+            "garbage",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7",
+            "ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            "00-00000000000000000000000000000000-00f067aa0ba902b7-01",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01",
+            "00-4BF92F3577B34DA6A3CE929D0E0E4736-00f067aa0ba902b7-01",
+        ] {
+            assert_eq!(trace_id(bad), None, "{bad}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_trace_id_names_a_request_with_no_id_of_its_own() {
+        let traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+        let req = Request::get("/")
+            .header("traceparent", traceparent)
+            .body(Body::empty())
+            .unwrap();
+        let res = app().oneshot(req).await.unwrap();
+        assert_eq!(body(res).await, "4bf92f3577b34da6a3ce929d0e0e4736");
+        let req = Request::get("/")
+            .header("traceparent", traceparent)
+            .header("x-request-id", "page-42")
+            .body(Body::empty())
+            .unwrap();
+        let res = app().oneshot(req).await.unwrap();
         assert_eq!(body(res).await, "page-42");
     }
 

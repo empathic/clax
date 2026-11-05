@@ -3,12 +3,26 @@
 Local-first: everything here runs on this machine with no account and no
 hosted tracing product.
 
+## OTLP export
+
+`clax serve --foreground` sends its spans over OTLP/HTTP when
+`OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) is set,
+as service `OTEL_SERVICE_NAME`, by default `clax` (`clax_http::otel`). Unset,
+no exporter or thread exists and each request costs one atomic load. A request
+with a well-formed W3C `traceparent` continues that trace: its `request` span
+is a child of the caller's span. A collector that is down loses spans and does
+not affect the daemon. A trace is exported on the caller's say: `-00` in
+`traceparent` means unsampled, and nothing is sent. The Worker's wasm32 build
+has none of this.
+
 ## Request ids and causes
 
 Every request the daemon answers has an id (`clax_http::request_id`): the
-caller's `x-request-id` when it is 1–64 of `[A-Za-z0-9._-]`, or a new one
-(12 hex digits of epoch milliseconds, then 16 random). The answer carries it
-back as `x-request-id`.
+caller's `x-request-id` when it is 1–64 of `[A-Za-z0-9._-]`, else the trace ID
+of its `traceparent`, else a new one (12 hex digits of epoch milliseconds, then
+16 random). The answer carries it back as `x-request-id`. Requests of one trace
+with no `x-request-id` of their own share the ID, so a `cause` then names the
+trace rather than one request.
 
 The handler runs under that id as its *cause* (`clax_core::cause`), and so
 do the store jobs it hands off (`AppState::store_call*`): every event

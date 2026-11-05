@@ -42,12 +42,14 @@ pub mod loopback;
 pub mod net;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod net_cache;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod otel;
 pub mod peer_user;
 pub mod perf;
-pub mod request_id;
 pub mod pushes;
 pub mod remote_drivers;
 pub mod reporter;
+pub mod request_id;
 pub mod seats;
 pub mod settings;
 pub mod site_access;
