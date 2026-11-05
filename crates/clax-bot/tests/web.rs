@@ -512,9 +512,13 @@ async fn opting_out_mid_run_refuses_web_disabled() {
     assert!(web_rows(&env).is_empty());
 }
 
-/// A source that has lost its credentials: it would answer as the fake
-/// does, but says it is not configured.
-struct Unconfigured(std::sync::Arc<clax_bot::web::FakeWebSource>);
+/// A source that has lost the credentials of some operations: it would
+/// answer as the fake does, but says it can perform only those of its
+/// shape.
+struct Unconfigured(
+    std::sync::Arc<clax_bot::web::FakeWebSource>,
+    clax_bot::web::WebShape,
+);
 
 #[async_trait::async_trait]
 impl clax_bot::web::WebSource for Unconfigured {
@@ -540,8 +544,8 @@ impl clax_bot::web::WebSource for Unconfigured {
         self.0.fetch(url, format, limits, hop, cancel).await
     }
 
-    fn configured(&self) -> bool {
-        false
+    fn configured(&self) -> clax_bot::web::WebShape {
+        self.1
     }
 }
 
@@ -557,11 +561,50 @@ async fn a_source_that_lost_its_credentials_refuses_web_disabled() {
     env.api.push(finish_turn("done"));
     let run = env.run_with_web("search");
     let mut deps = env.deps();
-    deps.web = Some(std::sync::Arc::new(Unconfigured(env.web())));
+    deps.web = Some(std::sync::Arc::new(Unconfigured(
+        env.web(),
+        clax_bot::web::WebShape::default(),
+    )));
     env.drive(&deps, &run, &DriverId::mint()).await;
     assert_eq!(script_result(&env, &run, 0)["value"], "web_disabled");
     assert!(env.web().calls().is_empty());
     assert!(web_rows(&env).is_empty());
+}
+
+#[tokio::test]
+async fn a_source_that_can_only_fetch_refuses_search_and_fetches() {
+    let env = Env::new().await;
+    let a = "https://example.com/a";
+    env.web().search_answers("a", hits(&[a]));
+    env.web().page(a, page_at(a, "# A", &[]));
+    env.host.lock().context.threads[0].comments[0].text = format!("Read {a}.");
+    env.api.push(env.script_turn(
+        "tu_1",
+        "Web",
+        &format!(
+            "let s; try {{ await clax.web.search('a'); s = 'searched'; }} catch (e) {{ s = e.code + ': ' + e.message; }}
+             const p = await clax.web.fetch('{a}');
+             return {{s, read: JSON.stringify(p).includes('# A')}};"
+        ),
+    ));
+    env.api.push(finish_turn("done"));
+    let run = env.run_with_web("search,fetch");
+    let mut deps = env.deps();
+    deps.web = Some(std::sync::Arc::new(Unconfigured(
+        env.web(),
+        clax_bot::web::WebShape {
+            search: false,
+            fetch: true,
+        },
+    )));
+    env.drive(&deps, &run, &DriverId::mint()).await;
+    let v = &script_result(&env, &run, 0)["value"];
+    assert_eq!(
+        v["s"],
+        "web_disabled: clax.web.search was turned off (not_configured) since this run started; do without it"
+    );
+    assert_eq!(v["read"], true, "{v}");
+    assert_eq!(env.web().calls(), [("fetch".to_string(), a.to_string())]);
 }
 
 /// A source whose host found it cannot run here (the Worker's AI binding

@@ -1206,47 +1206,58 @@ pub fn driver_with_web(
         events: bot.events.clone(),
         catalog_url: bot.catalog_url.clone(),
         catalog_flight: bot.catalog_flight.clone(),
-        web_configured: bot.web_configured,
+        // The runs have a source now: the daemon's own fetches at least,
+        // unless the host said its source does more (the test fixtures).
+        web_configured: if bot.web_configured.any() {
+            bot.web_configured
+        } else {
+            clax_bot::web::WebShape {
+                search: false,
+                fetch: true,
+            }
+        },
         web_check: bot.web_check.clone(),
         admin_web_check: bot.admin_web_check.clone(),
     });
     driver
 }
 
-/// Whether ClaxBot's web use is configured on this host now: never once
-/// the host knows its source cannot be used (its origin or site domain
-/// names no host, or the source cannot run where it runs:
-/// [`clax_http::bot::Bot::web_check`]); else the host says so
-/// ([`clax_http::bot::Bot::web_configured`]: the Worker's AI binding, the
-/// daemon's test fixtures), or, on a native daemon, the
-/// instance holds a key-encryption key, a Cloudflare account ID and a
-/// sealed token ([`crate::web_source::has_credentials`]), read at each
-/// call so an admin's change takes effect without a restart.
+/// Which of ClaxBot's web operations are configured on this host now:
+/// neither once the host knows its source cannot be used (its origin or
+/// site domain names no host, or the source cannot run where it runs:
+/// [`clax_http::bot::Bot::web_check`]); else those the host's source
+/// performs ([`clax_http::bot::Bot::web_configured`]: both for the
+/// Worker's AI binding and the daemon's test fixtures, fetch for the
+/// daemon's own source), and, for a native host whose source fetches but
+/// does not search on its own (the daemon's), search once the instance
+/// holds a key-encryption key, a Cloudflare account ID and a sealed token
+/// ([`crate::web_source::has_credentials`]), read at each call so an
+/// admin's change takes effect without a restart.
 ///
 /// # Errors
 /// The store's.
-pub fn web_configured(st: &Store, bot: &clax_http::bot::Bot) -> clax_core::Result<bool> {
+pub fn web_configured(
+    st: &Store,
+    bot: &clax_http::bot::Bot,
+) -> clax_core::Result<clax_bot::web::WebShape> {
+    use clax_bot::web::WebShape;
     if bot.web_check.why().is_some() {
-        return Ok(false);
+        return Ok(WebShape::default());
     }
-    if bot.web_configured {
-        // Every decision on web use (a run's start, the person's and the
-        // admin's views) comes here: with web use on, the host is asked to
-        // check its source, which it does after the request.
-        if web_on(st)? {
-            bot.web_check.want();
-        }
-        return Ok(true);
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
+    let mut shape = bot.web_configured;
+    // Every decision on web use (a run's start, the person's and the
+    // admin's views) comes here: with web use on, the host is asked to
+    // check its source, which it does after the request (the Worker; the
+    // daemon checks nothing).
+    if shape.any() && web_on(st)? {
+        bot.web_check.want();
     }
     #[cfg(not(target_arch = "wasm32"))]
-    {
-        crate::web_source::has_credentials(st, bot.kek.as_ref())
+    if shape.fetch && !shape.search {
+        shape.search = crate::web_source::has_credentials(st, bot.kek.as_ref())?;
     }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = st;
-        Ok(false)
-    }
+    Ok(shape)
 }
 
 /// Whether an admin turned web search or web fetch on.

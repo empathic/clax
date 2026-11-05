@@ -260,7 +260,7 @@ describe("Admin › Web", () => {
     const calls = stubFetch({
       "GET /api/admin/web": webSettings({ sources: { "fetch.max_per_run": "file" } }),
       "GET /api/admin/pricing": WEB_PRICING,
-      "PUT /api/admin/web": (b: unknown) => webSettings({ configured: true, search: { ...webSettings().search, enabled: true, provider: "exa" }, fetch: { ...webSettings().fetch, enabled: true, url_rule: "allowlist", allowlist: (b as { fetch: { allowlist: string[] } }).fetch.allowlist } }),
+      "PUT /api/admin/web": (b: unknown) => webSettings({ configured: { search: true, fetch: true }, search: { ...webSettings().search, enabled: true, provider: "exa" }, fetch: { ...webSettings().fetch, enabled: true, url_rule: "allowlist", allowlist: (b as { fetch: { allowlist: string[] } }).fetch.allowlist } }),
     });
     const m = mount(AdminWeb, {});
     await settle();
@@ -297,7 +297,7 @@ describe("Admin › Web", () => {
     const m = mount(AdminWeb, {});
     await settle();
     expect(m.root.textContent).toContain(`Web access is off: ${why}`);
-    expect(m.root.textContent).not.toContain("Not configured: web access needs");
+    expect(m.root.textContent).not.toContain("Search needs the Cloudflare");
   });
 
   it("a_source_that_cannot_run_here_says_why", async () => {
@@ -308,12 +308,12 @@ describe("Admin › Web", () => {
     const m = mount(AdminWeb, { now: () => new Date("2026-10-21T12:00:00Z") });
     await settle();
     expect(m.root.textContent).toContain("Web access is off: Workers AI cannot run where this Worker runs.");
-    expect(m.root.textContent).not.toContain("Not configured");
+    expect(m.root.textContent).not.toContain("Search needs the Cloudflare");
   });
 
   it("a_check_still_running_says_so", async () => {
     stubFetch({
-      "GET /api/admin/web": webSettings({ configured: true, checking: true }),
+      "GET /api/admin/web": webSettings({ configured: { search: true, fetch: true }, checking: true }),
       "GET /api/admin/pricing": WEB_PRICING,
     });
     const m = mount(AdminWeb, { now: () => new Date("2026-10-21T12:00:00Z") });
@@ -325,11 +325,11 @@ describe("Admin › Web", () => {
     const calls = stubFetch({
       "GET /api/admin/web": webSettings(),
       "GET /api/admin/pricing": WEB_PRICING,
-      "PUT /api/admin/web/token": webSettings({ configured: true, cloudflare: { account_id: "", token: { set: true, last4: "9f3a", set_at: "2026-10-21T09:00:00Z", set_by: { id: "*owner", name: "Alex" }, last_ok_at: null } } }),
+      "PUT /api/admin/web/token": webSettings({ configured: { search: true, fetch: true }, cloudflare: { account_id: "", token: { set: true, last4: "9f3a", set_at: "2026-10-21T09:00:00Z", set_by: { id: "*owner", name: "Alex" }, last_ok_at: null } } }),
     });
     const m = mount(AdminWeb, { now: () => new Date("2026-10-21T12:00:00Z") });
     await settle();
-    expect(m.root.textContent).toContain("Not configured");
+    expect(m.root.textContent).toContain("Search needs the Cloudflare account ID and API token below. Fetch works without them, except for PDF and Office documents.");
     click(button(m.root, /^Set/));
     const input = m.root.querySelector<HTMLInputElement>('.bkey input[type="password"]')!;
     type(input, "cf-secret-9f3a");
@@ -339,6 +339,8 @@ describe("Admin › Web", () => {
     expect(m.root.querySelector('.bkey input[type="password"]')).toBeNull();
     expect(m.root.querySelector(".bkey-s")!.textContent).toContain("ending 9f3a");
     expect(m.root.textContent).not.toContain("cf-secret");
+    // With the token, search is configured too: no hint.
+    expect(m.root.textContent).not.toContain("Search needs the Cloudflare");
   });
 
   it("saves the gateway, the provider key alias and the results per search, and refuses a limit outside 1 to 10", async () => {

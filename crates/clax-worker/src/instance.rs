@@ -722,7 +722,11 @@ fn worker_bot(
         events,
         catalog_url: first_catalog_url,
         catalog_flight,
-        web_configured: web.is_some(),
+        web_configured: if web.is_some() {
+            clax_bot::web::WebShape::BOTH
+        } else {
+            clax_bot::web::WebShape::default()
+        },
         web_check: check,
         admin_web_check: web.clone().map(|w| {
             Arc::new(AdminWebView(worker::send::SendWrapper::new(w)))

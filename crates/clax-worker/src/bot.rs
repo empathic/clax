@@ -553,7 +553,7 @@ mod tests {
         assert!(own.holds("clax.example"));
         assert!(own.holds("abcdefghijkl.sites.example"));
         assert!(!own.holds("example.com"));
-        assert!(web.configured());
+        assert_eq!(web.configured(), clax_bot::web::WebShape::BOTH);
         // Without either, the source is unchanged.
         let bare = own_hosts(fixtures.clone(), None, None).unwrap();
         assert_eq!(bare.own_hosts(), clax_bot::web::OwnHosts::default());

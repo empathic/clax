@@ -7,7 +7,7 @@ export const WEEK_END = "2026-10-26T00:00:00Z";
 export const week = (o: Partial<Week> = {}): Week => ({ start: WEEK_START, end: WEEK_END, weekly_milli: 2_000_000, lift_milli: 0, spent_milli: 310_000, warn: false, exhausted: false, ...o });
 export const meBot = (o: Partial<MeBot> = {}): MeBot => ({
   enabled: true, unenforced: false, available: true, unavailable_reason: null,
-  key: { own: null, use_own: false }, week: week(), role: "member", web: { on: true, offered: true, why_off: null, prices: { search_milli: 25, fetch_milli: 50 } }, ...o,
+  key: { own: null, use_own: false }, week: week(), role: "member", web: { on: true, offered: true, operations: { search: true, fetch: true }, why_off: null, prices: { search_milli: 25, fetch_milli: 50 } }, ...o,
 });
 export const adminPerson = (o: Partial<AdminPerson> = {}): AdminPerson => ({
   person: "p_sam", name: "Sam", role: "member", flags: { claxbot: true, claxbot_unenforced: false }, key_source: "own",
@@ -92,7 +92,7 @@ export const run = (o: Partial<BotRun> = {}): BotRun => ({
 });
 /** As `GET /api/admin/web` answers: search and fetch off, the defaults, a daemon without its Cloudflare account. */
 export const webSettings = (o: Partial<WebSettings> = {}): WebSettings => ({
-  configured: false,
+  configured: { search: false, fetch: true },
   unavailable: null,
   checking: false,
   search: { enabled: false, provider: "ceramic", gateway: "default", byok_alias: "", limit: 5, max_per_run: 10 },

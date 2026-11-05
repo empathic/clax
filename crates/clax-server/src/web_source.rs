@@ -1,9 +1,12 @@
 //! The daemon's web source (spec
 //! `docs/superpowers/specs/2026-11-02-claxbot-web-tools-design.md` §4.3,
-//! §5.3, §10): [`RestSource`], which searches and converts through
-//! Cloudflare's REST API and fetches pages with the daemon's own HTTP
-//! client, and [`DaemonWeb`], which builds one from the instance's
-//! settings and sealed token at each call.
+//! §5.3, §10): [`RestSource`], which fetches pages with the daemon's own
+//! HTTP client and converts HTML to Markdown itself
+//! ([`clax_bot::web::markdown`]), and, with a Cloudflare account, searches
+//! and converts PDF and Office documents through Cloudflare's REST API;
+//! and [`DaemonWeb`], which builds one from the instance's settings and
+//! sealed token at each call. Without an account the daemon still
+//! fetches.
 //!
 //! # The host check
 //!
@@ -25,17 +28,17 @@
 //! ([`FakeWebSource::from_fixtures`]'s shape) instead, and web use is
 //! configured ([`fixtures`]).
 
+use clax_bot::web::markdown::html_to_markdown;
 use clax_bot::web::page::{
-    Handling, decode, decode_html, handling, html_for_conversion, http_error, is_sniffed,
-    links_of_body, links_of_html, links_of_markdown, media_type, media_type_of, pretty_json,
-    user_agent,
+    Handling, decode, decode_html, handling, http_error, is_sniffed, links_of_body, links_of_html,
+    links_of_markdown, media_type, media_type_of, pretty_json, user_agent,
 };
 use clax_bot::web::url::{is_local_addr, redirect_allowed};
 use clax_bot::web::{
     CODE_URL_NOT_ALLOWED, CODE_WEB_BLOCKED, CODE_WEB_TIMEOUT, CODE_WEB_TOO_LARGE,
     CODE_WEB_UNAVAILABLE, CODE_WEB_UNSUPPORTED_CONTENT_TYPE, FakeWebSource, FetchLimits,
     FetchedPage, Format, OwnHosts, PublicUrl, SearchAnswer, SearchHit, SearchQuery, WebError,
-    WebSource, WithOwnHosts,
+    WebShape, WebSource, WithOwnHosts,
 };
 use clax_bot_sandbox::{CODE_CANCELLED, CancelToken};
 use clax_core::secret::Secret;
@@ -58,8 +61,9 @@ pub const ACCEPT: &str = "text/markdown, text/html;q=0.9, */*;q=0.8";
 /// The environment variable naming the test mode's fixtures file.
 pub const FIXTURES_ENV: &str = "CLAX_TEST_WEB_FIXTURES";
 
-/// How long a search or a conversion request to Cloudflare may take on
-/// its own (a fetch's conversion is also within the fetch's deadline).
+/// How long a search or a document's conversion request to Cloudflare may
+/// take on its own (a fetch's conversion is also within the fetch's
+/// deadline).
 const API_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The most bytes of a search answer read from Cloudflare.
@@ -68,9 +72,31 @@ const SEARCH_ANSWER_BYTES: u64 = 1 << 20;
 /// The most bytes of a Markdown conversion's answer read from Cloudflare.
 const CONVERSION_ANSWER_BYTES: u64 = 16 << 20;
 
-/// The type an HTML page is sent for conversion as: decoded first,
-/// whatever charset it came in.
-const HTML_UTF8: &str = "text/html; charset=utf-8";
+/// What a search answers on a daemon without a Cloudflare account.
+const NO_ACCOUNT: &str = "web search is not configured on this instance: an admin sets the Cloudflare account ID and API token";
+
+/// `body`, an HTML page served as `declared`, from `at`: as Markdown, and
+/// its links. Decoding, the link scan and the conversion are linear in the
+/// page, but a page is up to 5 MB, so they run on a blocking thread, not
+/// on the run driver's task, and a conversion that fails there answers
+/// `web_unavailable` rather than ending that task.
+async fn convert_html(
+    body: Vec<u8>,
+    declared: String,
+    at: PublicUrl,
+) -> Result<(String, Vec<String>), WebError> {
+    tokio::task::spawn_blocking(move || {
+        let html = decode_html(&body, &declared);
+        (html_to_markdown(&html, &at), links_of_html(&html, &at))
+    })
+    .await
+    .map_err(|e| {
+        unavailable(
+            format!("the page could not be converted to Markdown ({e})"),
+            false,
+        )
+    })
+}
 
 /// Whether `ip` is a public unicast address a fetch may connect to: not
 /// in any range [`is_local_addr`] refuses, the one list the URL check and
@@ -186,15 +212,17 @@ fn unavailable(message: impl Into<String>, retryable: bool) -> WebError {
     WebError::new(CODE_WEB_UNAVAILABLE, message, retryable)
 }
 
-/// A [`WebSource`] over Cloudflare's REST API: search through
-/// `POST {api_base}/client/v4/accounts/{id}/ai/websearch/`, conversion to
-/// Markdown through `POST {api_base}/client/v4/accounts/{id}/ai/tomarkdown`,
-/// and pages fetched by the daemon itself, with the host check
-/// ([`CheckedResolver`]) on every request.
+/// A [`WebSource`] of pages fetched by the daemon itself, with the host
+/// check ([`CheckedResolver`]) on every request, and HTML converted to
+/// Markdown by the daemon ([`html_to_markdown`]): the page goes nowhere
+/// else. With a Cloudflare account it also searches, through
+/// `POST {api_base}/client/v4/accounts/{id}/ai/websearch/`, and converts
+/// PDF and Office documents through
+/// `POST {api_base}/client/v4/accounts/{id}/ai/tomarkdown`; without one a
+/// search answers `web_unavailable` before anything is sent, and a
+/// document `web_unsupported_content_type` once it has been fetched.
 pub struct RestSource {
-    api_base: Url,
-    account_id: String,
-    token: Secret,
+    account: Option<Account>,
     /// Cloudflare's API: no redirects followed (the token goes nowhere
     /// else). The client is the reason it could not be built otherwise,
     /// and every call then answers `web_unavailable`: never a client
@@ -209,6 +237,14 @@ pub struct RestSource {
     tls: Result<rustls::ClientConfig, String>,
     /// Sent on every fetch ([`user_agent`]).
     user_agent: String,
+}
+
+/// The Cloudflare account a [`RestSource`] searches and converts
+/// documents through: where its API is, its ID and its token.
+struct Account {
+    api_base: Url,
+    id: String,
+    token: Secret,
 }
 
 impl RestSource {
@@ -241,15 +277,33 @@ impl RestSource {
         allow_loopback: bool,
         lookup: Arc<dyn Lookup>,
     ) -> RestSource {
+        RestSource::of(
+            Some(Account {
+                api_base,
+                id: account_id,
+                token,
+            }),
+            allow_loopback,
+            lookup,
+        )
+    }
+
+    /// A source without a Cloudflare account: it fetches, converting HTML
+    /// itself, and searches nothing. `allow_loopback` as for
+    /// [`RestSource::new`]; names resolved with `lookup`.
+    #[must_use]
+    pub fn without_account(allow_loopback: bool, lookup: Arc<dyn Lookup>) -> RestSource {
+        RestSource::of(None, allow_loopback, lookup)
+    }
+
+    fn of(account: Option<Account>, allow_loopback: bool, lookup: Arc<dyn Lookup>) -> RestSource {
         let api = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
             .build()
             .map_err(|e| e.to_string());
         RestSource {
-            api_base,
-            account_id,
-            token,
+            account,
             api,
             lookup,
             allow_loopback,
@@ -292,12 +346,12 @@ impl RestSource {
             .map_err(|e| unavailable(format!("the daemon's HTTP client failed ({e})"), false))
     }
 
-    /// `{api_base}/client/v4/accounts/{id}/ai/{path}`.
-    fn endpoint(&self, path: &str) -> String {
+    /// `{api_base}/client/v4/accounts/{id}/ai/{path}` of `account`.
+    fn endpoint(account: &Account, path: &str) -> String {
         format!(
             "{}/client/v4/accounts/{}/ai/{path}",
-            self.api_base.as_str().trim_end_matches('/'),
-            self.account_id
+            account.api_base.as_str().trim_end_matches('/'),
+            account.id
         )
     }
 
@@ -329,9 +383,10 @@ impl RestSource {
     }
 
     /// `body`, a file named `name` of type `mime`, converted to Markdown by
-    /// Cloudflare.
+    /// Cloudflare through `account`.
     async fn to_markdown(
         &self,
+        account: &Account,
         body: Vec<u8>,
         name: String,
         mime: &str,
@@ -342,8 +397,8 @@ impl RestSource {
             .map_err(|e| unavailable(format!("the page's type cannot be sent ({e})"), false))?;
         let form = reqwest::multipart::Form::new().part("files", part);
         let r = RestSource::client(&self.api)?
-            .post(self.endpoint("tomarkdown"))
-            .bearer_auth(self.token.expose())
+            .post(RestSource::endpoint(account, "tomarkdown"))
+            .bearer_auth(account.token.expose())
             .multipart(form)
             .timeout(API_TIMEOUT)
             .send()
@@ -492,6 +547,17 @@ impl RestSource {
         // Before the body is read: an error status whose served type is not
         // text has no readable body, and a type the rules refuse is
         // refused. A type that says too little is sniffed from the body.
+        // A document is read only through a Cloudflare account.
+        let no_account = |media: &str| {
+            gone(WebError::new(
+                CODE_WEB_UNSUPPORTED_CONTENT_TYPE,
+                format!(
+                    "{} is {media}, which this instance reads only with a Cloudflare account (an admin sets one). Use another source.",
+                    at.normalized()
+                ),
+                false,
+            ))
+        };
         let served = media_type(&declared);
         if !is_sniffed(&served) && !handling(&served, format).is_textual() {
             if status >= 400 {
@@ -499,6 +565,10 @@ impl RestSource {
             }
             if handling(&served, format) == Handling::Unsupported {
                 return Err(unsupported(&served, format));
+            }
+            if matches!(handling(&served, format), Handling::Document(_)) && self.account.is_none()
+            {
+                return Err(no_account(&served));
             }
         }
         let body = read_capped(resp, limits.max_bytes, &at)
@@ -513,12 +583,7 @@ impl RestSource {
         let (text, links) = match handling(&content_type, format) {
             Handling::Unsupported => return Err(unsupported(&content_type, format)),
             Handling::Html => {
-                // Sent decoded, as UTF-8 declared first, so the conversion
-                // never guesses the page's charset.
-                let html = decode_html(&body, &declared);
-                let links = links_of_html(&html, &at);
-                let md = self
-                    .to_markdown(html_for_conversion(&html), "page.html".into(), HTML_UTF8)
+                let (md, links) = convert_html(body, declared.clone(), at.clone())
                     .await
                     .map_err(gone)?;
                 // An error page whose conversion is empty has nothing to
@@ -534,8 +599,11 @@ impl RestSource {
                 (html, links)
             }
             Handling::Document(ext) => {
+                let Some(account) = &self.account else {
+                    return Err(no_account(&content_type));
+                };
                 let md = self
-                    .to_markdown(body, format!("document.{ext}"), &content_type)
+                    .to_markdown(account, body, format!("document.{ext}"), &content_type)
                     .await
                     .map_err(gone)?;
                 if status >= 400 && md.trim().is_empty() {
@@ -720,6 +788,9 @@ impl WebSource for RestSource {
         if cancel.is_cancelled() {
             return Err(cancelled());
         }
+        let Some(account) = &self.account else {
+            return Err(unavailable(NO_ACCOUNT, false));
+        };
         let mut body = json!({
             "query": q.query,
             "provider": q.provider.as_str(),
@@ -731,8 +802,8 @@ impl WebSource for RestSource {
         }
         let call = async {
             let r = RestSource::client(&self.api)?
-                .post(self.endpoint("websearch/"))
-                .bearer_auth(self.token.expose())
+                .post(RestSource::endpoint(account, "websearch/"))
+                .bearer_auth(account.token.expose())
                 .json(&body)
                 .timeout(API_TIMEOUT)
                 .send()
@@ -784,14 +855,18 @@ impl WebSource for RestSource {
     }
 }
 
+/// A Cloudflare account ID and its opened token.
+type Credentials = (String, Secret);
+
 /// The daemon's [`WebSource`]: at each call, a [`RestSource`] for the
-/// account ID and sealed Cloudflare token the instance holds now, kept
-/// while they stay the same. The token is opened for the API base it is
-/// sent to, which the token's slot binds to [`CLOUDFLARE_ORIGIN`]: any
-/// other base is refused, and reads as not configured. Without both,
-/// [`WebSource::configured`] is false, so a run's calls are refused
-/// `web_disabled` before the source is called; a call that reaches it
-/// anyway answers `web_unavailable`, not gone out.
+/// account ID and sealed Cloudflare token the instance holds now, or one
+/// without an account when it holds neither, kept while they stay the
+/// same. The token is opened for the API base it is sent to, which the
+/// token's slot binds to [`CLOUDFLARE_ORIGIN`]: any other base is
+/// refused, and reads as no account. It always fetches; it searches only
+/// with an account ([`WebSource::configured`]), so without one a run's
+/// searches are refused `web_disabled` before the source is called, and a
+/// search that reaches it anyway answers `web_unavailable`, not gone out.
 pub struct DaemonWeb {
     store: Arc<Store>,
     kek: Option<Kek>,
@@ -803,8 +878,8 @@ pub struct DaemonWeb {
     allow_loopback: bool,
     lookup: Arc<dyn Lookup>,
     user_agent: String,
-    /// The source of the last credentials, and those credentials.
-    current: Mutex<Option<(String, Secret, Arc<RestSource>)>>,
+    /// The last credentials (none: no account), and their source.
+    current: Mutex<Option<(Option<Credentials>, Arc<RestSource>)>>,
 }
 
 impl DaemonWeb {
@@ -865,30 +940,31 @@ impl DaemonWeb {
                 .await
                 .map_err(|e| read_error(e.to_string()))?
                 .map_err(|e| read_error(e.to_string()))?;
-        let Some((account, token)) = creds else {
-            return Err(unavailable(
-                "web use is not configured on this instance: an admin sets the Cloudflare account ID and API token",
-                false,
-            ));
-        };
         let mut current = self.current.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((a, t, s)) = current.as_ref()
-            && *a == account
-            && t.expose() == token.expose()
-        {
-            return Ok(s.clone());
+        if let Some((held, s)) = current.as_ref() {
+            let same = match (held, &creds) {
+                (Some((a, t)), Some((account, token))) => {
+                    a == account && t.expose() == token.expose()
+                }
+                (None, None) => true,
+                _ => false,
+            };
+            if same {
+                return Ok(s.clone());
+            }
         }
-        let source = Arc::new(
-            RestSource::with_lookup(
+        let source = match &creds {
+            Some((account, token)) => RestSource::with_lookup(
                 self.target(),
                 account.clone(),
                 token.clone(),
                 self.allow_loopback,
                 self.lookup.clone(),
-            )
-            .with_user_agent(self.user_agent.clone()),
-        );
-        *current = Some((account, token, source.clone()));
+            ),
+            None => RestSource::without_account(self.allow_loopback, self.lookup.clone()),
+        };
+        let source = Arc::new(source.with_user_agent(self.user_agent.clone()));
+        *current = Some((creds, source.clone()));
         Ok(source)
     }
 }
@@ -956,14 +1032,17 @@ impl WebSource for DaemonWeb {
             .await
     }
 
-    /// Whether the instance holds an account ID and a token that opens now
-    /// ([`has_credentials`]); a store error reads as not configured. It
-    /// reads the store and opens the token on the calling thread (a
-    /// performer's, once per web call, beside its other store reads), not
-    /// on a blocking thread as [`DaemonWeb`]'s calls do: one indexed row
-    /// and one decryption of a short token.
-    fn configured(&self) -> bool {
-        has_credentials(&self.store, self.kek.as_ref()).unwrap_or(false)
+    /// Fetch always; search when the instance holds an account ID and a
+    /// token that opens now ([`has_credentials`]), a store error reading as
+    /// none. It reads the store and opens the token on the calling thread
+    /// (a performer's, once per web call, beside its other store reads),
+    /// not on a blocking thread as [`DaemonWeb`]'s calls do: one indexed
+    /// row and one decryption of a short token.
+    fn configured(&self) -> WebShape {
+        WebShape {
+            search: has_credentials(&self.store, self.kek.as_ref()).unwrap_or(false),
+            fetch: true,
+        }
     }
 }
 
@@ -1093,8 +1172,8 @@ impl WebSource for NoHostsWeb {
         Err(unavailable(self.0.clone(), false))
     }
 
-    fn configured(&self) -> bool {
-        false
+    fn configured(&self) -> WebShape {
+        WebShape::default()
     }
 }
 
@@ -1683,7 +1762,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_converts_html_through_tomarkdown() {
+    async fn fetch_converts_html_itself() {
         let server = Server::start(|r| match r.path.as_str() {
             "/page" => {
                 assert_eq!(r.header("accept"), ACCEPT);
@@ -1703,27 +1782,72 @@ mod tests {
                 "text/html",
                 b"<meta charset=\"iso-8859-1\"><p>caf\xe9</p>".to_vec(),
             ),
+            _ => resp(404, "text/plain", "no"),
+        })
+        .await;
+        // With an account and without one alike, and nothing goes to
+        // Cloudflare.
+        for s in [
+            source(&server, true),
+            RestSource::without_account(true, stub()),
+        ] {
+            let url = server.url("site.test", "/page");
+            let p = fetch(&s, &url, Format::Auto, FetchLimits::default())
+                .await
+                .unwrap();
+            let next = format!("http://site.test:{}/next", server.port);
+            assert_eq!(p.text, format!("# Hi\n\n[next]({next})"));
+            assert_eq!(p.status, 200);
+            assert_eq!(p.content_type, "text/html");
+            assert_eq!(p.final_url, url.normalized());
+            assert_eq!(p.links, vec![next]);
+            // Raw returns the HTML itself.
+            let p = fetch(&s, &url, Format::Raw, FetchLimits::default())
+                .await
+                .unwrap();
+            assert!(p.text.contains("<h1>Hi</h1>"), "{}", p.text);
+            // A page in another charset is converted from its text.
+            let latin = server.url("site.test", "/latin");
+            let p = fetch(&s, &latin, Format::Auto, FetchLimits::default())
+                .await
+                .unwrap();
+            assert_eq!(p.text, "caf\u{e9}");
+            // So is a page whose charset only its meta declares, and its
+            // raw HTML is decoded by it too.
+            let meta = server.url("site.test", "/meta");
+            let p = fetch(&s, &meta, Format::Auto, FetchLimits::default())
+                .await
+                .unwrap();
+            assert_eq!(p.text, "caf\u{e9}");
+            let p = fetch(&s, &meta, Format::Raw, FetchLimits::default())
+                .await
+                .unwrap();
+            assert_eq!(p.text, "<meta charset=\"iso-8859-1\"><p>caf\u{e9}</p>");
+        }
+        assert!(
+            server
+                .requests()
+                .iter()
+                .all(|r| !r.path.starts_with("/client/")),
+            "nothing is sent to Cloudflare's API"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_document_is_converted_through_the_account_only() {
+        let server = Server::start(|r| match r.path.as_str() {
+            "/doc.pdf" => resp(200, "application/pdf", b"%PDF-1.4 doc".to_vec()),
+            "/sniffed" => resp(200, "", b"%PDF-1.4 doc".to_vec()),
             p if p == format!("/client/v4/accounts/{ACCOUNT}/ai/tomarkdown") => {
                 assert_eq!(r.header("authorization"), format!("Bearer {TOKEN}"));
                 let body = String::from_utf8_lossy(&r.body);
-                assert!(body.contains("name=\"files\""), "{body}");
-                assert!(body.contains("filename=\"page.htm"), "{body}");
-                assert!(body.contains("charset=utf-8"), "{body}");
-                // The copy converted declares UTF-8 before anything else.
-                assert!(body.contains("\r\n\r\n<meta charset=\"utf-8\"><"), "{body}");
-                // The page arrives decoded, as UTF-8.
-                let data = if body.contains("<p>caf\u{e9}</p>") {
-                    "caf\u{e9}\n"
-                } else {
-                    assert!(body.contains("<h1>Hi</h1>"), "{body}");
-                    "# Hi\n\n[next](/next)\n"
-                };
+                assert!(body.contains("filename=\"document.pdf\""), "{body}");
                 resp(
                     200,
                     "application/json",
                     json!({"success": true, "result": [
-                        {"name": "page.html", "mimeType": "text/html", "format": "markdown",
-                         "data": data}
+                        {"name": "document.pdf", "mimeType": "application/pdf",
+                         "format": "markdown", "data": "# Doc\n\nSee https://x.example/."}
                     ]})
                     .to_string(),
                 )
@@ -1731,43 +1855,55 @@ mod tests {
             _ => resp(404, "text/plain", "no"),
         })
         .await;
-        let s = source(&server, true);
-        let url = server.url("site.test", "/page");
-        let p = fetch(&s, &url, Format::Auto, FetchLimits::default())
-            .await
-            .unwrap();
-        assert_eq!(p.text, "# Hi\n\n[next](/next)\n");
-        assert_eq!(p.status, 200);
-        assert_eq!(p.content_type, "text/html");
-        assert_eq!(p.final_url, url.normalized());
-        assert_eq!(
-            p.links,
-            vec![format!("http://site.test:{}/next", server.port)]
-        );
-        // Raw returns the HTML itself, with no conversion.
+        let url = server.url("site.test", "/doc.pdf");
+        let p = fetch(
+            &source(&server, true),
+            &url,
+            Format::Auto,
+            FetchLimits::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(p.text, "# Doc\n\nSee https://x.example/.");
+        assert_eq!(p.links, vec!["https://x.example/".to_string()]);
+        // Without an account: fetched, then refused, before the body is read
+        // when the type is declared and after it when it is sniffed.
+        let local = RestSource::without_account(true, stub());
         let before = server.requests().len();
-        let p = fetch(&s, &url, Format::Raw, FetchLimits::default())
+        for path in ["/doc.pdf", "/sniffed"] {
+            let e = fetch(
+                &local,
+                &server.url("site.test", path),
+                Format::Auto,
+                FetchLimits::default(),
+            )
             .await
-            .unwrap();
-        assert!(p.text.contains("<h1>Hi</h1>"), "{}", p.text);
-        assert_eq!(server.requests().len(), before + 1, "no conversion request");
-        // A page in another charset is converted from its text.
-        let latin = server.url("site.test", "/latin");
-        let p = fetch(&s, &latin, Format::Auto, FetchLimits::default())
+            .unwrap_err();
+            assert_eq!(
+                (e.code, e.went_out, e.retryable),
+                (CODE_WEB_UNSUPPORTED_CONTENT_TYPE, true, false),
+                "{path}: {e}"
+            );
+            assert!(e.message.contains("only with a Cloudflare account"), "{e}");
+        }
+        assert_eq!(server.requests().len(), before + 2, "no conversion request");
+    }
+
+    #[tokio::test]
+    async fn a_search_without_an_account_sends_nothing() {
+        let server = Server::start(|_| resp(200, "application/json", "{}")).await;
+        let local = RestSource::without_account(true, stub());
+        let e = local
+            .search(&query(), &CancelToken::new())
             .await
-            .unwrap();
-        assert_eq!(p.text, "caf\u{e9}\n");
-        // So is a page whose charset only its meta declares, and its raw
-        // HTML is decoded by it too.
-        let meta = server.url("site.test", "/meta");
-        let p = fetch(&s, &meta, Format::Auto, FetchLimits::default())
-            .await
-            .unwrap();
-        assert_eq!(p.text, "caf\u{e9}\n");
-        let p = fetch(&s, &meta, Format::Raw, FetchLimits::default())
-            .await
-            .unwrap();
-        assert_eq!(p.text, "<meta charset=\"iso-8859-1\"><p>caf\u{e9}</p>");
+            .unwrap_err();
+        assert_eq!(
+            (e.code, e.went_out, e.retryable),
+            (CODE_WEB_UNAVAILABLE, false, false),
+            "{e}"
+        );
+        assert!(e.message.contains("Cloudflare account ID"), "{e}");
+        assert!(server.requests().is_empty());
     }
 
     #[tokio::test]
@@ -1839,25 +1975,6 @@ mod tests {
     #[tokio::test]
     async fn an_error_status_without_a_readable_body_is_unavailable() {
         let server = Server::start(|r| {
-            if r.path == format!("/client/v4/accounts/{ACCOUNT}/ai/tomarkdown") {
-                // An HTML page with text converts to it; one without, to
-                // nothing but white space.
-                let body = String::from_utf8_lossy(&r.body);
-                let data = if body.contains("<p>gone</p>") {
-                    "gone\n"
-                } else {
-                    " \n"
-                };
-                return resp(
-                    200,
-                    "application/json",
-                    json!({"success": true, "result": [
-                        {"name": "page.html", "mimeType": "text/html", "format": "markdown",
-                         "data": data}
-                    ]})
-                    .to_string(),
-                );
-            }
             let (status, rest) = r.path[1..].split_once('/').unwrap();
             let status: u16 = status.parse().unwrap();
             match rest {
@@ -1908,7 +2025,7 @@ mod tests {
             let p = fetch(&s, &url, Format::Auto, FetchLimits::default())
                 .await
                 .unwrap();
-            assert_eq!((p.status, p.text.as_str()), (status, "gone\n"));
+            assert_eq!((p.status, p.text.as_str()), (status, "gone"));
         }
         // A 200 image is still unsupported, not unavailable.
         let e = fetch(
@@ -2023,7 +2140,11 @@ mod tests {
         let (_d, st) = store();
         let kek = Kek::generate();
         let web = DaemonWeb::new(st.clone(), Some(kek.clone()));
-        assert!(!web.configured());
+        let fetch_only = WebShape {
+            search: false,
+            fetch: true,
+        };
+        assert_eq!(web.configured(), fetch_only);
         let e = web.search(&query(), &CancelToken::new()).await.unwrap_err();
         assert_eq!((e.code, e.went_out), (CODE_WEB_UNAVAILABLE, false), "{e}");
         assert!(e.message.contains("not configured"), "{e}");
@@ -2034,7 +2155,7 @@ mod tests {
         .unwrap();
         st.set_secret(&AuditCtx::DAEMON, &kek, &SecretSlot::Cloudflare, TOKEN)
             .unwrap();
-        assert!(web.configured());
+        assert_eq!(web.configured(), WebShape::BOTH);
         // The token opens only for the base it is sent to, which its slot
         // binds to Cloudflare's origin: another base is not configured,
         // and nothing is sent.
@@ -2048,11 +2169,42 @@ mod tests {
         assert!(server.requests().is_empty());
         // A token sealed under another key-encryption key is none.
         let other = DaemonWeb::new(st.clone(), Some(Kek::generate()));
-        assert!(!other.configured());
+        assert_eq!(other.configured(), fetch_only);
         assert!(!has_credentials(&st, Some(&Kek::generate())).unwrap());
         st.clear_secret(&AuditCtx::DAEMON, &SecretSlot::Cloudflare)
             .unwrap();
-        assert!(!web.configured());
+        assert_eq!(web.configured(), fetch_only);
+    }
+
+    #[tokio::test]
+    async fn the_daemon_source_fetches_without_an_account() {
+        let server = Server::start(|r| match r.path.as_str() {
+            "/page" => resp(200, "text/html", "<h1>Local</h1>"),
+            _ => resp(500, "text/plain", "never asked"),
+        })
+        .await;
+        let (_d, st) = store();
+        let web = DaemonWeb::new(st, None).sending_to(server.api_base(), stub());
+        let url = server.url("site.test", "/page");
+        let p = web
+            .fetch(
+                &url,
+                Format::Auto,
+                &FetchLimits::default(),
+                &any,
+                &CancelToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(p.text, "# Local");
+        assert_eq!(
+            server
+                .requests()
+                .iter()
+                .map(|r| r.path.clone())
+                .collect::<Vec<_>>(),
+            ["/page"]
+        );
     }
 
     #[tokio::test]
@@ -2224,7 +2376,7 @@ mod tests {
             Some("https://clax.example"),
             Some("https://sites.example/x"),
         );
-        assert!(!bad.configured());
+        assert_eq!(bad.configured(), WebShape::default());
         assert_eq!(unavailable, Some(why));
     }
 

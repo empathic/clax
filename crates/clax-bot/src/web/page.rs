@@ -471,7 +471,7 @@ pub fn links_of_html(html: &str, base: &PublicUrl) -> Vec<String> {
 /// The most bytes of a link target worth resolving: a URL of
 /// [`MAX_URL_CHARS`](super::url::MAX_URL_CHARS) characters is at most four
 /// bytes each.
-const MAX_TARGET_BYTES: usize = super::url::MAX_URL_CHARS * 4;
+pub(crate) const MAX_TARGET_BYTES: usize = super::url::MAX_URL_CHARS * 4;
 
 /// The links of Markdown `md`: inline links and images (`[t](u "title")`),
 /// reference definitions (`[r]: u`), autolinks (`<u>`) and bare `http`

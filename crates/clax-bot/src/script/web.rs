@@ -85,7 +85,7 @@ use crate::web::{
     CODE_CREDITS_EXHAUSTED, CODE_URL_NOT_ALLOWED, CODE_URL_NOT_IN_PRIOR_CONTEXT, CODE_WEB_CAP,
     CODE_WEB_DISABLED, CODE_WEB_UNAVAILABLE, FetchGrant, Format, OP_FETCH, OP_SEARCH, PublicUrl,
     SearchAnswer, SearchGrant, SearchQuery, UrlRule, UrlSource, WebAccess, WebError, WebGrant,
-    WebShape, WebSource, access::sources, charged,
+    WebOff, WebShape, WebSource, access::sources, charged,
 };
 use clax_bot_sandbox::HostError;
 use clax_core::audit::{AuditKind, AuditRecord};
@@ -527,7 +527,25 @@ impl RunHost<'_> {
                 ));
             }
         };
-        let grant = match WebAccess::now(tick.store, &run.person, source.configured()) {
+        let configured = source.configured();
+        // An operation the source can no longer perform (the daemon's
+        // Cloudflare token removed, which search needs) is off as not
+        // configured, though the other may still be on.
+        let can = if op == OP_SEARCH {
+            configured.search
+        } else {
+            configured.fetch
+        };
+        if !can {
+            return Finish::refused(HostError::new(
+                CODE_WEB_DISABLED,
+                format!(
+                    "clax.{op} was turned off ({}) since this run started; do without it",
+                    WebOff::NotConfigured.as_str()
+                ),
+            ));
+        }
+        let grant = match WebAccess::now(tick.store, &run.person, configured) {
             Ok(WebAccess::On(g)) => g,
             Ok(WebAccess::Off(why)) => {
                 return Finish::refused(HostError::new(

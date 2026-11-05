@@ -445,9 +445,11 @@ fn loose_mode(path: &std::path::Path) -> Option<u32> {
 /// precedence over a stored one. A hosted core reads no `[bot]` and no
 /// such variable. Either takes its price catalog's URL from `catalog_url`
 /// when given, else from `[bot] price_catalog_url`
-/// ([`crate::catalog::url_of`]). Web use is configured from the start in
-/// the test mode of [`crate::web_source::fixtures`]; otherwise it is while
-/// the instance holds a Cloudflare account ID and token
+/// ([`crate::catalog::url_of`]). Both web operations are configured from
+/// the start in the test mode of [`crate::web_source::fixtures`];
+/// otherwise the run driver gives the daemon its own source
+/// ([`crate::bot::driver`]), which fetches, and searches while the
+/// instance holds a Cloudflare account ID and token
 /// ([`crate::bot::web_configured`]). `[bot.web]` is laid over the stored
 /// `web.*` settings as the rest of `[bot]` is ([`web_overrides`]).
 fn local_bot(s: &AppState, catalog_url: Option<Option<String>>) -> clax_http::bot::Bot {
@@ -462,7 +464,11 @@ fn local_bot(s: &AppState, catalog_url: Option<Option<String>>) -> clax_http::bo
     });
     let mut bot = clax_http::bot::Bot {
         catalog_url,
-        web_configured: crate::web_source::fixtures().is_some(),
+        web_configured: if crate::web_source::fixtures().is_some() {
+            clax_bot::web::WebShape::BOTH
+        } else {
+            clax_bot::web::WebShape::default()
+        },
         ..Default::default()
     };
     clax_store::secrets::sweep_leftovers(&s.home, s.store.now_utc());
