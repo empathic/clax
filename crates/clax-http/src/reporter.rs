@@ -61,7 +61,7 @@ pub const REPORT_BODY_LIMIT: usize = clax_store::threads::MAX_CLIP_BYTES
     + 4 * clax_core::report::MAX_CONTEXT_BYTES
     + 256 * 1024;
 /// The request headers a reporter's page may send cross-origin.
-pub const ALLOW_HEADERS: &str = "authorization, clax-signature, content-type";
+pub const ALLOW_HEADERS: &str = "authorization, clax-signature, content-type, traceparent";
 /// The methods of the reporter routes.
 pub const ALLOW_METHODS: &str = "GET, POST";
 /// Seconds a browser may keep a preflight's answer.

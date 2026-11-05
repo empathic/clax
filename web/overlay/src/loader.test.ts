@@ -159,6 +159,8 @@ describe("authOf and the queued install", () => {
     expect(await authOf("/clax/reporter-token", win)("PUBKEY")).toEqual({ token: "t", expires_at: "x" });
     expect(seen[0][0]).toBe("/clax/reporter-token");
     expect(seen[0][1]).toMatchObject({ method: "POST", body: "PUBKEY", credentials: "same-origin" });
+    await authOf("/clax/reporter-token", win)("PUBKEY", { traceparent: "00-a-b-01" });
+    expect(seen[1][1]?.headers).toEqual({ "content-type": "text/plain", traceparent: "00-a-b-01" });
   });
 
   it("installs what a tag manager queued before the script ran", async () => {

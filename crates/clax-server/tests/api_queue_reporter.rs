@@ -884,7 +884,7 @@ async fn the_preflight_answers_only_listed_origins() {
         assert_eq!(h["access-control-allow-origin"], ORIGIN);
         assert_eq!(
             h["access-control-allow-headers"],
-            "authorization, clax-signature, content-type"
+            "authorization, clax-signature, content-type, traceparent"
         );
         assert!(h.get("access-control-allow-credentials").is_none());
         assert!(h.get_all("vary").iter().any(|v| v == "Origin"));
