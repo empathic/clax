@@ -1269,6 +1269,8 @@ pub struct MessagesClient {
     /// Sent as `x-llm-session` on Anthropic calls, so a local LLM proxy can
     /// tell whose calls these are (ClaxBot labels each run `claxbot:<run id>`).
     session_label: Option<String>,
+    /// Sent as `traceparent` on Anthropic calls, continuing the caller's trace.
+    traceparent: Option<String>,
 }
 
 impl Default for MessagesClient {
@@ -1311,6 +1313,7 @@ impl MessagesClient {
             http: Transport::new(),
             timeouts: Timeouts::default(),
             session_label: None,
+            traceparent: None,
         }
     }
 
@@ -1318,6 +1321,12 @@ impl MessagesClient {
     /// The label names the caller and holds no secret: a proxy records it.
     pub fn with_session_label(mut self, label: impl Into<String>) -> MessagesClient {
         self.session_label = Some(label.into());
+        self
+    }
+
+    /// This client sending `traceparent` on its Anthropic calls, when given one.
+    pub fn with_traceparent(mut self, traceparent: Option<String>) -> MessagesClient {
+        self.traceparent = traceparent;
         self
     }
 
@@ -1357,6 +1366,9 @@ impl MessagesClient {
         }
         if let Some(l) = &self.session_label {
             headers.push(("x-llm-session", l.clone()));
+        }
+        if let Some(t) = &self.traceparent {
+            headers.push(("traceparent", t.clone()));
         }
         self.send_with(method, url, &headers, json).await
     }

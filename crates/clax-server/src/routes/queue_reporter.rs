@@ -470,7 +470,10 @@ async fn start_first_responder(s: &AppState, qid: String, tid: String) {
         .store_call(move |st| super::bot::start_report_run(st, &bot, &qid, &tid))
         .await
     {
-        Ok(Some(run)) => s.bot.runs.started(&run),
+        Ok(Some(run)) => {
+            clax_bot::trace::remember(&run);
+            s.bot.runs.started(&run);
+        }
         Ok(None) => {}
         Err(e) => tracing::warn!(error = ?e, "a report's first responder did not start"),
     }

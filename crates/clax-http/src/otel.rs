@@ -83,6 +83,16 @@ where
 {
     let layer = tracing_opentelemetry::layer().with_tracer(provider.tracer("clax"));
     ACTIVE.store(true, Ordering::Relaxed);
+    clax_bot::trace::install(clax_bot::trace::Hooks {
+        set_parent: |span, traceparent| {
+            let mut headers = HeaderMap::new();
+            if let Ok(v) = traceparent.parse() {
+                headers.insert("traceparent", v);
+            }
+            accept_parent(span, &headers);
+        },
+        current: current_traceparent,
+    });
     (layer, Guard(Some(provider)))
 }
 
@@ -96,6 +106,25 @@ pub fn accept_parent(span: &tracing::Span, headers: &HeaderMap) {
     // Without a well-formed `traceparent` this context has no span, and the
     // request starts a trace of its own.
     let _ = span.set_parent(cx);
+}
+
+/// The `traceparent` of the current span, when the export is on and it is in a
+/// trace: for a call that leaves the process or a task the span does not reach.
+pub fn current_traceparent() -> Option<String> {
+    if !ACTIVE.load(Ordering::Relaxed) {
+        return None;
+    }
+    let cx = tracing::Span::current().context();
+    let span = opentelemetry::trace::TraceContextExt::span(&cx);
+    let sc = span.span_context();
+    sc.is_valid().then(|| {
+        format!(
+            "00-{}-{}-{:02x}",
+            sc.trace_id(),
+            sc.span_id(),
+            sc.trace_flags().to_u8()
+        )
+    })
 }
 
 struct Headers<'a>(&'a HeaderMap);

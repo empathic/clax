@@ -26,6 +26,7 @@ pub mod host_conformance;
 pub mod prompt;
 pub mod run;
 pub mod script;
+pub mod trace;
 
 pub use clax_store::Journaled;
 pub use driver::{Driver, IdleReport};

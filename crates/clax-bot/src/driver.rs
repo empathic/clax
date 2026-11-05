@@ -404,20 +404,24 @@ impl Driver {
                     let deps = &*self.deps;
                     let events = &*self.events;
                     let driver = &self.id;
-                    running.push(async move {
-                        let out = tick(
-                            deps,
-                            &id,
-                            driver,
-                            TickOpts {
-                                budget: Some(left),
-                                cancel,
-                                events,
-                            },
-                        )
-                        .await;
-                        (id, out)
-                    });
+                    let span = crate::trace::run_span(&id);
+                    running.push(tracing::Instrument::instrument(
+                        async move {
+                            let out = tick(
+                                deps,
+                                &id,
+                                driver,
+                                TickOpts {
+                                    budget: Some(left),
+                                    cancel,
+                                    events,
+                                },
+                            )
+                            .await;
+                            (id, out)
+                        },
+                        span,
+                    ));
                 }
             }
             if running.is_empty() {
@@ -434,6 +438,9 @@ impl Driver {
             tokio::select! {
                 Some((id, out)) = running.next() => {
                     self.settle(&id, &out);
+                    if matches!(&out, Ok(o) if matches!(o.next, Next::Done(_))) {
+                        crate::trace::forget(&id);
+                    }
                     if let Ok(o) = out {
                         report.ticks.push((id, o));
                     }

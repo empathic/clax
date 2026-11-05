@@ -1900,7 +1900,8 @@ impl Tick<'_> {
                     total: Some(total),
                     ..self.deps.client.timeouts()
                 })
-                .with_session_label(format!("claxbot:{}", self.run.id));
+                .with_session_label(format!("claxbot:{}", self.run.id))
+                .with_traceparent(crate::trace::current());
             let attempt = s.attempt;
             let events = self.opts.events;
             let (store, run_id, n, driver) = (self.store, self.run.id.clone(), self.n, self.driver);

@@ -38,9 +38,9 @@ export default defineConfig({
     lib: { entry: "overlay/src/script.ts", formats: ["iife", "es"], name: "Clax", fileName: format => OUTPUTS[format as keyof typeof OUTPUTS] },
     rollupOptions: { output: { inlineDynamicImports: true } },
     minify: true, sourcemap: false, cssCodeSplit: false,
-    // `--watch` only. Rollup's chokidar uses FSEvents on macOS, which can lag by
-    // seconds or miss an edit when fseventsd is busy; fs.watch on each of the
-    // overlay's few files heard every edit at once.
-    watch: { chokidar: { useFsEvents: false } as object },
+    // `--watch` only (any `build.watch` makes `vite build` watch). Rollup's chokidar
+    // uses FSEvents on macOS, which can lag by seconds or miss an edit when fseventsd
+    // is busy; fs.watch on each of the overlay's few files heard every edit at once.
+    ...(process.argv.includes("--watch") ? { watch: { chokidar: { useFsEvents: false } as object } } : {}),
   },
 });
