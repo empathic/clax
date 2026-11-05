@@ -19,13 +19,14 @@
   import type { Mode } from "./options";
 
   // `element` false (the install turned the element picker off): no Element mode.
-  type Props = { mode: Mode | null; outlined?: string | null; modes?: { mode: Mode; label: string; key: string }[]; element?: boolean; onMode(m: Mode): void; onCancel(): void };
+  // `onReports` (reports are on): the same "Your reports" the launcher offers, for a host with no launcher.
+  type Props = { mode: Mode | null; outlined?: string | null; modes?: { mode: Mode; label: string; key: string }[]; element?: boolean; onMode(m: Mode): void; onCancel(): void; onReports?: () => void };
   const ALL: { mode: Mode; label: string; key: string }[] = [
     { mode: "element", label: "Element", key: "E" },
     { mode: "area", label: "Area", key: "A" },
     { mode: "screen", label: "Screen", key: "S" },
   ];
-  let { mode, outlined = null, modes = ALL, element = true, onMode, onCancel }: Props = $props();
+  let { mode, outlined = null, modes = ALL, element = true, onMode, onCancel, onReports }: Props = $props();
   const shown = $derived(modes.filter(m => element || m.mode !== "element"));
 
   /** Focus goes to the mode that is on (none for a reopen's note, whose
@@ -88,6 +89,9 @@
     {/each}
   </div>
   <span class="hint" aria-hidden="true">{mode ? SHORT[mode] : "Pick a mode, or write"} · Esc</span>
+  {#if onReports}
+    <button type="button" class="ghost" onclick={onReports}>Your reports</button>
+  {/if}
   <button type="button" class="ghost" aria-keyshortcuts="Escape" onclick={onCancel}>Cancel</button>
   <span class="sr" role="status">{live ? (mode ? HINT[mode] : NONE) : ""}</span>
   <span class="sr outlined" aria-live="polite">{mode === "element" && outlined ? `Outlined ${outlined}.` : ""}</span>

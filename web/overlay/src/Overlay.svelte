@@ -27,7 +27,7 @@
   // to the Clax extension). The overlay renders none of them unless a plugin
   // is in. "What's sent" stays the overlay's own: it is where the core
   // refuses data that comes without a line in it.
-  import { mount as mountComponent, onDestroy, onMount, unmount as unmountComponent, untrack, type Component, type Snippet } from "svelte";
+  import { flushSync, mount as mountComponent, onDestroy, onMount, unmount as unmountComponent, untrack, type Component, type Snippet } from "svelte";
   import { addSheet } from "../../bridge/src/sheet";
   import type { AttachmentData, CaptureContribution, PluginHost, SentRow } from "../../sdk/src/plugin";
   import type { DiagLine, ReportContext, Report } from "../../sdk/src/types";
@@ -697,6 +697,12 @@
     if (waitingId) { expand(waitingId); waitingId = null; }
     poll.start();
   }
+  /** From the mode bar, whose button goes away with it: focus moves to the panel. */
+  function reportsFromBar(): void {
+    toggleReports();
+    flushSync();
+    cx?.querySelector<HTMLElement>(".panel")?.focus();
+  }
   function closeReports(): void {
     open = false;
     pageOnly = false;
@@ -940,7 +946,7 @@
 
 <div class="cx" bind:this={cx}>
   {#if bar}
-    <ModeBar mode={bar.mode} {outlined} modes={barModes} onMode={choose} onCancel={() => closeBar()} />
+    <ModeBar mode={bar.mode} {outlined} modes={barModes} onMode={choose} onCancel={() => closeBar()} onReports={reportsOn && draft?.purpose.kind !== "reopen" ? reportsFromBar : undefined} />
   {/if}
 
   <!-- The notices zone: always there, so a notice never moves the composer or the launcher. -->
