@@ -26,7 +26,7 @@ CRATES = {
         "tests": {
             "integration": "tests/integration.rs"
         },
-        "version": "0.6.0",
+        "version": "0.7.0",
         "wasm_deps": [
             "@crates_wasm//:chrono-0.4.45",
             "@crates_wasm//:encoding_rs-0.8.42",
@@ -66,7 +66,7 @@ CRATES = {
         "tests": {
             "integration": "tests/integration.rs"
         },
-        "version": "0.6.0"
+        "version": "0.7.0"
     },
     "crates/clax-bot-sandbox": {
         "bins": {},
@@ -80,7 +80,7 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-bot-sandbox",
         "tests": {},
-        "version": "0.6.0",
+        "version": "0.7.0",
         "wasm_deps": [
             "@crates_wasm//:oxc_allocator-0.139.0",
             "@crates_wasm//:oxc_ast-0.139.0",
@@ -123,7 +123,7 @@ CRATES = {
             "descriptors": "tests/descriptors.rs",
             "integration": "tests/integration.rs"
         },
-        "version": "0.6.0"
+        "version": "0.7.0"
     },
     "crates/clax-commands": {
         "bins": {},
@@ -144,7 +144,7 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-commands",
         "tests": {},
-        "version": "0.6.0"
+        "version": "0.7.0"
     },
     "crates/clax-content-git": {
         "bins": {},
@@ -165,7 +165,7 @@ CRATES = {
         "tests": {
             "integration": "tests/integration.rs"
         },
-        "version": "0.6.0",
+        "version": "0.7.0",
         "wasm_deps": [],
         "wasm_path_deps": [
             "//crates/clax-core:clax_core",
@@ -189,7 +189,7 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-core",
         "tests": {},
-        "version": "0.6.0",
+        "version": "0.7.0",
         "wasm_deps": [
             "@crates_wasm//:base64-0.22.1",
             "@crates_wasm//:chrono-0.4.45",
@@ -257,7 +257,7 @@ CRATES = {
             "log": "tests/log.rs",
             "old_homes": "tests/old_homes.rs"
         },
-        "version": "0.6.0"
+        "version": "0.7.0"
     },
     "crates/clax-embedded": {
         "bins": {},
@@ -271,7 +271,7 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-embedded",
         "tests": {},
-        "version": "0.6.0"
+        "version": "0.7.0"
     },
     "crates/clax-fake-exe": {
         "bins": {},
@@ -285,7 +285,7 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-fake-exe",
         "tests": {},
-        "version": "0.6.0"
+        "version": "0.7.0"
     },
     "crates/clax-fleet": {
         "bins": {
@@ -310,7 +310,7 @@ CRATES = {
         "tests": {
             "integration": "tests/integration.rs"
         },
-        "version": "0.6.0"
+        "version": "0.7.0"
     },
     "crates/clax-git": {
         "bins": {},
@@ -326,7 +326,7 @@ CRATES = {
         "tests": {
             "integration": "tests/integration.rs"
         },
-        "version": "0.6.0",
+        "version": "0.7.0",
         "wasm_deps": [
             "@crates_wasm//:miniz_oxide-0.9.1",
             "@crates_wasm//:serde_json-1.0.151",
@@ -354,7 +354,7 @@ CRATES = {
         "tests": {
             "golden": "tests/golden.rs"
         },
-        "version": "0.6.0"
+        "version": "0.7.0"
     },
     "crates/clax-http": {
         "bins": {},
@@ -376,7 +376,7 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-http",
         "tests": {},
-        "version": "0.6.0",
+        "version": "0.7.0",
         "wasm_deps": [
             "@crates_wasm//:axum-0.8.9",
             "@crates_wasm//:base64-0.22.1",
@@ -431,7 +431,7 @@ CRATES = {
         "tests": {
             "integration": "tests/integration.rs"
         },
-        "version": "0.6.0",
+        "version": "0.7.0",
         "wasm_deps": [
             "@crates_wasm//:anyhow-1.0.104",
             "@crates_wasm//:base64-0.22.1",
@@ -472,7 +472,7 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-realtime",
         "tests": {},
-        "version": "0.6.0",
+        "version": "0.7.0",
         "wasm_deps": [
             "@crates_wasm//:bytes-1.12.1",
             "@crates_wasm//:chrono-0.4.45",
@@ -502,7 +502,7 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-rt",
         "tests": {},
-        "version": "0.6.0",
+        "version": "0.7.0",
         "wasm_deps": [
             "@crates_wasm//:futures-channel-0.3.34",
             "@crates_wasm//:futures-util-0.3.34",
@@ -529,7 +529,7 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-sample",
         "tests": {},
-        "version": "0.6.0",
+        "version": "0.7.0",
         "wasm_deps": [
             "@crates_wasm//:base64-0.22.1",
             "@crates_wasm//:chrono-0.4.45",
@@ -588,7 +588,7 @@ CRATES = {
         "tests": {
             "integration": "tests/integration.rs"
         },
-        "version": "0.6.0",
+        "version": "0.7.0",
         "wasm_deps": [
             "@crates_wasm//:anyhow-1.0.104",
             "@crates_wasm//:axum-0.8.9",
@@ -646,7 +646,7 @@ CRATES = {
         "tests": {
             "app_bundles": "tests/app_bundles.rs"
         },
-        "version": "0.6.0",
+        "version": "0.7.0",
         "wasm_deps": [
             "@crates_wasm//:base64-0.22.1",
             "@crates_wasm//:chacha20poly1305-0.10.1",
@@ -693,7 +693,7 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-testkit",
         "tests": {},
-        "version": "0.6.0"
+        "version": "0.7.0"
     },
     "crates/clax-worker": {
         "bins": {},
