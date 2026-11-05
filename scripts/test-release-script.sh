@@ -17,6 +17,10 @@
 # tip, the one `gh run list --workflow deploy-prod.yml` lists. The fake
 # prints what each --jq filter would. Origin refuses merge commits on main,
 # as GitHub does (GH013).
+# A run works on the release branch in a worktree of its own, $WT
+# (target/release/worktree-0.6.0 in the scratch repository), and removes it
+# once the branch is pushed: the scratch checkout, $C/repo, stays on main,
+# untouched, unless the branch is checked out there already.
 # The cases and their helpers run through $CASES, out of shellcheck's sight.
 # shellcheck disable=SC2329
 set -uo pipefail
@@ -84,7 +88,10 @@ case "$1 $2" in
     "auth status")
         if [ -e "$S/no-auth" ]; then echo "You are not logged into any GitHub hosts." >&2; exit 1; fi ;;
     "pr list")
-        cat "$S/pr" 2>/dev/null || true ;;
+        # By --head, "STATE URL"; else the open release pull requests'
+        # "BRANCH URL".
+        if [ -n "$(flag --head "$@")" ]; then cat "$S/pr" 2>/dev/null || true
+        elif read -r state url < "$S/pr" 2>/dev/null && [ "$state" = OPEN ]; then echo "release/0.6.0 $url"; fi ;;
     "pr create")
         # $FAKE_STATE/pr-create-fail: GitHub refuses it.
         if [ -e "$S/pr-create-fail" ]; then echo "GraphQL: Something went wrong (fake)" >&2; exit 1; fi
@@ -163,11 +170,13 @@ if [ "${1:-}" != --print ]; then
         echo $(( $(cat "$CLAX_RELEASE_NOW_FILE") + $(cat "$FAKE_STATE/check-advance") )) > "$CLAX_RELEASE_NOW_FILE"
     fi
     # $FAKE_STATE/check-heartbeat: the next run waits, at most a minute, for
-    # a heartbeat of its step in release.sh's output ($FAKE_OUT).
+    # a heartbeat of its step in release.sh's output ($FAKE_OUT): a line
+    # with the text the file holds.
     if [ -e "$FAKE_STATE/check-heartbeat" ]; then
+        want="$(cat "$FAKE_STATE/check-heartbeat")"
         rm "$FAKE_STATE/check-heartbeat"
         i=0
-        while [ "$i" -lt 1200 ] && ! grep -F "Check the version files: 3m12s" "$FAKE_OUT" >/dev/null 2>&1; do
+        while [ "$i" -lt 1200 ] && ! grep -F "$want" "$FAKE_OUT" >/dev/null 2>&1; do
             sleep 0.05
             i=$((i + 1))
         done
@@ -210,6 +219,7 @@ SH
     git -C "$r" fetch -q origin
     PROD0="$(git -C "$r" rev-parse prod)"
     MAIN0="$(git -C "$r" rev-parse main)"
+    WT="$r/target/release/worktree-0.6.0"
 }
 
 # Runs release.sh from another directory; its output is in $C/out.
@@ -217,10 +227,13 @@ release() {
     (cd "$T" && PATH="${CASE_PATH:-$FAKE_PATH}" "$TEST_BASH" "$C/repo/scripts/release.sh" "$@") > "$C/out" 2>&1
 }
 act() { release 0.6.0 --i-know-what-i-am-doing; }
-# Everything a run could change: the work tree, ignored files included, and
-# the refs here and on origin.
+# Everything a run could change: the work tree, ignored files included, the
+# worktrees and the release worktree's files, and the refs here and on
+# origin.
 snapshot() {
     git -C "$C/repo" status --porcelain=v1 -uall --ignored
+    git -C "$C/repo" worktree list --porcelain
+    if [ -e "$WT" ]; then git -C "$WT" status --porcelain=v1 -uall --ignored; git -C "$WT" diff; fi
     git -C "$C/repo" for-each-ref --format='%(refname) %(objectname)'
     git -C "$C/origin.git" for-each-ref --format='%(refname) %(objectname)'
     cat "$C/repo/scripts/ensure-clax.sh" "$C/repo/bazel/workspace.bzl" "$C/repo/MODULE.bazel.lock" "$FAKE_STATE/pr" 2>/dev/null
@@ -238,10 +251,10 @@ signed() { git -C "$C/repo" verify-commit "$1" 2>/dev/null; }
 # The first line of the pull request's body, in Markdown.
 # shellcheck disable=SC2016
 PR_BODY_LINE='Clax 0.6.0: `origin/prod` with `origin/main` merged in and the version bumped (`scripts/release.sh 0.6.0`).'
-# The preparation a run leaves: origin's release/0.6.0 a signed "Release
-# 0.6.0" commit on a signed merge of main into prod's tip, the checkout on
-# it and clean, the pull request open, and prod and main as they were.
-prepared_ok() {
+# The preparation a run leaves on origin: release/0.6.0 a signed "Release
+# 0.6.0" commit on a signed merge of main into prod's tip, the pull request
+# open, and prod and main as they were.
+origin_ok() {
     local rel
     rel="$(o rev-parse -q --verify refs/heads/release/0.6.0)" || return 1
     [ "$(subject "$rel")" = "Release 0.6.0" ] \
@@ -250,12 +263,23 @@ prepared_ok() {
         && signed "$rel" && signed "$rel^" \
         && [ "$(o show "$rel:scripts/ensure-clax.sh")" = "$(printf 'CLAX_VERSION="0.6.0"\nPINNED_VERSION="0.5.0"')" ] \
         && [ "$(o show "$rel:MODULE.bazel.lock")" = "version = 0.6.0" ] \
-        && [ "$(git -C "$C/repo" symbolic-ref --short HEAD)" = release/0.6.0 ] \
-        && [ "$(git -C "$C/repo" rev-parse HEAD)" = "$rel" ] && [ -z "$(git -C "$C/repo" status --porcelain)" ] \
         && [ "$(cat "$FAKE_STATE/pr")" = "OPEN https://github.com/empathic/clax-test/pull/7" ] \
         && grep -x -F "gh pr create --base prod --head release/0.6.0 --title Release 0.6.0 --body $PR_BODY_LINE" "$FAKE_STATE/calls" >/dev/null \
         && [ "$(o rev-parse prod)" = "$PROD0" ] && [ "$(o rev-parse main)" = "$MAIN0" ] && [ -z "$(o tag -l v0.6.0)" ]
 }
+# origin_ok, and here: the checkout still on main at $MAIN0, its status
+# what it was ($MAIN_STATUS, clean by default); the release worktree gone,
+# from disk and from git's list, with the local release/0.6.0.
+prepared_ok() {
+    origin_ok \
+        && [ "$(git -C "$C/repo" symbolic-ref --short HEAD)" = main ] \
+        && [ "$(git -C "$C/repo" rev-parse HEAD)" = "$MAIN0" ] \
+        && [ "$(git -C "$C/repo" status --porcelain)" = "${MAIN_STATUS:-}" ] \
+        && [ ! -e "$WT" ] && ! git -C "$C/repo" worktree list --porcelain | grep -x -F "worktree $WT" >/dev/null \
+        && ! git -C "$C/repo" rev-parse -q --verify refs/heads/release/0.6.0 >/dev/null
+}
+# The release worktree, made by hand as step 2 makes it.
+add_worktree() { git -C "$C/repo" worktree add -q --no-track -b release/0.6.0 "$WT" origin/prod; }
 
 # GitHub merges the pull request: a signed merge commit of origin's
 # release/0.6.0 into prod.
@@ -325,10 +349,16 @@ case_1() {
     release 0.6.0; rc=$?
     after="$(snapshot)"
     if [ "$rc" = 0 ] && [ "$before" = "$after" ] && [ -z "$(actions)" ] && [ ! -e "$C/repo/target" ] \
-        && has "Dry run: nothing is changed" && has "2. [todo] Cut the release branch: git switch -c release/0.6.0 origin/prod" \
+        && has "Dry run: nothing is changed" \
+        && has "  Here, in a worktree of its own, target/release/worktree-0.6.0; the checkout you run this from is left as it is:" \
+        && has "2. [todo] Make the release branch, in a worktree of its own: git worktree add -b release/0.6.0 target/release/worktree-0.6.0 origin/prod" \
+        && has "8. [todo] Push the release branch, then remove the worktree: git push origin release/0.6.0; git worktree remove target/release/worktree-0.6.0; git branch -D release/0.6.0" \
+        && has "  On GitHub:" \
         && has "9. [todo] Open the pull request into prod: gh pr create --base prod --head release/0.6.0" \
         && has "10. [todo] Merge the pull request (you, on GitHub): once CI and staging pass, merge it (Create a merge commit)" \
-        && ! has "11. " && has "starts at step 2" && has "ok: preparing 0.6.0 from origin/prod (at 0.5.0)"; then
+        && has "  Then Deploy prod runs on the merge, each job once those it follows are done:" \
+        && has "candidate, reel     at once" \
+        && ! has "11. " && has "starts at step 2" && has "ok: preparing 0.6.0 from origin/prod (at 0.5.0)" && ! has ", clean,"; then
         pass "a dry run checks, prints the plan and changes nothing"
     else fail "a dry run checks, prints the plan and changes nothing (rc=$rc: $(cat "$C/out"))"; fi
 }
@@ -343,15 +373,17 @@ case_2() {
         && has "The release is prepared: the pull request https://github.com/empathic/clax-test/pull/7 into prod, which is staging:" \
         && has "and approve Deploy prod's deploy: it deploys clax.dev from the candidate staging tested," \
         && has "  the pull request: https://github.com/empathic/clax-test/pull/7" \
+        && logs "  release/0.6.0 is checked out in $WT" && logs "  removed $WT and the local release/0.6.0" \
         && ! has "step 10/10" && logs "== step 6 of 10 ran 0s" && logs "== step 9 of 10 ran 0s"; then
-        pass "the first run cuts the release branch from prod, merges main, bumps, checks the versions, pushes it and opens its pull request"
+        pass "the first run makes the release branch from prod in a worktree, merges main, bumps, checks the versions, pushes it, removes the worktree and opens its pull request, the checkout left on main"
     else fail "the first run prepares the release (rc=$rc; calls: $got; $(cat "$C/out"))"; fi
-    # Typical durations: 85s in all, 75s for steps 2-10; step N starts at
-    # the share of steps 1 to N-1 (10s of 85s for step 2, 55s for 6, 75s for 9).
+    # Typical durations: 655s in all, 645s for steps 2-10; step N starts at
+    # the share of steps 1 to N-1 (10s of 655s for step 2, 625s for 6, 645s
+    # for 9).
     if has "  4. [todo] Bump the version: scripts/bump-version.sh 0.6.0" \
-        && has "Estimated: about 1m in all, about 1m for the steps to do (typical durations; later runs learn from their logs; the review not counted)." \
-        && has "[11%] step 2/10 Cut the release branch: git switch -c release/0.6.0 origin/prod" \
-        && has "[64%] step 6/10 Check the version files: scripts/check-version.sh" && has "[88%] step 9/10 Open the pull request into prod: " \
+        && has "Estimated: about 11m in all, about 11m for the steps to do (typical durations; later runs learn from their logs; the review and Deploy prod not counted)." \
+        && has "[1%] step 2/10 Make the release branch, in a worktree of its own: git worktree add -b release/0.6.0 target/release/worktree-0.6.0 origin/prod" \
+        && has "[95%] step 6/10 Check the version files: scripts/check-version.sh" && has "[98%] step 9/10 Open the pull request into prod: " \
         && [ "$(grep -c '^\[[0-9]*%\] step [0-9]*/10 ' "$C/out")" = 8 ] \
         && ! has "fake check-version: the versions agree" && ! has "fake bazel-sync" && logs "fake check-version: the versions agree"; then
         pass "a run shows the steps, then one line per step; the steps' output goes to the log alone"
@@ -364,9 +396,9 @@ case_2() {
         pass "the pull request's body is the release's checklist: CI, staging, a merge commit, then Deploy prod"
     else fail "the pull request's body ($(sed -n '/^gh pr create/,$p' "$FAKE_STATE/calls"))"; fi
 
-    # Again before the merge, on the release branch or on prod: the run
+    # Again before the merge, on main, the release branch or prod: the run
     # says where the pull request is, and changes nothing.
-    for at in release/0.6.0 prod; do
+    for at in main release/0.6.0 prod; do
         git -C "$C/repo" switch -q "$at"
         : > "$FAKE_STATE/calls"
         before="$(snapshot)"
@@ -420,39 +452,79 @@ case_3() {
     if [ "$rc" = 1 ] && has "step 6 (Check the version files) failed" && has "scripts/release.sh 0.6.0 --i-know-what-i-am-doing" \
         && has "The last 50 lines of $C/repo/target/release/0.6.0.log:" && has "fake check-version: plugins/x/VERSION is 0.5.0, not 0.6.0" \
         && has "The log: $C/repo/target/release/0.6.0.log" \
-        && grep -x 'CLAX_VERSION="0.6.0"' "$C/repo/scripts/ensure-clax.sh" >/dev/null \
-        && [ "$(git -C "$C/repo" log -1 --format=%s)" = "Merge origin/main into release/0.6.0" ] \
+        && grep -x 'CLAX_VERSION="0.6.0"' "$WT/scripts/ensure-clax.sh" >/dev/null \
+        && grep -x 'CLAX_VERSION="0.5.0"' "$C/repo/scripts/ensure-clax.sh" >/dev/null \
+        && [ "$(git -C "$WT" symbolic-ref --short HEAD)" = release/0.6.0 ] \
+        && [ "$(git -C "$WT" log -1 --format=%s)" = "Merge origin/main into release/0.6.0" ] \
+        && [ "$(git -C "$C/repo" symbolic-ref --short HEAD)" = main ] && [ "$(git -C "$C/repo" rev-parse HEAD)" = "$MAIN0" ] \
+        && [ -z "$(git -C "$C/repo" status --porcelain)" ] \
         && [ -z "$(o branch --list release/0.6.0)" ]; then
-        pass "a failing version check stops the run before the release commit, naming the step and how to resume"
+        pass "a failing version check stops the run before the release commit, naming the step and how to resume, the worktree left and the checkout untouched"
     else fail "a failing version check stops the run (rc=$rc: $(cat "$C/out"))"; fi
     release 0.6.0; rc=$?
-    if [ "$rc" = 0 ] && has "4. [done] Bump the version" && has "5. [todo] Sync Bazel" && has "starts at step 5"; then
-        pass "a dry run after it shows the bump done and the rest to do"
+    if [ "$rc" = 0 ] && has "  Here, in $WT, where release/0.6.0 is checked out already:" \
+        && has "2. [done] Make the release branch, in a worktree of its own" \
+        && has "4. [done] Bump the version" && has "5. [todo] Sync Bazel" && has "starts at step 5"; then
+        pass "a dry run after it shows the worktree, the bump done and the rest to do"
     else fail "a dry run after a failing version check (rc=$rc: $(cat "$C/out"))"; fi
     rm "$FAKE_STATE/check-fail"
     act; rc=$?
     if [ "$rc" = 0 ] && prepared_ok && [ "$(count "bump 0.6.0")" = 1 ] && has "step 4/10 Bump the version: done already" \
-        && has "step 3/10 Merge main into it: done already"; then
-        pass "the next run resumes at the version check and prepares the release, bumping once"
+        && has "step 2/10 Make the release branch, in a worktree of its own: done already" \
+        && has "step 3/10 Merge main into it: done already" && logs "  removed $WT and the local release/0.6.0"; then
+        pass "the next run resumes at the version check in the worktree, prepares the release, bumping once, and removes the worktree"
     else fail "resume after a failing version check (rc=$rc: $(cat "$C/out"))"; fi
 }
 case_3b() {
-    # A refused push of the release branch; the next run, from main, switches
-    # back to the branch and pushes it.
+    # A refused push of the release branch; with its worktree removed by
+    # hand, the next run checks the local branch out in a worktree again and
+    # pushes it.
     new_case
     : > "$FAKE_STATE/reject-branch"
     act; rc=$?
-    if [ "$rc" = 1 ] && has "step 8 (Push the release branch) failed" && [ -z "$(o branch --list release/0.6.0)" ] \
-        && [ "$(git -C "$C/repo" log -1 --format=%s)" = "Release 0.6.0" ] && [ "$(count "gh pr create")" = 0 ]; then
-        pass "a refused push of the release branch stops at step 8 with the release commit made"
+    if [ "$rc" = 1 ] && has "step 8 (Push the release branch, then remove the worktree) failed" && [ -z "$(o branch --list release/0.6.0)" ] \
+        && [ "$(git -C "$WT" log -1 --format=%s)" = "Release 0.6.0" ] && [ "$(count "gh pr create")" = 0 ] \
+        && [ "$(git -C "$C/repo" rev-parse HEAD)" = "$MAIN0" ]; then
+        pass "a refused push of the release branch stops at step 8 with the release commit made, in the worktree"
     else fail "a refused push of the release branch (rc=$rc: $(cat "$C/out"))"; fi
     rm "$FAKE_STATE/reject-branch"
-    git -C "$C/repo" switch -q main
+    git -C "$C/repo" worktree remove "$WT"
     act; rc=$?
-    if [ "$rc" = 0 ] && prepared_ok && has "step 2/10 Cut the release branch: git switch" \
+    if [ "$rc" = 0 ] && prepared_ok \
+        && has "step 2/10 Make the release branch, in a worktree of its own: git worktree add" \
+        && logs "  release/0.6.0 is checked out in $WT" \
         && has "step 7/10 Commit the release: done already" && [ "$(count "check-version")" = 1 ]; then
-        pass "the next run, from main, switches to the release branch and pushes it"
-    else fail "resume at the release branch from main (rc=$rc: $(cat "$C/out"))"; fi
+        pass "the next run, its worktree gone, checks the local release branch out in a worktree again and pushes it"
+    else fail "resume at the local release branch with no worktree (rc=$rc: $(cat "$C/out"))"; fi
+}
+case_3e() {
+    # The release branch checked out in the checkout itself: the run works
+    # there, and leaves it there after the push.
+    new_case
+    git -C "$C/repo" switch -q --no-track -c release/0.6.0 origin/prod
+    act; rc=$?
+    rel="$(o rev-parse -q --verify refs/heads/release/0.6.0)"
+    if [ "$rc" = 0 ] && origin_ok && has "step 2/10 Make the release branch, in a worktree of its own: done already" \
+        && [ "$(git -C "$C/repo" symbolic-ref --short HEAD)" = release/0.6.0 ] \
+        && [ "$(git -C "$C/repo" rev-parse HEAD)" = "$rel" ] && [ -z "$(git -C "$C/repo" status --porcelain)" ] \
+        && [ ! -e "$WT" ] && [ "$(git -C "$C/repo" worktree list --porcelain | grep -c '^worktree ')" = 1 ] \
+        && ! logs "removed "; then
+        pass "a release branch checked out in the checkout already is prepared in place and left there after the push"
+    else fail "a release branch checked out in the checkout (rc=$rc: $(cat "$C/out"))"; fi
+}
+case_3f() {
+    # A checkout with changes and untracked files, on main: the run works
+    # in its worktree and leaves them as they were.
+    new_case
+    echo "local edit" >> "$C/repo/bazel/workspace.bzl"
+    echo scratch > "$C/repo/notes.txt"
+    MAIN_STATUS="$(git -C "$C/repo" status --porcelain)"
+    act; rc=$?
+    if [ "$rc" = 0 ] && MAIN_STATUS="$MAIN_STATUS" prepared_ok \
+        && [ "$(cat "$C/repo/bazel/workspace.bzl")" = "$(printf 'version = 0.5.0\nlocal edit')" ] \
+        && [ "$(cat "$C/repo/notes.txt")" = scratch ]; then
+        pass "changes and untracked files in the checkout run from do not stop a run, which leaves them as they were"
+    else fail "a run from a checkout with changes (rc=$rc: $(git -C "$C/repo" status --porcelain); $(cat "$C/out"))"; fi
 }
 case_3c() {
     # GitHub refusing the pull request: the next run opens it.
@@ -465,9 +537,9 @@ case_3c() {
     else fail "a refused pull request (rc=$rc: $(cat "$C/out"))"; fi
     rm "$FAKE_STATE/pr-create-fail"
     act; rc=$?
-    if [ "$rc" = 0 ] && prepared_ok && has "step 8/10 Push the release branch: done already"; then
+    if [ "$rc" = 0 ] && prepared_ok && has "step 8/10 Push the release branch, then remove the worktree: done already"; then
         pass "the next run opens the pull request"
-    else fail "resume at the pull request (rc=$rc: $(cat "$C/out"))"; fi
+    else fail "resume at the pull request (rc=$rc: $(git -C "$C/repo" status --porcelain; git -C "$C/repo" branch; git -C "$C/repo" worktree list); $(cat "$C/out"))"; fi
 }
 case_3d() {
     # A merge of main that conflicts: the run stops saying how to merge by
@@ -486,15 +558,17 @@ case_3d() {
     PROD0="$(o rev-parse prod)" MAIN0="$(o rev-parse main)"
     act; rc=$?
     if [ "$rc" = 1 ] && has "step 3 (Merge main into it) failed" && has "conflicts in: fix.txt" \
-        && has 'git merge -S origin/main -m "Merge origin/main into release/0.6.0"' \
-        && [ "$(git -C "$C/repo" rev-parse HEAD)" = "$PROD0" ] && [ -z "$(git -C "$C/repo" status --porcelain)" ] \
+        && has "Merge by hand in $WT, signed and with this subject:" \
+        && has "git -C $WT merge -S origin/main -m \"Merge origin/main into release/0.6.0\"" \
+        && [ "$(git -C "$WT" rev-parse HEAD)" = "$PROD0" ] && [ -z "$(git -C "$WT" status --porcelain)" ] \
+        && [ "$(git -C "$C/repo" rev-parse HEAD)" = "$MAIN0" ] && [ -z "$(git -C "$C/repo" status --porcelain)" ] \
         && [ "$(count "bump 0.6.0")" = 0 ]; then
-        pass "a merge of main that conflicts stops at step 3, saying how to merge by hand"
+        pass "a merge of main that conflicts stops at step 3, saying how to merge by hand in the worktree"
     else fail "a merge of main that conflicts (rc=$rc: $(cat "$C/out"))"; fi
-    git -C "$C/repo" merge -q -S origin/main -m "Merge origin/main into release/0.6.0" >/dev/null 2>&1
-    echo main > "$C/repo/fix.txt"
-    git -C "$C/repo" add fix.txt
-    git -C "$C/repo" commit -q -S --no-edit
+    git -C "$WT" merge -q -S origin/main -m "Merge origin/main into release/0.6.0" >/dev/null 2>&1
+    echo main > "$WT/fix.txt"
+    git -C "$WT" add fix.txt
+    git -C "$WT" commit -q -S --no-edit
     act; rc=$?
     if [ "$rc" = 0 ] && prepared_ok && has "step 3/10 Merge main into it: done already"; then
         pass "merged by hand as told, the next run goes on"
@@ -503,14 +577,28 @@ case_3d() {
 case_18() {
 
     # --- preflight refusals --------------------------------------------------------------
+    # Changes and untracked files count in the release branch's worktree
+    # alone (case_3f: the checkout's own do not).
     new_case
-    echo "local edit" >> "$C/repo/bazel/workspace.bzl"
-    refuse "a changed file" "uncommitted changes: bazel/workspace.bzl"
+    add_worktree
+    echo "local edit" >> "$WT/bazel/workspace.bzl"
+    refuse "a changed file in the release worktree" "uncommitted changes in $WT: bazel/workspace.bzl"
+}
+case_18b() {
+    # A run whose push was refused leaves the worktree with the release
+    # commit; a change made in it after that is refused.
+    new_case
+    : > "$FAKE_STATE/reject-branch"
+    act
+    rm "$FAKE_STATE/reject-branch"
+    echo "local edit" >> "$WT/main.txt"
+    refuse "a change in the worktree a failed run left, after the release commit" "uncommitted changes in $WT: main.txt"
 }
 case_19() {
     new_case
-    echo scratch > "$C/repo/notes.txt"
-    refuse "an untracked file" "untracked files: notes.txt"
+    add_worktree
+    echo scratch > "$WT/notes.txt"
+    refuse "an untracked file in the release worktree" "untracked files in $WT: notes.txt"
 }
 case_21() {
     # Preparing: a commit on the release branch that is not the release's.
@@ -590,10 +678,31 @@ case_30() {
 }
 case_31() {
     new_case
-    git -C "$C/repo" switch -q -c release/0.6.0 origin/prod
+    add_worktree
+    sed -i.bak 's/^CLAX_VERSION=/CLAX_VERSION_GONE=/' "$WT/scripts/ensure-clax.sh"
+    rm "$WT/scripts/ensure-clax.sh.bak"
+    refuse "versions that disagree in the release worktree" "release/0.6.0's versions disagree, in $WT (scripts/check-version.sh)"
+}
+case_31b() {
+    # The checkout's own versions are not read.
+    new_case
     sed -i.bak 's/^CLAX_VERSION=/CLAX_VERSION_GONE=/' "$C/repo/scripts/ensure-clax.sh"
     rm "$C/repo/scripts/ensure-clax.sh.bak"
-    refuse "versions that disagree" "the checkout's versions disagree (scripts/check-version.sh)"
+    MAIN_STATUS="$(git -C "$C/repo" status --porcelain)"
+    act; rc=$?
+    if [ "$rc" = 0 ] && MAIN_STATUS="$MAIN_STATUS" prepared_ok; then
+        pass "versions that disagree in the checkout run from do not stop a run"
+    else fail "versions that disagree in the checkout run from (rc=$rc: $(cat "$C/out"))"; fi
+}
+case_31c() {
+    # origin's release branch ahead of the local one.
+    new_case
+    add_worktree
+    git -C "$WT" -c commit.gpgsign=false commit -q --allow-empty -m "Elsewhere"
+    git -C "$WT" push -q origin release/0.6.0
+    git -C "$WT" reset -q --hard origin/prod
+    git -C "$C/repo" fetch -q origin
+    refuse "an origin release branch ahead of the local one" "origin's release/0.6.0 has commits the local release/0.6.0 lacks (git -C $WT pull --ff-only, or git branch -D release/0.6.0)"
 }
 case_32() {
     new_case
@@ -627,17 +736,17 @@ case_38() {
 
     # --- progress --------------------------------------------------------------------
     # Steps a run finds done count in full: with typical durations (no
-    # earlier log), steps 1-8 are 75s of 85s.
+    # earlier log), steps 1-2 are 15s of 655s, steps 1-8 645s.
     new_case
     : > "$FAKE_STATE/pr-create-fail"
     act
     rm "$FAKE_STATE/pr-create-fail" "$C/repo/target/release/0.6.0.log"
     act; rc=$?
     if [ "$rc" = 0 ] && prepared_ok && has "  8. [done] Push the release branch" && has "  9. [todo] Open the pull request into prod" \
-        && has "Estimated: about 1m in all, under a minute for the steps to do (typical durations" \
-        && has "[17%] step 2/10 Cut the release branch: done already" \
-        && has "[88%] step 8/10 Push the release branch: done already" \
-        && has "[88%] step 9/10 Open the pull request into prod: gh pr create" \
+        && has "Estimated: about 11m in all, under a minute for the steps to do (typical durations" \
+        && has "[2%] step 2/10 Make the release branch, in a worktree of its own: done already" \
+        && has "[98%] step 8/10 Push the release branch, then remove the worktree: done already" \
+        && has "[98%] step 9/10 Open the pull request into prod: gh pr create" \
         && has "Starting at step 9."; then
         pass "a resumed run counts the steps done in its percentage"
     else fail "a resumed run's percentage (rc=$rc: $(cat "$C/out"))"; fi
@@ -669,30 +778,76 @@ case_39() {
     else fail "a log of an earlier step numbering (rc=$rc: $(cat "$C/out"))"; fi
 }
 case_40() {
-    # A heartbeat while the version check runs, its clock moved on by 3m12s:
-    # the share done (60s of 85s, the step counted for no more than its
-    # weight) and the time left (25s).
+    # A heartbeat while the version check runs, its clock moved on by 3m12s,
+    # past the step's 5s estimate: the share done (630s of 655s, the step
+    # counted for no more than its weight), the time taken, and no time left
+    # claimed.
     new_case
     echo 192 > "$FAKE_STATE/check-advance"
-    : > "$FAKE_STATE/check-heartbeat"
+    echo "Check the version files: 3m12s" > "$FAKE_STATE/check-heartbeat"
     CLAX_RELEASE_HEARTBEAT_SECONDS=0.05 act; rc=$?
-    if [ "$rc" = 0 ] && prepared_ok && has "[70%] step 6/10 Check the version files: 3m12s (under a minute left)"; then
-        pass "a heartbeat tells the share done, the time taken and the time left"
-    else fail "a heartbeat (rc=$rc: $(cat "$C/out"))"; fi
+    if [ "$rc" = 0 ] && prepared_ok \
+        && has "[96%] step 6/10 Check the version files: 3m12s (past this step's estimate of 5s; how much longer is not known)" \
+        && ! grep -F "Check the version files: 3m12s" "$C/out" | grep -F "left" >/dev/null; then
+        pass "a heartbeat past its step's estimate tells the share done and the time taken, and claims no time left"
+    else fail "a heartbeat past its step's estimate (rc=$rc: $(cat "$C/out"))"; fi
+}
+case_40b() {
+    # A heartbeat while the version check runs, its clock moved on by 3s,
+    # within the step's 5s estimate: the share done (628s of 655s) and the
+    # time left (27s).
+    new_case
+    echo 3 > "$FAKE_STATE/check-advance"
+    echo "Check the version files: 3s" > "$FAKE_STATE/check-heartbeat"
+    CLAX_RELEASE_HEARTBEAT_SECONDS=0.05 act; rc=$?
+    if [ "$rc" = 0 ] && prepared_ok \
+        && has "[95%] step 6/10 Check the version files: 3s (under a minute left, estimated)" \
+        && ! has "past this step's estimate"; then
+        pass "a heartbeat within its step's estimate tells the share done, the time taken and the time left"
+    else fail "a heartbeat within its step's estimate (rc=$rc: $(cat "$C/out"))"; fi
 }
 case_41() {
     # --verbose streams the steps' output too, still logging it.
     new_case
     release 0.6.0 --i-know-what-i-am-doing --verbose; rc=$?
     if [ "$rc" = 0 ] && prepared_ok && has "fake check-version: the versions agree" \
-        && has "[64%] step 6/10 Check the version files: scripts/check-version.sh" && logs "fake check-version: the versions agree"; then
+        && has "[95%] step 6/10 Check the version files: scripts/check-version.sh" && logs "fake check-version: the versions agree"; then
         pass "--verbose streams the steps' output and logs it"
     else fail "--verbose (rc=$rc: $(cat "$C/out"))"; fi
 }
 
+case_42() {
+    # --- no version: the current release and the next ones ---------------------------
+    new_case
+    : > "$FAKE_STATE/calls"
+    before="$(snapshot)"
+    release; rc=$?
+    if [ "$rc" = 0 ] && [ "$before" = "$(snapshot)" ] && [ -z "$(actions)" ] \
+        && has "The current release: 0.5.0" && has "origin's newest release tag: v0.5.0" \
+        && has "origin/prod: 0.5.0" && has "origin/main: 0.5.0" && ! has "under way" \
+        && has "just release 0.5.1    a patch" && has "just release 0.6.0    a minor release" \
+        && has "just release 1.0.0    a major release"; then
+        pass "with no version, it prints the current release and the next ones"
+    else fail "with no version (rc=$rc: $(actions); $(cat "$C/out"))"; fi
+    prepare_by_hand
+    release; rc=$?
+    if [ "$rc" = 0 ] && has "under way: release/0.6.0, https://github.com/empathic/clax-test/pull/7 (just release 0.6.0 says where it is)"; then
+        pass "with no version, it names a release pull request open into prod"
+    else fail "with no version, an open release pull request (rc=$rc: $(cat "$C/out"))"; fi
+    merge_pr
+    release; rc=$?
+    if [ "$rc" = 0 ] && has "The current release: 0.6.0" && has "origin/prod: 0.6.0, not tagged yet (Deploy prod tags it)" \
+        && has "just release 0.6.1    a patch" && ! has "under way"; then
+        pass "with no version, prod's merged release counts before its tag"
+    else fail "with no version, prod merged before its tag (rc=$rc: $(cat "$C/out"))"; fi
+    release --i-know-what-i-am-doing; rc=$?
+    if [ "$rc" = 2 ]; then pass "the act flag with no version is a usage error"
+    else fail "the act flag with no version (rc=$rc: $(cat "$C/out"))"; fi
+}
+
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 [ "$JOBS" -le 8 ] || JOBS=8
-CASES="case_1 case_2 case_2b case_2c case_3 case_3b case_3c case_3d case_18 case_19 case_21 case_22 case_22b case_22c case_23 case_24 case_25 case_26 case_27 case_29 case_30 case_31 case_32 case_33 case_36 case_37 case_38 case_39 case_40 case_41"
+CASES="case_1 case_2 case_2b case_2c case_3 case_3b case_3c case_3d case_3e case_3f case_18 case_18b case_19 case_21 case_22 case_22b case_22c case_23 case_24 case_25 case_26 case_27 case_29 case_30 case_31 case_31b case_31c case_32 case_33 case_36 case_37 case_38 case_39 case_40 case_40b case_41 case_42"
 # A case's subshell exits 0 once its last check has run; one that dies on
 # the way (an unbound variable under set -u, say) exits otherwise, and fails
 # the gate whatever it printed before. Each case's status is collected by its
