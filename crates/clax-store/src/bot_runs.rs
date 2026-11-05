@@ -445,7 +445,64 @@ impl Store {
     /// with `require_explicit_price`, one without its token cost lines,
     /// which an admin sets with [`Store::set_model_rates`]); the store's.
     pub fn create_run(&self, ctx: &AuditCtx, new: NewRun) -> Result<Run> {
-        self.with_tx(|tx| self.create_run_in(tx, ctx, new))
+        self.with_tx(|tx| self.create_run_in(tx, ctx, new, None))
+    }
+
+    /// [`Store::create_run`] of a run answering a report of queue `qid`
+    /// (`new`'s one thread), its `bot.run_start` naming the queue, unless
+    /// the queue's reports already started `max_per_day` runs this UTC day:
+    /// then `None`, and nothing is made, in the same transaction.
+    ///
+    /// # Errors
+    /// [`Store::create_run`]'s.
+    pub fn create_report_run(
+        &self,
+        ctx: &AuditCtx,
+        new: NewRun,
+        qid: &str,
+        max_per_day: Option<u32>,
+    ) -> Result<Option<Run>> {
+        let day = clax_core::time::stamp(
+            self.now_utc()
+                .date_naive()
+                .and_hms_opt(0, 0, 0)
+                .expect("midnight exists")
+                .and_utc(),
+        );
+        self.with_tx(|tx| {
+            if let Some(cap) = max_per_day {
+                let made: i64 = tx.query_row(
+                    "SELECT count(*) FROM bot_runs r WHERE r.created_at >= ?2 AND EXISTS
+                       (SELECT 1 FROM json_each(r.thread_ids_json) j
+                          JOIN threads t ON t.id = j.value WHERE t.queue_id = ?1)",
+                    params![qid, day],
+                    |r| r.get(0),
+                )?;
+                if made >= i64::from(cap) {
+                    return Ok(None);
+                }
+            }
+            Ok(Some(self.create_run_in(tx, ctx, new, Some(qid))?))
+        })
+    }
+
+    /// The report run `run` answers, as (its queue, its thread): the first
+    /// of its threads filed through a queue, `None` when none was. Such a
+    /// run reaches that report alone ([`clax_core::queue`]; the script
+    /// API's `report.*`), whoever started it.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn run_report(&self, run: &Run) -> Result<Option<(String, String)>> {
+        let ids = serde_json::to_string(&run.thread_ids).expect("serialisable IDs");
+        self.with_read(|c| {
+            Ok(c.prepare_cached(
+                "SELECT t.queue_id, t.id FROM threads t WHERE t.queue_id IS NOT NULL
+                   AND t.id IN (SELECT value FROM json_each(?1)) ORDER BY t.id LIMIT 1",
+            )?
+            .query_row(params![ids], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()?)
+        })
     }
 
     /// [`Store::create_run`] unless a run that has not ended (queued,
@@ -464,7 +521,7 @@ impl Store {
             if let Some(active) = active_on_in(tx, &new.thread_ids)? {
                 return Ok(Err(active));
             }
-            Ok(Ok(self.create_run_in(tx, ctx, new)?))
+            Ok(Ok(self.create_run_in(tx, ctx, new, None)?))
         })
     }
 
@@ -589,6 +646,7 @@ impl Store {
         tx: &rusqlite::Transaction<'_>,
         ctx: &AuditCtx,
         new: NewRun,
+        queue: Option<&str>,
     ) -> Result<Run> {
         {
             let exists: Option<i64> = tx
@@ -625,6 +683,9 @@ impl Store {
                 .with("thread_ids", new.thread_ids.clone())
                 .with("model", new.model.as_str())
                 .with("key_source", new.key_source.as_str());
+            if let Some(qid) = queue {
+                rec = rec.with("queue_id", qid);
+            }
             rec.ids.artifact = Some(new.artifact_id.clone());
             self.record_audit(tx, ctx, rec)?;
             Ok(run_in(tx, &id)?.expect("the run was just made"))

@@ -139,10 +139,27 @@ pub struct BotProfile {
     pub instructions: String,
     /// `default`, `quick` or `complex`.
     pub tier: String,
+    /// How many runs the queue's reports start per UTC day; none: no limit
+    /// of its own (the person's credits and the per-run caps still hold).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_runs_per_day: Option<u32>,
+    /// What a run may do beyond reading and replying to its report:
+    /// [`RESOLVE_TOOL`] lets it resolve the report. Any other name gives
+    /// nothing.
     #[serde(default)]
     pub tools: Vec<String>,
+}
+
+/// The [`BotProfile::tools`] name that lets a run resolve its report.
+pub const RESOLVE_TOOL: &str = "report.resolve";
+
+/// The ClaxBot profile of responders `rs`' first responder, when it is one.
+#[must_use]
+pub fn first_bot_profile(rs: &[Responder]) -> Option<&BotProfile> {
+    match rs.first() {
+        Some(Responder::Bot { profile, .. }) => Some(profile),
+        _ => None,
+    }
 }
 
 /// The most responders a queue has.

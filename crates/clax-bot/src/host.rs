@@ -61,6 +61,10 @@ pub fn host_error(e: &CoreError) -> HostError {
     match e {
         CoreError::Invalid { code, message } => HostError::new(*code, message.clone()),
         CoreError::NotFound => HostError::new("not_found", "not found"),
+        CoreError::NotAMember => HostError::new("forbidden", "not a member of the queue"),
+        CoreError::ThreadTaken { name } => {
+            HostError::new("thread_taken", format!("{name} holds the claim"))
+        }
         CoreError::Conflict { current } => HostError::new(
             "conflict",
             format!("the artifact is at version {current}; someone else published"),
@@ -234,9 +238,26 @@ pub struct ThreadMeta {
     pub comments: Vec<CommentMeta>,
 }
 
+/// The report a run answers as its queue's first responder, for the prompt.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReportRequest {
+    /// The queue's name.
+    pub queue: String,
+    /// The queue's profile's instructions: the admin's words, unlike the
+    /// report's.
+    pub instructions: String,
+    /// Whether the profile lets the run resolve the report.
+    pub may_resolve: bool,
+    /// The report as `report.get` answers it.
+    pub report: Value,
+}
+
 /// Everything the first turn's prompt says about the request.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct RequestContext {
+    /// The report of a report's run; its threads and brief are then empty.
+    #[serde(default)]
+    pub report: Option<ReportRequest>,
     pub artifact: ArtifactMeta,
     /// The name of the person the run acts for.
     #[serde(default)]

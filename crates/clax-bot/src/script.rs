@@ -152,6 +152,22 @@ impl RunHost<'_> {
     /// What the run's rules refuse before the host sees the call.
     fn policy(&self, op: &str, args: &[Value]) -> std::result::Result<(), HostError> {
         let run = &self.tick.run;
+        let report = self
+            .tick
+            .store
+            .run_report(run)
+            .map_err(|e| crate::host::host_error(&e))?
+            .is_some();
+        if !api::in_scope(op, report) {
+            return Err(HostError::new(
+                "forbidden",
+                if report {
+                    "this run answers one report: only clax.report.* reaches anything"
+                } else {
+                    "clax.report.* is only for a run answering a report"
+                },
+            ));
+        }
         if matches!(op, "threads.read" | "threads.reply" | "threads.resolve") {
             let id = args[0].as_str().unwrap_or("");
             if !run.thread_ids.iter().any(|t| t == id) {

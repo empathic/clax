@@ -41,6 +41,7 @@ use axum::response::{IntoResponse, Response};
 use clax_core::ArtifactId;
 use clax_core::CoreError;
 use clax_core::audit::{AuditCtx, AuditKind};
+use clax_core::queue::first_bot_profile;
 use clax_http::agent::DeniedToGrants;
 use clax_http::audit::DeferredAudit;
 use clax_http::auth::Caller;
@@ -827,6 +828,74 @@ pub fn start_run(
         },
     )?
     .map_err(|active| run_active(&active.id))
+}
+
+/// The run the report `tid` just filed in queue `qid` starts when the
+/// queue's first responder is a ClaxBot profile: acting for the queue's
+/// maker, who must be allowed a run ([`refusal`]) and pays for it, on the
+/// profile's tier's model; the run reaches that report alone
+/// ([`clax_store::Store::run_report`]). A refusal, or the profile's
+/// `max_runs_per_day` used up (`queue_daily_cap`), is recorded as
+/// `bot.refused` and starts nothing: the report waits as it would with no
+/// responder. Returns the run started; the caller tells the driver.
+///
+/// # Errors
+/// The store's.
+pub fn start_report_run(
+    st: &Store,
+    bot: &Bot,
+    qid: &str,
+    tid: &str,
+) -> clax_core::Result<Option<String>> {
+    let rs = st.responders(qid)?;
+    let Some(profile) = first_bot_profile(&rs) else {
+        return Ok(None);
+    };
+    let queue = st.queue(qid)?.ok_or(CoreError::NotAMember)?;
+    let person = queue.person.unwrap_or_else(|| OWNER.to_string());
+    let Some(caller) = crate::bot::person_caller(st, &person)? else {
+        return Ok(None);
+    };
+    let ctx = clax_http::bot::caller_ctx(st, &caller)?;
+    let report = st
+        .report(qid, tid, clax_store::queues::Visibility::All)?
+        .ok_or(CoreError::NotFound)?;
+    let aid = ArtifactId::parse(&report.artifact.id)?;
+    let art = st.get_artifact(&aid)?.ok_or(CoreError::NotFound)?;
+    if let Some(code) = refusal(st, bot, &person)? {
+        st.record_refused(&ctx, &person, code, Some(aid.as_str()))?;
+        return Ok(None);
+    }
+    let model = st
+        .bot_setting(match profile.tier.as_str() {
+            "quick" => Setting::ModelQuick,
+            "complex" => Setting::ModelComplex,
+            _ => Setting::ModelDefault,
+        })?
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let new = clax_store::bot_runs::NewRun {
+        artifact_id: aid.as_str().to_string(),
+        person: person.clone(),
+        request: RequestKind::Thread,
+        thread_ids: vec![tid.to_string()],
+        model,
+        key_source: key_source(st, bot, &person)?.unwrap_or(KeySource::Instance),
+        base_version: art.current_version,
+        agent_grant: None,
+    };
+    let refused = match st.create_report_run(&ctx, new, qid, profile.max_runs_per_day) {
+        Ok(Some(run)) => return Ok(Some(run.id)),
+        Ok(None) => "queue_daily_cap",
+        Err(CoreError::Invalid {
+            code: "model_not_priced",
+            ..
+        }) => "model_not_priced",
+        Err(e) => return Err(e),
+    };
+    st.record_refused(&ctx, &person, refused, Some(aid.as_str()))?;
+    Ok(None)
 }
 
 /// What a person's comment on a thread ClaxBot answered does (spec

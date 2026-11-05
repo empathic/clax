@@ -14,15 +14,18 @@
 //! them.
 
 use crate::routes::bot::reads_artifact;
+use crate::routes::queue_agent::{Announcer, announce_resolved};
 use clax_bot::host::{
-    ArtifactMeta, CommentMeta, PlanFuture, PublishDraft, RequestContext, ThreadMeta, WritePlan,
-    host_error,
+    ArtifactMeta, CommentMeta, PlanFuture, PublishDraft, ReportRequest, RequestContext, ThreadMeta,
+    WritePlan, host_error,
 };
 use clax_bot::{BotHost, OpCtx};
 use clax_bot_sandbox::{
     CancelToken, ErrorKind, Host, HostError, Limits, Sandbox, Script, ScriptOutcome,
 };
 use clax_core::ArtifactId;
+use clax_core::queue::{BotProfile, RESOLVE_TOOL, first_bot_profile};
+use clax_core::report::ResolveReason;
 use clax_core::rights::RightType;
 use clax_http::auth::Caller;
 use clax_http::state::AppState;
@@ -30,6 +33,7 @@ use clax_store::Store;
 use clax_store::app_data::{AppDataOp, WireCaller};
 use clax_store::bot_runs::CallEntry;
 use clax_store::bot_runs::{RequestKind, Run};
+use clax_store::queues::Visibility;
 use clax_store::roles::OWNER;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -308,6 +312,12 @@ impl ServerHost {
     ) -> Result<ReadNow, HostError> {
         let run = cx.run;
         let a = self.artifact(st, run)?;
+        if op == "report.get" {
+            let Some((qid, tid, _)) = Self::run_report(st, run)? else {
+                return Err(forbidden("this run answers no report"));
+            };
+            return Self::report_view(st, &qid, &tid).map(ReadNow::Done);
+        }
         let id = ArtifactId::parse(&a.id).map_err(|e| host_error(&e))?;
         let s = |i: usize| {
             args.get(i)
@@ -508,6 +518,161 @@ impl ServerHost {
         Ok(())
     }
 
+    /// The report run `run` answers, as (its queue, its thread, the queue's
+    /// first responder's profile), or `None` for a run answering none.
+    ///
+    /// # Errors
+    /// `forbidden` when its person is no longer a member of the queue, or
+    /// ClaxBot no longer its first responder; the store's.
+    fn run_report(
+        st: &Store,
+        run: &Run,
+    ) -> Result<Option<(String, String, BotProfile)>, HostError> {
+        let Some((qid, tid)) = st.run_report(run).map_err(|e| host_error(&e))? else {
+            return Ok(None);
+        };
+        let person = (run.person != OWNER).then_some(run.person.as_str());
+        if st
+            .queue_role(&qid, person)
+            .map_err(|e| host_error(&e))?
+            .is_none()
+        {
+            return Err(forbidden(
+                "the person this run acts for is not a member of the report's queue",
+            ));
+        }
+        let rs = st.responders(&qid).map_err(|e| host_error(&e))?;
+        let Some(profile) = first_bot_profile(&rs).cloned() else {
+            return Err(forbidden("ClaxBot is not this queue's first responder"));
+        };
+        Ok(Some((qid, tid, profile)))
+    }
+
+    /// The report `qid`'s `tid` as a run reads it: everything its members
+    /// read but the reporter's profile, which the model has no need of.
+    fn report_view(st: &Store, qid: &str, tid: &str) -> Result<Value, HostError> {
+        let mut report = st
+            .report(qid, tid, Visibility::All)
+            .map_err(|e| host_error(&e))?
+            .ok_or_else(|| HostError::new("not_found", "the report is gone"))?;
+        report.reporter_profile = None;
+        serde_json::to_value(report).map_err(|e| HostError::new("internal", e.to_string()))
+    }
+
+    /// The plan of `report.reply` or `report.resolve` with `args`, checked.
+    async fn report_plan<'s>(
+        &'s self,
+        cx: &OpCtx<'_>,
+        op: &str,
+        args: &[Value],
+    ) -> Result<WritePlan<'s>, HostError> {
+        let resolve = op == "report.resolve";
+        let action = if resolve { "resolve" } else { "reply" };
+        let (me, r) = (self.me(), cx.run.clone());
+        let (qid, tid) = self
+            .on_store(move |st| {
+                me.check_write(st, &r, RightType::Comments, action)?;
+                let Some((qid, tid, profile)) = ServerHost::run_report(st, &r)? else {
+                    return Err(forbidden("this run answers no report"));
+                };
+                if resolve && !profile.tools.iter().any(|t| t == RESOLVE_TOOL) {
+                    return Err(forbidden(
+                        "this queue's profile does not let ClaxBot resolve its reports",
+                    ));
+                }
+                Ok((qid, tid))
+            })
+            .await?;
+        let (state, ctx, run) = (self.state.clone(), cx.audit.clone(), cx.run.clone());
+        if resolve {
+            let reason = match args.first().and_then(|o| o.get("reason")) {
+                None | Some(Value::Null) => ResolveReason::Other,
+                Some(v) => serde_json::from_value(v.clone()).map_err(|_| {
+                    HostError::new(
+                        clax_bot::api::CODE_BAD_ARGS,
+                        "reason is fixed, duplicate, wontfix, cannot_reproduce or other",
+                    )
+                })?,
+            };
+            return Ok(Box::new(move |entry: CallEntry| {
+                Box::pin(async move {
+                    let an = Announcer::of(&state);
+                    let events = state.events.clone();
+                    state
+                        .store
+                        .call(move |st| {
+                            let guard = |tx: &clax_store::Tx<'_>| {
+                                st.check_bot_write_in(
+                                    tx,
+                                    &run.person,
+                                    run.agent_grant.as_deref(),
+                                    Some(&run.artifact_id),
+                                    RightType::Comments,
+                                    "resolve",
+                                )
+                            };
+                            let person = (run.person != OWNER).then_some(run.person.as_str());
+                            let (j, touched) = st.resolve_report_journaled(
+                                &ctx,
+                                &qid,
+                                &tid,
+                                clax_http::bot::ACTOR_ID,
+                                person,
+                                reason,
+                                &entry,
+                                &guard,
+                            )?;
+                            if let (Some(touched), Some(t)) = (touched, st.get_thread(&tid)?) {
+                                announce_resolved(&an, st, &ctx, &t, None, &touched);
+                                events.publish(clax_core::Event::Queues);
+                            }
+                            Ok(j)
+                        })
+                        .await
+                }) as PlanFuture<'s>
+            }));
+        }
+        let body = args
+            .first()
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        Ok(Box::new(move |entry: CallEntry| {
+            Box::pin(async move {
+                let s = state.feedback_ctx();
+                state
+                    .store
+                    .call(move |st| {
+                        let guard = |tx: &clax_store::Tx<'_>| {
+                            st.check_bot_write_in(
+                                tx,
+                                &run.person,
+                                run.agent_grant.as_deref(),
+                                Some(&run.artifact_id),
+                                RightType::Comments,
+                                "reply",
+                            )
+                        };
+                        let person = (run.person != OWNER).then_some(run.person.as_str());
+                        let j = st.report_reply_journaled(
+                            &ctx,
+                            &qid,
+                            &tid,
+                            person,
+                            clax_http::bot::NAME,
+                            &body,
+                            &entry,
+                            &guard,
+                        )?;
+                        announce_thread(&s, st, &tid);
+                        s.events.publish(clax_core::Event::Queues);
+                        Ok(j)
+                    })
+                    .await
+            }) as PlanFuture<'s>
+        }))
+    }
+
     /// ClaxBot's name on a comment: acting for its person ("ClaxBot (for
     /// Sam)", spec §6.5).
     fn author(st: &Store, run: &Run) -> String {
@@ -595,6 +760,31 @@ impl BotHost for ServerHost {
             let a = me.artifact(st, &run)?;
             let mut names = clax_http::bot::Names::new(st);
             let person_name = names.name(&run.person).map_err(|e| host_error(&e))?;
+            let artifact = ArtifactMeta {
+                url: Some(format!("{}/a/{}", me.state.browser_base, a.id)),
+                id: a.id.clone(),
+                title: a.title.clone(),
+                description: a.description.clone(),
+                version: a.current_version,
+            };
+            if let Some((qid, tid, profile)) = ServerHost::run_report(st, &run)? {
+                let queue = st
+                    .queue(&qid)
+                    .map_err(|e| host_error(&e))?
+                    .ok_or_else(|| HostError::new("not_found", "the queue is gone"))?;
+                return Ok(RequestContext {
+                    report: Some(ReportRequest {
+                        queue: queue.name,
+                        may_resolve: profile.tools.iter().any(|t| t == RESOLVE_TOOL),
+                        instructions: profile.instructions,
+                        report: ServerHost::report_view(st, &qid, &tid)?,
+                    }),
+                    artifact,
+                    person_name,
+                    threads: Vec::new(),
+                    brief: None,
+                });
+            }
             let mut threads = Vec::new();
             for tid in &run.thread_ids {
                 let t = ServerHost::thread(st, &run, tid)?;
@@ -612,13 +802,8 @@ impl BotHost for ServerHost {
                 threads.clear();
             }
             Ok(RequestContext {
-                artifact: ArtifactMeta {
-                    url: Some(format!("{}/a/{}", me.state.browser_base, a.id)),
-                    id: a.id,
-                    title: a.title,
-                    description: a.description,
-                    version: a.current_version,
-                },
+                report: None,
+                artifact,
                 person_name,
                 threads,
                 brief,
@@ -683,6 +868,7 @@ impl BotHost for ServerHost {
         };
         let run = cx.run.clone();
         match op {
+            "report.reply" | "report.resolve" => self.report_plan(cx, op, args).await,
             "threads.reply" | "threads.resolve" => {
                 let (me, r, tid) = (self.me(), run.clone(), s(0));
                 let action = if op == "threads.reply" {
@@ -1022,6 +1208,11 @@ impl BotHost for ServerHost {
         let (me, r, tid) = (self.me(), cx.run.clone(), thread_id.to_string());
         self.on_store(move |st| {
             me.check_write(st, &r, RightType::Comments, "reply")?;
+            if st.run_report(&r).map_err(|e| host_error(&e))?.is_some() {
+                return Err(forbidden(
+                    "a run answering a report replies with report.reply",
+                ));
+            }
             ServerHost::thread(st, &r, &tid).map(|_| ())
         })
         .await?;

@@ -9681,7 +9681,7 @@ the body below.
 | `tag.create` | `tag_id, name, colour, description` | a tag made |
 | `tag.update` | `tag_id, fields{name?, colour?, description?}` | a tag renamed, recoloured or redescribed |
 | `tag.delete` | `tag_id, name, artifacts` (how many carried it) | a tag deleted, and so removed from every artifact |
-| `bot.run_start` | `run, request (thread\|brief), thread_ids[], model, key_source (instance\|own)` | a ClaxBot run made, on its artifact |
+| `bot.run_start` | `run, request (thread\|brief), thread_ids[], model, key_source (instance\|own), queue_id?` (the queue, for a run a filed report started) | a ClaxBot run made, on its artifact |
 | `bot.turn` | `run, step, model, key_source (instance\|own), input_tokens, cached_tokens, output_tokens, stop_reason, credits_milli` | a model turn's step committed |
 | `bot.script` | `run, step, title, code_sha256, calls[op], cpu_ms, mem_peak, credits_milli, error` (the code itself is in the run's step, never the body) | a script's step committed |
 | `bot.call` | `run, step, op, target, ok` | every API op a script called, reads included, with its step |
@@ -10214,6 +10214,7 @@ handle, `*system` as "Clax".
 | `GET /api/me/flags` → `{flags: {claxbot, claxbot_unenforced}}` (each person's defaults filled in) | the same, their own; agents 403 `not_for_agents` | — |
 | `GET /api/agents` | as before; ClaxBot is listed first (`handle: "claxbot"`, `builtin: true`, `live`, or `unavailable: no_flag\|no_credits\|not_configured\|model_not_priced`) where the caller may send | — |
 | `POST /api/bot/runs {thread_ids, artifact_id}`; a send or batch with `to: "claxbot"`; `POST /api/artifacts:new` with `build: "claxbot"`; a person's comment on a thread whose last run ended | the sender (a person, or their agent: the run acts for that person); SameOrigin | `bot.run_start`, or `bot.refused` and 403 `no_flag`, `credits_exhausted`, `not_configured` or `model_not_priced` before any model call |
+| A report filed on a local Clax in a queue whose first responder is a ClaxBot profile (see "A ClaxBot profile as a queue's first responder") | the queue's maker: the run acts for them, on their credits | `bot.run_start` with `queue_id`, or `bot.refused` with `no_flag`, `credits_exhausted`, `not_configured`, `model_not_priced` or `queue_daily_cap`; the report is filed either way |
 | `GET /api/bot/runs?artifact=`, `GET /api/bot/runs/<id>`, `GET /api/bot/runs/<id>/events` | the person a run acts for, admins, and anyone who may read its artifact (read-only); a live page's runs the owner's alone; on a hosted Clax an admin as below | `view.run` |
 | `POST /api/bot/runs/<id>/cancel`, `GET /api/bot/runs/<id>/draft/<path>` | the person it acts for and admins (403 `not_permitted`, a draft 404); on a hosted Clax a draft for an admin only at an artifact they made | `bot.cancel` |
 | `GET /api/admin/people`, `PUT …/<person>/flags`, `…/credits` | admins | `view.admin {page: people}`, `admin.flag`, `admin.credits` |
@@ -10223,6 +10224,40 @@ handle, `*system` as "Clax".
 | `POST /api/admin/pricing/catalog/refresh` | admins | — (it replaces the cached public price catalog alone) |
 | `GET /api/audit?…`, `GET /api/audit/<seq>` | admins every event (on a hosted Clax every event but those naming an artifact out of their own reach), anyone else their scope (Toolpath journal, "Kinds"); a live page's events the owner's alone | `view.audit {filters}` |
 | `GET /api/toolpath/export` | the owner, and admins (live pages refused); on a hosted Clax each exports their own reach | — |
+
+**A ClaxBot profile as a queue's first responder.** On a local Clax, a
+report filed through `POST /api/queues/<qid>/reporter/reports` in a queue
+whose first entry of `GET /api/queues/<qid>/responders` has `kind: "bot"`
+starts one run. It acts for the queue's maker and spends their credits,
+every per-run cap and week's credits holding as for any run; it takes the
+model of the profile's `tier` (`models.default`, `models.quick` or
+`models.complex`) and the system prompt carries the profile's
+`instructions` as its only requests. A report is anyone's words: it reaches
+the model as data, never instructions. `max_runs_per_day` limits the runs
+the queue's reports start per UTC day. A hosted Clax starts none, and a
+reporter's comment or a reopen starts none.
+
+A run naming a report's thread, however it was started, has `clax.report.*`
+alone and takes no ID, so it reaches that report and nothing else; any
+other `clax.*` call answers `forbidden`, as `clax.report.*` does on every
+other run:
+
+| Operation | What it does |
+|---|---|
+| `clax.report.get()` | the report as its queue's members read it, without `reporter_profile` |
+| `clax.report.reply(markdown)` | `{comment_id}`: a comment by agent `ClaxBot`, which the reporter reads, at once |
+| `clax.report.resolve({reason?})` | closes it for `reason` (`fixed`, `duplicate`, `wontfix`, `cannot_reproduce`, `other`, the default), `resolved_by` `agent:claxbot`; `forbidden` unless the profile's `tools` names `report.resolve` |
+
+A run holds no claim: it has no session. Its writes answer `thread_taken`
+while a session holds a live lease, checked in the write's transaction, so
+a session that claimed the report has it to itself; the report stays `open`
+through the run, and a session may claim it meanwhile. A run posts nothing
+on the report but its `report.reply` calls: neither its `finish` summary nor
+a stop's notice reaches the reporter; they are on the run. Each write
+answers `forbidden` once ClaxBot is no longer the queue's first responder or
+the run's person no longer a member, and a run whose first turn finds so
+stops as `request_gone`. `escalate_after_secs` is stored and not yet acted
+on: nothing asks the next responder.
 
 Admins are the owner (on a hosted daemon, the `OWNER_GITHUB` account) and
 the people the owner made admins. Agents get 403 `not_for_agents` on every
