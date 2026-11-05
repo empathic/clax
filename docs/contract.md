@@ -2857,36 +2857,36 @@ minutes after it ends, so ending every session with the token does not
 turn this off at once; an agent of another machine (a session with a
 grant) never holds the token and makes nothing wait. A session an open job
 names is never reaped while the job is open, and counts for as long: its
-harness may still be running. The decisions:
+harness may still be running. The decisions are what the daemon carries
+out itself; answering an agent's question is not among them, any more than
+a comment is: an answer is advice the agent acts on (a question an agent's
+push or site opening waits on, `approval_pending`, is approved only by an
+answer made in the owner's browser). The decisions:
 
-1. answering a question an agent asked (`POST /api/questions/<qid>/answer`),
-   except a question an agent's push or site opening waits on
-   (`approval_pending`), whose answer counts only when made in the owner's
-   browser anyway;
-2. pushing an artifact to a public Clax (`POST /api/artifacts/<aid>/push`,
+1. pushing an artifact to a public Clax (`POST /api/artifacts/<aid>/push`,
    the owner's own push);
-3. connecting a public Clax (`POST /api/remotes`), and answering an agent's
+2. connecting a public Clax (`POST /api/remotes`), and answering an agent's
    connection request (`POST /api/remotes/requests/<id>/answer`, already
    the owner's browser's alone: it asks while passkeys are required, as
-   decision 5 does);
-4. widening who may open a page: its site to the world (`PATCH
+   decision 4 does);
+3. widening who may open a page: its site to the world (`PATCH
    /api/artifacts/<aid>` `{site_access: "world"}` for a site not open
    yet), and its public copy's link access (`PUT
    /api/remotes/<rid>/artifacts/<raid>/sharing/link` with an `access`,
    or `listed: true`), a share of the public copy with a person (`PUT
    …/sharing/shares`), and its comments turned on (`PUT
    …/sharing/comments` with `on` other than `false`);
-5. approving a machine's connection (`POST /api/grants/<gid>/approve`),
+4. approving a machine's connection (`POST /api/grants/<gid>/approve`),
    setting a person's rights (`PUT /api/people/<id>/rights`) and revoking
    a person (`DELETE /api/people/<id>`);
-6. pairing the Clax extension (`POST /api/extension/credentials`), whose
+5. pairing the Clax extension (`POST /api/extension/credentials`), whose
    credential then acts as the owner's browser;
-7. registering a passkey for confirmations (`POST /api/passkeys`, below),
+6. registering a passkey for confirmations (`POST /api/passkeys`, below),
    which waits for a confirmation from any browser but the in-process
    app's frame.
 
 Who waits: the owner calling with the token and no browser credential
-(decisions 1 to 4 and 6; decision 5 refuses the token alone as before, 403
+(decisions 1 to 3 and 5; decision 4 refuses the token alone as before, 403
 `browser_required`).
 Any owner browser session, the in-process app's frame (the Clax app's
 shell, relayed through its embedded core) and a paired extension decide at
@@ -2922,7 +2922,7 @@ again while it is open, 403 `declined` once declined, 410
 `confirmation_expired` ten minutes after it was made (answered or not,
 unused), 409 `confirmation_used` once spent, 403
 `confirmation_mismatch` for a confirmation of another decision (another
-question, answer, page, remote, push mode, `auto`, `forked_from` or
+page, remote, push mode, `auto`, `forked_from` or
 `title`, remote name or machine, person or rights), and 404
 `unknown_confirmation` for an ID none has.
 

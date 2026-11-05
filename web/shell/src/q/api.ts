@@ -4,10 +4,9 @@
 // this. A 403 (the caller is not the owner) resolves to "forbidden"; a 409
 // on an answer, a skip or a move resolves to the question as it closed;
 // a decision held for the owner's confirmation (202 `confirmation_pending`)
-// is confirmed here with a passkey where one is required (`heldFetch`),
-// else throws an `ApiError` coded so, saying where to confirm; any other
+// throws an `ApiError` coded so, saying where to confirm; any other
 // failure throws an `ApiError`.
-import { HELD, heldFetch, heldOf } from "../held";
+import { HELD, heldOf } from "../held";
 import { ApiError, type AnswerBody, type InboxFilter, type InboxGroupPage, type InboxItem, type InboxPage, type InboxSummary, type QuestionView, type StripAgent } from "../api";
 
 export type Forbidden = "forbidden";
@@ -18,7 +17,7 @@ export type Closing = { question: QuestionView } | { closed: QuestionView };
 const JSON_BODY = { "content-type": "application/json" };
 
 async function call<T>(path: string, init?: RequestInit, closed = false): Promise<T | Forbidden | { closed: QuestionView }> {
-  const res = await heldFetch(path, init);
+  const res = await fetch(path, init);
   // Held for the owner's confirmation: where to confirm, not a result.
   const held = await heldOf(res);
   if (held) throw new ApiError(202, held.message, HELD);

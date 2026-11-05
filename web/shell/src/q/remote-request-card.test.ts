@@ -91,10 +91,10 @@ describe("RemoteRequestCard", () => {
       vi.spyOn(window, "open").mockReturnValue(tab as unknown as Window);
       const m = mount(RemoteRequestCard, { item: item("remote_request"), now });
       click(button(m.root, label)!);
-      await settle();
+      // A held answer first asks whether a passkey confirms it here.
+      await vi.waitFor(() => { flush(); expect(m.root.querySelector(".held")?.textContent).toContain(`Confirm in your browser: ${URL}`); });
       expect(m.root.querySelector('[role="alert"]')).toBeNull();
       expect(m.root.querySelector(".rcard")!.getAttribute("data-status")).toBe("open");
-      expect(m.root.querySelector(".held")!.textContent).toContain(`Confirm in your browser: ${URL}`);
       if (answer === "connect") expect(tab.close).toHaveBeenCalled();
       click(button(m.root, label)!);
       await settle();

@@ -884,16 +884,11 @@ async fn the_cli_token_answers_as_the_cli() {
         .unwrap()
         .to_string();
     let path = format!("/api/questions/{qid}/answer");
-    let answer = json!({"answers": [{"selected": ["B"]}]});
-    // While its agent is live, the token's answer waits for the owner's browser.
-    let held = post(&ts, &path, answer.clone()).await;
-    assert_eq!(held.status(), 202);
-    let v: Value = ts
-        .confirmed(reqwest::Method::POST, &path, answer)
-        .await
-        .json()
-        .await
-        .unwrap();
+    // While its agent is live too, the token's answer is made at once: an
+    // answer, like a comment, asks no confirmation.
+    let r = post(&ts, &path, json!({"answers": [{"selected": ["B"]}]})).await;
+    assert_eq!(r.status(), 200);
+    let v: Value = r.json().await.unwrap();
     assert_eq!(v["question"]["answered_via"], "cli");
 }
 

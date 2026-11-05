@@ -1,7 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "../api";
 import { browserCall, Refused } from "../held";
-import { answerQuestion } from "./api";
 import { passkeySettings } from "./passkey";
 
 const ID = "cf_0123456789abcdef0123456789abcdef";
@@ -12,7 +10,7 @@ const settings = (required: boolean) => ({
   require_passkey: required, required, offer_dismissed: false, passkeys: required ? [{ credential_id: "AQ", alg: -7, created_at: "2026-10-30T10:00:00.000Z" }] : [],
 });
 const challenge = { challenge: "AQID", rp_id: "localhost", user_id: "CQ", timeout_ms: 600000, allow: ["AQ"] };
-const question = { id: "q1", status: "answered" };
+const person = { id: "p1", rights: "clax:reader" };
 
 type Call = { method: string; url: string; body: unknown; confirmation: string | null };
 /** Answers each call by `routes` (`[status, body]` or a body), keeping its confirmation header. */
@@ -42,19 +40,19 @@ afterEach(() => { vi.unstubAllGlobals(); });
 describe("a decision this page made, held for confirmation", () => {
   it("is confirmed here with the passkey and made again, finishing it with no card", async () => {
     const calls = stub({
-      "POST /api/questions/q1/answer": c => c.confirmation === ID ? { question } : held,
+      "PUT /api/people/p1/rights": c => c.confirmation === ID ? { person } : held,
       "GET /api/passkeys": () => settings(true),
       "POST /api/passkeys/challenge": () => challenge,
       [`POST /api/confirmations/${ID}`]: () => ({ confirmation: { id: ID, status: "approved" } }),
     });
     await passkeySettings(true);
-    expect(await answerQuestion("q1", { answers: [] } as never)).toEqual({ question });
+    expect(await browserCall("/api/people/p1/rights", "PUT", { rights: "clax:reader" })).toEqual({ person });
     expect(get).toHaveBeenCalledTimes(1);
-    expect(calls.filter(c => c.method === "POST").map(c => [c.url, c.body, c.confirmation])).toEqual([
-      ["/api/questions/q1/answer", { answers: [] }, null],
+    expect(calls.filter(c => c.method !== "GET").map(c => [c.url, c.body, c.confirmation])).toEqual([
+      ["/api/people/p1/rights", { rights: "clax:reader" }, null],
       ["/api/passkeys/challenge", { purpose: "confirm", confirmation_id: ID }, null],
       [`/api/confirmations/${ID}`, { approve: true, assertion: { credential_id: "AQ", authenticator_data: "Bw", client_data_json: "BQ", signature: "CA" } }, null],
-      ["/api/questions/q1/answer", { answers: [] }, ID],
+      ["/api/people/p1/rights", { rights: "clax:reader" }, ID],
     ]);
   });
 
@@ -72,11 +70,11 @@ describe("a decision this page made, held for confirmation", () => {
   });
 
   it("without a required passkey, it says where to confirm, as before", async () => {
-    stub({ "POST /api/questions/q1/answer": () => held, "GET /api/passkeys": () => settings(false) });
+    stub({ "PUT /api/people/p1/rights": () => held, "GET /api/passkeys": () => settings(false) });
     await passkeySettings(true);
-    const e = await answerQuestion("q1", { answers: [] } as never).catch(x => x);
-    expect(e).toBeInstanceOf(ApiError);
-    expect(e.code).toBe("confirmation_pending");
+    const e = await browserCall("/api/people/p1/rights", "PUT", { rights: "clax:reader" }).catch(x => x);
+    expect(e).toBeInstanceOf(Refused);
+    expect((e as Refused).code).toBe("confirmation_pending");
     expect(get).not.toHaveBeenCalled();
   });
 

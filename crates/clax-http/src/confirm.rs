@@ -93,8 +93,6 @@ pub use clax_core::confirm::{CONFIRMATION_HEADER, MAX_WAIT_SECS, PENDING};
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Decision {
-    /// Answering question `question_id` with `answers`.
-    Answer { question_id: String, answers: Value },
     /// Pushing `artifact_id` to remote `remote_id` (its ID) in `mode`,
     /// with the push's `auto` (letting agents push new versions without
     /// asking), `forked_from` and `title` as sent.
@@ -387,16 +385,6 @@ pub fn words(st: &Store, d: &Value) -> clax_core::Result<String> {
             .unwrap_or_else(|| rid.to_string()))
     };
     Ok(match d["kind"].as_str().unwrap_or_default() {
-        "answer" => {
-            let qid = s("question_id");
-            let asked = st
-                .question(&qid)?
-                .and_then(|q| q.questions.first().map(|x| x.question.clone()));
-            match asked {
-                Some(q) => format!("answer an agent's question “{q}”"),
-                None => "answer an agent's question".to_string(),
-            }
-        }
         "push" => format!(
             "push {} to {}",
             title(&s("artifact_id"))?,

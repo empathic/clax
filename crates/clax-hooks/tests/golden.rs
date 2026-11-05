@@ -1131,7 +1131,7 @@ impl Daemon {
     /// answering in Clax: an owner browser session opened as `clax open`
     /// opens one (a login code made with the token, redeemed at `GET
     /// /login`, whose page carries the session's proof). While an agent session is live the token alone would get
-    /// 202 `confirmation_pending` for a decision such as an answer.
+    /// 202 `confirmation_pending` for a decision such as a push.
     fn post_as_owner_browser(&self, path: &str, body: Value) -> Value {
         let plain = reqwest::blocking::Client::builder()
             .no_proxy()
