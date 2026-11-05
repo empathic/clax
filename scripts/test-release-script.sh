@@ -84,7 +84,10 @@ case "$1 $2" in
     "auth status")
         if [ -e "$S/no-auth" ]; then echo "You are not logged into any GitHub hosts." >&2; exit 1; fi ;;
     "pr list")
-        cat "$S/pr" 2>/dev/null || true ;;
+        # By --head, "STATE URL"; else the open release pull requests'
+        # "BRANCH URL".
+        if [ -n "$(flag --head "$@")" ]; then cat "$S/pr" 2>/dev/null || true
+        elif read -r state url < "$S/pr" 2>/dev/null && [ "$state" = OPEN ]; then echo "release/0.6.0 $url"; fi ;;
     "pr create")
         # $FAKE_STATE/pr-create-fail: GitHub refuses it.
         if [ -e "$S/pr-create-fail" ]; then echo "GraphQL: Something went wrong (fake)" >&2; exit 1; fi
@@ -690,9 +693,38 @@ case_41() {
     else fail "--verbose (rc=$rc: $(cat "$C/out"))"; fi
 }
 
+case_42() {
+    # --- no version: the current release and the next ones ---------------------------
+    new_case
+    : > "$FAKE_STATE/calls"
+    before="$(snapshot)"
+    release; rc=$?
+    if [ "$rc" = 0 ] && [ "$before" = "$(snapshot)" ] && [ -z "$(actions)" ] \
+        && has "The current release: 0.5.0" && has "origin's newest release tag: v0.5.0" \
+        && has "origin/prod: 0.5.0" && has "origin/main: 0.5.0" && ! has "under way" \
+        && has "just release 0.5.1    a patch" && has "just release 0.6.0    a minor release" \
+        && has "just release 1.0.0    a major release"; then
+        pass "with no version, it prints the current release and the next ones"
+    else fail "with no version (rc=$rc: $(actions); $(cat "$C/out"))"; fi
+    prepare_by_hand
+    release; rc=$?
+    if [ "$rc" = 0 ] && has "under way: release/0.6.0, https://github.com/empathic/clax-test/pull/7 (just release 0.6.0 says where it is)"; then
+        pass "with no version, it names a release pull request open into prod"
+    else fail "with no version, an open release pull request (rc=$rc: $(cat "$C/out"))"; fi
+    merge_pr
+    release; rc=$?
+    if [ "$rc" = 0 ] && has "The current release: 0.6.0" && has "origin/prod: 0.6.0, not tagged yet (Deploy prod tags it)" \
+        && has "just release 0.6.1    a patch" && ! has "under way"; then
+        pass "with no version, prod's merged release counts before its tag"
+    else fail "with no version, prod merged before its tag (rc=$rc: $(cat "$C/out"))"; fi
+    release --i-know-what-i-am-doing; rc=$?
+    if [ "$rc" = 2 ]; then pass "the act flag with no version is a usage error"
+    else fail "the act flag with no version (rc=$rc: $(cat "$C/out"))"; fi
+}
+
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 [ "$JOBS" -le 8 ] || JOBS=8
-CASES="case_1 case_2 case_2b case_2c case_3 case_3b case_3c case_3d case_18 case_19 case_21 case_22 case_22b case_22c case_23 case_24 case_25 case_26 case_27 case_29 case_30 case_31 case_32 case_33 case_36 case_37 case_38 case_39 case_40 case_41"
+CASES="case_1 case_2 case_2b case_2c case_3 case_3b case_3c case_3d case_18 case_19 case_21 case_22 case_22b case_22c case_23 case_24 case_25 case_26 case_27 case_29 case_30 case_31 case_32 case_33 case_36 case_37 case_38 case_39 case_40 case_41 case_42"
 # A case's subshell exits 0 once its last check has run; one that dies on
 # the way (an unbound variable under set -u, say) exits otherwise, and fails
 # the gate whatever it printed before. Each case's status is collected by its

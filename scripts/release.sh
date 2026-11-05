@@ -5,9 +5,16 @@
 # prod: the deploy, once the owner approves, the GitHub release, the carry
 # to main with the plugins' pin, the Pi package).
 #
+#   scripts/release.sh                                    the current release and the next ones
 #   scripts/release.sh X.Y.Z                              a dry run
 #   scripts/release.sh X.Y.Z --i-know-what-i-am-doing     cuts the pull request
 #   ... --verbose                                         streams every step's output
+#
+# With no version it prints the current release (origin's newest vX.Y.Z
+# tag, or origin/prod's version when that is newer), the versions origin's
+# prod and main are at, any release pull request open into prod, and the
+# next patch, minor and major versions, as the commands that cut them; it
+# changes nothing (it fetches origin's main and prod).
 #
 # The dry run, the default, runs the read-only checks and prints every step
 # with whether it is done already; it changes nothing (it fetches origin's
@@ -78,7 +85,7 @@ PROD=prod
 LAST=10
 
 usage() {
-    echo "usage: scripts/release.sh X.Y.Z [$ACT_FLAG] [--verbose]" >&2
+    echo "usage: scripts/release.sh [X.Y.Z [$ACT_FLAG] [--verbose]]" >&2
     exit 2
 }
 V=""
@@ -93,7 +100,7 @@ for arg in "$@"; do
         *) [ -z "$V" ] || usage; V="$arg" ;;
     esac
 done
-[ -n "$V" ] || usage
+[ -n "$V" ] || [ "$ACT$VERBOSE" = 00 ] || usage
 TAG="v$V"
 RB="release/$V"
 REL_SUBJECT="Release $V"
@@ -533,7 +540,60 @@ This pull request is staging (docs/prod.md, "Releasing"):
 - [ ] Merge with a merge commit (not squash or rebase). Deploy prod then waits for the owner's approval, deploys clax.dev from the candidate staging tested, publishes $TAG, carries the release and the plugins' pin to \`main\` and publishes the Pi package.
 EOF
 }
+# --- no version: the current release and the next ones ------------------------------
+
+# The patch, minor and major versions after X.Y.Z $1.
+next_versions() {
+    local x y z
+    IFS=. read -r x y z <<< "$1"
+    echo "$x.$y.$((z + 1)) $x.$((y + 1)).0 $((x + 1)).0.0"
+}
+# Prints the current release and the versions that may follow it.
+versions() {
+    local remote t url newest="" prod_v main_v cur open patch minor major
+    resolve_repo
+    if [ "${#PROBLEMS[@]}" -gt 0 ]; then say "release.sh: ${PROBLEMS[0]}"; exit 1; fi
+    g fetch --quiet --no-tags origin main "$PROD" || { say "release.sh: cannot fetch main and $PROD from origin"; exit 1; }
+    remote="$(g ls-remote --tags --refs origin 'v*')" || { say "release.sh: cannot list origin's tags"; exit 1; }
+    while read -r _ t; do
+        t="${t#refs/tags/v}"
+        semver_ok "$t" || continue
+        if [ -z "$newest" ] || [ "$(ver_cmp "$t" "$newest")" = 1 ]; then newest="$t"; fi
+    done <<< "$remote"
+    prod_v="$(version_at "origin/$PROD")"
+    main_v="$(version_at origin/main)"
+    cur="$newest"
+    if [ -n "$prod_v" ] && semver_ok "$prod_v" && { [ -z "$cur" ] || [ "$(ver_cmp "$prod_v" "$cur")" = 1 ]; }; then cur="$prod_v"; fi
+    if [ -n "$cur" ]; then say "The current release: $cur"; else say "No release yet."; fi
+    if [ -n "$newest" ]; then t="v$newest"; else t="none"; fi
+    say "  origin's newest release tag: $t"
+    if [ -n "$prod_v" ] && [ "$prod_v" != "$newest" ]; then
+        say "  origin/$PROD: $prod_v, not tagged yet (Deploy prod tags it)"
+    else
+        say "  origin/$PROD: ${prod_v:-?}"
+    fi
+    say "  origin/main: ${main_v:-?}"
+    open="$(gh pr list --base "$PROD" --state open --json headRefName,url \
+        --jq '.[] | select(.headRefName | startswith("release/")) | "\(.headRefName) \(.url)"' 2>/dev/null)" || open=""
+    while read -r t url; do
+        [ -n "$t" ] || continue
+        say "  under way: $t, $url (just release ${t#release/} says where it is)"
+    done <<< "$open"
+    read -r patch minor major <<< "$(next_versions "${cur:-0.0.0}")"
+    say ""
+    say "The next release, one of:"
+    say "  just release $patch    a patch"
+    say "  just release $minor    a minor release"
+    say "  just release $major    a major release"
+    say "Each is a dry run; add $ACT_FLAG to cut it."
+}
+
 # --- main -------------------------------------------------------------------------
+
+if [ -z "$V" ]; then
+    versions
+    exit 0
+fi
 
 # Lists steps 2-10, done or to do, with the estimate of the time they take;
 # NEXT is the first step to do.
