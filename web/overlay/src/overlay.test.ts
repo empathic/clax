@@ -535,6 +535,16 @@ describe("the overlay", () => {
     view = mount(Overlay as never, props(), host);
   });
 
+  it("a screenshot that failed offers the exact one without claiming a frame, canvas or video", async () => {
+    view.unmount();
+    view = mount(Overlay as never, props({ capture: { ...capture, supported: true } }), host);
+    click(button("Report"));
+    onPick(picked(async () => { throw new Error("clip took longer than 12000 ms"); }));
+    await settle();
+    expect(q(".exact")?.textContent).not.toMatch(/didn't render/);
+    expect(button("Use exact screenshot")).toBeDefined();
+  });
+
   it("a reporter who may not file has no Report button, and report() does nothing", () => {
     view.unmount();
     view = mount(Overlay as never, props({ canFile: false }), host);
