@@ -6,25 +6,27 @@
   // one card per open confirmation (`ConfirmationCard`), newest at the
   // bottom of a stack in the corner, so a call the CLI or an agent waits
   // on is seen wherever the owner is. A card answered here stays a
-  // moment, saying how, then leaves; the inbox shows them too. At phone
+  // moment, saying how, then leaves. While the page lists them itself
+  // (the inbox does), there are no toasts: one card each. At phone
   // width the stack spans the screen, inside its 16px gutter.
   import { after } from "../clock";
   import ConfirmationCard from "./ConfirmationCard.svelte";
-  import { type ConfirmationFeed, type ConfirmationView, confirmations } from "./confirm.svelte";
+  import { type ConfirmationFeed, type ConfirmationView, cardsOf, confirmations } from "./confirm.svelte";
 
   let { feed }: { feed?: ConfirmationFeed } = $props();
   const f = $derived(feed ?? confirmations());
   /** How long an answered card stays, saying how. */
   const LEAVE_MS = 2500;
   let answered = $state<ConfirmationView[]>([]);
-  const shown = $derived([...f.open.filter(c => !answered.some(a => a.id === c.id)), ...answered]);
+  // A passkey registration rides on another card's setup line.
+  const shown = $derived([...cardsOf(f.open).filter(c => !answered.some(a => a.id === c.id)), ...answered]);
   const done = (c: ConfirmationView) => {
     answered = [...answered, c];
     after(LEAVE_MS, () => { answered = answered.filter(a => a.id !== c.id); f.take(c); });
   };
 </script>
 
-{#if shown.length}
+{#if shown.length && !f.listed}
   <section class="confirm-toasts" aria-label="Waiting for your confirmation">
     {#each shown as c (c.id)}<ConfirmationCard {c} onanswered={done} />{/each}
   </section>

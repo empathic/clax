@@ -20,7 +20,7 @@
 import { type OverlayToWorker, type WorkerToOverlay, isComposerNote, isFromOverlay, isFromPanel } from "../messages";
 import { captureClip, chromeCapture } from "./capture";
 import * as origins from "./origins";
-import { HOST, PairError } from "./pairing";
+import { HOST, askNative } from "./pairing";
 import { type PanelDeps, panelAction } from "./panel";
 import { composerFrameTab, composerTab, createWorker } from "./worker";
 
@@ -53,10 +53,7 @@ export function startBackground(c: typeof chrome) {
   };
   const { pairer, api, tabs, picks, sites, inbox, fromOverlay } = createWorker({
     pair: {
-      sendNative: async (host, msg) => {
-        try { return await c.runtime.sendNativeMessage(host, msg); }
-        catch (e) { throw new PairError(/not found/i.test(String(e)) ? "host_missing" : "host_failed", String(e)); }
-      },
+      sendNative: (host, msg) => askNative(c.runtime, host, msg),
       session: c.storage.session, local: c.storage.local,
       manifestVersion: c.runtime.getManifest().version,
       // Not mid-request, and not while a pick is open: a reload tears down the
@@ -225,6 +222,14 @@ export function startBackground(c: typeof chrome) {
         const daemon = (await pairer.current()).daemon;
         const r = await c.runtime.sendNativeMessage(HOST, { type: "login", v: 1, next: path }).catch(() => null) as { type?: unknown; url?: unknown } | null;
         return r?.type === "login" && typeof r.url === "string" && r.url.startsWith(`${daemon}/login?`) ? r.url : daemon + path;
+      },
+      // No paired daemon to check the link against: the host's own address for it, on localhost.
+      confirmation: async () => {
+        const held = await pairer.held();
+        const next = held ? `/inbox?confirm=${encodeURIComponent(held)}` : "/inbox";
+        const r = await c.runtime.sendNativeMessage(HOST, { type: "login", v: 1, next }) as { type?: unknown; url?: unknown } | null;
+        if (r?.type === "login" && typeof r.url === "string" && /^http:\/\/localhost:[1-9]\d{0,4}\/login\?/.test(r.url)) return r.url;
+        throw new Error("Clax could not open its inbox to confirm pairing");
       },
       create: async url => { await c.tabs.create({ url }); },
       // Matches only tabs whose address the extension may read (an origin it holds).

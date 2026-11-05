@@ -52,7 +52,7 @@
   import { GROUP_PAGE, GROUP_ROWS, type Group, MAX_GROUP_PAGE, MORE_ROWS, appendGroups, appendRows, fromWire, groupKey, mergeGroups, takeItem } from "./inbox-groups";
   import ApprovalCard from "../people/ApprovalCard.svelte";
   import ConfirmationCard from "./ConfirmationCard.svelte";
-  import { confirmations } from "./confirm.svelte";
+  import { cardsOf, confirmations } from "./confirm.svelte";
   import ConnectionCard from "../people/ConnectionCard.svelte";
   import RemoteRequestCard from "./RemoteRequestCard.svelte";
   import InboxGroup from "./InboxGroup.svelte";
@@ -74,6 +74,8 @@
   const p: Props = $props();
   const inbox = $derived(p.inbox ?? shared().inbox);
   const confirming = confirmations();
+  // The open ones as cards: a passkey registration rides on another's setup line.
+  const confirms = $derived(cardsOf(confirming.open));
   // `?confirm=<id>`: that confirmation's card takes focus once it is listed.
   let confirmTarget = $state(new URLSearchParams(location.search).get("confirm"));
   $effect(() => {
@@ -488,10 +490,10 @@
 
   {#if error}<p class="err" role="alert">{error}</p>{/if}
 
-  {#if confirming.open.length}
+  {#if confirms.length}
     <section class="sec" aria-label="Waiting for your confirmation">
-      <h3 class="pinned-h">Confirm in your browser<span class="c">{fmt(confirming.open.length)}</span></h3>
-      <div class="dlist">{#each confirming.open as c (c.id)}<ConfirmationCard {c} now={p.now} />{/each}</div>
+      <h3 class="pinned-h">Confirm in your browser<span class="c">{fmt(confirms.length)}</span></h3>
+      <div class="dlist" {@attach () => confirming.listHere()}>{#each confirms as c (c.id)}<ConfirmationCard {c} now={p.now} />{/each}</div>
     </section>
   {/if}
 

@@ -24,7 +24,20 @@ export type ConfirmationView = {
   expires_at: string;
   confirm_url: string;
   agents: ConfirmAgent[];
+  /** The decision as recorded: its `kind` names it. */
+  decision?: { kind?: string };
 };
+
+/** Whether `c` adds a passkey: a registration the daemon holds, and adds once `c` is approved. */
+export const registersPasskey = (c: ConfirmationView) => c.decision?.kind === "register_passkey";
+
+/** The cards to show for `open`: a passkey registration is answered on
+ * the setup line of the first other card (`carriesSetup`), when there is
+ * one, rather than as a card of its own. */
+export const cardsOf = (open: ConfirmationView[]) => open.some(c => !registersPasskey(c)) ? open.filter(c => !registersPasskey(c)) : open;
+
+/** Whether card `c` carries the line for a passkey registration waiting in `open`. */
+export const carriesSetup = (open: ConfirmationView[], c: ConfirmationView) => open.some(registersPasskey) && open.find(x => !registersPasskey(x))?.id === c.id;
 
 /** The open confirmations, oldest first; "forbidden" for a browser that is not the owner's. */
 export async function listConfirmations(): Promise<ConfirmationView[] | "forbidden"> {
@@ -41,7 +54,7 @@ export async function listConfirmations(): Promise<ConfirmationView[] | "forbidd
  * `assertion` where passkeys are required: it as it is after. A refusal
  * throws `Refused`. */
 export async function answerConfirmation(id: string, approve: boolean, assertion?: Assertion): Promise<ConfirmationView> {
-  const b = await browserCall<{ confirmation: ConfirmationView }>(`/api/confirmations/${encodeURIComponent(id)}`, "POST", assertion ? { approve, assertion } : { approve });
+  const b = await browserCall<{ confirmation: ConfirmationView }>(`/api/confirmations/${encodeURIComponent(id)}`, "POST", assertion ? { approve, assertion } : { approve }, undefined, true);
   return b.confirmation;
 }
 
@@ -56,21 +69,38 @@ type Source = { hear(f: (e: StreamEvent) => void): () => void };
 
 /** The page's open confirmations, following the owner's `inbox` topic. */
 export class ConfirmationFeed {
-  declare private s: { open: ConfirmationView[] };
+  declare private s: { open: ConfirmationView[]; listed: number };
   declare private unwatch: (() => void) | null;
   declare private changed: Set<() => void>;
+  declare private ended: Set<(c: ConfirmationView) => void>;
   declare private readonly list: typeof listConfirmations;
 
   constructor(opts: { list?: typeof listConfirmations } = {}) {
-    const s = $state({ open: [] as ConfirmationView[] });
+    const s = $state({ open: [] as ConfirmationView[], listed: 0 });
     this.s = s;
     this.unwatch = null;
     this.changed = new Set();
+    this.ended = new Set();
     this.list = opts.list ?? listConfirmations;
   }
 
   /** The open confirmations, oldest first. */
   get open(): ConfirmationView[] { return this.s.open; }
+
+  /** Whether the page lists the open ones itself (the inbox does), so the toasts need not. */
+  get listed(): boolean { return this.s.listed > 0; }
+
+  /** Marks the open ones listed on the page until the returned function runs. */
+  listHere(): () => void {
+    this.s.listed++;
+    return () => { this.s.listed--; };
+  }
+
+  /** Calls `f` with each confirmation heard answered or expired, until the returned function runs. */
+  onEnded(f: (c: ConfirmationView) => void): () => void {
+    this.ended.add(f);
+    return () => { this.ended.delete(f); };
+  }
   private set open(v: ConfirmationView[]) {
     this.s.open = v;
     for (const f of [...this.changed]) f();
@@ -105,6 +135,7 @@ export class ConfirmationFeed {
   take(c: ConfirmationView): void {
     const rest = this.s.open.filter(x => x.id !== c.id);
     this.open = c.status === "open" ? [...rest, c].sort((a, b) => a.created_at.localeCompare(b.created_at)) : rest;
+    if (c.status !== "open") for (const f of [...this.ended]) f(c);
   }
 
   private on(e: StreamEvent): void {

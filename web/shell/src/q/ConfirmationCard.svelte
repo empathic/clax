@@ -12,15 +12,17 @@
   // show it. Where the owner requires a passkey, **Confirm** asks the
   // browser for one (Touch ID, or another) first. On first use, where a
   // passkey can be used here and none is set up, the card offers "Require
-  // Touch ID or a passkey to confirm" (**Set up** / **Not now**, which is
-  // remembered). Wherever passkeys are named (the offer, a confirmation
+  // Touch ID or a passkey to confirm" (**Set up** / **Don't ask again**,
+  // remembered; Settings still sets one up). While a passkey registration
+  // waits for its confirmation, the first other open card carries its line
+  // (**Confirm adding it** / **Cancel**) in place of its card. Wherever passkeys are named (the offer, a confirmation
   // that requires one), the card lists those registered and how each was
   // added, so one the owner did not add shows.
   import { relativeTime } from "../format";
-  import { type ConfirmationView, agentLabel, answerConfirmation } from "./confirm.svelte";
+  import { type ConfirmationView, agentLabel, answerConfirmation, carriesSetup, confirmations, registersPasskey } from "./confirm.svelte";
   import { type PasskeySettings, assertFor, passkeySettings, putSettings, unavailableHere } from "./passkey";
   import PasskeyList from "./PasskeyList.svelte";
-  import PasskeySetup from "./PasskeySetup.svelte";
+  import PasskeySetup, { ended, setup } from "./PasskeySetup.svelte";
 
   let { c, now, onanswered }: {
     c: ConfirmationView;
@@ -37,7 +39,13 @@
   void passkeySettings().then(s => { keys = s; });
   // The first-use offer: passkeys can be used here, none is required, and it was not put off.
   const offer = $derived(!!keys && keys.available && !keys.require_passkey && !keys.offer_dismissed && unavailableHere() === null);
-  let offered = $state<string | null>(null);
+  // A setup finished while this card is shown, wherever it was started.
+  const seen = setup.finished;
+  const setUp = $derived(setup.finished > seen);
+  // A passkey registration waiting: the first other open card carries its line, and no card offers another.
+  const open = $derived(confirmations().open);
+  const carries = $derived(status === "open" && carriesSetup(open, c));
+  const waiting = $derived(open.some(registersPasskey));
   const notNow = () => { void putSettings({ offer_dismissed: true }).then(s => { keys = s; }, () => {}); };
   const OUTCOME: Record<string, string> = { approved: "Confirmed", declined: "Declined", expired: "Expired: make the call again for a new one" };
 
@@ -53,6 +61,8 @@
       const after = await answerConfirmation(c.id, approve, assertion);
       made = after.status;
       onanswered?.(after);
+      // A passkey registration's: the daemon added it on approval.
+      void ended(after);
       queueMicrotask(() => self()?.focus({ preventScroll: true }));
     } catch (x) { err = x instanceof Error ? x.message : String(x); } finally { busy = false; }
   }
@@ -80,13 +90,15 @@
   {#if keys?.passkeys.length && (offer || keys.required)}
     <div class="ckeys"><span>{keys.required ? "Confirming asks for one of these passkeys:" : "Passkeys registered:"}</span><PasskeyList keys={keys.passkeys} {now} /></div>
   {/if}
-  {#if offered}
-    <p class="coffer" role="status">{offered}</p>
-  {:else if offer}
+  {#if setUp}
+    <p class="coffer" role="status">Passkey added: Confirm now asks for Touch ID or your passkey.</p>
+  {:else if carries}
+    <div class="coffer"><PasskeySetup onDone={s => { keys = s; }} /></div>
+  {:else if offer && !waiting && !registersPasskey(c)}
     <div class="coffer">
       <span>Require Touch ID or a passkey to confirm</span>
-      <PasskeySetup onDone={s => { keys = s; offered = "Touch ID or a passkey now confirms these decisions."; }} />
-      <button type="button" class="ghost" onclick={notNow}>Not now</button>
+      <PasskeySetup onDone={s => { keys = s; }} />
+      <button type="button" class="ghost" onclick={notNow}>Don't ask again</button>
     </div>
   {/if}
 </article>

@@ -2,7 +2,7 @@
 // (docs/contract.md "Publishing to a public Clax"). Loaded with the button,
 // after the first paint. A hosted daemon answers none of them (404).
 import { ApiError, getToken } from "../api";
-import { HELD, heldOf } from "../held";
+import { HELD, heldFetch, heldOf } from "../held";
 
 /** A public Clax this Clax is signed in to (never its token); while its
  * sign-in waits, the code, the approval page and the seconds between polls. */
@@ -51,7 +51,8 @@ async function headers(json: boolean): Promise<Record<string, string>> {
 }
 
 async function answer<T>(res: Response): Promise<T> {
-  // Held for the owner's confirmation (a push or a sign-in): where to confirm.
+  // Held for the owner's confirmation (a push or a sign-in) and not
+  // confirmed here with a passkey (`heldFetch`): where to confirm.
   const held = await heldOf(res);
   if (held) throw new ApiError(202, held.message, HELD);
   if (!res.ok) {
@@ -74,7 +75,7 @@ export async function remotesOf(id: string): Promise<Remotes> {
 
 /** Pushes artifact `id` to `remote` in `mode`; `auto` lets agents push its new versions without asking. */
 export async function push(id: string, remote: string, mode: Mode, auto?: boolean): Promise<Pushed> {
-  return answer<Pushed>(await fetch(`/api/artifacts/${id}/push`, {
+  return answer<Pushed>(await heldFetch(`/api/artifacts/${id}/push`, {
     method: "POST", headers: await headers(true), body: JSON.stringify({ remote, mode, auto }),
   }));
 }
@@ -109,7 +110,7 @@ export function hostOf(origin: string | null): string {
 }
 
 async function send<T>(method: string, url: string, body?: unknown): Promise<T> {
-  return answer<T>(await fetch(url, {
+  return answer<T>(await heldFetch(url, {
     method, headers: await headers(body !== undefined), body: body === undefined ? undefined : JSON.stringify(body),
   }));
 }

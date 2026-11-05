@@ -192,10 +192,11 @@ pub struct RegisterBody {
 /// authenticator_data, client_data_json}` (the owner's browser) → 201
 /// `{passkey, settings}`: registers the passkey a `register` challenge was
 /// answered with, user verified. While an agent is live it is a confirmed
-/// decision whatever browser asks ([`Decision::RegisterPasskey`]): 202
-/// `confirmation_pending`, and the same call again with the confirmation's
-/// ID once it is approved. 403 `passkey_refused` for a registration that
-/// does not check; 409 `passkey_exists`.
+/// decision whatever browser asks ([`Decision::RegisterPasskey`]): checked
+/// first (its challenge spent), it answers 202 `confirmation_pending`, and
+/// approving that confirmation adds the passkey and requires passkeys from
+/// then on ([`add_held`]), with no call made again. 403 `passkey_refused`
+/// for a registration that does not check; 409 `passkey_exists`.
 pub async fn register(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -215,26 +216,11 @@ pub async fn register(
             "passkeys need a secure address: open Clax at http://localhost to use one",
         ));
     };
-    let decision = Decision::RegisterPasskey {
-        credential_id: b.credential_id.clone(),
-        body_sha256: confirm::registration_sha256(
-            &b.credential_id,
-            &b.public_key,
-            b.alg,
-            &b.authenticator_data,
-            &b.client_data_json,
-        ),
-    };
-    confirm::require_confirmation(&s, &caller, &by, decision).await?;
-    let st = s.clone();
-    // Who added it, shown with it from now on: from which browser, and
-    // the owner's agents live then.
-    let via = if by.answers_with_passkey() {
-        "a browser session"
-    } else {
-        "the Clax app"
-    };
-    let v = s
+    // Checked first, its challenge taken: a registration held for
+    // confirmation is the checked key itself, which the daemon adds once
+    // the confirmation is approved ([`add_held`]).
+    let public_key = b.public_key.clone();
+    let r = s
         .store_call(move |db| {
             let refused = |why: &str| CoreError::invalid("passkey_refused", why.to_string());
             let decode = |v: &str| from_b64url(v).map_err(refused);
@@ -254,26 +240,90 @@ pub async fn register(
                 rp_id: &rp_id,
                 challenge: &challenge,
             };
-            let r = verify_registration(&e, &b.credential_id, &spki, b.alg, &ad, &cdj)
-                .map_err(refused)?;
-            let agents: Vec<String> = db
-                .live_agent_sessions()?
-                .iter()
-                .map(|a| match &a.name {
-                    Some(n) => format!("{n} ({})", a.harness),
-                    None => format!("{} {}", a.harness, a.agent_handle),
-                })
-                .collect();
-            let passkey = db.add_passkey(
-                &audit.resolve(db)?,
-                &r,
-                &json!({"via": via, "agents_live": agents}),
-            )?;
+            verify_registration(&e, &b.credential_id, &spki, b.alg, &ad, &cdj).map_err(refused)
+        })
+        .await
+        .map_err(passkey_error)?;
+    let decision = Decision::RegisterPasskey {
+        credential_id: r.credential_id.clone(),
+        public_key,
+        alg: r.alg,
+        sign_count: r.sign_count,
+    };
+    confirm::require_confirmation(&s, &caller, &by, decision).await?;
+    let st = s.clone();
+    // Who added it, shown with it from now on: from which browser, and
+    // the owner's agents live then.
+    let via = if by.answers_with_passkey() {
+        "a browser session"
+    } else {
+        "the Clax app"
+    };
+    let v = s
+        .store_call(move |db| {
+            let passkey = add(db, &audit.resolve(db)?, &r, via)?;
             Ok(json!({"passkey": passkey, "settings": view(&st, db)?}))
         })
         .await
         .map_err(passkey_error)?;
     Ok((StatusCode::CREATED, Json(v)).into_response())
+}
+
+/// Adds checked passkey `r`, added `via` a browser or the app, with the
+/// owner's agents live now.
+fn add(
+    db: &clax_store::Store,
+    ctx: &clax_core::audit::AuditCtx,
+    r: &clax_core::webauthn::Registered,
+    via: &str,
+) -> clax_core::Result<clax_store::passkeys::Passkey> {
+    let agents: Vec<String> = db
+        .live_agent_sessions()?
+        .iter()
+        .map(|a| match &a.name {
+            Some(n) => format!("{n} ({})", a.harness),
+            None => format!("{} {}", a.harness, a.agent_handle),
+        })
+        .collect();
+    db.add_passkey(ctx, r, &json!({"via": via, "agents_live": agents}))
+}
+
+/// Adds the passkey approved confirmation `c` held, when it holds one (a
+/// [`Decision::RegisterPasskey`]), and requires passkeys from then on, as
+/// its words say; spends the confirmation. Nothing for any other.
+///
+/// # Errors
+/// The store's.
+pub fn add_held(
+    db: &clax_store::Store,
+    ctx: &clax_core::audit::AuditCtx,
+    c: &clax_store::confirmations::Confirmation,
+) -> clax_core::Result<()> {
+    let Some(r) = confirm::held_registration(&c.decision) else {
+        return Ok(());
+    };
+    if !matches!(
+        db.use_confirmation(&c.id, &c.decision)?,
+        clax_store::confirmations::Use::Approved
+    ) {
+        return Ok(());
+    }
+    match add(db, ctx, &r, "a browser session") {
+        Ok(_) => {}
+        Err(CoreError::Invalid {
+            code: "passkey_exists",
+            ..
+        }) => {}
+        Err(e) => return Err(e),
+    }
+    let p = db.confirm_prefs()?;
+    db.set_confirm_prefs(
+        ctx,
+        ConfirmPrefs {
+            require_passkey: true,
+            ..p
+        },
+    )
 }
 
 #[derive(Deserialize)]

@@ -1,10 +1,11 @@
 // A decision the daemon holds for the owner's confirmation (docs/contract.md,
 // "Browser confirmations"): while an agent is live, a decision made from a
 // browser that may not decide alone answers 202 `confirmation_pending` and
-// changes nothing. The shell's decision calls read it here, and say where
-// to confirm instead of taking the body for the decision's result. The
-// owner's browser's own calls go through `browserCall`, which reads it for
-// each and presents a confirmation's ID when the call is made again.
+// changes nothing. The shell's decision calls go through `heldFetch`: where
+// passkeys are required, the owner confirms this page's own decision here
+// with their passkey and the call is made again with the confirmation's ID,
+// so it finishes without a card. Otherwise the call reads it and says where
+// to confirm instead of taking the body for the decision's result.
 
 /** A held decision: its confirmation, where to confirm it, and the line that says so. */
 export type Held = { id: string; url: string; message: string };
@@ -36,14 +37,31 @@ export class Refused extends Error {
  * an ID the daemon handed this shell, never a page's. */
 const CONFIRMATION_HEADER = "x-clax-confirmation";
 
+/** `fetch(path, init)` for a decision this page made: when the daemon
+ * holds it and passkeys are required, it is confirmed here with the
+ * owner's passkey (`confirmHere`, loaded then) and made again with the
+ * confirmation's ID, answering that call. `hold` leaves a held decision as
+ * answered: one whose approval itself finishes it, and the confirming's
+ * own calls. A read is no decision. A passkey not used declines it and
+ * throws. */
+export async function heldFetch(path: string, init: RequestInit = {}, hold = false): Promise<Response> {
+  const res = await fetch(path, init);
+  const held = hold || (init.method ?? "GET") === "GET" ? null : await heldOf(res);
+  if (!held?.id) return res;
+  const { confirmHere } = await import("./q/confirm-here");
+  if (!(await confirmHere(held))) return res;
+  return fetch(path, { ...init, headers: { ...init.headers as Record<string, string>, [CONFIRMATION_HEADER]: held.id } });
+}
+
 /** The owner's browser's call to `path` (its cookie, never the token),
  * with `body` as JSON and `confirm`, a held decision's confirmation ID,
- * presented with the call it confirms. Answers the body (`{}` for a 204);
- * a held decision or any other refusal throws `Refused`. */
-export async function browserCall<T>(path: string, method = "GET", body?: unknown, confirm?: string): Promise<T> {
+ * presented with the call it confirms; `hold` as `heldFetch` takes it.
+ * Answers the body (`{}` for a 204); a held decision or any other refusal
+ * throws `Refused`. */
+export async function browserCall<T>(path: string, method = "GET", body?: unknown, confirm?: string, hold = false): Promise<T> {
   const headers: Record<string, string> = body === undefined ? {} : { "content-type": "application/json" };
   if (confirm) headers[CONFIRMATION_HEADER] = confirm;
-  const res = await fetch(path, { method, headers, cache: "no-store", ...body !== undefined && { body: JSON.stringify(body) } });
+  const res = await heldFetch(path, { method, headers, cache: "no-store", ...body !== undefined && { body: JSON.stringify(body) } }, hold || !!confirm);
   const held = await heldOf(res);
   if (held) throw new Refused(202, held.message, HELD, held);
   if (res.ok) return (res.status === 204 ? {} : await res.json()) as T;

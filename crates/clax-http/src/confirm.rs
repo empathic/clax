@@ -93,8 +93,6 @@ pub use clax_core::confirm::{CONFIRMATION_HEADER, MAX_WAIT_SECS, PENDING};
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Decision {
-    /// Answering question `question_id` with `answers`.
-    Answer { question_id: String, answers: Value },
     /// Pushing `artifact_id` to remote `remote_id` (its ID) in `mode`,
     /// with the push's `auto` (letting agents push new versions without
     /// asking), `forked_from` and `title` as sent.
@@ -145,13 +143,14 @@ pub enum Decision {
     RevokePerson { person: String },
     /// Registering passkey `credential_id` for confirmations: asked from
     /// any browser but the in-process frame while an agent is live, since
-    /// a passkey becomes the authority on every confirmation. Bound to
-    /// `body_sha256`, the SHA-256 of the whole registration
-    /// ([`registration_sha256`]), so an approved registration lets in no
-    /// other key under its credential ID.
+    /// a passkey becomes the authority on every confirmation. It holds the
+    /// registration as checked (`public_key` as sent, base64url SPKI), so
+    /// approving it adds that key and no other ([`held_registration`]).
     RegisterPasskey {
         credential_id: String,
-        body_sha256: String,
+        public_key: String,
+        alg: i64,
+        sign_count: u32,
     },
 }
 
@@ -386,16 +385,6 @@ pub fn words(st: &Store, d: &Value) -> clax_core::Result<String> {
             .unwrap_or_else(|| rid.to_string()))
     };
     Ok(match d["kind"].as_str().unwrap_or_default() {
-        "answer" => {
-            let qid = s("question_id");
-            let asked = st
-                .question(&qid)?
-                .and_then(|q| q.questions.first().map(|x| x.question.clone()));
-            match asked {
-                Some(q) => format!("answer an agent's question “{q}”"),
-                None => "answer an agent's question".to_string(),
-            }
-        }
         "push" => format!(
             "push {} to {}",
             title(&s("artifact_id"))?,
@@ -453,18 +442,18 @@ pub fn passkey_rp(s: &AppState) -> Option<(String, String)> {
     (rp == "localhost" || rp.ends_with(".localhost")).then_some((rp, origin))
 }
 
-/// The SHA-256 (lowercase hex) of a registration's fields, each as sent,
-/// one per line: what [`Decision::RegisterPasskey`] binds.
-pub fn registration_sha256(
-    credential_id: &str,
-    public_key: &str,
-    alg: i64,
-    authenticator_data: &str,
-    client_data_json: &str,
-) -> String {
-    clax_core::secret::sha256_hex(&format!(
-        "{credential_id}\n{public_key}\n{alg}\n{authenticator_data}\n{client_data_json}"
-    ))
+/// The checked registration a recorded [`Decision::RegisterPasskey`]
+/// holds: what approving it adds. `None` for any other decision.
+pub fn held_registration(d: &Value) -> Option<clax_core::webauthn::Registered> {
+    if d["kind"] != "register_passkey" {
+        return None;
+    }
+    Some(clax_core::webauthn::Registered {
+        credential_id: d["credential_id"].as_str()?.to_string(),
+        public_key: clax_core::webauthn::from_b64url(d["public_key"].as_str()?).ok()?,
+        alg: d["alg"].as_i64()?,
+        sign_count: u32::try_from(d["sign_count"].as_u64()?).ok()?,
+    })
 }
 
 /// A passkey's assertion, as the browser hands it over (each field

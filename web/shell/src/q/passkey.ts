@@ -50,9 +50,11 @@ export function unavailableHere(): string | null {
   return null;
 }
 
-// Every write sends a JSON body, `{}` when it has none.
-const call = <T>(path: string, method = "GET", body?: unknown, confirm?: string) =>
-  browserCall<T>(path, method, method === "GET" ? undefined : body ?? {}, confirm);
+// Every write sends a JSON body, `{}` when it has none. None is confirmed
+// here: confirming here makes these calls, and a registration held is
+// finished by its approval.
+const call = <T>(path: string, method = "GET", body?: unknown) =>
+  browserCall<T>(path, method, method === "GET" ? undefined : body ?? {}, undefined, true);
 
 let cached: Promise<PasskeySettings | null> | null = null;
 
@@ -101,13 +103,14 @@ export async function makePasskey(): Promise<Registration> {
   return { credential_id: b64u(cred.rawId), public_key: b64u(key), alg: r.getPublicKeyAlgorithm(), authenticator_data: b64u(r.getAuthenticatorData()), client_data_json: b64u(r.clientDataJSON) };
 }
 
-/** What registering came to: the settings after, or, while an agent is live, the confirmation it waits for. */
+/** What registering came to: the settings after, or, while an agent is
+ * live, the confirmation it waits for, whose approval adds it. */
 export type Registered = { settings: PasskeySettings } | { held: Held };
 
-/** Registers `reg`, presenting confirmation `confirm` when it was held for one. */
-export async function register(reg: Registration, confirm?: string): Promise<Registered> {
+/** Registers `reg`. */
+export async function register(reg: Registration): Promise<Registered> {
   try {
-    const r = await call<{ settings: PasskeySettings }>("/api/passkeys", "POST", reg, confirm);
+    const r = await call<{ settings: PasskeySettings }>("/api/passkeys", "POST", reg);
     cached = Promise.resolve(r.settings);
     return { settings: r.settings };
   } catch (e) {

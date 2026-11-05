@@ -55,29 +55,16 @@ fn ask_body() -> Value {
 }
 
 #[tokio::test]
-async fn a_token_answer_waits_for_the_browser_while_an_agent_is_live() {
+async fn a_token_decision_waits_for_the_browser_while_an_agent_is_live() {
     let ts = TestServer::spawn().await;
-    let sid = ts.register_session("claude", "c-1").await["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let qid = ts.ask(&sid, ask_body()).await["question"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let path = format!("/api/questions/{qid}/answer");
-    let answer = json!({"answers": [{"selected": ["Yes"]}]});
-    let first = ts
-        .token_call(Method::POST, &path, answer.clone(), None)
-        .await;
+    let aid = page(&ts, "Ship").await;
+    ts.register_session("claude", "c-1").await;
+    let first = open_world(&ts, &aid, None).await;
     let id = pending(&ts, &first);
-    assert_eq!(first.1["decision"], "answer an agent's question “Ship it?”");
-    assert_eq!(ts.question_status(&qid).await, "open", "nothing changed");
+    assert_eq!(first.1["decision"], "open “Ship”'s site to the world");
+    assert!(!site_is_open(&ts, &aid).await, "nothing changed");
     // Asked again, it is the same confirmation, still waiting.
-    let again = ts
-        .token_call(Method::POST, &path, answer.clone(), None)
-        .await;
-    assert_eq!(pending(&ts, &again), id);
+    assert_eq!(pending(&ts, &open_world(&ts, &aid, None).await), id);
     // The token reads it, and the owner's browser lists it with the agents live now.
     let (s, v) = ts
         .token_call(
@@ -103,12 +90,8 @@ async fn a_token_answer_waits_for_the_browser_while_an_agent_is_live() {
     assert_eq!(s, 200);
     let listed = &v["confirmations"][0];
     assert_eq!(listed["id"], id.as_str());
-    assert_eq!(listed["words"], "answer an agent's question “Ship it?”");
+    assert_eq!(listed["words"], "open “Ship”'s site to the world");
     assert_eq!(listed["agents"][0]["harness"], "claude");
-    // An answer that is not the one confirmed is not let through.
-    let other = json!({"answers": [{"selected": ["No"]}]});
-    let (s, v) = ts.token_call(Method::POST, &path, other, Some(&id)).await;
-    assert_eq!((s, code(&v)), (403, "confirmation_mismatch"));
     ts.confirm(&id, true).await;
     let (s, v) = ts
         .token_call(
@@ -122,10 +105,37 @@ async fn a_token_answer_waits_for_the_browser_while_an_agent_is_live() {
         (s, v["confirmation"]["status"].as_str()),
         (200, Some("approved"))
     );
-    let (s, v) = ts.token_call(Method::POST, &path, answer, Some(&id)).await;
+    let (s, v) = open_world(&ts, &aid, Some(&id)).await;
     assert_eq!(s, 200, "{v}");
+    assert!(site_is_open(&ts, &aid).await);
+}
+
+/// An answer, like a comment, is advice the agent acts on, not a decision
+/// the daemon carries out: the token's answer is made at once while an
+/// agent is live, recorded as the CLI's. The owner's agent answering is
+/// refused as before.
+#[tokio::test]
+async fn a_token_answer_is_made_at_once_while_an_agent_is_live() {
+    let ts = TestServer::spawn().await;
+    let sid = ts.register_session("claude", "c-a").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let qid = ts.ask(&sid, ask_body()).await["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, v) = ts
+        .token_call(
+            Method::POST,
+            &format!("/api/questions/{qid}/answer"),
+            json!({"answers": [{"selected": ["Yes"]}]}),
+            None,
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["question"]["answered_via"], "cli", "{v}");
     assert_eq!(ts.question_status(&qid).await, "answered");
-    // The owner's agent answering is refused as before: no new power.
     let qid = ts.ask(&sid, ask_body()).await["question"]["id"]
         .as_str()
         .unwrap()
@@ -268,7 +278,7 @@ async fn pairing_the_extension_while_an_agent_is_live_asks_first() {
         .await;
     assert_eq!(s, 200, "{v}");
     assert!(v["credential"].is_string());
-    // The paired extension answers a question without a further confirmation.
+    // The paired extension then acts for the owner: it answers a question.
     let ext = ts.extension().await;
     let qid = ts.ask(&sid, ask_body()).await["question"]["id"]
         .as_str()
@@ -402,32 +412,16 @@ async fn any_owner_browser_session_confirms_by_default() {
     assert_eq!(s, 200, "{v}");
 }
 
-/// A token answer the owner confirmed in the browser is recorded as the
-/// CLI's, not the shell's, and the browser's answer to the confirmation is
-/// in the audit.
+/// The owner's browser's answer to a confirmation is in the audit.
 #[tokio::test]
-async fn a_confirmed_token_answer_is_the_clis_and_the_confirmation_is_audited() {
+async fn a_confirmation_answered_in_the_browser_is_audited() {
     let ts = TestServer::spawn().await;
-    let sid = ts.register_session("claude", "c-k").await["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let qid = ts.ask(&sid, ask_body()).await["question"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let path = format!("/api/questions/{qid}/answer");
-    let answer = json!({"answers": [{"selected": ["Yes"]}]});
-    let id = pending(
-        &ts,
-        &ts.token_call(Method::POST, &path, answer.clone(), None)
-            .await,
-    );
+    let aid = page(&ts, "Audited").await;
+    ts.register_session("claude", "c-k").await;
+    let id = pending(&ts, &open_world(&ts, &aid, None).await);
     ts.confirm(&id, true).await;
-    let (s, v) = ts.token_call(Method::POST, &path, answer, Some(&id)).await;
+    let (s, v) = open_world(&ts, &aid, Some(&id)).await;
     assert_eq!(s, 200, "{v}");
-    assert_eq!(v["question"]["answered_via"], "cli", "{v}");
-    // The owner's browser's answer to the confirmation is in the audit.
     let answered: Vec<_> = ts
         .store
         .events_after(0, 10_000)
@@ -587,7 +581,7 @@ async fn with_passkeys_required_confirming_takes_a_valid_assertion() {
 
 /// While passkeys are required, a browser session's own decisions wait
 /// for a confirmation too: an agent holding the token can open a session
-/// of its own. Decision 5 refuses the token alone as before.
+/// of its own. Decision 4 refuses the token alone as before.
 #[tokio::test]
 async fn with_passkeys_required_a_browser_sessions_decisions_ask() {
     let ts = TestServer::spawn().await;
@@ -705,8 +699,23 @@ async fn with_passkeys_required_approving_a_machine_asks() {
     assert_eq!(id.len(), 35);
 }
 
+/// The owner's passkey settings, as their browser reads them.
+async fn passkey_settings(ts: &TestServer) -> Value {
+    let (s, v) = ts
+        .as_browser(
+            &ts.owner_cookie(),
+            Method::GET,
+            "/api/passkeys",
+            Value::Null,
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    v
+}
+
 /// Registering a passkey while an agent is live is a confirmed decision,
-/// from any browser.
+/// from any browser: checked as it is asked, and added, required from then
+/// on, as its confirmation is approved, wherever that is answered.
 #[tokio::test]
 async fn registering_a_passkey_while_an_agent_is_live_is_confirmed() {
     let ts = TestServer::spawn().await;
@@ -726,7 +735,31 @@ async fn registering_a_passkey_while_an_agent_is_live_is_confirmed() {
         first.1["decision"],
         "add a passkey that confirms these decisions from now on"
     );
+    assert!(
+        passkey_settings(&ts).await["passkeys"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     ts.confirm(&id, true).await;
+    let v = passkey_settings(&ts).await;
+    assert_eq!(
+        v["passkeys"][0]["credential_id"],
+        key.credential_id(),
+        "{v}"
+    );
+    assert_eq!(v["required"], true, "{v}");
+    // Sending it again finds its challenge spent.
+    let (s, v) = ts
+        .as_browser_confirming(
+            &owner,
+            Method::POST,
+            "/api/passkeys",
+            reg.clone(),
+            Some(&id),
+        )
+        .await;
+    assert_eq!((s, code(&v)), (403, "passkey_refused"), "{v}");
     // An agent holding the token reads the confirmation and the credential
     // ID it names, and posts its own key under that ID with the approved
     // confirmation: the registration it approved is another.
@@ -741,17 +774,20 @@ async fn registering_a_passkey_while_an_agent_is_live_is_confirmed() {
         .as_browser_confirming(&minted, Method::POST, "/api/passkeys", forged, Some(&id))
         .await;
     assert_eq!((s, code(&v)), (403, "confirmation_mismatch"), "{v}");
-    let (s, v) = ts
-        .as_browser_confirming(&owner, Method::POST, "/api/passkeys", reg, Some(&id))
-        .await;
-    assert_eq!(s, 201, "{v}");
-    assert_eq!(v["passkey"]["credential_id"], key.credential_id());
-    // A registration over another ceremony's challenge does not check.
+    assert_eq!(
+        passkey_settings(&ts).await["passkeys"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    // A registration over another ceremony's challenge does not check, so
+    // asks for no confirmation.
     let other = SoftPasskey::new();
     let c = ts
         .passkey_challenge(&owner, json!({"purpose": "disable"}))
         .await;
-    let first = ts
+    let (s, v) = ts
         .as_browser_confirming(
             &owner,
             Method::POST,
@@ -760,18 +796,35 @@ async fn registering_a_passkey_while_an_agent_is_live_is_confirmed() {
             None,
         )
         .await;
-    let id = pending(&ts, &first);
-    ts.confirm(&id, true).await;
-    let (s, v) = ts
-        .as_browser_confirming(
+    assert_eq!((s, code(&v)), (403, "passkey_refused"), "{v}");
+}
+
+/// A declined registration adds nothing.
+#[tokio::test]
+async fn a_declined_passkey_registration_adds_nothing() {
+    let ts = TestServer::spawn().await;
+    ts.register_session("claude", "c-p4").await;
+    let key = SoftPasskey::new();
+    let (origin, rp) = ts.passkey_rp().await;
+    let owner = ts.owner_cookie();
+    let c = ts
+        .passkey_challenge(&owner, json!({"purpose": "register"}))
+        .await;
+    let id = pending(
+        &ts,
+        &ts.as_browser_confirming(
             &owner,
             Method::POST,
             "/api/passkeys",
-            other.registration(&c, &origin, &rp),
-            Some(&id),
+            key.registration(&c, &origin, &rp),
+            None,
         )
-        .await;
-    assert_eq!((s, code(&v)), (403, "passkey_refused"), "{v}");
+        .await,
+    );
+    ts.confirm(&id, false).await;
+    let v = passkey_settings(&ts).await;
+    assert!(v["passkeys"].as_array().unwrap().is_empty(), "{v}");
+    assert_eq!(v["required"], false, "{v}");
 }
 
 /// A registration whose authenticator data attests another key than the
@@ -805,15 +858,12 @@ async fn a_registration_must_send_the_key_its_authenticator_attests() {
     let reg = a.registration(&c, &origin, &rp);
     let id = pending(
         &ts,
-        &ts.as_browser_confirming(&owner, Method::POST, "/api/passkeys", reg.clone(), None)
+        &ts.as_browser_confirming(&owner, Method::POST, "/api/passkeys", reg, None)
             .await,
     );
     ts.confirm(&id, true).await;
-    let (s, v) = ts
-        .as_browser_confirming(&owner, Method::POST, "/api/passkeys", reg, Some(&id))
-        .await;
-    assert_eq!(s, 201, "{v}");
-    let by = &v["settings"]["passkeys"][0]["added_by"];
+    let v = passkey_settings(&ts).await;
+    let by = &v["passkeys"][0]["added_by"];
     assert_eq!(by["via"], "a browser session", "{v}");
     assert!(
         by["agents_live"][0].as_str().unwrap().contains("claude"),

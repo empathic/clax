@@ -1,7 +1,7 @@
 {
   "bridgeBaseline": 32861,
-  "gallery": 32796,
-  "artifact": 70656,
+  "gallery": 32798,
+  "artifact": 70752,
   "host": 9088,
   "questions": 18300,
   "bridge": 6288,
@@ -13,7 +13,7 @@
   "partRoom": 3657,
   "partSample": 3674,
   "extOverlay": 32768,
-  "extWorker": 25216,
+  "extWorker": 25544,
   "extComposer": 28672,
   "extPanel": 66560,
   "people": 1048576,

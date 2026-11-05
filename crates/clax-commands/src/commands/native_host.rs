@@ -230,7 +230,7 @@ pub fn held(mint: &Value) -> Option<Value> {
     let (id, url) = clax_core::confirm::held(None, mint)?;
     let mut r = error(
         "confirmation_pending",
-        "Confirm pairing the Clax extension in your Clax browser tab: an agent is running, so Clax asks you first.",
+        "An agent is running, so Clax asks you to confirm pairing this extension first: open its card in Clax's inbox.",
     );
     r["confirmation_id"] = json!(id);
     r["confirm_url"] = json!(url);
@@ -551,7 +551,7 @@ mod tests {
                 &json!("http://localhost:7480/inbox?confirm=cf_ab12")
             )
         );
-        assert!(r["message"].as_str().unwrap().contains("Clax browser tab"));
+        assert!(r["message"].as_str().unwrap().contains("Clax's inbox"));
         assert!(held(&json!({"credential": "cxe_x"})).is_none());
         let bad_id = json!({"status": "confirmation_pending", "confirmation_id": "../x"});
         assert!(held(&bad_id).is_none());
