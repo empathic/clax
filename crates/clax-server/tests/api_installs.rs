@@ -107,6 +107,43 @@ async fn an_install_is_made_listed_changed_and_deleted_in_the_browser() {
     assert_eq!(v["install"]["config"]["brand_color"], "#00aa77");
     assert_eq!(v["install"]["config"]["product_name"], Value::Null);
 
+    // How the site opens feedback: an edit here is what its overlay fetches next.
+    let (s, v) = browser(
+        &ts,
+        &owner,
+        Method::PATCH,
+        &format!("/api/queues/{qid}/installs/{iid}"),
+        Some(json!({"config": {"ribbon": true}})),
+    )
+    .await;
+    assert_eq!(s, 400, "a ribbon needs its wording: {v}");
+    assert_eq!(v["error"]["code"], "invalid_install");
+    let (s, v) = browser(
+        &ts,
+        &owner,
+        Method::PATCH,
+        &format!("/api/queues/{qid}/installs/{iid}"),
+        Some(json!({"config": {"trigger": " .feedback-btn ", "f_key": true, "ribbon": true, "ribbon_text": "Early Access"}})),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let c = &v["install"]["config"];
+    assert_eq!(c["trigger"], ".feedback-btn");
+    assert_eq!(c["f_key"], true);
+    assert_eq!(c["ribbon"], true);
+    assert_eq!(c["ribbon_text"], "Early Access");
+    let (s, p) = json_of(
+        ts.client
+            .get(format!("{}/api/installs/{iid}/config", ts.base))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, 200, "{p}");
+    assert_eq!(p["config"]["trigger"], ".feedback-btn");
+    assert_eq!(p["config"]["ribbon_text"], "Early Access");
+
     let (s, _) = browser(
         &ts,
         &owner,

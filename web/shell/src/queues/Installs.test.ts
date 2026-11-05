@@ -54,10 +54,29 @@ describe("Installs", () => {
     const post = calls.find(c => c.method === "POST")!;
     expect(post.body).toEqual({
       name: "Basis", origins: ["https://app.example"],
-      config: { product_name: null, report_label: null, queue_label: "Sends to", reports_button: true, picker: true, brand_color: null },
+      config: { product_name: null, report_label: null, queue_label: "Sends to", reports_button: true, picker: true, brand_color: null, trigger: null, f_key: false, ribbon: false, ribbon_text: null },
     });
     expect(m.root.querySelector('[data-install="i1"]')!.textContent).toContain("Basis");
     expect(m.root.querySelector("form.edit")).toBeNull();
+  });
+
+  it("edits how the site opens feedback, and refuses what is no selector before it asks", async () => {
+    const calls = stubFetch({ [`GET ${LIST}`]: { installs: [install()] }, [`PATCH ${LIST}/i1`]: { install: install() } });
+    const m = mount(Installs, { queue: QUEUE, admin: true });
+    await settle();
+    click(button(m.root, "Edit"));
+    type(m.root, "trigger", "button[");
+    submit(m.root);
+    await settle();
+    expect(m.root.querySelector('[role="alert"]')!.textContent).toBe("Not a CSS selector: button[");
+    expect(calls.some(c => c.method === "PATCH")).toBe(false);
+    type(m.root, "trigger", " .feedback-btn ");
+    type(m.root, "ribbon_text", "Early Access");
+    click(m.root.querySelector<HTMLInputElement>('[name="f_key"]')!);
+    click(m.root.querySelector<HTMLInputElement>('[name="ribbon"]')!);
+    submit(m.root);
+    await settle();
+    expect((calls.find(c => c.method === "PATCH")!.body as { config: unknown }).config).toMatchObject({ trigger: ".feedback-btn", f_key: true, ribbon: true, ribbon_text: "Early Access" });
   });
 
   it("edits and says a refusal", async () => {

@@ -4441,6 +4441,74 @@ A queue wake reaching a session launched with the Claude Code channel
 carries `queue_id` and `queue_event` (`filed` or `reopened`) in its
 channel event's `meta`.
 
+#### Installs
+
+An **install** is one site that embeds the overlay and files into a queue.
+The site's page carries only the install's ID (`<meta name="clax-install"
+content="<id>">`, or the overlay's `install` option); everything else about
+how its overlay looks and opens is the install's, edited on the queue's page
+in Clax, and reaches the site on its next page load, with no change to the
+site.
+
+`GET /api/queues/<qid>/installs` lists a queue's installs, for any member.
+`POST` makes one (`{name, origins, config?}`, 201), and `PATCH
+/api/queues/<qid>/installs/<iid>` (`{name?, origins?, config?}`) and `DELETE`
+change and remove one, for an admin. `config` is set whole. `GET
+/api/installs/<iid>/config` is the public config the overlay fetches, for
+anyone with no credential: `{install_id, name, origin, queue, config}`, with
+an `ETag`, `Cache-Control: no-cache`, and `Access-Control-Allow-Origin` for the
+install's own origins alone. 404 for a deleted install, or its queue's.
+
+`config`, each field optional (400 `invalid_install` for what is refused):
+
+| Field | Default | What it does |
+|---|---|---|
+| `product_name` | none | The name the overlay calls itself by. It never says "Clax" unless this does. At most 80 characters on one line, as is each piece of wording. |
+| `report_label` | `Report` | The corner button's label. |
+| `queue_label` | `Files into` | The words before the queue's name in the Report panel. |
+| `reports_button` | `true` | Whether "Your reports" shows. |
+| `picker` | `true` | Whether the element picker is offered. |
+| `brand_color` | the overlay's | The accent, and the ribbon's band, `#rrggbb`. |
+| `trigger` | none | The CSS selector of the site's element that opens the overlay, at most 256 characters. With one, the corner button does not show. |
+| `f_key` | `false` | Whether capital `F` opens the overlay. |
+| `ribbon` | `false` | Whether the ribbon shows across the top-left corner. It needs `ribbon_text`. |
+| `ribbon_text` | none | What the ribbon says, at most 14 characters. The band shows it in capitals. |
+
+Added fields need no migration: `config` is one JSON column
+(`installs.config_json`), and a config stored before a field existed reads as
+that field's default. A Clax rolled back past a field reads a config that
+carries it as all defaults, since unknown fields are refused and an
+unreadable config reads as the default.
+
+**The trigger** is matched at each click on the page, in the capture phase, so
+an element a client-side framework renders later counts from its first frame,
+and a page's `stopPropagation` does not hide it. The element is left as it is
+and its own handler still runs. A selector the browser cannot parse is ignored
+with a console warning; Clax's form refuses one before saving. An element the
+page itself marks `data-feedback="report"` (or `"reports"`) opens the overlay
+(or "Your reports") whether or not an install says so, including when the
+config cannot be fetched.
+
+**`F`** is capital F. It does nothing in a text field (`input`, `textarea`,
+`select`, anything editable, a `textbox`, `searchbox` or `combobox` role, at
+any depth of shadow root), with Command, Control or Option, while composing,
+on a held key, or when the page has already used the key (`preventDefault`).
+
+**The ribbon** is a band across the page's top-left corner, with a host of its
+own first in `<body>`, so it is first in the tab order. It is a real button
+named `<ribbon_text> — send feedback`, with a focus ring along the band;
+only the band takes the pointer. With no reporter signed in (the overlay
+started with `canFile: false` and no `auth`) it is a label, `role="img"`, named
+`<ribbon_text>`, and nothing asks for a token.
+
+Pressing any of these while a report is under way never drops it: a draft being
+written gets focus. When the overlay closes, focus goes back to what opened it.
+
+**Fallback.** When there is no install, or its config cannot be fetched in 3
+seconds, the overlay runs on the page's own options: `queue`, `reports`,
+`trigger`, `fKey`, `ribbon`, and the corner button. Without a `queue` it does not
+start.
+
 #### Report queue routes
 
 A deployer's app files reports into a queue and its reporters give their

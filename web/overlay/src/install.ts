@@ -1,7 +1,8 @@
 // The overlay's install: the one ID a host page carries (`<meta
 // name="clax-install">` or `OverlayOptions.install`), whose config Clax
 // serves (`GET /api/installs/<id>/config`: the queue it files into, its
-// name and pages, and the install's wording and switches). The page's own
+// name and pages, the install's wording and switches, and how the page opens
+// it: its trigger selector, the `F` key and the ribbon). The page's own
 // options and metas are what the overlay falls back to when there is no
 // install, or its config cannot be fetched.
 import type { InstallConfig, PublicInstallConfig } from "../../sdk/src/types";
@@ -79,6 +80,12 @@ export interface Settings {
   /** The queue as the install names it; null without an install's config. */
   queueInfo: QueueInfo | null;
   brandColor: string | null;
+  /** The selector of the page's element that opens the overlay. */
+  trigger: string | null;
+  /** Whether the `F` key opens the overlay. */
+  fKey: boolean;
+  /** What the ribbon says; null: no ribbon. */
+  ribbon: string | null;
 }
 
 const text = (s: string | null | undefined, dflt: string) => (typeof s === "string" && s.trim()) || dflt;
@@ -87,7 +94,7 @@ const text = (s: string | null | undefined, dflt: string) => (typeof s === "stri
  * else the page's options and metas. The page's `queue` stands when it
  * names another queue than the install (its backend mints tokens for it):
  * the panel then names no queue. */
-export function settingsOf(cfg: PublicInstallConfig | null, opts: Pick<OverlayOptions, "queue" | "reports" | "instance">, doc: Document): Settings {
+export function settingsOf(cfg: PublicInstallConfig | null, opts: Pick<OverlayOptions, "queue" | "reports" | "instance" | "trigger" | "fKey" | "ribbon">, doc: Document): Settings {
   const fallback: Settings = {
     queue: opts.queue ?? "",
     reports: reportsModeOf(doc, opts.reports),
@@ -95,6 +102,9 @@ export function settingsOf(cfg: PublicInstallConfig | null, opts: Pick<OverlayOp
     wording: DEFAULT_WORDING,
     queueInfo: null,
     brandColor: null,
+    trigger: text(opts.trigger, "") || null,
+    fKey: opts.fKey === true,
+    ribbon: text(opts.ribbon, "") || null,
   };
   if (!cfg) return fallback;
   const c: Partial<InstallConfig> = cfg.config;
@@ -114,5 +124,8 @@ export function settingsOf(cfg: PublicInstallConfig | null, opts: Pick<OverlayOp
     },
     queueInfo: same ? { name: cfg.queue.name, page: `${base}${cfg.queue.page}`, reporterPage: `${base}${cfg.queue.reporter_page}` } : null,
     brandColor: typeof c.brand_color === "string" && /^#[0-9a-f]{6}$/i.test(c.brand_color) ? c.brand_color : null,
+    trigger: text(c.trigger, "") || null,
+    fKey: c.f_key === true,
+    ribbon: c.ribbon === true ? text(c.ribbon_text, "") || null : null,
   };
 }

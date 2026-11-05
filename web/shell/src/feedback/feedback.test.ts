@@ -135,7 +135,7 @@ describe("the shell's feedback", () => {
     expect(o).toMatchObject({ instance: "https://clax.dev", queue: "q_feedback", user: "p_ana", launcher: false });
     // No token is asked for until the overlay needs one.
     expect(calls.map(c => c.url)).toEqual(["/_app/feedback/config"]);
-    expect(await o.auth("PUBKEY")).toEqual({ token: "cxr_abc", expires_at: "2026-10-29T12:00:00Z" });
+    expect(await o.auth!("PUBKEY")).toEqual({ token: "cxr_abc", expires_at: "2026-10-29T12:00:00Z" });
     expect(calls[1]).toEqual({ url: "/_app/feedback/token", method: "POST", body: { public_key: "PUBKEY" }, credentials: "same-origin" });
     expect(s.feedbackKeyRows()).toEqual([{ keys: ["F"], what: "Report a problem with Clax" }]);
   });

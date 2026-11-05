@@ -20,17 +20,19 @@
   let editing = $state<string | null>(null);
   let copied = $state<string | null>(null);
 
-  type Form = { name: string; origins: string; product_name: string; report_label: string; queue_label: string; reports_button: boolean; picker: boolean; brand_color: string };
-  const blank = (): Form => ({ name: "", origins: p.queue.origins.join("\n"), product_name: "", report_label: "", queue_label: "", reports_button: true, picker: true, brand_color: "" });
+  type Form = { name: string; origins: string; product_name: string; report_label: string; queue_label: string; reports_button: boolean; picker: boolean; brand_color: string; trigger: string; f_key: boolean; ribbon: boolean; ribbon_text: string };
+  const blank = (): Form => ({ name: "", origins: p.queue.origins.join("\n"), product_name: "", report_label: "", queue_label: "", reports_button: true, picker: true, brand_color: "", trigger: "", f_key: false, ribbon: false, ribbon_text: "" });
   const formOf = (i: api.Install): Form => ({
     name: i.name, origins: i.origins.join("\n"),
     product_name: i.config.product_name ?? "", report_label: i.config.report_label ?? "", queue_label: i.config.queue_label ?? "",
     reports_button: i.config.reports_button, picker: i.config.picker, brand_color: i.config.brand_color ?? "",
+    trigger: i.config.trigger ?? "", f_key: i.config.f_key ?? false, ribbon: i.config.ribbon ?? false, ribbon_text: i.config.ribbon_text ?? "",
   });
   let form = $state<Form>(blank());
 
   const load = () => api.listInstalls(qid).then(b => { installs = b.installs; }, x => { err = `Could not load the installs: ${refusal(x)}`; });
   const opt = (s: string) => s.trim() || null;
+  const isSelector = (s: string) => { try { document.createDocumentFragment().querySelector(s); return true; } catch { return false; } };
 
   function open(id: string | null, i?: api.Install) {
     err = null;
@@ -42,9 +44,11 @@
     e.preventDefault();
     const { origins, bad } = parseOrigins(form.origins);
     if (bad.length) { err = `Not an origin: ${bad.join(", ")}`; return; }
+    // Only a browser can parse a selector: a bad one is caught here, not found on the site.
+    if (opt(form.trigger) && !isSelector(form.trigger.trim())) { err = `Not a CSS selector: ${form.trigger.trim()}`; return; }
     const fields: api.InstallFields = {
       name: form.name.trim(), origins,
-      config: { product_name: opt(form.product_name), report_label: opt(form.report_label), queue_label: opt(form.queue_label), reports_button: form.reports_button, picker: form.picker, brand_color: opt(form.brand_color) },
+      config: { product_name: opt(form.product_name), report_label: opt(form.report_label), queue_label: opt(form.queue_label), reports_button: form.reports_button, picker: form.picker, brand_color: opt(form.brand_color), trigger: opt(form.trigger), f_key: form.f_key, ribbon: form.ribbon, ribbon_text: opt(form.ribbon_text) },
     };
     err = null;
     try {
@@ -69,6 +73,9 @@
     c.product_name ? `named "${c.product_name}"` : "no product name",
     c.reports_button ? "Your reports" : "no Your reports",
     c.picker ? "element picker" : "no element picker",
+    ...(c.trigger ? [`opened by ${c.trigger}`] : []),
+    ...(c.f_key ? ["F key"] : []),
+    ...(c.ribbon && c.ribbon_text ? [`ribbon "${c.ribbon_text}"`] : []),
   ].join(" · ");
 
   onMount(() => { void load(); });
@@ -84,6 +91,10 @@
     <label class="field">Accent colour <input name="brand_color" maxlength="7" placeholder="#rrggbb" spellcheck="false" value={form.brand_color} oninput={e => { form.brand_color = e.currentTarget.value; }} /></label>
     <label class="check"><input type="checkbox" name="reports_button" checked={form.reports_button} onchange={e => { form.reports_button = e.currentTarget.checked; }} /> Show "Your reports"</label>
     <label class="check"><input type="checkbox" name="picker" checked={form.picker} onchange={e => { form.picker = e.currentTarget.checked; }} /> Offer the element picker</label>
+    <label class="field">Trigger: the CSS selector of the site's button that opens feedback <input name="trigger" autocomplete="off" spellcheck="false" maxlength="256" placeholder="none: a button in the corner" aria-describedby="install-trigger-hint" value={form.trigger} oninput={e => { form.trigger = e.currentTarget.value; }} /><span class="hint" id="install-trigger-hint">Name a real button or link. It may render after the page loads. With a trigger, the corner button goes.</span></label>
+    <label class="field">Ribbon's wording <input name="ribbon_text" maxlength="14" placeholder="Early Access" value={form.ribbon_text} oninput={e => { form.ribbon_text = e.currentTarget.value; }} /></label>
+    <label class="check"><input type="checkbox" name="f_key" checked={form.f_key} onchange={e => { form.f_key = e.currentTarget.checked; }} /> The F key opens feedback, outside text fields</label>
+    <label class="check"><input type="checkbox" name="ribbon" checked={form.ribbon} onchange={e => { form.ribbon = e.currentTarget.checked; }} /> Show the ribbon across the top-left corner</label>
     <div class="row">
       <button type="submit" class="primary" disabled={!form.name.trim()}>{editing === "new" ? "Add install" : "Save"}</button>
       <button type="button" class="ghost" onclick={() => { editing = null; err = null; }}>Cancel</button>

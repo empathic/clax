@@ -60,13 +60,29 @@ export interface OverlayOptions {
    * fetched; when it cannot be (in `INSTALL_TIMEOUT_MS`), it starts on this
    * page's own options and metas. */
   install?: string;
-  /** Gets a reporter token for the reporter's public key, from the deployer's backend. */
-  auth: ReporterAuth;
+  /** Gets a reporter token for the reporter's public key, from the deployer's
+   * backend. Left out only with `canFile: false`: nobody is signed in, so
+   * nothing asks for a token, and the overlay is the install's ribbon alone,
+   * as a label. */
+  auth?: ReporterAuth;
   /** `"corner"` (the default): the Report and "Your reports" buttons in the
    * page's bottom right corner. `false`: none; the host starts a report
    * with `report()` and opens the list with `showReports()` from its own
-   * controls, and shows the count `on("badge")` gives. */
+   * controls, and shows the count `on("badge")` gives. A trigger (below) also
+   * leaves the corner empty. An element the page marks `data-feedback="report"`
+   * opens the overlay whatever these say. */
   launcher?: "corner" | false;
+  /** The CSS selector of the page's element that opens the overlay, matched
+   * at each click, so an element rendered later counts. Use a real button or
+   * link: it stays what it is, and gets focus back when the overlay closes.
+   * An install's config, once fetched, sets it in its place. */
+  trigger?: string;
+  /** Whether the `F` key (capital F, never in a text field) opens the overlay
+   * (default false). An install's config, once fetched, sets it in its place. */
+  fKey?: boolean;
+  /** What the ribbon across the page's top-left corner says; none by default.
+   * An install's config, once fetched, sets it in its place. */
+  ribbon?: string;
   /** Whether this reporter may file reports (default true). False: no
    * Report button, and `report()` does nothing; "Your reports" stays. */
   canFile?: boolean;

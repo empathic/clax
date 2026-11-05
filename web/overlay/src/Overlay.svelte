@@ -184,12 +184,11 @@
 
   /** Starts a new report in `mode` (Element by default). A "Still broken"
    * note being written is not dropped unasked: the reporter is asked first. */
-  export function report(opts: { mode?: Mode | "note" } = {}): void {
+  export function report(opts: { mode?: Mode | "note"; opener?: HTMLElement | null } = {}): void {
     if (!canFile) return;
     // What had focus on the page (the host's trigger, or where a shortcut was pressed) gets it back on close.
-    const at = doc.activeElement;
-    const own = (reportBtn?.getRootNode() as ShadowRoot | Document | undefined) ?? null;
-    opener = at instanceof HTMLElement && at !== doc.body && !(own instanceof ShadowRoot && own.host === at) ? at : null;
+    const at = opts.opener ?? doc.activeElement;
+    opener = at instanceof HTMLElement && at !== doc.body && at !== host ? at : null;
     const mode = firstMode(opts.mode);
     // A presentation outside the page (the Clax extension) takes the report whole.
     if (pres?.handoff?.({ mode, url: pageUrl(doc), title: doc.title }, win)) return;
@@ -201,6 +200,19 @@
     // popup blocker allows only that); the composer is drawn there once there is one.
     if (layout === "window") openComposerWindow();
     startReport(mode);
+  }
+
+  /** The page's trigger, `F` or the ribbon, pressed: a report, focus going
+   * back to `from` when it closes. A report under way is not dropped for it: a
+   * draft being written gets focus, and the mode bar stays as it is. */
+  export function enter(from: HTMLElement | null): void {
+    if (!canFile || bar) return;
+    if (draft) {
+      if (open) closeReports();
+      queueMicrotask(() => noteEl?.focus());
+      return;
+    }
+    report({ opener: from });
   }
 
   function startReport(mode: Mode | "note"): void {
@@ -666,7 +678,8 @@
       filed = r;
       onFiled?.(r);
       plugins.emit("sent", { id: r.id });
-      queueMicrotask(() => viewBtn?.focus());
+      // "Filed" has no button without Your reports, so focus goes back to where the report started.
+      queueMicrotask(() => { if (viewBtn) viewBtn.focus(); else giveBack(); });
     } catch (e) {
       d.error = failureText(e);
     } finally {
@@ -980,14 +993,14 @@
     <section class="filed" role="status" aria-label="Filed">
       <p><strong>Filed.</strong>{#if reportsOn} Replies and fixes show in Your reports.{/if}</p>
       <div class="actions">
-        <button type="button" class="ghost" aria-label="Dismiss" onclick={() => { filed = null; }}>✕</button>
+        <button type="button" class="ghost" aria-label="Dismiss" onclick={() => { filed = null; giveBack(); }}>✕</button>
         {#if reportsOn}<button type="button" class="primary" bind:this={viewBtn} onclick={viewFiled}>View in Your reports</button>{/if}
       </div>
     </section>
   {/if}
 
   {#if open}
-    <Reports {reports} error={loadError} {expanded} only={pageOnly ? onPage : null} onShowAll={() => { pageOnly = false; }} onExpand={expand} onReply={reply} onVerify={verify} onStillBroken={stillBroken} onClose={closeReports} />
+    <Reports {reports} error={loadError} {expanded} only={pageOnly ? onPage : null} onShowAll={() => { pageOnly = false; }} onExpand={expand} onReply={reply} onVerify={verify} onStillBroken={stillBroken} onClose={() => { closeReports(); giveBack(); }} />
   {/if}
 
 
