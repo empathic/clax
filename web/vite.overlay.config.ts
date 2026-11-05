@@ -40,7 +40,8 @@ export default defineConfig({
     minify: true, sourcemap: false, cssCodeSplit: false,
     // `--watch` only (any `build.watch` makes `vite build` watch). Rollup's chokidar
     // uses FSEvents on macOS, which can lag by seconds or miss an edit when fseventsd
-    // is busy; fs.watch on each of the overlay's few files heard every edit at once.
+    // is busy. Without it chokidar polls (100 ms) the files Rollup watches, the
+    // overlay's few, and hears every edit.
     ...(process.argv.includes("--watch") ? { watch: { chokidar: { useFsEvents: false } as object } } : {}),
   },
 });
