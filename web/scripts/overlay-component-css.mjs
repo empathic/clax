@@ -12,13 +12,39 @@ export const CSS_SLOT = "__CLAX_OVERLAY_COMPONENT_CSS__";
  * overlay adopts it as a constructed sheet in its shadow root, which a
  * page's CSP `style-src` without 'unsafe-inline' allows, where the <style>
  * elements Svelte's injected CSS makes are refused. The build fails when
- * the chunk has no slot or the components compiled to no CSS. */
+ * the chunk has no slot or the components compiled to no CSS.
+ *
+ * With several outputs, one renders at a time. `vite build` writes them in
+ * turn, but Rollup's watcher starts them all together, and vite:css-post
+ * keeps "the single CSS file is emitted" in one flag, so only the first output
+ * would get the sheet and `--watch` would fail on the other, every rebuild.
+ * Waiting in a sequential renderStart, before Vite's resets that flag, gives
+ * the watcher what a plain build does. */
 export function componentCssIntoScript(fileName) {
   const names = Array.isArray(fileName) ? fileName : [fileName];
+  let turn = Promise.resolve();
+  let done = () => {};
   return {
     name: "clax-overlay-component-css",
     apply: "build",
     enforce: "post",
+    buildStart() {
+      turn = Promise.resolve();
+    },
+    renderStart: {
+      order: "pre",
+      sequential: true,
+      async handler() {
+        const previous = turn;
+        let release;
+        turn = new Promise(resolve => { release = resolve; });
+        await previous;
+        done = release;
+      },
+    },
+    renderError() {
+      done();
+    },
     generateBundle(_, bundle) {
       const sheets = Object.values(bundle).filter(f => f.type === "asset" && f.fileName.endsWith(".css"));
       const css = sheets.map(f => String(f.source)).join("\n");
@@ -32,6 +58,7 @@ export function componentCssIntoScript(fileName) {
       if (js?.type !== "chunk" || !slot.test(js.code)) return this.error(`${name} has no ${CSS_SLOT} for the components' CSS`);
       if (!css) return this.error("the overlay's components compiled to no CSS");
       js.code = js.code.replace(slot, () => JSON.stringify(css));
+      done();
     },
   };
 }

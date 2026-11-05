@@ -76,7 +76,9 @@ if [ "$BUILD_SYSTEM" = native ]; then
     export CLAX_DEV=1
     (cd web && node scripts/build-parts.mjs)
     (cd web && node scripts/build-parts.mjs --watch 2>&1 | sed -u "s/^/[web:bridge-parts] /") &
-    for cfg in bridge transport shell; do
+    # overlay: /_clax/overlay.js and .mjs, which the debug daemon serves from
+    # web/dist, so a deployer's dev page sees a change once it reloads.
+    for cfg in bridge transport shell overlay; do
         (cd web && pnpm exec vite build -c "vite.$cfg.config.ts" --watch 2>&1 | sed -u "s/^/[web:$cfg] /") &
     done
     (cd web && node scripts/build-sdk.mjs --watch 2>&1 | sed -u "s/^/[web:sdk] /") &
