@@ -24,7 +24,7 @@
   const reports = $derived(all && only ? all.filter(r => only.includes(r.id)) : all);
 </script>
 
-<section class="panel" aria-label="Your reports">
+<section class="panel" aria-label="Your reports" tabindex="-1">
   <header>
     <h2>{only ? "Yours on this page" : "Your reports"}</h2>
     {#if only && onShowAll}<button type="button" class="ghost small" onclick={onShowAll}>Show all</button>{/if}

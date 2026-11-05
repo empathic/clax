@@ -452,6 +452,8 @@ describe("the overlay", () => {
     expect(focused()).toBe("Area");
     press("ArrowRight");
     press("ArrowRight");
+    expect(focused()).toBe("Your reports");
+    press("ArrowRight");
     expect(focused()).toBe("Cancel");
     press("ArrowRight");
     expect(focused()).toBe("Element");
@@ -531,6 +533,36 @@ describe("the overlay", () => {
     await settle();
     expect(host.querySelector(".panel")).not.toBeNull();
     expect(host.querySelector(".modebar")).toBeNull();
+    r.unmount();
+    view = mount(Overlay as never, props(), host);
+  });
+
+  it("the mode bar offers Your reports with no launcher, and opening it moves focus to the panel", async () => {
+    view.unmount();
+    const r = renderComponent(Overlay as never, { props: props({ launcher: false }) as never, target: host });
+    flushSync();
+    const api = r.component as unknown as { report(): void };
+    api.report();
+    flushSync();
+    const inBar = [...host.querySelectorAll<HTMLButtonElement>(".modebar button")].find(b => nameOf(b) === "Your reports");
+    expect(inBar).toBeDefined();
+    click(inBar!);
+    await settle();
+    expect(host.querySelector(".modebar")).toBeNull();
+    const panel = host.querySelector<HTMLElement>(".panel");
+    expect(panel).not.toBeNull();
+    expect(panel!.getRootNode() instanceof ShadowRoot ? (panel!.getRootNode() as ShadowRoot).activeElement : document.activeElement).toBe(panel);
+    r.unmount();
+    view = mount(Overlay as never, props(), host);
+  });
+
+  it('with reports: "off", the mode bar has no Your reports', () => {
+    view.unmount();
+    const r = renderComponent(Overlay as never, { props: props({ reports: "off", launcher: false }) as never, target: host });
+    flushSync();
+    (r.component as unknown as { report(): void }).report();
+    flushSync();
+    expect([...host.querySelectorAll(".modebar button")].map(nameOf)).not.toContain("Your reports");
     r.unmount();
     view = mount(Overlay as never, props(), host);
   });
