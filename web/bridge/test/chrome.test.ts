@@ -105,4 +105,23 @@ describe("reportChrome", () => {
       media.mockRestore();
     }
   });
+
+  it("drops a sample due after the window lost its document", () => {
+    const f = fakeTimers();
+    const post = vi.fn();
+    // The window as jsdom leaves it once closed: no document, its timers
+    // (Node's, under vitest) still due.
+    let gone = false;
+    const win = new Proxy(window, {
+      get: (t, k) => {
+        if (k === "document" && gone) return undefined;
+        const v = Reflect.get(t, k);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    reportChrome(win, post, f.t);
+    gone = true;
+    expect(() => f.fire()).not.toThrow();
+    expect(post).not.toHaveBeenCalled();
+  });
 });

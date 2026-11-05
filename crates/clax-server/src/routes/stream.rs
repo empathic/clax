@@ -48,7 +48,9 @@ use std::convert::Infallible;
 /// opened through the extension gateway is live-only
 /// ([`clax_realtime::stream::live_only_admits`]); only requests with the credential
 /// it was opened with change or resume it, and it ends, delivering nothing
-/// more, once that credential is revoked or expires. On a hosted daemon a
+/// more, once that credential is revoked or expires. A stream opened with
+/// a local owner browser session ends once that session ends (`clax
+/// logout`). On a hosted daemon a
 /// client holds at most [`clax_http::socket_caps`]'s caps of streams and
 /// sockets: past one, 429 `too_many_streams` (a resume of a stream whose
 /// connection is still open takes its place).
@@ -76,7 +78,8 @@ pub async fn open(
     let slot = slot_for(&s, &client, resume)?;
     let conn = open_stream(&s, who, local, credential, resume, guest)
         .await?
-        .holding(Some(slot));
+        .holding(Some(slot))
+        .ending_on(crate::routes::events::owner_session_ended(&s, &extensions));
     let chunks = futures::stream::unfold(conn, |mut c| async move {
         c.next().await.map(|b| (Ok::<_, Infallible>(b), c))
     });
@@ -331,6 +334,10 @@ fn topics(names: &[String]) -> Result<Vec<Topic>, ApiError> {
 /// `forbidden` otherwise, and the whole change is refused),
 /// and a `docs` topic needs the artifact to declare `db` unless the caller holds
 /// the token, in `Authorization` or as the events cookie (403 `not_declared`).
+/// A `queue:<qid>` topic needs the caller to act as a member of the queue
+/// (404 `not_a_member` otherwise, as its triage routes answer); each of its
+/// `report` events then reaches only the streams of the queue's members at
+/// the change.
 /// Every topic of a draft needs the token or the events cookie (404
 /// otherwise): its events are the owner's alone; on a hosted daemon it
 /// needs the draft in the caller's reach too (404 otherwise). On a hosted
@@ -455,6 +462,19 @@ pub async fn update(
             "forbidden",
             "only the owner follows the app's jobs",
         ));
+    }
+    let queues: Vec<&str> = add
+        .iter()
+        .filter_map(|t| match t {
+            Topic::Queue(q) => Some(q.as_str()),
+            _ => None,
+        })
+        .collect();
+    if !queues.is_empty() {
+        let caller = d.caller(&s).await?;
+        for qid in queues {
+            super::queue_agent::member_as(&s, &caller, qid).await?;
+        }
     }
     let token = token_or_cookie(&who);
     let hosted = s.hosted.is_some();

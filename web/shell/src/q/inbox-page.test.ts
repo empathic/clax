@@ -119,7 +119,7 @@ describe("InboxPage", () => {
     expect(groups[0].querySelector(".irow .title")!.textContent).toBe("claude replied");
     expect(groups[1].querySelector<HTMLElement>(".gbody")!.hidden).toBe(true);
     expect(groups[1].querySelector(".gread")).toBeNull();
-    expect(calls.map(c => c.url)).toEqual(expect.arrayContaining(["/api/inbox?kind=question%2Capproval%2Cconnection&read=unread&limit=200", "/api/inbox?group=artifact&rows=3"]));
+    expect(calls.map(c => c.url)).toEqual(expect.arrayContaining(["/api/inbox?kind=question%2Capproval%2Cconnection%2Cremote_request&read=unread&limit=200", "/api/inbox?group=artifact&rows=3"]));
     // The quiet line opens in place: its newest read rows, then more of it.
     click(second);
     expect(second.getAttribute("aria-expanded")).toBe("true");
@@ -328,7 +328,7 @@ describe("InboxPage", () => {
     await vi.advanceTimersByTimeAsync(1);
     flush();
     expect(location.search).toBe("?search=dash");
-    expect(calls.slice(n).map(c => c.url)).toEqual([`/api/inbox?q=dash&kind=question%2Capproval%2Cconnection&read=unread&limit=200`, "/api/inbox?q=dash&group=artifact&rows=3"]);
+    expect(calls.slice(n).map(c => c.url)).toEqual([`/api/inbox?q=dash&kind=question%2Capproval%2Cconnection%2Cremote_request&read=unread&limit=200`, "/api/inbox?q=dash&group=artifact&rows=3"]);
     await vi.advanceTimersByTimeAsync(0);
     flush();
     expect([...m.root.querySelectorAll(".irow")].map(r => r.getAttribute("data-item"))).toEqual(["IR"]);
@@ -397,7 +397,7 @@ describe("InboxPage", () => {
     handlers[0]({ type: "ready" });
     await new Promise(r => setTimeout(r, 300));
     await settle();
-    expect(pages()).toEqual(["/api/inbox?kind=question%2Capproval%2Cconnection&read=unread&limit=200", "/api/inbox?group=artifact&rows=3"]);
+    expect(pages()).toEqual(["/api/inbox?kind=question%2Capproval%2Cconnection%2Cremote_request&read=unread&limit=200", "/api/inbox?group=artifact&rows=3"]);
     expect(m.root.querySelectorAll(".irow").length).toBeGreaterThan(0);
   });
 
@@ -420,6 +420,15 @@ describe("InboxPage", () => {
     expect([toggle.getAttribute("aria-expanded"), filters.hasAttribute("data-open")]).toEqual(["true", true]);
     // The phone's rule: filters not opened are hidden there.
     expect(document.head.textContent).toMatch(/@media \(max-width: 700px\)[^@]*\.inbox \.filters:not\(\[data-open\]\)\s*\{\s*display:\s*none;?\s*\}/);
+  });
+
+  it("keeps the Unread chip beside the search, outside the filters phone width hides", async () => {
+    stubRoutes();
+    const { m } = page();
+    await settle();
+    const chip = m.root.querySelector(".unread-chip")!;
+    expect(chip.closest(".find")).not.toBeNull();
+    expect(chip.closest("#inbox-filters")).toBeNull();
   });
 
   it("asks for notification permission only from Notify me, and says when they are blocked", async () => {
@@ -521,6 +530,14 @@ describe("InboxPage", () => {
     expect(document.activeElement).toBe(m.root.querySelector(".acard"));
   });
 
+  it("goes to the connection request's card for `?remote_request=`, focused", async () => {
+    history.replaceState(null, "", "/inbox?remote_request=01J9Q0000000000000000000RR");
+    stubRoutes({ "": [item("remote_request", { id: "IRR", seq: 6 }), R] });
+    const { m } = page();
+    await settle();
+    expect(document.activeElement).toBe(m.root.querySelector(".rcard"));
+  });
+
   it("filters by the approval, connection and ended kinds", async () => {
     history.replaceState(null, "", "/inbox?kind=connection");
     const calls = stubRoutes();
@@ -553,5 +570,23 @@ describe("InboxPage", () => {
     click(m.root.querySelector('.achip[aria-pressed="true"]')!);
     await settle();
     expect(location.search).toBe("");
+  });
+
+  it("fetches the agent strip again when the stream's agents topic says the roster changed", async () => {
+    vi.useFakeTimers();
+    stubRoutes();
+    const watchers: { topics: readonly string[]; on: (e: { type: string; topic?: string }) => void }[] = [];
+    const stream = { watch: (topics: readonly string[], on: (e: { type: string; topic?: string }) => void) => { watchers.push({ topics, on }); return () => {}; } };
+    mount(InboxPage, { inbox: new InboxFeed(), questions: new QuestionFeed(), go: vi.fn(), now, stream: stream as never });
+    await vi.advanceTimersByTimeAsync(0);
+    flush();
+    const agents = watchers.find(w => w.topics.includes("agents"));
+    expect(agents).toBeDefined();
+    const n = stripFetches;
+    agents!.on({ type: "agents", topic: "agents" });
+    agents!.on({ type: "agents", topic: "agents" });
+    await vi.advanceTimersByTimeAsync(250);
+    // Debounced: a burst is one fetch.
+    expect(stripFetches).toBe(n + 1);
   });
 });

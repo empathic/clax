@@ -88,7 +88,8 @@ pub struct SetBody {
 
 /// `PUT /api/sessions/<sid>/working/<aid>` (W): creates or updates the
 /// record; given fields replace. `{working, message_truncated}`. A new
-/// record records `working.start` as the session's agent.
+/// record records `working.start` as the session's agent. The session's
+/// live leases on the reports among the record's threads are renewed.
 pub async fn put(
     State(s): State<AppState>,
     TokenOrAgent(a): TokenOrAgent<clax_http::agent::WorkingPut>,
@@ -127,6 +128,9 @@ pub async fn put(
                 },
             );
             settle(st, &audit, &events, &w, &changed);
+            // Working on a claimed report renews the session's lease on it
+            // (spec 2026-10-27-clax-sdk-design §7.4).
+            st.renew_session_leases(&sid, &view.view.thread_ids)?;
             Ok(view)
         })
         .await?;

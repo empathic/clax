@@ -262,7 +262,7 @@ async fn visible_comment_on_withheld_page_hides_quote_and_title() {
     assert!(entry["title"].is_null(), "{entry}");
     assert_eq!(entry["withheld"]["authors"][0]["name"], "Mia");
     assert_eq!(entry["files"], json!(["owner.html"]));
-    assert_eq!(entry["files_withheld"], 3);
+    assert_eq!(entry["files_withheld"], 4);
     assert!(!all.to_string().contains(FILE_NAME), "{all}");
     no_canary("the owner's agent's listing", &all.to_string());
     let mine = entry["threads"]
@@ -1210,13 +1210,13 @@ async fn version_files_and_notes_are_withheld() {
             "{who}: {v}"
         );
         assert_eq!(vs[0]["files"], json!({}), "{who}");
-        assert_eq!(vs[0]["files_withheld"], 3, "{who}");
+        assert_eq!(vs[0]["files_withheld"], 4, "{who}");
         assert!(vs[0]["content_sha256"].is_null(), "{who}: {v}");
         // Version 2 is the owner's agent's, carrying Mia's files.
         assert_eq!(vs[1]["label"], "the owner's agent's", "{who}");
         let files: Vec<&String> = vs[1]["files"].as_object().unwrap().keys().collect();
         assert_eq!(files, ["owner.html"], "{who}");
-        assert_eq!(vs[1]["files_withheld"], 3, "{who}");
+        assert_eq!(vs[1]["files_withheld"], 4, "{who}");
         let (status, one) = call(format!("/api/artifacts/{aid}/versions/1")).await;
         assert_eq!(status, 200, "{who}: {one}");
         assert_eq!(one["version"], vs[0], "{who}");
@@ -1227,7 +1227,7 @@ async fn version_files_and_notes_are_withheld() {
         assert_eq!(status, 200, "{who}: {f}");
         let files: Vec<&String> = f["files"].as_object().unwrap().keys().collect();
         assert_eq!(files, ["owner.html"], "{who}: {f}");
-        assert_eq!(f["files_withheld"], 3, "{who}");
+        assert_eq!(f["files_withheld"], 4, "{who}");
         // Its content: a withheld file and one that is not there answer
         // alike, so the route tells nothing of a guessed name.
         let (status, _) = call(format!("/api/artifacts/{aid}/versions/2/files/owner.html")).await;
@@ -1366,7 +1366,7 @@ async fn publish_conflict_summary_is_filtered() {
     assert_eq!(v["version"]["label"], "Sam's");
     let files: Vec<&String> = v["version"]["files"].as_object().unwrap().keys().collect();
     assert_eq!(files, ["index.html", "sam.css"], "{v}");
-    assert_eq!(v["version"]["files_withheld"], 3, "{v}");
+    assert_eq!(v["version"]["files_withheld"], 4, "{v}");
     assert_text_withheld("a publish's artifact", &v["artifact"]);
     let id = clax_core::ArtifactId::parse(aid).unwrap();
     let v3 = w.ts.store.get_version(&id, 3).unwrap().unwrap();

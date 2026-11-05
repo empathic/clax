@@ -17,11 +17,18 @@ const READ_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Pushes one commit on `main` of `aid`'s repository putting `index.html`.
 async fn push(content: &MemGitContent, aid: &str, html: &str, message: &str) {
+    push_files(content, aid, &[("index.html", html)], message).await;
+}
+
+/// Pushes one commit on `main` of `aid`'s repository putting `files`.
+async fn push_files(content: &MemGitContent, aid: &str, files: &[(&str, &str)], message: &str) {
     let repo = content.host().repo(&repo_name(aid)).unwrap();
     let head = repo.refs().await.unwrap()[MAIN];
     let base = repo.read_commit_meta(&head).await.unwrap().unwrap().tree;
     let mut changes = Changes::new();
-    changes.insert("index.html".into(), Some(html.as_bytes().to_vec()));
+    for (path, body) in files {
+        changes.insert((*path).into(), Some(body.as_bytes().to_vec()));
+    }
     let (tree, mut objects) = build_tree(&repo, Some(base), &changes).await.unwrap();
     let sig = Signature::utc(
         &Person {
@@ -135,6 +142,75 @@ async fn a_pushed_commit_is_a_version_the_stream_announces_and_a_stale_publish_c
     assert_eq!(next.status(), 201);
     let v = next_version(&mut stream, &mut buf).await;
     assert_eq!(v["n"], 3);
+}
+
+/// A pushed `clax.json` that drops an approved `net` host narrows the
+/// approval, and the stream tells open views to refetch the permissions.
+#[tokio::test]
+async fn a_push_that_narrows_the_approval_announces_the_permissions() {
+    let content = Arc::new(MemGitContent::in_memory(
+        Person {
+            name: "Clax".into(),
+            email: "clax@users.clax.dev".into(),
+        },
+        Arc::new(SystemClock),
+    ));
+    let ts = TestServer::spawn_on_one_connection(content.clone()).await;
+    let res = ts
+        .post_json(
+            "/api/artifacts",
+            serde_json::json!({
+                "title": "Weather",
+                "capabilities": {"net": {"hosts": ["a.clax.invalid", "b.clax.invalid"]}},
+                "files": {"index.html": {"content": "<p>one</p>"}},
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 201);
+    let a: serde_json::Value = res.json().await.unwrap();
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    ts.approve(&aid).await.expect("net waited");
+    let res = ts.get(&format!("/api/events?artifact={aid}")).await;
+    assert_eq!(res.status(), 200);
+    let mut events = clax_testkit::EventReader::from_response(res);
+    assert_eq!(events.next().await.0, "ready");
+
+    push_files(
+        &content,
+        &aid,
+        &[(
+            "clax.json",
+            r#"{"capabilities":{"net":{"hosts":["a.clax.invalid"]}}}"#,
+        )],
+        "Drop b",
+    )
+    .await;
+    // A publish that did not see the push records it first.
+    let stale = ts
+        .post_json(
+            &format!("/api/artifacts/{aid}/versions"),
+            serde_json::json!({"if_version": 1, "files": {"index.html": {"content": "<p>mine</p>"}}}),
+        )
+        .await;
+    assert_eq!(stale.status(), 409);
+    let v = events.next_named("version").await;
+    assert_eq!(v["n"], 2);
+    let ev = events.next_named("permissions").await;
+    assert_eq!(
+        ev,
+        serde_json::json!({"type": "permissions", "artifact_id": aid})
+    );
+    let approval: serde_json::Value = ts
+        .get_authed(&format!("/api/artifacts/{aid}/permissions"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        approval["approved"]["capabilities"],
+        serde_json::json!({"net": {"hosts": ["a.clax.invalid"]}}),
+        "{approval}"
+    );
 }
 
 /// A push ledger naming one person, unknown here, as every commit's pusher.

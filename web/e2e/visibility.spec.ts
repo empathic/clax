@@ -26,7 +26,7 @@
 // The daemon listens on every interface; on a machine with no LAN address
 // it refuses invites (`not_on_lan`) and each test says so and skips.
 import type { Page } from "@playwright/test";
-import { expect, publish, startDaemon, test } from "./fixtures";
+import { asLocalViewer, expect, publish, startDaemon, test } from "./fixtures";
 import { Agent, type Person, connect, handleOf, invite, leave, ownerThread, people, project, sendFrom, threadFrom, threadPage } from "./people-helpers";
 
 const PAGE = { "index.html": "<main><h1>Quarterly Review</h1><h2>Quarterly goals</h2></main>" };
@@ -88,6 +88,9 @@ test("Mia's comment to Sam's agent waits for Sam's approval, which only those co
     // its text nor whose approval.
     await owner.goto(threadPage(d.base, aid, tid));
     await expect(owner.locator(`.thread-card[data-thread="${tid}"] .waiting`)).toHaveText("waiting for Sam's approval");
+    // A visitor at the machine's own LAN address: a browser of this
+    // machine's, with a viewer cookie there.
+    await asLocalViewer(visitorCtx, d, new URL(mia.lan).hostname);
     const visitor = await visitorCtx.newPage();
     await visitor.goto(threadPage(mia.lan, aid, tid));
     await expect(visitor.locator(`.thread-card[data-thread="${tid}"] .waiting`)).toHaveText("sent to sam-notes");
@@ -165,6 +168,7 @@ test("Mia declines Sam's comment: those concerned read it declined by Mia, a vis
     await expect(await waiting(mia.page, mia.lan)).toHaveText("you declined");
     const owner = await ownerCtx.newPage();
     await expect(await waiting(owner, d.base)).toHaveText("declined by Mia");
+    await asLocalViewer(visitorCtx, d, new URL(mia.lan).hostname);
     await expect(await waiting(await visitorCtx.newPage(), mia.lan)).toHaveText("sent to mia-notes");
     expect(miaAgent.seen).not.toContain("bigger chart");
 
@@ -241,9 +245,14 @@ test("Sam raises one of Mia's agents on his artifact; Mia's narrowing caps the r
     const agentRow = mia.page.locator(".agent").filter({ has: mia.page.locator(".aname", { hasText: /^notes-fix$/ }) });
     await expect(agentRow.locator(".raised-by .note.by")).toHaveText("Raised by Sam until this session ends: Publish new versions on “Sam's Notes”");
     await agentRow.locator(".narrow summary").click();
-    const box = agentRow.locator(".narrow .caps label", { hasText: "Publish new versions" }).locator("input");
+    const cap = agentRow.locator(".narrow .caps label", { hasText: "Publish new versions" });
+    const box = cap.locator("input");
     await box.uncheck();
     await expect.poll(() => publishes(fix)).toContain("not_permitted");
+    // The card takes no further change until the first one answers, which
+    // can come after the daemon already applies it: wait for the card to
+    // show it.
+    await expect(cap.locator(".raised")).toHaveText("Raised by Sam on “Sam's Notes”, but off while this is off");
     await box.check();
     await expect.poll(() => publishes(fix)).toBe("ok");
 

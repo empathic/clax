@@ -5,8 +5,9 @@
 // change applied to the page and remembered.
 import { type DrawerPrefs, DRAWER_KEY, applyPrefs, normal, readPrefs } from "../view/drawer-model";
 
-let prefs: DrawerPrefs = $state.raw(normal(readPrefs()));
-applyPrefs(prefs);
+const stored = normal(readPrefs());
+applyPrefs(stored);
+let prefs: DrawerPrefs = $state.raw(stored);
 
 export const drawer = {
   get prefs(): DrawerPrefs { return prefs; },

@@ -6,6 +6,7 @@ import * as fixtures from "../../../shell/src/q/fixtures";
 import type { InboxReq as InboxReqLike } from "./link.svelte";
 import Panel from "./Panel.svelte";
 import { PanelQuestions } from "./questions";
+import { CONFIRM_PAIRING } from "../sw/tabs";
 
 const thread = {
   id: "01J9AAAAAAAAAAAAAAAAAAAAAA", artifact_id: "7q3k9mzx2b4t", version_n: 1, status: "open", sent_to_agent: false, has_clip: false,
@@ -55,6 +56,38 @@ describe("Panel", () => {
     await fireEvent.input(input, { target: { value: "Mia" } });
     await fireEvent.keyDown(input, { key: "Enter" });
     expect(l.sent).toContainEqual({ t: "set-name", name: "Mia" });
+  });
+
+  it("words a declined or expired pairing confirmation as such, with a way to ask again", async () => {
+    for (const [code, words] of [["pairing_declined", "Pairing was declined in your browser."], ["pairing_expired", "The pairing confirmation expired."]]) {
+      const l = link(state({ error: { code, message: "pairing failed" } }));
+      render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z") } });
+      expect(screen.getByRole("alert").textContent).toContain(words);
+      expect(screen.getByRole("alert").textContent).not.toContain("daemon.log");
+      await fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(l.sent).toContainEqual({ t: "retry" });
+      cleanup();
+    }
+  });
+
+  it("asks for the pairing's confirmation with a button that opens it in Clax", async () => {
+    const l = link(state({ error: { code: "confirm_pairing", message: CONFIRM_PAIRING } }));
+    render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z") } });
+    expect(screen.getByRole("alert").textContent).toContain("An agent is running");
+    expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "Confirm in Clax" }));
+    expect(l.sent).toContainEqual({ t: "confirm-pairing" });
+  });
+
+  it("opens Open in Clax through the worker's login link, with no plain address to follow past it", async () => {
+    const l = link(state());
+    render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z") } });
+    const open = screen.getByRole("button", { name: "Open in Clax" });
+    // No link: a middle-click, a modifier click or "Open in new tab" has no address to open.
+    expect(open.getAttribute("href")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Open in Clax" })).toBeNull();
+    await fireEvent.click(open);
+    expect(l.sent).toContainEqual({ t: "open-clax", path: "/a/7q3k9mzx2b4t" });
   });
 
   it("shows a failure with a way to retry", async () => {

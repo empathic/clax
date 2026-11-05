@@ -34,7 +34,8 @@ async function apps(tag: string, bCaps: (a: string) => Record<string, unknown> =
   await setDoc(b, "runs/r1", { km: 5 });
   const a = (await publishWith(d.base, d.token, `Dashboard ${tag}`, reader(b), { db: { read: [b] } })).artifact.id;
   const caps = bCaps(a);
-  if (JSON.stringify(caps) !== JSON.stringify({ db: {} })) await api(d.base, d.token, `/api/artifacts/${b}`, { method: "PATCH", body: JSON.stringify({ capabilities: caps }) });
+  // B's clax.json owns its declaration, so a new version changes it.
+  if (JSON.stringify(caps) !== JSON.stringify({ db: {} })) await api(d.base, d.token, `/api/artifacts/${b}/versions`, { method: "POST", body: JSON.stringify({ if_version: 1, capabilities: caps, files: { "index.html": { content: SOURCE } } }) });
   return { a, b };
 }
 

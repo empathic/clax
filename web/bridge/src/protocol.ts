@@ -222,6 +222,12 @@ export type BridgeToShell =
   | { type: "clax:pick"; pickId: string; version: number; anchor: Anchor; clipPng?: ArrayBuffer; clipError?: string }
   | { type: "clax:anchors"; requestId: string | null; results: AnchorResult[] }
   | { type: "clax:cancel" }
+  /** The viewer pressed C or F in the page (`pageShortcut`, `channel.ts`):
+   * the shell runs its own key (C, comment mode on or off; F, report a
+   * problem with Clax, where the viewer may) under the rules it keeps, and
+   * only while the frame holds the viewer's gesture. The page can post this
+   * too, so it decides nothing alone. */
+  | { type: "clax:shortcut"; key: "c" | "f" }
   /** The page is going away (`pagehide`): the shell closes the gate until the
    * next document greets, so nothing it sends reaches whatever document the
    * frame shows next. It may arrive once that document has replaced the page,
@@ -295,4 +301,4 @@ export type BridgeToShell =
   | CallRequest;
 
 export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:hash", "clax:greet", "clax:back", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:inspect", "clax:test", "clax:migrate", "clax:peers", "clax:storage-access", "clax:use-result", "clax:call-result", "clax:event"]);
-export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:cursor", "clax:peer-at", "clax:no-cookie", "clax:storage-access", "clax:scroll", "clax:route", "clax:chrome", "clax:wait", "clax:inspection", "clax:tests", "clax:migration", "clax:use", "clax:call"]);
+export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:shortcut", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:cursor", "clax:peer-at", "clax:no-cookie", "clax:storage-access", "clax:scroll", "clax:route", "clax:chrome", "clax:wait", "clax:inspection", "clax:tests", "clax:migration", "clax:use", "clax:call"]);

@@ -68,20 +68,29 @@ pub fn mentions_agent(body: &str) -> bool {
 
 /// Broadcasts the `thread` event. It reaches every subscriber, so its view
 /// ([`clax_http::views::thread::thread_event_views`]) has no `clip_path` and no
-/// delivery state, whoever made the change.
-pub(crate) fn publish_thread(
-    ctx: &clax_realtime::feedback::FeedbackCtx,
-    st: &Store,
-    t: &Thread,
-) -> clax_core::Result<()> {
-    let view = thread_event_views(st, std::slice::from_ref(t), ctx.codex_push())?
-        .pop()
-        .expect("one view per thread");
-    ctx.events.publish(Event::Thread {
-        artifact_id: t.artifact_id.clone(),
-        thread: view,
-    });
-    Ok(())
+/// delivery state, whoever made the change. A report's change also
+/// reaches its queue's topic ([`super::queue_agent::publish_report`]).
+/// Best-effort: it runs after the change committed, so a failed read is
+/// logged and that event is not sent, and the caller's answer stands.
+pub(crate) fn publish_thread(ctx: &clax_realtime::feedback::FeedbackCtx, st: &Store, t: &Thread) {
+    match thread_event_views(st, std::slice::from_ref(t), ctx.codex_push()) {
+        Ok(mut views) => {
+            let view = views.pop().expect("one view per thread");
+            ctx.events.publish(Event::Thread {
+                artifact_id: t.artifact_id.clone(),
+                thread: view,
+            });
+        }
+        Err(e) => {
+            tracing::warn!(thread = t.id.as_str(), error = %e, "a thread's change was not announced");
+        }
+    }
+    // A report's change reaches its queue's members as IDs and state.
+    if let Some(qid) = &t.queue_id
+        && let Err(e) = super::queue_agent::publish_report(ctx, st, qid, &t.id)
+    {
+        tracing::warn!(queue = qid.as_str(), report = t.id.as_str(), error = %e, "a report's change was not announced");
+    }
 }
 
 /// The live session an agent reply or resolve comes from: the caller's
@@ -226,10 +235,19 @@ fn refuse_send_comments_off(st: &Store, id: &ArtifactId, resolves: bool) -> clax
     Ok(())
 }
 
-/// The thread `tid` if it belongs to the live artifact `id`.
+/// The thread `tid` if it belongs to the live artifact `id`. Every route
+/// here reads or writes a thread through it, so a queue's report, which
+/// only its queue's routes read and write, is refused at every one.
+///
+/// # Errors
+/// `NotFound`; [`CoreError::QueueReport`] (409 `queue_report`, naming the
+/// queue) for a report.
 fn thread_of(st: &Store, id: &ArtifactId, tid: &str) -> clax_core::Result<Thread> {
     match st.get_thread(tid)? {
-        Some(t) if t.artifact_id == id.as_str() => Ok(t),
+        Some(t) if t.artifact_id == id.as_str() => match t.queue_id {
+            Some(queue_id) => Err(CoreError::QueueReport { queue_id }),
+            None => Ok(t),
+        },
         _ => Err(CoreError::NotFound),
     }
 }
@@ -675,7 +693,7 @@ pub(crate) async fn create_thread_keyed_now(
         Keyed::Before { thread_id, .. } => {
             let t = thread_of(st, id, &thread_id)?;
             if t.status != "open" || t.sent_to_agent {
-                publish_thread(ctx, st, &t)?;
+                publish_thread(ctx, st, &t);
                 return Ok((t, Vec::new()));
             }
             t
@@ -724,7 +742,7 @@ pub(crate) fn announce_new_thread(
             all.merge(touched);
         }
     }
-    publish_thread(ctx, st, &thread)?;
+    publish_thread(ctx, st, &thread);
     apply(ctx, st, &all);
     Ok((thread, unresolved))
 }
@@ -1207,7 +1225,7 @@ pub async fn comment(
             });
             apply(&ctx, st, &touched);
             let t = thread_of(st, &id, &tid)?;
-            publish_thread(&ctx, st, &t)?;
+            publish_thread(&ctx, st, &t);
             // A person's reply reopened it: its open questions move back in.
             if was_resolved && t.status == "open" {
                 clax_http::views::question::announce_thread(&app, st, &tid);
@@ -1368,7 +1386,7 @@ pub async fn send(
                 });
             }
             apply(&ctx, st, &touched);
-            publish_thread(&ctx, st, &t)?;
+            publish_thread(&ctx, st, &t);
             vis.filter_thread(st, &t, ctx.codex_push(), with_path)
         })
         .await?;
@@ -1537,7 +1555,7 @@ pub async fn handoff(
             };
             let (t, touched, _) = st.handoff(&audit, &tid, &sid, to.as_deref())?;
             apply(&ctx, st, &touched);
-            publish_thread(&ctx, st, &t)?;
+            publish_thread(&ctx, st, &t);
             vis.filter_thread(st, &t, ctx.codex_push(), with_path)
         })
         .await?;
@@ -1734,7 +1752,7 @@ pub async fn resolve(
                 resolved_at: t.resolved_at.clone().unwrap_or_default(),
             });
             apply(&ctx, st, &touched);
-            publish_thread(&ctx, st, &t)?;
+            publish_thread(&ctx, st, &t);
             clax_http::views::question::announce_thread(&app, st, &tid);
             let view = vis.filter_thread(st, &t, ctx.codex_push(), with_path)?;
             Ok(Outcome::Done(json!({"thread": view})))
@@ -1830,7 +1848,7 @@ pub async fn reopen(
             }
             let audit = audit.resolve(st)?;
             let t = st.reopen_thread(&audit, &tid)?;
-            publish_thread(&ctx, st, &t)?;
+            publish_thread(&ctx, st, &t);
             clax_http::views::question::announce_thread(&app, st, &tid);
             Ok(Outcome::Done(
                 json!({"thread": vis.filter_thread(st, &t, ctx.codex_push(), with_path)?}),

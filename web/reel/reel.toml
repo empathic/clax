@@ -1,0 +1,85 @@
+# The sizzle reel (docs/superpowers/specs/2026-10-27-sizzle-reel-design.md
+# §9.3): its vignettes in reel order, their titles and durations, the cuts,
+# the end card, the poster frame and the landing artifact. config.ts and the
+# composer read this file and refuse anything it does not define.
+
+[reel]
+fps = 30
+size = [1920, 1080]
+capture = { viewport = [1280, 800], scale = 1.25, theme = "light" }
+card_seconds = { full = 1.2, short = 1.0 }
+
+[[vignette]]
+id = "coldopen"
+title = "Ask for a page"
+seconds = 8.5
+in_short = true
+
+[[vignette]]
+id = "agent"
+title = "Ask your agent"
+seconds = 12
+in_short = true
+
+[[vignette]]
+id = "dash"
+title = "From raw data to answers"
+seconds = 7.5
+in_short = true
+
+[[vignette]]
+id = "globe"
+title = "Ask for anything"
+seconds = 7.5
+in_short = true
+
+[[vignette]]
+id = "game"
+title = "Build things together"
+seconds = 8
+in_short = false
+
+[[vignette]]
+id = "realtime"
+title = "Work together, live"
+seconds = 7
+in_short = true
+
+[[vignette]]
+id = "history"
+title = "Every version, kept"
+seconds = 9
+in_short = true
+
+[[vignette]]
+id = "claxbot"
+title = "No agent? Use ClaxBot"
+seconds = 10
+in_short = false
+
+[[vignette]]
+id = "share"
+title = "Share it"
+seconds = 9
+in_short = true
+
+[[vignette]]
+id = "more"
+title = "Pages that do more"
+seconds = 8
+in_short = false
+
+[end]
+seconds = 4
+headline = "Your agents build pages. Clax gives them a home."
+footer = "clax.dev"
+
+[poster]
+vignette = "realtime"
+at = 3.5
+
+# Empty until the Quickstart is first published to clax.dev from
+# web/quickstart/; the commit after that publish sets both.
+[upload]
+landing_artifact = ""       # the landing artifact's ID on clax.dev
+landing = ""                # its public URL, ending in that ID

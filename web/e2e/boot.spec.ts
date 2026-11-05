@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { test, expect, type Daemon, contentFrame, openArtifact, publish } from "./fixtures";
+import { test, expect, type Daemon, contentFrame, openArtifact, proofHeaders, publish } from "./fixtures";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -10,7 +10,7 @@ const PAGE = `<h1>Top</h1><p style="height:3000px">long</p><h2 id="part-2">Part 
 test("the frame in the HTML opens through its site's handshake, at the link's fragment, and comments at once", async ({ browser }) => {
   const { artifact } = await publish(d.base, d.token, "Boot", { "index.html": PAGE });
   const ctx = await browser.newContext();
-  const html = await (await ctx.request.get(`${d.base}/a/${artifact.id}`)).text();
+  const html = await (await ctx.request.get(`${d.base}/a/${artifact.id}`, { headers: proofHeaders(d.base) })).text();
   expect(html).toContain(`<iframe class="frame"`);
   expect(html).toContain(`/_clax/session/start?next=%2F_clax%2Fv%2F1%2F`);
   expect(html).not.toContain(d.token);
@@ -71,8 +71,9 @@ test("a page reached under a rebound host name gets no bootstrap and no frame, a
   const rebound = await playwright.request.newContext({ extraHTTPHeaders: { host: `rebind.example:${port}` } });
   try {
     expect((await rebound.get(`${d.base}/api/artifacts/${artifact.id}`)).status()).toBe(403);
+    // A request with no credential: refused, as the API is.
     const res = await rebound.get(`${d.base}/a/${artifact.id}`);
-    expect(res.status()).toBe(200);
+    expect(res.status()).toBe(401);
     const html = await res.text();
     expect(html).not.toContain(`id="clax-boot"`);
     expect(html).not.toContain("<iframe");

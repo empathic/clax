@@ -103,6 +103,15 @@ export class Grants {
     this.granted.delete(name);
   }
 
+  /** Takes back `name` for this viewer: the stored grant and this view's
+   * answers about it go, so its next use asks again. */
+  revoke(name: string): void {
+    this.granted.delete(name);
+    this.denied.delete(name);
+    this.dismissed.delete(name);
+    write(this.storage, this.key, [...this.granted].filter(n => !VIEW_ONLY.has(n)));
+  }
+
   /** Why a consent-gated write cannot go ahead: `forbidden` after "Don't
    * allow", `consent_required` after a dismissed prompt; `null` otherwise. */
   refusal(name: string): "forbidden" | "consent_required" | null {

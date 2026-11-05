@@ -3,6 +3,8 @@
 
 use crate::client::Client;
 use clax_core::Home;
+use clax_core::remote::SessionCredential;
+use clax_mcp::client::ClientError;
 use clax_mcp::{ClaxTools, DaemonClient};
 use rmcp::model::CallToolResult;
 use std::future::Future;
@@ -11,14 +13,86 @@ use std::future::Future;
 /// when the CLI is one ([`Client::agent`]), naming the CLI as its channel
 /// (audit spec §6.9), and signing every request for a remote daemon. The
 /// one `DaemonClient` the CLI makes (`crates/clax-commands/clippy.toml`).
+/// A decision the daemon holds for the owner's browser is waited out as
+/// the CLI's own client waits ([`DaemonClient::waiting_for_confirmations`]).
+fn daemon_client(c: &Client, session: Option<String>) -> DaemonClient {
+    let session = session.map(|id| InSession { id, secret: None });
+    daemon_client_in(c, session.as_ref())
+}
+
+/// [`daemon_client`] acting in `session` when given: every request names
+/// it (`X-Clax-Session`) and, when the credential has a secret (a remote
+/// daemon's grant session), proves it.
 #[allow(clippy::disallowed_methods)]
-fn daemon_client(c: &Client) -> DaemonClient {
-    let d = DaemonClient::with_channel(c.base.clone(), c.token.clone(), None, c.agent);
-    match c.remote() {
+fn daemon_client_in(c: &Client, session: Option<&InSession>) -> DaemonClient {
+    let d = DaemonClient::with_channel(
+        c.base.clone(),
+        c.token.clone(),
+        session.map(|s| s.id.clone()),
+        c.agent,
+    );
+    let d = match c.remote() {
         Some(r) => d.with_remote(r.clone()),
+        None => d,
+    };
+    match session.and_then(|s| s.secret.as_ref()) {
+        Some(secret) => d.with_session_secret(secret.clone()),
         None => d,
     }
     .with_via("cli")
+    .waiting_for_confirmations(crate::client::tell_stderr)
+}
+
+/// The agent session a command acts in: its ID and, on a remote daemon,
+/// the secret that proves it (`None` on the local daemon, whose sessions
+/// act with its token).
+#[derive(Clone, Debug)]
+pub struct InSession {
+    pub id: String,
+    pub secret: Option<clax_core::secret::Secret>,
+}
+
+impl InSession {
+    /// Session `id`, proved by `cred` when there is one.
+    pub fn new(id: String, cred: Option<&SessionCredential>) -> InSession {
+        InSession {
+            id,
+            secret: cred.map(|c| c.secret.clone()),
+        }
+    }
+}
+
+/// Runs `f` with the tools' client for the daemon `c` reaches, acting in
+/// `session` when given, and returns its answer as the client gave it:
+/// for commands that make the client's calls themselves rather than run a
+/// tool, whose result in a session carries the session's waiting feedback.
+///
+/// # Errors
+/// When the runtime cannot be built.
+pub fn daemon<T, F, Fut>(
+    c: &Client,
+    session: Option<&InSession>,
+    f: F,
+) -> anyhow::Result<clax_mcp::client::Result<T>>
+where
+    F: FnOnce(DaemonClient) -> Fut,
+    Fut: Future<Output = clax_mcp::client::Result<T>>,
+{
+    let d = daemon_client_in(c, session);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    Ok(rt.block_on(f(d)))
+}
+
+/// The error a daemon call's failure `e` becomes: a refusal as `<code>:
+/// <message>`, cleaned as the [`Client`]'s errors are; any other failure
+/// as the client words it.
+pub fn client_error(e: ClientError) -> anyhow::Error {
+    match e {
+        ClientError::Api { error, .. } => tool_error(&serde_json::json!({ "error": error })),
+        e => anyhow::anyhow!("{}", crate::term::clean_line(&e.to_string())),
+    }
 }
 
 /// Runs `f` with the tool set for the daemon (started if needed) and returns
@@ -39,7 +113,12 @@ where
     F: FnOnce(ClaxTools) -> Fut,
     Fut: Future<Output = Result<CallToolResult, rmcp::ErrorData>>,
 {
-    let tools = ClaxTools::new(daemon_client(c), c.browser_url(""), None, home.log_path());
+    let tools = ClaxTools::new(
+        daemon_client(c, None),
+        c.browser_url(""),
+        None,
+        home.log_path(),
+    );
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -57,6 +136,31 @@ where
         return Err(tool_error(&value));
     }
     Ok(value)
+}
+
+/// Runs `f` with the tools' client for the daemon `c` reaches, asking as
+/// agent session `session` when given ([`daemon_client`]). A refusal is a
+/// [`crate::remote::Refused`], as the [`Client`]'s are.
+pub fn with_daemon<T, F, Fut>(c: &Client, session: Option<String>, f: F) -> anyhow::Result<T>
+where
+    F: FnOnce(DaemonClient) -> Fut,
+    Fut: Future<Output = Result<T, ClientError>>,
+{
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(f(daemon_client(c, session)))
+        .map_err(|e| match e {
+            ClientError::Api { status, error } => crate::remote::Refused {
+                status,
+                code: crate::term::clean_line(error["code"].as_str().unwrap_or("error")),
+                message: crate::term::clean_line(
+                    error["message"].as_str().unwrap_or("request failed"),
+                ),
+            }
+            .into(),
+            e => anyhow::anyhow!("{e}"),
+        })
 }
 
 /// The error an error result `value` becomes: `<code>: <message>`. Both
@@ -95,9 +199,9 @@ mod tests {
     fn the_tool_commands_follow_the_clis_channel() {
         let mut c = crate::client::tests::client_for_test();
         c.agent = true;
-        assert!(daemon_client(&c).agent_channel());
+        assert!(daemon_client(&c, None).agent_channel());
         c.agent = false;
-        assert!(!daemon_client(&c).agent_channel());
+        assert!(!daemon_client(&c, None).agent_channel());
     }
 
     /// Every command reaches the daemon through [`Client`] or

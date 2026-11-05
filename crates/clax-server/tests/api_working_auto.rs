@@ -132,6 +132,7 @@ async fn an_agent_resolve_and_a_viewer_resolve_take_the_thread_out() {
             ts.base,
             t2["id"].as_str().unwrap()
         ))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .send()
         .await
         .unwrap();

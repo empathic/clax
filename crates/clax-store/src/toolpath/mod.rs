@@ -29,6 +29,7 @@
 //! clax://<install>/backfill/<table>/<row ID>         a history row the backfill skipped
 //! clax://<install>/run/<run ID>                      a ClaxBot run
 //! clax://<install>/cost_line/<line ID>               a credits cost line (`*instance`: the price and free tier)
+//! clax://<install>/queue/<queue ID>                  a report queue
 //! ```
 //!
 //! Every segment is percent-encoded down to RFC 3986's unreserved
@@ -218,6 +219,17 @@ pub fn actor_string(actor: &Actor, clax_version: &str) -> String {
             format!("tool:clax-client/{}", actor_segment(grant_id))
         }
         Actor::Anonymous => "human:clax-anonymous".into(),
+        Actor::Reporter {
+            queue_id,
+            reporter_id,
+        } => format!(
+            "human:clax-reporter/{}.{}",
+            actor_segment(queue_id),
+            actor_segment(reporter_id)
+        ),
+        Actor::Service { grant_id, .. } => {
+            format!("tool:clax-service/{}", actor_segment(grant_id))
+        }
         Actor::System { .. } => format!("tool:clax/{}", actor_segment(clax_version)),
         Actor::Bot { on_behalf_of } => format!(
             "agent:claxbot/{}",
@@ -330,6 +342,26 @@ pub fn actor_def(actor: &Actor, install: &str, clax_commit: &str, opts: &Redacti
             def
         }
         Actor::Anonymous => json!({"name": "Anonymous viewer"}),
+        Actor::Reporter {
+            queue_id,
+            reporter_id,
+        } => {
+            let mut def = json!({"identities": [identity(
+                "clax-reporter",
+                &format!("{install}/{queue_id}/{reporter_id}"),
+            )]});
+            if !opts.no_names {
+                def["name"] = reporter_id.as_str().into();
+            }
+            def
+        }
+        Actor::Service { queue_id, grant_id } => json!({
+            "name": "Report queue service",
+            "identities": [
+                identity("clax-queue-grant", grant_id),
+                identity("clax-queue", &format!("{install}/{queue_id}")),
+            ],
+        }),
         Actor::System { .. } => json!({
             "name": "Clax",
             "identities": [identity("clax-build", clax_commit)],
@@ -482,6 +514,8 @@ pub enum Obj<'a> {
     Run(&'a str),
     /// A credits cost line, by its ID.
     CostLine(&'a str),
+    /// A report queue, by its ID.
+    Queue(&'a str),
 }
 
 /// The opaque, install-scoped URI of `obj` (spec §10.2).
@@ -513,6 +547,7 @@ pub fn clax_uri(install: &str, obj: Obj<'_>) -> String {
         Obj::BackfillRow(t, r) => format!("{base}/backfill/{}/{}", seg(t), seg(r)),
         Obj::Run(r) => format!("{base}/run/{}", seg(r)),
         Obj::CostLine(l) => format!("{base}/cost_line/{}", seg(l)),
+        Obj::Queue(q) => format!("{base}/queue/{}", seg(q)),
     }
 }
 
@@ -732,6 +767,7 @@ impl Event<'_> {
                 | K::BotTurn
                 | K::BotScript
                 | K::BotCall
+                | K::BotWeb
                 | K::BotRunEnd
                 | K::BotCancel
                 | K::ViewRun,
@@ -741,11 +777,12 @@ impl Event<'_> {
                 .map(Obj::Person)
                 .or(Some(Obj::Install)),
             Some(K::ViewAudit | K::AdminProvider | K::AdminSettings) => Some(Obj::Install),
-            Some(K::AdminRole | K::AdminFlag | K::AdminCredits | K::BotRefused) => {
+            Some(K::AdminRole | K::AdminFlag | K::AdminCredits | K::BotRefused | K::MeWeb) => {
                 self.str("person").map(Obj::Person)
             }
             Some(K::AdminKey) => Some(self.str("person").map_or(Obj::Install, Obj::Person)),
             Some(K::AdminCostLine) => self.str("line").map(Obj::CostLine),
+            Some(K::QueueCreate | K::QueueUpdate) => self.str("queue_id").map(Obj::Queue),
             _ => None,
         };
         let generic = || match (a, t) {
@@ -765,7 +802,10 @@ impl Event<'_> {
                 | K::ArtifactDelete
                 | K::LivePage
                 | K::LivePageRekey
-                | K::LivePageMerge,
+                | K::LivePageMerge
+                | K::ExternalCreate
+                | K::ExternalUpdate
+                | K::ExternalDelete,
             ) => a.map(Obj::Artifact),
             _ => specific,
         };
@@ -1405,6 +1445,23 @@ impl Event<'_> {
                     "refused"
                 }
             ),
+            Some(K::BotWeb) => format!(
+                "ClaxBot run {} {} (step {}, {} credits)",
+                self.show("run"),
+                match (self.str("op"), self.str("query"), self.str("url")) {
+                    _ if self.body.get("ok") == Some(&Value::Bool(false)) => format!(
+                        "was refused {} {} ({})",
+                        self.show("op"),
+                        self.str("query").or(self.str("url")).unwrap_or(""),
+                        self.show("code")
+                    ),
+                    (Some("web.search"), Some(q), _) => format!("searched the web for {q}"),
+                    (Some("web.fetch"), _, Some(u)) => format!("fetched {u}"),
+                    _ => format!("called {}", self.show("op")),
+                },
+                self.show("step"),
+                credits(self.body.get("credits_milli"))
+            ),
             Some(K::BotRunEnd) => format!(
                 "Ended ClaxBot run {}: {}{} ({} credits)",
                 self.show("run"),
@@ -1475,18 +1532,27 @@ impl Event<'_> {
                 };
                 format!("Changed the ClaxBot settings {}", and_list(&fields))
             }
+            Some(K::MeWeb) => format!(
+                "Turned web search and fetch {} for person {}",
+                if self.body.get("value").and_then(Value::as_bool) == Some(true) {
+                    "on"
+                } else {
+                    "off"
+                },
+                self.show("person")
+            ),
             Some(K::AdminKey) => format!(
-                "{} the {} model key{}",
+                "{} the {}{}",
                 match (self.str("op"), self.body.get("value")) {
                     (Some("clear"), _) => "Cleared",
                     (Some("use_own"), Some(Value::Bool(true))) => "Put in use",
                     (Some("use_own"), _) => "Took out of use",
                     _ => "Set",
                 },
-                if self.str("scope") == Some("own") {
-                    "own"
-                } else {
-                    "instance"
+                match self.str("scope") {
+                    Some("own") => "own model key",
+                    Some("cloudflare") => "Cloudflare API token",
+                    _ => "instance model key",
                 },
                 match self.str("person") {
                     Some(p) => format!(" of person {p}"),
@@ -1503,6 +1569,81 @@ impl Event<'_> {
                     and_list(&fields),
                     self.show("line")
                 )
+            }
+            Some(K::ExternalCreate) => match self.str("external_id") {
+                Some(x) => format!("Created external artifact {x}"),
+                None => format!("Created external {}", art()),
+            },
+            Some(K::ExternalUpdate) => {
+                let fields: Vec<&str> = ["title", "url", "revision", "metadata"]
+                    .into_iter()
+                    .filter(|f| self.body.contains_key(*f))
+                    .collect();
+                format!("Changed the {} of external {}", and_list(&fields), art())
+            }
+            Some(K::ExternalDelete) => match self.str("external_id") {
+                Some(x) => format!("Deleted external artifact {x}"),
+                None => format!("Deleted external {}", art()),
+            },
+            Some(K::ThreadMetadata) => format!("Set the metadata of thread {}", thread()),
+            Some(K::QueueCreate) => format!("Created queue {}", self.show("queue_id")),
+            Some(K::QueueUpdate) => format!(
+                "Changed queue {} ({})",
+                self.show("queue_id"),
+                self.show("op")
+            ),
+            Some(K::QueueClaim) => format!(
+                "Claimed report {} until {}",
+                thread(),
+                self.show("expires_at")
+            ),
+            Some(K::QueueRelease) => format!(
+                "Released the claim on report {} ({})",
+                thread(),
+                self.show("reason")
+            ),
+            Some(K::QueueFix) => format!("Proposed fix {} on report {}", self.show("n"), thread()),
+            Some(K::QueueVerify) => format!("Verified the fix on report {}", thread()),
+            Some(K::QueueReopen) => format!("Reopened report {}", thread()),
+            Some(K::RemoteRequestAsk) => format!(
+                "Asked to connect to {} (request {})",
+                self.show("origin"),
+                self.show("request_id")
+            ),
+            Some(K::RemoteRequestAnswer) => format!(
+                "Answered {} to connecting to {} (request {})",
+                self.show("answer"),
+                self.show("origin"),
+                self.show("request_id")
+            ),
+            Some(K::RemoteRequestClose) => format!(
+                "Closed the request to connect to {} as {} (request {})",
+                self.show("origin"),
+                self.show("status"),
+                self.show("request_id")
+            ),
+            Some(K::ConfirmationAnswer) => format!(
+                "{} confirmation {} ({})",
+                if self.str("answer") == Some("approve") {
+                    "Approved"
+                } else {
+                    "Declined"
+                },
+                self.show("confirmation_id"),
+                self.show("decision")
+            ),
+            Some(K::PasskeyAdd) => format!("Added passkey {}", self.show("credential_id")),
+            Some(K::PasskeyRemove) => format!(
+                "Removed passkey {} ({})",
+                self.show("credential_id"),
+                self.show("reason")
+            ),
+            Some(K::PasskeyRequire) => {
+                if self.body.get("required").and_then(Value::as_bool) == Some(true) {
+                    "Required a passkey to confirm".to_string()
+                } else {
+                    "Stopped requiring a passkey to confirm".to_string()
+                }
             }
             Some(K::BackfillSkip) => {
                 return format!(

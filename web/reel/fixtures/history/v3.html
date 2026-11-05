@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Northwind Launch Plan</title>
+<style>
+  /* Version 3 of Northwind's launch plan, seeded for the reel's history
+     vignette (web/reel/vignettes/history.ts): owners, dates and status.
+     Northwind, its launch and its people are invented. Light only. */
+  :root { --bg: #f6f7f9; --card: #ffffff; --fg: #17191c; --muted: #646a73; --line: #e3e6ea; --accent: #3b5bdb;
+    --done: #2f9e44; --done-bg: #e6f4ea; --doing: #1c6dd0; --doing-bg: #e5effc; --todo: #6b6f76; --todo-bg: #eef0f2; --risk: #c2410c; --risk-bg: #fdeee4; color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 32px auto; padding: 0 16px; }
+  .kicker { margin: 0 0 4px; color: var(--muted); font-size: 13px; letter-spacing: 0.05em; text-transform: uppercase; }
+  h1 { margin: 0 0 14px; font-size: 30px; letter-spacing: -0.01em; }
+  .progress { display: flex; align-items: center; gap: 12px; margin: 0 0 18px; color: var(--muted); font-size: 14px; }
+  .bar { flex: 1; height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 38%; background: var(--accent); border-radius: 99px; }
+  table { width: 100%; border-collapse: separate; border-spacing: 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  th { text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 600; padding: 10px 14px; background: #fafbfc; border-bottom: 1px solid var(--line); }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  tr:last-child td { border-bottom: 0; }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 99px; font-size: 12px; font-weight: 600; }
+  .done { color: var(--done); background: var(--done-bg); }
+  .doing { color: var(--doing); background: var(--doing-bg); }
+  .todo { color: var(--todo); background: var(--todo-bg); }
+  .risk { color: var(--risk); background: var(--risk-bg); }
+  .due { color: var(--muted); font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<main>
+  <p class="kicker">Northwind Atlas · Launch, November 18</p>
+  <h1>Launch plan</h1>
+  <div class="progress"><div class="bar"><i></i></div>3 of 8 done</div>
+  <table>
+    <thead><tr><th>Task</th><th>Owner</th><th>Due</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td>Book the venue</td><td>Sam</td><td class="due">Oct 28</td><td><span class="pill done">Done</span></td></tr>
+      <tr><td>Send the invitations</td><td>Mia</td><td class="due">Oct 30</td><td><span class="pill done">Done</span></td></tr>
+      <tr><td>Finish the press kit</td><td>Priya</td><td class="due">Nov 4</td><td><span class="pill doing">In progress</span></td></tr>
+      <tr><td>Brief the support team</td><td>Jon</td><td class="due">Nov 7</td><td><span class="pill done">Done</span></td></tr>
+      <tr><td>Print the badges</td><td>Priya</td><td class="due">Nov 10</td><td><span class="pill risk">At risk</span></td></tr>
+      <tr><td>Confirm the caterer</td><td>Sam</td><td class="due">Nov 11</td><td><span class="pill doing">In progress</span></td></tr>
+      <tr><td>Rehearse the keynote</td><td>Alex</td><td class="due">Nov 16</td><td><span class="pill todo">To do</span></td></tr>
+      <tr><td>Go live on the website</td><td>Mia</td><td class="due">Nov 18</td><td><span class="pill todo">To do</span></td></tr>
+    </tbody>
+  </table>
+</main>
+</body>
+</html>

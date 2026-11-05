@@ -1,0 +1,56 @@
+# Who reaches the fleet's pods. Port 7480 takes requests from the Ingress
+# controller and forwards from the fleet's other pods; 7481 (health,
+# status, metrics) answers the kubelet's probes, which network policies do
+# not stop on common CNIs, and the fleet's pods. Label the Ingress
+# controller's namespace clax.empathic.dev/ingress=true (or edit the
+# selector below), and the namespace of a Prometheus that scrapes /metrics
+# clax.empathic.dev/metrics=true: /metrics asks for no credential (it holds
+# counters only), so this rule is what limits who reads it, while /status
+# asks for the peer key, which Prometheus is never given (docs/kubernetes.md,
+# Operating it). Forwards between pods carry cookies and
+# tokens in plain HTTP: keep the pod network encrypted (docs/kubernetes.md,
+# Security).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: clax
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: clax
+      app.kubernetes.io/component: fleet
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: clax
+              app.kubernetes.io/component: fleet
+        - namespaceSelector:
+            matchLabels:
+              clax.empathic.dev/ingress: "true"
+        # Requests that come from no pod on the pod network match no
+        # selector above, and time out on a CNI that enforces policies;
+        # admit their addresses with an ipBlock:
+        # - a LoadBalancer or NodePort Service rather than an Ingress
+        #   controller: the clients' addresses with
+        #   externalTrafficPolicy: Local, else the nodes';
+        # - an Ingress controller with hostNetwork: true (common for
+        #   ingress-nginx on bare metal): the nodes' addresses;
+        # - a cloud load balancer that sends to pod IPs: GKE's
+        #   container-native Ingress, 130.211.0.0/22 and 35.191.0.0/16;
+        #   the AWS Load Balancer Controller in IP mode, its subnets.
+        # - ipBlock:
+        #     cidr: 203.0.113.0/24
+      ports:
+        - port: 7480
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: clax
+              app.kubernetes.io/component: fleet
+        - namespaceSelector:
+            matchLabels:
+              clax.empathic.dev/metrics: "true"
+      ports:
+        - port: 7481

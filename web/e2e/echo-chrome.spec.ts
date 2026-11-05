@@ -1,7 +1,8 @@
 // Echo's chrome in a real browser: the favicon, the theme before first
 // paint, and the shell's keys (C and ?), which belong to the page while it
-// has focus and to a dialog while one is open, and are held while the viewer
-// may still be typing for the page (spec §8, "Keys"; decisions Q2 and Q6).
+// has focus (but for C outside its fields, which the bridge tells the shell
+// of) and to a dialog while one is open, and are held while the viewer may
+// still be typing for the page (spec §8, "Keys"; decisions Q2 and Q6).
 import { type Frame, type Locator, type Page } from "@playwright/test";
 import { test, expect, type Daemon, api, contentFrame, openArtifact, postThread, publishWith } from "./fixtures";
 import { settle } from "./time";
@@ -46,20 +47,41 @@ test("the first paint already has the theme: the system's, or the stored choice 
   }
 });
 
-test("keys pressed in the page are the page's: C and ? do nothing in the shell", async ({ page }) => {
-  const { artifact } = await publishWith(d.base, d.token, "Frame keys", PAGE, {});
+// A page with a field of its own, and one that takes C itself.
+const FIELD = `<!doctype html><html><head><title>Field</title></head><body><main><h2 id="t">Target</h2><p>Type here.</p><input id="f" aria-label="Notes"><p id="own" tabindex="0">Own keys</p></main><script>
+document.getElementById("own").addEventListener("keydown", e => { if (e.key === "c") e.preventDefault(); });
+</script></body></html>`;
+
+test("keys pressed in the page are the page's, but for C outside its fields: ? does nothing in the shell", async ({ page }) => {
+  const { artifact } = await publishWith(d.base, d.token, "Frame keys", FIELD, {});
   const frame = await openArtifact(page, d.base, artifact.id, 1);
   const comment = page.getByRole("button", { name: "Comment", exact: true });
   await page.locator("body").press("c");
   await expect(comment).toHaveAttribute("aria-pressed", "true");
   await page.locator("body").press("c");
   await expect(comment).toHaveAttribute("aria-pressed", "false");
-  await frame.locator("p").click();
+  // C typed into the page's field, or on an element that takes C itself, is the page's.
+  // The viewer's pointer moves over the shell, then into the page: after
+  // their key in the shell, only such a move makes the page's focus theirs
+  // (the frame's gesture, which C from the page needs).
+  await page.mouse.move(5, 5);
+  const field = frame.locator("#f");
+  await field.click();
+  await page.keyboard.type("cC");
+  await expect(field).toHaveValue("cC");
+  await frame.locator("#own").click();
+  await expect(frame.locator("#own")).toBeFocused();
   await page.keyboard.press("c");
   await page.keyboard.press("Shift+?");
   await settle(page);
   await expect(comment).toHaveAttribute("aria-pressed", "false");
   await expect(page.getByRole("dialog")).toHaveCount(0);
+  // C on the page's text, focus in the page: comment mode on, and off again.
+  await frame.locator("p").first().click();
+  await page.keyboard.press("c");
+  await expect(comment).toHaveAttribute("aria-pressed", "true");
+  await page.keyboard.press("c");
+  await expect(comment).toHaveAttribute("aria-pressed", "false");
 });
 
 test("C and ? are the shell's only letter keys: T, J, K, S, R and Enter do nothing", async ({ page }) => {

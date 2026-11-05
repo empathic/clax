@@ -9,6 +9,7 @@ import 'package:clax_app/agent/progress.dart';
 import 'package:clax_app/agent/prompt.dart';
 import 'package:clax_app/agent/request.dart';
 import 'package:clax_app/agent/scripted_backend.dart';
+import 'package:clax_app/bundle/content_hash.dart' show withoutManifest;
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:flutter/services.dart';
@@ -132,7 +133,12 @@ void main() {
       final r = create.args['request']! as PublishRequest;
       expect(r.title, 'Run log');
       expect(r.capabilities, {'db': {}});
-      expect(api.filesOf(aid, 1), {'index.html': page, 'app.js': 'go()'});
+      // The daemon writes clax.json from the declaration.
+      expect(withoutManifest(api.filesOf(aid, 1)), {
+        'index.html': page,
+        'app.js': 'go()',
+      });
+      expect(api.filesOf(aid, 1), contains('clax.json'));
       expect((await api.getDoc(aid, 'runs/first'))!.data, {'km': 5});
       expect(backend.seen.single.kind, RequestKind.newApp);
       expect(backend.seen.single.model, 'claude-haiku-5-5');
@@ -650,7 +656,10 @@ void main() {
         'title': 'Runs',
         'capabilities': <String, Object?>{},
       });
-      expect(api.filesOf(aid, 3), api.filesOf(aid, 1));
+      expect(
+        withoutManifest(api.filesOf(aid, 3)),
+        withoutManifest(api.filesOf(aid, 1)),
+      );
       final t = api.threadOf(aid, item.threadId);
       expect(t.comments.last.body, startsWith("Couldn't make that change: "));
       expect(t.status, 'open');

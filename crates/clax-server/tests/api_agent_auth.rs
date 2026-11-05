@@ -789,13 +789,15 @@ async fn every_agent_channel_is_an_agent() {
     )
     .await;
     assert_eq!(v, json!({"caller": "viewer", "viewer": viewer.public_id}));
-    let v = caller(
-        ts.client
-            .get(at("/api/_test/caller"))
-            .header("x-clax-channel", "agent"),
-    )
-    .await;
-    assert_eq!(v, json!({"caller": "anonymous"}));
+    // With no credential at all, the request is refused before any route.
+    let res = ts
+        .client
+        .get(at("/api/_test/caller"))
+        .header("x-clax-channel", "agent")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(status_code(res).await, (401, "no_credential".to_string()));
     // A connected person's browser.
     let _sam = ts.connect_person("Sam", "clax:collaborator").await;
     let sam_viewer = ts
@@ -1017,8 +1019,11 @@ fn every_route() -> Vec<(String, String, bool)> {
             "inbox" => include_str!("../src/routes/inbox.rs"),
             "live" => include_str!("../src/routes/live.rs"),
             "people" => include_str!("../src/routes/people.rs"),
+            "resolve" => include_str!("../src/routes/resolve.rs"),
             "approvals" => include_str!("../src/routes/approvals.rs"),
             "questions" => include_str!("../src/routes/questions.rs"),
+            "queues" => include_str!("../src/routes/queues.rs"),
+            "queue_agent" => include_str!("../src/routes/queue_agent.rs"),
             "room" => include_str!("../src/routes/room.rs"),
             "sample" => include_str!("../src/routes/sample.rs"),
             "sessions" => include_str!("../src/routes/sessions.rs"),

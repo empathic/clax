@@ -507,7 +507,8 @@ async fn get_page_restricted_needs_sign_in() {
         (404, "text/html; charset=utf-8"),
         "{never}"
     );
-    assert!(never.contains("href=\"/signin\""), "{never}");
+    assert!(never.contains("/signin\">Sign in</a>"), "{never}");
+    assert!(never.contains("This may be a private page."), "{never}");
     for (b, path) in [
         (&anyone, format!("/a/{aid}/get")),
         (&anyone, format!("/a/{aid}/get/")),

@@ -176,6 +176,38 @@ describe("the room's socket on the page's own origin", () => {
     expect(pushed.slice(before)).toEqual([["connection", { connected: true }]]);
   });
 
+  it("holds an emit or join made while a viewer change reopens the socket, and sends it on the new one", async () => {
+    const sh = framingShell();
+    const { t, sockets } = room(sh);
+    await t.call("room", "connect", []);
+    await vi.waitFor(() => expect(sh.asked).toEqual(["room.watch"]));
+    sockets[0].open();
+    sh.viewer();
+    const emitted = t.call("room", "emit", [null, "reaction", { kind: "wave" }]);
+    const joined = t.call("room", "join", ["table"]);
+    await Promise.resolve();
+    expect(sockets[1].sent).toEqual([]);
+    sockets[1].open();
+    await vi.waitFor(() => expect(sockets[1].sent.map(m => m.t)).toEqual(["emit", "join"]));
+    const [emit, join] = sockets[1].sent;
+    sockets[1].frame({ t: "nack", id: emit.id, code: "not_permitted", message: "no" });
+    sockets[1].frame({ t: "ack", id: join.id });
+    await expect(emitted).rejects.toMatchObject({ code: "not_permitted" });
+    await expect(joined).resolves.toBeNull();
+  });
+
+  it("answers an emit held through a viewer change as not dropped when the new socket closes before it opens", async () => {
+    const sh = framingShell();
+    const { t, sockets } = room(sh);
+    await t.call("room", "connect", []);
+    await vi.waitFor(() => expect(sh.asked).toEqual(["room.watch"]));
+    sockets[0].open();
+    sh.viewer();
+    const emitted = t.call("room", "emit", [null, "reaction"]);
+    sockets[1].end(1006);
+    await expect(emitted).resolves.toEqual({ dropped: false });
+  });
+
   it("top-level, reopens at the new level when the site's whoami changed while the page was away", async () => {
     let who = { kind: "visitor", id: "v_1", level: "public" };
     let asked = 0;

@@ -9,7 +9,7 @@ import { ALLOW_DELAY_MS } from "./view/prompt-queue";
 import { SEEN_AFTER_MS } from "./view/sidebar-model";
 import { RETRY_MS } from "../../bridge/src/part-loader";
 
-type TestClock = { advance(ms: number): number; readonly skew: number; readonly pending: number };
+type TestClock = { advance(ms: number): number; dueIn(label: string): number | null; readonly skew: number; readonly pending: number };
 const clock = () => (globalThis as unknown as { claxTestClock: TestClock }).claxTestClock;
 
 describe("the shell's clock", () => {
@@ -47,6 +47,24 @@ describe("the shell's clock", () => {
     expect(ran).toEqual(["seen"]);
     clock().advance(500);
     expect(ran).toEqual(["seen", "looked"]);
+  });
+
+  it("due_in_reads_the_latest_pending_timer_with_that_label", () => {
+    expect(clock().dueIn("probe")).toBeNull();
+    after(1000, () => {}, "probe");
+    after(400, () => {}, "other");
+    const cancel = after(3000, () => {}, "probe");
+    clock().advance(100);
+    // The most recently started one, relative to the clock now.
+    expect(clock().dueIn("probe")).toBeGreaterThan(2_800);
+    expect(clock().dueIn("probe")).toBeLessThanOrEqual(2_900);
+    expect(clock().dueIn("other")).toBeGreaterThan(200);
+    cancel();
+    expect(clock().dueIn("probe")).toBeGreaterThan(800);
+    expect(clock().dueIn("probe")).toBeLessThanOrEqual(900);
+    clock().advance(2000);
+    expect(clock().dueIn("probe")).toBeNull();
+    expect(clock().dueIn("other")).toBeNull();
   });
 
   it("a cancelled timer never runs", () => {

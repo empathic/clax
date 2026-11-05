@@ -1,5 +1,6 @@
 import "./e2e/bazel-env";
 import { cpus } from "node:os";
+import { join } from "node:path";
 import { defineConfig } from "@playwright/test";
 
 // Every test runs in parallel with the others: each worker has its own daemon
@@ -13,6 +14,9 @@ import { defineConfig } from "@playwright/test";
 // expectation fails in 5 s; a test that hangs stops at 30 s (90 s for the
 // gesture tests).
 const workers = Number(process.env.CLAX_E2E_WORKERS) || cpus().length + 4;
+// Under Bazel a failed test's page (its error context and a screenshot) is
+// kept with the test's outputs, which CI uploads with the logs of a failed run.
+const outputs = process.env.TEST_UNDECLARED_OUTPUTS_DIR;
 
 export default defineConfig({
   testDir: "e2e",
@@ -21,21 +25,30 @@ export default defineConfig({
   workers,
   timeout: 30_000,
   expect: { timeout: 5_000 },
-  use: { browserName: "chromium" },
+  use: { browserName: "chromium", screenshot: "only-on-failure" },
+  ...(outputs ? { outputDir: join(outputs, "test-results") } : {}),
   // Projects schedule the work: the gesture tests take up to five eighths of
   // the workers. Several wait out Chromium's 5 s user activation, which no
   // clock can shorten, so they run beside the busier tests rather than all
   // at once. The Chrome overlay's tests launch browsers of their own, each
   // with the extension in a fresh profile (e2e/extension-fixtures.ts).
   // `shots` renders the app's web pieces for a person to look at, on
-  // demand only (//web:e2e_shots, e2e/app-shots.spec.ts).
+  // demand only (//web:e2e_shots, e2e/app-shots.spec.ts). `queues` is the
+  // report queues' and the feedback loop's end to end tests
+  // (//web:e2e_queues).
   projects: [
     // A gesture test waits out Chromium's real 5 s activation, some twice,
     // so one counts as hung only after 90 s.
     { name: "gesture", testMatch: /gesture\.spec\.ts$/, workers: Math.ceil(workers * 5 / 8), timeout: 90_000 },
     { name: "chrome-overlay", testMatch: /chrome-overlay\.spec\.ts$/ },
     { name: "shots", testMatch: /app-shots\.spec\.ts$/ },
-    { name: "rest", testIgnore: /(gesture|chrome-overlay|app-shots)\.spec\.ts$/ },
+    // Report queues end to end: a hosted daemon, a deployer's site on
+    // another origin and the overlay it embeds (e2e/queues.spec.ts), the
+    // feedback loop from capture to verified (e2e/feedback-loop.spec.ts),
+    // and the shell reporting problems with Clax into its own queue
+    // (e2e/feedback.spec.ts).
+    { name: "queues", testMatch: /(queues|feedback-loop|feedback)\.spec\.ts$/ },
+    { name: "rest", testIgnore: /(gesture|chrome-overlay|app-shots|queues|feedback-loop|feedback)\.spec\.ts$/ },
   ],
   reporter: "list",
 });

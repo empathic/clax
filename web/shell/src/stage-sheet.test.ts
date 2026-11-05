@@ -19,7 +19,7 @@ it("a sheet whose code fails to load reaches sheetFailed", async () => {
     me: null, ask: null, file: "index.html", sheet: "keys" as "keys" | null, drafts: [], showDraft: null, draftChanged: null, tags: null,
   });
   const ctl = {
-    id: "a", state, shown: () => 1, latest: () => 1, missing: () => null, here: () => "/", openPin() {}, hover() {},
+    id: "a", state, shown: () => 1, latest: () => 1, missing: () => null, pending: () => null, here: () => "/", openPin() {}, hover() {},
     closeSheet: vi.fn(), sheetFailed: vi.fn(() => state.set({ sheet: null })),
   };
   const m = mount(StageIsland, { ctl } as never);

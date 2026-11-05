@@ -30,8 +30,10 @@
 //!   `shell::gallery_page` sends (no framing, revalidated), except on a
 //!   hosted instance (`HOSTED` = `1`), whose gate decides who gets them;
 //! - `/_clax/<path>` is the web UI's file from the static assets with the
-//!   daemon's caching (`shell::asset_cache`), except the bridge and the
-//!   contract's type definitions, which the server answers;
+//!   daemon's caching (`shell::asset_cache`), and for the embeddable
+//!   overlay's files its type and any-origin reads (`shell::embed_file`),
+//!   except the bridge and the contract's type definitions, which the
+//!   server answers;
 //! - everything else (the API, `/a/…` with its first-load data, the
 //!   stream's WebSocket) goes to the instance's object, named by
 //!   `CLAX_INSTANCE` (`default` when unset). A file the assets lack goes
@@ -107,6 +109,7 @@ pub mod repos;
 pub mod sandbox;
 mod store;
 mod web;
+pub mod web_source;
 
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -219,12 +222,70 @@ async fn fetch(req: Request, env: Env, _ctx: worker::Context) -> Result<Response
     to_instance(&env, req).await
 }
 
-/// `req` for the instance's object, unless its declared body is too large.
+/// `req` for the instance's object, unless its declared body is too large;
+/// a body of no declared length goes through [`forward_undeclared`].
 async fn to_instance(env: &Env, req: Request) -> Result<Response> {
     if let Some(res) = instance::refuse_declared(&req)? {
         return Ok(res);
     }
+    if instance::undeclared_body(&req)? {
+        return forward_undeclared(env, req).await;
+    }
     instance_stub(env)?.fetch_with_request(req).await
+}
+
+/// `req`, whose body declares no length, for the instance's object, its
+/// body relayed by the Worker ([`Relay`]) rather than handed on whole. The
+/// object may answer before it has read the whole body (413 past its
+/// limit, or 429), and the runtime fails any read of the Worker's request
+/// stream once the Worker's response is sent, dropping the connection: a
+/// body handed on whole is still being copied then. So once the object
+/// answers, the Worker lets go of the request stream (which cancels it)
+/// before it returns, and the relay ends.
+async fn forward_undeclared(env: &Env, mut req: Request) -> Result<Response> {
+    let held = Rc::new(std::cell::RefCell::new(Some(Box::pin(req.stream()?))));
+    let body = wasm_streams::ReadableStream::from_stream(Relay(held.clone()));
+    let mut init = worker::RequestInit::new();
+    init.with_method(req.method())
+        .with_headers(req.headers().clone())
+        .with_body(Some(body.into_raw().into()));
+    let relayed = Request::new_with_init(req.url()?.as_str(), &init)?;
+    let res = instance_stub(env)?.fetch_with_request(relayed).await;
+    drop(held.borrow_mut().take());
+    res
+}
+
+/// The body [`forward_undeclared`] relays: the request stream's chunks
+/// while the Worker holds it, then its end.
+struct Relay(Rc<std::cell::RefCell<Option<std::pin::Pin<Box<worker::ByteStream>>>>>);
+
+impl futures_util::Stream for Relay {
+    type Item = std::result::Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        use std::task::Poll;
+        let mut held = self.0.borrow_mut();
+        let Some(stream) = held.as_mut() else {
+            return Poll::Ready(None);
+        };
+        match stream.as_mut().poll_next(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Some(Ok(bytes))) => {
+                Poll::Ready(Some(Ok(js_sys::Uint8Array::from(bytes.as_slice()).into())))
+            }
+            Poll::Ready(Some(Err(e))) => {
+                *held = None;
+                Poll::Ready(Some(Err(js_sys::Error::new(&e.to_string()).into())))
+            }
+            Poll::Ready(None) => {
+                *held = None;
+                Poll::Ready(None)
+            }
+        }
+    }
 }
 
 /// Where the Worker sends a request (see the crate docs).
@@ -458,16 +519,29 @@ async fn queue(batch: worker::MessageBatch<Value>, env: Env, _ctx: worker::Conte
     Ok(())
 }
 
+/// Whether `path` is one of the gallery shell's pages, which the daemon
+/// serves as its shell page (`clax_server::router`): `/`, `/inbox`,
+/// `/people`, `/tags`, `/admin`, `/settings`, `/me`, `/audit`, and the
+/// Queues page with a queue's and a report's views (`/queues`,
+/// `/queues/<qid>`, `/queues/<qid>/<tid>`).
+fn shell_page(path: &str) -> bool {
+    let segs: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    matches!(
+        segs.as_slice(),
+        [""] | ["inbox" | "people" | "tags" | "admin" | "settings" | "me" | "audit"]
+            | ["queues"]
+            | ["queues", _]
+            | ["queues", _, _]
+    ) && path.starts_with('/')
+        && !segs.iter().skip(1).any(|s| s.is_empty())
+}
+
 /// The web UI's file for `path` from the static assets, with the headers
 /// the daemon serves it with; `None` for a path the server answers, or a
 /// file the assets lack.
 async fn static_asset(env: &Env, path: &str, app_host: bool) -> Result<Option<HttpResponse>> {
     let (file, cache, entry) = match path {
-        "/" | "/inbox" | "/people" | "/tags" | "/admin" | "/settings" | "/me" | "/audit"
-            if app_host =>
-        {
-            ("/index.html".to_string(), "no-cache", true)
-        }
+        _ if app_host && shell_page(path) => ("/index.html".to_string(), "no-cache", true),
         _ => match path
             .strip_prefix("/_clax/")
             .and_then(clax_server::shell::asset_cache)
@@ -501,6 +575,23 @@ async fn static_asset(env: &Env, path: &str, app_host: bool) -> Result<Option<Ht
             header::CONTENT_TYPE,
             HeaderValue::from_static("text/javascript"),
         );
+    }
+    // The embeddable overlay's files, as the daemon answers them: to any
+    // origin, never with credentials, with their own content type.
+    if let Some(ty) = file
+        .strip_prefix("/_clax/")
+        .and_then(clax_server::shell::embed_file)
+    {
+        h.insert(header::CONTENT_TYPE, HeaderValue::from_static(ty));
+        h.insert(
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            HeaderValue::from_static("*"),
+        );
+        h.insert(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        );
+        h.remove(header::ACCESS_CONTROL_ALLOW_CREDENTIALS);
     }
     Ok(Some(res))
 }
@@ -847,6 +938,31 @@ mod tests {
             retired: None,
         };
         super::route(path, url_host, host, &hosts, spike)
+    }
+
+    #[test]
+    fn the_shell_pages_include_a_queues_and_a_reports_view() {
+        for p in [
+            "/",
+            "/inbox",
+            "/audit",
+            "/queues",
+            "/queues/01J0000000000000000000000A",
+            "/queues/01J0000000000000000000000A/01J0000000000000000000000B",
+        ] {
+            assert!(super::shell_page(p), "{p}");
+        }
+        for p in [
+            "",
+            "/queues/",
+            "/queues//t",
+            "/queues/q/t/x",
+            "/a/7q3k9mzx2b4t",
+            "/people/x",
+            "/_clax/app.js",
+        ] {
+            assert!(!super::shell_page(p), "{p}");
+        }
     }
 
     #[test]

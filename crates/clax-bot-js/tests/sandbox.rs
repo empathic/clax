@@ -386,7 +386,7 @@ async fn the_call_past_the_limit_never_reaches_the_host() {
 #[tokio::test]
 async fn refused_arguments_never_reach_the_host() {
     let host = EchoHost::default();
-    let code = "let a = [0]; for (let i = 0; i < 20; i++) a = [a, a];\ntry { await clax.echo(a) } catch (e) { return [e.name, e.message] }";
+    let code = "let a = [0]; for (let i = 0; i < 17; i++) a = [a, a];\ntry { await clax.echo(a) } catch (e) { return [e.name, e.message] }";
     let outcome = sandbox()
         .run(
             &Script::new("t", code),
@@ -395,7 +395,10 @@ async fn refused_arguments_never_reach_the_host() {
             &CancelToken::new(),
         )
         .await;
-    let value = outcome.value.unwrap();
+    let value = outcome
+        .value
+        .clone()
+        .unwrap_or_else(|| panic!("{outcome:?}"));
     assert_eq!(value[0], "TypeError");
     assert!(
         value[1].as_str().unwrap().contains("limit is 262144"),

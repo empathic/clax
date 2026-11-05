@@ -1,6 +1,9 @@
 name: ci
-on: { push: { branches: [main] }, pull_request: {} }
+on: { push: { branches: [main, prod] }, pull_request: {} }
 permissions: { contents: read }
+# On prod (docs/prod.md), the bazel, worker and version jobs are the
+# ruleset's required checks: keep their names. Only main's pushes commit
+# Bazel's state and log perf.
 # One job through Bazel (docs/bazel.md, "CI"): `scripts/bazel-test.sh --ci`
 # checks what scripts/quality_gates.sh checks with Cargo and pnpm, the quick
 # checks first. The native gates do not run here; they are a manual
@@ -85,12 +88,13 @@ jobs:
           name: bazel
           commit: "true"
       # The targets of scripts/bazel-test.sh --ci's test pass, built and not
-      # run.
+      # run. The query names each target, so the macOS and iOS ones are
+      # requested explicitly and skipped here as that pass skips them.
       - name: Build
         run: |
           listed="$(bazelisk query 'tests(//...) except attr(tags, "\bmanual\b", //...)')"
           mapfile -t tests <<< "$listed"
-          bazelisk build --keep_going //crates/... //web:playwright "${tests[@]}"
+          bazelisk build --keep_going --skip_incompatible_explicit_targets //crates/... //web:playwright "${tests[@]}"
       # The format and clippy aspects the next run's quick checks start
       # with. A lint that fails (often why the bazel job did) leaves the
       # rest of them cached, so this step does not fail on one.
@@ -104,54 +108,24 @@ jobs:
         if: ${{ always() }}
         run: bazelisk shutdown || true
 
-  # What Bazel does not build: crates/clax-worker, a workspace of its own
-  # with its own Cargo.lock that builds for wasm32 only, and the wasm32 check
-  # of the crates a hosted Worker runs (scripts/check-wasm.sh). Natively, as
-  # scripts/quality_gates.sh runs them in its worker and wasm32 lanes; the
-  # runner's clang and llvm-ar target wasm32. The Worker's format check is
-  # the bazel job's (//crates/clax-worker:rustfmt), with the rustfmt the
-  # rest of the repository is checked with. A job beside the bazel job
-  # rather than steps in it: it shares nothing with Bazel's cache, and in
-  # parallel it adds nothing to the run's time.
-  worker:
+  # On a pull request into prod: it comes from a release branch of this
+  # repository (scripts/check-release-head.sh), and the head's version is
+  # X.Y.Z, every version file agrees, and it is greater than prod's
+  # (scripts/check-version-bump.sh). The full fetch brings origin/prod.
+  version:
+    if: ${{ github.event_name == 'pull_request' && github.base_ref == 'prod' }}
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 60
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: { persist-credentials: false }
-      # rust-toolchain.toml's version, with the wasm32-unknown-unknown target.
-      - name: Install Rust toolchain
-        run: rustup toolchain install
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with: { workspaces: ". -> target\ncrates/clax-worker -> target" }
-      # pnpm for the web UI the Worker's e2e serves and drives Playwright from.
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        with: { package_json_file: web/package.json }
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
-      - name: Check the Worker's crates for wasm32
-        run: scripts/check-wasm.sh
-      # Before the Worker builds: it embeds web/dist (crates/clax-worker/
-      # build.rs refuses a wasm32 build without it).
-      - name: Build the web UI
-        run: scripts/pnpm-install-stamped.sh web --silent && scripts/build-web.sh
-      # Its tests, clippy, the wasm build under wrangler (test-wasm.mjs) and
-      # the sandbox conformance suite on it (test-sandbox.mjs).
-      - name: Run the Worker's checks (scripts/worker-checks.sh)
-        run: scripts/worker-checks.sh
-      - name: Install Chromium
-        run: cd web && pnpm exec playwright install --with-deps chromium
-      # The Clax server in its Durable Object under wrangler dev --local, in
-      # two browsers, on the build test-wasm.mjs made.
-      - name: Run the Worker's e2e
-        run: cd crates/clax-worker && node e2e.mjs --no-build
-      # The instance as a hosted Clax, with each artifact's site on its own
-      # host and its app data in its own object, on the same build.
-      - name: Run the Worker's hosted e2e
-        run: cd crates/clax-worker && node e2e-hosted.mjs --no-build
+        with: { fetch-depth: 0, persist-credentials: false }
+      - name: Check the pull request comes from a release branch
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: scripts/check-release-head.sh "$HEAD_REF" "$HEAD_REPO" "$GITHUB_REPOSITORY"
+      - name: Check the version is raised over prod's
+        run: scripts/check-version-bump.sh origin/prod
 
   # The perf benchmarks after every green push to main, kept in a log, never
   # a gate (docs/usage.md, "Developing Clax"): each run appends one JSON line to

@@ -148,6 +148,19 @@ class HttpClaxApi implements ClaxApi {
   }
 
   @override
+  Future<void> approveCapabilities(
+    String aid,
+    int version,
+    String declarationSha256,
+  ) async {
+    await _json(
+      'PUT',
+      '/api/artifacts/${_seg(aid)}/capability-approval',
+      body: {'version': version, 'declaration_sha256': declarationSha256},
+    );
+  }
+
+  @override
   Future<PublishResult> restoreVersion(
     String aid,
     int n, {
@@ -707,17 +720,24 @@ class HttpClaxApi implements ClaxApi {
     String qid,
     List<Map<String, Object?>> answers,
   ) async {
+    // The person's decision, made on the app's screen: as the person, as
+    // in their browser (the core's owner-browser caller).
     final j = await _json(
       'POST',
       '/api/questions/${_seg(qid)}/answer',
       body: {'answers': answers},
+      person: true,
     );
     return _question(j);
   }
 
   @override
   Future<QuestionView> declineQuestion(String qid) async {
-    final j = await _json('POST', '/api/questions/${_seg(qid)}/decline');
+    final j = await _json(
+      'POST',
+      '/api/questions/${_seg(qid)}/decline',
+      person: true,
+    );
     return _question(j);
   }
 

@@ -56,7 +56,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
   it("holds another view's page publish until this view's own publish settles", async () => {
     const assign = vi.fn();
     let answer!: (r: Response) => void;
-    const declared = { ...artifact(1, { "index.html": page }), artifact: { ...artifact(1).artifact, capabilities: { artifact: {} } } };
+    const declared = { ...artifact(1, { "index.html": page }), artifact: { ...artifact(1).artifact, capabilities: { artifact: {} }, capabilities_in_force: { artifact: {} } } };
     const view = await mountView(async (url, init) => {
       if (url === "/api/token") return new Response(JSON.stringify({ token: "tk" }));
       if (init?.method === "POST") return new Promise<Response>(r => { answer = r; });
@@ -88,7 +88,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     // An earlier test's activation would count as input before the shell's script ran.
     Object.defineProperty(navigator, "userActivation", { value: { isActive: false }, configurable: true });
     const assign = vi.fn();
-    const declared = { ...artifact(1, { "index.html": page }), artifact: { ...artifact(1).artifact, capabilities: { artifact: {} } } };
+    const declared = { ...artifact(1, { "index.html": page }), artifact: { ...artifact(1).artifact, capabilities: { artifact: {} }, capabilities_in_force: { artifact: {} } } };
     const view = await mountView(async (url, init) => {
       if (url === "/api/token") return new Response(JSON.stringify({ token: "tk" }));
       if (init?.method === "POST") return new Response(JSON.stringify({ version: { n: 2 } }), { status: 201 });
@@ -117,7 +117,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     Object.defineProperty(navigator, "userActivation", { value: { isActive: false }, configurable: true });
     const assign = vi.fn();
     let answer!: (r: Response) => void;
-    const declared = { ...artifact(1, { "index.html": page }), artifact: { ...artifact(1).artifact, capabilities: { artifact: {} } } };
+    const declared = { ...artifact(1, { "index.html": page }), artifact: { ...artifact(1).artifact, capabilities: { artifact: {} }, capabilities_in_force: { artifact: {} } } };
     const view = await mountView(async (url, init) => {
       if (url === "/api/token") return new Response(JSON.stringify({ token: "tk" }));
       if (init?.method === "POST") return new Promise<Response>(r => { answer = r; });

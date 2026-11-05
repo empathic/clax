@@ -141,6 +141,8 @@ command.
   [Grok Build](plugins/clax-grok/README.md).
 - [The contract](docs/contract.md): every tool's arguments and results, the
   page contract and the security model, for anyone building an integration.
+- [Bug reports from your app](docs/feedback.md): add Clax's report overlay
+  to a product of your own, and let your agents fix what its users report.
 - [Clax on Cloudflare](docs/hosted/writeup.md): the same server as a hosted,
   multi-person service. Empathic's hosted Clax has its own
   [Terms of Service](docs/legal/terms.md) and
@@ -158,5 +160,7 @@ Copyright (C) 2026 Empathic, Inc.
 Clax is free software. The local programs, the agent plugins and the browser
 extension are licensed under the GNU GPL, version 2 only. The web
 application and the hosted service are licensed under the GNU AGPL, version 3
-only. Code they share may be used under either. [LICENSE](LICENSE) says which
-license covers which part.
+only. Code they share may be used under either. The SDK and the overlay a
+deployer's app embeds, and the bridge code they are built from, are licensed
+under the GNU LGPL, version 2.1 only, so the apps that use them may be under
+any license. [LICENSE](LICENSE) says which license covers which part.

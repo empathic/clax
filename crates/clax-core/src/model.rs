@@ -189,6 +189,11 @@ pub struct Thread {
     /// recorded). For the visibility filter; never served.
     #[serde(skip)]
     pub resolved_by_person: Option<String>,
+    /// The report queue the thread is a report of (spec
+    /// 2026-10-27-clax-sdk-design §7): such a thread is read and written
+    /// through its queue's routes alone. Never served.
+    #[serde(skip)]
+    pub queue_id: Option<String>,
 }
 
 /// `Comment::author_kind` of a comment a viewer wrote in the browser.

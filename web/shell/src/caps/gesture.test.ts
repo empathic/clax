@@ -115,6 +115,70 @@ describe("frame gestures", () => {
     expect(frameGesture()).toBe(true);
   });
 
+  it("counts no arrival when the layout moves under a mouse that never moved: the top bar hiding as the page loads", () => {
+    // Chromium hit-tests the resting mouse as the page loads (a move with no
+    // movement), then sends the frame's mouseover at the same spot.
+    notePointerOver(button, 0, 0);
+    notePointerAt(0, 0, "mouse", false, false);
+    notePointerOver(frame, 0, 0);
+    pull();
+    expect(frameGesture()).toBe(false);
+    // The viewer's own move onto the frame counts.
+    notePointerOver(button, 520, 250);
+    notePointerAt(520, 250);
+    notePointerOver(frame, 490, 250);
+    expect(frameGesture()).toBe(true);
+  });
+
+  it("counts no arrival from a shell element the pointer rested on before the shell saw any pointer event, once that element has gone", () => {
+    // Linux Chromium's mouse at (0, 0) on the top bar as the page loaded,
+    // before the shell's script ran; app mode then hides the bar.
+    notePointerOver(frame, 0, 0, { fromUnder: true });
+    pull();
+    expect(frameGesture()).toBe(false);
+  });
+
+  it("counts an arrival from a shell element the pointer has left, before the shell saw any pointer event", () => {
+    notePointerOver(frame, 200, 300);
+    pull();
+    expect(frameGesture()).toBe(true);
+  });
+
+  it("keeps a counted arrival when the layout moves a shell element under the resting mouse", () => {
+    clickShell();
+    arrive(300, 250);
+    notePointerOver(button, 300, 250);
+    pull();
+    expect(frameGesture()).toBe(true);
+  });
+
+  it("ignores a resting mouse's boundary events after a touch, until the mouse really moves", () => {
+    // The mouse rests on the top bar; a finger taps a shell control, then
+    // the page.
+    notePointerOver(button, 200, 28);
+    notePointerAt(200, 28);
+    notePointerAt(297.6, 27.5, "touch");
+    noteShellInput();
+    notePointerOver(button, 298, 28, { touch: true });
+    notePointerOver(frame, 44, 142, { touch: true });
+    // Chromium hit-tests the resting mouse again: the bar, not the finger.
+    notePointerOver(button, 200, 28);
+    notePointerAt(200, 28, "mouse", false, false);
+    notePointerOver(button, 200, 28);
+    pull();
+    expect(frameGesture()).toBe(true);
+  });
+
+  it("takes a mouse's boundary events again once it really moves after a touch", () => {
+    notePointerAt(297.6, 27.5, "touch");
+    noteShellInput();
+    notePointerOver(frame, 44, 142, { touch: true });
+    notePointerAt(210, 28, "mouse", false, true);
+    notePointerOver(button, 220, 28);
+    pull();
+    expect(frameGesture()).toBe(false);
+  });
+
   it("is not the page pulling focus while the viewer types in the shell with the pointer resting on the frame", () => {
     clickShell();
     arrive();
@@ -344,7 +408,6 @@ describe("frame gestures", () => {
     button.focus();
     expect(pickHintAllowed()).toBe(false);
     // A counted arrival: the viewer's press would count, so the advice would be wrong.
-    notePointerAt(CANCEL.x - 20, CANCEL.y);
     notePointerOver(frame, CANCEL.x - 20, CANCEL.y);
     pull();
     expect(pickHintAllowed()).toBe(false);
@@ -391,10 +454,10 @@ describe("frame gestures", () => {
     expect(frameGesture()).toBe(false);
   });
 
-  it("counts an arrival at the spot of a move just before it (the shield lowered by that move)", () => {
+  it("counts a real move onto the frame after a click on a control over it: the move's mouseover comes first, at the new spot", () => {
     clickShell(CANCEL);
-    notePointerAt(CANCEL.x - 20, CANCEL.y);
     notePointerOver(frame, CANCEL.x - 20, CANCEL.y);
+    notePointerAt(CANCEL.x - 20, CANCEL.y);
     pull();
     expect(frameGesture()).toBe(true);
   });

@@ -13,8 +13,9 @@ filegroup(
 )
 
 # The generated token files and the haiku copy are what design/tokens.json
-# writes, app mode's colours match it, and every listed pair meets its
-# contrast (scripts/sync-tokens.py --check).
+# writes, app mode's colours match it, every listed pair meets its
+# contrast, and the reel's cursor eases along its motion curves
+# (scripts/sync-tokens.py --check).
 sh_test(
     name = "tokens_sync",
     srcs = ["tokens-sync.sh"],
@@ -23,6 +24,7 @@ sh_test(
         "//apps/clax_app:token_outputs",
         "//scripts:sync-tokens.py",
         "//web:token_inputs",
+        "//web/reel:pace.ts",
     ],
 )
 

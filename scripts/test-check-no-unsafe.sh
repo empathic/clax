@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Checks scripts/check-no-unsafe.sh on a copy of itself beside a minimal
-# workspace (two crates that take the workspace's lints, the separate
-# clax-worker workspace, and crates/clax-embed): the tree passes, from any
-# directory and with or without a root given; clax-embed not denying the
-# lint, the workspace not forbidding it, and another crate with lints of
-# its own (clax-ios's former exception among them) each fail, naming the
+# Checks scripts/check-no-unsafe.sh on a copy of it and of the
+# check-no-unsafe.py it runs, beside a minimal workspace (crates that take
+# the workspace's lints, crates/clax-embed, and the Worker's SQLite VFS,
+# clax-worker/vfs, nested in another crate's directory): the tree passes, from any directory
+# and with or without a root given; clax-embed not denying the lint, the
+# workspace not forbidding it, and another crate with lints of its own
+# (clax-ios's former exception and the nested crate among them) each fail,
+# naming the
 # finding; in crates/clax-embed/src/ffi.rs, a fifth
 # export, an unsafe subscribe or close, a safe open or call, a parameter
 # of another type, a second from_raw_parts or one without its SAFETY line,
@@ -12,8 +14,13 @@
 # crate, `unsafe` after the opening `(` of a signature line, and
 # clax-embed not forbidding unsafe_op_in_unsafe_fn fail (an unsafe
 # operation in an `unsafe fn` with no `unsafe` block carries no keyword the
-# check could see: only that lint refuses it); CSP's `'unsafe-inline'`
-# passes; `unsafe` in another crate fails as it always has.
+# check could see: only that lint refuses it); in the Worker's SQLite VFS
+# (crates/clax-worker/vfs), the registration without its SAFETY comment,
+# with other arguments or twice, any other unsafe or allow, and a manifest
+# not denying the lint or not forbidding unsafe_op_in_unsafe_fn fail, and
+# the registration in another crate fails;
+# CSP's `'unsafe-inline'` passes; `unsafe` in another crate fails as it
+# always has.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 d="$(mktemp -d)"
@@ -36,9 +43,37 @@ EOF
     printf '//! %s.\n\npub fn f() -> i32 {\n    1\n}\n' "$1" > "$d/w/crates/$1/src/lib.rs"
 }
 
+_vfs() { # _vfs DIR VERSION_LINE: a SQLite VFS crate and its registration
+    mkdir -p "$1/src"
+    cat > "$1/Cargo.toml" <<EOF
+[package]
+name = "$(basename "$1")"
+$2
+
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "forbid"
+
+[dependencies]
+EOF
+    cat > "$1/src/lib.rs" <<'EOF'
+//! A VFS; `unsafe` in a comment is skipped.
+
+fn register_vfs() -> Result<(), rsqlite_vfs::RegisterVfsError> {
+    // SAFETY: the crate's own callbacks, registered once,
+    // never unregistered.
+    #[allow(unsafe_code)]
+    let registered = unsafe { rsqlite_vfs::register_vfs::<IoMethods, Vfs>(VFS_NAME, (), false) };
+    registered.map(|r| {
+        r.into_raw();
+    })
+}
+EOF
+}
+
 _copy() {
     rm -rf "$d/w" && mkdir -p "$d/w/scripts"
-    cp scripts/check-no-unsafe.sh "$d/w/scripts/"
+    cp scripts/check-no-unsafe.sh scripts/check-no-unsafe.py "$d/w/scripts/"
     cat > "$d/w/Cargo.toml" <<'EOF'
 [workspace]
 members = ["crates/*"]
@@ -49,17 +84,8 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(clax_embedded)'] }
 EOF
     _crate clax-core
     _crate clax-store
-    mkdir -p "$d/w/crates/clax-worker/src"
-    cat > "$d/w/crates/clax-worker/Cargo.toml" <<'EOF'
-[package]
-name = "clax-worker"
-
-[workspace]
-
-[lints.rust]
-unsafe_code = "deny"
-EOF
-    : > "$d/w/crates/clax-worker/src/lib.rs"
+    _crate clax-worker
+    _crate clax-worker/vfs
     mkdir -p "$d/w/crates/clax-embed/src"
     cat > "$d/w/crates/clax-embed/Cargo.toml" <<'EOF'
 [package]
@@ -78,6 +104,7 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 [dependencies]
 EOF
     printf '//! The core in an app, behind C functions.\n\npub fn f() -> i32 {\n    1\n}\n' > "$d/w/crates/clax-embed/src/lib.rs"
+    _vfs "$d/w/crates/clax-worker/vfs" 'version = "0.0.0"'
     cat > "$d/w/crates/clax-embed/src/ffi.rs" <<'EOF'
 //! The four C functions; `unsafe` in a comment is skipped.
 
@@ -160,6 +187,44 @@ _expect fail "clax-embed allowing unsafe_code" "crates/clax-embed/Cargo.toml: mu
 _copy
 rm -rf "$d/w/crates/clax-embed"
 _expect pass "the tree without clax-embed"
+
+DOVFS="$d/w/crates/clax-worker/vfs/src/lib.rs"
+VFS_ONLY="only the VFS's registration may use unsafe"
+REG='    let registered = unsafe { rsqlite_vfs::register_vfs::<IoMethods, Vfs>(VFS_NAME, (), false) };'
+
+_copy
+_sub "$d/w/crates/clax-worker/vfs/Cargo.toml" 'unsafe_code = "deny"' 'unsafe_code = "allow"'
+_expect fail "the Worker's VFS allowing unsafe_code" "crates/clax-worker/vfs/Cargo.toml: must deny unsafe_code"
+
+_copy
+_sub "$d/w/crates/clax-worker/vfs/Cargo.toml" 'unsafe_op_in_unsafe_fn = "forbid"' ''
+_expect fail "the Worker's VFS not forbidding unsafe_op_in_unsafe_fn" "crates/clax-worker/vfs/Cargo.toml: must forbid unsafe_op_in_unsafe_fn"
+
+_copy
+_sub "$DOVFS" "    // SAFETY: the crate's own callbacks, registered once," "    // The crate's own callbacks, registered once,"
+_expect fail "a registration without its SAFETY comment" "crates/clax-worker/vfs/src/lib.rs:7: $VFS_ONLY"
+
+_copy
+_sub "$DOVFS" "(VFS_NAME, (), false)" "(VFS_NAME, (), true)"
+_expect fail "a registration as the default VFS" "crates/clax-worker/vfs/src/lib.rs:7: $VFS_ONLY"
+
+_copy
+_sub "$DOVFS" "$REG" "$REG
+    #[allow(unsafe_code)]
+$REG"
+_expect fail "a second registration" "crates/clax-worker/vfs/src/lib.rs:9: $VFS_ONLY"
+
+_copy
+printf 'pub fn g() {\n    unsafe {}\n}\n' >> "$DOVFS"
+_expect fail "other unsafe in a VFS crate" "crates/clax-worker/vfs/src/lib.rs:13: $VFS_ONLY"
+
+_copy
+printf '#[allow(unsafe_code)]\nfn h() {}\n' >> "$DOVFS"
+_expect fail "another allow in a VFS crate" "crates/clax-worker/vfs/src/lib.rs:12: $VFS_ONLY"
+
+_copy
+cp "$DOVFS" "$d/w/crates/clax-core/src/x.rs"
+_expect fail "the registration in another crate" "crates/clax-core/src/x.rs:7: $REG"
 
 FFI="$d/w/crates/clax-embed/src/ffi.rs"
 EMBED_LIB="$d/w/crates/clax-embed/src/lib.rs"
@@ -255,6 +320,13 @@ _sub "$d/w/crates/clax-store/Cargo.toml" '[lints]
 workspace = true' '[lints.rust]
 unsafe_code = "deny"'
 _expect fail "another crate with lints of its own" "crates/clax-store/Cargo.toml: does not take the workspace's lints"
+
+_copy
+_crate clax-worker/nested
+_sub "$d/w/crates/clax-worker/nested/Cargo.toml" '[lints]
+workspace = true' '[lints.rust]
+unsafe_code = "deny"'
+_expect fail "a nested crate with lints of its own" "crates/clax-worker/nested/Cargo.toml: does not take the workspace's lints"
 
 _copy
 _sub "$d/w/crates/clax-store/Cargo.toml" '[lints]

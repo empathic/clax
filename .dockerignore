@@ -1,0 +1,30 @@
+# What `docker build` (deploy/Dockerfile) leaves out of the context: builds,
+# caches and installs, each of which the image makes again, and the parts
+# of the repository the image never reads (the app, the Worker's builds,
+# the demo, the docs but the legal pages the web build renders and the
+# contract ClaxBot's prompt carries). The Worker's crates stay: they are
+# workspace members, and cargo loads every member's manifest.
+.git
+target
+**/target
+**/node_modules
+bazel-*
+web/dist/*
+!web/dist/.gitkeep
+web/dist-extension/*
+!web/dist-extension/.gitkeep
+web/dist-sdk
+web/test-results
+web/playwright-report
+web/e2e
+web/perf
+apps
+crates/clax-worker/build
+demo
+design
+local
+deploy/k8s
+docs/*
+!docs/legal
+!docs/contract.md
+.wrangler

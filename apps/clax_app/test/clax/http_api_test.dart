@@ -231,6 +231,14 @@ void main() {
     return rs.single;
   }
 
+  /// A person's own decision, made on the app's screen: as the person, as
+  /// in their browser (the core's owner-browser caller).
+  void expectPersonCall(Recorded r) {
+    expect(r.as, CallAs.ownerBrowser);
+    expect(r.headers.containsKey('authorization'), isFalse);
+    expect(r.headers.containsKey('x-clax-session'), isFalse);
+  }
+
   void expectOwnerCall(Recorded r) {
     expect(r.as, CallAs.owner);
     expect(
@@ -986,6 +994,16 @@ void main() {
       },
     );
 
+    test('approveCapabilities sends PUT with the version and the '
+        'declaration hash, naming no session', () async {
+      api.sessionId = sid;
+      server.json('PUT', '/api/artifacts/a1/capability-approval', 200, {});
+      await api.approveCapabilities('a1', 3, 'abc123');
+      final r = only('PUT', '/api/artifacts/a1/capability-approval');
+      expect(r.json, {'version': 3, 'declaration_sha256': 'abc123'});
+      expectOwnerCall(r);
+    });
+
     test('setWorking on an unknown artifact stays not_found', () async {
       api.sessionId = sid;
       server.json('PUT', '/api/sessions/$sid/working/gonegonegone', 404, {
@@ -1704,7 +1722,7 @@ void main() {
           const QuestionAnswer(text: 'nautical miles').toJson(),
         ]);
         final req = only('POST', '/api/questions/$qid/answer');
-        expectOwnerCall(req);
+        expectPersonCall(req);
         expect(req.json, {
           'answers': [
             {'selected': <String>[], 'text': 'nautical miles'},
@@ -1742,7 +1760,7 @@ void main() {
         'question': questionJson(status: 'declined'),
       });
       final q = await api.declineQuestion(qid);
-      expectOwnerCall(only('POST', '/api/questions/$qid/decline'));
+      expectPersonCall(only('POST', '/api/questions/$qid/decline'));
       expect(q.isDeclined, isTrue);
     });
 

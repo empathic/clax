@@ -16,6 +16,7 @@ import 'content_hash.dart';
 import 'doc_snapshot.dart';
 import 'lineage_store.dart';
 import 'trust.dart';
+import 'updater.dart' show addedCapabilities;
 
 /// A bundle service's failure, in one sentence for the sheet ([message]),
 /// with [code] (a [BundleError] code, or the service's own) and the
@@ -93,8 +94,10 @@ class PublishedFiles {
   /// is read here; [contentSha256] hashes the files when first asked.
   factory PublishedFiles.of(Bundle b) {
     final m = b.manifest;
+    // A clax.json a bundle should not hold is left out: the manifest's
+    // capabilities are the declaration, and the daemon writes the file.
     final entries = <String, FileEntry>{
-      for (final MapEntry(:key, :value) in m.files.entries)
+      for (final MapEntry(:key, :value) in withoutManifest(m.files).entries)
         key: FileEntry.bytes(b.files[key]!, type: value.type),
     };
     String? change;
@@ -154,8 +157,14 @@ class Installed {
 
 /// Opens and installs bundles.
 class Installer {
-  Installer({required this.api, required this.store, required this.key});
+  Installer({
+    required this.api,
+    required this.store,
+    required this.key,
+    void Function(String)? log,
+  }) : _log = log ?? ((_) {});
 
+  final void Function(String) _log;
   final ClaxApi api;
   final LineageStore store;
   final BundleKey key;
@@ -293,6 +302,17 @@ class Installer {
     }
     final aid = created.artifact.id;
     made?.call(aid);
+    // The person accepted this install: what it declares is approved with
+    // it. A refusal leaves the install landed; the shell's bar asks instead.
+    final shown = addedCapabilities(const {}, m.capabilities);
+    await approveCapabilities(
+      api,
+      aid,
+      created.pendingCapabilities,
+      shownCapabilities: shown.capabilities,
+      shownHosts: shown.hosts,
+      log: _log,
+    );
     final mine =
         opened.decision.mine && opened.decision.answer == TrustAnswer.install;
     try {
@@ -472,3 +492,43 @@ StreamSubscription<StreamEvent> forgetDeleted(
   await store.forget(aid);
   snapshots?.discard(aid);
 });
+
+/// Approves the declaration [pending] names (a create's or publish's
+/// `pending_capabilities`) for app [aid], as the person who accepted it.
+/// Nothing is called when [pending] is null, nor when it names a
+/// capability or `net` host outside what the person's sheet listed
+/// ([shownCapabilities], [shownHosts]): the pending set is against the last
+/// approved declaration and can be wider than the sheet; the shell's bar
+/// asks about the rest. A refusal (403 `admin_only`,
+/// 409 `stale_version`, the network) is logged and not thrown: what landed
+/// stays, and the shell's bar asks.
+Future<void> approveCapabilities(
+  ClaxApi api,
+  String aid,
+  PendingCapabilities? pending, {
+  required Iterable<String> shownCapabilities,
+  required Iterable<String> shownHosts,
+  required void Function(String) log,
+}) async {
+  if (pending == null) return;
+  final unseen = [
+    ...pending.capabilities.where((c) => !shownCapabilities.contains(c)),
+    ...pending.hosts.where((h) => !shownHosts.contains(h)),
+  ];
+  if (unseen.isNotEmpty) {
+    log(
+      'not approving v${pending.version} of $aid: it waits on '
+      '${unseen.join(', ')}, which the person was not shown',
+    );
+    return;
+  }
+  try {
+    await api.approveCapabilities(
+      aid,
+      pending.version,
+      pending.declarationSha256,
+    );
+  } on Object catch (e) {
+    log('approving v${pending.version} of $aid failed: $e');
+  }
+}

@@ -573,7 +573,7 @@ async fn a_store_on_one_connection_records_a_push_before_a_publish() {
     );
     let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
     let tell = heard.clone();
-    st.set_pushed_listener(move |_, v| tell.lock().unwrap().push(v.n));
+    st.set_pushed_listener(move |_, v, _| tell.lock().unwrap().push(v.n));
     let (a, _) = st
         .call_async(|st| async move {
             st.create_artifact_async(DAEMON, publish("<p>one</p>", None), None)
@@ -1200,4 +1200,57 @@ async fn a_file_a_version_left_out_does_not_spend_a_later_pushs_read_bytes() {
     let note = v.note.as_deref().unwrap();
     assert!(note.starts_with("1 file was not taken"), "{note}");
     assert!(note.contains(": bad big.bin. Page"), "{note}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pushed_clax_json_declares_the_version_as_a_publish_would() {
+    let f = fixture().await;
+    let caps = |n: u32| f.st.version_capabilities(f.id.as_str(), n).unwrap();
+    let reconcile = async || {
+        f.st.reconcile_pushes_async(DAEMON, &f.id, &Pusher::default())
+            .await
+            .unwrap()
+            .len()
+    };
+    // The owner's commit adding clax.json declares from it.
+    f.write("clax.json", r#"{"capabilities": {"db": {}}}"#);
+    f.commit("Declare db").await;
+    f.push_as(Pusher::default()).await;
+    assert_eq!(reconcile().await, 1);
+    assert_eq!(caps(2), serde_json::json!({"db": {}}));
+    let artifact = f.st.get_artifact(&f.id).unwrap().unwrap();
+    assert_eq!(artifact.capabilities, serde_json::json!({"db": {}}));
+    // One that is not a manifest is no version.
+    f.write("clax.json", r#"{"capabilities": {}, "title": "x"}"#);
+    f.commit("Not a manifest").await;
+    f.push_as(Pusher::default()).await;
+    let bad = f.git.text(&f.clone, &["rev-parse", "HEAD"]).await;
+    assert_eq!(reconcile().await, 0);
+    assert_eq!(f.refusals(), [(bad, "invalid_manifest".to_string())]);
+    // Removing it clears the declaration.
+    f.git.text(&f.clone, &["rm", "-q", "clax.json"]).await;
+    f.commit("Declare nothing").await;
+    f.push_as(Pusher::default()).await;
+    assert_eq!(reconcile().await, 1);
+    assert_eq!(caps(3), serde_json::json!({}));
+    // A person who did not make the page changes contents, not its
+    // declaration.
+    let rae = person(&f.st, "Rae");
+    may_publish(&f.st, &rae, &f.id);
+    f.write("clax.json", r#"{"capabilities": {"user": {}}}"#);
+    f.commit("Rae declares user").await;
+    f.push_as(as_person(&rae)).await;
+    let wide = f.git.text(&f.clone, &["rev-parse", "HEAD"]).await;
+    assert_eq!(reconcile().await, 0);
+    assert_eq!(f.refusals().last(), Some(&(wide, "admin_only".to_string())));
+    f.write("clax.json", r#"{"capabilities": {}}"#);
+    f.write("index.html", "<p>rae</p>");
+    f.commit("Rae's page, declaring what is in force").await;
+    f.push_as(as_person(&rae)).await;
+    assert_eq!(reconcile().await, 1);
+    assert_eq!(caps(4), serde_json::json!({}));
+    assert_eq!(
+        f.read(4, "clax.json").await.as_deref(),
+        Some(r#"{"capabilities": {}}"#)
+    );
 }

@@ -14,6 +14,7 @@
   import { onMount } from "svelte";
   import { listArtifacts } from "../api";
   import * as api from "./api";
+  import { forgetThenSignOut } from "./signout";
   import { refusal } from "../people/refusal";
 
   let { me }: { me: api.HostedMe } = $props();
@@ -49,7 +50,7 @@
   }
   const copy = (what: string, text: string) => { void navigator.clipboard?.writeText(text).then(() => { copied = what; }, () => {}); };
   const makeLink = () => act("me", async () => { link = await api.signinLink(); });
-  const signOut = () => act("me", async () => { await api.signOut(); location.assign("/signin"); });
+  const signOut = () => act("me", async () => { await forgetThenSignOut(api.signOut); location.assign("/signin"); });
   const mint = (e: Event) => { e.preventDefault(); void act("tokens", async () => { minted = await api.mintToken(label.trim()); label = ""; }); };
   const share = (e: Event) => { e.preventDefault(); if (pick) void act("links", () => api.setLink(pick, pickAccess)); };
   const minutes = (iso: string) => Math.max(0, Math.round((Date.parse(iso) - Date.now()) / 60000));
@@ -100,6 +101,10 @@
       <div class="cmd"><code>{minted.claude_command}</code><button type="button" onclick={() => copy("claude", minted!.claude_command)}>{copied === "claude" ? "Copied" : "Copy"}</button></div>
       <p class="lead">Or to Codex, in <code>~/.codex/config.toml</code>:</p>
       <div class="cmd"><pre>{minted.codex_config}</pre><button type="button" onclick={() => copy("codex", minted!.codex_config)}>{copied === "codex" ? "Copied" : "Copy"}</button></div>
+      {#if minted.grok_command}
+        <p class="lead">Or to Grok Build:</p>
+        <div class="cmd"><code>{minted.grok_command}</code><button type="button" onclick={() => copy("grok", minted!.grok_command!)}>{copied === "grok" ? "Copied" : "Copy"}</button></div>
+      {/if}
       <p class="meta">The token is shown this once.</p>
     </div>
   {/if}

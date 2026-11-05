@@ -276,50 +276,7 @@ impl Store {
         id: &ArtifactId,
         replies_armed: bool,
     ) -> Result<Watch> {
-        self.with_tx(|tx| {
-            check(tx, session_id, id)?;
-            let before = current(tx, session_id, id.as_str())?;
-            tx.execute(
-                "INSERT INTO watches (session_id, artifact_id, replies_armed, created_at) VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(session_id, artifact_id) DO UPDATE SET replies_armed = excluded.replies_armed, source = 'direct'",
-                params![session_id, id.as_str(), replies_armed, self.now()],
-            )?;
-            let rec = match before {
-                None => Some(artifact_watch_record(
-                    tx,
-                    AuditKind::WatchStart,
-                    &self.now(),
-                    session_id,
-                    id.as_str(),
-                    replies_armed,
-                    "direct",
-                )?),
-                Some((armed, source)) => {
-                    let mut fields = serde_json::Map::new();
-                    if armed != replies_armed {
-                        fields.insert("replies_armed".into(), replies_armed.into());
-                    }
-                    if source != "direct" {
-                        fields.insert("source".into(), "direct".into());
-                    }
-                    if fields.is_empty() {
-                        None
-                    } else {
-                        Some(artifact_update_record(
-                            tx,
-                            &self.now(),
-                            session_id,
-                            id.as_str(),
-                            fields.into(),
-                        )?)
-                    }
-                }
-            };
-            if let Some(rec) = rec {
-                self.record_audit(tx, ctx, rec)?;
-            }
-            fetch(tx, session_id, id)
-        })
+        self.with_tx(|tx| watch_in(self, tx, ctx, session_id, id, replies_armed))
     }
 
     /// Names the local agent another Clax's sync session relays for on its
@@ -387,14 +344,16 @@ impl Store {
 
     /// The artifact of session `session_id`: of the live artifacts it watches
     /// (publishing watches), the one it last published a version of or
-    /// started watching, whichever is later; None when it watches none.
+    /// started watching, whichever is later; None when it watches none. A
+    /// followed remote artifact's mirror is never it: its page is the
+    /// remote's.
     /// A mirrored question that names no artifact is about this page, and
     /// without one it is asked in the terminal.
     pub fn session_artifact(&self, session_id: &str) -> Result<Option<String>> {
         self.with_read(|c| {
             Ok(c.query_row(
                 "SELECT w.artifact_id FROM watches w JOIN artifacts a ON a.id = w.artifact_id
-                 WHERE w.session_id = ?1 AND a.deleted_at IS NULL
+                 WHERE w.session_id = ?1 AND a.deleted_at IS NULL AND a.remote_mirror = 0
                  ORDER BY MAX(w.created_at, COALESCE((SELECT MAX(v.created_at) FROM versions v
                      WHERE v.artifact_id = w.artifact_id AND v.session_id = ?1), '')) DESC, w.artifact_id
                  LIMIT 1",
@@ -441,6 +400,59 @@ pub(crate) fn ensure_watch_in(
             true,
             "direct",
         )?;
+        st.record_audit(tx, ctx, rec)?;
+    }
+    fetch(tx, session_id, id)
+}
+
+/// [`Store::watch`] in `tx`, for `st`.
+pub(crate) fn watch_in(
+    st: &Store,
+    tx: &Transaction<'_>,
+    ctx: &AuditCtx,
+    session_id: &str,
+    id: &ArtifactId,
+    replies_armed: bool,
+) -> Result<Watch> {
+    check(tx, session_id, id)?;
+    let before = current(tx, session_id, id.as_str())?;
+    tx.execute(
+        "INSERT INTO watches (session_id, artifact_id, replies_armed, created_at) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(session_id, artifact_id) DO UPDATE SET replies_armed = excluded.replies_armed, source = 'direct'",
+        params![session_id, id.as_str(), replies_armed, st.now()],
+    )?;
+    let rec = match before {
+        None => Some(artifact_watch_record(
+            tx,
+            AuditKind::WatchStart,
+            &st.now(),
+            session_id,
+            id.as_str(),
+            replies_armed,
+            "direct",
+        )?),
+        Some((armed, source)) => {
+            let mut fields = serde_json::Map::new();
+            if armed != replies_armed {
+                fields.insert("replies_armed".into(), replies_armed.into());
+            }
+            if source != "direct" {
+                fields.insert("source".into(), "direct".into());
+            }
+            if fields.is_empty() {
+                None
+            } else {
+                Some(artifact_update_record(
+                    tx,
+                    &st.now(),
+                    session_id,
+                    id.as_str(),
+                    fields.into(),
+                )?)
+            }
+        }
+    };
+    if let Some(rec) = rec {
         st.record_audit(tx, ctx, rec)?;
     }
     fetch(tx, session_id, id)

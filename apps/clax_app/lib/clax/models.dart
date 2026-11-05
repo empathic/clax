@@ -286,6 +286,33 @@ class PublishRequest {
   };
 }
 
+/// The capability declaration a version waits on its maker's approval for,
+/// as a create's or publish's answer names it.
+class PendingCapabilities {
+  const PendingCapabilities({
+    required this.version,
+    required this.capabilities,
+    required this.hosts,
+    required this.declarationSha256,
+  });
+
+  factory PendingCapabilities.fromJson(Json j) => PendingCapabilities(
+    version: (j['version'] as num).toInt(),
+    capabilities: [
+      for (final c in j['capabilities'] as List? ?? const []) '$c',
+    ],
+    hosts: [for (final h in j['hosts'] as List? ?? const []) '$h'],
+    declarationSha256: j['declaration_sha256'] as String,
+  );
+
+  final int version;
+  final List<String> capabilities;
+  final List<String> hosts;
+
+  /// The hash of the declaration; an approval names it with [version].
+  final String declarationSha256;
+}
+
 /// A create's, publish's or restore's answer: the artifact and the new version.
 class PublishResult {
   const PublishResult({
@@ -293,6 +320,7 @@ class PublishResult {
     required this.version,
     required this.url,
     this.noteTruncated = false,
+    this.pendingCapabilities,
   });
 
   factory PublishResult.fromJson(Json j) => PublishResult(
@@ -300,10 +328,17 @@ class PublishResult {
     version: VersionInfo.fromJson(_map(j['version'])),
     url: j['url'] as String,
     noteTruncated: j['note_truncated'] as bool? ?? false,
+    pendingCapabilities: j['pending_capabilities'] is Map
+        ? PendingCapabilities.fromJson(_map(j['pending_capabilities']))
+        : null,
   );
 
   final ArtifactSummary artifact;
   final VersionInfo version;
+
+  /// What the version declares that its maker has not yet approved; null
+  /// when there is nothing to approve.
+  final PendingCapabilities? pendingCapabilities;
 
   /// The shell's path for the artifact, `/a/<aid>`.
   final String url;

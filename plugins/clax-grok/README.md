@@ -42,15 +42,38 @@ the plugin's runs with a warning in `~/.clax/logs/hooks.log`. When no
 that says why and how to fix it, and the hooks exit 0, so a missing binary
 never fails a turn.
 
+## On clax.dev, or another hosted Clax
+
+The plugin works with a Clax on your machine. Grok Build also connects to a
+hosted Clax directly, as its MCP client takes a remote server with a header
+(`grok mcp add --transport http <name> <url> --header "<Name>: <value>"`,
+in xAI's Grok Build docs, "MCP servers"). On the hosted Clax's People page,
+under Agent tokens, name the machine and press Create token: it shows the
+command to run, once,
+
+```
+grok mcp add --transport http clax_hosted <MCP URL> --header "Authorization: Bearer <token>"
+```
+
+then start a new Grok session. The agent acts as you, with your rights, and
+the token is revoked on People. The server is named `clax_hosted`, apart
+from this plugin's `clax_grok` and the Claude Code copy's `clax`, so Grok
+names its tools `clax_hosted__<tool>`. It gets the tools alone: no `clax`
+skill and no hooks, so comments reach it on tool results and in
+`wait_for_feedback`. To keep the skill and the hooks, use this plugin with a
+local Clax and publish to clax.dev from there (`clax remote add
+https://clax.dev`, then Publish to clax.dev or the `publish_public` tool).
+
 ## What it adds
 
-- The `clax_grok` MCP server (`clax mcp --agent grok`): thirty-two tools,
+- The `clax_grok` MCP server (`clax mcp --agent grok`): forty-two tools,
   `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `tag`, `tags`, `fork`,
   `asset_upload`, `status`, `comments_read`, `comments_reply`,
-  `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `where_to_ask`, `publish_public`,
+  `comments_resolve`, `comments_handoff`, `watch`, `wait_for_feedback`, `working`, `draft`, `git_remote`, `ask`, `where_to_ask`, `connect_instance`, `publish_public`,
   and the data tools
   `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`,
-  `db_str_replace`, `db_batch`, which Grok names `clax_grok__<tool>` and reaches through `use_tool`.
+  `db_str_replace`, `db_batch`, and the report queue tools
+  `queue_list`, `queue_claim`, `queue_renew`, `queue_release`, `queue_reply`, `queue_resolve`, `queue_get`, `queue_fix`, `queue_watch`, which Grok names `clax_grok__<tool>` and reaches through `use_tool`.
   The first tool call starts the daemon when none is running.
 - The `clax` skill: when to publish, the page contract, the comment loop,
   and how to start the monitor that wakes the session for comments ("Live
@@ -139,7 +162,7 @@ tiers 1, 2 and 4.
 ## Working from a source checkout
 
 `just dev grok` runs Grok with the installed clax-grok plugin, the fresh
-build named in `CLAX_BIN`, and `CLAX_HOME=~/.clax-dev`. Grok runs its installed
+build named in `CLAX_BIN`, and the checkout's dev home in `CLAX_HOME`. Grok runs its installed
 copy of the plugin, so to try changes to the skill, the hooks or the wrapper,
 run `just install`, which reinstalls the plugin from the copy built into the
 new binary.

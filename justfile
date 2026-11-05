@@ -10,11 +10,11 @@ default: help
 help:
     @just --list --unsorted
 
-# Build clax and start a harness on ~/.clax-dev and port 7481 (claude and pi load this checkout's plugin; codex and grok use the installed one); with no harness, `just watch`
+# Build clax and start a harness on this checkout's dev home (~/.clax-dev on 7481; a linked worktree's own ~/.clax-dev-<name>) (claude and pi load this checkout's plugin; codex and grok use the installed one); with no harness, `just watch`
 dev *ARGS:
     ./scripts/dev.sh "$@"
 
-# Run the auto-reloading daemon and web UI (~/.clax-dev on 7481, or $CLAX_DEV_PORT; --shared: ~/.clax on 7480)
+# Run the auto-reloading daemon and web UI on this checkout's dev home (~/.clax-dev on 7481; a linked worktree's own ~/.clax-dev-<name>; or $CLAX_HOME, $CLAX_DEV_PORT; --shared: ~/.clax on 7480)
 watch *ARGS:
     ./scripts/watch.sh "$@"
 
@@ -30,15 +30,19 @@ install-test:
 plugin-test:
     ./scripts/test-plugins.sh
 
-# Check clax-core, clax-rt, clax-mcp, clax-server and clax-content-git for wasm32-unknown-unknown (a hosted Worker's target), warnings denied; needs an LLVM clang with a wasm32 backend (brew install llvm, or $LLVM_BIN)
+# Build the crates a hosted Worker runs for wasm32-unknown-unknown, warnings denied (//bazel/wasm:check)
 check-wasm *ARGS:
-    ./scripts/check-wasm.sh "$@"
+    ./scripts/run.sh check-wasm "$@"
 
-# Run crates/clax-worker's checks: its format check with Bazel's rustfmt (//crates/clax-worker:rustfmt), then natively (its own Cargo workspace) npm ci, its tests, clippy, test-deploy-config.mjs (deploy.mjs's generated config), and test-wasm.mjs and test-sandbox.mjs under `wrangler dev --local` (scripts/worker-checks.sh)
+# Check the crates a hosted Worker runs for wasm32 natively, with cargo check (scripts/check-wasm.sh); needs an LLVM clang with a wasm32 backend (brew install llvm, or $LLVM_BIN)
+check-wasm-native *ARGS:
+    CLAX_BUILD=native ./scripts/run.sh check-wasm "$@"
+
+# Run crates/clax-worker's checks: its and its VFS's format check, tests and clippy, deploy.mjs's generated config, and the wasm Worker under `wrangler dev --local` (test-wasm.mjs, test-sandbox.mjs, test-bot.mjs, test-feedback.mjs) and in browsers (e2e.mjs, e2e-hosted.mjs)
 worker-test:
     ./scripts/run.sh worker-test
 
-# Run crates/clax-worker's checks natively, its format check with cargo fmt
+# Run crates/clax-worker's checks natively, with Cargo, pnpm and worker-build (scripts/worker-checks.sh, then the e2e runs)
 worker-test-native:
     CLAX_BUILD=native ./scripts/run.sh worker-test
 
@@ -65,17 +69,25 @@ uninstall:
     -cargo uninstall --root "${CARGO_HOME:-$HOME/.cargo}" clax-cli 2>/dev/null
     rm -f "${CARGO_HOME:-$HOME/.cargo}/bin/clax"
 
-# Run the dev daemon in the foreground on ~/.clax-dev, port 7481 (extra args go to `clax serve`)
+# Run the dev daemon in the foreground on this checkout's dev home and port (extra args go to `clax serve`)
 serve *ARGS:
-    CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" ./scripts/run.sh clax serve --foreground --port 7481 "$@"
+    . scripts/dev-home.sh && watch_settings && CLAX_HOME="$DEV_HOME" ./scripts/run.sh clax serve --foreground --port "$DEV_PORT" "$@"
 
-# Stop the dev daemon (~/.clax-dev)
+# Stop the daemon of this checkout's dev home
 stop:
-    CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" ./scripts/run.sh clax stop
+    . scripts/dev-home.sh && watch_settings && CLAX_HOME="$DEV_HOME" ./scripts/run.sh clax stop
 
-# Check the dev home and its daemon (~/.clax-dev)
+# Check this checkout's dev home and its daemon
 doctor:
-    CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" ./scripts/run.sh clax doctor
+    . scripts/dev-home.sh && watch_settings && CLAX_HOME="$DEV_HOME" ./scripts/run.sh clax doctor
+
+# Run a clax command with the checkout's build on this checkout's dev home (`just clax remote add http://localhost:8789`)
+clax *ARGS:
+    . scripts/dev-home.sh && watch_settings && CLAX_HOME="$DEV_HOME" ./scripts/run.sh clax "$@"
+
+# Set up the instance's own feedback queue on the running dev daemon (~/.clax-dev, or $CLAX_HOME): queue clax-feedback-dev, its service grant and [feedback] in config.toml; restart the daemon after (docs/prod.md)
+dev-feedback:
+    ./scripts/dev-feedback.sh
 
 # The Clax app (apps/clax_app). With Bazel each builds or checks from the
 # shared cache (docs/bazel.md, "The Clax app"); each has a `-native` twin
@@ -135,6 +147,11 @@ app-iphone-testflight:
 home-bundle:
     ./scripts/run.sh home-bundle
 
+# Record a vignette of the sizzle reel into target/reel/<id>/ with Bazel (--fast <id>: //web/reel:<id>_fast, clip.webm and beats.json); there is no native twin
+[positional-arguments]
+reel *ARGS:
+    ./scripts/run.sh reel "$@"
+
 # Pack the home app's bundle natively (dart run) into apps/clax_app/assets/home
 home-bundle-native:
     CLAX_BUILD=native ./scripts/run.sh home-bundle
@@ -177,15 +194,15 @@ build *ARGS:
 build-native *ARGS:
     CLAX_BUILD=native ./scripts/run.sh build "$@"
 
-# Build the web UI and the extension into web/dist and web/dist-extension
+# Build the web UI, the extension and the SDK package into web/dist, web/dist-extension and web/dist-sdk
 web *ARGS:
     ./scripts/run.sh web "$@"
 
-# Build the web UI and the extension with pnpm
+# Build the web UI, the extension and the SDK package with pnpm
 web-native *ARGS:
     CLAX_BUILD=native ./scripts/run.sh web "$@"
 
-# Run the web lint, typecheck, unit tests and bundle gate
+# Run the web lint, typecheck, unit tests, bundle gate and SDK package test
 web-test *ARGS:
     ./scripts/run.sh web-test "$@"
 
@@ -273,18 +290,47 @@ crate-package: web
     # The packed manifest has no [workspace] table (cargo strips it); unpacked inside this repository it needs one.
     cd target/crate-package/unpacked/clax-* && printf '\n[workspace]\n' >> Cargo.toml && CARGO_TARGET_DIR="{{justfile_directory()}}/target" cargo check --locked
 
-# Run the hosted demo locally in one go (demo/local.ts): build the web UI and the Worker, a fresh `wrangler dev --local` in hosted mode on a free port with one live seat, seed, links, steps and a git clone command; Enter starts the demo agents (extra args: --native for the native daemon instead, --port, --seats, --agents, --pace, --no-build)
+# Run the hosted demo locally in one go (demo/local.ts): install the Worker's packages (stamped pnpm install), build the web UI (Bazel when installed) and the Worker, a fresh `wrangler dev --local` in hosted mode on a free port with one live seat, seed, links, steps and a git clone command; Enter starts the demo agents (extra args: --native for the native daemon instead, --port, --seats, --agents, --pace, --no-build)
 hosted-demo *ARGS:
     node demo/local.ts "$@"
+
+# An agent of a local Clax connects to the dev Worker, reads a private page there and is told of a comment on it, end to end (demo/remote-e2e.ts): the Worker with clax-dev-local's settings and a scratch-home daemon on free ports, each step printed, exit 0 when every step passed; runs in target/remote-e2e/ (args: --no-build to use the last builds, --keep to keep the run directory)
+remote-e2e *ARGS:
+    node demo/remote-e2e.ts "$@"
+
+# Run clax.dev on this machine (demo/clax-dev-local.ts): the Worker under `wrangler dev --local` on the first free port of 8788-8797 with a production deploy's settings (GitHub sign-in against real GitHub, the bundled Terms and Privacy Policy) and nothing seeded, an owner of its own (a sign-in link printed each run) so that your GitHub sign-in is a new person's sign-up with the Terms and the quickstart, its data kept in target/clax-dev-local/; the first run on a machine registers a GitHub App in two clicks in the browser, kept in ~/.config/clax/local/github.env for every worktree rebuilding and restarting the Worker when web/ or crates/ change (args: --fresh to start over, --owner to make your GitHub account the owner, --setup to leave setup open, --port, --no-build to build nothing and watch nothing)
+clax-dev-local *ARGS:
+    node demo/clax-dev-local.ts "$@"
 
 # Deploy hosted Clax to the Cloudflare account `npx wrangler login` signed in to (crates/clax-worker/deploy.mjs): bucket, queue, Artifacts namespace, secrets, the public host as a custom domain and the site domain as the route *.<site domain>/*, build, deploy, wait for /healthz and check a site host (args: --zone, --public, --site-domain, --store artifacts|memory, --dry-run, --config-only, --out, --diag, --no-build, --rotate-secrets)
 hosted-deploy *ARGS:
     cd crates/clax-worker && node deploy.mjs "$@"
 
-# Deploy clax.dev, Empathic's hosted Clax, with the settings saved in ~/.config/clax/deploy/setup.env and the bundled Terms of Service and Privacy Policy (scripts/cloudflare-setup.sh --legal bundled). A dry run that changes nothing on the account unless given --i-know-what-i-am-doing; --smoke smoke-tests the deployment too
+# Deploy clax.dev, Empathic's hosted Clax and the production instance, with the settings saved in ~/.config/clax/deploy/setup.env and the bundled Terms of Service and Privacy Policy (scripts/cloudflare-setup.sh --legal bundled --production). A dry run that changes nothing on the account unless given --i-know-what-i-am-doing; --smoke smoke-tests the deployment too. clax.dev deploys from GitHub Actions on pushes to prod (docs/prod.md); this deploys it from a laptop only at a clean checkout of origin's prod tip and with --from-laptop. Other instances deploy with scripts/cloudflare-setup.sh
 clax-dev-deploy *ARGS:
-    ./scripts/cloudflare-setup.sh --legal bundled "$@"
+    ./scripts/cloudflare-setup.sh --legal bundled --production "$@"
+
+# Deploy the environment NAME other than clax.dev (docs/environments.md): dev, which GitHub Actions deploys from every green push to main, or a preview such as pr-12, which it deploys for each pull request; each is a Worker with resources of its own, its settings kept in ~/.config/clax/deploy/setup.NAME.env (scripts/cloudflare-setup.sh --env NAME --legal bundled). A dry run unless given --i-know-what-i-am-doing; dev's first deploy, which makes its secrets, runs from here. prod is just clax-dev-deploy
+env-deploy NAME *ARGS:
+    if [ "$1" = prod ]; then echo "just env-deploy deploys dev or a preview; clax.dev is just clax-dev-deploy" >&2; exit 2; fi
+    ./scripts/cloudflare-setup.sh --legal bundled --env "$@"
+
+# Run the Worker's locked wrangler from any directory (Bazel's //crates/clax-worker:wrangler; natively the stamped install in crates/clax-worker), e.g. just wrangler whoami (the accounts the login sees, with their IDs), just wrangler login, just wrangler tail clax-dev
+wrangler *ARGS:
+    ./scripts/run.sh wrangler "$@"
+
+# Run the Worker's locked wrangler with the native tools: its stamped pnpm install in crates/clax-worker
+wrangler-native *ARGS:
+    CLAX_BUILD=native ./scripts/run.sh wrangler "$@"
+
+# Tear down the preview NAME: its Worker with every artifact and person in it, its custom domain, route and DNS record (crates/clax-worker/teardown.mjs; needs CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID; args: --site-zone <zone>, required, and --dry-run). Never dev or prod
+env-teardown NAME *ARGS:
+    cd crates/clax-worker && node teardown.mjs "$@"
 
 # Release Clax VERSION and every plugin: Claude Code, Codex and Grok through the repo's marketplaces, Pi through npm (scripts/release.sh); a dry run unless --i-know-what-i-am-doing
 release VERSION *ARGS:
     ./scripts/release.sh "$@"
+
+# Publish the SDK package, @empathic/clax-client-sdk, at VERSION, its own version (web/sdk/package.json's), from origin's main (scripts/release-sdk.sh); a dry run unless --i-know-what-i-am-doing
+release-sdk VERSION *ARGS:
+    ./scripts/release-sdk.sh "$@"

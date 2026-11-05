@@ -249,7 +249,7 @@
     <div class="send-unsent pick"><SendButton label={unsentLabel(unsentCount, target)} agents={p.agents ?? []} names={agentsByHandle} target={null} {me} {own} aid={asks}
       threads={p.threads.filter(t => t.status === "open" && !t.sent_to_agent).map(t => t.id)} onSend={() => {}} onChoose={h => p.onChoose?.(h)} /></div>
   {:else if unsentCount && p.onSendUnsent && !p.readOnly && !p.noSend}
-    <button type="button" class="primary send-unsent" disabled={p.batchBusy}
+    <button type="button" class="primary send-unsent" data-shell-control="send" disabled={p.batchBusy}
       onclick={e => { unsentHint = guardedAction(e, "send", () => p.onSendUnsent?.()); }}>{unsentLabel(unsentCount, target)}</button>
     <p class="act-hint" role="status">{unsentHint ?? ""}</p>
   {/if}

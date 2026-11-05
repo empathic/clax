@@ -1,0 +1,14 @@
+# The manifests and the example catalog, which clax-fleet's tests read to
+# check they name only what the binary reads (crates/clax-fleet/src/main.rs).
+filegroup(
+    name = "manifests",
+    srcs = glob(["**/*.yaml", "**/*.toml"]),
+    visibility = ["//crates/clax-fleet:__pkg__"],
+)
+
+# The overlay's image tag, which scripts/bump-version.sh writes and the
+# release script test checks (scripts/test-release.files).
+exports_files(
+    ["sqlite/kustomization.yaml"],
+    visibility = ["//scripts:__pkg__"],
+)

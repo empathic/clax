@@ -1,6 +1,6 @@
 //! The digest of an app's files that the render gate compares: the content hash
 //! `apps/clax_app/lib/bundle/content_hash.dart` computes (`contentHash`),
-//! over every file but `icon.svg`. The app records a draft's clean render
+//! over every file but `icon.svg` (and, as every content hash, `clax.json`). The app records a draft's clean render
 //! under it, and a publish step naming that draft must publish files with
 //! the same digest.
 
@@ -65,6 +65,10 @@ mod tests {
         assert_eq!(files_digest(FILES), DIGEST);
         assert_eq!(files_digest(FILES.into_iter().take(3)), DIGEST);
         assert_ne!(files_digest(FILES.into_iter().skip(1)), DIGEST);
+        // `clax.json` is in no content hash: the vector the app's
+        // `contentHash leaves clax.json out` test checks.
+        let declared = FILES.into_iter().chain([("clax.json", &b"{}"[..])]);
+        assert_eq!(files_digest(declared), DIGEST);
     }
 
     #[test]

@@ -44,7 +44,7 @@ run it through the command the plugin's session context gives.
   for tests.
 - No `unsafe`: the workspace lints forbid it (`unsafe_code = "forbid"` in
   `Cargo.toml`).
-- One exception, approved by the owner: `crates/clax-embed` denies `unsafe_code` instead of forbidding it, and allows it only in `src/ffi.rs`, on its four exported C functions (`clax_embed_open`, `clax_embed_call`, `clax_embed_subscribe`, `clax_embed_close`) and the one `std::slice::from_raw_parts` each of `clax_embed_open` and `clax_embed_call` makes of its byte arguments; `//scripts:no_unsafe` fails on any other `unsafe`, any other `allow(unsafe_code)`, and any other crate that does not take the workspace's lints.
+- Two exceptions, approved by the owner, each in a crate that denies `unsafe_code` instead of forbidding it: `crates/clax-embed` allows it only in `src/ffi.rs`, on its four exported C functions (`clax_embed_open`, `clax_embed_call`, `clax_embed_subscribe`, `clax_embed_close`) and the one `std::slice::from_raw_parts` each of `clax_embed_open` and `clax_embed_call` makes of its byte arguments; and the Worker's SQLite VFS, `crates/clax-worker/vfs`, allows it only on the one statement in `src/lib.rs` that registers the VFS with SQLite (`rsqlite_vfs::register_vfs`, an `unsafe fn`), under its `SAFETY` comment. `//scripts:no_unsafe` fails on any other `unsafe`, any other `allow(unsafe_code)`, and any other crate that does not take the workspace's lints.
 - Never create hard links, in code, tests or scripts.
 - Tests are fast and load-tolerant: no sleeps standing in for a condition,
   no wall-clock budgets in any check, injected clocks for timing rules.
@@ -90,7 +90,8 @@ run it through the command the plugin's session context gives.
 ## Homes, daemons and git
 
 - Never run an unmerged build against the owner's `~/.clax` or its daemon
-  on 7480. Use `just watch`/`just dev` (`~/.clax-dev`), or a scratch
+  on 7480. Use `just watch`/`just dev` (the checkout's dev home: `~/.clax-dev`,
+  or a linked worktree's own `~/.clax-dev-<name>`), or a scratch
   `CLAX_HOME` on a free port, and stop any daemon you start by its PID.
 - Migrations are numbered contiguously in
   `crates/clax-store/src/migrations.rs`; a branch takes the next free

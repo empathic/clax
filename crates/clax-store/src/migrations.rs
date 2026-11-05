@@ -5,9 +5,9 @@
 /// migration, its marker) where no earlier one did, with triggers that
 /// refuse to change or remove a row of it, and inserts `$name`. Nothing
 /// else writes the table, so the marker stays as long as the database.
-/// Use: `concat!(migration_marker!("name"), "UPDATE …;")`.
-// No migration changes only rows yet; the tests' simulated one does.
-#[cfg_attr(not(test), allow(unused_macros))]
+/// Use: `concat!(migration_marker!("name"), "UPDATE …;")`. No migration
+/// of this numbering uses it; the tests build earlier numberings with it.
+#[cfg(test)]
 macro_rules! migration_marker {
     ($name:literal) => {
         concat!(
@@ -1704,6 +1704,451 @@ pub const MIGRATIONS: &[&str] = &[
         AND NOT EXISTS (SELECT 1 FROM assets a WHERE a.id = page_authors.id);
     UPDATE page_authors SET id = (SELECT a.artifact_id FROM assets a WHERE a.id = page_authors.id) || '/' || id
         WHERE kind = 'asset';",
+    // 55: the page a device sign-in returns its person to once it is
+    // decided. `device_codes.return_to` is a loopback address the machine
+    // named (`clax_http::loopback::loopback_return`), or NULL.
+    "ALTER TABLE device_codes ADD COLUMN return_to TEXT;",
+    // 56: the capability declaration each version was published under.
+    // `versions.capabilities_json` is that version's declaration, or NULL
+    // when it is not known: every version before this migration but each
+    // artifact's current one, which takes the artifact's declaration.
+    "ALTER TABLE versions ADD COLUMN capabilities_json TEXT;
+    UPDATE versions SET capabilities_json = (
+            SELECT a.capabilities_json FROM artifacts a WHERE a.id = versions.artifact_id)
+        WHERE n = (SELECT a.current_version FROM artifacts a WHERE a.id = versions.artifact_id);",
+    // 57: the Clax Quickstart seeded into each person's gallery
+    // (`crate::quickstart`). One row per person, keyed by public ID or
+    // `*owner`, written when the gallery is seeded: `artifact_id` is the
+    // artifact made, or NULL when none was (a home that already held
+    // artifacts); `release` and `version_n` are the release and version
+    // Clax last wrote to it; `seeded_at` is when the row was written; and
+    // `stopped_at` is when updates stopped for good (the person touched or
+    // deleted it), NULL while Clax still moves it to each release.
+    "CREATE TABLE quickstarts (
+        person TEXT PRIMARY KEY,
+        artifact_id TEXT,
+        release TEXT,
+        version_n INTEGER,
+        seeded_at TEXT NOT NULL,
+        stopped_at TEXT
+    );",
+    // 58: each artifact's approved capability declaration
+    // (`crate::capability_approvals`): the last declaration its
+    // administrator approved, the version it was approved at, when and by
+    // whom (`owner`, `person:<ID>`, `migration`, or `clax` for a quickstart
+    // version Clax wrote). Every live artifact but
+    // a hidden draft has its current declaration approved here (`by =
+    // 'migration'`), since it is in force today. Deleting the artifact
+    // removes its row (the foreign key on a row delete, the trigger on the
+    // soft delete).
+    "CREATE TABLE capability_approvals (
+        artifact_id TEXT PRIMARY KEY REFERENCES artifacts(id) ON DELETE CASCADE,
+        version_n INTEGER NOT NULL,
+        capabilities_json TEXT NOT NULL,
+        approved_at TEXT NOT NULL,
+        by TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE TRIGGER capability_approvals_on_delete AFTER UPDATE OF deleted_at ON artifacts
+    WHEN NEW.deleted_at IS NOT NULL
+    BEGIN
+        DELETE FROM capability_approvals WHERE artifact_id = NEW.id;
+    END;
+    INSERT INTO capability_approvals (artifact_id, version_n, capabilities_json, approved_at, by)
+        SELECT id, current_version, capabilities_json, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'migration'
+        FROM artifacts
+        WHERE deleted_at IS NULL AND current_version > 0 AND hidden = 0
+            AND capabilities_json NOT IN ('{}', '');",
+    // 59: report queues and external artifacts (`crate::queues`,
+    // `crate::external`; spec 2026-10-27-clax-sdk-design §6, §7). A queue
+    // is made by `person` (NULL: the owner) and lists the origins of the
+    // deployer's app; its members are people by public ID. A service grant
+    // and a reporter token are kept by their SHA-256 alone. An external
+    // artifact is an `html` artifact with a row here naming its app's
+    // `external_id`, unique in its `namespace` (`''`: the whole instance;
+    // on a hosted Clax, the queue maker's account); its soft delete drops the row,
+    // so the ID can name a new artifact. A report is a thread with a
+    // `queue_id`; a claim is one row per session that held a lease on it,
+    // the thread's current lease being the one with the largest `fence`
+    // (a released one is kept, so a fence is never reused).
+    // A reporter's comment carries its `reporter_id`.
+    "CREATE TABLE queues (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        person TEXT,
+        origins_json TEXT NOT NULL CHECK (json_valid(origins_json)),
+        reporters_see TEXT NOT NULL DEFAULT 'own' CHECK (reporters_see IN ('own', 'all')),
+        created_at TEXT NOT NULL,
+        deleted_at TEXT
+    );
+    CREATE INDEX queues_by_person ON queues(person) WHERE deleted_at IS NULL;
+    CREATE TABLE queue_members (
+        queue_id TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE,
+        person TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('admin', 'triage')),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (queue_id, person)
+    ) WITHOUT ROWID;
+    CREATE INDEX queue_members_by_person ON queue_members(person);
+    CREATE TABLE queue_service_grants (
+        id TEXT PRIMARY KEY,
+        queue_id TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        token_sha256 TEXT NOT NULL UNIQUE,
+        public_key TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        revoked_at TEXT
+    );
+    CREATE INDEX queue_service_grants_by_queue ON queue_service_grants(queue_id);
+    CREATE TABLE queue_reporter_tokens (
+        token_sha256 TEXT PRIMARY KEY,
+        queue_id TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE,
+        service_grant_id TEXT NOT NULL REFERENCES queue_service_grants(id) ON DELETE CASCADE,
+        reporter_id TEXT NOT NULL,
+        origin TEXT NOT NULL,
+        public_key TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE INDEX queue_reporter_tokens_by_expiry ON queue_reporter_tokens(expires_at);
+    CREATE TABLE external_artifacts (
+        artifact_id TEXT PRIMARY KEY REFERENCES artifacts(id) ON DELETE CASCADE,
+        namespace TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        url TEXT NOT NULL,
+        metadata_json TEXT CHECK (json_valid(metadata_json)),
+        metadata_version INTEGER NOT NULL DEFAULT 1,
+        revision TEXT,
+        UNIQUE (namespace, external_id)
+    );
+    CREATE TRIGGER external_artifacts_on_delete AFTER UPDATE OF deleted_at ON artifacts
+    WHEN NEW.deleted_at IS NOT NULL
+    BEGIN
+        DELETE FROM external_artifacts WHERE artifact_id = NEW.id;
+    END;
+    ALTER TABLE threads ADD COLUMN queue_id TEXT;
+    ALTER TABLE threads ADD COLUMN reporter_id TEXT;
+    ALTER TABLE threads ADD COLUMN metadata_json TEXT;
+    ALTER TABLE threads ADD COLUMN metadata_version INTEGER NOT NULL DEFAULT 1;
+    CREATE INDEX threads_by_queue ON threads(queue_id, created_at, id) WHERE queue_id IS NOT NULL;
+    CREATE INDEX threads_by_queue_reporter ON threads(queue_id, reporter_id, created_at, id)
+        WHERE queue_id IS NOT NULL;
+    ALTER TABLE comments ADD COLUMN reporter_id TEXT;
+    CREATE TABLE queue_claims (
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        session_id TEXT NOT NULL,
+        queue_id TEXT NOT NULL,
+        lease_id TEXT NOT NULL,
+        fence INTEGER NOT NULL,
+        expires_at TEXT NOT NULL,
+        released INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (thread_id, session_id)
+    ) WITHOUT ROWID;
+    CREATE INDEX queue_claims_by_session ON queue_claims(session_id);",
+    // 60: a local daemon's browser login (`crate::browser_login`). A login
+    // code, made by a holder of the daemon token, is redeemed once by the
+    // browser it was opened in; an owner browser session is the value of
+    // that browser's owner and events cookies. Both are kept by their
+    // SHA-256 alone, and name no viewer row: a session is the owner's
+    // whatever row the owner is. A hosted daemon writes neither.
+    //
+    // It also adds connection requests (`crate::remote_requests`): an
+    // agent's ask that the owner connect this home to a Clax instance, at
+    // most one open per origin (`remote_requests_open`), each asking
+    // session with the URL it wanted; the origins the owner muted ("Never
+    // for this instance") and those held off a day by "Not now". The
+    // inbox gains their kind, `remote_request`, rebuilt as migration 30
+    // rebuilt it, keeping every `seq`. And it adds what following a remote
+    // artifact keeps: `remote_links.followed`, a link that mirrors a
+    // remote artifact's threads rather than pushes one, with
+    // `remote_links.unwatched_at`, since when no local session has watched
+    // it (the sync leaves it alone then, and drops it a week on), and
+    // `artifacts.remote_mirror`, the local artifact holding those threads
+    // (a column, as `artifacts.kind`'s CHECK cannot be altered without
+    // rebuilding the table every other table names). And a remote may be
+    // `signed_out`: its token was refused there (revoked), so it is kept,
+    // with its links, until the person connects it again; `remotes` is
+    // rebuilt for the status's CHECK, as no table names it, and gains
+    // `reconnecting`, set while a signed-out remote's new sign-in waits, so
+    // one that does not finish leaves it signed out rather than forgotten.
+    // `threads.reopened_by_person` is whose reopen left a thread open
+    // (`*owner`, a person's public ID, or `-` for anyone else; NULL for
+    // Clax itself and reopens before it): a linked thread's reopen goes up
+    // to its remote only when it is the owner's (`crate::linked`).
+    "CREATE TABLE login_codes (
+        sha256 TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        used_at TEXT
+    ) WITHOUT ROWID;
+    CREATE TABLE owner_browser_sessions (
+        sha256 TEXT PRIMARY KEY,
+        proof_sha256 TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        ended_at TEXT
+    ) WITHOUT ROWID;
+    CREATE TABLE remote_requests (
+        id TEXT PRIMARY KEY,
+        origin TEXT NOT NULL,
+        name TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('open', 'connected', 'dismissed', 'muted', 'expired')),
+        opened_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        answered_at TEXT,
+        remote_id TEXT
+    );
+    CREATE UNIQUE INDEX remote_requests_open ON remote_requests(origin) WHERE status = 'open';
+    CREATE INDEX remote_requests_by_opener ON remote_requests(opened_by, created_at);
+    CREATE TABLE remote_request_askers (
+        request_id TEXT NOT NULL REFERENCES remote_requests(id) ON DELETE CASCADE,
+        session_id TEXT NOT NULL,
+        url TEXT,
+        reason TEXT,
+        asked_at TEXT NOT NULL,
+        PRIMARY KEY (request_id, session_id)
+    ) WITHOUT ROWID;
+    CREATE TABLE remote_mutes (
+        origin TEXT PRIMARY KEY,
+        muted_at TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE TABLE remote_dismissals (
+        origin TEXT PRIMARY KEY,
+        until TEXT NOT NULL
+    ) WITHOUT ROWID;
+    ALTER TABLE remote_links ADD COLUMN followed INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE remote_links ADD COLUMN unwatched_at TEXT;
+    ALTER TABLE artifacts ADD COLUMN remote_mirror INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE threads ADD COLUMN reopened_by_person TEXT;
+    CREATE TABLE remotes_60 (
+        id TEXT PRIMARY KEY,
+        origin TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'connected', 'signed_out')),
+        token TEXT,
+        device_code TEXT,
+        user_code TEXT,
+        verification_url TEXT,
+        sign_in_expires_at TEXT,
+        poll_interval_s INTEGER,
+        person_public_id TEXT,
+        person_name TEXT,
+        grant_id TEXT,
+        created_at TEXT NOT NULL,
+        connected_at TEXT,
+        client_kind TEXT,
+        reconnecting INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO remotes_60 SELECT id, origin, name, status, token, device_code, user_code,
+        verification_url, sign_in_expires_at, poll_interval_s, person_public_id, person_name,
+        grant_id, created_at, connected_at, client_kind, 0 FROM remotes;
+    DROP TABLE remotes;
+    ALTER TABLE remotes_60 RENAME TO remotes;
+    CREATE TABLE inbox_items_60 (
+        seq INTEGER PRIMARY KEY,
+        id TEXT NOT NULL UNIQUE,
+        kind TEXT NOT NULL CHECK (kind IN ('reply', 'version', 'published', 'question', 'finished',
+                                           'approval', 'connection', 'ended', 'push', 'remote_request')),
+        key TEXT NOT NULL UNIQUE,
+        recipient TEXT,
+        artifact_id TEXT,
+        thread_id TEXT,
+        comment_id TEXT,
+        version_n INTEGER,
+        question_id TEXT,
+        session_id TEXT,
+        harness TEXT,
+        request_id TEXT,
+        grant_id TEXT,
+        detail_json TEXT,
+        created_at TEXT NOT NULL,
+        read_at TEXT
+    );
+    INSERT INTO inbox_items_60 SELECT seq, id, kind, key, recipient, artifact_id, thread_id,
+        comment_id, version_n, question_id, session_id, harness, request_id, grant_id, detail_json,
+        created_at, read_at FROM inbox_items;
+    DROP TABLE inbox_items;
+    ALTER TABLE inbox_items_60 RENAME TO inbox_items;
+    CREATE INDEX inbox_unread ON inbox_items(COALESCE(recipient, ''), seq) WHERE read_at IS NULL;
+    CREATE INDEX inbox_by_recipient ON inbox_items(COALESCE(recipient, ''), seq);
+    CREATE INDEX inbox_by_artifact ON inbox_items(COALESCE(recipient, ''), artifact_id, seq);
+    CREATE INDEX inbox_by_kind ON inbox_items(COALESCE(recipient, ''), kind, seq);
+    CREATE INDEX inbox_by_harness ON inbox_items(COALESCE(recipient, ''), harness, seq);
+    CREATE INDEX inbox_by_session ON inbox_items(COALESCE(recipient, ''), session_id, seq);
+    CREATE INDEX inbox_by_created ON inbox_items(created_at, seq);
+    CREATE INDEX inbox_by_thread ON inbox_items(thread_id) WHERE thread_id IS NOT NULL;
+    CREATE INDEX inbox_by_question ON inbox_items(question_id) WHERE question_id IS NOT NULL;
+    CREATE INDEX inbox_by_request ON inbox_items(request_id) WHERE request_id IS NOT NULL;
+    -- Browser confirmation (`crate::confirmations`): a decision made with
+    -- the daemon token while an agent of the owner's is live waits for a
+    -- click in the owner's browser. `decision_json` is the decision a
+    -- confirmation is bound to; `used_at` marks the one call it let
+    -- through. The owner may also require a passkey (WebAuthn with user
+    -- verification) to confirm: `passkeys` holds each one registered
+    -- (its SPKI public key, COSE algorithm and signature counter, and how
+    -- it was added: from which browser, the owner's agents live then),
+    -- `passkey_challenges` each challenge handed out (single use, bound to
+    -- its purpose: a confirmation, a registration, turning the
+    -- requirement off, a removal), and `confirm_prefs` whether passkeys are
+    -- required and whether the first-use offer was put off.
+    CREATE TABLE confirmations (
+        id TEXT PRIMARY KEY,
+        decision_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('open','approved','declined','expired')),
+        created_at TEXT NOT NULL,
+        answered_at TEXT,
+        used_at TEXT
+    ) WITHOUT ROWID;
+    CREATE TABLE passkeys (
+        credential_id TEXT PRIMARY KEY,
+        public_key BLOB NOT NULL,
+        alg INTEGER NOT NULL,
+        sign_count INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        added_by_json TEXT NOT NULL DEFAULT '{}'
+    ) WITHOUT ROWID;
+    CREATE TABLE passkey_challenges (
+        challenge TEXT PRIMARY KEY,
+        purpose TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE TABLE confirm_prefs (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        require_passkey INTEGER NOT NULL DEFAULT 0,
+        offer_dismissed INTEGER NOT NULL DEFAULT 0
+    );
+    -- End of browser confirmation.",
+    // 61: the feedback loop (spec 2026-10-29-feedback-loop-design §5, §6,
+    // §7.3): a report's context, server stamp, reporter profile, phase,
+    // resolve reason, reopen count and the reporter's last read; the
+    // profile a reporter token carries; a reopen comment's capture number
+    // and clip; each capture's diagnostics (the filing's is capture 0); its
+    // fix attempts, the session of each agent's (NULL: a person's), and
+    // their verdicts; which comments are notes for the queue's members
+    // alone (`triage_only`); the sessions watching a queue; and which
+    // feedback rows are a queue's wake (`filed`, `reopened`, and
+    // `released`: a person ended the session's claim); and the instance's
+    // own feedback queue and service grant, kept when a hosted instance
+    // makes them for itself (`instance_feedback`, one row).
+    "ALTER TABLE threads ADD COLUMN report_context_json TEXT CHECK (report_context_json IS NULL OR json_valid(report_context_json));
+    ALTER TABLE threads ADD COLUMN report_server_json TEXT;
+    ALTER TABLE threads ADD COLUMN reporter_profile_json TEXT;
+    ALTER TABLE threads ADD COLUMN report_phase TEXT CHECK (report_phase IN ('fix_proposed', 'verified'));
+    ALTER TABLE threads ADD COLUMN resolve_reason TEXT;
+    ALTER TABLE threads ADD COLUMN reopen_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE threads ADD COLUMN reporter_seen_at TEXT;
+    ALTER TABLE queue_reporter_tokens ADD COLUMN profile_json TEXT;
+    ALTER TABLE comments ADD COLUMN report_capture INTEGER;
+    ALTER TABLE comments ADD COLUMN clip_key TEXT;
+    ALTER TABLE comments ADD COLUMN triage_only INTEGER NOT NULL DEFAULT 0;
+    CREATE TABLE report_diagnostics (
+      thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+      capture INTEGER NOT NULL, lines_json TEXT NOT NULL, n INTEGER NOT NULL,
+      PRIMARY KEY (thread_id, capture)) WITHOUT ROWID;
+    CREATE TABLE report_fixes (
+      thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+      n INTEGER NOT NULL, fix_json TEXT NOT NULL, proposer_name TEXT NOT NULL,
+      proposer_session_id TEXT, created_at TEXT NOT NULL,
+      outcome TEXT NOT NULL DEFAULT 'pending'
+        CHECK (outcome IN ('pending', 'verified', 'rejected', 'superseded', 'closed')),
+      verdict_note TEXT, verdict_context_json TEXT, verdict_at TEXT,
+      PRIMARY KEY (thread_id, n)) WITHOUT ROWID;
+    CREATE TABLE queue_watches (queue_id TEXT NOT NULL REFERENCES queues(id) ON DELETE CASCADE, session_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (queue_id, session_id)) WITHOUT ROWID;
+    ALTER TABLE feedback ADD COLUMN queue_event TEXT CHECK (queue_event IS NULL OR queue_event IN ('filed', 'reopened', 'released'));
+    CREATE TABLE instance_feedback (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      queue_id TEXT NOT NULL, grant_id TEXT NOT NULL,
+      grant_token TEXT NOT NULL, grant_key BLOB NOT NULL,
+      created_at TEXT NOT NULL);",
+    // 62: the cached price catalog (tokenulator.dev's listings,
+    // `crate::price_catalog::CatalogListing`), one row per provider and model, in
+    // micro-USD per million tokens (a missing cache rate is NULL), replaced
+    // whole on each fetch; and the source of the rates each usage row was
+    // charged at (`crate::credits::RateSource`), every earlier row's a cost
+    // line's.
+    "CREATE TABLE price_catalog (
+        provider_id TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        input_micro_usd INTEGER NOT NULL,
+        output_micro_usd INTEGER NOT NULL,
+        cache_read_micro_usd INTEGER,
+        cache_write_micro_usd INTEGER,
+        source TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        fetched_at TEXT NOT NULL,
+        PRIMARY KEY (provider_id, model_id)
+    ) WITHOUT ROWID;
+    ALTER TABLE usage_rows ADD COLUMN rate_source TEXT NOT NULL DEFAULT 'line'
+        CHECK (rate_source IN ('line', 'catalog', 'default', 'provider'));",
+    // 63: web search and web fetch (spec 2026-11-02-claxbot-web-tools §7):
+    // `cost_lines.unit` takes `kreq`, a thousand requests, so `cost_lines` is
+    // rebuilt with the one CHECK widened (SQLite cannot alter a CHECK) and
+    // its rows copied; the Rust step ([`WEB_MIGRATION`]) seeds the web lines
+    // (`crate::credits::seed_web_lines`). `bot_person_prefs` holds each
+    // person's own choice of web tools (§9.2), and `sealed_secrets` is
+    // rebuilt with `cloudflare` in its scope CHECK for the instance's
+    // Cloudflare token (§9.3). `bot_web_pages` is a run's page store (§6.2):
+    // each page a fetch of the run received, by normalised URL, with the
+    // journal place that fetched it, removed with the run's call journal;
+    // `bot_runs.web` is the web grant's shape when the run was made (§4.4).
+    // `bot_person_prefs` is the migration's mark (`MARKS_AFTER_APP`).
+    "CREATE TABLE cost_lines_new (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        unit TEXT NOT NULL CHECK (unit IN
+            ('mtok_input', 'mtok_cached_input', 'mtok_cache_write', 'mtok_output', 'cpu_gb_s', 'mreq',
+             'gb_month', 'run', 'kreq')),
+        cost_micro_usd INTEGER NOT NULL CHECK (cost_micro_usd >= 0),
+        margin_bp INTEGER NOT NULL CHECK (margin_bp >= 0),
+        fixed_credits_milli INTEGER CHECK (fixed_credits_milli >= 0),
+        applies TEXT NOT NULL CHECK (applies IN ('instance_key', 'always')),
+        source TEXT NOT NULL,
+        model TEXT,
+        updated_by TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    INSERT INTO cost_lines_new
+        SELECT id, label, unit, cost_micro_usd, margin_bp, fixed_credits_milli, applies,
+               source, model, updated_by, updated_at
+        FROM cost_lines;
+    DROP TABLE cost_lines;
+    ALTER TABLE cost_lines_new RENAME TO cost_lines;
+    CREATE TABLE bot_person_prefs (
+        person TEXT PRIMARY KEY,
+        web INTEGER NOT NULL,
+        set_at TEXT NOT NULL
+    );
+    CREATE TABLE sealed_secrets_new (
+        scope TEXT NOT NULL CHECK (scope IN ('instance', 'own', 'cloudflare')),
+        person TEXT NOT NULL,
+        nonce BLOB NOT NULL,
+        sealed BLOB NOT NULL,
+        last4 TEXT NOT NULL,
+        use_own INTEGER NOT NULL DEFAULT 1,
+        set_by TEXT NOT NULL,
+        set_at TEXT NOT NULL,
+        last_ok_at TEXT,
+        host TEXT,
+        PRIMARY KEY (scope, person)
+    );
+    INSERT INTO sealed_secrets_new
+        SELECT scope, person, nonce, sealed, last4, use_own, set_by, set_at, last_ok_at, host
+        FROM sealed_secrets;
+    DROP TABLE sealed_secrets;
+    ALTER TABLE sealed_secrets_new RENAME TO sealed_secrets;
+    CREATE TABLE bot_web_pages (
+        run_id TEXT NOT NULL,
+        url TEXT NOT NULL,
+        step_n INTEGER NOT NULL,
+        seq INTEGER NOT NULL,
+        final_url TEXT NOT NULL,
+        status INTEGER NOT NULL,
+        content_type TEXT NOT NULL,
+        text TEXT NOT NULL,
+        total_chars INTEGER NOT NULL,
+        links_json TEXT NOT NULL,
+        PRIMARY KEY (run_id, url)
+    ) WITHOUT ROWID;
+    ALTER TABLE bot_runs ADD COLUMN web TEXT NOT NULL DEFAULT '';",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -1725,8 +2170,49 @@ pub const APP_DATA_MIGRATION: u32 = LEGACY_PATHS_MIGRATION + 1;
 pub const SITE_SESSIONS_MIGRATION: u32 = APP_DATA_MIGRATION + 1;
 
 /// The migration that keys assets by artifact and asset ID, as a schema
-/// version, and this build's last.
+/// version.
 pub const ASSET_KEYS_MIGRATION: u32 = SITE_SESSIONS_MIGRATION + 1;
+
+/// The migration that adds `device_codes.return_to`, as a schema version.
+pub const RETURN_TO_MIGRATION: u32 = ASSET_KEYS_MIGRATION + 1;
+
+/// The migration that adds `versions.capabilities_json`, as a schema
+/// version.
+pub const VERSION_CAPABILITIES_MIGRATION: u32 = RETURN_TO_MIGRATION + 1;
+
+/// The migration that adds `quickstarts`, each person's seeded Clax
+/// Quickstart, as a schema version.
+pub const QUICKSTART_MIGRATION: u32 = VERSION_CAPABILITIES_MIGRATION + 1;
+
+/// The migration that adds `capability_approvals` and approves each live
+/// artifact's current declaration, as a schema version.
+pub const CAPABILITY_APPROVALS_MIGRATION: u32 = QUICKSTART_MIGRATION + 1;
+
+/// The migration that adds report queues and external artifacts
+/// (`queues`, `external_artifacts`, `queue_claims`, and the queue columns
+/// of threads and comments), as a schema version.
+pub const QUEUES_MIGRATION: u32 = CAPABILITY_APPROVALS_MIGRATION + 1;
+
+/// The migration that adds a local daemon's browser login (`login_codes`,
+/// `owner_browser_sessions`), connection requests (`remote_requests` and
+/// the tables beside it, the inbox's `remote_request` kind) and followed
+/// remote links (`remote_links.followed`, `artifacts.remote_mirror`), as a
+/// schema version.
+pub const BROWSER_LOGIN_MIGRATION: u32 = QUEUES_MIGRATION + 1;
+
+/// The feedback loop's migration (`report_fixes`, `report_diagnostics`,
+/// `queue_watches`, `instance_feedback`, the report columns of threads and
+/// the profile of reporter tokens), as a schema version.
+pub const FEEDBACK_LOOP_MIGRATION: u32 = BROWSER_LOGIN_MIGRATION + 1;
+
+/// The migration that adds the cached price catalog (`price_catalog`) and
+/// `usage_rows.rate_source`, as a schema version.
+pub const PRICE_CATALOG_MIGRATION: u32 = FEEDBACK_LOOP_MIGRATION + 1;
+
+/// The migration that lets a cost line count in thousands of requests
+/// (`kreq`) and seeds the web search and web fetch lines, as a schema
+/// version, and this build's last.
+pub const WEB_MIGRATION: u32 = PRICE_CATALOG_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -1886,16 +2372,25 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 
 /// What each migration after the app's leaves in the schema, in order:
 /// ClaxBot's ([`CLAXBOT_MIGRATION`]), then [`LEGACY_PATHS_MIGRATION`] to
-/// [`ASSET_KEYS_MIGRATION`]. They follow the app's in every
+/// [`WEB_MIGRATION`]. They follow the app's in every
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 5] = [
+const MARKS_AFTER_APP: [Mark<'static>; 14] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
     Mark::Table("site_codes"),
     Mark::Index("assets_by_id"),
+    Mark::Column("device_codes", "return_to"),
+    Mark::Column("versions", "capabilities_json"),
+    Mark::Table("quickstarts"),
+    Mark::Table("capability_approvals"),
+    Mark::Table("queues"),
+    Mark::Table("owner_browser_sessions"),
+    Mark::Table("report_fixes"),
+    Mark::Table("price_catalog"),
+    Mark::Table("bot_person_prefs"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -2213,6 +2708,9 @@ pub(super) fn rust_step_of(
     }
     if version == REMOTE_KIND_MIGRATION {
         mirrored_author_key(tx)?;
+    }
+    if version == WEB_MIGRATION {
+        crate::credits::seed_web_lines(tx)?;
     }
     Ok(())
 }
@@ -4823,11 +5321,171 @@ mod tests {
         assert!(MIGRATIONS[first + 10].contains("CREATE TABLE app_data_moved ("));
         assert!(MIGRATIONS[first + 11].contains("CREATE TABLE site_codes ("));
         assert!(MIGRATIONS[first + 12].contains("CREATE INDEX assets_by_id"));
-        assert_eq!(MIGRATIONS.len() as u32, ASSET_KEYS_MIGRATION);
+        assert_eq!(super::RETURN_TO_MIGRATION, super::ASSET_KEYS_MIGRATION + 1);
+        assert!(MIGRATIONS[first + 13].contains("ADD COLUMN return_to"));
+        assert_eq!(
+            super::VERSION_CAPABILITIES_MIGRATION,
+            super::RETURN_TO_MIGRATION + 1
+        );
+        assert!(
+            MIGRATIONS[first + 14].contains("ALTER TABLE versions ADD COLUMN capabilities_json")
+        );
+        assert_eq!(
+            super::QUICKSTART_MIGRATION,
+            super::VERSION_CAPABILITIES_MIGRATION + 1
+        );
+        assert!(MIGRATIONS[first + 15].contains("CREATE TABLE quickstarts ("));
+        assert_eq!(
+            super::CAPABILITY_APPROVALS_MIGRATION,
+            super::QUICKSTART_MIGRATION + 1
+        );
+        assert!(MIGRATIONS[first + 16].contains("CREATE TABLE capability_approvals ("));
+        assert_eq!(
+            super::QUEUES_MIGRATION,
+            super::CAPABILITY_APPROVALS_MIGRATION + 1
+        );
+        assert!(MIGRATIONS[first + 17].contains("CREATE TABLE queues ("));
+        assert_eq!(super::BROWSER_LOGIN_MIGRATION, super::QUEUES_MIGRATION + 1);
+        assert!(MIGRATIONS[first + 18].contains("CREATE TABLE owner_browser_sessions ("));
+        assert_eq!(
+            super::FEEDBACK_LOOP_MIGRATION,
+            super::BROWSER_LOGIN_MIGRATION + 1
+        );
+        assert!(MIGRATIONS[first + 19].contains("CREATE TABLE report_fixes ("));
+        assert_eq!(
+            super::PRICE_CATALOG_MIGRATION,
+            super::FEEDBACK_LOOP_MIGRATION + 1
+        );
+        assert!(MIGRATIONS[first + 20].contains("CREATE TABLE price_catalog ("));
+        assert_eq!(MIGRATIONS.len() as u32, super::WEB_MIGRATION);
     }
 
     #[test]
-    fn a_fresh_database_reaches_54() {
+    fn migration_56_gives_each_artifacts_current_version_its_declaration() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        drop(Store::open(&home).unwrap());
+        let c = Connection::open(home.db_path()).unwrap();
+        // The schema as it was before 56, with versions of two artifacts.
+        c.execute_batch("ALTER TABLE versions DROP COLUMN capabilities_json;")
+            .unwrap();
+        c.execute_batch(
+            "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version, capabilities_json)
+                VALUES ('7q3k9mzx2b4t', 'A', 'x', 'x', 2, '0', '{\"db\":{}}'),
+                       ('8r4m2nzy3c5v', 'B', 'x', 'x', 1, '0', '{}');
+             INSERT INTO versions (artifact_id, n, created_at, files_json) VALUES
+                ('7q3k9mzx2b4t', 1, 'x', '{}'), ('7q3k9mzx2b4t', 2, 'x', '{}'),
+                ('8r4m2nzy3c5v', 1, 'x', '{}');",
+        )
+        .unwrap();
+        c.execute_batch(MIGRATIONS[super::VERSION_CAPABILITIES_MIGRATION as usize - 1])
+            .unwrap();
+        let rows: Vec<(String, u32, Option<String>)> = c
+            .prepare(
+                "SELECT artifact_id, n, capabilities_json FROM versions ORDER BY artifact_id, n",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("7q3k9mzx2b4t".to_string(), 1, None),
+                (
+                    "7q3k9mzx2b4t".to_string(),
+                    2,
+                    Some("{\"db\":{}}".to_string())
+                ),
+                ("8r4m2nzy3c5v".to_string(), 1, Some("{}".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn migration_58_approves_every_declaration_in_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        drop(Store::open(&home).unwrap());
+        let c = Connection::open(home.db_path()).unwrap();
+        // The schema as it was before 58, with an artifact declaring `net`,
+        // one declaring nothing, a deleted one and a hidden draft.
+        c.execute_batch(
+            "DROP TRIGGER capability_approvals_on_delete; DROP TABLE capability_approvals;",
+        )
+        .unwrap();
+        c.execute_batch(
+            "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version, capabilities_json, deleted_at, hidden)
+                VALUES ('7q3k9mzx2b4t', 'A', 'x', 'x', 2, '0', '{\"net\":{\"hosts\":[\"a.example.com\"]}}', NULL, 0),
+                       ('8r4m2nzy3c5v', 'B', 'x', 'x', 1, '0', '{}', NULL, 0),
+                       ('9s5n3pa04d6w', 'C', 'x', 'x', 1, '0', '{\"sample\":{}}', 'x', 0),
+                       ('2t6p4qb15e7x', 'D', 'x', 'x', 1, '0', '{\"sample\":{}}', NULL, 1);",
+        )
+        .unwrap();
+        c.execute_batch(MIGRATIONS[super::CAPABILITY_APPROVALS_MIGRATION as usize - 1])
+            .unwrap();
+        let rows: Vec<(String, u32, String, String)> = c
+            .prepare(
+                "SELECT artifact_id, version_n, capabilities_json, by FROM capability_approvals ORDER BY artifact_id",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![(
+                "7q3k9mzx2b4t".to_string(),
+                2,
+                "{\"net\":{\"hosts\":[\"a.example.com\"]}}".to_string(),
+                "migration".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn migration_62_adds_the_catalog_and_marks_every_earlier_charge_a_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        drop(Store::open(&home).unwrap());
+        let c = Connection::open(home.db_path()).unwrap();
+        // The schema as it was before 62, with a usage row.
+        c.execute_batch(
+            "DROP TABLE price_catalog; ALTER TABLE usage_rows DROP COLUMN rate_source;
+             INSERT INTO usage_rows (person, line, unit, qty, rate_cost_micro_usd, margin_bp,
+                credit_price_micro_usd, base_qty, cost_micro_usd, credits_milli, free_milli,
+                key_source, week, at)
+             VALUES ('*owner', 'harness.run', 'run', 1, 0, 9000, 10000, 1, 0, 1000, 1000,
+                'instance', '2026-10-26T00:00:00Z', 'x');",
+        )
+        .unwrap();
+        c.execute_batch(MIGRATIONS[super::PRICE_CATALOG_MIGRATION as usize - 1])
+            .unwrap();
+        let source: String = c
+            .query_row("SELECT rate_source FROM usage_rows", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(source, "line");
+        assert!(
+            c.execute("UPDATE usage_rows SET rate_source = 'guess'", [])
+                .is_err(),
+            "the source is one of four"
+        );
+        c.execute("UPDATE usage_rows SET rate_source = 'catalog'", [])
+            .unwrap();
+        assert_eq!(table_count(&c, "price_catalog"), 1);
+        c.execute(
+            "INSERT INTO price_catalog (provider_id, model_id, name, input_micro_usd,
+                output_micro_usd, source, observed_at, fetched_at)
+             VALUES ('openai', 'gpt-5', 'GPT-5', 1, 2, 's', 'o', 'f')",
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_fresh_database_reaches_63() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         drop(Store::open(&home).unwrap());
@@ -4840,9 +5498,56 @@ mod tests {
         assert_eq!(super::APP_DATA_MIGRATION, 52);
         assert_eq!(super::SITE_SESSIONS_MIGRATION, 53);
         assert_eq!(ASSET_KEYS_MIGRATION, 54);
-        assert_eq!(user_version(&c), ASSET_KEYS_MIGRATION);
+        assert_eq!(super::RETURN_TO_MIGRATION, 55);
+        assert_eq!(super::VERSION_CAPABILITIES_MIGRATION, 56);
+        assert_eq!(super::QUICKSTART_MIGRATION, 57);
+        assert_eq!(super::CAPABILITY_APPROVALS_MIGRATION, 58);
+        assert_eq!(super::QUEUES_MIGRATION, 59);
+        assert_eq!(super::BROWSER_LOGIN_MIGRATION, 60);
+        assert_eq!(super::FEEDBACK_LOOP_MIGRATION, 61);
+        assert_eq!(super::PRICE_CATALOG_MIGRATION, 62);
+        assert_eq!(super::WEB_MIGRATION, 63);
+        assert_eq!(user_version(&c), super::WEB_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
+            assert_eq!(table_count(&c, table), 1, "{table}");
+        }
+        for table in [
+            "report_fixes",
+            "report_diagnostics",
+            "queue_watches",
+            "instance_feedback",
+        ] {
+            assert_eq!(table_count(&c, table), 1, "{table}");
+        }
+        for column in [
+            "report_context_json",
+            "report_server_json",
+            "reporter_profile_json",
+            "report_phase",
+            "resolve_reason",
+            "reopen_count",
+            "reporter_seen_at",
+        ] {
+            assert!(
+                super::has_column(&c, "threads", column).unwrap(),
+                "{column}"
+            );
+        }
+        assert!(super::has_column(&c, "queue_reporter_tokens", "profile_json").unwrap());
+        assert!(super::has_column(&c, "feedback", "queue_event").unwrap());
+        for column in ["report_capture", "clip_key"] {
+            assert!(
+                super::has_column(&c, "comments", column).unwrap(),
+                "{column}"
+            );
+        }
+        for table in [
+            "confirmations",
+            "passkeys",
+            "passkey_challenges",
+            "confirm_prefs",
+        ] {
             assert_eq!(table_count(&c, table), 1, "{table}");
         }
     }
@@ -5582,7 +6287,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), ASSET_KEYS_MIGRATION);
+        assert_eq!(user_version(&c), super::WEB_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -6073,15 +6778,18 @@ mod tests {
 
         // The owner's home after this build's first open: 43 adopted to 46,
         // then the jobs migration to 47, the app push migration to 48, the
-        // remote kind migration to 49, ClaxBot's to 50, and the site
-        // migrations to 54.
+        // remote kind migration to 49, ClaxBot's to 50, the site
+        // migrations to 54, the return-to migration to 55, the version
+        // declarations' to 56, the quickstart's to 57, the capability
+        // approvals' to 58, the queues' to 59, the browser login's to 60,
+        // the feedback loop's to 61 and the price catalog's to 62 and the web lines' to 63.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), ASSET_KEYS_MIGRATION);
+            assert_eq!(user_version(&c), super::WEB_MIGRATION);
             (columns_of(&c), every_row(&c))
         };
 
@@ -6089,8 +6797,8 @@ mod tests {
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(
             user_version(&c),
-            ASSET_KEYS_MIGRATION + 1,
-            "ClaxBot's 50 and the site migrations' 51 to 54 are one later now"
+            super::WEB_MIGRATION + 1,
+            "ClaxBot's 50 and the migrations 51 to 63 after it are one later now"
         );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
@@ -6109,7 +6817,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), ASSET_KEYS_MIGRATION);
+        assert_eq!(user_version(&copied), super::WEB_MIGRATION);
         assert_eq!(
             every_row(&copied),
             before,
@@ -6123,7 +6831,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (ASSET_KEYS_MIGRATION + 1, schema, rows)
+            (super::WEB_MIGRATION + 1, schema, rows)
         );
     }
 
@@ -6397,7 +7105,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, ASSET_KEYS_MIGRATION);
+        assert_eq!(last, super::WEB_MIGRATION);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));

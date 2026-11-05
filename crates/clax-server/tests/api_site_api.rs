@@ -1013,17 +1013,16 @@ async fn a_docs_read_answers_304_until_its_artifacts_documents_change() {
     let (s, tag) = get_tagged(&theirs, list, after.as_deref()).await;
     assert_eq!(s, 200);
     assert_ne!(tag, after);
-    // A change to the declaration (its rules) makes it stale too.
+    // A change to the declaration (its rules) makes it stale too: a new
+    // version's, since its clax.json owns the declaration.
     let res = ts
-        .authed(
-            ts.client
-                .patch(format!("{}/api/artifacts/{aid}", ts.base))
-                .json(&json!({"capabilities": {"db": {}}})),
+        .post_json(
+            &format!("/api/artifacts/{aid}/versions"),
+            json!({"if_version": 1, "capabilities": {"db": {}},
+                   "files": {"index.html": {"content": "<main></main>"}}}),
         )
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 200);
+        .await;
+    assert_eq!(res.status(), 201);
     assert_eq!(get_tagged(&api, list, after.as_deref()).await.0, 200);
     // A write carries none.
     let res = api

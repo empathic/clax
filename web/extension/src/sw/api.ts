@@ -222,6 +222,9 @@ export class Api {
     const r = await res.json().catch(() => null) as { question?: QuestionView; error?: { code?: string; message?: string } } | null;
     if (res.ok && r?.question) return { question: r.question, closed: false };
     if (res.status === 409 && r?.question) return { question: r.question, closed: true };
+    // Held for the owner's confirmation (a daemon from before answers
+    // stopped asking for one): say so, not the status's text.
+    if (res.status === 202) throw new ApiFailure("confirmation_pending", "Answer it in Clax: it asks to confirm it.", 202);
     throw new ApiFailure(r?.error?.code ?? `http_${res.status}`, r?.error?.message ?? res.statusText, res.status);
   }
 }

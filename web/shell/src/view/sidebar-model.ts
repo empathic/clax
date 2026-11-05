@@ -9,12 +9,25 @@ export const SEEN_AFTER_MS = 1000;
 
 export type SidebarSections = { open: Thread[]; detached: Thread[]; resolved: Thread[]; numbers: Map<string, number>; file: string | null };
 
-/** Open threads: those about the whole artifact (no pin, no number), then
- * those on the page shown and found (numbered like the pins), then those on
- * other pages the version holds; Detached: open threads on the page shown
- * and not found, then those on a page the version does not hold (never one
- * about the whole artifact, which is on no page); then resolved threads. `file` undefined means the index; null, a document
- * that did not greet. */
+/** When a thread last changed: its newest comment, its start, or its resolve, whichever is latest. */
+export function lastActivity(t: Thread): string {
+  let at = t.created_at ?? "";
+  for (const c of t.comments ?? []) if (c.created_at > at) at = c.created_at;
+  if (t.resolved_at && t.resolved_at > at) at = t.resolved_at;
+  return at;
+}
+
+/** `list` with the latest activity first; threads that changed at the same time keep their order. */
+const latestFirst = (list: Thread[]) => [...list].sort((a, b) => (lastActivity(b) > lastActivity(a) ? 1 : lastActivity(b) < lastActivity(a) ? -1 : 0));
+
+/** Open threads: those about the whole artifact (no pin, no number), those
+ * on the page shown and found (numbered like the pins, in the order they
+ * were made), and those on other pages the version holds; Detached: open
+ * threads on the page shown and not found, and those on a page the version
+ * does not hold (never one about the whole artifact, which is on no page);
+ * then resolved threads. Each section lists the thread that changed last
+ * first. `file` undefined means the index; null, a document that did not
+ * greet. */
 export function sidebarSections(threads: Thread[], resolved: Record<string, AnchorResult>, file: string | null | undefined, holds: (f: string) => boolean = () => true): SidebarSections {
   const page = file === undefined ? INDEX_FILE : file;
   const whole = threads.filter(t => t.status === "open" && t.anchor.kind === "artifact");
@@ -25,9 +38,9 @@ export function sidebarSections(threads: Thread[], resolved: Record<string, Anch
   const attached = here.filter(t => !detached.includes(t));
   const elsewhere = open.filter(t => t.anchor.file !== page && !gone.includes(t));
   return {
-    open: [...whole, ...attached, ...elsewhere],
-    detached,
-    resolved: threads.filter(t => t.status === "resolved"),
+    open: latestFirst([...whole, ...attached, ...elsewhere]),
+    detached: latestFirst(detached),
+    resolved: latestFirst(threads.filter(t => t.status === "resolved")),
     numbers: new Map(attached.map((t, i) => [t.id, i + 1])),
     file: page,
   };

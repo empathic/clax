@@ -1,0 +1,168 @@
+load(":c_tools.bzl", "wasm_c_tools")
+load(":host_files.bzl", "host_files")
+load(":worker.bzl", "wasm_check_test")
+
+exports_files([
+    "Cargo.lock",
+    "worker_bundle.mjs",
+])
+
+# The hosted Worker's target (crates/clax-worker, bazel/wasm/worker.bzl).
+platform(
+    name = "wasm32",
+    constraint_values = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:none",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "is_wasm32",
+    constraint_values = ["@platforms//cpu:wasm32"],
+    visibility = ["//visibility:public"],
+)
+
+# The web UI a wasm32 Worker embeds, built for the host (host_files.bzl).
+host_files(
+    name = "web_dist",
+    srcs = ["//web:dist"],
+    visibility = ["//crates/clax-worker:__pkg__"],
+)
+
+# The NDK's LLVM for the machine the build runs on: Bazel's NDK repository
+# names its prebuilt directory by that host.
+config_setting(
+    name = "exec_macos",
+    constraint_values = ["@platforms//os:macos"],
+)
+
+alias(
+    name = "ndk_clang",
+    actual = select({
+        ":exec_macos": "@androidndk//toolchains/llvm/prebuilt/darwin-x86_64:bin/clang",
+        "//conditions:default": "@androidndk//toolchains/llvm/prebuilt/linux-x86_64:bin/clang",
+    }),
+)
+
+alias(
+    name = "ndk_llvm_ar",
+    actual = select({
+        ":exec_macos": "@androidndk//toolchains/llvm/prebuilt/darwin-x86_64:bin/llvm-ar",
+        "//conditions:default": "@androidndk//toolchains/llvm/prebuilt/linux-x86_64:bin/llvm-ar",
+    }),
+)
+
+alias(
+    name = "ndk_llvm_files",
+    actual = select({
+        ":exec_macos": "@androidndk//toolchains/llvm/prebuilt/darwin-x86_64:all_binaries",
+        "//conditions:default": "@androidndk//toolchains/llvm/prebuilt/linux-x86_64:all_binaries",
+    }),
+)
+
+# WASM32_CC and WASM32_AR for ring's and sqlite-wasm-rs's build scripts
+# (MODULE.bazel).
+wasm_c_tools(
+    name = "c_tools",
+    ar = ":ndk_llvm_ar",
+    clang = ":ndk_clang",
+    files = [":ndk_llvm_files"],
+    visibility = ["//visibility:public"],
+)
+
+# The machine the build runs on, for the tools the Worker's bundle runs
+# (bazel/wasm/tools.MODULE.bazel).
+
+config_setting(
+    name = "exec_darwin_arm64",
+    constraint_values = [
+        "@platforms//os:macos",
+        "@platforms//cpu:aarch64",
+    ],
+)
+
+config_setting(
+    name = "exec_darwin_x86_64",
+    constraint_values = [
+        "@platforms//os:macos",
+        "@platforms//cpu:x86_64",
+    ],
+)
+
+config_setting(
+    name = "exec_linux_arm64",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:aarch64",
+    ],
+)
+
+config_setting(
+    name = "exec_linux_x86_64",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+)
+
+alias(
+    name = "wasm_bindgen",
+    actual = select({
+        ":exec_darwin_arm64": "@wasm_bindgen_darwin_arm64//:wasm-bindgen",
+        ":exec_darwin_x86_64": "@wasm_bindgen_darwin_x86_64//:wasm-bindgen",
+        ":exec_linux_arm64": "@wasm_bindgen_linux_arm64//:wasm-bindgen",
+        ":exec_linux_x86_64": "@wasm_bindgen_linux_x86_64//:wasm-bindgen",
+    }),
+)
+
+alias(
+    name = "wasm_opt",
+    actual = select({
+        ":exec_darwin_arm64": "@binaryen_darwin_arm64//:bin/wasm-opt",
+        ":exec_darwin_x86_64": "@binaryen_darwin_x86_64//:bin/wasm-opt",
+        ":exec_linux_arm64": "@binaryen_linux_arm64//:bin/wasm-opt",
+        ":exec_linux_x86_64": "@binaryen_linux_x86_64//:bin/wasm-opt",
+    }),
+)
+
+alias(
+    name = "wasm_opt_lib",
+    actual = select({
+        ":exec_darwin_arm64": "@binaryen_darwin_arm64//:lib",
+        ":exec_darwin_x86_64": "@binaryen_darwin_x86_64//:lib",
+        ":exec_linux_arm64": "@binaryen_linux_arm64//:lib",
+        ":exec_linux_x86_64": "@binaryen_linux_x86_64//:lib",
+    }),
+)
+
+alias(
+    name = "esbuild",
+    actual = select({
+        ":exec_darwin_arm64": "@esbuild_darwin_arm64//:bin/esbuild",
+        ":exec_darwin_x86_64": "@esbuild_darwin_x86_64//:bin/esbuild",
+        ":exec_linux_arm64": "@esbuild_linux_arm64//:bin/esbuild",
+        ":exec_linux_x86_64": "@esbuild_linux_x86_64//:bin/esbuild",
+    }),
+)
+
+# The crates a hosted Worker runs, built for wasm32 with warnings denied
+# (scripts/check-wasm.sh natively), and the Worker's own two.
+wasm_check_test(
+    name = "check",
+    libs = [
+        "//crates/clax-bot:clax_bot_wasm",
+        "//crates/clax-bot-sandbox:clax_bot_sandbox_wasm",
+        "//crates/clax-content-git:clax_content_git_wasm",
+        "//crates/clax-core:clax_core_wasm",
+        "//crates/clax-http:clax_http_wasm",
+        "//crates/clax-mcp:clax_mcp_wasm",
+        "//crates/clax-realtime:clax_realtime_wasm",
+        "//crates/clax-rt:clax_rt_wasm",
+        "//crates/clax-sample:clax_sample_wasm",
+        "//crates/clax-server:clax_server_wasm",
+        "//crates/clax-store:clax_store_wasm",
+        "//crates/clax-worker:clax_worker_wasm",
+        "//crates/clax-worker/vfs:clax_do_vfs_wasm",
+    ],
+)

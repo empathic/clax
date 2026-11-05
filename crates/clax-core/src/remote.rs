@@ -37,6 +37,15 @@ pub const REMOTE_ENV: &str = "CLAX_REMOTE";
 /// The version of `remote.json`'s format this build writes and reads.
 pub const FILE_VERSION: u32 = 1;
 
+/// Longest `wait` of a connection-request poll (`GET
+/// /api/remotes/requests/<id>?wait=`), in seconds: under an MCP tool's
+/// timeout, as `wait_for_feedback`'s default.
+pub const REQUEST_MAX_WAIT_SECS: u64 = 50;
+
+/// When a connection-request poll that found every wait on its request
+/// taken should call again, in seconds (its answer's `retry_after_s`).
+pub const REQUEST_RETRY_AFTER_S: u64 = 5;
+
 /// The backoff before each retry of `limit_reached` and `busy`, in
 /// seconds, before jitter: three retries.
 pub const BACKOFF_S: [u64; 3] = [1, 2, 4];

@@ -113,6 +113,7 @@ void main() {
         'use the internet: api.weather.example',
       ]);
       expect(capabilityWords({'sample': {}}), ['use Claude (on your API key)']);
+      expect(capabilityWords({'shell': {}}), ['point at Clax’s own buttons']);
     });
 
     test('added capabilities: new ones and new net hosts only', () {

@@ -10,6 +10,7 @@ import 'package:clax_app/agent/tools/file_tools.dart';
 import 'package:clax_app/agent/tools/finish.dart';
 import 'package:clax_app/agent/tools/render_tool.dart';
 import 'package:clax_app/agent/tools/toolbox.dart';
+import 'package:clax_app/bundle/content_hash.dart' show withoutManifest;
 import 'package:clax_app/clax/api.dart';
 import 'package:clax_app/clax/fake_api.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -474,7 +475,8 @@ void main() {
       expect(req.capabilities, {
         'db': {'read': <Object?>[]},
       });
-      expect(r.api.filesOf(r.aid!, 2), {'index.html': page});
+      expect(withoutManifest(r.api.filesOf(r.aid!, 2)), {'index.html': page});
+      expect(r.api.filesOf(r.aid!, 2), contains('clax.json'));
     });
 
     test('without resolve the threads stay open', () async {
@@ -656,7 +658,10 @@ void main() {
         'title': 'Runs',
         'capabilities': {'db': {}},
       });
-      expect(r.api.filesOf(r.aid!, 3), r.api.filesOf(r.aid!, 1));
+      expect(
+        withoutManifest(r.api.filesOf(r.aid!, 3)),
+        withoutManifest(r.api.filesOf(r.aid!, 1)),
+      );
       expect(
         r.thread().comments.last.body,
         "Couldn't make that change: its data couldn't be updated: too big",
@@ -815,7 +820,7 @@ void main() {
           'capabilities': {'db': {}},
         });
         expect(r.api.currentVersion(r.aid!), 3);
-        expect(r.api.filesOf(r.aid!, 3), {'index.html': page});
+        expect(withoutManifest(r.api.filesOf(r.aid!, 3)), {'index.html': page});
         expect(r.thread().status, 'open');
         expect(
           r.thread().comments.last.body,
@@ -977,7 +982,7 @@ void main() {
         'capabilities': {'db': {}},
       });
       expect(r.api.currentVersion(r.aid!), 3);
-      expect(r.api.filesOf(r.aid!, 3), {'index.html': page});
+      expect(withoutManifest(r.api.filesOf(r.aid!, 3)), {'index.html': page});
       expect(await r.ledger.of(r.aid!), isEmpty);
       expect(r.thread().status, 'open');
     });
@@ -990,7 +995,7 @@ void main() {
       await r.finish('Added.');
       expect(r.state.outcome, isA<RunGaveUp>());
       expect(r.named('restoreVersion'), hasLength(1));
-      expect(r.api.filesOf(r.aid!, 3), {'index.html': page});
+      expect(withoutManifest(r.api.filesOf(r.aid!, 3)), {'index.html': page});
       expect(await r.ledger.of(r.aid!), isEmpty);
     });
 

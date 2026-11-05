@@ -6,7 +6,7 @@
 // cookie, from the public origin. A refusal throws `Refused` with the
 // daemon's own message, which the page shows as it is. Names and titles
 // are people's and agents' text: untrusted, rendered as text.
-import { Refused } from "../people/api";
+import { browserCall, Refused } from "../held";
 
 export { Refused };
 
@@ -22,7 +22,7 @@ export type HostedMe = { origin: string; setup_open: boolean; signed_in: boolean
 /** An agent token; `kind` is `device` for the person's own device (the Clax app's sign-in, which may manage the sharing of their artifacts), else `agent`. */
 export type AgentToken = { id: string; label: string; status: string; created_at: string; last_used_at: string | null; ended_at: string | null; kind?: "device" | "agent" };
 /** A new agent token: `token` and the commands that carry it are shown this once. */
-export type NewAgentToken = { id: string; label: string; created_at: string; token: string; mcp_url: string; claude_command: string; codex_config: string };
+export type NewAgentToken = { id: string; label: string; created_at: string; token: string; mcp_url: string; claude_command: string; codex_config: string; grok_command?: string };
 export type LinkAccess = "viewer" | "commenter";
 /** A page shared by link; `listed` when the public gallery lists it. */
 export type SharedLink = { artifact_id: string; title: string; access: LinkAccess; url: string; listed?: boolean };
@@ -45,13 +45,8 @@ export type Sharing =
 /** An artifact in the public gallery. */
 export type PublicArtifact = { artifact_id: string; title: string; url: string };
 
-async function call<T>(path: string, method = "GET", body?: unknown): Promise<T> {
-  const res = await fetch(path, method === "GET" ? { cache: "no-store" } : { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}) });
-  if (res.ok) return (res.status === 204 ? {} : await res.json()) as T;
-  let b: { error?: { code?: string; message?: string } } = {};
-  try { b = await res.json(); } catch { /* not json */ }
-  throw new Refused(res.status, b.error?.message ?? (res.statusText || `HTTP ${res.status}`), b.error?.code ?? null);
-}
+// Every write sends a JSON body, `{}` when it has none.
+const call = <T>(path: string, method = "GET", body?: unknown) => browserCall<T>(path, method, method === "GET" ? undefined : body ?? {});
 const e = encodeURIComponent;
 
 /** The browser's sign-in, or null on a local daemon (which has none). */
@@ -73,8 +68,8 @@ export const signOut = () => call<unknown>("/api/hosted/signout", "POST");
 export const tokens = () => call<{ tokens: AgentToken[] }>("/api/hosted/agent-tokens");
 export const mintToken = (label: string) => call<NewAgentToken>("/api/hosted/agent-tokens", "POST", { label });
 export const revokeToken = (id: string) => call<{ token: AgentToken | null }>(`/api/hosted/agent-tokens/${e(id)}`, "DELETE");
-/** A waiting device sign-in: the machine it names, and its kind (`clax-app` for the Clax app). */
-export type DeviceRequest = { client_name: string; peer_ip: string; client_kind?: string | null; created_at: string; expires_at: string; same_address?: boolean };
+/** A waiting device sign-in: the machine it names, its kind (`clax-app` for the Clax app), and the loopback page of that machine's Clax to send the person back to once they decide. */
+export type DeviceRequest = { client_name: string; peer_ip: string; client_kind?: string | null; created_at: string; expires_at: string; same_address?: boolean; return_to?: string | null };
 export const peekDevice = (code: string) => call<DeviceRequest>(`/api/hosted/device/${e(code)}`);
 export const approveDevice = (code: string) => call<{ token: AgentToken }>(`/api/hosted/device/${e(code)}/approve`, "POST");
 export const denyDevice = (code: string) => call<unknown>(`/api/hosted/device/${e(code)}/deny`, "POST");

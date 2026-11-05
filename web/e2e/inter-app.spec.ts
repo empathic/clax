@@ -33,7 +33,8 @@ async function apps(tag: string, share = false) {
   const b = (await publishWith(d.base, d.token, `Runs ${tag}`, SOURCE, { db: {} })).artifact.id;
   await api(d.base, d.token, `/api/artifacts/${b}/docs/runs/r1`, { method: "PUT", body: JSON.stringify({ data: { km: 5 }, lww: true }) });
   const a = (await publishWith(d.base, d.token, `Dashboard ${tag}`, reader(b), { db: { read: [b] } })).artifact.id;
-  if (share) await api(d.base, d.token, `/api/artifacts/${b}`, { method: "PATCH", body: JSON.stringify({ capabilities: { db: { share: { read: [a] } } } }) });
+  // B's clax.json owns its declaration, so a new version changes it.
+  if (share) await api(d.base, d.token, `/api/artifacts/${b}/versions`, { method: "POST", body: JSON.stringify({ if_version: 1, capabilities: { db: { share: { read: [a] } } }, files: { "index.html": { content: SOURCE } } }) });
   return { a, b };
 }
 

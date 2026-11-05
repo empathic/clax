@@ -40,29 +40,22 @@ if (cd "$T" && scripts/bump-version.sh 9.8.7 >/dev/null) && [ "$(cd "$T" && scri
     && cmp -s "$T/scripts/ensure-clax.sh" "$T/plugins/pi/scripts/ensure-clax.sh" \
     && grep -q '^This is Clax plugin 9.8.7\.' "$T/plugins/pi/skills/clax/SKILL.md" \
     && python3 "$T/scripts/sync-skill-tools.py" --check >/dev/null \
-    && grep -A1 '^name = "clax-fake-exe"$' "$T/Cargo.lock" | grep '^version = "9.8.7"$' >/dev/null; then
-    pass "bump-version writes every version, the launcher copies and skill blocks included"
+    && grep -A1 '^name = "clax-fake-exe"$' "$T/Cargo.lock" | grep '^version = "9.8.7"$' >/dev/null \
+    && grep -q '^    newTag: "9.8.7"$' "$T/deploy/k8s/sqlite/kustomization.yaml" \
+    && grep -q 'releases/download/v9.8.7/clax-fleet.yaml$' "$T/docs/kubernetes.md" \
+    && grep -q 'ghcr.io/empathic/clax-fleet:9.8.7 ' "$T/docs/kubernetes.md" \
+    && ! grep -o 'ghcr.io/empathic/clax-fleet:[0-9][0-9A-Za-z.-]*' "$T/docs/kubernetes.md" | grep -v ':9.8.7$' >/dev/null; then
+    pass "bump-version writes every version, the launcher copies, skill blocks and fleet image tags included"
 else fail "bump-version writes every version"; fi
-# The Worker's lock: every Clax crate it names by path at the new version,
-# its own two crates (0.0.0), and every registry package and the vendored
-# QuickJS crates (third_party/clax-rquickjs-*, at their upstream version)
-# as they were.
-lock_diff="$(diff "$HERE/crates/clax-worker/Cargo.lock" "$T/crates/clax-worker/Cargo.lock" | grep '^[<>]' | sort | uniq -c)"
-crates="$(awk '/^name = "clax-/ && !/^name = "clax-rquickjs-/ {n=$3} /^version = / && n {print n, $3; n=""}' "$T/crates/clax-worker/Cargo.lock")"
-if echo "$crates" | grep -v '"0.0.0"' | grep -v '"9.8.7"' | grep . >/dev/null || ! echo "$crates" | grep '"9.8.7"' >/dev/null \
-    || echo "$lock_diff" | grep -v 'version = "' | grep . >/dev/null; then
-    fail "bump-version writes the Worker's Cargo.lock ($crates; $lock_diff)"
-else pass "bump-version writes the Worker's Cargo.lock, and only its Clax crates' versions"; fi
+# The Worker's two crates keep their own version (0.0.0) in Cargo.lock.
+if grep -A1 -E '^name = "(clax-worker|clax-do-vfs)"$' "$T/Cargo.lock" | grep '^version = ' | grep -v '"0.0.0"' | grep . >/dev/null; then
+    fail "bump-version leaves the Worker's crates at 0.0.0"
+else pass "bump-version leaves the Worker's crates at 0.0.0"; fi
 
 sed -i.bak 's/"version": "9.8.7"/"version": "9.8.6"/' "$T/plugins/clax/.codex-plugin/plugin.json"
 out="$(cd "$T" && scripts/check-version.sh 2>&1)"; rc=$?
 if [ "$rc" = 1 ] && echo "$out" | grep "plugins/clax/.codex-plugin/plugin.json: 9.8.6" >/dev/null; then pass "a stray version is named"
 else fail "a stray version is named ($out)"; fi
-
-sed -i.bak '/^name = "clax-core"$/{n;s/9.8.7/9.8.6/;}' "$T/crates/clax-worker/Cargo.lock"
-out="$(cd "$T" && scripts/check-version.sh 2>&1)"; rc=$?
-if [ "$rc" = 1 ] && echo "$out" | grep "crates/clax-worker/Cargo.lock clax-core: 9.8.6" >/dev/null; then pass "a stray Worker lock version is named"
-else fail "a stray Worker lock version is named ($out)"; fi
 
 # A fresh copy of the version files, for the cases below that need one.
 fresh() {
@@ -83,6 +76,27 @@ for f in plugins/claude-code/skills/clax/SKILL.md plugins/clax/skills/clax/SKILL
     if [ "$rc" = 1 ] && echo "$out" | grep "$f tool block: 9.9.9" >/dev/null; then pass "a stray skill block is named ($f)"
     else fail "a stray skill block is named ($f: $out)"; fi
 done
+
+for f in deploy/k8s/sqlite/kustomization.yaml; do
+    fresh "$T/stray"
+    sed -i.bak 's/^    newTag: ".*"$/    newTag: "9.9.9"/' "$T/stray/$f"
+    out="$(cd "$T/stray" && scripts/check-version.sh 2>&1)"; rc=$?
+    if [ "$rc" = 1 ] && echo "$out" | grep "$f newTag: 9.9.9" >/dev/null; then pass "a stray fleet image tag is named ($f)"
+    else fail "a stray fleet image tag is named ($f: $out)"; fi
+done
+# Every image the docs name is checked, not only the first.
+fresh "$T/stray"
+python3 - "$T/stray/docs/kubernetes.md" <<'PY'
+import re, sys
+path = sys.argv[1]
+text = open(path).read()
+ms = list(re.finditer(r'ghcr\.io/empathic/clax-fleet:[0-9][0-9A-Za-z.-]*', text))
+m = ms[-1]
+open(path, "w").write(text[:m.start()] + "ghcr.io/empathic/clax-fleet:9.9.9" + text[m.end():])
+PY
+out="$(cd "$T/stray" && scripts/check-version.sh 2>&1)"; rc=$?
+if [ "$rc" = 1 ] && echo "$out" | grep -E "docs/kubernetes.md image #[2-9]: 9.9.9" >/dev/null; then pass "a stray image version in the docs is named"
+else fail "a stray image version in the docs is named ($out)"; fi
 
 # A pattern that fails to match late in the list leaves every file as it was.
 fresh "$T/half"

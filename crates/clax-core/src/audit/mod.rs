@@ -116,6 +116,7 @@ kinds! {
     BotTurn = "bot.turn",
     BotScript = "bot.script",
     BotCall = "bot.call",
+    BotWeb = "bot.web",
     BotRunEnd = "bot.run_end",
     BotCancel = "bot.cancel",
     BotRefused = "bot.refused",
@@ -130,6 +131,25 @@ kinds! {
     AdminKey = "admin.key",
     AdminCostLine = "admin.cost_line",
     AdminSettings = "admin.settings",
+    MeWeb = "me.web",
+    ExternalCreate = "external.create",
+    ExternalUpdate = "external.update",
+    ExternalDelete = "external.delete",
+    ThreadMetadata = "thread.metadata",
+    QueueCreate = "queue.create",
+    QueueUpdate = "queue.update",
+    QueueClaim = "queue.claim",
+    QueueRelease = "queue.release",
+    QueueFix = "queue.fix",
+    QueueVerify = "queue.verify",
+    QueueReopen = "queue.reopen",
+    RemoteRequestAsk = "remote_request.ask",
+    RemoteRequestAnswer = "remote_request.answer",
+    RemoteRequestClose = "remote_request.close",
+    ConfirmationAnswer = "confirmation.answer",
+    PasskeyAdd = "passkey.add",
+    PasskeyRemove = "passkey.remove",
+    PasskeyRequire = "passkey.require",
 }
 
 impl std::fmt::Display for AuditKind {
@@ -230,6 +250,18 @@ pub enum Actor {
     /// Every ClaxBot step runs under the rights of that person.
     Bot {
         on_behalf_of: String,
+    },
+    /// A reporter of a report queue, through its reporter token (spec
+    /// 2026-10-27-clax-sdk-design §5.3): the queue and the reporter ID the
+    /// deployer's app gave. No person of this instance.
+    Reporter {
+        queue_id: String,
+        reporter_id: String,
+    },
+    /// A deployer's backend, through a queue's service grant (§5.3).
+    Service {
+        queue_id: String,
+        grant_id: String,
     },
 }
 
@@ -659,10 +691,16 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 
 /// A version's content hash (spec §5.3): `sha256:` and the hex SHA-256 of
 /// its manifest, one `<path>\0<sha256 hex>\0<size>\n` line per file in path
-/// order. `None` when a file has no hash.
+/// order, every file but `clax.json` ([`crate::manifest::MANIFEST_PATH`]):
+/// the declaration it holds travels beside the files (a bundle's manifest, a
+/// publish's `capabilities`), so a copy the daemon writes it into keeps the
+/// hash of the files it was sent. `None` when a file has no hash.
 pub fn content_manifest_sha256(files: &BTreeMap<String, crate::model::FileMeta>) -> Option<String> {
     let mut manifest = Vec::new();
     for (path, meta) in files {
+        if path == crate::manifest::MANIFEST_PATH {
+            continue;
+        }
         let sha = meta.sha256.as_deref()?;
         manifest.extend_from_slice(path.as_bytes());
         manifest.push(0);
@@ -706,6 +744,16 @@ mod tests {
             content_manifest_sha256(&BTreeMap::new()).as_deref(),
             Some(format!("sha256:{}", sha256_hex(b""))).as_deref()
         );
+        let mut declared = files.clone();
+        declared.insert("clax.json".to_string(), meta(b"{}"));
+        assert_eq!(
+            content_manifest_sha256(&declared).as_deref(),
+            Some(expected),
+            "clax.json is left out"
+        );
+        let mut nested = files.clone();
+        nested.insert("a/clax.json".to_string(), meta(b"{}"));
+        assert_ne!(content_manifest_sha256(&nested).as_deref(), Some(expected));
         let mut unhashed = files.clone();
         unhashed.get_mut("app.js").unwrap().sha256 = None;
         assert_eq!(content_manifest_sha256(&unhashed), None);
@@ -787,6 +835,7 @@ mod tests {
             "bot.turn",
             "bot.script",
             "bot.call",
+            "bot.web",
             "bot.run_end",
             "bot.cancel",
             "bot.refused",
@@ -801,6 +850,25 @@ mod tests {
             "admin.key",
             "admin.cost_line",
             "admin.settings",
+            "me.web",
+            "external.create",
+            "external.update",
+            "external.delete",
+            "thread.metadata",
+            "queue.create",
+            "queue.update",
+            "queue.claim",
+            "queue.release",
+            "queue.fix",
+            "queue.verify",
+            "queue.reopen",
+            "remote_request.ask",
+            "remote_request.answer",
+            "remote_request.close",
+            "confirmation.answer",
+            "passkey.add",
+            "passkey.remove",
+            "passkey.require",
         ];
         let names: Vec<&str> = AuditKind::ALL.iter().map(|k| k.as_str()).collect();
         assert_eq!(names, spec);
@@ -963,7 +1031,7 @@ mod tests {
             in_group(KindGroup::Views),
             ["view.run", "view.admin", "view.audit", "view.usage"]
         );
-        assert_eq!(in_group(KindGroup::Bot).len(), 7);
+        assert_eq!(in_group(KindGroup::Bot).len(), 8);
         assert_eq!(in_group(KindGroup::Admin).len(), 7);
         assert_eq!(
             in_group(KindGroup::Credits),

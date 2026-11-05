@@ -15,7 +15,7 @@ import type { HandlerFactory } from "./host";
 import { lazyHandler } from "./lazy";
 import { permissionsHandler } from "./permissions";
 
-/** The composer tier's gesture at a call's arrival (device, home). */
+/** The composer tier's gesture at a call's arrival (device, home, shell). */
 const composerAtArrival = (): ArrivalGesture => ({ composer: frameGesture() });
 
 /** The strict tier's gesture at a call's arrival (artifact.publish). */
@@ -42,6 +42,8 @@ export const REGISTRY: Record<string, HandlerFactory> = {
   permissions: permissionsHandler,
   room: lazyHandler(() => import("./room").then(m => m.roomHandler)),
   sample: lazyHandler(() => import("./sample").then(m => m.sampleHandler)),
+  // `commentMode` is the composer tier's; `highlight` and `can` need no gesture.
+  shell: lazyHandler(() => import("./shell").then(m => m.shellHandler), composerAtArrival),
   // In the Clax app, a page's calls to its own site's API (site.ts).
   site: lazyHandler(() => import("./site").then(m => m.siteHandler)),
   user: lazyHandler(() => import("./user").then(m => m.userHandler)),

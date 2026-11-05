@@ -69,10 +69,17 @@ pub fn references_in(text: &str) -> Vec<(String, String)> {
 /// the duration to finish in; the cached file, or why there is none.
 pub type Fetch = dyn Fn(&str, &str, Duration) -> Result<PathBuf, String> + Send + Sync;
 
-/// Fetches each distinct one of `refs` at once, each on a thread of its
-/// own given what is left of `within`, and waits for them no longer than
-/// `within`: a fetch not back by then is [`TIMED_OUT`] (its thread is left
-/// to end on its own bound). So a hook that must print what it took within
+/// The most clip fetches one payload runs at once, so the clips held in
+/// memory at once stay bounded. The MCP shim (`clax_mcp::client`) and the
+/// Pi extension (`plugins/pi/src/remote.ts`, checked by the contract
+/// fixture) fetch by it too.
+pub const FETCHES_AT_ONCE: usize = 4;
+
+/// Fetches each distinct one of `refs`, at most [`FETCHES_AT_ONCE`] at
+/// once on threads of their own, each fetch given what is left of
+/// `within`, and waits for them no longer than `within`: a fetch not back
+/// by then, or not begun, is [`TIMED_OUT`] (a running thread is left to
+/// end on its own bound). So a hook that must print what it took within
 /// its deadline loses no comment to a slow clip.
 pub fn fetch_within(
     refs: &[(String, String)],
@@ -80,31 +87,43 @@ pub fn fetch_within(
     fetch: std::sync::Arc<Fetch>,
 ) -> HashMap<(String, String), Result<PathBuf, String>> {
     let until = Instant::now() + within;
-    let (tx, rx) = std::sync::mpsc::channel();
     let mut out = HashMap::new();
-    let mut waiting = 0;
+    let mut queue = std::collections::VecDeque::new();
     for r in refs {
-        if out.contains_key(r) {
-            continue;
+        if !out.contains_key(r) {
+            out.insert(r.clone(), Err(TIMED_OUT.to_string()));
+            queue.push_back(r.clone());
         }
-        out.insert(r.clone(), Err(TIMED_OUT.to_string()));
-        let (tx, fetch, r) = (tx.clone(), fetch.clone(), r.clone());
-        let left = until.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            continue;
-        }
-        waiting += 1;
+    }
+    if within.is_zero() {
+        return out;
+    }
+    let waiting = queue.len();
+    let queue = std::sync::Arc::new(std::sync::Mutex::new(queue));
+    let (tx, rx) = std::sync::mpsc::channel();
+    for _ in 0..FETCHES_AT_ONCE.min(waiting) {
+        let (tx, fetch, queue) = (tx.clone(), fetch.clone(), queue.clone());
         std::thread::spawn(move || {
-            let got = fetch(&r.0, &r.1, left);
-            let _ = tx.send((r, got));
+            loop {
+                let next = queue.lock().map(|mut q| q.pop_front());
+                let Ok(Some(r)) = next else { return };
+                let left = until.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return;
+                }
+                let got = fetch(&r.0, &r.1, left);
+                if tx.send((r, got)).is_err() {
+                    return;
+                }
+            }
         });
     }
-    while waiting > 0 {
+    drop(tx);
+    for _ in 0..waiting {
         let left = until.saturating_duration_since(Instant::now());
         match rx.recv_timeout(left) {
             Ok((r, got)) => {
                 out.insert(r, got);
-                waiting -= 1;
             }
             Err(_) => break,
         }
@@ -481,6 +500,38 @@ mod tests {
         let none: Arc<Fetch> = Arc::new(|_: &str, _: &str, _: Duration| panic!("no fetch"));
         let got = fetch_within(&refs, Duration::ZERO, none);
         assert!(got.values().all(|r| r == &Err(TIMED_OUT.to_string())));
+    }
+
+    /// At most FETCHES_AT_ONCE fetches run together, and every clip is
+    /// fetched.
+    #[test]
+    fn fetches_run_at_most_fetches_at_once_together() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+        let (now, most) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        // The first FETCHES_AT_ONCE fetches meet here, so they run together.
+        let meet = Arc::new(Barrier::new(FETCHES_AT_ONCE));
+        let begun = Arc::new(AtomicUsize::new(0));
+        let (n, m) = (now.clone(), most.clone());
+        let fetch: Arc<Fetch> = Arc::new(move |a: &str, t: &str, _: Duration| {
+            let running = n.fetch_add(1, Ordering::SeqCst) + 1;
+            m.fetch_max(running, Ordering::SeqCst);
+            if begun.fetch_add(1, Ordering::SeqCst) < FETCHES_AT_ONCE {
+                meet.wait();
+            }
+            n.fetch_sub(1, Ordering::SeqCst);
+            Ok(PathBuf::from(format!("/c/{a}-{t}.png")))
+        });
+        let refs: Vec<(String, String)> = (0..10)
+            .map(|i| (AID.to_string(), format!("01J9ZZZZZZZZZZZZZZZZZZZZ{i:02}")))
+            .collect();
+        // fetch_within takes a bound; this one only stops a hang (fewer
+        // than FETCHES_AT_ONCE running together never meet), and no fetch
+        // here waits on anything else.
+        let got = fetch_within(&refs, Duration::from_secs(600), fetch);
+        assert_eq!(got.len(), 10);
+        assert!(got.values().all(Result::is_ok), "{got:?}");
+        assert_eq!(most.load(Ordering::SeqCst), FETCHES_AT_ONCE);
     }
 
     #[test]

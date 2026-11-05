@@ -239,7 +239,7 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("comment.add", "body") => Text,
         ("comment.add", "author_name") => Name,
         ("comment.add", "comment_id" | "author_kind" | "via_harness" | "via_page") => Safe,
-        ("thread.resolve", "resolved_by" | "addressed_version") => Safe,
+        ("thread.resolve", "resolved_by" | "addressed_version" | "reason") => Safe,
         ("thread.delete", "moved") => Safe,
         (
             "thread.send",
@@ -313,6 +313,11 @@ fn body_class(kind: &str, field: &str) -> Class {
         ) => Safe,
         ("approval.decide", "request_id" | "scope") => Safe,
         ("approval.withdraw", "request_id" | "reason") => Safe,
+        // A connection request (`crate::remote_requests`): its instance's
+        // origin, never the asking agent's URL or reason.
+        ("remote_request.ask", "request_id" | "origin" | "opened") => Safe,
+        ("remote_request.answer", "request_id" | "origin" | "answer" | "remote_id") => Safe,
+        ("remote_request.close", "request_id" | "origin" | "status" | "remote_id") => Safe,
         ("thread.take", "thread_id" | "session" | "cause") => Safe,
         ("thread.release", "thread_id" | "session" | "reason") => Safe,
         ("backfill.skip", "reason") => Text,
@@ -344,6 +349,18 @@ fn body_class(kind: &str, field: &str) -> Class {
         // (`give_up`): both are text.
         ("bot.call", "run" | "step" | "op" | "ok") => Safe,
         ("bot.call", "target") => Text,
+        // A web call (spec 2026-11-02-claxbot-web-tools §8): its query and
+        // URL are the model's or a page's text, and so is the provider's
+        // whole answer to a search; the source that allowed a fetch is a
+        // code (`comment`, `search #<n>`, `page #<n>`), and whether the
+        // call was answered, its error code and whether it came from the
+        // page store are codes too.
+        (
+            "bot.web",
+            "run" | "step" | "op" | "source" | "provider" | "request_id" | "credits_milli" | "ok"
+            | "code" | "stored",
+        ) => Safe,
+        ("bot.web", "query" | "url" | "response") => Text,
         ("bot.run_end", "run" | "outcome" | "credits_milli") => Safe,
         ("bot.run_end", "reason") => Text,
         ("bot.cancel", "run" | "by") => Safe,
@@ -367,6 +384,40 @@ fn body_class(kind: &str, field: &str) -> Class {
         // The keys of the local daemon's settings written to config.toml
         // (`serve.port`), never their values.
         ("admin.settings", "fields") => Safe,
+        // A person's own choice of the web tools: their key and a flag.
+        ("me.web", "person" | "value") => Safe,
+        // External artifacts and report queues (spec
+        // 2026-10-27-clax-sdk-design §6.6): an app's opaque IDs, titles,
+        // revisions and metadata are its users' text; a page URL can carry
+        // a query.
+        (
+            "external.create" | "external.update",
+            "external_id" | "title" | "revision" | "metadata",
+        ) => Text,
+        ("external.create" | "external.update", "url") => Path,
+        ("external.create" | "external.update", "metadata_sha256" | "previous_sha256") => Safe,
+        ("external.delete", "external_id") => Text,
+        ("external.delete", "metadata_sha256") => Safe,
+        ("thread.metadata", "metadata") => Text,
+        ("thread.metadata", "thread_id" | "metadata_sha256" | "previous_sha256") => Safe,
+        ("queue.create" | "queue.update", "name" | "grant_name") => Text,
+        (
+            "queue.create" | "queue.update",
+            "queue_id" | "origins" | "reporters_see" | "op" | "member" | "role" | "grant_id",
+        ) => Safe,
+        (
+            "queue.claim" | "queue.release",
+            "queue_id" | "thread_id" | "session" | "lease_id" | "fence" | "expires_at" | "reason",
+        ) => Safe,
+        ("queue.fix", "url") => Path,
+        (
+            "queue.fix" | "queue.verify" | "queue.reopen",
+            "queue_id" | "thread_id" | "n" | "commit" | "reopen_count" | "reason",
+        ) => Safe,
+        ("confirmation.answer", "confirmation_id" | "decision" | "answer") => Safe,
+        ("passkey.add", "credential_id" | "alg") => Safe,
+        ("passkey.remove", "credential_id" | "reason") => Safe,
+        ("passkey.require", "required") => Safe,
         _ => Class::Unclassified,
     }
 }

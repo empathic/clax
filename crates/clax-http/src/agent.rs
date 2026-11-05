@@ -277,8 +277,30 @@ need!(ApprovalsPoll, Ask, "ask", Own, DEFAULT_LIMIT);
 need!(ApprovalsList, None, Own, DEFAULT_LIMIT);
 need!(ApprovalRequestsList, None, Own, DEFAULT_LIMIT);
 need!(AgentsList, None, Own, DEFAULT_LIMIT);
+// What a URL names (`clax_server::resolve`): a local artifact or a page
+// for a person's agent; remote answers only for the owner's.
+need!(UrlResolve, None, Own, DEFAULT_LIMIT);
 need!(ToolCallReport, None, Own, DEFAULT_LIMIT);
 need!(ToolCallIdReport, None, Own, DEFAULT_LIMIT);
+// Report queues (spec 2026-10-27-clax-sdk-design §7): the queue's own
+// rights decide each (its triage members and their agents); the right
+// below is held somewhere, as a path without an artifact asks.
+need!(QueuesList, None, Own, DEFAULT_LIMIT);
+need!(QueueReportsList, Comments, "read", Own, DEFAULT_LIMIT);
+need!(QueueWatch, Comments, "watch", Own, DEFAULT_LIMIT);
+need!(QueueUnwatch, Comments, "watch", Own, DEFAULT_LIMIT);
+need!(QueueReportGet, Comments, "read", Own, DEFAULT_LIMIT);
+need!(QueueClip, Comments, "read", Own, DEFAULT_LIMIT);
+need!(QueueClaim, Comments, "reply", Own, DEFAULT_LIMIT);
+need!(QueueRenew, Comments, "reply", Own, DEFAULT_LIMIT);
+need!(QueueRelease, Comments, "reply", Own, DEFAULT_LIMIT);
+need!(QueueReply, Comments, "reply", Own, DEFAULT_LIMIT);
+need!(QueueResolve, Comments, "resolve", Own, DEFAULT_LIMIT);
+need!(QueueReportPatch, Comments, "reply", Own, DEFAULT_LIMIT);
+need!(QueueArtifactPatch, Artifacts, "update", Own, DEFAULT_LIMIT);
+need!(QueueFix, Comments, "reply", Own, DEFAULT_LIMIT);
+need!(QueueDiagnostics, Comments, "read", Own, DEFAULT_LIMIT);
+need!(QueueCommentClip, Comments, "read", Own, DEFAULT_LIMIT);
 
 /// Every route an agent of another machine may reach, by method and the
 /// path it is routed at (`MatchedPath`), with its need: [`verify_layer`]
@@ -482,6 +504,7 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
     ("GET", "/api/approvals", ApprovalsList::INFO),
     ("GET", "/api/approvals/requests", ApprovalRequestsList::INFO),
     ("GET", "/api/agents", AgentsList::INFO),
+    ("GET", "/api/resolve", UrlResolve::INFO),
     (
         "POST",
         "/api/sessions/{id}/tool-calls",
@@ -498,6 +521,70 @@ pub const ROUTES: &[(&str, &str, NeedInfo)] = &[
         SessionWhereToAsk::INFO,
     ),
     ("POST", "/api/sessions/{id}/terminal", SessionTerminal::INFO),
+    ("GET", "/api/queues", QueuesList::INFO),
+    ("GET", "/api/queues/{qid}/reports", QueueReportsList::INFO),
+    ("POST", "/api/queues/{qid}/watch", QueueWatch::INFO),
+    ("DELETE", "/api/queues/{qid}/watch", QueueUnwatch::INFO),
+    (
+        "GET",
+        "/api/queues/{qid}/reports/{tid}",
+        QueueReportGet::INFO,
+    ),
+    (
+        "PATCH",
+        "/api/queues/{qid}/reports/{tid}",
+        QueueReportPatch::INFO,
+    ),
+    (
+        "GET",
+        "/api/queues/{qid}/reports/{tid}/clip",
+        QueueClip::INFO,
+    ),
+    (
+        "POST",
+        "/api/queues/{qid}/reports/{tid}/claim",
+        QueueClaim::INFO,
+    ),
+    (
+        "POST",
+        "/api/queues/{qid}/reports/{tid}/renew",
+        QueueRenew::INFO,
+    ),
+    (
+        "POST",
+        "/api/queues/{qid}/reports/{tid}/release",
+        QueueRelease::INFO,
+    ),
+    (
+        "POST",
+        "/api/queues/{qid}/reports/{tid}/comments",
+        QueueReply::INFO,
+    ),
+    (
+        "POST",
+        "/api/queues/{qid}/reports/{tid}/resolve",
+        QueueResolve::INFO,
+    ),
+    (
+        "PATCH",
+        "/api/queues/{qid}/reports/{tid}/artifact",
+        QueueArtifactPatch::INFO,
+    ),
+    (
+        "POST",
+        "/api/queues/{qid}/reports/{tid}/fix",
+        QueueFix::INFO,
+    ),
+    (
+        "GET",
+        "/api/queues/{qid}/reports/{tid}/diagnostics",
+        QueueDiagnostics::INFO,
+    ),
+    (
+        "GET",
+        "/api/queues/{qid}/reports/{tid}/comments/{cid}/clip",
+        QueueCommentClip::INFO,
+    ),
 ];
 
 /// A [`ROUTE_NEEDS`] entry: handler, right (type and action), class.
@@ -585,10 +672,27 @@ pub const ROUTE_NEEDS: &[RouteNeed] = &[
     route_need!("approvals::list", ApprovalsList),
     route_need!("approvals::requests", ApprovalRequestsList),
     route_need!("people::list_agents", AgentsList),
+    route_need!("resolve::get", UrlResolve),
     route_need!("toolpath::session_tool_call", ToolCallReport),
     route_need!("sessions::tool_call_ids", ToolCallIdReport),
     route_need!("surface::where_to_ask", SessionWhereToAsk),
     route_need!("surface::terminal", SessionTerminal),
+    route_need!("queues::list", QueuesList),
+    route_need!("queue_agent::list", QueueReportsList),
+    route_need!("queue_agent::watch", QueueWatch),
+    route_need!("queue_agent::unwatch", QueueUnwatch),
+    route_need!("queue_agent::get", QueueReportGet),
+    route_need!("queue_agent::clip", QueueClip),
+    route_need!("queue_agent::claim", QueueClaim),
+    route_need!("queue_agent::renew", QueueRenew),
+    route_need!("queue_agent::release", QueueRelease),
+    route_need!("queue_agent::reply", QueueReply),
+    route_need!("queue_agent::resolve", QueueResolve),
+    route_need!("queue_agent::patch", QueueReportPatch),
+    route_need!("queue_agent::patch_artifact", QueueArtifactPatch),
+    route_need!("queue_agent::fix", QueueFix),
+    route_need!("queue_agent::diagnostics", QueueDiagnostics),
+    route_need!("queue_agent::comment_clip", QueueCommentClip),
 ];
 
 /// The `Filtered` needs whose filter is live: a person's agent reaches
@@ -961,6 +1065,16 @@ impl ReadRights {
                     _ => read(rights, &|x| x == a.id && a.authors.creator == *person),
                 }
             }
+        }
+    }
+
+    /// Whether the caller may read a report queue's reports, as the triage
+    /// routes ask of a member's agent: its rights hold Comments `read`
+    /// somewhere (every other caller may).
+    pub fn reads_reports(&self) -> bool {
+        match &self.rights {
+            None => true,
+            Some((rights, _)) => rights.allows_somewhere(RightType::Comments, "read"),
         }
     }
 
@@ -1952,7 +2066,7 @@ async fn bearer_head(s: &AppState, headers: &HeaderMap) -> Result<BearerGrant, R
 
 /// Whether a request has no body: no or a zero `Content-Length`, and no
 /// `Transfer-Encoding`.
-fn bodyless(headers: &HeaderMap) -> bool {
+pub(crate) fn bodyless(headers: &HeaderMap) -> bool {
     !headers.contains_key(header::TRANSFER_ENCODING)
         && headers
             .get(header::CONTENT_LENGTH)
@@ -1964,7 +2078,7 @@ fn bodyless(headers: &HeaderMap) -> bool {
 /// a small one, the budget for every byte, the minimum rate after the
 /// grace, and the absolute deadline ([`read_deadline`]). Permit, allowance
 /// and budget are released when it returns.
-async fn read_unverified(
+pub(crate) async fn read_unverified(
     gate: &Arc<Gate>,
     key: [u8; 32],
     headers: &HeaderMap,

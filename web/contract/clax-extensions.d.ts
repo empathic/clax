@@ -515,6 +515,70 @@ declare namespace ClaxExtensions {
       fetch(url: string, init?: RequestInit): Promise<Response>;
     }
   }
+
+  /**
+   * Clax's own controls around the page, for a page that walks its viewer
+   * through them (a tour). Declare `{"shell": {}}` (it takes no options)
+   * and obtain it with `await claude.use("shell")`: it is served in the
+   * owner's and editors' views, and resolves `null` for every other viewer
+   * and when undeclared, so render without it first.
+   *
+   * - `highlight(control)` rings that control for 6 s or until the viewer
+   *   presses anywhere in Clax's own bar or panels or presses Escape there
+   *   (a press in the page does not reach Clax: call `highlight` again to
+   *   move the ring, or let it lapse; the control's own click acts as
+   *   usual), one ring at a time: the next `highlight` moves it. It
+   *   resolves `true` once drawn, and `false`, drawing nothing, when the
+   *   control is not shown to this viewer now: at phone width `versions`,
+   *   `publish` and `fork` are in the more menu, and `send` needs the
+   *   threads shown. Clax opens no menu, panel or tab to reach a control.
+   *   No gesture is needed.
+   * - `can(control)` answers what `highlight` would, without drawing.
+   * - `commentMode(on)` turns comment mode on or off, only from a click or key press in the page (while comment mode is on, a click in the page picks what to comment on and never reaches the page, so leave it from a key press; the viewer's Escape or Comment button also leaves it), and resolves whether comment mode is on
+   *   afterwards: leaving keeps it on while the viewer's comment holds
+   *   typed text.
+   * - `address()` resolves where this page is in Clax: `origin`, the Clax
+   *   that frames it (`https://clax.dev`, `http://localhost:7480`), and
+   *   `url`, this artifact's address there (`<origin>/a/<ID>`, the latest
+   *   version), the one to give an agent to watch. It resolves `null` in
+   *   the Clax app. The page cannot learn the origin otherwise: its site
+   *   sends no referrer, so `document.referrer` is empty.
+   *
+   * It says only whether a named control is shown, and the Clax and
+   * address the page is already shown at; nothing about who else is here,
+   * which agent works on the artifact, or any credential.
+   */
+  namespace Shell {
+    /** `comment`: the Comment button. `threads`: the Threads button.
+     * `versions`: the version menu's button. `publish`: Publish (or the
+     * linked site's button). `fork`: Fork. `send`: the first Send to agent
+     * in the threads sidebar. */
+    type Control = "comment" | "threads" | "versions" | "publish" | "fork" | "send";
+
+    /**
+     * Rejection codes (as `{code, message}`):
+     * - `invalid_argument`: a control outside `Control`, or `on` not a boolean.
+     * - `no_gesture`: `commentMode` without the viewer's recent click or key
+     *   press in the page; nothing changes.
+     * - `unavailable`: `commentMode` where this view cannot comment (a live
+     *   page, a crowd's spectator, Comments off, an agent's draft shown, the
+     *   Clax app's inspector).
+     */
+    type ErrorCode = "invalid_argument" | "no_gesture" | "unavailable";
+
+    interface Shell {
+      highlight(control: Control): Promise<boolean>;
+      commentMode(on: boolean): Promise<boolean>;
+      can(control: Control): Promise<boolean>;
+      address(): Promise<Address | null>;
+    }
+
+    /** `address()`'s answer: the framing Clax's origin, and this artifact's address there. */
+    interface Address {
+      origin: string;
+      url: string;
+    }
+  }
 }
 
 /** What Clax adds to `window.claude` (`claude.d.ts` `interface Claude`). */

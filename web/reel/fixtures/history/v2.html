@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Northwind Launch Plan</title>
+<style>
+  /* Version 2 of Northwind's launch plan, seeded for the reel's history
+     vignette (web/reel/vignettes/history.ts): a checklist by week.
+     Northwind, its launch and its people are invented. Light only. */
+  :root { --bg: #f7f6f3; --card: #ffffff; --fg: #1d1c1a; --muted: #6b6862; --line: #e4e1da; --done: #2f9e44; color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 640px; margin: 40px auto; padding: 0 16px; }
+  .kicker { margin: 0 0 4px; color: var(--muted); font-size: 13px; letter-spacing: 0.05em; text-transform: uppercase; }
+  h1 { margin: 0 0 24px; font-size: 30px; letter-spacing: -0.01em; }
+  h2 { margin: 22px 0 8px; font-size: 14px; color: var(--muted); font-weight: 600; }
+  ul { list-style: none; margin: 0; padding: 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+  li { display: flex; align-items: center; gap: 12px; padding: 11px 16px; border-top: 1px solid var(--line); }
+  li:first-child { border-top: 0; }
+  .box { width: 18px; height: 18px; border: 2px solid #b9b4aa; border-radius: 5px; flex: none; }
+  li.done .box { background: var(--done); border-color: var(--done); }
+  li.done span:not(.who) { color: var(--muted); text-decoration: line-through; }
+  .t { flex: 1; }
+  .who { color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <p class="kicker">Northwind Atlas · Launch, November 18</p>
+  <h1>Launch plan</h1>
+  <h2>This week</h2>
+  <ul>
+    <li class="done"><i class="box"></i><span class="t">Book the venue</span><span class="who">Sam</span></li>
+    <li class="done"><i class="box"></i><span class="t">Send the invitations</span><span class="who">Mia</span></li>
+    <li><i class="box"></i><span class="t">Finish the press kit</span><span class="who">Priya</span></li>
+  </ul>
+  <h2>Next week</h2>
+  <ul>
+    <li><i class="box"></i><span class="t">Brief the support team</span><span class="who">Jon</span></li>
+    <li><i class="box"></i><span class="t">Print the badges</span><span class="who">Priya</span></li>
+    <li><i class="box"></i><span class="t">Confirm the caterer</span><span class="who">Sam</span></li>
+  </ul>
+  <h2>Launch week</h2>
+  <ul>
+    <li><i class="box"></i><span class="t">Rehearse the keynote</span><span class="who">Alex</span></li>
+    <li><i class="box"></i><span class="t">Go live on the website</span><span class="who">Mia</span></li>
+  </ul>
+</main>
+</body>
+</html>
