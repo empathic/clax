@@ -60,10 +60,11 @@
     return wellFormed(s);
   };
 
-  const hostError = (code, message) => {
+  const hostError = (code, message, retryable) => {
     const e = new ErrorCtor(message);
     defineProperty(e, "name", { value: "HostError", writable: true, configurable: true });
     defineProperty(e, "code", { value: code, writable: true, configurable: true });
+    defineProperty(e, "retryable", { value: retryable === true, writable: true, configurable: true });
     const info = create(null);
     info.code = code;
     info.message = message;
@@ -251,7 +252,7 @@
       return;
     }
     const h = parse(json);
-    p.reject(hostError(h.code, h.message));
+    p.reject(hostError(h.code, h.message, h.retryable));
   };
 
   const api = create(null);

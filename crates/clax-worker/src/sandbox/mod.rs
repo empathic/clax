@@ -745,7 +745,7 @@ pub fn answer_json(result: &Result<Value, clax_bot_sandbox::HostError>) -> Strin
         Ok(v) => json!({"ok": true, "json": v.to_string()}).to_string(),
         Err(e) => json!({
             "ok": false,
-            "json": json!({"code": e.code, "message": e.message}).to_string(),
+            "json": e.reply_json(),
         })
         .to_string(),
     }

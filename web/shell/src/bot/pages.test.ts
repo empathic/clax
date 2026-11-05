@@ -103,6 +103,43 @@ describe("You", () => {
     expect(m.root.querySelector('[role="switch"][aria-label="Use my own Anthropic key"]')!.getAttribute("aria-checked")).toBe("true");
   });
 
+  it("me_shows_the_web_switch_and_prices", async () => {
+    let me = meBot();
+    const calls = stubFetch({
+      "GET /api/me/bot": () => me,
+      "GET /api/me/usage": { week: { start: "2026-10-19T00:00:00Z", end: "2026-10-26T00:00:00Z" }, totals: [], runs: [] },
+      "PUT /api/me/bot": (b: { web: boolean }) => { me = meBot({ web: { on: b.web, offered: true, why_off: b.web ? null : "person_off", prices: { search_milli: 25, fetch_milli: 50 } } }); return me; },
+    });
+    const m = mount(MePage, { now: () => new Date("2026-10-21T14:05:00Z") });
+    await settle();
+    const sw = m.root.querySelector<HTMLElement>('[role="switch"][aria-label="Let ClaxBot search and read the web"]')!;
+    expect(sw.getAttribute("aria-checked")).toBe("true");
+    expect(sw.getAttribute("aria-disabled")).toBeNull();
+    expect(m.root.querySelector(".mew-web")!.textContent).toContain("Searches cost 25 credits and reading a page 50 credits, per thousand requests.");
+    click(sw);
+    await settle();
+    expect(calls.some(c => c.url === "/api/admin/pricing")).toBe(false);
+    expect(calls.find(c => c.method === "PUT")!.body).toEqual({ web: false });
+    const off = m.root.querySelector<HTMLElement>('[role="switch"][aria-label="Let ClaxBot search and read the web"]')!;
+    // Their own choice: off, and still theirs to turn on.
+    expect([off.getAttribute("aria-checked"), off.getAttribute("aria-disabled")]).toEqual(["false", null]);
+  });
+
+  it("me_disables_the_switch_when_off_on_the_instance", async () => {
+    for (const [why, text] of [["admin_off", "Off on this instance"], ["not_configured", "Not configured"]] as const) {
+      stubFetch({
+        "GET /api/me/bot": meBot({ web: { on: true, offered: false, why_off: why, prices: { search_milli: null, fetch_milli: null } } }),
+        "GET /api/me/usage": { week: { start: "2026-10-19T00:00:00Z", end: "2026-10-26T00:00:00Z" }, totals: [], runs: [] },
+      });
+      const m = mount(MePage, {});
+      await settle();
+      const sw = m.root.querySelector<HTMLElement>('[role="switch"][aria-label="Let ClaxBot search and read the web"]')!;
+      expect([sw.getAttribute("aria-checked"), sw.getAttribute("aria-disabled")]).toEqual(["false", "true"]);
+      expect(m.root.querySelector(".mew-web")!.textContent).toContain(text);
+      m.unmount();
+    }
+  });
+
   it("shows the provider host a key is bound to before it is saved, and a key set for another", async () => {
     let me = meBot({ provider_host: "https://api.anthropic.com" });
     stubFetch({

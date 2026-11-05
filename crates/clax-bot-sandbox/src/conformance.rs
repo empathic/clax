@@ -395,6 +395,25 @@ catch (e) { return [e.name, e.code, e.message, e instanceof Error] }"#,
             )
         },
         Case {
+            calls: vec![
+                Exchange {
+                    op: "echo",
+                    args: json!([1]),
+                    reply: Err(HostError::new("web_unavailable", "the source failed").retryable()),
+                },
+                call_err("echo", json!([2]), "web_cap", "the run used its searches"),
+            ],
+            ..case(
+                "a_host_error_says_whether_it_is_retryable",
+                r#"const out = [];
+for (const n of [1, 2]) {
+  try { await clax.echo(n) } catch (e) { out.push([e.code, e.retryable]) }
+}
+return out"#,
+                ok(json!([["web_unavailable", true], ["web_cap", false]])),
+            )
+        },
+        Case {
             calls: vec![call_err(
                 "files.read",
                 json!(["missing"]),

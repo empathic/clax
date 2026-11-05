@@ -4223,6 +4223,67 @@
     "n": 2
    },
    "backfilled": false
+  },
+  {
+   "seq": 125,
+   "at": "2026-10-06T14:09:34.125Z",
+   "kind": "me.web",
+   "actor": {
+    "type": "viewer",
+    "public_id": "u_77c0zz",
+    "display_name": "Sam",
+    "person": true
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "shell",
+    "person": "u_77c0zz",
+    "value": false
+   },
+   "backfilled": false
+  },
+  {
+   "seq": 126,
+   "at": "2026-10-06T14:09:35.126Z",
+   "kind": "bot.web",
+   "actor": {
+    "type": "bot",
+    "on_behalf_of": "u_77c0zz"
+   },
+   "ids": {
+    "artifact": "k3m9q2w8x1ab",
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "daemon",
+    "run": "01JBCB0T000000000000000R01",
+    "step": 2,
+    "op": "web.fetch",
+    "url": "https://example.com/guide",
+    "source": "search #0",
+    "request_id": "cf-7f3a9c2e",
+    "credits_milli": 1
+   },
+   "backfilled": false
   }
  ]
 }

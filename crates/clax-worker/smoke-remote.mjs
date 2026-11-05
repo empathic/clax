@@ -50,8 +50,12 @@
 // `git push`, and the push becoming a version (on Artifacts through the
 // queue's `pushed` event; when none arrives, a direct reconcile tells the
 // event's absence from a reconcile failure); a comment arriving live on a
-// WebSocket stream. Then it cleans up (--keep keeps the artifacts) and,
-// when it made the owner, prints a sign-in link for the owner's browser.
+// WebSocket stream; when the admin turned web search and fetch on
+// (`GET /api/admin/web`), a ClaxBot run whose script makes one real search
+// and one real fetch of https://developers.cloudflare.com/ through the AI
+// binding (it bills the account). Then it cleans up (--keep keeps the
+// artifacts) and, when it made the owner, prints a sign-in link for the
+// owner's browser.
 //
 // Every step prints `ok`/`FAIL`/`skip`, its time and what it saw; a step
 // whose inputs failed is skipped; when the site host's health answers 404
@@ -385,6 +389,13 @@ const PAGE = (marker) =>
  * secret while setup is open, else the owner token. With the owner token
  * the MCP steps act as the daemon token's sessionless agent. */
 const OWNER = "credential: a session, an agent token, setup or the owner token";
+/** The step that has ClaxBot search and fetch on the real platform. */
+const WEB_STEP = "claxbot: one web search and one fetch (AI binding)";
+/** The page that step fetches. */
+const WEB_PAGE = "https://developers.cloudflare.com/";
+/** How long that step waits for its run to end. */
+const WEB_RUN_LIMIT = 300_000;
+
 const CREDENTIAL_NAMES = { session: "the owner's session", agent: "an agent token", setup: "the owner made by setup", token: "the owner token" };
 
 async function smoke(c, o) {
@@ -393,6 +404,7 @@ async function smoke(c, o) {
   let aid = "";
   let fork = "";
   const dbIds = [];
+  let webAid = "";
   let agentTokenId = "";
   let subscription = "";
   const queue = o.queue ?? "clax-artifacts-events";
@@ -858,6 +870,42 @@ async function smoke(c, o) {
     }
   }, ["publish v2 (mcp)", OWNER]);
 
+  await step(WEB_STEP, async () => {
+    // Only when the admin turned web search on: it bills the account.
+    const web = (await c.owner("/api/admin/web")).json;
+    if (!web?.configured) skip("the instance has no web source (no AI binding)");
+    if (web.search?.enabled !== true) skip("web search is off (GET /api/admin/web: search.enabled)");
+    if (web.fetch?.enabled !== true) skip("web fetch is off (GET /api/admin/web: fetch.enabled)");
+    const me = (await c.owner("/api/me/bot")).json;
+    if (me?.web?.why_off) skip(`web use is off for the owner (${me.web.why_off})`);
+    if (me?.unavailable_reason) skip(`ClaxBot is unavailable to the owner (${short(me.unavailable_reason, 120)})`);
+    const made = await c.owner("/api/artifacts", {
+      method: "POST",
+      body: JSON.stringify({ title: `Smoke web ${RUN}`, files: { "index.html": { content: PAGE(`web ${RUN}`), encoding: "utf8" } } }),
+    });
+    webAid = made.json.artifact.id;
+    const form = new FormData();
+    form.set("anchor", JSON.stringify({ kind: "element", selector: "main", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }));
+    // The page's URL is in the sender's own words, so the run may fetch it.
+    form.set("body", `Smoke ${RUN}: in one script, call clax.web.search("Cloudflare Workers documentation") and then clax.web.fetch("${WEB_PAGE}"), return how many results and characters came back, then finish. Change nothing else.`);
+    form.set("version", "1");
+    const posted = await c.owner(`/api/artifacts/${webAid}/threads`, { method: "POST", body: form });
+    const tid = posted.json?.thread?.id;
+    const started = await c.owner("/api/bot/runs", { method: "POST", body: JSON.stringify({ thread_ids: [tid], artifact_id: webAid }) });
+    const rid = started.json.run.id;
+    const ended = await until("the run ends", async () => {
+      const r = (await c.owner(`/api/bot/runs/${rid}`)).json;
+      return ["finished", "failed", "gave_up", "stopped"].includes(r.status) ? r : undefined;
+    }, WEB_RUN_LIMIT);
+    const calls = ended.steps.filter((x) => x.kind === "script").flatMap((x) => x.calls ?? []);
+    const search = calls.find((x) => x.op === "web.search");
+    const fetched = calls.find((x) => x.op === "web.fetch");
+    if (!search?.ok) throw new Error(`run ${rid} (${ended.status}): no web.search answered: ${short(calls)}`);
+    if (!fetched?.ok) throw new Error(`run ${rid} (${ended.status}): no web.fetch of ${WEB_PAGE} answered: ${short(calls)}`);
+    if (ended.status !== "finished") throw new Error(`run ${rid} ended ${ended.status} (${short(ended.reason)})`);
+    return { detail: `run ${rid}: web.search in ${search.ms} ms, web.fetch of ${WEB_PAGE} in ${fetched.ms} ms` };
+  }, [OWNER]);
+
   // Cleanup: never fails the smoke, but says what it left.
   console.log("\n-- cleanup");
   if (subscription) {
@@ -866,7 +914,7 @@ async function smoke(c, o) {
     console.log(`     subscription ${subscription}: ${r.code === 0 ? "deleted" : `left (${short(r.err || r.out, 200)})`}`);
   }
   if (!flag("--keep") && c.mcpBearer) {
-    for (const id of [...dbIds, fork, aid].filter(Boolean)) {
+    for (const id of [...dbIds, fork, aid, webAid].filter(Boolean)) {
       const r = await c.tool("delete", { url_or_id: id }).then(() => "deleted", (e) => `left: ${short(e.message, 160)}`);
       console.log(`     artifact ${id}: ${r}`);
     }

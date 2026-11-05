@@ -2,12 +2,13 @@
 //! one scripted reply per request, in order, recording the usage it
 //! reported), a store on a scratch home with an injected clock, a run on a
 //! one-page artifact, and the deps that drive it (the QuickJS sandbox, a
-//! [`FakeBotHost`] over the store).
+//! [`FakeBotHost`] over the store, a [`FakeWebSource`]).
 
 #![allow(dead_code)]
 
 use clax_bot::host::{ArtifactMeta, CommentMeta, FakeBotHost, RequestContext, ThreadMeta};
 use clax_bot::run::{Deps, Keys, RunSettings, SettingsSource};
+use clax_bot::web::{FakeWebSource, WebShape};
 use clax_bot::{EventHub, Next, TickOpts, TickOutcome};
 use clax_bot_sandbox::{CancelToken, Sandbox};
 use clax_core::audit::AuditCtx;
@@ -16,6 +17,7 @@ use clax_core::{Home, publish::PublishRequest};
 use clax_sample::messages::{ApiKey, MessagesClient, RetryPolicy};
 use clax_store::Store;
 use clax_store::bot_runs::{DriverId, NewRun, RequestKind, Run};
+use clax_store::bot_settings::Setting;
 use clax_store::credits::{KeySource, UsageRow};
 use clax_store::roles::OWNER;
 use clax_store::secrets::Kek;
@@ -426,6 +428,8 @@ pub struct Env {
     pub sandbox: Arc<dyn Sandbox>,
     pub hub: Arc<EventHub>,
     pub instance_key: bool,
+    /// The web source [`Env::deps`] gives runs.
+    pub web: Arc<FakeWebSource>,
     /// The run's thread, another thread of the artifact, and a thread of
     /// another artifact, all in the store.
     pub t1: String,
@@ -547,6 +551,7 @@ impl Env {
             sandbox,
             hub: Arc::new(EventHub::new()),
             instance_key: true,
+            web: Arc::new(FakeWebSource::new()),
             t1,
             t2,
             foreign,
@@ -624,6 +629,42 @@ impl Env {
     }
 
     pub fn run_with(&self, request: RequestKind, model: &str, key_source: KeySource) -> String {
+        self.run_shaped(request, model, key_source, "")
+    }
+
+    /// The web source runs get from [`Env::deps`].
+    pub fn web(&self) -> Arc<FakeWebSource> {
+        self.web.clone()
+    }
+
+    /// A thread run that declares the web operations of `shape`
+    /// (`"search"`, `"fetch"` or `"search,fetch"`), with those operations
+    /// turned on by the admin.
+    pub fn run_with_web(&self, shape: &str) -> String {
+        let s = WebShape::parse(shape);
+        let mut on = Vec::new();
+        if s.search {
+            on.push((Setting::WebSearchEnabled, Some(json!(true))));
+        }
+        if s.fetch {
+            on.push((Setting::WebFetchEnabled, Some(json!(true))));
+        }
+        self.store.set_bot_settings(&AuditCtx::DAEMON, &on).unwrap();
+        self.run_shaped(
+            RequestKind::Thread,
+            "claude-sonnet-5-5",
+            KeySource::Instance,
+            s.as_str(),
+        )
+    }
+
+    fn run_shaped(
+        &self,
+        request: RequestKind,
+        model: &str,
+        key_source: KeySource,
+        web: &str,
+    ) -> String {
         self.store
             .create_run(
                 &clax_bot::run::bot_ctx(OWNER),
@@ -636,6 +677,7 @@ impl Env {
                     key_source,
                     base_version: 1,
                     agent_grant: None,
+                    web: web.into(),
                 },
             )
             .unwrap()
@@ -659,7 +701,7 @@ impl Env {
             max_attempts: 1,
             ..RetryPolicy::default()
         };
-        d
+        d.with_web(self.web.clone())
     }
 
     pub fn deps(&self) -> Deps {

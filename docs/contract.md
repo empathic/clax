@@ -6391,6 +6391,10 @@ router), and a test fails when it differs:
 | `POST /api/admin/provider/test` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/admin/shutdown` | Denied | no |
 | `GET /api/admin/usage` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/admin/web` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/admin/web` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/admin/web/token` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/admin/web/token` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/agent-read-consents` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/agent-read-consents/{reader}/{source}` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/agent-read-consents/{reader}/{source}` | Denied | yes: 403 `not_for_agents` |
@@ -9460,6 +9464,7 @@ the body below.
 | `bot.turn` | `run, step, model, key_source (instance\|own), input_tokens, cached_tokens, output_tokens, stop_reason, credits_milli` | a model turn's step committed |
 | `bot.script` | `run, step, title, code_sha256, calls[op], cpu_ms, mem_peak, credits_milli, error` (the code itself is in the run's step, never the body) | a script's step committed |
 | `bot.call` | `run, step, op, target, ok` | every API op a script called, reads included, with its step |
+| `bot.web` | `run, step, op (web.search\|web.fetch), query` or `url, source, provider, request_id, credits_milli` | a web call answered, with its charge, in the transaction that journals it |
 | `bot.run_end` | `run, outcome (finished\|gave_up\|stopped), reason, credits_milli` (the run's total) | a run's terminal step committed |
 | `bot.cancel` | `run, by` (the person key of who asked) | someone asked a queued or running run to stop |
 | `view.run` | `run` | someone opened a run's panel |
@@ -9860,6 +9865,7 @@ in that unit's base:
 | `mreq` | 10^6 requests | requests |
 | `gb_month` | 1 GiB for 30 days | bytes·s |
 | `run` | one run | runs |
+| `kreq` | 10^3 requests | requests |
 
 A row's credits are ⌈`qty` × cost × (1 + margin) ÷ (credit price × base)⌉
 milli-credits, computed exactly in integers and rounded up once per row,
@@ -9984,7 +9990,7 @@ handle, `*system` as "Clax".
 
 | Route | Who | Records |
 |---|---|---|
-| `GET /api/me/bot`, `PUT /api/me/bot {use_own}`, `PUT`/`DELETE /api/me/bot/key` | the owner and connected people, their own | `admin.key` (scope `own`) |
+| `GET /api/me/bot`, `PUT /api/me/bot {use_own?, web?}`, `PUT`/`DELETE /api/me/bot/key` | the owner and connected people, their own; the answer's `web` is `{on, offered, why_off, prices}`: `on` the person's own choice (default true), `offered` when the admin turned search or fetch on and the host has a source, `why_off` `admin_off`, `person_off`, `not_configured` or `null` (web use is on), `prices` `{search_milli, fetch_milli}` the milli-credits one request costs them at their key source, a search on the active provider's `web.search.<provider>` line (each `null` for a line that does not exist); `PUT /api/me/bot` with neither field is 400 `empty_request`, and a request any field of which is refused (`use_own` without an own key: 404) changes nothing; `web` is recorded as `me.web {person, value}` | `admin.key` (scope `own`) |
 | `GET /api/me/usage?week=` | the same; on a hosted Clax a run's `artifact_title` is `null` once its artifact is out of the caller's reach (its cost rows stay) | `view.usage` |
 | `GET /api/me/flags` → `{flags: {claxbot, claxbot_unenforced}}` (each person's defaults filled in) | the same, their own; agents 403 `not_for_agents` | — |
 | `GET /api/agents` | as before; ClaxBot is listed first (`handle: "claxbot"`, `builtin: true`, `live`, or `unavailable: no_flag\|no_credits\|not_configured\|model_not_priced`) where the caller may send | — |
@@ -9994,6 +10000,7 @@ handle, `*system` as "Clax".
 | `GET /api/admin/people`, `PUT …/<person>/flags`, `…/credits` | admins | `view.admin {page: people}`, `admin.flag`, `admin.credits` |
 | `PUT /api/admin/people/<person>/role {role}` | the owner alone (403 `owner_only`); the owner's own role 400 `owner_role` | `admin.role` |
 | `GET`/`PUT /api/admin/provider`, `PUT`/`DELETE …/key`, `POST …/test`, `GET …/models` | admins | `view.admin {page: provider\|provider.test\|provider.models}`, `admin.provider`, `admin.key` (scope `instance`) |
+| `GET`/`PUT /api/admin/web`, `PUT`/`DELETE /api/admin/web/token`; the answer's `configured` says whether the host has a web source; `unavailable` is null, or the reason web use is off whatever the credentials, with `configured` false: the instance's configured public origin or site domain names no host, so it could not refuse a fetch of its own hosts (the reason quotes the value, and holds for the life of the process), or the host found its source cannot run where it runs (a Worker whose AI binding throws under `wrangler dev --local`); the first holds over the second; `checking` is true while the host's check of its source is still running (the Worker waits for it at most 2 s before answering) | admins | `view.admin {page: web}`, `admin.provider`, `admin.key` (scope `cloudflare`) |
 | `GET`/`PUT /api/admin/pricing`, `POST`/`DELETE …/models`, `POST …/tokenulator`, `GET /api/admin/usage?week=` | admins | `view.admin {page: pricing\|usage}`, `admin.cost_line` |
 | `POST /api/admin/pricing/catalog/refresh` | admins | — (it replaces the cached public price catalog alone) |
 | `GET /api/audit?…`, `GET /api/audit/<seq>` | admins every event (on a hosted Clax every event but those naming an artifact out of their own reach), anyone else their scope (Toolpath journal, "Kinds"); a live page's events the owner's alone | `view.audit {filters}` |

@@ -85,6 +85,17 @@ settings! {
     DefaultRateCacheWrite = "default_rates.cache_write", FixedCredits, 700_000;
     DefaultRateOutput = "default_rates.output", FixedCredits, 2_800_000;
     RequireExplicitPrice = "require_explicit_price", Bool, false;
+    WebSearchEnabled = "web.search.enabled", Bool, false;
+    WebFetchEnabled = "web.fetch.enabled", Bool, false;
+    WebSearchProvider = "web.search.provider", Provider, "ceramic";
+    WebSearchGateway = "web.search.gateway", Ident, "default";
+    WebSearchByokAlias = "web.search.byok_alias", Ident, "";
+    WebSearchLimit = "web.search.limit", OneToTen, 5;
+    WebMaxSearchesPerRun = "web.max_searches_per_run", Positive, 10;
+    WebMaxFetchesPerRun = "web.max_fetches_per_run", Positive, 20;
+    WebFetchUrlRule = "web.fetch.url_rule", UrlRule, "sourced";
+    WebFetchAllowlist = "web.fetch.allowlist", Hosts, Vec::<String>::new();
+    WebCloudflareAccountId = "web.cloudflare.account_id", AccountId, "";
 }
 
 /// What a setting's value is.
@@ -106,6 +117,32 @@ enum Kind {
     FixedCredits,
     /// `true` or `false`.
     Bool,
+    /// A web search provider: `ceramic`, `exa` or `linkup`.
+    Provider,
+    /// 0 to 64 of `[A-Za-z0-9_-]` (an AI Gateway or BYOK alias name; empty
+    /// is unset).
+    Ident,
+    /// An integer from 1 to 10.
+    OneToTen,
+    /// Which URLs a fetch may take: `sourced`, `any_public` or `allowlist`.
+    UrlRule,
+    /// At most 100 lowercase hostnames, each optionally `*.`-prefixed.
+    Hosts,
+    /// Empty (unset), or a Cloudflare account ID: 32 hex digits.
+    AccountId,
+}
+
+/// Whether `h` is a lowercase DNS hostname: at most 253 characters of
+/// labels of 1 to 63 of `[a-z0-9-]`, none starting or ending with `-`.
+fn hostname_ok(h: &str) -> bool {
+    h.len() <= 253
+        && h.split('.').all(|l| {
+            (1..=63).contains(&l.len())
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
 }
 
 impl Setting {
@@ -207,6 +244,57 @@ impl Setting {
                 .as_bool()
                 .map(Value::from)
                 .ok_or_else(|| bad("true or false")),
+            Kind::Provider => match value.as_str().map(str::trim) {
+                Some(p @ ("ceramic" | "exa" | "linkup")) => Ok(Value::from(p)),
+                _ => Err(bad("one of ceramic, exa, linkup")),
+            },
+            Kind::Ident => match value.as_str().map(str::trim) {
+                Some(s)
+                    if s.len() <= 64
+                        && s.bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')) =>
+                {
+                    Ok(Value::from(s))
+                }
+                _ => Err(bad("up to 64 letters, digits, '_' and '-'")),
+            },
+            Kind::OneToTen => match value.as_i64() {
+                Some(n) if (1..=10).contains(&n) => Ok(Value::from(n)),
+                _ => Err(bad("a whole number from 1 to 10")),
+            },
+            Kind::UrlRule => match value.as_str().map(str::trim) {
+                Some(r @ ("sourced" | "any_public" | "allowlist")) => Ok(Value::from(r)),
+                _ => Err(bad("one of sourced, any_public, allowlist")),
+            },
+            Kind::Hosts => {
+                let what =
+                    "a list of at most 100 lowercase hostnames, each optionally starting '*.'";
+                let items = value.as_array().filter(|a| a.len() <= 100);
+                let hosts: Option<Vec<&str>> = items.and_then(|a| {
+                    a.iter()
+                        .map(|h| {
+                            h.as_str()
+                                .filter(|h| hostname_ok(h.strip_prefix("*.").unwrap_or(h)))
+                        })
+                        .collect()
+                });
+                hosts
+                    .filter(|h| {
+                        let set: std::collections::BTreeSet<&&str> = h.iter().collect();
+                        set.len() == h.len()
+                    })
+                    .map(Value::from)
+                    .ok_or_else(|| bad(what))
+            }
+            Kind::AccountId => match value.as_str().map(str::trim) {
+                Some(s)
+                    if s.is_empty()
+                        || (s.len() == 32 && s.bytes().all(|b| b.is_ascii_hexdigit())) =>
+                {
+                    Ok(Value::from(s.to_ascii_lowercase()))
+                }
+                _ => Err(bad("empty or 32 hex digits")),
+            },
         }
     }
 }
@@ -684,6 +772,100 @@ mod tests {
             json!("claude-sonnet-5-5")
         );
         assert!(st.stored_bot_settings().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_web_settings_default_off() {
+        let (_d, st) = store();
+        let want = [
+            (Setting::WebSearchEnabled, json!(false)),
+            (Setting::WebFetchEnabled, json!(false)),
+            (Setting::WebSearchProvider, json!("ceramic")),
+            (Setting::WebSearchGateway, json!("default")),
+            (Setting::WebSearchByokAlias, json!("")),
+            (Setting::WebSearchLimit, json!(5)),
+            (Setting::WebMaxSearchesPerRun, json!(10)),
+            (Setting::WebMaxFetchesPerRun, json!(20)),
+            (Setting::WebFetchUrlRule, json!("sourced")),
+            (Setting::WebFetchAllowlist, json!([])),
+            (Setting::WebCloudflareAccountId, json!("")),
+        ];
+        for (s, v) in want {
+            assert_eq!(st.bot_setting(s).unwrap(), v, "{}", s.key());
+            assert!(!s.is_pricing(), "{}", s.key());
+        }
+    }
+
+    #[test]
+    fn a_bad_provider_or_rule_is_refused() {
+        let (_d, st) = store();
+        for (s, bad) in [
+            (Setting::WebSearchProvider, json!("bing")),
+            (Setting::WebFetchUrlRule, json!("open")),
+        ] {
+            assert!(matches!(
+                st.set_bot_settings(DAEMON, &[(s, Some(bad))]),
+                Err(CoreError::Invalid {
+                    code: "invalid_setting",
+                    ..
+                })
+            ));
+        }
+        st.set_bot_settings(
+            DAEMON,
+            &[
+                (Setting::WebSearchProvider, Some(json!("linkup"))),
+                (Setting::WebFetchUrlRule, Some(json!("allowlist"))),
+                (
+                    Setting::WebFetchAllowlist,
+                    Some(json!(["example.com", "*.docs.example.org"])),
+                ),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            st.bot_setting(Setting::WebSearchProvider).unwrap(),
+            json!("linkup")
+        );
+    }
+
+    #[test]
+    fn the_new_kinds_check_their_values() {
+        let ok = |s: Setting, v: Value| s.check(&v).is_ok();
+        assert!(ok(Setting::WebSearchLimit, json!(10)) && !ok(Setting::WebSearchLimit, json!(11)));
+        assert!(!ok(Setting::WebSearchLimit, json!(0)));
+        assert!(ok(Setting::WebSearchGateway, json!("my_gw-1")));
+        assert!(!ok(Setting::WebSearchGateway, json!("has space")));
+        assert!(!ok(Setting::WebSearchGateway, json!("a".repeat(65))));
+        assert!(ok(Setting::WebSearchByokAlias, json!("")));
+        assert!(ok(Setting::WebCloudflareAccountId, json!("")));
+        assert!(ok(
+            Setting::WebCloudflareAccountId,
+            json!("0123456789abcdef0123456789ABCDEF")
+        ));
+        assert!(!ok(Setting::WebCloudflareAccountId, json!("0123")));
+        assert!(!ok(
+            Setting::WebCloudflareAccountId,
+            json!("g123456789abcdef0123456789abcdef")
+        ));
+        assert!(ok(
+            Setting::WebFetchAllowlist,
+            json!(["*.example.com", "a-b.io"])
+        ));
+        for bad in [
+            json!(["Example.com"]),
+            json!(["-a.com"]),
+            json!(["a..com"]),
+            json!([1]),
+            json!("a.com"),
+            json!(["*.*.a.com"]),
+        ] {
+            assert!(!ok(Setting::WebFetchAllowlist, bad.clone()), "{bad}");
+        }
+        assert!(!ok(Setting::WebFetchAllowlist, json!(["a.com", "a.com"])));
+        let many: Vec<String> = (0..101).map(|i| format!("h{i}.com")).collect();
+        assert!(!ok(Setting::WebFetchAllowlist, json!(many)));
+        assert!(ok(Setting::WebFetchAllowlist, json!(many[..100])));
     }
 
     #[test]

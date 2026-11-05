@@ -273,6 +273,13 @@ struct Instance {
     graced: Cell<bool>,
     /// ClaxBot's driver (`crate::bot`).
     bot: crate::bot::WorkerBot,
+    /// ClaxBot's web source, when the Worker has one
+    /// ([`AdminWebView`], [`Instance::start_wanted_web_check`]).
+    web: Option<Arc<dyn clax_bot::WebSource>>,
+    /// ClaxBot's scripted web source in the test mode (`CLAX_TEST_ROUTES`
+    /// and `CLAX_TEST_WEB` both `1`), which `POST /_worker/web-fixtures`
+    /// loads; `None` otherwise.
+    test_web: Option<Arc<crate::web_source::FixtureWeb>>,
     /// Kept so the streams' `shutdown` never closes.
     _shutdown: tokio::sync::watch::Sender<bool>,
     /// Dropped last: keeps the database file in the VFS.
@@ -302,6 +309,32 @@ pub struct InstanceDo {
     last_catalog_try: Cell<f64>,
     /// The request bodies the object holds.
     bodies: BodyBudget,
+}
+
+/// How long `GET /api/admin/web` waits for the web source's check
+/// ([`AdminWebView`]) before it answers "checking".
+const ADMIN_WEB_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The admin's view of the web settings checks the Worker's web source
+/// (`clax_http::bot::AdminWebCheck`, run by `GET /api/admin/web` once the
+/// caller is known to be an admin): it starts the source's check if one
+/// is due, whether web use is on or not, so the admin learns before
+/// turning it on, and waits for it at most [`ADMIN_WEB_WAIT`]; the view
+/// answers `checking` if it has not finished. No other request waits: a
+/// decision on web use asks for a check, which starts after the request
+/// ([`Instance::start_wanted_web_check`]). The source is held in a
+/// `SendWrapper`, as the Worker's other JavaScript-backed values are: a
+/// Durable Object runs on one thread.
+struct AdminWebView(worker::send::SendWrapper<Arc<dyn clax_bot::WebSource>>);
+
+impl clax_http::bot::AdminWebCheck for AdminWebView {
+    fn before_view(&self) -> futures_util::future::BoxFuture<'static, ()> {
+        let web = self.0.0.clone();
+        Box::pin(worker::send::SendFuture::new(async move {
+            web.start_check();
+            web.wait_check(ADMIN_WEB_WAIT).await;
+        }))
+    }
 }
 
 fn var(env: &Env, name: &str) -> String {
@@ -599,8 +632,45 @@ fn clax_app(env: &Env) -> Result<clax_core::config::ClaxApp> {
 /// overrides and no environment key; the Worker Loader sandbox, made
 /// first (when it cannot be, ClaxBot is off: `enabled` is false and a send
 /// is refused `not_configured`); the server's host; and a driver of its
-/// own ID, installed as the routes' run seam.
-fn worker_bot(env: &Env, app: &mut AppState) -> crate::bot::WorkerBot {
+/// own ID, installed as the routes' run seam; and its web source
+/// (`crate::bot::web_source`: `test_web` in the test mode, else the `AI`
+/// binding when the Worker has one), which makes the host's web use
+/// configured until the host knows its source cannot be used
+/// (`clax_http::bot::Bot::web_check`); the source is returned too, for
+/// [`Instance::start_wanted_web_check`]; it is the admin web view's check
+/// ([`AdminWebView`]) too.
+/// On a Worker that is not hosted (`HOSTED` is not `1`), `SITE_DOMAIN` is
+/// ignored ([`site_hosts`] is none: such a Worker serves no sites), and a
+/// set `PUBLIC_ORIGIN` that names no host leaves no source, with
+/// `web_check` unusable from the start for the reason
+/// (`crate::bot::web_or_reason`): web is off and the admin Web view says
+/// why. A hosted Worker with an unusable `SITE_DOMAIN` or `PUBLIC_ORIGIN`
+/// never gets here: `hosted` and the `fetch` handler refuse it (500).
+fn worker_bot(
+    env: &Env,
+    state: &State,
+    app: &mut AppState,
+    test_web: Option<Arc<crate::web_source::FixtureWeb>>,
+) -> (crate::bot::WorkerBot, Option<Arc<dyn clax_bot::WebSource>>) {
+    // Only a configured public origin is named to the sites fetched.
+    let public = var(env, "PUBLIC_ORIGIN");
+    let public = Some(public.trim()).filter(|p| !p.is_empty());
+    // Nor does a fetch reach the instance's own hosts: its public origin
+    // and its site domain.
+    let check = Arc::new(clax_bot::web::HostCheck::default());
+    let (web, why) = crate::bot::web_or_reason(site_hosts(env).and_then(|sites| {
+        crate::bot::web_source(
+            env,
+            test_web,
+            public,
+            sites.as_ref().map(|s| s.domain()),
+            check.clone(),
+            state,
+        )
+    }));
+    if let Some(why) = why {
+        check.set(clax_bot::web::WebCheck::Unusable(why));
+    }
     let kek_secret = env
         .secret("CLAX_KEK")
         .map(|v| v.to_string())
@@ -637,6 +707,7 @@ fn worker_bot(env: &Env, app: &mut AppState) -> crate::bot::WorkerBot {
         enabled,
         keys: keys.clone(),
         events: events.clone(),
+        web: web.clone(),
         resume_after: resume_after(env),
     });
     // A run's end may start a follow-up: it goes to the driver as the
@@ -651,8 +722,14 @@ fn worker_bot(env: &Env, app: &mut AppState) -> crate::bot::WorkerBot {
         events,
         catalog_url: first_catalog_url,
         catalog_flight,
+        web_configured: web.is_some(),
+        web_check: check,
+        admin_web_check: web.clone().map(|w| {
+            Arc::new(AdminWebView(worker::send::SendWrapper::new(w)))
+                as Arc<dyn clax_http::bot::AdminWebCheck>
+        }),
     });
-    bot
+    (bot, web)
 }
 
 /// How far ahead the alarm is kept while ClaxBot drives:
@@ -665,6 +742,25 @@ fn resume_after(env: &Env) -> std::time::Duration {
         .flatten()
         .filter(|ms| *ms >= 1_000);
     set.map_or(crate::bot::RESUME_AFTER, std::time::Duration::from_millis)
+}
+
+/// The storage key of the web fixtures `POST /_worker/web-fixtures` last
+/// loaded, so a restart's instance (a rebuilt server, or a new process on
+/// the same state) answers as the one before it.
+const WEB_FIXTURES_KEY: &str = "web_fixtures";
+
+/// The test mode's web source, with `CLAX_TEST_ROUTES` and `CLAX_TEST_WEB`
+/// both `1` (else `None`): scripted by the fixtures last loaded, or by none.
+fn test_web(state: &State, env: &Env) -> Result<Option<Arc<crate::web_source::FixtureWeb>>> {
+    if var(env, "CLAX_TEST_ROUTES") != "1" || var(env, "CLAX_TEST_WEB") != "1" {
+        return Ok(None);
+    }
+    let web = crate::web_source::FixtureWeb::default();
+    if let Some(kept) = kv_get(state, WEB_FIXTURES_KEY)? {
+        let v: serde_json::Value = serde_json::from_str(&kept).map_err(rust_err)?;
+        web.load(&v).map_err(rust_err)?;
+    }
+    Ok(Some(Arc::new(web)))
 }
 
 /// Where the alarm and the pricing routes fetch the price catalog:
@@ -691,6 +787,23 @@ struct Kept {
 }
 
 impl Instance {
+    /// Starts the web source's check in the background when a decision on
+    /// web use made with web use on asked for one
+    /// (`clax_http::bot::Bot::web_check`, asked in
+    /// `clax_server::bot::web_configured`, which every run's start,
+    /// whatever started it, and the person's and the admin's views go
+    /// through). It never waits. A check asked for while the last one's
+    /// back-off runs is declined (`crate::web_source::ProbePlan`) and the
+    /// ask is dropped with it: nothing is lost, because the source stays
+    /// configured meanwhile and the next decision with web on asks again.
+    fn start_wanted_web_check(&self) {
+        if self.app.bot.web_check.take_wanted()
+            && let Some(web) = &self.web
+        {
+            web.start_check();
+        }
+    }
+
     fn build(
         state: &State,
         env: &Env,
@@ -765,7 +878,8 @@ impl Instance {
         clax_core::set_build_commit(build_commit(&var(env, "CLAX_BUILD_COMMIT")));
         app.build = Some(var(env, "CLAX_BUILD")).filter(|b| !b.is_empty());
         app.feedback = feedback_of(env, &app);
-        let bot = worker_bot(env, &mut app);
+        let test_web = test_web(state, env)?;
+        let (bot, web) = worker_bot(env, state, &mut app, test_web.clone());
         app.seats
             .set_limits(clax_core::seats::SeatLimits::from_env(|k| {
                 Some(var(env, k)).filter(|v| !v.is_empty())
@@ -786,6 +900,8 @@ impl Instance {
             kept: RefCell::new(kept_json),
             graced: Cell::new(false),
             bot,
+            web,
+            test_web,
             _shutdown: shutdown_tx,
             _db: db,
         });
@@ -1454,7 +1570,9 @@ impl InstanceDo {
     ///   artifact's documents are: `{instance_docs, object_store,
     ///   object_doc}`, the documents the instance's database still holds
     ///   for it, whether its object holds a store, and the document at
-    ///   `path` there, read from the object directly (not through the move).
+    ///   `path` there, read from the object directly (not through the move);
+    /// - with `CLAX_TEST_WEB` = `1` too, `POST /_worker/web-fixtures` and
+    ///   `GET /_worker/web-fixtures` ([`InstanceDo::web_fixtures`]).
     ///
     /// On a site host they are the site's paths, as every path is.
     async fn test_route(
@@ -1528,6 +1646,63 @@ impl InstanceDo {
         let _ = self.inner.replace(Ok(fresh));
         self.revived.set(false);
         Some(Response::ok("rebuilt"))
+    }
+
+    /// The test mode's web fixtures (`Instance::test_web`; else `req` is
+    /// given back, and the router answers it), with the token:
+    ///
+    /// - `POST /_worker/web-fixtures {searches, pages}`
+    ///   (`clax_bot::FakeWebSource::from_fixtures`' shape) scripts ClaxBot's
+    ///   web source, replacing what it had, and keeps the fixtures in the
+    ///   object's storage for the instances after a restart: `{ok: true}`,
+    ///   or 400 naming what is not a fixture;
+    /// - `GET /_worker/web-fixtures`: `{calls: [[op, query or URL]]}`, the
+    ///   source's calls since this instance loaded its fixtures.
+    async fn web_fixtures(
+        &self,
+        inst: &Rc<Instance>,
+        req: axum::http::Request<axum::body::Body>,
+    ) -> std::result::Result<Result<Response>, axum::http::Request<axum::body::Body>> {
+        let Some(web) = inst.test_web.clone() else {
+            return Err(req);
+        };
+        let host = req
+            .headers()
+            .get(axum::http::header::HOST)
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("");
+        if req.uri().path() != "/_worker/web-fixtures" || inst.app.sites().target(host).is_some() {
+            return Err(req);
+        }
+        if !clax_http::auth::has_token(req.headers(), &inst.app.token) {
+            return Ok(Response::error("the token is required", 401));
+        }
+        if req.method() == axum::http::Method::GET {
+            return Ok(Response::from_json(
+                &serde_json::json!({ "calls": web.calls() }),
+            ));
+        }
+        if req.method() != axum::http::Method::POST {
+            return Ok(Response::error("GET or POST", 405));
+        }
+        let body = match axum::body::to_bytes(req.into_body(), MAX_BODY).await {
+            Ok(b) => b,
+            Err(e) => return Ok(Response::error(format!("{e}"), 400)),
+        };
+        let v: serde_json::Value = match serde_json::from_slice(&body) {
+            Ok(v) => v,
+            Err(e) => return Ok(Response::error(format!("not JSON: {e}"), 400)),
+        };
+        let fake = match clax_bot::FakeWebSource::from_fixtures(&v) {
+            Ok(f) => f,
+            Err(e) => return Ok(Response::error(e, 400)),
+        };
+        // Kept first: the source answers only what a restart would load.
+        if let Err(e) = kv_put(&self.state, WEB_FIXTURES_KEY, &v.to_string()) {
+            return Ok(Err(e));
+        }
+        web.replace(fake);
+        Ok(Response::from_json(&serde_json::json!({ "ok": true })))
     }
 
     /// `GET /_worker/app-data` (see [`InstanceDo::test_route`]).
@@ -1622,6 +1797,10 @@ impl DurableObject for InstanceDo {
             Ok(r) => r,
             Err(refused) => return Ok(refused),
         };
+        let req = match self.web_fixtures(&inst, req).await {
+            Ok(res) => return res,
+            Err(req) => req,
+        };
         if let Some(res) = self.test_route(&inst, &req).await {
             return res;
         }
@@ -1633,6 +1812,7 @@ impl DurableObject for InstanceDo {
             self.wrote.set(true);
         }
         let mut res = inst.router.clone().call(req).await.map_err(rust_err)?;
+        inst.start_wanted_web_check();
         inst.bot.take_wakes(now_ms());
         let out = match Self::opened(&mut res) {
             Some((carried, att)) => self.accept(&inst, carried, att),
@@ -1730,6 +1910,7 @@ impl DurableObject for InstanceDo {
             futures_util::pin_mut!(timed);
             let _ = futures_util::future::select(drive, timed).await;
         }
+        inst.start_wanted_web_check();
         inst.settle().await;
         self.schedule(&inst).await;
         // Last: after the runs and with the next alarm already set, so a
@@ -1921,6 +2102,60 @@ impl InstanceDo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Records the checks started and waited for, and the wait's bound.
+    #[derive(Default)]
+    struct Checked(std::sync::Mutex<Vec<String>>);
+
+    #[async_trait::async_trait]
+    impl clax_bot::WebSource for Checked {
+        async fn search(
+            &self,
+            _q: &clax_bot::web::SearchQuery,
+            _cancel: &clax_bot_sandbox::CancelToken,
+        ) -> std::result::Result<clax_bot::web::SearchAnswer, clax_bot::web::WebError> {
+            unreachable!()
+        }
+
+        async fn fetch(
+            &self,
+            _url: &clax_bot::web::PublicUrl,
+            _format: clax_bot::web::Format,
+            _limits: &clax_bot::web::FetchLimits,
+            _hop: &(
+                 dyn for<'u> Fn(
+                &'u clax_bot::web::PublicUrl,
+            ) -> std::result::Result<(), clax_bot::web::WebError>
+                     + Sync
+             ),
+            _cancel: &clax_bot_sandbox::CancelToken,
+        ) -> std::result::Result<clax_bot::web::FetchedPage, clax_bot::web::WebError> {
+            unreachable!()
+        }
+
+        fn start_check(&self) {
+            self.0.lock().unwrap().push("start".into());
+        }
+
+        async fn wait_check(&self, within: std::time::Duration) {
+            self.0.lock().unwrap().push(format!("wait {within:?}"));
+        }
+    }
+
+    #[test]
+    fn the_admins_web_view_starts_the_check_and_waits_for_it_bounded() {
+        use clax_http::bot::AdminWebCheck;
+        let source = Arc::new(Checked::default());
+        let view = AdminWebView(worker::send::SendWrapper::new(source.clone()));
+        // Nothing happens until the route runs the check.
+        let check = view.before_view();
+        assert!(source.0.lock().unwrap().is_empty());
+        futures_util::FutureExt::now_or_never(check).expect("answers");
+        assert_eq!(
+            *source.0.lock().unwrap(),
+            ["start".to_string(), format!("wait {ADMIN_WEB_WAIT:?}")]
+        );
+    }
 
     #[test]
     fn the_deployed_commit_var_names_the_commit_over_the_build() {

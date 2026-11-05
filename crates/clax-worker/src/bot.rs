@@ -138,6 +138,103 @@ pub fn sandbox(_env: &worker::Env) -> Result<Arc<dyn Sandbox>, String> {
     Err("the Worker Loader sandbox is a Worker's (wasm32)".into())
 }
 
+/// Where ClaxBot's `clax.web` calls go on this Worker
+/// (`crate::web_source`): `test`, the scripted source of the test mode,
+/// when given; else the `AI` binding, when the Worker has one, its fetches
+/// naming the instance at `public_origin` (`PUBLIC_ORIGIN`, when set; never
+/// a fallback) in their `User-Agent`; else none, and the host's web use is
+/// off, not configured. The source answers `public_origin`'s host and
+/// `site_domain` (with every host under it) as the instance's own, which
+/// no fetch reaches ([`own_hosts`]). The binding's source records in
+/// `check` what it finds of whether it can run where the Worker runs
+/// (`clax_bot::WebSource::start_check`), and hands its check to the
+/// Durable Object's `state` to keep it alive.
+///
+/// # Errors
+/// Why `public_origin` or `site_domain`, when set, names no host: the
+/// instance could not tell which hosts are its own, so it has no source
+/// ([`web_or_reason`]).
+pub fn web_source(
+    env: &worker::Env,
+    test: Option<Arc<crate::web_source::FixtureWeb>>,
+    public_origin: Option<&str>,
+    site_domain: Option<&str>,
+    check: Arc<clax_bot::web::HostCheck>,
+    state: &worker::State,
+) -> Result<Option<Arc<dyn clax_bot::WebSource>>, String> {
+    let source: Arc<dyn clax_bot::WebSource> = match test {
+        Some(t) => t,
+        None => match binding_source(env, public_origin, check, state) {
+            Some(s) => s,
+            None => return Ok(None),
+        },
+    };
+    own_hosts(source, public_origin, site_domain).map(Some)
+}
+
+/// `source`, answering `public_origin`'s host and `site_domain` as the
+/// instance's own hosts (`clax_bot::web::WithOwnHosts`); `source` itself
+/// when the Worker has neither.
+///
+/// # Errors
+/// Why a set `public_origin` or `site_domain` names no host
+/// (`clax_bot::web::OwnHosts::new`).
+pub fn own_hosts(
+    source: Arc<dyn clax_bot::WebSource>,
+    public_origin: Option<&str>,
+    site_domain: Option<&str>,
+) -> Result<Arc<dyn clax_bot::WebSource>, String> {
+    let own =
+        clax_bot::web::OwnHosts::new(public_origin, site_domain).map_err(|e| e.to_string())?;
+    Ok(if own == clax_bot::web::OwnHosts::default() {
+        source
+    } else {
+        Arc::new(clax_bot::web::WithOwnHosts::new(source, own))
+    })
+}
+
+/// `web`, the Worker's web source or why it has none: the source (and no
+/// reason), or none and the reason, logged, which the state carries in
+/// `clax_http::bot::Bot::web_check` for the admin Web view.
+#[must_use]
+pub fn web_or_reason(
+    web: Result<Option<Arc<dyn clax_bot::WebSource>>, String>,
+) -> (Option<Arc<dyn clax_bot::WebSource>>, Option<String>) {
+    match web {
+        Ok(web) => (web, None),
+        Err(why) => {
+            #[cfg(target_arch = "wasm32")]
+            worker::console_error!("ClaxBot's web tools are off: {why}");
+            (None, Some(why))
+        }
+    }
+}
+
+/// The `AI` binding's source, when the Worker has one.
+fn binding_source(
+    env: &worker::Env,
+    public_origin: Option<&str>,
+    check: Arc<clax_bot::web::HostCheck>,
+    state: &worker::State,
+) -> Option<Arc<dyn clax_bot::WebSource>> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use wasm_bindgen::JsCast;
+        let raw: &wasm_bindgen::JsValue = state.as_raw().as_ref();
+        let keep = worker::State::from(
+            raw.clone()
+                .unchecked_into::<worker::worker_sys::DurableObjectState>(),
+        );
+        crate::web_source::BindingSource::from_env(env, public_origin, check, keep)
+            .map(|b| Arc::new(b) as Arc<dyn clax_bot::WebSource>)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (env, public_origin, check, state);
+        None
+    }
+}
+
 /// ClaxBot's state for the routes on the Worker: the key-encryption key
 /// from `CLAX_KEK`, no environment key, `enabled` only when the sandbox
 /// could be made (else a send is refused `not_configured`), and `runs`.
@@ -320,6 +417,9 @@ pub struct Parts {
     pub enabled: bool,
     pub keys: Keys,
     pub events: Arc<EventHub>,
+    /// Where the runs' `clax.web` calls go ([`web_source`]); none: every
+    /// web call a run makes is refused.
+    pub web: Option<Arc<dyn clax_bot::WebSource>>,
     /// How far ahead the alarm is kept while one drives ([`RESUME_AFTER`]
     /// but in the Worker's tests).
     pub resume_after: Duration,
@@ -345,6 +445,10 @@ impl WorkerBot {
             parts.keys,
             Arc::new(clax_server::bot::StoreClock(parts.store)),
         );
+        let deps = match parts.web {
+            Some(web) => deps.with_web(web),
+            None => deps,
+        };
         let driver = Arc::new(Driver::new(DriverId::mint(), Arc::new(deps), parts.events));
         let kicks = Arc::new(Kicks::new(clax_server::bot::DriverRuns::of(driver.clone())));
         let bot = WorkerBot {
@@ -434,6 +538,40 @@ impl WorkerBot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_web_source_names_the_instances_own_hosts() {
+        let fixtures: Arc<dyn clax_bot::WebSource> =
+            Arc::new(crate::web_source::FixtureWeb::default());
+        let web = own_hosts(
+            fixtures.clone(),
+            Some("https://clax.example"),
+            Some("sites.example"),
+        )
+        .unwrap();
+        let own = web.own_hosts();
+        assert!(own.holds("clax.example"));
+        assert!(own.holds("abcdefghijkl.sites.example"));
+        assert!(!own.holds("example.com"));
+        assert!(web.configured());
+        // Without either, the source is unchanged.
+        let bare = own_hosts(fixtures.clone(), None, None).unwrap();
+        assert_eq!(bare.own_hosts(), clax_bot::web::OwnHosts::default());
+        // A set value that names no host is refused, not dropped.
+        let e = own_hosts(fixtures.clone(), None, Some("https://sites.example/"))
+            .err()
+            .unwrap();
+        assert!(e.contains("site domain"), "{e}");
+        let e = own_hosts(fixtures, Some("not an origin"), None)
+            .err()
+            .unwrap();
+        assert!(e.contains("public origin"), "{e}");
+        // The Worker keeps starting: no source, and the reason in quotes.
+        let (web, why) = web_or_reason(Err(e.clone()));
+        assert!(web.is_none());
+        assert_eq!(why, Some(e));
+        assert!(web_or_reason(Ok(None)).1.is_none());
+    }
 
     #[test]
     fn the_budget_leaves_the_margin_of_the_wall_limit_and_fits_a_turn() {

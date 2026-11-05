@@ -29,12 +29,14 @@ CRATES = {
         "version": "0.6.0",
         "wasm_deps": [
             "@crates_wasm//:chrono-0.4.45",
+            "@crates_wasm//:encoding_rs-0.8.42",
             "@crates_wasm//:futures-0.3.34",
             "@crates_wasm//:html5ever-0.40.1",
             "@crates_wasm//:serde-1.0.229",
             "@crates_wasm//:serde_json-1.0.151",
             "@crates_wasm//:tokio-1.53.1",
-            "@crates_wasm//:tracing-0.1.44"
+            "@crates_wasm//:tracing-0.1.44",
+            "@crates_wasm//:url-2.5.8"
         ],
         "wasm_path_deps": [
             "//crates/clax-bot-sandbox:clax_bot_sandbox",

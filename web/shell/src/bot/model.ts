@@ -114,15 +114,37 @@ export function perUnitMilli(line: Pick<CostLine, "cost_micro_usd" | "margin_bp"
   return Math.ceil((line.cost_micro_usd * (10_000 + line.margin_bp) * 1000) / (10_000 * priceMicro));
 }
 
+/** The web cost lines' price per thousand requests in milli-credits: a search on each provider, and a fetch (`null` where the lines do not list it). */
+export function webPrices(lines: Pick<CostLine, "id" | "cost_micro_usd" | "margin_bp" | "fixed_credits_milli">[], priceMicro: number): { search: Record<string, number>; fetch: number | null } {
+  const out: { search: Record<string, number>; fetch: number | null } = { search: {}, fetch: null };
+  for (const l of lines) {
+    if (l.id === "web.fetch") out.fetch = perUnitMilli(l, priceMicro);
+    else if (l.id.startsWith("web.search.")) out.search[l.id.slice("web.search.".length)] = perUnitMilli(l, priceMicro);
+  }
+  return out;
+}
+
+/** A fetch's source in words: the sender's comment, or the search or page whose result named the URL ("from search #2"). */
+export function webSource(source: string | undefined): string | null {
+  if (!source) return null;
+  return source === "comment" ? "from the sender's comment" : `from ${source}`;
+}
+
+/** What a web call cost, in credits; nothing for a call with no cost (a page from the store, or a call that failed uncharged). */
+export function callCost(milli: number | undefined): string | null {
+  if (!milli || milli <= 0) return null;
+  return `${credits(milli)} ${milli === 1000 ? "credit" : "credits"}`;
+}
+
 export const UNITS: Record<Unit, string> = {
   mtok_input: "1M input tokens", mtok_cached_input: "1M cached tokens", mtok_cache_write: "1M cache-write tokens", mtok_output: "1M output tokens",
-  cpu_gb_s: "CPU·GB-s", mreq: "1M requests", gb_month: "GB-month", run: "run",
+  cpu_gb_s: "CPU·GB-s", mreq: "1M requests", gb_month: "GB-month", run: "run", kreq: "thousand requests",
 };
 
 /** The base unit a usage row counts in (§7.3), by its line's unit. */
 export const BASE_UNITS: Record<Unit, string> = {
   mtok_input: "tokens", mtok_cached_input: "tokens", mtok_cache_write: "tokens", mtok_output: "tokens",
-  cpu_gb_s: "CPU·MiB·ms", mreq: "requests", gb_month: "byte·s", run: "runs",
+  cpu_gb_s: "CPU·MiB·ms", mreq: "requests", gb_month: "byte·s", run: "runs", kreq: "requests",
 };
 
 /** A rate card's token units, in order, with their names. */

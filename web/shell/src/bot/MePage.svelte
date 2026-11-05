@@ -10,7 +10,7 @@
   // ClaxBot is not on this Clax.
   import { onMount } from "svelte";
   import { refusal } from "../people/refusal";
-  import { type MeBot, type MeUsage, clearOwnKey, meUsage, setOwnKey, useOwnKey } from "./api";
+  import { type MeBot, type MeUsage, clearOwnKey, meUsage, setOwnKey, setWebChoice, useOwnKey } from "./api";
   import { refresh } from "./me";
   import { UNITS, credits, meter, resetDay, runStatus, tokens } from "./model";
   import BotPage from "./BotPage.svelte";
@@ -24,6 +24,15 @@
   let usage = $state<MeUsage | null>(null);
   let err = $state<string | null>(null);
   let busy = $state(false);
+  const WHY: Record<string, string> = { admin_off: "Off on this instance", not_configured: "Not configured" };
+  const web = $derived(me?.web ?? null);
+  const instanceWhy = $derived(web?.why_off && web.why_off !== "person_off" ? WHY[web.why_off] ?? null : null);
+  // What a request costs them, per thousand as the Pricing page words it (the daemon sends one request's milli-credits).
+  const cost = $derived.by(() => {
+    const p = web?.prices;
+    const parts = [p?.search_milli != null ? `Searches cost ${credits(p.search_milli * 1000)} credits` : null, p?.fetch_milli != null ? `${p.search_milli != null ? "reading" : "Reading"} a page ${credits(p.fetch_milli * 1000)} credits` : null].filter(Boolean);
+    return parts.length ? `${parts.join(" and ")}, per ${UNITS.kreq}.` : "";
+  });
   const m = $derived(me ? meter(me.week) : null);
   const at = (iso: string) => new Date(iso).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
   const take = (x: MeBot | null) => { if (x) me = x; else none = true; };
@@ -68,6 +77,15 @@
         <small class="note mek-host">Stored encrypted; ClaxBot sends it only to {#if me.provider_host}<b>{me.provider_host}</b>, the provider a key set now is bound to{:else}the provider's configured address{/if}.</small>
       </div>
     </section>
+    {#if web}
+      <section class="bcard" aria-labelledby="me-web">
+        <h3 id="me-web">Web</h3>
+        <div class="mek mew-web">
+          <Switch checked={web.why_off === null} label="Let ClaxBot search and read the web" disabled={!!instanceWhy} busy={busy} describedby="me-web-why" onchange={on => change(() => setWebChoice(on))} />
+          <small id="me-web-why" class="note">{instanceWhy ? `${instanceWhy}.` : "ClaxBot may search the web and read pages for you; what a run searches for and the pages it reads can carry data out."}{#if cost} {cost}{/if}</small>
+        </div>
+      </section>
+    {/if}
     <section class="bcard" aria-labelledby="me-r">
       <h3 id="me-r">Runs</h3>
       <div class="scroll">

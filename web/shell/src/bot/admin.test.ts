@@ -7,8 +7,9 @@ import AdminPeople from "./AdminPeople.svelte";
 import AdminPricing from "./AdminPricing.svelte";
 import AdminProvider from "./AdminProvider.svelte";
 import AdminUsage from "./AdminUsage.svelte";
+import AdminWeb from "./AdminWeb.svelte";
 import type { ModelPricing } from "./api";
-import { adminPerson, defaultPriced, listing, meBot, modelPricing, pricing, provider, unitPricing, usage } from "./fixtures";
+import { adminPerson, defaultPriced, listing, meBot, modelPricing, pricing, provider, unitPricing, usage, webSettings, WEB_LINES } from "./fixtures";
 import { forget } from "./me";
 
 const click = (el: Element) => flush(() => { dispatchTrusted(el, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })); });
@@ -39,7 +40,7 @@ describe("Admin", () => {
     const m = mount(AdminPage, {});
     await vi.waitFor(() => expect(m.root.textContent).toContain("Credits spent (paid)"));
     const tabs = [...m.root.querySelectorAll(".bpg-tabs a")].map(a => [a.textContent, a.getAttribute("aria-current")]);
-    expect(tabs).toEqual([["People & flags", null], ["Provider", null], ["Pricing", null], ["Usage", "page"], ["Audit", null], ["Settings", null]]);
+    expect(tabs).toEqual([["People & flags", null], ["Provider", null], ["Web", null], ["Pricing", null], ["Usage", "page"], ["Audit", null], ["Settings", null]]);
   });
 });
 
@@ -249,6 +250,169 @@ describe("Admin › Provider", () => {
     const api = m.root.querySelector<HTMLSelectElement>("#pv-api")!;
     expect(api.value).toBe("gemini");
     expect(api.disabled).toBe(true);
+  });
+});
+
+describe("Admin › Web", () => {
+  const WEB_PRICING = pricing({ lines: [...pricing().lines, ...WEB_LINES] });
+
+  it("the_web_tab_saves_the_rule", async () => {
+    const calls = stubFetch({
+      "GET /api/admin/web": webSettings({ sources: { "fetch.max_per_run": "file" } }),
+      "GET /api/admin/pricing": WEB_PRICING,
+      "PUT /api/admin/web": (b: unknown) => webSettings({ configured: true, search: { ...webSettings().search, enabled: true, provider: "exa" }, fetch: { ...webSettings().fetch, enabled: true, url_rule: "allowlist", allowlist: (b as { fetch: { allowlist: string[] } }).fetch.allowlist } }),
+    });
+    const m = mount(AdminWeb, {});
+    await settle();
+    // The risk, beside the switches.
+    expect(m.root.textContent).toContain("Web content can try to steer ClaxBot. It fetches only URLs from the sender's words, searches and pages it read, but which links it follows and what it searches for can still carry data out.");
+    const search = m.root.querySelector<HTMLElement>('[role="switch"][aria-label="Web search"]')!;
+    const fetchSw = m.root.querySelector<HTMLElement>('[role="switch"][aria-label="Web fetch"]')!;
+    expect([search.getAttribute("aria-checked"), fetchSw.getAttribute("aria-checked")]).toEqual(["false", "false"]);
+    // Each provider with its price from the Pricing lines.
+    const prov = m.root.querySelector<HTMLSelectElement>("#aw-provider")!;
+    expect([...prov.options].map(o => o.textContent)).toEqual(["Ceramic · 25 credits per thousand requests", "Exa · 700 credits per thousand requests", "Linkup · 500 credits per thousand requests"]);
+    expect(m.root.querySelector<HTMLInputElement>("#aw-max-fetch")!.readOnly).toBe(true);
+    const rule = m.root.querySelector<HTMLSelectElement>("#aw-rule")!;
+    expect([...rule.options].map(o => [o.value, o.textContent])).toEqual([["sourced", "Only URLs from the sender, searches and fetched pages"], ["any_public", "Any public URL"], ["allowlist", "Allowlist"]]);
+    expect(m.root.querySelector("#aw-allow")).toBeNull();
+    expect(m.root.textContent).not.toContain("Any URL ClaxBot writes may be fetched");
+    choose(rule, "any_public");
+    expect(m.root.textContent).toContain("Any URL ClaxBot writes may be fetched, so a page can make it send data out.");
+    choose(rule, "allowlist");
+    expect(m.root.textContent).not.toContain("Any URL ClaxBot writes may be fetched");
+    type(m.root.querySelector<HTMLTextAreaElement>("#aw-allow") as unknown as HTMLInputElement, "docs.example.com\n*.rust-lang.org\n");
+    click(search);
+    click(fetchSw);
+    choose(prov, "exa");
+    click(button(m.root, "Save"));
+    await settle();
+    expect(calls.find(c => c.method === "PUT")).toEqual({ url: "/api/admin/web", method: "PUT", body: { search: { enabled: true, provider: "exa" }, fetch: { enabled: true, url_rule: "allowlist", allowlist: ["docs.example.com", "*.rust-lang.org"] } } });
+    expect(m.root.querySelector('[role="status"]')!.textContent).toContain("Saved.");
+  });
+
+  it("shows why web is unavailable, in place of the credentials hint", async () => {
+    const why = 'the site domain "https://sites.example/x" is not a bare host name';
+    stubFetch({ "GET /api/admin/web": webSettings({ unavailable: why }), "GET /api/admin/pricing": WEB_PRICING });
+    const m = mount(AdminWeb, {});
+    await settle();
+    expect(m.root.textContent).toContain(`Web access is off: ${why}`);
+    expect(m.root.textContent).not.toContain("Not configured: web access needs");
+  });
+
+  it("a_source_that_cannot_run_here_says_why", async () => {
+    stubFetch({
+      "GET /api/admin/web": webSettings({ unavailable: "Workers AI cannot run where this Worker runs." }),
+      "GET /api/admin/pricing": WEB_PRICING,
+    });
+    const m = mount(AdminWeb, { now: () => new Date("2026-10-21T12:00:00Z") });
+    await settle();
+    expect(m.root.textContent).toContain("Web access is off: Workers AI cannot run where this Worker runs.");
+    expect(m.root.textContent).not.toContain("Not configured");
+  });
+
+  it("a_check_still_running_says_so", async () => {
+    stubFetch({
+      "GET /api/admin/web": webSettings({ configured: true, checking: true }),
+      "GET /api/admin/pricing": WEB_PRICING,
+    });
+    const m = mount(AdminWeb, { now: () => new Date("2026-10-21T12:00:00Z") });
+    await settle();
+    expect(m.root.textContent).toContain("Checking whether web access can run here.");
+  });
+
+  it("the_token_is_write_only", async () => {
+    const calls = stubFetch({
+      "GET /api/admin/web": webSettings(),
+      "GET /api/admin/pricing": WEB_PRICING,
+      "PUT /api/admin/web/token": webSettings({ configured: true, cloudflare: { account_id: "", token: { set: true, last4: "9f3a", set_at: "2026-10-21T09:00:00Z", set_by: { id: "*owner", name: "Alex" }, last_ok_at: null } } }),
+    });
+    const m = mount(AdminWeb, { now: () => new Date("2026-10-21T12:00:00Z") });
+    await settle();
+    expect(m.root.textContent).toContain("Not configured");
+    click(button(m.root, /^Set/));
+    const input = m.root.querySelector<HTMLInputElement>('.bkey input[type="password"]')!;
+    type(input, "cf-secret-9f3a");
+    flush(() => input.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    await settle();
+    expect(calls.find(c => c.url === "/api/admin/web/token")).toEqual({ url: "/api/admin/web/token", method: "PUT", body: { token: "cf-secret-9f3a" } });
+    expect(m.root.querySelector('.bkey input[type="password"]')).toBeNull();
+    expect(m.root.querySelector(".bkey-s")!.textContent).toContain("ending 9f3a");
+    expect(m.root.textContent).not.toContain("cf-secret");
+  });
+
+  it("saves the gateway, the provider key alias and the results per search, and refuses a limit outside 1 to 10", async () => {
+    const calls = stubFetch({
+      "GET /api/admin/web": webSettings({ sources: { "search.limit": "default" } }),
+      "PUT /api/admin/web": (b: unknown) => { const x = (b as { search: { gateway: string; byok_alias: string; limit: number } }).search; return webSettings({ search: { ...webSettings().search, ...x } }); },
+    });
+    const m = mount(AdminWeb, {});
+    await settle();
+    expect(m.root.textContent).toContain("With an alias, searches bill the provider key stored on the gateway instead of Cloudflare credits.");
+    type(m.root.querySelector("#aw-limit")!, "11");
+    click(button(m.root, "Save"));
+    expect(m.root.querySelector('[role="alert"]')!.textContent).toBe("Results per search is a whole number from 1 to 10.");
+    expect(calls.some(c => c.method === "PUT")).toBe(false);
+    type(m.root.querySelector("#aw-limit")!, "7");
+    type(m.root.querySelector("#aw-gateway")!, " edge ");
+    type(m.root.querySelector("#aw-byok")!, "exa-key");
+    click(button(m.root, "Save"));
+    await settle();
+    expect(calls.find(c => c.method === "PUT")!.body).toEqual({ search: { gateway: "edge", byok_alias: "exa-key", limit: 7 } });
+    expect(m.root.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("never sends a field the configuration sets, says Nothing changed, and refuses a cap that is not a whole number", async () => {
+    const calls = stubFetch({
+      "GET /api/admin/web": webSettings({ sources: { "search.provider": "file", "fetch.max_per_run": "env:CLAX_BOT__WEB", "search.limit": "file", "search.gateway": "file", "search.byok_alias": "file" } }),
+      "PUT /api/admin/web": webSettings(),
+    });
+    const m = mount(AdminWeb, {});
+    await settle();
+    click(button(m.root, "Save"));
+    expect(m.root.querySelector('[role="status"]')!.textContent).toBe("Nothing changed.");
+    expect(calls.some(c => c.method === "PUT")).toBe(false);
+    choose(m.root.querySelector("#aw-provider")!, "exa");
+    type(m.root.querySelector("#aw-max-fetch")!, "99");
+    type(m.root.querySelector("#aw-limit")!, "9");
+    type(m.root.querySelector("#aw-gateway")!, "other");
+    type(m.root.querySelector("#aw-byok")!, "other");
+    type(m.root.querySelector("#aw-max-search")!, "0");
+    click(button(m.root, "Save"));
+    expect(m.root.querySelector('[role="alert"]')!.textContent).toBe("Searches per run is a whole number, 1 or more.");
+    type(m.root.querySelector("#aw-max-search")!, "12");
+    click(button(m.root, "Save"));
+    await settle();
+    // Only the one field the configuration leaves editable is sent.
+    expect(calls.find(c => c.method === "PUT")!.body).toEqual({ search: { max_per_run: 12 } });
+  });
+
+  it("keeps unsaved edits when the token is set", async () => {
+    stubFetch({
+      "GET /api/admin/web": webSettings(),
+      "PUT /api/admin/web/token": webSettings({ search: { ...webSettings().search, enabled: true }, cloudflare: { account_id: "", token: { set: true, last4: "9f3a", set_at: "2026-10-21T09:00:00Z", last_ok_at: null } } }),
+    });
+    const m = mount(AdminWeb, {});
+    await settle();
+    type(m.root.querySelector("#aw-max-search")!, "4");
+    choose(m.root.querySelector("#aw-rule")!, "any_public");
+    click(button(m.root, /^Set/));
+    const input = m.root.querySelector<HTMLInputElement>('.bkey input[type="password"]')!;
+    type(input, "cf-secret-9f3a");
+    flush(() => input.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    await settle();
+    expect(m.root.querySelector(".bkey-s")!.textContent).toContain("ending 9f3a");
+    expect(m.root.querySelector<HTMLInputElement>("#aw-max-search")!.value).toBe("4");
+    expect(m.root.querySelector<HTMLSelectElement>("#aw-rule")!.value).toBe("any_public");
+    expect(m.root.querySelector('[role="switch"][aria-label="Web search"]')!.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("is not asked for the daemon's account on a hosted Clax", async () => {
+    stubFetch({ "GET /api/admin/web": webSettings(), "GET /api/hosted/me": { name: "x" } });
+    const m = mount(AdminWeb, {});
+    await settle();
+    expect(m.root.querySelector("#aw-account")).toBeNull();
+    expect(m.root.querySelector(".bkey")).toBeNull();
   });
 });
 

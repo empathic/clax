@@ -469,6 +469,7 @@ dependencies = [
  "clax-rt",
  "clax-sample",
  "clax-store",
+ "encoding_rs",
  "futures",
  "html5ever",
  "rusqlite",
@@ -477,6 +478,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]
@@ -895,6 +897,7 @@ dependencies = [
  "reqwest 0.12.28",
  "rmcp",
  "rusqlite",
+ "rustls",
  "send_wrapper",
  "serde",
  "serde_json",
@@ -912,6 +915,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "web-time",
+ "webpki-roots",
 ]
 
 [[package]]

@@ -5,9 +5,9 @@
 /// migration, its marker) where no earlier one did, with triggers that
 /// refuse to change or remove a row of it, and inserts `$name`. Nothing
 /// else writes the table, so the marker stays as long as the database.
-/// Use: `concat!(migration_marker!("name"), "UPDATE …;")`.
-// No migration changes only rows yet; the tests' simulated one does.
-#[cfg_attr(not(test), allow(unused_macros))]
+/// Use: `concat!(migration_marker!("name"), "UPDATE …;")`. No migration
+/// of this numbering uses it; the tests build earlier numberings with it.
+#[cfg(test)]
 macro_rules! migration_marker {
     ($name:literal) => {
         concat!(
@@ -2079,6 +2079,76 @@ pub const MIGRATIONS: &[&str] = &[
     ) WITHOUT ROWID;
     ALTER TABLE usage_rows ADD COLUMN rate_source TEXT NOT NULL DEFAULT 'line'
         CHECK (rate_source IN ('line', 'catalog', 'default', 'provider'));",
+    // 63: web search and web fetch (spec 2026-11-02-claxbot-web-tools §7):
+    // `cost_lines.unit` takes `kreq`, a thousand requests, so `cost_lines` is
+    // rebuilt with the one CHECK widened (SQLite cannot alter a CHECK) and
+    // its rows copied; the Rust step ([`WEB_MIGRATION`]) seeds the web lines
+    // (`crate::credits::seed_web_lines`). `bot_person_prefs` holds each
+    // person's own choice of web tools (§9.2), and `sealed_secrets` is
+    // rebuilt with `cloudflare` in its scope CHECK for the instance's
+    // Cloudflare token (§9.3). `bot_web_pages` is a run's page store (§6.2):
+    // each page a fetch of the run received, by normalised URL, with the
+    // journal place that fetched it, removed with the run's call journal;
+    // `bot_runs.web` is the web grant's shape when the run was made (§4.4).
+    // `bot_person_prefs` is the migration's mark (`MARKS_AFTER_APP`).
+    "CREATE TABLE cost_lines_new (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        unit TEXT NOT NULL CHECK (unit IN
+            ('mtok_input', 'mtok_cached_input', 'mtok_cache_write', 'mtok_output', 'cpu_gb_s', 'mreq',
+             'gb_month', 'run', 'kreq')),
+        cost_micro_usd INTEGER NOT NULL CHECK (cost_micro_usd >= 0),
+        margin_bp INTEGER NOT NULL CHECK (margin_bp >= 0),
+        fixed_credits_milli INTEGER CHECK (fixed_credits_milli >= 0),
+        applies TEXT NOT NULL CHECK (applies IN ('instance_key', 'always')),
+        source TEXT NOT NULL,
+        model TEXT,
+        updated_by TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    INSERT INTO cost_lines_new
+        SELECT id, label, unit, cost_micro_usd, margin_bp, fixed_credits_milli, applies,
+               source, model, updated_by, updated_at
+        FROM cost_lines;
+    DROP TABLE cost_lines;
+    ALTER TABLE cost_lines_new RENAME TO cost_lines;
+    CREATE TABLE bot_person_prefs (
+        person TEXT PRIMARY KEY,
+        web INTEGER NOT NULL,
+        set_at TEXT NOT NULL
+    );
+    CREATE TABLE sealed_secrets_new (
+        scope TEXT NOT NULL CHECK (scope IN ('instance', 'own', 'cloudflare')),
+        person TEXT NOT NULL,
+        nonce BLOB NOT NULL,
+        sealed BLOB NOT NULL,
+        last4 TEXT NOT NULL,
+        use_own INTEGER NOT NULL DEFAULT 1,
+        set_by TEXT NOT NULL,
+        set_at TEXT NOT NULL,
+        last_ok_at TEXT,
+        host TEXT,
+        PRIMARY KEY (scope, person)
+    );
+    INSERT INTO sealed_secrets_new
+        SELECT scope, person, nonce, sealed, last4, use_own, set_by, set_at, last_ok_at, host
+        FROM sealed_secrets;
+    DROP TABLE sealed_secrets;
+    ALTER TABLE sealed_secrets_new RENAME TO sealed_secrets;
+    CREATE TABLE bot_web_pages (
+        run_id TEXT NOT NULL,
+        url TEXT NOT NULL,
+        step_n INTEGER NOT NULL,
+        seq INTEGER NOT NULL,
+        final_url TEXT NOT NULL,
+        status INTEGER NOT NULL,
+        content_type TEXT NOT NULL,
+        text TEXT NOT NULL,
+        total_chars INTEGER NOT NULL,
+        links_json TEXT NOT NULL,
+        PRIMARY KEY (run_id, url)
+    ) WITHOUT ROWID;
+    ALTER TABLE bot_runs ADD COLUMN web TEXT NOT NULL DEFAULT '';",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -2136,8 +2206,13 @@ pub const BROWSER_LOGIN_MIGRATION: u32 = QUEUES_MIGRATION + 1;
 pub const FEEDBACK_LOOP_MIGRATION: u32 = BROWSER_LOGIN_MIGRATION + 1;
 
 /// The migration that adds the cached price catalog (`price_catalog`) and
-/// `usage_rows.rate_source`, as a schema version, and this build's last.
+/// `usage_rows.rate_source`, as a schema version.
 pub const PRICE_CATALOG_MIGRATION: u32 = FEEDBACK_LOOP_MIGRATION + 1;
+
+/// The migration that lets a cost line count in thousands of requests
+/// (`kreq`) and seeds the web search and web fetch lines, as a schema
+/// version, and this build's last.
+pub const WEB_MIGRATION: u32 = PRICE_CATALOG_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -2297,11 +2372,11 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 
 /// What each migration after the app's leaves in the schema, in order:
 /// ClaxBot's ([`CLAXBOT_MIGRATION`]), then [`LEGACY_PATHS_MIGRATION`] to
-/// [`PRICE_CATALOG_MIGRATION`]. They follow the app's in every
+/// [`WEB_MIGRATION`]. They follow the app's in every
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 13] = [
+const MARKS_AFTER_APP: [Mark<'static>; 14] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
@@ -2315,6 +2390,7 @@ const MARKS_AFTER_APP: [Mark<'static>; 13] = [
     Mark::Table("owner_browser_sessions"),
     Mark::Table("report_fixes"),
     Mark::Table("price_catalog"),
+    Mark::Table("bot_person_prefs"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -2632,6 +2708,9 @@ pub(super) fn rust_step_of(
     }
     if version == REMOTE_KIND_MIGRATION {
         mirrored_author_key(tx)?;
+    }
+    if version == WEB_MIGRATION {
+        crate::credits::seed_web_lines(tx)?;
     }
     Ok(())
 }
@@ -5278,7 +5357,7 @@ mod tests {
             super::FEEDBACK_LOOP_MIGRATION + 1
         );
         assert!(MIGRATIONS[first + 20].contains("CREATE TABLE price_catalog ("));
-        assert_eq!(MIGRATIONS.len() as u32, super::PRICE_CATALOG_MIGRATION);
+        assert_eq!(MIGRATIONS.len() as u32, super::WEB_MIGRATION);
     }
 
     #[test]
@@ -5406,7 +5485,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_database_reaches_62() {
+    fn a_fresh_database_reaches_63() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         drop(Store::open(&home).unwrap());
@@ -5427,7 +5506,8 @@ mod tests {
         assert_eq!(super::BROWSER_LOGIN_MIGRATION, 60);
         assert_eq!(super::FEEDBACK_LOOP_MIGRATION, 61);
         assert_eq!(super::PRICE_CATALOG_MIGRATION, 62);
-        assert_eq!(user_version(&c), super::PRICE_CATALOG_MIGRATION);
+        assert_eq!(super::WEB_MIGRATION, 63);
+        assert_eq!(user_version(&c), super::WEB_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
@@ -6207,7 +6287,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::PRICE_CATALOG_MIGRATION);
+        assert_eq!(user_version(&c), super::WEB_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -6702,14 +6782,14 @@ mod tests {
         // migrations to 54, the return-to migration to 55, the version
         // declarations' to 56, the quickstart's to 57, the capability
         // approvals' to 58, the queues' to 59, the browser login's to 60,
-        // the feedback loop's to 61 and the price catalog's to 62.
+        // the feedback loop's to 61 and the price catalog's to 62 and the web lines' to 63.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::PRICE_CATALOG_MIGRATION);
+            assert_eq!(user_version(&c), super::WEB_MIGRATION);
             (columns_of(&c), every_row(&c))
         };
 
@@ -6717,8 +6797,8 @@ mod tests {
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(
             user_version(&c),
-            super::PRICE_CATALOG_MIGRATION + 1,
-            "ClaxBot's 50 and the migrations 51 to 62 after it are one later now"
+            super::WEB_MIGRATION + 1,
+            "ClaxBot's 50 and the migrations 51 to 63 after it are one later now"
         );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
@@ -6737,7 +6817,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), super::PRICE_CATALOG_MIGRATION);
+        assert_eq!(user_version(&copied), super::WEB_MIGRATION);
         assert_eq!(
             every_row(&copied),
             before,
@@ -6751,7 +6831,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (super::PRICE_CATALOG_MIGRATION + 1, schema, rows)
+            (super::WEB_MIGRATION + 1, schema, rows)
         );
     }
 
@@ -7025,7 +7105,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, super::PRICE_CATALOG_MIGRATION);
+        assert_eq!(last, super::WEB_MIGRATION);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));

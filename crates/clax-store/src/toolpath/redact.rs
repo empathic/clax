@@ -349,6 +349,18 @@ fn body_class(kind: &str, field: &str) -> Class {
         // (`give_up`): both are text.
         ("bot.call", "run" | "step" | "op" | "ok") => Safe,
         ("bot.call", "target") => Text,
+        // A web call (spec 2026-11-02-claxbot-web-tools §8): its query and
+        // URL are the model's or a page's text, and so is the provider's
+        // whole answer to a search; the source that allowed a fetch is a
+        // code (`comment`, `search #<n>`, `page #<n>`), and whether the
+        // call was answered, its error code and whether it came from the
+        // page store are codes too.
+        (
+            "bot.web",
+            "run" | "step" | "op" | "source" | "provider" | "request_id" | "credits_milli" | "ok"
+            | "code" | "stored",
+        ) => Safe,
+        ("bot.web", "query" | "url" | "response") => Text,
         ("bot.run_end", "run" | "outcome" | "credits_milli") => Safe,
         ("bot.run_end", "reason") => Text,
         ("bot.cancel", "run" | "by") => Safe,
@@ -372,6 +384,8 @@ fn body_class(kind: &str, field: &str) -> Class {
         // The keys of the local daemon's settings written to config.toml
         // (`serve.port`), never their values.
         ("admin.settings", "fields") => Safe,
+        // A person's own choice of the web tools: their key and a flag.
+        ("me.web", "person" | "value") => Safe,
         // External artifacts and report queues (spec
         // 2026-10-27-clax-sdk-design §6.6): an app's opaque IDs, titles,
         // revisions and metadata are its users' text; a page URL can carry

@@ -1140,11 +1140,36 @@ impl clax_http::bot::Runs for DriverRuns {
 }
 
 /// The driver of a daemon on `state` (native): its deps over the server's
-/// host, this build's sandbox, the state's settings and keys, and the
-/// store's clock; the routes' events hub. Installs it as the state's run
-/// seam and returns it, not yet started.
+/// host, this build's sandbox, the state's settings and keys, the store's
+/// clock and the daemon's web source ([`crate::web_source::for_daemon`],
+/// its fetches naming a hosted daemon's public origin, a local one's
+/// nothing, and never reaching a hosted daemon's own hosts); the routes'
+/// events hub.
+/// Installs it as the state's run seam and returns it, not yet started.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn driver(state: &mut AppState) -> Arc<clax_bot::Driver> {
+    let hosted = state.hosted.as_ref();
+    let (web, unavailable) = crate::web_source::daemon_web(
+        state.store.clone(),
+        state.bot.kek.clone(),
+        hosted.map(|h| h.origin.as_str()),
+        hosted.and_then(|h| h.sites.as_ref()).map(|s| s.domain()),
+    );
+    if let Some(why) = unavailable {
+        state
+            .bot
+            .web_check
+            .set(clax_bot::web::WebCheck::Unusable(why));
+    }
+    driver_with_web(state, web)
+}
+
+/// [`driver`], with `web` as the runs' web source.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn driver_with_web(
+    state: &mut AppState,
+    web: Arc<dyn clax_bot::web::WebSource>,
+) -> Arc<clax_bot::Driver> {
     let bot = state.bot.clone();
     let host = ServerHost::new(state.clone());
     let wake = host.wake.clone();
@@ -1160,7 +1185,8 @@ pub fn driver(state: &mut AppState) -> Arc<clax_bot::Driver> {
         }),
         bot.keys(),
         Arc::new(StoreClock(state.store.clone())),
-    );
+    )
+    .with_web(web);
     let driver = Arc::new(clax_bot::Driver::new(
         clax_store::bot_runs::DriverId::mint(),
         Arc::new(deps),
@@ -1180,8 +1206,55 @@ pub fn driver(state: &mut AppState) -> Arc<clax_bot::Driver> {
         events: bot.events.clone(),
         catalog_url: bot.catalog_url.clone(),
         catalog_flight: bot.catalog_flight.clone(),
+        web_configured: bot.web_configured,
+        web_check: bot.web_check.clone(),
+        admin_web_check: bot.admin_web_check.clone(),
     });
     driver
+}
+
+/// Whether ClaxBot's web use is configured on this host now: never once
+/// the host knows its source cannot be used (its origin or site domain
+/// names no host, or the source cannot run where it runs:
+/// [`clax_http::bot::Bot::web_check`]); else the host says so
+/// ([`clax_http::bot::Bot::web_configured`]: the Worker's AI binding, the
+/// daemon's test fixtures), or, on a native daemon, the
+/// instance holds a key-encryption key, a Cloudflare account ID and a
+/// sealed token ([`crate::web_source::has_credentials`]), read at each
+/// call so an admin's change takes effect without a restart.
+///
+/// # Errors
+/// The store's.
+pub fn web_configured(st: &Store, bot: &clax_http::bot::Bot) -> clax_core::Result<bool> {
+    if bot.web_check.why().is_some() {
+        return Ok(false);
+    }
+    if bot.web_configured {
+        // Every decision on web use (a run's start, the person's and the
+        // admin's views) comes here: with web use on, the host is asked to
+        // check its source, which it does after the request.
+        if web_on(st)? {
+            bot.web_check.want();
+        }
+        return Ok(true);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::web_source::has_credentials(st, bot.kek.as_ref())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = st;
+        Ok(false)
+    }
+}
+
+/// Whether an admin turned web search or web fetch on.
+fn web_on(st: &Store) -> clax_core::Result<bool> {
+    use clax_store::bot_settings::Setting;
+    let on =
+        |s: Setting| -> clax_core::Result<bool> { Ok(st.bot_setting(s)?.as_bool() == Some(true)) };
+    Ok(on(Setting::WebSearchEnabled)? || on(Setting::WebFetchEnabled)?)
 }
 
 /// A clock reading the store's, owned.

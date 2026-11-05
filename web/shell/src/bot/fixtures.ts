@@ -1,13 +1,13 @@
 // ClaxBot fixtures for the unit tests: the shapes of spec 2026-10-21-claxbot
 // §10 with plausible values, each overridable.
-import type { AdminPerson, AdminUsage, BotRun, CatalogListing, CostLine, MeBot, ModelPricing, Pricing, Provider, Settings, UnitPricing, Week } from "./api";
+import type { AdminPerson, AdminUsage, BotRun, CatalogListing, CostLine, MeBot, ModelPricing, Pricing, Provider, Settings, UnitPricing, WebSettings, Week } from "./api";
 
 export const WEEK_START = "2026-10-19T00:00:00Z";
 export const WEEK_END = "2026-10-26T00:00:00Z";
 export const week = (o: Partial<Week> = {}): Week => ({ start: WEEK_START, end: WEEK_END, weekly_milli: 2_000_000, lift_milli: 0, spent_milli: 310_000, warn: false, exhausted: false, ...o });
 export const meBot = (o: Partial<MeBot> = {}): MeBot => ({
   enabled: true, unenforced: false, available: true, unavailable_reason: null,
-  key: { own: null, use_own: false }, week: week(), role: "member", ...o,
+  key: { own: null, use_own: false }, week: week(), role: "member", web: { on: true, offered: true, why_off: null, prices: { search_milli: 25, fetch_milli: 50 } }, ...o,
 });
 export const adminPerson = (o: Partial<AdminPerson> = {}): AdminPerson => ({
   person: "p_sam", name: "Sam", role: "member", flags: { claxbot: true, claxbot_unenforced: false }, key_source: "own",
@@ -90,3 +90,20 @@ export const run = (o: Partial<BotRun> = {}): BotRun => ({
   acting_for: { id: "p_sam", name: "Sam" }, started_at: "2026-10-21T14:02:00Z", credits_milli: 2000, tokens: { input: 30_000, cached: 6_000, output: 2_200 },
   steps: [], ...o,
 });
+/** As `GET /api/admin/web` answers: search and fetch off, the defaults, a daemon without its Cloudflare account. */
+export const webSettings = (o: Partial<WebSettings> = {}): WebSettings => ({
+  configured: false,
+  unavailable: null,
+  checking: false,
+  search: { enabled: false, provider: "ceramic", gateway: "default", byok_alias: "", limit: 5, max_per_run: 10 },
+  fetch: { enabled: false, url_rule: "sourced", allowlist: [], max_per_run: 20 },
+  cloudflare: { account_id: "", token: { set: false, last4: null, set_at: null, last_ok_at: null } },
+  sources: {}, ...o,
+});
+/** The web cost lines, per thousand requests at $0.01 a credit and no margin: 25, 700 and 500 credits for a search, 50 for a fetch. */
+export const WEB_LINES: CostLine[] = [
+  { id: "web.search.ceramic", label: "Web search (Ceramic)", unit: "kreq", cost_micro_usd: 250_000, margin_bp: 0, fixed_credits_milli: null, applies: "always", source: "Cloudflare", model: null },
+  { id: "web.search.exa", label: "Web search (Exa)", unit: "kreq", cost_micro_usd: 7_000_000, margin_bp: 0, fixed_credits_milli: null, applies: "always", source: "Cloudflare", model: null },
+  { id: "web.search.linkup", label: "Web search (Linkup)", unit: "kreq", cost_micro_usd: 5_000_000, margin_bp: 0, fixed_credits_milli: null, applies: "always", source: "Cloudflare", model: null },
+  { id: "web.fetch", label: "Web fetch", unit: "kreq", cost_micro_usd: 500_000, margin_bp: 0, fixed_credits_milli: null, applies: "always", source: "Cloudflare", model: null },
+];

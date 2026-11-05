@@ -351,7 +351,26 @@ pub(super) fn segment(h: &History, closed: bool) -> String {
 }
 
 /// The `seq` of the golden history's last row (`tests/toolpath/history.json`).
-const LAST_SEQ: i64 = 124;
+const LAST_SEQ: i64 = 126;
+
+#[test]
+fn a_cloudflare_token_change_is_not_called_a_model_key() {
+    let h = history();
+    let mut row = h
+        .rows
+        .iter()
+        .find(|r| r.kind == "admin.key")
+        .unwrap()
+        .clone();
+    let mut body: Value = serde_json::from_str(&row.body).unwrap();
+    body["scope"] = json!("cloudflare");
+    body["op"] = json!("set");
+    body.as_object_mut().unwrap().remove("person");
+    row.body = body.to_string();
+    let text = describe(&row, "install");
+    assert!(text.contains("Set the Cloudflare API token"), "{text}");
+    assert!(!text.contains("model key"), "{text}");
+}
 
 #[test]
 fn render_each_kind_matches_golden() {

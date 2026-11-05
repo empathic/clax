@@ -38,6 +38,8 @@
 use crate::events::{Event, EventSink, step_summary};
 use crate::host::{BotHost, NOTICE_SEQ, OpCtx, run_plan};
 use crate::prompt;
+use crate::web::WebSource;
+use crate::web::page::{sources as web_sources, sources_markdown};
 use clax_bot_sandbox::{CancelToken, Limits, MaybeSendSync, Sandbox};
 use clax_core::audit::{Actor, AuditCtx, AuditRecord, Via};
 use clax_core::gitctx::GitField;
@@ -258,6 +260,10 @@ pub struct Deps {
     pub retry_later: Duration,
     /// For tests: where to stop as if crashed.
     pub crash: Option<CrashHook>,
+    /// Where `clax.web.*` calls are sent (spec
+    /// 2026-11-02-claxbot-web-tools §4.3); `None` on a host without one,
+    /// where every web call is refused `web_disabled`.
+    pub web: Option<Arc<dyn WebSource>>,
 }
 
 impl std::fmt::Debug for Deps {
@@ -265,13 +271,14 @@ impl std::fmt::Debug for Deps {
         f.debug_struct("Deps")
             .field("keys", &self.keys)
             .field("retry", &self.retry)
+            .field("web", &self.web.is_some())
             .finish_non_exhaustive()
     }
 }
 
 impl Deps {
     /// Deps with the default retry policy, a 30 s wait after the model
-    /// stays unreachable, and no crash hook.
+    /// stays unreachable, no crash hook and no web source.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         store: Arc<Store>,
@@ -293,7 +300,15 @@ impl Deps {
             retry: RetryPolicy::default(),
             retry_later: Duration::from_secs(30),
             crash: None,
+            web: None,
         }
+    }
+
+    /// These deps, sending web calls to `web`.
+    #[must_use]
+    pub fn with_web(mut self, web: Arc<dyn WebSource>) -> Deps {
+        self.web = Some(web);
+        self
     }
 
     pub(crate) fn crashes(&self, at: CrashPoint) -> bool {
@@ -1492,9 +1507,14 @@ impl Tick<'_> {
     /// brief's thread), journaled at the step's notice places; failures are
     /// logged, not fatal.
     async fn notify(&self, attempt: i64, markdown: &str) {
+        self.notify_at(attempt, NOTICE_SEQ, markdown).await;
+    }
+
+    /// [`Self::notify`], the `i`th thread's post at journal place `first + i`.
+    async fn notify_at(&self, attempt: i64, first: i64, markdown: &str) {
         for (i, t) in self.run.thread_ids.iter().enumerate() {
-            let cx = self.op_ctx(attempt, NOTICE_SEQ + i as i64);
-            let seq = NOTICE_SEQ + i as i64;
+            let seq = first + i as i64;
+            let cx = self.op_ctx(attempt, seq);
             let res = match (
                 self.entry(attempt, seq, "reply", &json!([t, markdown])),
                 self.deps.host.plan_reply(&cx, t, markdown).await,
@@ -1661,10 +1681,28 @@ impl Tick<'_> {
     async fn finish(&self, summary: &str) -> Result<TickOutcome> {
         let s = self.begin(StepKind::Finish)?;
         let post = self.hist.replied.is_empty() && !summary.is_empty();
-        if post {
-            self.notify(s.attempt, summary).await;
+        let pages = self.store.web_pages(&self.run.id)?;
+        let sources = sources_markdown(&pages);
+        match (&sources, post) {
+            (Some(list), true) => {
+                self.notify(s.attempt, &format!("{summary}{list}")).await;
+            }
+            (None, true) => self.notify(s.attempt, summary).await,
+            // The run replied itself: the list stands alone, after the
+            // summary's place.
+            (Some(list), false) => {
+                self.notify_at(s.attempt, NOTICE_SEQ + 1, list.trim_start())
+                    .await;
+            }
+            (None, false) => {}
         }
-        let payload = json!({"summary": summary, "posted": post});
+        let payload = json!({
+            "summary": summary,
+            "posted": post,
+            "sources": web_sources(&pages).iter()
+                .map(|s| json!({"title": s.title.as_deref().unwrap_or(&s.url), "url": s.url}))
+                .collect::<Vec<_>>(),
+        });
         let usage = step_usage(&self.settings, self.n, 0, &payload, self.key_source());
         let c = self.commit(
             s.attempt,
@@ -1836,7 +1874,7 @@ impl Tick<'_> {
                 }
             };
             (
-                prompt::system_prompt(self.run.request),
+                prompt::system_prompt(self.run.request, crate::web::WebShape::parse(&self.run.web)),
                 vec![Block::text(prompt::request_message(self.run.request, &cx))],
             )
         } else {
