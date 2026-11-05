@@ -47,6 +47,14 @@ export interface InstallConfig {
   reports_button: boolean;
   picker: boolean;
   brand_color: string | null;
+  /** The CSS selector of the page's element that opens the overlay; with
+   * one, no corner launcher. Absent from a Clax that predates it. */
+  trigger?: string | null;
+  /** Whether the `F` key opens the overlay. */
+  f_key?: boolean;
+  /** Whether the overlay draws its ribbon; `ribbon_text` is what it says. */
+  ribbon?: boolean;
+  ribbon_text?: string | null;
 }
 
 /** `Install`: one site that embeds the overlay and files into a queue,

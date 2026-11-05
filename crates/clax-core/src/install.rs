@@ -1,7 +1,8 @@
 //! A queue's installs: one record per site that embeds the overlay and
 //! files into the queue, with the settings that site's overlay reads
 //! (its white-label wording, whether it shows the Report button and the
-//! element picker). The owner edits them in Clax (`clax_store::queues`);
+//! element picker, and how the page opens it: a trigger selector, the `F`
+//! key, a ribbon). The owner edits them in Clax (`clax_store::queues`);
 //! the host page carries only the install's ID and fetches the rest from
 //! `GET /api/installs/<id>/config`.
 
@@ -14,6 +15,11 @@ pub const MAX_INSTALL_NAME_CHARS: usize = 120;
 pub const MAX_WORDING_CHARS: usize = 80;
 /// The most installs a queue holds.
 pub const MAX_QUEUE_INSTALLS: usize = 64;
+/// The longest trigger selector, in characters.
+pub const MAX_TRIGGER_CHARS: usize = 256;
+/// The longest ribbon wording, in characters: what fits along the narrower
+/// band (web/overlay/src/ribbon.ts) at its smallest lettering.
+pub const MAX_RIBBON_CHARS: usize = 14;
 
 /// What an install's overlay is configured with. Wording left out is the
 /// overlay's own default; it never names a product (or "Clax") unless
@@ -41,6 +47,22 @@ pub struct InstallConfig {
     /// The overlay's accent, `#rrggbb`; `None`: its own.
     #[serde(default)]
     pub brand_color: Option<String>,
+    /// The CSS selector of the page's element that opens the overlay, as a
+    /// tag manager's trigger names one; `None`: the page's own option, and
+    /// the corner launcher. With one, the overlay shows no corner launcher.
+    #[serde(default)]
+    pub trigger: Option<String>,
+    /// Whether the `F` key opens the overlay (never in a text field).
+    #[serde(default)]
+    pub f_key: bool,
+    /// Whether the overlay draws its ribbon across the page's top-left
+    /// corner. It needs `ribbon_text`.
+    #[serde(default)]
+    pub ribbon: bool,
+    /// What the ribbon says, such as "Early Access". The band shows it in
+    /// capitals; a screen reader hears it as written.
+    #[serde(default)]
+    pub ribbon_text: Option<String>,
 }
 
 fn yes() -> bool {
@@ -56,6 +78,10 @@ impl Default for InstallConfig {
             reports_button: true,
             picker: true,
             brand_color: None,
+            trigger: None,
+            f_key: false,
+            ribbon: false,
+            ribbon_text: None,
         }
     }
 }
@@ -107,13 +133,45 @@ fn wording(field: &str, w: Option<String>) -> Result<Option<String>> {
     Ok(Some(t.to_string()))
 }
 
-/// `c` with its wording trimmed (blank wording is `None`) and its colour
-/// lowercased.
+/// `t` trimmed (blank is `None`). Only a browser can parse a selector, and
+/// a page's overlay ignores one it cannot; this refuses what never is one.
+fn trigger(t: Option<String>) -> Result<Option<String>> {
+    let Some(t) = t else { return Ok(None) };
+    let s = t.trim();
+    if s.is_empty() {
+        return Ok(None);
+    }
+    if s.chars().count() > MAX_TRIGGER_CHARS
+        || s.chars().any(|c| c.is_control() || "{}<".contains(c))
+    {
+        return Err(invalid(format!(
+            "the trigger is one CSS selector of at most {MAX_TRIGGER_CHARS} characters"
+        )));
+    }
+    Ok(Some(s.to_string()))
+}
+
+/// `c` with its wording and trigger trimmed (blank is `None`) and its
+/// colour lowercased.
 ///
 /// # Errors
 /// 400 `invalid_install` for wording over [`MAX_WORDING_CHARS`] or with
-/// control characters, or a `brand_color` that is not `#rrggbb`.
+/// control characters, a `brand_color` that is not `#rrggbb`, a `trigger`
+/// that is no selector, or a `ribbon` with no `ribbon_text` or one over
+/// [`MAX_RIBBON_CHARS`].
 pub fn check_install_config(c: InstallConfig) -> Result<InstallConfig> {
+    let ribbon_text = wording("the ribbon's wording", c.ribbon_text)?;
+    if ribbon_text
+        .as_deref()
+        .is_some_and(|t| t.chars().count() > MAX_RIBBON_CHARS)
+    {
+        return Err(invalid(format!(
+            "the ribbon's wording is at most {MAX_RIBBON_CHARS} characters"
+        )));
+    }
+    if c.ribbon && ribbon_text.is_none() {
+        return Err(invalid("the ribbon needs its wording (ribbon_text)"));
+    }
     let brand_color = match c.brand_color.as_deref().map(str::trim) {
         None | Some("") => None,
         Some(s) => {
@@ -131,6 +189,10 @@ pub fn check_install_config(c: InstallConfig) -> Result<InstallConfig> {
         reports_button: c.reports_button,
         picker: c.picker,
         brand_color,
+        trigger: trigger(c.trigger)?,
+        f_key: c.f_key,
+        ribbon: c.ribbon,
+        ribbon_text,
     })
 }
 
@@ -144,6 +206,59 @@ mod tests {
         assert_eq!(c, InstallConfig::default());
         assert!(c.reports_button && c.picker);
         assert_eq!(c.product_name, None);
+        // An install stored before these fields opens feedback as it did.
+        assert_eq!(c.trigger, None);
+        assert!(!c.f_key && !c.ribbon);
+        assert_eq!(c.ribbon_text, None);
+    }
+
+    #[test]
+    fn how_a_site_opens_feedback_is_checked() {
+        let c = check_install_config(InstallConfig {
+            trigger: Some("  .feedback-btn ".into()),
+            f_key: true,
+            ribbon: true,
+            ribbon_text: Some(" Early Access ".into()),
+            ..InstallConfig::default()
+        })
+        .unwrap();
+        assert_eq!(c.trigger.as_deref(), Some(".feedback-btn"));
+        assert_eq!(c.ribbon_text.as_deref(), Some("Early Access"));
+        assert!(c.f_key && c.ribbon);
+
+        let blank = check_install_config(InstallConfig {
+            trigger: Some("   ".into()),
+            ribbon_text: Some("  ".into()),
+            ..InstallConfig::default()
+        })
+        .unwrap();
+        assert_eq!((blank.trigger, blank.ribbon_text), (None, None));
+
+        for bad in [
+            InstallConfig {
+                ribbon: true,
+                ..InstallConfig::default()
+            },
+            InstallConfig {
+                ribbon: true,
+                ribbon_text: Some("x".repeat(MAX_RIBBON_CHARS + 1)),
+                ..InstallConfig::default()
+            },
+            InstallConfig {
+                trigger: Some("x".repeat(MAX_TRIGGER_CHARS + 1)),
+                ..InstallConfig::default()
+            },
+            InstallConfig {
+                trigger: Some("a{color:red}".into()),
+                ..InstallConfig::default()
+            },
+            InstallConfig {
+                trigger: Some("<button>".into()),
+                ..InstallConfig::default()
+            },
+        ] {
+            assert!(check_install_config(bad).is_err());
+        }
     }
 
     #[test]

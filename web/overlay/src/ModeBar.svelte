@@ -49,18 +49,31 @@
   let bar = $state<HTMLDivElement | null>(null);
   let edge = $state<"top" | "bottom">("top");
 
-  // The chip keeps clear of the pointer, wherever on the page it moves.
+  // The chip keeps clear of the pointer, wherever on the page it moves, but
+  // must not run from a pointer coming to press it: it never moves with the
+  // pointer on it, and with the pointer in its column it waits `HOLD_MS`, so
+  // what lies under it can still be reached by resting there.
+  const REACH_PX = 24;
+  const HOLD_MS = 700;
   $effect(() => {
     const el = bar;
     if (!el) return;
     const win = el.ownerDocument.defaultView ?? window;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const wait = (f?: () => void) => { clearTimeout(timer); timer = f && setTimeout(() => { timer = undefined; f(); }, HOLD_MS); };
     const onMove = (e: PointerEvent | MouseEvent) => {
-      const h = el.getBoundingClientRect().height || 44;
-      edge = edgeFor(edge, e.clientY, win.innerHeight, h);
+      const r = el.getBoundingClientRect();
+      const next = edgeFor(edge, e.clientY, win.innerHeight, r.height || 44);
+      const inColumn = e.clientX >= r.left - REACH_PX && e.clientX <= r.right + REACH_PX;
+      const onBar = inColumn && e.clientY >= r.top - REACH_PX && e.clientY <= r.bottom + REACH_PX;
+      if (next === edge || onBar) { wait(); return; }
+      if (!inColumn) { wait(); edge = next; return; }
+      if (timer === undefined) wait(() => { edge = next; });
     };
     win.addEventListener("pointermove", onMove, { capture: true, passive: true });
     win.addEventListener("mousemove", onMove, { capture: true, passive: true });
     return () => {
+      wait();
       win.removeEventListener("pointermove", onMove, { capture: true });
       win.removeEventListener("mousemove", onMove, { capture: true });
     };

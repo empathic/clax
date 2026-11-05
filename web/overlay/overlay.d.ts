@@ -191,10 +191,16 @@ export interface OverlayOptions {
   queue?: string;
   /** The install's ID, whose config Clax serves (its queue, wording, and whether it shows "Your reports" and the element picker). Default `<meta name="clax-install">`'s content. The overlay starts once the config is fetched, else on this page's own options. */
   install?: string;
-  /** Gets a reporter token for the reporter's public key, from the deployer's backend. */
-  auth: ReporterAuth;
-  /** `"corner"` (the default): Report and "Your reports" in the bottom right corner; `false`: none. */
+  /** Gets a reporter token for the reporter's public key, from the deployer's backend. Left out only with `canFile: false`: the install's ribbon alone, as a label. */
+  auth?: ReporterAuth;
+  /** `"corner"` (the default): Report and "Your reports" in the bottom right corner; `false`: none. A trigger also leaves the corner empty. An element marked `data-feedback="report"` opens the overlay whatever these say. */
   launcher?: "corner" | false;
+  /** The CSS selector of the page's element that opens the overlay, matched at each click. An install's config sets it in its place. */
+  trigger?: string;
+  /** Whether capital `F` opens the overlay, never in a text field (default false). An install's config sets it in its place. */
+  fKey?: boolean;
+  /** What the ribbon across the top-left corner says; none by default. An install's config sets it in its place. */
+  ribbon?: string;
   /** Whether this reporter may file reports (default true). */
   canFile?: boolean;
   /** `"button"` (the default): "Your reports" beside Report; `"off"`: no "Your reports", panel or polling. Default `<meta name="clax-reports">`'s content. */

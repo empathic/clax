@@ -22,7 +22,9 @@ import { type Recorder, installDiagnostics } from "../../sdk/src/diagnostics";
 import { forgetReporter as forgetKept } from "../../sdk/src/keystore";
 import { ReporterClient, type ReporterAuth } from "../../sdk/src/reporter";
 import type { DiagLine, Report } from "../../sdk/src/types";
+import { startEntries } from "./entry";
 import { type Settings, fetchInstall, installIdOf, settingsOf } from "./install";
+import { type Ribbon, mountRibbon } from "./ribbon";
 import { Session, externalIdOf, reportsModeOf } from "./model";
 import { CONTEXT_TIMEOUT_MS, type Given, type HostContext, type Mode, type OverlayOptions, type ReportsMode } from "./options";
 import Overlay from "./Overlay.svelte";
@@ -85,6 +87,7 @@ export async function forgetReporter(r: ReporterRef): Promise<void> {
 interface Mounted {
   report(opts?: { mode?: Mode | "note" }): void;
   showReports(): void;
+  enter(opener: HTMLElement | null): void;
 }
 
 /** The components' stylesheet: written in at build time from the CSS the
@@ -120,7 +123,10 @@ export function mountOverlay(opts: OverlayOptions, pluginList: readonly ClaxPlug
   if (typeof opts?.instance !== "string" || !opts.instance) throw new TypeError("Clax.overlay: instance must be a non-empty string");
   const installId = installIdOf(doc, opts.install);
   if (opts.queue !== undefined || !installId) if (typeof opts.queue !== "string" || !opts.queue) throw new TypeError("Clax.overlay: queue must be a non-empty string");
-  if (typeof opts.auth !== "function") throw new TypeError("Clax.overlay: auth must be a function");
+  // No reporter yet (nobody signed in): the ribbon alone, as a label; nothing asks for a token.
+  const noReporter = opts.auth === undefined && opts.canFile === false;
+  if (typeof opts.auth !== "function" && !noReporter) throw new TypeError("Clax.overlay: auth must be a function");
+  const auth: ReporterAuth = opts.auth ?? (() => Promise.reject(new Error("no reporter is signed in")));
   if (opts.launcher !== undefined && opts.launcher !== "corner" && opts.launcher !== false) throw new TypeError('Clax.overlay: launcher must be "corner" or false');
   if (opts.nonce !== undefined && (typeof opts.nonce !== "string" || !opts.nonce)) throw new TypeError("Clax.overlay: nonce must be a non-empty string");
   const instance = opts.instance.replace(/\/+$/, "");
@@ -167,10 +173,14 @@ export function mountOverlay(opts: OverlayOptions, pluginList: readonly ClaxPlug
   let settings: Settings | null = null;
   // What the host asked before the overlay started, done once it has.
   let asked: ((a: Mounted) => void) | null = null;
+  // The ways in that the page has none of its own code for: the trigger, F, the ribbon.
+  let stopEntries: (() => void) | null = null;
+  let ribbon: Ribbon | null = null;
   const start = (s: Settings) => {
     if (!open) return;
     settings = s;
-    client = new ReporterClient({ instance, queue: s.queue, auth: opts.auth, user: opts.user });
+    const canFile = opts.canFile ?? true;
+    client = new ReporterClient({ instance, queue: s.queue, auth, user: opts.user });
     if (s.brandColor) addSheet(root, `:host{--you:${s.brandColor};--you-ink:${s.brandColor};}`);
     app = mount(Overlay, {
       target,
@@ -178,9 +188,9 @@ export function mountOverlay(opts: OverlayOptions, pluginList: readonly ClaxPlug
         client, doc, host, session,
         picker: (onPick: (p: Picked) => void, onCancel: () => void, onHover?: (what: string | null) => void) => commentPicker(doc, onPick, onCancel, onHover),
         externalId: externalIdOf(doc, opts.externalId),
-        launcher: opts.launcher ?? "corner",
-        canFile: opts.canFile ?? true,
-        reports: s.reports,
+        launcher: noReporter || s.trigger ? false : opts.launcher ?? "corner",
+        canFile,
+        reports: noReporter ? "off" : s.reports,
         elementPicker: s.picker,
         wording: s.wording,
         queueInfo: s.queueInfo,
@@ -189,6 +199,9 @@ export function mountOverlay(opts: OverlayOptions, pluginList: readonly ClaxPlug
         plugins, presentation: opts.presentation, css, defaults: opts.defaults ?? {}, copy: opts.copy ?? {},
       },
     }) as unknown as Mounted;
+    const enter = (opener: HTMLElement | null) => app?.enter(opener);
+    if (!noReporter) stopEntries = startEntries(doc, { selector: s.trigger, fKey: s.fKey, open: enter, reports: () => app?.showReports() });
+    if (s.ribbon) ribbon = mountRibbon(doc, { wording: s.ribbon, brandColor: s.brandColor, onPress: canFile ? enter : null, shortcut: s.fKey ? "Shift+F" : null });
     asked?.(app);
     asked = null;
   };
@@ -222,6 +235,8 @@ export function mountOverlay(opts: OverlayOptions, pluginList: readonly ClaxPlug
       open = false;
       listeners.badge.clear();
       listeners.filed.clear();
+      stopEntries?.();
+      ribbon?.destroy();
       if (app) void unmount(app as never);
       plugins.destroy();
       host.remove();
