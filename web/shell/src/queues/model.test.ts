@@ -11,6 +11,18 @@ describe("parseOrigins", () => {
     });
   });
 
+  it("keeps an origin pattern as the server normalizes it", () => {
+    expect(parseOrigins("HTTPS://PathBase-PR-*.Fly.Dev:443/\nhttp://dev-*.example.com:8080\nhttps://pathbase-pr-*.fly.dev").origins)
+      .toEqual(["https://pathbase-pr-*.fly.dev", "http://dev-*.example.com:8080"]);
+    expect(parseOrigins("HTTPS://*.Fly.Dev/\nhttps://a.*.example.com:443\nhttp://*.*.example.com:80").origins)
+      .toEqual(["https://*.fly.dev", "https://a.*.example.com", "http://*.*.example.com"]);
+  });
+
+  it("names a pattern line with a * outside the host, a path or another scheme", () => {
+    expect(parseOrigins("https://ok-*.example.com\nhttp*://a-*.example.com\nhttps://a-*.example.com:*\nhttps://a-*.example.com/x\nftp://a-*.example.com\nhttps://u@a-*.example.com\nhttps://a-*.example.com:65536").bad)
+      .toEqual(["http*://a-*.example.com", "https://a-*.example.com:*", "https://a-*.example.com/x", "ftp://a-*.example.com", "https://u@a-*.example.com", "https://a-*.example.com:65536"]);
+  });
+
   it("names the lines that are not an http or https origin", () => {
     expect(parseOrigins("https://ok.example\nhttps://x.example/path\napp.example\nftp://f.example\nhttps://a.example?q\nhttps://u:p@b.example").bad)
       .toEqual(["https://x.example/path", "app.example", "ftp://f.example", "https://a.example?q", "https://u:p@b.example"]);

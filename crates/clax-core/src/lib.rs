@@ -39,6 +39,7 @@ pub mod manifest;
 pub mod mentions;
 pub mod model;
 pub mod names;
+pub mod origin;
 pub mod perf;
 pub mod presence;
 pub mod publish;

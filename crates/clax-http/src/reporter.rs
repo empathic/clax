@@ -18,12 +18,14 @@
 //!
 //! A service request is server to server: one carrying an `Origin` or a
 //! cookie is 403 `forbidden_origin`. A reporter request must carry exactly
-//! one `Origin`, equal to the token's and still among the queue's origins
-//! (403 `wrong_origin` otherwise, a missing one included), or, a browser's
-//! same-origin read carrying none, come from that origin's own pages
-//! (a `GET` or `HEAD` with `Sec-Fetch-Site: same-origin`, the token
-//! origin's `Host`, and the instance's own scheme). [`cors`] answers
-//! a reporter route's cross-origin reads for the queue's origins alone.
+//! one `Origin`, equal to the token's exact origin, which the queue still
+//! allows ([`clax_core::queue::queue_allows_origin`]: lists, or matches by
+//! one of its patterns; 403 `wrong_origin` otherwise, a missing `Origin`
+//! included), or, a browser's same-origin read carrying none, come from
+//! that origin's own pages (a `GET` or `HEAD` with `Sec-Fetch-Site:
+//! same-origin`, the token origin's `Host`, and the instance's own
+//! scheme). [`cors`] answers a reporter route's cross-origin reads for the
+//! origins the queue allows alone.
 
 use crate::agent;
 use crate::error::ApiError;
@@ -36,6 +38,7 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::Response;
 use clax_core::Secret;
+use clax_core::queue::queue_allows_origin;
 use clax_core::sig::{self, SigError};
 use clax_store::queues::{ReporterToken, ServiceGrant};
 
@@ -287,7 +290,7 @@ impl<const LIMIT: usize> FromRequest<AppState> for ReporterCaller<LIMIT> {
     /// whose grant was revoked, or another queue's; 401 `token_expired`;
     /// 403 `wrong_origin` for an `Origin` other than the token's, none (but
     /// for a same-origin browser request to the token origin's host), or
-    /// one the queue no longer lists; 401 `invalid_signature`,
+    /// one the queue no longer allows; 401 `invalid_signature`,
     /// `stale_request` or `replayed_request`; 429 `limit_reached`; 413
     /// `body_too_large`.
     async fn from_request(req: Request, s: &AppState) -> Result<Self, Refusal> {
@@ -319,7 +322,7 @@ impl<const LIMIT: usize> FromRequest<AppState> for ReporterCaller<LIMIT> {
             ),
             _ => false,
         };
-        if !from_origin || !origins.contains(&t.origin) {
+        if !from_origin || !queue_allows_origin(&origins, &t.origin) {
             return Err(wrong_origin());
         }
         let key = sig::decode_public(&t.public_key).map_err(|e| grant_auth::refuse(e, &s.store))?;
@@ -344,10 +347,12 @@ fn reporter_qid(path: &str) -> Option<&str> {
 }
 
 /// Route layer of the reporter routes: CORS (spec §5.3). Every answer
-/// varies on `Origin`. When the request's one `Origin` is among the path's
-/// queue's origins, the answer names it in `Access-Control-Allow-Origin`
-/// (never `*`, and no credentials mode) and [`EXPOSE_HEADERS`], and a
-/// preflight's answer also names [`ALLOW_METHODS`] and [`ALLOW_HEADERS`];
+/// varies on `Origin`. When the request's one `Origin` is one the path's
+/// queue allows ([`queue_allows_origin`]: listed, or matched by one of its
+/// patterns), the answer names that exact origin in
+/// `Access-Control-Allow-Origin` (never a pattern or `*`, and no
+/// credentials mode) and [`EXPOSE_HEADERS`], and a preflight's answer
+/// also names [`ALLOW_METHODS`] and [`ALLOW_HEADERS`];
 /// for any other origin it names none, and the browser keeps the answer
 /// from the page.
 pub async fn cors(State(s): State<AppState>, req: Request, next: Next) -> Response {
@@ -367,7 +372,7 @@ pub async fn cors(State(s): State<AppState>, req: Request, next: Next) -> Respon
     let listed = s
         .store_call(move |st| Ok(st.queue(&qid)?.map(|q| q.origins).unwrap_or_default()))
         .await
-        .is_ok_and(|origins| origins.contains(&origin));
+        .is_ok_and(|origins| queue_allows_origin(&origins, &origin));
     if !listed {
         return res;
     }

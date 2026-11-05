@@ -119,15 +119,20 @@ impl Setup {
 
     /// Mints a reporter token for `reporter_id` on [`ORIGIN`].
     async fn reporter(&self, reporter_id: &str) -> Reporter {
+        self.reporter_on(reporter_id, ORIGIN).await
+    }
+
+    /// Mints a reporter token for `reporter_id` on `origin`.
+    async fn reporter_on(&self, reporter_id: &str, origin: &str) -> Reporter {
         let key = KeyPair::generate();
         let res = self
             .service(
                 &format!("/api/queues/{}/reporter-tokens", self.qid),
-                &json!({"reporter_id": reporter_id, "origin": ORIGIN,
+                &json!({"reporter_id": reporter_id, "origin": origin,
                         "public_key": sig::encode_public(&key.public())}),
             )
             .await;
-        assert_eq!(res.status(), 200);
+        assert_eq!(res.status(), 200, "{origin}");
         let v: Value = res.json().await.unwrap();
         Reporter {
             token: v["token"].as_str().unwrap().to_string(),
@@ -598,6 +603,283 @@ async fn a_reporter_token_holds_only_from_its_origin() {
         .as_reporter(&r, Some(ORIGIN), "GET", &s.reports(), None, vec![])
         .await;
     assert_eq!(status_code(res).await, (403, "wrong_origin".into()));
+}
+
+/// A queue listing an origin pattern mints a token for each exact origin
+/// the pattern matches, bound to that origin alone: a page of another
+/// origin the pattern also matches cannot use it, CORS names the request's
+/// exact origin, never the pattern, and a report keeps its page's URL.
+#[tokio::test]
+async fn a_pattern_mints_tokens_bound_to_the_exact_origin_it_matched() {
+    const PATTERN: &str = "https://pathbase-pr-*.fly.dev";
+    const PR_538: &str = "https://pathbase-pr-538.fly.dev";
+    const PR_539: &str = "https://pathbase-pr-539.fly.dev";
+    let s = Setup::new().await;
+    let set_origins = |origins: Vec<String>| {
+        s.ts.store
+            .update_queue(
+                &AuditCtx::DAEMON,
+                &s.qid,
+                clax_store::queues::QueuePatch {
+                    origins: Some(origins),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+    };
+    set_origins(vec![ORIGIN.into(), PATTERN.into()]);
+    let mint = format!("/api/queues/{}/reporter-tokens", s.qid);
+    let key = sig::encode_public(&KeyPair::generate().public());
+
+    // The token is bound to the exact origin minted for.
+    let r = s.reporter_on("emp-1", PR_538).await;
+    let t =
+        s.ts.store
+            .reporter_by_token(&clax_core::secret::sha256_hex(&r.token))
+            .unwrap()
+            .unwrap();
+    assert_eq!(t.origin, PR_538);
+    // The exact origins keep minting as before.
+    s.reporter_on("emp-1", ORIGIN).await;
+
+    for not in [
+        "https://pathbase-pr-1.evil.fly.dev",
+        "http://pathbase-pr-1.fly.dev",
+        "https://pathbase-pr-.fly.dev",
+        "https://pathbase-pr-1.fly.dev:8443",
+        "https://pathbase-pr-1.fly.dev.attacker.com",
+    ] {
+        let res = s
+            .service(
+                &mint,
+                &json!({"reporter_id": "emp-1", "origin": not, "public_key": key}),
+            )
+            .await;
+        assert_eq!(
+            status_code(res).await,
+            (403, "wrong_origin".into()),
+            "{not}"
+        );
+    }
+    // A token is never minted for a pattern.
+    let res = s
+        .service(
+            &mint,
+            &json!({"reporter_id": "emp-1", "origin": PATTERN, "public_key": key}),
+        )
+        .await;
+    assert_eq!(status_code(res).await, (400, "invalid_origin".into()));
+
+    // A report filed from the token's origin keeps the page's URL, and the
+    // answer names that origin.
+    let (mp, ct) = multipart(&[
+        ("url", Part::Text("https://pathbase-pr-538.fly.dev/paths/7")),
+        ("title", Part::Text("Path 7")),
+        (
+            "anchor",
+            Part::Text(&clax_testkit::element_anchor().to_string()),
+        ),
+        ("body", Part::Text("The diff is empty")),
+    ]);
+    let res = s
+        .as_reporter(&r, Some(PR_538), "POST", &s.reports(), Some(&ct), mp)
+        .await;
+    assert_eq!(res.status(), 201);
+    assert_eq!(res.headers()["access-control-allow-origin"], PR_538);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(
+        v["report"]["artifact"]["url"],
+        "https://pathbase-pr-538.fly.dev/paths/7"
+    );
+
+    // Another origin the pattern matches cannot use the token; its own
+    // answer names that origin.
+    let res = s
+        .as_reporter(&r, Some(PR_539), "GET", &s.reports(), None, vec![])
+        .await;
+    assert_eq!(res.headers()["access-control-allow-origin"], PR_539);
+    assert_eq!(status_code(res).await, (403, "wrong_origin".into()));
+
+    // A preflight from an origin the pattern matches names that origin;
+    // from one it does not, none.
+    for (origin, named) in [
+        (PR_539, Some(PR_539)),
+        ("https://pathbase-pr-1.evil.fly.dev", None),
+    ] {
+        let res = s
+            .send(
+                "OPTIONS",
+                &s.reports(),
+                &[
+                    ("origin", origin.into()),
+                    ("access-control-request-method", "POST".into()),
+                ],
+                vec![],
+            )
+            .await;
+        let allowed = res.headers().get("access-control-allow-origin");
+        assert_eq!(allowed.map(|v| v.to_str().unwrap()), named, "{origin}");
+    }
+
+    // Dropping the pattern ends the tokens it allowed.
+    set_origins(vec![ORIGIN.into()]);
+    let res = s
+        .as_reporter(&r, Some(PR_538), "GET", &s.reports(), None, vec![])
+        .await;
+    assert_eq!(status_code(res).await, (403, "wrong_origin".into()));
+}
+
+/// A `*` label stands for one or more whole labels: a queue listing
+/// `https://*.fly.dev` mints for a name any depth under `fly.dev`, the
+/// token bound to that one origin, and CORS names the request's exact
+/// origin. The pattern is never matched as text: an `Origin` equal to it
+/// gets no CORS answer.
+#[tokio::test]
+async fn a_whole_label_pattern_matches_deeper_names_and_never_itself() {
+    const PATTERN: &str = "https://*.fly.dev";
+    const DEEP: &str = "https://a.b.fly.dev";
+    let s = Setup::new().await;
+    s.ts.store
+        .update_queue(
+            &AuditCtx::DAEMON,
+            &s.qid,
+            clax_store::queues::QueuePatch {
+                origins: Some(vec![PATTERN.into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let mint = format!("/api/queues/{}/reporter-tokens", s.qid);
+    let key = sig::encode_public(&KeyPair::generate().public());
+
+    let r = s.reporter_on("emp-1", DEEP).await;
+    let t =
+        s.ts.store
+            .reporter_by_token(&clax_core::secret::sha256_hex(&r.token))
+            .unwrap()
+            .unwrap();
+    assert_eq!(t.origin, DEEP);
+    let res = s
+        .as_reporter(&r, Some(DEEP), "GET", &s.reports(), None, vec![])
+        .await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.headers()["access-control-allow-origin"], DEEP);
+    let res = s
+        .as_reporter(
+            &r,
+            Some("https://c.fly.dev"),
+            "GET",
+            &s.reports(),
+            None,
+            vec![],
+        )
+        .await;
+    assert_eq!(status_code(res).await, (403, "wrong_origin".into()));
+
+    for (origin, status) in [("https://fly.dev", 403), (PATTERN, 400)] {
+        let res = s
+            .service(
+                &mint,
+                &json!({"reporter_id": "emp-1", "origin": origin, "public_key": key}),
+            )
+            .await;
+        assert_eq!(res.status(), status, "{origin}");
+    }
+    for (origin, named) in [
+        (DEEP, Some(DEEP)),
+        (PATTERN, None),
+        ("https://fly.dev", None),
+    ] {
+        let res = s
+            .send(
+                "OPTIONS",
+                &s.reports(),
+                &[
+                    ("origin", origin.into()),
+                    ("access-control-request-method", "POST".into()),
+                ],
+                vec![],
+            )
+            .await;
+        let allowed = res.headers().get("access-control-allow-origin");
+        assert_eq!(allowed.map(|v| v.to_str().unwrap()), named, "{origin}");
+    }
+}
+
+/// A pattern may be as broad as the queue's owner wants: a queue listing
+/// `https://*` mints for any `https` origin with a DNS name for its host
+/// on the default port, the token still bound to that one origin and CORS
+/// still naming the request's exact origin. The pattern is never matched
+/// as text.
+#[tokio::test]
+async fn a_bare_star_host_mints_for_any_https_name_and_binds_the_one_minted_for() {
+    const PATTERN: &str = "https://*";
+    const SOME: &str = "https://shop.example.com";
+    let s = Setup::new().await;
+    s.ts.store
+        .update_queue(
+            &AuditCtx::DAEMON,
+            &s.qid,
+            clax_store::queues::QueuePatch {
+                origins: Some(vec![PATTERN.into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let mint = format!("/api/queues/{}/reporter-tokens", s.qid);
+    let key = sig::encode_public(&KeyPair::generate().public());
+
+    let r = s.reporter_on("emp-1", SOME).await;
+    let res = s
+        .as_reporter(&r, Some(SOME), "GET", &s.reports(), None, vec![])
+        .await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.headers()["access-control-allow-origin"], SOME);
+    let res = s
+        .as_reporter(
+            &r,
+            Some("https://other.example.com"),
+            "GET",
+            &s.reports(),
+            None,
+            vec![],
+        )
+        .await;
+    assert_eq!(status_code(res).await, (403, "wrong_origin".into()));
+
+    for (origin, status) in [
+        ("http://shop.example.com", 403),
+        ("https://shop.example.com:8443", 403),
+        ("https://10.0.0.1", 403),
+        (PATTERN, 400),
+    ] {
+        let res = s
+            .service(
+                &mint,
+                &json!({"reporter_id": "emp-1", "origin": origin, "public_key": key}),
+            )
+            .await;
+        assert_eq!(res.status(), status, "{origin}");
+    }
+    for (origin, named) in [
+        (SOME, Some(SOME)),
+        ("http://shop.example.com", None),
+        (PATTERN, None),
+    ] {
+        let res = s
+            .send(
+                "OPTIONS",
+                &s.reports(),
+                &[
+                    ("origin", origin.into()),
+                    ("access-control-request-method", "POST".into()),
+                ],
+                vec![],
+            )
+            .await;
+        let allowed = res.headers().get("access-control-allow-origin");
+        assert_eq!(allowed.map(|v| v.to_str().unwrap()), named, "{origin}");
+    }
 }
 
 /// A page the instance serves at the token's own origin reads with no

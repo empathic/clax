@@ -4472,9 +4472,49 @@ most 256 bytes, `avatar_url` an http(s) URL; any other key or type is 400
 report filed under the token, and shown to triage members, never to
 reporters.
 
+**Origins.** A queue's `origins` (`POST /api/queues`, `PATCH
+/api/queues/<qid>`, at most 32) are exact origins and origin patterns. An
+exact origin is `scheme://host[:port]` of `http` or `https`, nothing after
+it, stored as a browser's `Origin` header names it: the host lowercased
+(an internationalized one in its `xn--` form) and a default port left out.
+A pattern holds a `*` in its host and is stored the same way
+(`HTTPS://App-PR-*.Example.com:443/` is `https://app-pr-*.example.com`).
+Its scheme and port are exact, never a `*`; its host, at most 253 bytes,
+is ASCII, of labels of `a`-`z`, `0`-`9`, `-` and `*`, each holding at most
+one `*`. A label that is only `*` stands for one or more whole labels, at
+any place in the host; a `*` beside other characters of its label
+(`pr-*`, `*-eu`) stands for one or more of `a`-`z`, `0`-`9` and `-` within
+that label, never a `.`. A pattern matches DNS names, never an IP
+address, and is never compared as text: an `Origin` equal to a pattern
+is not one it matches. So `https://app-pr-*.example.com` matches
+`https://app-pr-42.example.com`, and not `https://app-pr-.example.com`,
+`https://app-pr-1.evil.example.com`, `https://app-pr-1.example.com.evil.dev`,
+`http://app-pr-1.example.com` or `https://app-pr-1.example.com:8443`;
+`https://*.example.com` matches `https://a.example.com` and
+`https://a.b.example.com`, not `https://example.com`; and
+`https://a.*.example.com` matches `https://a.x.y.example.com`, not
+`https://a.example.com`. A pattern may be as broad as the queue's owner
+wants: `https://*.dev` and `https://pr-*.com` are patterns, and
+`https://*` matches every `https` origin with a DNS name for its host on
+the default port: a pattern only widens the origins the deployer's own
+backend may mint reporter tokens for, and filing still needs a token
+minted for one exact origin (below). Anything that is neither an origin
+nor a pattern as above is 400 `invalid_origin`. A queue allows an origin
+it lists, and one a pattern of it matches.
+
+A reporter token is always bound to one exact origin: a mint
+(`…/reporter-tokens`) names an exact origin the queue allows (a pattern is
+400 `invalid_origin`, another origin 403 `wrong_origin`), and the token
+records that origin. Its requests must carry exactly that `Origin`, and
+the queue must still allow it; a page of another origin the same pattern
+matches cannot use the token. A report keeps the URL its page sent; the
+pattern is never stored on a token or a report, nor named in a CORS
+answer.
+
 Reporter routes (`Authorization: Clax-Reporter <token>`, a
 `Clax-Signature` by the reporter's key, the token's `Origin`; each answers
-CORS for the queue's origins, with `Access-Control-Expose-Headers:
+CORS for the origins the queue allows, naming the request's own exact
+`Origin`, never a pattern, with `Access-Control-Expose-Headers:
 retry-after, date` so the page reads a refusal's wait and the instance's
 clock, and its `OPTIONS` preflight). A page served
 by the instance at the token's origin, whose same-origin `GET` a browser
@@ -4508,7 +4548,7 @@ reporter routes' tests fail on a refusal whose code it lacks.
 
 | Route | Body | Answer |
 |---|---|---|
-| `POST /api/queues/<qid>/reporter-tokens` (`Clax-Queue`, the service grant's signature, no `Origin`) | `{reporter_id, origin, public_key, profile?}` | `{token, expires_at}` |
+| `POST /api/queues/<qid>/reporter-tokens` (`Clax-Queue`, the service grant's signature, no `Origin`) | `{reporter_id, origin, public_key, profile?}` | `{token, expires_at}`, bound to exact `origin`; 403 `wrong_origin` for one the queue does not allow, 400 `invalid_origin` for a pattern |
 | `POST /api/queues/<qid>/reporter/reports` | multipart `external_id?`, `url`, `title`, `anchor` (JSON), `body`, `metadata?` (JSON), `revision?`, `clip?` (PNG), `context?` (JSON), `diagnostics?` (JSON lines, `diagnostics.jsonl`) | 201 `{report}`, with `server` |
 | `GET /api/queues/<qid>/reporter/reports?cursor=` | | `{reports, next}`; 400 `invalid_query` for another query |
 | `POST …/reporter/reports/<tid>/comments` | `{body}` | `{report}` |

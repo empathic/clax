@@ -2,10 +2,12 @@
 
 <script lang="ts">
   // A queue's form, new or editing: its name, the origins its reporters'
-  // pages may file from (one per line) and what a reporter reads, their
-  // own reports or every report of the queue. A line that is not an
-  // origin is named, and nothing is sent until it is fixed. `onSave`
-  // answers the refusal's message, or null once saved.
+  // pages may file from (one per line; a `*` in the host stands for one
+  // or more whole labels or part of one, for per-branch preview sites)
+  // and what a reporter reads, their own reports or every report of the
+  // queue. A line that is not an origin is named, and nothing is sent
+  // until it is fixed. `onSave` answers the refusal's message, or null
+  // once saved.
   import { onMount } from "svelte";
   import type { Queue, QueueFields, ReportersSee } from "./api";
   import { parseOrigins } from "./model";
@@ -26,7 +28,7 @@
   async function submit(e: Event) {
     e.preventDefault();
     if (busy) return;
-    if (parsed.bad.length) { err = `Not an origin: ${parsed.bad.join(", ")}. Write each as https://host, or http://host:port, with no path.`; return; }
+    if (parsed.bad.length) { err = `Not an origin: ${parsed.bad.join(", ")}. Write each as https://host, or http://host:port, with no path; a * may stand for host labels or part of one.`; return; }
     busy = true; err = null;
     try { err = await p.onSave({ name: name.trim(), origins: parsed.origins, reporters_see: see }); } finally { busy = false; }
   }
@@ -37,7 +39,7 @@
   <label class="field">Name <input name="name" autocomplete="off" required maxlength="80" value={name} oninput={e => { name = e.currentTarget.value; }} /></label>
   <label class="field">Origins, one per line
     <textarea name="origins" rows="3" spellcheck="false" placeholder="https://app.example" value={origins} oninput={e => { origins = e.currentTarget.value; }}></textarea>
-    <span class="hint">The sites whose pages may file reports into this queue.</span>
+    <span class="hint">The sites whose pages may file reports into this queue. A * stands for whole host labels (https://*.example.com) or part of one (https://pr-*.example.com), as broad as you want.</span>
   </label>
   <fieldset class="see">
     <legend>A reporter sees</legend>

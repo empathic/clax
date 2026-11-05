@@ -62,7 +62,8 @@ On the instance, as the person who will administer the queue:
 
 1. Queues, New queue. Give it a name, list your origins one per line
    (`https://app.example.com`, and `http://localhost:5173` for
-   development if you want reports from there), and pick who reporters see
+   development if you want reports from there; a pattern covers preview
+   deployments, below), and pick who reporters see
    ("Their own reports" is the usual choice).
 2. Manage, add the people who triage (Members), then "Create service
    grant". Copy the token and the private key into your backend's secrets,
@@ -72,6 +73,32 @@ On the instance, as the person who will administer the queue:
 
 The same steps as API calls are in `docs/prod.md`, "Feedback: clax.dev's
 own report queue".
+
+### Preview deployments
+
+A preview deployment per branch or pull request has an origin of its own
+(`https://pathbase-pr-538.fly.dev`, `https://pathbase-pr-539.fly.dev`, …).
+List one origin pattern for all of them, `https://pathbase-pr-*.fly.dev`,
+beside your exact origins. A `*` beside other characters stands for one or
+more letters, digits and `-` within its label, never a `.`, so this
+pattern matches `https://pathbase-pr-538.fly.dev` and not
+`https://pathbase-pr-1.evil.fly.dev`, `https://pathbase-pr-.fly.dev` or
+another scheme or port. A label that is only `*` stands for one or more
+whole labels: `https://*.preview.example.com` matches
+`https://pr-538.preview.example.com` and `https://a.b.preview.example.com`.
+A pattern can be as broad as you want, up to `https://*` for every
+`https` origin: it only widens the origins your backend may mint for, and
+filing still needs a reporter token your backend minted for one exact
+origin.
+
+Each preview's backend still mints for its own exact origin (the page's,
+never the pattern), and the token is bound to it: a page on another
+`fly.dev` name the pattern also matches cannot use it, and without your
+service grant it cannot mint one of its own. So take the origin from the
+deployment's own configuration, never from the request: a token route
+that mints for whatever origin a caller names would mint for that other
+page too. `docs/contract.md` ("Report queue routes", Origins) has the
+whole rule.
 
 ## 2. The token route in your backend
 
@@ -138,7 +165,7 @@ app.post("/clax-token", async (req, res) => {
   try {
     const minted = await clax.mintReporterToken({
       reporter_id: user.id,
-      origin: "https://app.example.com", // the page's origin, one of the queue's (not the instance)
+      origin: "https://app.example.com", // the page's exact origin, one the queue allows (not the instance)
       public_key,
     }, { name: user.name, github: user.githubLogin });
     res.set("cache-control", "no-store").json(minted); // {token, expires_at}
@@ -170,8 +197,8 @@ requests") lists. Two addresses go into it and must not be confused:
 - the **instance** (`https://clax.dev`, or your own Clax): the request is
   sent to it, and signed for its host;
 - the **page origin** (`https://app.example.com`): where your overlay
-  runs, one of the queue's origins. It goes in the body, and the token is
-  bound to it.
+  runs, an exact origin the queue lists or one of its patterns matches.
+  It goes in the body, and the token is bound to it.
 
 A Rust backend can depend on `clax-core` for `clax_core::sig` (the signer
 the instance verifies with; GPL-2.0-only OR AGPL-3.0-only, see
