@@ -881,7 +881,7 @@
       {#if draft.capture?.note}<p class="small warn" role="status">{draft.capture.note}</p>{/if}
       {#if exactSupported && draft.capture && draft.capture.info.method === "dom"}
         <p class="exact small" class:suggested={draft.capture.suggestExact}>
-          {#if draft.capture.suggestExact}<span>Part of this didn't render (a frame, canvas or video).</span>{/if}
+          {#if draft.capture.suggestExact && !draft.capture.error}<span>Part of this didn't render (a frame, canvas or video).</span>{/if}
           <button type="button" class:primary={draft.capture.suggestExact} disabled={exacting} onclick={() => void useExact()}>Use exact screenshot</button>
         </p>
       {/if}
