@@ -3,7 +3,7 @@
 // picking moves the chip to the bottom edge, and back as the pointer goes down.
 import { render } from "@testing-library/svelte";
 import { flushSync, tick } from "svelte";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { KEEP_CLEAR_PX, edgeFor } from "./keep-clear";
 import ModeBar from "./ModeBar.svelte";
 
@@ -38,6 +38,41 @@ describe("the mode bar while picking", () => {
     expect(bar.querySelector('[role="status"]')?.textContent).toMatch(/Click what your report is about/);
     expect(bar.querySelector(".hint")?.getAttribute("aria-hidden")).toBe("true");
     expect(bar.querySelector(".hint")?.textContent).toBe("Click or select it · Esc");
+  });
+
+  it("holds still for a pointer coming to press it, and moves off what a pointer rests near", () => {
+    vi.useFakeTimers();
+    try {
+      const { container } = render(ModeBar, { props: { mode: "element", onMode: () => {}, onCancel: () => {} } });
+      const bar = container.querySelector<HTMLElement>(".modebar")!;
+      bar.getBoundingClientRect = () => ({ left: 400, right: 900, top: 8, bottom: 52, width: 500, height: 44, x: 400, y: 8, toJSON() {} });
+      const move = (x: number, y: number) => { window.dispatchEvent(new MouseEvent("mousemove", { clientX: x, clientY: y })); flushSync(); };
+      // In its column, near it: it waits.
+      move(600, 90);
+      vi.advanceTimersByTime(300);
+      expect(bar.dataset.edge).toBe("top");
+      // On it: it stays, however long the pointer is there.
+      move(600, 30);
+      vi.advanceTimersByTime(5000);
+      flushSync();
+      expect(bar.dataset.edge).toBe("top");
+      // Resting near it, off it, it moves so what is under it can be reached.
+      move(600, 90);
+      vi.advanceTimersByTime(800);
+      flushSync();
+      expect(bar.dataset.edge).toBe("bottom");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("moves at once when the pointer is near its edge but outside its column", () => {
+    const { container } = render(ModeBar, { props: { mode: "element", onMode: () => {}, onCancel: () => {} } });
+    const bar = container.querySelector<HTMLElement>(".modebar")!;
+    bar.getBoundingClientRect = () => ({ left: 400, right: 900, top: 8, bottom: 52, width: 500, height: 44, x: 400, y: 8, toJSON() {} });
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 100, clientY: 20 }));
+    flushSync();
+    expect(bar.dataset.edge).toBe("bottom");
   });
 
   it("offers only the modes it is given", () => {
