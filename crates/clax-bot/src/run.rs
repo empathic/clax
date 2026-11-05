@@ -1490,8 +1490,13 @@ impl Tick<'_> {
 
     /// Posts `markdown` on each of the run's threads (a brief's run, on the
     /// brief's thread), journaled at the step's notice places; failures are
-    /// logged, not fatal.
+    /// logged, not fatal. A run answering a report posts nothing: whoever
+    /// filed it reads every comment, and these lines are for the queue's
+    /// people, who read them on the run.
     async fn notify(&self, attempt: i64, markdown: &str) {
+        if !matches!(self.store.run_report(&self.run), Ok(None)) {
+            return;
+        }
         for (i, t) in self.run.thread_ids.iter().enumerate() {
             let cx = self.op_ctx(attempt, NOTICE_SEQ + i as i64);
             let seq = NOTICE_SEQ + i as i64;
@@ -1836,7 +1841,10 @@ impl Tick<'_> {
                 }
             };
             (
-                prompt::system_prompt(self.run.request),
+                match &cx.report {
+                    Some(r) => prompt::report_system_prompt(r),
+                    None => prompt::system_prompt(self.run.request),
+                },
                 vec![Block::text(prompt::request_message(self.run.request, &cx))],
             )
         } else {

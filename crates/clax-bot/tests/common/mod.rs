@@ -491,6 +491,7 @@ fn thread(id: &str, author: &str, from_sender: bool, text: &str) -> ThreadMeta {
 
 pub fn thread_context(aid: &str, t1: &str) -> RequestContext {
     RequestContext {
+        report: None,
         artifact: ArtifactMeta {
             id: aid.into(),
             title: "Quarterly Report".into(),

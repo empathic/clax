@@ -529,6 +529,34 @@ fn check_reply_in(c: &Connection, qid: &str, tid: &str, sid: &str, now: &str) ->
     }
 }
 
+/// `Ok` when a ClaxBot run acting for `person` (`None`: the owner) may write
+/// to report `tid` of queue `qid` on `tx` at `now`: the queue is live, the
+/// report is one of its, `person` is a member, and no session holds a live
+/// lease: a session that claimed the report has it to itself.
+///
+/// # Errors
+/// [`CoreError::NotAMember`], `NotFound`, [`CoreError::ThreadTaken`] naming
+/// the holder.
+fn check_report_bot_in(
+    st: &Store,
+    tx: &Transaction<'_>,
+    qid: &str,
+    tid: &str,
+    person: Option<&str>,
+    now: &str,
+) -> Result<()> {
+    let q = queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
+    role_in(tx, &q, person)?.ok_or(CoreError::NotAMember)?;
+    report_artifact_in(tx, qid, tid)?;
+    settle_in(st, tx, tid, now)?;
+    match current_in(tx, tid, now)? {
+        Some(cur) if cur.live => Err(CoreError::ThreadTaken {
+            name: cur.holder_name,
+        }),
+        _ => Ok(()),
+    }
+}
+
 /// Thread `tid` of queue `qid` exists on a live artifact, and its artifact.
 fn report_artifact_in(c: &Connection, qid: &str, tid: &str) -> Result<String> {
     c.query_row(
@@ -2569,6 +2597,97 @@ impl Store {
             .report(qid, tid, Visibility::All)?
             .ok_or(CoreError::NotFound)?;
         Ok((c, report))
+    }
+
+    /// ClaxBot's reply `body`, by `author_name`, on report `tid` of queue
+    /// `qid`, for a run acting for `person` (`None`: the owner), journaled
+    /// as `entry` in the reply's own transaction: the journal's answer when
+    /// it holds `entry`'s key, writing nothing; else the comment and its
+    /// entry, `{comment_id}`, together. A run holds no claim, having no
+    /// session: it writes only while no session holds a live lease
+    /// ([`check_report_bot_in`]).
+    ///
+    /// # Errors
+    /// `key_reused`; `guard`'s; [`check_report_bot_in`]'s; `invalid_comment`
+    /// for a bad body.
+    #[allow(clippy::too_many_arguments)]
+    pub fn report_reply_journaled(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        tid: &str,
+        person: Option<&str>,
+        author_name: &str,
+        body: &str,
+        entry: &crate::bot_runs::CallEntry,
+        guard: crate::bot_runs::Guard<'_>,
+    ) -> Result<crate::bot_runs::Journaled> {
+        if let Some(prev) = self.journaled(entry)? {
+            return Ok(prev);
+        }
+        let comment = NewComment {
+            author_kind: AUTHOR_AGENT,
+            author_name: author_name.to_string(),
+            author_public_id: None,
+            via_session_id: None,
+            body: body.to_string(),
+            via_page: false,
+        };
+        let now = self.now();
+        let mut out = None;
+        self.add_comment_then(ctx, tid, comment, |tx, _, c| {
+            guard(&crate::bot_runs::Tx(tx))?;
+            check_report_bot_in(self, tx, qid, tid, person, &now)?;
+            out = Some(self.journal_in(tx, entry, serde_json::json!({"comment_id": c.id}))?);
+            Ok(())
+        })?;
+        Ok(out.expect("the reply was journaled"))
+    }
+
+    /// ClaxBot resolves report `tid` of queue `qid` for `reason`, as `by`
+    /// for a run acting for `person` (`None`: the owner), as
+    /// [`Store::resolve_report`] does, journaled as `entry` in the resolve's
+    /// own transaction, as [`Store::report_reply_journaled`] is; the value
+    /// is `null`. Also answers what the resolve changed, `None` when the
+    /// journal already held it.
+    ///
+    /// # Errors
+    /// [`Store::report_reply_journaled`]'s.
+    #[allow(clippy::too_many_arguments)]
+    pub fn resolve_report_journaled(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        tid: &str,
+        by: &str,
+        person: Option<&str>,
+        reason: ResolveReason,
+        entry: &crate::bot_runs::CallEntry,
+        guard: crate::bot_runs::Guard<'_>,
+    ) -> Result<(
+        crate::bot_runs::Journaled,
+        Option<clax_core::feedback::Touched>,
+    )> {
+        if let Some(prev) = self.journaled(entry)? {
+            return Ok((prev, None));
+        }
+        let now = self.now();
+        let person_key = person.unwrap_or(clax_core::visibility::OWNER);
+        self.with_tx(|tx| {
+            guard(&crate::bot_runs::Tx(tx))?;
+            check_report_bot_in(self, tx, qid, tid, person, &now)?;
+            let touched = self.resolve_thread_reason_in(
+                tx,
+                ctx,
+                tid,
+                by,
+                Some(person_key),
+                Some(reason.as_str()),
+                |_, _| Ok(None),
+            )?;
+            let j = self.journal_in(tx, entry, serde_json::Value::Null)?;
+            Ok((j, Some(touched)))
+        })
     }
 
     /// `by` resolves report `tid` of queue `qid` for `reason` as

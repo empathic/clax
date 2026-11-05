@@ -453,7 +453,27 @@ pub async fn file_report(
         .await?;
     announce(&s, report.report.id.clone()).await;
     wake_watchers(&s, woken).await;
+    // On a local Clax only: on a hosted one a stranger's report would spend
+    // the maker's credits, a choice no hosted setting offers yet.
+    if s.hosted.is_none() {
+        start_first_responder(&s, report.report.queue_id.clone(), report.report.id.clone()).await;
+    }
     Ok((StatusCode::CREATED, Json(json!({ "report": report }))))
+}
+
+/// Starts the ClaxBot run a report just filed gets
+/// ([`super::bot::start_report_run`]), and tells the driver; the report is
+/// filed whatever happens here, so a failure is logged.
+async fn start_first_responder(s: &AppState, qid: String, tid: String) {
+    let bot = s.bot.clone();
+    match s
+        .store_call(move |st| super::bot::start_report_run(st, &bot, &qid, &tid))
+        .await
+    {
+        Ok(Some(run)) => s.bot.runs.started(&run),
+        Ok(None) => {}
+        Err(e) => tracing::warn!(error = ?e, "a report's first responder did not start"),
+    }
 }
 
 #[derive(Deserialize)]
