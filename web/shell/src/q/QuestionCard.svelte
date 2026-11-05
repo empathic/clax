@@ -59,6 +59,8 @@
   let focused = $state<string | null>(null);
   let busy = $state(false);
   let hint = $state<string | null>(null);
+  // The hint is an action's failure, shown as one rather than as a hint.
+  let failure = $state(false);
   // The card's element, from its own focus and key events.
   let card: HTMLElement | undefined;
   // Focus is in the card. Focus that leaves to nowhere because its control
@@ -73,7 +75,7 @@
   let pending: QuestionStatus | null = null;
   // Whether the card was open when this instance last looked.
   let wasOpen = untrack(() => p.q.status === "open");
-  $effect(() => trail().keyboardTrail.onClear(() => { hint = null; }));
+  $effect(() => trail().keyboardTrail.onClear(() => { hint = null; failure = false; }));
   const who = $derived(agentLabel(p.q.agent, (p.others ?? [p.q]).map(o => o.agent)));
   // The Clax app's agent: its card names Clax, never its project folder, and its button reads "Answer".
   const app = $derived(p.q.agent?.harness === "app");
@@ -139,10 +141,11 @@
   // Runs `f` for activation `e` of a consequential action unless the trail says to click.
   const run = (e: Event, verb: string, closes: QuestionStatus, f: () => Promise<void>) => {
     if (busy) return;
+    failure = false;
     hint = trail().guardedAction(e, verb, () => {
       busy = true;
       pending = closes;
-      f().then(() => { busy = false; }, err => { busy = false; pending = null; hint = failed(err); queueMicrotask(regain); });
+      f().then(() => { busy = false; }, err => { busy = false; pending = null; hint = failed(err); failure = true; queueMicrotask(regain); });
     });
   };
   // The pending move on after a pick, if any.
@@ -323,7 +326,7 @@
   <!-- One live region for the card's life: while open, the trail's hint (a key
        asked for an action on a trail the page may have steered) or a failure;
        once closed, what closed it (read, not shown: the card shows it). -->
-  <p class="act-hint" data-sr={open ? undefined : ""} role="status">{open ? (hint ?? "") : said}</p>
+  <p class="act-hint" class:act-failed={open && failure} data-sr={open ? undefined : ""} role="status">{open ? (hint ?? "") : said}</p>
 </article>
 
 <style>

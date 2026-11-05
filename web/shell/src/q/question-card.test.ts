@@ -399,6 +399,8 @@ describe("QuestionCard", () => {
     click(buttons(m.root, "Skip")[0]);
     await vi.waitFor(() => expect(m.root.querySelector(".act-hint")!.textContent).toBe("Not sent: Clax did not answer. Try again."));
     flush();
+    // Shown as a failure, not as a hint.
+    expect(m.root.querySelector(".act-hint")!.classList.contains("act-failed")).toBe(true);
     expect((buttons(m.root, "Skip")[0] as HTMLButtonElement).disabled).toBe(false);
     fail = false;
     click(buttons(m.root, "Skip")[0]);
