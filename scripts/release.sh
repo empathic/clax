@@ -23,20 +23,27 @@
 # checkout's git identity, signing with its signing key. It builds and
 # tests nothing: CI does, on the pull request.
 #
+# The steps run in order, each once the one before it is done. Steps 2-8
+# work in a worktree of their own, target/release/worktree-X.Y.Z, which
+# step 8 removes once the branch is pushed: the checkout the script is run
+# from stays on its branch, with its changes, untouched. (When release/X.Y.Z
+# is checked out in some worktree already, they work there, and leave it.)
+#
 #    1  preflight: gh signed in; X.Y.Z newer than every v* tag and than
-#       origin/prod's version; commit signing works; the tools present; a
-#       clean checkout on any branch, or on release/X.Y.Z ahead of
-#       origin/prod only by merges of origin/main and the release commit.
-#       A failure here changes nothing.
-#    2  git switch -c release/X.Y.Z origin/prod (or to that branch, when it
-#       exists here or on origin)
+#       origin/prod's version; commit signing works; the tools present;
+#       release/X.Y.Z, where there is one, ahead of origin/prod only by
+#       merges of origin/main and the release commit, and its worktree
+#       clean. A failure here changes nothing.
+#    2  git worktree add -b release/X.Y.Z target/release/worktree-X.Y.Z
+#       origin/prod (or on that branch, when it exists here or on origin)
 #    3  a signed merge of origin/main into it, "Merge origin/main into
 #       release/X.Y.Z" (none when it has origin/main already)
 #    4  scripts/bump-version.sh X.Y.Z
 #    5  just bazel-sync, until it changes nothing (at most 4 runs)
 #    6  scripts/check-version.sh: the version files agree
 #    7  a signed commit "Release X.Y.Z" (git commit -S -a)
-#    8  git push origin release/X.Y.Z
+#    8  git push origin release/X.Y.Z; then the worktree and the local
+#       branch it made go
 #    9  gh pr create --base prod --head release/X.Y.Z, with the release's
 #       checklist; the run stops here
 #   10  the owner merges the pull request on GitHub, with a merge commit,
@@ -48,9 +55,10 @@
 # nothing after it. Run the same command again: each step's state is read
 # from git and GitHub (the version files, the commits by subject, the
 # release branch here and on origin, its pull request's state), so the run
-# resumes at the first step not done. Uncommitted changes are taken only
-# while steps 4-6 are pending the release commit; any other change, an
-# untracked file, or a commit other than the release's own, refuses to run.
+# resumes at the first step not done. In the release branch's worktree,
+# uncommitted changes are taken only while steps 4-6 are pending the
+# release commit; any other change, an untracked file, or a commit other
+# than the release's own, refuses to run.
 # It never force-pushes, and checks that every commit it pushes carries a
 # signature.
 #
@@ -106,6 +114,9 @@ RB="release/$V"
 REL_SUBJECT="Release $V"
 MERGE_SUBJECT="Merge origin/main into $RB"
 LOG="$ROOT/target/release/$V.log"
+# The worktree steps 2-8 make for the release branch, and how it is shown.
+WT_SHOWN="target/release/worktree-$V"
+WT_HOME="$ROOT/$WT_SHOWN"
 RESUME="scripts/release.sh $V $ACT_FLAG"
 # 1 once the run acts: from then on, say and logged append to LOG.
 LOGGING=0
@@ -116,6 +127,8 @@ HEARTBEAT="${CLAX_RELEASE_HEARTBEAT_SECONDS:-30}"
 exec 3>&1 4>&2
 
 g() { git -C "$ROOT" "$@"; }
+# git in the release branch's worktree, WT.
+w() { git -C "$WT" "$@"; }
 # What this shares with scripts/release-sdk.sh: versions, signing, the npm
 # environment, npm, workflow runs and their waits.
 # shellcheck source=scripts/lib/release-common.sh
@@ -153,7 +166,9 @@ about() {
 # Each step's expected seconds: typical durations, replaced by the average
 # of the durations earlier runs' logs recorded ("== step N of 21 ran Ss";
 # logs of the earlier numbering, "== step N ran Ss", are not read).
-WEIGHTS=([1]=10 [2]=5 [3]=5 [4]=5 [5]=30 [6]=5 [7]=5 [8]=10 [9]=5 [10]=5)
+# bazel-sync (5) resolves the third-party crates again: the bump changes
+# every workspace crate's version in Cargo.lock.
+WEIGHTS=([1]=10 [2]=5 [3]=5 [4]=5 [5]=600 [6]=5 [7]=5 [8]=10 [9]=5 [10]=5)
 LEARNED_FROM=0
 learn_weights() {
     local f n s
@@ -197,10 +212,11 @@ step_detail() {
     printf '%s' "$d"
 }
 # One heartbeat line: "[40%] step 5/10 Sync Bazel with Cargo: run 2,
-# 1m12s (about 1m left)". The step counts for no more than its
-# weight.
+# 1m12s (about 9m left, estimated)", or, once the step has run longer than
+# its weight, "(past this step's estimate of 10m00s; how much longer is not
+# known)". The step counts for no more than its weight.
 heartbeat() {
-    local e cur d left p
+    local e cur d left p rest
     e=$(($(now) - STEP_START))
     cur="$e"
     [ "$cur" -le "${WEIGHTS[STEP]}" ] || cur="${WEIGHTS[STEP]}"
@@ -208,7 +224,13 @@ heartbeat() {
     p="$(pct $((DONE_W + cur)))"
     [ "$p" -le 99 ] || p=99
     d="$(step_detail)"
-    printf '[%d%%] step %d/%d %s: %s%s (%s left)\n' "$p" "$STEP" "$LAST" "${TITLES[STEP]}" "${d:+$d, }" "$(dur "$e")" "$(about "$left")"
+    # Past its estimate, a step's end is not known: no time left is claimed.
+    if [ "$e" -gt "${WEIGHTS[STEP]}" ]; then
+        rest="past this step's estimate of $(dur "${WEIGHTS[STEP]}"); how much longer is not known"
+    else
+        rest="$(about "$left") left, estimated"
+    fi
+    printf '[%d%%] step %d/%d %s: %s%s (%s)\n' "$p" "$STEP" "$LAST" "${TITLES[STEP]}" "${d:+$d, }" "$(dur "$e")" "$rest"
 }
 # Prints a heartbeat to the terminal every HEARTBEAT seconds until stopped.
 HB_SLEEP=""
@@ -245,7 +267,10 @@ trap cleanup EXIT
 
 # --- state, read from git and GitHub -------------------------------------------
 
-checkout_version() { bash "$ROOT/scripts/check-version.sh" --print 2>/dev/null; }
+# The worktree that has the release branch checked out, or nothing.
+branch_worktree() {
+    g worktree list --porcelain | awk -v b="branch refs/heads/$RB" '/^worktree / { p = substr($0, 10) } $0 == b { print p }'
+}
 # The Clax version commit $1 carries (its scripts/ensure-clax.sh), or nothing.
 version_at() { g show "$1:scripts/ensure-clax.sh" 2>/dev/null | sed -n 's/^CLAX_VERSION="\(.*\)"$/\1/p'; }
 # The oldest commit in revision range $2 whose subject is exactly $1.
@@ -260,13 +285,15 @@ pr_state() {
     gh pr list --head "$RB" --base "$PROD" --state all --limit 1 --json state,url --jq '.[] | "\(.state) \(.url)"'
 }
 
-CUR="" BRANCH="" PROD_TIP="" PROD_VERSION="" PHASE=1 REMOTE_RB="" RB_REF="" REL_COMMIT="" PR_STATE="" PR_URL=""
+CUR="" WT="" PROD_TIP="" PROD_VERSION="" PHASE=1 REMOTE_RB="" RB_REF="" REL_COMMIT="" PR_STATE="" PR_URL=""
 # Reads the state the steps are judged by; fails, saying why in
 # REFRESH_ERR, when origin or GitHub cannot be read.
 refresh() {
     local out
-    CUR="$(checkout_version || true)"
-    BRANCH="$(g symbolic-ref --short -q HEAD || true)"
+    # The release branch's worktree, and the version it is at.
+    WT="$(branch_worktree)"
+    CUR=""
+    if [ -n "$WT" ]; then CUR="$(bash "$WT/scripts/check-version.sh" --print 2>/dev/null || true)"; fi
     PROD_TIP="$(g rev-parse -q --verify "refs/remotes/origin/$PROD^{commit}" 2>/dev/null || true)"
     PROD_VERSION=""
     if [ -n "$PROD_TIP" ]; then PROD_VERSION="$(version_at "$PROD_TIP")"; fi
@@ -337,23 +364,25 @@ check_version() {
     if old="$(subject_in "$REL_SUBJECT" origin/main)" && [ -n "$old" ]; then
         problem "origin/main has a \"$REL_SUBJECT\" commit already ($old), but origin/$PROD is not at $V"
     fi
-    if [ "$BRANCH" = "$RB" ]; then
-        if [ -z "$CUR" ]; then problem "the checkout's versions disagree (scripts/check-version.sh)"
+    if [ -n "$WT" ]; then
+        if [ -z "$CUR" ]; then problem "$RB's versions disagree, in $WT (scripts/check-version.sh)"
         elif [ "$(ver_cmp "$CUR" "$V")" = 1 ]; then problem "$RB is at $CUR, newer than $V"; fi
     fi
 }
 
-# Uncommitted changes and untracked files: refused, but for the changes a
-# step makes while it waits for its commit.
+# In the release branch's worktree, uncommitted changes and untracked
+# files: refused, but for the changes a step makes while it waits for its
+# commit. The checkout the script runs from is not read.
 check_clean() {
     local dirty untracked
-    untracked="$(g ls-files --others --exclude-standard "$ROOT")"
-    [ -z "$untracked" ] || problem "untracked files: $(echo "$untracked" | tr '\n' ' ')"
-    dirty="$(g diff --name-only HEAD)"
+    [ -n "$WT" ] || return 0
+    untracked="$(w ls-files --others --exclude-standard)"
+    [ -z "$untracked" ] || problem "untracked files in $WT: $(echo "$untracked" | tr '\n' ' ')"
+    dirty="$(w diff --name-only HEAD)"
     [ -n "$dirty" ] || return 0
     # The bump (4-6) on the release branch.
-    if [ "$BRANCH" = "$RB" ] && [ "$CUR" = "$V" ] && [ -z "$REL_COMMIT" ]; then return 0; fi
-    problem "uncommitted changes: $(echo "$dirty" | tr '\n' ' ')"
+    if [ "$CUR" = "$V" ] && [ -z "$REL_COMMIT" ]; then return 0; fi
+    problem "uncommitted changes in $WT: $(echo "$dirty" | tr '\n' ' ')"
 }
 
 # Preparing: any branch; the release branch, where there is one, holds
@@ -366,7 +395,7 @@ check_prepare() {
         return 0
     fi
     if [ -n "$REMOTE_RB" ] && { ! has_ref "$REMOTE_RB" || ! g merge-base --is-ancestor "$REMOTE_RB" "$RB_REF"; }; then
-        problem "origin's $RB has commits this checkout's $RB lacks (git switch $RB; git pull --ff-only)"
+        problem "origin's $RB has commits the local $RB lacks (git -C ${WT:-<its worktree>} pull --ff-only, or git branch -D $RB)"
     fi
     i=0
     while IFS= read -r subject; do
@@ -411,37 +440,37 @@ preflight() {
 # --- steps 2-10 -------------------------------------------------------------------
 
 TITLES=(
-    [2]="Cut the release branch"
+    [2]="Make the release branch, in a worktree of its own"
     [3]="Merge main into it"
     [4]="Bump the version"
     [5]="Sync Bazel with Cargo"
     [6]="Check the version files"
     [7]="Commit the release"
-    [8]="Push the release branch"
+    [8]="Push the release branch, then remove the worktree"
     [9]="Open the pull request into $PROD"
     [10]="Merge the pull request (you, on GitHub)"
 )
 COMMANDS=(
-    [2]="git switch -c $RB origin/$PROD"
+    [2]="git worktree add -b $RB $WT_SHOWN origin/$PROD"
     [3]="git merge -S origin/main -m \"$MERGE_SUBJECT\""
     [4]="scripts/bump-version.sh $V"
     [5]="just bazel-sync, until it changes nothing (at most 4 runs)"
     [6]="scripts/check-version.sh"
     [7]="git commit -S -a -m \"$REL_SUBJECT\""
-    [8]="git push origin $RB"
+    [8]="git push origin $RB; git worktree remove $WT_SHOWN; git branch -D $RB"
     [9]="gh pr create --base $PROD --head $RB"
     [10]="once CI and staging pass, merge it (Create a merge commit) and approve Deploy prod's deploy: the merge releases it"
 )
 
 # done_N: whether step N is done, from the state refresh read. Once origin's
 # prod is at this version, every step is.
-done_2() { [ "$PHASE" = 2 ] || [ "$BRANCH" = "$RB" ]; }
+done_2() { [ "$PHASE" = 2 ] || [ -n "$WT" ] || done_8; }
 done_3() {
     [ "$PHASE" = 2 ] || [ -n "$REL_COMMIT" ] && return 0
     [ -n "$RB_REF" ] || return 1
     [ -n "$(subject_in "$MERGE_SUBJECT" "$PROD_TIP..$RB_REF")" ] || g merge-base --is-ancestor origin/main "$RB_REF"
 }
-done_4() { [ "$PHASE" = 2 ] || [ -n "$REL_COMMIT" ] || { [ "$BRANCH" = "$RB" ] && [ "$CUR" = "$V" ]; }; }
+done_4() { [ "$PHASE" = 2 ] || [ -n "$REL_COMMIT" ] || { [ -n "$WT" ] && [ "$CUR" = "$V" ]; }; }
 done_5() { [ "$PHASE" = 2 ] || [ -n "$REL_COMMIT" ]; }
 done_6() { done_5; }
 done_7() { done_5; }
@@ -452,56 +481,64 @@ done_8() {
 done_9() { [ "$PHASE" = 2 ] || { done_8 && { [ "$PR_STATE" = OPEN ] || [ "$PR_STATE" = MERGED ]; }; }; }
 done_10() { [ "$PHASE" = 2 ]; }
 
-worktree_digest() { { g diff HEAD; g status --porcelain=v1 -uall; } | cksum; }
+worktree_digest() { { w diff HEAD; w status --porcelain=v1 -uall; } | cksum; }
 
-# Refuses to push commit range $1 unless each of its commits is signed.
+# Refuses to push commit range $1 of the release branch's worktree unless
+# each of its commits is signed.
 all_signed() {
     local c
-    for c in $(g rev-list "$@"); do
+    for c in $(w rev-list "$@"); do
         is_signed_commit "$c" && continue
         say "  $c (\"$(g log -1 --format=%s "$c")\") carries no signature; not pushing it."
-        if [ "$c" = "$(g rev-parse HEAD)" ]; then
-            say "  Sign it (git commit --amend -S --no-edit), then run this again."
+        if [ "$c" = "$(w rev-parse HEAD)" ]; then
+            say "  Sign it (git -C $WT commit --amend -S --no-edit), then run this again."
         else
-            say "  It is not the newest commit; signing it rewrites what follows, so sign it by hand."
+            say "  It is not the newest commit; signing it rewrites what follows, so sign it by hand, in $WT."
         fi
         return 1
     done
 }
 
-# Switches to the release branch: this checkout's, origin's, or a new one
-# from origin/prod.
+# Checks the release branch out in a worktree of its own, WT_HOME: the
+# local branch, origin's, or a new one from origin/prod. The checkout this
+# runs from stays as it is.
 step_2() {
-    if has_ref "refs/heads/$RB"; then g switch -q "$RB"
-    elif [ -n "$REMOTE_RB" ]; then g switch -q --track -c "$RB" "origin/$RB"
-    else g switch -q --no-track -c "$RB" "origin/$PROD"; fi
+    g worktree prune
+    mkdir -p "$(dirname "$WT_HOME")"
+    if has_ref "refs/heads/$RB"; then g worktree add -q "$WT_HOME" "$RB"
+    elif [ -n "$REMOTE_RB" ]; then g worktree add -q --track -b "$RB" "$WT_HOME" "origin/$RB"
+    else g worktree add -q --no-track -b "$RB" "$WT_HOME" "origin/$PROD"; fi
+    say "  $RB is checked out in $WT_HOME"
 }
 # Merges origin/main in, signed: main carries every earlier release's
 # version and pin (the carry, in Deploy prod), so the version files agree.
+# The branch starts at origin/prod's tip, so the pull request's merge into
+# prod changes nothing it holds: the merge's tree is the head's, the one CI
+# and staging tested (scripts/find-candidate.sh refuses any other).
 step_3() {
     local files
-    g fetch --quiet --no-tags origin main
-    if g merge-base --is-ancestor origin/main HEAD; then say "  $RB has origin/main already"; return 0; fi
-    if ! g merge -S --no-ff -q -m "$MERGE_SUBJECT" origin/main; then
-        files="$(g diff --name-only --diff-filter=U | tr '\n' ' ' | sed 's/ $//')"
-        g merge --abort 2>/dev/null || true
+    w fetch --quiet --no-tags origin main
+    if w merge-base --is-ancestor origin/main HEAD; then say "  $RB has origin/main already"; return 0; fi
+    if ! w merge -S --no-ff -q -m "$MERGE_SUBJECT" origin/main; then
+        files="$(w diff --name-only --diff-filter=U | tr '\n' ' ' | sed 's/ $//')"
+        w merge --abort 2>/dev/null || true
         say "  the merge of origin/main into $RB conflicts in: ${files:-(see the log)}"
-        say "  Merge by hand, signed and with this subject:"
-        say "    git merge -S origin/main -m \"$MERGE_SUBJECT\""
+        say "  Merge by hand in $WT, signed and with this subject:"
+        say "    git -C $WT merge -S origin/main -m \"$MERGE_SUBJECT\""
         say "  resolve, then commit it signed (git commit -S; git does not carry -S past a conflict),"
         say "  then run this again."
         return 1
     fi
-    is_signed_commit HEAD || { say "  the merge carries no signature"; return 1; }
+    is_signed_commit "$(w rev-parse HEAD)" || { say "  the merge carries no signature"; return 1; }
 }
-step_4() { bash "$ROOT/scripts/bump-version.sh" "$V"; }
+step_4() { bash "$WT/scripts/bump-version.sh" "$V"; }
 step_5() {
     local before after n
     for n in 1 2 3 4; do
         before="$(worktree_digest)"
         say "  just bazel-sync (run $n)"
         detail "run $n"
-        (cd "$ROOT" && logged just bazel-sync)
+        (cd "$WT" && logged just bazel-sync)
         after="$(worktree_digest)"
         if [ "$before" = "$after" ]; then return 0; fi
     done
@@ -510,19 +547,27 @@ step_5() {
 }
 # The gates run in CI, on the pull request; this checks only that the
 # version files agree before they are committed.
-step_6() { (cd "$ROOT" && logged bash scripts/check-version.sh); }
+step_6() { (cd "$WT" && logged bash scripts/check-version.sh); }
 step_7() {
     say "  committing:"
-    g status --short | sed 's/^/    /'
-    g commit -S -a -q -m "$REL_SUBJECT"
-    is_signed_commit HEAD || { say "  the commit carries no signature"; return 1; }
+    w status --short | sed 's/^/    /'
+    w commit -S -a -q -m "$REL_SUBJECT"
+    is_signed_commit "$(w rev-parse HEAD)" || { say "  the commit carries no signature"; return 1; }
 }
 # Pushes the release branch: the commits of its own (the merges and the
 # release commit) are signed; main's it brings along are on origin already.
+# Then the worktree step 2 made goes, with the local branch: origin has it.
+# A worktree the branch was checked out in already is left as it was.
 step_8() {
-    g fetch --quiet --no-tags origin main
+    w fetch --quiet --no-tags origin main
     all_signed "$PROD_TIP..HEAD" --not origin/main || return 1
-    g push origin "refs/heads/$RB:refs/heads/$RB"
+    w push origin "refs/heads/$RB:refs/heads/$RB"
+    [ "$WT" = "$WT_HOME" ] || return 0
+    if g worktree remove --force "$WT" && g branch -q -D "$RB"; then
+        say "  removed $WT and the local $RB"
+    else
+        say "  could not remove $WT (git worktree remove --force $WT; git branch -D $RB)"
+    fi
 }
 step_9() {
     local url
@@ -600,10 +645,16 @@ fi
 overview() {
     local n left=0 from
     say ""
-    say "The steps (checkout on ${BRANCH:-a detached HEAD} at ${CUR:-?}; origin/$PROD at ${PROD_VERSION:-?}):"
+    say "The steps run in order, each once the one before it is done (origin/$PROD is at ${PROD_VERSION:-?})."
     NEXT=""
     for n in $(seq 2 "$LAST"); do
-        if [ "$n" = 2 ]; then say "  Prepare, then the pull request into $PROD:"; fi
+        case "$n" in
+            2)
+                if [ -n "$WT" ]; then say "  Here, in $WT, where $RB is checked out already:"
+                else say "  Here, in a worktree of its own, $WT_SHOWN; the checkout you run this from is left as it is:"; fi ;;
+            9) say "  On GitHub:" ;;
+            10) say "     CI and staging (staging.yml) run on the pull request, at once." ;;
+        esac
         if [ -z "$NEXT" ] && "done_$n" 2>/dev/null; then
             say "  $n. [done] ${TITLES[n]}: ${COMMANDS[n]}"
         else
@@ -612,12 +663,18 @@ overview() {
             say "  $n. [todo] ${TITLES[n]}: ${COMMANDS[n]}"
         fi
     done
+    say "  Then Deploy prod runs on the merge, each job once those it follows are done:"
+    say "     candidate, reel     at once: the candidate staging tested, found and verified; the landing page's reel"
+    say "     deploy              after both, and your approval: clax.dev, from the candidate"
+    say "     publish, teardown   at once, after deploy: the GitHub release $TAG; the pull request's staging instance"
+    say "     carry               after publish: the release and the plugins' pin, onto main"
+    say "     pi                  after carry: the Pi package, on npm"
     if [ "$LEARNED_FROM" -gt 0 ]; then
         from="the steps' durations in $LEARNED_FROM earlier run log(s) under target/release/"
     else
         from="typical durations; later runs learn from their logs"
     fi
-    say "Estimated: $(about "$TOTAL_W") in all, $(about "$left") for the steps to do ($from; the review not counted)."
+    say "Estimated: $(about "$TOTAL_W") in all, $(about "$left") for the steps to do ($from; the review and Deploy prod not counted)."
     say ""
 }
 
@@ -657,7 +714,7 @@ if [ "${#PROBLEMS[@]}" -gt 0 ]; then
         exit 1
     fi
 elif [ "$PHASE" = 1 ]; then
-    say "  ok: preparing $V from origin/$PROD (at ${PROD_VERSION:-?}) and origin/main ($GH_REPO), clean, gh signed in, $V newer than every tag, signing works"
+    say "  ok: preparing $V from origin/$PROD (at ${PROD_VERSION:-?}) and origin/main ($GH_REPO), gh signed in, $V newer than every tag, signing works"
 fi
 # Merged already: the release is Deploy prod's, and a run says where.
 if [ "${#PROBLEMS[@]}" = 0 ] && [ "$PHASE" = 2 ]; then
