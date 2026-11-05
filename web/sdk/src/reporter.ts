@@ -14,8 +14,15 @@ export const RENEW_BEFORE_S = 60;
 /** Gets a reporter token for the key `publicKey` (unpadded base64url): the
  * deployer's own call to its backend, which knows the reporter from its
  * own session and calls `POST /api/queues/<queue>/reporter-tokens` with the
- * queue's service grant (`ServiceClient.mintReporterToken`). */
-export type ReporterAuth = (publicKey: string) => Promise<ReporterToken>;
+ * queue's service grant (`ServiceClient.mintReporterToken`). `trace` is the
+ * report attempt this token is for (see `ReporterClient`): send its
+ * `traceparent` to the backend to join its trace, or ignore it. */
+export type ReporterAuth = (publicKey: string, trace?: { traceparent: string }) => Promise<ReporterToken>;
+
+/** `n` random bytes in lower-case hex. */
+function randomHex(n: number): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(n)), b => b.toString(16).padStart(2, "0")).join("");
+}
 
 export interface ReporterOptions {
   /** The instance's base URL, such as `https://clax.corp.example`. */
@@ -131,7 +138,13 @@ async function captureParts(c: { clip?: Blob | Uint8Array; context?: ReportConte
  * first use and again from [`RENEW_BEFORE_S`] seconds before it expires,
  * and on a 401 asks once more and sends the call again once. Calls made
  * while a token is being fetched share that one `auth` call. With a `user`,
- * the key and the token are kept across page loads (`ReporterOptions.user`). */
+ * the key and the token are kept across page loads (`ReporterOptions.user`).
+ *
+ * Each report attempt has a W3C trace of its own, sent as `traceparent`: on
+ * the call filing or reopening the report, and on every `auth` call since the
+ * attempt before it, since the token a report is sent with is usually minted
+ * ahead of it, for the badge. An attempt on a token minted for an earlier one
+ * has no mint in its trace. */
 export class ReporterClient {
   private readonly fetch: Fetch;
   private readonly now: () => number;
@@ -144,6 +157,8 @@ export class ReporterClient {
   private kept: Kept | undefined;
   /** A refused key was replaced since the last successful mint. */
   private rekeyed = false;
+  /** The trace ID of the next report attempt. */
+  private attemptTrace = randomHex(16);
 
   constructor(private readonly opts: ReporterOptions) {
     this.fetch = opts.fetch ?? ((input, init) => globalThis.fetch(input, init));
@@ -255,8 +270,18 @@ export class ReporterClient {
   private async sendMultipart(path: string, parts: [string, Part][]): Promise<Report> {
     const boundary = `clax-${base64url(crypto.getRandomValues(new Uint8Array(18)))}`;
     const { body, contentType } = multipart(parts, boundary);
-    const { report } = await readJson<{ report: Report }>(await this.send("POST", path, body, contentType));
-    return report;
+    try {
+      const { report } = await readJson<{ report: Report }>(await this.send("POST", path, body, contentType, true));
+      return report;
+    } finally {
+      this.attemptTrace = randomHex(16);
+    }
+  }
+
+  /** A `traceparent` in this attempt's trace, sampled: the browser has no
+   * spans of its own, so its parent span ID is named here and exported by no one. */
+  private traceparent(): string {
+    return `00-${this.attemptTrace}-${randomHex(8)}-01`;
   }
 
   /** The URL of this reporter's view of the queue in Clax (on report
@@ -341,10 +366,11 @@ export class ReporterClient {
     }
   }
 
-  private async send(method: string, path: string, body?: Uint8Array, contentType?: string): Promise<Response> {
+  private async send(method: string, path: string, body?: Uint8Array, contentType?: string, traced = false): Promise<Response> {
     const once = async (token: string) => signedFetch({
       method, instance: this.opts.instance, path, body, contentType, now: this.now, fetch: this.fetch,
       credential: { scheme: "Clax-Reporter", token, signer: await this.key() },
+      traceparent: traced ? this.traceparent() : undefined,
     });
     const first = await once((await this.current()).token);
     if (first.status !== 401) return first;
@@ -362,14 +388,14 @@ export class ReporterClient {
       try {
         let got: ReporterToken;
         try {
-          got = await this.opts.auth(key.publicKey);
+          got = await this.opts.auth(key.publicKey, { traceparent: this.traceparent() });
         } catch (e) {
           // The backend refused this key for good: forget it, and ask
           // once with a fresh one.
           if (this.rekeyed || (e as { code?: unknown } | null)?.code !== "invalid_key") throw e;
           this.rekeyed = true;
           await this.dropKey();
-          got = await this.opts.auth((await this.key()).publicKey);
+          got = await this.opts.auth((await this.key()).publicKey, { traceparent: this.traceparent() });
         }
         const expiresAt = Date.parse(got.expires_at);
         if (!got.token || Number.isNaN(expiresAt)) throw new Error("auth gave no reporter token");

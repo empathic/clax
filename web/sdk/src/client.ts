@@ -40,6 +40,8 @@ export interface SignedRequest {
   /** Milliseconds since the Unix epoch. */
   now: () => number;
   fetch: Fetch;
+  /** The W3C `traceparent` to send, which the signature does not cover. */
+  traceparent?: string;
 }
 
 /** `/api/queues/<queue>` and `rest`, each segment percent-encoded. */
@@ -61,6 +63,7 @@ export async function signedFetch(r: SignedRequest): Promise<Response> {
     }),
   };
   if (r.contentType) headers["content-type"] = r.contentType;
+  if (r.traceparent) headers.traceparent = r.traceparent;
   const init: RequestInit = { method: r.method, headers, credentials: "omit" };
   if (r.body) init.body = body as BodyInit;
   try {

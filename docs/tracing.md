@@ -15,6 +15,11 @@ not affect the daemon. A trace is exported on the caller's say: `-00` in
 `traceparent` means unsampled, and nothing is sent. The Worker's wasm32 build
 has none of this.
 
+A page's overlay sends a sampled `traceparent` on the report it files or
+reopens, one trace per attempt, and passes the same trace to `auth` for each
+token it asks for since the attempt before, so a site's token route can join it.
+An attempt on a token minted for an earlier attempt has no mint in its trace.
+
 ## Request ids and causes
 
 Every request the daemon answers has an id (`clax_http::request_id`): the

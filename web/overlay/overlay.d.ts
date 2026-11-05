@@ -26,7 +26,7 @@ export interface ReporterToken {
 
 /** Gets a reporter token for the key `publicKey` (unpadded base64url) from
  * the deployer's own backend, which mints it with the queue's service grant. */
-export type ReporterAuth = (publicKey: string) => Promise<ReporterToken>;
+export type ReporterAuth = (publicKey: string, trace?: { traceparent: string }) => Promise<ReporterToken>;
 
 /** The release of the host app the reporter ran, as the host names it. */
 export interface Release {

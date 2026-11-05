@@ -320,11 +320,12 @@ export async function install(s: Snippet): Promise<Installed> {
 
 /** `auth` as the overlay takes it: a URL becomes a POST of the reporter's
  * public key to it (same origin, with the site's cookies), answered with
- * `{ token, expires_at }`. */
+ * `{ token, expires_at }`, with the report attempt's `traceparent`. */
 export function authOf(auth: ReporterAuth | string, win: Window): ReporterAuth {
   if (typeof auth === "function") return auth;
-  return async publicKey => {
-    const res = await win.fetch(auth, { method: "POST", credentials: "same-origin", headers: { "content-type": "text/plain" }, body: publicKey });
+  return async (publicKey, trace) => {
+    const headers = { "content-type": "text/plain", ...(trace ? { traceparent: trace.traceparent } : {}) };
+    const res = await win.fetch(auth, { method: "POST", credentials: "same-origin", headers, body: publicKey });
     if (!res.ok) throw new Error(`the site's token route answered HTTP ${res.status}`);
     return res.json();
   };

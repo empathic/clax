@@ -70,6 +70,49 @@ describe("ReporterClient", () => {
     expect(s.auths).toEqual([signer.publicKey]);
   });
 
+  it("gives a report attempt one trace, from the token before it to the report, and the next attempt another", async () => {
+    const inst = instance(s => s.url.pathname.endsWith("/reports") ? json(201, { report: REPORT }) : json(200, { count: 0, reports: [] }));
+    const minted: string[] = [];
+    const signer = await generateSigner();
+    const client = new ReporterClient({
+      instance: "https://clax.example", queue: "q1", fetch: inst.fetch, now: () => T0, signer,
+      auth: async (_pk, trace) => { minted.push(trace!.traceparent); return { token: "cxr_1", expires_at: new Date(T0 + 900_000).toISOString() }; },
+    });
+    const shape = /^00-([0-9a-f]{32})-([0-9a-f]{16})-01$/;
+    const report = { url: "https://site.example/", title: "t", anchor: null, body: "b" };
+
+    await client.badge();
+    expect(inst.sent[0].headers.traceparent).toBeUndefined();
+    expect(minted).toHaveLength(1);
+    const mint = shape.exec(minted[0])!;
+
+    await client.fileReport(report);
+    const first = shape.exec(inst.sent[1].headers.traceparent)!;
+    expect(first[1]).toBe(mint[1]);
+    expect(first[2]).not.toBe(mint[2]);
+    expect(await verifies(signer, inst.sent[1])).toBe(true);
+
+    await client.fileReport(report);
+    const second = shape.exec(inst.sent[2].headers.traceparent)!;
+    expect(second[1]).not.toBe(first[1]);
+    expect(minted).toHaveLength(1);
+  });
+
+  it("gives the attempt after a failed one a new trace", async () => {
+    let fail = true;
+    const inst = instance(() => fail ? json(500, {}) : json(201, { report: REPORT }));
+    const client = new ReporterClient({
+      instance: "https://clax.example", queue: "q1", fetch: inst.fetch, now: () => T0, signer: await generateSigner(),
+      auth: async () => ({ token: "cxr_1", expires_at: new Date(T0 + 900_000).toISOString() }),
+    });
+    const report = { url: "https://site.example/", title: "t", anchor: null, body: "b" };
+    await expect(client.fileReport(report)).rejects.toThrow();
+    fail = false;
+    await client.fileReport(report);
+    const [a, b] = inst.sent.map(s => s.headers.traceparent.split("-")[1]);
+    expect(a).not.toBe(b);
+  });
+
   it("asks for a view link, signed, on a report when given, as a URL on the instance", async () => {
     const s = setup(() => json(200, { path: "/reporter/q%201/enter?code=cxrc_x", expires_at: "2026-10-27T12:01:00Z" }));
     const { signer, client } = await s.make();

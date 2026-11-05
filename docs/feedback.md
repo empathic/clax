@@ -520,7 +520,7 @@ drawn in fallback fonts.
 |---|---|
 | `instance` | The instance's base URL. |
 | `queue` | The queue's ID. |
-| `auth(publicKey)` | Gets a reporter token from your backend (section 2). |
+| `auth(publicKey, trace)` | Gets a reporter token from your backend (section 2). Send `trace.traceparent` with that call to join the report's trace ([tracing](tracing.md)), or ignore it. |
 | `launcher` | `"corner"` (default): Report and "Your reports" in the bottom right corner. `false`: none; you call `report()` and `showReports()` from your own menu. |
 | `canFile` | Default `true`. `false` hides Report and keeps "Your reports" (and its badge polls, which ask for tokens). |
 | `reports` | `"button"` (default): "Your reports" beside Report. `"off"`: no "Your reports" button, panel or polling (the badge's too), for a page that lists the reports itself; Report stays. Default: the page's `<meta name="clax-reports" content="…">`. Any other value throws. |
