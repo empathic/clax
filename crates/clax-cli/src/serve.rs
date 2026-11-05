@@ -10,11 +10,16 @@ use std::time::Duration;
 
 /// Runs the daemon for `home` until it stops.
 pub fn run(home: &Home, a: ServeArgs) -> anyhow::Result<()> {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
     close_inherited_fds();
+    let (otlp, _otlp) = clax_http::otel::from_env();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?),
         )
+        .finish()
+        .with(otlp)
         .init();
     let inherited = if a.listen_stdin {
         Some(take_stdin_listener()?)
