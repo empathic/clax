@@ -555,12 +555,72 @@ describe("the overlay", () => {
     expect(q(".panel h4 button.row")).not.toBeNull();
     click(q(".panel h4 button.row") as HTMLElement);
     flushSync();
-    expect(q(".about")?.textContent).toMatch(/Filed/);
+    expect(q(".by")?.textContent).toMatch(/Filed by/);
     key("Escape", q(".panel") as HTMLElement);
     await settle();
     expect(q(".panel.full")).toBeNull();
     expect(q(".panel")).not.toBeNull();
     expect(nameOf(document.activeElement!)).toBe("Full view");
+  });
+
+  it("Full view: the clip with Fit/1x/2x, the anchor line, Conversation and Context, refetching the clip no more than once across a poll", async () => {
+    const ctx = {
+      v: 1 as const, captured_at: "2026-10-29T07:12:03.120Z",
+      environment: {
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        platform: "MacIntel", viewport: { w: 1024, h: 768, dpr: 2 }, color_scheme: "dark" as const,
+        url: "https://shop.example/cart?step=2", title: "Shopping cart",
+      },
+    };
+    let clipCalls = 0;
+    client.clipUrl = async (id: string) => { clipCalls++; return `blob:clip-${id}`; };
+    const withClip = () => report("t9", ["Wrong total"], { has_clip: true, context: ctx });
+    pages.push({ reports: [withClip()], next: null });
+    view.unmount();
+    view = mount(Overlay as never, props(), host);
+    click(button("Report"));
+    flushSync();
+    click(button("Your reports"));
+    await settle();
+    click(button("Full view"));
+    flushSync();
+    click(q(".panel h4 button.row") as HTMLElement);
+    flushSync();
+    await settle();
+    expect(clipCalls).toBe(1);
+    expect([...view.root.querySelectorAll(".zoom button")].map(b => b.textContent?.trim())).toEqual(["Fit", "1×", "2×"]);
+    const img = q<HTMLImageElement>(".clipbox img");
+    expect(img?.src).toContain("blob:clip-t9");
+    expect(img?.alt).toMatch(/Element: Total: \$12/);
+    expect(q(".anchor")?.textContent).toMatch(/On Element: Total: \$12/);
+    expect([...q(".panel")!.querySelectorAll("h5")].map(h => h.textContent)).toEqual(["Conversation", "Context"]);
+    expect(q(".thread .c")).toBeNull();
+    expect(q(".ctx")?.textContent).toMatch(/Captured/);
+    expect(q(".ctx")?.textContent).toMatch(/Chrome 131/);
+    expect(q(".ctx")?.textContent).toMatch(/1024 × 768 @2x · dark/);
+    expect(q(".ctx")?.textContent).toMatch(/Shopping cart/);
+    // Zoom is a plain toggle, not a refetch.
+    click([...view.root.querySelectorAll(".zoom button")].find(b => b.textContent?.trim() === "1×") as HTMLElement);
+    expect(clipCalls).toBe(1);
+    // "Your reports" polls every POLL_MS; the same report (a new object) must not refetch the clip.
+    pages.push({ reports: [withClip()], next: null });
+    timers.fire(POLL_MS);
+    await settle();
+    expect(clipCalls).toBe(1);
+  });
+
+  it("shows no clip in Full view when the client exposes no clipUrl, even with has_clip", async () => {
+    pages.push({ reports: [report("t9", ["Wrong total"], { has_clip: true })], next: null });
+    click(button("Report"));
+    flushSync();
+    click(button("Your reports"));
+    await settle();
+    click(button("Full view"));
+    flushSync();
+    click(q(".panel h4 button.row") as HTMLElement);
+    flushSync();
+    await settle();
+    expect(q(".clip")).toBeNull();
   });
 
   it("turns the full view on and off with F, but not while typing a reply", async () => {
@@ -1191,6 +1251,14 @@ describe("the dialog (Addendum 10: Changeling's Send feedback as the reference) 
   });
 
   it("never names Clax: no 'clax' in its text, element names, attributes or accessible names, in the dialog, its notices, or Your reports", async () => {
+    client.clipUrl = async (id: string) => `blob:clip-${id}`;
+    pages.push({ reports: [report("t9", ["The total is wrong"], {
+      has_clip: true,
+      context: {
+        v: 1, captured_at: "2026-10-29T07:12:03.120Z",
+        environment: { user_agent: "Mozilla/5.0 Chrome/131.0.0.0 Safari/537.36", platform: "MacIntel", viewport: { w: 1024, h: 768, dpr: 1 }, color_scheme: "light", url: "https://shop.example/cart", title: "Cart" },
+      },
+    })], next: null });
     const r = await open();
     try {
       const comp = r.component as unknown as { showReports(): void };
@@ -1203,6 +1271,13 @@ describe("the dialog (Addendum 10: Changeling's Send feedback as the reference) 
       await settle();
       strings.push(...everything(host));
       comp.showReports();
+      await settle();
+      // The Full view, expanded on the fixture report above: its clip, anchor line and Context render too.
+      const fullBtn = [...host.querySelectorAll("button")].find(b => b.textContent?.includes("Full view"));
+      fullBtn?.click();
+      flushSync();
+      (host.querySelector(".panel h4 button.row") as HTMLElement | null)?.click();
+      flushSync();
       await settle();
       strings.push(...everything(host));
       // A failure's words too.

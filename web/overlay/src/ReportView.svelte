@@ -10,14 +10,26 @@
   // answer), and the queue's people always; a person's fix is answered by
   // the queue's people alone. The reply box says who will hear it.
   import type { Report } from "../../sdk/src/types";
-  import { OUTCOME, failureText, safeLink, waitingFix } from "./model";
+  import { OUTCOME, anchorText, browserOf, failureText, filedByText, repliesOf, safeLink, timeIn, viewportText, waitingFix } from "./model";
 
-  // `full`: the full view (Reports' "Full view") adds what the panel leaves out: the page the report is about,
-  // when it was filed and each comment's time, and every earlier fix's summary and links.
-  type Props = { report: Report; full?: boolean; onReply(id: string, body: string): Promise<void>; onVerify(id: string): Promise<void>; onStillBroken(r: Report): void };
-  let { report: r, full = false, onReply, onVerify, onStillBroken }: Props = $props();
+  // `full`: the full view (Reports' "Full view") adds what the panel leaves out, in the shell's own report page's
+  // order: who filed it and when (and who claimed it); the clip, at Fit, 1x or 2x; the note, then "On <anchor>" and
+  // the page link; "Conversation" headed, replies alone (the note is above); and, last, "Context" (Captured,
+  // Browser, Viewport and the page the reporter's browser was actually on at capture).
+  type Props = { report: Report; full?: boolean; onReply(id: string, body: string): Promise<void>; onVerify(id: string): Promise<void>; onStillBroken(r: Report): void; onClipUrl?(id: string): Promise<string> };
+  let { report: r, full = false, onReply, onVerify, onStillBroken, onClipUrl }: Props = $props();
   const when = (iso: string) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? iso : d.toLocaleString(); };
   const page = $derived(safeLink(r.artifact?.url));
+  const note = $derived(r.comments[0] ?? null);
+  const convo = $derived(full ? repliesOf(r) : r.comments);
+  const anchorLine = $derived(anchorText(r.anchor));
+  const ctx = $derived(r.context);
+  const env = $derived(ctx?.environment);
+  const capturedLine = $derived(ctx ? timeIn(ctx.captured_at) : null);
+  const browserLine = $derived([browserOf(env?.user_agent), env?.platform].filter(Boolean).join(" on ") || null);
+  const viewportLine = $derived(viewportText(env?.viewport, env?.color_scheme));
+  const ctxPageLink = $derived(safeLink(env?.url));
+  const hasCtxPage = $derived(!!(env?.url || env?.title || env?.route));
 
   let text = $state("");
   let sending = $state(false);
@@ -26,6 +38,33 @@
 
   const waiting = $derived(waitingFix(r));
   const past = $derived((r.fixes ?? []).filter(f => f !== waiting));
+
+  // ---- The clip, Full view alone: fetched once per report (`clipKey`
+  // changes value only when the id, `full` or whether a clip can be had
+  // changes), never refetched by "Your reports" 15 s poll replacing the
+  // report object with an equal one. ----
+  const clipKey = $derived(full && r.has_clip && onClipUrl ? r.id : null);
+  let clipSrc = $state<string | null>(null);
+  let clipFailed = $state(false);
+  let zoom = $state<"fit" | 1 | 2>("fit");
+  let natural = $state<{ w: number; h: number } | null>(null);
+  const dpr = $derived(env?.viewport?.dpr || 1);
+  const clipWidth = $derived(zoom !== "fit" && natural ? `${(natural.w / dpr) * zoom}px` : null);
+  $effect(() => {
+    const id = clipKey;
+    clipSrc = null;
+    clipFailed = false;
+    natural = null;
+    zoom = "fit";
+    if (!id || !onClipUrl) return;
+    let cancelled = false;
+    let got: string | null = null;
+    onClipUrl(id).then(
+      u => { if (cancelled) { URL.revokeObjectURL(u); return; } got = u; clipSrc = u; },
+      () => { if (!cancelled) clipFailed = true; },
+    );
+    return () => { cancelled = true; if (got) URL.revokeObjectURL(got); };
+  });
 
   async function reply(): Promise<void> {
     if (sending || !text.trim()) return;
@@ -57,16 +96,45 @@
 
 <div class="thread" class:full>
   {#if full}
-    <dl class="about small">
-      <dt>On</dt><dd>{#if page}<a href={page} target="_blank" rel="noopener noreferrer">{r.artifact.title || page}</a>{:else}{r.artifact?.title ?? "—"}{/if}</dd>
-      <dt>Filed</dt><dd><time datetime={r.created_at}>{when(r.created_at)}</time></dd>
-    </dl>
+    <p class="by small">
+      Filed by <b>{filedByText(r)}</b> · <time datetime={r.created_at}>{when(r.created_at)}</time>
+      {#if r.claim}· claimed by {r.claim.holder_name}{/if}
+    </p>
+    {#if r.has_clip && onClipUrl}
+      <figure class="clip">
+        {#if clipSrc}
+          <div class="zoom" role="group" aria-label="Clip size">
+            {#each [["fit", "Fit"], [1, "1×"], [2, "2×"]] as const as [z, label] (z)}
+              <button type="button" class="ghost small" aria-pressed={zoom === z} onclick={() => { zoom = z; }}>{label}</button>
+            {/each}
+          </div>
+          <div class="clipbox" class:fit={zoom === "fit"}>
+            <img src={clipSrc} alt={anchorLine ?? "The reporter's screenshot"} style:width={clipWidth}
+              onload={e => { const i = e.currentTarget as HTMLImageElement; natural = { w: i.naturalWidth, h: i.naturalHeight }; }} />
+          </div>
+        {:else if clipFailed}
+          <p class="small muted">The screenshot could not be loaded.</p>
+        {:else}
+          <p class="small muted">Loading the screenshot…</p>
+        {/if}
+      </figure>
+    {/if}
+    <section class="note" aria-label="Note">
+      {#if note}<p class="body">{note.body}</p>{/if}
+      {#if anchorLine}<p class="small muted anchor">On {anchorLine}</p>{/if}
+      {#if r.artifact?.title || page}
+        <p class="small muted where">{#if page}<a href={page} target="_blank" rel="noopener noreferrer">{r.artifact.title || page}</a>{:else}{r.artifact?.title}{/if}</p>
+      {/if}
+    </section>
+    <h5>Conversation</h5>
   {/if}
-  {#each r.comments as c (c.id)}
+  {#each convo as c (c.id)}
     <div class="c" data-kind={c.author_kind}>
       <p class="who small">{c.author_kind === "reporter" ? "You" : c.author_name}{#if full} · <time datetime={c.created_at}>{when(c.created_at)}</time>{/if}</p>
       <p class="body">{c.body}</p>
     </div>
+  {:else}
+    {#if full}<p class="small muted">No replies yet.</p>{/if}
   {/each}
 
   {#each past as f (f.n)}
@@ -119,15 +187,37 @@
       <div class="actions"><button type="submit" class="primary" disabled={sending || !text.trim()}>{sending ? "Sending…" : "Reply"}</button></div>
     </form>
   {/if}
+
+  {#if full && ctx}
+    <section class="ctx" aria-label="Context">
+      <h5>Context</h5>
+      <dl>
+        {#if capturedLine}<dt>Captured</dt><dd>{capturedLine}</dd>{/if}
+        {#if browserLine}<dt>Browser</dt><dd title={env?.user_agent}>{browserLine}</dd>{/if}
+        {#if viewportLine}<dt>Viewport</dt><dd>{viewportLine}</dd>{/if}
+        {#if hasCtxPage}
+          <dt>Page</dt>
+          <dd>{#if env?.title}{env.title}{/if}{#if ctxPageLink}{" "}<a href={ctxPageLink} target="_blank" rel="noopener noreferrer">{env?.url}</a>{:else if env?.url}{" "}{env.url}{/if}{#if env?.route}{" "}<code>{env.route}</code>{/if}</dd>
+        {/if}
+      </dl>
+    </section>
+  {/if}
 </div>
 
 <style>
   .thread { display: flex; flex-direction: column; gap: 8px; padding: 0 14px 12px; }
   .thread.full { gap: 12px; font-size: 15px; }
-  .about { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; margin: 0; }
-  .about dt { color: var(--muted); font-weight: 600; }
-  .about dd { margin: 0; overflow-wrap: anywhere; }
-  .about a { color: var(--agent-ink); }
+  .by { margin: 0; color: var(--muted); }
+  .by b { color: var(--fg); font-weight: 600; }
+  .clip { margin: 0; min-width: 0; }
+  .zoom { display: flex; gap: 2px; margin-bottom: 6px; }
+  .zoom button[aria-pressed="true"] { background: var(--hover); color: var(--fg); font-weight: 600; }
+  .clipbox { max-height: 60vh; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }
+  .clipbox img { display: block; height: auto; }
+  .clipbox.fit img { width: 100%; }
+  .note { display: flex; flex-direction: column; gap: 2px; }
+  .anchor, .where { margin: 0; }
+  .thread.full h5 { margin: 6px 0 0; font: 600 13px/1.3 var(--font); color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
   .c { padding-left: 8px; border-left: 2px solid var(--border-hover); }
   .c[data-kind="reporter"] { border-left-color: var(--you); }
   .c[data-kind="agent"] { border-left-color: var(--agent-ink); }
@@ -141,4 +231,8 @@
   .reply-note { margin-top: 4px; }
   .actions { display: flex; justify-content: flex-end; margin-top: 6px; }
   .error { color: var(--danger); }
+  .ctx dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: 13px; }
+  .ctx dt { color: var(--muted); }
+  .ctx dd { margin: 0; overflow-wrap: anywhere; }
+  .ctx code { font: 12px var(--mono, ui-monospace, monospace); }
 </style>

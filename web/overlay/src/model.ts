@@ -6,6 +6,7 @@
 // verdict; the "Your reports" poll, which runs only while the panel is open;
 // and the badge poll, which runs while the page is visible.
 import type { Anchor } from "../../bridge/src/protocol";
+import { anchorText, browserOf, stateTone, timeIn, viewportText } from "../../bridge/src/report-text";
 import type { Recorder } from "../../sdk/src/diagnostics";
 import { environment } from "../../sdk/src/environment";
 import { type NewReport, type Reopening, type Verification, contextJson } from "../../sdk/src/reporter";
@@ -17,6 +18,10 @@ import { CONTEXT_TIMEOUT_MS, type Given, type HostContext, type ReportsMode } fr
 
 export type { Given, HostContext, OverlayOptions, ReportsMode } from "./options";
 export { CONTEXT_TIMEOUT_MS };
+/** The Context card's rows and the state pill's tone, shared with the
+ * shell's own queue pages (bridge/src/report-text): the words around them
+ * (and the state's own label, `stateLabel` below) are each page's own. */
+export { anchorText, browserOf, stateTone, timeIn, viewportText };
 
 /** The `<meta name>` a page sets `OverlayOptions.reports` with. */
 export const REPORTS_META = "clax-reports";
@@ -390,6 +395,16 @@ export function repliesOf(r: Report): ReportComment[] {
   return r.comments.slice(1);
 }
 
+/** Who filed `r`, as the reporter reads it: "you" for the reporter's own
+ * (no `submitter`, which is only served under `reporters_see: "all"`, or
+ * `submitter.you`), else the name `submitter` gives, or "someone" absent
+ * one. Never `reporter_profile` or `reporter_id`, which are triage's
+ * alone and never served to a reporter. */
+export function filedByText(r: Pick<Report, "submitter">): string {
+  if (!r.submitter || r.submitter.you) return "you";
+  return r.submitter.name?.trim() || "someone";
+}
+
 /** What "Your reports" shows a report by: its first comment's text, cut. */
 export function summaryOf(r: Report): string {
   const first = r.comments[0]?.body.replace(/\s+/g, " ").trim() ?? "";
@@ -587,4 +602,8 @@ export interface ReporterApi {
   seen(reportId: string): Promise<void>;
   /** The URL of the reporter's view of the queue (a single-use link). */
   viewLink?(reportId?: string): Promise<string>;
+  /** An object URL of report `reportId`'s clip, for an `<img>`; the caller
+   * revokes it. Absent on a host that never fetches it (the Full view's
+   * clip then goes unshown, same as a report with no clip at all). */
+  clipUrl?(reportId: string): Promise<string>;
 }

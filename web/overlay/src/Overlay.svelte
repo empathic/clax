@@ -767,6 +767,14 @@
     merge(await client.comment(id, body));
   }
 
+  /** The Full view's clip, when the client exposes one: bound so `this` on
+   * the real `ReporterClient` is not lost when a child calls it as a
+   * plain function. Absent entirely when the client does not, so the
+   * clip section goes unshown rather than always failing. `client` itself
+   * never changes after mount. */
+  // svelte-ignore state_referenced_locally
+  const onClipUrl = client.clipUrl ? (id: string) => client.clipUrl!(id) : undefined;
+
   async function verify(id: string): Promise<void> {
     const context = await session.verdictContext();
     merge(await client.verify(id, { context }));
@@ -996,7 +1004,7 @@
   {/if}
 
   {#if open}
-    <Reports {reports} error={loadError} {expanded} only={pageOnly ? onPage : null} onShowAll={() => { pageOnly = false; }} onExpand={expand} onReply={reply} onVerify={verify} onStillBroken={stillBroken} onClose={closeReports} />
+    <Reports {reports} error={loadError} {expanded} only={pageOnly ? onPage : null} onShowAll={() => { pageOnly = false; }} onExpand={expand} onReply={reply} onVerify={verify} onStillBroken={stillBroken} onClose={closeReports} {onClipUrl} />
   {/if}
 
 

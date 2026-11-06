@@ -4,7 +4,7 @@
   // `reports` is null until the first page arrived. Which report is open is
   // the overlay's (`expanded`), so it can open the one waiting on the reporter.
   import type { Report } from "../../sdk/src/types";
-  import { repliesOf, stateLabel, summaryOf } from "./model";
+  import { repliesOf, stateLabel, stateTone, summaryOf } from "./model";
   import ReportView from "./ReportView.svelte";
 
   type Props = {
@@ -19,8 +19,10 @@
     /** Only these reports (this page's), with "Show all" back to every one. */
     only?: string[] | null;
     onShowAll?(): void;
+    /** The Full view's clip, when the host can fetch one; absent leaves it unshown. */
+    onClipUrl?(id: string): Promise<string>;
   };
-  let { reports: all, error, expanded, only = null, onShowAll, onExpand, onReply, onVerify, onStillBroken, onClose }: Props = $props();
+  let { reports: all, error, expanded, only = null, onShowAll, onExpand, onReply, onVerify, onStillBroken, onClose, onClipUrl }: Props = $props();
   const reports = $derived(all && only ? all.filter(r => only.includes(r.id)) : all);
 
   // Grouped by where each report stands, the one waiting on the reporter first, and newest first within a group (the
@@ -109,12 +111,12 @@
             {#snippet row()}
               <button type="button" class="row" aria-expanded={opened.has(r.id)} onclick={() => toggle(r.id)}>
                 <span class="sum">{summaryOf(r)}</span>
-                <span class="meta small"><span class="state" data-state={r.state}>{stateLabel(r)}</span>{replies.length === 1 ? "1 reply" : `${replies.length} replies`}</span>
+                <span class="meta small"><span class="state" data-state={r.state} data-tone={stateTone(r.state)}>{stateLabel(r)}</span>{replies.length === 1 ? "1 reply" : `${replies.length} replies`}</span>
               </button>
             {/snippet}
             {#if full}<h4>{@render row()}</h4>{:else}{@render row()}{/if}
             {#if opened.has(r.id)}
-              <ReportView report={r} {full} {onReply} {onVerify} {onStillBroken} />
+              <ReportView report={r} {full} {onReply} {onVerify} {onStillBroken} {onClipUrl} />
             {/if}
           </li>
         {/each}
