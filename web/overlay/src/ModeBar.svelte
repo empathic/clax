@@ -19,13 +19,15 @@
   import type { Mode } from "./options";
 
   // `element` false (the install turned the element picker off): no Element mode.
-  type Props = { mode: Mode | null; outlined?: string | null; modes?: { mode: Mode; label: string; key: string }[]; element?: boolean; onMode(m: Mode): void; onCancel(): void };
+  // `onReports`: the bar also opens the reporter's own reports (their name `reportsLabel`, and how many wait on them, `waiting`).
+  type Props = { mode: Mode | null; outlined?: string | null; modes?: { mode: Mode; label: string; key: string }[]; element?: boolean; onMode(m: Mode): void; onCancel(): void;
+    onReports?: () => void; reportsLabel?: string; waiting?: number | null };
   const ALL: { mode: Mode; label: string; key: string }[] = [
     { mode: "element", label: "Element", key: "E" },
     { mode: "area", label: "Area", key: "A" },
     { mode: "screen", label: "Screen", key: "S" },
   ];
-  let { mode, outlined = null, modes = ALL, element = true, onMode, onCancel }: Props = $props();
+  let { mode, outlined = null, modes = ALL, element = true, onMode, onCancel, onReports, reportsLabel = "Your reports", waiting = null }: Props = $props();
   const shown = $derived(modes.filter(m => element || m.mode !== "element"));
 
   /** Focus goes to the mode that is on (none for a reopen's note, whose
@@ -88,6 +90,9 @@
     {/each}
   </div>
   <span class="hint" aria-hidden="true">{mode ? SHORT[mode] : "Pick a mode, or write"} · Esc</span>
+  {#if onReports}
+    <button type="button" class="ghost reports" onclick={onReports}>{reportsLabel}{#if waiting}<span class="count">{waiting}<span class="sr"> waiting on you</span></span>{/if}</button>
+  {/if}
   <button type="button" class="ghost" aria-keyshortcuts="Escape" onclick={onCancel}>Cancel</button>
   <span class="sr" role="status">{live ? (mode ? HINT[mode] : NONE) : ""}</span>
   <span class="sr outlined" aria-live="polite">{mode === "element" && outlined ? `Outlined ${outlined}.` : ""}</span>
@@ -103,6 +108,7 @@
   kbd { font: 500 10px/1 var(--font); padding: 1px 3px; border: 1px solid currentColor; border-radius: var(--radius-xs); opacity: .7; }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .hint { color: var(--muted); white-space: nowrap; }
+  .reports .count { margin-left: 5px; padding: 0 5px; border-radius: 999px; background: var(--you); color: var(--on-you); font-weight: 600; }
   @media (prefers-reduced-motion: reduce) { .modebar { transition: none; } }
   @media (pointer: coarse) { .modes button, .modebar > button { min-height: 40px; } }
 </style>

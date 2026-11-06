@@ -452,6 +452,8 @@ describe("the overlay", () => {
     expect(focused()).toBe("Area");
     press("ArrowRight");
     press("ArrowRight");
+    expect(focused()).toBe("Your reports");
+    press("ArrowRight");
     expect(focused()).toBe("Cancel");
     press("ArrowRight");
     expect(focused()).toBe("Element");
@@ -511,6 +513,22 @@ describe("the overlay", () => {
     await settle();
     expect(q(".panel")).not.toBeNull();
     expect(q('.panel li.open')?.textContent).toMatch(/Wrong/);
+  });
+
+  it("opens Your reports from the mode bar, and has no such button when reports are off", async () => {
+    click(button("Report"));
+    flushSync();
+    expect(q(".modebar")).not.toBeNull();
+    pages.push({ reports: [report("t9", ["Wrong"])], next: null });
+    click(button("Your reports"));
+    await settle();
+    expect(q(".modebar")).toBeNull();
+    expect(q(".panel")).not.toBeNull();
+    view.unmount();
+    view = mount(Overlay as never, props({ reports: "off" }), host);
+    click(button("Report"));
+    flushSync();
+    expect([...host.querySelectorAll(".modebar button")].map(b => b.textContent)).not.toContain("Your reports");
   });
 
   it("tells the host whether a report is under way, once per change", async () => {

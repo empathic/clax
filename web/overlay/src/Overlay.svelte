@@ -953,7 +953,8 @@
 
 <div class="cx" bind:this={cx}>
   {#if bar}
-    <ModeBar mode={bar.mode} {outlined} modes={barModes} onMode={choose} onCancel={() => closeBar()} />
+    <ModeBar mode={bar.mode} {outlined} modes={barModes} onMode={choose} onCancel={() => closeBar()}
+      onReports={reportsOn ? () => showReports() : undefined} {reportsLabel} waiting={count} />
   {/if}
 
   <!-- The notices zone: always there, so a notice never moves the composer or the launcher. -->
