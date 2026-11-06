@@ -9,9 +9,9 @@ import type { Anchor } from "../../bridge/src/protocol";
 import { anchorText, browserOf, stateTone, timeIn, viewportText } from "../../bridge/src/report-text";
 import type { Recorder } from "../../sdk/src/diagnostics";
 import { environment } from "../../sdk/src/environment";
-import { type NewReport, type Reopening, type Verification, contextJson } from "../../sdk/src/reporter";
+import { type NewReport, type Reopening, contextJson } from "../../sdk/src/reporter";
 import { scrub, wellFormed } from "../../sdk/src/scrub";
-import type { Badge, CaptureInfo, DiagLine, FixAttempt, FixOutcome, FlagValue, Release, Report, ReportComment, ReportContext, ReportPage, ResolveReason } from "../../sdk/src/types";
+import type { CaptureInfo, DiagLine, FixAttempt, FixOutcome, FlagValue, Release, Report, ReportComment, ReportContext, ResolveReason } from "../../sdk/src/types";
 import { type Placement, type Shape, remapShapes } from "./annotate";
 import type { Captured } from "./capture";
 import { CONTEXT_TIMEOUT_MS, type Given, type HostContext, type ReportsMode } from "./options";
@@ -36,10 +36,6 @@ export function reportsModeOf(doc: Document, given?: unknown): ReportsMode {
   throw new TypeError(`Clax.overlay: reports must be "button" or "off", not ${JSON.stringify(v)}`);
 }
 
-/** How often "Your reports" asks for new replies while it is open. */
-export const POLL_MS = 15_000;
-/** How often the badge is asked for while the page is visible. */
-export const BADGE_POLL_MS = 60_000;
 /** The largest context Clax takes, as compact JSON. */
 export const MAX_CONTEXT_BYTES = 16 * 1024;
 /** The longest title a report carries (the page's title, cut). */
@@ -459,151 +455,11 @@ export function safeLink(url: string | undefined): string | null {
   }
 }
 
-/** Timers the polls run on; injected in tests. */
-export interface Timers {
-  set(fn: () => void, ms: number): unknown;
-  clear(handle: unknown): void;
-}
-export const realTimers: Timers = {
-  set: (fn, ms) => setTimeout(fn, ms),
-  clear: h => clearTimeout(h as ReturnType<typeof setTimeout>),
-};
-
-/** Calls `load` at once and then `ms` after each call settles, until
- * `stop`: never two at once, and none after `stop`. A failed load is
- * `onError`'s and the poll keeps going. */
-export class Poll {
-  private timer: unknown = null;
-  private live = false;
-
-  constructor(private readonly load: () => Promise<void>, private readonly timers: Timers = realTimers, private readonly ms = POLL_MS, private readonly onError: (e: unknown) => void = () => {}) {}
-
-  start(): void {
-    if (this.live) return;
-    this.live = true;
-    void this.tick();
-  }
-
-  /** Loads now (a reply was just sent), and restarts the wait. */
-  now(): void {
-    if (!this.live) return;
-    this.timers.clear(this.timer);
-    this.timer = null;
-    void this.tick();
-  }
-
-  stop(): void {
-    this.live = false;
-    this.timers.clear(this.timer);
-    this.timer = null;
-  }
-
-  private running = false;
-  private again = false;
-
-  private async tick(): Promise<void> {
-    if (this.running) { this.again = true; return; }
-    this.running = true;
-    try {
-      await this.load();
-    } catch (e) {
-      if (this.live) this.onError(e);
-    } finally {
-      this.running = false;
-    }
-    if (!this.live) return;
-    if (this.again) { this.again = false; void this.tick(); return; }
-    this.timer = this.timers.set(() => { this.timer = null; void this.tick(); }, this.ms);
-  }
-}
-
-/** What the badge poll watches: whether the page is visible, and its
- * `focus` and `visibilitychange`. */
-export interface Visibility {
-  document: { visibilityState: DocumentVisibilityState; addEventListener(t: "visibilitychange", fn: () => void): void; removeEventListener(t: "visibilitychange", fn: () => void): void };
-  addEventListener(t: "focus", fn: () => void): void;
-  removeEventListener(t: "focus", fn: () => void): void;
-}
-
-/** What the badge poll tells: the count when it changed (the first count
- * too), and `rose` with the reports newly waiting when it rose since the
- * last count. */
-export interface BadgeHooks {
-  changed(n: number): void;
-  rose(newly: string[]): void;
-}
-
-/** The badge, asked for every `BADGE_POLL_MS` while the page is visible,
- * at once when it becomes visible or gets focus, and on `now`; a failed ask
- * is dropped and the next one tried. */
-export class BadgeWatch {
-  private last: Badge | null = null;
-  private readonly poll: Poll;
-  private live = false;
-
-  constructor(load: () => Promise<Badge>, private readonly win: Visibility, private readonly hooks: BadgeHooks, timers: Timers = realTimers, ms = BADGE_POLL_MS) {
-    this.poll = new Poll(async () => {
-      const b = await load();
-      if (!this.live) return;
-      this.seen(b);
-      if (this.win.document.visibilityState !== "visible") this.poll.stop();
-    }, timers, ms);
-  }
-
-  /** The last count, or null before the first. */
-  get count(): number | null {
-    return this.last?.waiting ?? null;
-  }
-
-  start(): void {
-    if (this.live) return;
-    this.live = true;
-    this.win.document.addEventListener("visibilitychange", this.wake);
-    this.win.addEventListener("focus", this.wake);
-    if (this.win.document.visibilityState === "visible") this.poll.start();
-  }
-
-  /** Asks now (the reporter just read or gave a verdict on a report). */
-  now(): void {
-    if (!this.live) return;
-    this.poll.stop();
-    this.poll.start();
-  }
-
-  stop(): void {
-    this.live = false;
-    this.poll.stop();
-    this.win.document.removeEventListener("visibilitychange", this.wake);
-    this.win.removeEventListener("focus", this.wake);
-  }
-
-  private readonly wake = () => {
-    if (this.win.document.visibilityState === "visible") this.now();
-    else this.poll.stop();
-  };
-
-  private seen(b: Badge): void {
-    const before = this.last;
-    this.last = b;
-    if (before?.waiting === b.waiting) return;
-    this.hooks.changed(b.waiting);
-    if (before && b.waiting > before.waiting) this.hooks.rose(b.report_ids.filter(id => !before.report_ids.includes(id)));
-  }
-}
-
-/** What the overlay calls of the SDK's `ReporterClient`. */
-export interface ReporterApi {
-  fileReport(r: NewReport): Promise<Report>;
-  myReports(cursor?: string): Promise<ReportPage>;
-  comment(reportId: string, body: string): Promise<Report>;
-  verify(reportId: string, v?: Verification): Promise<Report>;
-  reopen(reportId: string, r: Reopening): Promise<Report>;
-  badge(): Promise<Badge>;
-  seen(reportId: string): Promise<void>;
-  /** The URL of the reporter's view of the queue (a single-use link). */
-  viewLink?(reportId?: string): Promise<string>;
-  /** An object URL of report `reportId`'s clip, for an `<img>`; the caller
-   * revokes it. Absent on a host that never fetches it (the Full view's
-   * clip then goes unshown, same as a report with no clip at all). */
-  clipUrl?(reportId: string): Promise<string>;
-}
+// Timers, Poll, Visibility, BadgeHooks and BadgeWatch moved to the SDK's
+// headless reporter lifecycle (sdk/src/lifecycle.ts), which now owns "Your
+// reports" polling and the badge watch; re-exported here so this module's
+// own callers (Overlay.svelte, model.test.ts) are unchanged. ReporterApi
+// moved next to ReporterClient in sdk/src/reporter.ts, which it describes.
+export { BADGE_POLL_MS, BadgeWatch, POLL_MS, Poll, realTimers } from "../../sdk/src/lifecycle";
+export type { BadgeHooks, Timers, Visibility } from "../../sdk/src/lifecycle";
+export type { ReporterApi } from "../../sdk/src/reporter";

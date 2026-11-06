@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  BADGE_POLL_MS, BadgeWatch, type ReporterLifecycleState, POLL_MS, Poll, ReporterLifecycle, type Timers, type Visibility,
+  BadgeWatch, type ReporterLifecycleState, POLL_MS, Poll, ReporterLifecycle, type Timers, type Visibility,
   initialLifecycleState, pendingFixCount, update,
 } from "./lifecycle";
 import type { ReporterApi } from "./reporter";
