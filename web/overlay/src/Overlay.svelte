@@ -339,6 +339,15 @@
     if (reportsOn && !open) toggleReports();
   }
 
+  /** The reporter lifecycle's own `subscribe` (sdk/src/lifecycle.ts), for
+   * `mount.ts`'s `OverlayHandle.subscribe` to relay to the host: so a host
+   * with `launcher: false` can read the waiting count (and the rest of the
+   * lifecycle's state) for its own UI, the same state this component's
+   * launcher and "Your reports" already show. */
+  export function onLifecycle(fn: (s: ReporterLifecycleState) => void): () => void {
+    return lifecycle.subscribe(fn);
+  }
+
   /** Chooses `mode` in the mode bar. Element chosen again while it is on
    * (E, or its button) starts picking from the keyboard: focus leaves the
    * overlay, so the arrow keys move the outline and Enter picks. */

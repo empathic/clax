@@ -20,6 +20,7 @@ const handle = (): OverlayHandle => ({
   showReports: () => { calls.push("reports"); },
   actions: () => [{ id: "clax.report", label: "Send feedback", run: () => {} }],
   on: () => () => {},
+  subscribe: () => () => {},
   close: () => { calls.push("close"); },
   forget: async () => {},
 });

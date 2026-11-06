@@ -20,6 +20,7 @@ import { addSheet } from "../../bridge/src/sheet";
 import { TOKEN_NAME } from "../../sdk/src/config";
 import { type Recorder, installDiagnostics } from "../../sdk/src/diagnostics";
 import { forgetReporter as forgetKept } from "../../sdk/src/keystore";
+import { initialLifecycleState, type AuthStatus, type ReporterLifecycleState } from "../../sdk/src/lifecycle";
 import { ReporterClient, type ReporterAuth } from "../../sdk/src/reporter";
 import type { DiagLine, Report } from "../../sdk/src/types";
 import { type Settings, fetchInstall, installIdOf, settingsOf } from "./install";
@@ -30,7 +31,7 @@ import { type ClaxPlugin, PluginHost } from "../../sdk/src/plugin";
 import { commentPicker, type Picked } from "./picker";
 import TOKENS from "./tokens.css?inline";
 
-export type { DiagLine, Given, HostContext, Mode, OverlayOptions, Recorder, Report, ReporterAuth, ReportsMode };
+export type { AuthStatus, DiagLine, Given, HostContext, Mode, OverlayOptions, Recorder, Report, ReporterAuth, ReporterLifecycleState, ReportsMode };
 export { CONTEXT_TIMEOUT_MS };
 
 /** What a running overlay tells its host. */
@@ -61,6 +62,14 @@ export interface OverlayHandle {
   on(event: "badge", fn: (n: number) => void): () => void;
   on(event: "filed", fn: (r: Report) => void): () => void;
   on(event: "active", fn: (on: boolean) => void): () => void;
+  /** The reporter lifecycle's state (sdk/src/lifecycle.ts): auth, "Your
+   * reports" and the waiting count (`waiting`, the same the launcher's
+   * badge and `on("badge")` show) — for a host with `launcher: false` to
+   * read for its own UI, such as a "needs your review" dot on its own
+   * button. A Svelte store's `subscribe`: `fn` is called at once with the
+   * current state (`sdk/src/lifecycle.ts`'s `initialLifecycleState` before
+   * the overlay has started), and again on each change. */
+  subscribe(fn: (s: ReporterLifecycleState) => void): () => void;
   /** Removes the overlay and ends comment mode. The page's diagnostics
    * recorder keeps recording, for a later overlay. */
   close(): void;
@@ -90,6 +99,7 @@ export async function forgetReporter(r: ReporterRef): Promise<void> {
 interface Mounted {
   report(opts?: { mode?: Mode | "note" }): void;
   showReports(): void;
+  onLifecycle(fn: (s: ReporterLifecycleState) => void): () => void;
 }
 
 /** The components' stylesheet: written in at build time from the CSS the
@@ -158,6 +168,14 @@ export function mountOverlay(opts: OverlayOptions, pluginList: readonly ClaxPlug
   const listeners = { badge: new Set<(n: number) => void>(), filed: new Set<(r: Report) => void>(), active: new Set<(on: boolean) => void>() };
   let lastBadge: number | null = null;
   let lastActive = false;
+  // The reporter lifecycle's own state, relayed from the component once it
+  // starts (`start`, below); `handle.subscribe` works before that too,
+  // with `initialLifecycleState`, the same way `on("badge")` gives `null`
+  // until the first count (here, every subscriber instead gets the idle
+  // state at once).
+  const lifecycleListeners = new Set<(s: ReporterLifecycleState) => void>();
+  let lifecycleState: ReporterLifecycleState = initialLifecycleState;
+  let unsubLifecycle: (() => void) | null = null;
   const emit = <K extends keyof OverlayEvents>(event: K, value: OverlayEvents[K]) => {
     for (const fn of [...listeners[event]] as ((v: OverlayEvents[K]) => void)[]) {
       try { fn(value); } catch (e) { console.error(`Clax.overlay: a ${event} listener threw`, e); }
@@ -215,6 +233,10 @@ export function mountOverlay(opts: OverlayOptions, pluginList: readonly ClaxPlug
         plugins, presentation: opts.presentation, css, defaults: opts.defaults ?? {}, copy: opts.copy ?? {},
       },
     }) as unknown as Mounted;
+    unsubLifecycle = app.onLifecycle(st => {
+      lifecycleState = st;
+      for (const fn of [...lifecycleListeners]) { try { fn(st); } catch (e) { console.error("Clax.overlay: a subscribe listener threw", e); } }
+    });
     asked?.(app);
     asked = null;
   };
@@ -243,6 +265,11 @@ export function mountOverlay(opts: OverlayOptions, pluginList: readonly ClaxPlug
       if (event === "active") (fn as (on: boolean) => void)(lastActive);
       return () => { set.delete(fn); };
     },
+    subscribe(fn: (s: ReporterLifecycleState) => void) {
+      lifecycleListeners.add(fn);
+      fn(lifecycleState);
+      return () => { lifecycleListeners.delete(fn); };
+    },
     forget: () => ready.then(() => client?.forget()),
     close() {
       if (!open) return;
@@ -251,6 +278,8 @@ export function mountOverlay(opts: OverlayOptions, pluginList: readonly ClaxPlug
       listeners.filed.clear();
       if (lastActive) { lastActive = false; for (const fn of [...listeners.active]) { try { fn(false); } catch (e) { console.error("Clax.overlay: an active listener threw", e); } } }
       listeners.active.clear();
+      unsubLifecycle?.();
+      lifecycleListeners.clear();
       if (app) void unmount(app as never);
       plugins.destroy();
       stopScheme();

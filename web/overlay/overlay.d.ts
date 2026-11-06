@@ -283,6 +283,32 @@ export interface ClaxPlugin {
   setup?(ctx: PluginContext): void | (() => void);
 }
 
+/** Whether reports or the badge have reached Clax: `"idle"` before either
+ * starts, `"loading"` until the first answer, `"ready"` once one has ever
+ * succeeded, `"error"` (with `authError` set) when the latest attempt
+ * failed and none before it ever did. Never a window into the reporter's
+ * own key or token. */
+export type AuthStatus = "idle" | "loading" | "ready" | "error";
+
+/** The reporter lifecycle's state (`@empathic/clax-client-sdk`'s
+ * `sdk/src/lifecycle.ts`): `OverlayHandle.subscribe`'s own. */
+export interface ReporterLifecycleState {
+  auth: AuthStatus;
+  authError: unknown;
+  /** `null` until "Your reports" has loaded once. */
+  reports: Report[] | null;
+  reportsError: unknown;
+  reportsOpen: boolean;
+  /** A report of this reporter's that waits on them (a fix proposed, or a
+   * reply they have not read) — `Badge.waiting`, not only `fix_proposed`
+   * reports. `null` before the first ask. */
+  waiting: number | null;
+  /** The badge's count rising since the ask before it: a new `seq` each
+   * time (never 0), with the reports newly waiting; `null` before the
+   * first rise. */
+  rise: { seq: number; ids: string[] } | null;
+}
+
 /** What a running overlay tells its host. */
 export interface OverlayEvents {
   badge: number;
@@ -301,6 +327,12 @@ export interface OverlayHandle {
   on(event: "badge", fn: (n: number) => void): () => void;
   on(event: "filed", fn: (r: Report) => void): () => void;
   on(event: "active", fn: (on: boolean) => void): () => void;
+  /** The reporter lifecycle's state: auth, "Your reports" and the waiting
+   * count (`waiting`, the same `on("badge")` shows) — for a host with
+   * `launcher: false` to read for its own UI, such as a "needs your
+   * review" dot on its own button. A Svelte store's `subscribe`: `fn` is
+   * called at once with the current state, and again on each change. */
+  subscribe(fn: (s: ReporterLifecycleState) => void): () => void;
   close(): void;
   /** Forgets the reporter, as the host does when its user signs out:
    * deletes the key and token kept for `user` and drops them from this

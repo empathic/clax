@@ -10,6 +10,8 @@ export const SAME: [
   Same<Dts.OverlayOptions, Main.OverlayOptions>,
   Same<Dts.OverlayHandle, Main.OverlayHandle>,
   Same<Dts.OverlayEvents, Main.OverlayEvents>,
+  Same<Dts.ReporterLifecycleState, Main.ReporterLifecycleState>,
+  Same<Dts.AuthStatus, Main.AuthStatus>,
   Same<Dts.Report, Main.Report>,
   Same<Dts.HostContext, Main.HostContext>,
   Same<Dts.Mode, Main.Mode>,
@@ -20,4 +22,4 @@ export const SAME: [
   Same<typeof Dts.forgetReporter, typeof Main.forgetReporter>,
   Same<Dts.ReporterRef, Main.ReporterRef>,
   Same<Window["Clax"], Pick<typeof Main, "overlay" | "diagnostics" | "CONTEXT_TIMEOUT_MS" | "forgetReporter">>,
-] = [true, true, true, true, true, true, true, true, true, true, true, true, true];
+] = [true, true, true, true, true, true, true, true, true, true, true, true, true, true, true];
