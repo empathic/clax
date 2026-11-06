@@ -382,6 +382,7 @@ export async function renderClipWithReport(el: Element, win: Window = window, ti
       destroyContext(ctx);
     }
   };
+  const unmark = markScrolled(seen.scrolled);
   const png = (async () => {
     let scale = clipScale(crop?.w ?? r.width, crop?.h ?? r.height, win.devicePixelRatio || 1);
     for (let shrinks = 0; ; shrinks++) {
@@ -397,7 +398,7 @@ export async function renderClipWithReport(el: Element, win: Window = window, ti
       if (shrinks >= CLIP_SHRINKS) throw new Error("the screenshot is too large to keep, even scaled down");
       scale /= 2;
     }
-  })();
+  })().finally(unmark);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`clip took longer than ${timeoutMs} ms`)), timeoutMs); });
   try {
@@ -510,15 +511,15 @@ interface Survey {
   /** For a viewport render, where each fixed or stuck element (in the
    * order the renderer meets them) is drawn, relative to the root's box. */
   pinned: { fixed: boolean; dx: number; dy: number }[] | null;
-  /** Each box below the root whose overflow is not visible (one that can
-   * scroll), in the order the renderer meets them, with how far it is
-   * scrolled now: the copy draws every box from its top, so `scrollElements`
-   * moves each scrolled box's content back to where the page shows it. */
-  scrolled: { top: number; left: number }[];
+  /** Each box below the root that is scrolled now: the copy draws every box
+   * from its top, so the render marks these (`SCROLL_ATTR`, which the copy
+   * keeps) and `scrollElements` moves each one's content back to where the
+   * page shows it. */
+  scrolled: Element[];
 }
 
-/** Whether a computed overflow value lets a box scroll (programmatically, for `hidden`). */
-const scrolls = (v: string | null | undefined) => !!v && v !== "visible";
+/** The mark a scrolled box carries for the length of a render: "left,top" in CSS px. */
+const SCROLL_ATTR = "data-clax-scrolled";
 
 /** The nearest element at or above `el` that matches `sel`, across shadow roots. */
 function closestComposed(el: Element, sel: string): Element | null {
@@ -587,10 +588,7 @@ function survey(root: Element, origin: string, at: Rect, viewport: boolean): Sur
         pinned.push({ fixed: false, ...stuckOffset(el) });
       }
     }
-    if (win && el !== root) {
-      const cs = win.getComputedStyle(el);
-      if (scrolls(cs.overflowX) || scrolls(cs.overflowY)) scrolled.push({ top: el.scrollTop || 0, left: el.scrollLeft || 0 });
-    }
+    if (el !== root && (el.scrollTop || el.scrollLeft)) scrolled.push(el);
     if (el.localName === "video") continue;
     let kids: Element[] = [];
     if (el.localName === "iframe") {
@@ -711,28 +709,37 @@ function pinElements(root: Element, pinned: NonNullable<Survey["pinned"]>): void
   });
 }
 
-/** Draws each scrolled box of a copy as the page shows it now (`scrolled`, in
- * the order of the copy's boxes that can scroll). A copy is never scrolled,
- * so each child element of a scrolled box is moved up and left by the box's
- * scroll with `translate`, which leaves layout alone, and the box's own
- * overflow clips what moves out. A child that already has a `translate` keeps
- * it, offset by the scroll. Nothing moves when the copy's boxes do not line
- * up with the page's (as `pinElements`). */
-function scrollElements(root: Element, scrolled: Survey["scrolled"]): void {
-  if (!scrolled.some(s => s.top || s.left)) return;
-  const boxes = Array.from(root.querySelectorAll<HTMLElement>("*"))
-    .filter(e => e.style && (scrolls(e.style.getPropertyValue("overflow-x")) || scrolls(e.style.getPropertyValue("overflow-y"))));
-  if (boxes.length !== scrolled.length) return;
-  boxes.forEach((box, i) => {
-    const { top, left } = scrolled[i];
-    if (!top && !left) return;
+/** Marks each scrolled box of the page with its scroll (`SCROLL_ATTR`) for a
+ * render, which copies the mark; the result takes the marks off again. */
+function markScrolled(scrolled: Element[]): () => void {
+  const marked: Element[] = [];
+  for (const el of scrolled) {
+    if (el.hasAttribute(SCROLL_ATTR)) continue;
+    el.setAttribute(SCROLL_ATTR, `${el.scrollLeft || 0},${el.scrollTop || 0}`);
+    marked.push(el);
+  }
+  return () => { for (const el of marked) el.removeAttribute(SCROLL_ATTR); };
+}
+
+/** Draws each scrolled box of a copy as the page shows it now: a copy is
+ * never scrolled, so each child element of a box marked `SCROLL_ATTR` is
+ * moved up and left by the box's scroll with `translate`, which leaves layout
+ * alone, and the box's own overflow clips what moves out. A child that
+ * already has a `translate` keeps it, offset by the scroll. The marks are
+ * taken off the copy. */
+function scrollElements(root: Element): void {
+  const boxes = [...(root.hasAttribute(SCROLL_ATTR) ? [root] : []), ...Array.from(root.querySelectorAll(`[${SCROLL_ATTR}]`))];
+  for (const box of boxes) {
+    const [left = 0, top = 0] = (box.getAttribute(SCROLL_ATTR) ?? "").split(",").map(Number);
+    box.removeAttribute(SCROLL_ATTR);
+    if (!Number.isFinite(left) || !Number.isFinite(top) || (!left && !top)) continue;
     for (const kid of Array.from(box.children) as HTMLElement[]) {
       if (!kid.style) continue;
       const had = kid.style.getPropertyValue("translate").trim();
       const [x = "0px", y = "0px"] = had && had !== "none" ? had.split(/\s+/) : [];
       kid.style.setProperty("translate", `calc(${x} - ${left}px) calc(${y} - ${top}px)`, "important");
     }
-  });
+  }
 }
 
 /** The modern-screenshot options that make a render of `root` private:
@@ -748,7 +755,7 @@ function privateRender(root: Element, origin: string, seen: Survey, colour: stri
       if (clone.nodeType !== Node.ELEMENT_NODE) return;
       blankTyped(clone as Element, seen.shown, seen.editable);
       if (seen.pinned) pinElements(clone as Element, seen.pinned);
-      scrollElements(clone as Element, seen.scrolled);
+      scrollElements(clone as Element);
     },
     onCreateForeignObjectSvg: svg => {
       const doc = svg.ownerDocument;

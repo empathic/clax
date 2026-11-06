@@ -82,8 +82,10 @@ describe("viewport renders", () => {
     for (const id of ["#fold", "#change"]) expect(inCopy(id)!.getAttribute("style")).toMatch(/translate: calc\(0px - 0px\) calc\(0px - 1506px\)/);
     // A box that is not scrolled is drawn as it was.
     expect(inCopy("#top")!.getAttribute("style") ?? "").not.toMatch(/translate/);
-    // The page's own box is left alone.
+    // The page's own boxes are left as they were, and no mark stays on the page or in the copy.
     expect(document.getElementById("fold")!.getAttribute("style")).toBeNull();
+    expect(document.querySelector("[data-clax-scrolled]")).toBeNull();
+    expect(inCopy("[data-clax-scrolled]")).toBeNull();
   });
 });
 
