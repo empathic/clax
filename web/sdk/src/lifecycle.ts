@@ -261,8 +261,8 @@ export function update(state: ReporterLifecycleState, msg: ReporterLifecycleMsg)
 
 /** How many of `reports` are `fix_proposed` with a fix still waiting on a
  * verdict (not Clax's own `Badge.waiting`, which also counts an unread
- * reply); `null` before `reports` has ever loaded, so a host can tell "none
- * waiting" from "not asked yet". */
+ * reply); `null` before `reports` has ever loaded, so a host can tell none
+ * waiting apart from not asked yet. */
 export function pendingFixCount(reports: Report[] | null): number | null {
   if (reports === null) return null;
   return reports.filter(r => r.state === "fix_proposed" && (r.fixes?.at(-1)?.outcome ?? "pending") === "pending").length;
