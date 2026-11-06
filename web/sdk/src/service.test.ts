@@ -1,0 +1,89 @@
+import { describe, expect, it } from "vitest";
+import { ServiceClient } from "./service";
+import { canonical, fromBase64url } from "./sign";
+
+// The key of `sdk_vector_is_fixed` in crates/clax-core/src/sig.rs, as a
+// service grant's `private_key` carries one.
+const PKCS8 = "MFMCAQEwBQYDK2VwBCIEIEJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCoSMDIQAhUvjRm3kdJEUyQuFfLqtst8_6e2pe0wCXlg4GmIHbEg";
+const PUBLIC = "IVL40Zt5HSRFMkLhXy6rbLfP-ntqXtMAl5YOBpiB2xI";
+
+describe("ServiceClient", () => {
+  it("mints a reporter token signed with the grant's key", async () => {
+    const sent: { url: string; init: RequestInit }[] = [];
+    const client = new ServiceClient({
+      instance: "https://clax.example", queue: "q1", token: "cxq_grant", privateKey: PKCS8, now: () => 1_760_000_000_500,
+      fetch: async (url, init) => {
+        sent.push({ url, init });
+        return new Response(JSON.stringify({ token: "cxr_a", expires_at: "2026-10-27T12:15:00Z" }), { status: 200 });
+      },
+    });
+    const req = { reporter_id: "emp-7", origin: "https://app.example", public_key: "AAAA" };
+    expect(await client.mintReporterToken(req)).toEqual({ token: "cxr_a", expires_at: "2026-10-27T12:15:00Z" });
+    const [{ url, init }] = sent;
+    expect(url).toBe("https://clax.example/api/queues/q1/reporter-tokens");
+    const headers = init.headers as Record<string, string>;
+    expect(headers.authorization).toBe("Clax-Queue cxq_grant");
+    expect(headers["content-type"]).toBe("application/json");
+    const body = new Uint8Array(init.body as Uint8Array);
+    expect(JSON.parse(new TextDecoder().decode(body))).toEqual(req);
+    const m = /^t=1760000000, n=([\w-]{22}), s=([\w-]{86})$/.exec(headers["clax-signature"]);
+    expect(m).not.toBeNull();
+    const message = await canonical({
+      method: "POST", pathAndQuery: "/api/queues/q1/reporter-tokens", host: "clax.example", t: 1_760_000_000, nonce: m![1], body, token: "cxq_grant",
+    });
+    const pub = await crypto.subtle.importKey("raw", fromBase64url(PUBLIC) as BufferSource, { name: "Ed25519" }, true, ["verify"]);
+    expect(await crypto.subtle.verify("Ed25519", pub, fromBase64url(m![2]) as BufferSource, new TextEncoder().encode(message))).toBe(true);
+  });
+
+  it("mint sends profile", async () => {
+    const bodies: unknown[] = [];
+    const client = new ServiceClient({
+      instance: "https://clax.example", queue: "q1", token: "cxq_grant", privateKey: PKCS8,
+      fetch: async (_url, init) => {
+        bodies.push(JSON.parse(new TextDecoder().decode(new Uint8Array(init.body as Uint8Array))));
+        return new Response(JSON.stringify({ token: "cxr_a", expires_at: "2026-10-27T12:15:00Z" }), { status: 200 });
+      },
+    });
+    const req = { reporter_id: "emp-7", origin: "https://app.example", public_key: "AAAA" };
+    const profile = { name: "Alex", email: "ahk@example.com", github: "ahk", avatar_url: "https://avatars.example/ahk.png" };
+    await client.mintReporterToken(req, profile);
+    await client.mintReporterToken({ ...req, profile: { name: "In the request" } });
+    await client.mintReporterToken({ ...req, profile: { name: "In the request" } }, { name: "Given" });
+    expect(bodies).toEqual([
+      { ...req, profile },
+      { ...req, profile: { name: "In the request" } },
+      { ...req, profile: { name: "Given" } },
+    ]);
+  });
+
+  it("retries limit_reached after its backoff, signing the retry anew", async () => {
+    const signatures: string[] = [];
+    const slept: number[] = [];
+    const answers = [
+      new Response(JSON.stringify({ error: { code: "limit_reached", message: "full" } }), { status: 429 }),
+      new Response(JSON.stringify({ token: "cxr_a", expires_at: "2026-10-27T12:15:00Z" }), { status: 200 }),
+    ];
+    const client = new ServiceClient({
+      instance: "https://clax.example", queue: "q1", token: "cxq_grant", privateKey: PKCS8,
+      sleep: async ms => { slept.push(ms); }, random: () => 0,
+      fetch: async (_url, init) => { signatures.push((init.headers as Record<string, string>)["clax-signature"]); return answers.shift()!; },
+    });
+    expect(await client.mintReporterToken({ reporter_id: "r", origin: "https://app.example", public_key: "AAAA" })).toEqual({ token: "cxr_a", expires_at: "2026-10-27T12:15:00Z" });
+    expect(slept).toEqual([1000]);
+    expect(new Set(signatures).size).toBe(2);
+  });
+
+  it("refuses an instance that is not an origin", () => {
+    expect(() => new ServiceClient({ instance: "https://apps.example.com/clax", queue: "q1", token: "cxq_grant", privateKey: PKCS8 }))
+      .toThrow(/^ServiceClient: instance must be an origin/);
+  });
+
+  it("gives the instance's error", async () => {
+    const client = new ServiceClient({
+      instance: "https://clax.example", queue: "q1", token: "cxq_grant", privateKey: PKCS8,
+      fetch: async () => new Response(JSON.stringify({ error: { code: "wrong_origin", message: "not a queue origin" } }), { status: 403 }),
+    });
+    await expect(client.mintReporterToken({ reporter_id: "r", origin: "https://evil.example", public_key: "AAAA" }))
+      .rejects.toMatchObject({ code: "wrong_origin", status: 403 });
+  });
+});

@@ -1,0 +1,40 @@
+# The instances the fleet serves (crates/clax-fleet/src/catalog.rs). Each
+# is a hosted Clax at its own public origin; its `config` is the
+# config.toml its home is given. Check a catalog before applying it, with
+# the image (docs/kubernetes.md, The catalog):
+#
+#   clax-fleet check-catalog fleet.toml
+#
+# `shards` is the StatefulSet's replica count, and each instance names its
+# `shard`: the pod (clax-<shard>) whose volume keeps it; `create = true`
+# lets that pod make the instance's home, for a new instance's first start
+# only: remove it once the instance has started, so a shard that finds no
+# home (a wrong `shard`, a move) never makes an empty one. Never
+# give a removed instance's name to another tenant: its data is kept under
+# the name.
+
+shards = 2
+
+[[instance]]
+name = "example"
+shard = 0
+# Remove once it has started.
+create = true
+# No `default = true`: with more than one tenant, a host no instance names
+# would be answered by the default's instance (docs/kubernetes.md, The
+# catalog). Leave none, and such hosts get 404.
+config = '''
+[hosted]
+public_origin = "https://clax.example.com"
+# On a registrable domain of its own, not under example.com: an artifact
+# page there could otherwise set cookies the origin receives
+# (docs/kubernetes.md, The catalog).
+site_domain = "clax-sites.example.net"
+# The setup secret the first visit to /setup asks for, from the
+# environment (the clax-secrets Secret): one variable per instance.
+setup_secret_env = "CLAX_SETUP_SECRET_EXAMPLE"
+# Signing in with GitHub: the OAuth app's client secret, also one variable
+# per instance.
+# github_client_id = "<the app's client ID>"
+# github_client_secret_env = "CLAX_GITHUB_SECRET_EXAMPLE"
+'''

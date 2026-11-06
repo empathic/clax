@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:cryptography/dart.dart' show DartSha256;
 
 import '../agent/icon_svg.dart' show appIconPath, iconBytesProblem;
+import '../bundle/content_hash.dart' show manifestPath;
 import 'api.dart';
 
 /// One call [FakeClaxApi] received: the method's name and its arguments.
@@ -723,11 +724,12 @@ class FakeClaxApi implements ClaxApi {
       throw _invalid('missing_index', 'a version must include index.html');
     }
     _checkIcon(files);
+    final declared = _declare(_requestFiles(r), r.capabilities, files);
     final aid = _newArtifactId();
     final a = _artifacts[aid] = _FakeArtifact(
       id: aid,
       title: title,
-      capabilities: Map.of(r.capabilities ?? const {}),
+      capabilities: Map.of(declared ?? const {}),
       ownerSession: sessionId,
       versions: [],
     )..icon = r.icon;
@@ -759,9 +761,10 @@ class FakeClaxApi implements ClaxApi {
         files[e.key] = e.value!;
       }
     }
+    final declared = _declare(_requestFiles(r), r.capabilities, files);
     if (r.title != null) a.title = r.title!;
     if (r.icon != null) a.icon = r.icon;
-    if (r.capabilities != null) a.capabilities = Map.of(r.capabilities!);
+    if (declared != null) a.capabilities = Map.of(declared);
     a.versions.add(
       _version(
         aid,
@@ -777,6 +780,47 @@ class FakeClaxApi implements ClaxApi {
       a.threads[t]!.addressedIn.add(a.current);
     }
     return _landed(a, r.addresses);
+  }
+
+  /// What [approveCapabilities] was called with, in order: the artifact,
+  /// the version and the declaration's hash.
+  final List<(String, int, String)> approved = [];
+
+  /// Whether a create's or publish's answer names a declaration to approve
+  /// (`pending_capabilities`); its hash is [pendingSha256].
+  bool pendsApproval = true;
+
+  /// Capability names a version's `pending_capabilities` names beyond what
+  /// it declares, as a daemon's pending set against the last approved
+  /// declaration can.
+  List<String> unseenPending = const [];
+
+  /// Per artifact, the capability names and `net` hosts approved so far.
+  final Map<String, Set<String>> _approvedCaps = {};
+  final Map<String, Set<String>> _approvedHosts = {};
+
+  static List<String> _hostsOf(Map<String, Object?> c) => switch (c['net']) {
+    {'hosts': final List<Object?> h} => [for (final x in h) '$x'],
+    _ => const [],
+  };
+
+  static String pendingSha256(String aid, int n) => 'sha-$aid-$n';
+
+  @override
+  Future<void> approveCapabilities(
+    String aid,
+    int version,
+    String declarationSha256,
+  ) async {
+    _call('approveCapabilities', {
+      'aid': aid,
+      'version': version,
+      'declaration_sha256': declarationSha256,
+    });
+    final a = _artifact(aid);
+    approved.add((aid, version, declarationSha256));
+    _approvedCaps[aid] = a.capabilities.keys.toSet();
+    _approvedHosts[aid] = _hostsOf(a.capabilities).toSet();
   }
 
   @override
@@ -805,12 +849,17 @@ class FakeClaxApi implements ClaxApi {
     _checkVersion(a, ifVersion);
     if (title != null) a.title = title;
     if (icon != null) a.icon = icon;
-    if (capabilities != null) a.capabilities = Map.of(capabilities);
+    final files = Map.of(a.versions[n - 1].blobs);
+    // As the daemon does, a declaration given with the restore is written
+    // as its clax.json.
+    if (capabilities != null) {
+      a.capabilities = Map.of(_declare(const {}, capabilities, files)!);
+    }
     a.versions.add(
       _version(
         aid,
         a.current + 1,
-        Map.of(a.versions[n - 1].blobs),
+        files,
         label: label ?? 'Restored v$n',
         note: note ?? 'Restored version $n',
       ),
@@ -1349,9 +1398,10 @@ class FakeClaxApi implements ClaxApi {
         files[e.key] = e.value!;
       }
     }
+    final declared = _declare(_requestFiles(r), r.capabilities, files);
     if (r.title != null) a.title = r.title!;
     if (r.icon != null) a.icon = r.icon;
-    if (r.capabilities != null) a.capabilities = Map.of(r.capabilities!);
+    if (declared != null) a.capabilities = Map.of(declared);
     a.versions.add(
       _version(draftId, a.current + 1, files, label: r.label, note: r.note),
     );
@@ -2231,7 +2281,9 @@ class FakeClaxApi implements ClaxApi {
     String? note,
     List<String> addresses = const [],
   }) {
-    final paths = files.keys.toList()..sort(_byteOrder);
+    // The daemon's content hash leaves the capability declaration out.
+    final paths = files.keys.where((p) => p != manifestPath).toList()
+      ..sort(_byteOrder);
     final manifest = StringBuffer();
     for (final p in paths) {
       final f = files[p]!;
@@ -2287,6 +2339,70 @@ class FakeClaxApi implements ClaxApi {
       _FakeFile(e.bytes, e.type ?? _type(path), text: e.text);
 
   /// A request's files and entries (an entry wins), null for a removal.
+  /// The declaration a publish makes, as the daemon decides it
+  /// (`clax_core::publish`): a `clax.json` it sends is the declaration (400
+  /// `invalid_manifest` when it is not `{"capabilities": {…}}`, and
+  /// `manifest_mismatch` when [capabilities] differs); [capabilities]
+  /// without one writes it into [files]; a removal of it with none clears
+  /// the declaration; neither keeps it (null).
+  static Map<String, Object?>? _declare(
+    Map<String, _FakeFile?> sent,
+    Map<String, Object?>? capabilities,
+    Map<String, _FakeFile> files,
+  ) {
+    if (sent[manifestPath] case final file?) {
+      Map<String, Object?>? declared;
+      try {
+        final j = jsonDecode(utf8.decode(file.bytes));
+        if (j is Map<String, Object?> &&
+            j.length == 1 &&
+            j['capabilities'] is Map<String, Object?>) {
+          declared = j['capabilities'] as Map<String, Object?>;
+        }
+      } on FormatException {
+        declared = null;
+      }
+      if (declared == null) {
+        throw _invalid(
+          'invalid_manifest',
+          'clax.json must be {"capabilities": {...}}',
+        );
+      }
+      if (capabilities != null &&
+          _canonical(capabilities) != _canonical(declared)) {
+        throw _invalid(
+          'manifest_mismatch',
+          "capabilities differs from clax.json's",
+        );
+      }
+      return declared;
+    }
+    if (capabilities != null) {
+      final text =
+          '${const JsonEncoder.withIndent('  ').convert({'capabilities': capabilities})}\n';
+      files[manifestPath] = _FakeFile(
+        Uint8List.fromList(utf8.encode(text)),
+        'application/json',
+        text: text,
+      );
+      return capabilities;
+    }
+    if (sent.containsKey(manifestPath)) return const {};
+    return null;
+  }
+
+  /// [v] as JSON with every object's keys sorted, for comparing
+  /// declarations as the daemon does (key order does not count).
+  static String _canonical(Object? v) => jsonEncode(_sorted(v));
+
+  static Object? _sorted(Object? v) => switch (v) {
+    final Map<String, Object?> m => {
+      for (final k in m.keys.toList()..sort()) k: _sorted(m[k]),
+    },
+    final List<Object?> l => [for (final e in l) _sorted(e)],
+    _ => v,
+  };
+
   static Map<String, _FakeFile?> _requestFiles(PublishRequest r) => {
     for (final e in r.files.entries)
       e.key: e.value == null ? null : _texts({e.key: e.value!})[e.key],
@@ -2296,11 +2412,28 @@ class FakeClaxApi implements ClaxApi {
 
   PublishResult _landed(_FakeArtifact a, List<String> addresses) {
     final v = a.versions.last.info;
+    final pending = pendsApproval
+        ? PendingCapabilities(
+            version: v.n,
+            capabilities: [
+              ...a.capabilities.keys.where(
+                (k) => !(_approvedCaps[a.id]?.contains(k) ?? false),
+              ),
+              ...unseenPending,
+            ],
+            hosts: [
+              for (final h in _hostsOf(a.capabilities))
+                if (!(_approvedHosts[a.id]?.contains(h) ?? false)) h,
+            ],
+            declarationSha256: pendingSha256(a.id, v.n),
+          )
+        : null;
     if (a.hidden) {
       return PublishResult(
         artifact: a.summary(_now()),
         version: v,
         url: '/a/${a.id}',
+        pendingCapabilities: pending,
       );
     }
     if (sessionId != null) working.remove(a.id);
@@ -2314,6 +2447,7 @@ class FakeClaxApi implements ClaxApi {
       artifact: a.summary(_now()),
       version: v,
       url: '/a/${a.id}',
+      pendingCapabilities: pending,
     );
   }
 

@@ -1,0 +1,8 @@
+# No dependency's install script runs: their packages work without them
+# (esbuild's and workerd's launchers find their platform binary when they
+# run, and fsevents ships its own). Stated because Bazel's rules for pnpm
+# projects (docs/bazel.md) require it stated.
+allowBuilds:
+  esbuild: false
+  fsevents: false
+  workerd: false

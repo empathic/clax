@@ -11,6 +11,11 @@
 //! the step commits with what completed. The script's clock and random
 //! numbers are fixed per step ([`clax_bot_sandbox::Determinism`]), so a
 //! script that only reads what it read before makes the same calls.
+//!
+//! `clax.web.*` calls are performed by the run itself, through the run's
+//! web source, and journaled with their charge (see [`web`]).
+
+mod web;
 
 use crate::api;
 use crate::check;
@@ -43,6 +48,38 @@ struct CallLog {
     replayed: bool,
     /// How long the call took, in milliseconds.
     ms: u64,
+    /// What a web call charged, from its journal entry when it was
+    /// answered from the journal; `None` for any other call.
+    cost_milli: Option<i64>,
+    /// What the run panel shows of a web call: `{query}`, or `{url,
+    /// source}` where `source` names where the URL came from
+    /// ([`crate::web::UrlSource::label`]).
+    web: Option<Value>,
+}
+
+/// What [`RunHost::perform`] made of a call.
+struct Performed {
+    res: std::result::Result<Value, HostError>,
+    target: Option<String>,
+    replayed: bool,
+    cost_milli: Option<i64>,
+    web: Option<Value>,
+}
+
+impl Performed {
+    fn plain(
+        res: std::result::Result<Value, HostError>,
+        target: Option<String>,
+        replayed: bool,
+    ) -> Performed {
+        Performed {
+            res,
+            target,
+            replayed,
+            cost_milli: None,
+            web: None,
+        }
+    }
 }
 
 struct HostState {
@@ -66,18 +103,31 @@ struct RunHost<'a> {
     state: Mutex<HostState>,
 }
 
+/// A failure as the journal keeps it: `code`, `message`, and `retryable`
+/// when it is.
 fn err_json(e: &HostError) -> Value {
-    json!({"code": e.code, "message": e.message})
+    let mut v = json!({"code": e.code, "message": e.message});
+    if e.retryable {
+        v["retryable"] = json!(true);
+    }
+    v
 }
 
+/// The answer journal entry `e` holds, a failure as [`err_json`] kept it.
 fn recorded(e: &CallEntry) -> std::result::Result<Value, HostError> {
     if e.ok() {
         Ok(e.result().clone())
     } else {
-        Err(HostError::new(
-            e.result()["code"].as_str().unwrap_or("call_failed"),
-            e.result()["message"].as_str().unwrap_or(""),
-        ))
+        let r = e.result();
+        let err = HostError::new(
+            r["code"].as_str().unwrap_or("call_failed"),
+            r["message"].as_str().unwrap_or(""),
+        );
+        Err(if r["retryable"] == json!(true) {
+            err.retryable()
+        } else {
+            err
+        })
     }
 }
 
@@ -86,16 +136,8 @@ impl RunHost<'_> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn log(
-        &self,
-        seq: i64,
-        op: &str,
-        target: Option<String>,
-        res: &std::result::Result<Value, HostError>,
-        replayed: bool,
-        ms: u64,
-    ) {
-        let (ok, code) = match res {
+    fn log(&self, seq: i64, op: &str, p: &Performed, ms: u64) {
+        let (ok, code) = match &p.res {
             Ok(_) => (true, None),
             Err(e) => (false, Some(e.code.clone())),
         };
@@ -103,20 +145,24 @@ impl RunHost<'_> {
             self.attempt,
             Event::Call {
                 op: op.into(),
-                target: target.clone(),
+                target: p.target.clone(),
                 ok,
                 code: code.clone(),
                 ms,
+                cost_milli: p.cost_milli,
+                web: p.web.clone(),
             },
         );
         self.lock().calls.push(CallLog {
             seq,
             op: op.into(),
-            target,
+            target: p.target.clone(),
             ok,
             code,
-            replayed,
+            replayed: p.replayed,
             ms,
+            cost_milli: p.cost_milli,
+            web: p.web.clone(),
         });
     }
 
@@ -294,12 +340,7 @@ impl RunHost<'_> {
         Ok(got)
     }
 
-    async fn perform(
-        &self,
-        op: &str,
-        raw: &Value,
-        seq: i64,
-    ) -> (std::result::Result<Value, HostError>, Option<String>, bool) {
+    async fn perform(&self, op: &str, raw: &Value, seq: i64) -> Performed {
         let hash = args_hash(raw);
         let replay = self.journal.get(&seq);
         if let Some(e) = replay
@@ -310,7 +351,7 @@ impl RunHost<'_> {
                 e.op()
             );
             self.lock().diverged = Some((seq, why.clone()));
-            return (
+            return Performed::plain(
                 Err(HostError::new(api::CODE_REPLAY_DIVERGED, why)),
                 None,
                 false,
@@ -323,7 +364,7 @@ impl RunHost<'_> {
                 if replay.is_none() {
                     self.journal(seq, op, raw, &res, false);
                 }
-                return (res, None, replay.is_some());
+                return Performed::plain(res, None, replay.is_some());
             }
         };
         let target = api::target(op, &args, &self.tick.run.artifact_id);
@@ -332,10 +373,20 @@ impl RunHost<'_> {
             if replay.is_none() {
                 self.journal(seq, op, raw, &res, false);
             }
-            return (res, target, replay.is_some());
+            return Performed::plain(res, target, replay.is_some());
         }
         let spec = api::op(op).expect("checked");
         let res = match spec.performer {
+            api::Performer::Web => {
+                let done = self.web(op, &args, raw, seq, replay).await;
+                return Performed {
+                    res: done.res,
+                    target,
+                    replayed: replay.is_some(),
+                    cost_milli: done.cost_milli,
+                    web: Some(done.web),
+                };
+            }
             api::Performer::Draft => {
                 let res = self.draft_op(op, &args, replay).await;
                 if replay.is_none() {
@@ -373,6 +424,15 @@ impl RunHost<'_> {
                             }
                             res
                         }
+                        // Unreachable: every Spend operation is `Performer::Web`.
+                        api::Access::Spend => {
+                            let res = Err(HostError::new(
+                                api::CODE_UNKNOWN_OP,
+                                format!("clax.{op} is not a host operation"),
+                            ));
+                            self.journal(seq, op, raw, &res, false);
+                            res
+                        }
                     }
                 }
             },
@@ -385,7 +445,7 @@ impl RunHost<'_> {
                 _ => {}
             }
         }
-        (res, target, replay.is_some())
+        Performed::plain(res, target, replay.is_some())
     }
 }
 
@@ -399,22 +459,26 @@ impl Host for RunHost<'_> {
             (st.seq - 1, st.diverged.clone())
         };
         if let Some((at, why)) = diverged {
-            let res = Err(HostError::new(
-                api::CODE_REPLAY_DIVERGED,
-                format!("the replay stopped at call {at}: {why}"),
-            ));
-            self.log(seq, op, None, &res, false, 0);
-            return res;
+            let p = Performed::plain(
+                Err(HostError::new(
+                    api::CODE_REPLAY_DIVERGED,
+                    format!("the replay stopped at call {at}: {why}"),
+                )),
+                None,
+                false,
+            );
+            self.log(seq, op, &p, 0);
+            return p.res;
         }
         let started = clax_rt::time::Instant::now();
-        let (res, target, replayed) = self.perform(op, &args, seq).await;
-        let ms = if replayed {
+        let p = self.perform(op, &args, seq).await;
+        let ms = if p.replayed {
             0
         } else {
             u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
         };
-        self.log(seq, op, target, &res, replayed, ms);
-        res
+        self.log(seq, op, &p, ms);
+        p.res
     }
 }
 
@@ -588,9 +652,12 @@ impl Tick<'_> {
         let calls_json: Vec<Value> = st
             .calls
             .iter()
-            .map(
-                |c| json!({"op": c.op, "target": c.target, "ok": c.ok, "code": c.code, "ms": c.ms}),
-            )
+            .map(|c| {
+                let mut v = json!({"op": c.op, "target": c.target, "ok": c.ok, "code": c.code,
+                                   "ms": c.ms});
+                crate::events::with_web_fields(&mut v, c.cost_milli, c.web.as_ref());
+                v
+            })
             .collect();
         let base = st.moved.then_some(st.draft.base_version);
         let cancelled = outcome

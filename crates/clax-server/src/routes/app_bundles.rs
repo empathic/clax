@@ -436,6 +436,39 @@ pub fn stamp_app_fields(st: &Store, a: &Artifact, view: &mut Value) -> clax_core
     Ok(())
 }
 
+/// Adds to `view`, artifact `a`'s JSON, `capabilities_in_force`: the
+/// declaration in force ([`Store::capabilities_in_force`]), what the shell
+/// hands the page. For a caller who may approve its declaration
+/// (`may_approve`, as `routes::permissions::may_approve` decides: never an
+/// agent; on a local daemon the owner alone, on a hosted one who
+/// administers it) it adds `may_approve: true` and `pending_capabilities`,
+/// what the current version declares that waits for approval (`null` when
+/// nothing does);
+/// for anyone else both are absent. Where `view` withholds the declaration
+/// from its reader (`capabilities` null, as the reader's visibility filter
+/// leaves it), `capabilities_in_force` is null and nothing more is said.
+///
+/// # Errors
+/// The store's.
+pub fn stamp_capabilities(
+    st: &Store,
+    a: &Artifact,
+    may_approve: bool,
+    view: &mut Value,
+) -> clax_core::Result<()> {
+    if view.get("capabilities").is_some_and(Value::is_null) {
+        view["capabilities_in_force"] = Value::Null;
+        return Ok(());
+    }
+    let id = ArtifactId::parse(&a.id)?;
+    view["capabilities_in_force"] = st.capabilities_in_force(&id)?;
+    if may_approve {
+        view["may_approve"] = json!(true);
+        view["pending_capabilities"] = json!(st.pending_capabilities(&id)?);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{is_lineage, slug};

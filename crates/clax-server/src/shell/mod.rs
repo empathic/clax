@@ -137,6 +137,48 @@ pub fn legal_page(
     }
 }
 
+/// A file of the landing page, `file` relative to the quickstart `release`
+/// (`clax_server::hosted`'s `/start/`): its pages as static pages only
+/// their own origin may frame (the shell's landing entry frames
+/// `index.html`), and each other file by its extension, revalidated by its
+/// `ETag`. Names starting with a dot are never served.
+pub fn landing_file(
+    release: &clax_core::quickstart::Release,
+    req: &HeaderMap,
+    file: &str,
+) -> Result<Response, ApiError> {
+    let hidden = file.split('/').any(|c| c.starts_with('.') || c.is_empty());
+    let Some(data) = (!hidden).then(|| release.files.get(file)).flatten() else {
+        return Err(ApiError::not_found());
+    };
+    if file.ends_with(".html") {
+        let mut res = http_cache::html(req, &String::from_utf8_lossy(data));
+        let h = res.headers_mut();
+        h.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("frame-ancestors 'self'"),
+        );
+        h.insert(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("SAMEORIGIN"),
+        );
+        return Ok(res);
+    }
+    let ct = mime_guess::from_path(file)
+        .first_or_octet_stream()
+        .to_string();
+    Ok(http_cache::tagged(req, data, REVALIDATE, || {
+        (
+            [
+                (header::CONTENT_TYPE, ct),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+            ],
+            data.clone(),
+        )
+            .into_response()
+    }))
+}
+
 /// `/`, `/inbox`, `/people` and `/tags`: the gallery's entry, which shows
 /// the gallery, the inbox, People or the tags by its path.
 pub async fn gallery_page(
@@ -154,7 +196,11 @@ pub async fn gallery_page(
 /// The data is the API's, so it follows the API's host rule
 /// ([`clax_http::auth::request_host_allowed`], checked before anything is read):
 /// a request whose `Host` the API would refuse (a DNS name rebound to this
-/// machine) gets the bare entry, whose own API calls then fail. A store error
+/// machine) gets the bare entry, whose own API calls then fail. So does a
+/// page load that carries an owner browser session's cookie without its
+/// proof ([`clax_http::local_trust::UnprovenSession`]): every navigation of
+/// a local owner's browser, whose shell then reads the data with the proof
+/// (`web/shell/src/owner-proof.ts`). A store error
 /// or a store slower than the API's timeout also gives the bare entry, and
 /// the shell loads the data itself.
 ///
@@ -185,7 +231,16 @@ pub async fn artifact_page(
         || extensions
             .get::<clax_http::hosted::HostedRequest>()
             .is_some();
-    let injected = if host_ok {
+    // An owner browser session's cookie without its proof passed the gate
+    // for the page load alone: the page carries no data, and the shell
+    // loads it with the proof.
+    let unproven = extensions
+        .get::<clax_http::local_trust::UnprovenSession>()
+        .is_some()
+        && extensions
+            .get::<clax_http::local_trust::OwnerSession>()
+            .is_none();
+    let injected = if host_ok && !unproven {
         within(
             s.request_timeout,
             boot::assemble(&s, route, uri.query(), &req, &extensions),
@@ -415,6 +470,9 @@ pub async fn static_file(
     let Some(f) = (!hidden).then(|| s.web.get(&file)).flatten() else {
         return Ok(ApiError::not_found().into_response());
     };
+    if let Some(ty) = embed_file(&path) {
+        return Ok(embed_answer(ty, f.data.into_owned()));
+    }
     let ct = if path.ends_with(".js") {
         "text/javascript".to_string()
     } else {
@@ -463,6 +521,34 @@ pub async fn static_file(
         f.data.into_owned(),
     )
         .into_response())
+}
+
+/// The embeddable overlay's files under `/_clax/` (`overlay.js`, its ES
+/// module `overlay.mjs`, and their type definitions `overlay.d.ts`), with
+/// each one's content type: a deployer's page on any origin loads them,
+/// so they are answered with `Access-Control-Allow-Origin: *` and never
+/// with credentials. `None` for every other file.
+pub fn embed_file(path: &str) -> Option<&'static str> {
+    match path {
+        "overlay.js" | "overlay.mjs" => Some("text/javascript"),
+        "overlay.d.ts" => Some("text/plain; charset=utf-8"),
+        _ => None,
+    }
+}
+
+/// An embeddable overlay file's answer (`embed_file`): `body` as type
+/// `ty`, cached for an hour, readable from any origin, not sniffed.
+fn embed_answer(ty: &'static str, body: Vec<u8>) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, ty),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 /// How [`static_file`] caches `/_clax/<path>` when another host serves the
@@ -655,5 +741,26 @@ mod tests {
         assert_eq!(asset_cache("bridge.js"), None);
         assert_eq!(asset_cache("transport.js"), None);
         assert_eq!(asset_cache("mark.svg"), Some("public, max-age=3600"));
+    }
+
+    #[test]
+    fn only_the_overlay_files_are_offered_to_other_origins_with_their_types() {
+        assert_eq!(embed_file("overlay.js"), Some("text/javascript"));
+        assert_eq!(embed_file("overlay.mjs"), Some("text/javascript"));
+        assert_eq!(
+            embed_file("overlay.d.ts"),
+            Some("text/plain; charset=utf-8")
+        );
+        for other in [
+            "bridge.js",
+            "transport.js",
+            "shell/a-12345678.js",
+            "overlay.css",
+            "x/overlay.js",
+        ] {
+            assert_eq!(embed_file(other), None, "{other}");
+        }
+        // The Worker serves them from its assets with their cache.
+        assert_eq!(asset_cache("overlay.mjs"), Some("public, max-age=3600"));
     }
 }

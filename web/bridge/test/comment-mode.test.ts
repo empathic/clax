@@ -5,6 +5,10 @@ import { FRAME_FALLBACK_MS } from "../src/frame";
 // A backstop for a loaded machine; no test here times anything.
 vi.setConfig({ testTimeout: 20_000 });
 
+// jsdom reports window.focus as not implemented, with a stack trace each
+// time comment mode takes focus back; a no-op keeps the log readable.
+window.focus = () => {};
+
 let hooks: { [K in Exclude<keyof ModeHooks, "live">]: ReturnType<typeof vi.fn> } & Pick<ModeHooks, "live">;
 let mode: CommentMode;
 const nextFrame = () => new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
@@ -202,6 +206,16 @@ describe("CommentMode", () => {
     expect(hooks.pickElement).not.toHaveBeenCalled();
   });
 
+  it("never picks what a host marked data-clax-ignore", () => {
+    document.body.insertAdjacentHTML("beforeend", `<aside data-clax-ignore><button>Chat</button></aside>`);
+    mode.set(true);
+    const b = document.querySelector("aside button")!;
+    fire(b, "mousedown");
+    fire(b, "mouseup");
+    fire(b, "click");
+    expect(hooks.pickElement).not.toHaveBeenCalled();
+  });
+
   it("ignores a selection made before the mode was turned on", () => {
     const p = document.querySelector("p")!;
     select(p, 0, 4);
@@ -211,6 +225,19 @@ describe("CommentMode", () => {
     select(p, 5, 12);
     fire(p, "mouseup");
     expect(hooks.pickRange).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("an outline the host leads", () => {
+  it("outlines the element given while the mode is on, and hides it for none", () => {
+    const h = document.querySelector("h2")!;
+    mode.outlineTarget(h);
+    expect(outline().style.display).not.toBe("block");
+    mode.set(true);
+    mode.outlineTarget(h);
+    expect(outline().style.display).toBe("block");
+    mode.outlineTarget(null);
+    expect(outline().style.display).toBe("none");
   });
 });
 
@@ -417,6 +444,26 @@ describe("drawing areas", () => {
     at(p, "mousemove", 200, 90, { shiftKey: true });
     at(p, "mouseup", 200, 90, { shiftKey: true });
     expect(hooks.pickArea).toHaveBeenCalledWith({ left: 24, top: 18, width: 176, height: 72 });
+  });
+
+  it("in Area mode draws an area from a drag over text, and picks nothing by a click", () => {
+    textUnderPointer();
+    mode.set(true);
+    mode.setAreasOnly(true);
+    const p = document.querySelector("#p")!;
+    expect(at(p, "mousedown", 24, 18).defaultPrevented).toBe(true);
+    at(p, "mousemove", 200, 90);
+    at(p, "mouseup", 200, 90);
+    expect(hooks.pickArea).toHaveBeenCalledWith({ left: 24, top: 18, width: 176, height: 72 });
+    mode.captured();
+    at(p, "mousedown", 30, 30);
+    at(p, "mouseup", 30, 30);
+    at(p, "click", 30, 30);
+    expect(hooks.pickElement).not.toHaveBeenCalled();
+    expect(hooks.pickRange).not.toHaveBeenCalled();
+    mode.setAreasOnly(false);
+    at(p, "click", 30, 30);
+    expect(hooks.pickElement.mock.calls.length + hooks.pickRange.mock.calls.length).toBe(1);
   });
 
   it("cancels a drag on Escape without leaving comment mode", () => {

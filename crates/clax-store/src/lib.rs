@@ -105,8 +105,12 @@ pub mod backup;
 pub mod batches;
 pub mod bot_runs;
 pub mod bot_settings;
+pub mod bot_web;
 pub mod briefs;
+pub mod browser_login;
+pub mod capability_approvals;
 pub mod changelog;
+pub mod confirmations;
 pub mod credits;
 pub mod device;
 pub mod docs;
@@ -115,6 +119,7 @@ pub mod elevations;
 pub mod engagement;
 pub mod exec;
 pub mod extension;
+pub mod external;
 pub mod feedback;
 pub mod flags;
 pub mod forks;
@@ -130,12 +135,17 @@ pub mod linked;
 pub mod live;
 pub mod migrations;
 pub mod net_grants;
+pub mod passkeys;
 pub mod people;
 #[cfg(test)]
 mod plans;
+pub mod price_catalog;
 pub mod pushes;
 pub mod questions;
+pub mod queues;
+pub mod quickstart;
 pub mod reach;
+pub mod remote_requests;
 pub mod remotes;
 pub mod roles;
 pub mod sample_grants;
@@ -157,6 +167,7 @@ pub use attention::{AgentPerson, AgentView, Attention, AttentionSummary, Partici
 pub use audit::AuditRow;
 pub use bot_runs::{CallEntry, Guard, Journaled, Tx};
 pub use feedback::{Delivery, DeliveryViewer, SendTarget, TakeFeedback, Taken};
+pub use quickstart::{Quickstart, Seeded, Updated};
 pub use sessions::{
     EndReason, EndedSession, JoinSession, NameSource, Proved, Reaped, RegisterSession, Registered,
     Restored, RosterAgent,
@@ -199,7 +210,7 @@ type AgentsListener = Arc<dyn Fn(Vec<String>) + Send + Sync>;
 
 /// The installed pushed versions listener, cloned out of its lock.
 pub(crate) type PushedListener =
-    Arc<dyn Fn(&clax_core::model::Artifact, &clax_core::model::Version) + Send + Sync>;
+    Arc<dyn Fn(&clax_core::model::Artifact, &clax_core::model::Version, bool) + Send + Sync>;
 
 pub struct Store {
     home: Home,
@@ -239,6 +250,10 @@ pub struct Store {
     /// Told of each version recorded from a pushed commit
     /// ([`Store::set_pushed_listener`]).
     pushed_listener: RwLock<Option<PushedListener>>,
+    /// Whether this store is a hosted daemon's, which decides who
+    /// administers an artifact for a pushed declaration
+    /// ([`Store::set_hosted`]).
+    hosted: AtomicBool,
     /// Where every time the store writes or compares is read
     /// ([`Store::now`]). IDs are minted from the system clock.
     clock: Arc<dyn Clock>,
@@ -422,6 +437,7 @@ impl Store {
             publish_key_locks: ArtifactLocks::default(),
             brief_key_locks: ArtifactLocks::default(),
             shut_down: AtomicBool::new(false),
+            hosted: AtomicBool::new(false),
             inbox_changes,
             inbox_listener: RwLock::new(None),
             request_changes,
@@ -944,6 +960,11 @@ pub(crate) mod test_util {
     /// ([`super::tests::the_store_tests_pass_on_one_connection`]).
     pub const STORE_MODE_VAR: &str = "CLAX_TEST_STORE";
 
+    /// Set to `apart` where that run is a test target of its own
+    /// (`//crates/clax-store:clax_store_one_connection_test`, which runs
+    /// that test alone), so the target of every other test leaves it out.
+    pub const ONE_CONNECTION_RUN_VAR: &str = "CLAX_TEST_STORE_ONE_CONNECTION";
+
     /// Whether this run's [`store`]s are on one connection.
     pub fn on_one_connection() -> bool {
         std::env::var(STORE_MODE_VAR).as_deref() == Ok("single")
@@ -1025,8 +1046,22 @@ pub(crate) mod test_util {
         ArtifactId::parse(&a.id).unwrap()
     }
 
-    /// A one-version artifact declaring `caps`.
+    /// A one-version artifact declaring `caps`, its declaration approved
+    /// (recorded as approved by `owner`, with no grant made), so all of it
+    /// is in force: a test of grants starts from what an approved app has.
     pub fn artifact_with_caps(store: &Store, caps: serde_json::Value) -> ArtifactId {
+        let id = artifact_declaring(store, caps.clone());
+        store
+            .with_tx(|tx| {
+                crate::capability_approvals::record_in(tx, &id, 1, &caps, "owner", &store.now())
+            })
+            .unwrap();
+        id
+    }
+
+    /// A one-version artifact declaring `caps`, nothing of it approved, so
+    /// its gated names wait for approval.
+    pub fn artifact_declaring(store: &Store, caps: serde_json::Value) -> ArtifactId {
         let req: PublishRequest = serde_json::from_value(serde_json::json!({
             "title": "Tracker",
             "capabilities": caps,
@@ -1210,10 +1245,14 @@ mod tests {
     /// this test binary runs them again with
     /// [`STORE_MODE_VAR`](super::test_util::STORE_MODE_VAR) set. The pool's
     /// own tests (`exec::tests`) are left out; they open the pool whichever
-    /// the mode, and its one-connection tests are run here.
+    /// the mode, and its one-connection tests are run here. Under Bazel this
+    /// test runs in a target of its own, beside the others rather than after
+    /// them ([`ONE_CONNECTION_RUN_VAR`](super::test_util::ONE_CONNECTION_RUN_VAR)).
     #[test]
     fn the_store_tests_pass_on_one_connection() {
-        if super::test_util::on_one_connection() {
+        if super::test_util::on_one_connection()
+            || std::env::var(super::test_util::ONE_CONNECTION_RUN_VAR).as_deref() == Ok("apart")
+        {
             return;
         }
         let out = std::process::Command::new(std::env::current_exe().unwrap())

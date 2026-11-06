@@ -26,9 +26,12 @@ cleanup() { "$bin" stop >/dev/null 2>&1 || true; rm -rf "$scratch"; }
 trap cleanup EXIT
 info="$("$bin" serve --json --port 0)"
 port="$(printf '%s' "$info" | python3 -c 'import json, sys; print(json.load(sys.stdin)["port"])')"
-page="$(curl -fsS "http://127.0.0.1:$port/")"
-case "$page" in
-    *"/_clax/"*) ;;
-    *) echo "$bin does not serve the embedded web UI: GET / names no /_clax/ asset (was web/dist built before cargo build --release?)" >&2; exit 1 ;;
+# The gallery at / needs a signed-in browser, but the UI's files under
+# /_clax/ need no credential, and web/dist holds none until the web build
+# runs. bridge.js is the one every artifact page loads.
+type="$(curl -fsS -o /dev/null -w '%{content_type}' "http://127.0.0.1:$port/_clax/bridge.js")" || type=""
+case "$type" in
+    text/javascript*) ;;
+    *) echo "$bin does not serve the embedded web UI: GET /_clax/bridge.js answered '${type:-an error}' (was web/dist built before cargo build --release?)" >&2; exit 1 ;;
 esac
 echo "ok: $bin is clax $version, bundles SQLite with the store's options, and serves the embedded web UI"

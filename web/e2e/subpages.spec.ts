@@ -143,22 +143,39 @@ test(`the address bar's fragment moves the page's, which goes on hearing the she
   await commentModeIn(frame);
 });
 
-test(`back across an in-page link, the page is asked to greet again and goes on hearing the shell`, async ({ page }) => {
+test(`back across an in-page link, the page is asked to greet again when the load closed its gate, and goes on hearing the shell`, async ({ page }) => {
   const LONG = `<!doctype html><html><head><title>Long</title></head><body><a id="jump" href="#end">To the end</a><div style="height:3000px"></div><h2 id="end">End</h2></body></html>`;
   const { artifact } = await publish(d.base, d.token, `Back`, { "index.html": LONG });
   const id = artifact.id;
-  // Counts the shell's requests to greet again, in every frame.
-  await page.addInitScript(() => addEventListener("message", e => { if (e.data && e.data.type === "clax:greet") (window as unknown as { greets: number }).greets = ((window as unknown as { greets?: number }).greets ?? 0) + 1; }));
+  // Counts the shell's requests to greet again, in every frame; the shell's
+  // window logs the frame's loads and hellos in the order the shell sees them.
+  await page.addInitScript(() => {
+    const w = window as unknown as { greets?: number; seen?: string[] };
+    addEventListener("message", e => {
+      if (e.data?.type === "clax:greet") w.greets = (w.greets ?? 0) + 1;
+      if (window === window.top && e.data?.type === "clax:hello") (w.seen ??= []).push("hello");
+    });
+    // An element's load leaves the window out of its path: heard at the document.
+    if (window === window.top) document.addEventListener("load", e => { if ((e.target as Element)?.tagName === "IFRAME") (w.seen ??= []).push("load"); }, true);
+  });
   const frame = await openArtifact(page, d.base, id, 1);
+  const seen = () => page.evaluate(() => (window as unknown as { seen?: string[] }).seen ?? []);
+  await expect.poll(async () => { const s = await seen(); return s.includes("load") && s.includes("hello"); }).toBe(true);
   // The link stays with the browser: a fragment entry of the frame's own.
   await frame.locator("#jump").click();
   await expect(page).toHaveURL(`${d.base}/a/${id}#end`);
   // Back across that entry: Chromium fires a load at the frame element with
-  // no new document, which closes the gate; the shell asks the page to
-  // greet, and its hello reopens it.
+  // no new document. A load with no hello since the one before closes the
+  // gate, and the shell asks the page to greet; its hello reopens it. A
+  // page's first hello may come after its first load (frame-gate.ts), and
+  // then that hello counts for this load: the gate stays open and nothing
+  // is asked.
+  const before = await seen();
+  const asked = before.at(-1) === "load" ? 1 : 0;
   await page.evaluate(() => history.back());
   await expect.poll(() => frame.evaluate(() => location.hash)).toBe("");
-  await expect.poll(() => frame.evaluate(() => (window as unknown as { greets?: number }).greets ?? 0)).toBe(1);
+  await expect.poll(async () => (await seen()).length).toBeGreaterThan(before.length);
+  await expect.poll(() => frame.evaluate(() => (window as unknown as { greets?: number }).greets ?? 0)).toBe(asked);
   await page.getByRole("button", { name: "Comment", exact: true }).click();
   await commentModeIn(frame);
 });

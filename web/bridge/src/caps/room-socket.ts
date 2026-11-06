@@ -9,7 +9,8 @@
 // The site fixes a socket's level when it opens, so when the viewer changes
 // (a guest who names themselves moves to a higher level) the room opens a
 // new socket under the same label, which replaces the old one without the
-// page seeing it leave. It learns of the change from a framing Clax shell
+// page seeing it leave; the page's emits and joins meanwhile wait for the
+// new socket rather than being dropped. It learns of the change from a framing Clax shell
 // (`room/viewer`, after `room.watch`), and, top-level, from the site's
 // `whoami` read again as the page comes back into view.
 //
@@ -58,6 +59,10 @@ export function originRoom(client: Pick<OriginClient, "socket" | "call">, shell:
   let retired: WebSocket | null = null;
   // Who the site said the viewer was when the socket last opened.
   let who: string | null = null;
+  // While a viewer change's socket opens, the page still sees the room
+  // connected: its emits and joins wait for that socket, which settles this.
+  let reopening: Promise<void> | null = null;
+  let reopened = () => {};
 
   const send = (m: unknown) => { if (ws && isOpen) ws.send(JSON.stringify(m)); };
   const whoami = () => client.call("user", "whoami", []).then(w => whoKey(w as Who), () => null);
@@ -108,6 +113,7 @@ export function originRoom(client: Pick<OriginClient, "socket" | "call">, shell:
       s = client.socket(`room?peer=${label}`);
     } catch {
       terminal = true;
+      reopened();
       push("error", { room: null, code: "not_granted", message: "this view cannot join the room" });
       return;
     }
@@ -123,6 +129,7 @@ export function originRoom(client: Pick<OriginClient, "socket" | "call">, shell:
       push("connection", { connected: true });
       for (const [room, state] of presence) send({ t: "presence", room, state });
       for (const room of joined) rejoin(room);
+      reopened();
     };
     s.onmessage = e => {
       if (ws !== s || typeof e.data !== "string") return;
@@ -136,6 +143,7 @@ export function originRoom(client: Pick<OriginClient, "socket" | "call">, shell:
       const was = isOpen;
       isOpen = false;
       failWaiters("the room connection closed");
+      reopened();
       if (was) push("connection", { connected: false });
       // Another viewer's socket holds the label: take a fresh one.
       if (e.code === 4403 && e.reason === "peer_taken") label = peerLabel();
@@ -162,6 +170,7 @@ export function originRoom(client: Pick<OriginClient, "socket" | "call">, shell:
     ws = null;
     isOpen = false;
     failWaiters("the room reconnected");
+    reopening ??= new Promise(resolve => { reopened = () => { reopening = null; reopened = () => {}; resolve(); }; });
     connect();
   }
 
@@ -208,6 +217,7 @@ export function originRoom(client: Pick<OriginClient, "socket" | "call">, shell:
           return null;
         }
         case "emit": {
+          if (reopening) await reopening;
           if (!ws || !isOpen) return { dropped: false };
           const msg: Record<string, unknown> = { t: "emit", room: args[0] ?? null, topic: args[1] };
           if (args.length > 2) msg.data = args[2];
@@ -216,6 +226,7 @@ export function originRoom(client: Pick<OriginClient, "socket" | "call">, shell:
         }
         case "join": {
           const room = String(args[0]);
+          if (reopening) await reopening;
           await request({ t: "join", room });
           joined.add(room);
           return null;

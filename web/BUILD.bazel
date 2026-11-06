@@ -26,36 +26,75 @@ APP_DIRS = [
     "extension/**",
     "contract/**",
     "scripts/**",
+    "quickstart/**",
+    "sdk/**",
+    "overlay/**",
 ]
 
 TEST_FILES = [
     "**/*.test.ts",
     "bridge/test/**",
     "extension/test/**",
+    "sdk/test/**",
     "shell/src/test/**",
     "shell/test-setup.ts",
 ]
 
+# What the SDK package's build (//web:dist_sdk) reads: its sources'
+# directories, its build scripts and their configuration. A part of
+# :files_app, so that an edit elsewhere does not rebuild the package, and a
+# source outside these directories is missing from its sandbox.
+SDK_DIRS = [
+    "sdk/**",
+    "overlay/**",
+    "bridge/**",
+]
+
+SDK_FILES = [
+    "package.json",
+    "scripts/build-sdk.mjs",
+    "scripts/extension-clean.mjs",
+    "scripts/overlay-component-css.mjs",
+    "svelte.config.js",
+    "tsconfig.json",
+]
+
 copy_to_bin(
-    name = "files_app",
+    name = "files_sdk",
     srcs = glob(
-        APP_DIRS,
-        exclude = TEST_FILES + [
+        SDK_DIRS,
+        exclude = TEST_FILES + ["**/.qual"],
+    ) + SDK_FILES,
+    visibility = ["//visibility:public"],
+)
+
+copy_to_bin(
+    name = "files_app_rest",
+    srcs = glob(
+        [d for d in APP_DIRS if d not in SDK_DIRS],
+        exclude = TEST_FILES + SDK_FILES + [
             "**/.qual",
             "extension/key/key.pem",
         ],
     ) + [
         ".oxlintrc.json",
-        "package.json",
         "playwright.config.ts",
         "pnpm-workspace.yaml",
-        "svelte.config.js",
-        "tsconfig.json",
         "vite.bridge.config.ts",
         "vite.bridge-parts.config.ts",
         "vite.shell.config.ts",
         "vite.transport.config.ts",
+        "vite.overlay.config.ts",
         "vitest.config.ts",
+        "vitest.sdk.config.ts",
+    ],
+)
+
+filegroup(
+    name = "files_app",
+    srcs = [
+        ":files_app_rest",
+        ":files_sdk",
     ],
     visibility = ["//visibility:public"],
 )
@@ -66,6 +105,7 @@ copy_to_bin(
         [d + "/" + t for d in [x[:-len("/**")] for x in APP_DIRS] for t in ["**/*.test.ts"]] + [
             "bridge/test/**",
             "extension/test/**",
+            "sdk/test/**",
             "shell/src/test/**",
             "shell/test-setup.ts",
             "e2e/**",
@@ -126,6 +166,23 @@ pick_dir(
     visibility = ["//visibility:public"],
 )
 
+# pnpm run build:sdk: the SDK package, @empathic/clax-client-sdk
+# (scripts/build-sdk.mjs), an action of its own so that no web build the
+# binaries embed runs it. Its version is its own (sdk/package.json's),
+# and it carries the license text of web/bridge,
+# web/overlay and web/sdk.
+npm_script_build(
+    name = "dist_sdk",
+    srcs = [
+        ":files_sdk",
+        ":node_modules",
+        "//:lgpl_license",
+    ],
+    out_dirs = ["dist-sdk"],
+    script = "build:sdk",
+    visibility = ["//visibility:public"],
+)
+
 # pnpm run build:e2e: the browser tests' web UI, with the test clock.
 npm_script_build(
     name = "dist_e2e",
@@ -161,6 +218,31 @@ filegroup(
     visibility = ["//crates/clax-core:__pkg__"],
 )
 
+# The scrubbing cases clax-core's tests include (src/scrub.rs) and the SDK's
+# tests run alike.
+filegroup(
+    name = "sdk_scrub_cases",
+    srcs = ["sdk/test/scrub-cases.json"],
+    visibility = ["//crates:__subpackages__"],
+)
+
+# The error codes the SDK's QueueErrorCode lists (sdk/src/types.ts), which
+# clax-server's reporter route tests check every refusal against
+# (tests/api_queue_reporter.rs).
+filegroup(
+    name = "sdk_error_codes",
+    srcs = ["sdk/test/queue-error-codes.json"],
+    visibility = ["//crates:__subpackages__"],
+)
+
+# The SDK's request signing, which the Worker's feedback check signs a
+# reporter's calls with (crates/clax-worker/test-feedback.mjs).
+copy_to_bin(
+    name = "sdk_sign",
+    srcs = ["sdk/src/sign.ts"],
+    visibility = ["//crates/clax-worker:__pkg__"],
+)
+
 # The extension's manifest, which clax-core embeds.
 exports_files(
     ["extension/manifest.json"],
@@ -175,6 +257,7 @@ filegroup(
         "shell/src/*-cases.json",
         "shell/src/view/frame-host.ts",
         "shell/src/view/haiku.json",
+        "shell/src/theme.css",
     ]) + [
         "bridge/src/protocol.ts",
         "shell/artifact.html",
@@ -196,10 +279,12 @@ filegroup(
 # What the unit tests and the typecheck read outside web/: the toolpath
 # vectors, the browser tests of the hosted demo (they import demo/lib), the
 # home app's modules, its unit tests and the kit (apps/clax_app/home_unit),
-# and the host relay's scripts for one long answer (relay_fixture).
+# the host relay's scripts for one long answer (relay_fixture), and the
+# reel's recorder (web/reel, a package of its own, so no input of :dist).
 UNIT_DATA = [
     ":files",
     ":node_modules",
+    "//web/reel:files",
     "//apps/clax_app:home",
     "//apps/clax_app:home_unit",
     "//apps/clax_app:kit",
@@ -228,7 +313,32 @@ npm_script_test(
     script = "test",
 )
 
-# The bundle gate: gzip sizes of the built web UI and extension against
+# The SDK package as an app gets it (pnpm run test:sdk, sdk/package.test.ts):
+# installed from the tarball `npm pack` makes of it, with the Node
+# toolchain's npm, its package.json, its exports imported by name, the
+# overlay run from its bundle, and its declarations type-checked as an
+# app's.
+npm_script_test(
+    name = "sdk_package",
+    data = [
+        ":dist_sdk",
+        ":files",
+        ":node_modules",
+        "//:lgpl_license",
+        "@nodejs//:npm_bin",
+        "@nodejs//:npm_files",
+    ],
+    env = {"CLAX_NPM_CLI": "$(rootpath @nodejs//:npm_bin)"},
+    # The toolchain's npm stays where its repository put it.
+    no_copy_to_bin = [
+        "@nodejs//:npm_bin",
+        "@nodejs//:npm_files",
+    ],
+    script = "test:sdk",
+)
+
+# The bundle gate: gzip sizes of the built web UI, extension and SDK
+# package's overlay entry against
 # web/perf/bundle-budget.json (scripts/bundle-size.mjs). Its --record mode
 # writes the budget file in the checkout and stays a native command.
 npm_script_test(
@@ -236,6 +346,7 @@ npm_script_test(
     data = [
         ":dist",
         ":dist_extension",
+        ":dist_sdk",
         ":files",
         ":node_modules",
     ],
@@ -247,6 +358,8 @@ npm_script_test(
 # the browsers are read where Bazel put them, not copied
 # (web/e2e/bazel-env.ts). `e2e_shots` renders the app's web pieces into
 # CLAX_SHOTS_DIR (e2e/app-shots.spec.ts) and is run on demand only.
+# `e2e_queues` saves its screenshots to CLAX_QUEUES_SHOTS_DIR when set
+# (e2e/queues.spec.ts).
 E2E_DATA = [
     "//apps/clax_app:home",
     "//apps/clax_app:kit",
@@ -263,6 +376,7 @@ E2E_DATA = [
 ]
 
 E2E_ENV = {
+    "CLAX_GALLERY__QUICKSTART": "false",
     "CLAX_E2E_WEB_DIST": "$(rootpath :dist_e2e)",
     "CLAX_TEST_BIN": "$(rootpath //crates/clax-cli:clax)",
     "PLAYWRIGHT_BROWSERS_PATH": "$(rootpath @chromium//:browsers)",
@@ -292,6 +406,7 @@ E2E_SKIPS = ["crates/clax-cli/clax"]
 ) for project in [
     "gesture",
     "chrome-overlay",
+    "queues",
     "rest",
     "shots",
 ]]

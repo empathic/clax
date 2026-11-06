@@ -227,7 +227,10 @@ class Exporter {
     final d = await api.getArtifact(aid);
     final v = version == null ? _current(d) : _version(d, version);
     final files = <String, BundleFile>{};
-    for (final MapEntry(key: path, value: meta) in v.files.entries) {
+    // The manifest carries the declaration; clax.json, which can name the
+    // person's other apps, never travels (withoutManifest).
+    for (final MapEntry(key: path, value: meta)
+        in withoutManifest(v.files).entries) {
       final bytes = await api.readFileBytes(aid, v.n, path);
       if (bytes == null) {
         throw BundleFailure(

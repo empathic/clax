@@ -10,7 +10,10 @@
 //! recorded as `admin.provider {fields[], values{key: value}}` for the
 //! provider, model and cap keys (none of them a secret: the key is kept in
 //! [`crate::secrets`]), and as `admin.cost_line {line: "*instance", op: "update",
-//! fields}` for the credit price and the free tier.
+//! fields}` for the pricing keys: the credit price, the free tier, the
+//! default token rates (`default_rates.*`, milli-credits per million
+//! tokens, for a model with neither a cost line nor a catalog listing) and
+//! `require_explicit_price` (only cost lines price a model).
 
 use super::Store;
 use super::roles::set_by;
@@ -21,7 +24,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 /// The cost line ID that `admin.cost_line` names for an instance-wide
-/// pricing setting (the credit price, the free tier).
+/// pricing setting (the credit price, the free tier, the default rates).
 pub const INSTANCE_LINE: &str = "*instance";
 
 /// Declares [`Setting`] with each key's name, kind and default.
@@ -62,6 +65,7 @@ macro_rules! settings {
 }
 
 settings! {
+    Api = "api", Api, "anthropic";
     BaseUrl = "base_url", Url, "https://api.anthropic.com";
     ModelDefault = "models.default", Model, "claude-sonnet-5-5";
     ModelQuick = "models.quick", Model, "claude-haiku-5-5";
@@ -76,19 +80,69 @@ settings! {
     ScriptMaxCalls = "script.max_calls", Positive, 200;
     CreditPriceMicroUsd = "credit_price_micro_usd", Positive, 10_000;
     FreeWeeklyMilli = "free_weekly_milli", NonNegative, 2_000_000;
+    DefaultRateInput = "default_rates.input", FixedCredits, 560_000;
+    DefaultRateCachedInput = "default_rates.cached_input", FixedCredits, 28_000;
+    DefaultRateCacheWrite = "default_rates.cache_write", FixedCredits, 700_000;
+    DefaultRateOutput = "default_rates.output", FixedCredits, 2_800_000;
+    RequireExplicitPrice = "require_explicit_price", Bool, false;
+    WebSearchEnabled = "web.search.enabled", Bool, false;
+    WebFetchEnabled = "web.fetch.enabled", Bool, false;
+    WebSearchProvider = "web.search.provider", Provider, "ceramic";
+    WebSearchGateway = "web.search.gateway", Ident, "default";
+    WebSearchByokAlias = "web.search.byok_alias", Ident, "";
+    WebSearchLimit = "web.search.limit", OneToTen, 5;
+    WebMaxSearchesPerRun = "web.max_searches_per_run", Positive, 10;
+    WebMaxFetchesPerRun = "web.max_fetches_per_run", Positive, 20;
+    WebFetchUrlRule = "web.fetch.url_rule", UrlRule, "sourced";
+    WebFetchAllowlist = "web.fetch.allowlist", Hosts, Vec::<String>::new();
+    WebCloudflareAccountId = "web.cloudflare.account_id", AccountId, "";
 }
 
 /// What a setting's value is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
+    /// A wire API's name ([`clax_core::config::ModelApi`]).
+    Api,
     /// An `http://` or `https://` URL with a host.
     Url,
-    /// A model ID: 1 to 128 of `[A-Za-z0-9._:-]`.
+    /// A model ID: 1 to 128 of `[A-Za-z0-9._:/-]` (`/` for a host's
+    /// namespaced IDs, such as `subconscious/glm-5.3-marathon`).
     Model,
     /// An integer from 1 to 10^12.
     Positive,
     /// An integer from 0 to 10^15.
     NonNegative,
+    /// Milli-credits per line unit, bounded as a fixed cost line's are:
+    /// an integer from 0 to [`crate::credits::MAX_FIXED_CREDITS_MILLI`].
+    FixedCredits,
+    /// `true` or `false`.
+    Bool,
+    /// A web search provider: `ceramic`, `exa` or `linkup`.
+    Provider,
+    /// 0 to 64 of `[A-Za-z0-9_-]` (an AI Gateway or BYOK alias name; empty
+    /// is unset).
+    Ident,
+    /// An integer from 1 to 10.
+    OneToTen,
+    /// Which URLs a fetch may take: `sourced`, `any_public` or `allowlist`.
+    UrlRule,
+    /// At most 100 lowercase hostnames, each optionally `*.`-prefixed.
+    Hosts,
+    /// Empty (unset), or a Cloudflare account ID: 32 hex digits.
+    AccountId,
+}
+
+/// Whether `h` is a lowercase DNS hostname: at most 253 characters of
+/// labels of 1 to 63 of `[a-z0-9-]`, none starting or ending with `-`.
+fn hostname_ok(h: &str) -> bool {
+    h.len() <= 253
+        && h.split('.').all(|l| {
+            (1..=63).contains(&l.len())
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
 }
 
 impl Setting {
@@ -111,7 +165,13 @@ impl Setting {
     pub fn is_pricing(self) -> bool {
         matches!(
             self,
-            Setting::CreditPriceMicroUsd | Setting::FreeWeeklyMilli
+            Setting::CreditPriceMicroUsd
+                | Setting::FreeWeeklyMilli
+                | Setting::DefaultRateInput
+                | Setting::DefaultRateCachedInput
+                | Setting::DefaultRateCacheWrite
+                | Setting::DefaultRateOutput
+                | Setting::RequireExplicitPrice
         )
     }
 
@@ -124,6 +184,17 @@ impl Setting {
             CoreError::invalid("invalid_setting", format!("{} takes {what}", self.key()))
         };
         match self.kind() {
+            Kind::Api => {
+                let names: Vec<&str> = clax_core::config::ModelApi::ALL
+                    .iter()
+                    .map(|a| a.as_str())
+                    .collect();
+                let what = format!("one of {}", names.join(", "));
+                let s = value.as_str().ok_or_else(|| bad(&what))?.trim();
+                clax_core::config::ModelApi::parse(s)
+                    .map(|a| Value::from(a.as_str()))
+                    .ok_or_else(|| bad(&what))
+            }
             Kind::Url => {
                 let s = value.as_str().ok_or_else(|| bad("a URL"))?.trim();
                 let what = "an https URL (http only on localhost or a loopback address), without a query or fragment";
@@ -143,10 +214,12 @@ impl Setting {
                 let ok = !s.is_empty()
                     && s.len() <= 128
                     && s.bytes().all(|b| {
-                        b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'-')
+                        b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'/' | b'-')
                     });
                 if !ok {
-                    return Err(bad("a model ID (letters, digits, '.', '_', ':' and '-')"));
+                    return Err(bad(
+                        "a model ID (letters, digits, '.', '_', ':', '/' and '-')",
+                    ));
                 }
                 Ok(Value::from(s))
             }
@@ -157,6 +230,70 @@ impl Setting {
             Kind::NonNegative => match value.as_i64() {
                 Some(n) if (0..=1_000_000_000_000_000).contains(&n) => Ok(Value::from(n)),
                 _ => Err(bad("a whole number from 0")),
+            },
+            Kind::FixedCredits => match value.as_i64() {
+                Some(n) if (0..=crate::credits::MAX_FIXED_CREDITS_MILLI).contains(&n) => {
+                    Ok(Value::from(n))
+                }
+                _ => Err(bad(&format!(
+                    "a whole number from 0 to {}",
+                    crate::credits::MAX_FIXED_CREDITS_MILLI
+                ))),
+            },
+            Kind::Bool => value
+                .as_bool()
+                .map(Value::from)
+                .ok_or_else(|| bad("true or false")),
+            Kind::Provider => match value.as_str().map(str::trim) {
+                Some(p @ ("ceramic" | "exa" | "linkup")) => Ok(Value::from(p)),
+                _ => Err(bad("one of ceramic, exa, linkup")),
+            },
+            Kind::Ident => match value.as_str().map(str::trim) {
+                Some(s)
+                    if s.len() <= 64
+                        && s.bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')) =>
+                {
+                    Ok(Value::from(s))
+                }
+                _ => Err(bad("up to 64 letters, digits, '_' and '-'")),
+            },
+            Kind::OneToTen => match value.as_i64() {
+                Some(n) if (1..=10).contains(&n) => Ok(Value::from(n)),
+                _ => Err(bad("a whole number from 1 to 10")),
+            },
+            Kind::UrlRule => match value.as_str().map(str::trim) {
+                Some(r @ ("sourced" | "any_public" | "allowlist")) => Ok(Value::from(r)),
+                _ => Err(bad("one of sourced, any_public, allowlist")),
+            },
+            Kind::Hosts => {
+                let what =
+                    "a list of at most 100 lowercase hostnames, each optionally starting '*.'";
+                let items = value.as_array().filter(|a| a.len() <= 100);
+                let hosts: Option<Vec<&str>> = items.and_then(|a| {
+                    a.iter()
+                        .map(|h| {
+                            h.as_str()
+                                .filter(|h| hostname_ok(h.strip_prefix("*.").unwrap_or(h)))
+                        })
+                        .collect()
+                });
+                hosts
+                    .filter(|h| {
+                        let set: std::collections::BTreeSet<&&str> = h.iter().collect();
+                        set.len() == h.len()
+                    })
+                    .map(Value::from)
+                    .ok_or_else(|| bad(what))
+            }
+            Kind::AccountId => match value.as_str().map(str::trim) {
+                Some(s)
+                    if s.is_empty()
+                        || (s.len() == 32 && s.bytes().all(|b| b.is_ascii_hexdigit())) =>
+                {
+                    Ok(Value::from(s.to_ascii_lowercase()))
+                }
+                _ => Err(bad("empty or 32 hex digits")),
             },
         }
     }
@@ -295,6 +432,14 @@ pub(crate) fn int_setting_in(c: &Connection, ov: &Overrides, s: Setting) -> Resu
     Ok(setting_in(c, ov, s)?
         .as_i64()
         .or_else(|| s.default_value().as_i64())
+        .unwrap_or_default())
+}
+
+/// [`setting_in`] for a boolean setting.
+pub(crate) fn bool_setting_in(c: &Connection, ov: &Overrides, s: Setting) -> Result<bool> {
+    Ok(setting_in(c, ov, s)?
+        .as_bool()
+        .or_else(|| s.default_value().as_bool())
         .unwrap_or_default())
 }
 
@@ -630,6 +775,173 @@ mod tests {
     }
 
     #[test]
+    fn the_web_settings_default_off() {
+        let (_d, st) = store();
+        let want = [
+            (Setting::WebSearchEnabled, json!(false)),
+            (Setting::WebFetchEnabled, json!(false)),
+            (Setting::WebSearchProvider, json!("ceramic")),
+            (Setting::WebSearchGateway, json!("default")),
+            (Setting::WebSearchByokAlias, json!("")),
+            (Setting::WebSearchLimit, json!(5)),
+            (Setting::WebMaxSearchesPerRun, json!(10)),
+            (Setting::WebMaxFetchesPerRun, json!(20)),
+            (Setting::WebFetchUrlRule, json!("sourced")),
+            (Setting::WebFetchAllowlist, json!([])),
+            (Setting::WebCloudflareAccountId, json!("")),
+        ];
+        for (s, v) in want {
+            assert_eq!(st.bot_setting(s).unwrap(), v, "{}", s.key());
+            assert!(!s.is_pricing(), "{}", s.key());
+        }
+    }
+
+    #[test]
+    fn a_bad_provider_or_rule_is_refused() {
+        let (_d, st) = store();
+        for (s, bad) in [
+            (Setting::WebSearchProvider, json!("bing")),
+            (Setting::WebFetchUrlRule, json!("open")),
+        ] {
+            assert!(matches!(
+                st.set_bot_settings(DAEMON, &[(s, Some(bad))]),
+                Err(CoreError::Invalid {
+                    code: "invalid_setting",
+                    ..
+                })
+            ));
+        }
+        st.set_bot_settings(
+            DAEMON,
+            &[
+                (Setting::WebSearchProvider, Some(json!("linkup"))),
+                (Setting::WebFetchUrlRule, Some(json!("allowlist"))),
+                (
+                    Setting::WebFetchAllowlist,
+                    Some(json!(["example.com", "*.docs.example.org"])),
+                ),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            st.bot_setting(Setting::WebSearchProvider).unwrap(),
+            json!("linkup")
+        );
+    }
+
+    #[test]
+    fn the_new_kinds_check_their_values() {
+        let ok = |s: Setting, v: Value| s.check(&v).is_ok();
+        assert!(ok(Setting::WebSearchLimit, json!(10)) && !ok(Setting::WebSearchLimit, json!(11)));
+        assert!(!ok(Setting::WebSearchLimit, json!(0)));
+        assert!(ok(Setting::WebSearchGateway, json!("my_gw-1")));
+        assert!(!ok(Setting::WebSearchGateway, json!("has space")));
+        assert!(!ok(Setting::WebSearchGateway, json!("a".repeat(65))));
+        assert!(ok(Setting::WebSearchByokAlias, json!("")));
+        assert!(ok(Setting::WebCloudflareAccountId, json!("")));
+        assert!(ok(
+            Setting::WebCloudflareAccountId,
+            json!("0123456789abcdef0123456789ABCDEF")
+        ));
+        assert!(!ok(Setting::WebCloudflareAccountId, json!("0123")));
+        assert!(!ok(
+            Setting::WebCloudflareAccountId,
+            json!("g123456789abcdef0123456789abcdef")
+        ));
+        assert!(ok(
+            Setting::WebFetchAllowlist,
+            json!(["*.example.com", "a-b.io"])
+        ));
+        for bad in [
+            json!(["Example.com"]),
+            json!(["-a.com"]),
+            json!(["a..com"]),
+            json!([1]),
+            json!("a.com"),
+            json!(["*.*.a.com"]),
+        ] {
+            assert!(!ok(Setting::WebFetchAllowlist, bad.clone()), "{bad}");
+        }
+        assert!(!ok(Setting::WebFetchAllowlist, json!(["a.com", "a.com"])));
+        let many: Vec<String> = (0..101).map(|i| format!("h{i}.com")).collect();
+        assert!(!ok(Setting::WebFetchAllowlist, json!(many)));
+        assert!(ok(Setting::WebFetchAllowlist, json!(many[..100])));
+    }
+
+    #[test]
+    fn the_default_rates_and_explicit_prices_are_pricing_settings() {
+        let (_d, st) = store();
+        assert_eq!(
+            st.bot_setting(Setting::RequireExplicitPrice).unwrap(),
+            json!(false)
+        );
+        assert_eq!(
+            st.bot_setting(Setting::DefaultRateOutput).unwrap(),
+            json!(2_800_000)
+        );
+        for bad in [json!(1), json!("true"), json!(null)] {
+            assert!(Setting::RequireExplicitPrice.check(&bad).is_err(), "{bad}");
+        }
+        assert!(Setting::DefaultRateInput.check(&json!(-1)).is_err());
+        // Bounded as a fixed cost line is.
+        let max = crate::credits::MAX_FIXED_CREDITS_MILLI;
+        assert_eq!(
+            Setting::DefaultRateOutput.check(&json!(max)).unwrap(),
+            json!(max)
+        );
+        assert!(matches!(
+            st.set_bot_settings(
+                DAEMON,
+                &[(Setting::DefaultRateOutput, Some(json!(max + 1)))]
+            ),
+            Err(CoreError::Invalid {
+                code: "invalid_setting",
+                ..
+            })
+        ));
+        let mut ov = Overrides::default();
+        assert!(
+            ov.set(Setting::DefaultRateInput, &json!(max + 1), "file")
+                .is_err()
+        );
+        assert_eq!(
+            Setting::parse("default_rates.cache_write").unwrap(),
+            Setting::DefaultRateCacheWrite
+        );
+        let changed = st
+            .set_bot_settings(
+                DAEMON,
+                &[
+                    (Setting::RequireExplicitPrice, Some(json!(true))),
+                    (Setting::DefaultRateInput, Some(json!(0))),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            changed,
+            [Setting::DefaultRateInput, Setting::RequireExplicitPrice]
+        );
+        let ov = st.bot_overrides();
+        assert!(
+            st.with_read(|c| bool_setting_in(c, &ov, Setting::RequireExplicitPrice))
+                .unwrap()
+        );
+        let ev = st
+            .events_after(0, 100)
+            .unwrap()
+            .into_iter()
+            .rfind(|e| e.kind.starts_with("admin."))
+            .unwrap();
+        assert_eq!(ev.kind, "admin.cost_line");
+        assert!(
+            ev.body.contains("\"require_explicit_price\":true")
+                && ev.body.contains("\"default_rates.input\":0"),
+            "{}",
+            ev.body
+        );
+    }
+
+    #[test]
     fn overrides_win_on_every_read_and_refuse_writes() {
         let (_d, st) = store();
         st.set_bot_settings(
@@ -680,6 +992,32 @@ mod tests {
     }
 
     #[test]
+    fn the_api_is_one_of_three_and_a_model_id_may_hold_a_slash() {
+        let (_d, st) = store();
+        assert_eq!(st.bot_setting(Setting::Api).unwrap(), json!("anthropic"));
+        for api in ["anthropic", "openai", "gemini"] {
+            assert_eq!(Setting::Api.check(&json!(api)).unwrap(), json!(api));
+        }
+        assert_eq!(
+            Setting::ModelDefault
+                .check(&json!("subconscious/glm-5.3-marathon"))
+                .unwrap(),
+            json!("subconscious/glm-5.3-marathon")
+        );
+        let changed = st
+            .set_bot_settings(
+                DAEMON,
+                &[
+                    (Setting::Api, Some(json!("openai"))),
+                    (Setting::BaseUrl, Some(json!("https://api.mistral.ai/v1"))),
+                ],
+            )
+            .unwrap();
+        assert_eq!(changed, [Setting::Api, Setting::BaseUrl]);
+        assert_eq!(st.bot_setting(Setting::Api).unwrap(), json!("openai"));
+    }
+
+    #[test]
     fn settings_are_checked_set_cleared_and_recorded() {
         let (_d, st) = store();
         for (s, bad) in [
@@ -690,6 +1028,10 @@ mod tests {
             (Setting::BaseUrl, json!("https://proxy.example/?token=x")),
             (Setting::BaseUrl, json!(3)),
             (Setting::ModelQuick, json!("a b")),
+            (Setting::ModelQuick, json!("a?b")),
+            (Setting::Api, json!("cohere")),
+            (Setting::Api, json!("OpenAI")),
+            (Setting::Api, json!(1)),
             (Setting::MaxSteps, json!(0)),
             (Setting::FreeWeeklyMilli, json!(-1)),
         ] {

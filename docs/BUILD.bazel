@@ -11,6 +11,14 @@ filegroup(
     ],
 )
 
+# The Kubernetes guide, whose overlay of one's own clax-fleet's tests check
+# against deploy/k8s (crates/clax-fleet/src/main.rs).
+filegroup(
+    name = "kubernetes",
+    srcs = ["kubernetes.md"],
+    visibility = ["//crates/clax-fleet:__pkg__"],
+)
+
 # The Terms of Service and Privacy Policy, which the web build renders
 # into web/dist (web/scripts/build-legal.mjs) beside web/'s own files.
 copy_to_bin(
@@ -23,6 +31,7 @@ copy_to_bin(
 exports_files(
     [
         "contract.md",
+        "kubernetes.md",
         "usage.md",
     ],
     visibility = ["//scripts:__pkg__"],

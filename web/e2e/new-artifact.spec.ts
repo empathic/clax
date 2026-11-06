@@ -8,7 +8,7 @@
 // dark, into CLAX_E2E_SHOTS_DIR (target/new-artifact-shots by default).
 import { mkdirSync } from "node:fs";
 import { type Page } from "@playwright/test";
-import { api, contentFrame, type Daemon, expect, registerSession, test } from "./fixtures";
+import { api, asLocalViewer, contentFrame, type Daemon, expect, registerSession, test } from "./fixtures";
 import { settle } from "./time";
 
 const BRIEF = "A bar chart of Q3 revenue by region, sorted high to low, with last quarter as a faint ghost bar.";
@@ -72,6 +72,7 @@ test("with no agent live, the dialog gives a prompt to paste into one, and opens
 });
 
 test("a LAN viewer, who may not create, is offered no New", async ({ page, daemon: d }) => {
+  await asLocalViewer(page.context(), d);
   await page.route("**/api/token", r => r.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: { code: "not_loopback", message: "not a loopback connection" } }) }));
   await page.goto(d.base);
   await expect(page.locator(".gbar .search")).toBeVisible();

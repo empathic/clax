@@ -482,6 +482,20 @@ describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(calls.some(c => c.url === "/api/artifacts")).toBe(false);
     await workerWith("people", "agents");
   });
+
+  it("is the Queues page at a queue's and a report's view, and the gallery at another page's sub-path", async () => {
+    for (const path of ["/queues/q1", "/queues/q1/t1"]) {
+      const calls = stubAs("owner");
+      const root = await mountAt(path);
+      await waitFor(() => root.querySelector(".qview, .rview"), `the Queues page at ${path}`);
+      expect(calls.some(c => c.url === "/api/artifacts")).toBe(false);
+      unmountGallery!(); unmountGallery = null; await freshModules();
+    }
+    const calls = stubAs("owner");
+    const root = await mountAt("/people/x");
+    await waitFor(() => calls.some(c => c.url === "/api/artifacts") && root.querySelector("a.card"), "the gallery");
+    expect(root.querySelector(".ppl")).toBeNull();
+  });
 });
 
 describe("Gallery tags", { timeout: MOUNT_TIMEOUT_MS }, () => {

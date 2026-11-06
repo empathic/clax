@@ -321,9 +321,12 @@ abstract interface class AppGrants {
   Future<List<String>> grant(String aid, Map<String, Object?> capabilities);
 }
 
-/// Grants as the owner would on the app's consent prompts: the declared
-/// net hosts (`PUT /api/artifacts/<id>/net-grants`) and AI
-/// (`PUT /api/artifacts/<id>/sample-grant`).
+/// Grants as the owner would: approves what the app's current version
+/// declares that waits for approval (the `pending_capabilities` of
+/// `GET /api/artifacts/<id>`, by their version and declaration hash, to
+/// `PUT /api/artifacts/<id>/capability-approval`), then answers its consent
+/// prompts: the declared net hosts (`PUT /api/artifacts/<id>/net-grants`)
+/// and AI (`PUT /api/artifacts/<id>/sample-grant`).
 class ApiGrants implements AppGrants {
   ApiGrants(this.transport);
 
@@ -335,6 +338,7 @@ class ApiGrants implements AppGrants {
     String aid,
     Map<String, Object?> capabilities,
   ) async {
+    await _approve(aid);
     final granted = <String>[];
     final hosts = switch (capabilities['net']) {
       {'hosts': final List<Object?> h} => [for (final x in h) '$x'],
@@ -349,6 +353,29 @@ class ApiGrants implements AppGrants {
       granted.add('sample');
     }
     return granted;
+  }
+
+  /// Approves what app [aid]'s current version declares that waits for
+  /// approval, as it was shown; nothing when nothing waits.
+  Future<void> _approve(String aid) async {
+    final path = '/api/artifacts/$aid';
+    final r = await transport.send(
+      'GET',
+      path,
+      timeout: const Duration(seconds: 35),
+    );
+    if (r.status >= 300) {
+      throw StateError('GET $path: ${r.status} ${utf8.decode(r.body)}');
+    }
+    final pending = switch (r.json ?? jsonDecode(utf8.decode(r.body))) {
+      {'artifact': {'pending_capabilities': final Map<String, Object?> p}} => p,
+      _ => null,
+    };
+    if (pending == null) return;
+    await _put('$path/capability-approval', {
+      'version': pending['version'],
+      'declaration_sha256': pending['declaration_sha256'],
+    });
   }
 
   Future<void> _put(String path, Object? body) async {

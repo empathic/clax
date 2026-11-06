@@ -1,6 +1,6 @@
 // Checks the Worker's wasm build end to end: builds it (./build.sh), starts
 // `wrangler dev --local` on free ports with a fresh `--persist-to` under
-// target/wasm-test/, writes notes and blobs through the routes, checks that
+// target/clax-worker/wasm-test/, writes notes and blobs through the routes, checks that
 // a rollback, a refused journal mode and a transaction past the VFS's cap
 // leave the database as it was, then restarts wrangler on the same state
 // and checks that a fresh isolate sees the same rows, blob digest and page
@@ -15,9 +15,9 @@
 
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { HERE, build, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { HERE, STATE, build, pruneRuns, start, writeConfig } from "./harness.mjs";
 
-const ROOT = join(HERE, "target/wasm-test");
+const ROOT = join(STATE, "wasm-test");
 const KEEP_RUNS = 3;
 
 function check(ok, what, detail) {
@@ -99,11 +99,17 @@ async function main() {
     running.add(w);
     for (const [method, path] of [["GET", "/stats"], ["POST", "/notes?body=five"], ["POST", "/init"]]) {
       const r = await call(w.base, method, path);
-      check(r.status === 404 || r.status === 405, `without test routes ${method} /do/wasm-test${path} is not the spike's`, r);
+      // Clax's own router answers: a request with no credential is refused
+      // before any route (401 no_credential), and one with a credential
+      // finds no such route.
+      const refused = r.status === 401 && r.body?.error?.code === "no_credential";
+      check(refused || r.status === 404 || r.status === 405, `without test routes ${method} /do/wasm-test${path} is not the spike's`, r);
     }
     for (const [method, path] of [["GET", "/_worker/alarm"], ["POST", "/_worker/hibernate"], ["GET", "/_worker/sandbox"]]) {
       const r = await fetch(`${w.base}${path}`, { method, headers: { authorization: "Bearer any" } });
-      check(r.status === 404 || r.status === 405, `without test routes ${method} ${path} is absent`, r.status);
+      // Clax's own router answers: the made-up token is refused before any
+      // route (401), as a real one finds no such route (404 or 405).
+      check(r.status === 401 || r.status === 404 || r.status === 405, `without test routes ${method} ${path} is absent`, r.status);
     }
     await w.stop();
     running.delete(w);

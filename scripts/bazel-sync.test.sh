@@ -3,8 +3,9 @@
 # Cargo and Bazel files: current files pass; a new default crate feature, a
 # changed workspace lint, a stale MODULE.bazel.lock (Bazel's error, faked), a
 # Rust version that differs from rust-toolchain.toml, a workspace crate
-# without a BUILD.bazel, and a job limit in .bazelrc each fail, naming the
-# cause; --check never writes a file. A sync whose resolution rewrites
+# without a BUILD.bazel, stale specs of the Worker's wasm32 crates, a
+# wasm-bindgen CLI pinned at another version than its crate, and a job limit
+# in .bazelrc each fail, naming the cause; --check never writes a file. A sync whose resolution rewrites
 # Cargo.lock (crate_universe, faked) resolves again, so one run is enough.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -18,8 +19,15 @@ fresh() {
     rm -rf "$T/r"; mkdir -p "$T/r"
     (cd "$HERE" && git ls-files -z --cached --others --exclude-standard | xargs -0 tar -cf - 2>/dev/null) | tar -xf - -C "$T/r"
 }
-# perl rather than sed -i: one spelling on macOS and Linux.
-edit() { perl -0pi -e "$1" "$2"; }
+# edit PATTERN REPLACEMENT FILE: replaces the first match of the Python
+# regular expression PATTERN (^ and $ match at each line) in FILE, in place;
+# one spelling on macOS and Linux, unlike sed -i.
+edit() {
+    python3 -c 'import re, sys
+pattern, repl, path = sys.argv[1:]
+with open(path, newline="") as f: text = f.read()
+with open(path, "w", newline="") as f: f.write(re.sub(pattern, repl, text, count=1, flags=re.M))' "$@"
+}
 # Bazel's own lockfile check is a fake that passes, unless a case makes it
 # fail; every real run (scripts/bazel-test.sh) runs the real one.
 . "$HERE/scripts/fake-exe.sh"
@@ -30,26 +38,32 @@ check() { (cd "$T/r" && BAZEL_SYNC_BAZEL="${BAZEL:-$T/bin/bazel-ok}" scripts/baz
 
 fresh; if check; then pass "current files pass"; else fail "current files pass: $(cat "$T/out")"; fi
 
-fresh; edit 's/^\[lints\]\n/[features]\ndefault = ["extra"]\nextra = []\n\n[lints]\n/m' "$T/r/crates/clax-hooks/Cargo.toml"
+fresh; edit '^\[lints\]\n' '[features]\ndefault = ["extra"]\nextra = []\n\n[lints]\n' "$T/r/crates/clax-hooks/Cargo.toml"
 touch "$T/stamp"
 if check; then fail "a new default feature fails"; elif grep -q 'just bazel-sync' "$T/out"; then pass "a new default feature fails, naming just bazel-sync"; else fail "message: $(cat "$T/out")"; fi
 wrote="$(cd "$T/r" && find . -type f -newer "$T/stamp" ! -path './target/*' | sort)"
 [ -z "$wrote" ] && pass "--check writes nothing" || fail "--check wrote: $wrote"
 
-fresh; edit 's/^\[lints\]\n/[features]\nextra = []\n\n[lints]\n/m' "$T/r/crates/clax-hooks/Cargo.toml"
-edit 's/^clax-hooks = \{ path = "..\/clax-hooks" \}$/clax-hooks = { path = "..\/clax-hooks", features = ["extra"] }/m' "$T/r/crates/clax-server/Cargo.toml"
+fresh; edit '^\[lints\]\n' '[features]\nextra = []\n\n[lints]\n' "$T/r/crates/clax-hooks/Cargo.toml"
+edit '^clax-hooks = \{ path = "\.\./clax-hooks" \}$' 'clax-hooks = { path = "../clax-hooks", features = ["extra"] }' "$T/r/crates/clax-server/Cargo.toml"
 if check; then fail "a test feature on a workspace crate fails"; elif grep -q 'clax-testkit' "$T/out"; then pass "a test feature on a workspace crate fails, naming clax-testkit"; else fail "message: $(cat "$T/out")"; fi
 
 fresh; if BAZEL="$T/bin/bazel-stale" check; then fail "a stale lockfile fails"; elif grep -q 'just bazel-sync' "$T/out"; then pass "a stale lockfile fails, naming just bazel-sync"; else fail "message: $(cat "$T/out")"; fi
 
-fresh; edit 's/unsafe_code = "forbid"/unsafe_code = "deny"/' "$T/r/Cargo.toml"
+fresh; edit 'unsafe_code = "forbid"' 'unsafe_code = "deny"' "$T/r/Cargo.toml"
 if check; then fail "a changed lint fails"; else pass "a changed lint fails"; fi
 
-fresh; edit 's/channel = "1.94.0"/channel = "1.95.0"/' "$T/r/rust-toolchain.toml"
+fresh; edit 'channel = "1\.94\.0"' 'channel = "1.95.0"' "$T/r/rust-toolchain.toml"
 if check; then fail "a toolchain mismatch fails"; elif grep -q 'rust-toolchain.toml' "$T/out"; then pass "a toolchain mismatch fails"; else fail "message: $(cat "$T/out")"; fi
 
 fresh; rm "$T/r/crates/clax-hooks/BUILD.bazel"
 if check; then fail "a crate without BUILD.bazel fails"; elif grep -q 'crates/clax-hooks' "$T/out"; then pass "a crate without BUILD.bazel fails"; else fail "message: $(cat "$T/out")"; fi
+
+fresh; edit '^crate\.spec\(default_features = False, features = \[[^]]*\], package = "tokio".*\n' '' "$T/r/bazel/wasm/crates.MODULE.bazel"
+if check; then fail "stale wasm specs fail"; elif grep -q 'bazel/wasm/crates.MODULE.bazel' "$T/out"; then pass "stale wasm specs fail, naming bazel/wasm/crates.MODULE.bazel"; else fail "message: $(cat "$T/out")"; fi
+
+fresh; edit 'wasm-bindgen-0\.2\.129-aarch64-apple-darwin\.tar\.gz"' 'wasm-bindgen-0.2.128-aarch64-apple-darwin.tar.gz"' "$T/r/bazel/wasm/tools.MODULE.bazel"
+if check; then fail "a wasm-bindgen CLI at another version fails"; elif grep -q 'pin the CLI' "$T/out"; then pass "a wasm-bindgen CLI at another version than its crate fails"; else fail "message: $(cat "$T/out")"; fi
 
 fresh; printf 'build --jobs=4\n' >> "$T/r/.bazelrc"
 if check; then fail "a job limit fails"; else pass "a job limit in .bazelrc fails"; fi
@@ -58,8 +72,16 @@ if check; then fail "a job limit fails"; else pass "a job limit in .bazelrc fail
 # manifest: the fake rewrites it on resolving, as crate_universe does, and
 # logs each resolution.
 V="$("$HERE/scripts/check-version.sh" --print)"
-printf '#!/bin/sh\necho resolve >> "$BAZEL_SYNC_TEST_LOG"\nperl -0pi -e '"'"'s/(name = "clax-fake-exe"\\nversion = ")0\\.0\\.1"/${1}%s"/'"'"' Cargo.lock\n' "$V" | fake_exe "$T/bin/bazel-repin"
-fresh; edit 's/(name = "clax-fake-exe"\nversion = ")[^"]+"/${1}0.0.1"/' "$T/r/Cargo.lock"
+fake_exe "$T/bin/bazel-repin" <<SH
+#!/bin/sh
+echo resolve >> "\$BAZEL_SYNC_TEST_LOG"
+python3 - <<'PY'
+with open("Cargo.lock", newline="") as f: text = f.read()
+old = 'name = "clax-fake-exe"\nversion = "0.0.1"'
+with open("Cargo.lock", "w", newline="") as f: f.write(text.replace(old, 'name = "clax-fake-exe"\nversion = "$V"', 1))
+PY
+SH
+fresh; edit '(name = "clax-fake-exe"\nversion = ")[^"]+"' '\g<1>0.0.1"' "$T/r/Cargo.lock"
 : > "$T/resolves"
 if (cd "$T/r" && BAZEL_SYNC_TEST_LOG="$T/resolves" BAZEL_SYNC_BAZEL="$T/bin/bazel-repin" scripts/bazel-sync.sh) >"$T/out" 2>&1 \
     && [ "$(wc -l < "$T/resolves" | tr -d ' ')" = 2 ] && grep -q "resolving again" "$T/out"; then

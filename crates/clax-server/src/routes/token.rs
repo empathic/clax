@@ -1,96 +1,30 @@
 use axum::{
     Json,
-    extract::State,
-    http::{HeaderMap, header},
+    http::header,
     response::{IntoResponse, Response},
 };
-use clax_core::audit::Via;
-use clax_http::auth::{Conn, is_local_host, is_loopback};
 use clax_http::error::ApiError;
-use clax_http::state::AppState;
-use clax_store::viewers::Claim;
-/// The bearer token, for the shell on this machine. Beyond the `/api` host
-/// check ([`clax_http::auth::require_api_host`]), the peer must be a loopback
-/// address and the `Host` a literal local name (not the LAN bind address),
-/// else 403 `not_loopback`. A request the browser marks same-origin
-/// (`Sec-Fetch-Site: same-origin`: the shell's own) also gets the events
-/// cookie ([`clax_http::auth::events_cookie_name`]), HttpOnly, `SameSite=Strict`,
-/// set twice: scoped to `/api/events` and to `/api/stream` (which covers its
-/// subscription route), so the shell's event stream holds the token's level
-/// without the token in its URL; and the owner cookie
-/// ([`clax_http::identity::owner_cookie_name`]) for the API and the artifact
-/// pages, so the browser is the owner there. Such a request is the owner's
-/// browser: when it carries exactly one `clax_viewer` cookie, the viewer that
-/// names is claimed for the owner ([`clax_store::Store::claim_for_owner`]:
-/// only a viewer minted on this machine), the cookie removed, and a viewer
-/// the claim retired leaves every presence list and room at once.
+use clax_http::identity::Identity;
+
+/// The bearer token, for the shell of a browser of the owner's: a request
+/// carrying a live owner browser session ([`clax_http::local_trust`]) from
+/// this machine, which only a redeemed login code opens. Anyone else gets
+/// 401 `unauthorized`, whatever its peer, `Host`, `Origin` or
+/// `Sec-Fetch-Site` say: reaching the port is no credential. It sets no
+/// cookie and claims no viewer (the login route does both, `GET /login`).
+/// A hosted daemon's gate answers this path itself
+/// ([`clax_http::hosted::gate`]).
 pub async fn token(
-    State(s): State<AppState>,
+    axum::extract::State(s): axum::extract::State<clax_http::state::AppState>,
     _d: clax_http::agent::DeniedToGrants,
-    clax_http::auth::PeerConn(Conn { peer: addr, .. }): clax_http::auth::PeerConn,
-    headers: HeaderMap,
+    who: Identity,
 ) -> Result<Response, ApiError> {
-    let host = headers
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    if !is_loopback(addr) || !is_local_host(host) {
-        return Err(ApiError::forbidden(
-            "not_loopback",
-            "the token is only served to local processes",
-        ));
+    if !who.owner_cookie {
+        return Err(ApiError::unauthorized());
     }
-    let mut res = (
+    Ok((
         [(header::CACHE_CONTROL, "no-store")],
         Json(serde_json::json!({"token": s.token})),
     )
-        .into_response();
-    let same_origin = headers
-        .get("sec-fetch-site")
-        .is_some_and(|v| v.as_bytes() == b"same-origin");
-    if same_origin {
-        for path in clax_http::identity::OWNER_COOKIE_PATHS {
-            if let Some(v) = clax_http::identity::set_owner_cookie(host, &s.token, path) {
-                res.headers_mut().append(header::SET_COOKIE, v);
-            }
-        }
-        // Exactly one viewer cookie: with several, another page planted one
-        // and none can be trusted to be this browser's.
-        if let [cookie] = clax_http::viewer::read_all(&headers).as_slice() {
-            let cookie = cookie.clone();
-            let claimed = s
-                .store_call(move |st| st.claim_for_owner(Via::Shell, &cookie))
-                .await?;
-            tracing::debug!(?claimed, "claiming a browser viewer for the owner");
-            let claimed_something = claimed != Claim::Nothing;
-            let retired = match claimed {
-                Claim::Nothing => None,
-                Claim::Adopted { retired } => retired,
-                Claim::Merged(old) => Some(old),
-            };
-            if claimed_something {
-                res.headers_mut().append(
-                    header::SET_COOKIE,
-                    clax_http::identity::clear_viewer_cookie(),
-                );
-            }
-            if let Some(old) = retired {
-                for aid in s.presence.forget(&old) {
-                    clax_realtime::presence::announce(&s.events, &s.presence, &aid);
-                }
-                s.rooms.evict_viewer(&old);
-            }
-        }
-        for path in ["/api/events", "/api/stream"] {
-            let cookie = format!(
-                "{}={}; Path={path}; HttpOnly; SameSite=Strict",
-                clax_http::auth::events_cookie_name(host),
-                clax_http::auth::events_cookie_value(&s.token)
-            );
-            if let Ok(v) = header::HeaderValue::from_str(&cookie) {
-                res.headers_mut().append(header::SET_COOKIE, v);
-            }
-        }
-    }
-    Ok(res)
+        .into_response())
 }

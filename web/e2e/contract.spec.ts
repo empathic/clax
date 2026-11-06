@@ -5,7 +5,7 @@
 // labels, downloads, and the daemon's API.
 import { readdirSync, readFileSync } from "node:fs";
 import { type Frame, type Page } from "@playwright/test";
-import { test, expect, type Daemon, api, contentFrame, namedViewer, openArtifact, publishWith, reach, nameField } from "./fixtures";
+import { test, expect, type Daemon, api, approve, contentFrame, namedViewer, openArtifact, publishWith, reach, nameField } from "./fixtures";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -212,6 +212,8 @@ test("every sample page is a plain claude.ai page with a case here", () => {
     const run = async (page: Page) => {
       const src = c.page ? await c.page() : html(file);
       const { artifact } = await publishWith(d.base, d.token, `${file}`, src, c.caps);
+      // The owner approves what the page declares, as from the approval bar.
+      await approve(d.base, d.token, artifact.id);
       if (file === "tracker.html") {
         expect(await seed(artifact.id, "tasks/a", { title: "Seeded one", created: 1 })).toBe(200);
         expect(await seed(artifact.id, "tasks/b", { title: "Seeded two", created: 2 })).toBe(200);

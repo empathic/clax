@@ -59,6 +59,8 @@
   let focused = $state<string | null>(null);
   let busy = $state(false);
   let hint = $state<string | null>(null);
+  // The hint is an action's failure, shown as one rather than as a hint.
+  let failure = $state(false);
   // The card's element, from its own focus and key events.
   let card: HTMLElement | undefined;
   // Focus is in the card. Focus that leaves to nowhere because its control
@@ -73,7 +75,7 @@
   let pending: QuestionStatus | null = null;
   // Whether the card was open when this instance last looked.
   let wasOpen = untrack(() => p.q.status === "open");
-  $effect(() => trail().keyboardTrail.onClear(() => { hint = null; }));
+  $effect(() => trail().keyboardTrail.onClear(() => { hint = null; failure = false; }));
   const who = $derived(agentLabel(p.q.agent, (p.others ?? [p.q]).map(o => o.agent)));
   // The Clax app's agent: its card names Clax, never its project folder, and its button reads "Answer".
   const app = $derived(p.q.agent?.harness === "app");
@@ -84,7 +86,25 @@
   const spec =$derived(p.q.questions[Math.min(tab, p.q.questions.length - 1)]);
   const preview = $derived(previewOf(spec, focused, draft[tab]));
   const open = $derived(p.q.status === "open");
-  const link = $derived(questionLink(p.q));
+  // Retry on the line of a copy not sent, as a thread card's
+  // (`retryCopies`, loaded with the first press). The view of the question
+  // Retry succeeded on: until a newer view comes, the copy reads as sending
+  // again (the retry moves no event). The view a Retry failed on, and why,
+  // said on the line until the next press or a newer view.
+  let retrying = $state(false);
+  let retriedOn = $state.raw<QuestionView | null>(null);
+  let retryFailed = $state.raw<{ on: QuestionView; text: string } | null>(null);
+  const link = $derived(questionLink(p.q, retriedOn === p.q));
+  const retry = async () => {
+    const q = p.q, l = q.linked, a = q.artifact;
+    if (!l || !a || retrying) return;
+    retrying = true;
+    retryFailed = null;
+    try {
+      const failed = await (await import("../ui/retry-request")).retryCopies(a.id, l.remote_id);
+      if (failed) retryFailed = { on: q, text: failed }; else retriedOn = q;
+    } catch { retryFailed = { on: q, text: "Retry failed: Clax did not answer" }; } finally { retrying = false; }
+  };
   const about = $derived(aboutLink(p.q, p.here, p.thread));
   const base = $derived(`q-${p.q.id}`);
   // Takes focus back only when it went nowhere (<body>): focus the person
@@ -121,10 +141,11 @@
   // Runs `f` for activation `e` of a consequential action unless the trail says to click.
   const run = (e: Event, verb: string, closes: QuestionStatus, f: () => Promise<void>) => {
     if (busy) return;
+    failure = false;
     hint = trail().guardedAction(e, verb, () => {
       busy = true;
       pending = closes;
-      f().then(() => { busy = false; }, err => { busy = false; pending = null; hint = failed(err); queueMicrotask(regain); });
+      f().then(() => { busy = false; }, err => { busy = false; pending = null; hint = failed(err); failure = true; queueMicrotask(regain); });
     });
   };
   // The pending move on after a pick, if any.
@@ -284,7 +305,7 @@
       </div>
       {/each}
     </div>
-    {#if link?.line}<p class="link-line" data-failed={link.failed ? "" : undefined}>{link.line}</p>{/if}
+    {#if link?.line}<p class="link-line" data-failed={link.failed ? "" : undefined}><span>{link.line}</span>{#if link.retry}{#if retryFailed?.on === p.q}<span class="retry-err" role="status">{retryFailed.text}</span>{/if}<button type="button" class="retry" disabled={retrying} onclick={() => void retry()}>{retrying ? "Retrying…" : "Retry"}</button>{/if}</p>{/if}
     <footer class="acts">
       {#if n > 1}
         <!-- aria-disabled, not disabled: a button disabled under focus drops it. -->
@@ -305,7 +326,7 @@
   <!-- One live region for the card's life: while open, the trail's hint (a key
        asked for an action on a trail the page may have steered) or a failure;
        once closed, what closed it (read, not shown: the card shows it). -->
-  <p class="act-hint" data-sr={open ? undefined : ""} role="status">{open ? (hint ?? "") : said}</p>
+  <p class="act-hint" class:act-failed={open && failure} data-sr={open ? undefined : ""} role="status">{open ? (hint ?? "") : said}</p>
 </article>
 
 <style>
@@ -367,6 +388,8 @@
     .qcard .link-tag[data-unlinked] { font-weight: 500; font-style: italic; }
     .qcard .link-line { margin: 8px 0 0; font-size: 12.5px; color: var(--muted); }
     .qcard .link-line[data-failed] { color: var(--danger); }
+    .qcard .link-line[data-failed] { display: flex; align-items: center; gap: 8px; }
+    .qcard .link-line .retry { margin-left: auto; flex: none; min-height: 24px; padding: 2px 10px; font-size: 12px; color: var(--fg); }
     .qcard .closed .there { font-weight: 400; color: var(--muted); }
     .qcard .instead { margin: -2px 0 6px; font-size: 12.5px; color: var(--danger); }
     @media (pointer: coarse) { .qcard .opt input[data-opt] { width: 20px; height: 20px; } }

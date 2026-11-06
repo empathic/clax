@@ -8,6 +8,10 @@ pub enum CoreError {
     NotFound,
     #[error("version conflict: current version is {current}")]
     Conflict { current: u32 },
+    /// An approval of an artifact's declaration that names a version or
+    /// a declaration no longer current: `current` is the current version.
+    #[error("the declaration to approve changed: the current version is {current}")]
+    StaleVersion { current: u32 },
     /// A document write pinned to a version the document no longer has (or,
     /// with `current: None`, pinned to a document that does not exist).
     #[error("document {path} changed: current version is {current:?}")]
@@ -49,6 +53,57 @@ pub enum CoreError {
         "this thread is taken by {name}; only its owner agent may reply to, resolve or hand it off"
     )]
     ThreadTaken { name: String },
+    /// An agent's write as a report's claimant (reply, resolve, metadata)
+    /// after its lease on the report expired or another lease superseded
+    /// it (spec 2026-10-27-clax-sdk-design §7.4).
+    #[error("your claim on this report has lapsed; claim it again to act on it")]
+    LeaseLost,
+    /// An agent's write to a report (reply, resolve, metadata) from a
+    /// session that holds no lease on it: it never claimed the report, or
+    /// released its claim (spec 2026-10-27-clax-sdk-design §7.4).
+    #[error("claim this report before you act on it")]
+    ClaimRequired,
+    /// A report context that is too large, of the wrong shape or of an
+    /// unknown version (spec 2026-10-29-feedback-loop-design §5.1).
+    #[error("invalid report context: {0}")]
+    InvalidContext(String),
+    /// A diagnostics part that is too large or holds a line of the wrong
+    /// shape (spec 2026-10-29-feedback-loop-design §5.2).
+    #[error("invalid diagnostics: {0}")]
+    InvalidDiagnostics(String),
+    /// A reporter profile with a field too long or an avatar URL that is
+    /// not `https:` or `http:` (spec 2026-10-29-feedback-loop-design §5.4).
+    #[error("invalid reporter profile: {0}")]
+    InvalidProfile(String),
+    /// A verdict (verify, reopen from a fix) on a report with no fix
+    /// waiting for one (spec 2026-10-29-feedback-loop-design §6.3).
+    #[error("this report has no fix waiting for a verdict")]
+    NotFixProposed,
+    /// A claim of a report whose fix waits for a verdict, or a fix proposed
+    /// on a closed report (spec 2026-10-29-feedback-loop-design §6.2).
+    #[error("this report cannot be claimed or fixed now: reopen it first")]
+    NotClaimable,
+    /// A content-only operation (publish, fork, a git remote, a version's
+    /// files) on an external artifact, whose content Clax never stores
+    /// (spec 2026-10-27-clax-sdk-design §6.2).
+    #[error("this is an external artifact: Clax keeps no content of it")]
+    ExternalArtifact,
+    /// A reporter token minted for, or used from, an origin the queue does
+    /// not list or the token was not minted for (§5.3).
+    #[error("this origin may not file reports to this queue")]
+    WrongOrigin,
+    /// A reporter token past its expiry (§5.3).
+    #[error("the reporter token has expired; ask the app for a new one")]
+    TokenExpired,
+    /// A generic thread route's read or write of a queue's report, which is
+    /// read and written through its queue's routes alone (spec
+    /// 2026-10-27-clax-sdk-design §7.3).
+    #[error("this thread is a queue report: use the queue routes (queue_reply, queue_resolve)")]
+    QueueReport { queue_id: String },
+    /// A queue that does not exist, or of which the caller is not a member:
+    /// the two are indistinguishable by design.
+    #[error("no such queue")]
+    NotAMember,
     /// The artifact's current declaration does not include `capability`, which
     /// the request needs.
     #[error("this artifact does not declare the {capability} capability")]

@@ -1,0 +1,11 @@
+{
+  "targets": {
+    "row": "frame:#list li:has(input[data-item=\"invites\"])",
+    "draft": ".new-writers .live-writers",
+    "checklist": "frame:main"
+  },
+  "shots": [
+    { "at": "draft-0.17", "targets": ["row", "draft"], "label": "Mia's draft: the row she picked and her typing" },
+    { "at": "tick-0.37", "targets": ["checklist"], "label": "Sam ticks a task off" }
+  ]
+}

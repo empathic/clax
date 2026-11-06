@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Northwind Orders</title>
+<style>
+  /* Northwind's order forecast: the version an agent publishes in the reel's
+     "From raw data to answers" vignette (web/reel/vignettes/dash.ts), built
+     from the raw grid of its first version (fixtures/dash/orders.html). The
+     company and every number are invented and come from a fixed seed.
+     Self-contained: no network. Every motion is drawn from
+     Date.now() on a 16 ms timer that starts as the script runs, so the
+     deterministic camera, which steps the page's clock (timers and all),
+     films it the same each run: its draws fall at the same times of that
+     clock, which an animation frame's do not. */
+  :root {
+    color-scheme: light;
+    --bg: #f3f2ee;
+    --surface: #fcfcfb;
+    --fg: #0b0b0b;
+    --fg2: #52514e;
+    --muted: #8a8882;
+    --line: #e3e1da;
+    --grid: #ecebe6;
+    --chip: #e9e7e1;
+    --north: #2a78d6;
+    --south: #eb6834;
+    --east: #1baf7a;
+    --west: #eda100;
+    --fc: #6250d6;
+    --good: #0f7b3f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #121211; --surface: #1a1a19; --fg: #f0efec; --fg2: #c3c2b7; --muted: #8f8e86; --line: #2e2d2a; --grid: #262523; --chip: #2a2927;
+      --north: #3987e5; --south: #d95926; --east: #199e70; --west: #c98500; --fc: #9085e9; --good: #4cc27c;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #121211; --surface: #1a1a19; --fg: #f0efec; --fg2: #c3c2b7; --muted: #8f8e86; --line: #2e2d2a; --grid: #262523; --chip: #2a2927;
+    --north: #3987e5; --south: #d95926; --east: #199e70; --west: #c98500; --fc: #9085e9; --good: #4cc27c;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 16px 18px 18px; display: grid; gap: 10px; }
+  .top { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .eyebrow { margin: 0 0 2px; color: var(--fg2); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; display: flex; align-items: center; gap: 6px; }
+  .live { width: 7px; height: 7px; border-radius: 50%; background: var(--good); display: inline-block; }
+  h1 { margin: 0; font-size: 22px; letter-spacing: -0.02em; font-weight: 680; }
+  .chips { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+  .chips button { font: inherit; font-size: 12.5px; border: 1px solid var(--line); background: var(--surface); color: var(--fg2); padding: 5px 11px; border-radius: 999px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+  .chips button[aria-pressed="true"] { background: var(--fg); border-color: var(--fg); color: var(--surface); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 1px 2px rgba(20, 20, 10, 0.04), 0 6px 18px -10px rgba(20, 20, 10, 0.12); }
+  .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+  .kpi { padding: 11px 14px 9px; position: relative; overflow: hidden; }
+  .kpi .label { color: var(--fg2); font-size: 12px; }
+  .kpi .value { font-size: 24px; font-weight: 680; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; margin-top: 1px; }
+  .kpi .sub { color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+  .kpi .sub b { color: var(--good); font-weight: 600; }
+  .kpi.fc { background: linear-gradient(135deg, color-mix(in oklab, var(--fc) 10%, var(--surface)), var(--surface) 70%); }
+  .kpi.fc .value { color: var(--fc); }
+  .panel { padding: 12px 14px 10px; }
+  .panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+  .panel h2 { margin: 0; font-size: 13.5px; font-weight: 620; }
+  .legend { display: flex; gap: 12px; flex-wrap: wrap; color: var(--fg2); font-size: 11.5px; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .legend .band { width: 16px; height: 8px; border-radius: 2px; background: color-mix(in oklab, var(--fc) 22%, transparent); border-top: 2px dashed var(--fc); }
+  .chart { position: relative; }
+  .chart svg { display: block; width: 100%; }
+  .tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; font-size: 11.5px; box-shadow: 0 6px 18px -8px rgba(0,0,0,0.25); min-width: 132px; display: none; font-variant-numeric: tabular-nums; }
+  .tip .h { color: var(--fg2); margin-bottom: 3px; }
+  .tip .r { display: flex; align-items: center; gap: 6px; justify-content: space-between; }
+  .tip .r span:first-child { display: inline-flex; align-items: center; gap: 5px; color: var(--fg2); }
+  .row2 { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.3fr); gap: 10px; }
+  .donut { display: flex; align-items: center; gap: 16px; }
+  .donut svg { flex: none; }
+  .shares { display: grid; gap: 5px; flex: 1; font-variant-numeric: tabular-nums; }
+  .shares div { display: flex; justify-content: space-between; gap: 8px; color: var(--fg2); font-size: 12px; }
+  .shares div span:first-child { display: inline-flex; align-items: center; gap: 6px; }
+  .shares b { color: var(--fg); font-weight: 600; }
+  .board { position: relative; }
+  .bar { position: absolute; left: 0; right: 0; height: 22px; display: grid; grid-template-columns: 128px minmax(0, 1fr) 54px; align-items: center; gap: 8px; font-size: 12px; }
+  .bar .name { color: var(--fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bar .track { height: 10px; border-radius: 0 4px 4px 0; background: var(--grid); position: relative; overflow: hidden; }
+  .bar .fill { position: absolute; left: 0; top: 0; bottom: 0; display: flex; gap: 2px; border-radius: 0 4px 4px 0; overflow: hidden; }
+  .bar .fill i { display: block; height: 100%; flex: none; }
+  .bar .v { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+  @media (max-width: 700px) { .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } .row2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <div>
+      <p class="eyebrow"><span class="live" id="live"></span>Northwind · 1,204 orders · Jan 5 – Oct 26, 2026</p>
+      <h1>Orders forecast</h1>
+    </div>
+    <div class="chips" role="group" aria-label="Region" id="chips"></div>
+  </div>
+  <section class="kpis">
+    <div class="card kpi"><div class="label">Revenue, year to date</div><div class="value" id="k-rev">$0</div><div class="sub" id="k-rev-s"></div></div>
+    <div class="card kpi"><div class="label">Orders</div><div class="value" id="k-ord">0</div><div class="sub" id="k-ord-s"></div></div>
+    <div class="card kpi"><div class="label">Average order</div><div class="value" id="k-avg">$0</div><div class="sub" id="k-avg-s"></div></div>
+    <div class="card kpi fc"><div class="label">Forecast, next 90 days</div><div class="value" id="k-fc">$0</div><div class="sub" id="k-fc-s"></div></div>
+  </section>
+  <section class="card panel">
+    <div class="panel-head">
+      <h2 id="chart-title">Weekly revenue by region</h2>
+      <div class="legend" id="legend"></div>
+    </div>
+    <div class="chart" id="chart"><svg id="svg" role="img" aria-label="Weekly revenue by region, with a 90-day forecast"></svg><div class="tip" id="tip"></div></div>
+  </section>
+  <section class="row2">
+    <div class="card panel">
+      <div class="panel-head"><h2>Share of revenue</h2></div>
+      <div class="donut"><svg id="donut" width="132" height="132" viewBox="0 0 132 132"></svg><div class="shares" id="shares"></div></div>
+    </div>
+    <div class="card panel">
+      <div class="panel-head"><h2 id="board-title">Top products</h2></div>
+      <div class="board" id="board"></div>
+    </div>
+  </section>
+</main>
+<script>
+(() => {
+  // ---- Data: a fixed seed, so the same numbers each run. ----
+  let seed = 0x5a17ed;
+  const rand = () => { seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const REGIONS = [
+    { id: "north", name: "North", base: 22.5, g: 0.009, ph: 2, orders: 301 },
+    { id: "south", name: "South", base: 17.8, g: 0.006, ph: 6, orders: 254 },
+    { id: "east", name: "East", base: 27.6, g: 0.011, ph: 0, orders: 371 },
+    { id: "west", name: "West", base: 19.4, g: 0.015, ph: 4, orders: 278 },
+  ];
+  const H = 43, F = 13, N = H + F;
+  const DAY = 86400000, START = Date.UTC(2026, 0, 5);
+  const week = i => new Date(START + i * 7 * DAY);
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const day = d => `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
+  const model = (r, i) => r.base * Math.pow(1 + r.g, i) * (1 + 0.11 * Math.sin((2 * Math.PI * (i + r.ph)) / 17) + 0.05 * Math.sin((2 * Math.PI * i) / 6.5));
+  for (const r of REGIONS) {
+    r.actual = Array.from({ length: H }, (_, i) => model(r, i) * (1 + (rand() - 0.5) * 0.16));
+    const recent = r.actual.slice(-10).map((v, k) => v / model(r, H - 10 + k));
+    const level = recent.reduce((a, b) => a + b, 0) / recent.length;
+    const resid = r.actual.map((v, i) => v / model(r, i) - 1);
+    r.sigma = Math.sqrt(resid.reduce((a, b) => a + b * b, 0) / resid.length);
+    r.fc = Array.from({ length: F }, (_, h) => model(r, H + h) * level);
+    r.sd = Array.from({ length: F }, (_, h) => r.fc[h] * r.sigma * Math.sqrt(1 + h * 0.35));
+    r.ytd = r.actual.reduce((a, b) => a + b, 0) * 1000;
+    r.next = r.fc.reduce((a, b) => a + b, 0) * 1000;
+    r.last = r.actual.slice(-F).reduce((a, b) => a + b, 0) * 1000;
+  }
+  const PRODUCTS = ["Trailhead 2 Tent", "Summit Shell Jacket", "Drift Sleeping Bag", "Ridge Daypack", "Basecamp Stove", "Alpine Headlamp", "Cascade Bottle"];
+  const PRICE_WEIGHT = [1.45, 1.2, 1.0, 0.82, 0.6, 0.42, 0.26];
+  for (const r of REGIONS) {
+    const raw = PRODUCTS.map((_, p) => PRICE_WEIGHT[p] * (0.6 + rand() * 0.8));
+    const sum = raw.reduce((a, b) => a + b, 0);
+    r.products = raw.map(v => (v / sum) * r.ytd);
+  }
+
+  // ---- Formatting. ----
+  const money = v => v >= 1e6 ? `$${(v / 1e6).toFixed(2)}M` : v >= 1e4 ? `$${Math.round(v / 1e3)}K` : v >= 1e3 ? `$${(v / 1e3).toFixed(2)}K` : `$${Math.round(v)}`;
+  const int = v => Math.round(v).toLocaleString("en-US");
+  const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const color = r => css(`--${r.id}`);
+  const ease = x => (x <= 0 ? 0 : x >= 1 ? 1 : 1 - Math.pow(1 - x, 3));
+  const easeInOut = x => (x <= 0 ? 0 : x >= 1 ? 1 : x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+  const clamp01 = x => Math.max(0, Math.min(1, x));
+  const lerp = (a, b, t) => a + (b - a) * t;
+
+  // ---- State: which regions count, morphing from what they were. ----
+  let selected = "all";
+  const weightsOf = sel => REGIONS.map(r => (sel === "all" || sel === r.id ? 1 : 0));
+  let wFrom = weightsOf("all"), wTo = wFrom, morphAt = -1e9;
+  // Every motion is a function of the time since the script ran (and since
+  // the last filter), never of how many draws have come.
+  const t0 = Date.now();
+  const MORPH = 750;
+  const morphP = t => easeInOut((t - morphAt) / MORPH);
+  const weights = t => { const p = morphP(t); return wFrom.map((w, k) => lerp(w, wTo[k], p)); };
+
+  function totals(w) {
+    const sum = f => REGIONS.reduce((a, r, k) => a + f(r) * w[k], 0);
+    const ytd = sum(r => r.ytd), orders = sum(r => r.orders), next = sum(r => r.next), last = sum(r => r.last);
+    return { ytd, orders, avg: orders > 0 ? ytd / orders : 0, next, last };
+  }
+
+  // ---- Chips and legend. ----
+  const chips = document.getElementById("chips");
+  for (const c of [{ id: "all", name: "All regions" }, ...REGIONS]) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.dataset.region = c.id;
+    b.setAttribute("aria-pressed", String(c.id === "all"));
+    b.innerHTML = c.id === "all" ? c.name : `<span class="dot" style="background:var(--${c.id})"></span>${c.name}`;
+    b.addEventListener("click", () => choose(c.id));
+    chips.append(b);
+  }
+  document.getElementById("legend").innerHTML = REGIONS.map(r => `<span><i class="dot" style="background:var(--${r.id})"></i>${r.name}</span>`).join("") + `<span><i class="band"></i>Forecast, 80% band</span>`;
+
+  function choose(id) {
+    if (id === selected) return;
+    const now = Date.now();
+    kFrom = kpisAt(now);
+    wFrom = weights(now);
+    wTo = weightsOf(id);
+    morphAt = now;
+    selected = id;
+    for (const b of chips.children) b.setAttribute("aria-pressed", String(b.dataset.region === id));
+    const r = REGIONS.find(x => x.id === id);
+    document.getElementById("chart-title").textContent = r ? `Weekly revenue, ${r.name}` : "Weekly revenue by region";
+    document.getElementById("board-title").textContent = r ? `Top products, ${r.name}` : "Top products";
+  }
+
+  // ---- The area chart. ----
+  const svg = document.getElementById("svg");
+  const tip = document.getElementById("tip");
+  const chartEl = document.getElementById("chart");
+  const PAD = { l: 44, r: 12, t: 14, b: 24 };
+  let W = 600, HT = 230, hover = null;
+  function size() {
+    W = Math.max(320, chartEl.clientWidth);
+    const room = innerHeight - chartEl.getBoundingClientRect().top - 196;
+    HT = Math.round(Math.max(170, Math.min(300, room)));
+    svg.setAttribute("viewBox", `0 0 ${W} ${HT}`);
+    svg.setAttribute("height", String(HT));
+  }
+  const x = i => PAD.l + (i / (N - 1)) * (W - PAD.l - PAD.r);
+  const niceMax = v => { const s = Math.pow(10, Math.floor(Math.log10(v))); for (const m of [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (m * s >= v) return m * s; return 10 * s; };
+  /** The chart's nice top for regions weighted `w`: the highest week, band and all. */
+  function topFor(w) {
+    let peak = 0;
+    for (let i = 0; i < N; i++) {
+      const tot = REGIONS.reduce((a, r, k) => a + (i < H ? r.actual[i] : r.fc[i - H]) * w[k], 0);
+      const s = i >= H ? 1.28 * Math.sqrt(REGIONS.reduce((a, r, k) => a + Math.pow(r.sd[i - H] * w[k], 2), 0)) : 0;
+      peak = Math.max(peak, tot + s);
+    }
+    return niceMax(peak * 1.05);
+  }
+
+  function drawChart(t) {
+    const w = weights(t);
+    const reveal = ease((t - t0 - 150) / 1300);
+    const band = ease((t - t0 - 1150) / 800);
+    // Stacks: for each week, the cumulative top of each layer.
+    const stack = Array.from({ length: N }, (_, i) => {
+      let acc = 0;
+      return REGIONS.map((r, k) => { const v = (i < H ? r.actual[i] : r.fc[i - H]) * w[k]; const lo = acc; acc += v; return [lo, acc]; });
+    });
+    const total = i => stack[i][REGIONS.length - 1][1];
+    const sd = h => Math.sqrt(REGIONS.reduce((a, r, k) => a + Math.pow(r.sd[h] * w[k], 2), 0));
+    const yMax = lerp(topFor(wFrom), topFor(wTo), morphP(t));
+    const y = v => HT - PAD.b - (v / yMax) * (HT - PAD.t - PAD.b);
+    const out = [];
+    out.push(`<defs>`);
+    for (const r of REGIONS) out.push(`<linearGradient id="g-${r.id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${color(r)}" stop-opacity="0.95"/><stop offset="1" stop-color="${color(r)}" stop-opacity="0.72"/></linearGradient>`);
+    out.push(`<linearGradient id="g-band" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="${css("--fc")}" stop-opacity="0.40"/><stop offset="1" stop-color="${css("--fc")}" stop-opacity="0.20"/></linearGradient>`);
+    out.push(`<clipPath id="reveal"><rect x="0" y="0" width="${PAD.l + reveal * (x(H - 1) - PAD.l) + 1}" height="${HT}"/></clipPath>`);
+    out.push(`<clipPath id="reveal-fc"><rect x="${x(H - 1)}" y="0" width="${band * (x(N - 1) - x(H - 1))}" height="${HT}"/></clipPath>`);
+    out.push(`</defs>`);
+    // Grid and axes.
+    const ticks = 4;
+    for (let k = 0; k <= ticks; k++) {
+      const v = (yMax / ticks) * k, yy = y(v);
+      out.push(`<line x1="${PAD.l}" x2="${W - PAD.r}" y1="${yy}" y2="${yy}" stroke="${css("--grid")}" stroke-width="1"/>`);
+      out.push(`<text x="${PAD.l - 8}" y="${yy + 4}" text-anchor="end" font-size="10.5" fill="${css("--muted")}">${v === 0 ? "$0" : `$${Math.round(v)}K`}</text>`);
+    }
+    for (let i = 0; i < N; i += 1) {
+      const d = week(i);
+      if (d.getUTCDate() <= 7) out.push(`<text x="${x(i)}" y="${HT - 6}" text-anchor="middle" font-size="10.5" fill="${css("--muted")}">${MONTHS[d.getUTCMonth()]}</text>`);
+    }
+    // Forecast zone's backdrop.
+    out.push(`<rect x="${x(H - 1)}" y="${PAD.t}" width="${x(N - 1) - x(H - 1)}" height="${HT - PAD.t - PAD.b}" fill="${css("--fc")}" opacity="${0.045 * band}"/>`);
+    // Actuals, stacked.
+    const area = (k, from, to) => {
+      let d = "";
+      for (let i = from; i <= to; i++) d += `${i === from ? "M" : "L"}${x(i).toFixed(1)},${y(stack[i][k][1]).toFixed(1)}`;
+      for (let i = to; i >= from; i--) d += `L${x(i).toFixed(1)},${y(stack[i][k][0]).toFixed(1)}`;
+      return d + "Z";
+    };
+    const top = (k, from, to) => { let d = ""; for (let i = from; i <= to; i++) d += `${i === from ? "M" : "L"}${x(i).toFixed(1)},${y(stack[i][k][1]).toFixed(1)}`; return d; };
+    out.push(`<g clip-path="url(#reveal)">`);
+    REGIONS.forEach((r, k) => { if (w[k] > 0.001) out.push(`<path d="${area(k, 0, H - 1)}" fill="url(#g-${r.id})"/>`); });
+    REGIONS.forEach((r, k) => { if (w[k] > 0.001) out.push(`<path d="${top(k, 0, H - 1)}" fill="none" stroke="${css("--surface")}" stroke-width="1.5" stroke-linejoin="round"/>`); });
+    out.push(`</g>`);
+    // Forecast: the regions faded, the 80% band and the total's dashed line.
+    if (band > 0) {
+    out.push(`<g clip-path="url(#reveal-fc)">`);
+    REGIONS.forEach((r, k) => { if (w[k] > 0.001) out.push(`<path d="${area(k, H - 1, N - 1)}" fill="${color(r)}" opacity="0.22"/>`); });
+    let bandD = "";
+    for (let i = H - 1; i < N; i++) { const s = i < H ? 0 : 1.28 * sd(i - H); bandD += `${i === H - 1 ? "M" : "L"}${x(i).toFixed(1)},${y(total(i) + s).toFixed(1)}`; }
+    for (let i = N - 1; i >= H - 1; i--) { const s = i < H ? 0 : 1.28 * sd(i - H); bandD += `L${x(i).toFixed(1)},${y(Math.max(0, total(i) - s)).toFixed(1)}`; }
+    out.push(`<path d="${bandD}Z" fill="url(#g-band)"/>`);
+    let line = "";
+    for (let i = H - 1; i < N; i++) line += `${i === H - 1 ? "M" : "L"}${x(i).toFixed(1)},${y(total(i)).toFixed(1)}`;
+    out.push(`<path d="${line}" fill="none" stroke="${css("--fc")}" stroke-width="2" stroke-dasharray="5 4" stroke-dashoffset="${(-(t - t0) / 60).toFixed(2)}"/>`);
+    out.push(`</g>`);
+    }
+    // Today.
+    const tx = x(H - 1), ty = y(total(H - 1));
+    if (reveal >= 1) {
+      out.push(`<line x1="${tx}" x2="${tx}" y1="${PAD.t}" y2="${HT - PAD.b}" stroke="${css("--fg2")}" stroke-width="1" stroke-dasharray="2 3" opacity="${band}"/>`);
+      out.push(`<text x="${tx - 6}" y="${PAD.t + 10}" text-anchor="end" font-size="10.5" fill="${css("--fg2")}" opacity="${band}">Today</text>`);
+      out.push(`<text x="${tx + 6}" y="${PAD.t + 10}" font-size="10.5" font-weight="600" fill="${css("--fc")}" opacity="${band}">Next 90 days</text>`);
+      const pulse = ((t - t0) % 1600) / 1600;
+      out.push(`<circle cx="${tx}" cy="${ty}" r="${4 + pulse * 10}" fill="${css("--fc")}" opacity="${(1 - pulse) * 0.35}"/>`);
+      out.push(`<circle cx="${tx}" cy="${ty}" r="4.5" fill="${css("--fc")}" stroke="${css("--surface")}" stroke-width="2"/>`);
+    }
+    // Hover crosshair.
+    if (hover !== null && reveal >= 1) {
+      const hx = x(hover);
+      out.push(`<line x1="${hx}" x2="${hx}" y1="${PAD.t}" y2="${HT - PAD.b}" stroke="${css("--fg")}" stroke-width="1" opacity="0.5"/>`);
+      REGIONS.forEach((r, k) => { if (w[k] > 0.5) out.push(`<circle cx="${hx}" cy="${y(stack[hover][k][1])}" r="4" fill="${color(r)}" stroke="${css("--surface")}" stroke-width="2"/>`); });
+      const rows = REGIONS.map((r, k) => (w[k] > 0.5 ? `<div class="r"><span><i class="dot" style="background:${color(r)}"></i>${r.name}</span><b>$${((hover < H ? r.actual[hover] : r.fc[hover - H]) * 1).toFixed(1)}K</b></div>` : "")).join("");
+      tip.innerHTML = `<div class="h">Week of ${day(week(hover))}${hover >= H ? " · forecast" : ""}</div>${rows}`;
+      tip.style.display = "block";
+      const left = hx + 14 + 150 > W ? hx - 14 - 150 : hx + 14;
+      tip.style.left = `${left}px`;
+      tip.style.top = `${PAD.t + 6}px`;
+    } else tip.style.display = "none";
+    svg.innerHTML = out.join("");
+  }
+  chartEl.addEventListener("mousemove", e => {
+    const b = svg.getBoundingClientRect();
+    const px = e.clientX - b.left;
+    const i = Math.round(((px - PAD.l) / (W - PAD.l - PAD.r)) * (N - 1));
+    hover = i >= 0 && i < N ? i : null;
+  });
+  chartEl.addEventListener("mouseleave", () => { hover = null; });
+
+  // ---- KPIs: they count up, and count again on a new filter. ----
+  let kFrom = { ytd: 0, orders: 0, avg: 0, next: 0, last: 0 };
+  /** The figures the tiles show at `t`: counting up from zero, then from what they showed when the filter changed. */
+  function kpisAt(t) {
+    const goal = totals(wTo);
+    const p = morphAt > t0 ? ease((t - morphAt) / 900) : ease((t - t0 - 100) / 1500);
+    const k = {};
+    for (const key of Object.keys(goal)) k[key] = lerp(kFrom[key], goal[key], p);
+    return k;
+  }
+  function drawKpis(t) {
+    const goal = totals(wTo);
+    const k = kpisAt(t);
+    document.getElementById("k-rev").textContent = money(k.ytd);
+    document.getElementById("k-ord").textContent = int(k.orders);
+    document.getElementById("k-avg").textContent = money(k.avg);
+    document.getElementById("k-fc").textContent = money(k.next);
+    const all = totals(weightsOf("all"));
+    document.getElementById("k-rev-s").innerHTML = `${Math.round((goal.ytd / all.ytd) * 100)}% of all regions`;
+    document.getElementById("k-ord-s").innerHTML = `${(goal.orders / 43).toFixed(1)} a week`;
+    document.getElementById("k-avg-s").innerHTML = `<b>+6.2%</b> vs. Q1`;
+    const up = goal.last > 0 ? ((goal.next / goal.last - 1) * 100).toFixed(1) : "0.0";
+    document.getElementById("k-fc-s").innerHTML = `<b>+${up}%</b> on the last 90 days`;
+  }
+
+  // ---- The donut: each region's share; the chosen one stands out. ----
+  const donut = document.getElementById("donut");
+  const shares = document.getElementById("shares");
+  const all = totals(weightsOf("all"));
+  shares.innerHTML = REGIONS.map(r => `<div data-r="${r.id}"><span><i class="dot" style="background:var(--${r.id})"></i>${r.name}</span><b>${Math.round((r.ytd / all.ytd) * 100)}%</b></div>`).join("");
+  function drawDonut(t) {
+    const sweep = ease((t - t0 - 250) / 1300);
+    const w = weights(t);
+    const cx = 66, cy = 66, R = 54, r0 = 36;
+    let a = -Math.PI / 2;
+    const out = [`<circle cx="${cx}" cy="${cy}" r="${(R + r0) / 2}" fill="none" stroke="${css("--grid")}" stroke-width="${R - r0}"/>`];
+    const gap = 0.025;
+    REGIONS.forEach((r, k) => {
+      const span = (r.ytd / all.ytd) * 2 * Math.PI * sweep;
+      const focus = selected === "all" ? 0 : w[k];
+      const out1 = R + 5 * focus, in1 = r0 - 1 * focus;
+      const a0 = a + gap / 2, a1 = a + Math.max(gap / 2, span - gap / 2);
+      const large = a1 - a0 > Math.PI ? 1 : 0;
+      const pt = (rad, ang) => `${(cx + rad * Math.cos(ang)).toFixed(2)},${(cy + rad * Math.sin(ang)).toFixed(2)}`;
+      if (span > gap) out.push(`<path d="M${pt(out1, a0)}A${out1},${out1} 0 ${large} 1 ${pt(out1, a1)}L${pt(in1, a1)}A${in1},${in1} 0 ${large} 0 ${pt(in1, a0)}Z" fill="${color(r)}" opacity="${(selected === "all" ? 1 : 0.28 + 0.72 * w[k]).toFixed(3)}"/>`);
+      a += span;
+    });
+    const sel = REGIONS.find(r => r.id === selected);
+    const big = sel ? `${Math.round((sel.ytd / all.ytd) * 100)}%` : money(all.ytd * sweep);
+    out.push(`<text x="${cx}" y="${cy + 2}" text-anchor="middle" font-size="17" font-weight="680" fill="${css("--fg")}">${big}</text>`);
+    out.push(`<text x="${cx}" y="${cy + 17}" text-anchor="middle" font-size="10" fill="${css("--muted")}">${sel ? sel.name : "year to date"}</text>`);
+    donut.innerHTML = out.join("");
+    for (const el of shares.children) el.style.opacity = selected === "all" || el.dataset.r === selected ? "1" : "0.45";
+  }
+
+  // ---- The product leaderboard: bars grow, and re-rank on a filter. ----
+  const board = document.getElementById("board");
+  const ROW = 26, SHOW = 5;
+  board.style.height = `${ROW * SHOW - 4}px`;
+  const bars = PRODUCTS.map((name, p) => {
+    const el = document.createElement("div");
+    el.className = "bar";
+    el.innerHTML = `<span class="name">${name}</span><span class="track"><span class="fill">${REGIONS.map(r => `<i style="background:var(--${r.id})"></i>`).join("")}</span></span><span class="v"></span>`;
+    board.append(el);
+    return { el, fill: el.querySelector(".fill"), segs: [...el.querySelectorAll(".fill i")], v: el.querySelector(".v"), p, pos: p, val: 0 };
+  });
+  function drawBoard(t) {
+    const w = weights(t);
+    const valsFor = ws => PRODUCTS.map((_, p) => REGIONS.reduce((a, r, k) => a + r.products[p] * ws[k], 0));
+    const orderOf = vs => vs.map((v, p) => [v, p]).sort((a, b) => b[0] - a[0]).map(e => e[1]);
+    const vals = valsFor(w);
+    const from = orderOf(valsFor(wFrom)), to = orderOf(valsFor(wTo)), order = orderOf(vals);
+    const max = Math.max(...vals);
+    for (const b of bars) {
+      const rank = order.indexOf(b.p);
+      b.pos = lerp(from.indexOf(b.p), to.indexOf(b.p), morphP(t));
+      const grow = ease((t - t0 - 400 - rank * 90) / 900);
+      const frac = (vals[b.p] / max) * grow;
+      b.el.style.transform = `translateY(${(b.pos * ROW).toFixed(2)}px)`;
+      b.el.style.opacity = String(clamp01(SHOW - b.pos));
+      b.fill.style.width = `${(frac * 100).toFixed(2)}%`;
+      // Each region's part of the bar, in its colour.
+      REGIONS.forEach((r, k) => { b.segs[k].style.width = vals[b.p] > 0 ? `${((r.products[b.p] * w[k]) / vals[b.p] * 100).toFixed(3)}%` : "0"; b.segs[k].style.display = w[k] > 0.004 ? "block" : "none"; });
+      b.v.textContent = money(vals[b.p] * grow);
+    }
+  }
+
+  // ---- One loop draws it all, every 16 ms from the script's start. ----
+  function frame() {
+    const t = Date.now();
+    drawChart(t);
+    drawKpis(t);
+    drawDonut(t);
+    drawBoard(t);
+    document.getElementById("live").style.opacity = String(0.55 + 0.45 * Math.cos(((t - t0) / 1600) * 2 * Math.PI));
+    setTimeout(frame, 16);
+  }
+  size();
+  addEventListener("resize", size);
+  frame();
+})();
+</script>
+</body>
+</html>

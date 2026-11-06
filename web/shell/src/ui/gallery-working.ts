@@ -55,17 +55,18 @@ export const summary = () => import("../q/GallerySummary.svelte");
 export { default as NewTile } from "./NewTile.svelte";
 
 /** The gallery shell's pages besides the gallery and the inbox, each its own chunk. */
-export type Page = "people" | "tags" | "admin" | "settings" | "me" | "audit";
+export type Page = "people" | "tags" | "queues" | "admin" | "settings" | "me" | "audit";
 const PAGES: Record<Page, () => Promise<{ default: unknown }>> = {
   people: () => import("../people/People.svelte"),
   tags: () => import("./TagsPage.svelte"),
+  queues: () => import("../queues/Queues.svelte"),
   admin: () => import("../bot/AdminPage.svelte"),
   settings: () => import("../bot/SettingsPage.svelte"),
   me: () => import("../bot/MePage.svelte"),
   audit: () => import("../bot/AuditPage.svelte"),
 };
 
-/** `/people`, `/tags`, `/admin`, `/settings`, `/me` and `/audit`: mounts
+/** `/people`, `/tags`, `/queues`, `/admin`, `/settings`, `/me` and `/audit`: mounts
  * that page (its own chunk) at the end of `target`, following the page's
  * stream. The result removes it. */
 export function page(name: Page, target: Element): () => void {

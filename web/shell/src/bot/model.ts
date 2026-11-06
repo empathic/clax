@@ -1,11 +1,12 @@
 // ClaxBot's numbers and words for the shell (spec 2026-10-21-claxbot §7,
 // §11): credits from milli-credits, money from micro-USD, margins from
 // basis points; the week's meter and its warn and exhausted states; the
-// Send menu's availability line; a cost line's credits per unit; the
-// margin before and after the free tier; a run's state as its events
-// arrive; the audit's time ranges; and the settings' sections. Pure: no
-// clock but the one passed in.
-import type { AdminUsage, BotCall, BotRun, BotStep, CostLine, MeBot, RunEvent, RunStatus, SettingField, Source, Unavailable, Unit, Week } from "./api";
+// Send menu's availability line; a cost line's credits per unit; where a
+// model's token rates come from and its price in a line; the margin
+// before and after the free tier; a run's state as its events arrive; the
+// audit's time ranges; and the settings' sections. Pure: no clock but the
+// one passed in.
+import type { AdminUsage, BotCall, BotRun, BotStep, CostLine, MeBot, PriceSummary, RateSource, RunEvent, RunStatus, SettingField, Source, TokenUnit, Unavailable, Unit, Week } from "./api";
 
 /** A setting as its section lists it: its dotted name and the rest of it after the section. */
 export type Setting = SettingField & { key: string; label: string };
@@ -113,16 +114,53 @@ export function perUnitMilli(line: Pick<CostLine, "cost_micro_usd" | "margin_bp"
   return Math.ceil((line.cost_micro_usd * (10_000 + line.margin_bp) * 1000) / (10_000 * priceMicro));
 }
 
+/** The web cost lines' price per thousand requests in milli-credits: a search on each provider, and a fetch (`null` where the lines do not list it). */
+export function webPrices(lines: Pick<CostLine, "id" | "cost_micro_usd" | "margin_bp" | "fixed_credits_milli">[], priceMicro: number): { search: Record<string, number>; fetch: number | null } {
+  const out: { search: Record<string, number>; fetch: number | null } = { search: {}, fetch: null };
+  for (const l of lines) {
+    if (l.id === "web.fetch") out.fetch = perUnitMilli(l, priceMicro);
+    else if (l.id.startsWith("web.search.")) out.search[l.id.slice("web.search.".length)] = perUnitMilli(l, priceMicro);
+  }
+  return out;
+}
+
+/** A fetch's source in words: the sender's comment, or the search or page whose result named the URL ("from search #2"). */
+export function webSource(source: string | undefined): string | null {
+  if (!source) return null;
+  return source === "comment" ? "from the sender's comment" : `from ${source}`;
+}
+
+/** What a web call cost, in credits; nothing for a call with no cost (a page from the store, or a call that failed uncharged). */
+export function callCost(milli: number | undefined): string | null {
+  if (!milli || milli <= 0) return null;
+  return `${credits(milli)} ${milli === 1000 ? "credit" : "credits"}`;
+}
+
 export const UNITS: Record<Unit, string> = {
   mtok_input: "1M input tokens", mtok_cached_input: "1M cached tokens", mtok_cache_write: "1M cache-write tokens", mtok_output: "1M output tokens",
-  cpu_gb_s: "CPU·GB-s", mreq: "1M requests", gb_month: "GB-month", run: "run",
+  cpu_gb_s: "CPU·GB-s", mreq: "1M requests", gb_month: "GB-month", run: "run", kreq: "thousand requests",
 };
 
 /** The base unit a usage row counts in (§7.3), by its line's unit. */
 export const BASE_UNITS: Record<Unit, string> = {
   mtok_input: "tokens", mtok_cached_input: "tokens", mtok_cache_write: "tokens", mtok_output: "tokens",
-  cpu_gb_s: "CPU·MiB·ms", mreq: "requests", gb_month: "byte·s", run: "runs",
+  cpu_gb_s: "CPU·MiB·ms", mreq: "requests", gb_month: "byte·s", run: "runs", kreq: "requests",
 };
+
+/** A rate card's token units, in order, with their names. */
+export const TOKEN_UNITS: { id: TokenUnit; label: string }[] = [
+  { id: "input", label: "Input" }, { id: "cached_input", label: "Cached input" }, { id: "cache_write", label: "Cache write" }, { id: "output", label: "Output" },
+];
+/** Where a model's token rate comes from, as its badge says it: any rate an admin did not set is an estimate (the store's `RateSource::is_estimated`). */
+export const RATE_SOURCES: Record<RateSource, string> = { line: "set", catalog: "tokenulator.dev, estimated", default: "default rate, estimated", provider: "billed by the provider" };
+export const estimated = (s: RateSource | null | undefined): boolean => s === "catalog" || s === "default";
+/** A model's price in one line, input / output: "105 / 630 credits per Mtok, tokenulator.dev, estimated"; "no price" when it resolves to none. */
+export function priceSummary(p: PriceSummary): string {
+  const [i, o] = [p.input_credits_milli_per_mtok, p.output_credits_milli_per_mtok];
+  if (!p.source || i === null || o === null) return "no price";
+  const from = p.source === "mixed" ? (p.estimated ? "set in part, estimated" : "set") : RATE_SOURCES[p.source];
+  return `${credits(i)} / ${credits(o)} credits per Mtok, ${from}`;
+}
 
 /** Gross margin before and after the free tier, in basis points (null without revenue). */
 export function margins(u: Pick<AdminUsage, "revenue_micro_usd" | "cost_micro_usd" | "free_cost_micro_usd">): { before: number | null; after: number | null } {

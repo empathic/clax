@@ -1,0 +1,120 @@
+"""The tools worker-build runs after rustc, pinned by checksum.
+
+bazel/wasm/worker.bzl runs them as crates/clax-worker/build.sh's worker-build
+0.8.7 does (worker-build's src/versions.rs): wasm-bindgen at the version the
+Worker's wasm-bindgen crate is in Cargo.lock (scripts/bazel-derive.py's
+features check fails when they differ), binaryen's wasm-opt 132 and esbuild
+0.28.2, each for the machine the build runs on; and the JavaScript shim
+worker-build wraps the module in, from its crate.
+"""
+
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "wasm_bindgen_darwin_arm64",
+    build_file_content = 'exports_files(["wasm-bindgen"], visibility = ["//visibility:public"])',
+    sha256 = "81d4a23d56b3c3eb8187658329116d50e0b228a93b343825fb71f70179051cd1",
+    strip_prefix = "wasm-bindgen-0.2.129-aarch64-apple-darwin",
+    url = "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/wasm-bindgen-0.2.129-aarch64-apple-darwin.tar.gz",
+)
+
+http_archive(
+    name = "wasm_bindgen_darwin_x86_64",
+    build_file_content = 'exports_files(["wasm-bindgen"], visibility = ["//visibility:public"])',
+    sha256 = "7e028879a68ec53dae14048b55cc5215f6df75b17a9c1426fac8fa086d3202fd",
+    strip_prefix = "wasm-bindgen-0.2.129-x86_64-apple-darwin",
+    url = "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/wasm-bindgen-0.2.129-x86_64-apple-darwin.tar.gz",
+)
+
+http_archive(
+    name = "wasm_bindgen_linux_arm64",
+    build_file_content = 'exports_files(["wasm-bindgen"], visibility = ["//visibility:public"])',
+    sha256 = "1797c349a0f45d30946e8986b184135e12839ab576c9a04203e85febfc5dcb35",
+    strip_prefix = "wasm-bindgen-0.2.129-aarch64-unknown-linux-gnu",
+    url = "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/wasm-bindgen-0.2.129-aarch64-unknown-linux-gnu.tar.gz",
+)
+
+http_archive(
+    name = "wasm_bindgen_linux_x86_64",
+    build_file_content = 'exports_files(["wasm-bindgen"], visibility = ["//visibility:public"])',
+    sha256 = "82d12bb940e2d4e72e0d5605387fc1b8ca179044e012b620f0ce4e7440e8320e",
+    strip_prefix = "wasm-bindgen-0.2.129-x86_64-unknown-linux-musl",
+    url = "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl.tar.gz",
+)
+
+http_archive(
+    name = "binaryen_darwin_arm64",
+    # wasm-opt loads ../lib/libbinaryen beside it.
+    build_file_content = 'exports_files(["bin/wasm-opt"], visibility = ["//visibility:public"])\nfilegroup(name = "lib", srcs = glob(["lib/**"]), visibility = ["//visibility:public"])',
+    sha256 = "98aad827847af7ef990ed7098d885725c8e5b5aae75073403635617ae4e259aa",
+    strip_prefix = "binaryen-version_132",
+    url = "https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-arm64-macos.tar.gz",
+)
+
+http_archive(
+    name = "binaryen_darwin_x86_64",
+    # wasm-opt loads ../lib/libbinaryen beside it.
+    build_file_content = 'exports_files(["bin/wasm-opt"], visibility = ["//visibility:public"])\nfilegroup(name = "lib", srcs = glob(["lib/**"]), visibility = ["//visibility:public"])',
+    sha256 = "40c3de90bb3766bd0282a895e139a6f50253dba49b4f5bb89e66faca162d832e",
+    strip_prefix = "binaryen-version_132",
+    url = "https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-macos.tar.gz",
+)
+
+http_archive(
+    name = "binaryen_linux_arm64",
+    # wasm-opt loads ../lib/libbinaryen beside it.
+    build_file_content = 'exports_files(["bin/wasm-opt"], visibility = ["//visibility:public"])\nfilegroup(name = "lib", srcs = glob(["lib/**"]), visibility = ["//visibility:public"])',
+    sha256 = "c58562417836c5d0493d89bdefc434933bdc097db641b483df86bcfa557a107f",
+    strip_prefix = "binaryen-version_132",
+    url = "https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-aarch64-linux.tar.gz",
+)
+
+http_archive(
+    name = "binaryen_linux_x86_64",
+    # wasm-opt loads ../lib/libbinaryen beside it.
+    build_file_content = 'exports_files(["bin/wasm-opt"], visibility = ["//visibility:public"])\nfilegroup(name = "lib", srcs = glob(["lib/**"]), visibility = ["//visibility:public"])',
+    sha256 = "195ddc94f9bc89f45abdabb0b9eea86023d727ba90eac8b35b80f2544fc30572",
+    strip_prefix = "binaryen-version_132",
+    url = "https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz",
+)
+
+http_archive(
+    name = "esbuild_darwin_arm64",
+    build_file_content = 'exports_files(["bin/esbuild"], visibility = ["//visibility:public"])',
+    integrity = "sha512-n4KqkOQrraxHJcgjM1RvwbigfQKIKJVpM7xp+KsxiyUSrRdIXnt73VhrPAx0fV44hgfmIVKjxMN9J1t5jySVkw==",
+    strip_prefix = "package",
+    url = "https://registry.npmjs.org/@esbuild/darwin-arm64/-/darwin-arm64-0.28.2.tgz",
+)
+
+http_archive(
+    name = "esbuild_darwin_x86_64",
+    build_file_content = 'exports_files(["bin/esbuild"], visibility = ["//visibility:public"])',
+    integrity = "sha512-uq6suIWYP37qzGddBKPw5QEQPi6HiLGsO7UmkpfyaYNQ3D+rN6w6WfwH+nuqcGXWvawGwxOEroO4YGnFh95azw==",
+    strip_prefix = "package",
+    url = "https://registry.npmjs.org/@esbuild/darwin-x64/-/darwin-x64-0.28.2.tgz",
+)
+
+http_archive(
+    name = "esbuild_linux_arm64",
+    build_file_content = 'exports_files(["bin/esbuild"], visibility = ["//visibility:public"])',
+    integrity = "sha512-pW4AC0P3it8c7do9MVM4p51FzHzdM/TZrerurgRcHJ2WTa1VQ1CIq18xncfpBJw4ojkiZZrKW2yIBWBP92j6Ug==",
+    strip_prefix = "package",
+    url = "https://registry.npmjs.org/@esbuild/linux-arm64/-/linux-arm64-0.28.2.tgz",
+)
+
+http_archive(
+    name = "esbuild_linux_x86_64",
+    build_file_content = 'exports_files(["bin/esbuild"], visibility = ["//visibility:public"])',
+    integrity = "sha512-4xTZr1FUmSoQW4XIWmit3tzQrUTZM+N3P0XV8xROKYF50XfI7xeO90+1bZvNwxIufQ9hDQVRJH5YhgPVF8A/HQ==",
+    strip_prefix = "package",
+    url = "https://registry.npmjs.org/@esbuild/linux-x64/-/linux-x64-0.28.2.tgz",
+)
+
+http_archive(
+    name = "worker_build_js",
+    build_file_content = 'exports_files(["src/js/shim.js"], visibility = ["//visibility:public"])',
+    sha256 = "1051c05ef088889a30ad3bad40c22a716ba8ca8d02a3fb01cef8c143ba952222",
+    strip_prefix = "worker-build-0.8.7",
+    type = "tar.gz",
+    url = "https://static.crates.io/crates/worker-build/worker-build-0.8.7.crate",
+)

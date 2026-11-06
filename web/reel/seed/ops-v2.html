@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Northwind Ops</title>
+<style>
+  /* Northwind Ops, version 2: what the agent publishes in the reel's agent
+     vignette (web/reel/vignettes/agent.ts). The board of version 1
+     (ops-v1.html) becomes a timeline of the same tasks (`tasks/*`: start,
+     days, depends_on) with their dependencies drawn, beside a burndown of
+     `metrics/burndown`, in a new theme. The team and its launch are
+     invented. */
+  :root {
+    --bg: #f4f4fa;
+    --panel: #ffffff;
+    --side: #1e1b4b;
+    --side-2: #312e81;
+    --side-fg: #e0e7ff;
+    --fg: #17162b;
+    --muted: #64618a;
+    --line: #e4e3f1;
+    --grid: #efeef8;
+    --accent: #6d28d9;
+    --accent-soft: #ede9fe;
+    --good: #059669;
+    --today: #e11d48;
+    --alex: #f97316;
+    --mia: #14b8a6;
+    --sam: #3b82f6;
+    --priya: #a855f7;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f0e1d;
+      --panel: #18172b;
+      --side: #0b0a1a;
+      --side-2: #1e1b4b;
+      --fg: #ecebff;
+      --muted: #a5a3c9;
+      --line: #2a2945;
+      --grid: #201f36;
+      --accent-soft: #2e1065;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .app { display: grid; grid-template-columns: 172px 1fr; min-height: 100%; }
+  nav { background: linear-gradient(180deg, var(--side), var(--side-2)); color: var(--side-fg); padding: 18px 12px; }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; margin: 0 6px 22px; color: #fff; }
+  .brand i { width: 22px; height: 22px; border-radius: 7px; background: conic-gradient(from 200deg, #a78bfa, #22d3ee, #f472b6, #a78bfa); display: inline-block; }
+  nav a { display: block; padding: 7px 10px; border-radius: 8px; color: #c7d2fe; text-decoration: none; margin-bottom: 2px; opacity: 0.85; }
+  nav a.on { background: rgba(255, 255, 255, 0.14); color: #fff; font-weight: 600; opacity: 1; }
+  nav h6 { margin: 20px 10px 6px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: #a5b4fc; }
+  main { padding: 18px 22px; min-width: 0; }
+  header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  h1 { margin: 0; font-size: 21px; letter-spacing: -0.01em; }
+  .chip { background: var(--accent-soft); color: var(--accent); font-weight: 600; font-size: 12px; padding: 2px 9px; border-radius: 99px; }
+  header .when { color: var(--muted); }
+  .stack { margin-left: auto; display: flex; }
+  .stack .av { margin-left: -6px; box-shadow: 0 0 0 2px var(--bg); }
+  .strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 12px; }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px; box-shadow: 0 1px 2px rgba(30, 27, 75, 0.06); }
+  .tile b { display: block; font-size: 20px; font-weight: 700; }
+  .tile small { color: var(--muted); font-size: 12px; }
+  .tile em { font-style: normal; font-size: 12px; font-weight: 600; color: var(--good); margin-left: 6px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; box-shadow: 0 1px 2px rgba(30, 27, 75, 0.06); margin-bottom: 12px; }
+  .card h2 { margin: 0 0 6px; font-size: 13px; font-weight: 650; display: flex; align-items: center; gap: 12px; }
+  .legend { margin-left: auto; display: flex; gap: 12px; color: var(--muted); font-weight: 500; font-size: 12px; }
+  .legend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; background: var(--c); opacity: var(--o, 1); }
+  svg { display: block; overflow: visible; }
+  svg text { font: 12px system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--fg); }
+  svg .day { fill: var(--muted); font-size: 11px; }
+  /* The arrival: the bars sweep in one after another, the dependencies draw
+     themselves from bar to bar, the burndown draws its line, and then the
+     critical path keeps flowing and today's point keeps pulsing. */
+  .bar rect { animation: grow 650ms cubic-bezier(0.05, 0.7, 0.1, 1) both; animation-delay: calc(var(--i) * 60ms); }
+  .bar path { animation: fade 250ms ease-out both; animation-delay: calc(var(--i) * 60ms + 500ms); }
+  .dep { stroke-dasharray: 1; animation: draw 520ms cubic-bezier(0.4, 0, 0.2, 1) both; animation-delay: calc(450ms + var(--j) * 70ms); }
+  .flow { stroke-dasharray: 0.03 0.04; animation: fade 300ms ease-out both 1300ms, flow 1100ms linear infinite 1300ms; }
+  .burn { stroke-dasharray: 1; animation: draw 1100ms cubic-bezier(0.4, 0, 0.2, 1) both 350ms; }
+  .area { animation: fade 700ms ease-out both 700ms; }
+  .pulse { transform-box: fill-box; transform-origin: center; animation: pulse 1200ms ease-out infinite 1400ms; opacity: 0; }
+  .tile, .row2 .card, .path li { animation: rise 450ms cubic-bezier(0.05, 0.7, 0.1, 1) both; animation-delay: calc(var(--k, 0) * 70ms); }
+  @keyframes grow { from { width: 0; } }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes draw { 0% { stroke-dashoffset: 1; opacity: 0; } 12% { opacity: 1; } 100% { stroke-dashoffset: 0; opacity: 1; } }
+  @keyframes flow { from { stroke-dashoffset: 0.07; } to { stroke-dashoffset: 0; } }
+  @keyframes pulse { 0% { transform: scale(1); opacity: 0.55; } 100% { transform: scale(3.2); opacity: 0; } }
+  @keyframes rise { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; } }
+  .row2 { display: grid; grid-template-columns: 1.7fr 1fr; gap: 12px; }
+  .row2 .card { margin-bottom: 0; }
+  .path { list-style: none; margin: 4px 0 0; padding: 0; }
+  .path li { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-top: 1px solid var(--line); font-size: 13px; }
+  .path li:first-child { border-top: 0; }
+  .path small { margin-left: auto; color: var(--muted); }
+  .av { width: 20px; height: 20px; border-radius: 50%; color: #fff; font-size: 9px; font-weight: 700; display: inline-grid; place-items: center; flex: none; }
+  .loading { color: var(--muted); }
+  @media (max-width: 640px) {
+    .app { grid-template-columns: 1fr; }
+    nav { display: none; }
+    .strip, .row2 { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <nav>
+    <div class="brand"><i></i>Northwind Ops</div>
+    <a href="#">Overview</a>
+    <a href="#" class="on">Launch timeline</a>
+    <a href="#">Incidents</a>
+    <a href="#">Releases</a>
+    <h6>Teams</h6>
+    <a href="#">Payments</a>
+    <a href="#">Growth</a>
+    <a href="#">Platform</a>
+  </nav>
+  <main>
+    <header>
+      <h1>Launch 3.0</h1><span class="chip">Timeline</span><span class="when">ships November 18</span>
+      <span class="stack" id="stack"></span>
+    </header>
+    <section class="strip">
+      <div class="tile"><small>Open tasks</small><b id="open">–</b></div>
+      <div class="tile" style="--k: 1"><small>Points left</small><b><span id="left">–</span><em id="burned"></em></b></div>
+      <div class="tile" style="--k: 2"><small>Days to launch</small><b>15</b></div>
+      <div class="tile" style="--k: 3"><small>Forecast</small><b style="color: var(--good)">On track</b></div>
+    </section>
+    <section class="card">
+      <h2>Timeline <span class="legend"><span style="--c: var(--accent)">done</span><span style="--c: var(--accent); --o: 0.55">in progress</span><span style="--c: var(--accent); --o: 0.22">to do</span></span></h2>
+      <svg id="gantt" height="300" role="img" aria-label="The launch's tasks on a timeline, with their dependencies"><text class="loading" x="0" y="20">Loading…</text></svg>
+    </section>
+    <section class="row2">
+      <div class="card">
+        <h2>Burndown <span class="legend"><span style="--c: var(--accent)">remaining</span><span style="--c: var(--muted); --o: 0.5">ideal</span></span></h2>
+        <svg id="burndown" height="132" role="img" aria-label="Points remaining by day against the ideal line"></svg>
+      </div>
+      <div class="card">
+        <h2>Critical path</h2>
+        <ul class="path" id="path"></ul>
+      </div>
+    </section>
+  </main>
+</div>
+<script>
+(async () => {
+  const PEOPLE = { Alex: "--alex", Mia: "--mia", Sam: "--sam", Priya: "--priya" };
+  const DAYS = 16;
+  const START = new Date(Date.UTC(2026, 10, 3));
+  const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const colorOf = owner => css(PEOPLE[owner] ?? "--accent");
+  const avatar = name => `<span class="av" style="background: var(${PEOPLE[name] ?? "--accent"})" title="${name}">${name.slice(0, 2).toUpperCase()}</span>`;
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  document.getElementById("stack").innerHTML = ["Alex", "Mia", "Sam", "Priya"].map(avatar).join("");
+
+  // The critical path: the longest chain of dependencies to the launch.
+  function criticalPath(tasks) {
+    const byId = new Map(tasks.map(t => [t.id, t]));
+    const chain = [];
+    for (let t = tasks.at(-1); t; ) {
+      chain.unshift(t);
+      t = (t.depends_on ?? []).map(id => byId.get(id)).filter(Boolean).sort((a, b) => (b.start + b.days) - (a.start + a.days))[0];
+    }
+    return chain;
+  }
+
+  function gantt(tasks) {
+    const svg = document.getElementById("gantt");
+    const W = svg.parentElement.clientWidth - 28;
+    const LABEL = 168, ROW = 28, TOP = 22;
+    const dx = (W - LABEL) / DAYS;
+    const x = d => LABEL + d * dx;
+    const y = i => TOP + i * ROW;
+    const row = new Map(tasks.map((t, i) => [t.id, i]));
+    svg.setAttribute("width", String(W));
+    svg.setAttribute("height", String(TOP + tasks.length * ROW + 4));
+    let out = `<defs><marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L8 4 L0 8 z" fill="${css("--muted")}"/></marker></defs>`;
+    // Today is November 10; its label takes the place of the day after's.
+    const today = 7;
+    for (let d = 0; d <= DAYS; d++) {
+      const date = new Date(START.getTime() + d * 864e5);
+      const weekend = date.getUTCDay() === 0 || date.getUTCDay() === 6;
+      if (d < DAYS && weekend) out += `<rect x="${x(d)}" y="${TOP - 4}" width="${dx}" height="${tasks.length * ROW + 4}" fill="${css("--grid")}"/>`;
+      if (d < DAYS && d % 2 === 0 && d !== today + 1) out += `<text class="day" x="${x(d) + 2}" y="12">${date.getUTCDate()}</text>`;
+    }
+    out += `<line x1="${x(today)}" x2="${x(today)}" y1="${TOP - 6}" y2="${TOP + tasks.length * ROW}" stroke="${css("--today")}" stroke-width="1.5"/>`;
+    out += `<text x="${x(today) + 4}" y="12" style="fill: ${css("--today")}; font-size: 11px; font-weight: 600">Today</text>`;
+    tasks.forEach((t, i) => {
+      const c = colorOf(t.owner);
+      const left = x(t.start), w = t.days * dx - 4, top = y(i) + 5, h = ROW - 10;
+      const fill = t.status === "done" ? 1 : t.status === "todo" ? 0 : t.status === "review" ? 0.85 : 0.5;
+      out += `<text x="28" y="${y(i) + ROW / 2 + 4}">${esc(t.title)}</text>`;
+      out += `<circle cx="10" cy="${y(i) + ROW / 2}" r="8" fill="${c}"/><text x="10" y="${y(i) + ROW / 2 + 3}" text-anchor="middle" style="fill: #fff; font-size: 8px; font-weight: 700">${esc(t.owner.slice(0, 2).toUpperCase())}</text>`;
+      out += `<g class="bar" style="--i: ${i}"><rect x="${left}" y="${top}" width="${w}" height="${h}" rx="5" fill="${c}" opacity="0.22"/>`;
+      if (fill) out += `<rect x="${left}" y="${top}" width="${w * fill}" height="${h}" rx="5" fill="${c}"/>`;
+      if (t.status === "done") out += `<path d="M${left + w - 15} ${top + h / 2} l3.5 3.5 l6.5 -7" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
+      out += `</g>`;
+    });
+    const critical = new Set(criticalPath(tasks).map(t => t.id));
+    let j = 0;
+    for (const t of tasks) for (const dep of t.depends_on ?? []) {
+      const from = tasks[row.get(dep)];
+      if (!from) continue;
+      const x1 = x(from.start + from.days) - 4, y1 = y(row.get(dep)) + ROW / 2;
+      const x2 = x(t.start) - 1, y2 = y(row.get(t.id)) + ROW / 2;
+      const bend = Math.max(14, Math.min(40, Math.abs(x2 - x1)));
+      const d = `M${x1} ${y1} C${x1 + bend} ${y1} ${x2 - bend} ${y2} ${x2} ${y2}`;
+      out += `<path class="dep" style="--j: ${j++}" pathLength="1" d="${d}" fill="none" stroke="${css("--muted")}" stroke-width="1.4" marker-end="url(#arrow)"/>`;
+      // The critical path's links flow toward the launch.
+      if (critical.has(t.id) && critical.has(dep)) out += `<path class="flow" pathLength="1" d="${d}" fill="none" stroke="${css("--accent")}" stroke-width="2.4" stroke-linecap="round"/>`;
+    }
+    svg.innerHTML = out;
+  }
+
+  function burndown(remaining) {
+    const svg = document.getElementById("burndown");
+    const W = svg.parentElement.clientWidth - 28, H = 132, L = 26, B = 18;
+    svg.setAttribute("width", String(W));
+    const total = remaining[0];
+    const x = d => L + d / (DAYS - 1) * (W - L - 4);
+    const y = v => 6 + (1 - v / total) * (H - B - 6);
+    let out = "";
+    for (const v of [0, total / 2, total]) out += `<line x1="${L}" x2="${W - 4}" y1="${y(v)}" y2="${y(v)}" stroke="${css("--line")}"/><text class="day" x="0" y="${y(v) + 4}">${Math.round(v)}</text>`;
+    out += `<line x1="${x(0)}" y1="${y(total)}" x2="${x(DAYS - 1)}" y2="${y(0)}" stroke="${css("--muted")}" stroke-width="1.5" stroke-dasharray="4 4" opacity="0.6"/>`;
+    const pts = remaining.map((v, d) => `${x(d).toFixed(1)},${y(v).toFixed(1)}`);
+    out += `<polygon class="area" points="${x(0)},${y(0)} ${pts.join(" ")} ${x(remaining.length - 1)},${y(0)}" fill="${css("--accent")}" fill-opacity="0.12"/>`;
+    out += `<polyline class="burn" pathLength="1" points="${pts.join(" ")}" fill="none" stroke="${css("--accent")}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
+    const last = remaining.length - 1;
+    out += `<circle class="pulse" cx="${x(last)}" cy="${y(remaining[last])}" r="4" fill="${css("--accent")}"/>`;
+    out += `<circle class="area" cx="${x(last)}" cy="${y(remaining[last])}" r="4" fill="${css("--accent")}" stroke="#fff" stroke-width="2"/>`;
+    out += `<text class="day" x="${x(0)}" y="${H - 2}">Nov 3</text><text class="day" x="${x(DAYS - 1)}" y="${H - 2}" text-anchor="end">Nov 18</text>`;
+    svg.innerHTML = out;
+  }
+
+  const db = await claude.use("db");
+  let tasks = [];
+  // Each view is drawn anew only when its data changed: drawing restarts its arrival.
+  const drawn = { tasks: "", burndown: "" };
+  db.collection("tasks").orderBy("order").onSnapshot(snap => {
+    tasks = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    if (JSON.stringify(tasks) === drawn.tasks) return;
+    drawn.tasks = JSON.stringify(tasks);
+    gantt(tasks);
+    const open = tasks.filter(t => t.status !== "done");
+    document.getElementById("open").textContent = String(open.length);
+    document.getElementById("path").innerHTML = criticalPath(tasks).slice(-4).map((t, k) => `<li style="--k: ${k + 4}">${avatar(t.owner)}${esc(t.title)}<small>${t.days} d</small></li>`).join("");
+  });
+  db.doc("metrics/burndown").onSnapshot(snap => {
+    if (!snap.exists) return;
+    const { remaining } = snap.data();
+    if (JSON.stringify(remaining) === drawn.burndown) return;
+    drawn.burndown = JSON.stringify(remaining);
+    burndown(remaining);
+    document.getElementById("left").textContent = String(remaining.at(-1));
+    document.getElementById("burned").textContent = `−${remaining.at(-2) - remaining.at(-1)} today`;
+  });
+})();
+</script>
+</body>
+</html>

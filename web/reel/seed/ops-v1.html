@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Northwind Ops</title>
+<style>
+  /* Northwind Ops, version 1: a launch-ops console for the reel's agent
+     vignette (web/reel/vignettes/agent.ts), a board of the launch's tasks
+     kept in the page's documents (`tasks/*`, `metrics/burndown`). The team
+     and its launch are invented. Version 2 is ops-v2.html. */
+  :root {
+    --bg: #f6f6f4;
+    --panel: #ffffff;
+    --side: #efeeea;
+    --fg: #1f1e1c;
+    --muted: #6e6b65;
+    --line: #e3e1db;
+    --col: #ecebe7;
+    --accent: #4b5563;
+    --alex: #c2410c;
+    --mia: #0f766e;
+    --sam: #1d4ed8;
+    --priya: #7e22ce;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161615;
+      --panel: #1f1f1d;
+      --side: #1b1b1a;
+      --fg: #ecebe7;
+      --muted: #a3a09a;
+      --line: #34332f;
+      --col: #252522;
+      --accent: #cbd5e1;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .app { display: grid; grid-template-columns: 172px 1fr; min-height: 100%; }
+  nav { background: var(--side); border-right: 1px solid var(--line); padding: 18px 12px; }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 650; font-size: 15px; margin: 0 6px 22px; }
+  .brand i { width: 22px; height: 22px; border-radius: 6px; background: var(--accent); display: inline-block; }
+  nav a { display: block; padding: 7px 10px; border-radius: 7px; color: var(--muted); text-decoration: none; margin-bottom: 2px; }
+  nav a.on { background: var(--panel); color: var(--fg); font-weight: 600; box-shadow: 0 0 0 1px var(--line); }
+  nav h6 { margin: 20px 10px 6px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  main { padding: 20px 22px; min-width: 0; }
+  header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; }
+  h1 { margin: 0; font-size: 21px; letter-spacing: -0.01em; }
+  header span { color: var(--muted); }
+  .strip { display: grid; grid-template-columns: repeat(3, 1fr) 1.4fr; gap: 10px; margin-bottom: 16px; }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .tile b { display: block; font-size: 20px; font-weight: 650; }
+  .tile small { color: var(--muted); font-size: 12px; }
+  .tile svg { display: block; width: 100%; height: 30px; margin-top: 2px; }
+  .board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .col { background: var(--col); border-radius: 10px; padding: 10px; min-height: 380px; }
+  .col h2 { margin: 0 0 8px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; display: flex; justify-content: space-between; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; margin-bottom: 8px; }
+  .card p { margin: 0 0 8px; font-weight: 500; }
+  .meta { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 12px; }
+  .av { width: 22px; height: 22px; border-radius: 50%; color: #fff; font-size: 10px; font-weight: 700; display: inline-grid; place-items: center; }
+  .pts { border: 1px solid var(--line); border-radius: 99px; padding: 0 7px; }
+  .loading { color: var(--muted); padding: 8px 2px; }
+  @media (max-width: 640px) {
+    .app { grid-template-columns: 1fr; }
+    nav { display: none; }
+    .strip, .board { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <nav>
+    <div class="brand"><i></i>Northwind Ops</div>
+    <a href="#">Overview</a>
+    <a href="#" class="on">Launch board</a>
+    <a href="#">Incidents</a>
+    <a href="#">Releases</a>
+    <h6>Teams</h6>
+    <a href="#">Payments</a>
+    <a href="#">Growth</a>
+    <a href="#">Platform</a>
+  </nav>
+  <main>
+    <header><h1>Launch 3.0</h1><span>ships November 18</span></header>
+    <section class="strip" id="strip">
+      <div class="tile"><small>Open tasks</small><b id="open">–</b></div>
+      <div class="tile"><small>Points left</small><b id="left">–</b></div>
+      <div class="tile"><small>Days to launch</small><b>15</b></div>
+      <div class="tile"><small>Checkout errors, 24 h</small><svg id="spark" viewBox="0 0 160 30" preserveAspectRatio="none" aria-hidden="true"></svg></div>
+    </section>
+    <section class="board" id="board"><p class="loading">Loading…</p></section>
+  </main>
+</div>
+<script>
+(async () => {
+  const PEOPLE = { Alex: "--alex", Mia: "--mia", Sam: "--sam", Priya: "--priya" };
+  const COLUMNS = [["todo", "To do"], ["doing", "In progress"], ["review", "Review"], ["done", "Done"]];
+  // A day of checkout errors, by hour: the small chart in the strip.
+  const ERRORS = [6, 5, 7, 4, 4, 3, 5, 8, 9, 7, 6, 6, 5, 7, 6, 4, 3, 4, 5, 3, 2, 3, 2, 2];
+  const spark = document.getElementById("spark");
+  const max = Math.max(...ERRORS);
+  const pts = ERRORS.map((v, i) => `${(i * 160 / (ERRORS.length - 1)).toFixed(1)},${(28 - v / max * 24).toFixed(1)}`).join(" ");
+  spark.innerHTML = `<polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="1.5" opacity="0.6"/>`;
+
+  const avatar = name => `<span class="av" style="background: var(${PEOPLE[name] ?? "--accent"})" title="${name}">${name.slice(0, 2).toUpperCase()}</span>`;
+  const board = document.getElementById("board");
+  const db = await claude.use("db");
+  db.collection("tasks").orderBy("order").onSnapshot(snap => {
+    const tasks = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    board.replaceChildren(...COLUMNS.map(([status, label]) => {
+      const col = document.createElement("div");
+      col.className = "col";
+      const mine = tasks.filter(t => t.status === status);
+      col.innerHTML = `<h2><span>${label}</span><span>${mine.length}</span></h2>` + mine.map(t =>
+        `<div class="card" data-task="${t.id}"><p>${t.title}</p><div class="meta">${avatar(t.owner)}<span class="pts">${t.points} pts</span></div></div>`).join("");
+      return col;
+    }));
+    document.getElementById("open").textContent = String(tasks.filter(t => t.status !== "done").length);
+  });
+  db.doc("metrics/burndown").onSnapshot(snap => {
+    if (snap.exists) document.getElementById("left").textContent = String(snap.data().remaining.at(-1));
+  });
+})();
+</script>
+</body>
+</html>

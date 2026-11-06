@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Team Sketch</title>
+<style>
+  /* Northwind's sketch pad: the first version of the reel's game vignette
+     (web/reel/vignettes/game.ts), a plain single-player drawing pad with a
+     few strokes on it. The team is invented. Light only, as the reel is
+     filmed. */
+  :root {
+    --bg: #f7f6f3;
+    --card: #ffffff;
+    --fg: #1d1c1a;
+    --muted: #6b6862;
+    --line: #e4e1da;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 860px; margin: 28px auto; padding: 0 16px; }
+  header p { margin: 0 0 2px; color: var(--muted); font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; }
+  h1 { margin: 0 0 14px; font-size: 28px; letter-spacing: -0.01em; }
+  .tools { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; }
+  .swatch { width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--card); box-shadow: 0 0 0 1px var(--line); cursor: pointer; padding: 0; }
+  .swatch[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--fg); }
+  .tools .sep { flex: 1; }
+  .tools button.plain { font: inherit; font-size: 14px; padding: 5px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
+  #pad { display: block; width: 100%; aspect-ratio: 16 / 9; background: var(--card); border: 1px solid var(--line); border-radius: 14px; touch-action: none; cursor: crosshair; }
+  .hint { margin: 10px 0 0; color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <p>Northwind · Design team</p>
+    <h1>Team Sketch</h1>
+  </header>
+  <div class="tools" role="toolbar" aria-label="Pen colour">
+    <button class="swatch" style="background:#1d1c1a" aria-label="Ink" aria-pressed="true" data-c="#1d1c1a"></button>
+    <button class="swatch" style="background:#e8590c" aria-label="Orange" aria-pressed="false" data-c="#e8590c"></button>
+    <button class="swatch" style="background:#1971c2" aria-label="Blue" aria-pressed="false" data-c="#1971c2"></button>
+    <button class="swatch" style="background:#2f9e44" aria-label="Green" aria-pressed="false" data-c="#2f9e44"></button>
+    <span class="sep"></span>
+    <button class="plain" id="clear">Clear</button>
+  </div>
+  <svg id="pad" viewBox="0 0 1600 900" aria-label="Drawing pad">
+    <g id="strokes" fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="7">
+      <path stroke="#e8590c" d="M1270 190 m-70 0 a70 70 0 1 0 140 0 a70 70 0 1 0 -140 0"/>
+      <path stroke="#e8590c" d="M1270 80 v-30 M1270 300 v30 M1160 190 h-30 M1380 190 h30 M1192 112 l-22 -22 M1348 268 l22 22 M1348 112 l22 -22 M1192 268 l-22 22"/>
+      <path stroke="#1d1c1a" d="M300 660 v-230 l170 -140 l170 140 v230 z"/>
+      <path stroke="#1d1c1a" d="M430 660 v-110 h80 v110"/>
+      <path stroke="#1971c2" d="M340 470 h60 v60 h-60 z M540 470 h60 v60 h-60 z"/>
+      <path stroke="#2f9e44" d="M120 700 C 400 660, 700 720, 980 690 S 1400 650, 1500 700"/>
+      <path stroke="#2f9e44" d="M900 690 c -10 -60 10 -120 0 -170 M900 560 c 30 -20 50 -10 70 -30 M900 600 c -30 -20 -50 -10 -70 -30"/>
+      <path stroke="#1971c2" d="M760 230 c 30 -30 60 -30 90 0 c 30 -30 60 -30 90 0 M960 300 c 22 -22 44 -22 66 0 c 22 -22 44 -22 66 0"/>
+    </g>
+  </svg>
+  <p class="hint">Draw with your pointer. Only you see what you draw.</p>
+</main>
+<script>
+  // A single-player pad: strokes stay in this browser.
+  const pad = document.getElementById("pad");
+  const strokes = document.getElementById("strokes");
+  let colour = "#1d1c1a";
+  let path = null;
+  let d = "";
+  const at = e => {
+    const r = pad.getBoundingClientRect();
+    return [Math.round((e.clientX - r.left) / r.width * 1600), Math.round((e.clientY - r.top) / r.height * 900)];
+  };
+  pad.addEventListener("pointerdown", e => {
+    const [x, y] = at(e);
+    d = `M${x} ${y}`;
+    path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("stroke", colour);
+    path.setAttribute("d", d);
+    strokes.append(path);
+    pad.setPointerCapture(e.pointerId);
+  });
+  pad.addEventListener("pointermove", e => {
+    if (!path) return;
+    const [x, y] = at(e);
+    d += ` L${x} ${y}`;
+    path.setAttribute("d", d);
+  });
+  pad.addEventListener("pointerup", () => { path = null; });
+  for (const b of document.querySelectorAll(".swatch")) {
+    b.addEventListener("click", () => {
+      colour = b.dataset.c;
+      for (const o of document.querySelectorAll(".swatch")) o.setAttribute("aria-pressed", String(o === b));
+    });
+  }
+  document.getElementById("clear").addEventListener("click", () => strokes.replaceChildren());
+</script>
+</body>
+</html>

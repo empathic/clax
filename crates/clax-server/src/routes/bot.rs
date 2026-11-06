@@ -6,6 +6,9 @@
 //!   /api/me/bot {use_own}`, `PUT /api/me/bot/key {key}` and `DELETE
 //!   /api/me/bot/key` change their own key and answer the same. A key is
 //!   write-only: no answer carries it.
+//! - `GET /api/me/flags` → `{flags: {claxbot, claxbot_unenforced}}`:
+//!   the caller's own flags, each person's defaults filled in (spec
+//!   2026-10-29-feedback-loop-design §10.3).
 //! - `GET /api/me/usage?week=<time>` → their runs and line totals of the
 //!   week the time falls in (this week without it); on a hosted daemon a
 //!   run's `artifact_title` only while its artifact is in their reach.
@@ -35,6 +38,7 @@ use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use clax_bot::web::WebAccess;
 use clax_core::ArtifactId;
 use clax_core::CoreError;
 use clax_core::audit::{AuditCtx, AuditKind};
@@ -140,6 +144,46 @@ pub fn can_export(st: &Store, who: &Identity, caller: &Caller) -> clax_core::Res
     Ok(super::toolpath::reads_history(who) || role_of(st, caller)?.is_admin())
 }
 
+/// `GET /api/me/bot`'s `web`: `on` is the person's own choice; `offered`
+/// when the admin turned on an operation the host's source can perform,
+/// and `operations {search, fetch}` which;
+/// `why_off` names why web use is off for them now (`admin_off`,
+/// `person_off`, `not_configured`) or is null. `prices` is what one search
+/// (on the active provider's line) and one fetch cost them, in
+/// milli-credits at their key source; null for a line that does not exist.
+fn web_view(st: &Store, bot: &Bot, person: &str) -> clax_core::Result<Value> {
+    let on =
+        |s: Setting| -> clax_core::Result<bool> { Ok(st.bot_setting(s)?.as_bool() == Some(true)) };
+    let configured = crate::bot::web_configured(st, bot)?;
+    let operations = clax_bot::web::WebShape {
+        search: on(Setting::WebSearchEnabled)? && configured.search,
+        fetch: on(Setting::WebFetchEnabled)? && configured.fetch,
+    };
+    let why_off = match clax_bot::web::WebAccess::now(st, person, configured)? {
+        clax_bot::web::WebAccess::Off(why) => json!(why.as_str()),
+        clax_bot::web::WebAccess::On(_) => Value::Null,
+    };
+    let source = key_source(st, bot, person)?.unwrap_or(KeySource::Instance);
+    let price = |line: String| -> clax_core::Result<Value> {
+        if st.cost_line(&line)?.is_none() {
+            return Ok(Value::Null);
+        }
+        Ok(json!(st.one_request_milli(&line, source)?))
+    };
+    let provider = st.bot_setting(Setting::WebSearchProvider)?;
+    let search = price(format!(
+        "web.search.{}",
+        provider.as_str().unwrap_or("ceramic")
+    ))?;
+    Ok(json!({
+        "on": st.web_choice(person)?,
+        "offered": operations.any(),
+        "operations": {"search": operations.search, "fetch": operations.fetch},
+        "why_off": why_off,
+        "prices": {"search_milli": search, "fetch_milli": price("web.fetch".into())?},
+    }))
+}
+
 /// `GET /api/me/bot`'s answer for `person`.
 ///
 /// # Errors
@@ -178,6 +222,7 @@ pub fn me_view(
             "use_own": own.as_ref().is_some_and(|m| m.use_own),
         },
         "week": st.week_usage_now(person)?,
+        "web": web_view(st, bot, person)?,
     });
     if let Some(code) = refused {
         v["unavailable_reason"] = json!(unavailable(code));
@@ -208,30 +253,61 @@ pub async fn me_get(
     Ok(Json(v))
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct UseOwnBody {
-    use_own: bool,
+/// `GET /api/me/flags` (see the module documentation).
+pub async fn me_flags(
+    State(s): State<AppState>,
+    d: DeniedToGrants,
+) -> Result<Json<Value>, ApiError> {
+    d.refuse_agents()?;
+    let (_, person) = me(&s, &d).await?;
+    let flags = s.store_call(move |st| st.flags_of(&person)).await?;
+    Ok(Json(json!({ "flags": flags })))
 }
 
-/// `PUT /api/me/bot {use_own}`: whether the caller's runs use their own
-/// key (404 when they have none).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeBody {
+    #[serde(default)]
+    use_own: Option<bool>,
+    #[serde(default)]
+    web: Option<bool>,
+}
+
+/// `PUT /api/me/bot {use_own?, web?}`, at least one (else 400
+/// `empty_request`): whether the caller's runs use their own key (404 when
+/// they have none) and whether they allow ClaxBot the web tools.
 pub async fn me_put(
     State(s): State<AppState>,
     d: DeniedToGrants,
     who: Identity,
     _o: SameOrigin,
     audit: DeferredAudit,
-    req: Result<Json<UseOwnBody>, JsonRejection>,
+    req: Result<Json<MeBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     d.refuse_agents()?;
     let (caller, person) = me(&s, &d).await?;
     let b = body(req)?;
+    if b.use_own.is_none() && b.web.is_none() {
+        return Err(ApiError::bad_request(
+            "empty_request",
+            "give use_own, web or both",
+        ));
+    }
     let bot = s.bot.clone();
     let v = s
         .store_call(move |st| {
             let ctx = audit.resolve(st)?;
-            st.set_use_own(&ctx, &person, b.use_own)?;
+            // Everything that can refuse is checked before anything is
+            // written, so a refused request changes nothing.
+            if b.use_own.is_some() && st.secret_meta(&SecretSlot::Own(person.clone()))?.is_none() {
+                return Err(CoreError::NotFound);
+            }
+            if let Some(on) = b.use_own {
+                st.set_use_own(&ctx, &person, on)?;
+            }
+            if let Some(on) = b.web {
+                st.set_web_choice(&ctx, &person, on)?;
+            }
             me_view(st, &bot, &who, &caller, &person)
         })
         .await?;
@@ -810,6 +886,10 @@ pub fn start_run(
             key_source,
             base_version: art.current_version,
             agent_grant: sender.agent_grant.clone(),
+            web: WebAccess::now(st, person, crate::bot::web_configured(st, bot)?)?
+                .shape()
+                .as_str()
+                .to_string(),
         },
     )?
     .map_err(|active| run_active(&active.id))
@@ -1331,8 +1411,10 @@ pub fn step_view(s: &clax_store::bot_runs::Step, credits_milli: i64) -> Value {
                 .into_iter()
                 .flatten()
                 .map(|c| {
-                    json!({"op": c["op"], "target": c["target"], "ok": c["ok"].as_bool().unwrap_or(false),
-                           "ms": c["ms"].as_u64().unwrap_or(0), "error": c["code"]})
+                    let mut v = json!({"op": c["op"], "target": c["target"], "ok": c["ok"].as_bool().unwrap_or(false),
+                           "ms": c["ms"].as_u64().unwrap_or(0), "error": c["code"]});
+                    clax_bot::events::with_web_fields(&mut v, c["cost_milli"].as_i64(), c.get("web"));
+                    v
                 })
                 .collect();
             set("calls", json!(calls));
@@ -1341,7 +1423,13 @@ pub fn step_view(s: &clax_store::bot_runs::Step, credits_milli: i64) -> Value {
             set("error", out["error"]["message"].clone());
             set("cpu_ms", json!(out["cpu_us"].as_u64().unwrap_or(0) / 1000));
         }
-        StepKind::Finish => set("summary", p["summary"].clone()),
+        StepKind::Finish => {
+            set("summary", p["summary"].clone());
+            // The pages the run read, as the run panel lists them.
+            if p["sources"].as_array().is_some_and(|a| !a.is_empty()) {
+                set("sources", p["sources"].clone());
+            }
+        }
         _ => {
             let reason = if p["reason"].is_null() {
                 p["code"].clone()
@@ -1374,7 +1462,9 @@ pub fn steps_view(
 /// the person it acts for nor an admin): its place, kind, state, times,
 /// credits, a script's title and its calls' ops and outcomes, a finish's
 /// summary or an end's reason; never what was read with the acting
-/// person's rights: narration, code, values, logs, errors, a call's target.
+/// person's rights: narration, code, values, logs, errors, a call's target
+/// or its web query or URL (`web`). A finish's `sources` stay: they are
+/// part of the reply ClaxBot posts, which readers of the artifact see.
 pub fn for_reader(step: &mut Value) {
     if let Some(o) = step.as_object_mut() {
         for k in [
@@ -1396,6 +1486,7 @@ pub fn for_reader(step: &mut Value) {
                 if let Some(c) = c.as_object_mut() {
                     c.remove("target");
                     c.remove("error");
+                    c.remove("web");
                 }
             }
         }
@@ -1412,6 +1503,7 @@ fn event_for_reader(event: &str, mut data: Value) -> Option<Value> {
             if let Some(c) = data["call"].as_object_mut() {
                 c.remove("target");
                 c.remove("error");
+                c.remove("web");
             }
             Some(data)
         }
@@ -1458,7 +1550,7 @@ pub fn panel_event(
                         v["status"] = json!("running");
                         v["ended_at"] = Value::Null;
                         if let Some(o) = v.as_object_mut() {
-                            for k in ["text", "calls", "logs", "value", "error", "summary", "reason"] {
+                            for k in ["text", "calls", "logs", "value", "error", "summary", "sources", "reason"] {
                                 o.remove(k);
                             }
                         }
@@ -1474,8 +1566,12 @@ pub fn panel_event(
             json!({"step": n, "text": d["text"]})
         }
         "script" => json!({"step": n, "title": d["title"], "code": d["code"]}),
-        "call" => json!({"step": n, "call": {"op": d["op"], "target": d["target"], "ok": d["ok"],
-                                             "ms": d["ms"].as_u64().unwrap_or(0), "error": d["code"]}}),
+        "call" => {
+            let mut call = json!({"op": d["op"], "target": d["target"], "ok": d["ok"],
+                                  "ms": d["ms"].as_u64().unwrap_or(0), "error": d["code"]});
+            clax_bot::events::with_web_fields(&mut call, d["cost_milli"].as_i64(), d.get("web"));
+            json!({"step": n, "call": call})
+        }
         "step_done" => {
             let Some((run, steps)) = st.run_with_steps(run_id)? else {
                 return Ok(None);
@@ -1510,13 +1606,17 @@ pub fn panel_event(
 /// ([`RunAccess::Overseer`], 404), and a reader of the artifact
 /// alone sees what [`for_reader`] leaves; access is checked again at
 /// every step's end and every [`RECHECK_EVERY`] of quiet, and the stream
-/// ends once it is gone. Opening it records `view.run` (at most once in
-/// five minutes per viewer and run).
+/// ends once it is gone. A stream opened with an owner browser session
+/// ends when that session does (`clax logout`,
+/// [`clax_http::local_trust::session_ended`]), as the event streams
+/// and sockets do. Opening it records `view.run` (at most once in five
+/// minutes per viewer and run).
 pub async fn events(
     State(s): State<AppState>,
     d: DeniedToGrants,
     who: Identity,
     headers: axum::http::HeaderMap,
+    extensions: axum::http::Extensions,
     p: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
     d.refuse_agents()?;
@@ -1628,6 +1728,8 @@ pub async fn events(
             }
         }
     });
+    let ended = clax_http::local_trust::session_ended(&s.owner_sessions, &extensions);
+    let chunks = futures::StreamExt::take_until(chunks, ended);
     let mut res = axum::body::Body::from_stream(chunks).into_response();
     let h = res.headers_mut();
     h.insert(
@@ -1647,7 +1749,82 @@ pub async fn events(
 
 #[cfg(test)]
 mod tests {
-    use super::quartiles;
+    use super::{event_for_reader, for_reader, panel_event, quartiles, step_view};
+    use serde_json::{Value, json};
+
+    /// A web call as the run loop records it in a step's `calls` and on a
+    /// live `call` event.
+    fn web_call() -> Value {
+        json!({"op": "web.fetch", "target": null, "ok": true, "code": null, "ms": 3,
+               "cost_milli": 1, "web": {"url": "https://example.com/a", "source": "comment"}})
+    }
+
+    #[test]
+    fn a_web_calls_cost_and_source_reach_the_step_view_and_the_call_event() {
+        let step = clax_store::bot_runs::Step {
+            run_id: "r1".into(),
+            n: 2,
+            kind: clax_store::bot_runs::StepKind::Script,
+            started_at: "2026-11-03T10:00:00Z".into(),
+            attempt: 1,
+            committed_at: Some("2026-11-03T10:00:01Z".into()),
+            payload: Some(json!({"title": "Read", "code": "…", "calls": [web_call(),
+                {"op": "files.list", "target": null, "ok": true, "code": null, "ms": 0}]})),
+            observed: Vec::new(),
+            failures: 0,
+        };
+        let mut v = step_view(&step, 1);
+        let calls = &v["calls"];
+        assert_eq!(calls[0]["cost_milli"], 1, "{v}");
+        assert_eq!(calls[0]["web"]["source"], "comment", "{v}");
+        assert!(calls[1].get("cost_milli").is_none() && calls[1].get("web").is_none());
+        for_reader(&mut v);
+        assert!(v["calls"][0].get("web").is_none(), "{v}");
+        assert_eq!(v["calls"][0]["cost_milli"], 1);
+
+        let dir = tempfile::tempdir().unwrap();
+        let st = clax_store::Store::open(&clax_core::Home::at(dir.path().join("ax"))).unwrap();
+        let ev = clax_bot::RunEvent {
+            id: clax_bot::EventId {
+                step: 2,
+                attempt: 1,
+                seq: 1,
+            },
+            event: "call",
+            data: web_call(),
+        };
+        let out = panel_event(&st, "r1", &ev).unwrap().unwrap();
+        assert_eq!(out["call"]["cost_milli"], 1, "{out}");
+        assert_eq!(out["call"]["web"]["url"], "https://example.com/a", "{out}");
+        let read = event_for_reader("call", out).unwrap();
+        assert!(read["call"].get("web").is_none(), "{read}");
+    }
+
+    #[test]
+    fn a_finish_steps_sources_reach_the_step_view_and_survive_for_reader() {
+        let finish = |payload: Value| clax_store::bot_runs::Step {
+            run_id: "r1".into(),
+            n: 3,
+            kind: clax_store::bot_runs::StepKind::Finish,
+            started_at: "2026-11-03T10:00:00Z".into(),
+            attempt: 1,
+            committed_at: Some("2026-11-03T10:00:01Z".into()),
+            payload: Some(payload),
+            observed: Vec::new(),
+            failures: 0,
+        };
+        let sources = json!([{"title": "Runes", "url": "https://docs.example.com/runes"}]);
+        let mut v = step_view(&finish(json!({"summary": "Done.", "sources": sources})), 0);
+        assert_eq!(v["sources"], sources, "{v}");
+        for_reader(&mut v);
+        assert_eq!(v["sources"], sources, "{v}");
+        assert_eq!(v["summary"], "Done.");
+        // A run that read no page has none to list.
+        let v = step_view(&finish(json!({"summary": "Done.", "sources": []})), 0);
+        assert!(v.get("sources").is_none(), "{v}");
+        let v = step_view(&finish(json!({"summary": "Done."})), 0);
+        assert!(v.get("sources").is_none(), "{v}");
+    }
 
     #[test]
     fn estimates_are_the_middle_half_of_recent_runs() {

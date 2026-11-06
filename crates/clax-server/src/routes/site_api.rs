@@ -13,7 +13,7 @@
 //! | `assets` | `POST` (an upload), `GET` (the list) | `/api/artifacts/<id>/assets` |
 //! | `assets/<asset ID>` | `DELETE` | `/api/artifacts/<id>/assets/<asset ID>` (an asset of `<id>`'s alone) |
 //! | `room` | `GET` (a WebSocket) | `/api/artifacts/<id>/room` |
-//! | `artifact` | `GET` | `/api/artifacts/<id>` |
+//! | `artifact` | `GET`, `HEAD` | `/api/artifacts/<id>`, its `capabilities` the declaration in force ([`in_force_as_declared`]; a `HEAD` answer without the `ETag` and `Content-Length` of the full one) |
 //! | `whoami` | `GET` | `{kind, id?, name?, level, can_edit}` ([`whoami`]) |
 //! | `read/<source>/docs`, `read/<source>/docs/<path>` | `GET` | `/api/artifacts/<source>/docs…` read for this artifact (`X-Clax-Reader`, [`read_source`]) |
 //!
@@ -32,6 +32,10 @@
 //! - **Origin:** a request whose `Origin` is not the site's own is 403
 //!   `forbidden_origin`, and a write (any method but `GET` and `HEAD`)
 //!   without one is too. No answer carries `Access-Control-Allow-Origin`.
+//! - **What a page is told it declares:** every caller's `artifact` read
+//!   carries the declaration in force as `capabilities`
+//!   ([`clax_store::Store::capabilities_in_force`]), so a page decides
+//!   `use()` on what its owner approved, never on what waits.
 //! - **A visitor** (a site open to the world) reads only `artifact`'s
 //!   `{artifact: {id, title, current_version, capabilities}}`. On a hosted daemon each
 //!   write of a visitor, a link viewer or a guest is counted per client
@@ -246,6 +250,7 @@ async fn answer(s: AppState, api: axum::Router, mut req: Request) -> Result<Resp
         .unwrap_or_default()
         .to_string();
     let get = matches!(*req.method(), Method::GET | Method::HEAD);
+    let head = *req.method() == Method::HEAD;
     if rest == "whoami" {
         if !get {
             return Err(refuse(method_not_allowed()));
@@ -352,6 +357,13 @@ async fn answer(s: AppState, api: axum::Router, mut req: Request) -> Result<Resp
         .map_err(|_| refuse(ApiError::not_found()))?;
     use tower::ServiceExt as _;
     let Ok(mut res) = api.oneshot(req).await;
+    if get && rest == "artifact" && res.status() == axum::http::StatusCode::OK {
+        res = if head {
+            without_body_validators(res)
+        } else {
+            in_force_as_declared(res).await.map_err(refuse)?
+        };
+    }
     res.headers_mut()
         .remove(header::ACCESS_CONTROL_ALLOW_ORIGIN);
     // A document that is not there is as cacheable as one that is.
@@ -529,9 +541,57 @@ async fn whoami(s: &AppState, aid: &ArtifactId, caller: &SiteCaller) -> Result<R
     Ok(no_store(Json(v).into_response()))
 }
 
+/// `res`, a site holder's answer to `GET /api/artifacts/<id>`, with
+/// `artifact.capabilities` the declaration in force (its
+/// `artifact.capabilities_in_force`; null where the view withholds the
+/// declaration, and where the field is missing), which the page's bridge
+/// decides `use()` from. Its `ETag` and `Content-Length` go with the body
+/// they described.
+///
+/// # Errors
+/// 500 `internal` when the answer is not the JSON it should be: nothing is
+/// passed on that could carry the full declaration.
+async fn in_force_as_declared(res: Response) -> Result<Response, ApiError> {
+    let (mut parts, body) = res.into_parts();
+    let broken = || {
+        ApiError::new(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "the artifact read could not be narrowed to its declaration in force",
+        )
+    };
+    let bytes = axum::body::to_bytes(body, 16 << 20)
+        .await
+        .map_err(|_| broken())?;
+    let mut v: Value = serde_json::from_slice(&bytes).map_err(|_| broken())?;
+    let Some(a) = v.get_mut("artifact").and_then(Value::as_object_mut) else {
+        return Err(broken());
+    };
+    let in_force = a
+        .get("capabilities_in_force")
+        .cloned()
+        .unwrap_or(Value::Null);
+    a.insert("capabilities".into(), in_force);
+    parts.headers.remove(header::CONTENT_LENGTH);
+    parts.headers.remove(header::ETAG);
+    Ok(Response::from_parts(parts, Body::from(v.to_string())))
+}
+
+/// `res`, a site holder's answer to `HEAD /api/artifacts/<id>`, which has
+/// no body to narrow: its `ETag` and `Content-Length` described the full
+/// declaration's body, which the narrowed `GET` does not send, so they go.
+fn without_body_validators(res: Response) -> Response {
+    let (mut parts, body) = res.into_parts();
+    parts.headers.remove(header::CONTENT_LENGTH);
+    parts.headers.remove(header::ETAG);
+    Response::from_parts(parts, body)
+}
+
 /// `artifact` for a visitor: `{artifact: {id, title, current_version,
-/// capabilities}}`, what a page reads of itself (its declaration, from which
-/// the bridge decides what `use()` resolves), and nothing of who works on it.
+/// capabilities}}`, what a page reads of itself (`capabilities` its
+/// declaration in force, [`clax_store::Store::capabilities_in_force`], from
+/// which the bridge decides what `use()` resolves), and nothing of who
+/// works on it.
 async fn visitor_artifact(s: &AppState, aid: &ArtifactId) -> Result<Response, ApiError> {
     let aid = aid.clone();
     let v: Value = s
@@ -543,7 +603,7 @@ async fn visitor_artifact(s: &AppState, aid: &ArtifactId) -> Result<Response, Ap
                 "id": a.id.as_str(),
                 "title": a.title,
                 "current_version": a.current_version,
-                "capabilities": a.capabilities,
+                "capabilities": st.capabilities_in_force(&aid)?,
             }}))
         })
         .await?;

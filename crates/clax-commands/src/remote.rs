@@ -47,12 +47,14 @@ impl std::fmt::Display for Unreachable {
 
 impl std::error::Error for Unreachable {}
 
-/// A refusal [`SignedClient::send`] gave up on (`stale_request`,
-/// `limit_reached`, `busy`, `clock_skew`, or another 401, 429 or 503),
-/// worded as `Client` words every refusal, `<code>: <message>`, with the
-/// daemon's words made safe to print.
+/// A daemon's refusal: one [`SignedClient::send`] gave up on
+/// (`stale_request`, `limit_reached`, `busy`, `clock_skew`, or another 401,
+/// 429 or 503), or any error answer `Client` gets; worded `<code>:
+/// <message>`, with the daemon's words made safe to print.
 #[derive(Debug)]
 pub struct Refused {
+    /// The HTTP status of the answer.
+    pub status: u16,
     pub code: String,
     pub message: String,
 }
@@ -123,7 +125,8 @@ impl SignedClient {
     /// surrounding spaces and tabs, and is signed now. A refusal that
     /// [`Retry`] gives up on is a [`Refused`]; any other answer is returned
     /// with its body read whole, at most [`MAX_RESPONSE_BYTES`] (`stream`:
-    /// returned unread, for a reader that takes it a line at a time).
+    /// a success returned unread, for a reader that takes it a line at a
+    /// time or under its own cap; a refusal is still read whole).
     ///
     /// # Errors
     /// A body that streams (it cannot be hashed), duplicate agent headers,
@@ -173,7 +176,9 @@ impl SignedClient {
             })?;
             let status = res.status().as_u16();
             if !matches!(status, 401 | 429 | 503) {
-                if stream {
+                // Only a success streams: a refusal's body is read under
+                // the cap, as every other answer is.
+                if stream && res.status().is_success() {
                     return Ok(res);
                 }
                 let bytes = capped_body(&mut res)?;
@@ -207,6 +212,7 @@ impl SignedClient {
                 Next::After(d) => (self.sleep)(d),
                 Next::ClockSkew(o) => {
                     return Err(Refused {
+                        status,
                         code: "clock_skew".into(),
                         message: clock_skew_message(o),
                     }
@@ -217,6 +223,7 @@ impl SignedClient {
                         .as_str()
                         .unwrap_or("request failed");
                     return Err(Refused {
+                        status,
                         message: clean_line(&refusal_message(&code, message, &self.signer)),
                         code: clean_line(&code),
                     }
@@ -555,6 +562,40 @@ pub(crate) mod tests {
             .unwrap_err()
             .to_string();
         assert!(!e.contains('\u{1b}') && !e.contains('\u{7}'), "{e:?}");
+    }
+
+    /// A streamed request streams only a success: a refusal's body is read
+    /// under the cap like any answer's, so a huge error body is refused
+    /// unread.
+    #[test]
+    fn a_streamed_refusal_is_capped() {
+        let token = Secret::new("cxg_t".into());
+        let huge = (clax_core::remote::MAX_RESPONSE_BYTES + 1).to_string();
+        let d = FakeDaemon::start(vec![
+            (
+                404,
+                vec![("content-length".into(), huge)],
+                refusal("not_found"),
+            ),
+            (404, vec![], refusal("not_found")),
+            (200, vec![], serde_json::json!({"ok": true})),
+        ]);
+        let (c, _) = client(&d, 1_760_000_000);
+        let http = reqwest::blocking::Client::new();
+        let get = || http.get(format!("{}/api/artifacts/k3m9x2a7b8c4/clip", d.base));
+        let e = c
+            .send(get(), Credential::Grant(&token), true)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("larger than"), "{e}");
+        let res = c.send(get(), Credential::Grant(&token), true).unwrap();
+        assert_eq!(res.status().as_u16(), 404);
+        assert_eq!(
+            res.json::<serde_json::Value>().unwrap(),
+            refusal("not_found")
+        );
+        let res = c.send(get(), Credential::Grant(&token), true).unwrap();
+        assert_eq!(res.status().as_u16(), 200);
     }
 
     #[test]

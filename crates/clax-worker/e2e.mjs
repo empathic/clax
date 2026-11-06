@@ -1,7 +1,7 @@
 // The Clax server in its Durable Object, end to end under `wrangler dev
 // --local`, in two browsers: builds the Worker (./build.sh; the web UI must
 // be built, scripts/build-web.sh), starts wrangler with fresh state under
-// target/e2e/ and an owner token, publishes an artifact through the API,
+// target/clax-worker/e2e/ and an owner token, publishes an artifact through the API,
 // and checks that the gallery shows it, that it opens with its content on
 // its own origin, that a comment one browser posts reaches the other live
 // over the stream's WebSocket, that a rebuilt server (as after hibernation:
@@ -18,12 +18,12 @@
 import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { HERE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { HERE, STATE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
 
 const require = createRequire(join(HERE, "../../web/package.json"));
 const { chromium } = require("@playwright/test");
 
-const ROOT = join(HERE, "target/e2e");
+const ROOT = join(STATE, "e2e");
 const TOKEN = "e2e-owner-token-" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 const LIMIT = 15_000;
 const SHOTS = process.env.CLAX_E2E_SHOTS ?? "";
@@ -164,7 +164,19 @@ async function main() {
     const anon = await fetch(`${base}/api/artifacts`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
     check(anon.status === 401, "publishing without the token is refused", anon.status);
     const tok = await fetch(`${base}/api/token`);
-    check(tok.status === 403, "GET /api/token serves no one", tok.status);
+    // No caller of a Worker holds an owner browser session (only a login on
+    // the daemon's own machine opens one), and one with no credential is
+    // refused before any route.
+    check(tok.status === 401, "GET /api/token serves no one", tok.status);
+    // The embeddable overlay's files, from the static assets, as the daemon
+    // answers them (shell::embed_file): to any origin, without credentials.
+    for (const [file, type] of [["overlay.js", "text/javascript"], ["overlay.mjs", "text/javascript"], ["overlay.d.ts", "text/plain; charset=utf-8"]]) {
+      const r = await fetch(`${base}/_clax/${file}`, { headers: { origin: "https://changelist.example" } });
+      const got = { status: r.status, type: r.headers.get("content-type"), acao: r.headers.get("access-control-allow-origin"), creds: r.headers.get("access-control-allow-credentials"), sniff: r.headers.get("x-content-type-options") };
+      check(got.status === 200 && got.type === type && got.acao === "*" && got.creds === null && got.sniff === "nosniff", `/_clax/${file} is served to any origin as ${type}`, got);
+    }
+    const svg = await fetch(`${base}/_clax/mark.svg`, { headers: { origin: "https://changelist.example" } });
+    check(svg.status === 200 && svg.headers.get("access-control-allow-origin") === null, "the web UI's other files are not offered to other origins", svg.status);
 
     // A Worker that is not hosted signs no browser in, and a private
     // artifact's site answers only a site session, which the shell asks for

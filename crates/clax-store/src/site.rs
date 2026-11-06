@@ -650,8 +650,9 @@ fn commit_refile(
             n += 1;
             tx.execute(
                 "INSERT INTO versions (artifact_id, n, label, created_at, session_id, files_json, note,
-                    content_sha256)
-                 VALUES (?1, ?2, NULL, ?3, NULL, ?4, ?5, ?6)",
+                    content_sha256, capabilities_json)
+                 VALUES (?1, ?2, NULL, ?3, NULL, ?4, ?5, ?6,
+                         (SELECT capabilities_json FROM artifacts WHERE id = ?1))",
                 params![to.artifact_id, n, now, copy.files_json, copy.note, copy.content_sha256],
             )?;
             if let Some(a) = &page {
@@ -1803,6 +1804,37 @@ mod tests {
             copy.content_sha256,
             clax_core::audit::content_manifest_sha256(&copy.files)
         );
+    }
+
+    #[test]
+    fn a_version_copied_onto_a_page_records_the_pages_declaration() {
+        let (_d, st) = store();
+        let a = page(&st, "/a", "<p>a");
+        let b = page(&st, "/b", "<p>b");
+        let caps = serde_json::json!({"db": {}});
+        st.with_write(|c| {
+            c.execute(
+                "UPDATE artifacts SET capabilities_json = ?2 WHERE id = ?1",
+                params![b.as_str(), caps.to_string()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let t = thread(&st, &a, None);
+        st.refile_threads(DAEMON, &[to(&b, &t.id)], &by(KIND_MOVE), &[])
+            .unwrap();
+        // /b's version 2 is the copy of /a's version 1.
+        assert_eq!(st.get_thread(&t.id).unwrap().unwrap().version_n, 2);
+        let raw: Option<String> = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT capabilities_json FROM versions WHERE artifact_id = ?1 AND n = 2",
+                    params![b.as_str()],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(raw.as_deref(), Some(caps.to_string().as_str()));
     }
 
     #[test]

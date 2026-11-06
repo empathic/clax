@@ -6,7 +6,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
-import { candidates, makeScratch, sandboxOf } from './scratch.mjs';
+import { candidates, makeScratch, removedByBazel, sandboxOf } from './scratch.mjs';
 
 const root = mkdtempSync(join(tmpdir(), 'scratch-test-'));
 after(() => {
@@ -76,4 +76,13 @@ test('when no place will do, the error says why', () => {
 
 test('each call makes a directory of its own', () => {
   assert.notEqual(makeScratch([writable]), makeScratch([writable]));
+});
+
+test("a copy inside the test's temporary directory is left for Bazel to remove", () => {
+  assert.equal(removedByBazel('/t/test-tmp/npm-script-ab12', { TEST_TMPDIR: '/t/test-tmp' }), true);
+  assert.equal(removedByBazel('/t/test-tmp/npm-script-ab12', { TEST_TMPDIR: '/t/test-tmp/' }), true);
+  // A sibling sharing only the prefix, a sandbox directory, or no test at all.
+  assert.equal(removedByBazel('/t/test-tmp-other/npm-script-ab12', { TEST_TMPDIR: '/t/test-tmp' }), false);
+  assert.equal(removedByBazel('/o/sandbox/darwin-sandbox/7/npm-script-ab12', { TEST_TMPDIR: '/t/test-tmp' }), false);
+  assert.equal(removedByBazel('/tmp/npm-script-ab12', {}), false);
 });

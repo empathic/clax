@@ -437,7 +437,8 @@ pub async fn list(
 /// `comments` 400 `invalid_args`: it has no route to turn the switch back
 /// on (`PUT /api/hosted/artifacts/<aid>/comments` is a hosted daemon's). A person's agent creates from a
 /// session, as its person (spec §6.7, §8.2); the answer is filtered for an
-/// agent channel's reader.
+/// agent channel's reader. Its `pending_capabilities` says what the
+/// declaration holds that waits for approval in Clax (`say_pending`).
 pub async fn create(
     State(s): State<AppState>,
     TokenOrAgent(a): TokenOrAgent<clax_http::agent::ArtifactsCreate>,
@@ -539,6 +540,7 @@ pub async fn create(
     let url = format!("/a/{}", artifact["id"].as_str().unwrap_or_default());
     let mut v =
         json!({"artifact": artifact, "version": version, "url": url, "note_truncated": truncated});
+    say_pending(&s, &mut v).await?;
     if !a.holds_token() {
         strip_sessions(&mut v);
     }
@@ -992,6 +994,7 @@ pub async fn get(
     let hosted = s.hosted.is_some();
     let reader = SourceReader::new(a.caller.clone(), a.member().cloned(), hosted);
     let (caller, member) = (a.caller.clone(), a.member_rights());
+    let browser_member = a.member().cloned();
     let wakes = super::sessions::Wakes::for_caller(&s, &a.caller);
     let may_resolve = super::threads::resolves(&a, &s, &id).await?;
     let mut v = s
@@ -1025,18 +1028,30 @@ pub async fn get(
             );
             // Whether the caller may change its tags (the shell's tag
             // editor): those who administer it, as for its pin.
-            artifact["may_tag"] = json!(clax_http::agent::administers(
-                st,
-                &caller,
-                a.id.as_str(),
-                hosted
-            )?);
+            let administers = clax_http::agent::administers(st, &caller, a.id.as_str(), hosted)?;
+            artifact["may_tag"] = json!(administers);
             // Whether the caller may resolve its threads, so also send them
             // while its Comments switch is off (the shell's Send).
             artifact["may_resolve"] = json!(may_resolve);
+            // Whether the caller may edit it (the shell's Edit control).
+            artifact["may_edit"] = json!(browser_edits(
+                st,
+                &caller,
+                browser_member.as_ref(),
+                hosted,
+                a.id.as_str()
+            )?);
             // Its Comments switch, forks and app (an artifact carrying a
             // bundle).
             super::app_bundles::stamp_app_fields(st, &a, &mut artifact)?;
+            // The declaration in force, and for who may approve it what
+            // waits.
+            super::app_bundles::stamp_capabilities(
+                st,
+                &a,
+                super::permissions::may_approve(&caller, administers, hosted),
+                &mut artifact,
+            )?;
             let mut v = json!({
                 "artifact": artifact,
                 "versions": vis.filter_versions(&versions),
@@ -1106,6 +1121,46 @@ pub(crate) async fn admin_change(
     }
 }
 
+/// 400 `manifest_owned` when `capabilities` would change artifact `id`'s
+/// declaration and its current version holds a `clax.json`
+/// ([`clax_core::manifest::MANIFEST_PATH`]) that parses as a manifest: the
+/// file declares it, and only a version that changes the file changes it.
+/// An artifact without one, or whose `clax.json` is not a manifest, takes
+/// the change as before.
+async fn manifest_owned(
+    s: &AppState,
+    id: &ArtifactId,
+    capabilities: Value,
+) -> Result<(), ApiError> {
+    let id = id.clone();
+    let owned = s
+        .store_call_async(move |st| async move {
+            // No such artifact is the edit's own answer.
+            let Some(cur) = st.get_artifact(&id)? else {
+                return Ok(false);
+            };
+            if capabilities == cur.capabilities {
+                return Ok(false);
+            }
+            let path = clax_core::manifest::MANIFEST_PATH;
+            // A clax.json that is no manifest (a file of the page's own,
+            // from before manifests) declares nothing.
+            Ok(st
+                .read_file_async(&id, cur.current_version, path)
+                .await?
+                .is_some_and(|(bytes, _)| clax_core::manifest::parse(&bytes).is_ok()))
+        })
+        .await?;
+    if owned {
+        Err(ApiError::bad_request(
+            "manifest_owned",
+            "this artifact declares its capabilities in clax.json: publish a new version that changes it",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// Metadata edits. `capabilities` replaces the whole declaration (omitted
 /// keeps, `{}` clears); it and the text fields are validated like a
 /// publish's.
@@ -1171,10 +1226,13 @@ pub async fn presence(
 /// filtered for an agent channel's reader, and carries `site_access`. An
 /// agent's opening to the world that waits on its person answers 202
 /// `{status: "approval_pending", question_id, inbox_url}` and changes
-/// nothing.
+/// nothing. The owner's opening to the world made with the token alone
+/// while an agent session is live waits for a click in their browser: 202
+/// `confirmation_pending` ([`clax_http::confirm`]), and changes nothing.
 pub async fn patch(
     State(s): State<AppState>,
     a: Agent<clax_http::agent::ArtifactsPatch>,
+    confirming: clax_http::confirm::Confirming,
     headers: HeaderMap,
     audit: AuditCtx,
     deferred: clax_http::audit::DeferredAudit,
@@ -1218,6 +1276,22 @@ pub async fn patch(
         b.description.as_deref(),
         b.icon.as_deref(),
     )?;
+    if world == Some(true) {
+        let i2 = id.clone();
+        let open = s.store_call(move |st| st.site_open_to_world(&i2)).await?;
+        if !open {
+            let decision = clax_http::confirm::Decision::Widen {
+                artifact_id: id.as_str().to_string(),
+                to: "world".into(),
+                remote_id: None,
+                body: None,
+            };
+            clax_http::confirm::require_confirmation(&s, &a.caller, &confirming, decision).await?;
+        }
+    }
+    if let Some(caps) = b.capabilities.clone() {
+        manifest_owned(&s, &id, caps).await?;
+    }
     admin_change(&s, &a.caller, &id, b.pinned, b.capabilities.clone()).await?;
     if let Some(world) = world
         && let super::world::Change::Pending(body) =
@@ -1232,8 +1306,10 @@ pub async fn patch(
         .and_then(|h| h.to_str().ok())
         .unwrap_or_default();
     let site_url = format!("{}/", clax_http::site_access::site_origin(&s, &id, host));
+    let events = s.events.clone();
     let artifact = s
         .store_call(move |st| {
+            let approved = st.capability_approval(&id)?;
             let a = st.update_meta(
                 &audit,
                 &id,
@@ -1247,6 +1323,7 @@ pub async fn patch(
                     via_page,
                 },
             )?;
+            super::permissions::tell_if_narrowed(st, &events, &id, approved.as_ref())?;
             let mut view = json!(a);
             let vis = vf.build(st)?;
             vis.filter_artifact(st, &a, &[], &mut view)?;
@@ -1333,6 +1410,7 @@ pub async fn list_versions(
 /// filtered for an agent channel's reader, so a file carried forward from
 /// someone it has not approved stays withheld. A body naming `comments` is
 /// 400 `invalid_args`: the switch is set at creation and by its own route.
+/// The answer carries `pending_capabilities`, as a create's does.
 pub async fn publish(
     State(s): State<AppState>,
     TokenOrAgent(a): TokenOrAgent<clax_http::agent::Publish>,
@@ -1415,9 +1493,11 @@ pub async fn publish(
                 p.hidden = vis.filter_hidden_files(&prev);
             }
             p.publish_key = publish_key_of(&grant, &key);
+            let approved = st.capability_approval(&id)?;
             let (artifact, version) = st
                 .publish_version_async(&audit, &id, p, session.as_deref())
                 .await?;
+            super::permissions::tell_if_narrowed(st, &events, &id, approved.as_ref())?;
             if let Some(sid) = &session {
                 published_from(st, &audit, &ctx, &drafts, sid, &artifact, retarget)?;
             }
@@ -1430,7 +1510,7 @@ pub async fn publish(
             });
             for tid in &version.addresses {
                 if let Some(t) = st.get_thread(tid)? {
-                    crate::routes::threads::publish_thread(&ctx, st, &t)?;
+                    crate::routes::threads::publish_thread(&ctx, st, &t);
                 }
             }
             vis.filter_published(st, &artifact, &version)
@@ -1443,6 +1523,7 @@ pub async fn publish(
     let url = format!("/a/{}", artifact["id"].as_str().unwrap_or_default());
     let mut v =
         json!({"artifact": artifact, "version": version, "url": url, "note_truncated": truncated});
+    say_pending(&s, &mut v).await?;
     if !a.holds_token() {
         strip_sessions(&mut v);
     }
@@ -1469,7 +1550,7 @@ pub struct RestoreBody {
 /// as a publish sets them (checked as a publish's: 400
 /// `invalid_capabilities`, `label_too_long`); without them the declaration
 /// is untouched. The answer is publish's (201 `{artifact, version, url,
-/// note_truncated}`), and a `version` event follows. 409
+/// note_truncated, pending_capabilities}`), and a `version` event follows. 409
 /// `conflict` with `current` when `if_version` is not the current version,
 /// 404 `not_found` for an unknown artifact or version, 400 `invalid_args`
 /// when a field is missing or one it does not take is sent (naming it),
@@ -1515,9 +1596,24 @@ pub async fn restore(
         ));
     };
     let (declaration, truncated) = b.declaration.validated()?;
-    if declaration.capabilities.is_some() {
+    // A restore that declares none takes the restored version's: that is a
+    // change of capabilities when it differs from the current one.
+    let capabilities = match declaration.capabilities.clone() {
+        Some(c) => Some(c),
+        None => {
+            let aid = id.as_str().to_string();
+            s.store_call(move |st| match st.version_capabilities(&aid, n) {
+                Ok(c) => Ok(Some(c)),
+                // The restore itself answers an unknown artifact or version.
+                Err(clax_core::CoreError::NotFound) => Ok(None),
+                Err(e) => Err(e),
+            })
+            .await?
+        }
+    };
+    if capabilities.is_some() {
         let caller = d.caller(&s).await?;
-        admin_change(&s, &caller, &id, None, declaration.capabilities.clone()).await?;
+        admin_change(&s, &caller, &id, None, capabilities).await?;
     }
     let session = session_header(&headers)?;
     let events = s.events.clone();
@@ -1525,6 +1621,7 @@ pub async fn restore(
         .store_call_async(move |st| async move {
             let st = &*st;
             let session = publishing_session(st, &session, None)?;
+            let approved = st.capability_approval(&id)?;
             let (artifact, version) = st
                 .restore_version_declaring_async(
                     &audit,
@@ -1535,6 +1632,7 @@ pub async fn restore(
                     declaration,
                 )
                 .await?;
+            super::permissions::tell_if_narrowed(st, &events, &id, approved.as_ref())?;
             events.publish(Event::Version {
                 artifact_id: artifact.id.clone(),
                 n: version.n,
@@ -1546,12 +1644,50 @@ pub async fn restore(
         })
         .await?;
     let url = format!("/a/{}", artifact.id);
-    Ok((
-        StatusCode::CREATED,
-        Json(
-            json!({"artifact": artifact, "version": version, "url": url, "note_truncated": truncated}),
-        ),
-    ))
+    let mut v =
+        json!({"artifact": artifact, "version": version, "url": url, "note_truncated": truncated});
+    say_pending(&s, &mut v).await?;
+    Ok((StatusCode::CREATED, Json(v)))
+}
+
+/// Sets `answer`'s `pending_capabilities` (a publish answer's): what its
+/// artifact's current version declares that waits for approval in Clax
+/// ([`clax_store::Store::pending_capabilities`]), `null` when nothing does,
+/// and `null` too when the current version is no longer the answer's
+/// `version` (another publish landed after this one; [`pending_of`]).
+/// Publishing never approves, whoever publishes. An answer that withholds
+/// the declaration from its reader (`artifact.capabilities` null, as the
+/// visibility filter leaves it) says nothing of it either.
+async fn say_pending(s: &AppState, answer: &mut Value) -> Result<(), ApiError> {
+    if answer["artifact"]
+        .get("capabilities")
+        .is_some_and(Value::is_null)
+    {
+        return Ok(());
+    }
+    let Some(id) = answer["artifact"]["id"]
+        .as_str()
+        .and_then(|i| ArtifactId::parse(i).ok())
+    else {
+        return Ok(());
+    };
+    let pending = s.store_call(move |st| st.pending_capabilities(&id)).await?;
+    answer["pending_capabilities"] = pending_of(&answer["version"], pending);
+    Ok(())
+}
+
+/// `pending` as the `pending_capabilities` of an answer whose version is
+/// `version`: read after the publish's transaction, it is of a later
+/// version when another publish landed meanwhile, and then says nothing of
+/// this one (`null`).
+fn pending_of(
+    version: &Value,
+    pending: Option<clax_store::capability_approvals::Pending>,
+) -> Value {
+    match pending {
+        Some(p) if version["n"].as_u64() == Some(u64::from(p.version)) => json!(p),
+        _ => Value::Null,
+    }
 }
 
 /// Version `n`, filtered for an agent channel's reader; without the token,
@@ -1753,6 +1889,32 @@ pub(crate) fn fork_refusal(
     })
 }
 
+/// Whether a browser's `caller` may edit artifact `aid`, as `whoami`'s
+/// `can_edit` says (never a person's agent): the owner, and the owner's
+/// agents, on a daemon with no hosted people, else when the owner's rights
+/// `update` it; a signed-in person (`member`) whose rights `update` it;
+/// no one else.
+///
+/// # Errors
+/// The store's.
+pub(crate) fn browser_edits(
+    st: &Store,
+    caller: &clax_http::auth::Caller,
+    member: Option<&clax_http::hosted::MemberRights>,
+    hosted: bool,
+    aid: &str,
+) -> clax_core::Result<bool> {
+    use clax_http::auth::Caller;
+    let update = (RightType::Artifacts, "update");
+    match (caller, member) {
+        (Caller::Owner { .. } | Caller::OwnerAgent { .. }, _) => Ok(
+            !hosted || clax_http::hosted::MemberRights::owner(st)?.allows_at(st, update, aid)?
+        ),
+        (_, Some(m)) => m.allows_at(st, update, aid),
+        _ => Ok(false),
+    }
+}
+
 /// `POST /api/artifacts/<aid>/fork` body.
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -1846,4 +2008,36 @@ pub async fn fork(
         strip_sessions(&mut v);
     }
     Ok((StatusCode::CREATED, Json(v)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pending_of;
+    use clax_core::capabilities::Added;
+    use clax_store::capability_approvals::Pending;
+    use serde_json::{Value, json};
+
+    fn pending_at(version: u32) -> Pending {
+        Pending {
+            version,
+            declaration_sha256: "sha".into(),
+            added: Added {
+                capabilities: vec!["shell".into()],
+                hosts: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn a_publish_answer_says_only_its_own_versions_pending() {
+        let mine = json!({"n": 3});
+        assert_eq!(
+            pending_of(&mine, Some(pending_at(3)))["capabilities"],
+            json!(["shell"])
+        );
+        // Another publish landed before the read: it is not this answer's.
+        assert_eq!(pending_of(&mine, Some(pending_at(4))), Value::Null);
+        assert_eq!(pending_of(&mine, None), Value::Null);
+        assert_eq!(pending_of(&Value::Null, Some(pending_at(3))), Value::Null);
+    }
 }

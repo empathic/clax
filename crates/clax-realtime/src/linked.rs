@@ -40,6 +40,15 @@ pub struct Linked {
     pub read_errors: Mutex<HashMap<(String, String), String>>,
     /// Tests: requests to remotes fail as unreachable while set.
     pub offline: AtomicBool,
+    /// Tests: while set, the threads followers' sessions were handed there
+    /// wait to be sent here ([`Linked::hold_routes`]).
+    pub hold_routes: AtomicBool,
+    /// How many threads followers' sessions were handed there wait to be
+    /// sent here, as the last cycle left them.
+    pub routes_waiting: AtomicUsize,
+    /// Tests: a followed artifact's session there is refused each watch it
+    /// asks for there, as a remote at its limit (429) refuses one.
+    pub refuse_follows: AtomicBool,
     /// Tests: the answers to this many up-sends are lost after the remote
     /// acted on them.
     pub lose_answers: AtomicUsize,
@@ -49,9 +58,17 @@ pub struct Linked {
     /// Tests: a read to go on waits while set, its page cursor kept.
     pub hold_resumed: AtomicBool,
     pub started: AtomicBool,
+    /// The session there each local session watching a followed remote
+    /// artifact speaks in, by remote and local session: its ID and secret
+    /// there. The sync opens and ends them; that local session's writes
+    /// on that remote go up in it.
+    pub sessions_there: Mutex<HashMap<(String, String), (String, clax_core::Secret)>>,
     /// Set under [`Linked::tasks`]'s lock once the sync stopped: no task is
     /// started after.
     pub stopped: AtomicBool,
+    /// The tasks ending followers' sessions there that a stopped sync task
+    /// left running ([`Linked::ending`]), for the daemon's stop to await.
+    pub ending: Mutex<Vec<clax_rt::JoinHandle<()>>>,
 }
 
 impl Linked {
@@ -65,12 +82,30 @@ impl Linked {
             status: Mutex::default(),
             read_errors: Mutex::default(),
             offline: AtomicBool::new(false),
+            refuse_follows: AtomicBool::new(false),
+            hold_routes: AtomicBool::new(false),
+            routes_waiting: AtomicUsize::new(0),
             lose_answers: AtomicUsize::new(0),
             read_limits: Default::default(),
             hold_resumed: AtomicBool::new(false),
             started: AtomicBool::new(false),
+            sessions_there: Mutex::default(),
             stopped: AtomicBool::new(false),
+            ending: Mutex::default(),
         }
+    }
+
+    /// Keeps `h`, a task ending a follower's session there, for
+    /// [`Linked::take_ending`]; those finished already are dropped.
+    pub fn ending(&self, h: clax_rt::JoinHandle<()>) {
+        let mut v = self.ending.lock().unwrap_or_else(|e| e.into_inner());
+        v.retain(|t| !t.is_finished());
+        v.push(h);
+    }
+
+    /// The tasks ending followers' sessions there not taken yet.
+    pub fn take_ending(&self) -> Vec<clax_rt::JoinHandle<()>> {
+        std::mem::take(&mut *self.ending.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// How remote `rid`'s sync stands.
@@ -122,6 +157,23 @@ impl Linked {
     #[cfg(debug_assertions)]
     pub fn set_offline(&self, on: bool) {
         self.offline.store(on, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Tests: while `on`, the threads followers' sessions are handed there
+    /// wait (counted in [`Linked::routes_waiting`]) instead of being sent
+    /// here.
+    #[cfg(debug_assertions)]
+    pub fn hold_routes(&self, on: bool) {
+        self.hold_routes
+            .store(on, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Tests: refuses, while `on`, each watch a followed artifact's session
+    /// there asks for, as a remote at its limit does (429).
+    #[cfg(debug_assertions)]
+    pub fn set_refuse_follows(&self, on: bool) {
+        self.refuse_follows
+            .store(on, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Tests: loses the answers to the next `n` up-sends after the remote
@@ -178,6 +230,40 @@ impl Linked {
         match self.read_limits[i].load(std::sync::atomic::Ordering::SeqCst) {
             0 => default,
             n => n,
+        }
+    }
+
+    /// The session on remote `rid` that local session `sid` speaks in
+    /// there, while it watches a followed artifact there: its ID and
+    /// secret.
+    pub fn session_there(&self, rid: &str, sid: &str) -> Option<(String, clax_core::Secret)> {
+        self.sessions_there
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&(rid.to_string(), sid.to_string()))
+            .cloned()
+    }
+
+    /// Records, or with `None` forgets, the session on remote `rid` that
+    /// local session `sid` speaks in there.
+    pub fn set_session_there(
+        &self,
+        rid: &str,
+        sid: &str,
+        there: Option<(String, clax_core::Secret)>,
+    ) {
+        let mut m = self
+            .sessions_there
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let k = (rid.to_string(), sid.to_string());
+        match there {
+            Some(t) => {
+                m.insert(k, t);
+            }
+            None => {
+                m.remove(&k);
+            }
         }
     }
 

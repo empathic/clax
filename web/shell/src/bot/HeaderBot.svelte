@@ -56,7 +56,7 @@
        meter the header's other links show their icons alone. */
     @media (max-width: 520px) {
       .gbar .admin-link { display: none; }
-      .gbar:has(.bot-meter) .inbox-link .word, .gbar:has(.bot-meter) .people-link .word { display: none; }
+      .gbar:has(.bot-meter) .inbox-link .word, .gbar:has(.bot-meter) .people-link .word, .gbar:has(.bot-meter) .queues-link .word { display: none; }
     }
   }
 </style>

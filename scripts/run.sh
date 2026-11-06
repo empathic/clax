@@ -6,16 +6,19 @@
 #   scripts/run.sh check [args]      auto-format, then ci
 #   scripts/run.sh test [args]       the Rust tests
 #   scripts/run.sh lint              rustfmt, clippy and the web lint
-#   scripts/run.sh web-test          the web UI's lint, type checks, unit tests and bundle gate
+#   scripts/run.sh web-test          the web UI's lint, type checks, unit tests, bundle gate and SDK package test
 #   scripts/run.sh pi-test           the Pi extension's type check and tests
 #   scripts/run.sh web-e2e           the browser tests
 #   scripts/run.sh perf              the perf benchmarks, on demand (they gate nothing; on a
 #                                    Mac also the Clax app's launch, scripts/perf-app-launch.sh)
-#   scripts/run.sh worker-test       crates/clax-worker's checks: its format check (Bazel's
-#                                    rustfmt, or cargo fmt), then scripts/worker-checks.sh,
-#                                    natively either way (its own Cargo workspace)
+#   scripts/run.sh worker-test       crates/clax-worker's checks: its and its VFS's format
+#                                    check, tests and clippy, and its wasm build under
+#                                    `wrangler dev --local` and in browsers (natively
+#                                    scripts/worker-checks.sh and e2e.mjs)
+#   scripts/run.sh check-wasm        the crates a hosted Worker runs, built for wasm32 with
+#                                    warnings denied (natively scripts/check-wasm.sh)
 #   scripts/run.sh build             the clax binary
-#   scripts/run.sh web               web/dist and web/dist-extension, built
+#   scripts/run.sh web               web/dist, web/dist-extension and web/dist-sdk, built
 #   scripts/run.sh clax [args]       build the debug clax and run it (serve, stop, doctor, …)
 #   scripts/run.sh bin               build the debug clax and print its path
 #   scripts/run.sh install           build the release clax and install it in $CARGO_HOME/bin
@@ -28,6 +31,11 @@
 #   scripts/run.sh app-apk           the Clax app's release APK, and print its path
 #   scripts/run.sh app-macos         the Clax app's macOS app, and print its path
 #   scripts/run.sh home-bundle       the home app's bundle, as the app builds pack it, and print its path
+#   scripts/run.sh reel --fast <id>  record the sizzle reel's vignette <id> in fast mode
+#                                    (//web/reel:<id>_fast) into target/reel/<id>/; Bazel only
+#   scripts/run.sh wrangler [args]   run the Worker's locked wrangler (whoami, login, tail, …):
+#                                    //crates/clax-worker:wrangler (natively its stamped
+#                                    pnpm install in crates/clax-worker)
 #   scripts/run.sh which             say which build system would run, and why
 #   scripts/run.sh --dry-run <task>  say what would run, and run nothing
 #
@@ -74,9 +82,12 @@ case "$task" in
     install) needs=(rust web) ;;
     web-test|pi-test|web) needs=(web) ;;
     web-e2e) needs=(rust web) ;;
-    worker-test) needs=(rust) ;;
+    worker-test) needs=(rust web) ;;
+    check-wasm) needs=(rust) ;;
     app-test|app-integration|app-apk|app-macos) needs=(rust web flutter) ;;
     home-bundle) needs=(flutter) ;;
+    reel) needs=(rust web) ;;
+    wrangler) needs=(web) ;;
     *) usage ;;
 esac
 
@@ -94,6 +105,13 @@ fi
 
 build_system_choose "${needs[@]}" || exit 2
 
+# The reel is recorded by Bazel targets alone: natively its recorder would
+# need a `pnpm install` in the worktree.
+if [ "$task" = reel ] && [ "$BUILD_SYSTEM" != bazel ]; then
+    echo "error: \`reel\` runs only with Bazel: the reel's recordings are Bazel targets (//web/reel). Install Bazelisk: $(build_system_install_hint)" >&2
+    exit 2
+fi
+
 # _run <command...>: runs it, or with --dry-run says what it would run.
 _run() {
     if [ "$dry" = 1 ]; then
@@ -108,7 +126,8 @@ if [ "$dry" = 0 ] && command -v caffeinate >/dev/null 2>&1; then awake=(caffeina
 
 # _copy_dist <dir>: Bazel's build of web/<dir> into the checkout as writable
 # regular files (Bazel's outputs are read-only, and a later native build
-# must be able to replace them), never links; .gitkeep stays.
+# must be able to replace them), never links; .gitkeep stays, and a
+# missing web/<dir> is made.
 _copy_dist() {
     local dir="$1" from
     from="$("$BAZEL" info bazel-bin 2>/dev/null)/web/$dir"
@@ -117,9 +136,42 @@ _copy_dist() {
         return 0
     fi
     [ -d "$from" ] || { echo "error: $from is missing" >&2; return 1; }
+    mkdir -p "web/$dir"
     find "web/$dir" -mindepth 1 -maxdepth 1 ! -name .gitkeep -exec rm -rf {} +
     cp -R "$from/." "web/$dir/"
     chmod -R u+w "web/$dir"
+}
+
+# _reel <args>: `--fast <id>` builds //web/reel:<id>_fast and copies its
+# files (clip.webm, beats.json) into target/reel/<id>/ as writable regular
+# files, never links.
+_reel() {
+    local id from dest="target/reel"
+    case "${1:-}" in
+        --fast)
+            id="${2:-}"
+            [ -n "$id" ] && [ "$#" -eq 2 ] || { echo "usage: just reel --fast <vignette>" >&2; return 2; }
+            ;;
+        *)
+            echo "usage: just reel --fast <vignette>" >&2
+            return 2
+            ;;
+    esac
+    case "$id" in *[!a-z0-9-]* | -*) echo "error: not a vignette ID: $id" >&2; return 2 ;; esac
+    _run "${awake[@]+"${awake[@]}"}" "$BAZEL" build --lockfile_mode=error "//web/reel:${id}_fast" || return $?
+    dest="$dest/$id"
+    if [ "$dry" = 1 ]; then
+        echo "would run: copy the files of //web/reel:${id}_fast to $dest/"
+        return 0
+    fi
+    from="$("$BAZEL" cquery --lockfile_mode=error --output=files "//web/reel:${id}_fast" 2>/dev/null | sed -n 1p)"
+    [ -n "$from" ] && [ -d "$from" ] || { echo "error: no output directory for //web/reel:${id}_fast" >&2; return 1; }
+    rm -rf "$dest"
+    mkdir -p "$dest"
+    cp -R "$from/." "$dest/"
+    chmod -R u+w "$dest"
+    find "$dest" -type f -exec chmod a-x {} +
+    echo "reel: $id (fast) in $PWD/$dest: $(cd "$dest" && ls | tr '\n' ' ')"
 }
 
 # _bazel_bin <label>: builds a binary and prints its absolute path; Bazel's
@@ -198,15 +250,15 @@ _bazel() {
             done
             _run "${b[@]}" test --lockfile_mode=error //web:lint
             ;;
-        web-test) _run "${b[@]}" test --lockfile_mode=error //web:lint //web:typecheck //web:unit //web:bundle_size "$@" ;;
+        web-test) _run "${b[@]}" test --lockfile_mode=error //web:lint //web:typecheck //web:unit //web:bundle_size //web:sdk_package "$@" ;;
         pi-test) _run "${b[@]}" test --lockfile_mode=error //plugins/pi:typecheck //plugins/pi:test "$@" ;;
         web-e2e) _run "${b[@]}" test --lockfile_mode=error //web:e2e_gesture //web:e2e_chrome_overlay //web:e2e_rest "$@" ;;
         worker-test)
-            # Only the format check is Bazel's; the rest is Cargo and npm.
-            _run "${b[@]}" test --lockfile_mode=error //crates/clax-worker:rustfmt &&
-                echo "── the Worker's tests, clippy and wasm build run natively (its own Cargo workspace) ──" &&
-                _run "${awake[@]+"${awake[@]}"}" ./scripts/worker-checks.sh
+            _run "${b[@]}" build --lockfile_mode=error --config=fmt //crates/clax-worker/... &&
+                _run "${b[@]}" build --lockfile_mode=error --config=clippy //crates/clax-worker/... &&
+                _run "${b[@]}" test --lockfile_mode=error //crates/clax-worker/... //bazel/wasm:check "$@"
             ;;
+        check-wasm) _run "${b[@]}" test --lockfile_mode=error //bazel/wasm:check "$@" ;;
         perf)
             _run "${b[@]}" test --lockfile_mode=error --nocache_test_results --test_output=all \
                 --test_env=CLAX_PERF_JSON="$PERF_JSON" --sandbox_writable_path="$(dirname "$PERF_JSON")" \
@@ -229,8 +281,8 @@ _bazel() {
             ;;
         rust-project) _run "${b[@]}" run --lockfile_mode=error @rules_rust//tools/rust_analyzer:gen_rust_project -- //crates/... ;;
         web)
-            _run "${b[@]}" build --lockfile_mode=error //web:dist //web:dist_extension "$@" || return $?
-            _copy_dist dist && _copy_dist dist-extension
+            _run "${b[@]}" build --lockfile_mode=error //web:dist //web:dist_extension //web:dist_sdk "$@" || return $?
+            _copy_dist dist && _copy_dist dist-extension && _copy_dist dist-sdk
             ;;
         app-test) _run "${b[@]}" test --lockfile_mode=error //apps/clax_app/... "$@" ;;
         app-integration)
@@ -255,6 +307,8 @@ _bazel() {
         app-apk) _bazel_out //apps/clax_app:apk ;;
         app-macos) _bazel_out //apps/clax_app:macos_app ;;
         home-bundle) _bazel_out //apps/clax_app:home_bundle ;;
+        reel) _reel "$@" ;;
+        wrangler) _run "$BAZEL" run --lockfile_mode=error --noshow_progress --show_result=0 --ui_event_filters=-info //crates/clax-worker:wrangler -- "$@" ;;
     esac
 }
 
@@ -275,18 +329,21 @@ _native() {
                 _run bash -c 'cd web && pnpm exec playwright install --with-deps chromium && pnpm run e2e'
             ;;
         worker-test)
-            # The workspace's own members only: `--all` would also format the
-            # Clax crates it uses by path.
-            _run bash -c 'cd crates/clax-worker && cargo fmt -- --check' &&
-                _run "${awake[@]+"${awake[@]}"}" ./scripts/worker-checks.sh
+            _run cargo fmt -p clax-worker -p clax-do-vfs -- --check &&
+                _run cargo test -q -p clax-worker -p clax-do-vfs &&
+                _run cargo clippy -q -p clax-worker -p clax-do-vfs --all-targets -- -D warnings &&
+                _run "${awake[@]+"${awake[@]}"}" ./scripts/worker-checks.sh &&
+                _run bash -c 'cd web && pnpm install --frozen-lockfile && pnpm exec playwright install chromium' &&
+                _run bash -c 'cd crates/clax-worker && node e2e.mjs --no-build && node e2e-hosted.mjs --no-build'
             ;;
+        check-wasm) _run ./scripts/check-wasm.sh "$@" ;;
         perf)
             _run bash -c 'cd web && pnpm install --frozen-lockfile' && _run ./scripts/build-web.sh &&
                 _run cargo build -q --release -p clax-cli &&
                 _run env CLAX_PERF_JSON="$PERF_JSON" CLAX_PERF_BIN="$PWD/target/release/clax" ./scripts/perf-daemon.sh &&
                 _run env CLAX_PERF_JSON="$PERF_JSON" CLAX_PERF_BIN="$PWD/target/release/clax" ./scripts/perf-clients.sh &&
                 _run env CLAX_PERF_JSON="$PERF_JSON" bash -c 'cd web && pnpm exec playwright install chromium >/dev/null && pnpm run perf' &&
-                _run env CLAX_PERF_JSON="$PERF_JSON" bash -c 'cd web && node scripts/bundle-size.mjs'
+                _run env CLAX_PERF_JSON="$PERF_JSON" bash -c 'cd web && pnpm run build:sdk && node scripts/bundle-size.mjs'
             local status=$?
             _perf_app_launch
             return "$status"
@@ -308,7 +365,10 @@ _native() {
                 _install "$PWD/target/release/clax"
             ;;
         rust-project) echo "Natively rust-analyzer reads Cargo.toml: nothing to generate." ;;
-        web) _run bash -c 'cd web && pnpm install --frozen-lockfile' && _run ./scripts/build-web.sh ;;
+        web)
+            _run bash -c 'cd web && pnpm install --frozen-lockfile' && _run ./scripts/build-web.sh &&
+                _run bash -c 'cd web && pnpm run build:sdk'
+            ;;
         app-test)
             _run ./scripts/build-home-bundle.sh --i-know-what-i-am-doing &&
                 _run bash -c 'cd apps/clax_app && tool/check.sh'
@@ -347,6 +407,10 @@ _native() {
         home-bundle)
             _run ./scripts/build-home-bundle.sh --i-know-what-i-am-doing &&
                 { [ "$dry" = 1 ] || echo "$PWD/apps/clax_app/assets/home/home.clax"; }
+            ;;
+        wrangler)
+            _run ./scripts/pnpm-install-stamped.sh crates/clax-worker --silent &&
+                _run crates/clax-worker/node_modules/.bin/wrangler "$@"
             ;;
     esac
 }
@@ -392,7 +456,7 @@ status=$?
 _perf_record
 
 if [ "$status" -eq 0 ]; then result="passed"; else result="failed (exit $status)"; fi
-case "$task" in build|web|bin|install|rust-project|app-apk|app-macos|home-bundle) result="${result/passed/done}" ;; esac
+case "$task" in build|web|bin|install|rust-project|app-apk|app-macos|home-bundle|wrangler) result="${result/passed/done}" ;; esac
 line="── \`$task\` $result with the native tools, not Bazel. CI gates on Bazel, and the two can differ: this does not say what CI will."
 if [ "$BUILD_SYSTEM_FALLBACK" = 1 ]; then
     line="$line Install Bazelisk for the same checks: $(build_system_install_hint)"

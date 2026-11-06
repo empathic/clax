@@ -136,6 +136,12 @@ pub struct Hosted {
     /// The site domain ([`Hosted::with_sites`]); `None` serves sites at
     /// `<id>.localhost` alone ([`crate::host::SiteHosts::local`]).
     pub sites: Option<crate::host::SiteHosts>,
+    /// The name discovery gives the instance ([`Hosted::with_name`]);
+    /// `None` names it by its host.
+    pub name: Option<String>,
+    /// Where the landing page's reel is served from ([`Hosted::with_reel`]);
+    /// `None` serves it only if the quickstart release carries it.
+    pub reel: Option<Reel>,
     /// A request for the public or content host came from a loopback peer
     /// with `behind_cloudflare` off, and was logged ([`Hosted::note_peer`]).
     proxy_noted: std::sync::atomic::AtomicBool,
@@ -151,7 +157,38 @@ impl std::fmt::Debug for Hosted {
             .field("github", &self.github)
             .field("legal", &self.legal)
             .field("sites", &self.sites)
+            .field("reel", &self.reel)
             .finish()
+    }
+}
+
+/// Where the landing page's reel is served from: a video CDN in
+/// production, the dev server's own address locally. The landing page names
+/// its files beside it ([`LANDING`]), and hosted mode redirects them here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reel {
+    /// The video's address (`reel.mp4`).
+    pub video: String,
+    /// The poster frame's address (`reel-poster.jpg`); `None` serves it
+    /// from the quickstart release, if it carries one.
+    pub poster: Option<String>,
+}
+
+impl Reel {
+    /// The reel at `video` with its poster at `poster`; an error naming the
+    /// address that is not `https://` (`http://` only on localhost).
+    pub fn new(video: &str, poster: Option<&str>) -> Result<Reel, String> {
+        for u in std::iter::once(video).chain(poster) {
+            if !clax_core::config::base_url_ok(u) {
+                return Err(format!(
+                    "the reel's addresses must be https:// URLs (http:// only on localhost), not \"{u}\""
+                ));
+            }
+        }
+        Ok(Reel {
+            video: video.into(),
+            poster: poster.map(Into::into),
+        })
     }
 }
 
@@ -370,6 +407,8 @@ impl Hosted {
             public_gallery: false,
             legal: None,
             sites: None,
+            name: None,
+            reel: None,
             proxy_noted: std::sync::atomic::AtomicBool::new(false),
         })
     }
@@ -436,6 +475,19 @@ impl Hosted {
         Hosted { sites, ..self }
     }
 
+    /// This hosted mode naming itself `name` in discovery (`None`: its
+    /// host).
+    pub fn with_name(self, name: Option<String>) -> Hosted {
+        Hosted { name, ..self }
+    }
+
+    /// This hosted mode sending the landing page's reel (`reel.mp4` and
+    /// `reel-poster.jpg` under [`LANDING`]) to `reel`'s addresses (`None`:
+    /// served from the quickstart release, if it carries them).
+    pub fn with_reel(self, reel: Option<Reel>) -> Hosted {
+        Hosted { reel, ..self }
+    }
+
     /// Whether this hosted mode serves the bundled documents at `/terms`
     /// and `/privacy`.
     pub fn serves_legal(&self) -> bool {
@@ -462,9 +514,20 @@ impl Hosted {
     /// Hosted mode as `[hosted]` sets it, the setup secret read from the
     /// environment variable it names.
     pub fn from_config(c: &clax_core::config::HostedConfig) -> Option<Hosted> {
-        let secret = std::env::var(&c.setup_secret_env).ok();
+        Hosted::from_config_with(c, &|var| std::env::var(var).ok())
+    }
+
+    /// [`Hosted::from_config`], each secret (the setup secret, the GitHub
+    /// client secret) read by `secret` from the name of the variable
+    /// `[hosted]` gives it.
+    pub fn from_config_with(
+        c: &clax_core::config::HostedConfig,
+        secret: &dyn Fn(&str) -> Option<String>,
+    ) -> Option<Hosted> {
+        let github_secret = |var: &str| secret(var).unwrap_or_default();
+        let secret = secret(&c.setup_secret_env);
         let github = c.github.as_ref().and_then(|g| {
-            let secret = std::env::var(&g.client_secret_env).unwrap_or_default();
+            let secret = github_secret(&g.client_secret_env);
             crate::github::GitHub::new(
                 &g.client_id,
                 &secret,
@@ -483,6 +546,7 @@ impl Hosted {
                         .as_deref()
                         .and_then(crate::host::SiteHosts::new),
                 )
+                .with_name(c.name.clone())
         })
     }
 
@@ -911,6 +975,76 @@ pub fn owners_people_view(st: &clax_store::Store, v: &mut Value) -> clax_core::R
     Ok(())
 }
 
+/// `new`, a person's rights the owner sets on a hosted daemon (an array of
+/// access objects, as [`clax_core::rights::Rights::to_json`] writes them),
+/// with every location of `stored` (their rights now) that the owner's
+/// People hides ([`owners_people_view`]: an artifact the owner's listings
+/// do not name) kept: added to the object of `new` of the same type,
+/// actions and level, or as an object of its own when `new` has none. The
+/// owner never saw them, so a value built from what People showed does not
+/// mean to drop them.
+///
+/// # Errors
+/// The store's.
+pub fn keep_hidden_locations(
+    st: &clax_store::Store,
+    stored: &Value,
+    new: &mut Value,
+) -> clax_core::Result<()> {
+    let owner = MemberRights::owner(st)?;
+    let key = |o: &serde_json::Map<String, Value>| {
+        (
+            o.get("type").cloned(),
+            o.get("actions").cloned(),
+            o.get("level").cloned(),
+        )
+    };
+    let (Some(stored), Some(new)) = (stored.as_array(), new.as_array_mut()) else {
+        return Ok(());
+    };
+    for old in stored.iter().filter_map(Value::as_object) {
+        let hidden: Vec<Value> = old
+            .get("locations")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|l| match l.as_str() {
+                None | Some("*" | "own") => false,
+                Some(l) => !owner.lists(st, l.strip_prefix("own:").unwrap_or(l)),
+            })
+            .cloned()
+            .collect();
+        if hidden.is_empty() {
+            continue;
+        }
+        let k = key(old);
+        match new
+            .iter_mut()
+            .filter_map(Value::as_object_mut)
+            .find(|o| key(o) == k)
+        {
+            Some(o) => {
+                let ls = o
+                    .entry("locations")
+                    .or_insert_with(|| Value::Array(Vec::new()));
+                if let Some(ls) = ls.as_array_mut() {
+                    for l in hidden {
+                        if !ls.contains(&l) {
+                            ls.push(l);
+                        }
+                    }
+                }
+            }
+            None => {
+                let mut o = old.clone();
+                o.insert("locations".into(), Value::Array(hidden));
+                new.push(Value::Object(o));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn hide_beyond(v: &mut Value, lists: &mut dyn FnMut(&str) -> bool) {
     match v {
         Value::Array(xs) => xs.iter_mut().for_each(|x| hide_beyond(x, lists)),
@@ -1209,7 +1343,11 @@ impl HostedRequest {
             owner_cookie: false,
             cookie: None,
             hosted_viewer: s.filter(|s| !s.owner).map(|s| s.viewer.clone()),
-            hosted_owner: s.is_some_and(|s| s.owner),
+            browser: if s.is_some_and(|s| s.owner) {
+                crate::identity::Browser::HostedOwner
+            } else {
+                id.browser
+            },
             ..id
         }
     }
@@ -1288,6 +1426,9 @@ pub fn guest_need(method: &Method, path: &str, query: Option<&str>) -> GuestNeed
         | ["inbox"]
         | ["people"]
         | ["tags"]
+        | ["queues"]
+        | ["queues", _]
+        | ["queues", _, _]
         | ["admin"]
         | ["settings"]
         | ["me"]
@@ -1583,11 +1724,22 @@ pub const OWN_PAGES: &[&str] = &[
     "/auth/github",
     crate::github::CALLBACK_PATH,
     "/site-signin",
+    // The landing page: the quickstart this build carries, for anyone.
+    LANDING,
+    "/start",
     // The Clax app's links, which Apple and Google fetch with no session;
     // each handler answers only on the public host.
     "/.well-known/apple-app-site-association",
     "/.well-known/assetlinks.json",
+    // What this Clax is (`GET /.well-known/clax`), for any caller.
+    "/.well-known/clax",
 ];
+
+/// The landing page's directory: the quickstart release the build carries
+/// ([`crate::state::AppState::quickstart`]), served as it ships
+/// (`clax_server::hosted::router`). A signed-out visitor to `/` is sent
+/// here when the build carries one, and to `/signin` when it does not.
+pub const LANDING: &str = "/start/";
 
 /// The bundled legal documents' pages ([`Hosted::serves_legal`]).
 pub const LEGAL_PAGES: &[&str] = &["/terms", "/privacy"];
@@ -1789,6 +1941,10 @@ pub async fn gate(State(s): State<AppState>, mut req: Request, next: Next) -> Re
     let query = req.uri().query().map(str::to_string);
     match guest_need(&method, &path, query.as_deref()) {
         GuestNeed::Open => next.run(req).await,
+        // The front door is the landing page, when the build carries one.
+        GuestNeed::Gallery if path == "/" && s.quickstart.is_some() => {
+            Redirect::to(LANDING).into_response()
+        }
         GuestNeed::Gallery => Redirect::to("/signin").into_response(),
         GuestNeed::Refused => sign_in_required(),
         GuestNeed::At {
@@ -1934,6 +2090,26 @@ pub fn signed_in_response(h: &Hosted, signed: SignedIn, mut shape: Value, key: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_configured_name_is_trimmed_and_reaches_hosted_mode() {
+        let hosted = |extra: &str| {
+            let text = format!("[hosted]\npublic_origin = \"https://clax.example\"\n{extra}");
+            let c = clax_core::config::HomeConfig::from_text(
+                "/h/config.toml".into(),
+                &text,
+                std::iter::empty(),
+            )
+            .unwrap();
+            Hosted::from_config(&c.hosted().unwrap().unwrap()).unwrap()
+        };
+        assert_eq!(hosted("").name, None);
+        assert_eq!(hosted("name = \"  \"\n").name, None);
+        assert_eq!(
+            hosted("name = \"  Studio Clax \"\n").name.as_deref(),
+            Some("Studio Clax")
+        );
+    }
 
     #[test]
     fn a_public_host_from_loopback_is_noted_once_and_only_off_cloudflare() {
@@ -2232,6 +2408,18 @@ mod tests {
     }
 
     #[test]
+    fn queue_subpaths_are_gallery_pages() {
+        use GuestNeed::*;
+        let q = "/queues/01J0000000000000000000000A";
+        let t = "/queues/01J0000000000000000000000A/01J0000000000000000000000B";
+        for path in ["/queues", q, t] {
+            assert_eq!(guest_need(&Method::GET, path, None), Gallery, "{path}");
+            assert_eq!(guest_need(&Method::POST, path, None), Refused, "{path}");
+        }
+        assert_eq!(guest_need(&Method::GET, &format!("{t}/x"), None), Refused);
+    }
+
+    #[test]
     fn a_guest_reaches_only_a_shared_pages_routes() {
         use GuestNeed::*;
         let aid = "7q3k9mzx2b4t";
@@ -2246,6 +2434,7 @@ mod tests {
             (Method::GET, "/people", None, Gallery),
             (Method::GET, "/inbox", None, Gallery),
             (Method::GET, "/tags", None, Gallery),
+            (Method::GET, "/queues", None, Gallery),
             (Method::GET, "/admin", None, Gallery),
             (Method::GET, "/settings", None, Gallery),
             (Method::GET, "/me", None, Gallery),

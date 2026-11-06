@@ -1,7 +1,7 @@
 // The shell's Clone button and dialog on the Worker as a hosted Clax
 // (HOSTED=1), end to end under `wrangler dev --local`: builds the Worker
 // (./build.sh; the web UI must be built, scripts/build-web.sh), starts
-// wrangler with fresh state under target/e2e-clone/, `http://localhost:<port>`
+// wrangler with fresh state under target/clax-worker/e2e-clone/, `http://localhost:<port>`
 // as the public origin and `localhost` as the site domain,
 // publishes an artifact with the owner token (the CLI's credential), and
 // signs the first person, Ada, in with the setup secret. Her browser opens
@@ -13,7 +13,7 @@
 // read it; a browser with no
 // session gets no token until Ada shares the artifact by link, and then a
 // read token alone (15 minutes), whose command clones it too. Screenshots of each go to
-// target/e2e-clone/<run>/shots (or CLAX_E2E_SHOTS). Prints one line per
+// target/clax-worker/e2e-clone/<run>/shots (or CLAX_E2E_SHOTS). Prints one line per
 // check; exits non-zero on the first failure.
 //
 // `node e2e-clone.mjs --no-build` skips the build.
@@ -22,12 +22,12 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { HERE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { HERE, STATE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
 
 const require = createRequire(join(HERE, "../../web/package.json"));
 const { chromium } = require("@playwright/test");
 
-const ROOT = join(HERE, "target/e2e-clone");
+const ROOT = join(STATE, "e2e-clone");
 const TOKEN = "clone-owner-token-" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 const SECRET = "clone setup secret " + Math.random().toString(36).slice(2);
 const LIMIT = 15_000;

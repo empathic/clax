@@ -736,11 +736,15 @@ pub async fn scopes_for(
 /// Whether a push with a token of `scope` handed to `asker` would be
 /// credited to them: always but for a write token from a host that names
 /// no pusher ([`GitRemotes::names_pushers`]), whose pushes are the
-/// owner's, which only the owner and the owner's agents get.
+/// owner's, which only the owner and the owner's agents get: on a hosted
+/// daemon an agent token the owner minted is a `PersonAgent` of no person.
 fn credited(host: &dyn GitRemotes, asker: &Asker, scope: Scope) -> bool {
     scope == Scope::Read
         || host.names_pushers()
-        || matches!(asker, Asker::Owner | Asker::OwnerAgent { .. })
+        || matches!(
+            asker,
+            Asker::Owner | Asker::OwnerAgent { .. } | Asker::PersonAgent { person: None, .. }
+        )
 }
 
 /// 403 `push_unattributed`: see [`credited`].

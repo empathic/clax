@@ -117,7 +117,7 @@ test(`a sub page's vote replaces that page only, and every view stays on it`, as
   expect(await file(2, "data.json")).toBe("{\"a\":1}");
   expect(await file(2, "votes/poll.html")).toContain("data-votes=\"1\"");
   const v2 = (await (await fetch(`${d.base}/api/artifacts/${artifact.id}/versions/2`)).json()).version;
-  expect(Object.keys(v2.files).sort()).toEqual(["data.json", "index.html", "votes/poll.html"]);
+  expect(Object.keys(v2.files).sort()).toEqual(["clax.json", "data.json", "index.html", "votes/poll.html"]);
   await ctx.close();
 });
 

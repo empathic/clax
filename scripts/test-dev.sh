@@ -25,6 +25,13 @@ export HOME="$T/home"
 export CODEX_HOME="$T/codex-home" CLAUDE_CONFIG_DIR="$T/claude-config" PI_CODING_AGENT_DIR="$T/pi-agent" GROK_HOME="$T/grok-home"
 mkdir -p "$HOME" "$CODEX_HOME" "$CLAUDE_CONFIG_DIR" "$PI_CODING_AGENT_DIR" "$GROK_HOME"
 unset CLAX_HOME CLAX_DEV_PORT CLAX_DEV_BIN CLAX_BIN CLAX_PORT
+# The checkout the dev home is chosen for (dev_defaults): a scratch
+# repository's main checkout, so the cases below read the same wherever this
+# runs, and a linked worktree of it for the cases that need one. A worktree
+# home takes the first of these ports another home does not record.
+gitq() { git -c user.name=t -c user.email=t@example.com -c commit.gpgsign=false "$@" >/dev/null 2>&1; }
+gitq init -q "$T/repo" && gitq -C "$T/repo" commit -q --allow-empty -m init && gitq -C "$T/repo" worktree add -q "$T/wt-feature"
+export CLAX_DEV_CHECKOUT="$T/repo" DEV_WORKTREE_PORTS="7591 7592"
 
 # shellcheck source=scripts/dev-home.sh
 . "$HERE/dev-home.sh"
@@ -41,6 +48,27 @@ watch_settings --shared
 if [ "$DEV_HOME" = "$HOME/.clax" ] && [ "$DEV_PORT" = 7480 ] && [ -z "${DEV_ARGS[*]-}" ]; then
     pass "just watch --shared serves ~/.clax on 7480"
 else fail "just watch --shared ($DEV_HOME $DEV_PORT)"; fi
+# A linked worktree gets a home of its own, on the first port no other dev
+# home records, and keeps the port its home records.
+mkdir -p "$HOME/.clax-dev-other"
+printf '[serve]\nport = 7591\n' > "$HOME/.clax-dev-other/config.toml"
+CLAX_DEV_CHECKOUT="$T/wt-feature" watch_settings
+if [ "$DEV_HOME" = "$HOME/.clax-dev-wt-feature" ] && [ "$DEV_PORT" = 7592 ]; then
+    pass "a linked worktree defaults to a home of its own, on the first port no other dev home records"
+else fail "a linked worktree's defaults ($DEV_HOME $DEV_PORT)"; fi
+mkdir -p "$HOME/.clax-dev-wt-feature"
+printf '[serve]\nport = 7600\n' > "$HOME/.clax-dev-wt-feature/config.toml"
+CLAX_DEV_CHECKOUT="$T/wt-feature" watch_settings
+if [ "$DEV_HOME" = "$HOME/.clax-dev-wt-feature" ] && [ "$DEV_PORT" = 7600 ]; then
+    pass "a linked worktree keeps the port its home records"
+else fail "a linked worktree's recorded port ($DEV_HOME $DEV_PORT)"; fi
+rm -rf "$HOME/.clax-dev-wt-feature"
+mkdir -p "$HOME/.clax-dev-another"
+printf '[serve]\nport = 7592\n' > "$HOME/.clax-dev-another/config.toml"
+if ! CLAX_DEV_CHECKOUT="$T/wt-feature" watch_settings 2>"$T/err" && grep -q "no free port in 7591-7592" "$T/err"; then
+    pass "a new worktree home with every port recorded fails, saying what to do"
+else fail "no free worktree port ($(cat "$T/err"))"; fi
+rm -rf "$HOME/.clax-dev-other" "$HOME/.clax-dev-another"
 
 ensure_dev_home "$T/dh" 7481
 ensure_dev_home "$T/dh" 9999
@@ -223,6 +251,47 @@ rm -rf "$HOME/.clax-dev"
 CLAX_DEV_PORT=7599 devrun pi
 if grep -qx 'port = 7599' "$HOME/.clax-dev/config.toml"; then pass "just dev records CLAX_DEV_PORT in a new dev home"
 else fail "just dev and CLAX_DEV_PORT ($(cat "$HOME/.clax-dev/config.toml"))"; fi
+
+CLAX_DEV_CHECKOUT="$T/wt-feature" devrun pi
+if grep -q "home=$HOME/.clax-dev-wt-feature " "$T/calls" && grep -qx 'port = 7591' "$HOME/.clax-dev-wt-feature/config.toml"; then
+    pass "just dev in a linked worktree runs on that worktree's own home and port"
+else fail "just dev in a worktree ($(cat "$T/calls" "$T/err"))"; fi
+rm -rf "$HOME/.clax-dev-wt-feature"
+
+# A new dev home opens a signed-in browser once; a home with a database
+# only says how.
+printf '#!/bin/sh\necho "clax $*" >> "%s/clax-calls"\nif [ "$1" = serve ]; then : > "$CLAX_HOME/clax.db"; fi\necho "clax 9.9.9-dev"\n' "$T" | fake_exe "$T/clax-opens"
+rm -rf "$HOME/.clax-dev" "$T/clax-calls"
+CLAX_BUILD=native CLAX_DEV_BIN="$T/clax-opens" PATH="$FAKE:$PATH" "$HERE/dev.sh" pi >"$T/out" 2>"$T/err"
+if grep -qx "clax open" "$T/clax-calls" && grep -q "opened this dev home's gallery in your browser, signed in" "$T/out"; then
+    pass "a new dev home opens its gallery in a signed-in browser"
+else fail "a new dev home's browser ($(cat "$T/clax-calls" "$T/out" "$T/err"))"; fi
+rm -f "$T/clax-calls"
+CLAX_BUILD=native CLAX_DEV_BIN="$T/clax-opens" PATH="$FAKE:$PATH" "$HERE/dev.sh" pi >"$T/out" 2>"$T/err"
+if ! grep -qx "clax open" "$T/clax-calls" && grep -q "to sign a browser in to this dev home: just clax open" "$T/out"; then
+    pass "a dev home with a database opens nothing and says how to sign a browser in"
+else fail "an existing dev home's browser ($(cat "$T/clax-calls" "$T/out"))"; fi
+rm -rf "$HOME/.clax-dev"
+
+# A home the build cannot open (another build's migrations) stops `just dev`
+# before the harness, saying why and what to do; the home is left as it is.
+printf '#!/bin/sh\nif [ "$1" = serve ]; then mkdir -p "$CLAX_HOME/logs"; echo "error: could not upgrade the database from schema version 49: table person_roles already exists" >> "$CLAX_HOME/logs/daemon.log"; echo "error: daemon exited during startup" >&2; exit 1; fi\necho "clax 9.9.9-dev"\n' | fake_exe "$T/clax-old-home"
+: > "$T/calls"
+CLAX_BUILD=native CLAX_DEV_BIN="$T/clax-old-home" PATH="$FAKE:$PATH" "$HERE/dev.sh" claude >"$T/out" 2>"$T/err"
+rc=$?
+if [ "$rc" = 1 ] && [ ! -s "$T/calls" ] && grep -q "cannot open the dev home $HOME/.clax-dev:" "$T/err" \
+    && grep -q "schema version 49: table person_roles already exists" "$T/err" && grep -qF "mv \"$HOME/.clax-dev\" \"$HOME/.clax-dev.old\"" "$T/err" \
+    && [ -d "$HOME/.clax-dev" ]; then
+    pass "a dev home this build cannot open stops just dev before the harness, saying why and what to do"
+else fail "a dev home the build cannot open (rc=$rc; $(cat "$T/calls" "$T/err"))"; fi
+# Another failure later is not explained by that old line in the log.
+printf '#!/bin/sh\nif [ "$1" = serve ]; then echo "error: daemon exited during startup" >&2; exit 1; fi\necho "clax 9.9.9-dev"\n' | fake_exe "$T/clax-no-start"
+CLAX_BUILD=native CLAX_DEV_BIN="$T/clax-no-start" PATH="$FAKE:$PATH" "$HERE/dev.sh" claude >"$T/out" 2>"$T/err"
+rc=$?
+if [ "$rc" = 1 ] && ! grep -q "cannot open the dev home" "$T/err" && grep -q "the daemon did not start on $HOME/.clax-dev; see $HOME/.clax-dev/logs/daemon.log" "$T/err"; then
+    pass "a daemon that fails to start for another reason is not explained by an older log line"
+else fail "another start failure (rc=$rc; $(cat "$T/err"))"; fi
+rm -rf "$HOME/.clax-dev/logs"
 
 devrun bogus
 if [ -z "$(cat "$T/calls")" ] && grep -q "usage: just dev" "$T/err"; then pass "an unknown harness prints usage"

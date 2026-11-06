@@ -72,7 +72,7 @@ export class LiveView {
 
   constructor(ctl: LiveHost, state: () => ViewState, toFrame: (m: ShellToBridge) => void, make?: (url: string) => SocketLike) {
     const host: Host = this.host = { id: ctl.id, shown: s => ctl.shown(s), set: f => ctl.set(f), state, toFrame };
-    this.socket = new LiveSocket(liveUrl(host.id), {
+    this.socket = new LiveSocket(() => liveUrl(host.id), {
       welcome: w => host.set(s => ({ live: { ...ui(s), color: w.color } })),
       batch: b => {
         host.set(s => ({ live: { ...ui(s), layer: applyBatch(ui(s).layer, b, wall()), now: wall() } }));

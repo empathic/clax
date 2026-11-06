@@ -120,6 +120,54 @@ describe("the run panel", () => {
     }
   });
 
+  it("a_web_call_shows_its_source_and_cost", async () => {
+    const stream = sse();
+    daemon({
+      "GET /api/bot/runs/r3": json(run({ id: "r3", steps: [{ n: 1, kind: "script", status: "running", started_at: "x", credits_milli: 0, title: "Look it up", calls: [
+        { op: "web.search", ok: true, ms: 640, cost_milli: 25_000, web: { query: "svelte 5 runes release notes" } },
+        { op: "web.fetch", target: "https://svelte.dev/blog", ok: true, ms: 300, cost_milli: 50_000, web: { url: "https://svelte.dev/blog", source: "search #2" } },
+        { op: "web.fetch", target: "https://svelte.dev/blog", ok: true, ms: 2, cost_milli: 0, web: { url: "https://svelte.dev/blog", source: "page #3" } },
+        { op: "web.fetch", ok: false, ms: 1, error: "url_not_allowed", web: { url: "https://example.org/x", source: "comment" } },
+      ] }] })),
+      "GET /api/bot/runs/r3/events": () => new Response(stream.body, { headers: { "content-type": "text/event-stream" } }),
+    });
+    const m = mount(RunPanel, { aid: "7q3k9mzx2b4t", runs: [] });
+    botView.open("r3");
+    flush();
+    await settle();
+    const rows = [...document.querySelectorAll("#bot-run-panel .calls li")].map(li => li.textContent);
+    expect(rows[0]).toContain("web.search");
+    expect(rows[0]).toContain("svelte 5 runes release notes");
+    expect(rows[0]).toContain("25 credits");
+    expect(rows[1]).toContain("https://svelte.dev/blog");
+    expect(rows[1]).toContain("from search #2");
+    expect(rows[1]).toContain("50 credits");
+    expect(rows[2]).toContain("from page #3");
+    expect(rows[2]).not.toMatch(/credit|free/);
+    expect(rows[3]).toContain("https://example.org/x");
+    expect(rows[3]).toContain("from the sender's comment");
+    expect(rows[3]).not.toContain("credit");
+    // A live call event shows the same.
+    stream.send("call", { step: 1, call: { op: "web.search", ok: true, ms: 10, cost_milli: 700_000, web: { query: "later" } } });
+    await settle();
+    expect(document.querySelector("#bot-run-panel .calls li:last-child")!.textContent).toContain("700 credits");
+    m.unmount();
+  });
+
+  it("finish_lists_sources", async () => {
+    daemon({ "GET /api/bot/runs/r4": json(run({ id: "r4", status: "finished", steps: [
+      { n: 1, kind: "finish", status: "done", started_at: "x", credits_milli: 0, summary: "Added the release notes.", sources: [{ title: "Svelte blog", url: "https://svelte.dev/blog" }, { title: "javascript:alert(1)", url: "javascript:alert(1)" }, { title: "Again", url: "https://svelte.dev/blog" }] },
+    ] })) });
+    const m = mount(RunPanel, { aid: "7q3k9mzx2b4t", runs: [] });
+    botView.open("r4");
+    flush();
+    await settle();
+    const links = [...document.querySelectorAll<HTMLAnchorElement>("#bot-run-panel .finish .sources a")];
+    expect(links.map(a => [a.textContent, a.getAttribute("href"), a.rel])).toEqual([["Svelte blog", "https://svelte.dev/blog", "noopener noreferrer"], ["Again", "https://svelte.dev/blog", "noopener noreferrer"]]);
+    expect(document.querySelector("#bot-run-panel .finish .sources")!.getAttribute("aria-label")).toBe("Sources");
+    m.unmount();
+  });
+
   it("collapses a finished script, opens one that failed, and closes on Escape", async () => {
     daemon({ "GET /api/bot/runs/r2": json(run({ id: "r2", status: "finished", steps: [
       { n: 1, kind: "script", status: "done", started_at: "x", credits_milli: 0, title: "Look", calls: [], code: "return 1" },

@@ -79,7 +79,15 @@ void main() {
         '${(c.args['request']! as PublishRequest).ifVersion}',
   ];
 
-  Future<void> idle() => until(
+  /// [until], waiting out the asked store's calls in flight when it is a
+  /// [TrackedAsked]: a real file's writes take no fixed number of turns.
+  Future<void> settle(bool Function() condition, {String? reason}) =>
+      switch (asked) {
+        final TrackedAsked t => t.until(condition),
+        _ => until(condition, reason: reason),
+      };
+
+  Future<void> idle() => settle(
     () => api.waitingPolls == 1 && worker.isIdle,
     reason: 'the worker is idle on a poll',
   );
@@ -1284,7 +1292,7 @@ void main() {
     /// Parks a change with its question open and returns the question.
     Future<QuestionView> park(String aid) async {
       api.sendComment(aid, 'Show my total');
-      await until(() => events.whereType<WorkerReplied>().isNotEmpty);
+      await settle(() => events.whereType<WorkerReplied>().isNotEmpty);
       await idle();
       return (await api.questions()).single;
     }
@@ -1294,25 +1302,13 @@ void main() {
       ...changeCalls(reply: 'I asked you which units in Clax.', resolve: false),
     ];
 
-    /// Turns the event loop, with real time for file writes, until
-    /// [condition] holds; fails after [turns] turns.
-    Future<void> untilAsync(
-      Future<bool> Function() condition, {
-      int turns = 500,
-    }) async {
-      for (var i = 0; i < turns; i++) {
-        if (await condition()) return;
-        await Future<void>.delayed(const Duration(milliseconds: 1));
-      }
-      throw StateError('condition not reached');
-    }
-
     test('an answer polled as the worker stops runs once at the next start, '
         'from asked.json', () async {
       final dir = await Directory.systemTemp.createTemp('worker_asked');
       addTearDown(() => dir.delete(recursive: true));
       final file = File('${dir.path}/asked.json');
-      asked = FileAskedQuestions(file);
+      final before = TrackedAsked(FileAskedQuestions(file));
+      asked = before;
       final aid = api.seedArtifact('Runs', {'index.html': page});
       final first = workerWith([parking()])..start();
       await idle();
@@ -1328,17 +1324,18 @@ void main() {
         ]),
       );
       await first.stop();
-      await untilAsync(
+      await before.until(
         () async =>
             (await FileAskedQuestions(file).all()).single.answer != null,
       );
       api.releasePolls();
 
-      asked = FileAskedQuestions(file);
+      final files = TrackedAsked(FileAskedQuestions(file));
+      asked = files;
       workerWith([
         changeCalls(reply: 'Kilometres.', edits: [('Save', 'km')]),
       ]).start();
-      await until(() => api.currentVersion(aid) == 2);
+      await files.until(() => api.currentVersion(aid) == 2);
       await idle();
       expect(runner.seen, hasLength(1));
       expect(runner.text(0), contains('The person answered your question'));
@@ -1998,4 +1995,49 @@ class DyingApi extends FakeClaxApi {
     await _maybeHang();
     return super.deleteDraft(draftId);
   }
+}
+
+/// An [AskedQuestions] whose every call is followed: [until] waits out the
+/// calls in flight (real file I/O, which no count of event-loop turns
+/// covers) before each turn it counts.
+class TrackedAsked implements AskedQuestions {
+  TrackedAsked(this.inner);
+
+  final AskedQuestions inner;
+  final _pending = <Future<void>>{};
+
+  Future<T> _track<T>(Future<T> f) {
+    final done = f.then<void>((_) {}, onError: (_) {});
+    _pending.add(done);
+    done.whenComplete(() => _pending.remove(done));
+    return f;
+  }
+
+  /// [until] from loop_support.dart, with the calls in flight waited out
+  /// before each turn, so a real file's writes count as no turns.
+  Future<void> until(
+    FutureOr<bool> Function() condition, {
+    int turns = 2000,
+  }) async {
+    for (var i = 0; i < turns; i++) {
+      if (await condition()) return;
+      while (_pending.isNotEmpty) {
+        await Future.wait(_pending.toList());
+      }
+      await Future<void>.delayed(Duration.zero);
+    }
+    throw StateError('condition not reached: $condition');
+  }
+
+  @override
+  Future<void> put(AskedEntry e) => _track(inner.put(e));
+  @override
+  Future<AskedEntry?> take(String questionId) => _track(inner.take(questionId));
+  @override
+  Future<List<AskedEntry>> all() => _track(inner.all());
+  @override
+  Future<AskedEntry?> answer(String questionId, String text) =>
+      _track(inner.answer(questionId, text));
+  @override
+  Future<void> drop(String questionId) => _track(inner.drop(questionId));
 }

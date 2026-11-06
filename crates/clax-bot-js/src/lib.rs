@@ -970,10 +970,7 @@ impl Engine {
             };
             let (ok, json) = match result {
                 Ok(v) => (true, v.to_string()),
-                Err(e) => (
-                    false,
-                    serde_json::json!({"code": e.code, "message": e.message}).to_string(),
-                ),
+                Err(e) => (false, e.reply_json()),
             };
             let settled = ctx.with(|ctx| -> Result<(), Thrown> {
                 let caught = |e| thrown(CaughtError::from_error(&ctx, e), &file);

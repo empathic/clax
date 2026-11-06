@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Star Chase</title>
+<style>
+  /* Northwind's star-chase: the version the agent publishes in the reel's
+     game vignette (web/reel/vignettes/game.ts). Everyone with the page open
+     plays at once over the `room` capability: each viewer's orb, name and
+     score travel as their presence, and every view draws everyone. The
+     team is invented. Light page, dark arena, as the reel is filmed.
+     Everything moves on Date.now(), so a camera that steps the
+     page's clock films the same frames each run. */
+  :root {
+    --bg: #f7f6f3;
+    --fg: #1d1c1a;
+    --muted: #6b6862;
+    --line: #e4e1da;
+    --live: #2f9e44;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 860px; margin: 22px auto; padding: 0 16px; }
+  .top { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin: 0 0 12px; }
+  .top p { margin: 0 0 2px; color: var(--muted); font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; }
+  h1 { margin: 0; font-size: 28px; letter-spacing: -0.01em; }
+  h1 span { background: linear-gradient(90deg, #ff4fa3, #ffb02e 55%, #2ee6c9); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .live { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px; background: #fff; font-size: 14px; color: var(--muted); white-space: nowrap; }
+  .live b { color: var(--fg); }
+  .live i { width: 9px; height: 9px; border-radius: 50%; background: var(--live); box-shadow: 0 0 0 0 rgba(47, 158, 68, 0.5); }
+  .arena { position: relative; width: 100%; aspect-ratio: 16 / 9; border-radius: 18px; overflow: hidden; background: #0d0b2e; box-shadow: 0 18px 40px -18px rgba(28, 16, 80, 0.55), 0 0 0 1px rgba(28, 16, 80, 0.2); cursor: none; touch-action: none; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .board { position: absolute; top: 14px; right: 14px; margin: 0; padding: 10px 12px 8px; min-width: 184px; list-style: none; border-radius: 14px; background: rgba(10, 8, 34, 0.55); border: 1px solid rgba(255, 255, 255, 0.14); color: #fff; font-size: 17px; backdrop-filter: blur(6px); pointer-events: none; }
+  .board h2 { margin: 0 0 6px; font-size: 11px; letter-spacing: 0.14em; color: rgba(255, 255, 255, 0.6); font-weight: 700; }
+  .board li { display: flex; align-items: center; gap: 9px; padding: 3px 0; }
+  .board .dot { width: 11px; height: 11px; border-radius: 50%; }
+  .board .name { flex: 1; font-weight: 600; }
+  .board .score { font-weight: 800; font-variant-numeric: tabular-nums; min-width: 1.4em; text-align: right; display: inline-block; transform-origin: 70% 55%; }
+  .help { position: absolute; left: 16px; bottom: 12px; color: rgba(255, 255, 255, 0.62); font-size: 13px; pointer-events: none; }
+  @media (max-width: 560px) { .board { min-width: 0; font-size: 13px; } .help { display: none; } }
+</style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <div>
+      <p>Northwind · Design team</p>
+      <h1><span>Star Chase</span></h1>
+    </div>
+    <div class="live" aria-live="polite"><i id="pulse"></i><b id="count">1</b> playing</div>
+  </div>
+  <div class="arena" id="arena">
+    <canvas id="c" aria-label="The arena: steer your orb with your pointer and grab the stars"></canvas>
+    <div class="board"><h2>SCORES</h2><ol id="board" style="margin:0;padding:0;list-style:none"></ol></div>
+    <div class="help">Everyone on this page plays · steer with your pointer · grab the ★</div>
+  </div>
+</main>
+<script>
+(async () => {
+  const PALETTE = ["#ff4fa3", "#a78bff", "#b6f34a", "#ff7a59", "#4fb4ff", "#ffb02e", "#2ee6c9", "#f472f6"];
+  const fnv = s => { let h = 0x811c9dc5; for (const b of new TextEncoder().encode(s)) h = Math.imul(h ^ b, 0x01000193) >>> 0; return h; };
+  const colourOf = name => PALETTE[fnv(name) % PALETTE.length];
+  const rng = seed => { let s = seed >>> 0; return () => { s = (s + 0x6d2b79f5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; };
+  // Where the stars fall, in turn: star k is at STARS[k % 8], k being every
+  // player's score added up, so every view shows the same star.
+  const STARS = [[0.66, 0.42], [0.32, 0.36], [0.80, 0.70], [0.50, 0.64], [0.18, 0.30], [0.86, 0.26], [0.26, 0.74], [0.58, 0.22]];
+  const starAt = k => STARS[k % STARS.length];
+  /** How near a player's pointer must come to a star, as a share of the arena's width. */
+  const CATCH = 0.05;
+  const TRAIL = 22;
+
+  const arena = document.getElementById("arena");
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d");
+  const board = document.getElementById("board");
+  const count = document.getElementById("count");
+  const pulse = document.getElementById("pulse");
+
+  const use = name => (window.claude?.use ? window.claude.use(name).catch(() => null) : Promise.resolve(null));
+  const [room, user] = await Promise.all([use("room"), use("user")]);
+  let name = "You";
+  try { name = (await user?.me())?.name || "You"; } catch { /* a player with no name */ }
+  const h = fnv(name);
+  const me = { name, x: 0.16 + (h % 5) * 0.03, y: 0.70 - (h % 3) * 0.05, score: 0 };
+  const share = () => { try { room?.presence({ name: me.name, x: me.x, y: me.y, score: me.score }); } catch { /* single player */ } };
+  share();
+
+  /** The other players in the room now, by peer: their name, target and score. */
+  const others = () => {
+    const out = [];
+    for (const p of room?.peers?.() ?? []) {
+      if (p.sameTab) continue;
+      const s = p.presence ?? {};
+      if (typeof s.name !== "string" || typeof s.x !== "number" || typeof s.y !== "number") continue;
+      out.push({ key: p.peer, name: s.name, x: s.x, y: s.y, score: typeof s.score === "number" ? s.score : 0 });
+    }
+    return out;
+  };
+  const total = () => me.score + others().reduce((n, p) => n + p.score, 0);
+  // What the reel's recorder reads, from a world of its own that shares
+  // only the document: a "starchase:read" event on it answers at once in
+  // its data-state, with this player and the ones this view has heard.
+  document.addEventListener("starchase:read", () => {
+    document.documentElement.dataset.state = JSON.stringify({ me, heard: others().map(({ name, x, y, score }) => ({ name, x, y, score })), total: total() });
+  });
+
+  let W = 0, H = 0, dpr = 1;
+  const fit = () => {
+    const w = arena.clientWidth, hh = arena.clientHeight, d = window.devicePixelRatio || 1;
+    if (w === W && hh === H && d === dpr) return;
+    W = w; H = hh; dpr = d;
+    canvas.width = Math.round(W * d); canvas.height = Math.round(H * d);
+  };
+
+  arena.addEventListener("pointermove", e => {
+    const r = arena.getBoundingClientRect();
+    me.x = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+    me.y = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+    const [sx, sy] = starAt(total());
+    if (Math.hypot((me.x - sx) * r.width, (me.y - sy) * r.height) / r.width < CATCH) me.score += 1;
+    share();
+  });
+
+  // The background's stars, the same each load.
+  const sky = (() => { const r = rng(7); return Array.from({ length: 110 }, () => ({ x: r(), y: r(), z: 0.3 + r() * 0.7, ph: r() * 6.28, sp: 0.6 + r() * 1.8 })); })();
+
+  const players = new Map(); // key -> { hx, hy, trail, score, pop }
+  let lastTotal = null;
+  let starBorn = 0;
+  const bursts = [];
+  let last = null;
+
+  const easeBack = p => { const c = 1.9; return 1 + (c + 1) * Math.pow(p - 1, 3) + c * Math.pow(p - 1, 2); };
+  const alpha = (hex, a) => { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; };
+
+  function drawBackground(t) {
+    const g = ctx.createLinearGradient(0, 0, W, H);
+    g.addColorStop(0, "#120a3a"); g.addColorStop(1, "#06223f");
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    const nebula = (cx, cy, r, c) => { const n = ctx.createRadialGradient(cx, cy, 0, cx, cy, r); n.addColorStop(0, c); n.addColorStop(1, "rgba(0,0,0,0)"); ctx.fillStyle = n; ctx.fillRect(0, 0, W, H); };
+    ctx.globalCompositeOperation = "lighter";
+    nebula(W * (0.22 + 0.05 * Math.sin(t / 2300)), H * (0.3 + 0.06 * Math.cos(t / 2900)), W * 0.42, "rgba(255,79,163,0.20)");
+    nebula(W * (0.8 + 0.04 * Math.cos(t / 2600)), H * (0.72 + 0.05 * Math.sin(t / 3100)), W * 0.45, "rgba(46,230,201,0.17)");
+    nebula(W * (0.55 + 0.06 * Math.sin(t / 3700)), H * 0.15, W * 0.35, "rgba(167,139,255,0.20)");
+    ctx.globalCompositeOperation = "source-over";
+    // A floor of lines drifting toward the viewer.
+    ctx.strokeStyle = "rgba(160,190,255,0.07)"; ctx.lineWidth = 1;
+    const step = 46, off = (t * 0.012) % step;
+    ctx.beginPath();
+    for (let x = -step + off; x < W + step; x += step) { ctx.moveTo(x, 0); ctx.lineTo(x, H); }
+    for (let y = -step + off; y < H + step; y += step) { ctx.moveTo(0, y); ctx.lineTo(W, y); }
+    ctx.stroke();
+    for (const s of sky) {
+      const x = ((s.x * W - t * 0.006 * s.z * 4) % W + W) % W;
+      const a = 0.25 + 0.6 * Math.abs(Math.sin(t / 1000 * s.sp + s.ph)) * s.z;
+      ctx.fillStyle = `rgba(255,255,255,${a.toFixed(3)})`;
+      ctx.fillRect(x, s.y * H, 1.6 * s.z + 0.4, 1.6 * s.z + 0.4);
+    }
+  }
+
+  function drawStar(t, k) {
+    const [sx, sy] = starAt(k);
+    const x = sx * W, y = sy * H;
+    const age = t - starBorn;
+    const s = age < 420 ? Math.max(0, easeBack(Math.min(1, age / 420))) : 1 + 0.08 * Math.sin(t / 180);
+    ctx.globalCompositeOperation = "lighter";
+    const glow = ctx.createRadialGradient(x, y, 0, x, y, 86 * s);
+    glow.addColorStop(0, "rgba(255,200,60,0.55)"); glow.addColorStop(1, "rgba(255,160,40,0)");
+    ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(x, y, 86 * s, 0, 6.2832); ctx.fill();
+    for (let j = 0; j < 2; j++) {
+      const p = ((age / 1300) + j / 2) % 1;
+      ctx.strokeStyle = `rgba(255,210,90,${((1 - p) * 0.55).toFixed(3)})`; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x, y, (26 + p * 56) * s, 0, 6.2832); ctx.stroke();
+    }
+    for (let j = 0; j < 3; j++) {
+      const a = t / 700 + j * 2.094;
+      ctx.fillStyle = "rgba(255,240,180,0.9)";
+      ctx.beginPath(); ctx.arc(x + Math.cos(a) * 42 * s, y + Math.sin(a) * 42 * s, 2.6, 0, 6.2832); ctx.fill();
+    }
+    ctx.globalCompositeOperation = "source-over";
+    ctx.save();
+    ctx.translate(x, y); ctx.rotate(t / 650); ctx.scale(s, s);
+    ctx.shadowColor = "rgba(255,190,40,0.95)"; ctx.shadowBlur = 28;
+    const fill = ctx.createLinearGradient(-20, -20, 20, 20);
+    fill.addColorStop(0, "#fff6c2"); fill.addColorStop(0.5, "#ffc43a"); fill.addColorStop(1, "#ff8a1f");
+    ctx.fillStyle = fill;
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const r = i % 2 ? 11 : 27, a = -Math.PI / 2 + i * Math.PI / 5;
+      ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+    }
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+
+  function drawPlayer(t, p, colour, label, self) {
+    ctx.globalCompositeOperation = "lighter";
+    for (let i = 0; i < p.trail.length; i++) {
+      const f = (i + 1) / p.trail.length;
+      const [x, y] = p.trail[i];
+      ctx.fillStyle = alpha(colour, (0.04 + 0.4 * f * f).toFixed(3));
+      ctx.beginPath(); ctx.arc(x * W, y * H, 2.5 + 12 * f, 0, 6.2832); ctx.fill();
+    }
+    const x = p.hx * W, y = p.hy * H + Math.sin(t / 260 + p.phase) * 2.5;
+    const glow = ctx.createRadialGradient(x, y, 0, x, y, 62);
+    glow.addColorStop(0, alpha(colour, 0.55)); glow.addColorStop(1, alpha(colour, 0));
+    ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(x, y, 62, 0, 6.2832); ctx.fill();
+    ctx.globalCompositeOperation = "source-over";
+    ctx.save();
+    ctx.shadowColor = colour; ctx.shadowBlur = 18;
+    ctx.fillStyle = colour; ctx.beginPath(); ctx.arc(x, y, 17, 0, 6.2832); ctx.fill();
+    ctx.restore();
+    ctx.fillStyle = "rgba(255,255,255,0.85)"; ctx.beginPath(); ctx.arc(x - 5, y - 5, 5.5, 0, 6.2832); ctx.fill();
+    const a = t / 420 + p.phase;
+    ctx.strokeStyle = alpha(colour, 0.6); ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(x, y, 27, a, a + 2.2); ctx.stroke();
+    ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(x + Math.cos(a + 2.2) * 27, y + Math.sin(a + 2.2) * 27, 3, 0, 6.2832); ctx.fill();
+    // The name tag.
+    ctx.font = "700 15px system-ui, -apple-system, 'Segoe UI', sans-serif";
+    const text = self ? `${label} (you)` : label;
+    const w = ctx.measureText(text).width + 20;
+    const tx = x - w / 2, ty = y - 58;
+    ctx.fillStyle = "rgba(8,6,30,0.66)";
+    ctx.beginPath(); ctx.roundRect(tx, ty, w, 25, 12.5); ctx.fill();
+    ctx.strokeStyle = alpha(colour, 0.8); ctx.lineWidth = 1; ctx.stroke();
+    ctx.fillStyle = colour; ctx.textBaseline = "middle"; ctx.textAlign = "center";
+    ctx.fillText(text, x, ty + 13);
+  }
+
+  function drawBursts(t) {
+    for (let i = bursts.length - 1; i >= 0; i--) {
+      const b = bursts[i];
+      const p = (t - b.t0) / 1100;
+      if (p >= 1) { bursts.splice(i, 1); continue; }
+      const x = b.x * W, y = b.y * H;
+      ctx.globalCompositeOperation = "lighter";
+      ctx.strokeStyle = alpha(b.colour, (1 - p) * 0.9); ctx.lineWidth = 1 + 4 * (1 - p);
+      ctx.beginPath(); ctx.arc(x, y, 14 + 130 * (1 - Math.pow(1 - p, 3)), 0, 6.2832); ctx.stroke();
+      const r = rng(b.seed);
+      for (let j = 0; j < 30; j++) {
+        const ang = j / 30 * 6.2832 + r() * 0.4, sp = 110 + r() * 220, size = 2.5 + r() * 4;
+        const d = sp * (1 - Math.pow(1 - p, 2.2)) * 0.9;
+        ctx.fillStyle = j % 2 ? alpha("#ffd25a", 1 - p) : alpha(b.colour, 1 - p);
+        ctx.beginPath(); ctx.arc(x + Math.cos(ang) * d, y + Math.sin(ang) * d + 30 * p * p, size * (1 - p * 0.6), 0, 6.2832); ctx.fill();
+      }
+      ctx.globalCompositeOperation = "source-over";
+      ctx.save();
+      ctx.globalAlpha = 1 - p;
+      ctx.font = "800 28px system-ui, -apple-system, 'Segoe UI', sans-serif";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.shadowColor = b.colour; ctx.shadowBlur = 14;
+      ctx.fillStyle = "#fff";
+      ctx.fillText(`+1 ${b.name}`, x, y - 30 - 46 * p);
+      ctx.restore();
+    }
+  }
+
+  let boardKey = "";
+  function drawBoard(t, list) {
+    const key = list.map(p => `${p.name}:${p.score}`).join("|");
+    if (key !== boardKey) {
+      boardKey = key;
+      board.replaceChildren(...list.map(p => {
+        const li = document.createElement("li");
+        li.dataset.player = p.name;
+        const dot = document.createElement("span"); dot.className = "dot"; dot.style.background = p.colour; dot.style.boxShadow = `0 0 10px ${p.colour}`;
+        const n = document.createElement("span"); n.className = "name"; n.textContent = p.name;
+        const s = document.createElement("span"); s.className = "score"; s.textContent = String(p.score);
+        li.append(dot, n, s);
+        return li;
+      }));
+    }
+    for (const li of board.children) {
+      const p = list.find(q => q.name === li.dataset.player);
+      const s = li.querySelector(".score");
+      const age = p && p.pop ? t - p.pop : Infinity;
+      const k = age < 700 ? 1 + 0.7 * Math.exp(-age / 160) * Math.cos(age / 60) : 1;
+      s.style.transform = `scale(${k.toFixed(3)})`;
+      s.style.color = age < 900 ? "#ffd25a" : "#fff";
+    }
+    count.textContent = String(list.length);
+    const beat = (t % 1600) / 1600;
+    pulse.style.boxShadow = `0 0 0 ${(beat * 8).toFixed(2)}px rgba(47,158,68,${(0.5 * (1 - beat)).toFixed(3)})`;
+  }
+
+  // The game steps 30 times a second, on Date.now() (which the reel's
+  // camera steps a 30th of a second per frame): a step's time is the end of
+  // the 30th of a second it falls in, counted from the page's first step,
+  // so a filmed frame shows the same state whenever its animation frames
+  // fell inside it. Between steps the canvas keeps what it shows.
+  const STEP = 100 / 3;
+  let first = null, lastTick = null;
+  function frame() {
+    const tick = Math.ceil((Date.now() - 0.5) / STEP);
+    if (tick === lastTick) { requestAnimationFrame(frame); return; }
+    lastTick = tick;
+    first ??= tick;
+    const t = (tick - first) * STEP;
+    fit();
+    const dt = last === null ? STEP : Math.min(100, t - last);
+    last = t;
+    const k = 1 - Math.exp(-dt / 70);
+    const seen = [{ key: "me", name: me.name, x: me.x, y: me.y, score: me.score, self: true }, ...others()];
+    const now = me.score + seen.slice(1).reduce((n, p) => n + p.score, 0);
+    for (const s of seen) {
+      let p = players.get(s.key);
+      if (!p) { p = { hx: s.x, hy: s.y, trail: [], score: s.score, pop: 0, phase: (fnv(s.name) % 628) / 100 }; players.set(s.key, p); }
+      if (lastTotal !== null && s.score > p.score) {
+        for (let i = p.score; i < s.score; i++) {
+          const [bx, by] = starAt(lastTotal + (i - p.score));
+          bursts.push({ x: bx, y: by, t0: t, colour: colourOf(s.name), name: s.name, seed: 1000 + lastTotal + i });
+        }
+        p.pop = t;
+      }
+      p.score = s.score;
+      p.hx += (s.x - p.hx) * k; p.hy += (s.y - p.hy) * k;
+      p.trail.push([p.hx, p.hy]);
+      if (p.trail.length > TRAIL) p.trail.shift();
+    }
+    for (const key of [...players.keys()]) if (!seen.some(s => s.key === key)) players.delete(key);
+    if (lastTotal === null || now !== lastTotal) { if (lastTotal !== null) starBorn = t; lastTotal = now; }
+
+    if (W > 0) {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      drawBackground(t);
+      drawStar(t, now);
+      const order = [...seen].sort((a, b) => (a.self ? 1 : 0) - (b.self ? 1 : 0) || a.name.localeCompare(b.name));
+      for (const s of order) drawPlayer(t, players.get(s.key), colourOf(s.name), s.name, !!s.self);
+      drawBursts(t);
+      const vg = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.45, W / 2, H / 2, Math.max(W, H) * 0.75);
+      vg.addColorStop(0, "rgba(0,0,0,0)"); vg.addColorStop(1, "rgba(0,0,0,0.38)");
+      ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+    }
+    drawBoard(t, seen.map(s => ({ name: s.name, score: s.score, colour: colourOf(s.name), pop: players.get(s.key).pop }))
+      .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name)));
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

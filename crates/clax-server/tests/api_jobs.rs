@@ -257,6 +257,33 @@ async fn a_step_on_a_moved_base_records_nothing() {
     assert_eq!(versions(&ts, &aid).await, 2);
 }
 
+/// A publish step whose declaration drops an approved `net` host narrows
+/// the approval, and the stream tells open views to refetch the
+/// permissions, as a publish does.
+#[tokio::test]
+async fn a_publish_step_that_narrows_the_approval_announces_the_permissions() {
+    let ts = TestServer::spawn().await;
+    let (_o, token) = owner(&ts).await;
+    let (s, v) = send(authed(&ts, Method::POST, "/api/artifacts").json(&json!({
+        "title": "Weather", "capabilities": {"net": {"hosts": ["a.clax.invalid", "b.clax.invalid"]}},
+        "files": {"index.html": {"content": "<p>v1"}}
+    })))
+    .await;
+    assert_eq!(s, 201, "{v}");
+    let aid = v["artifact"]["id"].as_str().unwrap().to_string();
+    ts.approve(&aid).await.expect("net waited");
+    let mut ev = ts
+        .events_with(&format!("?artifact={aid}"), |r| ts.authed(r))
+        .await;
+    running(&ts, &token, "j1", "change", Some(&aid)).await;
+    let mut body = publish_body(Some(&aid), 1, "<p>v2", true);
+    body["publish"]["request"]["capabilities"] = json!({"net": {"hosts": ["a.clax.invalid"]}});
+    let (s, v) = step(&ts, &token, "j1", "publish:1", body).await;
+    assert_eq!(s, 200, "{v}");
+    let p = ev.next_named("permissions").await;
+    assert_eq!(p, json!({"type": "permissions", "artifact_id": aid}));
+}
+
 #[tokio::test]
 async fn a_moved_document_refuses_the_whole_step() {
     let ts = TestServer::spawn().await;

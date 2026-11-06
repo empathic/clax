@@ -1000,6 +1000,54 @@ async fn relink_moves_an_existing_links_base() {
     assert_eq!(texts(&public.ts, &raid, 3), texts(&local, &aid, 2));
 }
 
+#[tokio::test]
+async fn a_link_made_again_after_a_new_sign_in_bases_on_the_pushed_version() {
+    let public = Public::new().await;
+    let local = TestServer::spawn().await;
+    let rid = connect_app(&local, &public).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let aid = app(&local, "Tips", &[("index.html", "<h1>1</h1>")]).await;
+    let (s, v) = publish(&local, &aid, 1).await;
+    assert_eq!(s, 200, "{v}");
+    let raid = raid_of(&v);
+    // A local version not published yet, then a new sign-in.
+    version(&local, &aid, 1, &[("index.html", Some("<h1>2</h1>"))]).await;
+    let (s, v) = local_req(
+        &local,
+        reqwest::Method::DELETE,
+        &format!("/api/remotes/{rid}"),
+        json!(null),
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let rid = connect_app(&local, &public).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, v) = post(
+        &local,
+        &format!("/api/remotes/{rid}/links"),
+        json!({"artifact_id": aid, "remote_artifact_id": raid, "url": "u", "remote_n": 1}),
+    )
+    .await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(
+        (
+            v["link"]["pushed_n"].as_u64(),
+            v["link"]["remote_n"].as_u64()
+        ),
+        (Some(1), Some(1)),
+        "public version 1 is local version 1, not the newer 2: {v}"
+    );
+    // The unpublished version goes up on it.
+    let (s, v) = publish(&local, &aid, 2).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["pushed"], json!([{"n": 2, "remote_n": 2}]), "{v}");
+}
+
 /// `POST /api/remotes/<rid>/artifacts/<raid>/comments {body}`.
 async fn tell(local: &TestServer, rid: &str, raid: &str, body: Value) -> (u16, Value) {
     post(
@@ -1429,8 +1477,8 @@ async fn app_push_names_the_copy_it_makes() {
 }
 
 /// A public Clax from before app publishing, as its routes answer: its
-/// device sign-in's body denies fields it does not know (`client_kind`
-/// among them), its publish ignores them (`comments`, `forked_from`) and
+/// device sign-in's body denies fields it does not know (`client_kind` and
+/// `return_to` among them) and approves at once, its publish ignores them (`comments`, `forked_from`) and
 /// answers no Comments switch, its sharing routes refuse a token 403
 /// `browser_required`, and it has none of the app's routes (404). Every
 /// request it takes is logged as `<method> <path>`.
@@ -1493,6 +1541,16 @@ impl OldPublic {
                 ),
             )
             .route(
+                "/api/hosted/device/token",
+                on_post(|| async {
+                    axum::Json(json!({
+                        "token": "the-token",
+                        "person": {"public_id": "p_ada", "display_name": "Ada"},
+                        "grant_id": "g_old",
+                    }))
+                }),
+            )
+            .route(
                 "/api/sessions",
                 on_post(|| async {
                     (
@@ -1553,6 +1611,16 @@ impl OldPublic {
         self.log.lock().unwrap().iter().any(|l| l == line)
     }
 
+    /// How many requests it took that were `line`.
+    fn times(&self, line: &str) -> usize {
+        self.log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| *l == line)
+            .count()
+    }
+
     /// Signs `local` in to it as a daemon does (no kind), its token
     /// `the-token`: the remote's ID.
     fn connect(&self, local: &TestServer) -> String {
@@ -1610,6 +1678,25 @@ async fn app_sign_in_to_a_public_clax_from_before_client_kinds_is_remote_too_old
     let (s, v) = post(&local, "/api/remotes", json!({"url": old.origin})).await;
     assert_eq!(s, 201, "{v}");
     assert_eq!(v["remote"]["status"], "pending", "{v}");
+}
+
+#[tokio::test]
+async fn a_public_clax_without_return_to_still_signs_in() {
+    let old = OldPublic::spawn().await;
+    let local = TestServer::spawn().await;
+    let (s, v) = post(
+        &local,
+        "/api/remotes",
+        json!({"url": old.origin, "return_to": "/a/x?publish=1"}),
+    )
+    .await;
+    // Refused the field, the sign-in is asked again without it: the
+    // approval page opens in a tab of its own.
+    assert_eq!((s, &v["return_to_kept"]), (201, &json!(false)), "{v}");
+    assert_eq!(old.times("POST /api/hosted/device/code"), 2);
+    let id = v["remote"]["id"].as_str().unwrap();
+    let (s, v) = post(&local, &format!("/api/remotes/{id}/poll"), json!({})).await;
+    assert_eq!((s, v["status"].as_str()), (200, Some("connected")), "{v}");
 }
 
 #[tokio::test]

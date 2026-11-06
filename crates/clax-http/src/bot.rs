@@ -79,6 +79,62 @@ pub struct Bot {
     /// Every run's live events, which the driver emits and
     /// `GET /api/bot/runs/<id>/events` streams.
     pub events: Arc<clax_bot::EventHub>,
+    /// Where the price catalog is fetched from: the daemon's `[bot]
+    /// price_catalog_url`, the Worker's tokenulator.dev; tests pass a local
+    /// server's. `None` (the default): it is never fetched, and the routes
+    /// that fetch it answer 502 `tokenulator_error`.
+    pub catalog_url: Option<String>,
+    /// The price catalog refresh in flight, so concurrent ones share it.
+    pub catalog_flight: Arc<CatalogFlight>,
+    /// The operations the host's web source performs whatever the stored
+    /// settings hold: both for the Worker's AI binding and the daemon's
+    /// test fixtures (`CLAX_TEST_WEB_FIXTURES`); fetch for the daemon's
+    /// own source (set by its run driver, `clax_server::bot::driver`),
+    /// which searches once the instance holds the Cloudflare
+    /// account ID and token an admin sets, read at each call
+    /// (`clax_server::bot::web_configured`). Neither (the default) for a
+    /// host without a source: every run's web use is off, not configured
+    /// (`clax_bot::web::WebAccess::now`).
+    pub web_configured: clax_bot::web::WebShape,
+    /// What the host knows of whether its web source can be used
+    /// (`clax_bot::web::HostCheck`): unusable once the instance's
+    /// configured public origin or site domain names no host (set at
+    /// start), or once a check finds the source cannot run where the host
+    /// runs (the Worker's AI binding under `wrangler dev --local`; never
+    /// checked on the daemon). Unusable, web use is not configured whatever
+    /// `web_configured` says, and the admin's view says why
+    /// (`GET /api/admin/web`'s `unavailable`).
+    pub web_check: Arc<clax_bot::web::HostCheck>,
+    /// What `GET /api/admin/web` runs once it knows the caller is an
+    /// admin, before it reads the view ([`AdminWebCheck`]): the Worker's
+    /// check of its AI binding. None (the default): nothing, as on the
+    /// daemon.
+    pub admin_web_check: Option<Arc<dyn AdminWebCheck>>,
+}
+
+/// The host's check of its web source for the admin's view of the web
+/// settings, run only for a request that will be answered that view
+/// (after authentication), so a request about to be refused starts no
+/// work and waits for none.
+pub trait AdminWebCheck: Send + Sync {
+    /// Starts the host's check of its web source if one is due, and waits
+    /// for it a bounded time; the view then answers `checking` if it has
+    /// not finished.
+    fn before_view(&self) -> futures::future::BoxFuture<'static, ()>;
+}
+
+/// What a price catalog refresh came to: the listings the cache holds and
+/// when it was fetched, or the refusal's status, code and message.
+pub type CatalogOutcome =
+    Result<(usize, chrono::DateTime<chrono::Utc>), (axum::http::StatusCode, &'static str, String)>;
+
+/// One price catalog refresh at a time: a refresh holds `last` while it
+/// runs and leaves its outcome there, counting itself in `done`; one that
+/// waited on it takes that outcome rather than fetching again.
+#[derive(Default)]
+pub struct CatalogFlight {
+    pub done: std::sync::atomic::AtomicU64,
+    pub last: futures::lock::Mutex<Option<CatalogOutcome>>,
 }
 
 impl Default for Bot {
@@ -90,6 +146,11 @@ impl Default for Bot {
             views: Arc::default(),
             runs: Arc::new(NoRuns),
             events: Arc::default(),
+            catalog_url: None,
+            catalog_flight: Arc::default(),
+            web_configured: clax_bot::web::WebShape::default(),
+            web_check: Arc::default(),
+            admin_web_check: None,
         }
     }
 }
@@ -196,6 +257,7 @@ impl Bot {
 const CONFIGURED: &[(&str, clax_store::bot_settings::Setting, i64)] = {
     use clax_store::bot_settings::Setting::*;
     &[
+        ("api", Api, 1),
         ("base_url", BaseUrl, 1),
         ("models.default", ModelDefault, 1),
         ("models.quick", ModelQuick, 1),

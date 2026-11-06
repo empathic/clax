@@ -1,6 +1,6 @@
 // Checks the repository stand-in under `wrangler dev --local`: builds the
 // Worker (./build.sh), starts wrangler on free ports with a fresh
-// `--persist-to` under target/repos-test/ and REPO_DEV_ROUTES=1, writes two
+// `--persist-to` under target/clax-worker/repos-test/ and REPO_DEV_ROUTES=1, writes two
 // versions of a new artifact through the content store (`content_store`,
 // GitContent over RepoDO), mints a read token and clones the artifact from
 // the Worker's /git/ URL with real `git` and with `jj git clone`, checks
@@ -31,7 +31,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(HERE, "target/repos-test");
+// As harness.mjs's STATE: the test runner's TEST_TMPDIR, else
+// target/clax-worker at the repository root.
+const ROOT = join(process.env.TEST_TMPDIR || join(HERE, "../../target/clax-worker"), "repos-test");
 const KEEP_RUNS = 3;
 const START_LIMIT_MS = 60_000;
 const STOP_LIMIT_MS = 10_000;

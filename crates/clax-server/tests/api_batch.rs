@@ -26,9 +26,12 @@ async fn setup(ts: &TestServer) -> (String, String, Vec<String>) {
     (sid, aid, tids)
 }
 
+/// The batch send, from a browser of this machine's
+/// ([`TestServer::local_browser`]).
 async fn send(ts: &TestServer, aid: &str, body: Value) -> reqwest::Response {
     ts.client
         .post(format!("{}/api/artifacts/{aid}/threads:send", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .json(&body)
         .send()
         .await
@@ -98,6 +101,7 @@ async fn a_bad_thread_fails_the_batch_and_nothing_is_sent() {
             "{}/api/artifacts/{aid}/threads/{}/resolve",
             ts.base, tids[1]
         ))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .send()
         .await
         .unwrap();
@@ -165,6 +169,7 @@ async fn the_batch_route_refuses_a_foreign_origin_like_the_single_send() {
     let r = ts
         .client
         .post(format!("{}/api/artifacts/{aid}/threads:send", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .header("origin", "http://evil.example")
         .json(&json!({"thread_ids": [tids[0]]}))
         .send()
@@ -276,6 +281,7 @@ async fn to_sends_only_to_that_agent_and_an_unknown_handle_writes_nothing() {
             "{}/api/artifacts/{aid}/threads/{}/send",
             ts.base, tids[2]
         ))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .json(&json!({"to": handle}))
         .send()
         .await
@@ -346,6 +352,7 @@ async fn reply(ts: &TestServer, aid: &str, tid: &str, body: &str) {
             "{}/api/artifacts/{aid}/threads/{tid}/comments",
             ts.base
         ))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .json(&json!({"body": body}))
         .send()
         .await
@@ -423,6 +430,7 @@ async fn once_the_target_ends_later_comments_go_to_everyone_and_a_send_without_t
             "{}/api/artifacts/{aid}/threads/{}/send",
             ts.base, tids[1]
         ))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .send()
         .await
         .unwrap();

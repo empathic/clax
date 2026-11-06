@@ -74,7 +74,11 @@ async fn respond(s: AppState, who: Identity, name: Option<String>) -> Result<Res
             // cookie is never adopted. One holding a legacy cookie (its
             // viewer's row ID, from before migration 24) gets a fresh
             // secret for the same viewer, also while that cookie's
-            // replacement is recent (spec §21.4).
+            // replacement is recent (spec §21.4). On a local daemon the
+            // gate (`clax_http::local_trust::gate`) refuses a request with
+            // no credential, and one whose cookie names no viewer, before
+            // this route: there only a legacy cookie whose reissue finds no
+            // viewer reaches `mint`, and no anonymous browser does.
             let mint = |st: &clax_store::Store| -> clax_core::Result<clax_core::secret::Secret> {
                 let c = clax_core::secret::viewer_cookie();
                 st.mint_viewer(c.expose(), who.local)?;
