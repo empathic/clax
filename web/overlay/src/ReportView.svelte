@@ -12,8 +12,12 @@
   import type { Report } from "../../sdk/src/types";
   import { OUTCOME, failureText, safeLink, waitingFix } from "./model";
 
-  type Props = { report: Report; onReply(id: string, body: string): Promise<void>; onVerify(id: string): Promise<void>; onStillBroken(r: Report): void };
-  let { report: r, onReply, onVerify, onStillBroken }: Props = $props();
+  // `full`: the full view (Reports' "Full view") adds what the panel leaves out: the page the report is about,
+  // when it was filed and each comment's time, and every earlier fix's summary and links.
+  type Props = { report: Report; full?: boolean; onReply(id: string, body: string): Promise<void>; onVerify(id: string): Promise<void>; onStillBroken(r: Report): void };
+  let { report: r, full = false, onReply, onVerify, onStillBroken }: Props = $props();
+  const when = (iso: string) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? iso : d.toLocaleString(); };
+  const page = $derived(safeLink(r.artifact?.url));
 
   let text = $state("");
   let sending = $state(false);
@@ -51,17 +55,32 @@
   }
 </script>
 
-<div class="thread">
+<div class="thread" class:full>
+  {#if full}
+    <dl class="about small">
+      <dt>On</dt><dd>{#if page}<a href={page} target="_blank" rel="noopener noreferrer">{r.artifact.title || page}</a>{:else}{r.artifact?.title ?? "—"}{/if}</dd>
+      <dt>Filed</dt><dd><time datetime={r.created_at}>{when(r.created_at)}</time></dd>
+    </dl>
+  {/if}
   {#each r.comments as c (c.id)}
     <div class="c" data-kind={c.author_kind}>
-      <p class="who small">{c.author_kind === "reporter" ? "You" : c.author_name}</p>
+      <p class="who small">{c.author_kind === "reporter" ? "You" : c.author_name}{#if full} · <time datetime={c.created_at}>{when(c.created_at)}</time>{/if}</p>
       <p class="body">{c.body}</p>
     </div>
   {/each}
 
   {#each past as f (f.n)}
+    {@const change = full ? safeLink(f.url) : null}
+    {@const check = full ? safeLink(f.verify_url) : null}
     <div class="fix" data-outcome={f.outcome}>
-      <p class="small"><strong>Fix {f.n}</strong> · {OUTCOME[f.outcome]}</p>
+      <p class="small"><strong>Fix {f.n}</strong> · {OUTCOME[f.outcome]}{#if full && f.proposer_name} · from {f.proposer_name}{/if}</p>
+      {#if full && f.summary}<p class="body">{f.summary}</p>{/if}
+      {#if change || check}
+        <p class="links small">
+          {#if check}<a href={check} target="_blank" rel="noopener noreferrer">Where it was checked</a>{/if}
+          {#if change}<a href={change} target="_blank" rel="noopener noreferrer">The change</a>{/if}
+        </p>
+      {/if}
       {#if f.verdict_note}<p class="small muted">“{f.verdict_note}”</p>{/if}
     </div>
   {/each}
@@ -104,6 +123,11 @@
 
 <style>
   .thread { display: flex; flex-direction: column; gap: 8px; padding: 0 14px 12px; }
+  .thread.full { gap: 12px; font-size: 15px; }
+  .about { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; margin: 0; }
+  .about dt { color: var(--muted); font-weight: 600; }
+  .about dd { margin: 0; overflow-wrap: anywhere; }
+  .about a { color: var(--agent-ink); }
   .c { padding-left: 8px; border-left: 2px solid var(--border-hover); }
   .c[data-kind="reporter"] { border-left-color: var(--you); }
   .c[data-kind="agent"] { border-left-color: var(--agent-ink); }

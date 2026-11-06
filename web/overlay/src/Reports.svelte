@@ -22,13 +22,29 @@
   };
   let { reports: all, error, expanded, only = null, onShowAll, onExpand, onReply, onVerify, onStillBroken, onClose }: Props = $props();
   const reports = $derived(all && only ? all.filter(r => only.includes(r.id)) : all);
+
+  /** The full view: the panel fills the window as a reading page (each report
+   * a heading, with what the panel leaves out); Escape goes back to the panel. */
+  let full = $state(false);
+  let fullBtn = $state<HTMLButtonElement | null>(null);
+  function setFull(on: boolean): void {
+    full = on;
+    queueMicrotask(() => fullBtn?.focus());
+  }
+  function keys(e: KeyboardEvent): void {
+    if (full && e.key === "Escape" && !e.isComposing) { e.preventDefault(); e.stopPropagation(); setFull(false); }
+  }
 </script>
 
-<section class="panel" aria-label="Your reports">
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<section class="panel" class:full aria-label="Your reports" onkeydown={keys}>
   <header>
     <h2>{only ? "Yours on this page" : "Your reports"}</h2>
-    {#if only && onShowAll}<button type="button" class="ghost small" onclick={onShowAll}>Show all</button>{/if}
-    <button type="button" class="ghost" onclick={onClose} aria-label="Close your reports">✕</button>
+    <span class="tools">
+      {#if only && onShowAll}<button type="button" class="ghost small" onclick={onShowAll}>Show all</button>{/if}
+      <button type="button" class="ghost small" aria-pressed={full} aria-keyshortcuts={full ? "Escape" : undefined} bind:this={fullBtn} onclick={() => setFull(!full)}>{full ? "Back to panel" : "Full view"}</button>
+      <button type="button" class="ghost" onclick={onClose} aria-label="Close your reports">✕</button>
+    </span>
   </header>
   {#if error}<p class="error small" role="alert">{error}</p>{/if}
   {#if reports === null}
@@ -40,12 +56,15 @@
       {#each reports as r (r.id)}
         {@const replies = repliesOf(r)}
         <li class:open={expanded === r.id}>
-          <button type="button" class="row" aria-expanded={expanded === r.id} onclick={() => onExpand(expanded === r.id ? null : r.id)}>
-            <span class="sum">{summaryOf(r)}</span>
-            <span class="meta small"><span class="state" data-state={r.state}>{stateLabel(r)}</span>{replies.length === 1 ? "1 reply" : `${replies.length} replies`}</span>
-          </button>
+          {#snippet row()}
+            <button type="button" class="row" aria-expanded={expanded === r.id} onclick={() => onExpand(expanded === r.id ? null : r.id)}>
+              <span class="sum">{summaryOf(r)}</span>
+              <span class="meta small"><span class="state" data-state={r.state}>{stateLabel(r)}</span>{replies.length === 1 ? "1 reply" : `${replies.length} replies`}</span>
+            </button>
+          {/snippet}
+          {#if full}<h3>{@render row()}</h3>{:else}{@render row()}{/if}
           {#if expanded === r.id}
-            <ReportView report={r} {onReply} {onVerify} {onStillBroken} />
+            <ReportView report={r} {full} {onReply} {onVerify} {onStillBroken} />
           {/if}
         </li>
       {/each}
@@ -58,6 +77,15 @@
   .panel { width: min(380px, calc(100vw - 32px)); max-height: 560px; overflow: auto; background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius); box-shadow: var(--elev-lg); }
   header { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; padding: 6px 6px 6px 14px; background: var(--raised); border-bottom: 1px solid var(--border); }
   h2 { margin: 0; font: 600 15px/1.3 var(--font); }
+  .tools { display: flex; gap: 4px; align-items: center; }
+  h3 { margin: 0; font: inherit; }
+  /* The full view: the whole window, one readable column. */
+  .panel.full { position: fixed; inset: 0; width: auto; max-height: none; border: 0; border-radius: 0; box-shadow: none; z-index: 10; font-size: 15px; }
+  .panel.full > header, .panel.full > ul, .panel.full > p { max-width: 760px; margin-inline: auto; }
+  .panel.full > header { padding: 12px 8px 12px 16px; }
+  .panel.full h2 { font-size: 20px; }
+  .panel.full .row { padding: 14px 16px; }
+  .panel.full .sum { font-size: 16px; font-weight: 600; }
   .empty { padding: 16px 14px; }
   .error { padding: 6px 14px 0; color: var(--danger); }
   ul { list-style: none; margin: 0; padding: 0; }

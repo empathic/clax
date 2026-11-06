@@ -531,6 +531,26 @@ describe("the overlay", () => {
     expect([...host.querySelectorAll(".modebar button")].map(b => b.textContent)).not.toContain("Your reports");
   });
 
+  it("reads Your reports in a full view: each report a heading, with its page and dates; Escape goes back", async () => {
+    pages.push({ reports: [report("t9", ["Wrong"])], next: null });
+    click(button("Report"));
+    flushSync();
+    click(button("Your reports"));
+    await settle();
+    click(button("Full view"));
+    flushSync();
+    expect(q(".panel.full")).not.toBeNull();
+    expect(q(".panel h3 button.row")).not.toBeNull();
+    click(q(".panel h3 button.row") as HTMLElement);
+    flushSync();
+    expect(q(".about")?.textContent).toMatch(/Filed/);
+    key("Escape", q(".panel") as HTMLElement);
+    await settle();
+    expect(q(".panel.full")).toBeNull();
+    expect(q(".panel")).not.toBeNull();
+    expect(nameOf(document.activeElement!)).toBe("Full view");
+  });
+
   it("tells the host whether a report is under way, once per change", async () => {
     view.unmount();
     const told: boolean[] = [];
