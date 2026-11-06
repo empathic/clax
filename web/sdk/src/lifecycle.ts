@@ -216,6 +216,7 @@ export type ReporterLifecycleMsg =
   | { type: "report/updated"; report: Report; first?: boolean }
   | { type: "badge/started" }
   | { type: "badge/changed"; waiting: number }
+  | { type: "badge/failed"; error: unknown }
   | { type: "badge/rose"; ids: string[] }
   | { type: "reset" };
 
@@ -252,6 +253,12 @@ export function update(state: ReporterLifecycleState, msg: ReporterLifecycleMsg)
       return state.auth === "idle" ? { ...state, auth: "loading" } : state;
     case "badge/changed":
       return state.waiting === msg.waiting && state.auth === "ready" ? state : { ...state, waiting: msg.waiting, auth: "ready" };
+    case "badge/failed":
+      // A failed ask is dropped and the next one tried (BadgeWatch's own
+      // doc): once ready, this changes nothing visible. Before that, it is
+      // the only signal a host with no "Your reports" panel open (and so
+      // no `reports/failed`) has that calls are not getting through.
+      return state.auth === "ready" ? state : { ...state, auth: "error", authError: msg.error };
     case "badge/rose":
       return { ...state, rise: { seq: (state.rise?.seq ?? 0) + 1, ids: msg.ids } };
     case "reset":
@@ -298,8 +305,15 @@ export class ReporterLifecycle {
       opts.timers, opts.pollMs,
       e => this.dispatch({ type: "reports/failed", error: e }),
     );
+    // BadgeWatch itself keeps its own documented behavior (a failed ask is
+    // dropped and the next one tried, through its own Poll's default
+    // no-op onError); this loader only also tells the pure state of the
+    // failure, then re-throws so BadgeWatch's retry is unaffected. Without
+    // it, a host with no "Your reports" panel ever open (so no
+    // `reports/failed` either) would see `auth: "loading"` forever against
+    // a token route that always refuses.
     this.badgeWatch = opts.win
-      ? new BadgeWatch(() => client.badge(), opts.win, {
+      ? new BadgeWatch(() => client.badge().catch((e: unknown) => { this.dispatch({ type: "badge/failed", error: e }); throw e; }), opts.win, {
         changed: n => this.dispatch({ type: "badge/changed", waiting: n }),
         rose: ids => this.dispatch({ type: "badge/rose", ids }),
       }, opts.timers, opts.badgePollMs)

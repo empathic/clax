@@ -12,7 +12,11 @@ import type { OverlayHandle, ReporterRef } from "../../overlay/src/mount";
 import type { OverlayOptions } from "../../overlay/src/options";
 
 export { ClaxError } from "./client";
-export { ReporterClient, type NewReport, type ReporterAuth, type ReporterOptions } from "./reporter";
+export {
+  ReporterLifecycle, type ReporterLifecycleMsg, type ReporterLifecycleOptions, type ReporterLifecycleState,
+  initialLifecycleState, pendingFixCount, update as updateReporterLifecycle, type AuthStatus,
+} from "./lifecycle";
+export { ReporterClient, type NewReport, type ReporterApi, type ReporterAuth, type ReporterOptions } from "./reporter";
 export type * from "./types";
 
 /** What `window.Clax` is once `<instance>/_clax/overlay.js` has loaded (or

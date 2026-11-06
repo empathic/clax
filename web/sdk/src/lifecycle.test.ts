@@ -97,6 +97,16 @@ describe("update: the pure reducer", () => {
     expect(roseAgain.rise).toEqual({ seq: 2, ids: ["t2"] });
   });
 
+  it("badge/failed sets auth to error only before anything has ever succeeded, same as reports/failed but with no reportsOpen guard", () => {
+    const failed = update(initialLifecycleState, { type: "badge/failed", error: new Error("down") });
+    expect(failed.auth).toBe("error");
+    expect(failed.authError).toBeInstanceOf(Error);
+    // While reports are not even open, badge/failed is the only signal that calls are not getting through.
+    expect(update(initialLifecycleState, { type: "reports/failed", error: new Error("ignored, reports closed") })).toBe(initialLifecycleState);
+    const ready = update(initialLifecycleState, { type: "badge/changed", waiting: 0 });
+    expect(update(ready, { type: "badge/failed", error: new Error("transient") })).toBe(ready);
+  });
+
   it("badge/started moves idle to loading, same as reports/opened, and never moves it back from ready", () => {
     expect(update(initialLifecycleState, { type: "badge/started" }).auth).toBe("loading");
     const ready = update(initialLifecycleState, { type: "badge/changed", waiting: 0 });
@@ -219,6 +229,21 @@ describe("ReporterLifecycle: the runtime store", () => {
     life.startBadge();
     await settle();
     expect(life.get().waiting).toBeNull();
+  });
+
+  it("a host with launcher: false and no 'Your reports' panel still sees auth go to error against a refusing token route (badge alone)", async () => {
+    const c = client();
+    c.badge = async () => { throw Object.assign(new Error("no reporter token"), { code: "invalid_key" }); };
+    const win = visibility();
+    const life = new ReporterLifecycle(c, { timers: manualTimers(), win });
+    const states: ReporterLifecycleState[] = [];
+    life.subscribe(s => states.push(s));
+    life.startBadge();
+    await settle();
+    expect(life.get().auth).toBe("error");
+    expect(life.get().authError).toMatchObject({ code: "invalid_key" });
+    // reports/failed never fires (reports were never open): badge/failed is the only path to "error" here.
+    expect(states.some(s => s.auth === "error")).toBe(true);
   });
 
   it("reset drops every held state and stops both polls", async () => {
