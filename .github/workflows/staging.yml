@@ -63,11 +63,16 @@ jobs:
 
   # The release binaries, SHA256SUMS, install.sh and SOURCE_TREE, attested,
   # as the workflow artifact release-dist.
+  #
+  # contents: write is for release.yml's publish job alone, which a
+  # candidate skips: GitHub refuses to start a run whose called workflow has
+  # a job asking for more than its caller grants, skipped or not. Every
+  # other job of release.yml asks for contents: read.
   binaries:
     uses: ./.github/workflows/release.yml
     with: { candidate: true }
     permissions:
-      contents: read
+      contents: write
       actions: read
       id-token: write
       attestations: write
