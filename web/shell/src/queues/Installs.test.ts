@@ -36,6 +36,54 @@ describe("Installs", () => {
     expect(button(m.root, "New install")).toBeUndefined();
   });
 
+  it("shows each install how to add it to a site, filled from its real values, and announces a copy", async () => {
+    stubFetch({ [`GET ${LIST}`]: { installs: [install()] } });
+    const writes: string[] = [];
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText: (t: string) => { writes.push(t); return Promise.resolve(); } } });
+    const m = mount(Installs, { queue: QUEUE, admin: false });
+    await settle();
+    const site = m.root.querySelector('[data-site="i1"]')!;
+    expect(site.querySelector("summary")!.textContent).toBe("Add it to your site");
+    expect([...site.querySelectorAll("[data-way]")].map(w => w.getAttribute("data-way"))).toEqual(["script", "build", "server"]);
+    const snip = (id: string) => site.querySelector(`[data-snippet="${id}"]`)!.textContent!;
+    const origin = location.origin;
+    for (const id of ["script-tag", "sdk", "dts", "own-button"]) {
+      expect(snip(id)).toContain(`instance: "${origin}"`);
+      expect(snip(id)).toContain('queue: "q1"');
+      expect(snip(id)).toContain('install: "i1"');
+    }
+    expect(snip("script-tag")).toContain(`<script src="${origin}/_clax/overlay.js"></script>`);
+    expect(snip("sdk")).toContain('import { loadOverlay, reporterTokenFrom } from "@empathic/clax-client-sdk";');
+    expect(snip("dts")).toContain(`"${origin}/_clax/overlay.mjs"`);
+    expect(snip("env")).toContain(`CLAX_INSTANCE=${origin}\nCLAX_QUEUE=q1\nCLAX_INSTALL=i1\n`);
+    expect(snip("env")).toContain("CLAX_QUEUE_TOKEN=cxq_…");
+    expect(snip("route")).toContain('origin: "https://app.example"');
+    expect(snip("own-button")).toContain("launcher: false");
+    expect(snip("own-button")).toContain("handle.subscribe(s =>");
+    expect(site.querySelector(".licence")!.textContent).toContain("LGPL-2.1-only");
+    expect(site.querySelector(".licence")!.textContent).toContain("AGPL-3.0-only");
+
+    const live = m.root.querySelector('[aria-live="polite"]')!;
+    expect(live.textContent).toBe("");
+    const copyBtn = site.querySelector<HTMLButtonElement>('[aria-label="Copy @empathic/clax-client-sdk"]')!;
+    expect(copyBtn.tagName).toBe("BUTTON"); // a real button: in the tab order
+    click(copyBtn);
+    await settle();
+    expect(writes).toEqual([snip("sdk")]);
+    expect(copyBtn.textContent).toBe("Copied");
+    expect(live.textContent).toBe("Copied @empathic/clax-client-sdk.");
+  });
+
+  it("says when a copy fails", async () => {
+    stubFetch({ [`GET ${LIST}`]: { installs: [install()] } });
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText: () => Promise.reject(new Error("denied")) } });
+    const m = mount(Installs, { queue: QUEUE, admin: false });
+    await settle();
+    click(m.root.querySelector('[aria-label="Copy Your backend\'s environment"]'));
+    await settle();
+    expect(m.root.querySelector('[aria-live="polite"]')!.textContent).toBe("Could not copy Your backend's environment; select the text instead.");
+  });
+
   it("makes an install, its origins defaulting to the queue's", async () => {
     let made = false;
     const calls = stubFetch({

@@ -229,6 +229,121 @@ export function deployments(instance: string, qid: string, pin: OverlayPin | nul
   ];
 }
 
+/** One copyable snippet of an install's "Add it to your site". */
+export interface SiteSnippet { id: string; label: string; text: string }
+/** One way a site adds the overlay, with its snippets. */
+export interface SiteWay { id: "script" | "build" | "server"; title: string; snippets: SiteSnippet[] }
+
+/** The three ways a site adds install `iid` of queue `qid` from `instance`
+ * — a script tag, a build-time import, and the host's backend minting the
+ * reporter token with the queue's service grant — each filled with these
+ * values. `origin` is the page's origin the backend names (one of the
+ * install's). Secrets stay placeholders: the grant's token and key are
+ * shown once, when the grant is made. */
+export function siteWays(instance: string, qid: string, iid: string, origin: string): SiteWay[] {
+  const base = instance.replace(/\/+$/, "");
+  const [b, q, i, o] = [base, qid, iid, origin].map(v => JSON.stringify(v));
+  const route = "/clax/reporter-token";
+  return [
+    {
+      id: "script", title: "A script tag loaded from Clax",
+      snippets: [{
+        id: "script-tag", label: "Script tag, in each page",
+        text: `<script src="${attr(`${base}/_clax/overlay.js`)}"></script>
+<script>
+  const feedback = Clax.overlay({
+    instance: ${b},
+    queue: ${q},
+    install: ${i}, // the install's wording and accent colour apply
+    auth: async (publicKey) => {
+      const r = await fetch("${route}", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ public_key: publicKey }),
+      });
+      if (!r.ok) throw new Error("no reporter token: " + r.status);
+      return r.json(); // { token, expires_at }
+    },
+  });
+</script>`,
+      }],
+    },
+    {
+      id: "build", title: "At build, with the SDK package or the overlay's types",
+      snippets: [
+        {
+          id: "sdk", label: "@empathic/clax-client-sdk",
+          text: `import { loadOverlay, reporterTokenFrom } from "@empathic/clax-client-sdk";
+
+const Clax = await loadOverlay(${b});
+const handle = Clax.overlay({
+  instance: ${b},
+  queue: ${q},
+  install: ${i},
+  auth: reporterTokenFrom("${route}"), // POSTs { public_key }, reads { token, expires_at }
+});`,
+        },
+        {
+          id: "dts", label: "Dynamic import, typed by overlay.d.ts",
+          text: `// Save ${base}/_clax/overlay.d.ts beside your code as clax-overlay.d.ts
+import type { OverlayHandle, OverlayOptions } from "./clax-overlay";
+type Overlay = typeof import("./clax-overlay");
+
+const OVERLAY_URL = ${JSON.stringify(`${base}/_clax/overlay.mjs`)};
+
+export async function startOverlay(opts: Omit<OverlayOptions, "instance" | "queue" | "install">): Promise<OverlayHandle> {
+  const { overlay } = (await import(/* @vite-ignore */ OVERLAY_URL)) as Overlay;
+  return overlay({ instance: ${b}, queue: ${q}, install: ${i}, ...opts });
+}`,
+        },
+      ],
+    },
+    {
+      id: "server", title: "Server-side: your backend mints the reporter token",
+      snippets: [
+        {
+          id: "env", label: "Your backend's environment",
+          text: `CLAX_INSTANCE=${base}
+CLAX_QUEUE=${qid}
+CLAX_INSTALL=${iid}
+CLAX_QUEUE_TOKEN=cxq_…          # the service grant's token, shown once when it is made
+CLAX_QUEUE_KEY=<private_key>    # the service grant's private_key, as shown`,
+        },
+        {
+          id: "route", label: `The token route, ${route}`,
+          text: `import { ServiceClient } from "@empathic/clax-client-sdk/service";
+
+const clax = new ServiceClient({
+  instance: process.env.CLAX_INSTANCE!,
+  queue: process.env.CLAX_QUEUE!,
+  token: process.env.CLAX_QUEUE_TOKEN!,
+  privateKey: process.env.CLAX_QUEUE_KEY!,
+});
+
+// POST ${route} { public_key }, behind your own sign-in.
+app.post("${route}", async (req, res) => {
+  const user = req.session.user;
+  if (!user) return res.status(401).json({ error: "sign in first" });
+  const minted = await clax.mintReporterToken({
+    reporter_id: user.id,
+    origin: ${o}, // the page's origin, one of the install's
+    public_key: req.body.public_key,
+  });
+  res.set("cache-control", "no-store").json(minted); // { token, expires_at }
+});`,
+        },
+        {
+          id: "own-button", label: "Your own button (launcher: false)",
+          text: `const handle = Clax.overlay({ instance: ${b}, queue: ${q}, install: ${i}, auth, launcher: false });
+myButton.addEventListener("click", () => handle.report());
+// The count waiting on the reporter (a fix to verify, or an unread reply):
+handle.subscribe(s => { myButton.dataset.waiting = s.waiting ? String(s.waiting) : ""; });`,
+        },
+      ],
+    },
+  ];
+}
+
 /** What changed in queue `name` from counts `a` to `b`, as a sentence for
  * a screen reader: "1 report claimed in Bugs.", "2 reports filed, 1
  * resolved in Bugs."; `null` when nothing rose or either count is cut

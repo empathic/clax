@@ -9,7 +9,7 @@
   // on its next page load.
   import { onMount } from "svelte";
   import * as api from "./api";
-  import { parseOrigins, refusal } from "./model";
+  import { parseOrigins, refusal, siteWays } from "./model";
 
   const p: { queue: api.Queue; admin: boolean } = $props();
   // svelte-ignore state_referenced_locally
@@ -63,8 +63,23 @@
     await load();
   }
 
+  /** What the live region last said about a copy ("" between copies, so a
+   * second copy of the same snippet announces again). */
+  let said = $state("");
+
   const metaTag = (id: string) => `<meta name="clax-install" content="${id}">`;
-  const copy = (id: string) => { void navigator.clipboard?.writeText(metaTag(id)).then(() => { copied = id; }, () => {}); };
+  /** Copies `text` and says so: `key` names the button showing "Copied". */
+  function copy(key: string, text: string, label: string) {
+    said = "";
+    const done = (ok: boolean) => {
+      copied = ok ? key : null;
+      said = ok ? `Copied ${label}.` : `Could not copy ${label}; select the text instead.`;
+    };
+    const clip = navigator.clipboard;
+    if (!clip) { done(false); return; }
+    void clip.writeText(text).then(() => done(true), () => done(false));
+  }
+  const ways = (i: api.Install) => siteWays(location.origin, qid, i.id, i.origins[0] ?? "https://app.example.com");
   const summary = (c: api.InstallConfig) => [
     c.product_name ? `named "${c.product_name}"` : "no product name",
     c.reports_button ? "Your reports" : "no Your reports",
@@ -101,7 +116,25 @@
           <div class="who">
             {i.name}<span class="key">{i.origins.join(", ") || "no origins"}</span>
             <span class="sum">{summary(i.config)}</span>
-            <span class="cmd"><code>{metaTag(i.id)}</code><button type="button" onclick={() => copy(i.id)}>{copied === i.id ? "Copied" : "Copy"}</button></span>
+            <span class="cmd"><code>{metaTag(i.id)}</code><button type="button" aria-label={`Copy ${i.name}'s meta tag`} onclick={() => copy(i.id, metaTag(i.id), `${i.name}'s meta tag`)}>{copied === i.id ? "Copied" : "Copy"}</button></span>
+            <details class="site" data-site={i.id}>
+              <summary>Add it to your site</summary>
+              <p class="hint">Three ways, each with this instance, this queue ({qid}) and this install ({i.id}). Your backend's token route mints reporter tokens with a service grant of this queue; its token and key stay placeholders here.</p>
+              {#each ways(i) as w (w.id)}
+                <section class="way" data-way={w.id} aria-label={w.title}>
+                  <h5>{w.title}</h5>
+                  {#each w.snippets as s (s.id)}
+                    {@const key = `${i.id}:${s.id}`}
+                    <div class="snip">
+                      <div class="head"><span>{s.label}</span><button type="button" aria-label={`Copy ${s.label}`} onclick={() => copy(key, s.text, s.label)}>{copied === key ? "Copied" : "Copy"}</button></div>
+                      <pre data-snippet={s.id}><code>{s.text}</code></pre>
+                    </div>
+                  {/each}
+                  {#if w.id === "server"}<p class="hint">A host that draws its own button passes <code>launcher: false</code> and reads <code>handle.subscribe(s =&gt; s.waiting)</code> for its badge.</p>{/if}
+                </section>
+              {/each}
+              <p class="licence">Licences, as the source states them: web/sdk/package.json gives @empathic/clax-client-sdk as a whole LGPL-2.1-only. docs/feedback.md: the files a product copies directly, web/sdk/src (service.ts, client.ts, sign.ts, types.ts) and overlay.d.ts, are AGPL-3.0-only; clax-core (clax_core::sig) is GPL-2.0-only OR AGPL-3.0-only. A product that does not accept those terms implements the signed-request protocol itself; the overlay script itself is loaded from the instance, not copied.</p>
+            </details>
           </div>
           {#if p.admin}
             <button type="button" class="ghost" aria-expanded={editing === i.id} onclick={() => open(editing === i.id ? null : i.id, i)}>Edit</button>
@@ -119,6 +152,7 @@
     {:else}<button type="button" onclick={() => open("new")}>New install</button>{/if}
   {/if}
   {#if err}<p class="err" role="alert">{err}</p>{/if}
+  <p class="sr" role="status" aria-live="polite">{said}</p>
 </section>
 
 <style>
@@ -140,4 +174,15 @@
   .hint, .none { margin: 6px 0; color: var(--muted); font-size: 12.5px; }
   .err { margin: 6px 0 0; color: var(--danger); font-size: 13px; }
   button.danger { color: var(--danger); }
+  .site { font-weight: 400; margin-top: 4px; }
+  .site summary { cursor: pointer; font-size: 13px; min-height: 24px; }
+  .way { margin: 8px 0 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--card); min-width: 0; }
+  h5 { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
+  .snip { margin-top: 8px; min-width: 0; }
+  .snip .head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 12.5px; color: var(--muted); }
+  .snip pre { margin: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); overflow-x: auto; font: 12px/1.45 var(--mono); }
+  .snip pre code { font: inherit; }
+  .hint code { font: 12px var(--mono); }
+  .licence { margin: 10px 0 0; color: var(--muted); font-size: 12px; }
+  .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 </style>
