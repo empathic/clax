@@ -6,7 +6,7 @@ instance, and read the replies.
 
 | Entry | What it gives | Where it runs |
 |---|---|---|
-| `@empathic/clax-client-sdk` | `ReporterClient`, `ClaxError` and the queue routes' types | the page |
+| `@empathic/clax-client-sdk` | `ReporterClient`, `ClaxError`, the queue routes' types, and `loadOverlay`/`reporterTokenFrom` for a page without a bundler | the page |
 | `@empathic/clax-client-sdk/overlay` | `overlay()`: a Report button, comment mode to point at what the report is about, and "Your reports" with their replies | the page |
 | `@empathic/clax-client-sdk/service` | `ServiceClient`, which mints reporter tokens with the queue's service grant | your backend only: it holds the grant |
 | `@empathic/clax-client-sdk/loader` | `install()`: Clax as a container, configured from Clax, installing only what its config names | the page |
@@ -48,6 +48,45 @@ deletes the key and token kept for a reporter (call it on sign-out),
 before the overlay does (nothing leaves the page unless the reporter ticks
 "Include recent errors"), and `CONTEXT_TIMEOUT_MS`, how long a report waits for the `context` option's
 answer before filing without it.
+
+The overlay's lifecycle — loading, the reporter's reports and their
+states, and the count waiting on a verdict or an unread reply — is kept
+apart from its UI: a host with `launcher: false` and its own button reads
+it with `handle.subscribe`, a Svelte store (`subscribe(fn) =>
+unsubscribe`, called at once with the current state):
+
+```ts
+const handle = overlay({ instance, queue, auth, launcher: false });
+handle.subscribe(state => {
+  myOwnButton.dataset.needsReview = state.waiting ? "true" : "false";
+});
+```
+
+## Loading the overlay from a script tag
+
+A page that cannot `import` the `./overlay` entry (no bundler, or the
+overlay must load from the instance itself, never pinned into your build)
+loads it as a classic script and gets `window.Clax` back, typed — in
+place of hand-typing `window.Clax` and writing your own script injector:
+
+```ts
+import { loadOverlay, reporterTokenFrom } from "@empathic/clax-client-sdk";
+
+const Clax = await loadOverlay("https://clax.example.com");
+const handle = Clax.overlay({
+  instance: "https://clax.example.com",
+  queue: "<queue ID>",
+  auth: reporterTokenFrom("/clax/reporter-token"), // POSTs {public_key}, reads {token, expires_at}
+  launcher: false,
+});
+```
+
+`reporterTokenFrom(url, { fetch?, headers? })` is the client side of the
+token route (above, "The backend"): it forwards `trace.traceparent` as a
+header when the overlay gives one, and throws with `code` read from a
+`{ error: { code } }` body on a non-OK answer, so the overlay's drop-and-
+retry on `invalid_key` keeps working. Write your own `auth` instead when
+your route's shape differs.
 
 ## Plugins
 
