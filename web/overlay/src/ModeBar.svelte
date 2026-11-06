@@ -15,7 +15,7 @@
   // comes near; the full instructions are said in its live region, and only
   // a short hint shows.
   import { onMount, tick } from "svelte";
-  import { edgeFor } from "./keep-clear";
+  import { KEEP_CLEAR_DWELL_MS, edgeFor } from "./keep-clear";
   import type { Mode } from "./options";
 
   // `element` false (the install turned the element picker off): no Element mode.
@@ -50,18 +50,27 @@
   let bar = $state<HTMLDivElement | null>(null);
   let edge = $state<"top" | "bottom">("top");
 
-  // The chip keeps clear of the pointer, wherever on the page it moves.
+  // The chip keeps clear of the pointer, wherever on the page it moves, but
+  // not of a pointer on its way to it: it moves only once the pointer has
+  // stayed near it for `KEEP_CLEAR_DWELL_MS` without reaching it, and never
+  // while the pointer is on it, so its own buttons can be clicked.
   $effect(() => {
     const el = bar;
     if (!el) return;
     const win = el.ownerDocument.defaultView ?? window;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const cancel = () => { if (timer !== null) { clearTimeout(timer); timer = null; } };
     const onMove = (e: PointerEvent | MouseEvent) => {
-      const h = el.getBoundingClientRect().height || 44;
-      edge = edgeFor(edge, e.clientY, win.innerHeight, h);
+      const r = el.getBoundingClientRect();
+      if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) { cancel(); return; }
+      const next = edgeFor(edge, e.clientY, win.innerHeight, r.height || 44);
+      if (next === edge) { cancel(); return; }
+      if (timer === null) timer = setTimeout(() => { timer = null; edge = next; }, KEEP_CLEAR_DWELL_MS);
     };
     win.addEventListener("pointermove", onMove, { capture: true, passive: true });
     win.addEventListener("mousemove", onMove, { capture: true, passive: true });
     return () => {
+      cancel();
       win.removeEventListener("pointermove", onMove, { capture: true });
       win.removeEventListener("mousemove", onMove, { capture: true });
     };
