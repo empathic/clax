@@ -563,6 +563,27 @@ describe("the overlay", () => {
     expect(nameOf(document.activeElement!)).toBe("Full view");
   });
 
+  it("turns the full view on and off with F, but not while typing a reply", async () => {
+    pages.push({ reports: [report("t9", ["Wrong"])], next: null });
+    click(button("Report"));
+    flushSync();
+    click(button("Your reports"));
+    await settle();
+    const panel = q(".panel") as HTMLElement;
+    key("f", panel);
+    await settle();
+    expect(q(".panel.full")).not.toBeNull();
+    const field = document.createElement("textarea");
+    q(".panel")!.append(field);
+    key("f", field);
+    await settle();
+    expect(q(".panel.full")).not.toBeNull();
+    field.remove();
+    key("f", q(".panel") as HTMLElement);
+    await settle();
+    expect(q(".panel.full")).toBeNull();
+  });
+
   it("tells the host whether a report is under way, once per change", async () => {
     view.unmount();
     const told: boolean[] = [];

@@ -31,8 +31,13 @@
     full = on;
     queueMicrotask(() => fullBtn?.focus());
   }
+  /** Escape leaves the full view; F turns it on and off, but not while typing (a reply). */
   function keys(e: KeyboardEvent): void {
-    if (full && e.key === "Escape" && !e.isComposing) { e.preventDefault(); e.stopPropagation(); setFull(false); }
+    if (e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (full && e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setFull(false); return; }
+    const at = e.composedPath()[0];
+    if (at instanceof HTMLElement && (at.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(at.tagName))) return;
+    if (e.key.toLowerCase() === "f") { e.preventDefault(); e.stopPropagation(); setFull(!full); }
   }
 </script>
 
@@ -42,7 +47,7 @@
     <h2>{only ? "Yours on this page" : "Your reports"}</h2>
     <span class="tools">
       {#if only && onShowAll}<button type="button" class="ghost small" onclick={onShowAll}>Show all</button>{/if}
-      <button type="button" class="ghost small" aria-pressed={full} aria-keyshortcuts={full ? "Escape" : undefined} bind:this={fullBtn} onclick={() => setFull(!full)}>{full ? "Back to panel" : "Full view"}</button>
+      <button type="button" class="ghost small" aria-pressed={full} aria-keyshortcuts={full ? "F Escape" : "F"} bind:this={fullBtn} onclick={() => setFull(!full)}>{full ? "Back to panel" : "Full view"}<kbd aria-hidden="true">F</kbd></button>
       <button type="button" class="ghost" onclick={onClose} aria-label="Close your reports">✕</button>
     </span>
   </header>
@@ -79,6 +84,8 @@
   h2 { margin: 0; font: 600 15px/1.3 var(--font); }
   .tools { display: flex; gap: 4px; align-items: center; }
   h3 { margin: 0; font: inherit; }
+  /* The key, beside the label and out of its accessible name (aria-keyshortcuts says it), as in the mode bar. */
+  kbd { margin-left: 6px; font: 500 10px/1 var(--font); padding: 1px 3px; border: 1px solid currentColor; border-radius: var(--radius-xs); opacity: .7; }
   /* The full view: the whole window, one readable column. */
   .panel.full { position: fixed; inset: 0; width: auto; max-height: none; border: 0; border-radius: 0; box-shadow: none; z-index: 10; font-size: 15px; }
   .panel.full > header, .panel.full > ul, .panel.full > p { max-width: 760px; margin-inline: auto; }
