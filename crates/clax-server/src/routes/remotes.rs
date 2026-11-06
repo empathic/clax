@@ -679,38 +679,40 @@ pub struct PushBody {
     question_id: Option<String>,
 }
 
-/// The remote a push names, or the only connected one.
+/// The remote a push names, or the only connected one; with none connected,
+/// the only remote there is, so that a push to a remote signed out (by the
+/// linked sync, say) or still signing in says so rather than to add one.
 ///
 /// # Errors
-/// 404 `no_remote`; 400 `remote_required` for several connected and none
-/// named; 400 `not_connected` while its sign-in waits; 502
-/// `remote_signed_out` once it refused this Clax's token.
+/// 404 `no_remote` for none; 400 `remote_required` for several connected,
+/// or none connected and several known, and none named; 400 `not_connected`
+/// while its sign-in waits; 502 `remote_signed_out` once it refused this
+/// Clax's token.
 pub(super) async fn push_target(s: &AppState, key: Option<String>) -> Result<Remote, ApiError> {
     let r = match key {
         Some(k) => remote_named(s, &k).await?,
-        None => match s
-            .store_call(|st| st.remotes())
-            .await?
-            .into_iter()
-            .filter(|r| r.status == "connected")
-            .collect::<Vec<_>>()
-            .as_slice()
-        {
-            [one] => one.clone(),
-            [] => {
-                return Err(ApiError::new(
-                    StatusCode::NOT_FOUND,
-                    "no_remote",
-                    "this Clax is signed in to no public Clax: add one with `clax remote add <url>`",
-                ));
+        None => {
+            let remotes = s.store_call(|st| st.remotes()).await?;
+            let connected: Vec<&Remote> =
+                remotes.iter().filter(|r| r.status == "connected").collect();
+            match (connected.as_slice(), remotes.as_slice()) {
+                ([one], _) => (*one).clone(),
+                ([], [one]) => one.clone(),
+                (_, []) => {
+                    return Err(ApiError::new(
+                        StatusCode::NOT_FOUND,
+                        "no_remote",
+                        "this Clax is signed in to no public Clax: add one with `clax remote add <url>`",
+                    ));
+                }
+                _ => {
+                    return Err(ApiError::bad_request(
+                        "remote_required",
+                        "this Clax is signed in to several public Clax instances, or to none of the ones it knows: name one",
+                    ));
+                }
             }
-            _ => {
-                return Err(ApiError::bad_request(
-                    "remote_required",
-                    "this Clax is signed in to several public Clax instances: name one",
-                ));
-            }
-        },
+        }
     };
     if r.status == "signed_out" {
         return Err(public::signed_out(&r.origin));
