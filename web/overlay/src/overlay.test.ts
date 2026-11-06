@@ -584,6 +584,21 @@ describe("the overlay", () => {
     expect(q(".panel.full")).toBeNull();
   });
 
+  it("holds the host page still while the full view is open, and gives its scroll back after", async () => {
+    pages.push({ reports: [report("t9", ["Wrong"])], next: null });
+    document.documentElement.style.overflow = "";
+    click(button("Report"));
+    flushSync();
+    click(button("Your reports"));
+    await settle();
+    click(button("Full view"));
+    flushSync();
+    expect(document.documentElement.style.overflow).toBe("hidden");
+    click(button("Back to panel"));
+    flushSync();
+    expect(document.documentElement.style.overflow).toBe("");
+  });
+
   it("tells the host whether a report is under way, once per change", async () => {
     view.unmount();
     const told: boolean[] = [];

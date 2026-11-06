@@ -31,6 +31,15 @@
     full = on;
     queueMicrotask(() => fullBtn?.focus());
   }
+  // The full view is the page while it is open: the wheel scrolls it, never the host page behind it (which would
+  // otherwise take every scroll the reports don't need). The host's own overflow comes back as it was.
+  $effect(() => {
+    if (!full) return;
+    const root = (fullBtn?.ownerDocument ?? document).documentElement;
+    const was = root.style.overflow;
+    root.style.overflow = "hidden";
+    return () => { root.style.overflow = was; };
+  });
   /** Escape leaves the full view; F turns it on and off, but not while typing (a reply). */
   function keys(e: KeyboardEvent): void {
     if (e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -87,7 +96,7 @@
   /* The key, beside the label and out of its accessible name (aria-keyshortcuts says it), as in the mode bar. */
   kbd { margin-left: 6px; font: 500 10px/1 var(--font); padding: 1px 3px; border: 1px solid currentColor; border-radius: var(--radius-xs); opacity: .7; }
   /* The full view: the whole window, one readable column. */
-  .panel.full { position: fixed; inset: 0; width: auto; max-height: none; border: 0; border-radius: 0; box-shadow: none; z-index: 10; font-size: 15px; }
+  .panel.full { position: fixed; inset: 0; width: auto; max-height: none; overflow-y: auto; overscroll-behavior: contain; border: 0; border-radius: 0; box-shadow: none; z-index: 10; font-size: 15px; }
   .panel.full > header, .panel.full > ul, .panel.full > p { max-width: 760px; margin-inline: auto; }
   .panel.full > header { padding: 12px 8px 12px 16px; }
   .panel.full h2 { font-size: 20px; }
