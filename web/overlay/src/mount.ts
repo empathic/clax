@@ -41,6 +41,10 @@ export interface OverlayEvents {
   badge: number;
   /** A report the reporter just filed, as Clax answered it. */
   filed: Report;
+  /** Whether a report is under way (the mode bar, a pick, or the form open),
+   * told on each change; a listener added later hears the current value at
+   * once. The host's own trigger shows it (`aria-pressed`). */
+  active: boolean;
 }
 
 /** A running overlay. */
@@ -56,6 +60,7 @@ export interface OverlayHandle {
   /** Listens for `event`; the result stops listening. */
   on(event: "badge", fn: (n: number) => void): () => void;
   on(event: "filed", fn: (r: Report) => void): () => void;
+  on(event: "active", fn: (on: boolean) => void): () => void;
   /** Removes the overlay and ends comment mode. The page's diagnostics
    * recorder keeps recording, for a later overlay. */
   close(): void;
@@ -132,8 +137,9 @@ export function mountOverlay(opts: OverlayOptions, pluginList: readonly ClaxPlug
   const recorder = installDiagnostics(win, { instance });
   const session = new Session({ context: opts.context, metadata: opts.metadata, diagnostics: opts.diagnostics, recorder }, win);
 
-  const listeners = { badge: new Set<(n: number) => void>(), filed: new Set<(r: Report) => void>() };
+  const listeners = { badge: new Set<(n: number) => void>(), filed: new Set<(r: Report) => void>(), active: new Set<(on: boolean) => void>() };
   let lastBadge: number | null = null;
+  let lastActive = false;
   const emit = <K extends keyof OverlayEvents>(event: K, value: OverlayEvents[K]) => {
     for (const fn of [...listeners[event]] as ((v: OverlayEvents[K]) => void)[]) {
       try { fn(value); } catch (e) { console.error(`Clax.overlay: a ${event} listener threw`, e); }
@@ -186,6 +192,7 @@ export function mountOverlay(opts: OverlayOptions, pluginList: readonly ClaxPlug
         queueInfo: s.queueInfo,
         onBadge: (n: number) => { lastBadge = n; emit("badge", n); },
         onFiled: (r: Report) => emit("filed", r),
+        onActive: (on: boolean) => { if (on === lastActive) return; lastActive = on; emit("active", on); },
         plugins, presentation: opts.presentation, css, defaults: opts.defaults ?? {}, copy: opts.copy ?? {},
       },
     }) as unknown as Mounted;
@@ -209,11 +216,12 @@ export function mountOverlay(opts: OverlayOptions, pluginList: readonly ClaxPlug
       ...(opts.canFile ?? true ? [{ id: "clax.report", label: "Send feedback", run: () => whenUp(a => a.report()) }] : []),
       ...(settings?.reports === "off" ? [] : [{ id: "clax.reports", label: "Your reports", run: () => whenUp(a => a.showReports()) }]),
     ],
-    on(event: keyof OverlayEvents, fn: ((n: number) => void) | ((r: Report) => void)) {
-      if (event !== "badge" && event !== "filed") throw new TypeError(`Clax.overlay: no event ${String(event)}`);
+    on(event: keyof OverlayEvents, fn: ((n: number) => void) | ((r: Report) => void) | ((on: boolean) => void)) {
+      if (event !== "badge" && event !== "filed" && event !== "active") throw new TypeError(`Clax.overlay: no event ${String(event)}`);
       const set = listeners[event] as Set<typeof fn>;
       set.add(fn);
       if (event === "badge" && lastBadge !== null) (fn as (n: number) => void)(lastBadge);
+      if (event === "active") (fn as (on: boolean) => void)(lastActive);
       return () => { set.delete(fn); };
     },
     forget: () => ready.then(() => client?.forget()),
@@ -222,6 +230,8 @@ export function mountOverlay(opts: OverlayOptions, pluginList: readonly ClaxPlug
       open = false;
       listeners.badge.clear();
       listeners.filed.clear();
+      if (lastActive) { lastActive = false; for (const fn of [...listeners.active]) { try { fn(false); } catch (e) { console.error("Clax.overlay: an active listener threw", e); } } }
+      listeners.active.clear();
       if (app) void unmount(app as never);
       plugins.destroy();
       host.remove();

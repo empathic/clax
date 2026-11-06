@@ -513,6 +513,24 @@ describe("the overlay", () => {
     expect(q('.panel li.open')?.textContent).toMatch(/Wrong/);
   });
 
+  it("tells the host whether a report is under way, once per change", async () => {
+    view.unmount();
+    const told: boolean[] = [];
+    view = mount(Overlay as never, props({ onActive: (on: boolean) => told.push(on) }), host);
+    flushSync();
+    expect(told).toEqual([false]);
+    click(button("Report"));
+    flushSync();
+    expect(told).toEqual([false, true]);
+    // Picking, and the form after the pick, are one report under way: nothing new is told.
+    onPick(picked(async () => new Uint8Array([1]).buffer));
+    await settle();
+    expect(told).toEqual([false, true]);
+    click(button("Cancel"));
+    await settle();
+    expect(told).toEqual([false, true, false]);
+  });
+
   it("launcher false mounts no launcher and report() opens the mode bar", async () => {
     view.unmount();
     const r = renderComponent(Overlay as never, { props: props({ launcher: false }) as never, target: host });

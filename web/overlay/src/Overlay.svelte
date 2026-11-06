@@ -73,6 +73,9 @@
     timers?: Timers;
     onBadge?: (n: number) => void;
     onFiled?: (r: Report) => void;
+    /** Told whether a report is under way (the mode bar, a pick, or the form
+     * open), each time that changes: the host's own trigger shows it. */
+    onActive?: (on: boolean) => void;
     /** The plugins: every feature the overlay shows comes from one. */
     plugins: PluginHost;
     /** The presentation asked for (a presentation plugin's id); the first available one otherwise. */
@@ -88,7 +91,7 @@
   };
   let {
     client, doc, host, picker: makePicker, session, externalId, launcher = "corner", canFile = true, capture: captureDeps = {}, flatten: flattenDeps = browserFlatten,
-    timers = realTimers, onBadge, onFiled, plugins, presentation: presentationId, css = "", defaults = {}, copy = {},
+    timers = realTimers, onBadge, onFiled, onActive, plugins, presentation: presentationId, css = "", defaults = {}, copy = {},
     openWindow = (w: Window) => w.open("", "feedback-composer", "popup,width=480,height=760"),
     reports: reportsMode = "button", elementPicker = true, wording = DEFAULT_WORDING, queueInfo = null,
   }: Props = $props();
@@ -151,6 +154,16 @@
   let pulse = $state(false);
   let reportBtn = $state<HTMLButtonElement | null>(null);
   let viewBtn = $state<HTMLButtonElement | null>(null);
+
+  /** Whether a report is under way: the mode bar, a pick, or the form. */
+  const active = $derived(bar !== null || picking || draft !== null);
+  let toldActive: boolean | null = null;
+  $effect(() => {
+    const on = active;
+    if (on === toldActive) return;
+    toldActive = on;
+    untrack(() => onActive?.(on));
+  });
 
   /** The report newly waiting on the reporter, which "Your reports" opens on next. */
   let waitingId: string | null = null;

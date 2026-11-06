@@ -287,6 +287,9 @@ export interface ClaxPlugin {
 export interface OverlayEvents {
   badge: number;
   filed: Report;
+  /** Whether a report is under way (the mode bar, a pick, or the form open);
+   * a listener added later hears the current value at once. */
+  active: boolean;
 }
 
 /** A running overlay. */
@@ -297,6 +300,7 @@ export interface OverlayHandle {
   actions(): { id: string; label: string; run(): void }[];
   on(event: "badge", fn: (n: number) => void): () => void;
   on(event: "filed", fn: (r: Report) => void): () => void;
+  on(event: "active", fn: (on: boolean) => void): () => void;
   close(): void;
   /** Forgets the reporter, as the host does when its user signs out:
    * deletes the key and token kept for `user` and drops them from this
