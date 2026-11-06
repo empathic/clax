@@ -48,4 +48,29 @@ describe("overlay()", () => {
       expect(seen.filter(s => /clax/i.test(s))).toEqual([]);
     } finally { handle.close(); }
   });
+
+  // The reporter lifecycle, reachable without the launcher (#34's point: a
+  // host with `launcher: false` reads `waiting` from here for its own
+  // button). `opts.auth` always refuses, so this is also the runtime
+  // (not just dts-check's type-level) proof of the badge/failed fix:
+  // with "Your reports" never opened (`reports` defaults to "button", so
+  // it is, but no test here opens its panel), only the badge watch ever
+  // calls the backend, and its failure alone must still reach auth: "error".
+  it("handle.subscribe hears the current state at once, then auth going to error against a backend that only ever refuses, and nothing more after close", async () => {
+    const seen: { auth: string }[] = [];
+    const handle = overlay(opts);
+    const unsubscribe = handle.subscribe(s => seen.push(s));
+    try {
+      expect(seen).toHaveLength(1);
+      // Already "loading", not "idle": the badge watch starts synchronously
+      // while the overlay mounts (`reports` defaults to "button", so it is on).
+      expect(seen[0]).toMatchObject({ auth: "loading", waiting: null, reports: null });
+      for (let i = 0; i < 20 && seen.at(-1)?.auth !== "error"; i++) await new Promise(r => setTimeout(r, 0));
+      expect(seen.at(-1)).toMatchObject({ auth: "error" });
+      const before = seen.length;
+      handle.close();
+      await new Promise(r => setTimeout(r, 0));
+      expect(seen).toHaveLength(before);
+    } finally { unsubscribe(); handle.close(); }
+  });
 });
