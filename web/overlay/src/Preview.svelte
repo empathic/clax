@@ -64,6 +64,7 @@
     <pre class="row" data-row={r.id}>{r.preview}</pre>
     {#if r.privacyNote}<p class="small muted">{r.privacyNote}</p>{/if}
   {/each}
+  <p class="small muted kept">Kept until deleted.</p>
 </details>
 
 <style>

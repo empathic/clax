@@ -283,6 +283,8 @@ describe("the overlay", () => {
     const json = details.querySelector("pre.context")!.textContent!;
     expect(JSON.parse(json)).toMatchObject({ v: 1, captured_at: when.toISOString(), release: { version: "0.6.0", commit: "f7e862ab0" }, flags: { claxbot: true }, app: { view: "cart" }, capture: { mode: "element", method: "dom" } });
     expect(details.textContent).toMatch(/Recent errors are not sent/);
+    // How long a report is kept is said where what's sent is.
+    expect(details.textContent).toMatch(/Kept until deleted/);
     click(q('input[aria-label="Include recent errors (1)"]'));
     expect(details.querySelector(".diag")?.textContent).toMatch(/TypeError: total is undefined/);
   });
