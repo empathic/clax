@@ -552,8 +552,8 @@ describe("the overlay", () => {
     click(button("Full view"));
     flushSync();
     expect(q(".panel.full")).not.toBeNull();
-    expect(q(".panel h3 button.row")).not.toBeNull();
-    click(q(".panel h3 button.row") as HTMLElement);
+    expect(q(".panel h4 button.row")).not.toBeNull();
+    click(q(".panel h4 button.row") as HTMLElement);
     flushSync();
     expect(q(".about")?.textContent).toMatch(/Filed/);
     key("Escape", q(".panel") as HTMLElement);
@@ -582,6 +582,25 @@ describe("the overlay", () => {
     key("f", q(".panel") as HTMLElement);
     await settle();
     expect(q(".panel.full")).toBeNull();
+  });
+
+  it("groups Your reports by where each stands, newest first in a group, and opens any number at once", async () => {
+    const a = { ...report("t1", ["Old open"]), state: "open" as const, created_at: "2026-11-01T00:00:00Z" };
+    const b = { ...report("t2", ["New open"]), state: "open" as const, created_at: "2026-11-05T00:00:00Z" };
+    const c = { ...report("t3", ["Done"]), state: "resolved" as const, created_at: "2026-11-06T00:00:00Z" };
+    pages.push({ reports: [a, c, b], next: null });
+    click(button("Report"));
+    flushSync();
+    click(button("Your reports"));
+    await settle();
+    expect([...host.querySelectorAll(".panel h3.group")].map(h => h.textContent?.replace(/\s+\d+$/, ""))).toEqual(["Open", "Closed"]);
+    const rows = [...host.querySelectorAll<HTMLButtonElement>(".panel button.row")];
+    expect(rows.map(r => r.querySelector(".sum")?.textContent)).toEqual(["New open", "Old open", "Done"]);
+    click(rows[0]);
+    flushSync();
+    click(rows[2]);
+    flushSync();
+    expect(host.querySelectorAll('.panel button.row[aria-expanded="true"]').length).toBe(2);
   });
 
   it("holds the host page still while the full view is open, and gives its scroll back after", async () => {

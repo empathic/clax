@@ -23,6 +23,33 @@
   let { reports: all, error, expanded, only = null, onShowAll, onExpand, onReply, onVerify, onStillBroken, onClose }: Props = $props();
   const reports = $derived(all && only ? all.filter(r => only.includes(r.id)) : all);
 
+  // Grouped by where each report stands, the one waiting on the reporter first, and newest first within a group (the
+  // queue view's states: Fix proposed; Open and Claimed; Verified and Resolved).
+  const GROUPS: { key: string; label: string; states: string[] }[] = [
+    { key: "waiting", label: "Fix ready for you to check", states: ["fix_proposed"] },
+    { key: "open", label: "Open", states: ["open", "claimed"] },
+    { key: "closed", label: "Closed", states: ["verified", "resolved"] },
+  ];
+  const newestFirst = (a: Report, b: Report) => (b.created_at ?? "").localeCompare(a.created_at ?? "");
+  const grouped = $derived.by(() => {
+    if (!reports) return [];
+    const known = new Set(GROUPS.flatMap(g => g.states));
+    const out = GROUPS.map(g => ({ ...g, items: reports.filter(r => g.states.includes(r.state)).sort(newestFirst) }));
+    const other = reports.filter(r => !known.has(r.state)).sort(newestFirst);
+    if (other.length) out.push({ key: "other", label: "Other", states: [], items: other });
+    return out.filter(g => g.items.length > 0);
+  });
+
+  // Any number of reports open at once (the overlay's `expanded` opens one, such as the report waiting on you); a row
+  // toggles its own.
+  let opened = $state<Set<string>>(new Set());
+  $effect(() => { if (expanded && !opened.has(expanded)) opened = new Set([...opened, expanded]); });
+  function toggle(id: string): void {
+    const next = new Set(opened);
+    if (next.has(id)) next.delete(id); else { next.add(id); onExpand(id); }
+    opened = next;
+  }
+
   /** The full view: the panel fills the window as a reading page (each report
    * a heading, with what the panel leaves out); Escape goes back to the panel. */
   let full = $state(false);
@@ -40,18 +67,25 @@
     root.style.overflow = "hidden";
     return () => { root.style.overflow = was; };
   });
-  /** Escape leaves the full view; F turns it on and off, but not while typing (a reply). */
+  /** Escape leaves the full view; F turns it on and off, but not while typing (a reply, or a field of the page).
+   * Heard wherever focus is while the panel is open, ahead of the page's own keys (a host may use F itself). */
   function keys(e: KeyboardEvent): void {
-    if (e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.defaultPrevented || e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return;
     if (full && e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setFull(false); return; }
     const at = e.composedPath()[0];
     if (at instanceof HTMLElement && (at.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(at.tagName))) return;
     if (e.key.toLowerCase() === "f") { e.preventDefault(); e.stopPropagation(); setFull(!full); }
   }
+  let panelEl = $state<HTMLElement | null>(null);
+  $effect(() => {
+    const win = panelEl?.ownerDocument.defaultView;
+    if (!win) return;
+    win.addEventListener("keydown", keys, true);
+    return () => win.removeEventListener("keydown", keys, true);
+  });
 </script>
 
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<section class="panel" class:full aria-label="Your reports" onkeydown={keys}>
+<section class="panel" class:full aria-label="Your reports" bind:this={panelEl}>
   <header>
     <h2>{only ? "Yours on this page" : "Your reports"}</h2>
     <span class="tools">
@@ -66,23 +100,26 @@
   {:else if reports.length === 0}
     <p class="muted small empty">No reports yet. Press Report and pick what on the page your report is about.</p>
   {:else}
-    <ul>
-      {#each reports as r (r.id)}
-        {@const replies = repliesOf(r)}
-        <li class:open={expanded === r.id}>
-          {#snippet row()}
-            <button type="button" class="row" aria-expanded={expanded === r.id} onclick={() => onExpand(expanded === r.id ? null : r.id)}>
-              <span class="sum">{summaryOf(r)}</span>
-              <span class="meta small"><span class="state" data-state={r.state}>{stateLabel(r)}</span>{replies.length === 1 ? "1 reply" : `${replies.length} replies`}</span>
-            </button>
-          {/snippet}
-          {#if full}<h3>{@render row()}</h3>{:else}{@render row()}{/if}
-          {#if expanded === r.id}
-            <ReportView report={r} {full} {onReply} {onVerify} {onStillBroken} />
-          {/if}
-        </li>
-      {/each}
-    </ul>
+    {#each grouped as g (g.key)}
+      <h3 class="group">{g.label} <span class="muted">{g.items.length}</span></h3>
+      <ul>
+        {#each g.items as r (r.id)}
+          {@const replies = repliesOf(r)}
+          <li class:open={opened.has(r.id)}>
+            {#snippet row()}
+              <button type="button" class="row" aria-expanded={opened.has(r.id)} onclick={() => toggle(r.id)}>
+                <span class="sum">{summaryOf(r)}</span>
+                <span class="meta small"><span class="state" data-state={r.state}>{stateLabel(r)}</span>{replies.length === 1 ? "1 reply" : `${replies.length} replies`}</span>
+              </button>
+            {/snippet}
+            {#if full}<h4>{@render row()}</h4>{:else}{@render row()}{/if}
+            {#if opened.has(r.id)}
+              <ReportView report={r} {full} {onReply} {onVerify} {onStillBroken} />
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    {/each}
   {/if}
 </section>
 
@@ -92,7 +129,9 @@
   header { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; padding: 6px 6px 6px 14px; background: var(--raised); border-bottom: 1px solid var(--border); }
   h2 { margin: 0; font: 600 15px/1.3 var(--font); }
   .tools { display: flex; gap: 4px; align-items: center; }
-  h3 { margin: 0; font: inherit; }
+  h4 { margin: 0; font: inherit; }
+  .group { margin: 12px 16px 4px; font-size: 12px; font-weight: 600; color: var(--muted); }
+  .group .muted { font-weight: 400; }
   /* The key, beside the label and out of its accessible name (aria-keyshortcuts says it), as in the mode bar. */
   kbd { margin-left: 6px; font: 500 10px/1 var(--font); padding: 1px 3px; border: 1px solid currentColor; border-radius: var(--radius-xs); opacity: .7; }
   /* The full view: the whole window, one readable column. */

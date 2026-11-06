@@ -112,6 +112,24 @@ export const diagnostics = {
   },
 };
 
+/** The overlay takes the page's own light or dark: the color-scheme the page computes on its root (a site's theme switch
+ * sets it, as Changeling's does), as `data-scheme` on the host, which tokens.css follows over the system's. A page that
+ * names both, or neither, leaves it to the system. Followed as the page switches; returns the stop. */
+export function followScheme(doc: Document, host: HTMLElement): () => void {
+  const win = doc.defaultView;
+  const read = () => {
+    const s = win ? win.getComputedStyle(doc.documentElement).colorScheme.trim() : "";
+    const one = s === "dark" || s === "only dark" ? "dark" : s === "light" || s === "only light" ? "light" : null;
+    if (one) host.setAttribute("data-scheme", one); else host.removeAttribute("data-scheme");
+  };
+  read();
+  const mo = new MutationObserver(read);
+  mo.observe(doc.documentElement, { attributes: true, attributeFilter: ["class", "style", "data-theme", "data-color-scheme"] });
+  const mq = win?.matchMedia?.("(prefers-color-scheme: dark)");
+  mq?.addEventListener?.("change", read);
+  return () => { mo.disconnect(); mq?.removeEventListener?.("change", read); };
+}
+
 /** `theme`'s `--clax-*` entries; anything else is left out. */
 function themeOf(theme: Record<string, string> | undefined): Record<string, string> {
   const out: Record<string, string> = {};
@@ -166,6 +184,7 @@ export function mountOverlay(opts: OverlayOptions, pluginList: readonly ClaxPlug
   root.append(target);
   for (const k of ["keydown", "keyup", "keypress"]) root.addEventListener(k, e => e.stopPropagation());
   doc.documentElement.appendChild(host);
+  const stopScheme = followScheme(doc, host);
 
   let open = true;
   let app: Mounted | null = null;
@@ -234,6 +253,7 @@ export function mountOverlay(opts: OverlayOptions, pluginList: readonly ClaxPlug
       listeners.active.clear();
       if (app) void unmount(app as never);
       plugins.destroy();
+      stopScheme();
       host.remove();
     },
   };
