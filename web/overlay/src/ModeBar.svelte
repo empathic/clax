@@ -15,7 +15,7 @@
   // comes near; the full instructions are said in its live region, and only
   // a short hint shows.
   import { onMount, tick } from "svelte";
-  import { KEEP_CLEAR_DWELL_MS, edgeFor } from "./keep-clear";
+  import { KEEP_CLEAR_DWELL_MS, KEEP_CLEAR_SIDE_PX, edgeFor } from "./keep-clear";
   import type { Mode } from "./options";
 
   // `element` false (the install turned the element picker off): no Element mode.
@@ -62,7 +62,9 @@
     const cancel = () => { if (timer !== null) { clearTimeout(timer); timer = null; } };
     const onMove = (e: PointerEvent | MouseEvent) => {
       const r = el.getBoundingClientRect();
-      if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) { cancel(); return; }
+      // Over the chip, or in its column (above or below it, within a little of its sides): a pointer on its way to
+      // the chip's buttons, which a slow, deliberate approach keeps near it for longer than any dwell. Stay put.
+      if (e.clientX >= r.left - KEEP_CLEAR_SIDE_PX && e.clientX <= r.right + KEEP_CLEAR_SIDE_PX) { cancel(); return; }
       const next = edgeFor(edge, e.clientY, win.innerHeight, r.height || 44);
       if (next === edge) { cancel(); return; }
       if (timer === null) timer = setTimeout(() => { timer = null; edge = next; }, KEEP_CLEAR_DWELL_MS);
@@ -100,7 +102,7 @@
   </div>
   <span class="hint" aria-hidden="true">{mode ? SHORT[mode] : "Pick a mode, or write"} · Esc</span>
   {#if onReports}
-    <button type="button" class="ghost reports" onclick={onReports}>{reportsLabel}{#if waiting}<span class="count">{waiting}<span class="sr"> waiting on you</span></span>{/if}</button>
+    <button type="button" class="ghost reports" aria-keyshortcuts="R" onclick={onReports}>{reportsLabel}<kbd aria-hidden="true">R</kbd>{#if waiting}<span class="count">{waiting}<span class="sr"> waiting on you</span></span>{/if}</button>
   {/if}
   <button type="button" class="ghost" aria-keyshortcuts="Escape" onclick={onCancel}>Cancel</button>
   <span class="sr" role="status">{live ? (mode ? HINT[mode] : NONE) : ""}</span>

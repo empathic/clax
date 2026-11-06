@@ -533,6 +533,16 @@ describe("the overlay", () => {
     expect([...host.querySelectorAll(".modebar button")].map(b => b.textContent)).not.toContain("Your reports");
   });
 
+  it("opens Your reports from the mode bar with R", async () => {
+    click(button("Report"));
+    flushSync();
+    pages.push({ reports: [report("t9", ["Wrong"])], next: null });
+    key("r");
+    await settle();
+    expect(q(".modebar")).toBeNull();
+    expect(q(".panel")).not.toBeNull();
+  });
+
   it("reads Your reports in a full view: each report a heading, with its page and dates; Escape goes back", async () => {
     pages.push({ reports: [report("t9", ["Wrong"])], next: null });
     click(button("Report"));

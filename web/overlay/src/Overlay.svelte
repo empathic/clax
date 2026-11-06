@@ -361,6 +361,7 @@
       const mode = barModes.find(m => m.key.toLowerCase() === e.key.toLowerCase())?.mode;
       if (e.key === "Escape") closeBar();
       else if (mode) choose(mode);
+      else if (reportsOn && e.key.toLowerCase() === "r") showReports();
       else return;
       e.preventDefault();
       e.stopPropagation();

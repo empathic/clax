@@ -62,6 +62,31 @@ describe("the mode bar while picking", () => {
     vi.useRealTimers();
   });
 
+  it("stays put for a slow approach from straight above, however long it lingers near, and moves for a pointer off to the side", () => {
+    vi.useFakeTimers();
+    const { container } = render(ModeBar, { props: { mode: "element", onMode: () => {}, onCancel: () => {}, onReports: () => {} } });
+    const bar = container.querySelector<HTMLElement>(".modebar")!;
+    bar.getBoundingClientRect = () => ({ left: 400, right: 800, top: 8, bottom: 44, width: 400, height: 36, x: 400, y: 8, toJSON() {} }) as DOMRect;
+    for (const y of [120, 100, 80, 60]) {
+      window.dispatchEvent(new MouseEvent("mousemove", { clientX: 790, clientY: y }));
+      vi.advanceTimersByTime(KEEP_CLEAR_DWELL_MS);
+    }
+    flushSync();
+    expect(bar.dataset.edge).toBe("top");
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: 900, clientY: 60 }));
+    vi.advanceTimersByTime(KEEP_CLEAR_DWELL_MS);
+    flushSync();
+    expect(bar.dataset.edge).toBe("bottom");
+    vi.useRealTimers();
+  });
+
+  it("shows R on Your reports, kept out of its name", () => {
+    const { container } = render(ModeBar, { props: { mode: "element", onMode: () => {}, onCancel: () => {}, onReports: () => {}, waiting: 2 } });
+    const b = container.querySelector<HTMLButtonElement>(".reports")!;
+    expect(b.getAttribute("aria-keyshortcuts")).toBe("R");
+    expect(b.querySelector("kbd")?.getAttribute("aria-hidden")).toBe("true");
+  });
+
   it("offers only the modes it is given", () => {
     const { container } = render(ModeBar, { props: { mode: null, modes: [{ mode: "screen", label: "This page", key: "S" }], onMode: () => {}, onCancel: () => {} } });
     expect([...container.querySelectorAll(".modes button")].map(b => b.textContent)).toEqual(["This pageS"]);
