@@ -15,10 +15,11 @@ _RUNNER = "//bazel/js:runner"
 _RUNNER_LIB = "//bazel/js:runner_lib"
 
 # The runner copies exactly an action's declared files into a private
-# directory and runs the script there (npm_script.mjs says why). So
-# rules_js's own guard against following links, which patches Node's file
-# system calls and cannot reach Vite's native code, is off: there are no
-# links to follow.
+# directory, each package linked to its place in rules_js's store, and
+# runs the script there (npm_script.mjs says why). So rules_js's own guard
+# against following links, which patches Node's file system calls and
+# cannot reach Vite's native code, is off: a link leads to the one real
+# path that native code and JavaScript both see.
 
 def _project(rule, project):
     """The package whose package.json a rule in this package runs a script of."""

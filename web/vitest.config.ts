@@ -1,8 +1,16 @@
+import { realpathSync } from "node:fs";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { configDefaults, defineConfig } from "vitest/config";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { svelteTesting } from "@testing-library/svelte/vite";
 import { MOUNT_TIMEOUT_MS } from "./shell/src/test/timeouts";
+// Where the packages' files really are: pnpm's node_modules/.pnpm, or under
+// Bazel rules_js's store in bazel-bin (bazel/js/npm_script.mjs links each
+// package to it). Both keep a package at <store>/<package>@<version>/node_modules/<name>;
+// a file names it, as a test sandbox may make the directory itself a tree of links.
+const vitestManifest = realpathSync(fileURLToPath(new URL("./node_modules/vitest/package.json", import.meta.url)));
+const packageStore = dirname(dirname(dirname(dirname(vitestManifest))));
 export default defineConfig({
   // svelteTesting() resolves Svelte's browser build under jsdom and unmounts after each test.
   plugins: [svelte(), svelteTesting()],
@@ -11,8 +19,9 @@ export default defineConfig({
   define: { __CLAX_TEST_CLOCK__: "true", __CLAX_EXT_TEST__: "false" },
   // The bridge loads its lazy parts from source here (parts-static.ts).
   resolve: { alias: { "clax-bridge-parts": fileURLToPath(new URL("./bridge/src/parts-static.ts", import.meta.url)) } },
-  // The home app's unit tests (apps/clax_app/home_unit) import its modules and the kit from outside web/.
-  server: { fs: { allow: [fileURLToPath(new URL("..", import.meta.url))] } },
+  // The home app's unit tests (apps/clax_app/home_unit) import its modules and the kit from outside web/,
+  // and the browser-mode transform loads packages from their store.
+  server: { fs: { allow: [fileURLToPath(new URL("..", import.meta.url)), packageStore] } },
   // Every test and hook may take up to MOUNT_TIMEOUT_MS: a limit that ends a
   // test that hangs, well above what a loaded machine takes to load a fresh
   // module registry, so it never decides whether a test passes.
