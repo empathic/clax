@@ -35,9 +35,10 @@
   import type { CaptureDeps, Captured } from "./capture";
   import Portal from "./Portal.svelte";
   import {
-    BadgeWatch, type Draft, POLL_MS, Poll, type ReporterApi, type Session, type Timers, canSend, carryShapes, clipOf, clipStatus, defaultShapes,
+    type Draft, type ReporterApi, type Session, type Timers, canSend, carryShapes, clipOf, clipStatus, defaultShapes,
     failureText, newDraft, pageUrl, quoteOf, realTimers, reopenOf, reportOf, type ReportsMode, summaryOf, withCapture,
   } from "./model";
+  import { ReporterLifecycle, type ReporterLifecycleState, type Visibility } from "../../sdk/src/lifecycle";
   import { DEFAULT_WORDING, type QueueInfo, type Wording } from "./install";
   import ModeBar from "./ModeBar.svelte";
   import type { Mode } from "./options";
@@ -98,6 +99,14 @@
   const reportsOn = untrack(() => reportsMode !== "off");
 
   const win = untrack(() => doc.defaultView ?? window);
+
+  // The reporter's own lifecycle (sdk/src/lifecycle.ts): "Your reports"
+  // (open only while its panel is), the badge (while reportsOn), and the
+  // commands (file, reply, verify, reopen, seen) that change them. The
+  // overlay consumes it rather than owning the poll and the badge watch
+  // itself; its own state below (`reports`, `loadError`, `count`, `pulse`,
+  // `waitingId`) mirrors what it tells, so the template is unchanged.
+  const lifecycle = untrack(() => new ReporterLifecycle(client, { timers, win: win as unknown as Visibility }));
 
   // ---- Plugins ----
 
@@ -167,6 +176,34 @@
 
   /** The report newly waiting on the reporter, which "Your reports" opens on next. */
   let waitingId: string | null = null;
+
+  // Mirrors `lifecycle`'s state into the plain `$state` above (`reports`,
+  // `loadError`, `count`, `pulse`) and into `waitingId`, so the template
+  // and the rest of this component are unchanged by the lifecycle moving
+  // to the SDK: `onBadge` is told only on a real change of the count (as
+  // `BadgeWatch` already deduped before it), and a badge rise pulses the
+  // launcher once, same as before.
+  let toldBadge: number | null = null;
+  let lastRiseSeq = 0;
+  let pulseTimer: unknown = null;
+  const unsubscribeLifecycle = untrack(() => lifecycle.subscribe(s => {
+    reports = s.reports;
+    loadError = s.reportsError === null ? null : failureText(s.reportsError);
+    if (s.waiting !== toldBadge) {
+      toldBadge = s.waiting;
+      count = s.waiting;
+      if (s.waiting !== null) onBadge?.(s.waiting);
+    }
+    if (s.rise && s.rise.seq !== lastRiseSeq) {
+      lastRiseSeq = s.rise.seq;
+      waitingId = s.rise.ids[0] ?? waitingId;
+      timers.clear(pulseTimer);
+      pulse = true;
+      pulseTimer = timers.set(() => { pulse = false; }, 1600);
+    }
+  }));
+  if (reportsOn) untrack(() => lifecycle.startBadge());
+
   /** The pick a draft's capture came from, for the exact screenshot. */
   let pickFor: { of: Draft; mode: Mode; pick: Picked | null } | null = null;
   /** What a send of a draft waits for: its capture, context and metadata. */
@@ -186,8 +223,8 @@
   });
   onDestroy(() => {
     closeWindow();
-    poll.stop();
-    badge.stop();
+    unsubscribeLifecycle();
+    lifecycle.stop();
     revokeClip();
     timers.clear(noticeTimer);
     timers.clear(pulseTimer);
@@ -661,22 +698,19 @@
       }
       const purpose = d.purpose;
       if (purpose.kind === "reopen") {
-        const r = await client.reopen(purpose.report.id, extended(reopenOf(d, marked)));
+        const r = await lifecycle.reopen(purpose.report.id, extended(reopenOf(d, marked)));
         if (draft !== d) return;
-        merge(r);
         draft = null;
         revokeClip();
         expanded = r.id;
         showReports();
-        badge.now();
         say("Sent. The report is open again.");
         return;
       }
-      const r = await client.fileReport(extended(reportOf(d, { url: pageUrl(doc), title: doc.title }, { externalId }, marked)));
+      const r = await lifecycle.file(extended(reportOf(d, { url: pageUrl(doc), title: doc.title }, { externalId }, marked)));
       if (draft !== d) return;
       draft = null;
       revokeClip();
-      merge(r, true);
       filed = r;
       onFiled?.(r);
       plugins.emit("sent", { id: r.id });
@@ -688,20 +722,9 @@
     }
   }
 
-  /** Puts `r` in the list in place of its old self, or first when new. */
-  function merge(r: Report, first = false): void {
-    if (!reports) return;
-    reports = reports.some(x => x.id === r.id) ? reports.map(x => (x.id === r.id ? r : x)) : first ? [r, ...reports] : reports;
-  }
-
   // ---- Your reports ----
-
-  const poll = untrack(() => new Poll(async () => {
-    const page = await client.myReports();
-    if (!open) return;
-    reports = page.reports;
-    loadError = null;
-  }, timers, POLL_MS, e => { loadError = failureText(e); }));
+  // The poll that drives `reports` and `loadError` is the lifecycle's own
+  // (`ReporterLifecycle.openReports`/`closeReports`): see `unsubscribeLifecycle` above.
 
   function toggleReports(): void {
     if (open) { closeReports(); return; }
@@ -709,12 +732,12 @@
     filed = null;
     if (bar && draft?.purpose.kind !== "reopen") closeBar(false);
     if (waitingId) { expand(waitingId); waitingId = null; }
-    poll.start();
+    lifecycle.openReports();
   }
   function closeReports(): void {
     open = false;
     pageOnly = false;
-    poll.stop();
+    lifecycle.closeReports();
   }
 
   // ---- Yours on this page (the framed composer's header) ----
@@ -760,11 +783,11 @@
 
   function expand(id: string | null): void {
     expanded = id;
-    if (id) client.seen(id).then(() => badge.now(), () => {});
+    if (id) void lifecycle.seen(id).catch(() => {});
   }
 
   async function reply(id: string, body: string): Promise<void> {
-    merge(await client.comment(id, body));
+    await lifecycle.reply(id, body);
   }
 
   /** The Full view's clip, when the client exposes one: bound so `this` on
@@ -777,8 +800,7 @@
 
   async function verify(id: string): Promise<void> {
     const context = await session.verdictContext();
-    merge(await client.verify(id, { context }));
-    badge.now();
+    await lifecycle.verify(id, { context });
   }
 
   /** "Still broken": a note, and the mode bar for a new capture. */
@@ -795,20 +817,6 @@
     pickFor = null;
     bar = { mode: null };
   }
-
-  // ---- The badge ----
-
-  let pulseTimer: unknown = null;
-  const badge = untrack(() => new BadgeWatch(() => client.badge(), win as never, {
-    changed: n => { count = n; onBadge?.(n); },
-    rose: ids => {
-      waitingId = ids[0] ?? waitingId;
-      timers.clear(pulseTimer);
-      pulse = true;
-      pulseTimer = timers.set(() => { pulse = false; }, 1600);
-    },
-  }, timers));
-  if (reportsOn) untrack(() => badge.start());
 
   const status = $derived(draft ? clipStatus(draft.clip) : null);
   /** What a send would carry now, as "What's sent" shows it (the marks are drawn in at Send). */
