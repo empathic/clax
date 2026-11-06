@@ -70,6 +70,21 @@ describe("viewport renders", () => {
     expect(stuck).toMatch(/position: relative !important/);
     expect(stuck).toMatch(/top: -120px !important/);
   });
+
+  it("draw a box scrolled inside the page at its scroll, not from its top", async () => {
+    // Changeling's diff scrolls in its own box (report 01M6QAX9RH67KGX1ERVKPEMZXY):
+    // the copy showed the box's top, a folded block, in place of the change in view.
+    document.body.innerHTML = `<div id="pane" style="overflow-x: hidden; overflow-y: auto; height: 600px"><section id="fold">folded</section><section id="change">change</section></div><div id="still" style="overflow-y: auto"><p id="top">top</p></div>`;
+    sized(document.documentElement, 0, 0, 1024, 800);
+    const pane = document.getElementById("pane")!;
+    Object.defineProperty(pane, "scrollTop", { get: () => 1506 });
+    await renderViewportClip(window, 20_000);
+    for (const id of ["#fold", "#change"]) expect(inCopy(id)!.getAttribute("style")).toMatch(/translate: calc\(0px - 0px\) calc\(0px - 1506px\)/);
+    // A box that is not scrolled is drawn as it was.
+    expect(inCopy("#top")!.getAttribute("style") ?? "").not.toMatch(/translate/);
+    // The page's own box is left alone.
+    expect(document.getElementById("fold")!.getAttribute("style")).toBeNull();
+  });
 });
 
 describe("private DOM renders", () => {

@@ -510,7 +510,15 @@ interface Survey {
   /** For a viewport render, where each fixed or stuck element (in the
    * order the renderer meets them) is drawn, relative to the root's box. */
   pinned: { fixed: boolean; dx: number; dy: number }[] | null;
+  /** Each box below the root whose overflow is not visible (one that can
+   * scroll), in the order the renderer meets them, with how far it is
+   * scrolled now: the copy draws every box from its top, so `scrollElements`
+   * moves each scrolled box's content back to where the page shows it. */
+  scrolled: { top: number; left: number }[];
 }
+
+/** Whether a computed overflow value lets a box scroll (programmatically, for `hidden`). */
+const scrolls = (v: string | null | undefined) => !!v && v !== "visible";
 
 /** The nearest element at or above `el` that matches `sel`, across shadow roots. */
 function closestComposed(el: Element, sel: string): Element | null {
@@ -555,6 +563,7 @@ function survey(root: Element, origin: string, at: Rect, viewport: boolean): Sur
   const found: Omitted[] = [];
   const blocks: Rect[] = [];
   const pinned: Survey["pinned"] = viewport ? [] : null;
+  const scrolled: Survey["scrolled"] = [];
   const rootBox = root.getBoundingClientRect();
   const stack: { el: Element; redacted: boolean }[] = [{ el: root, redacted: false }];
   while (stack.length) {
@@ -577,6 +586,10 @@ function survey(root: Element, origin: string, at: Rect, viewport: boolean): Sur
       } else if (pos === "sticky" && el instanceof win.HTMLElement) {
         pinned.push({ fixed: false, ...stuckOffset(el) });
       }
+    }
+    if (win && el !== root) {
+      const cs = win.getComputedStyle(el);
+      if (scrolls(cs.overflowX) || scrolls(cs.overflowY)) scrolled.push({ top: el.scrollTop || 0, left: el.scrollLeft || 0 });
     }
     if (el.localName === "video") continue;
     let kids: Element[] = [];
@@ -609,6 +622,7 @@ function survey(root: Element, origin: string, at: Rect, viewport: boolean): Sur
     shown: !!closestComposed(root, `[${SHOW_ATTR}]`),
     editable: !!editableAt && editableAt.getAttribute("contenteditable")?.toLowerCase() !== "false",
     pinned,
+    scrolled,
   };
 }
 
@@ -697,6 +711,30 @@ function pinElements(root: Element, pinned: NonNullable<Survey["pinned"]>): void
   });
 }
 
+/** Draws each scrolled box of a copy as the page shows it now (`scrolled`, in
+ * the order of the copy's boxes that can scroll). A copy is never scrolled,
+ * so each child element of a scrolled box is moved up and left by the box's
+ * scroll with `translate`, which leaves layout alone, and the box's own
+ * overflow clips what moves out. A child that already has a `translate` keeps
+ * it, offset by the scroll. Nothing moves when the copy's boxes do not line
+ * up with the page's (as `pinElements`). */
+function scrollElements(root: Element, scrolled: Survey["scrolled"]): void {
+  if (!scrolled.some(s => s.top || s.left)) return;
+  const boxes = Array.from(root.querySelectorAll<HTMLElement>("*"))
+    .filter(e => e.style && (scrolls(e.style.getPropertyValue("overflow-x")) || scrolls(e.style.getPropertyValue("overflow-y"))));
+  if (boxes.length !== scrolled.length) return;
+  boxes.forEach((box, i) => {
+    const { top, left } = scrolled[i];
+    if (!top && !left) return;
+    for (const kid of Array.from(box.children) as HTMLElement[]) {
+      if (!kid.style) continue;
+      const had = kid.style.getPropertyValue("translate").trim();
+      const [x = "0px", y = "0px"] = had && had !== "none" ? had.split(/\s+/) : [];
+      kid.style.setProperty("translate", `calc(${x} - ${left}px) calc(${y} - ${top}px)`, "important");
+    }
+  });
+}
+
 /** The modern-screenshot options that make a render of `root` private:
  * images from other origins, Clax's overlay and what carries
  * `data-clax-ignore` are left out; typed values are blanked (`blankTyped`);
@@ -710,6 +748,7 @@ function privateRender(root: Element, origin: string, seen: Survey, colour: stri
       if (clone.nodeType !== Node.ELEMENT_NODE) return;
       blankTyped(clone as Element, seen.shown, seen.editable);
       if (seen.pinned) pinElements(clone as Element, seen.pinned);
+      scrollElements(clone as Element, seen.scrolled);
     },
     onCreateForeignObjectSvg: svg => {
       const doc = svg.ownerDocument;
