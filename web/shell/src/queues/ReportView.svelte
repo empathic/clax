@@ -31,7 +31,7 @@
   import ContextCard from "./ContextCard.svelte";
   import Diagnostics from "./Diagnostics.svelte";
   import FixHistory from "./FixHistory.svelte";
-  import { REASON_LABEL, STATE_LABEL, TABS, anchorText, httpUrl, noteOf, queueHref, queueTopic, refusal, reporterName } from "./model";
+  import { REASON_LABEL, STATE_LABEL, TABS, anchorText, httpUrl, noteOf, queueHref, queueTopic, refusal, reporterName, stateTone } from "./model";
 
   const p: { qid: string; tid: string; queue?: api.Queue | null; nav: (e: MouseEvent) => void; stream?: EventStream; zone?: string; locale?: string } = $props();
   let report = $state<api.Report | null>(null);
@@ -188,7 +188,7 @@
   {#if r}
     <header class="rh">
       <h2 id="rv-h">{noteOf(r).split("\n")[0] || "Report"}</h2>
-      <span class={["state", r.state]}>{STATE_LABEL[r.state] ?? r.state}</span>
+      <span class={["state", r.state]} data-tone={stateTone(r.state)}>{STATE_LABEL[r.state] ?? r.state}</span>
       {#if r.resolve_reason && (r.state === "resolved" || r.state === "verified")}<span class="muted">{REASON_LABEL[r.resolve_reason] ?? r.resolve_reason}</span>{/if}
       {#if r.reopen_count}<span class="muted">reopened {r.reopen_count}×</span>{/if}
     </header>

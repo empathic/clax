@@ -2,7 +2,10 @@
 // one per line, its reports counted by state, the page's addresses, how a
 // report's reporter, context and anchor read, and a refusal as a sentence.
 import type { DiagLine, FixOutcome, Report, ReportContext, ReportPage, ReportState, ResolveReason } from "../../../sdk/src/types";
+import { anchorText, browserOf, stateTone, timeIn } from "../../../bridge/src/report-text";
 import type { StateFilter } from "./api";
+
+export { anchorText, browserOf, stateTone, timeIn };
 
 /** The origins typed in `text`, one per line: each as its origin
  * (`https://app.example`, no trailing slash), the first of each kept;
@@ -181,41 +184,6 @@ export function codeOf(ctx: ReportContext | undefined): { text: string; href: st
   const path = file.split("/").map(encodeURIComponent).join("/");
   const href = repo && commit && side !== "LEFT" ? `${repo}/blob/${commit}/${path}#L${start}${end !== start ? `-L${end}` : ""}` : null;
   return { text, href };
-}
-
-/** A browser and its major version, read from a user agent: "Chrome 131",
- * "Safari 18", "Firefox 132", "Edge 131"; the agent itself when none is known. */
-export function browserOf(ua: string | undefined): string | null {
-  if (!ua) return null;
-  const v = (re: RegExp) => re.exec(ua)?.[1];
-  const known: [string, RegExp][] = [["Edge", /Edg(?:e|A|iOS)?\/(\d+)/], ["Firefox", /(?:Firefox|FxiOS)\/(\d+)/], ["Chrome", /(?:Chrome|CriOS)\/(\d+)/], ["Safari", /Version\/(\d+)[.\d]* .*Safari\//]];
-  for (const [name, re] of known) { const n = v(re); if (n) return `${name} ${n}`; }
-  return ua;
-}
-
-/** `iso` as a date and time in `zone` (the reader's when absent), with the
- * zone's short name; `null` for a zone the browser does not know or a time
- * it cannot read. */
-export function timeIn(iso: string, zone?: string, locale?: string): string | null {
-  const t = new Date(iso);
-  if (Number.isNaN(t.getTime())) return null;
-  try {
-    return new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short", timeZone: zone }).format(t)
-      + ` ${zoneName(t, zone, locale)}`;
-  } catch { return null; }
-}
-function zoneName(t: Date, zone: string | undefined, locale: string | undefined): string {
-  return new Intl.DateTimeFormat(locale, { timeZone: zone, timeZoneName: "short" }).formatToParts(t).find(p => p.type === "timeZoneName")?.value ?? zone ?? "";
-}
-
-/** What a report's anchor points at, as a line: the quote, the element's
- * name, the custom name or the selector, after the kind. */
-export function anchorText(anchor: unknown): string | null {
-  if (!anchor || typeof anchor !== "object") return null;
-  const a = anchor as { kind?: string; quote?: string | null; label?: string; name?: string; custom_name?: string | null; selector?: string | null };
-  const kind = { element: "Element", range: "Text", area: "Area", custom: "Custom", artifact: "The whole page" }[a.kind ?? ""] ?? a.kind ?? "Anchor";
-  const what = a.label || (a.quote ? `“${a.quote}”` : "") || a.name || a.custom_name || a.selector || "";
-  return what ? `${kind}: ${what}` : kind;
 }
 
 /** A diagnostics line's levels, most severe first. */
