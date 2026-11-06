@@ -411,3 +411,24 @@ export class ReporterClient {
     return this.pending;
   }
 }
+
+/** What a reporter lifecycle (the overlay's, or a host's own) calls of
+ * `ReporterClient`: moved out here (from the overlay's own model) so
+ * `sdk/src/lifecycle.ts`'s headless `ReporterLifecycle` can take either a
+ * real `ReporterClient` or a fake of tests without depending on the
+ * overlay. */
+export interface ReporterApi {
+  fileReport(r: NewReport): Promise<Report>;
+  myReports(cursor?: string): Promise<ReportPage>;
+  comment(reportId: string, body: string): Promise<Report>;
+  verify(reportId: string, v?: Verification): Promise<Report>;
+  reopen(reportId: string, r: Reopening): Promise<Report>;
+  badge(): Promise<Badge>;
+  seen(reportId: string): Promise<void>;
+  /** The URL of the reporter's view of the queue (a single-use link). */
+  viewLink?(reportId?: string): Promise<string>;
+  /** An object URL of report `reportId`'s clip, for an `<img>`; the caller
+   * revokes it. Absent on a host that never fetches it (the Full view's
+   * clip then goes unshown, same as a report with no clip at all). */
+  clipUrl?(reportId: string): Promise<string>;
+}
