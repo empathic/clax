@@ -1,0 +1,336 @@
+# ClaxBot's workspace for Clax: copy to <home>/workspace.toml. README.md here
+# says what it needs and what to replace.
+
+# No image is published for this: the repository's own (deploy/Dockerfile)
+# is the runtime, with no toolchain. Unset, the service refuses to start. On
+# Daytona this is a snapshot's name, sized and x86-64 (README.md, "A snapshot on
+# Daytona"), of clax-image.Dockerfile, which has git 2.44 or later (Ubuntu
+# 24.04's 2.43 fails 19 of clax-core's tests), and:
+#   Bazel 9.3.0 through bazelisk (.bazelversion), which `just` prefers
+#   Rust 1.94.0 with wasm32-unknown-unknown (rust-toolchain.toml)
+#   Node 26 (preview.yml) and pnpm 12.3.4 (web/package.json)
+#   clang, lld and llvm for the wasm32 Worker (preview.yml)
+#   Python 3.11+ for `just`
+# image = "clax-workspace-1"
+auto_stop_minutes = 30
+
+# What MODULE.bazel, the lockfiles and preview.yml fetch from, with the
+# hosts GitHub's archives and releases redirect to (rules_nodejs takes Node
+# from nodejs.org, rules_python its interpreter from a GitHub release). Not
+# measured by a full build in a container: add what the first one is refused.
+# The Flutter app's hosts are left out.
+domain_allow_list = [
+  "github.com",
+  "codeload.github.com",
+  "objects.githubusercontent.com",
+  "release-assets.githubusercontent.com",
+  "index.crates.io",
+  "static.crates.io",
+  "static.rust-lang.org",
+  "bcr.bazel.build",
+  "releases.bazel.build",
+  "registry.npmjs.org",
+  "nodejs.org",
+  "pypi.org",
+  "files.pythonhosted.org",
+  "cdn.playwright.dev",
+  # The Android SDK and NDK, which Bazel fetches even for a Rust library's
+  # test: every build fails without it.
+  "dl.google.com",
+]
+
+[runtime]
+kind = "daytona"
+
+[[target]]
+# The ID of the queue whose reports are for Clax. A hosted instance makes
+# `clax-feedback` itself (docs/feedback.md), with an ID of its own: until
+# this is one, no run matches this target.
+queue = "REPLACE_WITH_QUEUE_ID"
+# Where a pull request links its report: the same queue's ID. Only the queue's
+# members can open it, so a public pull request shows no more than the ID.
+report_url = "https://clax.dev/queues/REPLACE_WITH_QUEUE_ID/{report}"
+repo_url = "https://github.com/empathic/clax.git"
+repo = "empathic/clax"
+base = "main"
+# install.sh fetches releases of this repository unauthenticated, so it is
+# read as public, and a container clones it with no token.
+public = true
+# preview.yml deploys only on a person's `/preview <SHA>`.
+reviewed_previews = true
+# What a queue's members are told to do to bring a held fix's preview up.
+preview_gate = "read the change, then, with write access, post `/preview {commit}` on the pull request"
+# The repository is public and anyone signed in to clax.dev files reports, so
+# a reporter's word starts no run here: a member's Send is the review of what a
+# run reads.
+follow_ups = false
+# What a run reads of how to work here, beside AGENTS.md. A cold
+# //crates/clax-core:clax_core_lib_test took 371 s in a container.
+guidance = """
+Build and test with Bazel through `just`, not cargo.
+A first build is slow: give `clax.shell.exec` `timeout: 600`, and start with \
+narrow targets such as `bazelisk test //crates/<crate>:...`.
+The `title` of `clax.change.propose` is the commit's subject, and must be a \
+conventional commit: `type(scope): summary`. Add no attribution lines.
+You may not change manifests, lockfiles or build scripts, nor the code of \
+sign-in, authorization and report queues, which includes the auth and queue \
+routes: a change that touches them is refused when you propose it, and the \
+refusal names the path. If a fix needs one, stop and say so in your answer \
+rather than working towards it.
+Refused the same way, so check before a slow build: migrations \
+(crates/clax-store/src/migrations.rs), ClaxBot's own crates (crates/clax-bot*), \
+the server's crates/clax-server/src/bot.rs and router.rs, web/sdk/, and anything \
+outside `writable_paths`. `writable_paths` and `protected_paths` in \
+deploy/claxbot-workspace/clax.toml, here in the repository, are the whole list.
+web/perf/bundle-budget.json is refused too: a change that crosses a bundle \
+budget cannot raise it, so measure before you add to the web bundles.
+Write no qualifier records, whatever AGENTS.md says of them: those files are \
+refused here, and what you found goes in the proposal's summary.
+Write a test first, and watch it fail, for each change of behaviour.
+"""
+# What a target's model may keep open and push in a day.
+max_open_pull_requests = 3
+max_pushes_per_day = 10
+
+# Where a change may write. Nothing outside this is a change a model makes
+# here: no manifest, build script, lockfile or workflow is inside it.
+writable_paths = [
+  "crates/*/src/",
+  "crates/*/tests/",
+  "web/shell/src/",
+  "web/overlay/src/",
+  "web/e2e/",
+  "docs/",
+]
+
+# Subtracts from writable_paths, and stays right if that list grows. These
+# reach past a preview: what builds, what deploys, what signs in and what says
+# who may do what. It carries the defaults every target has, which the Rust
+# side adds anyway, for preview.yml's `approve`, which reads this file and no
+# Rust: scripts/check-claxbot-paths.py checks a pull request's paths against
+# this list, path-cases.txt holds both matchers to one answer, and
+# //scripts:claxbot_paths fails on an entry no longer in the tree.
+protected_paths = [
+  # Every target's.
+  ".github/",
+  ".gitmodules",  # absent: git reads it if it is made
+  "**/.gitattributes",
+  "**/.lfsconfig",
+  # Deploy: what preview.yml runs with the preview environment's token.
+  "deploy/",
+  "scripts/cloudflare-setup.sh",
+  "scripts/setup-env-github.sh",
+  "scripts/setup-prod-github.sh",
+  "crates/clax-worker/build.sh",
+  "crates/clax-worker/cloudflare-api.mjs",
+  "crates/clax-worker/deploy-lib.mjs",
+  "crates/clax-worker/deploy.mjs",
+  "crates/clax-worker/teardown.mjs",
+  "crates/clax-worker/wrangler.jsonc",
+  "crates/clax-worker/smoke-remote.mjs",
+  "crates/clax-worker/harness.mjs",
+  # Release.
+  "install.sh",
+  "scripts/carry-release.sh",
+  "scripts/check-release-head.sh",
+  "scripts/lib/release-common.sh",
+  "scripts/package-release.sh",
+  "scripts/pin-release.sh",
+  "scripts/release-sdk.sh",
+  "scripts/release.sh",
+  "scripts/verify-candidate.sh",
+  # What builds, and what a build or an agent's tool reads as instructions.
+  "scripts/",
+  "bazel/",
+  "third_party/",
+  "plugins/",
+  "apps/",
+  ".cargo/",
+  ".config/",
+  ".claude-plugin/",
+  ".grok-plugin/",
+  ".agents/",
+  ".claude/",  # absent: an agent reads it if it is made
+  ".codex/",  # absent: an agent reads it if it is made
+  "**/Cargo.toml",
+  "Cargo.lock",
+  "**/build.rs",
+  "**/package.json",
+  "**/pnpm-lock.yaml",
+  "**/pnpm-workspace.yaml",
+  "**/.npmrc",
+  "**/.pnpmfile.cjs",
+  "**/BUILD.bazel",
+  "**/BUILD",
+  "**/*.bzl",
+  "**/REPO.bazel",
+  "**/MODULE.bazel",
+  "MODULE.bazel",
+  "MODULE.bazel.lock",
+  ".bazelrc",
+  ".bazelversion",
+  ".bazeliskrc",  # absent: bazelisk reads it if it is made
+  ".bazelignore",
+  "user.bazelrc",  # absent: git-ignored, and Bazel reads it if it is made
+  "rust-toolchain.toml",
+  "justfile",
+  ".dockerignore",
+  "clippy.toml",
+  "web/scripts/",
+  "web/reel/",
+  "web/svelte.config.js",
+  "web/playwright.config.ts",
+  "web/tsconfig.json",
+  "web/vite.bridge-parts.config.ts",
+  "web/vite.bridge.config.ts",
+  "web/vite.overlay.config.ts",
+  "web/vite.shell.config.ts",
+  "web/vite.transport.config.ts",
+  # ClaxBot itself, and what an agent reads as its rules.
+  "crates/clax-bot/",
+  "crates/clax-bot-js/",
+  "crates/clax-bot-sandbox/",
+  "crates/clax-bot-workspace/",
+  "crates/clax-bot-remote/",
+  "crates/clax-bot-workspace-service/",
+  "**/AGENTS.md",
+  "**/CLAUDE.md",
+  "**/.qual",
+  "**/.mcp.json",
+  # Migrations.
+  "crates/clax-store/src/migrations.rs",
+  # Sign-in and authorization.
+  "crates/clax-http/src/auth.rs",
+  "crates/clax-http/src/github.rs",
+  "crates/clax-http/src/grant_auth.rs",
+  "crates/clax-server/src/github.rs",
+  "crates/clax-store/src/secrets.rs",
+  "crates/clax-store/src/roles.rs",
+  "crates/clax-store/src/visibility.rs",
+  "crates/clax-store/src/grants.rs",
+  "crates/clax-store/src/people.rs",
+  "crates/clax-store/src/passkeys.rs",
+  "crates/clax-core/src/rights.rs",
+  "crates/clax-core/src/sig.rs",
+  "crates/clax-http/src/hosted.rs",
+  "crates/clax-http/src/reporter.rs",
+  "crates/clax-http/src/identity.rs",
+  "crates/clax-http/src/viewer.rs",
+  "crates/clax-http/src/content_policy.rs",
+  "crates/clax-http/src/site_access.rs",
+  "crates/clax-http/src/local_trust.rs",
+  "crates/clax-http/src/seats.rs",
+  "crates/clax-server/src/routes/guards.rs",
+  "crates/clax-server/src/routes/login.rs",
+  "crates/clax-server/src/routes/token.rs",
+  "crates/clax-server/src/routes/grants.rs",
+  "crates/clax-server/src/routes/git_token.rs",
+  "crates/clax-server/src/routes/passkeys.rs",
+  "crates/clax-server/src/routes/people.rs",
+  "crates/clax-server/src/routes/queues.rs",
+  "crates/clax-server/src/routes/queue_reporter.rs",
+  "crates/clax-server/src/routes/queue_agent.rs",
+  "crates/clax-server/src/routes/queue_repo.rs",
+  "crates/clax-server/src/routes/queue_notifier.rs",
+  "crates/clax-server/src/routes/feedback.rs",
+  "crates/clax-server/src/routes/bot.rs",
+  "crates/clax-server/src/integrations/feedback.rs",
+  "crates/clax-server/src/notifiers.rs",
+  "crates/clax-store/src/queues.rs",
+  "crates/clax-store/src/queues/",
+  "crates/clax-store/src/queue_notifiers.rs",
+  "crates/clax-store/src/queue_notifiers/",
+  "crates/clax-store/src/queue_repos.rs",
+  "crates/clax-store/src/queue_repos/",
+  "crates/clax-store/src/feedback.rs",
+  "crates/clax-core/src/queue.rs",
+  "crates/clax-core/src/report.rs",
+  "crates/clax-core/src/feedback.rs",
+  "crates/clax-store/src/hosted.rs",
+  "crates/clax-store/src/github.rs",
+  "crates/clax-store/src/browser_login.rs",
+  "crates/clax-store/src/device.rs",
+  "crates/clax-store/src/site_sessions.rs",
+  "crates/clax-store/src/viewers.rs",
+  "crates/clax-store/src/extension.rs",
+  "crates/clax-store/src/elevations.rs",
+  "crates/clax-store/src/approvals.rs",
+  "crates/clax-store/src/capability_approvals.rs",
+  "crates/clax-store/src/confirmations.rs",
+  "crates/clax-store/src/reach.rs",
+  "crates/clax-store/src/shares.rs",
+  "crates/clax-store/src/sample_grants.rs",
+  "crates/clax-store/src/net_grants.rs",
+  "crates/clax-store/src/flags.rs",
+  "crates/clax-core/src/confirm.rs",
+  "crates/clax-core/src/extension.rs",
+  "crates/clax-http/src/agent.rs",
+  "crates/clax-http/src/confirm.rs",
+  "crates/clax-http/src/extension.rs",
+  "crates/clax-http/src/db_caller.rs",
+  "crates/clax-server/src/hosted.rs",
+  "crates/clax-server/src/routes/confirmations.rs",
+  "crates/clax-server/src/routes/extension.rs",
+  "crates/clax-sample/src/form.rs",
+  "web/sdk/",
+  "crates/clax-server/src/router.rs",
+  "crates/clax-server/src/routes/mod.rs",
+  "crates/clax-server/src/routes/admin.rs",
+  "crates/clax-server/src/routes/permissions.rs",
+  "crates/clax-server/src/routes/site_signin.rs",
+  "crates/clax-server/src/routes/connect.rs",
+  "crates/clax-server/src/routes/approvals.rs",
+  "crates/clax-core/src/visibility.rs",
+  "crates/clax-core/src/webauthn.rs",
+  "crates/clax-core/src/secret.rs",
+  "crates/clax-http/src/lib.rs",
+  "crates/clax-http/src/live_access.rs",
+  "crates/clax-http/src/peer_user.rs",
+  "crates/clax-worker/src/repos/tokens.rs",
+  "crates/clax-embed/src/ffi.rs",
+  # What a run's own limits are made of, on each host.
+  "crates/clax-worker/src/sandbox/",
+  "crates/clax-worker/src/bot.rs",
+  "crates/clax-worker/src/workspace.rs",
+  "crates/clax-server/src/bot.rs",
+  "crates/clax-http/src/bot.rs",
+  "crates/clax-store/src/bot_runs.rs",
+  "crates/clax-store/src/bot_settings.rs",
+  # What people are told and agree to.
+  "docs/legal/",
+  "docs/usage.md",
+]
+
+# A tripwire, and no control: it catches the plain way of pointing a `mod` at a
+# protected file from a writable one, a `#[path]` or a `cfg_attr` carrying it,
+# whitespace aside. A macro, a raw string or an `include!` of another extension
+# gets past it, and a writable `lib.rs` can swap a module with no attribute at
+# all. Only the daemon checks it. A person's review of the diff is the control,
+# so adding patterns here adds nothing.
+refused_in_rust = ["#[path", ",path=\""]
+
+# PREVIEW_HOST_ZONE, as chosen for the `preview` environment
+# (docs/environments.md). ClaxBot's pull request deploys only on a person's
+# `/preview <SHA>`, so a fix is held until then: its reporter is asked nothing,
+# and hears of it when the preview comes up. The queue's notifier tells its people
+# at the proposal. The wait is detached from the run and outlives it; if it ends
+# with no preview seen the queue's members are told, on the report and on the stream,
+# and a preview that comes up later than this reaches nobody unless a member hands
+# the fix over with its link. A person reads the change first and a deploy has taken
+# 10 to 20 minutes, so this is a day, the most a wait may be, and a look a minute.
+preview_url = "https://pr-{pr}.clax-preview.dev"
+preview_ready_path = "/healthz"
+# `commit` in the answer is the full SHA: preview.yml checks out the pull
+# request's head and deploy.mjs builds that in as CLAX_BUILD_COMMIT.
+preview_names_commit = true
+preview_timeout_secs = 86400
+preview_poll_secs = 60
+
+# Last in the file: TOML reads what follows a table as part of it. The App's
+# tokens are minted per repository and its commits are signed by GitHub. It
+# needs Contents and Pull requests read and write on this repository, and no
+# Workflows permission; replace both numbers.
+[target.github_app]
+app_id = 0
+installation_id = 0
+private_key_env = "CLAXBOT_CLAX_APP_KEY"

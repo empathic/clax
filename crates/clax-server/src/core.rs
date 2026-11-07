@@ -203,7 +203,7 @@ impl Core {
         state.net = Arc::new(clax_http::net_cache::daemon_net(cfg.home.root()));
         state.bot = Arc::new(local_bot(&state, cfg.catalog_url));
         // ClaxBot's driver: the runs a previous process left, then every new one.
-        let bot_driver = crate::bot::driver(&mut state);
+        let bot_driver = crate::bot::driver_for_home(&mut state, Some(cfg.home.root()));
         state.audit_wake.install(&state.store);
         // The appender recovers the journal and catches it up on its own
         // thread, so the core serves at once.
@@ -564,7 +564,8 @@ pub(crate) async fn stop_store(store: Arc<Store>, within: Duration) -> bool {
 
 /// The background tasks a core runs: the session reaper, the grant
 /// sweeper, the planner statistics refresh, the drafts sweeper, the
-/// working sweeper and the price catalog's refresh.
+/// working sweeper, the price catalog's refresh and the delivery of queue
+/// notices.
 fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::task::JoinHandle<()>> {
     let fctx = state.feedback_ctx();
     let reap_state = state.clone();
@@ -679,6 +680,7 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
     // The price catalog, once its cache is a day old: looked at on start
     // and every hour after.
     let catalog = crate::catalog::spawn_refresher(state.clone(), crate::catalog::CHECK_EVERY);
+    let notices = crate::notifiers::spawn_delivery(state.clone(), crate::notifiers::CHECK_EVERY);
 
     vec![
         reaper,
@@ -687,6 +689,7 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
         drafts_sweeper,
         sweeper,
         catalog,
+        notices,
     ]
 }
 

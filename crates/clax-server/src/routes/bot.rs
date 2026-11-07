@@ -659,6 +659,45 @@ pub fn run_access(
     Err(CoreError::NotFound)
 }
 
+/// Whether `caller` sees run `run` as its status alone ([`status_alone`]):
+/// a confidential run ([`Run::confidential`]) is for its report's queue, so
+/// anyone with no role there does, whatever else they may do: the
+/// instance's admin, the artifact's maker, a reader of the artifact. A run
+/// whose queue cannot be told is sealed from all but the person it acts for.
+///
+/// # Errors
+/// The store's.
+pub fn sealed_from(st: &Store, caller: &Caller, run: &Run) -> clax_core::Result<bool> {
+    if !run.confidential {
+        return Ok(false);
+    }
+    let person = match caller {
+        Caller::Owner { .. } => None,
+        Caller::Person { viewer } => Some(viewer.public_id.as_str()),
+        _ => return Ok(true),
+    };
+    for tid in &run.thread_ids {
+        if let Some(q) = st.get_thread(tid)?.and_then(|t| t.queue_id) {
+            return Ok(st.queue_role(&q, person)?.is_none());
+        }
+    }
+    Ok(person.unwrap_or(clax_store::roles::OWNER) != run.person)
+}
+
+/// What of run view `v` ([`run_view`]) someone sees a run is sealed from
+/// ([`sealed_from`]): its ID, status, kind and times, and nothing that a
+/// model's words could reach.
+pub fn status_alone(v: &Value) -> Value {
+    json!({
+        "id": v["id"], "status": v["status"], "request": v["request"],
+        "started_at": v["started_at"], "ended_at": v["ended_at"],
+        "artifact_id": null, "thread_ids": [], "reason": null, "model": null,
+        "key_source": null, "acting_for": null, "credits_milli": 0,
+        "tokens": {"input": 0, "cached": 0, "output": 0},
+        "draft": null, "last_event_id": null, "sealed": true,
+    })
+}
+
 /// The caller of a run route: not an agent, not anonymous.
 async fn run_caller(s: &AppState, d: &DeniedToGrants) -> Result<Caller, ApiError> {
     d.refuse_agents()?;
@@ -728,15 +767,21 @@ pub fn for_overseer(v: &mut Value) {
 #[serde(deny_unknown_fields)]
 pub struct RunsQuery {
     artifact: String,
+    /// Lists only the runs of this thread of the artifact.
+    thread: Option<String>,
 }
 
 /// The most runs `GET /api/bot/runs` lists.
 const RUNS_LISTED: u32 = 50;
 
-/// `GET /api/bot/runs?artifact=` (see the module documentation): the
-/// runs on an artifact the caller may read, newest first. An admin lists
-/// any artifact's on a local daemon; on a hosted one only those they read,
-/// as anyone (404 for any other, as for none).
+/// `GET /api/bot/runs?artifact=[&thread=]` (see the module documentation):
+/// the runs on an artifact the caller may read, newest first, or those of
+/// one of its threads. An admin lists any artifact's on a local daemon; on
+/// a hosted one only those they read, as anyone (404 for any other, as for
+/// none). Each run says whether the caller may stop it (`may_stop`), a
+/// sealed one too, as [`cancel`] would answer, and the answer whether they
+/// may send the artifact's threads (`may_send`), as [`create`] would, for a
+/// view that cannot work these out.
 pub async fn list(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -758,12 +803,28 @@ pub async fn list(
             if !admin && !reads_artifact(st, hosted, &caller, id.as_str(), live)? {
                 return Err(CoreError::NotFound);
             }
-            let runs = st
-                .runs_for_artifact(id.as_str(), RUNS_LISTED)?
+            let mut listed = match &q.thread {
+                Some(tid) => st.runs_for_thread(tid, RUNS_LISTED)?,
+                None => st.runs_for_artifact(id.as_str(), RUNS_LISTED)?,
+            };
+            listed.retain(|r| r.artifact_id == id.as_str());
+            let runs = listed
                 .iter()
-                .map(|r| run_view(st, r))
+                .map(|r| {
+                    let v = run_view(st, r)?;
+                    let mut v = if sealed_from(st, &caller, r)? {
+                        status_alone(&v)
+                    } else {
+                        v
+                    };
+                    let access = run_access(st, hosted, live, &caller, r)?;
+                    v["may_stop"] = json!(access.controls());
+                    Ok(v)
+                })
                 .collect::<clax_core::Result<Vec<_>>>()?;
-            Ok(json!({"runs": runs}))
+            let may_send = reads_artifact(st, hosted, &caller, id.as_str(), live)?
+                && super::people::may_send_at(st, &caller, &id)?;
+            Ok(json!({"runs": runs, "may_send": may_send}))
         })
         .await?;
     Ok(Json(v))
@@ -786,7 +847,9 @@ pub async fn get(
             let live = live_ids.contains(&run.artifact_id);
             let access = run_access(st, hosted, live, &caller, &run)?;
             let mut v = run_view(st, &run)?;
-            if access == RunAccess::Overseer {
+            if sealed_from(st, &caller, &run)? {
+                v = status_alone(&v);
+            } else if access == RunAccess::Overseer {
                 for_overseer(&mut v);
             } else {
                 let mut steps = steps_view(st, &run.id, &steps)?;
@@ -865,8 +928,35 @@ pub fn start_run(
     request: RequestKind,
     thread_ids: Vec<String>,
 ) -> clax_core::Result<Run> {
+    start_run_woken(st, bot, ctx, sender, aid, request, thread_ids, None)
+}
+
+/// [`start_run`] for a run a reporter's `woken` started, which it keeps.
+///
+/// # Errors
+/// [`start_run`]'s.
+#[allow(clippy::too_many_arguments)]
+pub fn start_run_woken(
+    st: &Store,
+    bot: &Bot,
+    ctx: &AuditCtx,
+    sender: &Sender,
+    aid: &ArtifactId,
+    request: RequestKind,
+    thread_ids: Vec<String>,
+    woken: Option<clax_store::bot_runs::WokenBy>,
+) -> clax_core::Result<Run> {
     let person = sender.person.as_str();
     let art = st.get_artifact(aid)?.ok_or(CoreError::NotFound)?;
+    // A report leads: the run's queue, branch and fix are all its first's.
+    let mut thread_ids = thread_ids;
+    let plain = |t: &String| {
+        st.get_thread(t)
+            .ok()
+            .flatten()
+            .is_none_or(|t| t.queue_id.is_none())
+    };
+    thread_ids.sort_by_key(plain);
     if let Some(active) = st.active_run_on(&thread_ids)? {
         return Err(run_active(&active.id));
     }
@@ -875,23 +965,24 @@ pub fn start_run(
         return Err(refused_error(st, person, code)?);
     }
     let key_source = key_source(st, bot, person)?.unwrap_or(KeySource::Instance);
-    st.create_run_exclusive(
-        ctx,
-        clax_store::bot_runs::NewRun {
-            artifact_id: aid.as_str().to_string(),
-            person: person.to_string(),
-            request,
-            thread_ids,
-            model: model_of(st)?,
-            key_source,
-            base_version: art.current_version,
-            agent_grant: sender.agent_grant.clone(),
-            web: WebAccess::now(st, person, crate::bot::web_configured(st, bot)?)?
-                .shape()
-                .as_str()
-                .to_string(),
-        },
-    )?
+    let new = clax_store::bot_runs::NewRun {
+        artifact_id: aid.as_str().to_string(),
+        person: person.to_string(),
+        request,
+        thread_ids,
+        model: model_of(st)?,
+        key_source,
+        base_version: art.current_version,
+        agent_grant: sender.agent_grant.clone(),
+        web: WebAccess::now(st, person, crate::bot::web_configured(st, bot)?)?
+            .shape()
+            .as_str()
+            .to_string(),
+    };
+    match woken {
+        Some(by) => st.create_woken_run(ctx, new, by),
+        None => st.create_run_exclusive(ctx, new),
+    }?
     .map_err(|active| run_active(&active.id))
 }
 
@@ -1233,7 +1324,9 @@ pub async fn cancel(
             let ctx = audit.resolve(st)?;
             let run = st.cancel_run(&ctx, &run.id)?;
             let mut v = run_view(st, &run)?;
-            if access == RunAccess::Overseer {
+            if sealed_from(st, &caller, &run)? {
+                v = status_alone(&v);
+            } else if access == RunAccess::Overseer {
                 for_overseer(&mut v);
             }
             Ok(v)
@@ -1286,7 +1379,9 @@ async fn serve_draft(
         .store_call_async(move |st| async move {
             let run = st.run(&rid)?.ok_or(CoreError::NotFound)?;
             let live = live_ids.contains(&run.artifact_id);
-            if !run_access(&st, hosted, live, &caller, &run)?.reads_draft() {
+            if !run_access(&st, hosted, live, &caller, &run)?.reads_draft()
+                || sealed_from(&st, &caller, &run)?
+            {
                 return Err(CoreError::NotFound);
             }
             if let Some(f) = st
@@ -1712,12 +1807,23 @@ pub async fn events(
             if next.event == "run_end" {
                 f.done = true;
             }
-            let (rid, ev) = (f.rid.clone(), next.clone());
+            let (rid, ev, c) = (f.rid.clone(), next.clone(), f.caller.clone());
+            // Asked at each event: a run becomes confidential at its first
+            // tick, and a member may leave the queue. Not knowing is sealed.
             let data =
-                f.s.store_call(move |st| panel_event(st, &rid, &ev))
-                    .await
-                    .ok()
-                    .flatten();
+                f.s.store_call(move |st| {
+                    let run = st.run(&rid)?.ok_or(CoreError::NotFound)?;
+                    if !sealed_from(st, &c, &run)? {
+                        return panel_event(st, &rid, &ev);
+                    }
+                    if ev.event != "run_end" {
+                        return Ok(None);
+                    }
+                    Ok(Some(json!({"run": status_alone(&run_view(st, &run)?)})))
+                })
+                .await
+                .ok()
+                .flatten();
             let data = match data {
                 Some(d) if f.reader => event_for_reader(next.event, d),
                 d => d,

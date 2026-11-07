@@ -20,6 +20,9 @@ members = [
     "crates/clax-bot-sandbox",
     "crates/clax-bot-js",
     "crates/clax-bot",
+    "crates/clax-bot-workspace",
+    "crates/clax-bot-remote",
+    "crates/clax-bot-workspace-service",
     # Patched copies of third-party crates, under names of their own
     # (docs/bazel.md, section Patched third-party crates).
     "third_party/clax-rquickjs-sys",
@@ -53,6 +56,9 @@ default-members = [
     "crates/clax-bot-sandbox",
     "crates/clax-bot-js",
     "crates/clax-bot",
+    "crates/clax-bot-workspace",
+    "crates/clax-bot-remote",
+    "crates/clax-bot-workspace-service",
     "third_party/clax-rquickjs-sys",
     "third_party/clax-rquickjs-core",
     "crates/clax-embed",

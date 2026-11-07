@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Leave</title></head>
+<body>
+<h1>Request leave</h1>
+<p id="out"></p>
+<script type="module">
+  import { daysBetween } from "./days.js";
+  document.getElementById("out").textContent =
+    `Monday to Friday takes ${daysBetween("2026-03-02", "2026-03-06")} days.`;
+</script>
+</body>
+</html>

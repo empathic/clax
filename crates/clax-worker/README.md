@@ -60,6 +60,58 @@ whose client ID, secret and owner are kept in
 over and `--setup` leaves setup open to try it. `just hosted-demo` is the
 other local instance: seeded people and artifacts, and demo agents.
 
+### ClaxBot's workspace
+
+A Worker runs no container. With `CLAX_WORKSPACE_SERVICE_URL` and the secret
+`CLAX_WORKSPACE_SERVICE_TOKEN` both set, ClaxBot's `clax.shell.exec` and
+`clax.change.propose` go to a workspace service
+(`crates/clax-bot-workspace-service`), reached by `fetch` with that bearer
+secret, which is all the Worker holds of it (`src/workspace.rs`). With neither
+set the Worker runs as it does without one; with one alone, or an address that
+is not `https://`, it has none and a queue's Repository panel says that it did not
+start. A service needs a name for this instance too, its own setting else
+`CLAX_INSTANCE`.
+
+`deploy.mjs` sets the variables, and the deploy record keeps them; an empty value
+clears one, and a preview refuses them all:
+
+| Flag | Variable | Value |
+|---|---|---|
+| `--workspace-service-url` | `CLAX_WORKSPACE_SERVICE_URL` | the service's `https://` address |
+| `--workspace-preview-hosts` | `CLAX_WORKSPACE_PREVIEW_HOSTS` | the hosts a preview's link may be on, comma-separated, each exact or `*.` before a zone |
+| `--workspace-forge-hosts` | `CLAX_WORKSPACE_FORGE_HOSTS` | the same of a pull request's link |
+| `--workspace-service-instance` | `CLAX_WORKSPACE_SERVICE_INSTANCE` | the service's name for this instance |
+
+Set anywhere else they last until the next deploy, since `wrangler deploy` replaces
+what the dashboard holds.
+
+Cloudflare Access goes in front of the service with a service token: the secrets
+`CLAX_WORKSPACE_ACCESS_CLIENT_ID` and `CLAX_WORKSPACE_ACCESS_CLIENT_SECRET`, sent as
+`CF-Access-Client-Id` and `CF-Access-Client-Secret`, beside the bearer secret. Both
+or neither: one alone is a workspace that did not start. They are secrets, so no
+deploy record holds them, and no preview gets them
+([docs/prod.md](../../docs/prod.md), "ClaxBot's workspace service").
+
+The object keeps the service's latest snapshot in its storage, so a new
+incarnation answers what a run is offered before it hears from the service; one
+over 15 minutes old has lapsed: it offers nothing and reads as confidential while
+it lasts, and marks no run. A call goes on at the service whatever the alarm does: a tick gives it up when its
+time is out and the next joins it, and a killed instance's resumes from its
+alarm. A driver's start reaps what the service holds for runs not live. An outage
+fails closed: a command answers `shell_unavailable`, and with no snapshot a run has
+no shell. Previews are polled from the alarm, every 30 s while one may yet be told
+of, whether or not its run has ended, and on after a failed poll, and a link on no
+host of `CLAX_WORKSPACE_PREVIEW_HOSTS` counts as no preview. Reaping, ending a run
+and that timed work are each bounded to 30 s of an alarm: what they did not get to
+is kept and tried again, each failure holding the timed work back longer, up to 10
+minutes. Such a Worker runs at most five runs at once, since each holds one of the six connections
+a Worker may have waiting for headers.
+
+**The service serves its operator's `workspace.toml` alone.** It holds no store
+and no key-encryption key, so a repository a queue's admin connects in Clax cannot
+run on a Worker. The Repository panel offers no link there and says why; only a
+queue the operator's file names gets a repository.
+
 ### ClaxBot's sandbox
 
 ClaxBot's scripts run in the Worker Loader sandbox (`src/sandbox/`,
@@ -363,7 +415,12 @@ npx wrangler queues subscription create clax-artifacts-events --source artifacts
 | `GIT_SMART_HTTP` | `0` with `artifacts` | `1` serves the stand-in over git smart HTTP at `/git/*` |
 | `CLAX_INSTANCE` | empty | The instance object's name (`default`) |
 | `CLAX_LIVE_PEOPLE_SEATS`, `CLAX_LIVE_GUEST_SEATS`, `CLAX_LIVE_AGENT_SEATS`, `CLAX_LIVE_SEAT_IDLE_S` | empty | Live seats per artifact and the idle release; empty takes 100, 20, 20 and 180 s |
+| `CLAX_WORKSPACE_SERVICE_URL` | the workspace service's `https://` address (`deploy.mjs --workspace-service-url`), else empty | ClaxBot's containers ([below](#claxbots-workspace)); off unless the secret `CLAX_WORKSPACE_SERVICE_TOKEN` is set too |
+| `CLAX_WORKSPACE_PREVIEW_HOSTS` | `*.<preview zone>` | Comma-separated hosts, each exact or `*.` before a zone, where a preview's link may point, whatever the service says; empty allows none |
+| `CLAX_WORKSPACE_FORGE_HOSTS` | `github.com` | The same, of a pull request's link |
+| `CLAX_WORKSPACE_SERVICE_INSTANCE` | empty, or the service's `CLAX_WORKSPACE_SERVICE_INSTANCE` | What every request names this instance as, and a service serving another refuses; empty takes `CLAX_INSTANCE`, else `default` |
 | `CLAX_TEST_ROUTES`, `CLAX_TEST_WEB`, `REPO_DEV_ROUTES` | `0` | Test-only routes, and ClaxBot's scripted web source; never `1` on a deploy |
+| `CLAX_TEST_RESUME_AFTER_MS`, `CLAX_TEST_ALARM_BUDGET_MS`, `CLAX_TEST_TEND_MS` | empty | With the test routes, what takes minutes in seconds; never on a deploy |
 | `CLAX_DIAG_ROUTES` | `0`; `1` (`deploy.mjs --diag`) only until the smoke is green | `/_diag/` for the owner token (`src/diag.rs`): what the platform's bindings answer |
 | `GITHUB_CLIENT_ID` | the OAuth App's client ID (`deploy.mjs --github-client-id`) | GitHub sign-in; off without it or without `GITHUB_CLIENT_SECRET` |
 | `OWNER_GITHUB` | the owner's GitHub login (`deploy.mjs --owner-github`) | Whoever signs in as that account (case-insensitive) is the owner |
@@ -554,6 +611,9 @@ its steps. Not yet run against a deployed Worker:
   `platform_error` reads them by), `abortIsolate` after a script's last
   message, and the eight conformance cases `test-sandbox.mjs` cannot run
   locally.
+- ClaxBot's workspace against a real service, through a real tunnel, on
+  Cloudflare: `fetch` to it, a poll aborted when a tick gives it up, the
+  connection limit under five runs, and the service's own containers.
 - ClaxBot's runs on a real Durable Object: an alarm driving for minutes
   (the 15-minute wall limit, and the 30 s of CPU an invocation has by
   default), an invocation the platform ends mid-step and the alarm kept a

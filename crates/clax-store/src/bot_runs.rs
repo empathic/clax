@@ -170,6 +170,41 @@ pub struct Run {
     /// tools), `"search"`, `"fetch"` or `"search,fetch"`. Written when the
     /// run is made and never changed.
     pub web: String,
+    /// The run may hold material a report's reporter must not read
+    /// ([`Store::mark_run_confidential`]). It goes from false to true and
+    /// never back.
+    pub confidential: bool,
+    /// What started the run, for a run no person sent.
+    pub woken_by: Option<WokenBy>,
+}
+
+/// What a reporter did that started a run ([`Store::create_woken_run`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WokenBy {
+    /// They said a fix does not work: the run may propose another.
+    Reopen,
+    /// They replied while a fix waits for their verdict: the run may answer
+    /// and may not change what they are checking.
+    Reply,
+}
+
+impl WokenBy {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WokenBy::Reopen => "reopen",
+            WokenBy::Reply => "reply",
+        }
+    }
+
+    fn parse(s: &str) -> Option<WokenBy> {
+        match s {
+            "reopen" => Some(WokenBy::Reopen),
+            "reply" => Some(WokenBy::Reply),
+            _ => None,
+        }
+    }
 }
 
 /// One step.
@@ -262,7 +297,7 @@ pub struct Committed {
 
 const RUN_COLS: &str = "id, artifact_id, person, request, thread_ids_json, status, reason, model,
     key_source, base_version, credits_milli, claimed_by, claimed_at, created_at, updated_at, ended_at,
-    agent_grant, due_at, web";
+    agent_grant, due_at, web, confidential, woken_by";
 
 fn row_to_run(r: &Row<'_>) -> rusqlite::Result<Run> {
     let s = |i: usize| r.get::<_, String>(i);
@@ -286,6 +321,11 @@ fn row_to_run(r: &Row<'_>) -> rusqlite::Result<Run> {
         agent_grant: r.get(16)?,
         due_at: r.get(17)?,
         web: s(18)?,
+        confidential: r.get(19)?,
+        woken_by: r
+            .get::<_, Option<String>>(20)?
+            .as_deref()
+            .and_then(WokenBy::parse),
     })
 }
 
@@ -475,6 +515,63 @@ impl Store {
                 return Ok(Err(active));
             }
             Ok(Ok(self.create_run_in(tx, ctx, new)?))
+        })
+    }
+
+    /// [`Store::create_run_exclusive`] for a run `by` started, which it
+    /// keeps ([`Run::woken_by`]).
+    ///
+    /// # Errors
+    /// [`Store::create_run`]'s.
+    pub fn create_woken_run(
+        &self,
+        ctx: &AuditCtx,
+        new: NewRun,
+        by: WokenBy,
+    ) -> Result<std::result::Result<Run, Run>> {
+        self.with_tx(|tx| {
+            if let Some(active) = active_on_in(tx, &new.thread_ids)? {
+                return Ok(Err(active));
+            }
+            let run = self.create_run_in(tx, ctx, new)?;
+            tx.execute(
+                "UPDATE bot_runs SET woken_by = ?2 WHERE id = ?1",
+                params![run.id, by.as_str()],
+            )?;
+            Ok(Ok(Run {
+                woken_by: Some(by),
+                ..run
+            }))
+        })
+    }
+
+    /// Marks run `id` as one that may hold confidential material
+    /// ([`Run::confidential`]). There is no way to clear it.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn mark_run_confidential(&self, id: &str) -> Result<()> {
+        self.with_tx(|tx| {
+            tx.execute(
+                "UPDATE bot_runs SET confidential = 1 WHERE id = ?1",
+                params![id],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Whether run `id`'s journal holds a call at a place of `seq` or
+    /// later: what tells a run that touched its workspace.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn run_called_from(&self, id: &str, seq: i64) -> Result<bool> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM bot_calls WHERE run_id = ?1 AND seq >= ?2)",
+                params![id, seq],
+                |r| r.get(0),
+            )?)
         })
     }
 
@@ -1162,6 +1259,22 @@ impl Store {
                 "SELECT {CALL_COLS} FROM bot_calls WHERE run_id = ?1 AND step_n = ?2 ORDER BY seq"
             ))?;
             let rows = q.query_map(params![id, n], row_to_call)?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// The journal of every call of `op` run `id` made, in any step, by step
+    /// and `seq`.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn bot_calls_of(&self, id: &str, op: &str) -> Result<Vec<CallEntry>> {
+        self.with_read(|c| {
+            let mut q = c.prepare_cached(&format!(
+                "SELECT {CALL_COLS} FROM bot_calls WHERE run_id = ?1 AND op = ?2
+                 ORDER BY step_n, seq"
+            ))?;
+            let rows = q.query_map(params![id, op], row_to_call)?;
             Ok(rows.collect::<rusqlite::Result<_>>()?)
         })
     }
@@ -2119,6 +2232,18 @@ mod tests {
         assert_eq!(body["step"], 1);
         assert_eq!(turn.ids.artifact.as_deref(), Some(run.artifact_id.as_str()));
         assert!(turn.actor.contains("\"type\":\"bot\""));
+    }
+
+    #[test]
+    fn a_run_marked_confidential_stays_so_and_a_woken_run_keeps_what_woke_it() {
+        let (_d, st) = store();
+        let run = new_run(&st);
+        assert!(!run.confidential);
+        assert_eq!(run.woken_by, None);
+        st.mark_run_confidential(&run.id).unwrap();
+        st.mark_run_confidential(&run.id).unwrap();
+        assert!(st.run(&run.id).unwrap().unwrap().confidential);
+        assert!(!st.run_called_from(&run.id, 0).unwrap());
     }
 
     #[test]

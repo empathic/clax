@@ -530,6 +530,7 @@ pub fn channel(origin: &str) -> &'static str {
 ///
 /// ```json
 /// {"enabled": true, "instance": "<origin>", "queue": "<queue ID>",
+///  "public_notice": false,
 ///  "context": {"release": {"version": "…", "commit": "…", "id": "<build>", "channel": "prod"|"dev"},
 ///              "flags": {"claxbot": true, "claxbot_unenforced": false},
 ///              "app": {"repo": "https://github.com/empathic/clax"}}}
@@ -557,15 +558,17 @@ pub async fn config(
     let Some(i) = current(&s).await? else {
         return Ok(off);
     };
-    let (flags, user) = s
+    let qid = i.queue_id.clone();
+    let (flags, user, public_notice) = s
         .store_call(move |st| {
             let flags = st.flags_of(&person)?;
+            let public_notice = st.queue(&qid)?.is_some_and(|q| q.public_notice);
             let user = if person == OWNER {
                 st.owner_viewer(false)?.public_id
             } else {
                 person
             };
-            Ok((flags, user))
+            Ok((flags, user, public_notice))
         })
         .await?;
     let mut release = instance.release();
@@ -575,6 +578,7 @@ pub async fn config(
         "instance": i.instance,
         "queue": i.queue_id,
         "user": user,
+        "public_notice": public_notice,
         "context": {
             "release": release,
             "flags": flags,

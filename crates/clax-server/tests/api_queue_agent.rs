@@ -4,8 +4,9 @@
 
 use clax_core::audit::AuditCtx;
 use clax_core::queue::{LEASE_SECS, ReportersSee, Role};
+use clax_core::report::NewFix;
 use clax_core::working::ManualClock;
-use clax_store::queues::{ExternalScope, NewQueue, NewReport, ReporterToken};
+use clax_store::queues::{ExternalScope, NewQueue, NewReport, ReportWriter, ReporterToken};
 use clax_testkit::{FAKE_PNG, TestServer, element_anchor};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -909,6 +910,89 @@ async fn fix_with_a_stale_fence_is_lease_lost() {
         (200, &json!("fix_proposed")),
         "{v}"
     );
+}
+
+impl Q {
+    /// Session `sid` on the report under its live lease, with a fix of
+    /// ClaxBot's held on it. A claim refuses a report whose fix waits and a
+    /// run's fix refuses a live lease, so only a clock set back brings the
+    /// two together: the lease lapses, the run proposes, and the lease is
+    /// live again.
+    async fn held_under_lease(&self, sid: &str) {
+        let (s, v) = self
+            .agent(Some(sid), "POST", &self.report("/claim"), json!({}))
+            .await;
+        assert_eq!(s, 200, "{v}");
+        let past_it = LEASE_SECS + 1;
+        self.clock.advance(past_it);
+        let by = ReportWriter::Run {
+            run: "run-1".into(),
+            name: "ClaxBot".into(),
+            key: "k".into(),
+            note: None,
+            held: true,
+            preview_url: None,
+        };
+        let fix = NewFix {
+            summary: "A fix has been proposed.".into(),
+            url: None,
+            commit: None,
+            release: None,
+            verify_url: None,
+            verify_after: None,
+        };
+        self.ts
+            .store
+            .propose_fix(&AuditCtx::DAEMON, &self.qid, &self.tid, &by, fix)
+            .unwrap();
+        self.clock.advance(-past_it);
+    }
+}
+
+#[tokio::test]
+async fn an_agent_may_not_hand_over_a_held_fix_with_no_link() {
+    let q = setup().await;
+    let a = q.session("a").await;
+    q.held_under_lease(&a).await;
+    let body = json!({"summary": "Have a look."});
+    let (s, v) = q.agent(Some(&a), "POST", &q.report("/fix"), body).await;
+    assert_eq!((s, code(&v)), (400, "verify_url_required"), "{v}");
+    let (_, v) = q.agent(Some(&a), "GET", &q.report(""), json!(null)).await;
+    let fixes = v["report"]["fixes"].as_array().unwrap();
+    assert_eq!(fixes.len(), 1, "nothing changed: {v}");
+    assert_eq!(fixes[0]["held"], true, "{v}");
+    assert_eq!(fixes[0]["outcome"], "pending", "{v}");
+}
+
+#[tokio::test]
+async fn an_agents_fix_with_a_link_hands_a_held_fix_over_and_stays_with_its_run() {
+    let q = setup().await;
+    let a = q.session("a").await;
+    q.held_under_lease(&a).await;
+    let body = json!({"summary": "Have a look.", "verify_url": "https://check.example/pr-1"});
+    let (s, v) = q.agent(Some(&a), "POST", &q.report("/fix"), body).await;
+    assert_eq!(s, 200, "{v}");
+    let fixes = v["report"]["fixes"].as_array().unwrap();
+    assert_eq!(fixes[0]["outcome"], "superseded", "{v}");
+    assert_eq!(fixes[1]["outcome"], "pending", "{v}");
+    assert!(fixes[1].get("held").is_none(), "{v}");
+    assert_eq!(
+        q.ts.store.last_fix_run(&q.tid).unwrap().as_deref(),
+        Some("run-1"),
+        "a reopen still wakes ClaxBot"
+    );
+}
+
+#[tokio::test]
+async fn an_agent_may_still_propose_a_fix_with_no_link_when_none_is_held() {
+    let q = setup().await;
+    let a = q.session("a").await;
+    q.agent(Some(&a), "POST", &q.report("/claim"), json!({}))
+        .await;
+    let body = json!({"summary": "Done."});
+    let (s, v) = q.agent(Some(&a), "POST", &q.report("/fix"), body).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["report"]["state"], "fix_proposed", "{v}");
 }
 
 #[tokio::test]

@@ -113,7 +113,8 @@ own user table, never an email address. The optional `profile` (`name`,
 `email`, `github`, `avatar_url`, each at most 256 bytes) is shown to
 triage members with each report, and never to other reporters. A
 `github` login lets a fixing agent ask the reporter to review its pull
-request.
+request, and picks who a queue's notifier sends a direct message: verify it
+before you assert it ("Telling people on Zulip").
 
 ### Licences of the code you use
 
@@ -582,6 +583,7 @@ drawn in fallback fonts.
 | `auth(publicKey)` | Gets a reporter token from your backend (section 2). |
 | `launcher` | `"corner"` (default): Report and "Your reports" in the bottom right corner. `false`: none; you call `report()` and `showReports()` from your own menu. |
 | `canFile` | Default `true`. `false` hides Report and keeps "Your reports" (and its badge polls, which ask for tokens). |
+| `publicNotice` | `true` makes the composer say "What you write may appear in a public pull request." at once. A queue with its public notice on (section 7) says so through the badge, whatever this is. |
 | `context` | Your `release`, `flags` and `app`, or a function giving them, called when each capture starts (section 5). |
 | `metadata` | Any JSON attached to each report, or a function giving it, called once per report. Triage can edit it later. |
 | `diagnostics` | `{default: true}` ticks "Include recent errors" by default (default unticked). |
@@ -740,6 +742,14 @@ reporter sees it before sending.
 5. **Send**, then "Filed" with "View in Your reports" (or in your own page:
    `onShowReports`, section 4).
 
+A queue whose reports an agent works from in a public repository should tell
+its reporters so: tick "Tell reporters what they write may appear in a public
+pull request" on the queue's Edit form, or `PATCH /api/queues/<qid>
+{"public_notice": true}`. The composer then says so. The overlay reads this from
+its first badge answer, so a report started before that answer shows no notice
+unless your page also passes `publicNotice`; to pass it, read `public_notice`
+from `GET /api/queues` in your backend.
+
 **Your reports** lists what the user filed, with their state ("Open",
 "Being worked on", "Fix ready for you to check", "Fixed: you confirmed
 it", "Resolved: …"), the conversation, and a reply box. The launcher's
@@ -818,6 +828,146 @@ its summary, "Check it here" and "The change". Then:
 No agent can verify its own fix: verifying and reopening on a reporter's
 behalf are a person's alone.
 
+### When ClaxBot proposed the fix
+
+A queue whose repository is linked for ClaxBot has fixes proposed by a
+run, not a session. What the reporter does then starts a further run:
+
+- **Before it proposes, a run talks to the reporter; from then on the host
+  does.** A plan or a question it replies with before proposing reaches the
+  reporter, except from a confidential run. From its proposal to the end of
+  the run, everything the run writes on the report (its replies, its finish
+  summary, its reason for giving up, its stop notices) goes to the queue's
+  people alone, and the run is told so; a preview that answers ends none of
+  that. A proposal that failed counts unless it is known to have left nothing:
+  one refused before any push is, and one that failed some other way may have
+  a change out, so it holds. The same holds of a later run while a run's fix
+  waits, but for a run answering a reply on a fix the reporter has to check
+  (below).
+- **The reporter gets nothing of a fix until there is something to check.** A
+  fix with no preview yet says only that one has been proposed, offers no verdict
+  and is held, on a public repository too. The queue's people read what
+  it changed. When the preview answers, the reporter gets its link, with
+  those same words: what ClaxBot wrote of the fix, and its pull request, stay
+  with the queue's people, even when a preview is up at the proposal. If the
+  wait ends with no preview seen, which does not say none is up, the queue's
+  people get a note saying ClaxBot stopped watching, and their notifier tells
+  them. Where a person must let each
+  preview out, the target's `preview_gate` says how, and both the fix's note and
+  that note repeat it
+  with the commit's full SHA ([`docs/usage.md`](usage.md)).
+- **Still broken** starts a run, which sees the note on the report and
+  works from the same branch while its pull request is open. If that was
+  merged or closed the branch is finished: the run starts from the current
+  base on a new branch and opens a new pull request. It proposes again as
+  a new attempt. A fix one of the queue's people handed over counts as
+  ClaxBot's here, and everything below holds of it the same.
+- **A plain reply** starts nothing and is acknowledged in fixed words, and
+  the queue's people read it, unless the repository opts in. Then the run
+  may read and answer; it may not push, since the reporter is checking the
+  code as it stands. Its answer reaches the reporter once they have the fix
+  to check. On a held fix the reply is acknowledged in those fixed words all
+  the same, and the run's answer goes to the queue's people alone.
+- It acts for the person, and the agent, of the run that proposed the fix,
+  and only while they are still a member who may send the report. It
+  runs on their credits. A refused person is passed over.
+- Nothing starts while another agent's claim holds the report or a run
+  works on it, or after a person stopped the last run or it was refused:
+  a person's Stop stays stopped until a person sends the report again.
+- A run does not close a report whose fix waits for a verdict
+  (`fix_waiting`): that verdict is the reporter's, or a person's.
+- At most three such runs follow one another. Then ClaxBot stops, and
+  the queue's people get a note saying so. A person sending the report or
+  commenting on it starts the count again.
+- A target with `follow_ups = false` starts none of these: a reporter's word
+  waits on the report for the queue's people, a rejection tells them through the
+  queue's notifier ("Telling people on Zulip"), and a member's Send is the review
+  of what the next run reads. A public repository's target should say so.
+
+### A repository with private code
+
+A confidential target's run reads source while following a reporter's
+words, so nothing it writes reaches the reporter. That stays true of the
+report: a later run on it is held the same way, even with the repository
+disconnected, and so is any run on a report where a person left a note for
+the queue. On a public repository such a run proposes nothing: a pull request
+there is public, so `clax.change.propose` is refused in fixed words, nothing is
+pushed, and the queue's members get a note saying so. A person makes that
+change. The reporter sees:
+
+- a fixed message on the fix, and no summary, pull request or commit;
+- the link to the preview only where every deploy needs a person's approval
+  of the commit. Elsewhere, and until the preview is up, the fix says a
+  fix has been proposed, and it is held: it offers no verdict, and the
+  reporter routes refuse one (409 `not_fix_proposed`), since there is
+  nothing to check. The queue's people have the link. One of them hands
+  it over by proposing a fix of their own with `verify_url`, which
+  supersedes the held one and without which it is refused (400
+  `verify_url_required`), or gives the verdict on the reporter's behalf.
+  An agent's session is refused the same way: only a ClaxBot run's fix,
+  itself held, replaces a held fix with no link. A fix that hands one
+  over, a person's or an agent's, stays with the run that proposed it.
+  `node demo/claxbot-workspace/run.ts` runs that hand-over against a private
+  repository;
+- a fixed acknowledgement of a reply.
+
+ClaxBot's own words are notes for the queue's members on the report
+(`triage_only`), and its run shows anyone else its status alone, an
+instance's admin and the artifact's maker included. What it proposed goes
+to the pull request.
+
+### Telling people on Zulip
+
+A queue can tell people when a report needs them. Its admin connects Zulip
+under the queue's admin panel, or with `PUT /api/queues/<qid>/notifiers/zulip`
+(`docs/contract.md`): the organization's address, a bot's email and API key, a
+stream, and `people`, a map of GitHub login to Zulip email. **Send a test
+message** posts to the stream, by the saved settings: it checks the address,
+the bot and the stream, and tries no direct message. Direct messages need Zulip
+7.0 or later. Nothing here is specific to Clax's own queue: a report's reporter
+is matched by the `github` of the profile your token route asserts.
+
+**Verify `github` before you assert it.** That login picks who gets a direct
+message, with the link and the first line of the report. If your backend passes
+on a login a user merely typed, anyone can name someone else and have that
+person's preview link sent, or their own report's sent to another. Assert only a
+login you confirmed, by GitHub sign-in or the like, and otherwise leave it out:
+the report is then told on the stream.
+
+- **A fix has something to check.** When a fix carries a link its reporter can
+  use, whoever proposed it, a reporter in `people` gets a direct message with the
+  first line of their report and the link, and again if that link changes. It
+  says to answer under My reports, with a link a reporter can open: the page they
+  filed on, or for a report filed on this instance `/#my-reports`, which opens the
+  shell's My reports. The link to the report in Clax is the queue's people's. For
+  anyone else, or if Zulip refuses the direct message, the stream gets fixed
+  words under a topic of the report's ID, with a link to the report in Clax,
+  which only the queue's people can open. A stream's readers are not known to be
+  the queue's, so it gets no reporter's name, no preview link, no pull request
+  and no report text, whatever the run.
+- **A fix is held for a person.** The stream is told, under the same topic, with
+  a link to the report, naming the pull request and what the target says deploys
+  its preview, where the fix has them, and that nothing tells the reporter until
+  that preview answers. Where a person must deploy it, that comes at the proposal.
+  From a confidential run it names neither.
+- **ClaxBot stopped watching for a preview without seeing one up.** The stream is told, under the same
+  topic, with a link to the report: a preview that is up or deployed from now on reaches nobody,
+  and to tell the reporter a member hands the fix over, proposing one of their own
+  with the preview's link (*Hand it to the reporter* on the report, or
+  `POST /api/queues/<qid>/reports/<tid>/fix` with a `verify_url`). It names the pull
+  request and what deploys the preview on the same terms as above, and takes the
+  place of a held fix's message not yet sent, whose words would no longer be so.
+  A notifier set after the fix was proposed hears of neither.
+- **A fix was rejected.** A reopen tells the stream, under the same topic, in fixed
+  words with a link to the report: no reopen's words and no reporter's name.
+
+No prose of ClaxBot's is ever sent. A preview link can be an agent's own, so the
+characters Zulip reads as markup are percent-encoded in every link, and a
+report's title is shown as code: neither can mention anyone. A link that cannot
+be made safe is left out, and the panel says so. If a message cannot go, the
+panel says why in fixed words, for the stream and for direct messages apart, and
+Clax tries again for a week.
+
 `web/e2e/feedback-loop.spec.ts` runs this whole loop in a browser: a site
 on another origin with a strict policy, a report with context and recent
 errors, an agent on the MCP tools, a fix that is still broken, a second
@@ -833,8 +983,8 @@ clax.dev reports problems with Clax itself into its own queue,
   backend as yours is.
 - **The backend**: `POST /_app/feedback/token` (the route above) and
   `GET /_app/feedback/config`, which tells the shell whether to mount the
-  overlay and with what (`{enabled, instance, queue, context}`; the
-  context's release mirrors `/healthz`, its flags are the person's own
+  overlay and with what (`{enabled, instance, queue, public_notice, context}`;
+  the context's release mirrors `/healthz`, its flags are the person's own
   from `GET /api/me/flags`).
 - **The shell**: the overlay with `launcher: false`, "Report a problem"
   (shortcut `F` outside text fields) and "My reports" in the account menu, and `context()` returning that

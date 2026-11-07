@@ -1,0 +1,43 @@
+[package]
+name = "clax-bot-workspace-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ClaxBot's containers behind the workspace wire, for a host of runs that cannot hold one: it holds the runtime's and the forge's keys, and no model key, no store and no credential into Clax"
+# Every file in tests/ is a module of the one integration test binary.
+autotests = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "clax-bot-workspace-service"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+async-trait = "0.1"
+axum = { workspace = true, features = ["http1", "json", "tokio"] }
+clax-bot = { path = "../clax-bot" }
+clax-bot-remote = { path = "../clax-bot-remote" }
+clax-bot-sandbox = { path = "../clax-bot-sandbox" }
+clax-bot-workspace = { path = "../clax-bot-workspace" }
+clax-core = { path = "../clax-core" }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+chrono.workspace = true
+clax-bot-js = { path = "../clax-bot-js" }
+clax-sample = { path = "../clax-sample" }
+clax-store = { path = "../clax-store" }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["full", "test-util"] }
+tower = { workspace = true, features = ["util"] }
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

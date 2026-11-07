@@ -2149,6 +2149,185 @@ pub const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (run_id, url)
     ) WITHOUT ROWID;
     ALTER TABLE bot_runs ADD COLUMN web TEXT NOT NULL DEFAULT '';",
+    // 64: a queue's link to a repository (`queue_repos`,
+    // [`crate::queue_repos`]) and the instance's GitHub App
+    // (`instance_github_app`, one row), and whether the owner approves token
+    // links (`instance_repo_policy`, one row once they say). `sealed_secrets` is rebuilt with
+    // `repo_read`, `repo_write` and `github_app` in its scope CHECK (SQLite
+    // cannot alter a CHECK), its rows copied; `person` holds the queue ID
+    // of a queue's tokens. `queue_repos` is the migration's mark
+    // (`MARKS_AFTER_APP`).
+    "CREATE TABLE sealed_secrets_new (
+        scope TEXT NOT NULL CHECK (scope IN
+            ('instance', 'own', 'cloudflare', 'repo_read', 'repo_write', 'github_app')),
+        person TEXT NOT NULL,
+        nonce BLOB NOT NULL,
+        sealed BLOB NOT NULL,
+        last4 TEXT NOT NULL,
+        use_own INTEGER NOT NULL DEFAULT 1,
+        set_by TEXT NOT NULL,
+        set_at TEXT NOT NULL,
+        last_ok_at TEXT,
+        host TEXT,
+        forge_host TEXT,
+        PRIMARY KEY (scope, person)
+    );
+    INSERT INTO sealed_secrets_new
+            (scope, person, nonce, sealed, last4, use_own, set_by, set_at, last_ok_at, host)
+        SELECT scope, person, nonce, sealed, last4, use_own, set_by, set_at, last_ok_at, host
+        FROM sealed_secrets;
+    DROP TABLE sealed_secrets;
+    ALTER TABLE sealed_secrets_new RENAME TO sealed_secrets;
+    CREATE TABLE instance_github_app (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        app_id INTEGER NOT NULL CHECK (app_id > 0),
+        slug TEXT NOT NULL,
+        api_url TEXT NOT NULL,
+        set_by TEXT NOT NULL,
+        set_at TEXT NOT NULL
+    );
+    CREATE TABLE queue_repos (
+        queue_id TEXT PRIMARY KEY,
+        repo TEXT NOT NULL,
+        base TEXT NOT NULL,
+        repo_url TEXT,
+        forge_api_url TEXT,
+        protected_paths_json TEXT NOT NULL,
+        preview_url TEXT NOT NULL,
+        preview_ready_path TEXT NOT NULL,
+        preview_names_commit INTEGER NOT NULL,
+        preview_timeout_secs INTEGER NOT NULL,
+        preview_poll_secs INTEGER NOT NULL,
+        access TEXT NOT NULL CHECK (access IN ('github_app', 'token')),
+        installation_id INTEGER,
+        installation_account TEXT,
+        approved_by TEXT,
+        approved_at TEXT,
+        set_by TEXT NOT NULL,
+        set_at TEXT NOT NULL,
+        rev TEXT NOT NULL,
+        owner_addresses INTEGER NOT NULL,
+        public INTEGER NOT NULL,
+        allow_open_egress INTEGER NOT NULL,
+        reviewed_previews INTEGER NOT NULL,
+        wake_on_reply INTEGER NOT NULL,
+        ci_accepted INTEGER NOT NULL,
+        last_ok_at TEXT,
+        last_failure TEXT,
+        last_failure_at TEXT,
+        CHECK ((access = 'github_app') = (installation_id IS NOT NULL)),
+        CHECK ((access = 'token') = (repo_url IS NOT NULL)),
+        CHECK ((access = 'token') = (forge_api_url IS NOT NULL))
+    ) WITHOUT ROWID;
+    CREATE TABLE instance_repo_policy (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        token_approval INTEGER NOT NULL,
+        set_by TEXT NOT NULL,
+        set_at TEXT NOT NULL
+    );",
+    // 65: what a ClaxBot run on a report keeps. `bot_runs.confidential`: the
+    // run may hold material a reporter must not read, set once and never
+    // cleared. `bot_runs.woken_by`: what started a run no person sent.
+    // `report_fixes.proposer_run_id`: the run that proposed a fix (a fix has
+    // a proposer session or a run, or neither for a person's),
+    // `proposal_key`, which makes one proposal one attempt, `held`: no
+    // verdict of its reporter's until a link exists, and for a held fix
+    // `preview_url` and `preview_missed`: the preview that answered, for the
+    // queue's members alone, or that the wait ended with none. A person's fix
+    // that took over from a held one keeps its `proposer_run_id` and has no
+    // `proposal_key`. `confidential` is the migration's mark
+    // (`MARKS_AFTER_APP`).
+    "ALTER TABLE bot_runs ADD COLUMN confidential INTEGER NOT NULL DEFAULT 0
+        CHECK (confidential IN (0, 1));
+    ALTER TABLE bot_runs ADD COLUMN woken_by TEXT CHECK (woken_by IN ('reopen', 'reply'));
+    ALTER TABLE report_fixes ADD COLUMN proposer_run_id TEXT;
+    ALTER TABLE report_fixes ADD COLUMN proposal_key TEXT;
+    ALTER TABLE report_fixes ADD COLUMN held INTEGER NOT NULL DEFAULT 0 CHECK (held IN (0, 1));
+    ALTER TABLE report_fixes ADD COLUMN preview_url TEXT;
+    ALTER TABLE report_fixes ADD COLUMN preview_missed INTEGER NOT NULL DEFAULT 0
+        CHECK (preview_missed IN (0, 1));
+    CREATE UNIQUE INDEX report_fixes_by_proposal ON report_fixes(thread_id, proposal_key)
+        WHERE proposal_key IS NOT NULL;",
+    // 66: a queue's notifiers and their outbox ([`crate::queue_notifiers`]).
+    // `sealed_secrets` is rebuilt with `notifier_zulip` in its scope CHECK,
+    // its rows copied; `person` holds the queue ID. `queue_notices` is one row
+    // per notifier, fix, event and link (empty for a held fix), which is what
+    // keeps an event told once.
+    // `queue_fix_links`: what a proposal links to, and what its target says
+    // deploys its preview, for a held fix's notice.
+    // `queue_notifiers` is the migration's mark (`MARKS_AFTER_APP`).
+    "CREATE TABLE sealed_secrets_new (
+        scope TEXT NOT NULL CHECK (scope IN
+            ('instance', 'own', 'cloudflare', 'repo_read', 'repo_write', 'github_app',
+             'notifier_zulip')),
+        person TEXT NOT NULL,
+        nonce BLOB NOT NULL,
+        sealed BLOB NOT NULL,
+        last4 TEXT NOT NULL,
+        use_own INTEGER NOT NULL DEFAULT 1,
+        set_by TEXT NOT NULL,
+        set_at TEXT NOT NULL,
+        last_ok_at TEXT,
+        host TEXT,
+        forge_host TEXT,
+        PRIMARY KEY (scope, person)
+    );
+    INSERT INTO sealed_secrets_new
+            (scope, person, nonce, sealed, last4, use_own, set_by, set_at, last_ok_at, host,
+             forge_host)
+        SELECT scope, person, nonce, sealed, last4, use_own, set_by, set_at, last_ok_at, host,
+            forge_host
+        FROM sealed_secrets;
+    DROP TABLE sealed_secrets;
+    ALTER TABLE sealed_secrets_new RENAME TO sealed_secrets;
+    CREATE TABLE queue_notifiers (
+        queue_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('zulip')),
+        rev TEXT NOT NULL,
+        settings_json TEXT NOT NULL,
+        owner_site INTEGER NOT NULL CHECK (owner_site IN (0, 1)),
+        set_by TEXT NOT NULL,
+        set_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        last_ok_at TEXT,
+        last_failure TEXT,
+        last_failure_at TEXT,
+        direct_failure TEXT,
+        direct_failure_at TEXT,
+        last_test_at TEXT,
+        PRIMARY KEY (queue_id, kind)
+    ) WITHOUT ROWID;
+    CREATE TABLE queue_notices (
+        id TEXT PRIMARY KEY,
+        queue_id TEXT NOT NULL,
+        notifier TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        fix_n INTEGER NOT NULL,
+        event TEXT NOT NULL CHECK (event IN ('fix_to_check', 'fix_held', 'fix_wait_ended',
+            'fix_rejected')),
+        link TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'sent', 'dropped', 'expired')),
+        attempts INTEGER NOT NULL,
+        next_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        sent_at TEXT,
+        UNIQUE (notifier, thread_id, fix_n, event, link)
+    ) WITHOUT ROWID;
+    CREATE INDEX queue_notices_due ON queue_notices(next_at) WHERE state = 'pending';
+    CREATE INDEX queue_notices_by_queue ON queue_notices(queue_id, notifier, state);
+    CREATE TABLE queue_fix_links (
+        thread_id TEXT NOT NULL,
+        proposal_key TEXT NOT NULL,
+        url TEXT,
+        commit_sha TEXT,
+        preview_step TEXT,
+        PRIMARY KEY (thread_id, proposal_key)
+    ) WITHOUT ROWID;",
+    // 67: whether a queue tells its reporters that what they write may appear
+    // in a public pull request. The column is the migration's mark
+    // (`MARKS_AFTER_APP`).
+    "ALTER TABLE queues ADD COLUMN public_notice INTEGER NOT NULL DEFAULT 0
+        CHECK (public_notice IN (0, 1));",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -2211,8 +2390,30 @@ pub const PRICE_CATALOG_MIGRATION: u32 = FEEDBACK_LOOP_MIGRATION + 1;
 
 /// The migration that lets a cost line count in thousands of requests
 /// (`kreq`) and seeds the web search and web fetch lines, as a schema
-/// version, and this build's last.
+/// version.
 pub const WEB_MIGRATION: u32 = PRICE_CATALOG_MIGRATION + 1;
+
+/// The migration that adds what a ClaxBot run on a report keeps
+/// (`bot_runs.confidential`, `bot_runs.woken_by`,
+/// `report_fixes.proposer_run_id`, `report_fixes.proposal_key`), as a schema
+/// version.
+pub const RUN_KEEPS_MIGRATION: u32 = REPO_LINK_MIGRATION + 1;
+
+/// The migration that adds a queue's link to a repository (`queue_repos`),
+/// the instance's GitHub App (`instance_github_app`) and their slots of
+/// `sealed_secrets`, as a schema version.
+pub const REPO_LINK_MIGRATION: u32 = WEB_MIGRATION + 1;
+
+/// The migration that adds a queue's notifiers and their outbox
+/// (`queue_notifiers`, `queue_notices`, `queue_fix_links`) and their slot of
+/// `sealed_secrets`, as a schema version.
+pub const NOTIFIERS_MIGRATION: u32 = RUN_KEEPS_MIGRATION + 1;
+
+/// The migration that adds `queues.public_notice`, as a schema version.
+pub const PUBLIC_NOTICE_MIGRATION: u32 = NOTIFIERS_MIGRATION + 1;
+
+/// This build's newest migration, as a schema version.
+pub const LATEST_MIGRATION: u32 = MIGRATIONS.len() as u32;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -2372,11 +2573,11 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 
 /// What each migration after the app's leaves in the schema, in order:
 /// ClaxBot's ([`CLAXBOT_MIGRATION`]), then [`LEGACY_PATHS_MIGRATION`] to
-/// [`WEB_MIGRATION`]. They follow the app's in every
+/// [`PUBLIC_NOTICE_MIGRATION`]. They follow the app's in every
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 14] = [
+const MARKS_AFTER_APP: [Mark<'static>; 18] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
@@ -2391,6 +2592,10 @@ const MARKS_AFTER_APP: [Mark<'static>; 14] = [
     Mark::Table("report_fixes"),
     Mark::Table("price_catalog"),
     Mark::Table("bot_person_prefs"),
+    Mark::Table("queue_repos"),
+    Mark::Column("bot_runs", "confidential"),
+    Mark::Table("queue_notifiers"),
+    Mark::Column("queues", "public_notice"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -5357,7 +5562,122 @@ mod tests {
             super::FEEDBACK_LOOP_MIGRATION + 1
         );
         assert!(MIGRATIONS[first + 20].contains("CREATE TABLE price_catalog ("));
-        assert_eq!(MIGRATIONS.len() as u32, super::WEB_MIGRATION);
+        assert_eq!(super::REPO_LINK_MIGRATION, super::WEB_MIGRATION + 1);
+        assert!(MIGRATIONS[first + 22].contains("CREATE TABLE queue_repos ("));
+        assert_eq!(super::RUN_KEEPS_MIGRATION, super::REPO_LINK_MIGRATION + 1);
+        assert!(MIGRATIONS[first + 23].contains("ADD COLUMN confidential"));
+        assert_eq!(super::NOTIFIERS_MIGRATION, super::RUN_KEEPS_MIGRATION + 1);
+        assert_eq!(super::NOTIFIERS_MIGRATION, 66);
+        assert!(MIGRATIONS[first + 24].contains("CREATE TABLE queue_notifiers ("));
+        assert_eq!(super::PUBLIC_NOTICE_MIGRATION, 67);
+        assert!(MIGRATIONS[first + 25].contains("ADD COLUMN public_notice"));
+        assert_eq!(MIGRATIONS.len() as u32, super::LATEST_MIGRATION);
+    }
+
+    /// Migration 66 rebuilds `sealed_secrets`: what it held stays, a
+    /// repository token's second host included, and its new slot is taken.
+    #[test]
+    fn migration_66_keeps_every_sealed_secret_and_adds_the_notifiers_slot() {
+        let c = Connection::open_in_memory().unwrap();
+        let last = super::NOTIFIERS_MIGRATION as usize;
+        for sql in &MIGRATIONS[..last - 1] {
+            c.execute_batch(sql).unwrap();
+        }
+        let insert = |scope: &str| {
+            c.execute(
+                "INSERT INTO sealed_secrets (scope, person, nonce, sealed, last4, use_own, set_by,
+                    set_at, last_ok_at, host, forge_host)
+                 VALUES (?1, 'q1', x'0102', x'0304', 'wxyz', 0, '*owner', 't1', 't2', 'h', 'f')",
+                rusqlite::params![scope],
+            )
+        };
+        insert("repo_write").unwrap();
+        assert!(insert("notifier_zulip").is_err());
+        c.execute_batch(MIGRATIONS[last - 1]).unwrap();
+        let kept: (Vec<u8>, Vec<u8>, String, String) = c
+            .query_row(
+                "SELECT nonce, sealed, host, forge_host FROM sealed_secrets
+                 WHERE scope = 'repo_write' AND person = 'q1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(kept, (vec![1, 2], vec![3, 4], "h".into(), "f".into()));
+        insert("notifier_zulip").unwrap();
+        assert!(insert("no_such_scope").is_err());
+    }
+
+    /// Migration 64 rebuilds `sealed_secrets`: what it held stays, sealed
+    /// bytes and all, and the new slots are taken where a typo is not.
+    #[test]
+    fn migration_64_keeps_every_sealed_secret_and_widens_the_scopes() {
+        let c = Connection::open_in_memory().unwrap();
+        let last = super::REPO_LINK_MIGRATION as usize;
+        for sql in &MIGRATIONS[..last - 1] {
+            c.execute_batch(sql).unwrap();
+        }
+        let insert = |scope: &str, person: &str| {
+            c.execute(
+                "INSERT INTO sealed_secrets (scope, person, nonce, sealed, last4, use_own, set_by,
+                    set_at, last_ok_at, host)
+                 VALUES (?1, ?2, x'0102', x'0304', 'wxyz', 0, '*owner', 't1', 't2', 'https://h')",
+                rusqlite::params![scope, person],
+            )
+        };
+        insert("instance", "").unwrap();
+        insert("own", "p1").unwrap();
+        insert("cloudflare", "").unwrap();
+        assert!(insert("repo_read", "q1").is_err());
+        c.execute_batch(MIGRATIONS[last - 1]).unwrap();
+        let row = |scope: &str| -> (
+            Vec<u8>,
+            Vec<u8>,
+            String,
+            bool,
+            String,
+            String,
+            String,
+            String,
+        ) {
+            c.query_row(
+                "SELECT nonce, sealed, last4, use_own, set_by, set_at, last_ok_at, host
+                   FROM sealed_secrets WHERE scope = ?1",
+                [scope],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                    ))
+                },
+            )
+            .unwrap()
+        };
+        for scope in ["instance", "own", "cloudflare"] {
+            assert_eq!(
+                row(scope),
+                (
+                    vec![1, 2],
+                    vec![3, 4],
+                    "wxyz".to_string(),
+                    false,
+                    "*owner".to_string(),
+                    "t1".to_string(),
+                    "t2".to_string(),
+                    "https://h".to_string()
+                ),
+                "{scope}"
+            );
+        }
+        insert("repo_read", "q1").unwrap();
+        insert("repo_write", "q1").unwrap();
+        insert("github_app", "").unwrap();
+        assert!(insert("repo_admin", "q1").is_err());
     }
 
     #[test]
@@ -5485,7 +5805,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_database_reaches_63() {
+    fn a_fresh_database_reaches_67() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         drop(Store::open(&home).unwrap());
@@ -5507,7 +5827,11 @@ mod tests {
         assert_eq!(super::FEEDBACK_LOOP_MIGRATION, 61);
         assert_eq!(super::PRICE_CATALOG_MIGRATION, 62);
         assert_eq!(super::WEB_MIGRATION, 63);
-        assert_eq!(user_version(&c), super::WEB_MIGRATION);
+        assert_eq!(super::REPO_LINK_MIGRATION, 64);
+        assert_eq!(super::RUN_KEEPS_MIGRATION, 65);
+        assert_eq!(super::NOTIFIERS_MIGRATION, 66);
+        assert_eq!(super::PUBLIC_NOTICE_MIGRATION, 67);
+        assert_eq!(user_version(&c), super::LATEST_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
@@ -6287,7 +6611,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::WEB_MIGRATION);
+        assert_eq!(user_version(&c), super::LATEST_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -6782,14 +7106,15 @@ mod tests {
         // migrations to 54, the return-to migration to 55, the version
         // declarations' to 56, the quickstart's to 57, the capability
         // approvals' to 58, the queues' to 59, the browser login's to 60,
-        // the feedback loop's to 61 and the price catalog's to 62 and the web lines' to 63.
+        // the feedback loop's to 61, the price catalog's to 62, the web lines' to 63,
+        // the repository links' to 64 and what a run keeps to 65.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::WEB_MIGRATION);
+            assert_eq!(user_version(&c), super::LATEST_MIGRATION);
             (columns_of(&c), every_row(&c))
         };
 
@@ -6797,8 +7122,8 @@ mod tests {
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(
             user_version(&c),
-            super::WEB_MIGRATION + 1,
-            "ClaxBot's 50 and the migrations 51 to 63 after it are one later now"
+            super::LATEST_MIGRATION + 1,
+            "ClaxBot's 50 and the migrations 51 to 65 after it are one later now"
         );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
@@ -6817,7 +7142,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), super::WEB_MIGRATION);
+        assert_eq!(user_version(&copied), super::LATEST_MIGRATION);
         assert_eq!(
             every_row(&copied),
             before,
@@ -6831,7 +7156,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (super::WEB_MIGRATION + 1, schema, rows)
+            (super::LATEST_MIGRATION + 1, schema, rows)
         );
     }
 
@@ -7105,7 +7430,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, super::WEB_MIGRATION);
+        assert_eq!(last, super::LATEST_MIGRATION);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));

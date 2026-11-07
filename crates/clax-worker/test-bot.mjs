@@ -49,17 +49,39 @@
 //    HTML fetch answer web_unavailable, charged nothing;
 // 9. a Worker that is not hosted, with a PUBLIC_ORIGIN that names no host:
 //    the admin's view reports that reason (no source, so no check of the
-//    binding replaces it).
+//    binding replaces it);
+// 10. a Worker with a workspace service, a scripted one (fake-workspace.mjs),
+//    on an alarm budget of a moment (CLAX_TEST_ALARM_BUDGET_MS): a command
+//    that outlives several alarms is started once and joined by each; one
+//    cut by killing wrangler is joined by the new incarnation, from the
+//    alarm alone, after a reap of the live runs; an outage answers
+//    shell_unavailable and ends nothing else; a proposal's off-list
+//    verify_url is dropped, its fix held, and a scripted Zulip told what a
+//    person must do; a preview told after its run ended, with nothing asking
+//    the instance, is heard from the alarm's poll, an off-list one as none;
+//    its link reaches the reporter and, by direct message, Zulip; the
+//    reporter's reopen, through the real route, starts a run the alarm
+//    drives; a preview told across a restart is heard; a reopen a refusal
+//    held back is started by the sweep of the next incarnation; a poll lost
+//    mid-call and a preview poll that fails end nothing; and a member's note
+//    during a yield keeps what the run does next from leaving; and every
+//    request carried the headers of what fronts the service;
+// 11. a Worker whose service was never reached has no snapshot: a run gets
+//    no shell; and one with the service's URL and no secret, with no name
+//    for its instance, or with one of the two headers for what fronts the
+//    service, has no workspace, and says so.
 // (deploy.mjs's CLAX_KEK plan is deploy-lib.test.mjs's.)
 //
 // Prints one line per check and a JSON summary; exits non-zero on the first
 // failure. `node test-bot.mjs --no-build` skips the build.
 
-import { mkdirSync } from "node:fs";
-import { createServer } from "node:http";
+import { mkdirSync, readFileSync } from "node:fs";
+import { createServer, request } from "node:http";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { HERE, STATE, build, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { fakeWorkspace, fakeZulip } from "./fake-workspace.mjs";
+import { HERE, STATE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { fromBase64url, generateSigner, importPkcs8Signer, newNonce, signature } from "../../web/sdk/src/sign.ts";
 
 const ROOT = join(STATE, "bot-test");
 const KEEP_RUNS = 3;
@@ -73,6 +95,20 @@ const LIMIT_MS = 60_000;
 // (CLAX_TEST_RESUME_AFTER_MS; a minute but in tests), so a resume from the
 // alarm alone is waited for in seconds.
 const RESUME_MS = 3_000;
+// The workspace service's bearer secret, and where previews may be.
+const WS_SECRET = "workspace-test-secret-0123456789abcdef";
+const PREVIEW_HOSTS = "*.previews.example";
+// How long one alarm drives in section 10 (CLAX_TEST_ALARM_BUDGET_MS), so a
+// command outlives several, and how often the workspace's timed work is done
+// (CLAX_TEST_TEND_MS).
+const BUDGET_MS = 15_000;
+const TEND_MS = 1_000;
+const WS_INSTANCE = "test-instance";
+// What stands in front of the service asks these of every request.
+const FRONT = { id: "front-test-id.access", secret: "front-test-secret-0123456789abcdef" };
+// The queue's page, and the Zulip key that must reach nothing but Zulip.
+const ORIGIN = "https://app.example";
+const ZULIP_KEY = "zulip-test-key-wxyz";
 
 const summary = { ok: true, checks: 0 };
 function check(cond, what, detail) {
@@ -259,11 +295,28 @@ return out;
 let openLocal;
 const localGate = new Promise((r) => (openLocal = r));
 
+/** A command in the run's container, its answer or its failure's code. */
+const execScript = (command) => `
+try { return await clax.shell.exec(${JSON.stringify(command)}, { timeout: 600 }); }
+catch (e) { return { code: e.code }; }
+`;
+
+/** A proposal of what the run changed, its answer or its failure's code. */
+const PROPOSE_SCRIPT = `
+try { return await clax.change.propose({ title: "Fix the total", summary: "The total was off by one." }); }
+catch (e) { return { code: e.code }; }
+`;
+
 /** The scripted runs, told apart by their thread's text. */
 let held = 0;
 function plan(body) {
   const text = JSON.stringify(body.messages);
   const turns = body.messages.filter((m) => m.role === "assistant").length;
+  if (text.includes("Hold the shell")) return scriptThenFinish("ws-held", turns, execScript("hold-minutes"), "It ran.");
+  if (text.includes("Cut the shell")) return scriptThenFinish("ws-cut", turns, execScript("hold-cut"), "It ran.");
+  if (text.includes("Try the shell")) return scriptThenFinish("ws-try", turns, execScript("try"), "It did not run.");
+  if (text.includes("The total is wrong")) return scriptThenFinish("ws-fix", turns, PROPOSE_SCRIPT, "Proposed a fix.");
+  if (text.includes("The sum is wrong")) return scriptThenFinish("ws-note", turns, `await clax.shell.exec("hold-note", { timeout: 600 });${PROPOSE_SCRIPT}`, "Done.");
   if (text.includes("Read the local tides")) {
     return { ...scriptThenFinish("local", turns, LOCAL_SCRIPT, "The web is unavailable here."), gate: turns === 0 ? localGate : undefined };
   }
@@ -380,6 +433,344 @@ async function alarmIn(base) {
 }
 
 const ENDED = ["finished", "failed", "gave_up", "stopped"];
+
+/** Waits for run `rid` to end; the run as it ended. */
+function ended(base, rid, what) {
+  return until(what, async () => {
+    const x = await run(base, rid);
+    return ENDED.includes(x.status) ? x : undefined;
+  });
+}
+
+/** The value of the script step of `r`, a run as `run` reads it. */
+const scriptValue = (r) => r.steps.find((s) => s.kind === "script")?.value;
+
+/** One request with exactly `headers`, as a backend's or a page's goes out. */
+function raw(base, method, path, headers, body) {
+  const { hostname, port } = new URL(base);
+  return new Promise((done, fail) => {
+    const req = request({ host: hostname, port, method, path, headers }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => {
+        const text = Buffer.concat(chunks).toString("utf8");
+        let json = null;
+        try {
+          json = text ? JSON.parse(text) : null;
+        } catch {
+          json = { text };
+        }
+        done({ status: res.statusCode, json });
+      });
+    });
+    req.on("error", fail);
+    if (body !== undefined) req.write(body);
+    req.end();
+  });
+}
+
+/** `signer`'s `Clax-Signature` of a request of `token` to `base`. */
+function signed(signer, base, method, path, token, body) {
+  return signature(signer, {
+    method, pathAndQuery: path, host: new URL(base).host, t: Math.floor(Date.now() / 1000), nonce: newNonce(), body, token,
+  });
+}
+
+/** A queue of `ORIGIN` and a reporter on it, minted by its service grant, as
+ * a deployer's backend mints one: `{qid, token, signer}`. */
+async function queueAndReporter(base) {
+  const qid = (await ok(base, "POST", "/api/queues", { name: "App", origins: [ORIGIN] })).queue.id;
+  const grant = await ok(base, "POST", `/api/queues/${qid}/service-grants`, { name: "app backend" });
+  const service = await importPkcs8Signer(fromBase64url(grant.private_key));
+  const signer = await generateSigner();
+  const path = `/api/queues/${qid}/reporter-tokens`;
+  const body = Buffer.from(JSON.stringify({
+    reporter_id: "emp-1", origin: ORIGIN, public_key: signer.publicKey, profile: { name: "Ana", github: "ana" },
+  }));
+  const r = await raw(base, "POST", path, {
+    authorization: `Clax-Queue ${grant.token}`,
+    "clax-signature": await signed(service, base, "POST", path, grant.token, body),
+    "content-type": "application/json",
+    "content-length": body.length,
+  }, body);
+  check(r.status === 200, "the queue's backend mints a reporter token", r);
+  return { qid, token: r.json.token, signer };
+}
+
+/** A multipart `POST` of reporter `who` to `path`. */
+async function asReporter(base, who, path, parts) {
+  const boundary = "clax-testboundary";
+  const body = Buffer.from(
+    parts.map(([k, v]) => `--${boundary}\r\ncontent-disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`).join("") + `--${boundary}--\r\n`,
+  );
+  return raw(base, "POST", path, {
+    authorization: `Clax-Reporter ${who.token}`,
+    "clax-signature": await signed(who.signer, base, "POST", path, who.token, body),
+    "content-type": `multipart/form-data; boundary=${boundary}`,
+    "content-length": body.length,
+    origin: ORIGIN,
+  }, body);
+}
+
+/** Gives the Worker at `base` a provider and a key; a new page's ID. */
+async function withModel(base, fake, title) {
+  await ok(base, "PUT", "/api/admin/provider", { base_url: fake.base });
+  await ok(base, "PUT", "/api/admin/provider/key", { key: KEY });
+  const page = "<title>Tide tables</title><main><h2>Tide tables</h2><p>High water at 06:12.</p></main>";
+  return (await ok(base, "POST", "/api/artifacts", { title, files: { "index.html": { content: page, encoding: "utf8" } } })).artifact.id;
+}
+
+/** Section 10 (the file's header), on its own state. */
+async function workspaceRuns(root, fake, vars) {
+  const dir = join(root, "workspace");
+  mkdirSync(dir, { recursive: true });
+  const svc = await fakeWorkspace(WS_SECRET, WS_INSTANCE, FRONT);
+  const zulip = await fakeZulip();
+  const config = writeConfig(dir, {
+    ...vars,
+    CLAX_KEK: KEK,
+    CLAX_TEST_LOOPBACK_PROVIDER: "1",
+    CLAX_WORKSPACE_SERVICE_URL: svc.base,
+    CLAX_WORKSPACE_SERVICE_TOKEN: WS_SECRET,
+    CLAX_WORKSPACE_ACCESS_CLIENT_ID: FRONT.id,
+    CLAX_WORKSPACE_ACCESS_CLIENT_SECRET: FRONT.secret,
+    CLAX_WORKSPACE_PREVIEW_HOSTS: PREVIEW_HOSTS,
+    CLAX_WORKSPACE_FORGE_HOSTS: "forge.example",
+    CLAX_WORKSPACE_SERVICE_INSTANCE: WS_INSTANCE,
+    CLAX_TEST_ALARM_BUDGET_MS: String(BUDGET_MS),
+    CLAX_TEST_TEND_MS: String(TEND_MS),
+  });
+  let w;
+  const logs = [];
+  const started = async (n) => {
+    w = await start(dir, config, n);
+    logs.push(w.log);
+    return w.base;
+  };
+  try {
+    let base = await started(20);
+    const aid = await withModel(base, fake, "Workspace");
+    check(svc.reaps.length > 0 && svc.reaps[0].length === 0, "a driver's start reaps, with the live runs (none yet)", svc.reaps);
+    const who = await queueAndReporter(base);
+    const { qid } = who;
+    const repoOf = async () => (await ok(base, "GET", `/api/queues/${qid}/repo`)).runtime;
+    let runtime = await repoOf();
+    check(runtime.configured === true && runtime.failed === false && runtime.third_party === true && runtime.operator_only === true,
+      "the panel hears a workspace someone else runs, serving its operator's repositories alone", runtime);
+    check(runtime.operator_target === false, "and that this queue is none of them", runtime);
+    svc.queues[qid] = { ...svc.CHANGE, preview_gate: "comment `/preview {commit}` on the pull request" };
+    // A new incarnation hears the queue's offer at its reap and, the one
+    // after, reads the snapshot that one kept.
+    for (let i = 0; i < 2; i++) {
+      await ok(base, "POST", "/_worker/hibernate");
+      runtime = await repoOf();
+    }
+    check(runtime.operator_target === true, "a queue the snapshot names is an operator's", runtime);
+
+    // A command longer than the alarm: started once, joined by each tick.
+    const held1 = (await ok(base, "POST", "/api/bot/runs", { thread_ids: [await thread(base, aid, "Hold the shell for minutes")], artifact_id: aid })).run.id;
+    await until("the held command starts", () => (svc.posts.some((p) => p.command === "hold-minutes") ? true : undefined));
+    await until("two ticks give the held command up", () => (svc.abandoned >= 2 ? true : undefined));
+    check((await run(base, held1)).status === "running", "the run goes on across its alarms");
+    // A blip while it is joined: polls lost on the way are asked again.
+    svc.blips = 2;
+    await until("two polls are dropped", () => (svc.blips === 0 ? true : undefined));
+    const afterBlip = svc.polls;
+    await until("the next poll gets through", () => (svc.polls > afterBlip ? true : undefined));
+    check((await run(base, held1)).status === "running", "a blip mid-poll ends nothing");
+    svc.release("hold-minutes", "made it");
+    const heldDone = await ended(base, held1, "the held run ends");
+    check(heldDone.status === "finished" && scriptValue(heldDone)?.output === "made it", "the command's answer reaches the script, ticks later", scriptValue(heldDone));
+    check(svc.posts.filter((p) => p.command === "hold-minutes").length === 1, "it was started once, whatever joined it", svc.posts.length);
+    await until("the run's end ends it at the service", () => (svc.ended.includes(held1) ? true : undefined));
+
+    // Killed mid-command: the new incarnation joins it, from the alarm alone.
+    const cut = (await ok(base, "POST", "/api/bot/runs", { thread_ids: [await thread(base, aid, "Cut the shell")], artifact_id: aid })).run.id;
+    await until("the command to cut starts", () => (svc.posts.some((p) => p.command === "hold-cut") ? true : undefined));
+    await w.stop();
+    const reaped = svc.reaps.length;
+    const polled = svc.polls;
+    base = await started(21);
+    await until("the alarm alone reaps", () => (svc.reaps.length > reaped ? true : undefined));
+    check(svc.reaps.at(-1).includes(cut), "the reap names every live run: this one stays", svc.reaps.at(-1));
+    await until("the alarm alone joins the command", () => (svc.polls > polled ? true : undefined));
+    svc.release("hold-cut", "survived");
+    const cutDone = await ended(base, cut, "the cut run ends");
+    check(cutDone.status === "finished" && scriptValue(cutDone)?.output === "survived", "the cut run got the command's answer, not shell_interrupted", scriptValue(cutDone));
+    check(svc.posts.filter((p) => p.command === "hold-cut").length === 1, "and the command was not run again");
+
+    // An outage fails closed, and the instance serves on.
+    svc.down = true;
+    const tried = (await ok(base, "POST", "/api/bot/runs", { thread_ids: [await thread(base, aid, "Try the shell")], artifact_id: aid })).run.id;
+    const triedDone = await ended(base, tried, "the run in an outage ends");
+    check(scriptValue(triedDone)?.code === "shell_unavailable", "in an outage a command answers shell_unavailable", scriptValue(triedDone));
+    check(triedDone.status === "finished" && (await call(base, "GET", "/healthz")).status === 200, "and the run and the instance go on", triedDone.status);
+    svc.down = false;
+
+    // A notifier, then a report and its fix.
+    const notifier = await call(base, "PUT", `/api/queues/${qid}/notifiers/zulip`, {
+      site: zulip.base, bot_email: "clax-bot@zulip.example", api_key: ZULIP_KEY, stream: "reports", people: { ana: "ana@zulip.example" },
+    });
+    check(notifier.status === 200 && !JSON.stringify(notifier.json).includes(ZULIP_KEY), "a queue admin sets a Zulip notifier, its key write-only", notifier);
+    const anchor = JSON.stringify({ kind: "artifact", selector: null, quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "" });
+    const reports = `/api/queues/${qid}/reporter/reports`;
+    const filed = await asReporter(base, who, reports, [["url", `${ORIGIN}/orders/7`], ["title", "Order 7"], ["anchor", anchor], ["body", "The total is wrong"]]);
+    check(filed.status === 201, "the reporter files a report", filed);
+    const tid = filed.json.report.id;
+    const rid = filed.json.report.artifact.id;
+    const report = async () => (await ok(base, "GET", `/api/queues/${qid}/reports/${tid}`)).report;
+    const runsOf = async () => {
+      const r = await ok(base, "GET", `/api/bot/runs?artifact=${rid}&thread=${tid}`);
+      return r.runs ?? r;
+    };
+
+    svc.waiting = true;
+    svc.proposal = (n) => ({ pr: 7, url: "https://forge.example/o/r/pull/7", commit: String(n).repeat(40), verify_url: "https://elsewhere.example/" });
+    const fixRun = (await ok(base, "POST", "/api/bot/runs", { thread_ids: [tid], artifact_id: rid })).run.id;
+    const fixDone = await ended(base, fixRun, "the proposing run ends");
+    check(fixDone.status === "finished" && scriptValue(fixDone)?.verify_url === null, "a proposal's off-list link never reaches the run", scriptValue(fixDone));
+    let fix = (await report()).fixes.at(-1);
+    check(fix?.held === true && !fix.fix?.verify_url && !fix.verify_url, "and its fix is held, with no link", fix);
+    const afterProposing = (await report()).comments.find((c) => c.body === "Proposed a fix.");
+    check(afterProposing?.triage_only === true, "and what the run wrote after proposing is for the queue's people alone", afterProposing);
+    // Its target names what a person does, so a person is asked now, with no
+    // wait ended and nothing told of a preview.
+    const heldNotice = await until("Zulip hears of the held fix", () => zulip.got[0]);
+    check(heldNotice.form.type === "stream" && heldNotice.form.to === "reports" && heldNotice.form.topic === tid,
+      "the alarm delivers the held fix's notice to the stream at its proposal, under the report", heldNotice.form);
+    check(heldNotice.form.content.includes("https://forge.example/o/r/pull/7") && heldNotice.form.content.includes(`To deploy its preview, comment \`/preview ${"1".repeat(40)}\` on the pull request.`),
+      "naming the pull request and what its target says deploys the preview", heldNotice.form.content);
+    check(heldNotice.form.content.includes("Nothing tells its reporter until the preview answers."), "and that its reporter waits on that", heldNotice.form.content);
+    check(heldNotice.authorization === `Basic ${Buffer.from(`clax-bot@zulip.example:${ZULIP_KEY}`).toString("base64")}`, "with the bot's credentials", heldNotice.authorization);
+    // Told after the run ended, with nothing asking the instance: only the
+    // fake is read until each event is acknowledged.
+    svc.proposal = (n) => ({ pr: 7, url: "https://forge.example/o/r/pull/7", commit: String(n).repeat(40), verify_url: null });
+    const off = svc.tell(fixRun, { verify_url: "https://elsewhere.example/x", reviewed: false });
+    await until("the alarm hears the off-list preview", () => (svc.acked.includes(off) ? true : undefined));
+    fix = (await report()).fixes.at(-1);
+    check(!fix.fix?.verify_url && !fix.verify_url && fix.held === true && fix.preview_missed === true, "a preview on no allowed host counts as none", fix);
+    // Told by the alarm, with no request here, and before a preview comes, which
+    // would drop it unsent.
+    const waitOver = await until("Zulip hears the wait ended", () => zulip.got.find((g) => g.form.content.includes("without seeing one up.")));
+    check(waitOver.form.type === "stream" && waitOver.form.topic === tid && waitOver.form.content.includes("A preview that is up or deployed from now on reaches nobody"),
+      "the alarm tells the stream the wait ended and what a preview now reaches", waitOver.form);
+    const on = svc.tell(fixRun, { verify_url: "https://pr-7.previews.example/", reviewed: false });
+    await until("the alarm hears the preview", () => (svc.acked.includes(on) ? true : undefined));
+    const told = await report();
+    fix = told.fixes.at(-1);
+    check(JSON.stringify(told).includes("https://pr-7.previews.example/") && !fix.held, "a preview told after its run ended reaches the fix", fix);
+    // A poll that fails does not end the polling.
+    const droppedBefore = svc.dropped;
+    svc.down = true;
+    await until("a poll fails", () => (svc.dropped > droppedBefore ? true : undefined));
+    const later = svc.tell(fixRun, { verify_url: "https://pr-7.previews.example/", reviewed: false });
+    svc.down = false;
+    await until("a later poll hears what the failed one did not", () => (svc.acked.includes(later) ? true : undefined));
+    const direct = await until("Zulip hears of the fix to check", () => zulip.got.find((g) => g.form.type === "direct"));
+    check(direct.form.to === JSON.stringify(["ana@zulip.example"]) && direct.form.content.includes("https://pr-7.previews.example/") && direct.form.content.includes("The total is wrong"),
+      "and the reporter is told on Zulip, by direct message, with the link", direct.form);
+    check(zulip.got.filter((g) => g.form.content.includes("is held for a person")).length === 1, "and the held fix was told of once", zulip.got);
+
+    // The reporter's reopen, through the route: the alarm drives the run.
+    const reopenAt = `${reports}/${tid}/reopen`;
+    const reopened = await asReporter(base, who, reopenAt, [["body", "Still broken on the total"]]);
+    check(reopened.status === 200, "the reporter says it does not work", reopened);
+    const second = await until("the reopen starts a run", async () => (await runsOf()).find((r) => r.id !== fixRun));
+    check(second.thread_ids.includes(tid), "a reopen starts a run through the route alone, nobody sending it", second);
+    const secondDone = await ended(base, second.id, "the reopen's run ends");
+    check(secondDone.status === "finished", "which the alarm drives to its end", { status: secondDone.status, reason: secondDone.reason });
+    check((await report()).fixes.length === 2, "and which proposes again");
+
+    // A preview told across a restart, heard from the alarm alone.
+    await w.stop();
+    const across = svc.tell(second.id, { verify_url: "https://pr-8.previews.example/", reviewed: false });
+    base = await started(22);
+    await until("the alarm alone hears the preview after a restart", () => (svc.acked.includes(across) ? true : undefined));
+
+    // A reopen a refusal held back: the next incarnation's sweep starts it.
+    const pricing = await ok(base, "GET", "/api/admin/pricing");
+    await ok(base, "PUT", "/api/admin/pricing", { ...pricing, free_weekly_milli: 1 });
+    const swept = await asReporter(base, who, reopenAt, [["body", "It is still wrong"]]);
+    check(swept.status === 200, "the reporter says so again, with the person's week spent", swept);
+    check((await runsOf()).length === 2, "a person refused gets no run");
+    await ok(base, "PUT", "/api/admin/pricing", pricing);
+    await w.stop();
+    base = await started(23);
+    await call(base, "GET", "/api/queues");
+    const third = await until("the sweep starts the run", async () => (await runsOf()).find((r) => r.id !== fixRun && r.id !== second.id));
+    check(third.thread_ids.includes(tid), "a driver's start finds the reopen the refusal held back", third);
+    const thirdDone = await ended(base, third.id, "the swept run ends");
+    check(thirdDone.status === "finished", "and the alarm drives it", { status: thirdDone.status, reason: thirdDone.reason });
+
+    // A person's note for the queue's members lands during a yield: what
+    // the run does next holds it.
+    const filed2 = await asReporter(base, who, reports, [["url", `${ORIGIN}/orders/8`], ["title", "Order 8"], ["anchor", anchor], ["body", "The sum is wrong"]]);
+    const tid2 = filed2.json.report.id;
+    const noted = (await ok(base, "POST", "/api/bot/runs", { thread_ids: [tid2], artifact_id: filed2.json.report.artifact.id })).run.id;
+    await until("the command before the note starts", () => (svc.posts.some((p) => p.command === "hold-note") ? true : undefined));
+    const gaveUp = svc.abandoned;
+    await until("a tick gives it up", () => (svc.abandoned > gaveUp ? true : undefined));
+    const sid = (await ok(base, "POST", "/api/sessions", { harness: "claude", harness_session_id: "note-taker", cwd: "/w" })).session.id;
+    const claimed = await raw(base, "POST", `/api/queues/${qid}/reports/${tid2}/claim`, {
+      authorization: `Bearer ${TOKEN}`, "x-clax-session": sid, "content-type": "application/json", "content-length": 2,
+    }, "{}");
+    check(claimed.status < 300, "an agent claims the report", claimed);
+    await ok(base, "POST", `/api/queues/${qid}/reports/${tid2}/release`, { note: "Between us: it is the VAT table." });
+    // The tick that joins the command next starts with the note there.
+    const noteLanded = svc.abandoned;
+    await until("the tick the note came in gives the command up", () => (svc.abandoned > noteLanded ? true : undefined));
+    svc.release("hold-note");
+    const notedDone = await ended(base, noted, "the run past the note ends");
+    check(scriptValue(notedDone)?.code === "confidential", "a member's note during a yield makes the run confidential: nothing is proposed", scriptValue(notedDone));
+    check(!svc.posts.some((p) => p.kind === "propose" && p.run.id === noted), "and nothing left for the service", svc.posts.length);
+
+    check(svc.badIds.length === 0, "every run ID, thread ID and key was one the service takes", svc.badIds);
+    check(svc.refused === 0, "every request carried the bearer secret and the wire's version", svc.refused);
+    check(svc.fronted > 0 && svc.stopped === 0, "and the headers of what fronts the service", { fronted: svc.fronted, stopped: svc.stopped });
+    const logged = logs.map((l) => readFileSync(l, "utf8")).join("");
+    check(!logged.includes(WS_SECRET) && !logged.includes(ZULIP_KEY) && !logged.includes(FRONT.secret), "no log holds the service's secret, the Zulip key or what fronts the service's");
+  } finally {
+    await w?.stop();
+    await svc.close();
+    await zulip.close();
+  }
+}
+
+/** Section 11 (the file's header), on its own state. */
+async function noWorkspace(root, fake, vars) {
+  const dir = join(root, "no-workspace");
+  mkdirSync(dir, { recursive: true });
+  const lvars = { ...vars, CLAX_KEK: KEK, CLAX_TEST_LOOPBACK_PROVIDER: "1" };
+  const closed = `http://127.0.0.1:${await freePort()}`;
+  let w;
+  try {
+    w = await start(dir, writeConfig(dir, { ...lvars, CLAX_WORKSPACE_SERVICE_URL: closed, CLAX_WORKSPACE_SERVICE_TOKEN: WS_SECRET, CLAX_WORKSPACE_SERVICE_INSTANCE: WS_INSTANCE }), 30);
+    let base = w.base;
+    const aid = await withModel(base, fake, "Nothing");
+    const qid = (await ok(base, "POST", "/api/queues", { name: "Q", origins: [ORIGIN] })).queue.id;
+    const unreached = (await ok(base, "POST", "/api/bot/runs", { thread_ids: [await thread(base, aid, "Try the shell")], artifact_id: aid })).run.id;
+    const done = await ended(base, unreached, "the run with no snapshot ends");
+    check(scriptValue(done)?.code === "shell_disabled", "with no word from the service a run has no shell", scriptValue(done));
+    check((await call(base, "GET", "/healthz")).status === 200, "and the instance serves on");
+    await w.stop();
+    w = await start(dir, writeConfig(dir, { ...lvars, CLAX_WORKSPACE_SERVICE_URL: closed }), 31);
+    base = w.base;
+    const { runtime } = await ok(base, "GET", `/api/queues/${qid}/repo`);
+    check(runtime.configured === true && runtime.failed === true, "the service's URL with no secret is a workspace that did not come up", runtime);
+    await w.stop();
+    w = await start(dir, writeConfig(dir, { ...lvars, CLAX_WORKSPACE_SERVICE_URL: closed, CLAX_WORKSPACE_SERVICE_TOKEN: WS_SECRET }), 32);
+    base = w.base;
+    const named = (await ok(base, "GET", `/api/queues/${qid}/repo`)).runtime;
+    check(named.configured === true && named.failed === true, "and so is a service with no name for this instance", named);
+    await w.stop();
+    w = await start(dir, writeConfig(dir, { ...lvars, CLAX_WORKSPACE_SERVICE_URL: closed, CLAX_WORKSPACE_SERVICE_TOKEN: WS_SECRET, CLAX_WORKSPACE_SERVICE_INSTANCE: WS_INSTANCE, CLAX_WORKSPACE_ACCESS_CLIENT_ID: FRONT.id }), 33);
+    base = w.base;
+    const half = (await ok(base, "GET", `/api/queues/${qid}/repo`)).runtime;
+    check(half.configured === true && half.failed === true, "and so is one of the two headers for what fronts the service", half);
+  } finally {
+    await w?.stop();
+  }
+}
 
 async function main() {
   await build();
@@ -628,6 +1019,12 @@ async function main() {
     const oview = await ok(base, "GET", "/api/admin/web");
     check(oview.configured?.search === false && oview.configured?.fetch === false && oview.checking === false && (oview.unavailable ?? "").includes('"not an origin"')
       && !/run remotely/.test(oview.unavailable), "a bad PUBLIC_ORIGIN turns web off, and the admin's view gives that reason", oview);
+    await w.stop();
+    w = null;
+
+    // 10, 11. A workspace service.
+    await workspaceRuns(dir, fake, vars);
+    await noWorkspace(dir, fake, vars);
   } finally {
     await stop();
     await fake.close();

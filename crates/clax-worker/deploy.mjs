@@ -83,7 +83,10 @@
 // environment's),
 // --account <ID> (else CLOUDFLARE_ACCOUNT_ID, else the login's one account),
 // --rotate-secrets, --diag (--no-diag, the default, keeps them off),
-// --no-build, --wait <s> (default 600), --out <path>, --config-only,
+// --no-build, --built-from <commit> (with --no-build, on a preview: the commit
+// the Worker was built from, where this checkout is the default branch's and
+// no pull request's code runs beside the deploy's token: preview.yml),
+// --wait <s> (default 600), --out <path>, --config-only,
 // --dry-run, --yes (no questions; fails on what it would ask),
 // --retired-content-origin <https origin> (the content host an instance
 // served assets on before site hosts; else the record's), --reel-url
@@ -92,6 +95,19 @@
 // production deploy's upload to Cloudflare Stream, scripts/reel-stream.mjs;
 // without them the page shows no player). --content is gone: artifacts are
 // served on the site domain's hosts.
+//
+// ClaxBot's workspace service (docs/prod.md, "ClaxBot's workspace service";
+// deploy-lib.mjs workspaceSettings): --workspace-service-url <https address>,
+// --workspace-preview-hosts <hosts>, --workspace-forge-hosts <hosts> and
+// --workspace-service-instance <name> set the Worker's CLAX_WORKSPACE_*
+// variables and are kept in the record, an empty value clearing one. A variable
+// set in the dashboard does not last: wrangler deploy replaces them, and this
+// config sets no keep_vars. The bearer secret CLAX_WORKSPACE_SERVICE_TOKEN is set
+// with wrangler secret put, and a deploy naming a service on a Worker without it
+// is refused; given in the environment, it is uploaded with the deploy, which is
+// how staging's new Worker gets it. The secrets CLAX_WORKSPACE_ACCESS_CLIENT_ID
+// and CLAX_WORKSPACE_ACCESS_CLIENT_SECRET go the same way, both or neither, and
+// no record holds them. A preview takes none of this.
 //
 // --ci: a deploy from a CI runner (scripts/cloudflare-setup.sh --ci): it
 // asks nothing, and fails naming each setting not given as a flag (the
@@ -142,7 +158,7 @@ import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { dirname, join, resolve } from "node:path";
 import { cloudflare, expiryRule, hasRule } from "./cloudflare-api.mjs";
-import { PREVIEW_ASSET_DAYS, buildId, builtCommitOf, builtFromRefusal, checkCiOptions, checkStaging, ciSecretsRefusal, doneText, envOf, healthOf, kekPlan, partialTriggerUpdate, prodTipOf, productionGate, reelVars, secretsToMake, siteZoneOf, versionIdOf, wildcardRecordOf, wranglerError } from "./deploy-lib.mjs";
+import { PREVIEW_ASSET_DAYS, buildId, builtCommitOf, builtFromOptionRefusal, builtFromRefusal, checkCiOptions, checkStaging, ciSecretsRefusal, doneText, envOf, healthOf, kekPlan, partialTriggerUpdate, prodTipOf, productionGate, reelVars, secretsToMake, siteZoneOf, versionIdOf, WORKSPACE_SETTINGS, wildcardRecordOf, workspaceFrontPlan, workspaceSettings, workspaceTokenPlan, wranglerError } from "./deploy-lib.mjs";
 import { BUILD, BUILT_FROM, HERE, baseConfig, embedsWebUi } from "./harness.mjs";
 
 const WRANGLER = join(HERE, "node_modules/.bin/wrangler");
@@ -172,7 +188,7 @@ const PAID_LIMIT_KIB = 10 * 1024;
 
 export function parseArgs(argv) {
   const o = { store: "artifacts", storeGiven: false, wait: 600, diag: false, build: true, dryRun: false, yes: false, rotate: false, configOnly: false, ci: false, production: false, staging: false, fromLaptop: false };
-  const takes = new Set(["--public", "--site-domain", "--zone", "--store", "--name", "--account", "--wait", "--out", "--github-client-id", "--owner-github", "--legal", "--terms-url", "--privacy-url", "--legal-version", "--retired-content-origin", "--reel-url", "--reel-poster-url", "--env", "--site-zone"]);
+  const takes = new Set(["--public", "--site-domain", "--zone", "--store", "--name", "--account", "--wait", "--out", "--github-client-id", "--owner-github", "--legal", "--terms-url", "--privacy-url", "--legal-version", "--retired-content-origin", "--reel-url", "--reel-poster-url", "--env", "--site-zone", "--built-from", ...WORKSPACE_SETTINGS.map((s) => `--${s.flag}`)]);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const [flag, inline] = a.includes("=") ? a.split(/=(.*)/s) : [a, undefined];
@@ -207,10 +223,13 @@ export function parseArgs(argv) {
   o.name ??= o.res.worker;
   if (o.production && o.res.env !== "prod") throw new Error(`--production is the prod environment's: it takes no --env ${o.res.env}`);
   checkStaging({ staging: o.staging, production: o.production, env: o.env, ci: o.ci });
+  const builtFrom = builtFromOptionRefusal(o);
+  if (builtFrom) throw new Error(builtFrom);
   if (o["retired-content-origin"] !== undefined && !retiredContentOrigin({ retired_content_origin: o["retired-content-origin"] })) {
     throw new Error(`--retired-content-origin takes an https:// origin (e.g. https://content.example.com), not ${o["retired-content-origin"]}`);
   }
   reelVars(o);
+  workspaceSettings(o);
   return o;
 }
 
@@ -481,7 +500,7 @@ export function retiredContentOrigin(record) {
   }
 }
 
-function deployConfig(o, pub, site, zone, account, github, legal, out, retired, build, commit) {
+function deployConfig(o, pub, site, zone, account, github, legal, out, retired, build, commit, workspace) {
   const c = baseConfig();
   delete c.$schema;
   // The config lives in target/deploy/, so its paths name the crate's files.
@@ -507,6 +526,8 @@ function deployConfig(o, pub, site, zone, account, github, legal, out, retired, 
   // The base config's CONTENT_ORIGIN, if it still has one, is the retired
   // content host's: RETIRED_CONTENT_ORIGIN names it, from the record.
   const { CONTENT_ORIGIN: _old, RETIRED_CONTENT_ORIGIN: _base, ...base } = c.vars ?? {};
+  // The workspace's come from this deploy alone: none reaches a preview.
+  for (const s of WORKSPACE_SETTINGS) delete base[s.variable];
   c.vars = {
     ...base,
     ...(retired ? { RETIRED_CONTENT_ORIGIN: retired } : {}),
@@ -529,6 +550,7 @@ function deployConfig(o, pub, site, zone, account, github, legal, out, retired, 
     ...(legal.legal ? { LEGAL: legal.legal } : {}),
     ...(legal.terms_url ? { TERMS_URL: legal.terms_url, PRIVACY_URL: legal.privacy_url, LEGAL_VERSION: legal.legal_version } : {}),
     ...reelVars(o),
+    ...workspace.vars,
   };
   // The environment's own bucket, namespace and queue (deploy-lib.mjs envOf).
   for (const b of c.r2_buckets ?? []) if (b.binding === "ASSETS") b.bucket_name = o.res.bucket;
@@ -772,12 +794,20 @@ async function writeDeployConfig(o, account) {
   // The flag's (a --ci deploy has no record), else the record's.
   const retired = retiredContentOrigin({ retired_content_origin: o["retired-content-origin"] }) ?? retiredContentOrigin(early);
   if (retired) info(`retired content origin ${retired}: its old asset addresses redirect to their sites`);
+  const workspace = workspaceSettings(o, early);
+  const service = workspace.vars.CLAX_WORKSPACE_SERVICE_URL;
+  if (service) {
+    info(`ClaxBot's workspace service ${service}, as instance ${workspace.vars.CLAX_WORKSPACE_SERVICE_INSTANCE ?? "CLAX_INSTANCE, and with neither no workspace"}`);
+    for (const list of ["CLAX_WORKSPACE_PREVIEW_HOSTS", "CLAX_WORKSPACE_FORGE_HOSTS"]) {
+      if (!workspace.vars[list]) info(`notice: no ${list}: no such link goes to anyone`);
+    }
+  }
   const configPath = o.out ? resolve(o.out) : DEPLOY_CONFIG;
-  const commit = await sourceCommit();
+  const commit = o["built-from"] ?? (await sourceCommit());
   const build = buildId(commit, new Date(), randomBytes(4).toString("hex"));
-  const config = deployConfig(o, pub, site, zone, account, github, legal, configPath, retired, build, commit);
+  const config = deployConfig(o, pub, site, zone, account, github, legal, configPath, retired, build, commit, workspace);
   info(`wrote ${configPath} (worker ${config.name}, REPO_STORE=${o.store}, SITE_DOMAIN=${site}, diagnostics ${o.diag ? "on" : "off"}, build ${build})`);
-  return { pub, site, zone, github, legal, config, configPath, retired, commit, build };
+  return { pub, site, zone, github, legal, config, configPath, retired, commit, build, workspace };
 }
 
 async function main() {
@@ -810,7 +840,7 @@ async function main() {
   }
   const account = who?.account.id;
 
-  const { pub, site, zone, github, legal, config, configPath, retired, commit, build } = await writeDeployConfig(o, account);
+  const { pub, site, zone, github, legal, config, configPath, retired, commit, build, workspace } = await writeDeployConfig(o, account);
   if (o.diag) diagReminder(pub);
 
   step("Resources");
@@ -876,6 +906,26 @@ async function main() {
   const oldBackup = oldKekBackup(pub, record);
   if (oldBackup) info(`notice: an old CLAX_KEK backup is at ${oldBackup}: keep it with the instance's backups, check its fingerprint in Admin, Provider, then delete it here (docs/prod.md, "CLAX_KEK")`);
   if (kek.upload) secrets = { ...(secrets ?? {}), CLAX_KEK: kek.upload };
+  const workspaceToken = workspaceTokenPlan({
+    have: who ? have : null,
+    given: process.env.CLAX_WORKSPACE_SERVICE_TOKEN,
+    url: workspace.vars.CLAX_WORKSPACE_SERVICE_URL,
+    preview: o.ephemeral && !o.staging,
+  });
+  if (workspaceToken.error && !o.dryRun) throw new Error(workspaceToken.error);
+  if (workspaceToken.error) info(`a deploy would refuse: ${workspaceToken.error}`);
+  else if (workspaceToken.say) info(workspaceToken.say);
+  if (workspaceToken.upload && !o.dryRun) secrets = { ...(secrets ?? {}), CLAX_WORKSPACE_SERVICE_TOKEN: workspaceToken.upload };
+  const workspaceFront = workspaceFrontPlan({
+    have: who ? have : null,
+    given: { id: process.env.CLAX_WORKSPACE_ACCESS_CLIENT_ID, secret: process.env.CLAX_WORKSPACE_ACCESS_CLIENT_SECRET },
+    url: workspace.vars.CLAX_WORKSPACE_SERVICE_URL,
+    preview: o.ephemeral && !o.staging,
+  });
+  if (workspaceFront.error && !o.dryRun) throw new Error(workspaceFront.error);
+  if (workspaceFront.error) info(`a deploy would refuse: ${workspaceFront.error}`);
+  else if (workspaceFront.say) info(workspaceFront.say);
+  if (workspaceFront.upload && !o.dryRun) secrets = { ...(secrets ?? {}), ...workspaceFront.upload };
   if (github.client_id) {
     let gh = process.env.GITHUB_CLIENT_SECRET?.trim();
     const missing = who && !have.includes("GITHUB_CLIENT_SECRET");
@@ -977,10 +1027,12 @@ async function main() {
   // An older record's content_origin is kept as the retired one; its
   // version_id was an earlier deploy's.
   const { content_origin: _old, retired_content_origin: _kept, version_id: _was, site_zone: _zone, queue: _queue, namespace: _namespace, ...kept } = record;
+  for (const s of WORKSPACE_SETTINGS) delete kept[s.record];
   const versionId = versionIdOf(r.out + r.err);
   const next = {
     ...kept,
     ...(retired ? { retired_content_origin: retired } : {}),
+    ...workspace.record,
     public_origin: `https://${pub}`,
     site_domain: site,
     ...(zone !== site ? { site_zone: zone } : {}),

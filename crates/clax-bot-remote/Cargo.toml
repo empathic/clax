@@ -1,0 +1,30 @@
+[package]
+name = "clax-bot-remote"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ClaxBot's workspace at a distance: the wire to a workspace service, and a Workspace that speaks it over a host's transport, for the native service and the hosted Worker alike"
+# Every file in tests/ is a module of the one integration test binary.
+autotests = false
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = "0.1"
+clax-bot = { path = "../clax-bot" }
+clax-bot-sandbox = { path = "../clax-bot-sandbox" }
+clax-core = { path = "../clax-core" }
+clax-rt = { path = "../clax-rt" }
+clax-store = { path = "../clax-store" }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

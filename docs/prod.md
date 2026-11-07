@@ -66,8 +66,9 @@ differs (the rulesets it writes whole each time). It
   approve the release pull request `just release` opens as them;
 - creates the environment `production`, deployable from `prod` only, with
   the variables the deploy reads: `PUBLIC_HOST`, `SITE_DOMAIN`, `STORE`,
-  and `RETIRED_CONTENT_ORIGIN` when the instance has one. The deploy reads
-  three more settings as the environment's secrets, so that they stay out
+  `RETIRED_CONTENT_ORIGIN` when the instance has one, and the
+  `CLAX_WORKSPACE_*` ones when given ("ClaxBot's workspace service"). The deploy
+  reads three more settings as the environment's secrets, so that they stay out
   of the repository's settings and its logs: `CLOUDFLARE_ACCOUNT_ID`,
   `OAUTH_CLIENT_ID` (the GitHub OAuth App's client ID; GitHub refuses
   names starting with `GITHUB_`) and `OWNER_GITHUB`. A variable left with
@@ -363,6 +364,204 @@ that is not hosted reports only with `[feedback]`. `just dev-feedback`
 with a queue `clax-feedback-dev` for `http://localhost:<port>`, so the
 loop runs locally end to end.
 
+## ClaxBot's workspace service
+
+A Worker runs no container. For ClaxBot to change code on clax.dev, the Worker
+reaches a workspace service on a host of the owner's, through a tunnel. Until
+all of this is done the Worker has none, and ClaxBot runs with no shell, as it
+does today. `deploy/claxbot-workspace/README.md`, "The workspace service", is the
+service's side: build, run, environment, home and tunnel. Nothing here has yet run
+against a real tunnel, Daytona or GitHub.
+
+The Worker's settings are four variables and three secrets:
+
+| Setting | Flag and record key | For Clax |
+|---|---|---|
+| `CLAX_WORKSPACE_SERVICE_URL` | `--workspace-service-url`, `workspace_service_url` | `https://<the tunnel's hostname>` |
+| `CLAX_WORKSPACE_PREVIEW_HOSTS` | `--workspace-preview-hosts`, `workspace_preview_hosts` | `*.<PREVIEW_HOST_ZONE>`: `*.clax-preview.dev` |
+| `CLAX_WORKSPACE_FORGE_HOSTS` | `--workspace-forge-hosts`, `workspace_forge_hosts` | `github.com` |
+| `CLAX_WORKSPACE_SERVICE_INSTANCE` | `--workspace-service-instance`, `workspace_service_instance` | `clax-prod`, the service's own value |
+| `CLAX_WORKSPACE_SERVICE_TOKEN` | none: a Worker secret | the service's own value |
+| `CLAX_WORKSPACE_ACCESS_CLIENT_ID` | none: a Worker secret | the Access service token's client ID |
+| `CLAX_WORKSPACE_ACCESS_CLIENT_SECRET` | none: a Worker secret | its client secret |
+
+The variables go through `deploy.mjs`, because `wrangler deploy` replaces what the
+dashboard holds: set by hand they last until the next deploy. Unset, the instance
+is `CLAX_INSTANCE`, which the service must then be given too; with neither the
+Worker has no workspace and the panel says it did not start. With a host list empty
+no such link goes to anyone, and a preview counts as none. The two Access secrets
+are for what fronts the service, are sent on every request, and go together: one
+alone is a workspace that did not start, and no deploy record holds them. **A
+preview takes none of this:** `deploy.mjs` refuses the flags, a record naming them,
+and the secrets, since a preview runs a pull request's code. `deploy-dev.yml` passes
+none either, and the secrets stay out of the `preview` environment, which dev
+deploys in.
+
+Each step's check comes before the next step:
+
+1. **Release this.** The Worker must be a build that reads these settings.
+2. **Find the queue.** `clax-feedback` is made the first time a signed-in person's
+   shell asks for it ("Feedback: clax.dev's own report queue"), with an ID of its
+   own: `curl -sf https://clax.dev/api/queues -H "authorization: Bearer $CLAX_TOKEN"
+   | jq '.queues[] | select(.name == "clax-feedback") | .id'`.
+3. **Fill in `workspace.toml`** from `deploy/claxbot-workspace/clax.toml`: that ID as
+   `queue` and in `report_url`, the App's two numbers and `image`, the snapshot's
+   name, as its README's "To use one" says. The service refuses to start on Daytona
+   with no `image`.
+4. **Start the service** with a new secret and `clax-prod`. Check: on the host,
+   `/v1/previews` answers 401 with no secret, and with it `.snapshot.queues` names
+   the queue's ID.
+5. **Make the tunnel, with Access in front** and a service token, as that README's
+   "The tunnel" says. Check: at `https://<hostname>`, `/v1/previews` answers
+   Access's 403 with no headers, and `.snapshot.queues` names the queue's ID with
+   the token's two headers and the secret.
+6. **Give the Worker the three secrets**, from `crates/clax-worker`:
+
+   ```
+   read -rs T && printf %s "$T" | npx wrangler secret put CLAX_WORKSPACE_SERVICE_TOKEN --name clax; unset T
+   read -rs T && printf %s "$T" | npx wrangler secret put CLAX_WORKSPACE_ACCESS_CLIENT_ID --name clax; unset T
+   read -rs T && printf %s "$T" | npx wrangler secret put CLAX_WORKSPACE_ACCESS_CLIENT_SECRET --name clax; unset T
+   ```
+
+   Each deploys at once, as a new version of the Worker. Check: a queue's Repository
+   panel now says *This Clax's container runtime did not start*, which is right
+   for secrets with no address, until the next step. They come first because a
+   deploy naming a service on a Worker with no secret is refused.
+7. **Set the variables and deploy:**
+
+   ```
+   scripts/setup-prod-github.sh --i-know-what-i-am-doing \
+     --workspace-service-url https://<hostname> \
+     --workspace-preview-hosts '*.clax-preview.dev' \
+     --workspace-forge-hosts github.com \
+     --workspace-service-instance clax-prod
+   ```
+
+   Then Actions, Deploy prod, Run workflow, on `prod`. Check: the panel says
+   *This Clax runs only the repositories its operator names: nothing connected
+   here is cloned.* That is the Worker reading its settings, and it is all the panel
+   can say: its status line stays *Not connected.*, since this target is the
+   operator's and no link. *This Clax has no container runtime yet* means the
+   variables did not arrive; *did not start* means the secret is missing or the
+   address is not `https://`.
+8. **Tell reporters it is public.** The target says `public = true`, so what a
+   reporter writes may reach a public pull request, and nothing turns this on for
+   an operator's target: on the queue's Edit form tick *Tell reporters what they
+   write may appear in a public pull request*, which is `PATCH /api/queues/<qid>
+   {"public_notice": true}`. Check: `GET /api/queues` answers `public_notice: true`
+   for it, and the composer of a new report says so.
+9. **Connect Zulip** on the queue's panel, with the stream the people who run
+   `/preview` read and `people` mapping the reporters' GitHub logins ("Telling
+   people on Zulip", `docs/feedback.md`). A queue with no notifier writes no notice,
+   and one set later asks nobody about a fix already proposed: it hears of that fix
+   only if a link reaches its reporter or a reopen rejects it. Check: **Send a test
+   message** arrives.
+10. **Send one report to ClaxBot** from `clax-feedback`, filed by someone who is
+    not you, so that the last step is a real reporter's. Check: its run gets a shell
+    and opens a pull request, the report's fix reads `held: true` with no
+    `verify_url`, and its reporter reads *A fix has been proposed.* with nothing to
+    check. A run with no shell here, past the panel's line in step 7, means the
+    service did not answer, or does not name this queue: the instance's Workers Logs
+    and the service's own log say which.
+11. **Read the Zulip message.** It comes soon after the proposal, when the alarm's
+    drive that made it ends or at the next alarm, while the run may still be going,
+    under a topic of the report's ID: the fix is held for a person, the pull
+    request, the `/preview <SHA>` to post and that nothing tells the reporter until
+    the preview answers. No message here means no notifier, or a fix with no step:
+    the panel's failure line, and the note on the report, say which.
+12. **Review, then post `/preview <the head's full SHA>`** on the pull request, as a
+    person with write access who is not its author. Read the diff first: it is the
+    control (`deploy/claxbot-workspace/README.md`, "The GitHub App"). The wait is a
+    day (`preview_timeout_secs`) and sits in no run, so the run may end and the
+    review take its time. A preview that answers after it reaches nobody: the
+    members are told so on the report and on the stream, and a member hands the fix
+    over with the preview's link (`POST /api/queues/<qid>/reports/<tid>/fix`, or
+    *Hand it to the reporter* on the report). Check: `preview.yml`'s `approve` passes and
+    its `deploy` runs, 10 to 20 minutes as measured, and
+    `https://pr-<N>.clax-preview.dev/healthz` names the commit.
+13. **See the reporter told.** Within about a minute and a half of `/healthz`
+    naming the commit (the service looks every `preview_poll_secs`, the Worker asks
+    it every 30 seconds), the fix reads `held: false` with its `verify_url`, and the
+    reporter's badge counts it. A reporter `people` maps gets a direct message with
+    the preview's link and where to answer. For anyone else the stream says the
+    report has something to check, and a member passes it on. Nothing by the fix's
+    next `/healthz`: check `CLAX_WORKSPACE_PREVIEW_HOSTS` holds the preview's host,
+    since a link on no listed host counts as no preview.
+14. **Get the verdict.** The reporter tries the preview, then answers under **My
+    reports** on clax.dev, which the message links: the overlay on a preview files
+    into the preview's own instance, so nothing said there reaches this report.
+    Check: *It's fixed* takes the report to verified. *Still broken* reopens it, the
+    stream gets a notice that the fix was rejected, and with `follow_ups = false`
+    no run starts until a member sends it. Either answer, from a person who is not
+    you, ends this runbook.
+
+What each step showed closes the records the README's "First live run" lists, which
+is the rest of what only a real run decides. Its step 2, a queue's own link, is the
+daemon's route and a Worker refuses it: steps 2 to 14 here stand in its place.
+
+A Worker runs **at most five runs at once** with a workspace, however the instance
+is set (`WORKSPACE_CONCURRENCY`, `crates/clax-worker/src/bot.rs`): each holds one of
+the six connections a Worker may have waiting for headers. The rest wait.
+
+An outage fails closed: with the service or the tunnel down, a command answers
+`shell_unavailable`, and a run with no recent snapshot has no shell.
+
+**Rotating the secret.** The service holds one secret and takes no other, so there
+is a gap of about as long as the second step, and both ends fail closed in it. Do
+it with no run going:
+
+1. Restart the service with the new value, so the old one stops working at once.
+2. Run step 6's command with the new value. Until it lands, the Worker's calls
+   answer 401 and its previews wait.
+3. Check: `/v1/previews` at the tunnel's address with the new secret, and one
+   command in a run.
+
+**Turning it off.** `gh variable delete CLAX_WORKSPACE_SERVICE_URL --env production`,
+then `npx wrangler secret delete` of `CLAX_WORKSPACE_SERVICE_TOKEN` and the two
+Access secrets with `--name clax`, then Run
+workflow. The panel says *no container runtime yet*.
+
+**From a laptop**, the same four flags go to `scripts/cloudflare-setup.sh`, and the
+deploy record keeps them for the next deploy; an empty value clears one.
+
+**On staging.** Staging has none unless its environment's variables of the same
+names are set, with `gh variable set <name> --env staging`, and the secret with
+`gh secret set CLAX_WORKSPACE_SERVICE_TOKEN --env staging`: each release pull
+request is a new Worker with nowhere to hold it first, so that deploy uploads it.
+`deploy.mjs` uploads the two Access secrets the same way when its environment holds
+them.
+Never give staging production's service. A service ends whatever its host does
+not name, so this is a second service, with a home, a secret, a tunnel and an
+instance of its own, and `deploy.mjs` refuses staging naming no instance. Two open
+release pull requests would share it, and end each other's runs.
+
+## Zulip: telling Empathic's people
+
+The queue's notifier (`docs/feedback.md`, "Telling people on Zulip") is set per
+queue, by a queue admin, and needs `CLAX_KEK`, which seals the bot's key. On
+clax.dev, for `clax-feedback`:
+
+1. In Empathic's Zulip, make a generic bot, and note its email and API key. Make a
+   throwaway stream, such as `clax-test`; a private stream needs the bot in it.
+2. On the queue's admin panel, under Zulip, give the organization's `https://`
+   address as **Site**, the bot's email and key, and `clax-test` as **Stream**.
+   Leave **People** empty.
+3. **Send a test message.** Check: it arrives in `clax-test`. A failure shows on the
+   panel in fixed words. This tries the address, the bot and the stream, and no
+   direct message.
+4. Fill in **People**, one a line: a GitHub login, then that person's Zulip email.
+   Change the stream to the real one. Leaving the key's box empty keeps it. Send
+   the test again, then delete `clax-test`.
+5. **Check a direct message and a link by hand,** once: Send a test message tries
+   neither. File a report as someone in `people`, and let a fix reach it. They get a
+   direct message, which needs Zulip 7.0 or later, with a link: open it, because a
+   link's encoding has been tested only against a fake Zulip.
+
+A reporter is matched by the GitHub login of their signed-in profile; anyone not in
+`people` is told on the stream in fixed words, with no name, link or report text.
+Rotate the key by saving a new one here. Deleting the notifier deletes its unsent
+notices.
+
 ## The deploy workflow
 
 Deploy prod runs on every push to `prod`, which is a release pull
@@ -394,7 +593,7 @@ ships; its jobs, in order:
   ```
   scripts/cloudflare-setup.sh --legal bundled --public "$PUBLIC_HOST" --site-domain "$SITE_DOMAIN" --store "$STORE" \
     [--github-client-id "$OAUTH_CLIENT_ID" --owner-github "$OWNER_GITHUB"] [--retired-content-origin "$RETIRED_CONTENT_ORIGIN"] \
-    [--reel-url … --reel-poster-url …] --account "$CLOUDFLARE_ACCOUNT_ID" \
+    [--workspace-service-url … and the workspace's other settings] [--reel-url … --reel-poster-url …] --account "$CLOUDFLARE_ACCOUNT_ID" \
     --ci --production --no-build --smoke --i-know-what-i-am-doing
   ```
 

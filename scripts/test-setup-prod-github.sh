@@ -264,6 +264,25 @@ else fail "flags update the variables ($(writes))"; fi
 : > "$C/calls"
 if run --i-know-what-i-am-doing && [ "$(q 'g["envs"]["production"]["vars"]["RETIRED_CONTENT_ORIGIN"]')" = https://old.example ]; then
     pass "a variable with no flag is kept"; else fail "a variable with no flag is kept"; fi
+# ClaxBot's workspace: each flag a variable of the environment, the record's
+# when no flag names one, none of it when neither does.
+: > "$C/calls"
+if run --i-know-what-i-am-doing --workspace-service-url https://w.example --workspace-preview-hosts '*.previews.example' \
+        --workspace-forge-hosts github.com --workspace-service-instance clax-prod \
+    && [ "$(q 'g["envs"]["production"]["vars"]["CLAX_WORKSPACE_SERVICE_URL"]')" = https://w.example ] \
+    && [ "$(q 'g["envs"]["production"]["vars"]["CLAX_WORKSPACE_PREVIEW_HOSTS"]')" = '*.previews.example' ] \
+    && [ "$(q 'g["envs"]["production"]["vars"]["CLAX_WORKSPACE_FORGE_HOSTS"]')" = github.com ] \
+    && [ "$(q 'g["envs"]["production"]["vars"]["CLAX_WORKSPACE_SERVICE_INSTANCE"]')" = clax-prod ]; then
+    pass "the workspace flags set the production environment's variables"
+else fail "the workspace flags set the variables ($(writes))"; fi
+python3 -c 'import json, sys; p = sys.argv[1]; r = json.load(open(p)); r["workspace_service_url"] = "https://r.example"; json.dump(r, open(p, "w"))' "$C/deploy/pub.example.json"
+: > "$C/calls"
+if run --i-know-what-i-am-doing && [ "$(q 'g["envs"]["production"]["vars"]["CLAX_WORKSPACE_SERVICE_URL"]')" = https://r.example ] \
+    && [ "$(q 'g["envs"]["production"]["vars"]["CLAX_WORKSPACE_FORGE_HOSTS"]')" = github.com ] \
+    && ! writes | grep 'staging/variables/CLAX_WORKSPACE\|staging/variables {"name":"CLAX_WORKSPACE' >/dev/null; then
+    pass "the record's workspace URL is taken, an unnamed variable kept, and staging given none"
+else fail "the record's workspace URL ($(writes))"; fi
+
 # --public-host: the environment's PUBLIC_HOST and the repository's both.
 # Another host has no deploy record here, so its account is a flag too.
 : > "$C/calls"

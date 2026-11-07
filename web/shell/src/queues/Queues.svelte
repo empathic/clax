@@ -12,11 +12,11 @@
   // `QueueView`), and a report its own view (`/queues/<qid>/<tid>`,
   // `ReportView`; spec 2026-10-29-feedback-loop-design §8): the page moves
   // between them in place, through the browser's history.
-  import { onMount } from "svelte";
+  import { onMount, type Component } from "svelte";
+  import { queueAdmin } from "../bot/me";
   import type { EventStream } from "../stream";
   import * as api from "./api";
   import { type Counts, countReports, countsText, queueHref, queuesRoute, refusal } from "./model";
-  import QueueAdmin from "./QueueAdmin.svelte";
   import QueueForm from "./QueueForm.svelte";
   import QueueView from "./QueueView.svelte";
   import ReportView from "./ReportView.svelte";
@@ -30,6 +30,22 @@
   // The form open: a queue's ID, "new", or none; and the queues whose Manage is open.
   let editing = $state<string | null>(null);
   let managing = $state<Record<string, boolean>>({});
+  // What Manage shows, loaded the first time it is opened: a queue is
+  // `managing` only once its panel can show. A failed load says so on the
+  // queue, and Manage or Try again asks again.
+  let QueueAdmin = $state<Component<{ queue: api.Queue }> | null>(null);
+  let loadingAdmin = $state<string | null>(null);
+  let adminFailed = $state<string | null>(null);
+  async function manage(id: string) {
+    if (managing[id]) { managing[id] = false; return; }
+    if (loadingAdmin) return;
+    adminFailed = null;
+    if (!QueueAdmin) {
+      loadingAdmin = id;
+      try { QueueAdmin = (await queueAdmin()).default as Component<{ queue: api.Queue }>; } catch { adminFailed = id; return; } finally { loadingAdmin = null; }
+    }
+    managing[id] = true;
+  }
   let path = $state(location.pathname);
   const route = $derived(queuesRoute(path));
   // The queue a sub-view is of: `null` while the list loads, `undefined` when the viewer has none of that ID.
@@ -137,7 +153,7 @@
               <span class="sp"></span>
               {#if q.role === "admin"}
                 <span class="acts">
-                  <button type="button" class="ghost" aria-expanded={!!managing[q.id]} onclick={() => { managing[q.id] = !managing[q.id]; }}>Manage</button>
+                  <button type="button" class="ghost" aria-expanded={!!managing[q.id]} aria-busy={loadingAdmin === q.id} onclick={() => void manage(q.id)}>Manage</button>
                   <button type="button" class="ghost" aria-label={`Edit queue ${q.name}`} onclick={() => open(q.id)}>Edit</button>
                   <button type="button" class="ghost danger" aria-label={`Delete queue ${q.name}`} onclick={() => void remove(q)}>Delete</button>
                 </span>
@@ -150,7 +166,9 @@
             {:else}
               <p class="meta">No origins yet: no page can file reports into it.</p>
             {/if}
-            {#if managing[q.id] && q.role === "admin"}<QueueAdmin queue={q} />{/if}
+            {#if loadingAdmin === q.id}<p class="meta" role="status">Loading…</p>{/if}
+            {#if adminFailed === q.id}<p class="meta" role="alert">Could not load this queue's settings. <button type="button" class="ghost" onclick={() => void manage(q.id)}>Try again</button></p>{/if}
+            {#if managing[q.id] && q.role === "admin" && QueueAdmin}<QueueAdmin queue={q} />{/if}
           {/if}
         </li>
       {/each}

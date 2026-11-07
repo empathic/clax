@@ -2,13 +2,14 @@
 // what the top bar's ClaxBot button and run panel (`ArtifactBot`, loaded
 // with the roster after the first paint) and the thread sidebar's Send
 // (`ShellSidebar`) share. ClaxBot is listed to the Send menu as a built-in
-// agent, first, live or with why it is not; choosing it is remembered per
-// artifact as any agent is (`rememberTarget`), and a Send to it starts a
+// agent, first, live or with why it is not; the sidebar remembers choosing it
+// per artifact as any agent's (`rememberTarget`), and a Send to it starts a
 // run of the threads sent (`POST /api/bot/runs`), whose panel then opens.
+// A report's view shares this (`ReportBot`), so nothing here imports what the
+// artifact entry holds: that would split it from the entry into a chunk of its own.
 import type { MeBot } from "./api";
 import { availability } from "./model";
 import { refusal } from "../people/refusal";
-import { rememberTarget } from "../view/send-target";
 import type { AgentView } from "../view/working-model";
 
 /** ClaxBot's handle, as the daemon names it and a Send targets it. */
@@ -40,11 +41,8 @@ class BotView {
     try { last = localStorage.getItem(`clax.sendTo.${aid}`); } catch { /* none */ }
     this.chosen = live && last === BOT;
   }
-  /** Chooses ClaxBot (or another agent, `on` false) for `aid`'s Sends. */
-  choose(aid: string, on: boolean): void {
-    this.chosen = on;
-    if (on) rememberTarget(aid, BOT);
-  }
+  /** Chooses ClaxBot (or another agent, `on` false) for this artifact's Sends. */
+  choose(on: boolean): void { this.chosen = on; }
   /** Opens the panel on run `id`. */
   open(id: string): void {
     this.run = id;

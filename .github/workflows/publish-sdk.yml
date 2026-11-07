@@ -115,8 +115,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
+          package-manager-cache: false
       - name: Build and test
         run: |
           pnpm install --frozen-lockfile
@@ -161,6 +160,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
+          package-manager-cache: false
           registry-url: https://registry.npmjs.org
       # Trusted publishing needs npm 11.5.1 or later; Node 22 ships npm 10.
       # An exact version: nothing unpinned runs where the token can be had.

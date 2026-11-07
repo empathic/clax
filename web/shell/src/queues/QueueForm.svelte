@@ -5,7 +5,8 @@
   // pages may file from (one per line; a `*` in the host stands for one
   // or more whole labels or part of one, for per-branch preview sites)
   // and what a reporter reads, their own reports or every report of the
-  // queue. A line that is not an origin is named, and nothing is sent
+  // queue; for a queue that exists, whether its reporters are told their
+  // words may be public. A line that is not an origin is named, and nothing is sent
   // until it is fixed. `onSave` answers the refusal's message, or null
   // once saved.
   import { onMount } from "svelte";
@@ -19,6 +20,8 @@
   let origins = $state(p.queue?.origins.join("\n") ?? "");
   // svelte-ignore state_referenced_locally
   let see = $state<ReportersSee>(p.queue?.reporters_see ?? "own");
+  // svelte-ignore state_referenced_locally
+  let notice = $state(p.queue?.public_notice ?? false);
   let err = $state<string | null>(null);
   let busy = $state(false);
   const parsed = $derived(parseOrigins(origins));
@@ -30,7 +33,7 @@
     if (busy) return;
     if (parsed.bad.length) { err = `Not an origin: ${parsed.bad.join(", ")}. Write each as https://host, or http://host:port, with no path; a * may stand for host labels or part of one.`; return; }
     busy = true; err = null;
-    try { err = await p.onSave({ name: name.trim(), origins: parsed.origins, reporters_see: see }); } finally { busy = false; }
+    try { err = await p.onSave({ name: name.trim(), origins: parsed.origins, reporters_see: see, ...p.queue && { public_notice: notice } }); } finally { busy = false; }
   }
   onMount(() => { document.querySelector<HTMLElement>(`form.qform[data-key="${key}"] input[name="name"]`)?.focus(); });
 </script>
@@ -46,6 +49,9 @@
     <label><input type="radio" name={`see-${key}`} value="own" checked={see === "own"} onchange={() => { see = "own"; }} /> Their own reports</label>
     <label><input type="radio" name={`see-${key}`} value="all" checked={see === "all"} onchange={() => { see = "all"; }} /> Every report in the queue</label>
   </fieldset>
+  {#if p.queue}
+    <label class="notice"><input type="checkbox" name="public_notice" checked={notice} onchange={e => { notice = e.currentTarget.checked; }} /> Tell reporters what they write may appear in a public pull request</label>
+  {/if}
   {#if err}<p class="err" role="alert">{err}</p>{/if}
   <div class="row">
     <button class="primary" type="submit" disabled={!name.trim()}>{p.queue ? "Save" : "Create queue"}</button>
@@ -62,6 +68,7 @@
   .see { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0; padding: 0; border: 0; }
   .see legend { width: 100%; padding: 0 0 4px; font-size: 12.5px; color: var(--muted); }
   .see label { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+  .notice { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
   .err { margin: 0; color: var(--danger); font-size: 13px; }
   .row { display: flex; flex-wrap: wrap; gap: 8px; }
 </style>

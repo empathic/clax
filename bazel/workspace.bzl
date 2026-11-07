@@ -68,6 +68,44 @@ CRATES = {
         },
         "version": "0.6.0"
     },
+    "crates/clax-bot-remote": {
+        "bins": {},
+        "default_features": [],
+        "deps": [
+            "//crates/clax-bot-sandbox:clax_bot_sandbox",
+            "//crates/clax-bot:clax_bot",
+            "//crates/clax-core:clax_core",
+            "//crates/clax-rt:clax_rt",
+            "//crates/clax-store:clax_store"
+        ],
+        "dev_deps": [],
+        "edition": "2024",
+        "features": [],
+        "has_build_script": False,
+        "lib": "clax_bot_remote",
+        "lib_root": "src/lib.rs",
+        "name": "clax-bot-remote",
+        "tests": {
+            "integration": "tests/integration.rs"
+        },
+        "version": "0.6.0",
+        "wasm_deps": [
+            "@crates_wasm//:serde-1.0.229",
+            "@crates_wasm//:serde_json-1.0.151",
+            "@crates_wasm//:tracing-0.1.44",
+            "@crates_wasm//:url-2.5.8"
+        ],
+        "wasm_path_deps": [
+            "//crates/clax-bot-sandbox:clax_bot_sandbox",
+            "//crates/clax-bot:clax_bot",
+            "//crates/clax-core:clax_core",
+            "//crates/clax-rt:clax_rt",
+            "//crates/clax-store:clax_store"
+        ],
+        "wasm_proc_macro_deps": [
+            "@crates_wasm//:async-trait-0.1.92"
+        ]
+    },
     "crates/clax-bot-sandbox": {
         "bins": {},
         "default_features": [],
@@ -93,6 +131,55 @@ CRATES = {
         "wasm_proc_macro_deps": [
             "@crates_wasm//:async-trait-0.1.92"
         ]
+    },
+    "crates/clax-bot-workspace": {
+        "bins": {},
+        "default_features": [],
+        "deps": [
+            "//crates/clax-bot-sandbox:clax_bot_sandbox",
+            "//crates/clax-bot:clax_bot",
+            "//crates/clax-core:clax_core",
+            "//crates/clax-store:clax_store"
+        ],
+        "dev_deps": [],
+        "edition": "2024",
+        "features": [],
+        "has_build_script": False,
+        "lib": "clax_bot_workspace",
+        "lib_root": "src/lib.rs",
+        "name": "clax-bot-workspace",
+        "tests": {
+            "conformance": "tests/conformance.rs"
+        },
+        "version": "0.6.0"
+    },
+    "crates/clax-bot-workspace-service": {
+        "bins": {
+            "clax-bot-workspace-service": "src/main.rs"
+        },
+        "default_features": [],
+        "deps": [
+            "//crates/clax-bot-remote:clax_bot_remote",
+            "//crates/clax-bot-sandbox:clax_bot_sandbox",
+            "//crates/clax-bot-workspace:clax_bot_workspace",
+            "//crates/clax-bot:clax_bot",
+            "//crates/clax-core:clax_core"
+        ],
+        "dev_deps": [
+            "//crates/clax-bot-js:clax_bot_js",
+            "//crates/clax-sample:clax_sample",
+            "//crates/clax-store:clax_store"
+        ],
+        "edition": "2024",
+        "features": [],
+        "has_build_script": False,
+        "lib": "clax_bot_workspace_service",
+        "lib_root": "src/lib.rs",
+        "name": "clax-bot-workspace-service",
+        "tests": {
+            "integration": "tests/integration.rs"
+        },
+        "version": "0.6.0"
     },
     "crates/clax-cli": {
         "bins": {
@@ -560,6 +647,7 @@ CRATES = {
         "deps": [
             "//crates/clax-bot-js:clax_bot_js",
             "//crates/clax-bot-sandbox:clax_bot_sandbox",
+            "//crates/clax-bot-workspace:clax_bot_workspace",
             "//crates/clax-bot:clax_bot",
             "//crates/clax-core:clax_core",
             "//crates/clax-http:clax_http",
@@ -699,6 +787,7 @@ CRATES = {
         "bins": {},
         "default_features": [],
         "deps": [
+            "//crates/clax-bot-remote:clax_bot_remote",
             "//crates/clax-bot-sandbox:clax_bot_sandbox",
             "//crates/clax-bot:clax_bot",
             "//crates/clax-content-git:clax_content_git",
@@ -746,6 +835,7 @@ CRATES = {
             "@crates_wasm//:worker-0.8.7"
         ],
         "wasm_path_deps": [
+            "//crates/clax-bot-remote:clax_bot_remote",
             "//crates/clax-bot-sandbox:clax_bot_sandbox",
             "//crates/clax-bot:clax_bot",
             "//crates/clax-content-git:clax_content_git",

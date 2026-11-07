@@ -151,6 +151,7 @@ pub mod hosted;
 pub mod integrations;
 pub mod linked;
 pub mod loopback;
+pub mod notifiers;
 pub mod public;
 mod quickstart;
 pub mod resolve;

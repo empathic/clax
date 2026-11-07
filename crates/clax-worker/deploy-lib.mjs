@@ -55,6 +55,20 @@ export function builtFromRefusal(wasm, record, head, trees = {}) {
   return null;
 }
 
+/** Why `o`'s `--built-from` cannot stand, or null. It names the commit a
+ * Worker unpacked here was built from, for a preview's deploy, which runs
+ * from a checkout of the default branch so that nothing of the pull request
+ * runs beside the deploy's token. Nothing else deploys a build of another
+ * tree. */
+export function builtFromOptionRefusal(o) {
+  const commit = o["built-from"];
+  if (commit === undefined) return null;
+  if (!/^[0-9a-f]{40}$/.test(commit)) return `--built-from takes a full commit ID, not ${commit}`;
+  if (o.build) return "--built-from goes with --no-build: it names what an earlier job built";
+  if (!o.ephemeral || o.production || o.staging) return "--built-from is a preview's: any other instance deploys what its own checkout built";
+  return null;
+}
+
 /** The commit built-from.json's text `record` names (lowercase hex), or
  * null when there is no record, or it names none. */
 export function builtCommitOf(record) {
@@ -156,6 +170,113 @@ export function checkStaging({ staging, production, env, ci }) {
   if (production) throw new Error("--staging is not --production: staging is a release pull request's own instance");
   if (!/^pr-[1-9][0-9]*$/.test(String(env ?? ""))) throw new Error(`--staging takes --env pr-<N>, the release pull request's number, not ${env ?? "none"}`);
   if (!ci) throw new Error("--staging goes with --ci: its owner token is made for the runner's smoke");
+}
+
+/** The Worker's settings of ClaxBot's workspace service (README.md,
+ * "ClaxBot's workspace"; docs/prod.md, "ClaxBot's workspace service"): the
+ * deploy's flag, the record's key and the Worker's variable. Its bearer secret
+ * is no setting: `workspaceTokenPlan`. */
+export const WORKSPACE_SETTINGS = [
+  { flag: "workspace-service-url", record: "workspace_service_url", variable: "CLAX_WORKSPACE_SERVICE_URL" },
+  { flag: "workspace-preview-hosts", record: "workspace_preview_hosts", variable: "CLAX_WORKSPACE_PREVIEW_HOSTS" },
+  { flag: "workspace-forge-hosts", record: "workspace_forge_hosts", variable: "CLAX_WORKSPACE_FORGE_HOSTS" },
+  { flag: "workspace-service-instance", record: "workspace_service_instance", variable: "CLAX_WORKSPACE_SERVICE_INSTANCE" },
+];
+
+const WORKSPACE_TOKEN = "CLAX_WORKSPACE_SERVICE_TOKEN";
+const WORKSPACE_FRONT = ["CLAX_WORKSPACE_ACCESS_CLIENT_ID", "CLAX_WORKSPACE_ACCESS_CLIENT_SECRET"];
+/** The service's MIN_TOKEN_BYTES (crates/clax-bot-workspace-service/src/settings.rs). */
+const WORKSPACE_TOKEN_BYTES = 32;
+const PREVIEW_HAS_NO_WORKSPACE = "a preview takes no ClaxBot workspace setting: it runs a pull request's code, and the service's bearer secret reaches every container and push it holds";
+
+/** Why `url` is not what the Worker takes as a service's address, or null:
+ * src/workspace.rs's service_url, without its test vars' loopback `http`. */
+function serviceUrlRefusal(url) {
+  try {
+    const u = new URL(url);
+    if (u.protocol === "https:" && !u.username && !u.password && !u.search && !u.hash && !url.includes("#")) return null;
+  } catch {
+    // not an address
+  }
+  return `--workspace-service-url takes an https:// address with no credentials, query or fragment, not ${url}`;
+}
+
+/** Why `hosts` is not a list clax_bot_remote::LinkHosts keeps whole, or null:
+ * that leaves out what it cannot read, so a slip would allow nothing, unsaid. */
+function hostsRefusal(flag, hosts) {
+  const one = /^(?:\*\.[a-z0-9_-]+(?:\.[a-z0-9_-]+)+|[a-z0-9_-]+(?:\.[a-z0-9_-]+)*)(?::[0-9]{1,5})?$/i;
+  const bad = hosts.split(",").map((h) => h.trim()).find((h) => h && !one.test(h));
+  return bad === undefined ? null : `${flag} takes comma-separated hosts, each exact or *. before a zone of two labels or more, not ${bad}`;
+}
+
+/** Why `value` cannot stand for `setting`, or null. */
+function workspaceRefusal(setting, value) {
+  if (setting.flag === "workspace-service-url") return serviceUrlRefusal(value);
+  if (setting.flag === "workspace-service-instance") {
+    return /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value) ? null : `--workspace-service-instance takes letters, digits, underscores and hyphens, not ${value}`;
+  }
+  return hostsRefusal(`--${setting.flag}`, value);
+}
+
+/** The workspace settings of a deploy: each `o` flag, else `record`'s, an
+ * empty flag clearing the record's. Answers `{ vars, record }`, what the
+ * Worker and the next record hold. Throws on a value neither takes, on a
+ * preview given any, and on staging naming a service but no instance: the
+ * service ends what its host does not name, so an instance is never shared. */
+export function workspaceSettings(o, record = {}) {
+  const preview = o.ephemeral && !o.staging;
+  if (preview && WORKSPACE_SETTINGS.some((s) => o[s.flag] !== undefined || record[s.record] !== undefined)) throw new Error(PREVIEW_HAS_NO_WORKSPACE);
+  const vars = {};
+  const kept = {};
+  for (const s of WORKSPACE_SETTINGS) {
+    const value = String(o[s.flag] ?? record[s.record] ?? "").trim();
+    if (!value) continue;
+    const why = workspaceRefusal(s, value);
+    if (why) throw new Error(why);
+    vars[s.variable] = value;
+    kept[s.record] = value;
+  }
+  if (o.staging && vars.CLAX_WORKSPACE_SERVICE_URL && !vars.CLAX_WORKSPACE_SERVICE_INSTANCE) {
+    throw new Error("staging's service needs --workspace-service-instance, one of its own: a service serves one instance");
+  }
+  return { vars, record: kept };
+}
+
+/** What the deploy does about the workspace service's bearer secret, given
+ * `have`, the secret names the Worker has (`null` without a login), `given`,
+ * the secret in the deploy's environment, `url`, the service's address if it
+ * has one, and whether this is a `preview`. It is set by `wrangler secret
+ * put` (docs/prod.md, "ClaxBot's workspace service"); `given` is for a Worker
+ * no one can set it on first, staging's. Answers `{ upload?, say?, error? }`,
+ * a Worker named a service with no secret being an `error`: its panel would
+ * say the runtime did not start. */
+export function workspaceTokenPlan({ have, given, url, preview = false }) {
+  const token = given?.trim();
+  const holds = have?.includes(WORKSPACE_TOKEN);
+  if (preview) return token || holds ? { error: `${WORKSPACE_TOKEN} on ${PREVIEW_HAS_NO_WORKSPACE}` } : {};
+  if (token && !url) return { error: `${WORKSPACE_TOKEN} is given with no --workspace-service-url to use it` };
+  if (token && token.length < WORKSPACE_TOKEN_BYTES) return { error: `${WORKSPACE_TOKEN} must be at least ${WORKSPACE_TOKEN_BYTES} bytes (openssl rand -hex 32)` };
+  if (token) return { upload: token, say: `${WORKSPACE_TOKEN} uploaded with the deploy` };
+  if (!url) return holds ? { say: `the Worker holds ${WORKSPACE_TOKEN} and names no service: its Repository panel says the runtime did not start` } : {};
+  if (have === null) return { say: `no login: a deploy checks the Worker has ${WORKSPACE_TOKEN}` };
+  if (holds) return { say: `the Worker has ${WORKSPACE_TOKEN}; kept` };
+  return { error: `the Worker has no ${WORKSPACE_TOKEN}, which --workspace-service-url needs: run wrangler secret put CLAX_WORKSPACE_SERVICE_TOKEN first (docs/prod.md, "ClaxBot's workspace service")` };
+}
+
+/** What a deploy does with the two secrets of what fronts the service, which
+ * have no flag and stay out of the record: given in the environment they are
+ * uploaded, as a new staging Worker needs; a Worker takes both or neither; a
+ * preview takes neither. `given` is `{ id, secret }`. Answers `{ upload?, say?,
+ * error? }`. */
+export function workspaceFrontPlan({ have, given = {}, url, preview = false }) {
+  const [id, secret] = [given.id?.trim(), given.secret?.trim()];
+  const held = WORKSPACE_FRONT.filter((n) => have?.includes(n));
+  if (preview) return id || secret || held.length ? { error: `${WORKSPACE_FRONT.join(" and ")} on ${PREVIEW_HAS_NO_WORKSPACE}` } : {};
+  if (Boolean(id) !== Boolean(secret)) return { error: `${WORKSPACE_FRONT.join(" and ")} are given together or not at all` };
+  if (id && !url) return { error: `${WORKSPACE_FRONT[0]} is given with no --workspace-service-url to use it` };
+  if (id) return { upload: { [WORKSPACE_FRONT[0]]: id, [WORKSPACE_FRONT[1]]: secret }, say: `${WORKSPACE_FRONT.join(" and ")} uploaded with the deploy` };
+  if (held.length === 1) return { error: `the Worker holds ${held[0]} alone: run wrangler secret put for the other, or delete it (docs/prod.md, "ClaxBot's workspace service")` };
+  return {};
 }
 
 /** The secrets a deploy generates, given `have`, the names the Worker

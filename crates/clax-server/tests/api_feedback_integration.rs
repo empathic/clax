@@ -241,6 +241,23 @@ impl Setup {
 }
 
 #[tokio::test]
+async fn the_config_says_when_the_queue_tells_reporters_their_words_may_be_public() {
+    let s = Setup::new().await;
+    let ana = s.ts.person("Ana").await;
+    let on = clax_store::queues::QueuePatch {
+        public_notice: Some(true),
+        ..Default::default()
+    };
+    s.ts.store
+        .update_queue(&AuditCtx::DAEMON, &s.qid, on)
+        .unwrap();
+    let (status, v) = s
+        .as_browser(Some(&ana), "GET", "/_app/feedback/config", None)
+        .await;
+    assert_eq!((status, &v["public_notice"]), (200, &json!(true)), "{v}");
+}
+
+#[tokio::test]
 async fn every_signed_in_person_reports_with_no_flag() {
     let s = Setup::new().await;
     let ana = s.ts.person("Ana").await;
@@ -290,6 +307,7 @@ async fn every_signed_in_person_reports_with_no_flag() {
     assert_eq!(v["queue"], s.qid.as_str());
     // The overlay's `user`: the person's public ID, as the token's reporter ID.
     assert_eq!(v["user"], ana.public_id.as_str(), "{v}");
+    assert_eq!(v["public_notice"], false, "{v}");
     assert_eq!(v["context"]["release"]["channel"], "dev");
     // The release is what `/healthz` reports.
     let health: Value = s.ts.get("/healthz").await.json().await.unwrap();

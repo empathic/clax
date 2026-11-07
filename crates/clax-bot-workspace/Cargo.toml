@@ -1,0 +1,30 @@
+[package]
+name = "clax-bot-workspace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait = "0.1"
+base64.workspace = true
+chrono.workspace = true
+clax-bot = { path = "../clax-bot" }
+clax-bot-sandbox = { path = "../clax-bot-sandbox" }
+clax-core = { path = "../clax-core" }
+clax-store = { path = "../clax-store" }
+reqwest = { workspace = true, features = ["rustls-tls"] }
+ring.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "time"] }
+toml.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+axum = { workspace = true, features = ["http1", "json", "tokio"] }
+tokio = { workspace = true, features = ["full"] }

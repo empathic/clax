@@ -6,6 +6,7 @@ crates/clax-core/src/remote.rs process_started  # the ps arm's cfg excludes iOS
 crates/clax-mcp/src/channel.rs process_argv  # the ps arm's cfg excludes iOS
 crates/clax-mcp/src/tools.rs run_opener  # reached only through open_in_browser, which answers false on iOS
 crates/clax-realtime/src/push.rs run_queue  # CodexPush, which the iOS host builds disabled
+crates/clax-sample/src/transport.rs a_public_only_client_uses_no_proxy_in_the_environment  # a test, in no iOS build
 skip crates/clax-mcp/src/shim.rs  # the stdio shim, for local agents
 skip crates/clax-mcp/src/probe.rs  # the shim's probe
 skip crates/clax-mcp/src/standdown.rs  # the shim's stand-down server

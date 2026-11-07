@@ -115,7 +115,7 @@ copy_to_bin(
         ":node_modules",
         ":scripts",
         "//web:dist",
-    ],
+    ] + (["//web:sdk_sign"] if name == "bot" else []),
     entry_point = "test-%s.mjs" % name,
     env = {"CLAX_WORKER_BUNDLE": "$(rootpath :bundle)"},
     patch_node_fs = False,

@@ -19,6 +19,8 @@ base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 # ClaxBot's run loop, which the instance drives from its alarm (src/bot.rs).
 clax-bot = { path = "../clax-bot" }
+# ClaxBot's workspace, which a separate service holds for the Worker.
+clax-bot-remote = { path = "../clax-bot-remote" }
 # ClaxBot's code-mode sandbox contract, which src/sandbox implements.
 clax-bot-sandbox = { path = "../clax-bot-sandbox" }
 clax-content-git = { path = "../clax-content-git" }

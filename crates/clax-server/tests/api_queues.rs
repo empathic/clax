@@ -115,10 +115,35 @@ async fn a_queue_is_made_listed_changed_and_deleted_in_the_browser() {
     assert_eq!(s, 200, "{v}");
     assert_eq!(v["queue"]["name"], "Reports");
     assert_eq!(v["queue"]["reporters_see"], "all");
+    assert_eq!(v["queue"]["public_notice"], false, "{v}");
     assert_eq!(
         v["queue"]["origins"],
         json!(["https://app.example.com", "https://*.fly.dev"])
     );
+
+    // An admin turns the notice to reporters on, and every view says so.
+    let (s, v) = browser(
+        &w.ts,
+        &w.owner,
+        Method::PATCH,
+        &format!("/api/queues/{qid}"),
+        Some(json!({"public_notice": true})),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["queue"]["public_notice"], true, "{v}");
+    let (s, v) = browser(&w.ts, &w.owner, Method::GET, "/api/queues", None).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["queues"][0]["public_notice"], true, "{v}");
+    let (s, v) = browser(
+        &w.ts,
+        &w.owner,
+        Method::PATCH,
+        &format!("/api/queues/{qid}"),
+        Some(json!({"public_notice": "yes"})),
+    )
+    .await;
+    assert_eq!(s, 400, "{v}");
 
     // Bad input is refused, naming what is wrong.
     let (s, v) = browser(

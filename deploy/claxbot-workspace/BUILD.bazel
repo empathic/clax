@@ -1,0 +1,10 @@
+# The example profiles, and what clax.toml's paths must come to, for
+# clax-bot-workspace's test and //scripts:claxbot_paths to read.
+filegroup(
+    name = "profiles",
+    srcs = glob(["*.toml"]) + ["path-cases.txt"],
+    visibility = [
+        "//crates/clax-bot-workspace:__pkg__",
+        "//scripts:__pkg__",
+    ],
+)

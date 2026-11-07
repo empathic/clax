@@ -12,6 +12,12 @@
 //! person's reach alone (the owner's included, spec 2026-10-22 §3): an
 //! artifact another person made is reached only through its share with
 //! them.
+//!
+//! A run proposes a fix on its report as itself
+//! ([`clax_store::queues::ReportWriter::Run`]): an agent's fix, kept with
+//! the run, and the audit trail names ClaxBot acting for the run's person.
+//! ClaxBot is no harness and takes no feedback rows: what wakes it is
+//! [`report_follow_up`].
 
 use crate::routes::bot::reads_artifact;
 use clax_bot::host::{
@@ -30,9 +36,11 @@ use clax_store::Store;
 use clax_store::app_data::{AppDataOp, WireCaller};
 use clax_store::bot_runs::CallEntry;
 use clax_store::bot_runs::{RequestKind, Run};
+use clax_store::queues::{ReportWriter, Visibility};
 use clax_store::roles::OWNER;
 use serde_json::{Value, json};
 use std::sync::Arc;
+use tokio::sync::broadcast::Receiver;
 
 /// The sandbox of a build without one (`native-sandbox` off, Android and
 /// iOS, or the Worker until it installs its own): every script ends `unavailable`
@@ -200,6 +208,53 @@ pub struct ServerHost {
     /// The driver the follow-ups a run's end starts are handed to, once
     /// one drives this host ([`driver`] sets it).
     wake: Arc<std::sync::OnceLock<Arc<dyn clax_http::bot::Runs>>>,
+    /// This host's runs propose fixes, so it answers their reporters
+    /// ([`report_follow_up`]): it has a workspace, which says which
+    /// queues' targets do. Without one nothing follows.
+    workspace: Option<HeldWorkspace>,
+    /// Reports' changes wait for [`ServerHost::follow_reports`], rather than
+    /// a task of the host's own.
+    asked: bool,
+    /// The task listening for reports' changes was started, or `changes`
+    /// set.
+    listening: Arc<std::sync::atomic::AtomicBool>,
+    /// The bus's events [`ServerHost::follow_reports`] has not read.
+    changes: Arc<std::sync::Mutex<Option<Receiver<clax_core::Stamped>>>>,
+}
+
+/// A host's workspace, as a job on the store takes it. On wasm32 a workspace
+/// is not `Send` (a Worker has one thread), so it is held in a `SendWrapper`
+/// there, as [`DriverRuns`] holds a driver.
+#[derive(Clone)]
+#[cfg(not(target_arch = "wasm32"))]
+struct HeldWorkspace(Arc<dyn clax_bot::Workspace>);
+/// A host's workspace, on the Worker's one thread.
+#[derive(Clone)]
+#[cfg(target_arch = "wasm32")]
+struct HeldWorkspace(send_wrapper::SendWrapper<Arc<dyn clax_bot::Workspace>>);
+
+impl HeldWorkspace {
+    fn of(workspace: Arc<dyn clax_bot::Workspace>) -> HeldWorkspace {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            HeldWorkspace(workspace)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            HeldWorkspace(send_wrapper::SendWrapper::new(workspace))
+        }
+    }
+
+    fn get(&self) -> &dyn clax_bot::Workspace {
+        self.0.as_ref()
+    }
+}
+
+/// The host's subscription, whatever a panic left of its lock.
+fn lock_changes(
+    changes: &std::sync::Mutex<Option<Receiver<clax_core::Stamped>>>,
+) -> std::sync::MutexGuard<'_, Option<Receiver<clax_core::Stamped>>> {
+    changes.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn forbidden(what: impl Into<String>) -> HostError {
@@ -207,15 +262,38 @@ fn forbidden(what: impl Into<String>) -> HostError {
 }
 
 impl ServerHost {
-    /// The host over `state`.
+    /// The host over `state`, with no workspace. On wasm32 it
+    /// [follows reports when asked](ServerHost::follows_when_asked).
     pub fn new(state: AppState) -> ServerHost {
         ServerHost {
             state,
             wake: Arc::default(),
+            workspace: None,
+            asked: cfg!(target_arch = "wasm32"),
+            listening: Arc::default(),
+            changes: Arc::default(),
         }
     }
 
-    /// Another handle on this host.
+    /// This host, with `workspace` saying which queues' reports it follows
+    /// ([`report_follow_up`]). The runs get theirs from [`clax_bot::Deps`].
+    #[must_use]
+    pub fn with_workspace(mut self, workspace: Arc<dyn clax_bot::Workspace>) -> ServerHost {
+        self.workspace = Some(HeldWorkspace::of(workspace));
+        self
+    }
+
+    /// This host, with no task listening for reports' changes: they wait for
+    /// [`ServerHost::follow_reports`], which its owner calls when the work
+    /// that changes them ends. A Worker's host is always so: a task of its
+    /// own could start a run after the request that woke it had looked for
+    /// wakes, and the alarm would never hear of it.
+    #[must_use]
+    pub fn follows_when_asked(mut self) -> ServerHost {
+        self.asked = true;
+        self
+    }
+
     /// Hands the follow-ups a run's end starts to `runs` (the daemon's
     /// [`driver`] does it for its own; the Worker for its alarm's). The
     /// first call wins.
@@ -223,10 +301,129 @@ impl ServerHost {
         let _ = self.wake.set(runs);
     }
 
+    /// Another handle on this host.
     fn me(&self) -> ServerHost {
         ServerHost {
             state: self.state.clone(),
             wake: self.wake.clone(),
+            workspace: self.workspace.clone(),
+            asked: self.asked,
+            listening: self.listening.clone(),
+            changes: self.changes.clone(),
+        }
+    }
+
+    /// What follows a report's change on this host.
+    fn follow(&self) -> Follow {
+        Follow {
+            workspace: self.workspace.clone(),
+            s: self.state.feedback_ctx(),
+        }
+    }
+
+    /// Starts hearing of reports' changes, once: a task that hands each to
+    /// [`report_follow_up`] or, on a host that
+    /// [follows when asked](ServerHost::follows_when_asked), a subscription
+    /// for [`ServerHost::follow_reports`] to read. An event lost to a full
+    /// bus or a crash is made up by the report's next change or its run's
+    /// end.
+    fn listen_to_reports(&self) {
+        use std::sync::atomic::Ordering;
+        use tokio::sync::broadcast::error::RecvError;
+        let Some(ws) = self.workspace.clone() else {
+            return;
+        };
+        if self.listening.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let (state, wake) = (self.state.clone(), self.wake.clone());
+        let mut events = state.events.subscribe();
+        if self.asked {
+            *lock_changes(&self.changes) = Some(events);
+            return;
+        }
+        clax_rt::spawn(async move {
+            loop {
+                let tid = match events.recv().await {
+                    Ok(s) => match s.event {
+                        clax_core::Event::Report { report_id, .. } => report_id,
+                        _ => continue,
+                    },
+                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Closed) => return,
+                };
+                let (bot, s, ws) = (state.bot.clone(), state.feedback_ctx(), ws.clone());
+                let started = state
+                    .store
+                    .call(move |st| report_follow_up(st, &bot, &s, ws.get(), &tid))
+                    .await;
+                match started {
+                    Ok(Some(run)) => {
+                        if let Some(w) = wake.get() {
+                            w.started(&run);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!(error = %e, "a report's follow-up did not start"),
+                }
+            }
+        });
+    }
+
+    /// Follows up the reports changed since it was last called, on a host
+    /// that [follows when asked](ServerHost::follows_when_asked): each goes to
+    /// [`report_follow_up`], under the rules a daemon's listener follows them
+    /// by, and what it starts goes to [`ServerHost::set_runs`]'s seam before
+    /// this returns. A host that fell behind the bus has lost changes, so it
+    /// looks for them as a driver's start does. Its owner calls this after
+    /// the work that changes reports, and before it looks for wakes.
+    pub async fn follow_reports(&self) {
+        let (mut tids, behind) = self.changed_reports();
+        if tids.is_empty() && !behind {
+            return;
+        }
+        let (bot, follow) = (self.state.bot.clone(), self.follow());
+        let started = self
+            .state
+            .store
+            .call(move |st| {
+                if behind {
+                    tids.extend(st.reports_of_run_fixes()?);
+                }
+                Ok(follow.reports(st, &bot, &tids))
+            })
+            .await;
+        match started {
+            Ok(runs) => {
+                if let Some(w) = self.wake.get() {
+                    for run in &runs {
+                        w.started(run);
+                    }
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "a report's follow-up did not start"),
+        }
+    }
+
+    /// The reports the bus has told of since the last look, and whether it
+    /// dropped events first.
+    fn changed_reports(&self) -> (std::collections::BTreeSet<String>, bool) {
+        use tokio::sync::broadcast::error::TryRecvError;
+        let (mut tids, mut behind) = (std::collections::BTreeSet::new(), false);
+        let mut changes = lock_changes(&self.changes);
+        let Some(events) = changes.as_mut() else {
+            return (tids, behind);
+        };
+        loop {
+            match events.try_recv() {
+                Ok(s) => {
+                    if let clax_core::Event::Report { report_id, .. } = s.event {
+                        tids.insert(report_id);
+                    }
+                }
+                Err(TryRecvError::Lagged(_)) => behind = true,
+                Err(TryRecvError::Empty | TryRecvError::Closed) => return (tids, behind),
+            }
         }
     }
 
@@ -267,6 +464,26 @@ impl ServerHost {
         }
     }
 
+    /// Refuses a run closing report `t` while a fix waits for its verdict:
+    /// that is its reporter's to give, or a person's, and closed it would take
+    /// no verdict and no fix from anyone.
+    fn check_verdict_open(st: &Store, t: &clax_core::model::Thread) -> Result<(), HostError> {
+        let Some(q) = &t.queue_id else {
+            return Ok(());
+        };
+        let report = st
+            .report(q, &t.id, Visibility::All)
+            .map_err(|e| host_error(&e))?;
+        if report.is_some_and(|r| r.state == clax_core::queue::State::FixProposed) {
+            return Err(HostError::new(
+                "fix_waiting",
+                "this report's fix waits for its reporter's verdict: leave the report open and \
+                 finish",
+            ));
+        }
+        Ok(())
+    }
+
     /// Whether `c` is a comment by the run's person.
     fn by_sender(st: &Store, run: &Run, c: &clax_core::model::Comment) -> bool {
         if c.author_kind != clax_core::model::AUTHOR_VIEWER {
@@ -278,6 +495,49 @@ impl ServerHost {
             Some(run.person.clone())
         };
         want.is_some() && c.author_public_id == want
+    }
+
+    /// [`ServerHost::thread_meta`], with the notes for its queue's members
+    /// when `t` is a report the run may read as one of them
+    /// ([`Store::run_reads_queue`]): what an earlier run told them is this
+    /// run's to read, and no other's. A person's note makes a run that reads
+    /// it confidential ([`clax_bot::run::Deps::confidential`]), which is
+    /// settled when a step begins, so one is read only by a run that is
+    /// `confidential` already: a note newer than that waits for the next step.
+    fn thread_with_notes(
+        st: &Store,
+        run: &Run,
+        t: &clax_core::model::Thread,
+        confidential: bool,
+    ) -> Result<ThreadMeta, HostError> {
+        let mut m = Self::thread_meta(st, run, t);
+        let Some(q) = &t.queue_id else {
+            return Ok(m);
+        };
+        let grant = run.agent_grant.as_deref();
+        if !st
+            .run_reads_queue(&run.person, grant, q)
+            .map_err(|e| host_error(&e))?
+        {
+            return Ok(m);
+        }
+        let report = st
+            .report(q, &t.id, Visibility::All)
+            .map_err(|e| host_error(&e))?;
+        for c in report.iter().flat_map(|r| &r.comments) {
+            let by_a_run = c.author_kind == clax_core::model::AUTHOR_AGENT;
+            if c.triage_only && (confidential || by_a_run) {
+                m.comments.push(CommentMeta {
+                    id: c.id.clone(),
+                    author: c.author_name.clone(),
+                    from_sender: false,
+                    at: c.created_at.clone(),
+                    text: c.body.clone(),
+                });
+            }
+        }
+        m.comments.sort_by(|a, b| a.at.cmp(&b.at));
+        Ok(m)
     }
 
     fn thread_meta(st: &Store, run: &Run, t: &clax_core::model::Thread) -> ThreadMeta {
@@ -399,7 +659,7 @@ impl ServerHost {
             }
             "threads.read" => {
                 let t = Self::thread(st, run, &s(0))?;
-                let m = Self::thread_meta(st, run, &t);
+                let m = Self::thread_with_notes(st, run, &t, cx.members_only)?;
                 Ok(ReadNow::Done(
                     json!({"id": m.id, "resolved": m.resolved, "anchor": m.anchor,
                           "comments": m.comments}),
@@ -518,7 +778,9 @@ impl ServerHost {
     }
 
     /// The plan of ClaxBot's reply `markdown` on the run's thread `tid`,
-    /// as agent ClaxBot for its person, announced as any comment is.
+    /// as agent ClaxBot for its person, announced as any comment is; for a
+    /// run holding confidential material ([`OpCtx::members_only`]) a note
+    /// for the queue's members alone.
     fn reply_plan<'s>(&'s self, cx: &OpCtx<'_>, tid: &str, markdown: &str) -> WritePlan<'s> {
         let (state, ctx, run, tid, body) = (
             self.state.clone(),
@@ -527,6 +789,7 @@ impl ServerHost {
             tid.to_string(),
             markdown.to_string(),
         );
+        let members_only = cx.members_only;
         Box::new(move |entry: CallEntry| {
             Box::pin(async move {
                 let s = state.feedback_ctx();
@@ -551,6 +814,17 @@ impl ServerHost {
                                 "reply",
                             )
                         };
+                        // Its reporter reads a report's comments: this is
+                        // a note for the queue's members, announced to them
+                        // alone, as the report's state.
+                        if members_only {
+                            let j =
+                                st.add_members_comment_journaled(&ctx, &tid, c, &entry, &guard)?;
+                            if let Some(t) = st.get_thread(&tid)? {
+                                crate::routes::threads::publish_thread(&s, st, &t);
+                            }
+                            return Ok(j);
+                        }
                         let j = st.add_comment_journaled(&ctx, &tid, c, &entry, &guard)?;
                         announce_thread(&s, st, &tid);
                         Ok(j)
@@ -558,6 +832,244 @@ impl ServerHost {
                     .await
             }) as PlanFuture<'s>
         })
+    }
+}
+
+/// The report run `run` works on: the first of its threads a queue holds.
+fn report_thread(st: &Store, run: &Run) -> clax_core::Result<clax_core::model::Thread> {
+    run.thread_ids
+        .iter()
+        .find_map(|tid| {
+            st.get_thread(tid)
+                .ok()
+                .flatten()
+                .filter(|t| t.queue_id.is_some())
+        })
+        .ok_or(clax_core::CoreError::NotFound)
+}
+
+/// [`report_follow_up`] as a host has it, to hand to the store's thread.
+struct Follow {
+    workspace: Option<HeldWorkspace>,
+    s: clax_realtime::feedback::FeedbackCtx,
+}
+
+impl Follow {
+    fn on(&self) -> bool {
+        self.workspace.is_some()
+    }
+
+    /// The runs [`report_follow_up`] starts on `tids`; one that fails is
+    /// logged and the rest still asked.
+    fn reports<'t>(
+        &self,
+        st: &Store,
+        bot: &clax_http::bot::Bot,
+        tids: impl IntoIterator<Item = &'t String>,
+    ) -> Vec<String> {
+        let Some(w) = &self.workspace else {
+            return Vec::new();
+        };
+        let mut started = Vec::new();
+        for tid in tids {
+            match report_follow_up(st, bot, &self.s, w.get(), tid) {
+                Ok(run) => started.extend(run),
+                Err(e) => {
+                    tracing::warn!(error = %e, report = tid, "a report's follow-up did not start");
+                }
+            }
+        }
+        started
+    }
+}
+
+/// The most runs ClaxBot starts on its own on one report since a person
+/// last sent one or commented.
+const MAX_AUTO_RUNS: usize = 3;
+
+/// Whether a run's end leaves its report to ClaxBot: it finished, or ran out
+/// of its time. A person's Stop, a refusal, a failure or a run that gave up
+/// stays as it is until a person sends the report again.
+fn may_follow(last: &Run) -> bool {
+    last.status == clax_store::bot_runs::RunStatus::Finished
+        || last.reason.as_deref() == Some("run_cap")
+}
+
+/// A fixed comment of ClaxBot's, for `run`'s person, `body`: on the report
+/// for everyone, or with `members` for its queue's members alone.
+fn post_fixed(
+    st: &Store,
+    s: &clax_realtime::feedback::FeedbackCtx,
+    run: &Run,
+    tid: &str,
+    body: &str,
+    members: bool,
+) -> clax_core::Result<()> {
+    let ctx = clax_bot::run::bot_ctx(&run.person);
+    let c = clax_store::threads::NewComment {
+        author_kind: clax_core::model::AUTHOR_AGENT,
+        author_name: ServerHost::author(st, run),
+        author_public_id: None,
+        via_session_id: None,
+        body: body.to_string(),
+        via_page: false,
+    };
+    if members {
+        st.add_members_comment(&ctx, tid, c)?;
+        if let Some(t) = st.get_thread(tid)? {
+            crate::routes::threads::publish_thread(s, st, &t);
+        }
+    } else {
+        st.add_comment(&ctx, tid, c)?;
+        announce_thread(s, st, tid);
+    }
+    Ok(())
+}
+
+/// What a reporter's word on a fix a run proposed does (`docs/feedback.md`),
+/// asked at every change of a report, every run's end and a driver's start,
+/// so it answers the same however often it is asked. Off unless
+/// `workspace`'s target for the queue offers a change.
+///
+/// The fix may be a person's or an agent's that took over from a run's held
+/// one ([`Store::last_fix_run`]): everything here holds of it the same.
+///
+/// A reopen (the report open, its last fix rejected) starts a run; a reply
+/// to a fix that waits starts one only on a target that opts in
+/// ([`clax_bot::workspace::Offer::wake_on_reply`]), and that run may only
+/// answer. Neither does while anyone's claim holds the report, a run works
+/// on it, or unless the word came after the last run began and that run
+/// ended on its own ([`may_follow`]): a person's Stop stays stopped. A target
+/// with [`clax_bot::workspace::Offer::no_follow_ups`] starts none at all. At
+/// [`MAX_AUTO_RUNS`] since a person last sent a run or commented it stops
+/// and tells the queue's members, once. The run acts for the person and
+/// agent of the run that proposed the fix, who must still read the queue
+/// ([`Store::run_reads_queue`]), may send the report and not be refused: a
+/// refused person is passed over quietly, however many events ask. A reply
+/// no run will answer to its reporter, a held fix's among them, is
+/// acknowledged in fixed words.
+/// Returns the run made. The reporter's words are data to it, as to any.
+///
+/// # Errors
+/// The store's.
+pub fn report_follow_up(
+    st: &Store,
+    bot: &clax_http::bot::Bot,
+    s: &clax_realtime::feedback::FeedbackCtx,
+    workspace: &dyn clax_bot::Workspace,
+    tid: &str,
+) -> clax_core::Result<Option<String>> {
+    use clax_bot::workspace::{AUTO_RUNS_STOPPED, REPLY_RECEIVED};
+    use clax_core::CoreError;
+    use clax_core::queue::{AUTHOR_REPORTER, State};
+    use clax_core::report::FixOutcome;
+    use clax_store::bot_runs::WokenBy;
+    let Some(qid) = st.get_thread(tid)?.and_then(|t| t.queue_id) else {
+        return Ok(None);
+    };
+    let Some(proposer) = st.last_fix_run(tid)?.map_or(Ok(None), |r| st.run(&r))? else {
+        return Ok(None);
+    };
+    let offer = workspace.offer(&proposer, Some(&qid));
+    if !offer.change {
+        return Ok(None);
+    }
+    let Some(report) = st.report(&qid, tid, Visibility::All)? else {
+        return Ok(None);
+    };
+    let Some(fix) = report.fixes.last() else {
+        return Ok(None);
+    };
+    let reopened = report.state == State::Open && fix.outcome == FixOutcome::Rejected;
+    let waiting = report.state == State::FixProposed && fix.outcome == FixOutcome::Pending;
+    let from_reporter = |c: &&clax_core::queue::ReportComment| c.author_kind == AUTHOR_REPORTER;
+    let word = if reopened {
+        report.comments.iter().rfind(|c| c.capture.is_some())
+    } else if waiting {
+        report.comments.iter().rfind(from_reporter)
+    } else {
+        return Ok(None);
+    };
+    let Some(word) = word else {
+        return Ok(None);
+    };
+    let last_said = report.comments.iter().rfind(|c| !c.triage_only);
+    // A run's words do not reach the reporter of a held fix, so nor does an
+    // answer: this says the reply was received.
+    let no_answer =
+        proposer.confidential || !offer.wake_on_reply || offer.no_follow_ups || fix.held;
+    if waiting && no_answer && last_said.is_some_and(|c| from_reporter(&c)) {
+        post_fixed(st, s, &proposer, tid, REPLY_RECEIVED, false)?;
+    }
+    if waiting && !offer.wake_on_reply {
+        return Ok(None);
+    }
+    let runs = st.runs_for_thread(tid, 50)?;
+    let Some(last) = runs.first() else {
+        return Ok(None);
+    };
+    if !last.status.is_terminal() || word.created_at <= last.created_at || !may_follow(last) {
+        return Ok(None);
+    }
+    let by_person = report
+        .comments
+        .iter()
+        .rfind(|c| c.author_kind == clax_core::model::AUTHOR_VIEWER)
+        .map(|c| c.created_at.as_str());
+    let automatic = runs
+        .iter()
+        .take_while(|r| r.woken_by.is_some() && by_person.is_none_or(|p| r.created_at.as_str() > p))
+        .count();
+    if automatic >= MAX_AUTO_RUNS {
+        let told = report.comments.iter().any(|c| {
+            c.triage_only && c.body == AUTO_RUNS_STOPPED && c.created_at > last.created_at
+        });
+        if !told {
+            post_fixed(st, s, &proposer, tid, AUTO_RUNS_STOPPED, true)?;
+        }
+        return Ok(None);
+    }
+    let grant = proposer.agent_grant.as_deref();
+    if !st.run_reads_queue(&proposer.person, grant, &qid)? {
+        return Ok(None);
+    }
+    let Some(caller) = person_caller(st, &proposer.person)? else {
+        return Ok(None);
+    };
+    let aid = ArtifactId::parse(&proposer.artifact_id)?;
+    if !crate::routes::people::may_send_at(st, &caller, &aid)?
+        || crate::routes::bot::refusal(st, bot, &proposer.person)?.is_some()
+    {
+        return Ok(None);
+    }
+    if offer.no_follow_ups {
+        return Ok(None);
+    }
+    let sender = crate::routes::bot::Sender {
+        person: proposer.person.clone(),
+        agent_grant: proposer.agent_grant.clone(),
+    };
+    let by = if reopened {
+        WokenBy::Reopen
+    } else {
+        WokenBy::Reply
+    };
+    match crate::routes::bot::start_run_woken(
+        st,
+        bot,
+        &clax_bot::run::bot_ctx(&proposer.person),
+        &sender,
+        &aid,
+        RequestKind::Thread,
+        vec![tid.to_string()],
+        Some(by),
+    ) {
+        Ok(run) => Ok(Some(run.id)),
+        Err(e @ (CoreError::NotFound | CoreError::Invalid { .. })) => {
+            tracing::info!(error = %e, report = tid, "a report's follow-up was refused");
+            Ok(None)
+        }
+        Err(e) => Err(e),
     }
 }
 
@@ -595,10 +1107,12 @@ impl BotHost for ServerHost {
             let a = me.artifact(st, &run)?;
             let mut names = clax_http::bot::Names::new(st);
             let person_name = names.name(&run.person).map_err(|e| host_error(&e))?;
+            let held = st.run(&run.id).map_err(|e| host_error(&e))?;
+            let confidential = held.is_some_and(|r| r.confidential);
             let mut threads = Vec::new();
             for tid in &run.thread_ids {
                 let t = ServerHost::thread(st, &run, tid)?;
-                threads.push(ServerHost::thread_meta(st, &run, &t));
+                threads.push(ServerHost::thread_with_notes(st, &run, &t, confidential)?);
             }
             let brief = (run.request == RequestKind::Brief)
                 .then(|| {
@@ -631,10 +1145,11 @@ impl BotHost for ServerHost {
         let me = self.me();
         let (run, audit) = (cx.run.clone(), cx.audit.clone());
         let (step, attempt, seq) = (cx.step, cx.attempt, cx.seq);
+        let members_only = cx.members_only;
         let (op, args) = (op.to_string(), args.to_vec());
         let now = self
             .on_store(move |st| {
-                let cx = OpCtx::new(&run, &audit, step, attempt, seq);
+                let cx = OpCtx::new(&run, &audit, step, attempt, seq).members_only(members_only);
                 me.read_now(st, &cx, &op, &args)
             })
             .await?;
@@ -690,9 +1205,14 @@ impl BotHost for ServerHost {
                 } else {
                     "resolve"
                 };
+                let resolving = op == "threads.resolve";
                 self.on_store(move |st| {
                     me.check_write(st, &r, RightType::Comments, action)?;
-                    ServerHost::thread(st, &r, &tid).map(|_| ())
+                    let t = ServerHost::thread(st, &r, &tid)?;
+                    if resolving {
+                        ServerHost::check_verdict_open(st, &t)?;
+                    }
+                    Ok(())
                 })
                 .await?;
                 if op == "threads.reply" {
@@ -1029,13 +1549,190 @@ impl BotHost for ServerHost {
     }
 
     async fn start_waiting(&self) -> clax_core::Result<usize> {
+        self.listen_to_reports();
         let bot = self.state.bot.clone();
+        let follow = self.follow();
         let started = self
             .state
             .store
-            .call(move |st| crate::routes::bot::drain_follow_ups(st, &bot))
+            .call(move |st| {
+                let mut started = crate::routes::bot::drain_follow_ups(st, &bot)?;
+                // A reporter's word a crash left between its commit and its
+                // event.
+                if follow.on() {
+                    started.extend(follow.reports(st, &bot, &st.reports_of_run_fixes()?));
+                }
+                Ok(started)
+            })
             .await?;
+        if let Some(w) = self.wake.get() {
+            for run in &started {
+                w.started(run);
+            }
+        }
         Ok(started.len())
+    }
+
+    async fn check_fix(&self, cx: &OpCtx<'_>) -> Result<(), HostError> {
+        use clax_core::CoreError;
+        let (run, key) = (cx.run.clone(), cx.key.clone());
+        self.state
+            .store
+            .call(move |st| {
+                let t = report_thread(st, &run)?;
+                let qid = t.queue_id.clone().ok_or(CoreError::NotFound)?;
+                if st.fix_proposed_under(&t.id, &key)? {
+                    return Ok(());
+                }
+                st.check_run_may_propose(&qid, &t.id)
+            })
+            .await
+            .map_err(|e| match e {
+                CoreError::ThreadTaken { name } => {
+                    HostError::new("thread_taken", format!("{name} holds this report"))
+                }
+                CoreError::NotClaimable => HostError::new("not_claimable", "this report is closed"),
+                other => host_error(&other),
+            })
+    }
+
+    async fn record_fix(
+        &self,
+        cx: &OpCtx<'_>,
+        fix: &clax_bot::host::ProposedFix,
+    ) -> Result<(), HostError> {
+        let (run, ctx, fix) = (cx.run.clone(), cx.audit.clone(), fix.clone());
+        let an = crate::routes::queue_agent::Announcer::of(&self.state);
+        self.state
+            .store
+            .call(move |st| {
+                let t = report_thread(st, &run)?;
+                let qid = t.queue_id.clone().ok_or(clax_core::CoreError::NotFound)?;
+                let (key, note, held) = (fix.key.clone(), fix.members_note.clone(), fix.held);
+                let preview_url = fix.preview_url.clone();
+                // Before the proposal, whose notice reads them.
+                st.keep_fix_links(
+                    &t.id,
+                    &key,
+                    &clax_store::queue_notifiers::FixLinks {
+                        url: fix.pull_request,
+                        commit: fix.pushed_commit,
+                        preview_step: fix.preview_step,
+                    },
+                )?;
+                let new = clax_core::report::NewFix {
+                    summary: fix.summary,
+                    url: fix.url,
+                    commit: fix.commit,
+                    release: None,
+                    verify_url: fix.verify_url,
+                    verify_after: None,
+                };
+                let by = ReportWriter::Run {
+                    run: run.id.clone(),
+                    name: clax_http::bot::NAME.to_string(),
+                    key,
+                    note,
+                    held,
+                    preview_url,
+                };
+                // Made once under its key; announced however often it is
+                // asked, so a step executed again makes up for a crash.
+                let report = st.propose_fix(&ctx, &qid, &t.id, &by, new)?;
+                let last = report
+                    .comments
+                    .iter()
+                    .rfind(|c| !c.triage_only)
+                    .map(|c| c.id.clone());
+                if let Err(e) =
+                    crate::routes::queue_agent::announce_comment(&an, st, &t.id, last.as_deref())
+                {
+                    tracing::warn!(error = ?e, "announcing a run's fix failed");
+                }
+                Ok(())
+            })
+            .await
+            .map_err(|e| host_error(&e))
+    }
+
+    async fn preview_ready(
+        &self,
+        run: &Run,
+        audit: &clax_core::audit::AuditCtx,
+        verify_url: &str,
+        for_reporter: bool,
+    ) -> Result<(), HostError> {
+        let (run, ctx, url) = (run.clone(), audit.clone(), verify_url.to_string());
+        let body = format!("{} {verify_url}", clax_bot::workspace::PREVIEW_READY);
+        let s = self.state.feedback_ctx();
+        self.state
+            .store
+            .call(move |st| {
+                let t = report_thread(st, &run)?;
+                let qid = t.queue_id.clone().ok_or(clax_core::CoreError::NotFound)?;
+                // Each write finds the run's own fix: a later fix has its own
+                // preview to wait for, and a person's is theirs.
+                if for_reporter {
+                    if st.set_fix_verify_url(&ctx, &qid, &t.id, &run.id, &url)? {
+                        post_fixed(st, &s, &run, &t.id, &body, false)?;
+                    }
+                } else if st.set_fix_preview(&t.id, &run.id, &url)? {
+                    post_fixed(st, &s, &run, &t.id, &body, true)?;
+                }
+                Ok(())
+            })
+            .await
+            .map_err(|e| host_error(&e))
+    }
+
+    async fn preview_missed(
+        &self,
+        run: &Run,
+        _audit: &clax_core::audit::AuditCtx,
+    ) -> Result<(), HostError> {
+        let (run, workspace) = (run.clone(), self.workspace.clone());
+        let s = self.state.feedback_ctx();
+        self.state
+            .store
+            .call(move |st| {
+                let t = report_thread(st, &run)?;
+                if st.set_fix_preview_missed(&t.id, &run.id)? {
+                    let offer = workspace.as_ref().map_or_else(Default::default, |w| {
+                        w.get().offer(&run, t.queue_id.as_deref())
+                    });
+                    let commit = st.run_fix_commit(&t.id, &run.id)?;
+                    let body = offer.preview_missed(commit.as_deref());
+                    post_fixed(st, &s, &run, &t.id, &body, true)?;
+                }
+                Ok(())
+            })
+            .await
+            .map_err(|e| host_error(&e))
+    }
+
+    async fn note_members(
+        &self,
+        run: &Run,
+        _audit: &clax_core::audit::AuditCtx,
+        body: &str,
+    ) -> Result<(), HostError> {
+        let (run, body) = (run.clone(), body.to_string());
+        let s = self.state.feedback_ctx();
+        self.state
+            .store
+            .call(move |st| {
+                let t = report_thread(st, &run)?;
+                let qid = t.queue_id.clone().ok_or(clax_core::CoreError::NotFound)?;
+                let told = st
+                    .report(&qid, &t.id, Visibility::All)?
+                    .is_some_and(|r| r.comments.iter().any(|c| c.triage_only && c.body == body));
+                if !told {
+                    post_fixed(st, &s, &run, &t.id, &body, true)?;
+                }
+                Ok(())
+            })
+            .await
+            .map_err(|e| host_error(&e))
     }
 
     async fn working(&self, run: &Run, on: bool) {
@@ -1044,14 +1741,22 @@ impl BotHost for ServerHost {
             return;
         }
         // The run ended (or stopped): the people queued on its threads
-        // meanwhile start their follow-ups, one thread's at a time.
+        // meanwhile start their follow-ups, one thread's at a time; then
+        // the reporter who wrote while it worked.
         let (bot, id, wake) = (self.state.bot.clone(), run.id.clone(), self.wake.clone());
+        let follow = self.follow();
         let started = self
             .state
             .store
-            .call(move |st| match st.run(&id)? {
-                Some(r) => crate::routes::bot::after_run(st, &bot, &r),
-                None => Ok(Vec::new()),
+            .call(move |st| {
+                let Some(r) = st.run(&id)? else {
+                    return Ok(Vec::new());
+                };
+                let mut started = crate::routes::bot::after_run(st, &bot, &r)?;
+                if r.status.is_terminal() {
+                    started.extend(follow.reports(st, &bot, &r.thread_ids));
+                }
+                Ok(started)
             })
             .await;
         match started {
@@ -1148,6 +1853,65 @@ impl clax_http::bot::Runs for DriverRuns {
 /// Installs it as the state's run seam and returns it, not yet started.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn driver(state: &mut AppState) -> Arc<clax_bot::Driver> {
+    driver_for_home(state, None)
+}
+
+/// The workspace of the home at `home`, if it has one, its store links with
+/// it where there is a key to open them, and what it is for the routes to
+/// say ([`clax_http::bot::RuntimeFacts`]). One that is set up and failed runs
+/// nothing and says so.
+#[cfg(not(target_arch = "wasm32"))]
+fn workspace_of(
+    state: &AppState,
+    home: Option<&std::path::Path>,
+) -> (
+    clax_http::bot::RuntimeFacts,
+    Option<Arc<dyn clax_bot::Workspace>>,
+) {
+    use clax_bot_workspace::config::{Links, for_home};
+    use clax_http::bot::RuntimeFacts;
+    use clax_store::queue_repos::Egress;
+    let links = state.bot.kek.clone().map(|kek| Links {
+        store: state.store.clone(),
+        kek,
+    });
+    match home.map_or(Ok(None), |h| for_home(h, links)) {
+        Ok(Some(w)) => {
+            let facts = RuntimeFacts {
+                configured: true,
+                third_party: w.runtime.third_party(),
+                egress_held: w.egress() == Egress::Held,
+                failed: false,
+                operator_queues: w.operator_queues(),
+                operator_only: false,
+            };
+            (facts, Some(Arc::new(w)))
+        }
+        Ok(None) => (RuntimeFacts::default(), None),
+        Err(e) => {
+            tracing::warn!(
+                error = format!("{e:#}"),
+                "ClaxBot has no container: workspace.toml"
+            );
+            let facts = RuntimeFacts {
+                configured: true,
+                third_party: true,
+                failed: true,
+                ..RuntimeFacts::default()
+            };
+            (facts, None)
+        }
+    }
+}
+
+/// [`driver`], with the workspace of the home at `home`, if it has one. The
+/// one place a daemon's workspace is wired: its file, its store links, and
+/// what the routes say of it.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn driver_for_home(
+    state: &mut AppState,
+    home: Option<&std::path::Path>,
+) -> Arc<clax_bot::Driver> {
     let hosted = state.hosted.as_ref();
     let (web, unavailable) = crate::web_source::daemon_web(
         state.store.clone(),
@@ -1161,7 +1925,9 @@ pub fn driver(state: &mut AppState) -> Arc<clax_bot::Driver> {
             .web_check
             .set(clax_bot::web::WebCheck::Unusable(why));
     }
-    driver_with_web(state, web)
+    let (facts, workspace) = workspace_of(state, home);
+    let _ = state.bot.runtime_facts.set(facts);
+    driver_with(state, web, workspace)
 }
 
 /// [`driver`], with `web` as the runs' web source.
@@ -1170,8 +1936,19 @@ pub fn driver_with_web(
     state: &mut AppState,
     web: Arc<dyn clax_bot::web::WebSource>,
 ) -> Arc<clax_bot::Driver> {
+    driver_with(state, web, None)
+}
+
+/// [`driver_with_web`], with `workspace` as the runs' container machinery.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn driver_with(
+    state: &mut AppState,
+    web: Arc<dyn clax_bot::web::WebSource>,
+    workspace: Option<Arc<dyn clax_bot::Workspace>>,
+) -> Arc<clax_bot::Driver> {
     let bot = state.bot.clone();
-    let host = ServerHost::new(state.clone());
+    let mut host = ServerHost::new(state.clone());
+    host.workspace = workspace.clone().map(HeldWorkspace::of);
     let wake = host.wake.clone();
     let host: Arc<dyn BotHost> = Arc::new(host);
     let deps = clax_bot::Deps::new(
@@ -1187,6 +1964,10 @@ pub fn driver_with_web(
         Arc::new(StoreClock(state.store.clone())),
     )
     .with_web(web);
+    let deps = match workspace {
+        Some(w) => deps.with_workspace(w),
+        None => deps,
+    };
     let driver = Arc::new(clax_bot::Driver::new(
         clax_store::bot_runs::DriverId::mint(),
         Arc::new(deps),
@@ -1218,6 +1999,7 @@ pub fn driver_with_web(
         },
         web_check: bot.web_check.clone(),
         admin_web_check: bot.admin_web_check.clone(),
+        runtime_facts: bot.runtime_facts.clone(),
     });
     driver
 }

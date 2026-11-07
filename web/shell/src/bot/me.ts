@@ -60,6 +60,11 @@ export async function myRole(me?: MeBot | null): Promise<Role> {
 /** Whether `role` sees the admin pages. */
 export const isAdmin = (role: Role | null | undefined): boolean => role === "owner" || role === "admin";
 
+/** A queue's members, grants and repository, which only Manage opens. Its
+ * loader is here, in what the gallery has already loaded, so that the Queues
+ * page carries neither it nor the list of what it imports. */
+export const queueAdmin = () => import("../queues/QueueAdmin.svelte");
+
 /** Whether this browser talks to a hosted daemon (`GET /api/hosted/me` answers), where Settings are not shown. */
 export function hosted(): Promise<boolean> {
   return fetch("/api/hosted/me").then(r => r.ok, () => false);

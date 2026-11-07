@@ -268,6 +268,43 @@ fn reporter_sees_only_own_under_own() {
 }
 
 #[test]
+fn a_queues_public_notice_is_off_until_a_patch_sets_it() {
+    let (_d, st, _clock) = clocked();
+    let qid = queue(&st, ReportersSee::Own);
+    let audited = |st: &crate::Store| audit(st, "queue.update").len();
+    assert!(!st.queue(&qid).unwrap().unwrap().public_notice);
+    assert!(!st.reporter_badge(&qid, "emp-1").unwrap().public_notice);
+    let before = audited(&st);
+    let on = super::QueuePatch {
+        public_notice: Some(true),
+        ..Default::default()
+    };
+    let row = st.update_queue(DAEMON, &qid, on.clone()).unwrap();
+    assert!(row.public_notice);
+    assert!(row.view(Role::Admin).public_notice);
+    assert!(st.queue(&qid).unwrap().unwrap().public_notice);
+    assert!(st.reporter_badge(&qid, "emp-1").unwrap().public_notice);
+    assert_eq!(audited(&st), before + 1);
+    // Setting it again changes nothing, and another field leaves it be.
+    st.update_queue(DAEMON, &qid, on).unwrap();
+    assert_eq!(audited(&st), before + 1);
+    let renamed = super::QueuePatch {
+        name: Some("Renamed".into()),
+        ..Default::default()
+    };
+    assert!(
+        st.update_queue(DAEMON, &qid, renamed)
+            .unwrap()
+            .public_notice
+    );
+    let off = super::QueuePatch {
+        public_notice: Some(false),
+        ..Default::default()
+    };
+    assert!(!st.update_queue(DAEMON, &qid, off).unwrap().public_notice);
+}
+
+#[test]
 fn reports_list_by_state_and_page() {
     let (_d, st, clock) = clocked();
     let qid = queue(&st, ReportersSee::All);
@@ -1816,7 +1853,8 @@ fn badge_counts_fix_proposed_and_unseen_replies() {
         st.reporter_badge(&qid, "emp-1").unwrap(),
         Badge {
             waiting: 0,
-            report_ids: vec![]
+            report_ids: vec![],
+            public_notice: false,
         }
     );
     clock.advance(1);
@@ -2214,4 +2252,306 @@ fn own_feedback_is_made_once_kept_and_remade_when_gone() {
     let queues = st.queues_of(None).unwrap();
     assert_eq!(queues.len(), 1, "{queues:?}");
     assert_eq!(queues[0].id, remade.queue_id);
+}
+
+fn run_writer(key: &str) -> ReportWriter<'static> {
+    ReportWriter::Run {
+        run: "run-1".into(),
+        name: "ClaxBot".into(),
+        key: key.into(),
+        note: None,
+        held: false,
+        preview_url: None,
+    }
+}
+
+#[test]
+fn a_held_fix_takes_no_verdict_of_its_reporters_until_a_link_comes() {
+    let clock = Arc::new(ManualClock::at("2026-10-27T12:00:00Z"));
+    let (_d, st) = store_with_clock(clock.clone());
+    let qid = queue(&st, ReportersSee::Own);
+    let tid = file(&st, &qid, Some("emp-1"), None);
+    let by = ReportWriter::Run {
+        run: "run-1".into(),
+        name: "ClaxBot".into(),
+        key: "k".into(),
+        note: Some("the pull request".into()),
+        held: true,
+        preview_url: None,
+    };
+    let r = st
+        .propose_fix(DAEMON, &qid, &tid, &by, a_fix("A person reviews it"))
+        .unwrap();
+    assert!(r.fixes[0].held);
+    assert!(
+        r.comments
+            .iter()
+            .any(|c| c.triage_only && c.body == "the pull request")
+    );
+    let reporter = || Verdict::Reporter("emp-1");
+    assert!(matches!(
+        st.verify_report(DAEMON, &qid, &tid, reporter(), None, None),
+        Err(CoreError::NotFixProposed)
+    ));
+    assert!(matches!(
+        st.reopen_report(
+            DAEMON,
+            &qid,
+            &tid,
+            reporter(),
+            "no".into(),
+            None,
+            None,
+            None
+        ),
+        Err(CoreError::NotFixProposed)
+    ));
+    // Read, it waits for nothing of theirs: the badge does not hold it up.
+    clock.advance(1);
+    st.mark_reporter_seen(&qid, &tid, "emp-1").unwrap();
+    assert_eq!(st.reporter_badge(&qid, "emp-1").unwrap().waiting, 0);
+    st.set_fix_verify_url(DAEMON, &qid, &tid, "run-1", "https://pr-1.preview.example")
+        .unwrap();
+    let r = st.report(&qid, &tid, Visibility::All).unwrap().unwrap();
+    assert!(!r.fixes[0].held);
+    st.verify_report(DAEMON, &qid, &tid, reporter(), None, None)
+        .unwrap();
+}
+
+#[test]
+fn a_link_for_the_reporter_ends_a_wait_said_to_have_ended_as_a_link_for_the_members_does() {
+    let (_d, st) = store();
+    let qid = queue(&st, ReportersSee::Own);
+    let by = ReportWriter::Run {
+        run: "run-1".into(),
+        name: "ClaxBot".into(),
+        key: "k".into(),
+        note: None,
+        held: true,
+        preview_url: None,
+    };
+    let wait_ended = || {
+        let tid = file(&st, &qid, Some("emp-1"), None);
+        st.propose_fix(DAEMON, &qid, &tid, &by, a_fix("Held"))
+            .unwrap();
+        assert!(st.set_fix_preview_missed(&tid, "run-1").unwrap());
+        tid
+    };
+    let missed = |tid: &str| {
+        let r = st.report(&qid, tid, Visibility::All).unwrap().unwrap();
+        r.fixes[0].members.as_ref().unwrap().preview_missed
+    };
+    let url = "https://pr-1.preview.example";
+
+    let for_members = wait_ended();
+    assert!(missed(&for_members));
+    assert!(st.set_fix_preview(&for_members, "run-1", url).unwrap());
+    assert!(!missed(&for_members));
+
+    let for_reporter = wait_ended();
+    assert!(missed(&for_reporter));
+    assert!(
+        st.set_fix_verify_url(DAEMON, &qid, &for_reporter, "run-1", url)
+            .unwrap()
+    );
+    assert!(!missed(&for_reporter));
+}
+
+#[test]
+fn a_person_hands_a_held_fix_to_its_reporter_by_proposing_their_own() {
+    let (_d, st) = store();
+    let qid = queue(&st, ReportersSee::Own);
+    let tid = file(&st, &qid, Some("emp-1"), None);
+    let by = ReportWriter::Run {
+        run: "run-1".into(),
+        name: "ClaxBot".into(),
+        key: "k".into(),
+        note: None,
+        held: true,
+        preview_url: None,
+    };
+    st.propose_fix(DAEMON, &qid, &tid, &by, a_fix("Held"))
+        .unwrap();
+    let person = ReportWriter::Person {
+        name: "Sam".into(),
+        public_id: None,
+    };
+    let mut fix = a_fix("Please check this");
+    fix.verify_url = Some("https://pr-1.preview.example".into());
+    st.propose_fix(DAEMON, &qid, &tid, &person, fix).unwrap();
+    st.verify_report(DAEMON, &qid, &tid, Verdict::Reporter("emp-1"), None, None)
+        .unwrap();
+}
+
+#[test]
+fn only_a_runs_own_held_proposal_replaces_a_held_fix_with_no_link() {
+    let (_d, st) = store();
+    let qid = queue(&st, ReportersSee::Own);
+    let tid = file(&st, &qid, Some("emp-1"), None);
+    let held = |key: &str| ReportWriter::Run {
+        run: "run-1".into(),
+        name: "ClaxBot".into(),
+        key: key.into(),
+        note: None,
+        held: true,
+        preview_url: None,
+    };
+    st.propose_fix(DAEMON, &qid, &tid, &held("k1"), a_fix("Held"))
+        .unwrap();
+
+    let err = st
+        .propose_fix(DAEMON, &qid, &tid, &run_writer("k2"), a_fix("Not held"))
+        .unwrap_err();
+    assert!(
+        matches!(&err, CoreError::Invalid { code, .. } if *code == "verify_url_required"),
+        "{err:?}"
+    );
+
+    let r = st
+        .propose_fix(DAEMON, &qid, &tid, &held("k3"), a_fix("Held again"))
+        .unwrap();
+    assert_eq!(r.fixes.len(), 2);
+    assert!(r.fixes[1].held);
+    assert_eq!(r.fixes[0].outcome, FixOutcome::Superseded);
+}
+
+#[test]
+fn the_start_scan_finds_only_a_word_after_the_last_run() {
+    let (_d, st) = store();
+    let qid = queue(&st, ReportersSee::Own);
+    let tid = file(&st, &qid, Some("emp-1"), None);
+    st.propose_fix(DAEMON, &qid, &tid, &run_writer("k"), a_fix("Fixed"))
+        .unwrap();
+    assert_eq!(st.reports_of_run_fixes().unwrap(), Vec::<String>::new());
+}
+
+fn a_fix(summary: &str) -> NewFix {
+    NewFix {
+        summary: summary.into(),
+        url: None,
+        commit: None,
+        release: None,
+        verify_url: None,
+        verify_after: None,
+    }
+}
+
+#[test]
+fn a_runs_fix_is_an_agents_kept_with_the_run_and_made_once_per_proposal() {
+    let (_d, st) = store();
+    let qid = queue(&st, ReportersSee::Own);
+    let tid = file(&st, &qid, Some("emp-1"), None);
+    let by = run_writer("run-1:2:0");
+    st.propose_fix(DAEMON, &qid, &tid, &by, a_fix("Fixed"))
+        .unwrap();
+    let r = st
+        .propose_fix(DAEMON, &qid, &tid, &by, a_fix("Fixed"))
+        .unwrap();
+    assert_eq!(r.fixes.len(), 1, "one proposal is one attempt");
+    assert_eq!(r.fixes[0].proposer_kind, ProposerKind::Agent);
+    assert_eq!(r.fixes[0].proposer_name, "ClaxBot");
+    assert_eq!(st.last_fix_run(&tid).unwrap().as_deref(), Some("run-1"));
+
+    let r = st
+        .propose_fix(DAEMON, &qid, &tid, &run_writer("run-1:2:1"), a_fix("Again"))
+        .unwrap();
+    assert_eq!(r.fixes.len(), 2);
+    assert_eq!(r.fixes[0].outcome, FixOutcome::Superseded);
+    assert_eq!(r.fixes[1].outcome, FixOutcome::Pending);
+}
+
+#[test]
+fn a_runs_fix_takes_no_lease_and_anothers_lease_refuses_it() {
+    let (_d, st) = store();
+    let qid = queue(&st, ReportersSee::Own);
+    let tid = file(&st, &qid, Some("emp-1"), None);
+    let a = session(&st, "claude", "a");
+    st.claim(DAEMON, &qid, &tid, &a).unwrap();
+    assert!(matches!(
+        st.check_run_may_propose(&qid, &tid),
+        Err(CoreError::ThreadTaken { .. })
+    ));
+    let e = st.propose_fix(DAEMON, &qid, &tid, &run_writer("k"), a_fix("Fixed"));
+    assert!(matches!(e, Err(CoreError::ThreadTaken { .. })), "{e:?}");
+    st.release(DAEMON, &qid, &tid, &a).unwrap();
+    st.check_run_may_propose(&qid, &tid).unwrap();
+    assert!(
+        st.report_reply(DAEMON, &qid, &tid, &run_writer("k"), "hi")
+            .is_err(),
+        "a run writes to a report through its fix alone"
+    );
+}
+
+#[test]
+fn a_waiting_fix_of_a_runs_takes_its_preview_once() {
+    let (_d, st) = store();
+    let qid = queue(&st, ReportersSee::Own);
+    let tid = file(&st, &qid, Some("emp-1"), None);
+    let url = "https://pr-1.preview.example";
+    assert!(
+        !st.set_fix_verify_url(DAEMON, &qid, &tid, "run-1", url)
+            .unwrap()
+    );
+    st.propose_fix(DAEMON, &qid, &tid, &run_writer("k"), a_fix("Fixed"))
+        .unwrap();
+    assert!(
+        st.set_fix_verify_url(DAEMON, &qid, &tid, "run-1", url)
+            .unwrap()
+    );
+    assert!(
+        !st.set_fix_verify_url(DAEMON, &qid, &tid, "run-1", url)
+            .unwrap()
+    );
+    let r = st.report(&qid, &tid, Visibility::All).unwrap().unwrap();
+    assert_eq!(r.fixes[0].fix.verify_url.as_deref(), Some(url));
+    assert!(
+        st.set_fix_verify_url(DAEMON, &qid, &tid, "run-1", "not a url")
+            .is_err(),
+        "a URL is checked as a fix's is"
+    );
+}
+
+#[test]
+fn a_members_note_is_on_the_report_for_members_and_nowhere_else() {
+    let (_d, st) = store();
+    let qid = queue(&st, ReportersSee::Own);
+    let tid = file(&st, &qid, Some("emp-1"), None);
+    let before = st.events_after(0, 10_000).unwrap().len();
+    st.add_members_comment(
+        DAEMON,
+        &tid,
+        crate::threads::NewComment {
+            author_kind: clax_core::model::AUTHOR_AGENT,
+            author_name: "ClaxBot".into(),
+            author_public_id: None,
+            via_session_id: None,
+            body: "the secret line".into(),
+            via_page: false,
+        },
+    )
+    .unwrap();
+    let members = st.report(&qid, &tid, Visibility::All).unwrap().unwrap();
+    let last = members.comments.last().unwrap();
+    assert!(last.triage_only && last.body == "the secret line");
+    let reporter = st
+        .report(&qid, &tid, Visibility::Reporter("emp-1"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(reporter.comments.len(), 1);
+    assert_eq!(st.reporter_badge(&qid, "emp-1").unwrap().waiting, 0);
+    let thread = st.get_thread(&tid).unwrap().unwrap();
+    assert!(thread.comments.iter().all(|c| c.body != "the secret line"));
+    let audit = st.events_after(0, 10_000).unwrap();
+    assert_eq!(audit.len(), before + 1, "it is recorded");
+    assert!(!format!("{audit:?}").contains("the secret line"));
+}
+
+#[test]
+fn who_a_run_may_read_a_queue_for() {
+    let (_d, st) = store();
+    let qid = queue(&st, ReportersSee::Own);
+    assert!(st.run_reads_queue("*owner", None, &qid).unwrap());
+    assert!(!st.run_reads_queue("emp-1", None, &qid).unwrap());
+    assert!(!st.run_reads_queue("u_nobody", None, &qid).unwrap());
+    assert!(!st.run_reads_queue("*owner", Some("gone"), &qid).unwrap());
 }

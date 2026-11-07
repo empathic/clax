@@ -226,6 +226,16 @@ impl Driver {
             Ok(swept) => tracing::info!(swept, "removed artifacts a crash left without a version"),
             Err(e) => tracing::warn!(error = %e, "the sweep of artifacts without a version failed"),
         }
+        // Only what is known may go: a store that cannot say reaps nothing.
+        if let Some(w) = &self.deps.workspace {
+            match self.deps.store.live_runs() {
+                Ok(runs) => {
+                    let active: Vec<String> = runs.into_iter().map(|r| r.id).collect();
+                    w.reap(&active).await;
+                }
+                Err(e) => tracing::warn!(error = %e, "the runs to keep could not be read"),
+            }
+        }
         match self.deps.host.start_waiting().await {
             Ok(0) => {}
             Ok(started) => {

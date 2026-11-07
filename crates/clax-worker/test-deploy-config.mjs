@@ -134,6 +134,75 @@ try {
   });
   check("--retired-content-origin takes an https:// origin alone", () => refused(["--public", "kept.example.com", "--retired-content-origin", "https://c.example.com/x"], /--retired-content-origin takes an https:\/\/ origin/));
 
+  const WORKSPACE = [
+    "--workspace-service-url", "https://workspace.example.com/",
+    "--workspace-preview-hosts", "*.previews.example",
+    "--workspace-forge-hosts", "github.com",
+    "--workspace-service-instance", "clax-prod",
+  ];
+  const workspaceVars = (r) => Object.fromEntries(Object.entries(r.config.vars).filter(([k]) => k.startsWith("CLAX_WORKSPACE_")));
+  const PREVIEW = ["--env", "pr-12", "--public", "pr-12.example.com", "--site-domain", "pr-12.example.run", "--site-zone", "example.run"];
+
+  check("the workspace service's flags become the Worker's vars", () => {
+    const r = deploy(["--public", "ws.example.com", "--site-domain", "ws.run", ...WORKSPACE]);
+    assert.equal(r.status, 0, r.text);
+    assert.deepEqual(workspaceVars(r), {
+      CLAX_WORKSPACE_SERVICE_URL: "https://workspace.example.com/",
+      CLAX_WORKSPACE_PREVIEW_HOSTS: "*.previews.example",
+      CLAX_WORKSPACE_FORGE_HOSTS: "github.com",
+      CLAX_WORKSPACE_SERVICE_INSTANCE: "clax-prod",
+    });
+  });
+
+  check("with no flag and no record the Worker has no workspace var", () => {
+    const r = deploy(["--public", "ws.example.com", "--site-domain", "ws.run"]);
+    assert.equal(r.status, 0, r.text);
+    assert.deepEqual(workspaceVars(r), {});
+  });
+
+  check("a later deploy keeps the record's workspace settings, and a flag replaces or clears one", () => {
+    writeFileSync(
+      join(home, "wsk.example.com.json"),
+      JSON.stringify({ public_origin: "https://wsk.example.com", site_domain: "wsk.run", workspace_service_url: "https://w.example.com", workspace_forge_hosts: "github.com" }),
+    );
+    const kept = deploy(["--public", "wsk.example.com"]);
+    assert.equal(kept.status, 0, kept.text);
+    assert.deepEqual(workspaceVars(kept), { CLAX_WORKSPACE_SERVICE_URL: "https://w.example.com", CLAX_WORKSPACE_FORGE_HOSTS: "github.com" });
+    const changed = deploy(["--public", "wsk.example.com", "--workspace-service-url", "https://v.example.com", "--workspace-forge-hosts", ""]);
+    assert.equal(changed.status, 0, changed.text);
+    assert.deepEqual(workspaceVars(changed), { CLAX_WORKSPACE_SERVICE_URL: "https://v.example.com" });
+  });
+
+  check("a preview refuses each workspace flag", () => {
+    for (let i = 0; i < WORKSPACE.length; i += 2) refused([...PREVIEW, WORKSPACE[i], WORKSPACE[i + 1]], /a preview takes no ClaxBot workspace setting/);
+  });
+  check("a preview refuses a record naming a workspace setting", () => {
+    writeFileSync(join(home, "pr-12.example.com.json"), JSON.stringify({ public_origin: "https://pr-12.example.com", site_domain: "pr-12.example.run", workspace_service_url: "https://w.example.com" }));
+    try {
+      refused(PREVIEW, /a preview takes no ClaxBot workspace setting/);
+    } finally {
+      rmSync(join(home, "pr-12.example.com.json"));
+    }
+  });
+  check("staging's workspace settings must name an instance of its own", () => {
+    const base = ["--env", "pr-12", "--staging", "--ci", "--public", "pr-12.example.com", "--site-domain", "pr-12.example.run", "--site-zone", "example.run"];
+    refused([...base, "--workspace-service-url", "https://w.example.com"], /--workspace-service-instance/);
+    const r = deploy([...base, "--workspace-service-url", "https://w.example.com", "--workspace-service-instance", "clax-staging"]);
+    assert.equal(r.status, 0, r.text);
+    assert.equal(r.config.vars.CLAX_WORKSPACE_SERVICE_INSTANCE, "clax-staging");
+  });
+  for (const [flag, value, why] of [
+    ["--workspace-service-url", "http://w.example.com", /takes an https:\/\/ address/],
+    ["--workspace-service-url", "https://u:p@w.example.com", /takes an https:\/\/ address/],
+    ["--workspace-service-url", "https://w.example.com/?a=1", /takes an https:\/\/ address/],
+    ["--workspace-preview-hosts", "https://previews.example", /--workspace-preview-hosts takes/],
+    ["--workspace-preview-hosts", "*.example", /--workspace-preview-hosts takes/],
+    ["--workspace-forge-hosts", "a b", /--workspace-forge-hosts takes/],
+    ["--workspace-service-instance", "-a", /--workspace-service-instance takes/],
+  ]) {
+    check(`${flag} ${value} is refused`, () => refused(["--public", "ws.example.com", "--site-domain", "ws.run", flag, value], why));
+  }
+
   check("a given site domain replaces the record's", () => {
     const r = deploy(["--public", "kept.example.com", "--site-domain", "other.run"]);
     assert.equal(r.status, 0, r.text);

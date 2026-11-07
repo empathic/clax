@@ -539,6 +539,15 @@ pub struct FixAttempt {
     /// agent's session hears the reporter's replies and may answer them;
     /// a person's fix is answered from the triage views.
     pub proposer_kind: ProposerKind,
+    /// Its reporter has nothing to check it on, and may give no verdict. A
+    /// link to check it on ends this, as a person's own fix does by
+    /// superseding it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub held: bool,
+    /// What the queue's members read of it beside the rest; `None` on a report
+    /// served to a reporter.
+    #[serde(default, flatten, skip_serializing_if = "Option::is_none")]
+    pub members: Option<FixForMembers>,
     pub created_at: String,
     pub outcome: FixOutcome,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -547,6 +556,15 @@ pub struct FixAttempt {
     pub verdict_context: Option<ReportContext>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verdict_at: Option<String>,
+}
+
+/// What only a queue's members read of a held fix ([`FixAttempt::held`]): it
+/// waits for a preview, or `preview_url` answered and no person has let it out,
+/// or `preview_missed`, the wait ended with none seen.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FixForMembers {
+    pub preview_url: Option<String>,
+    pub preview_missed: bool,
 }
 
 /// Why a report was closed (§6.1): `fixed` when a fix was verified or
@@ -886,6 +904,8 @@ mod tests {
             },
             proposer_name: "claude".into(),
             proposer_kind: ProposerKind::Agent,
+            held: false,
+            members: None,
             created_at: "2026-10-29T07:12:03.120Z".into(),
             outcome: FixOutcome::Pending,
             verdict_note: None,

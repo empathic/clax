@@ -104,6 +104,10 @@ export function isShortcut(e: ShortcutKey): boolean {
   return !t.closest("[role=dialog], [aria-modal=true]");
 }
 
+/** The address's fragment that opens the person's reports: where a message
+ * to a reporter sends them (crates/clax-server/src/notifiers.rs). */
+const MY_REPORTS = "#my-reports";
+
 /** A running feedback integration: the overlay, with no launcher of its
  * own; the shell's menu and key drive it. */
 export class Feedback {
@@ -178,7 +182,10 @@ export async function startFeedback(cfg: FeedbackConfig, deps: StartDeps = {}): 
     auth: tokenAuth(f),
     ...(cfg.user ? { user: cfg.user } : {}),
     launcher: false,
+    publicNotice: cfg.public_notice === true,
     context: hostContext(cfg, where),
   }, doc);
-  return new Feedback(handle, win);
+  const fb = new Feedback(handle, win);
+  if (win.location.hash === MY_REPORTS) fb.showReports();
+  return fb;
 }

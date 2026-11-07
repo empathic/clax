@@ -151,6 +151,13 @@ jobs:
       SITE_DOMAIN: ${{ vars.SITE_DOMAIN }}
       STORE: ${{ vars.STORE }}
       RETIRED_CONTENT_ORIGIN: ${{ vars.RETIRED_CONTENT_ORIGIN }}
+      # ClaxBot's workspace service (docs/prod.md, "ClaxBot's workspace
+      # service"): none of it set, the Worker has none. Its bearer secret is the
+      # Worker's own and passes through no workflow.
+      CLAX_WORKSPACE_SERVICE_URL: ${{ vars.CLAX_WORKSPACE_SERVICE_URL }}
+      CLAX_WORKSPACE_PREVIEW_HOSTS: ${{ vars.CLAX_WORKSPACE_PREVIEW_HOSTS }}
+      CLAX_WORKSPACE_FORGE_HOSTS: ${{ vars.CLAX_WORKSPACE_FORGE_HOSTS }}
+      CLAX_WORKSPACE_SERVICE_INSTANCE: ${{ vars.CLAX_WORKSPACE_SERVICE_INSTANCE }}
       # Secrets, not variables, kept out of the repository's settings and
       # masked in its logs: the GitHub OAuth App's client ID (GitHub refuses
       # a name starting GITHUB_), the owner's login and the Cloudflare
@@ -160,7 +167,11 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       # The merge commit, with the tested head (its second parent), whose
-      # tree the deploy checks the Worker's against.
+      # tree the deploy checks the Worker's against. Every script and lockfile
+      # below is this commit's, and `candidate` proved its tree is the head's,
+      # the commit the Worker's attestation names, so nothing here is newer
+      # than what was attested and approved. Unlike a preview's, then, this
+      # job has no other copy to take them from, and needs none.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { ref: "${{ github.sha }}", fetch-depth: 0, persist-credentials: false }
 
@@ -178,7 +189,7 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with: { package_json_file: web/package.json }
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with: { node-version: 26 }
+        with: { node-version: 26, package-manager-cache: false }
       # The tools scripts/cloudflare-setup.sh checks for, though it builds
       # nothing here.
       - name: Install Rust toolchain
@@ -238,6 +249,10 @@ jobs:
           if [ -n "$RETIRED_CONTENT_ORIGIN" ]; then
             args+=(--retired-content-origin "$RETIRED_CONTENT_ORIGIN")
           fi
+          [ -z "$CLAX_WORKSPACE_SERVICE_URL" ] || args+=(--workspace-service-url "$CLAX_WORKSPACE_SERVICE_URL")
+          [ -z "$CLAX_WORKSPACE_PREVIEW_HOSTS" ] || args+=(--workspace-preview-hosts "$CLAX_WORKSPACE_PREVIEW_HOSTS")
+          [ -z "$CLAX_WORKSPACE_FORGE_HOSTS" ] || args+=(--workspace-forge-hosts "$CLAX_WORKSPACE_FORGE_HOSTS")
+          [ -z "$CLAX_WORKSPACE_SERVICE_INSTANCE" ] || args+=(--workspace-service-instance "$CLAX_WORKSPACE_SERVICE_INSTANCE")
           if [ -n "$REEL_URL" ]; then
             args+=(--reel-url "$REEL_URL" --reel-poster-url "$REEL_POSTER_URL")
           else

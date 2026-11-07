@@ -1,0 +1,101 @@
+# ClaxBot's workspace for Pathbase: copy to <home>/workspace.toml. README.md
+# here says what it needs and what to replace.
+#
+# DO NOT TURN THIS ON YET. Pathbase's preview.yml deploys every branch of the
+# repository with no approval, in the GitHub environment `deploy`, the one
+# deploy-dev.yml also uses, with its Fly token and Neon key. A claxbot/ branch
+# would run with them unreviewed. First give that workflow the gate Clax's
+# has (.github/workflows/preview.yml here), and previews credentials of
+# their own.
+
+# No image is published for this: the repository's Dockerfile is the
+# runtime, a COPY of what scripts/build.sh made outside it. Its e2e job's
+# Playwright image has browsers and no Rust. Unset, a container is the
+# runtime's default, which builds nothing. Make one and name it here, with
+# git, and what ci.yml and preview.yml install:
+#   Rust 1.94.1 (rust-toolchain.toml)
+#   Bun 1.3.14
+#   Postgres 16 only to run the DB-layer tests against it (ci.yml)
+# image = "<yours>"
+auto_stop_minutes = 30
+
+# What Cargo, rustup and Bun fetch from, with the hosts GitHub's archives and
+# releases redirect to, which packages' install scripts may use. Not
+# measured by running a build in a container: add what the first one is
+# refused.
+domain_allow_list = [
+  "github.com",
+  "codeload.github.com",
+  "objects.githubusercontent.com",
+  "release-assets.githubusercontent.com",
+  "index.crates.io",
+  "static.crates.io",
+  "static.rust-lang.org",
+  "registry.npmjs.org",
+  "nodejs.org",
+]
+
+[runtime]
+kind = "daytona"
+
+[[target]]
+# The ID of the queue whose reports are for Pathbase. Pathbase has no Clax
+# queue yet: until this is one, no run matches this target.
+queue = "REPLACE_WITH_QUEUE_ID"
+repo_url = "https://github.com/empathic/pathbase.git"
+repo = "empathic/pathbase"
+base = "main"
+# Whether the repository is private could not be read from a checkout, so
+# this takes it to be: containers get a read token from the App. Say
+# `public = true` for a public one.
+
+# On top of `.github/`, `.gitmodules`, `.gitattributes` and `.lfsconfig`,
+# which every target has.
+protected_paths = [
+  # CI.
+  "deny.toml",
+  "scripts/check-authz-capabilities.sh",
+  "scripts/check.sh",
+  "scripts/ci.sh",
+  # Deploy: what preview.yml runs with its Fly token and Neon key.
+  ".dockerignore",
+  "Dockerfile",
+  "config/",
+  "scripts/build.sh",
+  "scripts/env-deploy.sh",
+  "scripts/env-reap.sh",
+  "scripts/env-teardown.sh",
+  "scripts/op.env",
+  # Release.
+  "scripts/cut-release.sh",
+  # Migrations.
+  "crates/pathbase-db/src/migrator/",
+  # Sign-in and authorization.
+  "crates/pathbase-auth/",
+]
+
+# The Fly app pathbase-pr-<N> (preview.yml).
+preview_url = "https://pathbase-pr-{pr}.fly.dev"
+preview_ready_path = "/api/v1/health"
+# Readiness cannot name a commit: /api/v1/health answers {"status":"ok"}
+# (crates/pathbase-api/src/health.rs). So on a second push to a pull request
+# the wait ends at once, on the deployment before it, and the reporter is
+# sent to a preview without the fix. Only a pull request's first deploy is
+# told apart, its app not answering until then. The X-Pathbase-Version
+# header does not help: the wait reads the body, and it carries a short SHA,
+# of the merge commit preview.yml checks out rather than the head.
+preview_names_commit = false
+# preview.yml deploys after its `ci` job. The timeout has to fit inside a
+# run, 30 minutes by default (max_run_minutes), and how long CI and the
+# deploy take has not been measured: a run that outlasts this reports no
+# address to verify at.
+preview_timeout_secs = 1200
+
+# Last in the file: TOML reads what follows a table as part of it. The App's
+# tokens are minted per repository and its commits are signed by GitHub. It
+# needs Contents and Pull requests read and write on this repository, and no
+# Workflows permission; replace both numbers.
+[target.github_app]
+app_id = 0
+installation_id = 0
+private_key_env = "CLAXBOT_PATHBASE_APP_KEY"

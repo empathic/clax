@@ -328,10 +328,10 @@ describe("the badge", () => {
   it("badge rise emits badge and pulses once", async () => {
     const t = manualTimers();
     const answers: Badge[] = [
-      { waiting: 1, report_ids: ["r1"] },
-      { waiting: 1, report_ids: ["r1"] },
-      { waiting: 3, report_ids: ["r1", "r2", "r3"] },
-      { waiting: 0, report_ids: [] },
+      { waiting: 1, report_ids: ["r1"], public_notice: false },
+      { waiting: 1, report_ids: ["r1"], public_notice: false },
+      { waiting: 3, report_ids: ["r1", "r2", "r3"], public_notice: false },
+      { waiting: 0, report_ids: [], public_notice: false },
     ];
     let asked = 0;
     const badges: number[] = [];
@@ -366,7 +366,7 @@ describe("the badge", () => {
     let asked = 0;
     const p = page();
     p.document.visibilityState = "hidden";
-    const watch = new BadgeWatch(async () => { asked++; return { waiting: 0, report_ids: [] }; }, p, { changed: () => {}, rose: () => {} }, t);
+    const watch = new BadgeWatch(async () => { asked++; return { waiting: 0, report_ids: [], public_notice: false }; }, p, { changed: () => {}, rose: () => {} }, t);
     watch.start();
     await settle();
     expect(asked).toBe(0);
@@ -388,6 +388,8 @@ describe("a report as the reporter reads it", () => {
     expect(stateLabel({ state: "open" })).toBe("Open");
     expect(stateLabel({ state: "claimed" })).toBe("Being worked on");
     expect(stateLabel({ state: "fix_proposed" })).toBe("Fix ready for you to check");
+    const held = { n: 1, summary: "s", proposer_name: "ClaxBot", held: true, created_at: "", outcome: "pending" as const };
+    expect(stateLabel({ state: "fix_proposed", fixes: [held] })).toBe("Fix not ready for you to check");
     expect(stateLabel({ state: "verified" })).toBe("Fixed: you confirmed it");
     expect(stateLabel({ state: "resolved" })).toBe("Resolved");
     expect(stateLabel({ state: "resolved", resolve_reason: "duplicate" })).toBe("Resolved: duplicate");

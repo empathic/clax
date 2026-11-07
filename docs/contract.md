@@ -4343,7 +4343,7 @@ the copy's remote, the link holds the copy's address alone.
 | `queue_release` | `queue`, `report_id` | `{report}`, open again |
 | `queue_reply` | `queue`, `report_id`, `body` | `{comment, report}`, under the session's live lease or, while the fix it proposed waits (`fix_proposed`), without one; `claim_required`, `lease_lost` or `thread_taken` |
 | `queue_resolve` | `queue`, `report_id`, optional `reason` (`fixed`, `duplicate`, `wontfix`, `cannot_reproduce` or `other`, the default) | `{report}`, resolved with `resolve_reason`; `claim_required`, `lease_lost` or `thread_taken` |
-| `queue_fix` | `queue`, `report_id`, `summary`; optional `url`, `commit`, `release`, `verify_url`, `verify_after` | `{report}`, `fix_proposed` (`POST …/fix`, with no `fence`: the session's live lease is checked); `claim_required`, `lease_lost`, `thread_taken`, `invalid_fix` or `not_claimable` |
+| `queue_fix` | `queue`, `report_id`, `summary`; optional `url`, `commit`, `release`, `verify_url`, `verify_after` | `{report}`, `fix_proposed` (`POST …/fix`, with no `fence`: the session's live lease is checked); `claim_required`, `lease_lost`, `thread_taken`, `invalid_fix`, `verify_url_required` or `not_claimable` |
 | `queue_watch` | `queue`, optional `stop` | `{queue, watching: true, wake}` (`POST /api/queues/<queue>/watch`; `wake` as `watch` gives it), or with `stop: true` `{queue, watching: false}` (`DELETE`) |
 
 #### Report queue tools
@@ -4417,8 +4417,15 @@ comments, claim, created_at`), a report carries, when they apply:
 version, the commit and build `/healthz` reports, and when it received
 the report), `reporter_profile` (triage members only), `resolve_reason`,
 `fixes` (`[{n, summary, url?, commit?, release?, verify_url?,
-verify_after?, proposer_name, proposer_kind, created_at, outcome, verdict_note?,
-verdict_context?, verdict_at?}]`, oldest first; `proposer_kind` is
+verify_after?, proposer_name, proposer_kind, held?, preview_url, preview_missed,
+created_at, outcome, verdict_note?, verdict_context?, verdict_at?}]`, oldest
+first; `held` says its reporter has nothing to check the fix on, so their
+verify and reopen answer 409 `not_fix_proposed` until a link comes or a
+person's own fix supersedes it; `preview_url` (a string or null) and
+`preview_missed` are the queue's members' alone and absent for a reporter: a
+held fix waits for a preview while the first is null and the second false, has
+one no person has let out at `preview_url`, or with `preview_missed` the wait
+ended with none seen, which does not say none is up; `proposer_kind` is
 `agent` (proposed through an agent's session, which hears the reporter's
 replies while the fix waits) or `person` (a triage member's, whose
 replies wait for the queue's people); `outcome` is `pending`,
@@ -4428,9 +4435,23 @@ replies wait for the queue's people); `outcome` is `pending`,
 (the filing's own, capture 0; absent when it has none). A reopen's comment
 carries `capture` (the reopen's number, the filing being capture 0),
 `has_clip` and `diagnostics_lines`. A note for the queue's members alone
-(a person's release of a claim) carries `triage_only: true`: a reporter's
-view of the report leaves it out, and the reporter's badge does not count
-it.
+(a person's release of a claim, or what a run wrote that its reporter does
+not read) carries `triage_only: true`: a reporter's view of the report leaves
+it out, and the reporter's badge does not count it.
+
+A ClaxBot run's replies, finish summary, give-up reason and stop notices on a
+report are comments its reporter reads until it proposes: a confidential run's
+are always such notes. From a `clax.change.propose` whose change may be out to
+the end of the run they are notes too, whatever the preview does and whether or
+not the report could take the fix, and so are those of any run while a run's
+fix is `pending`. A call refused before it began leaves nothing, and one begun
+leaves nothing only if the same attempt of its step answered `change_refused`:
+any other failure, a refusal met on coming back to the call, and a call with no
+answer all count as a change out. The one exception is a run woken by a reporter's reply
+(`wake_on_reply`) to a fix that is not `held`, whose answer the reporter reads.
+A reply so kept answers `{comment_id, members_only: true}`, and its script's
+`tool_result` carries `reply_note`, in fixed words. A reply to a `held` fix is
+acknowledged in fixed words even with `wake_on_reply`.
 
 | Field | Triage | The reporter that filed it | Another reporter (`reporters_see: all`) |
 |---|---|---|---|
@@ -4438,7 +4459,7 @@ it.
 | `metadata` (the host app's) | yes | yes | `null` |
 | `metadata_version` | yes | yes | `0` |
 | `artifact.metadata`, `artifact.metadata_version` (the page artifact's) | yes | yes | `null`, `0` |
-| `reporter_profile` | yes | absent | absent |
+| `reporter_profile`, `fixes[].preview_url`, `fixes[].preview_missed` | yes | absent | absent |
 | diagnostics (`…/diagnostics`) | yes | yes | 404 `not_found` |
 | `anchor`, `comments`, `fixes` (but their `verdict_context`) | yes | yes | yes |
 
@@ -4486,6 +4507,11 @@ most 256 bytes, `avatar_url` an http(s) URL; any other key or type is 400
 `invalid_profile`. It is the minting backend's assertion, kept with each
 report filed under the token, and shown to triage members, never to
 reporters.
+
+**Public notice.** A queue's `public_notice` (`PATCH /api/queues/<qid>
+{public_notice}`, an admin's, false until set; in each `Queue`) says that what
+a reporter writes may appear in a public pull request. The overlay's composer
+then says so.
 
 **Origins.** A queue's `origins` (`POST /api/queues`, `PATCH
 /api/queues/<qid>`, at most 32) are exact origins and origin patterns. An
@@ -4573,7 +4599,7 @@ reporter routes' tests fail on a refusal whose code it lacks.
 | `POST …/reporter/reports/<tid>/reopen` | multipart `body`, `clip?`, `diagnostics?`, `context?` | `{report}`, `open` with `reopen_count` one more and a waiting fix `rejected`; 409 `not_fix_proposed` for an `open` or `claimed` report |
 | `GET …/reporter/reports/<tid>/diagnostics?capture=` | | `{lines}` of a report it filed (404 `not_found` for another reporter's, `reporters_see: all` or not): capture `capture`'s, else the latest capture's that has any; `[]` for none; 400 `invalid_query` for a `capture` that is not a number, or another query |
 | `POST …/reporter/reports/<tid>/seen` | | 204: comments before now leave the badge |
-| `GET /api/queues/<qid>/reporter/badge` | | `{waiting, report_ids}`: its reports with a fix waiting for its verdict or a comment not its own since it last read them, oldest first |
+| `GET /api/queues/<qid>/reporter/badge` | | `{waiting, report_ids, public_notice}`: its reports with a fix waiting for its verdict or a comment not its own since it last read them, oldest first, and the queue's `public_notice` |
 
 Triage routes (a queue member, or a member's agent as "Report queue
 tools" says; 404 `not_a_member` otherwise):
@@ -4581,7 +4607,7 @@ tools" says; 404 `not_a_member` otherwise):
 | Route | Body | Answer |
 |---|---|---|
 | `GET /api/queues/<qid>/reports?state=&order=&cursor=` | | `{reports, next}`; `state` one of the five states or `active`; 400 `invalid_state` for another; `order` `oldest` (the default: in order of arrival) or `newest` (the latest filed first, each page after `cursor` holding the ones filed before it); 400 `invalid_query` for another |
-| `POST …/reports/<tid>/fix` | `{summary, url?, commit?, release?, verify_url?, verify_after?, fence?}` | `{report}`, `fix_proposed`: the summary is posted as the writer's comment, the lease ends (`queue.release`, reason `fix_proposed`); an agent needs its live lease, a person none; 400 `invalid_fix` (blank summary, summary over 4 KiB, a `url` or `verify_url` not http(s) or over 2048 bytes, `commit`, `release` or `verify_after` over 256 bytes); 409 `not_claimable` for a `verified` or `resolved` report |
+| `POST …/reports/<tid>/fix` | `{summary, url?, commit?, release?, verify_url?, verify_after?, fence?}` | `{report}`, `fix_proposed`: the summary is posted as the writer's comment, the lease ends (`queue.release`, reason `fix_proposed`); an agent needs its live lease, a person none; 400 `invalid_fix` (blank summary, summary over 4 KiB, a `url` or `verify_url` not http(s) or over 2048 bytes, `commit`, `release` or `verify_after` over 256 bytes); 400 `verify_url_required` for a fix with no `verify_url` in place of a held one, whose reporter would have nothing to check, unless it is a ClaxBot run's that is held itself; 409 `not_claimable` for a `verified` or `resolved` report |
 | `POST …/reports/<tid>/verify` | `{note?}` | `{report}`, `verified`, on the reporter's behalf and recorded as the person's; a person's alone (403 `not_for_agents`); 409 `not_fix_proposed` |
 | `POST …/reports/<tid>/reopen` | `{body}` | `{report}`, `open`, as the reporter's reopen; a person's alone (403 `not_for_agents`); 409 `not_fix_proposed` |
 | `POST …/reports/<tid>/resolve` | `{reason?}` (default `other`) | `{report}`, `resolved` with `resolve_reason`; 400 `invalid_args` for another reason |
@@ -4591,6 +4617,259 @@ tools" says; 404 `not_a_member` otherwise):
 | `POST …/reports/<tid>/release` | `{note?}` (a person's; an agent's body is not read) | `{report}`, `open`. An agent releases its own live lease (409 `claim_required`, `lease_lost` or `thread_taken` otherwise; `queue.release`, reason `explicit`). A person (not an agent) ends the report's live lease whoever holds it: the lease ends at once under its fence, so its holder's next `…/renew`, write or `…/fix` is 409 `lease_lost` (a new claim takes a larger fence); `note`, or `Released the claim: the report is open again.`, is posted as the person's comment with `triage_only`; the holder's session is woken (`queue_event` `released`, below); recorded as `queue.release` with reason `person` and the person as its actor; a person's answer is `{report, released}`, `released` true. A report no live lease holds (its claim lapsed, or was released already) is answered as it is with `released: false`, and nothing is written, journaled or woken. 400 `invalid_args` for another body |
 | `POST /api/queues/<qid>/watch` | | 204: the agent's session watches the queue until it unwatches it, ends, or its person leaves the queue (watching again changes nothing); 400 `no_session` without a session |
 | `DELETE /api/queues/<qid>/watch` | | 204: the session no longer watches it (one that did not is fine); it removes only the caller's own watch and needs no membership; 400 `no_session` without a session |
+
+**A queue's notifiers.** A queue admin may have people told when a report
+needs them, through a route any product can use. Zulip is the first kind.
+Agents, service grants and reporters reach none of these routes; a non-member
+gets 404 `not_a_member`, a triage member 403 `not_queue_admin`, the owner by
+hand acts as in their browser.
+
+| Route | Body | Answer |
+|---|---|---|
+| `GET /api/queues/<qid>/notifiers/zulip` | | `{notifier}`, null with none: `{kind, rev, site, bot_email, stream, people, api_key, last_ok_at, last_failure, last_failure_at, direct_failure, direct_failure_at, pending, expired, set_by, set_at}` |
+| `PUT /api/queues/<qid>/notifiers/zulip` | `{site, bot_email, stream, api_key?, people?, if_rev?}` | the same; 400 `notifier_changed`, `invalid_site`, `invalid_bot_email`, `invalid_stream`, `invalid_people`, `invalid_key`, `api_key_required`; 503 `no_kek` |
+| `DELETE /api/queues/<qid>/notifiers/zulip` | `{if_rev}` | 204: the notifier, its key and its unsent notices are gone (none is fine); 400 `notifier_changed`; deleting the queue does the same |
+| `POST /api/queues/<qid>/notifiers/zulip/test` | `{if_rev}` | the same as `GET`, a test message having gone to the stream, by the saved settings; no direct message is tried. 400 `no_notifier`, `notifier_changed`; 429 `test_too_soon`, within 30 seconds of the queue's last, unless the notifier was saved since; 502 `notifier_failed`, its message the fixed words `last_failure` shows; 503 `no_kek` |
+
+Each change is recorded as `queue.update {queue_id, op: "notifier", kind, ...}`:
+`site, bot_email, stream, people` (a count) for a `PUT`, `removed` for a
+`DELETE`, `test` for a test message, and the key as `admin.key`.
+
+`api_key` is sealed and write-only: an answer has `{set, last4, set_at, set_by,
+last_ok_at, host, problem}`, and no answer, audit record or log has the key.
+Left out, a `PUT` keeps the key set, unless the site's origin (its scheme, host
+and port) changes: 400 `api_key_required`, so nobody who cannot read a key can
+send it somewhere new. `people` maps a GitHub login, compared lowercase, to a
+Zulip email. `stream` is a name, and an all-digit one is refused, since Zulip's
+`to` takes a name or an ID and does not say which that is. `site` is a place the
+host contacts, held to a repository link's rule: `https://` to a public DNS name
+with no user name, password, query or fragment. Only the owner, and only on a
+local daemon, may also set `https://` to any host, a private name or address
+among them, or `http://` on loopback; another admin saving the form keeps the
+owner's address and its rule. That rule is held again at every use and
+every save, by the instance's policy of the moment: once a home is hosted a site
+it no longer allows is refused, `last_failure` says so, and nothing is sent. A
+site the owner of a local daemon did not set is reached at public addresses
+alone. No redirect is followed. `rev` is new at each change; `if_rev` is null or
+left out for no notifier.
+
+An event is written in the transaction of the change it tells of, once per
+notifier, fix, event and link: `fix_to_check` when a fix carries a `verify_url`
+and is not held, whoever proposed it, and again if that link changes; `fix_held` when a held fix needs a
+person, which is at once for a confidential run's or on a link with
+`reviewed_previews` or for a fix whose target names what a person does to deploy
+its preview, and otherwise when its preview is up with no person having let it out;
+`fix_wait_ended` when the wait for a held fix's preview ends with none seen, whether or
+not `fix_held` was written; `fix_rejected` when a reopen rejects a fix. A queue
+with no notifier writes none, and `fix_held` and `fix_wait_ended` go only to a
+notifier first set by the fix's proposal, a later save of it counting for nothing.
+A failed message is tried again after a minute, doubling to an hour, or after
+what a 429's `Retry-After` asks within that hour, for a week; then it counts in
+`expired`. Saving the notifier tries what waits at once. A notice whose fix has
+moved on, or whose link changed, is dropped unsent, as is a `fix_held` whose wait
+has ended, which `fix_wait_ended` tells instead. A notice sent or dropped is
+kept a month. `fix_rejected` is sent whatever the fix's state has become.
+
+Only a 401, a 403, a 429, a 5xx, a 3xx or no answer says the site is down, and
+ends that queue's turn for the pass. Any other failure, a 400 or a 200 with
+`result: error` among them, fails that one message. A direct message so refused
+falls back to the stream's message, and the notice counts as sent; to a site
+that is down it waits. One pass takes each queue's oldest notice before any
+queue's second. `last_failure` is what failed on the stream, and
+`direct_failure` what failed in a direct message, each until a message of that
+kind goes or the notifier is saved, so a stream that works hides no failing
+direct message. Both are in fixed words, and a server's answer is never kept.
+Each also tells of a link no message can carry, one with a user name or password
+or a host of anything but letters, digits and `- . _`: `direct_failure` when a
+fix's link cost its mapped reporter the direct message, and the stream's message
+went in its place, and `last_failure` when a held fix's message went without its
+pull request. A message whose answer was lost is sent again, since Zulip's API
+has no idempotency key. Direct messages use `type=direct`, which needs Zulip 7.0
+(feature level 174); an older server refuses it, and the stream is told instead.
+`docs/feedback.md` says what each message holds.
+
+**A queue's repository.** A queue admin links a queue to a repository, so
+ClaxBot can work its reports there. It is the route a person has; the
+operator's route, `<home>/workspace.toml`, stays, and for a queue the file names
+that target is what runs. A link is looked up per run, on the runtime of that
+file, so a daemon with no file leaves every link dormant. A link's fields mean what
+a workspace target's do, but for `container_repo_url`, which a link does not
+have: a container clones from `repo_url`. Agents, service grants and reporters
+reach none of these routes; a non-member gets 404 `not_a_member`, a triage
+member 403 `not_queue_admin`, the owner by hand acts as in their browser.
+
+| Route | Body | Answer |
+|---|---|---|
+| `GET /api/queues/<qid>/repo` | | `{repo, app, runtime}` |
+| `PUT /api/queues/<qid>/repo` | `{repo, preview_url, access, if_rev?, base?, repo_url?, forge_api_url?, protected_paths?, preview_ready_path?, preview_names_commit?, preview_timeout_secs?, preview_poll_secs?, public?, allow_open_egress?, reviewed_previews?, wake_on_reply?, ci_accepted?}` | the same; 400 `link_changed` |
+| `DELETE /api/queues/<qid>/repo` | `{if_rev}` | 204: the link and its tokens are gone (no link is fine); 400 `link_changed`; deleting the queue does the same |
+| `PUT /api/queues/<qid>/repo/tokens/<read\|write>` | `{token, if_rev}` | the same; 400 `no_repo_link`, `link_changed`, `wrong_access` for an App link, `invalid_key`, `same_token`; 503 `no_kek` |
+| `DELETE /api/queues/<qid>/repo/tokens/<read\|write>` | | the same |
+| `GET /api/admin/repos` | | `{app, links, token_approval, kek: {set}, runtime}`, the owner's alone |
+| `PUT /api/admin/repos/app` | `{app_id, slug, api_url?, private_key?}` | the same; 400 `invalid_app`, `invalid_forge_url`, `invalid_app_key`; 503 `no_kek` |
+| `DELETE /api/admin/repos/app` | | 204: the App and its key are gone and every App approval void; links stay, `needs_app` |
+| `PUT /api/admin/repos/policy` | `{token_approval}` | the same as `GET` |
+| `PUT /api/admin/repos/links/<qid>` | `{rev, approved}` | 204; 400 `no_repo_link`, `link_changed`, `no_github_app` |
+| `DELETE /api/admin/repos/links/<qid>` | | 204: the link and its tokens are gone, on any queue (no link is fine) |
+
+`repo` in an answer is `null` or the link: its fields, with `repo_url` and
+`forge_api_url` as in effect; `rev`; `set_by` `{id, name}`, `set_at`;
+`last_ok_at`, when a workspace last reached the repository through this link,
+`null` until one has and again after a new write token, App key or address: the
+App's own lookup and another queue's success on the same App are not this
+link's; `last_failure`, fixed words of what
+failed the last time a workspace used it, and `last_failure_at`, both `null` once
+something has worked, the link has changed or a token was set or cleared; `status`, the first of
+what it still needs: `needs_token`
+(no write token), `needs_read_token` (a link that is not `public`, on tokens, with no read
+token), `needs_app` (the instance has no App with a key), `needs_ci_acceptance`
+(a link that is not `public` with `ci_accepted` false) or
+`needs_approval`, else `ready`; and `access`, either `{kind: "token", read_token,
+write_token, approved, approved_by, approved_at}`, each token a `key_info`, or
+`{kind: "github_app", installation_id, account, approved, approved_by, approved_at}`,
+`account` the one the forge named as holding the installation.
+`ready` says the details are complete, not that anything has connected. `app`
+is `{configured, install_url, forge_api_url}`. `runtime` is `{configured,
+third_party, egress_held, failed, operator_only}`, as the daemon booted, read from the
+workspace it built and from no file: whether it has a workspace, whether someone
+else runs its containers, so that private source leaves the instance's own
+machines, whether an allow-list holds their egress, and whether a workspace
+that is set up could not be built, in which case nothing runs and `configured` and
+`third_party` are both `true`. `operator_only` says it runs its operator's targets
+and no link, however complete. The queue routes add `operator_target`: the
+operator's file names this queue, and a link on it is not what runs.
+
+A hosted Worker has a workspace only with a workspace service
+(`crates/clax-worker/README.md`). The service holds no store, so it serves its
+operator's `workspace.toml` alone: `configured`, `third_party` and
+`operator_only` are all `true`, `egress_held` is `false` since the Worker cannot
+tell, and a link made there stays dormant. `operator_target` goes by the service's
+last answer as the instance started. Without a service `configured` is `false`, and
+with its settings half made or an address that is no service's, `failed` is `true`.
+
+Each of `links` is `{queue_id, queue_name, repo, repo_url, forge_api_url,
+access, installation_id, account, status, approved, approvable, public,
+allow_open_egress, reviewed_previews, wake_on_reply, preview_url,
+preview_ready_path, protected_paths, ci_accepted, rev, maker, admins,
+set_by, set_at}`, `access` `token` or `github_app`, `maker` and each of
+`admins` `{id, name}`, and `approvable` whether an approval decides anything
+for it. Those waiting for approval come first.
+
+Fields, as a workspace target's: `repo` is `owner/name`; `base` a branch,
+`main` by default; `repo_url` where the host pushes and a container clones,
+GitHub's address of `repo` by default; `forge_api_url`,
+`https://api.github.com` by default; `protected_paths`, on top of the
+workspace's, a relative file or a directory ending in `/`, at most 64;
+`preview_url` a URL naming `{pr}`; `preview_ready_path`, `/healthz` by
+default, fetched there; `preview_names_commit`, `true` by default, whether its
+answer must name the commit; `preview_timeout_secs`, 1200 by default, at most
+a day; `preview_poll_secs`, 10 by default, at most the timeout. `access` is
+`{kind: "token"}` or `{kind: "github_app"}`, and anything more in it is refused:
+the daemon asks the App's forge, with the App's JWT, which installation holds
+`repo`, and keeps the account it names. 400 `no_github_app` with no App and key,
+`invalid_app_key` for a key that cannot sign, `app_not_installed` naming where to
+install it; 502 `forge_error` when the forge gives no answer. That answers any
+queue admin whether the App is on a repository they name. On a forge whose
+paths Clax knows, GitHub or the App's, a `repo_url` that is not `repo`'s
+address is refused 400 `repo_url_mismatch`, and a `repo_url` off github.com
+with no `forge_api_url` 400 `forge_required`, so a token set for another forge
+does not go to GitHub's by default. Hosts compare without a last `.`.
+
+A link is confidential unless its admin sets `public`, all of these `false` by
+default and recorded: `public`, that the repository may be shown to anyone;
+`allow_open_egress`, that a confidential link may run where no allow-list holds
+egress; `reviewed_previews`, that each deploy needs a person's approval of the
+commit; `wake_on_reply`, that a reporter's plain reply to a waiting fix starts a
+run; `ci_accepted`, that the repository's CI may run ClaxBot's branch, with that
+CI's secrets and network, before anyone reviews it. The workspace treats a link
+that is not `public` as confidential, and a confidential link does not open,
+`egress_open`, unless the runtime holds egress to an allow-list or
+`allow_open_egress` is set. Clax cannot see what a repository's CI runs, so a
+confidential link is `needs_ci_acceptance` until a queue admin sets `ci_accepted`,
+whoever approved it, the owner's own link included. `ci_accepted` is said of one
+repository: a change to `repo`, `repo_url`, `forge_api_url` or the installation
+stores it `false` whatever the body says, and the answer shows that.
+
+A change to `repo`, `repo_url`, `forge_api_url` or the installation voids an
+approval, and so does anyone but the owner changing `public`,
+`allow_open_egress`, `reviewed_previews`, `wake_on_reply`, `preview_url`,
+`preview_ready_path`, `protected_paths` or `ci_accepted`, in either direction.
+The owner's own new
+link, and the owner's change of where a link goes, approve it; the owner's change
+to anything else keeps an approval as it was. An approval says where a link goes,
+not whose token goes there: setting a token changes no `rev` and voids nothing,
+since a token reaches only the addresses the owner read, and is recorded as
+`admin.key`.
+
+Every link has a `rev`, new at each change, and a write names the one it was
+made from: `if_rev` (null or left out for no link) on `PUT …/repo`, required
+on a token and on `DELETE …/repo`. A link that has moved on answers 400 `link_changed` and nothing is
+written, so two admins cannot undo each other by accident and nobody seals a
+token to an address they did not see. A link removed and made again has
+another `rev`. An approval names the `rev` the owner read in the same way.
+
+Each URL is a place the host contacts, so each is refused, 400
+`invalid_repo_url`, `invalid_forge_url` or `invalid_preview_url`, unless it
+is `https://` to a public DNS name with no user name, password, query or
+fragment, and does not start with `-`. An IP literal, `localhost` and names
+under `.local`, `.internal` and the like are private and refused (the rule
+`hosted_base_url_ok` states). Only the owner of a local daemon gets that
+daemon's looser rule (`https://` anywhere, `http://` on loopback): anyone else
+there would have the daemon make requests for them. Addresses a save leaves as
+they were answer to the rule of who set them, so an admin may save the rest of
+a form holding the owner's loopback URL; changing any one holds all of them to
+the caller's rule. The same rule is applied again when the workspace reads the
+link, and a refusal never repeats the value. A name that resolves to a private
+address passes here, and is the connecting client's to refuse: unless the owner
+of a local daemon set it, the workspace's forge and preview clients connect only
+to public addresses and follow no redirect, and host-side `git` is pinned to an
+answer it resolved and checked first, each command anew. A container's clone is
+the runtime's network's, not the daemon's, and its egress is what holds it. `base`, `repo`,
+`preview_ready_path` and each protected path are likewise refused (`invalid_base`,
+`invalid_repo`, `invalid_ready_path`, `invalid_protected_path`) when a command
+could take them for an option or they could leave their place; timings
+`invalid_preview_timing`; an installation ID of 0 `invalid_installation`.
+
+Credentials are write-only: no answer, audit record or log carries one, only
+a `key_info`. A token is at least 20 characters. The read and write tokens are
+separate: the read token crosses into a container for its clone, the write
+token stays on the host, and the same value in both is refused 400
+`same_token`, either way round. Each is sealed in its queue's own slot, and a
+sealed value copied into another queue's slot does not open. A token is bound
+to the link it was set on, and to the origins of both its `repo_url` and its
+`forge_api_url`: changing `repo`, `repo_url` or `forge_api_url`
+clears both in that same change, so an admin who cannot read a token cannot
+redirect it, and the `op: repo` record says `tokens_cleared`. Other changes
+keep them. After the key-encryption key changes, a stored token does not open;
+setting either one succeeds all the same, and the workspace is refused
+`kek_mismatch` until both are set again. A token never opens through a model
+key's path; `Store::open_queue_repo`, which no route calls, is the one read, per
+run, so a token cleared during a run is not taken back from it.
+
+GitHub App access goes to the instance's forge and no other. Such a link
+stores neither URL: both follow the App's `api_url` at every use, and a body
+naming any other is refused 400 `forge_not_instance`; with no App, 400
+`no_github_app`. The App's key reaches every installation, and that the forge
+knows an installation proves nothing about who asked, so an App link is usable
+only once the owner has approved it, reading the account the forge named. A token link needs the same while `token_approval` is
+on: until the owner says otherwise, that is any instance but a local daemon.
+The owner's own new link is approved as it is made, and so is a link whose
+repository, URLs or installation the owner changes; any other save by anyone
+leaves approval as it was, and anyone else's change to those voids it. The
+owner's routes are the owner's alone, not an admin's: 403 `owner_only` for an
+admin, `forbidden` for a member. A first App, or one moved to another forge or
+ID, clears any key unless a new one comes with it and voids every App
+approval, each voided link recorded as `queue.update {op: repo_approval,
+approved: false}`, given a new `rev`, and their number kept as `approvals_voided`
+on the `admin.provider` record; removing the App does the same; token links' approvals stay.
+`key_info.last4` of the App's key is the start of its SHA-256, since every PEM
+document ends alike.
+
+The owner sees every link, whoever made it, since any connected person can
+make a queue and link it; they may disconnect any, a member of its queue or
+not. Revoking a person removes the link, and its tokens, from each queue that
+leaves with no live admin: nobody else could reach it, and it would go on
+working (`queue.update {op: repo_clear, reason: no_live_admin}`).
 
 **Queue wakes.** A report filed into a queue, and a report reopened (by
 its reporter, or by triage on their behalf), wakes every live session
@@ -4653,8 +4932,8 @@ An undelivered wake of a session that ends is deleted, never handed to
 another session: the report waits in its queue.
 
 Error codes besides the common ones: `invalid_context`,
-`invalid_diagnostics`, `invalid_profile`, `invalid_fix` (400);
-`not_fix_proposed`, `not_claimable`, `lease_lost` (409).
+`invalid_diagnostics`, `invalid_profile`, `invalid_fix`,
+`verify_url_required` (400); `not_fix_proposed`, `not_claimable`, `lease_lost` (409).
 
 **The instance's own feedback queue.** An instance files its people's
 reports about Clax itself into one of its queues, as an integrating
@@ -4679,7 +4958,7 @@ owner and each connected person who is not revoked; agents 403
 | Route | Body | Answer |
 |---|---|---|
 | `POST /_app/feedback/token` (same origin) | `{public_key}` (Ed25519, unpadded base64url) | `{token, expires_at}`: a reporter token for `reporter_id` = the person's public ID, the integration's origin and that key, with profile `{name?, github?}` from their GitHub account (`name` their Clax name without one); 404 `not_found` with the integration off; 401 without a credential; 403 `not_a_person` for a viewer; 400 as the public route answers the key (`invalid_key`, or `invalid_args` naming `public_key`); 429 `limit_reached` as it answers one, with its `Retry-After`; 503 `feedback_unavailable` for any other refusal of the public route, which is the integration's own (a revoked grant, an origin the queue no longer lists) and names no credential |
-| `GET /_app/feedback/config` | | `{enabled: true, instance, queue, user, context: {release: {version, commit?, id?, channel}, flags, app: {repo}}}` for a caller who may file: `instance` the instance's base URL to file to, `queue` its ID, `user` the caller's public ID (the reporter ID its tokens carry, and the overlay's `user`, which keeps its reporter key and token per person), `context` what the shell attaches to each report (`release` as `/healthz` reports it, `id` its `build`, `channel` `prod` on `https://clax.dev` and `dev` elsewhere; `flags` the caller's own, as `GET /api/me/flags`; `app.repo` `https://github.com/empathic/clax`); for anyone else, the integration off included, `{enabled: false, instance: null, queue: null, context: null}` |
+| `GET /_app/feedback/config` | | `{enabled: true, instance, queue, user, public_notice, context: {release: {version, commit?, id?, channel}, flags, app: {repo}}}` for a caller who may file: `instance` the instance's base URL to file to, `queue` its ID, `user` the caller's public ID (the reporter ID its tokens carry, and the overlay's `user`, which keeps its reporter key and token per person), `public_notice` the queue's, `context` what the shell attaches to each report (`release` as `/healthz` reports it, `id` its `build`, `channel` `prod` on `https://clax.dev` and `dev` elsewhere; `flags` the caller's own, as `GET /api/me/flags`; `app.repo` `https://github.com/empathic/clax`); for anyone else, the integration off included, `{enabled: false, instance: null, queue: null, context: null}` |
 
 A report is read and written through its queue alone. The thread listings
 (`GET /api/artifacts/<id>/threads`, `GET /api/threads`, `comments_read`
@@ -6444,6 +6723,12 @@ router), and a test fails when it differs:
 | `PUT /api/admin/provider/key` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/admin/provider/models` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/admin/provider/test` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/admin/repos` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/admin/repos/app` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/admin/repos/app` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/admin/repos/links/{qid}` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/admin/repos/links/{qid}` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/admin/repos/policy` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/admin/shutdown` | Denied | no |
 | `GET /api/admin/usage` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/admin/web` | Denied | yes: 403 `not_for_agents` |
@@ -6592,6 +6877,15 @@ router), and a test fails when it differs:
 | `GET /api/queues/{qid}/members` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/queues/{qid}/members/{public_id}` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/queues/{qid}/members/{public_id}` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/queues/{qid}/notifiers/zulip` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/queues/{qid}/notifiers/zulip` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/queues/{qid}/notifiers/zulip` | Denied | yes: 403 `not_for_agents` |
+| `POST /api/queues/{qid}/notifiers/zulip/test` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/queues/{qid}/repo` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/queues/{qid}/repo` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/queues/{qid}/repo` | Denied | yes: 403 `not_for_agents` |
+| `DELETE /api/queues/{qid}/repo/tokens/{which}` | Denied | yes: 403 `not_for_agents` |
+| `PUT /api/queues/{qid}/repo/tokens/{which}` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/queues/{qid}/reports/{tid}/reopen` | Denied | yes: 403 `not_for_agents` |
 | `POST /api/queues/{qid}/reports/{tid}/verify` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/queues/{qid}/service-grants` | Denied | yes: 403 `not_for_agents` |
@@ -9523,14 +9817,14 @@ the body below.
 | `bot.run_end` | `run, outcome (finished\|gave_up\|stopped), reason, credits_milli` (the run's total) | a run's terminal step committed |
 | `bot.cancel` | `run, by` (the person key of who asked) | someone asked a queued or running run to stop |
 | `view.run` | `run` | someone opened a run's panel |
-| `view.admin` | `page, subject_person?` | an admin page opened |
+| `view.admin` | `page, subject_person?, queue_id?` | an admin page opened, or a queue's repository link read (`page: queue_repo`) |
 | `view.audit` | `filters` | the audit view opened or filtered |
 | `view.usage` | `subject_person, week?` | a usage page opened |
 | `admin.role` | `person, role (admin), op (grant\|remove)` | the owner granted or removed admin |
 | `admin.flag` | `person, flag (claxbot\|claxbot_unenforced), value` | a flag changed |
 | `admin.credits` | `person, lift_from, lift_to, reason` | a person's weekly lift changed |
 | `admin.provider` | `fields[]` (the setting keys that changed), `values{key: value}` (their new values; none is a secret) | ClaxBot's provider, models or caps changed |
-| `admin.key` | `scope (instance\|own), op (set\|clear\|use_own), last4, person?` (an own key's person), `value` (with `use_own`: whether the key is now in use) | a model key set or cleared, or an own key put in or out of use; never the key |
+| `admin.key` | `scope (instance\|own\|cloudflare\|repo_read\|repo_write\|github_app\|notifier_zulip), op (set\|clear\|use_own), last4, person?, queue_id?` (an own key's person; a repository token's queue), `value` (with `use_own`: whether the key is now in use) | a model key set or cleared, or an own key put in or out of use; never the key |
 | `admin.cost_line` | `line, op (create\|update\|delete), fields{label?, unit?, cost_micro_usd?, margin_bp?, fixed_credits_milli?, applies?, source?, model?}`; `line` `*instance` with `fields{credit_price_micro_usd?, free_weekly_milli?}` for the price and free tier | a cost line or the instance's pricing changed |
 
 A system actor's event about someone names them in `body.for_actor`.
@@ -10056,6 +10350,8 @@ handle, `*system` as "Clax".
 | `PUT /api/admin/people/<person>/role {role}` | the owner alone (403 `owner_only`); the owner's own role 400 `owner_role` | `admin.role` |
 | `GET`/`PUT /api/admin/provider`, `PUT`/`DELETE …/key`, `POST …/test`, `GET …/models` | admins | `view.admin {page: provider\|provider.test\|provider.models}`, `admin.provider`, `admin.key` (scope `instance`) |
 | `GET`/`PUT /api/admin/web`, `PUT`/`DELETE /api/admin/web/token`; the answer's `configured` is `{search, fetch}`, which operations the host's source can perform now (the Worker: both; a daemon: fetch always, search once a Cloudflare account ID and token are set); `unavailable` is null, or the reason web use is off whatever the credentials, with both of `configured` false: the instance's configured public origin or site domain names no host, so it could not refuse a fetch of its own hosts (the reason quotes the value, and holds for the life of the process), or the host found its source cannot run where it runs (a Worker whose AI binding throws under `wrangler dev --local`); the first holds over the second; `checking` is true while the host's check of its source is still running (the Worker waits for it at most 2 s before answering) | admins | `view.admin {page: web}`, `admin.provider`, `admin.key` (scope `cloudflare`) |
+| `GET /api/admin/repos`, `PUT`/`DELETE …/app`, `PUT …/policy`, `PUT`/`DELETE …/links/<qid>` | the owner alone (403 `owner_only`; 403 `forbidden` for a member) | `view.admin {page: repos}`, `admin.provider` (`fields: ["github_app"]`, `approvals_voided`; `fields: ["token_approval"]`, `values`, `links_released`, how many token links turning it off lets run), `admin.key` (scope `github_app`), `queue.update` (`op: repo_approval`, `repo_clear`) |
+| `GET /api/queues/<qid>/repo`, `PUT`/`DELETE` the same, `PUT`/`DELETE …/tokens/<read\|write>` | the queue's admins ("A queue's repository") | `view.admin {page: queue_repo, queue_id}`, `queue.update` (`op: repo`, with `fields`, what changed, and every field's value; `repo_clear`), `admin.key` (scope `repo_read`, `repo_write`, with `queue_id`) |
 | `GET`/`PUT /api/admin/pricing`, `POST`/`DELETE …/models`, `POST …/tokenulator`, `GET /api/admin/usage?week=` | admins | `view.admin {page: pricing\|usage}`, `admin.cost_line` |
 | `POST /api/admin/pricing/catalog/refresh` | admins | — (it replaces the cached public price catalog alone) |
 | `GET /api/audit?…`, `GET /api/audit/<seq>` | admins every event (on a hosted Clax every event but those naming an artifact out of their own reach), anyone else their scope (Toolpath journal, "Kinds"); a live page's events the owner's alone | `view.audit {filters}` |

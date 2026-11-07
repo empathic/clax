@@ -1667,7 +1667,9 @@ impl Store {
     /// owner), their unused invites are revoked, and `person_revoked_at` is
     /// set. Their viewer row and authorship stay. Recorded under `ctx`: each
     /// grant's `grant.revoke`, each invite's `invite.revoke`, then
-    /// `person.revoke` (once).
+    /// `person.revoke` (once). A queue they leave with no live admin loses
+    /// its repository link and tokens, which nobody else could reach
+    /// (`queue.update {op: repo_clear, reason: no_live_admin}`).
     ///
     /// # Errors
     /// `not_a_person` for the owner or a viewer who is not a person;
@@ -1723,6 +1725,7 @@ impl Store {
                 "UPDATE viewers SET person_revoked_at = ?2 WHERE id = ?1 AND person_revoked_at IS NULL",
                 params![id, now],
             )?;
+            crate::queue_repos::remove_orphans_in(self, tx, ctx, public_id)?;
             // A GitHub account's person revoked: the account is blocked.
             super::github::block_in(tx, &id, &now)?;
             if n > 0 {

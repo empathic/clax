@@ -9,7 +9,7 @@ from GitHub Actions:
 |---|---|---|---|---|---|
 | `prod` | `clax` | `clax.dev`, `<ID>.clax.run` | Artifacts (bucket `clax-assets`, queue `clax-artifacts-events`, namespace `clax`) | every push to `prod` (`deploy-prod.yml`, [docs/prod.md](prod.md)) | `production` |
 | `dev` | `clax-dev` | `dev.PREVIEW_HOST_ZONE`, `<ID>.dev.PREVIEW_SITE_ZONE` | Artifacts (bucket `clax-assets-dev`, queue `clax-artifacts-events-dev`, namespace `clax-dev`) | every push to `main` whose `ci` run passes (`deploy-dev.yml`) | `preview` |
-| `pr-<N>` | `clax-pr-<N>` | `pr-<N>.PREVIEW_HOST_ZONE`, `<ID>.pr-<N>.PREVIEW_SITE_ZONE` | Artifacts (queue `clax-artifacts-events-pr-<N>`, namespace `clax-pr-<N>`), assets in the shared bucket `clax-assets-preview` | every push to a pull request from a branch of this repository, except a release pull request into `prod` (`preview.yml`) | `preview` |
+| `pr-<N>` | `clax-pr-<N>` | `pr-<N>.PREVIEW_HOST_ZONE`, `<ID>.pr-<N>.PREVIEW_SITE_ZONE` | Artifacts (queue `clax-artifacts-events-pr-<N>`, namespace `clax-pr-<N>`), assets in the shared bucket `clax-assets-preview` | every push to a pull request from a branch of this repository, except a release pull request into `prod`, and of ClaxBot's only a commit a person names (`preview.yml`) | `preview` |
 | staging, `pr-<N>` | `clax-pr-<N>`, on prod's account | `pr-<N>.clax-staging.dev`, `<ID>.pr-<N>.clax-staging.run` | as a preview's, on prod's account | every push to a release branch whose pull request into `prod` is open (`staging.yml`, [docs/prod.md](prod.md), "Staging") | `staging` |
 
 The `clax-dev` Worker is the dev environment, not clax.dev; clax.dev is
@@ -102,7 +102,9 @@ path or the diagnostics; dev's smoke does, on every merge to `main`.
 Only writers' branches get previews: `preview.yml` deploys a pull request
 whose branch is in this repository, which only someone with write access
 can push. Pull requests from forks get no preview: their runs are not
-given the `preview` environment's secrets.
+given the `preview` environment's secrets. ClaxBot's branches are in this
+repository too, and deploy only commit by commit, on a person's command
+("Credentials", below).
 
 ## GitHub sign-in on every environment
 
@@ -125,19 +127,134 @@ path at or under its path, so the one App serves every
 and its client secret the environment's secret `OAUTH_CLIENT_SECRET`, which
 the workflows pass to the deploy as `GITHUB_CLIENT_SECRET`.
 
+The App's scope is what Clax asks for, not a limit on what a preview can ask
+for. `read:user` is written in `crates/clax-http/src/github.rs`, which a pull
+request may change, and a preview runs that pull request's code holding the
+App's client ID and secret. So a preview could ask GitHub for `repo`, and
+GitHub would show whoever signs in that request. Do not sign in to a preview
+with an account that administers anything, and read the consent page:
+`OWNER_GITHUB` in the `preview` environment should be an account with no rights
+on anything that matters. Anything the App's secret reaches, a preview's code
+reaches.
+
+## What runs where
+
+Each deploy of dev or a preview is two jobs on two runners. `build` runs the
+commit's code (package install scripts, `build.rs`) with no environment and no
+secret, and hands over one file, `worker.tar`. `deploy` holds the environment
+and runs no code of that build, with one exception below:
+`scripts/unpack-worker.py` takes only a Worker's files out of the archive, and
+wrangler uploads them. If Cloudflare refuses a script at startup (error 10021),
+wrangler profiles the bundle locally in workerd, beside the deploy's token.
+
+A preview's `deploy` checks out the default branch, so its scripts, its
+`wrangler.jsonc` and the lockfile wrangler comes from are all main's, and
+`--built-from` names the commit deployed. A pull request's change to any of
+those does not reach its own preview. The preview workflow itself still comes
+from the branch: that binds ClaxBot, which cannot change `.github/`, and not a
+writer. Neither job restores an Actions cache.
+
 ## Credentials
 
 A Cloudflare API token's Workers permissions are account-wide: one that
-can deploy `clax-pr-12` can also replace `clax`. A preview's run executes
-the pull request's own scripts with the `preview` environment's token, so
-anyone who can push a branch to this repository can use that token.
+can deploy `clax-pr-12` can also replace `clax`. A preview's `deploy` job holds
+the `preview` environment's token and runs the default branch's scripts, not
+the pull request's, but the job's own steps come from the branch's copy of
+`preview.yml`, so anyone who can push a branch to this repository and edit that
+file can use that token.
 
 Who can use the preview token is who has write access to this repository:
 only a writer can push the branch a preview runs, and pull requests from
 forks get no preview (their runs are not given the environment's
 secrets). A check on the pull request's author in `preview.yml` would
-bound nothing more, since a run takes `preview.yml` from the pull request
-itself.
+bound nothing more against a writer, since a run takes `preview.yml` from
+the pull request itself. The split into `build` and `deploy` keeps a branch's
+build scripts from the token; a writer who edits the workflow gets past it.
+
+ClaxBot is the one pusher that is not a person: a model steered by a
+reporter's text writes its branches, all under `claxbot/`, and nobody has
+read them when they are pushed. So a pull request from a `claxbot/` branch,
+or by the login in the repository variable `CLAXBOT_LOGIN`, deploys on none of
+its `pull_request` events. A person approves one commit with a comment, the
+command alone in it:
+
+```
+/preview <the head's full 40-character SHA>
+```
+
+- **The comment names the commit.** Read the pull request, then name the
+  head you read. The job `approve` refuses any SHA but the current head, so a
+  later push, ClaxBot's own second commit among them, deploys nothing until a
+  new comment names it.
+- **Only a person with write access, other than the author.** `approve`,
+  which has no environment, no secret and no checkout, fails unless the
+  comment's sender is a `User`, is not the pull request's author, and has
+  `write` or `admin` on this repository, so neither triage nor ClaxBot's own
+  token, which can comment, is enough. It also refuses a closed pull request,
+  a fork's, a release's, Dependabot's and one that deploys by itself, and any
+  API error. It asks GitHub's compare API what the head changes from the
+  default branch and refuses, with a comment, any path
+  `deploy/claxbot-workspace/clax.toml` refuses.
+- **The build runs on the branch, not in the comment's run.** A run's ref
+  sets its Actions cache scope, and a comment's run has the default branch's:
+  a build there would run the branch's code where it could poison what that
+  scope's runs restore (`native-check.yml`'s pnpm store; nothing that ships
+  restores a cache). So `approve` dispatches `preview.yml` on the head branch, with the
+  pull request and the SHA as inputs. GitHub names `workflow_dispatch` and
+  `repository_dispatch` as the events made with `GITHUB_TOKEN` that start a run.
+- **Only `approve` can start a deploy.** The jobs `dispatched`, `build` and
+  `deploy` each require `github.triggering_actor` to be `github-actions[bot]`, which no
+  person is: the only other jobs with `actions: write`, in `deploy-prod.yml`,
+  run from `prod` and dispatch other workflows,
+  and ClaxBot's App has no Actions permission. `dispatched` matches the inputs
+  against strict patterns, and requires the SHA to be the run's own commit and
+  the current head of an open pull request of this branch, so a push landing
+  in between refuses it. `deploy` uses only what that job outputs.
+- **To deploy again, comment again.** A dispatched run's rerun, whole or of
+  its failed jobs, deploys nothing: its triggering actor is then a person.
+  Rerunning the comment's run checks everything anew and dispatches again.
+- **`approve` is the default branch's; the rest is the branch's.** For
+  `issue_comment` GitHub runs `preview.yml` from the default branch, so no
+  branch can change `approve`, and the command works once it is on `main`.
+  The `pull_request` path and the dispatched run take the file from the
+  branch, as the paragraph before says, so a branch that could edit it could
+  deploy itself. ClaxBot's cannot: `.github/` is a protected path of every
+  target, and its App has no `workflows` permission, so GitHub refuses such a
+  push as well ([deploy/claxbot-workspace/README.md](../deploy/claxbot-workspace/README.md)).
+  A branch older than this gate has no `workflow_dispatch` trigger, and
+  `approve` fails on it until it is rebased.
+- **A refused command disturbs nothing.** Only an accepted dispatch's deploy
+  joins the pull request's concurrency group, so neither a refusal, any other
+  comment, nor a push to the branch cancels a deploy or a teardown. A comment's
+  run and a dispatched one show under Actions and not on the pull request: a
+  refusal is a failure there, and a success the preview's comment, which names
+  the commit.
+- **`CLAXBOT_LOGIN` is ClaxBot's App's login** (`<app-slug>[bot]`). The branch
+  prefix alone would miss a renamed branch, and every App's pull requests
+  cannot be gated, since the release carry's is an App's too
+  (`scripts/carry-release.sh`) and keeps its preview. **While the variable is
+  unset, a renamed ClaxBot branch drops the gate:** it takes the ordinary
+  path, and deploys on every push.
+- **Everything else deploys as before.** On a `pull_request` event no job is
+  added. Someone who re-branches a ClaxBot branch under another name and opens
+  the pull request themselves takes responsibility for it: it is theirs, and
+  deploys on every push.
+- **Teardown does not wait for an approval.** Closing a ClaxBot pull request
+  that never deployed still runs `teardown`, which holds the `preview`
+  secrets, but it runs only code from the default branch: it checks that out,
+  never the closed branch or its base, which a stacked pull request may have
+  on a `claxbot/` branch. A deploy that joins the group after a close can
+  cancel a teardown; a dispatched deploy checks for that before it builds,
+  and tears down in its place.
+- **An accepted risk.** The command is as good as the login that posts it: an
+  agent holding a writer's `gh` login can post `/preview` as that person,
+  and a person reviewing with an agent should keep that in mind.
+
+ClaxBot waits for a preview for its target's `preview_timeout_secs`, a day on
+Clax's, which sits in no run. The queue's notifier tells its people at the
+proposal what to post. The reporter hears nothing until the preview answers; if
+the wait ends first, the queue's members get a note saying so, and an approval
+that comes later deploys a preview nobody is told of.
 
 **So dev and the previews run on a Cloudflare account of their own**, with
 their zones on it, apart from clax.dev's: neither token can reach prod's
@@ -198,7 +315,46 @@ Cloudflare's docs.
    … --i-know-what-i-am-doing                                                               # act
    ```
 
+3. Name ClaxBot's App, for the gate on its pull requests ("Credentials"):
+
+   ```
+   gh variable set CLAXBOT_LOGIN --body '<app-slug>[bot]'
+   ```
+
 The next push to a pull request deploys its preview.
+
+### The ClaxBot gate's first run
+
+`preview.yml`'s gate has been checked against a model of GitHub, not GitHub.
+Its first run on a real ClaxBot pull request should confirm, and whatever fails
+fails closed unless marked:
+
+1. A dispatch made with `GITHUB_TOKEN` has `github.triggering_actor`
+   `github-actions[bot]`. GitHub's docs say such a dispatch starts a run but
+   name no actor for it; if it is another name, `dispatched` refuses every
+   deploy, and both tests in `preview.yml` need that name.
+2. The dispatched run's ref is the head branch and its caches are that
+   branch's, not the default branch's (open, not closed, if wrong).
+3. `approve`'s `pull-requests: write` and `contents: read` are enough for `GET
+   collaborators/<login>/permission`, `GET pulls/<N>`, `GET compare/…`, `GET
+   contents/…` and a comment, and `actions: write` for the dispatch, sent with
+   `gh api -f 'inputs[pr]=…'`.
+4. A comment by a person has `sender.type` `User`, and one from the App's
+   token `Bot`.
+5. `deploy` starts when the job it needs was skipped, at once, on an ordinary
+   pull request (a preview would be missing, not unsafe).
+6. Job-level `concurrency` reads `needs` and `vars`, and a close's teardown
+   cancels a running deploy.
+7. The `preview` environment gives the dispatched run its secrets.
+8. A person's rerun of a dispatched run has that person as
+   `github.triggering_actor`, so it deploys nothing (open, not closed, if
+   wrong: it would redeploy the approved commit).
+9. A close during a dispatched deploy tears the preview down, and the
+   preview's comment lands on the pull request from a dispatched run.
+10. A person's Run workflow button on `preview.yml` deploys nothing: `dispatched`
+    refuses it (open, not closed, if wrong).
+11. `CLAXBOT_LOGIN` is set: while it is unset, a renamed ClaxBot branch drops
+    the gate (open, not closed).
 
 ### dev
 

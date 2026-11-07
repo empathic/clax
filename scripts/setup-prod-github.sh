@@ -17,7 +17,7 @@
 # scripts/cloudflare-setup.sh keeps: setup.env (PUBLIC_HOST, SITE_DOMAIN,
 # STORE, GITHUB_CLIENT_ID, OWNER_GITHUB; nothing else in it is read) and the
 # deploy record <public host>.json (its `account` and
-# `retired_content_origin`), in $CLAX_DEPLOY_HOME, else
+# `retired_content_origin` and `workspace_*`), in $CLAX_DEPLOY_HOME, else
 # $XDG_CONFIG_HOME/clax/deploy, else ~/.config/clax/deploy. A flag takes the
 # place of each; a setting found in neither fails the run, naming its flag.
 # None is written into this repository.
@@ -39,6 +39,10 @@
 #   --cloudflare-account-id <ID>
 #   --retired-content-origin <URL>  the record's `retired_content_origin`, else
 #                                   none (an existing variable is kept)
+#   --workspace-service-url <URL>   the Worker's CLAX_WORKSPACE_* variables, for
+#   --workspace-preview-hosts <H>   ClaxBot's workspace service: the record's
+#   --workspace-forge-hosts <H>     `workspace_*`, else none (an existing variable
+#   --workspace-service-instance <N> is kept); production's alone (docs/prod.md)
 #
 # In order, it
 #
@@ -51,9 +55,9 @@
 #    and may push to it directly (no release step does: a release reaches it
 #    by its pull request's merge alone);
 # 3. creates the environment `production`, deployable from `prod` only, and
-#    sets its variables (PUBLIC_HOST, SITE_DOMAIN, STORE and
-#    RETIRED_CONTENT_ORIGIN), removing any variable named as one of its
-#    secrets;
+#    sets its variables (PUBLIC_HOST, SITE_DOMAIN, STORE,
+#    RETIRED_CONTENT_ORIGIN and the CLAX_WORKSPACE_* ones given), removing any
+#    variable named as one of its secrets;
 # 4. sets the repository variable PUBLIC_HOST, which the hourly drift check
 #    (.github/workflows/deploy-prod.yml) reads outside the environment;
 # 5. makes the environment `npm` deployable from `prod` and `main` alone
@@ -107,6 +111,10 @@ OWNER_GITHUB=""
 OAUTH_CLIENT_ID=""
 CLOUDFLARE_ACCOUNT_ID=""
 RETIRED_CONTENT_ORIGIN=""
+CLAX_WORKSPACE_SERVICE_URL=""
+CLAX_WORKSPACE_PREVIEW_HOSTS=""
+CLAX_WORKSPACE_FORGE_HOSTS=""
+CLAX_WORKSPACE_SERVICE_INSTANCE=""
 STAGING_HOST_ZONE="clax-staging.dev"
 STAGING_SITE_ZONE="clax-staging.run"
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d'; }
@@ -123,6 +131,10 @@ while [ $# -gt 0 ]; do
         --github-client-id) OAUTH_CLIENT_ID="$2"; shift ;;
         --cloudflare-account-id) CLOUDFLARE_ACCOUNT_ID="$2"; shift ;;
         --retired-content-origin) RETIRED_CONTENT_ORIGIN="$2"; shift ;;
+        --workspace-service-url) CLAX_WORKSPACE_SERVICE_URL="$2"; shift ;;
+        --workspace-preview-hosts) CLAX_WORKSPACE_PREVIEW_HOSTS="$2"; shift ;;
+        --workspace-forge-hosts) CLAX_WORKSPACE_FORGE_HOSTS="$2"; shift ;;
+        --workspace-service-instance) CLAX_WORKSPACE_SERVICE_INSTANCE="$2"; shift ;;
         --staging-host-zone) STAGING_HOST_ZONE="$2"; shift ;;
         --staging-site-zone) STAGING_SITE_ZONE="$2"; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -154,6 +166,10 @@ record() {
 }
 [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || CLOUDFLARE_ACCOUNT_ID="$(record account)"
 [ -n "$RETIRED_CONTENT_ORIGIN" ] || RETIRED_CONTENT_ORIGIN="$(record retired_content_origin)"
+[ -n "$CLAX_WORKSPACE_SERVICE_URL" ] || CLAX_WORKSPACE_SERVICE_URL="$(record workspace_service_url)"
+[ -n "$CLAX_WORKSPACE_PREVIEW_HOSTS" ] || CLAX_WORKSPACE_PREVIEW_HOSTS="$(record workspace_preview_hosts)"
+[ -n "$CLAX_WORKSPACE_FORGE_HOSTS" ] || CLAX_WORKSPACE_FORGE_HOSTS="$(record workspace_forge_hosts)"
+[ -n "$CLAX_WORKSPACE_SERVICE_INSTANCE" ] || CLAX_WORKSPACE_SERVICE_INSTANCE="$(record workspace_service_instance)"
 missing=""
 [ -n "$PUBLIC_HOST" ] || missing="$missing --public-host"
 [ -n "$SITE_DOMAIN" ] || missing="$missing --site-domain"
@@ -306,7 +322,8 @@ set_var() {
 
 say "3. Environment production"
 branch_policy production prod
-for name in PUBLIC_HOST RETIRED_CONTENT_ORIGIN SITE_DOMAIN STORE; do
+for name in PUBLIC_HOST RETIRED_CONTENT_ORIGIN SITE_DOMAIN STORE \
+    CLAX_WORKSPACE_SERVICE_URL CLAX_WORKSPACE_PREVIEW_HOSTS CLAX_WORKSPACE_FORGE_HOSTS CLAX_WORKSPACE_SERVICE_INSTANCE; do
     [ -z "${!name}" ] || set_var "repos/$repo/environments/production/variables" "$name" "${!name}"
 done
 # The deploy reads these as secrets (step 6); a variable of the same name is

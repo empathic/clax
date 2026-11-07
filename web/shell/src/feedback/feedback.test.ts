@@ -132,7 +132,7 @@ describe("the shell's feedback", () => {
     const s = await booted(() => ({ view: "artifact", artifact: "a_123" }));
     expect(fake.order).toEqual(["diagnostics", "overlay"]);
     const o = fake.opts();
-    expect(o).toMatchObject({ instance: "https://clax.dev", queue: "q_feedback", user: "p_ana", launcher: false });
+    expect(o).toMatchObject({ instance: "https://clax.dev", queue: "q_feedback", user: "p_ana", launcher: false, publicNotice: false });
     // No token is asked for until the overlay needs one.
     expect(calls.map(c => c.url)).toEqual(["/_app/feedback/config"]);
     expect(await o.auth("PUBKEY")).toEqual({ token: "cxr_abc", expires_at: "2026-10-29T12:00:00Z" });
@@ -265,6 +265,16 @@ describe("the shell's feedback", () => {
     expect(fake.order).toEqual(["diagnostics", "overlay"]);
     await vi.waitFor(() => { expect(document.querySelector("button.fb-btn")).not.toBeNull(); });
     expect(slot.feedbackKeyRows()).toEqual([{ keys: ["F"], what: "Report a problem with Clax" }]);
+  });
+
+  it("opens My reports for an address that asks, as a reporter's message links it", async () => {
+    stubFetch({ "GET /_app/feedback/config": CONFIG });
+    const fake = fakeClax();
+    (window as { Clax?: unknown }).Clax = fake.Clax;
+    window.location.hash = "#my-reports";
+    await booted();
+    window.location.hash = "";
+    expect(fake.handle.showReports).toHaveBeenCalledTimes(1);
   });
 
   it("menu entry calls report(), shows its shortcut, and My reports carries the badge", async () => {

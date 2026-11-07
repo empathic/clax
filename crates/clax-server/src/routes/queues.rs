@@ -91,7 +91,7 @@ async fn admin_of(s: &AppState, qid: &str, person: Option<String>) -> Result<(),
 
 /// `GET /api/queues` → `{queues}`: the live queues the caller made or is a
 /// member of, oldest first, each `{id, name, origins, reporters_see,
-/// created_at, role}`. The owner and the owner's agents read the owner's;
+/// public_notice, created_at, role}`. The owner and the owner's agents read the owner's;
 /// a connected person and their agents read theirs; a viewer who is no
 /// connected person reads none. 401 without a credential.
 pub async fn list(
@@ -170,10 +170,11 @@ pub struct PatchBody {
     name: Option<String>,
     origins: Option<Vec<String>>,
     reporters_see: Option<ReportersSee>,
+    public_notice: Option<bool>,
 }
 
-/// `PATCH /api/queues/<qid> {name?, origins?, reporters_see?}` →
-/// `{queue}`: an admin's change, the errors of `POST /api/queues` for bad
+/// `PATCH /api/queues/<qid> {name?, origins?, reporters_see?, public_notice?}`
+/// → `{queue}`: an admin's change, the errors of `POST /api/queues` for bad
 /// fields.
 pub async fn patch(
     State(s): State<AppState>,
@@ -199,6 +200,7 @@ pub async fn patch(
                     name: b.name,
                     origins: b.origins,
                     reporters_see: b.reporters_see,
+                    public_notice: b.public_notice,
                 },
             )?;
             Ok(Ok(row.view(Role::Admin)))

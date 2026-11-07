@@ -18,8 +18,8 @@
 //!   {note?, context?}` and `…/reopen` (multipart) → `{report}`; `GET
 //!   …/reporter/reports/<tid>/diagnostics?capture=` → `{lines}`; `POST
 //!   …/reporter/reports/<tid>/seen` → 204; `GET
-//!   /api/queues/<qid>/reporter/badge` → `{waiting, report_ids}`; `OPTIONS`
-//!   on each, the CORS preflight ([`clax_http::reporter::cors`]).
+//!   /api/queues/<qid>/reporter/badge` → `{waiting, report_ids,
+//!   public_notice}`; `OPTIONS` on each, the CORS preflight ([`clax_http::reporter::cors`]).
 //!
 //! The reporter is always the token's, never the body's. A reporter reads
 //! the reports its queue's `reporters_see` shows it, and gives a verdict on
@@ -710,7 +710,9 @@ pub async fn seen(
 /// `GET /api/queues/<qid>/reporter/badge`: what waits for the token's
 /// reporter: the reports it filed whose fix waits for its verdict, or that
 /// hold a comment not its own since it last read them (`…/seen`), oldest
-/// first. Answers `{waiting, report_ids}`.
+/// first, and whether the queue tells its reporters that what they write may
+/// appear in a public pull request. Answers `{waiting, report_ids,
+/// public_notice}`.
 ///
 /// # Errors
 /// [`ReporterCaller`]'s.

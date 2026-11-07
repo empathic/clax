@@ -30,6 +30,7 @@ pub mod prompt;
 pub mod run;
 pub mod script;
 pub mod web;
+pub mod workspace;
 
 pub use clax_store::Journaled;
 pub use driver::{Driver, IdleReport};
@@ -40,3 +41,4 @@ pub use run::{
     tick,
 };
 pub use web::{FakeWebSource, WebSource};
+pub use workspace::{FakeWorkspace, Workspace};

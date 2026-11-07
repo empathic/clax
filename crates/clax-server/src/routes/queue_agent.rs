@@ -731,8 +731,9 @@ pub struct FixBody {
 /// one); a person needs no claim, sends no fence (one sent is not read),
 /// and a person's next fix supersedes the one waiting. 400 `invalid_fix`
 /// for a blank summary, a summary over 4 KiB, a `url` or `verify_url`
-/// that is not an http(s) URL, or a field too long; 409 `not_claimable`
-/// for a `verified` or `resolved` report.
+/// that is not an http(s) URL, or a field too long; 400
+/// `verify_url_required` for a fix with no `verify_url` in place of a held
+/// one; 409 `not_claimable` for a `verified` or `resolved` report.
 pub async fn fix(
     State(s): State<AppState>,
     a: Agent<QueueFix>,

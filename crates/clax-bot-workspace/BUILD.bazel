@@ -1,0 +1,6 @@
+load("//bazel:cargo.bzl", "cargo_package")
+
+cargo_package(
+    # config.rs's test reads the example profiles.
+    test_compile_data = ["//deploy/claxbot-workspace:profiles"],
+)

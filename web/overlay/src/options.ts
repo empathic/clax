@@ -45,6 +45,11 @@ export interface OverlayOptions {
   /** Whether this reporter may file reports (default true). False: no
    * Report button, and `report()` does nothing; "Your reports" stays. */
   canFile?: boolean;
+  /** Whether the composer tells the reporter "What you write may appear in a
+   * public pull request." (default false): for a queue whose reports an agent
+   * works from in a public repository. A queue that says so tells the overlay
+   * through its badge, whatever this is. */
+  publicNotice?: boolean;
   /** The host's part of each capture's context (spec
    * 2026-10-29-feedback-loop §5.1): `release`, `flags` and `app`, or a
    * function giving them, called when the reporter starts a capture (and

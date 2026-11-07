@@ -390,11 +390,11 @@ const RESOLVED: Record<ResolveReason, string> = {
 };
 
 /** A report's state as the reporter reads it. */
-export function stateLabel(r: Pick<Report, "state" | "resolve_reason">): string {
+export function stateLabel(r: Pick<Report, "state" | "resolve_reason"> & Partial<Pick<Report, "fixes">>): string {
   switch (r.state) {
     case "open": return "Open";
     case "claimed": return "Being worked on";
-    case "fix_proposed": return "Fix ready for you to check";
+    case "fix_proposed": return r.fixes?.at(-1)?.held ? "Fix not ready for you to check" : "Fix ready for you to check";
     case "verified": return "Fixed: you confirmed it";
     case "resolved": return r.resolve_reason ? RESOLVED[r.resolve_reason] : "Resolved";
   }
@@ -533,7 +533,7 @@ export class BadgeWatch {
     if (this.win.document.visibilityState === "visible") this.poll.start();
   }
 
-  /** Asks now (the reporter just read or gave a verdict on a report). */
+  /** Asks now. */
   now(): void {
     if (!this.live) return;
     this.poll.stop();

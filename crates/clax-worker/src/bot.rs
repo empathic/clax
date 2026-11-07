@@ -64,6 +64,23 @@
 //! new incarnation resumes the run's uncommitted step; a request to the
 //! object (the run's page polling, its event stream reconnecting)
 //! resumes it at once.
+//!
+//! # Its workspace
+//!
+//! With a workspace service set up ([`crate::workspace`]) the driver and the
+//! host share a [`WorkerWorkspace`]. A call on it goes on at the service, so
+//! a tick gives it up when its time is out and the next joins it: a command
+//! may outlive any number of alarms. The host follows reports' changes when
+//! asked ([`WorkerBot::follow_reports`]), after each request and around the
+//! alarm's drive. The workspace's timed work ([`WorkerBot::tend`]) retries
+//! ends the service did not answer and polls for previews, for as long as it
+//! says one may come, whether or not its run has ended, and on after a poll
+//! that failed. While it keeps failing it is held back, up to a cap, so a
+//! service that will not answer costs an alarm now and then ([`tend_due`]).
+//!
+//! Every connection a Worker has waiting for headers counts against the
+//! platform's six, and each run on a workspace holds one in its polls, so
+//! such a Worker runs at most [`WORKSPACE_CONCURRENCY`] at once.
 
 use std::cell::Cell;
 use std::sync::Arc;
@@ -78,6 +95,10 @@ use clax_store::secrets::Kek;
 
 use clax_bot_sandbox::Sandbox;
 
+use crate::workspace::{
+    REQUEST_TEND_DEADLINE, TEND_DEADLINE, TEND_EVERY, TEND_FOR_A_REQUEST_AFTER, WorkerWorkspace,
+};
+
 /// Cloudflare's wall-time limit on one Durable Object alarm invocation.
 pub const ALARM_WALL_LIMIT: Duration = Duration::from_secs(15 * 60);
 /// What [`alarm_budget`] leaves of [`ALARM_WALL_LIMIT`] for the step a tick
@@ -85,6 +106,9 @@ pub const ALARM_WALL_LIMIT: Duration = Duration::from_secs(15 * 60);
 pub const ALARM_MARGIN: Duration = Duration::from_secs(5 * 60);
 /// How far ahead the alarm is kept while one drives (see the module docs).
 pub const RESUME_AFTER: Duration = Duration::from_secs(60);
+/// The most runs at once on a Worker with a workspace: one connection each,
+/// and one left of the platform's six for the preview poll.
+pub const WORKSPACE_CONCURRENCY: u32 = 5;
 
 /// The wall time one alarm gives the driver (see the module docs).
 #[must_use]
@@ -92,6 +116,14 @@ pub fn alarm_budget(min_turn_budget: Duration) -> Duration {
     ALARM_WALL_LIMIT
         .saturating_sub(ALARM_MARGIN)
         .max(min_turn_budget)
+}
+
+/// When the workspace's timed work is next wanted (ms): `every` after the last
+/// time it was done, or when what held it back ends, if that is later.
+#[must_use]
+pub fn tend_due(last_tend: f64, every: Duration, held_until_ms: Option<i64>) -> f64 {
+    let due = last_tend + every.as_millis() as f64;
+    held_until_ms.map_or(due, |held| due.max(held as f64))
 }
 
 /// The key-encryption key `secret` (the `CLAX_KEK` secret: 64 hex digits,
@@ -294,11 +326,23 @@ impl clax_http::bot::Runs for Kicks {
 /// overrides), with the hosted infrastructure lines charged.
 pub struct StoredSettings {
     pub inner: clax_http::bot::Settings,
+    /// Whether the runs have a workspace ([`workspace_settings`]).
+    pub workspace: bool,
+    /// The least a turn is started with, but the default, in the Worker's
+    /// tests.
+    pub min_turn_budget: Option<Duration>,
 }
 
 impl SettingsSource for StoredSettings {
     fn settings(&self) -> clax_core::Result<RunSettings> {
-        Ok(hosted_settings(self.inner.settings()?))
+        let mut s = hosted_settings(self.inner.settings()?);
+        if self.workspace {
+            s = workspace_settings(s);
+        }
+        if let Some(least) = self.min_turn_budget {
+            s.min_turn_budget = least;
+        }
+        Ok(s)
     }
 }
 
@@ -308,6 +352,15 @@ impl SettingsSource for StoredSettings {
 pub fn hosted_settings(s: RunSettings) -> RunSettings {
     RunSettings {
         infra_lines: true,
+        ..s
+    }
+}
+
+/// `s` on a Worker with a workspace: at most [`WORKSPACE_CONCURRENCY`] runs.
+#[must_use]
+pub fn workspace_settings(s: RunSettings) -> RunSettings {
+    RunSettings {
+        concurrency: s.concurrency.min(WORKSPACE_CONCURRENCY),
         ..s
     }
 }
@@ -405,6 +458,14 @@ pub struct WorkerBot {
     schedule: Schedule,
     /// Whether [`Driver::start`] ran (at the incarnation's first event).
     started: Cell<bool>,
+    host: Arc<clax_server::bot::ServerHost>,
+    workspace: Option<Arc<WorkerWorkspace>>,
+    /// When the workspace's timed work was last done (ms).
+    last_tend: Cell<f64>,
+    /// How often it is done.
+    tend_every: Duration,
+    /// How long an alarm drives, but the default, in the Worker's tests.
+    alarm_budget: Option<Duration>,
 }
 
 /// What [`WorkerBot::new`] is made of: the parts the daemon's
@@ -412,7 +473,10 @@ pub struct WorkerBot {
 pub struct Parts {
     pub store: Arc<Store>,
     pub sandbox: Arc<dyn Sandbox>,
-    pub host: Arc<dyn BotHost>,
+    pub host: Arc<clax_server::bot::ServerHost>,
+    /// The runs' containers, the same as the host's ([`crate::workspace`]);
+    /// none: their API and prompt say nothing of one.
+    pub workspace: Option<Arc<WorkerWorkspace>>,
     /// Whether the instance runs ClaxBot at all (its sandbox could be made).
     pub enabled: bool,
     pub keys: Keys,
@@ -423,6 +487,17 @@ pub struct Parts {
     /// How far ahead the alarm is kept while one drives ([`RESUME_AFTER`]
     /// but in the Worker's tests).
     pub resume_after: Duration,
+    /// Test settings, none of them on a deploy.
+    pub tests: TestTimes,
+}
+
+/// Times a Worker's test shortens, so what takes minutes takes seconds.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TestTimes {
+    /// How long an alarm drives; turns then need a quarter of it.
+    pub alarm_budget: Option<Duration>,
+    /// How often the workspace's timed work is done.
+    pub tend_every: Option<Duration>,
 }
 
 impl WorkerBot {
@@ -435,18 +510,25 @@ impl WorkerBot {
                 store: parts.store.clone(),
                 enabled: parts.enabled,
             },
+            workspace: parts.workspace.is_some(),
+            min_turn_budget: parts.tests.alarm_budget.map(|b| b / 4),
         });
+        let host: Arc<dyn BotHost> = parts.host.clone();
         let deps = Deps::new(
             parts.store.clone(),
             MessagesClient::new(),
             parts.sandbox,
-            parts.host,
+            host,
             settings.clone(),
             parts.keys,
             Arc::new(clax_server::bot::StoreClock(parts.store)),
         );
         let deps = match parts.web {
             Some(web) => deps.with_web(web),
+            None => deps,
+        };
+        let deps = match parts.workspace.clone() {
+            Some(w) => deps.with_lapsing_workspace(w),
             None => deps,
         };
         let driver = Arc::new(Driver::new(DriverId::mint(), Arc::new(deps), parts.events));
@@ -457,6 +539,11 @@ impl WorkerBot {
             settings,
             schedule: Schedule::new(parts.resume_after),
             started: Cell::new(false),
+            host: parts.host,
+            workspace: parts.workspace,
+            last_tend: Cell::new(f64::NEG_INFINITY),
+            tend_every: parts.tests.tend_every.unwrap_or(TEND_EVERY),
+            alarm_budget: parts.tests.alarm_budget,
         };
         (bot, kicks)
     }
@@ -484,6 +571,53 @@ impl WorkerBot {
         }
     }
 
+    /// Follows up the reports changed since the last call
+    /// ([`clax_server::bot::ServerHost::follow_reports`]): what it starts
+    /// [`WorkerBot::take_wakes`] then finds.
+    pub async fn follow_reports(&self) {
+        self.host.follow_reports().await;
+    }
+
+    /// When the workspace next has timed work (ms); `None` with none.
+    #[must_use]
+    pub fn next_tend(&self) -> Option<f64> {
+        let w = self.workspace.as_ref()?;
+        let held = w.tend_held_until_ms(self.tend_every);
+        w.has_work()
+            .then(|| tend_due(self.last_tend.get(), self.tend_every, held))
+    }
+
+    async fn tend_now(&self, now_ms: f64, deadline: Duration) {
+        if let Some(w) = &self.workspace {
+            self.last_tend.set(now_ms);
+            w.tend(deadline).await;
+        }
+    }
+
+    /// The workspace's timed work, when that is due.
+    pub async fn tend(&self, now_ms: f64) {
+        if self.next_tend().is_some_and(|at| at <= now_ms) {
+            self.tend_now(now_ms, TEND_DEADLINE).await;
+        }
+    }
+
+    /// Before a drive reads offers, unless the work was done since `since`
+    /// (ms): an idle Worker's have lapsed.
+    pub async fn tend_before_drive(&self, since: f64, now_ms: f64) {
+        if self.last_tend.get() < since {
+            self.tend_now(now_ms, TEND_DEADLINE).await;
+        }
+    }
+
+    /// After a request that may have changed a report, before its follow-up
+    /// reads an offer, when the workspace's word may have lapsed.
+    pub async fn tend_for_a_request(&self, now_ms: f64) {
+        let after = TEND_FOR_A_REQUEST_AFTER.as_millis() as f64;
+        if now_ms - self.last_tend.get() >= after {
+            self.tend_now(now_ms, REQUEST_TEND_DEADLINE).await;
+        }
+    }
+
     /// After a request: a start or cancel the routes told wants the alarm
     /// now, unless one drives.
     pub fn take_wakes(&self, now_ms: f64) {
@@ -507,6 +641,9 @@ impl WorkerBot {
     /// The wall time this alarm drives for.
     #[must_use]
     pub fn budget(&self) -> Duration {
+        if let Some(fixed) = self.alarm_budget {
+            return fixed;
+        }
         let min = self
             .settings
             .settings()
@@ -613,6 +750,21 @@ mod tests {
     }
 
     #[test]
+    fn a_worker_with_a_workspace_leaves_a_connection_for_its_poll() {
+        let s = RunSettings {
+            concurrency: 8,
+            ..RunSettings::default()
+        };
+        assert_eq!(workspace_settings(s.clone()).concurrency, 5);
+        assert_eq!(hosted_settings(s.clone()).concurrency, 8, "without one");
+        let few = RunSettings {
+            concurrency: 2,
+            ..s
+        };
+        assert_eq!(workspace_settings(few).concurrency, 2);
+    }
+
+    #[test]
     fn without_its_sandbox_or_its_kek_claxbot_is_refused_not_configured() {
         let dir = tempfile::tempdir().unwrap();
         let home = clax_core::Home::at(dir.path().to_path_buf());
@@ -632,6 +784,15 @@ mod tests {
             Some("not_configured")
         );
         assert!(routes_bot(kek(), true, runs()).env_key.is_none());
+    }
+
+    #[test]
+    fn timed_work_held_back_waits_for_that_and_a_new_incarnation_does_too() {
+        let every = Duration::from_secs(30);
+        assert_eq!(tend_due(1_000.0, every, None), 31_000.0);
+        assert_eq!(tend_due(1_000.0, every, Some(600_000)), 600_000.0);
+        assert_eq!(tend_due(1_000.0, every, Some(2_000)), 31_000.0);
+        assert_eq!(tend_due(f64::NEG_INFINITY, every, Some(600_000)), 600_000.0);
     }
 
     #[test]

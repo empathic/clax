@@ -87,6 +87,9 @@ RUST_SOURCES = [
     "//crates/clax-bot-js:rust_sources",
     "//crates/clax-bot:rust_sources",
     "//crates/clax-bot-sandbox:rust_sources",
+    "//crates/clax-bot-workspace:rust_sources",
+    "//crates/clax-bot-workspace-service:rust_sources",
+    "//crates/clax-bot-remote:rust_sources",
     "//crates/clax-cli:rust_sources",
     "//crates/clax-commands:rust_sources",
     "//crates/clax-content-git:rust_sources",
@@ -114,6 +117,9 @@ CRATE_MANIFESTS = [
     "//crates/clax-bot-js:manifest",
     "//crates/clax-bot:manifest",
     "//crates/clax-bot-sandbox:manifest",
+    "//crates/clax-bot-workspace:manifest",
+    "//crates/clax-bot-workspace-service:manifest",
+    "//crates/clax-bot-remote:manifest",
     "//crates/clax-cli:manifest",
     "//crates/clax-commands:manifest",
     "//crates/clax-content-git:manifest",
@@ -359,6 +365,25 @@ sh_test(
 sh_test(
     name = "no_unsafe_test",
     srcs = ["test-check-no-unsafe.sh"],
+    data = [":all"],
+)
+
+# scripts/check-claxbot-paths.py (preview.yml's `approve`) on the profile it
+# reads, and the cases the daemon's matcher is held to as well.
+sh_test(
+    name = "claxbot_paths",
+    srcs = ["test-check-claxbot-paths.sh"],
+    data = [
+        ":all",
+        "//deploy/claxbot-workspace:profiles",
+    ],
+)
+
+# scripts/unpack-worker.py (preview.yml's and deploy-dev.yml's deploy jobs) on
+# archives written to escape it.
+sh_test(
+    name = "unpack_worker",
+    srcs = ["test-unpack-worker.sh"],
     data = [":all"],
 )
 

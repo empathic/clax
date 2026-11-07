@@ -152,6 +152,7 @@ wasm_check_test(
     name = "check",
     libs = [
         "//crates/clax-bot:clax_bot_wasm",
+        "//crates/clax-bot-remote:clax_bot_remote_wasm",
         "//crates/clax-bot-sandbox:clax_bot_sandbox_wasm",
         "//crates/clax-content-git:clax_content_git_wasm",
         "//crates/clax-core:clax_core_wasm",

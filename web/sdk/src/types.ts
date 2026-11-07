@@ -31,6 +31,8 @@ export interface Queue {
   name: string;
   origins: string[];
   reporters_see: ReportersSee;
+  /** Whether a reporter is told that what they write may appear in a public pull request. */
+  public_notice: boolean;
   created_at: string;
   role: QueueRole;
 }
@@ -213,6 +215,15 @@ export interface FixAttempt {
    * when a triage member did: replies wait for the queue's people.
    * Absent from a server older than the field: read it as `agent`. */
   proposer_kind?: ProposerKind;
+  /** The reporter has nothing to check it on: a person reviews it, and no
+   * verdict of theirs is taken until a link comes. */
+  held?: boolean;
+  /** The preview that answered for a held fix, kept from its reporter until
+   * a person hands it over. A queue's members alone receive this. */
+  preview_url?: string | null;
+  /** The wait for a held fix's preview ended with none. A queue's members
+   * alone receive this. */
+  preview_missed?: boolean;
   created_at: string;
   outcome: FixOutcome;
   verdict_note?: string;
@@ -236,10 +247,12 @@ export interface DiagLine {
 
 /** `GET /api/queues/<qid>/reporter/badge`: the reports waiting on the
  * reporter (a fix waiting for its verdict, or a comment not its own since
- * it last read them), oldest first; `waiting` is `report_ids.length`. */
+ * it last read them), oldest first; `waiting` is `report_ids.length`.
+ * `public_notice` is the queue's: see {@link Queue}. */
 export interface Badge {
   waiting: number;
   report_ids: string[];
+  public_notice: boolean;
 }
 
 /** `Lease`: what a claim or a renewal answers. */

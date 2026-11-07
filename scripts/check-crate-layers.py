@@ -48,7 +48,7 @@ BOT = STORE | SAMPLE | {"clax-bot", "clax-bot-sandbox"}
 HTTP = REALTIME | SAMPLE | BOT | {"clax-http"}
 MCP = CORE | {"clax-mcp"}
 HOOKS = CORE | {"clax-hooks"}
-SERVER = HTTP | MCP | {"clax-server", "clax-bot-js"}
+SERVER = HTTP | MCP | {"clax-server", "clax-bot-js", "clax-bot-workspace"}
 COMMANDS = STORE | MCP | HOOKS | {"clax-commands"}
 
 # What each crate may depend on (outside its tests).
@@ -68,7 +68,7 @@ ALLOWED = {
     "clax-realtime": STORE,
     "clax-http": REALTIME | SAMPLE | BOT,
     # The native sandbox, optional (`native-sandbox`).
-    "clax-server": HTTP | MCP | {"clax-bot-js"},
+    "clax-server": HTTP | MCP | {"clax-bot-js", "clax-bot-workspace"},
     "clax-commands": STORE | MCP | HOOKS,
     "clax-cli": SERVER | COMMANDS | {"clax-embedded"},
     # The core inside the Clax app's process, behind four C functions:
@@ -79,7 +79,7 @@ ALLOWED = {
     # database on the SQLite VFS over the object's storage (clax-do-vfs,
     # which depends on no workspace crate).
     "clax-do-vfs": set(),
-    "clax-worker": HTTP | {"clax-server", "clax-git", "clax-content-git", "clax-do-vfs"},
+    "clax-worker": HTTP | {"clax-server", "clax-git", "clax-content-git", "clax-do-vfs", "clax-bot-remote"},
     # Clax across processes (the Kubernetes deployment's server): the
     # daemon's core per instance, on its pages VFS, with the web UI the
     # binary embeds.
@@ -93,6 +93,15 @@ ALLOWED = {
     # and its driver, over the store, the Messages client and the sandbox
     # contract (never a sandbox implementation: the server wires one in).
     "clax-bot": STORE | SAMPLE | {"clax-bot-sandbox"},
+    # What ClaxBot's shell operations reach: container runtimes behind one
+    # seam, the host-side clone, the forge and previews. Native only.
+    "clax-bot-workspace": BOT,
+    # ClaxBot's workspace at a distance: the wire to a workspace service and
+    # a workspace that speaks it, for native targets and the Worker.
+    "clax-bot-remote": BOT,
+    # The workspace behind that wire, for a host of runs that cannot hold a
+    # container. Native only.
+    "clax-bot-workspace-service": BOT | {"clax-bot-workspace", "clax-bot-remote"},
     # Patched copies of third-party crates under names of their own
     # (third_party/, docs/bazel.md, "Patched third-party crates").
     "clax-rquickjs-sys": set(),

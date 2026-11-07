@@ -18,6 +18,9 @@ export interface FeedbackConfig {
   /** The person's public ID: the overlay's `user`, which keeps the
    * reporter's key and token per person (null in an older answer). */
   user: string | null;
+  /** That the queue tells its reporters what they write may appear in a
+   * public pull request (absent in an older answer). */
+  public_notice?: boolean;
   /** The release, flags and app the person's page runs, as the backend
    * knew them when the page loaded. */
   context: HostContext;

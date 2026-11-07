@@ -288,6 +288,185 @@ cookie acts as its person in the browser.
   their agents' sessions at once. Their browser on another machine is
   refused from then on, and what they wrote stays theirs.
 
+### Connecting a private repository
+
+ClaxBot can work a queue's reports in the queue's repository: it clones it
+into an ephemeral container, and the daemon judges what comes back, pushes a
+branch and opens a pull request. A queue admin connects the repository from
+Clax: **Queues**, **Manage**, then **Repository**. Name it `owner/name`, give
+the branch work starts from, and the URL previews appear at, with `{pr}` for
+the pull request's number.
+
+Then choose how Clax reaches it.
+
+- **The instance's GitHub App**, when the owner has set one up (**Admin**,
+  **Repositories**). Install the App on the repository with the link shown,
+  and name the repository: Clax asks the forge where the App is installed, and
+  says so if it is not. The owner approves each link under **Admin**,
+  **Repositories**, where it shows the account the forge named and what the
+  link allows (below), because the
+  App reaches everything it is installed on: an approved link lets ClaxBot
+  read that repository, push branches to it and open pull requests. The
+  owner's own new links need no approval. App access only works against the
+  forge the owner configured. GitHub signs what ClaxBot commits this way.
+- **Tokens**, for anyone. Make two
+  [fine-grained tokens](https://github.com/settings/personal-access-tokens/new)
+  limited to this one repository:
+  - a **read token**, with Contents: Read. It goes into the container for the
+    clone, so a token that can write, pasted here, goes into the container
+    too. A private repository's link waits for one; a public repository needs
+    none.
+  - a **write token**, with Contents: Read and write and Pull requests: Read
+    and write. It stays on the daemon and is never given to a container.
+
+  They must be different tokens; Clax refuses the same value twice. A pasted
+  token works until it expires, whatever happens to the link, so set an expiry
+  when you make it, the shortest you can live with. Commits made with a token
+  are unsigned, and a repository that requires signatures will refuse them; use
+  the App for one.
+
+  On a hosted Clax the owner approves token links too; on a local daemon they
+  can ask to, under **Admin**, **Repositories**.
+
+Tokens are sealed on saving and never shown again, to anyone. Clax shows their
+last four characters, who set them, and when, and beside each the hosts it goes
+to. If you change the repository or either URL the tokens are cleared, so
+nobody can send a token set by someone else to a new address: paste them
+again. If another admin changed the link while your panel was open, Clax
+refuses your change and shows the link as it is now. Only a queue's admins see
+this panel. Triage members, agents, service grants and reporters do not. The
+owner sees every link under **Admin**, **Repositories**, and can disconnect
+any. If a person is revoked and leaves a queue with no admin, its link and
+tokens are removed.
+
+The panel says what the link still needs, one step at a time: a write token,
+a read token, your word on the repository's CI (below), the owner's approval.
+With nothing missing it says **Details saved; nothing published yet** until
+ClaxBot has published through this link, then **Connected**, or what failed the
+last time; another queue's success on the same App says nothing of yours. That
+state is about publishing: a run that only cloned the repository leaves it as it
+was, and a failed publish stays on show through a change of read token, until a
+new write token or a publish that works. Nothing can use a link until
+the daemon has a container runtime, which only its operator gives it
+(`<home>/workspace.toml`, below): the panel says so, and says so too if that
+runtime did not start. Clearing a token, disconnecting, or the owner withdrawing
+an approval stops new runs, and a run already going keeps what it holds until it
+ends.
+
+A person starts a run: open the report in its queue and choose **Send to
+ClaxBot**. Whoever may send the report's page to ClaxBot sees it, while a fix
+may still be proposed and nobody else has claimed the report. The report then
+shows the run at work, with **Stop**.
+
+ClaxBot works on a branch under `claxbot/` and opens a pull request. It goes on
+with that branch only while the pull request is open: once it is merged or
+closed, a later run starts from the current base, on a new branch, with a new
+pull request. The reporter hears nothing until there is something to check. A
+fix with no preview address yet is held, on a public repository too, and the
+report tells its members that the reporter is waiting on them. When the preview
+answers, the reporter gets its link, beside the fixed words that a fix has been
+proposed; what ClaxBot said of the fix stays with the queue's members. On a
+private repository whose deploys need no person's approval the link stays with
+the members too: the report shows it to them, and they decide. If the wait ends
+with no preview seen, the members get a note saying ClaxBot stopped watching. Either way a member hands the
+fix over by proposing a fix with a link to check, which Clax requires. A
+reporter's **Still broken** on it then goes back to ClaxBot, as on any fix of
+its, under the same limits.
+
+**A private repository's CI.** ClaxBot's branch is a branch of your repository,
+written by a model that a reporter's words can steer, and your CI may start on
+it before any person has read it, with that CI's secrets and its network. Clax
+cannot see what your CI runs, so it does not guess: a private repository's link
+is not ready until a queue admin says **This repository's CI may run ClaxBot's
+branches**, having looked at what runs on a pull request. The owner's approval
+does not say it for you, even on the owner's own link. It is said of one
+repository: changing the repository, either URL or the installation takes it
+back.
+
+**What the owner reads.** Under **Admin**, **Repositories** the owner sees, on
+every link, whether it is public, whether it runs with open network access,
+whether each deploy needs a person, whether a reporter's reply can start a run,
+its preview URL and readiness path, its protected paths, and whether its CI is
+accepted. If anyone else changes any of
+those, in either direction, or the repository, either URL or the installation,
+the approval is void and the link waits for the owner again; the owner's own
+change never voids it. So accept the CI before asking for approval:
+accepting afterwards goes back to the owner. An approval says where a link goes,
+not whose token goes there: the owner never sees the account behind a token, so
+replacing one keeps the approval. The new token can reach only the addresses the
+owner read, and the audit log records who replaced it.
+
+A repository is confidential unless you say **Anyone may see this repository**
+under **More settings**. ClaxBot then sends what it writes to the queue's
+members, not the reporter, and the link needs a container whose network an
+allow-list narrows, or **Run a confidential repository with open network
+access**, which lets anything steering ClaxBot send your source anywhere. An
+allow-list only keeps a container away from the hosts not on it. If it holds a
+host people can upload to, such as github.com, it does not stop a steered model
+sending your source there, to an account of someone else's. Once a run on a
+report has been confidential, or the report holds a members' note, every later
+run on it is too, whatever becomes of the link. A
+repository off github.com needs its forge's API URL as well as its own, so a
+token is never sent to GitHub by default.
+
+What ClaxBot reads of the repository is sent to this Clax's model provider.
+Private source also leaves your machines when the daemon's containers run on a
+third-party runtime: the panel says so when they do. The container is
+ephemeral and holds no write credential and no model key, but while it runs,
+that provider's systems hold your source and the read token. If that is not
+acceptable, use a runtime on your own machines, or leave the repository
+unconnected.
+
+An operator gives the daemon its runtime in `<home>/workspace.toml`, and can
+name repositories there too, as a `[target.github_app]` with its key in an
+environment variable, or with tokens from environment variables. A repository
+connected here needs none of that beyond the runtime. If the file names a queue
+that also has a link, the file's target is what runs, and the panel says so.
+The daemon reads the file when it starts: restart it after adding or changing
+the file. For repositories connected here this is all of it:
+
+```toml
+image = "ghcr.io/you/build-image:latest"
+domain_allow_list = ["github.com", "codeload.github.com"]
+
+[runtime]
+kind = "daytona"
+```
+
+`image` holds git and whatever your builds need, and a home on Daytona with none
+gets no containers. The list is what a container may
+reach, and holds a private repository's link to it; as above, it does not stop a
+steered model sending source to a host on it that anyone can upload to.
+`kind = "docker"` runs on this machine's Docker, which cannot hold a container to
+a list: leave `domain_allow_list` out, and a private repository's link then needs
+its open network access allowed.
+
+GitHub signs what an App commits. A commit made with a token is unsigned, and
+a target in the file proposes nothing that way unless it says
+`allow_unsigned_commits = true`.
+
+A target in the file can hold a run tighter. `writable_paths` is an allow-list
+of where a change may write (empty: anywhere), and `protected_paths` subtracts
+from it; an entry is `a/b.rs`, a directory `a/*/c/`, where `*` stands inside one
+segment, or `**/name`, a file of that name at any depth. `max_open_pull_requests`
+(default 50) and `max_pushes_per_day` (default 200) are refused in fixed words
+before anything leaves. `follow_ups = false` stops a reporter's word starting a
+run, and `report_url`, an https address with `{report}` in it, makes a pull
+request link back to its report. A public repository's target should set
+`follow_ups = false` and `writable_paths`:
+`deploy/claxbot-workspace/clax.toml` does.
+
+A target in the file can also speak to its runs and its people. `guidance`, at
+most 4 KiB, is free text a run that works on the repository reads in its prompt
+after the repository's own `AGENTS.md`: how to build and test there, how long a
+first build takes, how a commit title must read (a proposal's title is the
+commit's subject). `preview_gate`, at most 256 bytes, is what a person does to
+deploy a preview where a person must, as a clause that follows "To deploy its
+preview,", with `{commit}` for the commit's full SHA: `post `/preview {commit}`
+on the pull request`. A target with `reviewed_previews = true` must have one,
+since nobody is otherwise told at the proposal that a person is waited for. Only
+an operator writes either: a repository linked from the queue's panel has neither.
+
 ### Publishing to a public Clax
 
 Your Clax can publish artifacts to a hosted one (a daemon in hosted mode, or

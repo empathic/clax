@@ -4,6 +4,8 @@
 //! testkit's delay middleware are here too.
 
 use crate::integrations::feedback as feedback_integration;
+use crate::routes::queue_notifier;
+use crate::routes::queue_repo;
 use crate::routes::{
     admin, app_bundles, app_drafts, approvals, artifacts, assets, audit_trail, bot, client_imports,
     confirmations, connect, content, discovery, docs, drafts, extension, feedback, git_token,
@@ -168,6 +170,26 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route(
             "/api/queues/{qid}/service-grants/{gid}",
             delete(queues::revoke_grant),
+        )
+        .route(
+            "/api/queues/{qid}/notifiers/zulip",
+            get(queue_notifier::get)
+                .put(queue_notifier::put)
+                .delete(queue_notifier::delete),
+        )
+        .route(
+            "/api/queues/{qid}/notifiers/zulip/test",
+            post(queue_notifier::test),
+        )
+        .route(
+            "/api/queues/{qid}/repo",
+            get(queue_repo::get)
+                .put(queue_repo::put)
+                .delete(queue_repo::delete),
+        )
+        .route(
+            "/api/queues/{qid}/repo/tokens/{which}",
+            put(queue_repo::put_token).delete(queue_repo::delete_token),
         )
         .route("/api/queues/{qid}/reports", get(queue_agent::list))
         .route(
@@ -609,6 +631,16 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         )
         .route("/api/admin/provider/test", post(admin::test))
         .route("/api/admin/provider/models", get(admin::models))
+        .route("/api/admin/repos", get(queue_repo::get_repos))
+        .route(
+            "/api/admin/repos/app",
+            put(queue_repo::put_app).delete(queue_repo::delete_app),
+        )
+        .route("/api/admin/repos/policy", put(queue_repo::put_policy))
+        .route(
+            "/api/admin/repos/links/{qid}",
+            put(queue_repo::approve).delete(queue_repo::disconnect),
+        )
         .route("/api/admin/web", get(admin::web).put(admin::set_web))
         .route(
             "/api/admin/web/token",

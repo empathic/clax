@@ -32,17 +32,19 @@
 //! run's claim ([`Wait::NotOurs`]), when the sandbox could not take the
 //! script ([`Wait::Stalled`]), when the model stayed unreachable
 //! ([`Wait::Retry`]) or when too little of the tick's budget is left for a
-//! turn ([`Wait::Budget`]). A step whose commit fails
+//! turn, or none for a workspace call that goes on without the tick
+//! ([`Wait::Budget`]). A step whose commit fails
 //! `max_commit_failures` times ends the run `failed`.
 
 use crate::events::{Event, EventSink, step_summary};
-use crate::host::{BotHost, NOTICE_SEQ, OpCtx, run_plan};
+use crate::host::{BotHost, INTENT_SEQ, NOTICE_SEQ, OpCtx, run_plan};
 use crate::prompt;
 use crate::web::WebSource;
 use crate::web::page::{sources as web_sources, sources_markdown};
-use clax_bot_sandbox::{CancelToken, Limits, MaybeSendSync, Sandbox};
+use clax_bot_sandbox::{CancelToken, HostError, Limits, MaybeSendSync, Sandbox};
 use clax_core::audit::{Actor, AuditCtx, AuditRecord, Via};
 use clax_core::gitctx::GitField;
+use clax_core::model::AUTHOR_AGENT;
 use clax_core::working::Clock;
 use clax_core::{CoreError, Result};
 use clax_sample::messages::{
@@ -60,11 +62,12 @@ use clax_store::credits::{
     RateSource, TOKEN_UNITS, Unit, parse_token_line, row_credits_milli, token_line, week_end,
     week_start,
 };
+use clax_store::queues::{RELEASED_BODY, Visibility};
 use clax_store::secrets::{Kek, SecretSlot};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
@@ -243,6 +246,26 @@ pub type CrashHook = Arc<dyn Fn(CrashPoint) -> bool + Send + Sync>;
 #[cfg(target_arch = "wasm32")]
 pub type CrashHook = Arc<dyn Fn(CrashPoint) -> bool>;
 
+/// A workspace whose offers are a copy of its word, which grows old while
+/// nothing reaches what gave it. That is its own state, apart from
+/// [`crate::workspace::Offer::unsure`], the word that a target could not be
+/// read: what a run it reaches gets is withheld and reads as confidential while
+/// the offers are lapsed, and it says nothing of any run, so nothing is kept of
+/// it ([`Deps::confidential`]). It reaches a run that began a workspace call and
+/// any [`OffersLapse::lapse_reaches`] names. Any other run has no word of the
+/// workspace's to lose: it goes on as a run of a host with no workspace.
+pub trait OffersLapse: MaybeSendSync {
+    /// Whether what [`crate::workspace::Workspace::offer`] answers now is no
+    /// word of the workspace's.
+    fn offers_lapsed(&self) -> bool;
+
+    /// Whether the workspace's word might matter to `run`, on a report of
+    /// `queue` if it is on one, for all this copy of it says.
+    fn lapse_reaches(&self, _run: &Run, _queue: Option<&str>) -> bool {
+        true
+    }
+}
+
 /// What a tick works with.
 pub struct Deps {
     pub store: Arc<Store>,
@@ -264,6 +287,14 @@ pub struct Deps {
     /// 2026-11-02-claxbot-web-tools §4.3); `None` on a host without one,
     /// where every web call is refused `web_disabled`.
     pub web: Option<Arc<dyn WebSource>>,
+    /// The run's ephemeral container ([`crate::workspace`]); `None` on a
+    /// host without one, where no run declares the shell operations.
+    pub workspace: Option<Arc<dyn crate::workspace::Workspace>>,
+    /// Says when the workspace's offers have lapsed, on a workspace whose
+    /// offers can ([`Deps::with_lapsing_workspace`]).
+    pub lapse: Option<Arc<dyn OffersLapse>>,
+    /// What tells the host of its workspace's previews.
+    previews: Option<Arc<HostPreviews>>,
 }
 
 impl std::fmt::Debug for Deps {
@@ -301,6 +332,9 @@ impl Deps {
             retry_later: Duration::from_secs(30),
             crash: None,
             web: None,
+            workspace: None,
+            lapse: None,
+            previews: None,
         }
     }
 
@@ -309,6 +343,248 @@ impl Deps {
     pub fn with_web(mut self, web: Arc<dyn WebSource>) -> Deps {
         self.web = Some(web);
         self
+    }
+
+    /// These deps, with `workspace` for the runs it offers anything.
+    #[must_use]
+    pub fn with_workspace(mut self, workspace: Arc<dyn crate::workspace::Workspace>) -> Deps {
+        let previews = Arc::new(HostPreviews {
+            store: self.store.clone(),
+            host: self.host.clone(),
+            proposing: Mutex::default(),
+            asks_again: workspace.resumable(),
+        });
+        workspace.previews(previews.clone());
+        self.previews = Some(previews);
+        self.workspace = Some(workspace);
+        self
+    }
+
+    /// These deps, with `workspace`, whose offers can lapse.
+    #[must_use]
+    pub fn with_lapsing_workspace<W>(mut self, workspace: Arc<W>) -> Deps
+    where
+        W: crate::workspace::Workspace + OffersLapse + 'static,
+    {
+        self.lapse = Some(workspace.clone());
+        self.with_workspace(workspace)
+    }
+
+    /// What a lapse of the workspace's offers is to `run`: `None` with none.
+    /// `Some(true)` when it reaches the run, as it does a run that cannot be
+    /// told apart, and `Some(false)` when the run has nothing to lose by it
+    /// ([`OffersLapse`]).
+    fn lapse_on(&self, run: &Run) -> Option<bool> {
+        let lapse = self.lapse.as_ref().filter(|l| l.offers_lapsed())?;
+        Some(match (queue_of(&self.store, run), self.touched(run)) {
+            (Ok(queue), Ok(false)) => lapse.lapse_reaches(run, queue.as_deref()),
+            _ => true,
+        })
+    }
+
+    /// Whether the workspace's offers have lapsed for `run` ([`OffersLapse`]).
+    pub(crate) fn offers_lapsed(&self, run: &Run) -> bool {
+        self.lapse_on(run) == Some(true)
+    }
+
+    /// Holds what is told of `run`'s preview until the answer is settled: a
+    /// preview already up can be told of before its fix is on the report.
+    pub(crate) fn fix_coming(&self, run: &str) -> FixComing {
+        let previews = self.previews.clone();
+        if let Some(p) = &previews {
+            p.lock().entry(run.to_string()).or_default();
+        }
+        FixComing {
+            previews,
+            run: run.to_string(),
+        }
+    }
+
+    /// Whether `run` may hold material a reporter must not read, kept on
+    /// the run once true ([`Store::mark_run_confidential`]) and never asked
+    /// again: a target edited out, a workspace gone from the host or a
+    /// failed lookup cannot lift it. A run that touched a workspace which no
+    /// longer answers for it is, and so is one on a thread that holds
+    /// such material already ([`Deps::threads_hold_secrets`]). A failed
+    /// lookup, the store's or the workspace's ([`Offer::unsure`]), reads as
+    /// yes for this tick, and is kept only for a run that touched a
+    /// workspace: one that touched none holds nothing, and asks again.
+    /// Offers that have lapsed for it ([`OffersLapse`]) read as yes while they
+    /// are lapsed, and nothing is kept: they say nothing of this run.
+    ///
+    /// [`Offer::unsure`]: crate::workspace::Offer::unsure
+    ///
+    /// # Errors
+    /// When it is true and cannot be kept: the tick must not go on as
+    /// though it were.
+    pub fn confidential(&self, run: &Run) -> Result<bool> {
+        Ok(self.standing(run)? != Standing::Clear)
+    }
+
+    /// Where `run` stands ([`Deps::confidential`]).
+    fn standing(&self, run: &Run) -> Result<Standing> {
+        if run.confidential {
+            return Ok(Standing::Confidential);
+        }
+        let keep = match self.looks_confidential(run) {
+            Ok(Standing::Lapsed) => return Ok(Standing::Lapsed),
+            Ok(s) => s == Standing::Confidential,
+            Err(e) => {
+                tracing::warn!("clax-bot: telling what run {} holds: {e}", run.id);
+                if !self.touched(run).unwrap_or(false) {
+                    return Ok(Standing::Confidential);
+                }
+                true
+            }
+        };
+        if !keep {
+            return Ok(Standing::Clear);
+        }
+        self.store.mark_run_confidential(&run.id)?;
+        Ok(Standing::Confidential)
+    }
+
+    /// Whether `run` has begun a workspace call.
+    fn touched(&self, run: &Run) -> Result<bool> {
+        self.store.run_called_from(&run.id, INTENT_SEQ)
+    }
+
+    /// Whether a run on `run`'s threads reads what a reporter must not: an
+    /// earlier run there was confidential, or a person left a note for the
+    /// queue's members, which a run of the queue's reads with the report. A
+    /// note a run wrote says no more than that run was allowed to, and a
+    /// claim released in no words of its own says nothing.
+    fn threads_hold_secrets(&self, run: &Run) -> Result<bool> {
+        for tid in &run.thread_ids {
+            if self
+                .store
+                .runs_for_thread(tid, u32::MAX)?
+                .iter()
+                .any(|r| r.confidential)
+            {
+                return Ok(true);
+            }
+            let Some(q) = self.store.get_thread(tid)?.and_then(|t| t.queue_id) else {
+                continue;
+            };
+            let report = self.store.report(&q, tid, Visibility::All)?;
+            let by_person = |c: &clax_core::queue::ReportComment| {
+                c.triage_only && c.author_kind != AUTHOR_AGENT && c.body != RELEASED_BODY
+            };
+            if report.is_some_and(|r| r.comments.iter().any(by_person)) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn looks_confidential(&self, run: &Run) -> Result<Standing> {
+        if self.threads_hold_secrets(run)? {
+            return Ok(Standing::Confidential);
+        }
+        let touched = || self.touched(run).map(Standing::of);
+        let Some(w) = &self.workspace else {
+            return touched();
+        };
+        let queue = match queue_of(&self.store, run) {
+            Ok(q) => q,
+            // Its thread was deleted: what it holds is what it touched.
+            Err(CoreError::NotFound) => return touched(),
+            Err(e) => return Err(e),
+        };
+        match self.lapse_on(run) {
+            Some(true) => return Ok(Standing::Lapsed),
+            Some(false) => return Ok(Standing::Clear),
+            None => {}
+        }
+        let offer = w.offer(run, queue.as_deref());
+        if offer.unsure {
+            return Err(CoreError::invalid(
+                "target_unread",
+                "the run's target could not be read",
+            ));
+        }
+        if offer.confidential {
+            return Ok(Standing::Confidential);
+        }
+        if offer.shell {
+            Ok(Standing::Clear)
+        } else {
+            touched()
+        }
+    }
+
+    /// Whether anyone may be able to read `run`'s target, its pull requests
+    /// with it, apart from anything the run itself holds. Not knowing is yes:
+    /// only a target that says it is private is taken as private.
+    #[must_use]
+    pub fn target_may_be_public(&self, run: &Run) -> bool {
+        let Some(w) = &self.workspace else {
+            return true;
+        };
+        match queue_of(&self.store, run) {
+            Ok(queue) => !w.target_private(run, queue.as_deref()),
+            Err(_) => true,
+        }
+    }
+
+    /// What `run` gets of the host's workspace, if it has one, asked at
+    /// each call so a right lost during the run ends its shell. On a report
+    /// a run gets nothing unless [`Store::run_reads_queue`], and a run a
+    /// reply started gets no change to propose. Confidentiality is the
+    /// run's own ([`Deps::confidential`]) or what the workspace says.
+    #[must_use]
+    pub fn workspace_offer(&self, run: &Run) -> crate::workspace::Offer {
+        use crate::workspace::Offer;
+        let confidential = run.confidential;
+        let Some(w) = &self.workspace else {
+            return Offer {
+                confidential,
+                ..Offer::default()
+            };
+        };
+        let queue = match queue_of(&self.store, run) {
+            Ok(q) => q,
+            Err(e) => {
+                tracing::warn!("clax-bot: finding the queue of run {}: {e}", run.id);
+                return Offer {
+                    confidential,
+                    ..Offer::default()
+                };
+            }
+        };
+        if self.lapse_on(run) == Some(false) {
+            return Offer {
+                confidential,
+                ..Offer::default()
+            };
+        }
+        let mut offer = w.offer(run, queue.as_deref());
+        offer.confidential |= confidential;
+        if let Some(q) = &queue {
+            let grant = run.agent_grant.as_deref();
+            let reads = self.store.run_reads_queue(&run.person, grant, q);
+            if !matches!(reads, Ok(true)) {
+                return Offer {
+                    confidential: offer.confidential,
+                    ..Offer::default()
+                };
+            }
+        }
+        if run.woken_by == Some(clax_store::bot_runs::WokenBy::Reply) {
+            offer.change = false;
+            offer.answers_only = true;
+        }
+        offer
+    }
+
+    /// The queue of the report `run` works on, if it works on one.
+    ///
+    /// # Errors
+    /// The store's, and `NotFound` for a thread of the run that is gone: a
+    /// run whose queue cannot be told is not a run with no queue.
+    pub(crate) fn run_queue(&self, run: &Run) -> Result<Option<String>> {
+        queue_of(&self.store, run)
     }
 
     pub(crate) fn crashes(&self, at: CrashPoint) -> bool {
@@ -326,6 +602,217 @@ pub fn bot_ctx(person: &str) -> AuditCtx {
         via: Via::Daemon,
         git: GitField::Absent,
         call: None,
+    }
+}
+
+/// A fix on its way to a report, from [`Deps::fix_coming`]. However the call
+/// ends what was held is told: awaited through [`FixComing::settled`], or from
+/// a task of its own when a Stop or a lost claim drops the step.
+pub(crate) struct FixComing {
+    previews: Option<Arc<HostPreviews>>,
+    run: String,
+}
+
+impl FixComing {
+    /// The fix is on its report, or will not be.
+    pub(crate) async fn settled(mut self) {
+        if let Some(p) = self.previews.take() {
+            p.settle(&self.run).await;
+        }
+    }
+}
+
+impl Drop for FixComing {
+    fn drop(&mut self) {
+        if let (Some(p), Ok(rt)) = (self.previews.take(), clax_rt::Handle::try_current()) {
+            let run = std::mem::take(&mut self.run);
+            rt.spawn(async move { p.settle(&run).await });
+        }
+    }
+}
+
+/// A fix's preview, told to the host as ClaxBot acting for the person of
+/// the run that proposed it.
+struct HostPreviews {
+    store: Arc<Store>,
+    host: Arc<dyn crate::host::BotHost>,
+    /// The runs between a proposal and its fix, each with what was told of
+    /// its preview meanwhile, the latest word.
+    proposing: Mutex<HashMap<String, Option<Told>>>,
+    /// The workspace keeps a word it was refused and asks again, so a run
+    /// between ticks, whose proposal no call here holds, can refuse it.
+    asks_again: bool,
+}
+
+/// Whether `calls`, one step's journal, hold a `change.propose` begun and
+/// never answered.
+fn proposal_unanswered(calls: &[clax_store::CallEntry]) -> bool {
+    calls.iter().any(|c| {
+        c.seq() >= INTENT_SEQ
+            && c.op() == crate::workspace::OP_PROPOSE
+            && !calls.iter().any(|a| a.seq() == c.seq() - INTENT_SEQ)
+    })
+}
+
+/// Whether `calls`, a run's journal of `change.propose`, hold a proposal
+/// whose change may be out, recorded on the report or not: one begun that no
+/// answer shows left nothing ([`proposal_left_nothing`]). A proposal refused
+/// before it was begun has no intent here and began nothing.
+fn proposal_stands(calls: &[clax_store::CallEntry]) -> bool {
+    calls.iter().any(|c| {
+        c.seq() >= INTENT_SEQ
+            && !calls.iter().any(|a| {
+                a.step_n() == c.step_n()
+                    && a.seq() == c.seq() - INTENT_SEQ
+                    && proposal_left_nothing(c, a)
+            })
+    })
+}
+
+/// Whether `answer` proves the proposal begun at `intent` left nothing: a
+/// [`crate::workspace::CODE_CHANGE_REFUSED`] from the attempt that began it,
+/// which is the workspace saying this call pushed nothing. An attempt after
+/// that came back to a call that may have gone further than anyone heard, so
+/// what it was told says nothing of the first. No other failure proves it: a
+/// report that no longer takes the fix says so of a change that may have
+/// left, a failure once the change is pushed is no refusal, and what nothing
+/// here knows may be either.
+fn proposal_left_nothing(intent: &clax_store::CallEntry, answer: &clax_store::CallEntry) -> bool {
+    !answer.ok()
+        && answer.attempt() == intent.attempt()
+        && answer.result()["code"] == crate::workspace::CODE_CHANGE_REFUSED
+}
+
+/// What a workspace said of a preview.
+enum Told {
+    /// Its link, and [`crate::workspace::Offer::reviewed_previews`] of what
+    /// the run was offered.
+    Ready(String, bool),
+    Missed,
+}
+
+impl HostPreviews {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Option<Told>>> {
+        self.proposing.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Refuses a word about `run` that its fix is not there yet to take.
+    fn no_fix_yet(&self, run: &str) -> std::result::Result<(), HostError> {
+        if !self.asks_again {
+            return Ok(());
+        }
+        let host_error = |e: CoreError| crate::host::host_error(&e);
+        let Some(open) = self.store.open_step(run).map_err(host_error)? else {
+            return Ok(());
+        };
+        let calls = self.store.bot_calls(run, open.n).map_err(host_error)?;
+        if proposal_unanswered(&calls) {
+            return Err(HostError::new(
+                crate::workspace::CODE_FIX_COMING,
+                "this run's fix is not recorded yet",
+            )
+            .retryable());
+        }
+        Ok(())
+    }
+
+    /// Keeps `told` for later when `run` is between a proposal and its fix.
+    fn held(&self, run: &str, told: impl FnOnce() -> Told) -> bool {
+        match self.lock().get_mut(run) {
+            Some(slot) => {
+                *slot = Some(told());
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Tells what was held for `run`, and holds no more.
+    async fn settle(&self, run: &str) {
+        let held = self.lock().remove(run).flatten();
+        let told = match held {
+            Some(Told::Ready(url, reviewed)) => self.ready(run, &url, reviewed).await,
+            Some(Told::Missed) => self.missed(run).await,
+            None => Ok(()),
+        };
+        if let Err(e) = told {
+            tracing::warn!("clax-bot: telling of run {run}'s preview: {e}");
+        }
+    }
+
+    async fn ready(
+        &self,
+        run: &str,
+        verify_url: &str,
+        reviewed: bool,
+    ) -> std::result::Result<(), HostError> {
+        let run = self
+            .store
+            .run(run)
+            .map_err(|e| crate::host::host_error(&e))?
+            .ok_or_else(|| HostError::new("not_found", format!("no run {run}")))?;
+        // A confidential run's preview is the reporter's only where a
+        // person approves what a preview serves, by the terms the run ran on.
+        let for_reporter = !run.confidential || reviewed;
+        self.host
+            .preview_ready(&run, &bot_ctx(&run.person), verify_url, for_reporter)
+            .await
+    }
+
+    async fn missed(&self, run: &str) -> std::result::Result<(), HostError> {
+        let run = self
+            .store
+            .run(run)
+            .map_err(|e| crate::host::host_error(&e))?
+            .ok_or_else(|| HostError::new("not_found", format!("no run {run}")))?;
+        self.host.preview_missed(&run, &bot_ctx(&run.person)).await
+    }
+}
+
+/// The queue of the report `run` works on: see [`Deps::run_queue`].
+fn queue_of(store: &Store, run: &Run) -> Result<Option<String>> {
+    for tid in &run.thread_ids {
+        let t = store.get_thread(tid)?.ok_or(CoreError::NotFound)?;
+        if t.queue_id.is_some() {
+            return Ok(t.queue_id);
+        }
+    }
+    Ok(None)
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl crate::workspace::PreviewSink for HostPreviews {
+    async fn preview_ready(
+        &self,
+        run: &str,
+        verify_url: &str,
+        reviewed: bool,
+    ) -> std::result::Result<(), HostError> {
+        self.no_fix_yet(run)?;
+        if self.held(run, || Told::Ready(verify_url.to_string(), reviewed)) {
+            return Ok(());
+        }
+        self.ready(run, verify_url, reviewed).await
+    }
+
+    async fn preview_missed(&self, run: &str) -> std::result::Result<(), HostError> {
+        self.no_fix_yet(run)?;
+        if self.held(run, || Told::Missed) {
+            return Ok(());
+        }
+        self.missed(run).await
+    }
+
+    async fn preview_lost(&self, run: &str) -> std::result::Result<(), HostError> {
+        let found = self.store.run(run);
+        let Some(run) = found.map_err(|e| crate::host::host_error(&e))? else {
+            return Ok(());
+        };
+        let words = crate::workspace::PREVIEW_LOST;
+        self.host
+            .note_members(&run, &bot_ctx(&run.person), words)
+            .await
     }
 }
 
@@ -469,7 +956,10 @@ pub enum Wait {
     /// The model stayed unreachable; try again after this.
     Retry(Duration),
     /// Too little of the tick's budget is left to start a turn
-    /// ([`RunSettings::min_turn_budget`]): tick it again with a fresh one.
+    /// ([`RunSettings::min_turn_budget`]), or none for a script's workspace
+    /// call that goes on without the tick
+    /// ([`crate::workspace::Workspace::resumable`]): tick it again with a
+    /// fresh one.
     Budget,
     /// A [`CrashPoint`] hook stopped the tick.
     Crashed,
@@ -1155,16 +1645,23 @@ pub async fn tick(
             TickOutcome::wait(Wait::NotOurs, None, None)
         });
     }
-    let (run, steps) = store.run_with_steps(run_id)?.ok_or(CoreError::NotFound)?;
+    let (mut run, steps) = store.run_with_steps(run_id)?.ok_or(CoreError::NotFound)?;
+    // Lapsed offers stay out of this: [`Tick::holds_secrets`] reads them as
+    // they stand, so a tick they come back in goes by them.
+    run.confidential = deps.standing(&run)? == Standing::Confidential;
+    let confidential = AtomicBool::new(run.confidential);
     let hist = History::of(&steps);
     let n = store.next_step_n(run_id)?;
     let open = steps.into_iter().find(|s| s.committed_at.is_none());
+    let plain = plain_threads(store, &run);
     let t = Tick {
         deps,
         store,
         settings,
         ctx: bot_ctx(&run.person),
+        plain,
         run,
+        confidential,
         hist,
         n,
         open,
@@ -1184,6 +1681,9 @@ pub(crate) struct Tick<'a> {
     pub settings: RunSettings,
     pub ctx: AuditCtx,
     pub run: Run,
+    /// Whether the run holds confidential material as of now: the run's own
+    /// flag as the tick began, or a call of this tick that marked it.
+    pub confidential: AtomicBool,
     pub hist: History,
     pub n: i64,
     /// The step begun and not committed, as the tick found it.
@@ -1191,6 +1691,37 @@ pub(crate) struct Tick<'a> {
     pub driver: &'a DriverId,
     pub opts: TickOpts<'a>,
     pub started: clax_rt::time::Instant,
+    /// The run's threads the tick found on no queue. A thread gets its queue
+    /// when it is made, so a reply on one of these need ask the store nothing
+    /// and cannot be held by a read that fails. A thread that could not be
+    /// read is not one.
+    pub plain: BTreeSet<String>,
+}
+
+/// The threads of `run` that read as being on no queue.
+fn plain_threads(store: &Store, run: &Run) -> BTreeSet<String> {
+    let plain =
+        |tid: &&String| matches!(store.get_thread(tid), Ok(Some(t)) if t.queue_id.is_none());
+    run.thread_ids.iter().filter(plain).cloned().collect()
+}
+
+/// Where a run stands on confidential material ([`Deps::confidential`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Standing {
+    Clear,
+    Confidential,
+    /// Not known: the workspace's offers have lapsed ([`OffersLapse`]).
+    Lapsed,
+}
+
+impl Standing {
+    fn of(confidential: bool) -> Standing {
+        if confidential {
+            Standing::Confidential
+        } else {
+            Standing::Clear
+        }
+    }
 }
 
 /// Why a run stops, and what it tells its threads.
@@ -1253,13 +1784,13 @@ impl Tick<'_> {
     }
 
     /// What is left of the run's time.
-    fn remaining(&self) -> Duration {
+    pub(crate) fn remaining(&self) -> Duration {
         Duration::from_secs(u64::from(self.settings.max_run_minutes) * 60)
             .saturating_sub(self.elapsed())
     }
 
     /// What is left of the tick's budget and the run's time.
-    fn available(&self) -> Duration {
+    pub(crate) fn available(&self) -> Duration {
         match self.opts.budget {
             Some(b) => b
                 .saturating_sub(self.started.elapsed())
@@ -1276,7 +1807,7 @@ impl Tick<'_> {
         seq: i64,
         op: &str,
         args: &Value,
-    ) -> std::result::Result<clax_store::CallEntry, clax_bot_sandbox::HostError> {
+    ) -> std::result::Result<clax_store::CallEntry, HostError> {
         self.store
             .call_entry(
                 &self.run.id,
@@ -1291,7 +1822,74 @@ impl Tick<'_> {
     }
 
     pub(crate) fn op_ctx(&self, attempt: i64, seq: i64) -> OpCtx<'_> {
-        OpCtx::new(&self.run, &self.ctx, self.n, attempt, seq)
+        OpCtx::new(&self.run, &self.ctx, self.n, attempt, seq).members_only(self.holds_secrets())
+    }
+
+    /// [`Self::op_ctx`] for a reply on thread `tid`, the model's or the run's
+    /// own notice: members only as well when the fix keeps the run from the
+    /// report's reporter ([`Self::fix_holds_replies`]). Reads stay with
+    /// [`Self::op_ctx`], since a reply held says nothing of what the run may
+    /// read. A hold that cannot be told is taken to stand, on any thread not
+    /// known to have no reporter ([`Tick::plain`]).
+    pub(crate) fn reply_ctx(&self, attempt: i64, seq: i64, tid: &str) -> OpCtx<'_> {
+        let held = self.fix_holds_replies(tid).unwrap_or_else(|e| {
+            tracing::warn!("clax-bot: reading the fixes of run {}: {e}", self.run.id);
+            true
+        });
+        let cx = self.op_ctx(attempt, seq);
+        let members_only = cx.members_only || held;
+        cx.members_only(members_only)
+    }
+
+    /// Whether the run's words on report `tid` stop at the queue's people:
+    /// from a proposal whose change may be out on ([`proposal_stands`]), for
+    /// the rest of the run (a preview that answers changes nothing: what
+    /// ClaxBot writes of a fix stays with them), and while a run's fix waits
+    /// there, unless this run was woken to answer the reporter of a fix they
+    /// have to check. Asked of the store at every reply, so it holds on a step
+    /// executed again, a tick that resumes one and either host. A thread no
+    /// queue holds has no reporter, and one the tick found so is not asked
+    /// of the store at all.
+    fn fix_holds_replies(&self, tid: &str) -> Result<bool> {
+        if self.plain.contains(tid) {
+            return Ok(false);
+        }
+        let on_report = self
+            .store
+            .get_thread(tid)?
+            .is_some_and(|t| t.queue_id.is_some());
+        if !on_report {
+            return Ok(false);
+        }
+        let op = crate::workspace::OP_PROPOSE;
+        if proposal_stands(&self.store.bot_calls_of(&self.run.id, op)?) {
+            return Ok(true);
+        }
+        let answers = self.run.woken_by == Some(clax_store::bot_runs::WokenBy::Reply);
+        Ok(match self.store.waiting_run_fix_held(tid)? {
+            Some(held) => held || !answers,
+            None => false,
+        })
+    }
+
+    /// Whether the run holds confidential material as of now, or the
+    /// workspace's offers have lapsed for it, so that it cannot be told.
+    pub(crate) fn holds_secrets(&self) -> bool {
+        self.confidential.load(Ordering::SeqCst) || self.deps.offers_lapsed(&self.run)
+    }
+
+    /// Marks the run as holding confidential material, for good and for the
+    /// rest of this tick: a workspace that offers some, before its first
+    /// effect. Lapsed offers say nothing of the run, so nothing is marked.
+    ///
+    /// # Errors
+    /// The store's: the call must not go on as though it were kept.
+    pub(crate) fn mark_confidential(&self) -> Result<()> {
+        if !self.deps.offers_lapsed(&self.run) && !self.confidential.load(Ordering::SeqCst) {
+            self.store.mark_run_confidential(&self.run.id)?;
+            self.confidential.store(true, Ordering::SeqCst);
+        }
+        Ok(())
     }
 
     /// Commits the open step and tells the run's events; the step's
@@ -1511,10 +2109,10 @@ impl Tick<'_> {
     }
 
     /// [`Self::notify`], the `i`th thread's post at journal place `first + i`.
-    async fn notify_at(&self, attempt: i64, first: i64, markdown: &str) {
+    pub(crate) async fn notify_at(&self, attempt: i64, first: i64, markdown: &str) {
         for (i, t) in self.run.thread_ids.iter().enumerate() {
             let seq = first + i as i64;
-            let cx = self.op_ctx(attempt, seq);
+            let cx = self.reply_ctx(attempt, seq, t);
             let res = match (
                 self.entry(attempt, seq, "reply", &json!([t, markdown])),
                 self.deps.host.plan_reply(&cx, t, markdown).await,
@@ -1556,6 +2154,7 @@ impl Tick<'_> {
         observed: Observed,
     ) -> Result<TickOutcome> {
         let s = self.begin(StepKind::Stopped)?;
+        self.tell_stranded().await;
         if let Some(notice) = &stop.notice {
             self.notify(s.attempt, notice).await;
         }
@@ -1585,7 +2184,7 @@ impl Tick<'_> {
             },
             observed,
         )?;
-        self.deps.host.working(&self.run, false).await;
+        self.ended(&c).await;
         Ok(self.outcome(StepKind::Stopped, c))
     }
 
@@ -1602,9 +2201,31 @@ impl Tick<'_> {
         .await
     }
 
+    /// Tells the queue's members when this step ends with a `change.propose`
+    /// begun and unanswered: nothing else will say where its change went.
+    /// Called again it adds nothing ([`BotHost::note_members`]).
+    pub(crate) async fn tell_stranded(&self) {
+        let calls = self.store.bot_calls(&self.run.id, self.n);
+        if !calls.is_ok_and(|c| proposal_unanswered(&c)) {
+            return;
+        }
+        if !matches!(self.deps.run_queue(&self.run), Ok(Some(_))) {
+            return;
+        }
+        let words = crate::workspace::PROPOSAL_STRANDED;
+        let told = self.deps.host.note_members(&self.run, &self.ctx, words);
+        if let Err(e) = told.await {
+            tracing::warn!(
+                "clax-bot: telling of a stranded proposal of {}: {e}",
+                self.run.id
+            );
+        }
+    }
+
     /// Ends the run `failed`: its step could not be committed.
     async fn fail(&self) -> Result<TickOutcome> {
         let s = self.begin(StepKind::Failed)?;
+        self.tell_stranded().await;
         let notice = format!("{} {}", stop_lead("internal_error"), self.what_i_did());
         self.notify(s.attempt, &notice).await;
         let commit = || StepCommit {
@@ -1626,7 +2247,7 @@ impl Tick<'_> {
             )?,
             other => other?,
         };
-        self.deps.host.working(&self.run, false).await;
+        self.ended(&c).await;
         Ok(self.outcome(StepKind::Failed, c))
     }
 
@@ -1714,8 +2335,21 @@ impl Tick<'_> {
             },
             Observed::default(),
         )?;
-        self.deps.host.working(&self.run, false).await;
+        self.ended(&c).await;
         Ok(self.outcome(StepKind::Finish, c))
+    }
+
+    /// What every way a run can end does once its end is committed
+    /// (`c`): stops showing it working and ends its container. A commit
+    /// that did not go through ended nothing: the step runs again.
+    async fn ended<T, E>(&self, c: &std::result::Result<T, E>) {
+        if c.is_err() {
+            return;
+        }
+        self.deps.host.working(&self.run, false).await;
+        if let Some(w) = &self.deps.workspace {
+            w.finish(&self.run).await;
+        }
     }
 
     async fn give_up(&self, code: &str, reason: &str) -> Result<TickOutcome> {
@@ -1735,7 +2369,7 @@ impl Tick<'_> {
             },
             Observed::default(),
         )?;
-        self.deps.host.working(&self.run, false).await;
+        self.ended(&c).await;
         Ok(self.outcome(StepKind::GiveUp, c))
     }
 
@@ -1873,8 +2507,16 @@ impl Tick<'_> {
                         .await;
                 }
             };
+            let mut offer = self.deps.workspace_offer(&self.run);
+            offer.confidential |= self.holds_secrets();
+            // A confidential run's web calls are refused: it declares none.
+            let web = if offer.confidential {
+                crate::web::WebShape::default()
+            } else {
+                crate::web::WebShape::parse(&self.run.web)
+            };
             (
-                prompt::system_prompt(self.run.request, crate::web::WebShape::parse(&self.run.web)),
+                prompt::system_prompt_for(self.run.request, web, offer),
                 vec![Block::text(prompt::request_message(self.run.request, &cx))],
             )
         } else {

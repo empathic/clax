@@ -1,0 +1,117 @@
+# ClaxBot's workspace for Changelist: copy to <home>/workspace.toml. README.md
+# here says what it needs and what to replace.
+#
+# DO NOT TURN THIS ON YET. Changelist's preview.yml deploys every branch of
+# the repository with no approval, and its README ("Token setup") says the
+# `preview` environment's Fly token and Neon key are equivalent to production
+# deploy access until previews have a Fly organization and Neon project of
+# their own. A claxbot/ branch would run with them unreviewed. First give
+# that workflow the gate Clax's has (.github/workflows/preview.yml here).
+
+# No image is published for this: the repository's Dockerfile is the
+# runtime, a COPY of what scripts/build.sh made outside it. Unset, a
+# container is the runtime's default, which builds nothing. Make one and
+# name it here, with git, and what .github/actions/setup-build installs:
+#   Rust 1.99.1 with wasm32-unknown-unknown (rust-toolchain.toml)
+#   clang and llvm with the WebAssembly backend (crates/engine's grammars)
+#   wasm-bindgen at Cargo.lock's version, and scripts/binaryen.sh's binaryen
+#   Node 26.x and pnpm 12.3.4 (web/package.json)
+#   Bazel 9.3.1 through bazelisk, for its CI's path (.bazelversion)
+#   Postgres 17 only to run the server tests against it (ci.yml)
+# image = "<yours>"
+auto_stop_minutes = 30
+
+# What MODULE.bazel, the lockfiles and setup-build fetch from, with the hosts
+# GitHub's archives and releases redirect to (a git dependency in Cargo.lock,
+# binaryen and wasm-bindgen releases; rules_nodejs takes Node from
+# nodejs.org). Not measured by running a build in a container: add what the
+# first one is refused.
+domain_allow_list = [
+  "github.com",
+  "codeload.github.com",
+  "objects.githubusercontent.com",
+  "release-assets.githubusercontent.com",
+  "index.crates.io",
+  "static.crates.io",
+  "static.rust-lang.org",
+  "bcr.bazel.build",
+  "releases.bazel.build",
+  "registry.npmjs.org",
+  "nodejs.org",
+  "files.pythonhosted.org",
+]
+
+[runtime]
+kind = "daytona"
+
+[[target]]
+# The ID of the queue whose reports are for Changelist. Changelist has no
+# Clax queue yet: until this is one, no run matches this target.
+queue = "REPLACE_WITH_QUEUE_ID"
+repo_url = "https://github.com/empathic/changelist.git"
+repo = "empathic/changelist"
+base = "main"
+# Whether the repository is private could not be read from a checkout, so
+# this takes it to be: containers get a read token from the App. Say
+# `public = true` for a public one.
+
+# On top of `.github/`, `.gitmodules`, `.gitattributes` and `.lfsconfig`,
+# which every target has.
+protected_paths = [
+  # CI.
+  "deny.toml",
+  "scripts/bazel-test.sh",
+  "scripts/check.sh",
+  "scripts/ci.sh",
+  # Deploy: what preview.yml runs with its Fly token and Neon key.
+  ".dockerignore",
+  "Dockerfile",
+  "config/",
+  "scripts/build.sh",
+  "scripts/env-deploy.sh",
+  "scripts/env-reap.sh",
+  "scripts/env-resolve.sh",
+  "scripts/env-teardown.sh",
+  "scripts/image-smoke.sh",
+  "scripts/op.dev.env",
+  "scripts/op.env",
+  "scripts/op.prod.env",
+  # Release.
+  "scripts/cut-release.sh",
+  "scripts/release-source.sh",
+  # Migrations.
+  "crates/migration/",
+  # Sign-in and authorization.
+  "crates/server/src/app_auth.rs",
+  "crates/server/src/auth/",
+  "crates/server/src/setup.rs",
+]
+
+# The Fly app changelist-pr-<N> (preview.yml). A new preview has no GitHub
+# App until someone registers one through the setup link in its pull
+# request's comment, so a reporter cannot sign in to it before then.
+preview_url = "https://changelist-pr-{pr}.fly.dev"
+preview_ready_path = "/api/health"
+# Readiness cannot name a commit: /api/health answers {"ok":true} and nothing
+# else (crates/server/src/api/health.rs). So on a second push to a pull
+# request the wait ends at once, on the deployment before it, and the
+# reporter is sent to a preview without the fix. Only a pull request's
+# first deploy is told apart, its app not answering until then. Naming the
+# commit takes a change there: the head's full SHA in that answer. The
+# image builds from the merge commit GitHub makes, not the head, so
+# stamping it from the build's own checkout would not do.
+preview_names_commit = false
+# preview.yml deploys after its `ci` job, whose limit is 75 minutes with
+# nothing cached. The timeout has to fit inside a run, 30 minutes by
+# default (max_run_minutes), and how long CI and the deploy take has not
+# been measured: a run that outlasts this reports no address to verify at.
+preview_timeout_secs = 1200
+
+# Last in the file: TOML reads what follows a table as part of it. The App's
+# tokens are minted per repository and its commits are signed by GitHub. It
+# needs Contents and Pull requests read and write on this repository, and no
+# Workflows permission; replace both numbers.
+[target.github_app]
+app_id = 0
+installation_id = 0
+private_key_env = "CLAXBOT_CHANGELIST_APP_KEY"

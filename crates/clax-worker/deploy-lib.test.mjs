@@ -9,6 +9,7 @@ import {
   SMOKE_CANNOT,
   buildId,
   builtCommitOf,
+  builtFromOptionRefusal,
   builtFromRefusal,
   checkCiOptions,
   checkStaging,
@@ -27,6 +28,9 @@ import {
   smokeCredential,
   versionIdOf,
   wildcardRecordOf,
+  workspaceSettings,
+  workspaceFrontPlan,
+  workspaceTokenPlan,
   wranglerError,
 } from "./deploy-lib.mjs";
 
@@ -43,6 +47,66 @@ Uploaded clax (21.37 sec)
   If you think this is a bug, please open an issue at:
   https://github.com/cloudflare/workers-sdk/issues/new/choose
 `;
+
+const TOKEN = "t".repeat(32);
+const URL_SET = "https://w.example.com";
+
+test("workspaceSettings keeps what it was given, by the record's names and the Worker's", () => {
+  const s = workspaceSettings({ "workspace-service-url": URL_SET }, { workspace_forge_hosts: "github.com" });
+  assert.deepEqual(s.vars, { CLAX_WORKSPACE_SERVICE_URL: URL_SET, CLAX_WORKSPACE_FORGE_HOSTS: "github.com" });
+  assert.deepEqual(s.record, { workspace_service_url: URL_SET, workspace_forge_hosts: "github.com" });
+});
+
+test("a Worker named a service must hold the bearer secret, or be given it", () => {
+  assert.match(workspaceTokenPlan({ have: [], url: URL_SET }).error, /wrangler secret put CLAX_WORKSPACE_SERVICE_TOKEN/);
+  assert.equal(workspaceTokenPlan({ have: ["CLAX_WORKSPACE_SERVICE_TOKEN"], url: URL_SET }).error, undefined);
+  assert.equal(workspaceTokenPlan({ have: [], url: URL_SET, given: TOKEN }).upload, TOKEN);
+});
+
+test("a token given is at least as long as the service takes", () => {
+  assert.match(workspaceTokenPlan({ have: [], url: URL_SET, given: "short" }).error, /at least 32 bytes/);
+});
+
+test("a token given replaces the Worker's, and goes with a service alone", () => {
+  assert.equal(workspaceTokenPlan({ have: ["CLAX_WORKSPACE_SERVICE_TOKEN"], url: URL_SET, given: TOKEN }).upload, TOKEN);
+  assert.match(workspaceTokenPlan({ have: [], given: TOKEN }).error, /--workspace-service-url/);
+});
+
+test("a preview holds no bearer secret, given or kept", () => {
+  assert.match(workspaceTokenPlan({ have: [], given: TOKEN, preview: true }).error, /a preview/);
+  assert.match(workspaceTokenPlan({ have: ["CLAX_WORKSPACE_SERVICE_TOKEN"], preview: true }).error, /a preview/);
+  assert.equal(workspaceTokenPlan({ have: [], preview: true }).error, undefined);
+});
+
+const FRONT_ID = "CLAX_WORKSPACE_ACCESS_CLIENT_ID";
+const FRONT_SECRET = "CLAX_WORKSPACE_ACCESS_CLIENT_SECRET";
+
+test("what fronts the service takes both of its secrets or neither", () => {
+  assert.deepEqual(workspaceFrontPlan({ have: [], url: URL_SET }), {});
+  assert.deepEqual(workspaceFrontPlan({ have: [FRONT_ID, FRONT_SECRET], url: URL_SET }), {});
+  assert.match(workspaceFrontPlan({ have: [], url: URL_SET, given: { id: "i" } }).error, /together/);
+  assert.match(workspaceFrontPlan({ have: [], url: URL_SET, given: { secret: "s" } }).error, /together/);
+  assert.match(workspaceFrontPlan({ have: [FRONT_ID], url: URL_SET }).error, /alone/);
+  assert.deepEqual(workspaceFrontPlan({ have: [], url: URL_SET, given: { id: "i", secret: "s" } }).upload, { [FRONT_ID]: "i", [FRONT_SECRET]: "s" });
+  assert.match(workspaceFrontPlan({ have: [], given: { id: "i", secret: "s" } }).error, /--workspace-service-url/);
+});
+
+test("a preview holds neither secret of what fronts the service, given or kept", () => {
+  assert.match(workspaceFrontPlan({ have: [], given: { id: "i", secret: "s" }, preview: true }).error, /a preview/);
+  assert.match(workspaceFrontPlan({ have: [FRONT_SECRET], preview: true }).error, /a preview/);
+  assert.deepEqual(workspaceFrontPlan({ have: [], preview: true }), {});
+});
+
+test("a Worker with no service asks nothing, and says when it holds a secret for none", () => {
+  assert.equal(workspaceTokenPlan({ have: [] }).error, undefined);
+  assert.match(workspaceTokenPlan({ have: ["CLAX_WORKSPACE_SERVICE_TOKEN"] }).say, /did not start/);
+});
+
+test("with no login the secret cannot be checked, and the plan says so", () => {
+  const plan = workspaceTokenPlan({ have: null, url: URL_SET });
+  assert.equal(plan.error, undefined);
+  assert.match(plan.say, /no login/);
+});
 
 test("the real partial trigger update is retried", () => {
   assert.equal(partialTriggerUpdate(PARTIAL), true);
@@ -401,6 +465,20 @@ test("--no-build deploys only a Worker built from the checked-out commit", () =>
   assert.match(builtFromRefusal(null, record(head), head), /no index_bg\.wasm/);
   // No commit to compare (not a git checkout): nothing to refuse on.
   assert.equal(builtFromRefusal(wasm, null, ""), null);
+});
+
+test("--built-from names a full commit, for a build deployed by another checkout's scripts", () => {
+  const sha = "0a2f4805a1b2c3d4e5f60718293a4b5c6d7e8f90";
+  const preview = { "built-from": sha, build: false, ci: true, ephemeral: true };
+  assert.equal(builtFromOptionRefusal({ build: true }), null);
+  assert.equal(builtFromOptionRefusal(preview), null);
+  assert.match(builtFromOptionRefusal({ ...preview, "built-from": "0a2f" }), /full commit/);
+  assert.match(builtFromOptionRefusal({ ...preview, "built-from": "--output=x" }), /full commit/);
+  assert.match(builtFromOptionRefusal({ ...preview, build: true }), /--no-build/);
+  // Only a preview's: anything else deploys what its own checkout built.
+  assert.match(builtFromOptionRefusal({ ...preview, ephemeral: false }), /preview/);
+  assert.match(builtFromOptionRefusal({ ...preview, production: true }), /preview/);
+  assert.match(builtFromOptionRefusal({ ...preview, staging: true }), /preview/);
 });
 
 test("--no-build deploys a Worker built from another commit with the checked-out commit's tree", () => {

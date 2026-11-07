@@ -133,7 +133,7 @@ async fn the_fake_host_passes_the_host_conformance_suite() {
         revoke: Box::new(move |person| host.lock().readers.push(person.to_string())),
     };
     let results = check_host(&fixture).await;
-    assert_eq!(results.len(), 9);
+    assert_eq!(results.len(), 10);
     for (name, r) in results {
         r.unwrap_or_else(|e| panic!("{name}: {e}"));
     }

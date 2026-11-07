@@ -399,6 +399,18 @@ pub fn finish_turn(summary: &str) -> Reply {
     )
 }
 
+pub fn give_up_turn(reason: &str) -> Reply {
+    stream(
+        &[B::Tool(
+            "tu_giv",
+            "give_up",
+            json!({"reason": reason}).to_string(),
+        )],
+        "tool_use",
+        USAGE,
+    )
+}
+
 pub fn text_turn(text: &'static str) -> Reply {
     stream(&[B::Text(text)], "end_turn", USAGE)
 }
@@ -658,7 +670,7 @@ impl Env {
         )
     }
 
-    fn run_shaped(
+    pub fn run_shaped(
         &self,
         request: RequestKind,
         model: &str,
@@ -682,6 +694,56 @@ impl Env {
             )
             .unwrap()
             .id
+    }
+
+    /// A thread run for `person` on thread `tid` of artifact `aid`.
+    pub fn run_for(&self, person: &str, aid: &str, tid: &str) -> String {
+        self.store
+            .create_run(
+                &clax_bot::run::bot_ctx(person),
+                NewRun {
+                    artifact_id: aid.into(),
+                    person: person.into(),
+                    request: RequestKind::Thread,
+                    thread_ids: vec![tid.into()],
+                    model: "claude-sonnet-5-5".into(),
+                    key_source: KeySource::Instance,
+                    base_version: 1,
+                    agent_grant: None,
+                    web: String::new(),
+                },
+            )
+            .unwrap()
+            .id
+    }
+
+    /// A thread run for the owner on thread `tid` of artifact `aid`, started
+    /// by a reporter's `by`.
+    pub fn woken_run(&self, by: clax_store::bot_runs::WokenBy, aid: &str, tid: &str) -> String {
+        self.store
+            .create_woken_run(
+                &clax_bot::run::bot_ctx(OWNER),
+                NewRun {
+                    artifact_id: aid.into(),
+                    person: OWNER.into(),
+                    request: RequestKind::Thread,
+                    thread_ids: vec![tid.into()],
+                    model: "claude-sonnet-5-5".into(),
+                    key_source: KeySource::Instance,
+                    base_version: 1,
+                    agent_grant: None,
+                    web: String::new(),
+                },
+                by,
+            )
+            .unwrap()
+            .unwrap()
+            .id
+    }
+
+    /// The home's database file.
+    pub fn home_db(&self) -> std::path::PathBuf {
+        Home::at(self._dir.path().join("ax")).db_path()
     }
 
     pub fn deps_with(&self, sandbox: Arc<dyn Sandbox>) -> Deps {

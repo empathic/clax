@@ -84,6 +84,115 @@ describe("ReportView", () => {
     expect([...m.root.querySelectorAll(".btns button")].map(b => b.textContent)).toEqual(["Propose fix", "Resolve", "Verify for the reporter", "Reopen for the reporter"]);
   });
 
+  // A held fix as the daemon shows it to members: `verify_url` is what the
+  // reporter was given, so a held fix has none; `preview_url` and
+  // `preview_missed` say where its preview stands.
+  const heldFix = { n: 1, summary: "Rounds the total", url: "https://github.com/o/r/pull/9", commit: "abc123", proposer_name: "ClaxBot", proposer_kind: "agent" as const, held: true, preview_url: null, preview_missed: false, created_at: "2026-10-29T09:00:00Z", outcome: "pending" as const };
+  const PREVIEW = "https://pr-9.acme.dev/";
+
+  it("tells members the reporter waits on a held fix waiting for its preview, and does not call it waiting for the reporter", async () => {
+    stubFetch({ [`GET ${R}`]: { report: report(1, { state: "fix_proposed", fixes: [heldFix] }) } });
+    const m = view();
+    await settle();
+    const line = m.root.querySelector("[data-held]")!;
+    expect(line.textContent).toContain("The reporter is waiting on you.");
+    expect(line.textContent).toContain("Fix 1 is waiting for its preview, so they have nothing to check yet.");
+    expect(line.querySelector("a")).toBeNull();
+    expect(m.root.querySelector('.fix[data-n="1"]')!.textContent).toContain("Held for you");
+    expect(m.root.querySelector('.fix[data-n="1"]')!.textContent).not.toContain("Waiting for the reporter");
+  });
+
+  it("gives members a held fix's preview, says the reporter has not got it, and hands it over with that link", async () => {
+    const up = { ...heldFix, preview_url: PREVIEW };
+    const handed = { ...heldFix, n: 2, held: false, verify_url: PREVIEW, proposer_name: "Mia" };
+    const proposed = report(1, { state: "fix_proposed", fixes: [{ ...up, held: false, outcome: "superseded" }, handed] });
+    const calls = stubFetch({ [`GET ${R}`]: { report: report(1, { state: "fix_proposed", fixes: [up] }) }, [`POST ${R}/fix`]: { report: proposed } });
+    const m = view();
+    await settle();
+    const line = m.root.querySelector("[data-held]")!;
+    expect(line.querySelector<HTMLAnchorElement>(`a[href="${PREVIEW}"]`)).not.toBeNull();
+    expect(line.textContent).toContain("Fix 1 has a preview, which only this queue's people can see");
+    expect(line.textContent).toContain("They hear of it when you hand it over.");
+    expect(line.textContent).not.toContain("no preview");
+    click(button(line as Element, "Hand it to the reporter"));
+    expect(m.root.querySelector<HTMLTextAreaElement>('textarea[name="summary"]')!.value).toBe("Rounds the total");
+    expect(m.root.querySelector<HTMLInputElement>('input[name="verify_url"]')!.value).toBe(PREVIEW);
+    submit(m.root);
+    await settle();
+    expect(calls.find(c => c.method === "POST")!.body).toEqual({ summary: "Rounds the total", url: "https://github.com/o/r/pull/9", commit: "abc123", verify_url: PREVIEW });
+    expect(m.root.querySelector("[data-held]")).toBeNull();
+  });
+
+  it("says when the wait for a held fix's preview ended with none, and that a link of a person's own is what is left", async () => {
+    stubFetch({ [`GET ${R}`]: { report: report(1, { state: "fix_proposed", fixes: [{ ...heldFix, preview_missed: true }] }) } });
+    const m = view();
+    await settle();
+    const line = m.root.querySelector("[data-held]")!;
+    expect(line.textContent).toContain("ClaxBot stopped watching for a preview of fix 1 without seeing one up, so they have no link to check.");
+    expect(line.textContent).toContain("hand it over with a link of your own");
+    expect(line.textContent).not.toContain("waiting for its preview");
+    expect(line.querySelector("a")).toBeNull();
+  });
+
+  it("will not hand a held fix over with no link, and sends nothing", async () => {
+    const calls = stubFetch({ [`GET ${R}`]: { report: report(1, { state: "fix_proposed", fixes: [heldFix] }) } });
+    const m = view();
+    await settle();
+    click(button(m.root.querySelector("[data-held]")!, "Hand it to the reporter"));
+    expect(m.root.querySelector('input[name="verify_url"]')!.getAttribute("aria-required")).toBe("true");
+    submit(m.root);
+    await settle();
+    expect(m.root.querySelector('[role="alert"]')!.textContent).toBe("Say where the reporter checks it: until this fix has a link, they have nothing to check.");
+    expect(calls.some(c => c.method === "POST")).toBe(false);
+    // The same goes for Propose fix, since a person's fix supersedes the held one.
+    click(button(m.root.querySelector(".btns")!, "Propose fix"));
+    click(button(m.root.querySelector(".btns")!, "Propose fix"));
+    type(m.root.querySelector('textarea[name="summary"]'), "Rounds it");
+    submit(m.root);
+    await settle();
+    expect(calls.some(c => c.method === "POST")).toBe(false);
+  });
+
+  it("leaves the link optional when no fix is held", async () => {
+    stubFetch({ [`GET ${R}`]: { report: report(1, { state: "open" }) } });
+    const m = view();
+    await settle();
+    click(button(m.root.querySelector(".btns")!, "Propose fix"));
+    expect(m.root.querySelector('input[name="verify_url"]')!.hasAttribute("aria-required")).toBe(false);
+  });
+
+  it("puts the daemon's refusal of a hand-over with no link in the form's words, as a fix may be held since this view read it", async () => {
+    stubFetch({
+      [`GET ${R}`]: { report: report(1, { state: "open" }) },
+      [`POST ${R}/fix`]: [400, { error: { code: "verify_url_required", message: "the reporter has nothing to check until this fix has a link" } }],
+    });
+    const m = view();
+    await settle();
+    click(button(m.root.querySelector(".btns")!, "Propose fix"));
+    type(m.root.querySelector('textarea[name="summary"]'), "Rounds it");
+    submit(m.root);
+    await settle();
+    expect(m.root.querySelector('[role="alert"]')!.textContent).toBe("Say where the reporter checks it: until this fix has a link, they have nothing to check.");
+    expect(m.root.querySelector<HTMLTextAreaElement>('textarea[name="summary"]')!.value).toBe("Rounds it");
+  });
+
+  it("does not hand the reporter the words that told them a person reviews the fix", async () => {
+    const fixed = { ...heldFix, summary: "A fix has been proposed." };
+    stubFetch({ [`GET ${R}`]: { report: report(1, { state: "fix_proposed", fixes: [fixed] }) } });
+    const m = view();
+    await settle();
+    click(button(m.root.querySelector("[data-held]")!, "Hand it to the reporter"));
+    expect(m.root.querySelector<HTMLTextAreaElement>('textarea[name="summary"]')!.value).toBe("A fix is ready for you to check.");
+  });
+
+  it("says nothing of a fix no longer held, or one that ended", async () => {
+    stubFetch({ [`GET ${R}`]: { report: report(1, { state: "open", fixes: [{ ...heldFix, outcome: "superseded" }] }) } });
+    const m = view();
+    await settle();
+    expect(m.root.querySelector("[data-held]")).toBeNull();
+    expect(m.root.querySelector('.fix[data-n="1"]')!.textContent).not.toContain("Held for you");
+  });
+
   it("resolve requires a reason", async () => {
     const calls = stubFetch({ [`GET ${R}`]: { report: report(1) }, [`POST ${R}/resolve`]: { report: report(1, { state: "resolved", status: "resolved", resolve_reason: "duplicate" }) } });
     const m = view();

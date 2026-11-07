@@ -12,9 +12,12 @@
 // $CLAX_QUEUES_SHOTS_DIR when it is set (under Bazel:
 // `--test_env=CLAX_QUEUES_SHOTS_DIR=$PWD/target/e2e-queues`), else to the
 // test's output directory.
+import { join } from "node:path";
+import type { Browser, Page } from "@playwright/test";
 import type { Lease, Report, ReportPage } from "../sdk/src/types";
-import { startDeployerSite } from "./deployer-site/server";
-import { expect, test } from "./fixtures";
+import { type DeployerSite, startDeployerSite } from "./deployer-site/server";
+import { fakeMessages, finishTurn } from "./fake-messages";
+import { NO_KEY_CONFIG, expect, startDaemon, test } from "./fixtures";
 import { hostedDaemon, ownerOf } from "./hosted-helpers";
 import { agentOf, agentTokenOf, cspViolations, openReports, queueWithGrant, refocus, reporterOn, shotPath } from "./queues-helpers";
 
@@ -56,6 +59,28 @@ test("a site's user files a report through the overlay; an agent claims, replies
     await expect(secret).toHaveCount(0);
     await expect(card.locator("li.line[data-grant]")).toHaveCount(1);
     site.grant({ queue: qid, token, privateKey });
+
+    // Its repository: connected with tokens, which come back as metadata
+    // alone, each beside the hosts it goes to.
+    const repo = card.getByRole("region", { name: "Repository of Leave app reports" });
+    await expect(repo.getByText("Not connected.")).toBeVisible();
+    await repo.getByLabel("Repository", { exact: true }).fill("acme/leave");
+    await repo.getByLabel("Preview URL").fill("https://pr-{pr}.acme.dev");
+    await repo.getByRole("button", { name: "Connect" }).click();
+    await expect(repo.getByText("Not ready: add a write token and a read token below.")).toBeVisible();
+    const write = repo.locator('[data-token="write"]');
+    await expect(write.locator("[data-hosts]")).toHaveText("Sent to github.com and api.github.com.");
+    await write.getByRole("button", { name: /^Set/ }).click();
+    await write.locator('input[type="password"]').fill("github_pat_e2e_0123456789_wxyz");
+    await write.getByRole("button", { name: "Save" }).click();
+    await expect(write.getByText("Set, ending wxyz")).toBeVisible();
+    // A private repository needs a read token too, and the panel says so.
+    await expect(repo.getByText("Not ready: add a read token below.")).toBeVisible();
+    await expect(repo).not.toContainText("github_pat_e2e");
+    await owner.screenshot({ path: shotPath(info, "queues-repository"), fullPage: true });
+    owner.once("dialog", dialog => void dialog.accept());
+    await repo.getByRole("button", { name: "Disconnect" }).click();
+    await expect(repo.getByText("Not connected.")).toBeVisible();
 
     // emp-1, signed in to the site only, picks the first request's heading
     // and files a report with its clip.
@@ -408,6 +433,200 @@ test("the triage views stay current: a filing, an agent's claim and a person's r
     const mine = await openReports(emp1);
     await expect(mine).toContainText("The dates are off by one.");
     await expect(mine).not.toContainText("Stuck since Monday");
+  } finally {
+    await site.stop();
+    await d.stop();
+  }
+});
+
+/** A report filed through the overlay by a site user, signed in as `emp-1`. */
+async function fileReport(browser: Browser, site: DeployerSite): Promise<Page> {
+  const emp1 = await reporterOn(browser, site, "emp-1");
+  await emp1.locator(".report-btn").click();
+  await expect(emp1.getByText("Click what your report is about")).toBeVisible();
+  await emp1.locator("#req-1 h2").click();
+  const composer = emp1.getByRole("form", { name: "New report" });
+  await composer.getByRole("textbox", { name: "Report" }).fill("The dates are off by one.");
+  await composer.getByRole("button", { name: "Send" }).click();
+  await expect(emp1.getByRole("status", { name: "Filed" })).toBeVisible();
+  return emp1;
+}
+
+/** Report `tid`'s waiting fix made a run's held fix on the daemon of `home`,
+ * its preview as `preview` says. A run proposes a fix only through a container,
+ * which no daemon here has, so the row is written as a run's would be; all the
+ * views then show of it is the daemon's own answer. */
+async function holdFix(home: string, tid: string, preview: { url?: string; missed?: boolean } = {}): Promise<void> {
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(join(home, "clax.db"));
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+    db.prepare("UPDATE report_fixes SET held = 1, proposal_key = 'e2e', preview_url = ?, preview_missed = ? WHERE thread_id = ? AND outcome = 'pending'")
+      .run(preview.url ?? null, preview.missed ? 1 : 0, tid);
+  } finally { db.close(); }
+}
+
+// On a local daemon: a hosted one takes no model address but a public https
+// one, so it cannot reach the scripted Messages API.
+test("a report goes to ClaxBot from its view, and the run panel follows it and finds it again", async ({ browser }) => {
+  test.setTimeout(90_000);
+  const fake = await fakeMessages([finishTurn("The dates come from the server's clock.")]);
+  const d = await startDaemon({
+    config: `${NO_KEY_CONFIG}[bot]\nbase_url = "${fake.base}"\napi_key_env = "CLAX_E2E_BOT_KEY"\n`,
+    env: { CLAX_E2E_BOT_KEY: "sk-ant-e2e-not-a-real-key-0000" },
+  });
+  const site = await startDeployerSite(d.base);
+  try {
+    const owner = await (await browser.newContext()).newPage();
+    const qid = await queueWithGrant(owner, d.base, site);
+    await fileReport(browser, site);
+
+    await owner.goto(`${d.base}/queues/${qid}`);
+    await owner.locator("li.rrow a").click();
+    const bot = owner.getByRole("region", { name: "ClaxBot" });
+    await expect(bot).toContainText("ClaxBot can work on this report, using your credits");
+    await bot.getByRole("button", { name: "Send to ClaxBot" }).click();
+    const panel = owner.getByRole("complementary", { name: "ClaxBot" });
+    await expect(panel.locator(".st")).toHaveText("Finished");
+    await expect(panel.locator(".answers")).toContainText("The dates are off by one.");
+    await expect(panel.locator(".finish")).toContainText("The dates come from the server's clock.");
+    expect(fake.left()).toBe(0);
+    await panel.getByRole("button", { name: "Close the run panel" }).click();
+    await expect(panel).toHaveCount(0);
+    // A reload finds the run on the report, a click away.
+    await owner.reload();
+    await expect(bot).toContainText("Last run: Finished");
+    await bot.getByRole("button", { name: "See the run" }).click();
+    await expect(panel.locator(".st")).toHaveText("Finished");
+  } finally {
+    await site.stop();
+    await d.stop();
+    await fake.stop();
+  }
+});
+
+test("a private link reaches ready through its panel and the owner's approval, and a held fix tells members", async ({ browser }, info) => {
+  test.setTimeout(90_000);
+  const { d, origin } = await hostedDaemon();
+  const site = await startDeployerSite(origin);
+  try {
+    const owner = await ownerOf(browser, origin);
+    const qid = await queueWithGrant(owner, origin, site);
+    const agent = await agentOf(origin, await agentTokenOf(owner));
+
+    // The queue's admin connects it: each screen says what is still needed.
+    await owner.goto(`${origin}/queues`);
+    await owner.locator(`li.qcard[data-id="${qid}"]`).getByRole("button", { name: "Manage" }).click();
+    const repo = owner.getByRole("region", { name: "Repository of Leave app reports" });
+    await repo.getByLabel("Repository", { exact: true }).fill("acme/leave");
+    await repo.getByLabel("Preview URL").fill("https://pr-{pr}.acme.dev");
+    await repo.getByRole("button", { name: "Connect" }).click();
+    await expect(repo.locator(".stat")).toContainText("Not ready: add a write token and a read token below.");
+    const setToken = async (which: string, value: string) => {
+      const field = repo.locator(`[data-token="${which}"]`);
+      await field.getByRole("button", { name: /^Set/ }).click();
+      await field.locator('input[type="password"]').fill(value);
+      await field.getByRole("button", { name: "Save" }).click();
+      await expect(field.getByText(`Set, ending ${value.slice(-4)}`)).toBeVisible();
+    };
+    await setToken("write", "github_pat_e2e_0123456789_wxyz");
+    await expect(repo.locator(".stat")).toContainText("Not ready: add a read token below.");
+    await setToken("read", "github_pat_e2e_9876543210_abcd");
+    await expect(repo.locator(".stat")).toContainText("this repository's CI needs your say-so below");
+    await expect(repo.locator("[data-ci]")).toContainText("before anyone has read the change");
+    await expect(repo.locator("[data-allowlist]")).toContainText("such as github.com");
+    await repo.getByLabel("This repository's CI may run ClaxBot's branches").check();
+    await repo.locator('form.rform button[type="submit"]').click();
+    // Ready as a link; this daemon has no container runtime, and the panel says so.
+    await expect(repo.locator(".stat")).toContainText("Nothing can use them until this Clax has a container runtime.");
+
+    // The owner asks to approve token links. Their own link comes approved:
+    // they withdraw it, read what it will do, and approve it.
+    await owner.goto(`${origin}/admin?tab=repos`);
+    await owner.getByRole("switch", { name: "Token links need my approval" }).click();
+    const line = owner.locator(`[data-link="${qid}"]`);
+    await line.getByRole("button", { name: "Withdraw" }).click();
+    await expect(line).toContainText("waiting for approval");
+    await expect(line.locator("[data-risk]")).toHaveText(["CI may run ClaxBot's branch, with its secrets and network, before anyone reviews it."]);
+    await expect(line.locator("[data-terms]")).toContainText("Preview https://pr-{pr}.acme.dev, ready at /healthz");
+    await owner.screenshot({ path: shotPath(info, "queues-approval"), fullPage: true });
+    await line.getByRole("button", { name: "Approve" }).click();
+    await expect(line.getByRole("button", { name: "Withdraw" })).toBeVisible();
+    await expect(line).toContainText("· ready");
+
+    const emp1 = await fileReport(browser, site);
+    await owner.goto(`${origin}/queues/${qid}`);
+    await owner.locator("li.rrow a").click();
+    await expect(owner.locator(".rh .state")).toHaveText("Open");
+
+    // A fix is proposed, and a person starts on a fix of their own.
+    const id = await owner.evaluate(() => location.pathname.split("/").at(-1)!);
+    const lease = await agent.ok<Lease>("POST", `/api/queues/${qid}/reports/${id}/claim`);
+    await agent.ok("POST", `/api/queues/${qid}/reports/${id}/fix`, { summary: "A fix has been proposed.", fence: lease.fence });
+    await owner.reload();
+    await expect(owner.locator('.fix[data-n="1"]')).toContainText("Waiting for the reporter");
+    await owner.locator(".btns").getByRole("button", { name: "Propose fix" }).click();
+    await owner.locator('textarea[name="summary"]').fill("Have a look.");
+
+    // Meanwhile the fix turns out held. This view does not know yet, so the
+    // daemon is the one to refuse a hand-over with no link, in the form's words.
+    const NEEDS_LINK = "Say where the reporter checks it: until this fix has a link, they have nothing to check.";
+    const alert = owner.locator('.acts [role="alert"]');
+    const submit = owner.locator('form.af button[type="submit"]');
+    await holdFix(d.home, id);
+    await submit.click();
+    await expect(alert).toHaveText(NEEDS_LINK);
+
+    // Held, waiting for its preview: members are told, and the reporter has nothing to give a verdict on.
+    await owner.reload();
+    const held = owner.locator("[data-held]");
+    await expect(held).toContainText("The reporter is waiting on you.");
+    await expect(held).toContainText("Fix 1 is waiting for its preview, so they have nothing to check yet.");
+    await expect(owner.locator('.fix[data-n="1"]')).toContainText("Held for you");
+    await owner.screenshot({ path: shotPath(info, "queues-held-fix"), fullPage: true });
+
+    // The wait ends with none.
+    await holdFix(d.home, id, { missed: true });
+    await owner.reload();
+    await expect(held).toContainText("ClaxBot stopped watching for a preview of fix 1 without seeing one up, so they have no link to check.");
+
+    // The preview answers, for members alone: what the daemon sends the reporter holds none of it.
+    const PREVIEW = "https://pr-9.acme.dev/";
+    await holdFix(d.home, id, { url: PREVIEW });
+    await owner.reload();
+    await expect(held).toContainText("Fix 1 has a preview, which only this queue's people can see");
+    await expect(held.getByRole("link", { name: "check it" })).toHaveAttribute("href", PREVIEW);
+    await owner.screenshot({ path: shotPath(info, "queues-held-preview"), fullPage: true });
+    const answer = emp1.waitForResponse(r => r.request().method() === "GET" && /\/reports\b/.test(new URL(r.url()).pathname) && r.ok());
+    const told = await openReports(emp1);
+    const served = await (await answer).text();
+    expect(served).toContain("A fix has been proposed.");
+    expect(served).not.toContain(PREVIEW);
+    expect(served).not.toContain("preview_url");
+    expect(served).not.toContain("preview_missed");
+    await told.getByRole("button", { name: /The dates are off by one/ }).click();
+    const waiting = told.getByRole("region", { name: "Fix waiting for your check" });
+    await expect(waiting).toContainText("A fix has been proposed.");
+    await expect(waiting.getByRole("link")).toHaveCount(0);
+    await expect(waiting.getByRole("button", { name: "Still broken" })).toHaveCount(0);
+
+    // Handing it over starts from the preview; the form takes no hand-over without a link.
+    await held.getByRole("button", { name: "Hand it to the reporter" }).click();
+    await expect(owner.locator('textarea[name="summary"]')).toHaveValue("A fix is ready for you to check.");
+    const link = owner.locator('input[name="verify_url"]');
+    await expect(link).toHaveValue(PREVIEW);
+    await link.fill("");
+    await submit.click();
+    await expect(alert).toHaveText(NEEDS_LINK);
+    await link.fill(PREVIEW);
+    await submit.click();
+    await expect(held).toHaveCount(0);
+    await expect(owner.locator('.fix[data-n="2"]')).toContainText("Waiting for the reporter");
+
+    // Now the reporter has it, and can say.
+    const handed = (await openReports(emp1)).getByRole("region", { name: "Fix waiting for your check" });
+    await expect(handed.getByRole("link", { name: "Check it here" })).toHaveAttribute("href", PREVIEW);
+    await expect(handed.getByRole("button", { name: "Still broken" })).toBeVisible();
   } finally {
     await site.stop();
     await d.stop();

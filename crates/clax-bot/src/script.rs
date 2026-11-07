@@ -14,6 +14,34 @@
 //!
 //! `clax.web.*` calls are performed by the run itself, through the run's
 //! web source, and journaled with their charge (see [`web`]).
+//!
+//! A workspace call's effect is outside the store, so no transaction holds
+//! it and its entry. Its intent is journaled first, at [`INTENT_SEQ`] past
+//! its place, and its answer at its place after. A step executed again that
+//! finds an intent and no answer does not repeat the call blindly:
+//! `shell.exec` joins the command if the workspace still knows it
+//! ([`workspace::Workspace::resume_exec`]) and otherwise answers
+//! [`workspace::CODE_SHELL_INTERRUPTED`], for the model to look at what the
+//! command left, and `change.propose` goes to the workspace again under the
+//! same [`workspace::Proposal::key`], which pushes nothing twice, and to
+//! [`crate::host::BotHost::record_fix`], which proposes once. Either answer
+//! is journaled like any other.
+//!
+//! On a [`workspace::Workspace::resumable`] workspace those calls last no
+//! longer than the tick. When its time runs out the call is dropped and left
+//! to go on, unjournaled, and answers [`workspace::CODE_YIELDED`]; so does
+//! every later call of the script, and the step ends [`Wait::Budget`] with
+//! nothing committed or charged. The next tick runs the script again and
+//! joins the call. Such a call is begun only with
+//! [`workspace::MIN_CALL_SLACK`] of the tick left, or
+//! [`LEAST_BEGUN_IN`] of the tick's budget where that is less, so a tick with
+//! a small budget still begins one.
+//!
+//! Replay answers what the journal answered, whatever the run's rules say by
+//! then. A step that ends with a `change.propose` begun and unanswered, by a
+//! stop, a failure or a script that did not wait for it, tells the queue's
+//! members ([`workspace::PROPOSAL_STRANDED`]), so a change never leaves
+//! unsaid.
 
 mod web;
 
@@ -21,8 +49,9 @@ use crate::api;
 use crate::check;
 use crate::draft::Draft;
 use crate::events::Event;
-use crate::host::{PublishDraft, Published, args_hash, run_plan};
+use crate::host::{INTENT_SEQ, PublishDraft, Published, args_hash, run_plan};
 use crate::run::{Observed, Stop, Tick, TickOutcome, Wait, compute_qty, step_usage, watched};
+use crate::workspace;
 use clax_bot_sandbox::{ErrorKind, Host, HostError, Script, ScriptError, ScriptOutcome};
 use clax_core::Result;
 use clax_core::audit::AuditRecord;
@@ -35,6 +64,11 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
+
+/// Where a call's notice that its fix went unrecorded is journaled: this,
+/// plus a hundred for each place of the call, plus the thread's. Past the
+/// run's own notices, short of [`INTENT_SEQ`].
+const FIX_NOTICE_SEQ: i64 = 1_500_000;
 
 /// The most bytes of a script's `tool_result`.
 pub const MAX_TOOL_RESULT_BYTES: usize = 100 << 10;
@@ -88,11 +122,16 @@ struct HostState {
     calls: Vec<CallLog>,
     published: Option<Published>,
     replied: Vec<String>,
+    /// A reply went to the queue's people alone, for the model to be told.
+    reply_kept: bool,
     created: bool,
     /// The base the draft moved to (a publish or a rebase).
     moved: bool,
     /// Where the replay left the journal, and why.
     diverged: Option<(i64, String)>,
+    /// The calls the tick gave up on when its time ran out, which go on: see
+    /// the module documentation.
+    gave_up: BTreeSet<i64>,
 }
 
 /// The [`Host`] a script's `clax` calls reach.
@@ -111,6 +150,19 @@ fn err_json(e: &HostError) -> Value {
         v["retryable"] = json!(true);
     }
     v
+}
+
+/// What a call answers once the tick's time has run out.
+/// A tick gives a call that much of its budget at the least, however little
+/// that is: a tick that always had too little to begin would come back for
+/// ever. A fraction, so that the first call of a tick is always begun.
+const LEAST_BEGUN_IN: u32 = 4;
+
+fn yield_error() -> HostError {
+    HostError::new(
+        workspace::CODE_YIELDED,
+        "this step goes on in the next tick: nothing more happens in this one",
+    )
 }
 
 /// The answer journal entry `e` holds, a failure as [`err_json`] kept it.
@@ -198,6 +250,15 @@ impl RunHost<'_> {
     /// What the run's rules refuse before the host sees the call.
     fn policy(&self, op: &str, args: &[Value]) -> std::result::Result<(), HostError> {
         let run = &self.tick.run;
+        if workspace::refused_when_confidential(op) && self.tick.holds_secrets() {
+            return Err(HostError::new(
+                workspace::CODE_CONFIDENTIAL,
+                format!(
+                    "this run holds confidential material: clax.{op} would carry it out of the \
+                     queue"
+                ),
+            ));
+        }
         if matches!(op, "threads.read" | "threads.reply" | "threads.resolve") {
             let id = args[0].as_str().unwrap_or("");
             if !run.thread_ids.iter().any(|t| t == id) {
@@ -222,6 +283,263 @@ impl RunHost<'_> {
             }
         }
         Ok(())
+    }
+
+    /// Journals that call `seq` is about to take effect; an effect is never
+    /// begun without it.
+    fn intend(&self, seq: i64, op: &str, raw: &Value) -> std::result::Result<(), HostError> {
+        let intent = self.tick.entry(self.attempt, INTENT_SEQ + seq, op, raw)?;
+        self.tick
+            .store
+            .record_bot_call(&intent)
+            .map(drop)
+            .map_err(|e| crate::host::host_error(&e))
+    }
+
+    /// Gives call `seq` up to the next tick. A failure that merely says
+    /// [`workspace::CODE_YIELDED`] is an answer: only this makes a yield.
+    fn give_up(&self, seq: i64) -> HostError {
+        self.lock().gave_up.insert(seq);
+        yield_error()
+    }
+
+    /// `work` of call `seq`, on a resumable workspace for as long as the tick
+    /// has left.
+    async fn until_yield<T>(
+        &self,
+        seq: i64,
+        resumable: bool,
+        work: impl Future<Output = std::result::Result<T, HostError>>,
+    ) -> std::result::Result<T, HostError> {
+        if !resumable {
+            return work.await;
+        }
+        match clax_rt::time::timeout(self.tick.available(), work).await {
+            Ok(done) => done,
+            Err(_) => Err(self.give_up(seq)),
+        }
+    }
+
+    /// `clax.shell.exec` or `clax.change.propose`, through the run's
+    /// workspace.
+    async fn workspace_op(
+        &self,
+        op: &str,
+        args: &[Value],
+        raw: &Value,
+        seq: i64,
+    ) -> std::result::Result<Value, HostError> {
+        let run = &self.tick.run;
+        // A call begun goes on to its end, whatever became of the offer: a
+        // change may be out in the world with only this to record it.
+        let begun = self.journal.contains_key(&(INTENT_SEQ + seq));
+        let lapsed = self.tick.deps.offers_lapsed(run);
+        let offered = self.offered();
+        let allowed = begun
+            || if op == workspace::OP_EXEC {
+                offered.shell
+            } else {
+                offered.change
+            };
+        let ws = self
+            .tick
+            .deps
+            .workspace
+            .as_ref()
+            .filter(|_| allowed)
+            .ok_or_else(|| {
+                HostError::new(
+                    workspace::CODE_SHELL_DISABLED,
+                    format!("this run does not have clax.{op}"),
+                )
+            })?;
+        let left = self.tick.remaining();
+        if left.is_zero() && !begun {
+            return Err(HostError::new(
+                workspace::CODE_RUN_CAP,
+                "this run is out of time: finish now",
+            ));
+        }
+        let resumable = ws.resumable();
+        if begun && op == workspace::OP_EXEC && !resumable {
+            return Err(workspace::shell_interrupted());
+        }
+        // With none of the tick left nothing is begun or waited for, and with
+        // too little nothing is begun, unless the run's own time is what is
+        // short: the next tick would have no more.
+        let in_tick = self.tick.available();
+        let slack = self
+            .tick
+            .opts
+            .budget
+            .map_or(workspace::MIN_CALL_SLACK, |b| {
+                workspace::MIN_CALL_SLACK.min(b / LEAST_BEGUN_IN)
+            });
+        let short = in_tick < slack && in_tick < left;
+        if resumable && (in_tick.is_zero() || (short && !begun)) {
+            return Err(self.give_up(seq));
+        }
+        // Before the first effect: what comes after it holds what it reads.
+        if offered.confidential {
+            self.tick
+                .mark_confidential()
+                .map_err(|e| crate::host::host_error(&e))?;
+        }
+        let cx = self.tick.op_ctx(self.attempt, seq);
+        let host = &self.tick.deps.host;
+        let queue = self
+            .tick
+            .deps
+            .run_queue(run)
+            .map_err(|e| crate::host::host_error(&e))?;
+        // What the queue's members were told does not go out in a public
+        // pull request. A call begun may have left already, and goes on.
+        if op == workspace::OP_PROPOSE
+            && !begun
+            && offered.confidential
+            && self.tick.deps.target_may_be_public(run)
+        {
+            if let Err(n) = host
+                .note_members(run, &self.tick.ctx, workspace::PROPOSAL_WITHHELD)
+                .await
+            {
+                tracing::warn!(
+                    "clax-bot: telling of a withheld proposal of {}: {n}",
+                    run.id
+                );
+            }
+            return Err(HostError::new(
+                workspace::CODE_CONFIDENTIAL,
+                workspace::PROPOSAL_PUBLIC,
+            ));
+        }
+        // Nothing leaves that the report could not take. A call begun may
+        // have left already, and no fix will say so.
+        if op == workspace::OP_PROPOSE
+            && queue.is_some()
+            && let Err(e) = host.check_fix(&cx).await
+        {
+            if begun
+                && let Err(n) = host
+                    .note_members(run, &self.tick.ctx, workspace::PROPOSAL_STRANDED)
+                    .await
+            {
+                tracing::warn!(
+                    "clax-bot: telling of a stranded proposal of {}: {n}",
+                    run.id
+                );
+            }
+            return Err(e);
+        }
+        if !begun {
+            self.intend(seq, op, raw)?;
+        }
+        if op == workspace::OP_EXEC {
+            let opts = &args[1];
+            let timeout = opts["timeout"]
+                .as_u64()
+                .unwrap_or(workspace::DEFAULT_TIMEOUT_SECS)
+                .clamp(1, workspace::MAX_TIMEOUT_SECS)
+                .min(left.as_secs().max(1));
+            let call = async {
+                if begun {
+                    let joined = ws.resume_exec(run, &cx.key).await?;
+                    return joined.ok_or_else(workspace::shell_interrupted);
+                }
+                ws.exec_keyed(
+                    run,
+                    queue.as_deref(),
+                    &cx.key,
+                    args[0].as_str().unwrap_or(""),
+                    opts["cwd"].as_str(),
+                    timeout,
+                )
+                .await
+            };
+            let out = self.until_yield(seq, resumable, call).await;
+            // The first command opened the target as it stands by then, which
+            // may not be what the offer above said. What comes next holds what
+            // this read.
+            if self.tick.deps.workspace_offer(run).confidential {
+                self.tick
+                    .mark_confidential()
+                    .map_err(|e| crate::host::host_error(&e))?;
+            }
+            let mut out = out?;
+            if let Some(text) = out["output"].as_str() {
+                out["output"] = Value::String(workspace::clip_output(text));
+            }
+            return Ok(out);
+        }
+        let change = &args[0];
+        let proposal = workspace::Proposal {
+            title: change["title"].as_str().unwrap_or("").to_string(),
+            summary: change["summary"].as_str().unwrap_or("").to_string(),
+            key: cx.key.clone(),
+        };
+        let coming = self.tick.deps.fix_coming(&run.id);
+        let done = self
+            .until_yield(seq, resumable, ws.propose(run, &proposal))
+            .await;
+        // An offer read in a lapse says nothing of this run, and what the
+        // workspace answered brought back what does.
+        let (cx, offered) = if lapsed {
+            let offered = self.offered();
+            if offered.confidential {
+                self.tick
+                    .mark_confidential()
+                    .map_err(|e| crate::host::host_error(&e))?;
+            }
+            (self.tick.op_ctx(self.attempt, seq), offered)
+        } else {
+            (cx, offered)
+        };
+        let done = self
+            .fix_of(&cx, queue.is_some(), offered, &proposal, done)
+            .await;
+        coming.settled().await;
+        done
+    }
+
+    /// What the run gets of its workspace now, in the light of what it holds.
+    fn offered(&self) -> workspace::Offer {
+        let mut offered = self.tick.deps.workspace_offer(&self.tick.run);
+        offered.confidential |= self.tick.holds_secrets();
+        offered
+    }
+
+    /// Records the fix of `proposal`, which `done` answered, on the run's
+    /// report if it has one.
+    async fn fix_of(
+        &self,
+        cx: &crate::host::OpCtx<'_>,
+        on_report: bool,
+        offered: workspace::Offer,
+        proposal: &workspace::Proposal,
+        done: std::result::Result<Value, HostError>,
+    ) -> std::result::Result<Value, HostError> {
+        let mut done = done?;
+        let host = &self.tick.deps.host;
+        let seq = cx.seq;
+        // The report's reporter hears of it through the fix. What was
+        // pushed stands whatever comes of that: the answer and a notice say
+        // where it is.
+        if on_report && let Err(e) = host.record_fix(cx, &offered.fix(proposal, &done)).await {
+            let url = done["url"]
+                .as_str()
+                .unwrap_or("the pull request")
+                .to_string();
+            done["fix_recorded"] = json!(false);
+            done["fix_error"] = json!(e.code);
+            let notice = format!(
+                "I proposed {url}, but could not record the fix on this report ({}).",
+                e.code
+            );
+            self.tick
+                .notify_at(self.attempt, FIX_NOTICE_SEQ + seq * 100, &notice)
+                .await;
+        }
+        Ok(done)
     }
 
     async fn draft_op(
@@ -343,7 +661,7 @@ impl RunHost<'_> {
     async fn perform(&self, op: &str, raw: &Value, seq: i64) -> Performed {
         let hash = args_hash(raw);
         let replay = self.journal.get(&seq);
-        if let Some(e) = replay
+        if let Some(e) = replay.or_else(|| self.journal.get(&(INTENT_SEQ + seq)))
             && (e.op() != op || e.args_hash() != hash)
         {
             let why = format!(
@@ -368,12 +686,14 @@ impl RunHost<'_> {
             }
         };
         let target = api::target(op, &args, &self.tick.run.artifact_id);
-        if let Err(e) = self.policy(op, &args) {
+        // What the journal answered was allowed or refused when it was made:
+        // the rules as they stand now do not rewrite it.
+        if replay.is_none()
+            && let Err(e) = self.policy(op, &args)
+        {
             let res = Err(e);
-            if replay.is_none() {
-                self.journal(seq, op, raw, &res, false);
-            }
-            return Performed::plain(res, target, replay.is_some());
+            self.journal(seq, op, raw, &res, false);
+            return Performed::plain(res, target, false);
         }
         let spec = api::op(op).expect("checked");
         let res = match spec.performer {
@@ -387,6 +707,16 @@ impl RunHost<'_> {
                     web: Some(done.web),
                 };
             }
+            api::Performer::Workspace => match replay {
+                Some(e) => recorded(e),
+                None => {
+                    let res = self.workspace_op(op, &args, raw, seq).await;
+                    if !self.lock().gave_up.contains(&seq) {
+                        self.journal(seq, op, raw, &res, true);
+                    }
+                    res
+                }
+            },
             api::Performer::Draft => {
                 let res = self.draft_op(op, &args, replay).await;
                 if replay.is_none() {
@@ -404,7 +734,12 @@ impl RunHost<'_> {
             api::Performer::Host => match replay {
                 Some(e) => recorded(e),
                 None => {
-                    let cx = self.tick.op_ctx(self.attempt, seq);
+                    let cx = if op == "threads.reply" {
+                        let tid = args[0].as_str().unwrap_or("");
+                        self.tick.reply_ctx(self.attempt, seq, tid)
+                    } else {
+                        self.tick.op_ctx(self.attempt, seq)
+                    };
                     match spec.access {
                         api::Access::Read => {
                             let res = self.tick.deps.host.read(&cx, op, &args).await;
@@ -437,10 +772,13 @@ impl RunHost<'_> {
                 }
             },
         };
-        if res.is_ok() {
+        if let Ok(v) = &res {
             let mut st = self.lock();
             match op {
-                "threads.reply" => st.replied.push(args[0].as_str().unwrap_or("").to_string()),
+                "threads.reply" => {
+                    st.replied.push(args[0].as_str().unwrap_or("").to_string());
+                    st.reply_kept |= v["members_only"] == json!(true);
+                }
                 "artifacts.create" => st.created = true,
                 _ => {}
             }
@@ -455,6 +793,9 @@ impl Host for RunHost<'_> {
     async fn call(&self, op: &str, args: Value) -> std::result::Result<Value, HostError> {
         let (seq, diverged) = {
             let mut st = self.lock();
+            if !st.gave_up.is_empty() {
+                return Err(yield_error());
+            }
             st.seq += 1;
             (st.seq - 1, st.diverged.clone())
         };
@@ -472,6 +813,9 @@ impl Host for RunHost<'_> {
         }
         let started = clax_rt::time::Instant::now();
         let p = self.perform(op, &args, seq).await;
+        if self.lock().gave_up.contains(&seq) {
+            return p.res;
+        }
         let ms = if p.replayed {
             0
         } else {
@@ -483,8 +827,9 @@ impl Host for RunHost<'_> {
 }
 
 /// A script's `tool_result` text (JSON: `value`, `logs`, `calls`, `error`,
-/// `published`, `replay`) and whether it is an error, logs trimmed to fit
-/// [`MAX_TOOL_RESULT_BYTES`].
+/// `published`, `replay`, `reply_note`) and whether it is an error, logs
+/// trimmed to fit [`MAX_TOOL_RESULT_BYTES`]. `reply_note` is there whatever
+/// the script returned, so the model learns where its reply went.
 fn tool_result_content(o: &ScriptOutcome, st: &HostState) -> (String, bool) {
     let calls: Vec<Value> = o
         .calls
@@ -499,6 +844,9 @@ fn tool_result_content(o: &ScriptOutcome, st: &HostState) -> (String, bool) {
         }
         if let Some(p) = &st.published {
             v["published"] = json!(p);
+        }
+        if st.reply_kept {
+            v["reply_note"] = json!(workspace::REPLY_KEPT);
         }
         if let Some((at, why)) = &st.diverged {
             let done: Vec<&str> = st
@@ -567,9 +915,11 @@ impl Tick<'_> {
                 calls: Vec::new(),
                 published: None,
                 replied: Vec::new(),
+                reply_kept: false,
                 created: false,
                 moved: false,
                 diverged: None,
+                gave_up: BTreeSet::new(),
             }),
         };
         let now_ms = chrono::DateTime::parse_from_rfc3339(&s.started_at)
@@ -594,6 +944,13 @@ impl Tick<'_> {
         if lost.load(std::sync::atomic::Ordering::SeqCst) {
             return Ok(TickOutcome::wait(
                 Wait::NotOurs,
+                Some(self.n),
+                Some(StepKind::Script),
+            ));
+        }
+        if !host.lock().gave_up.is_empty() && !self.opts.cancel.is_cancelled() {
+            return Ok(TickOutcome::wait(
+                Wait::Budget,
                 Some(self.n),
                 Some(StepKind::Script),
             ));
@@ -631,19 +988,27 @@ impl Tick<'_> {
         );
         let at = self.store.now();
         let call_ops: Vec<String> = outcome.calls.iter().map(|c| c.op.clone()).collect();
+        // The audit trail outlives the run and has readers of its own: of a
+        // confidential run it keeps no words of the model's.
+        let open = !self.holds_secrets();
         let mut events: Vec<AuditRecord> = vec![script_record(
             at.clone(),
-            title,
+            if open { title } else { "" },
             code,
             &call_ops,
             i64::try_from(outcome.cpu_us.div_ceil(1000)).unwrap_or(i64::MAX),
             i64::try_from(outcome.mem_peak_bytes).unwrap_or(i64::MAX),
-            outcome.error.as_ref().map(|e| e.message.as_str()),
+            outcome
+                .error
+                .as_ref()
+                .filter(|_| open)
+                .map(|e| e.message.as_str()),
         )];
         let mut reported = BTreeSet::new();
         for c in &st.calls {
             reported.insert(c.seq);
-            let mut r = call_record(at.clone(), &c.op, c.target.as_deref(), c.ok);
+            let target = c.target.as_deref().filter(|_| open);
+            let mut r = call_record(at.clone(), &c.op, target, c.ok);
             if c.replayed {
                 r = r.with("replayed", true);
             }
@@ -681,6 +1046,8 @@ impl Tick<'_> {
                 .await;
         }
         events.extend(self.unreported_calls(&reported));
+        // A script may end without waiting for its proposal.
+        self.tell_stranded().await;
         let (content, is_error) = tool_result_content(&outcome, &st);
         let result = Block::tool_result(tool_use_id, content, is_error).to_json();
         let payload = json!({

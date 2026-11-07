@@ -116,7 +116,10 @@ export type BotStep = {
 export type BotRun = {
   id: string; artifact_id: string; thread_ids: string[]; request: "thread" | "brief";
   status: RunStatus; reason?: StopReason | null;
-  model: string; key_source: "instance" | "own";
+  model: string | null; key_source: "instance" | "own" | null;
+  /** A confidential run shown to someone outside its report's queue: its
+   * status and times, and nothing else. */
+  sealed?: boolean;
   /** The person the run acts for: their person key (`*owner` for the owner) and name. */
   acting_for?: { id: string; name: string | null } | null;
   started_at: string; ended_at?: string | null;
@@ -304,7 +307,7 @@ async function headers(json: boolean): Promise<Record<string, string>> {
   return h;
 }
 
-async function call<T>(path: string, method = "GET", body?: unknown): Promise<T> {
+export async function call<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const init: RequestInit = { method, headers: await headers(body !== undefined) };
   if (method === "GET") init.cache = "no-store";
   if (body !== undefined) init.body = JSON.stringify(body);
@@ -350,6 +353,10 @@ export async function startRun(artifact_id: string, thread_ids: string[]): Promi
 }
 export const getRun = (id: string) => call<BotRun>(`/api/bot/runs/${e(id)}`);
 export const listRuns = (artifact: string) => call<{ runs: RunSummary[] }>(`/api/bot/runs${query({ artifact })}`);
+/** A run as `threadRuns` lists it; `may_stop` is what stopping it would answer. */
+export type ThreadRun = RunSummary & { may_stop?: boolean };
+/** The runs of thread `thread` of `artifact`, newest first, and whether the caller may send its threads. */
+export const threadRuns = (artifact: string, thread: string) => call<{ runs: ThreadRun[]; may_send: boolean }>(`/api/bot/runs${query({ artifact, thread })}`);
 export const cancelRun = (id: string) => call<{ run: RunSummary }>(`/api/bot/runs/${e(id)}/cancel`, "POST", {});
 /** The run's event stream after event `after` (`Last-Event-ID`; none: from
  * its first), as the response whose body `readSse` reads. */

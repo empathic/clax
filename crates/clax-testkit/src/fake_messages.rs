@@ -51,6 +51,17 @@ impl Turn {
         }
     }
 
+    /// A turn that calls `give_up {reason}`.
+    pub fn give_up(reason: &str) -> Turn {
+        Turn {
+            blocks: vec![
+                json!({"type": "tool_use", "id": "tu_give_up", "name": "give_up",
+                                "input": {"reason": reason}}),
+            ],
+            stop: "tool_use",
+        }
+    }
+
     /// The turn as the streaming format's events.
     fn sse(&self) -> String {
         let mut s = String::new();

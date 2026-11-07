@@ -104,8 +104,9 @@
         <select bind:this={pick} onchange={e => botView.open(e.currentTarget.value)}>{#each choices as id (id)}<option value={id} selected={id === botView.run}>{label(id)}</option>{/each}</select>
       </label>
     {/if}
-    {#if run}<p class="what">{what} · {run.model}{run.acting_for?.name ? ` · for ${run.acting_for.name}` : ""}</p>{/if}
-    {#if run && !mine(run)}<p class="what">{run.acting_for?.name ?? "Someone else"}'s run: you can follow it, and only they can stop it.</p>{/if}
+    {#if run?.sealed}<p class="what">This run's details are for the people of its report's queue.</p>
+    {:else if run}<p class="what">{what} · {run.model}{run.acting_for?.name ? ` · for ${run.acting_for.name}` : ""}</p>{/if}
+    {#if run && !run.sealed && !mine(run)}<p class="what">{run.acting_for?.name ?? "Someone else"}'s run: you can follow it, and only they can stop it.</p>{/if}
     {#if answers.length}
       <ul class="answers" aria-label="Threads it answers">
         {#each answers as q (q.id)}<li>{#if onThread}<button type="button" class="ghost" onclick={() => onThread(q.id)}>“{q.text}”</button>{:else}“{q.text}”{/if}</li>{/each}

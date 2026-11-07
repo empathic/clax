@@ -711,9 +711,11 @@ new disk.
 disk. Only a push to main commits its clone, and only if every step of the
 job succeeded: the sticky disk action discards it after a failed, cancelled
 or timed-out step. Pull requests read main's state and their writes are
-discarded, so no branch's code reaches what main builds from (turn on
-Blacksmith's branch protection for sticky disks too, so that holds for a
-workflow edited in a pull request). When the `bazel` job fails on a push to
+discarded, by the workflow's own steps. A workflow edited in a pull request can
+change those steps, and a build it runs reaches the disk, so what stops a
+branch's code reaching what main builds from is Blacksmith's branch protection
+for sticky disks, an account setting the repository cannot show: confirm it is
+on. When the `bazel` job fails on a push to
 main, `bazel-seed` builds the same targets on the same disk, runs no test
 and commits if the build succeeded: a failing test or lint leaves later runs
 main's current state, and only a build that fails leaves them the older one.

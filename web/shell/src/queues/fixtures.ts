@@ -1,7 +1,7 @@
 // Report fixtures for the queue and report views' unit tests.
 import type { Report, ReportContext } from "../../../sdk/src/types";
 
-export const QUEUE = { id: "q1", name: "Bugs", origins: ["https://app.example"], reporters_see: "own" as const, created_at: "2026-10-27T10:00:00Z", role: "triage" as const };
+export const QUEUE = { id: "q1", name: "Bugs", origins: ["https://app.example"], reporters_see: "own" as const, public_notice: false, created_at: "2026-10-27T10:00:00Z", role: "triage" as const };
 
 export const CONTEXT: ReportContext = {
   v: 1,

@@ -14,6 +14,9 @@
 # whose commit is no longer main's head does not move `main`. Release tags'
 # runs are never cancelled.
 #
+# A tag's and a candidate's images are built with no cache, so what ships is
+# what this commit makes and not what an earlier run left.
+#
 # Each platform builds on a runner of its own architecture, as release.yml's
 # binaries do (no emulation), and pushes its image by digest alone. `smoke`
 # deploys each pushed image to a kind cluster on a runner of its
@@ -65,8 +68,6 @@ jobs:
           build-args: CLAX_BUILD_COMMIT=${{ github.sha }}
           tags: clax-fleet:ci
           load: true
-          # Reads the release builds' cache; a pull request writes none.
-          cache-from: type=gha,scope=fleet-image-amd64
       - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
         with:
           install_only: true
@@ -108,8 +109,6 @@ jobs:
           # manifest list `merge` makes.
           provenance: mode=max
           sbom: true
-          cache-from: type=gha,scope=fleet-image-${{ matrix.arch }}
-          cache-to: type=gha,scope=fleet-image-${{ matrix.arch }},mode=max
       - name: Record the digest
         env:
           DIGEST: ${{ steps.build.outputs.digest }}

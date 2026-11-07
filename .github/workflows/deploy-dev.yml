@@ -7,9 +7,10 @@ name: Deploy dev
 # with its sites at <ID>.dev.<preview site zone>. It runs in the `preview`
 # environment: dev and the previews need the same Cloudflare account,
 # token and OAuth App (docs/environments.md, "Credentials"). A deploy runs
-# scripts/cloudflare-setup.sh --env dev in CI mode as Deploy prod does: it builds in a step without the deploy's secrets, then
-# deploys, waits for /healthz to report the build, checks a site host and
-# runs the smoke as dev's agent token. A failure fails the run; nothing is
+# scripts/cloudflare-setup.sh --env dev in CI mode as Deploy prod does: a job
+# with no environment and no secret builds, and a job in the environment
+# deploys what it built, waits for /healthz to report the build, checks a site
+# host and runs the smoke as dev's agent token. A failure fails the run; nothing is
 # rolled back. dev's first deploy, which makes its secrets, runs from a
 # laptop (`just env-deploy dev`).
 on:
@@ -22,7 +23,11 @@ on:
 permissions: {}
 
 jobs:
-  deploy:
+  # The commit's code, with no environment and no secret, as staging.yml's
+  # worker job builds it: no package's install script and no crate's build
+  # script runs on the runner that gets the deploy's token. A newer push's
+  # build replaces an older one, whose deploy then never starts.
+  build:
     # A passing ci run of a push to main (not of a pull request whose
     # branch is named main), or a run by hand on main.
     if: >-
@@ -32,9 +37,46 @@ jobs:
       && github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    permissions: { contents: read }
+    concurrency: { group: deploy-dev-build, cancel-in-progress: true }
+    env:
+      SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ env.SHA }}", persist-credentials: false }
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with: { package_json_file: web/package.json }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: 26, package-manager-cache: false }
+      # rust-toolchain.toml's version and targets; the Worker builds for
+      # wasm32-unknown-unknown.
+      - name: Install Rust toolchain
+        run: rustup toolchain install && rustup target add wasm32-unknown-unknown
+      # A clang that targets wasm32, and its linker and archiver.
+      - name: Install clang, lld and llvm
+        run: sudo apt-get update -q && sudo apt-get install -y -q clang lld llvm
+      # `h`: Bazel's build is a link to its output.
+      - name: Build the web UI and the Worker
+        env:
+          CLAX_BUILD_COMMIT: ${{ env.SHA }}
+          CARGO_INCREMENTAL: "0"
+        run: |
+          set -euo pipefail
+          scripts/pnpm-install-stamped.sh web
+          scripts/pnpm-install-stamped.sh crates/clax-worker
+          scripts/build-web.sh
+          crates/clax-worker/build.sh
+          tar -chf "$RUNNER_TEMP/worker.tar" target/clax-worker/build target/clax-worker/built-from.json web/dist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: worker, path: "${{ runner.temp }}/worker.tar", retention-days: 1, if-no-files-found: error }
+
+  deploy:
+    needs: [build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     # Its variables and secrets are what scripts/setup-env-github.sh sets
-    # and docs/environments.md describes. The `if` above admits main only;
-    # the environment admits any branch, for the previews.
+    # and docs/environments.md describes. `build`'s condition admits main
+    # only; the environment admits any branch, for the previews.
     environment: preview
     permissions: { contents: read }
     # One deploy at a time, and a running one is never cancelled. GitHub
@@ -75,31 +117,29 @@ jobs:
         with: { package_json_file: web/package.json }
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: ${{ env.skip != '1' }}
-        with: { node-version: 26 }
-      # rust-toolchain.toml's version and targets; the Worker builds for
-      # wasm32-unknown-unknown.
+        with: { node-version: 26, package-manager-cache: false }
+      # The tools scripts/cloudflare-setup.sh checks for, though it builds
+      # nothing here.
       - name: Install Rust toolchain
         if: ${{ env.skip != '1' }}
         run: rustup toolchain install && rustup target add wasm32-unknown-unknown
-      # A clang that targets wasm32, and its linker and archiver.
       - name: Install clang, lld and llvm
         if: ${{ env.skip != '1' }}
         run: sudo apt-get update -q && sudo apt-get install -y -q clang lld llvm
-
-      # Installs and builds with no secret in the environment (a dry run of
-      # the deploy below), as Deploy prod does.
-      - name: Build (scripts/cloudflare-setup.sh --env dev --ci, a dry run; no secrets)
+      # wrangler, with no secret in the environment.
+      - name: Install the deploy's packages
         if: ${{ env.skip != '1' }}
-        env:
-          CLAX_DEPLOY_HOME: ${{ runner.temp }}/clax-deploy
-        run: |
-          set -euo pipefail
-          args=(--env dev --legal bundled --public "$PUBLIC_HOST" --site-domain "$SITE_DOMAIN" --store artifacts)
-          if [ -n "$SITE_ZONE" ]; then args+=(--site-zone "$SITE_ZONE"); fi
-          if [ -n "$OAUTH_CLIENT_ID" ]; then args+=(--github-client-id "$OAUTH_CLIENT_ID" --owner-github "$OWNER_GITHUB"); fi
-          scripts/cloudflare-setup.sh "${args[@]}" --account "$CLOUDFLARE_ACCOUNT_ID" --ci
+        run: scripts/pnpm-install-stamped.sh crates/clax-worker
 
-      # Deploys what the step above built; only this step has the secrets.
+      # A directory of its own: nothing else reads what lands here.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: ${{ env.skip != '1' }}
+        with: { name: worker, path: "${{ runner.temp }}/worker-artifact" }
+      - name: Unpack the Worker (scripts/unpack-worker.py)
+        if: ${{ env.skip != '1' }}
+        run: python3 scripts/unpack-worker.py "$RUNNER_TEMP/worker-artifact" .
+
+      # Deploys what `build` built; only this step has the secrets.
       - name: Deploy (scripts/cloudflare-setup.sh --env dev --ci --no-build [--smoke])
         if: ${{ env.skip != '1' }}
         env:
@@ -109,6 +149,9 @@ jobs:
           CLAX_DEPLOY_HOME: ${{ runner.temp }}/clax-deploy
         run: |
           set -euo pipefail
+          # The deploy reads its record as its own settings, and a fresh
+          # runner has none: one here is not this deploy's.
+          [ ! -e "$CLAX_DEPLOY_HOME" ] || { echo "::error::a deploy record exists before the deploy"; exit 1; }
           args=(--env dev --legal bundled --public "$PUBLIC_HOST" --site-domain "$SITE_DOMAIN" --store artifacts)
           if [ -n "$SITE_ZONE" ]; then args+=(--site-zone "$SITE_ZONE"); fi
           if [ -n "$OAUTH_CLIENT_ID" ]; then args+=(--github-client-id "$OAUTH_CLIENT_ID" --owner-github "$OWNER_GITHUB"); fi

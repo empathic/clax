@@ -97,9 +97,14 @@ pub(super) fn anchor_record(a: &Anchor) -> serde_json::Value {
 /// (spec 2026-10-06-toolpath-audit §6.2). The body text is recorded as
 /// written; export redacts it on request (§11).
 pub(super) fn comment_record(aid: &str, c: &Comment) -> AuditRecord {
+    comment_record_saying(aid, c, c.body.as_str())
+}
+
+/// [`comment_record`] with `body` in place of the comment's.
+fn comment_record_saying(aid: &str, c: &Comment, body: &str) -> AuditRecord {
     let mut r = AuditRecord::new(AuditKind::CommentAdd, c.created_at.as_str())
         .with("comment_id", c.id.as_str())
-        .with("body", c.body.as_str())
+        .with("body", body)
         .with("author_kind", c.author_kind.as_str())
         .with("author_name", c.author_name.as_str())
         .with("via_harness", c.via_harness.clone())
@@ -626,14 +631,19 @@ const COMMENT_SELECT: &str = "SELECT c.id, c.thread_id, c.author_kind, c.author_
 
 fn load_comments(c: &Connection, thread_id: &str) -> Result<Vec<Comment>> {
     let mut stmt = c.prepare_cached(&format!(
-        "{COMMENT_SELECT} WHERE c.thread_id = ?1 ORDER BY c.created_at, c.id"
+        "{COMMENT_SELECT} WHERE c.thread_id = ?1 AND NOT c.triage_only
+         ORDER BY c.created_at, c.id"
     ))?;
     Ok(stmt
         .query_map(params![thread_id], row_to_comment)?
         .collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-/// The comments of each of `thread_ids`, oldest first, by thread ID.
+/// The comments of each of `thread_ids`, oldest first, by thread ID. A
+/// thread's comments never hold a report's notes for its queue's members
+/// (`triage_only`), here or in [`load_comments`]: only a report's own view
+/// reads those ([`crate::queues`]), so no thread route, event or export can
+/// carry one.
 pub(crate) const COMMENTS_OF_MANY: &str = "SELECT c.id, c.thread_id, c.author_kind, c.author_name, c.author_public_id, s.harness AS via_harness, c.via_page, c.body, c.created_at,
         CASE WHEN c.via_page THEN (SELECT json_group_array(pa.author) FROM page_authors pa
                                    WHERE pa.kind = 'comment' AND pa.id = c.id) END AS page_authors,
@@ -641,7 +651,7 @@ pub(crate) const COMMENTS_OF_MANY: &str = "SELECT c.id, c.thread_id, c.author_ki
         CASE WHEN s.id IS NULL THEN NULL WHEN s.person IS NULL THEN (SELECT display_name FROM viewers WHERE owner = 1)
              ELSE (SELECT display_name FROM viewers WHERE public_id = s.person) END AS agent_person_name,
         (SELECT lc.author_key FROM linked_comments lc WHERE lc.comment_id = c.id) AS remote_author
-     FROM json_each(?1) j CROSS JOIN comments c ON c.thread_id = j.value
+     FROM json_each(?1) j CROSS JOIN comments c ON c.thread_id = j.value AND NOT c.triage_only
      LEFT JOIN sessions s ON s.id = c.via_session_id
      ORDER BY c.thread_id, c.created_at, c.id";
 
@@ -1225,6 +1235,92 @@ impl Store {
             Ok(())
         })?;
         Ok(out.expect("the comment was journaled"))
+    }
+
+    /// Adds `c` to thread `thread_id` as a note for its queue's members
+    /// alone (`triage_only`): no thread view, event, inbox or reporter's
+    /// view holds it, and the audit trail records that it was written, not
+    /// what it says.
+    ///
+    /// # Errors
+    /// [`Store::add_comment`]'s.
+    pub fn add_members_comment(
+        &self,
+        ctx: &AuditCtx,
+        thread_id: &str,
+        c: NewComment,
+    ) -> Result<Comment> {
+        self.with_tx(|tx| self.add_members_comment_in(tx, ctx, thread_id, c))
+    }
+
+    /// [`Store::add_members_comment`] journaled as `entry` in the comment's
+    /// own transaction, as [`Store::add_comment_journaled`] is; the value is
+    /// `{comment_id, members_only: true}`.
+    ///
+    /// # Errors
+    /// [`Store::add_comment`]'s; `key_reused`.
+    pub fn add_members_comment_journaled(
+        &self,
+        ctx: &AuditCtx,
+        thread_id: &str,
+        c: NewComment,
+        entry: &super::bot_runs::CallEntry,
+        guard: super::bot_runs::Guard<'_>,
+    ) -> Result<super::bot_runs::Journaled> {
+        if let Some(prev) = self.journaled(entry)? {
+            return Ok(prev);
+        }
+        self.with_tx(|tx| {
+            guard(&super::bot_runs::Tx(tx))?;
+            let made = self.add_members_comment_in(tx, ctx, thread_id, c)?;
+            self.journal_in(
+                tx,
+                entry,
+                serde_json::json!({"comment_id": made.id, "members_only": true}),
+            )
+        })
+    }
+
+    pub(crate) fn add_members_comment_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        ctx: &AuditCtx,
+        thread_id: &str,
+        c: NewComment,
+    ) -> Result<Comment> {
+        check_body(&c.body)?;
+        let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
+        let comment = Comment {
+            id: new_ulid(),
+            thread_id: thread_id.to_string(),
+            author_kind: c.author_kind.to_string(),
+            author_name: c.author_name,
+            author_public_id: None,
+            via_harness: None,
+            via_page: false,
+            body: c.body,
+            created_at: self.now(),
+            page_authors: Vec::new(),
+            agent_person: None,
+            remote_author: None,
+            agent: None,
+        };
+        tx.execute(
+            "INSERT INTO comments (id, thread_id, author_kind, author_name, via_page, body,
+                created_at, triage_only)
+             VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, 1)",
+            params![
+                comment.id,
+                comment.thread_id,
+                comment.author_kind,
+                comment.author_name,
+                comment.body,
+                comment.created_at
+            ],
+        )?;
+        let rec = comment_record_saying(&t.artifact_id, &comment, "").with("members_only", true);
+        self.record_audit(tx, ctx, rec)?;
+        Ok(comment)
     }
 
     /// [`Store::resolve_thread`] by `by` (for `person`), journaled as

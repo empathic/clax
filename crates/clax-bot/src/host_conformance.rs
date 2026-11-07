@@ -287,6 +287,33 @@ pub async fn check_host(f: &HostFixture) -> Vec<(&'static str, Result<(), String
         .await,
     ));
     out.push((
+        "a_members_only_reply_makes_no_comment",
+        async {
+            let body = "members only: not for a reporter";
+            let args = json!([inside, body]);
+            let audit = crate::run::bot_ctx(&run.person);
+            let cx = OpCtx::new(run, &audit, STEP, 1, 800).members_only(true);
+            for plan in [
+                c.f.host
+                    .plan_write(&cx, "threads.reply", args.as_array().unwrap())
+                    .await,
+                c.f.host.plan_reply(&cx, &inside, body).await,
+            ] {
+                let entry = c.entry(run, 800, "threads.reply", &args)?;
+                let plan = plan.map_err(|e| e.code)?;
+                let v = run_plan(plan, entry).await.map_err(|e| e.code)?;
+                if v["members_only"] != json!(true) {
+                    return Err(format!("the reply answered {v}"));
+                }
+            }
+            match comments_saying(f, &inside, body)? {
+                0 => Ok(()),
+                n => Err(format!("{n} comments say it")),
+            }
+        }
+        .await,
+    ));
+    out.push((
         "a_thread_outside_the_run_is_refused",
         async {
             c.refused_read(run, 4, "threads.read", json!([f.thread_outside_run]))

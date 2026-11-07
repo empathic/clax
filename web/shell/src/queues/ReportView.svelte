@@ -23,8 +23,16 @@
   // keeps the page where it is, the drafts typed and the form open while
   // its state still allows it, and says politely what someone else
   // changed. Its back link returns to the queue view on the tab it came
-  // from.
-  import { onMount } from "svelte";
+  // from. A fix held from its reporter gets a line above the actions: they
+  // wait on the queue's members, while its preview is awaited, once it is up
+  // (`preview_url`, the members' alone) and when the wait ended with none
+  // (`preview_missed`). Hand it to the reporter opens Propose fix filled from
+  // it, the preview in its link field, since a person's fix supersedes a held
+  // one; that takes a link, as the reporter has nothing to check without. ClaxBot
+  // on the report (`ReportBot`) loads after the report, keeping the run panel
+  // out of the Queues page's chunk: by hand, since an {#await} here would
+  // move Svelte's await block into the artifact entry's chunks.
+  import { type Component, onMount } from "svelte";
   import type { EventStream } from "../stream";
   import { relativeTime } from "../format";
   import * as api from "./api";
@@ -52,6 +60,7 @@
   // The clip: fitted, or at 1× or 2× its size on the reporter's screen.
   let zoom = $state<"fit" | 1 | 2>("fit");
   let natural = $state<{ w: number; h: number } | null>(null);
+  let ReportBot = $state<Component<{ report: api.Report }> | null>(null);
 
   const r = $derived(report);
   const st = $derived(r?.state);
@@ -63,6 +72,11 @@
   // longer allows closes (its fields keep what was typed).
   const shown = $derived(form && ({ fix: canFix, resolve: canFix, verify: canVerify, reopen: canReopen, release: canRelease } as const)[form] ? form : null);
   $effect(() => { if (form && !shown) form = null; });
+  $effect(() => { if (report && !ReportBot) void import("./ReportBot.svelte").then(m => { ReportBot = m.default; }); });
+  // The fix waiting that its reporter has not been given.
+  const held = $derived(r?.fixes?.find(f => f.held && f.outcome === "pending") ?? null);
+  const heldCheck = $derived(httpUrl(held?.preview_url));
+  const NEEDS_LINK = "Say where the reporter checks it: until this fix has a link, they have nothing to check.";
   const conversation = $derived(r?.comments.slice(1) ?? []);
   const omitted = $derived(r?.context?.capture?.omitted ?? []);
   const dpr = $derived(r?.context?.environment?.viewport?.dpr || 1);
@@ -120,11 +134,18 @@
       form = null;
       return true;
     } catch (x) {
-      err = refusal(x);
+      err = x instanceof api.Refused && x.code === "verify_url_required" ? NEEDS_LINK : refusal(x);
       return false;
     } finally { busy = false; }
   }
   const open = (f: typeof form) => { form = shown === f ? null : f; err = null; status = ""; };
+  function handOver() {
+    if (!held) return;
+    // The fixed words of a confidential fix say a person reviews it; once handed over they no longer hold.
+    const summary = held.summary === "A fix has been proposed." ? "A fix is ready for you to check." : held.summary;
+    fix = { summary, url: held.url ?? "", commit: held.commit ?? "", verify_url: held.preview_url ?? "" };
+    form = "fix"; err = null; status = "";
+  }
   // One refetch at a time; a change heard meanwhile fetches once more after it.
   let fetching = false;
   let again = false;
@@ -138,6 +159,7 @@
     e.preventDefault();
     const summary = fix.summary.trim();
     if (!summary) { err = "Say what the fix changes."; return; }
+    if (held && !fix.verify_url.trim()) { err = NEEDS_LINK; return; }
     const f: api.FixFields = { summary };
     for (const k of ["url", "commit", "verify_url"] as const) { const v = fix[k].trim(); if (v) f[k] = v; }
     if (await act("Proposed the fix: the reporter can now check it.", () => api.proposeFix(p.qid, p.tid, f))) fix = { summary: "", url: "", commit: "", verify_url: "" };
@@ -264,6 +286,16 @@
           <p class="stat" role="status">{status}</p>
           <p class="sr" aria-live="polite">{notice}</p>
           {#if err}<p class="err" role="alert">{err}</p>{/if}
+          {#if held}
+            <div class="held" data-held role="note">
+              <p><b>The reporter is waiting on you.</b>
+                {#if heldCheck}Fix {held.n} has a preview, which only this queue's people can see: <a href={heldCheck} target="_blank" rel="noopener noreferrer">check it</a>. They hear of it when you hand it over.
+                {:else if held.preview_missed}ClaxBot stopped watching for a preview of fix {held.n} without seeing one up, so they have no link to check. You can hand it over with a link of your own.
+                {:else}Fix {held.n} is waiting for its preview, so they have nothing to check yet. You can hand it over now with a link of your own.{/if}
+              </p>
+              <button type="button" onclick={handOver}>Hand it to the reporter</button>
+            </div>
+          {/if}
           <div class="btns">
             {#if canFix}<button type="button" aria-expanded={shown === "fix"} onclick={() => open("fix")}>Propose fix</button>{/if}
             {#if canFix}<button type="button" aria-expanded={shown === "resolve"} onclick={() => open("resolve")}>Resolve</button>{/if}
@@ -276,7 +308,7 @@
               <label>Summary <textarea name="summary" rows="4" maxlength="4096" aria-required="true" placeholder="What the fix changes; the reporter reads it." bind:value={fix.summary}></textarea></label>
               <label>Pull request or change <input name="url" type="url" placeholder="https://github.com/…/pull/123" bind:value={fix.url} /></label>
               <label>Commit <input name="commit" maxlength="256" bind:value={fix.commit} /></label>
-              <label>Where the reporter checks it <input name="verify_url" type="url" placeholder="https://…" bind:value={fix.verify_url} /></label>
+              <label>Where the reporter checks it <input name="verify_url" type="url" aria-required={held ? "true" : undefined} placeholder="https://…" bind:value={fix.verify_url} /></label>
               <span class="row"><button type="submit" class="primary" disabled={busy}>Propose fix</button><button type="button" class="ghost" onclick={() => { form = null; }}>Cancel</button></span>
             </form>
           {:else if shown === "resolve"}
@@ -309,6 +341,7 @@
             </form>
           {/if}
         </section>
+        {#if ReportBot}<ReportBot report={r} />{/if}
         <ContextCard context={r.context} server={r.server} zone={p.zone} locale={p.locale} />
         <FixHistory fixes={r.fixes ?? []} />
       </aside>
@@ -363,6 +396,9 @@
   .reply button { justify-self: start; }
   textarea, input, select { width: 100%; box-sizing: border-box; }
   .btns { display: flex; flex-wrap: wrap; gap: 6px; }
+  .held { display: grid; justify-items: start; gap: 6px; margin: 0 0 10px; padding: 8px 10px; border: 1px solid var(--tag-orange-bd); border-radius: var(--radius-sm); background: var(--tag-orange-bg); color: var(--tag-orange-fg); font-size: 13px; }
+  .held p { margin: 0; overflow-wrap: anywhere; }
+  .held a { color: inherit; text-decoration: underline; }
   .af { display: grid; gap: 8px; margin-top: 10px; }
   .af label { display: grid; gap: 3px; font-size: 12.5px; color: var(--muted); }
   .af p { margin: 0; }

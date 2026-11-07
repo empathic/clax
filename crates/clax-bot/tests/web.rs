@@ -33,7 +33,7 @@ fn page(text: &str, links: &[&str]) -> Result<FetchedPage, WebError> {
 }
 
 /// A fetched page whose final URL is `url`.
-fn page_at(url: &str, text: &str, links: &[&str]) -> Result<FetchedPage, WebError> {
+pub fn page_at(url: &str, text: &str, links: &[&str]) -> Result<FetchedPage, WebError> {
     page(text, links).map(|p| FetchedPage {
         final_url: url.into(),
         ..p

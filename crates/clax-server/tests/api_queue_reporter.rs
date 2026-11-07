@@ -1940,6 +1940,22 @@ async fn reporter_cannot_verify_anothers_report_under_own() {
 }
 
 #[tokio::test]
+async fn the_badge_tells_a_reporters_overlay_of_the_queues_public_notice() {
+    let s = Setup::new().await;
+    let r = s.reporter("emp-1").await;
+    let badge = format!("/api/queues/{}/reporter/badge", s.qid);
+    let on = clax_store::queues::QueuePatch {
+        public_notice: Some(true),
+        ..Default::default()
+    };
+    s.ts.store
+        .update_queue(&AuditCtx::DAEMON, &s.qid, on)
+        .unwrap();
+    let v: Value = s.get_as(&r, &badge).await.json().await.unwrap();
+    assert_eq!(v["public_notice"], true, "{v}");
+}
+
+#[tokio::test]
 async fn badge_counts_then_seen_clears() {
     let s = Setup::new().await;
     let r = s.reporter("emp-1").await;
@@ -1955,7 +1971,10 @@ async fn badge_counts_then_seen_clears() {
         ORIGIN
     );
     let v: Value = res.json().await.unwrap();
-    assert_eq!(v, json!({"waiting": 0, "report_ids": []}));
+    assert_eq!(
+        v,
+        json!({"waiting": 0, "report_ids": [], "public_notice": false})
+    );
 
     // A reply on one, a fix on the other.
     let (st, v) = s
@@ -1969,21 +1988,24 @@ async fn badge_counts_then_seen_clears() {
     s.propose(&other);
     s.clock.advance(1);
     let v: Value = s.get_as(&r, &badge).await.json().await.unwrap();
-    assert_eq!(v, json!({"waiting": 2, "report_ids": [tid, other]}), "{v}");
+    assert_eq!(v["report_ids"], json!([tid, other]), "{v}");
+    assert_eq!(v["waiting"], 2, "{v}");
 
     let res = s
         .post_as(&r, &format!("{}/{tid}/seen", s.reports()), &json!({}))
         .await;
     assert_eq!(res.status(), 204);
     let v: Value = s.get_as(&r, &badge).await.json().await.unwrap();
-    assert_eq!(v, json!({"waiting": 1, "report_ids": [other]}), "{v}");
+    assert_eq!(v["report_ids"], json!([other]), "{v}");
+    assert_eq!(v["waiting"], 1, "{v}");
     // A fix waits for a verdict whether or not it was read.
     let res = s
         .post_as(&r, &format!("{}/{other}/seen", s.reports()), &json!({}))
         .await;
     assert_eq!(res.status(), 204);
     let v: Value = s.get_as(&r, &badge).await.json().await.unwrap();
-    assert_eq!(v, json!({"waiting": 1, "report_ids": [other]}), "{v}");
+    assert_eq!(v["report_ids"], json!([other]), "{v}");
+    assert_eq!(v["waiting"], 1, "{v}");
 }
 
 #[tokio::test]

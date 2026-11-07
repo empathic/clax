@@ -15,7 +15,7 @@ export function readConfig(body: unknown): FeedbackConfig | null {
   if (b?.enabled !== true || typeof b.instance !== "string" || !b.instance || typeof b.queue !== "string" || !b.queue) return null;
   const context = b.context && typeof b.context === "object" ? (b.context as HostContext) : {};
   const user = typeof b.user === "string" && b.user ? b.user : null;
-  return { instance: b.instance.replace(/\/+$/, ""), queue: b.queue, user, context };
+  return { ...b, instance: b.instance.replace(/\/+$/, ""), user, context } as FeedbackConfig;
 }
 
 /** Asks the config route afresh and reads its answer. */

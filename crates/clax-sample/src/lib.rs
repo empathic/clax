@@ -10,6 +10,7 @@
 pub mod anthropic;
 pub mod cache;
 pub mod flight;
+pub mod form;
 pub mod json_reply;
 pub mod messages;
 pub mod pricing;

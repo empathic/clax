@@ -116,7 +116,7 @@ beforeEach(() => {
     comment: async (id, body) => { comments.push([id, body]); return report(id, ["first", body]); },
     verify: async (id, v) => { verified.push([id, v]); return report(id, ["The end date is wrong"], { state: "verified", status: "resolved" }); },
     reopen: async (id, r) => { reopened.push([id, r]); return report(id, ["The end date is wrong", r.body], { state: "open" }); },
-    badge: async () => badges.shift() ?? { waiting: 0, report_ids: [] },
+    badge: async () => badges.shift() ?? { waiting: 0, report_ids: [], public_notice: false },
     seen: async id => { seen.push(id); },
   };
   host = document.createElement("div");
@@ -615,6 +615,31 @@ describe("the overlay", () => {
     expect(button("Your reports")).toBeDefined();
   });
 
+  it("says a report may go public only for a queue that says so", async () => {
+    const notice = "What you write may appear in a public pull request.";
+    click(button("Report"));
+    onPick(picked(async () => new ArrayBuffer(0)));
+    await settle();
+    expect(q(".composer")?.textContent).not.toContain(notice);
+    view.unmount();
+    view = mount(Overlay as never, props({ publicNotice: true }), host);
+    click(button("Report"));
+    onPick(picked(async () => new ArrayBuffer(0)));
+    await settle();
+    expect(q(".composer")?.textContent).toContain(notice);
+  });
+
+  it("says a report may go public when the queue's badge says so, whatever the host passed", async () => {
+    view.unmount();
+    badges.push({ waiting: 0, report_ids: [], public_notice: true });
+    view = mount(Overlay as never, props(), host);
+    await settle();
+    click(button("Report"));
+    onPick(picked(async () => new ArrayBuffer(0)));
+    await settle();
+    expect(q(".composer")?.textContent).toContain("What you write may appear in a public pull request.");
+  });
+
   it("files the page's URL with its query and without its fragment", async () => {
     const was = location.href;
     history.replaceState(null, "", "/leave?team=7#req-2");
@@ -781,7 +806,7 @@ describe("the overlay", () => {
     expect(fix.querySelector<HTMLAnchorElement>('a[data-link="verify"]')?.href).toBe("https://leave.example/req/1");
     expect(button("Still broken")).toBeDefined();
     // The reply box says who hears a reply while the fix waits.
-    expect(q(".panel .reply-note")?.textContent).toMatch(/Triage agent.*queue's people.*Still broken/s);
+    expect(q(".panel .reply-note")?.textContent).toMatch(/queue's people.*Triage agent may read it.*Still broken/s);
     const before = contexts;
     click(button("It's fixed"));
     await settle();
@@ -813,7 +838,35 @@ describe("the overlay", () => {
     click(button("Your reports"));
     await settle();
     click(q(".panel .row"));
-    expect(q(".panel .reply-note")?.textContent ?? "").toMatch(/goes to Triage agent while they are still at work/);
+    expect(q(".panel .reply-note")?.textContent ?? "").toMatch(/Triage agent may read it too/);
+  });
+
+  it("a held fix offers no verdict and says it is not ready to check", async () => {
+    const r = proposed("t1");
+    r.fixes = [{ n: 1, summary: "A fix has been proposed.", proposer_name: "ClaxBot", proposer_kind: "agent", held: true, created_at: "", outcome: "pending" }];
+    pages.push({ reports: [r], next: null });
+    click(button("Your reports"));
+    await settle();
+    expect(q(".panel .row")?.textContent).toMatch(/Fix not ready for you to check/);
+    click(q(".panel .row"));
+    expect(button("Still broken")).toBeUndefined();
+    expect(button("It's fixed")).toBeUndefined();
+    expect(q(".panel .fix.waiting")?.textContent).toMatch(/A fix has been proposed\./);
+    const note = q(".panel .reply-note")?.textContent ?? "";
+    expect(note).toMatch(/queue's people/);
+    expect(note).not.toMatch(/Still broken/);
+  });
+
+  it("a fix that was held, its preview up, is ready to check with no words of the model's", async () => {
+    const r = proposed("t1");
+    r.fixes = [{ n: 1, summary: "A fix has been proposed.", verify_url: "https://pr-1.preview.example/", proposer_name: "ClaxBot", proposer_kind: "agent", created_at: "", outcome: "pending" }];
+    pages.push({ reports: [r], next: null });
+    click(button("Your reports"));
+    await settle();
+    expect(q(".panel .row")?.textContent).toMatch(/Fix ready for you to check/);
+    click(q(".panel .row"));
+    expect(button("It's fixed")).toBeDefined();
+    expect(q('.panel a[data-link="verify"]')?.getAttribute("href")).toBe("https://pr-1.preview.example/");
   });
 
   it("Still broken requires a note and sends reopen with the new clip", async () => {
@@ -854,7 +907,7 @@ describe("the overlay", () => {
   it("pulses the launcher once when the badge rises, shows its count, and opens on the waiting report", async () => {
     view.unmount();
     const heard: number[] = [];
-    badges.push({ waiting: 0, report_ids: [] }, { waiting: 1, report_ids: ["t1"] });
+    badges.push({ waiting: 0, report_ids: [], public_notice: false }, { waiting: 1, report_ids: ["t1"], public_notice: false });
     view = mount(Overlay as never, props({ onBadge: (n: number) => heard.push(n) }), host);
     await settle();
     expect(heard).toEqual([0]);

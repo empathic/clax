@@ -6,13 +6,14 @@
   // set, and when a call last went through with it. Replace (or Set)
   // opens a password field; Save sends it and forgets it; Clear (or
   // Remove) asks first. `readOnly` (a key from the environment) shows the
-  // state alone. A refusal shows as the daemon words it.
+  // state alone. A refusal shows as the daemon words it. `clearSays` is what
+  // Clear does, for a key that does not stop at once.
   import { relativeTime } from "../format";
   import type { KeyInfo } from "./api";
   import { refusal } from "../people/refusal";
 
-  let { info, label, clearLabel = "Clear", readOnly = false, now, onSave, onClear }: {
-    info: KeyInfo | null; label: string; clearLabel?: string; readOnly?: boolean; now?: () => Date;
+  let { info, label, clearLabel = "Clear", clearSays = "ClaxBot stops using it at once.", readOnly = false, placeholder = "sk-ant-…", name = "clax-provider-api-key", now, onSave, onClear }: {
+    info: KeyInfo | null; label: string; clearLabel?: string; clearSays?: string; readOnly?: boolean; placeholder?: string; name?: string; now?: () => Date;
     onSave(key: string): Promise<unknown>; onClear(): Promise<unknown>;
   } = $props();
   let editing = $state(false);
@@ -32,7 +33,7 @@
     try { await onSave(value.trim()); value = ""; editing = false; } catch (x) { err = refusal(x); } finally { busy = false; }
   }
   async function clear() {
-    if (busy || !confirm(`${clearLabel} the ${label.toLowerCase()}? ClaxBot stops using it at once.`)) return;
+    if (busy || !confirm(`${clearLabel} the ${label.toLowerCase()}? ${clearSays}`)) return;
     busy = true; err = null;
     try { await onClear(); } catch (x) { err = refusal(x); } finally { busy = false; }
   }
@@ -44,7 +45,7 @@
     {#if editing}
       <form onsubmit={save}>
         <label class="bot-sr" for={id}>{label}</label>
-        <input {id} name="clax-provider-api-key" type="password" autocomplete="new-password" data-1p-ignore data-lpignore="true" spellcheck="false" placeholder="sk-ant-…" bind:value bind:this={input} />
+        <input {id} {name} type="password" autocomplete="new-password" data-1p-ignore data-lpignore="true" spellcheck="false" {placeholder} bind:value bind:this={input} />
         <button type="submit" class="primary" aria-disabled={busy || !value.trim()}>{busy ? "Saving…" : "Save"}</button>
         <button type="button" class="ghost" onclick={() => { editing = false; value = ""; err = null; }}>Cancel</button>
       </form>

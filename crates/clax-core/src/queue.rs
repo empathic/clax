@@ -233,6 +233,9 @@ pub struct Queue {
     /// exact origin they allow ([`queue_allows_origin`]).
     pub origins: Vec<String>,
     pub reporters_see: ReportersSee,
+    /// Whether a reporter is told what they write may appear in a public pull
+    /// request.
+    pub public_notice: bool,
     pub created_at: String,
     pub role: Role,
 }

@@ -496,6 +496,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "clax-bot-remote"
+version = "0.6.0"
+dependencies = [
+ "async-trait",
+ "clax-bot",
+ "clax-bot-sandbox",
+ "clax-core",
+ "clax-rt",
+ "clax-store",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "clax-bot-sandbox"
 version = "0.6.0"
 dependencies = [
@@ -506,6 +523,54 @@ dependencies = [
  "oxc_span",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "clax-bot-workspace"
+version = "0.6.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "clax-bot",
+ "clax-bot-sandbox",
+ "clax-core",
+ "clax-store",
+ "reqwest 0.12.28",
+ "ring",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "clax-bot-workspace-service"
+version = "0.6.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "clax-bot",
+ "clax-bot-js",
+ "clax-bot-remote",
+ "clax-bot-sandbox",
+ "clax-bot-workspace",
+ "clax-core",
+ "clax-sample",
+ "clax-store",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -877,6 +942,7 @@ dependencies = [
  "clax-bot",
  "clax-bot-js",
  "clax-bot-sandbox",
+ "clax-bot-workspace",
  "clax-content-git",
  "clax-core",
  "clax-fake-exe",
@@ -978,6 +1044,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "clax-bot",
+ "clax-bot-remote",
  "clax-bot-sandbox",
  "clax-content-git",
  "clax-core",

@@ -1,16 +1,20 @@
 //! Sealed secrets (migration 50, spec 2026-10-21-claxbot-design §8.1): the
-//! instance's model key and people's own keys, kept sealed with
-//! XChaCha20-Poly1305 under a key-encryption key ([`Kek`]) the caller
+//! instance's model key, people's own keys, the Cloudflare token, each
+//! queue's repository tokens and the instance's GitHub App key, kept sealed
+//! with XChaCha20-Poly1305 under a key-encryption key ([`Kek`]) the caller
 //! hands in. The store does not know where the KEK lives: locally it is
 //! `<home>/secrets/kek` ([`Kek::load_or_create`]), on the hosted Worker the
 //! `CLAX_KEK` secret ([`Kek::from_slice`]).
 //!
-//! A key is write-only: every read but [`Store::open_for_use`], which the
-//! model client alone calls, gives its metadata ([`SecretMeta`]: last four
-//! characters, who set it when, when it last worked). Each sealing has a
-//! fresh random 24-byte nonce and binds the slot it is stored in as
-//! associated data, so a sealed value copied into another slot does not
-//! open.
+//! A key is write-only: every read gives its metadata ([`SecretMeta`]: last
+//! four characters, who set it when, when it last worked) but two.
+//! [`Store::open_for_use`], which the model client and the web tools call,
+//! opens the model and Cloudflare slots and refuses the others; the
+//! workspace slots ([`SecretSlot::is_workspace`]) open only through
+//! [`Store::open_queue_repo`], for the queue they belong to. Each sealing
+//! has a fresh random 24-byte nonce and binds the slot it is stored in as
+//! associated data, so a sealed value copied into another slot, another
+//! queue's among them, does not open.
 //!
 //! [`Kek::load_or_create`] lives here rather than in `clax-core` because
 //! the KEK is the store's concern alone (nothing else seals with it), and
@@ -238,6 +242,15 @@ pub enum SecretSlot {
     Own(String),
     /// The instance's Cloudflare API token, which the web tools use.
     Cloudflare,
+    /// A queue's read token, by queue ID: what a container clones with.
+    RepoRead(String),
+    /// A queue's write token, by queue ID: what the host pushes and opens
+    /// pull requests with. It never reaches a container.
+    RepoWrite(String),
+    /// The private key of the instance's GitHub App, a PEM document.
+    GithubApp,
+    /// A queue's Zulip bot's API key, by queue ID ([`crate::queue_notifiers`]).
+    NotifierZulip(String),
 }
 
 impl SecretSlot {
@@ -246,14 +259,37 @@ impl SecretSlot {
             SecretSlot::Instance => "instance",
             SecretSlot::Own(_) => "own",
             SecretSlot::Cloudflare => "cloudflare",
+            SecretSlot::RepoRead(_) => "repo_read",
+            SecretSlot::RepoWrite(_) => "repo_write",
+            SecretSlot::GithubApp => "github_app",
+            SecretSlot::NotifierZulip(_) => "notifier_zulip",
         }
     }
 
+    /// The slot's `person` column: a person key, a queue ID for a queue's
+    /// tokens, empty for the instance's slots.
     pub(crate) fn person(&self) -> &str {
         match self {
-            SecretSlot::Instance | SecretSlot::Cloudflare => "",
-            SecretSlot::Own(p) => p,
+            SecretSlot::Instance | SecretSlot::Cloudflare | SecretSlot::GithubApp => "",
+            SecretSlot::Own(p)
+            | SecretSlot::RepoRead(p)
+            | SecretSlot::RepoWrite(p)
+            | SecretSlot::NotifierZulip(p) => p,
         }
+    }
+
+    /// Whether a queue's own module alone uses this slot: it is set and
+    /// opened through [`crate::queue_repos`] or [`crate::queue_notifiers`],
+    /// never [`Store::set_secret`] or [`Store::open_for_use`].
+    #[must_use]
+    pub fn is_workspace(&self) -> bool {
+        matches!(
+            self,
+            SecretSlot::RepoRead(_)
+                | SecretSlot::RepoWrite(_)
+                | SecretSlot::GithubApp
+                | SecretSlot::NotifierZulip(_)
+        )
     }
 
     /// The associated data a sealing in this slot binds.
@@ -279,6 +315,9 @@ pub struct SecretMeta {
     /// it was set); `None` for a key set before keys were bound, bound at
     /// its first use ([`Store::open_for_use`]).
     pub host: Option<String>,
+    /// A repository token's second origin, its forge's API; `None` for any
+    /// other secret.
+    pub forge_host: Option<String>,
 }
 
 impl SecretMeta {
@@ -295,8 +334,16 @@ impl SecretMeta {
 /// The longest key accepted, in bytes.
 pub const MAX_KEY_BYTES: usize = 512;
 
+/// The refusal of a workspace slot on a model key's path.
+fn wrong_slot() -> CoreError {
+    CoreError::invalid(
+        "wrong_slot",
+        "a repository credential is set and opened through its queue's link",
+    )
+}
+
 /// `key` trimmed, checked: 8 to [`MAX_KEY_BYTES`] visible ASCII characters.
-fn check_key(key: &str) -> Result<&str> {
+pub(crate) fn check_key(key: &str) -> Result<&str> {
     let k = key.trim();
     if k.len() < 8 || k.len() > MAX_KEY_BYTES || !k.bytes().all(|b| b.is_ascii_graphic()) {
         return Err(CoreError::invalid(
@@ -309,7 +356,7 @@ fn check_key(key: &str) -> Result<&str> {
 
 pub(crate) fn meta_in(c: &Connection, slot: &SecretSlot) -> Result<Option<SecretMeta>> {
     Ok(c.prepare_cached(
-        "SELECT last4, set_at, set_by, last_ok_at, use_own, host FROM sealed_secrets
+        "SELECT last4, set_at, set_by, last_ok_at, use_own, host, forge_host FROM sealed_secrets
               WHERE scope = ?1 AND person = ?2",
     )?
     .query_row(params![slot.scope(), slot.person()], |r| {
@@ -320,6 +367,7 @@ pub(crate) fn meta_in(c: &Connection, slot: &SecretSlot) -> Result<Option<Secret
             last_ok_at: r.get(3)?,
             use_own: r.get(4)?,
             host: r.get(5)?,
+            forge_host: r.get(6)?,
         })
     })
     .optional()?)
@@ -331,10 +379,151 @@ pub(crate) fn key_record(at: String, slot: &SecretSlot, op: &str, last4: &str) -
         .with("scope", slot.scope())
         .with("op", op)
         .with("last4", last4);
-    if let SecretSlot::Own(p) = slot {
-        rec = rec.with("person", p.as_str());
+    match slot {
+        SecretSlot::Own(p) => rec = rec.with("person", p.as_str()),
+        SecretSlot::RepoRead(q) | SecretSlot::RepoWrite(q) | SecretSlot::NotifierZulip(q) => {
+            rec = rec.with("queue_id", q.as_str());
+        }
+        SecretSlot::Instance | SecretSlot::Cloudflare | SecretSlot::GithubApp => {}
     }
     rec
+}
+
+/// `value`'s last four characters, as [`SecretMeta::last4`] shows them.
+pub(crate) fn last4_of(value: &str) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    chars[chars.len().saturating_sub(4)..].iter().collect()
+}
+
+/// Seals `value` under `kek` for `slot`: its nonce and sealed bytes.
+fn seal(kek: &Kek, slot: &SecretSlot, value: &str) -> Result<(Vec<u8>, Vec<u8>)> {
+    let nonce = clax_core::secret::random_bytes::<24>();
+    let aad = slot.aad();
+    let sealed = kek
+        .cipher()
+        .encrypt(
+            XNonce::from_slice(&nonce),
+            Payload {
+                msg: value.as_bytes(),
+                aad: &aad,
+            },
+        )
+        .map_err(|_| CoreError::invalid("seal_failed", "the key could not be sealed"))?;
+    Ok((nonce.to_vec(), sealed))
+}
+
+/// Opens what `slot` holds on `c` with `kek`, whatever the slot; `None`
+/// when it holds nothing. Its callers decide who may read it.
+///
+/// # Errors
+/// `kek_mismatch` as [`Store::open_for_use`]; the store's.
+pub(crate) fn open_in(c: &Connection, kek: &Kek, slot: &SecretSlot) -> Result<Option<Secret>> {
+    let row: Option<(Vec<u8>, Vec<u8>)> = c
+        .prepare_cached(
+            "SELECT nonce, sealed FROM sealed_secrets WHERE scope = ?1 AND person = ?2",
+        )?
+        .query_row(params![slot.scope(), slot.person()], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .optional()?;
+    row.map(|(nonce, sealed)| open_sealed(kek, slot, &nonce, &sealed))
+        .transpose()
+}
+
+/// The value `sealed` holds in `slot`.
+fn open_sealed(kek: &Kek, slot: &SecretSlot, nonce: &[u8], sealed: &[u8]) -> Result<Secret> {
+    let mismatch = || {
+        CoreError::invalid(
+            "kek_mismatch",
+            "the stored key does not open with this key-encryption key; set the key again",
+        )
+    };
+    if nonce.len() != 24 {
+        return Err(mismatch());
+    }
+    let aad = slot.aad();
+    let plain = kek
+        .cipher()
+        .decrypt(
+            XNonce::from_slice(nonce),
+            Payload {
+                msg: sealed,
+                aad: &aad,
+            },
+        )
+        .map_err(|_| mismatch())?;
+    String::from_utf8(plain)
+        .map(Secret::new)
+        .map_err(|_| mismatch())
+}
+
+/// What a workspace slot is to hold ([`put_in`]).
+pub(crate) struct Sealing<'a> {
+    pub value: &'a str,
+    /// What [`SecretMeta::last4`] shows of it.
+    pub shown: &'a str,
+    /// The origin it is bound to.
+    pub host: Option<&'a str>,
+    /// Its second origin, for a repository token.
+    pub forge_host: Option<&'a str>,
+}
+
+/// Seals `s` into workspace slot `slot` on `tx` under `kek`, replacing what
+/// was there, and records `admin.key {scope, op: set, last4, queue_id?}`
+/// under `ctx`.
+pub(crate) fn put_in(
+    st: &Store,
+    tx: &rusqlite::Transaction<'_>,
+    ctx: &AuditCtx,
+    kek: &Kek,
+    slot: &SecretSlot,
+    s: &Sealing<'_>,
+) -> Result<SecretMeta> {
+    let sealing = seal(kek, slot, s.value)?;
+    write_in(st, tx, ctx, slot, &sealing, s.shown, (s.host, s.forge_host))
+}
+
+/// Writes a sealing into `slot` on `tx` and records it.
+fn write_in(
+    st: &Store,
+    tx: &rusqlite::Transaction<'_>,
+    ctx: &AuditCtx,
+    slot: &SecretSlot,
+    (nonce, sealed): &(Vec<u8>, Vec<u8>),
+    last4: &str,
+    (host, forge_host): (Option<&str>, Option<&str>),
+) -> Result<SecretMeta> {
+    let now = st.now();
+    tx.execute(
+        "INSERT INTO sealed_secrets (scope, person, nonce, sealed, last4, use_own, set_by, set_at, last_ok_at, host, forge_host)
+         VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, NULL, ?8, ?9)
+         ON CONFLICT (scope, person) DO UPDATE SET nonce = excluded.nonce,
+           sealed = excluded.sealed, last4 = excluded.last4, use_own = 1,
+           set_by = excluded.set_by, set_at = excluded.set_at, last_ok_at = NULL,
+           host = excluded.host, forge_host = excluded.forge_host",
+        params![slot.scope(), slot.person(), nonce, sealed, last4, set_by(ctx), now, host, forge_host],
+    )?;
+    st.record_audit(tx, ctx, key_record(now, slot, "set", last4))?;
+    Ok(meta_in(tx, slot)?.expect("the secret was just written"))
+}
+
+/// Clears `slot` on `tx`, recording `admin.key {op: clear}` when it held a
+/// key. Returns whether it did.
+pub(crate) fn clear_in(
+    st: &Store,
+    tx: &rusqlite::Transaction<'_>,
+    ctx: &AuditCtx,
+    slot: &SecretSlot,
+) -> Result<bool> {
+    let Some(meta) = meta_in(tx, slot)? else {
+        return Ok(false);
+    };
+    tx.execute(
+        "DELETE FROM sealed_secrets WHERE scope = ?1 AND person = ?2",
+        params![slot.scope(), slot.person()],
+    )?;
+    st.record_audit(tx, ctx, key_record(st.now(), slot, "clear", &meta.last4))?;
+    Ok(true)
 }
 
 impl Store {
@@ -343,7 +532,8 @@ impl Store {
     /// An own key starts in use.
     ///
     /// # Errors
-    /// `invalid_key`; the store's.
+    /// `invalid_key`; `wrong_slot` for a workspace slot, which
+    /// [`crate::queue_repos`] sets, bound to where it may go; the store's.
     pub fn set_secret(
         &self,
         ctx: &AuditCtx,
@@ -351,23 +541,12 @@ impl Store {
         slot: &SecretSlot,
         key: &str,
     ) -> Result<SecretMeta> {
+        if slot.is_workspace() {
+            return Err(wrong_slot());
+        }
         let key = check_key(key)?;
-        let nonce = clax_core::secret::random_bytes::<24>();
-        let aad = slot.aad();
-        let sealed = kek
-            .cipher()
-            .encrypt(
-                XNonce::from_slice(&nonce),
-                Payload {
-                    msg: key.as_bytes(),
-                    aad: &aad,
-                },
-            )
-            .map_err(|_| CoreError::invalid("seal_failed", "the key could not be sealed"))?;
-        let last4: String = {
-            let chars: Vec<char> = key.chars().collect();
-            chars[chars.len() - 4..].iter().collect()
-        };
+        let sealing = seal(kek, slot, key)?;
+        let last4 = last4_of(key);
         // Bound to the provider in effect now: the key is only ever sent
         // there ([`Store::open_for_use`]).
         let host = match slot {
@@ -380,18 +559,15 @@ impl Store {
                 .and_then(clax_core::config::key_host),
         };
         self.with_tx(|tx| {
-            let now = self.now();
-            tx.execute(
-                "INSERT INTO sealed_secrets (scope, person, nonce, sealed, last4, use_own, set_by, set_at, last_ok_at, host)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, NULL, ?8)
-                 ON CONFLICT (scope, person) DO UPDATE SET nonce = excluded.nonce,
-                   sealed = excluded.sealed, last4 = excluded.last4, use_own = 1,
-                   set_by = excluded.set_by, set_at = excluded.set_at, last_ok_at = NULL,
-                   host = excluded.host",
-                params![slot.scope(), slot.person(), &nonce[..], sealed, last4, set_by(ctx), now, host],
-            )?;
-            self.record_audit(tx, ctx, key_record(now, slot, "set", &last4))?;
-            Ok(meta_in(tx, slot)?.expect("the secret was just written"))
+            write_in(
+                self,
+                tx,
+                ctx,
+                slot,
+                &sealing,
+                &last4,
+                (host.as_deref(), None),
+            )
         })
     }
 
@@ -401,17 +577,7 @@ impl Store {
     /// # Errors
     /// The store's.
     pub fn clear_secret(&self, ctx: &AuditCtx, slot: &SecretSlot) -> Result<bool> {
-        self.with_tx(|tx| {
-            let Some(meta) = meta_in(tx, slot)? else {
-                return Ok(false);
-            };
-            tx.execute(
-                "DELETE FROM sealed_secrets WHERE scope = ?1 AND person = ?2",
-                params![slot.scope(), slot.person()],
-            )?;
-            self.record_audit(tx, ctx, key_record(self.now(), slot, "clear", &meta.last4))?;
-            Ok(true)
-        })
+        self.with_tx(|tx| clear_in(self, tx, ctx, slot))
     }
 
     /// `slot`'s metadata, or `None` when it holds no key.
@@ -422,22 +588,27 @@ impl Store {
         self.with_read(|c| meta_in(c, slot))
     }
 
-    /// The key in `slot`, opened with `kek`, for the model client to send
-    /// to `base_url`; `None` when it holds no key. Nothing else reads a key
-    /// back. A key is sent only to the origin it was set for: another is
-    /// refused `key_host_mismatch`, as is a URL the base-URL policy refuses
+    /// The key in `slot`, opened with `kek`, for the model client or the
+    /// web tools to send to `base_url`; `None` when it holds no key. Beside
+    /// [`Store::open_queue_repo`], nothing else reads a key back. A key is
+    /// sent only to the origin it was set for: another is refused
+    /// `key_host_mismatch`, as is a URL the base-URL policy refuses
     /// ([`Store::set_base_url_policy`]); a key with no recorded origin
     /// (set before keys were bound) is bound to `base_url` now.
     ///
     /// # Errors
-    /// `key_host_mismatch` as above; `kek_mismatch` when `kek` is not the
-    /// one it was sealed with (or the row was tampered with); the store's.
+    /// `key_host_mismatch` as above; `wrong_slot` for a workspace slot;
+    /// `kek_mismatch` when `kek` is not the one it was sealed with (or the
+    /// row was tampered with); the store's.
     pub fn open_for_use(
         &self,
         kek: &Kek,
         slot: &SecretSlot,
         base_url: &str,
     ) -> Result<Option<Secret>> {
+        if slot.is_workspace() {
+            return Err(wrong_slot());
+        }
         type Row = (Vec<u8>, Vec<u8>, Option<String>);
         let row: Option<Row> = self.with_read(|c| {
             Ok(c.prepare_cached(
@@ -481,29 +652,7 @@ impl Store {
                 Ok(())
             })?,
         }
-        let mismatch = || {
-            CoreError::invalid(
-                "kek_mismatch",
-                "the stored key does not open with this key-encryption key; set the key again",
-            )
-        };
-        if nonce.len() != 24 {
-            return Err(mismatch());
-        }
-        let aad = slot.aad();
-        let plain = kek
-            .cipher()
-            .decrypt(
-                XNonce::from_slice(&nonce),
-                Payload {
-                    msg: &sealed,
-                    aad: &aad,
-                },
-            )
-            .map_err(|_| mismatch())?;
-        String::from_utf8(plain)
-            .map(|s| Some(Secret::new(s)))
-            .map_err(|_| mismatch())
+        open_sealed(kek, slot, &nonce, &sealed).map(Some)
     }
 
     /// Notes that a request with `slot`'s key succeeded now (the store's

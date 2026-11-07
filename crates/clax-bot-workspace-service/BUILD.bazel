@@ -1,0 +1,6 @@
+load("//bazel:cargo.bzl", "cargo_package")
+
+cargo_package(
+    # tests/run_loop.rs drives the run loop with clax-bot's own test support.
+    test_compile_data = ["//crates/clax-bot:rust_sources"],
+)

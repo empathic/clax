@@ -1,15 +1,16 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
-  // A queue's members and service grants, for its admins. A member is a
+  // A queue's members, service grants and repository, for its admins. A member is a
   // person by public ID, at admin (changes the queue, makes service
   // grants) or triage (reads and works its reports); adding a member
   // already there changes their role. A new service grant's token and
   // private key are shown here once, each with Copy, under a warning that
   // they are not shown again; Done forgets them. Revoking a grant, after
   // confirming, ends every reporter token it minted. Each list is fetched
-  // when the panel opens and after each change.
-  import { onMount } from "svelte";
+  // when the panel opens and after each change. All of it loads with
+  // Manage, not with the Queues page, and the repository's panel after it.
+  import { onMount, type Component } from "svelte";
   import * as api from "./api";
   import { refusal } from "./model";
 
@@ -23,6 +24,9 @@
   let grantName = $state("");
   let made = $state<api.ServiceGrantCreated | null>(null);
   let copied = $state<"token" | "key" | null>(null);
+  let RepoPanel = $state<Component<{ queue: api.Queue }> | null>(null);
+  let repoFailed = $state(false);
+  let NotifierPanel = $state<Component<{ queue: api.Queue }> | null>(null);
   // svelte-ignore state_referenced_locally
   const qid = p.queue.id;
 
@@ -66,7 +70,11 @@
   const copy = (what: "token" | "key", text: string) => { void navigator.clipboard?.writeText(text).then(() => { copied = what; }, () => {}); };
   const day = (iso: string) => iso.slice(0, 10);
 
-  onMount(() => { void loadMembers(); void loadGrants(); });
+  const loadRepo = () => {
+    repoFailed = false;
+    void import("./RepoPanel.svelte").then(m => { RepoPanel = m.default as Component<{ queue: api.Queue }>; }, () => { repoFailed = true; });
+  };
+  onMount(() => { void loadMembers(); void loadGrants(); loadRepo(); void import("./NotifierPanel.svelte").then(m => { NotifierPanel = m.default as Component<{ queue: api.Queue }>; }, () => {}); });
 </script>
 
 <div class="qadmin">
@@ -127,6 +135,10 @@
     </form>
     {#if grantErr}<p class="err" role="alert">{grantErr}</p>{/if}
   </section>
+
+  {#if RepoPanel}<RepoPanel queue={p.queue} />{/if}
+  {#if repoFailed}<p class="err" role="alert">Could not load the repository panel. <button type="button" class="ghost" onclick={loadRepo}>Try again</button></p>{/if}
+  {#if NotifierPanel}<NotifierPanel queue={p.queue} />{/if}
 </div>
 
 <style>

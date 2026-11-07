@@ -2023,11 +2023,21 @@ pub fn public_address(ip: std::net::IpAddr) -> bool {
                 return public_address(IpAddr::V4(v4));
             }
             let s = v6.segments();
+            // What translates or tunnels to an address this does not see:
+            // NAT64, the IPv4-translated form, 6to4 and Teredo.
+            let carries =
+                (s[0] == 0x0064 && s[1] == 0xff9b && s[2] <= 1 && (s[2] == 1 || s[3..6] == [0; 3]))
+                    || (s[..4] == [0; 4] && s[4] == 0xffff && s[5] == 0)
+                    || s[0] == 0x2002
+                    || (s[0] == 0x2001 && s[1] == 0);
             !(v6.is_unspecified()
                 || v6.is_loopback()
                 || v6.is_multicast()
+                || carries
                 || (s[0] & 0xfe00) == 0xfc00
                 || (s[0] & 0xffc0) == 0xfe80
+                || (s[0] & 0xffc0) == 0xfec0
+                || (s[0] == 0x0100 && s[1..4] == [0; 3])
                 || (s[0] == 0x2001 && s[1] == 0x0db8))
         }
     }
@@ -2064,6 +2074,26 @@ mod tests {
             "2001:db8::1",
             "::ffff:10.0.0.5",
             "::ffff:127.0.0.1",
+        ] {
+            assert!(!public_address(bad.parse().unwrap()), "{bad}");
+        }
+    }
+
+    #[test]
+    fn an_ipv6_address_that_carries_another_network_is_not_public() {
+        for ok in ["2001:4860:4860::8888", "2a00:1450::1", "2003::1"] {
+            assert!(public_address(ok.parse().unwrap()), "{ok}");
+        }
+        for bad in [
+            "64:ff9b::a00:5",
+            "64:ff9b::808:808",
+            "64:ff9b:1::1",
+            "2002:a00:5::1",
+            "2002:808:808::1",
+            "fec0::1",
+            "100::1",
+            "::ffff:0:a00:5",
+            "2001:0:4136:e378::1",
         ] {
             assert!(!public_address(bad.parse().unwrap()), "{bad}");
         }

@@ -6,7 +6,8 @@ name: Preview
 # Artifacts in a queue and namespace of its own, fresh at its first
 # deploy, with GitHub sign-in through the
 # preview OAuth App (whose callback URL matches every pr-<N> host) and
-# OWNER_GITHUB as its owner. Every push redeploys it; closing the pull
+# OWNER_GITHUB as its owner. Every push redeploys it (ClaxBot's only on a
+# person's command naming the commit, below); closing the pull
 # request tears it down (crates/clax-worker/teardown.mjs), and the
 # reaper (preview-reaper.yml) catches the closes GitHub sends no event for.
 #
@@ -18,32 +19,295 @@ name: Preview
 # pushed only by someone who can write to it, so the writers are who get
 # previews, and who reach the preview's Cloudflare token through their
 # run: docs/environments.md, "Credentials", says what that token reaches.
+#
+# ClaxBot's pull requests are the exception to "every push": they are in
+# this repository, but a model steered by a reporter's text wrote them. A
+# pull request from a `claxbot/` branch, or by the login in the repository
+# variable CLAXBOT_LOGIN (which still knows it after a rename), deploys on no
+# pull_request event. It deploys on a comment `/preview <the head's full
+# SHA>`, alone in the comment, in two steps:
+#
+# - `approve`, on the comment, checks it, and deploys nothing. The comment
+#   names the commit, so what deploys is what its author read: any SHA but
+#   the current head is refused, and a push after it needs a new comment.
+#   The sender comes from GitHub's event: a User, not the pull request's
+#   author, with write or admin. Triage is not enough, and ClaxBot's token,
+#   which can comment, is a Bot's. For issue_comment GitHub runs this file
+#   from the default branch, so no branch can change this job. It holds no
+#   secret, checks nothing out, and any API error fails it. It also asks
+#   GitHub's compare API what the head changes from the default branch, both
+#   sides of a rename, and refuses any path deploy/claxbot-workspace/clax.toml
+#   would (scripts/check-claxbot-paths.py, both read from the default branch):
+#   a check of the daemon's work by nothing of the daemon's. One list serves
+#   both, and path-cases.txt holds the two matchers to one answer.
+# - It then dispatches this workflow on the head branch, because a run's
+#   ref sets its Actions cache scope: a build in the comment's run would run
+#   branch code with the default branch's scope, and could poison what that
+#   scope's runs restore (native-check.yml's; nothing that ships restores
+#   one). `dispatched`, `build` and `deploy` go on only for a run
+#   GITHUB_TOKEN started (triggering_actor
+#   github-actions[bot]: of the jobs with actions: write, deploy-prod.yml's
+#   run from `prod` and dispatch other workflows, so `approve` alone can) and
+#   whose inputs are valid, name the run's own commit, and name an open
+#   pull request of this branch. So a writer's Run workflow button deploys
+#   nothing, nor does a rerun of a dispatched run, whose triggering actor is
+#   a person: a new comment does.
+#
+# The pull_request path and the dispatched run both take this file from the
+# branch, so a branch that could edit it could deploy itself. ClaxBot's
+# cannot: `.github/` is a protected path of every target, and its GitHub App
+# has no `workflows` permission (deploy/claxbot-workspace/README.md). That
+# binds the model, not a writer, who has the token anyway.
+#
+# GitHub shows the comment's and the dispatched run under Actions, not on
+# the pull request: a refusal is a failure there, and a success the preview's
+# comment. A path refusal is also a comment on the pull request. `build`
+# needs `dispatched` for its outputs alone: on a pull_request event that job
+# is skipped, which starts nothing and delays nothing.
+#
+# Building and deploying are two jobs on two runners. `build` runs the pull
+# request's code with no environment and no secret; `deploy` has the
+# environment and runs the default branch's scripts and lockfile on the one
+# file `build` hands it. A build script that appends to $GITHUB_PATH or
+# rewrites wrangler changes a runner nothing secret ever reaches.
 on:
   pull_request:
     types: [opened, synchronize, reopened, closed]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr: { description: "The pull request; only approve's dispatch deploys", type: string, required: true }
+      sha: { description: The commit approved, type: string, required: true }
 
 permissions: {}
 
-# One run per pull request at a time, a newer one cancelling the older, so
-# a deploy queued before the close cannot recreate a torn-down preview.
-concurrency:
-  group: preview-${{ github.event.number }}
-  cancel-in-progress: true
-
+# One deploy or teardown per pull request at a time, a newer one cancelling
+# the older, so a deploy queued before the close cannot recreate a torn-down
+# preview. The group is on the two jobs, not the workflow, because a
+# workflow's is taken before anything can be checked. Each job's group is
+# the shared one only for the event and ClaxBot tests of its condition, not
+# the repository, Dependabot or base tests, since a pull request those skip
+# has no deploy to cancel; otherwise it is the run's own, so no comment,
+# refused command, or push to a ClaxBot branch can cancel anything, whatever
+# GitHub does for a skipped job.
+# A dispatched deploy can join after `dispatched` passed and a teardown has
+# begun, and cancel it: its first check tears down in its place.
 jobs:
-  deploy:
+  approve:
     if: >-
-      github.event.action != 'closed'
-      && github.event.pull_request.head.repo.full_name == github.repository
-      && github.event.pull_request.user.login != 'dependabot[bot]'
-      && github.event.pull_request.base.ref != 'prod'
+      github.event_name == 'issue_comment'
+      && github.event.issue.pull_request
+      && startsWith(github.event.comment.body, '/preview ')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: { actions: write, contents: read, pull-requests: write }
+    steps:
+      # The comment is text from whoever wrote it: it comes in through env,
+      # is matched whole, and is never printed. `set -e` makes any failed
+      # call a refusal.
+      - name: Check the command, who gave it and what it names, then dispatch the deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.issue.number }}
+          BODY: ${{ github.event.comment.body }}
+          SENDER: ${{ github.event.sender.login }}
+          SENDER_TYPE: ${{ github.event.sender.type }}
+          CLAXBOT_LOGIN: ${{ vars.CLAXBOT_LOGIN }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          refuse() {
+            echo "::error::/preview on #$PR refused: $1"
+            exit 1
+          }
+          lower() { tr '[:upper:]' '[:lower:]' <<<"$1"; }
+          [[ "$BODY" =~ ^/preview\ ([0-9a-f]{40})$ ]] \
+            || refuse "the command is /preview and the head's full SHA, alone in the comment"
+          sha="${BASH_REMATCH[1]}"
+          [ "$SENDER_TYPE" = User ] || refuse "it must come from a person, not $SENDER ($SENDER_TYPE)"
+          permission="$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$SENDER/permission" --jq .permission)"
+          case "$permission" in
+            admin|write) ;;
+            *) refuse "it must come from someone with write access; $SENDER has $permission" ;;
+          esac
+          pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR")"
+          field() { jq -er "$1" <<<"$pr"; }
+          state="$(field .state)"
+          head_sha="$(field .head.sha)"
+          head_ref="$(field .head.ref)"
+          head_repo="$(field .head.repo.full_name)"
+          base_ref="$(field .base.ref)"
+          author="$(field .user.login)"
+          [ "$state" = open ] || refuse "the pull request is $state"
+          [ "$head_repo" = "$GITHUB_REPOSITORY" ] || refuse "its branch is not in this repository"
+          [ "$base_ref" != prod ] || refuse "a release pull request gets no preview"
+          [ "$author" != 'dependabot[bot]' ] || refuse "Dependabot's pull requests get no preview"
+          [ "$SENDER" != "$author" ] || refuse "its author cannot approve it"
+          [[ "$(lower "$head_ref")" = claxbot/* || ( -n "$CLAXBOT_LOGIN" && "$(lower "$author")" = "$(lower "$CLAXBOT_LOGIN")" ) ]] \
+            || refuse "this pull request deploys on every push, with no command"
+          [ "$sha" = "$head_sha" ] || refuse "$sha is not the head, $head_sha: read that one, then name it"
+          # GitHub lists at most 300 files of a comparison, and says nothing
+          # of the rest, so a list that long is no list.
+          gh api "repos/$GITHUB_REPOSITORY/compare/$DEFAULT_BRANCH...$sha" >"$RUNNER_TEMP/compare.json"
+          [ "$(jq -er '.files | length' "$RUNNER_TEMP/compare.json")" -lt 300 ] \
+            || refuse "it changes too many files for GitHub to list"
+          raw() {
+            gh api -H 'Accept: application/vnd.github.raw+json' \
+              "repos/$GITHUB_REPOSITORY/contents/$1?ref=$GITHUB_SHA" >"$RUNNER_TEMP/$2"
+          }
+          raw deploy/claxbot-workspace/clax.toml clax.toml
+          raw scripts/check-claxbot-paths.py check-claxbot-paths.py
+          if ! jq -j '.files[] | (.filename, "\u0000"), (.previous_filename // empty | (., "\u0000"))' "$RUNNER_TEMP/compare.json" \
+            | python3 "$RUNNER_TEMP/check-claxbot-paths.py" judge "$RUNNER_TEMP/clax.toml" >"$RUNNER_TEMP/refused"; then
+            # Paths are a model's text: in code spans, nothing they name is
+            # mentioned or linked.
+            listed="$(tr -d '`' <"$RUNNER_TEMP/refused" | head -20 | sed 's/.*/- `&`/')"
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --silent \
+              -f "body=**No preview of \`${sha:0:12}\`.** ClaxBot's pull requests may change no build-time or sensitive path (\`deploy/claxbot-workspace/clax.toml\`), and this one does, or could not be read:
+
+          ${listed:-(nothing could be listed)}
+
+          To preview it, a person moves the change to a branch of their own." || true
+            refuse "it changes a path deploy/claxbot-workspace/clax.toml refuses"
+          fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/preview.yml/dispatches" --silent \
+            -f "ref=$head_ref" -f "inputs[pr]=$PR" -f "inputs[sha]=$sha"
+
+  # What a dispatch asks for, checked before any job has a secret. Inputs
+  # are text until they match here; `build` and `deploy` use only these
+  # outputs.
+  dispatched:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: { pull-requests: read }
+    outputs:
+      number: ${{ steps.check.outputs.number }}
+      sha: ${{ steps.check.outputs.sha }}
+    steps:
+      - name: Check who dispatched this and what it names
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          IN_PR: ${{ inputs.pr }}
+          IN_SHA: ${{ inputs.sha }}
+        run: |
+          set -euo pipefail
+          refuse() {
+            echo "::error::dispatch refused: $1"
+            exit 1
+          }
+          [ "$TRIGGERING_ACTOR" = 'github-actions[bot]' ] || refuse "only a /preview comment deploys this; post a new one"
+          [[ "$IN_PR" =~ ^[1-9][0-9]{0,9}$ ]] || refuse "pr is not a pull request's number"
+          [[ "$IN_SHA" =~ ^[0-9a-f]{40}$ ]] || refuse "sha is not a full SHA"
+          [ "$IN_SHA" = "$GITHUB_SHA" ] || refuse "the branch moved past $IN_SHA: name the new head"
+          pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$IN_PR")"
+          field() { jq -er "$1" <<<"$pr"; }
+          state="$(field .state)"
+          head_sha="$(field .head.sha)"
+          head_ref="$(field .head.ref)"
+          head_repo="$(field .head.repo.full_name)"
+          [ "$state" = open ] || refuse "#$IN_PR is $state"
+          [ "$head_repo" = "$GITHUB_REPOSITORY" ] || refuse "#$IN_PR's branch is not in this repository"
+          [ "$head_ref" = "$GITHUB_REF_NAME" ] || refuse "#$IN_PR is not this branch's"
+          [ "$head_sha" = "$IN_SHA" ] || refuse "#$IN_PR's head moved past $IN_SHA: name the new head"
+          echo "number=$IN_PR" >>"$GITHUB_OUTPUT"
+          echo "sha=$IN_SHA" >>"$GITHUB_OUTPUT"
+
+  # The pull request's code, in a job with no environment and no secret: its
+  # package install scripts and build scripts run here, on a runner of their
+  # own, and what leaves is one file. The conditions are this workflow's for
+  # a preview at all; `deploy` follows this job. Its group is deploy's, under
+  # another name: joining deploy's would cancel a teardown with nothing to
+  # finish it, and a newer push's build needs only to replace an older build.
+  build:
+    needs: [dispatched]
+    if: >-
+      !cancelled()
+      && (
+        (github.event_name == 'pull_request'
+          && github.event.action != 'closed'
+          && github.event.pull_request.head.repo.full_name == github.repository
+          && github.event.pull_request.user.login != 'dependabot[bot]'
+          && github.event.pull_request.base.ref != 'prod'
+          && github.event.pull_request.user.login != vars.CLAXBOT_LOGIN
+          && !startsWith(github.event.pull_request.head.ref, 'claxbot/'))
+        || (github.event_name == 'workflow_dispatch'
+          && github.triggering_actor == 'github-actions[bot]'
+          && needs.dispatched.result == 'success'
+          && needs.dispatched.outputs.number != ''
+          && needs.dispatched.outputs.sha == github.sha)
+      )
+    concurrency:
+      group: preview-build-${{ (github.triggering_actor == 'github-actions[bot]' && needs.dispatched.outputs.number) || (github.event_name == 'pull_request' && github.event.action != 'closed' && github.event.pull_request.user.login != vars.CLAXBOT_LOGIN && !startsWith(github.event.pull_request.head.ref, 'claxbot/') && github.event.number) || github.run_id }}
+      cancel-in-progress: true
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    permissions: { contents: read }
+    env:
+      SHA: ${{ needs.dispatched.outputs.sha || github.event.pull_request.head.sha }}
+    steps:
+      # An empty SHA would check out the run's ref.
+      - name: Check there is a commit to build
+        run: '[[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no commit to build"; exit 1; }'
+
+      # The pull request's head commit, not the merge commit GitHub makes
+      # for the run, so /healthz names a commit someone pushed.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { ref: "${{ env.SHA }}", persist-credentials: false }
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with: { package_json_file: web/package.json }
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with: { node-version: 26, package-manager-cache: false }
+      - name: Install Rust toolchain
+        run: rustup toolchain install && rustup target add wasm32-unknown-unknown
+      - name: Install clang, lld and llvm
+        run: sudo apt-get update -q && sudo apt-get install -y -q clang lld llvm
+
+      # As staging.yml's worker job builds it, the commit going into /healthz
+      # and built-from.json. `h`: Bazel's build is a link to its output.
+      - name: Build the web UI and the Worker
+        env:
+          CLAX_BUILD_COMMIT: ${{ env.SHA }}
+          CARGO_INCREMENTAL: "0"
+        run: |
+          set -euo pipefail
+          scripts/pnpm-install-stamped.sh web
+          scripts/pnpm-install-stamped.sh crates/clax-worker
+          scripts/build-web.sh
+          crates/clax-worker/build.sh
+          tar -chf "$RUNNER_TEMP/worker.tar" target/clax-worker/build target/clax-worker/built-from.json web/dist
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: worker, path: "${{ runner.temp }}/worker.tar", retention-days: 1, if-no-files-found: error }
+
+  # Holds the environment's secrets and runs none of the pull request's code:
+  # everything it executes is the default branch's, wrangler and its lockfile
+  # too, and what `build` made is data, unpacked by scripts/unpack-worker.py and
+  # uploaded by wrangler. So a pull request's change to wrangler.jsonc or to a
+  # deploy script does not reach its own preview: it takes effect once merged.
+  # It restores no cache.
+  deploy:
+    needs: [dispatched, build]
+    # The actor test again, for a person's rerun of this job alone: `build`'s
+    # success would otherwise stand for a command nobody gave.
+    if: >-
+      !cancelled()
+      && needs.build.result == 'success'
+      && (github.event_name != 'workflow_dispatch' || github.triggering_actor == 'github-actions[bot]')
+    concurrency:
+      group: preview-${{ (github.triggering_actor == 'github-actions[bot]' && needs.dispatched.outputs.number) || (github.event_name == 'pull_request' && github.event.action != 'closed' && github.event.pull_request.user.login != vars.CLAXBOT_LOGIN && !startsWith(github.event.pull_request.head.ref, 'claxbot/') && github.event.number) || github.run_id }}
+      cancel-in-progress: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     environment: preview
     permissions: { contents: read, pull-requests: write }
     env:
-      NAME: pr-${{ github.event.number }}
-      SHA: ${{ github.event.pull_request.head.sha }}
+      # From `dispatched` for a dispatch, from the event for a push.
+      PR: ${{ needs.dispatched.outputs.number || github.event.number }}
+      NAME: pr-${{ needs.dispatched.outputs.number || github.event.number }}
+      SHA: ${{ needs.dispatched.outputs.sha || github.event.pull_request.head.sha }}
       PREVIEW_HOST_ZONE: ${{ vars.PREVIEW_HOST_ZONE }}
       PREVIEW_SITE_ZONE: ${{ vars.PREVIEW_SITE_ZONE }}
       OWNER_GITHUB: ${{ vars.OWNER_GITHUB }}
@@ -59,6 +323,7 @@ jobs:
           HAVE_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
           HAVE_OAUTH_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET != '' }}
         run: |
+          [[ "$PR" =~ ^[0-9]+$ && "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no pull request or commit to deploy"; exit 1; }
           missing=""
           for v in PREVIEW_HOST_ZONE PREVIEW_SITE_ZONE OWNER_GITHUB; do
             [ -n "${!v}" ] || missing="$missing variable:$v"
@@ -73,74 +338,95 @@ jobs:
             exit 1
           fi
 
-      # The pull request's head commit, not the merge commit GitHub makes
-      # for the run, so /healthz names a commit someone pushed.
+      # The default branch: every script below, and the lockfile wrangler
+      # comes from, whichever branch this workflow file was taken from.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: { ref: "${{ env.SHA }}", persist-credentials: false }
-
+        with: { ref: "${{ github.event.repository.default_branch }}", persist-credentials: false }
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with: { package_json_file: web/package.json }
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with: { node-version: 26 }
-      - name: Install Rust toolchain
-        run: rustup toolchain install && rustup target add wasm32-unknown-unknown
-      - name: Install clang, lld and llvm
-        run: sudo apt-get update -q && sudo apt-get install -y -q clang lld llvm
+        with: { node-version: 26, package-manager-cache: false }
 
-      # The deploy record stays in the runner's temporary directory (the
-      # runner context is a step's, not a job's env).
-      - name: Build (scripts/cloudflare-setup.sh --env pr-<N> --ci, a dry run; no secrets)
-        env:
-          CLAX_DEPLOY_HOME: ${{ runner.temp }}/clax-deploy
-        run: |
-          set -euo pipefail
-          scripts/cloudflare-setup.sh --env "$NAME" --legal bundled \
-            --public "$NAME.$PREVIEW_HOST_ZONE" --site-domain "$NAME.$PREVIEW_SITE_ZONE" --site-zone "$PREVIEW_SITE_ZONE" \
-            --github-client-id "$OAUTH_CLIENT_ID" --owner-github "$OWNER_GITHUB" --account "$CLOUDFLARE_ACCOUNT_ID" --ci
-
-      # The closed event's run normally cancels this one, but a push and a
-      # close in the same second can start the runs the other way round:
-      # a closed pull request is torn down here instead, and the job fails.
-      - name: Tear down instead if the pull request closed while this run waited
+      # This job joined the group only now, so it may have cancelled a
+      # teardown, or a close may have run before it: either way a closed pull
+      # request is torn down here, and the job fails. It goes before anything
+      # that can fail, so a close is finished whatever comes after.
+      - name: Tear down instead if the pull request is closed
         env:
           GH_TOKEN: ${{ github.token }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -euo pipefail
-          state="$(gh api "repos/$GITHUB_REPOSITORY/pulls/${{ github.event.number }}" --jq .state)"
+          state="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .state)"
           if [ "$state" != open ]; then
-            echo "::error::#${{ github.event.number }} is $state: tearing its preview down instead of deploying"
+            echo "::error::#$PR is $state: tearing its preview down instead of deploying"
             (cd crates/clax-worker && node teardown.mjs "$NAME" --site-zone "$PREVIEW_SITE_ZONE")
             exit 1
           fi
 
-      # Deploys what the build step built. A preview's first deploy makes
+      # What was approved or pushed is deployed only while it is the head: a
+      # rerun of an old run deploys nothing. After the teardown, which a closed
+      # pull request needs whatever its head.
+      - name: Check the commit is still the head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          head="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .head.sha)"
+          [ "$head" = "$SHA" ] || { echo "::error::$SHA is no longer #$PR's head, $head: nothing deployed"; exit 1; }
+
+      # The tools scripts/cloudflare-setup.sh checks for, though it builds
+      # nothing here.
+      - name: Install Rust toolchain
+        run: rustup toolchain install && rustup target add wasm32-unknown-unknown
+      - name: Install clang, lld and llvm
+        run: sudo apt-get update -q && sudo apt-get install -y -q clang lld llvm
+      # wrangler, from the default branch's lockfile, with no secret in the
+      # environment.
+      - name: Install the deploy's packages
+        run: scripts/pnpm-install-stamped.sh crates/clax-worker
+
+      # A directory of its own: a run's code can write what it likes into
+      # this artifact, and nothing else reads what lands here.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with: { name: worker, path: "${{ runner.temp }}/worker-artifact" }
+      - name: Unpack the Worker (scripts/unpack-worker.py)
+        run: python3 scripts/unpack-worker.py "$RUNNER_TEMP/worker-artifact" .
+
+      # Deploys what `build` built: --built-from names the commit, this
+      # checkout being the default branch's. A preview's first deploy makes
       # no SETUP_SECRET or CLAX_TOKEN (deploy.mjs --env): its owner signs in
       # with GitHub. The health wait and the site host check fail the run;
       # previews run no smoke.
-      - name: Deploy (scripts/cloudflare-setup.sh --env pr-<N> --ci --no-build)
+      - name: Deploy (scripts/cloudflare-setup.sh --env pr-<N> --ci --no-build --built-from <SHA>)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
           CLAX_DEPLOY_HOME: ${{ runner.temp }}/clax-deploy
         run: |
           set -euo pipefail
+          # The deploy reads its record as its own settings, and a fresh
+          # runner has none: one here is not this deploy's.
+          [ ! -e "$CLAX_DEPLOY_HOME" ] || { echo "::error::a deploy record exists before the deploy"; exit 1; }
           scripts/cloudflare-setup.sh --env "$NAME" --legal bundled \
             --public "$NAME.$PREVIEW_HOST_ZONE" --site-domain "$NAME.$PREVIEW_SITE_ZONE" --site-zone "$PREVIEW_SITE_ZONE" \
             --github-client-id "$OAUTH_CLIENT_ID" --owner-github "$OWNER_GITHUB" --account "$CLOUDFLARE_ACCOUNT_ID" \
-            --ci --no-build --i-know-what-i-am-doing
+            --ci --no-build --built-from "$SHA" --i-know-what-i-am-doing
 
-      # One comment per pull request, updated on every deploy.
+      # One comment per pull request, updated on every deploy. A preview runs
+      # this pull request's code, sign-in included, and that code chooses what
+      # the OAuth App is asked for (docs/environments.md, "Previews").
       - name: Comment the preview's address
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const url = `https://${process.env.NAME}.${process.env.PREVIEW_HOST_ZONE}`;
-            const body = `**Preview:** ${url} (commit ${process.env.SHA.slice(0, 12)}; sign in with GitHub as @${process.env.OWNER_GITHUB} to be its owner)`;
-            const { data: comments } = await github.rest.issues.listComments({ ...context.repo, issue_number: context.issue.number, per_page: 100 });
+            const body = `**Preview:** ${url} (commit ${process.env.SHA.slice(0, 12)}). This runs the pull request's unmerged code, its sign-in too. Do not sign in with a GitHub account that administers anything: that code chooses what GitHub is asked for, so read what the consent page lists.`;
+            const issue_number = Number(process.env.PR);
+            const { data: comments } = await github.rest.issues.listComments({ ...context.repo, issue_number, per_page: 100 });
             const mine = comments.find((c) => c.user?.type === "Bot" && c.body.startsWith("**Preview:**"));
             if (mine) await github.rest.issues.updateComment({ ...context.repo, comment_id: mine.id, body });
-            else await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
+            else await github.rest.issues.createComment({ ...context.repo, issue_number, body });
 
   teardown:
     if: >-
@@ -148,17 +434,22 @@ jobs:
       && github.event.pull_request.head.repo.full_name == github.repository
       && github.event.pull_request.user.login != 'dependabot[bot]'
       && github.event.pull_request.base.ref != 'prod'
+    concurrency:
+      group: preview-${{ github.event.action == 'closed' && github.event.number || github.run_id }}
+      cancel-in-progress: true
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: preview
     permissions: { contents: read }
     steps:
-      # The base branch's teardown.mjs, not the closed branch's: it needs
-      # no build, and what it runs with the token is code already merged.
+      # The default branch's teardown.mjs, not the closed branch's or its
+      # base's, which may be a claxbot/ branch under a stacked pull request:
+      # it needs no build, and what it runs with the token is code already
+      # merged. It runs on every close, approved or not.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: { ref: "${{ github.event.pull_request.base.sha }}", persist-credentials: false }
+        with: { ref: "${{ github.event.repository.default_branch }}", persist-credentials: false }
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with: { node-version: 26 }
+        with: { node-version: 26, package-manager-cache: false }
       - name: Tear down (crates/clax-worker/teardown.mjs pr-<N>)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

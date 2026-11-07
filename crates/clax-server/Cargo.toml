@@ -57,6 +57,7 @@ async-trait = "0.1"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 axum = { workspace = true, features = ["http1", "tokio", "tower-log", "ws"] }
 nix = { workspace = true, features = ["signal", "resource", "hostname"] }
+clax-bot-workspace = { path = "../clax-bot-workspace" }
 reqwest = { workspace = true, features = ["rustls-tls"] }
 # The web source's TLS configuration, built once and handed to each fetch's
 # client (reqwest's `use_preconfigured_tls`): the rustls, provider and roots

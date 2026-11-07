@@ -134,6 +134,8 @@ export interface FixAttempt {
   proposer_name: string;
   /** Absent from a server older than the field: read it as `agent`. */
   proposer_kind?: ProposerKind;
+  /** A person reviews it first: no verdict is taken until a link comes. */
+  held?: boolean;
   created_at: string;
   outcome: FixOutcome;
   verdict_note?: string;
@@ -194,6 +196,8 @@ export interface OverlayOptions {
   launcher?: "corner" | false;
   /** Whether this reporter may file reports (default true). */
   canFile?: boolean;
+  /** Whether the composer says a report may reach a public pull request (default false). */
+  publicNotice?: boolean;
   /** The host's `release`, `flags` and `app`, or a function giving them, called when a capture starts. */
   context?: Given<HostContext>;
   /** JSON attached to each report, or a function giving it, called once per report. */

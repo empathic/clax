@@ -51,6 +51,8 @@
     externalId?: string;
     launcher?: "corner" | false;
     canFile?: boolean;
+    /** That the composer says a report may reach a public pull request. */
+    publicNotice?: boolean;
     /** What captures use (tests replace the renders). */
     capture?: CaptureDeps;
     flatten?: FlattenDeps;
@@ -64,7 +66,7 @@
     reportsLabel?: string;
   };
   let {
-    client, doc, host, picker: makePicker, session, externalId, launcher = "corner", canFile = true, capture: captureDeps = {}, flatten: flattenDeps = browserFlatten,
+    client, doc, host, picker: makePicker, session, externalId, launcher = "corner", canFile = true, publicNotice, capture: captureDeps = {}, flatten: flattenDeps = browserFlatten,
     timers = realTimers, onBadge, onFiled, onShowReports, reportsLabel = "Your reports",
   }: Props = $props();
 
@@ -468,7 +470,9 @@
   // ---- The badge ----
 
   let pulseTimer: unknown = null;
-  const badge = untrack(() => new BadgeWatch(() => client.badge(), win as never, {
+  /** That the queue told its reporters their words may be public, by its badge. */
+  let told = $state.raw(false);
+  const badge = untrack(() => new BadgeWatch(() => client.badge().then(b => (told = b.public_notice, b)), win as never, {
     changed: n => { count = n; onBadge?.(n); },
     rose: ids => {
       waitingId = ids[0] ?? waitingId;
@@ -530,6 +534,7 @@
         {/if}
         <label><input type="checkbox" aria-label={`Include recent errors (${draft.diagnostics.length})`} disabled={draft.diagnostics.length === 0} bind:checked={draft.includeDiagnostics} /> Include recent errors ({draft.diagnostics.length})</label>
       </div>
+      {#if publicNotice || told}<p class="muted small">What you write may appear in a public pull request.</p>{/if}
       {#if outgoing}<Preview sent={outgoing} marked={draft.shapes.length > 0} />{/if}
       {#if draft.marksNote}<p class="small warn marks" role="status">{draft.marksNote}</p>{/if}
       {#if draft.error}<p class="error small" role="alert">Not sent: {draft.error}</p>{/if}

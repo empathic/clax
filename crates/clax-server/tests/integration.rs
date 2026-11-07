@@ -43,6 +43,8 @@ mod api_changelog;
 mod api_claxbot;
 #[cfg(any(not(clax_split), clax_split = "api_claxbot_run"))]
 mod api_claxbot_run;
+#[cfg(any(not(clax_split), clax_split = "api_claxbot_workspace"))]
+mod api_claxbot_workspace;
 #[cfg(any(not(clax_split), clax_split = "api_client_imports"))]
 mod api_client_imports;
 #[cfg(any(not(clax_split), clax_split = "api_confirmations"))]
@@ -127,6 +129,10 @@ mod api_pushes;
 mod api_questions;
 #[cfg(any(not(clax_split), clax_split = "api_queue_agent"))]
 mod api_queue_agent;
+#[cfg(any(not(clax_split), clax_split = "api_queue_notifiers"))]
+mod api_queue_notifiers;
+#[cfg(any(not(clax_split), clax_split = "api_queue_repo"))]
+mod api_queue_repo;
 #[cfg(any(not(clax_split), clax_split = "api_queue_reporter"))]
 mod api_queue_reporter;
 #[cfg(any(not(clax_split), clax_split = "api_queues"))]

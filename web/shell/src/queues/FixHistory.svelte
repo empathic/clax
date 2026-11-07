@@ -27,7 +27,7 @@
         <li class="fix" data-n={f.n}>
           <header>
             <b>Fix {f.n}</b>
-            <span class={["outcome", f.outcome]}>{OUTCOME_LABEL[f.outcome] ?? f.outcome}</span>
+            <span class={["outcome", f.outcome]}>{f.held && f.outcome === "pending" ? "Held for you" : OUTCOME_LABEL[f.outcome] ?? f.outcome}</span>
             <span class="muted">{f.proposer_name} · <time datetime={f.created_at} title={f.created_at}>{relativeTime(f.created_at)}</time></span>
           </header>
           <p class="sum">{f.summary}</p>

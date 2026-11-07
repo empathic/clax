@@ -150,6 +150,7 @@ export function overlay(opts: OverlayOptions, doc: Document = document): Overlay
       externalId: externalIdOf(doc, opts.externalId),
       launcher: opts.launcher ?? "corner",
       canFile: opts.canFile ?? true,
+      publicNotice: opts.publicNotice,
       onBadge: (n: number) => { lastBadge = n; emit("badge", n); },
       onFiled: (r: Report) => emit("filed", r),
       onShowReports: onShowReports && ((r?: Report) => {

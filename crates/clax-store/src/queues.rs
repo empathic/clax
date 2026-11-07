@@ -70,6 +70,7 @@ pub struct QueuePatch {
     pub name: Option<String>,
     pub origins: Option<Vec<String>>,
     pub reporters_see: Option<ReportersSee>,
+    pub public_notice: Option<bool>,
 }
 
 /// A live queue as stored.
@@ -81,6 +82,9 @@ pub struct QueueRow {
     pub person: Option<String>,
     pub origins: Vec<String>,
     pub reporters_see: ReportersSee,
+    /// Whether a reporter is told what they write may appear in a public pull
+    /// request: a queue an agent works from in a public repository.
+    pub public_notice: bool,
     pub created_at: String,
 }
 
@@ -92,6 +96,7 @@ impl QueueRow {
             name: self.name.clone(),
             origins: self.origins.clone(),
             reporters_see: self.reporters_see,
+            public_notice: self.public_notice,
             created_at: self.created_at.clone(),
             role,
         }
@@ -256,6 +261,8 @@ pub struct Badge {
     /// How many reports wait (`report_ids.len()`).
     pub waiting: u32,
     pub report_ids: Vec<String>,
+    /// [`QueueRow::public_notice`]: what a reporter's overlay reads it from.
+    pub public_notice: bool,
 }
 
 /// Whose external IDs a filed report's ID is among (spec §6.1): one
@@ -292,6 +299,21 @@ pub enum ReportWriter<'a> {
         name: String,
         public_id: Option<String>,
     },
+    /// A ClaxBot run proposing a fix ([`Store::propose_fix`] alone): an
+    /// agent's fix, kept with the run that made it. It takes no lease, and a
+    /// live lease of anyone's refuses it. `key` makes one proposal one
+    /// attempt, however many times it is made; `note` is written in the
+    /// fix's transaction for the queue's members alone; `held` keeps the
+    /// fix from its reporter's verdict ([`FixAttempt::held`]), and
+    /// `preview_url` is the preview a held fix has already, for those members.
+    Run {
+        run: String,
+        name: String,
+        key: String,
+        note: Option<String>,
+        held: bool,
+        preview_url: Option<String>,
+    },
 }
 
 impl ReportWriter<'_> {
@@ -299,7 +321,7 @@ impl ReportWriter<'_> {
     pub fn session(&self) -> Option<&str> {
         match self {
             ReportWriter::Agent(s) => Some(&s.id),
-            ReportWriter::Person { .. } => None,
+            ReportWriter::Person { .. } | ReportWriter::Run { .. } => None,
         }
     }
 }
@@ -330,14 +352,15 @@ fn queue_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<QueueRow> {
         person: r.get(2)?,
         origins: serde_json::from_str(&origins).unwrap_or_default(),
         reporters_see: ReportersSee::parse(&see).unwrap_or(ReportersSee::Own),
+        public_notice: r.get(6)?,
         created_at: r.get(5)?,
     })
 }
 
 const QUEUE_SELECT: &str =
-    "SELECT id, name, person, origins_json, reporters_see, created_at FROM queues";
+    "SELECT id, name, person, origins_json, reporters_see, created_at, public_notice FROM queues";
 
-fn queue_in(c: &Connection, qid: &str) -> Result<Option<QueueRow>> {
+pub(crate) fn queue_in(c: &Connection, qid: &str) -> Result<Option<QueueRow>> {
     Ok(c.prepare_cached(&format!(
         "{QUEUE_SELECT} WHERE id = ?1 AND deleted_at IS NULL"
     ))?
@@ -485,6 +508,29 @@ fn check_lease_in(c: &Connection, tid: &str, sid: &str, now: &str) -> Result<()>
     }
 }
 
+/// The refusal of a run's write to a report other than a fix.
+fn run_writes_fixes_alone() -> CoreError {
+    CoreError::invalid(
+        "forbidden",
+        "a run writes to a report through its fix alone",
+    )
+}
+
+/// `Ok` when no one's live lease holds report `tid` and it is not closed,
+/// on `c` at `now`.
+fn check_run_may_propose_in(c: &Connection, tid: &str, now: &str) -> Result<()> {
+    if let Some(cur) = current_in(c, tid, now)?.filter(|cur| cur.live) {
+        return Err(CoreError::ThreadTaken {
+            name: cur.holder_name,
+        });
+    }
+    let s = standing_in(c, tid)?;
+    match state_of(&s.status, s.phase.as_deref(), false) {
+        State::Verified | State::Resolved => Err(CoreError::NotClaimable),
+        _ => Ok(()),
+    }
+}
+
 /// The session that proposed report `tid`'s waiting fix, on `c`: while the
 /// report is `fix_proposed`, the agent's session its pending attempt was
 /// proposed through (the fix comment's `via_session_id`); `None` when no
@@ -620,7 +666,9 @@ fn fixes_in(c: &Connection, aid: &str, tid: &str) -> Result<Vec<FixAttempt>> {
     let rows: Vec<FixRow> = c
         .prepare_cached(
             "SELECT n, fix_json, proposer_name, created_at, outcome, verdict_note,
-                verdict_context_json, verdict_at, proposer_session_id IS NOT NULL
+                verdict_context_json, verdict_at,
+                proposer_session_id IS NOT NULL OR proposal_key IS NOT NULL, held,
+                preview_url, preview_missed
              FROM report_fixes WHERE thread_id = ?1 ORDER BY n",
         )?
         .query_map(params![tid], |r| {
@@ -634,6 +682,9 @@ fn fixes_in(c: &Connection, aid: &str, tid: &str) -> Result<Vec<FixAttempt>> {
                 verdict_context_json: r.get(6)?,
                 verdict_at: r.get(7)?,
                 by_agent: r.get(8)?,
+                held: r.get(9)?,
+                preview_url: r.get(10)?,
+                preview_missed: r.get(11)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -654,6 +705,11 @@ fn fixes_in(c: &Connection, aid: &str, tid: &str) -> Result<Vec<FixAttempt>> {
                 } else {
                     ProposerKind::Person
                 },
+                held: f.held,
+                members: Some(clax_core::report::FixForMembers {
+                    preview_url: f.preview_url,
+                    preview_missed: f.preview_missed,
+                }),
                 created_at: f.created_at,
                 outcome: FixOutcome::parse(&f.outcome).unwrap_or(FixOutcome::Pending),
                 verdict_note: f.verdict_note,
@@ -678,6 +734,9 @@ struct FixRow {
     verdict_context_json: Option<String>,
     verdict_at: Option<String>,
     by_agent: bool,
+    held: bool,
+    preview_url: Option<String>,
+    preview_missed: bool,
 }
 
 /// The report views of `rows` as `vis` reads them, on `c` at `now`: the
@@ -748,9 +807,12 @@ fn reports_of(
             });
         let state = state_of(&row.status, row.phase.as_deref(), claim.is_some());
         let mut fixes = fixes_in(c, &artifact.artifact_id, &row.id)?;
-        if !own {
-            for f in &mut fixes {
+        for f in &mut fixes {
+            if !own {
                 f.verdict_context = None;
+            }
+            if !with_profile {
+                f.members = None;
             }
         }
         let mut view = artifact.view();
@@ -890,6 +952,37 @@ fn check_verdict_in(c: &Connection, q: &QueueRow, tid: &str, by: &Verdict<'_>) -
         return Err(CoreError::NotFound);
     }
     Ok(s)
+}
+
+/// `Ok` unless `by` is a reporter and the fix waiting on report `tid` is
+/// held ([`FixAttempt::held`]): to its reporter no fix waits for a verdict.
+/// A person may still give one on their behalf.
+fn check_not_held_in(c: &Connection, tid: &str, by: &Verdict<'_>) -> Result<()> {
+    if !matches!(by, Verdict::Reporter(_)) {
+        return Ok(());
+    }
+    let held: bool = c.query_row(
+        "SELECT EXISTS (SELECT 1 FROM report_fixes WHERE thread_id = ?1
+            AND outcome = 'pending' AND held)",
+        params![tid],
+        |r| r.get(0),
+    )?;
+    if held {
+        return Err(CoreError::NotFixProposed);
+    }
+    Ok(())
+}
+
+/// The fix waiting on report `tid` when it is held, as the run that proposed
+/// it: `None` when no held fix waits.
+fn held_fix_run_in(c: &Connection, tid: &str) -> Result<Option<Option<String>>> {
+    Ok(c.query_row(
+        "SELECT proposer_run_id FROM report_fixes WHERE thread_id = ?1
+            AND outcome = 'pending' AND held",
+        params![tid],
+        |r| r.get(0),
+    )
+    .optional()?)
 }
 
 /// Report `tid`'s diagnostics as stored, with their count, when `lines`
@@ -1097,6 +1190,14 @@ impl Store {
                 rec = rec.with("reporters_see", s.as_str());
                 changed = true;
             }
+            if let Some(n) = p.public_notice.filter(|n| *n != q.public_notice) {
+                tx.execute(
+                    "UPDATE queues SET public_notice = ?2 WHERE id = ?1",
+                    params![qid, n],
+                )?;
+                rec = rec.with("public_notice", n);
+                changed = true;
+            }
             if changed {
                 self.record_audit(tx, ctx, rec)?;
             }
@@ -1105,8 +1206,9 @@ impl Store {
     }
 
     /// Deletes queue `qid`: it is gone from every listing, its service
-    /// grants are revoked and its reporter tokens end; its reports stay on
-    /// their artifacts. Recorded as `queue.update {queue_id, op: "delete"}`.
+    /// grants are revoked, its reporter tokens end, and its repository link
+    /// and that link's sealed tokens are removed; its reports stay on their
+    /// artifacts. Recorded as `queue.update {queue_id, op: "delete"}`.
     ///
     /// # Errors
     /// [`CoreError::NotAMember`] for no such queue.
@@ -1128,6 +1230,8 @@ impl Store {
             )?;
             let rec = queue_record(AuditKind::QueueUpdate, &now, qid).with("op", "delete");
             self.record_audit(tx, ctx, rec)?;
+            crate::queue_repos::remove_in(self, tx, ctx, qid)?;
+            crate::queue_notifiers::remove_queue_in(self, tx, ctx, qid)?;
             Ok(())
         })
     }
@@ -2449,6 +2553,7 @@ impl Store {
                     via_page: false,
                 }
             }
+            ReportWriter::Run { .. } => return Err(run_writes_fixes_alone()),
         };
         let agent = by.session();
         let now = self.now();
@@ -2503,6 +2608,7 @@ impl Store {
                 format!("viewer:{}", public_id.as_deref().unwrap_or("anonymous")),
                 None,
             ),
+            ReportWriter::Run { .. } => return Err(run_writes_fixes_alone()),
         };
         let agent = by.session();
         let now = self.now();
@@ -2635,12 +2741,19 @@ impl Store {
     /// url?, commit?}`. An agent proposes only under its own live lease,
     /// checked in the fix's transaction; a person needs none, and a
     /// person's fix on a report that is `fix_proposed` already is its next
-    /// attempt, the one waiting becoming `superseded`.
+    /// attempt, the one waiting becoming `superseded`. Any fix in place of
+    /// a held one ([`FixAttempt::held`]) but a run's that is held itself
+    /// hands that one over: it gives its reporter something to check, so it
+    /// needs a `verify_url`, and a person's or an agent's stays with the run
+    /// that proposed the held one ([`Store::last_fix_run`]), whose report it
+    /// goes on being.
     ///
     /// # Errors
     /// `invalid_fix` for a bad fix ([`NewFix::check`]);
-    /// [`CoreError::NotAMember`] for no such queue, `NotFound` for no such
-    /// report of it; [`Store::check_lease`]'s for an agent;
+    /// `verify_url_required` for a fix with no `verify_url` in place of a
+    /// held one, unless it is a run's that is held itself;
+    /// [`CoreError::NotAMember`] for no such queue, `NotFound`
+    /// for no such report of it; [`Store::check_lease`]'s for an agent;
     /// [`CoreError::NotClaimable`] for a `verified` or `resolved` report.
     pub fn propose_fix(
         &self,
@@ -2671,7 +2784,22 @@ impl Store {
         fence: Option<u64>,
     ) -> Result<Report> {
         fix.check()?;
+        if let ReportWriter::Run { key, .. } = by
+            && self.fix_proposed_under(tid, key)?
+        {
+            return self
+                .report(qid, tid, Visibility::All)?
+                .ok_or(CoreError::NotFound);
+        }
         let comment = match by {
+            ReportWriter::Run { name, .. } => NewComment {
+                author_kind: AUTHOR_AGENT,
+                author_name: name.clone(),
+                author_public_id: None,
+                via_session_id: None,
+                body: fix.summary.clone(),
+                via_page: false,
+            },
             ReportWriter::Agent(sess) => {
                 // A lapsed lease's owner is cleared whatever this answers.
                 self.check_lease(qid, tid, &sess.id)?;
@@ -2695,6 +2823,23 @@ impl Store {
         };
         let proposer = comment.author_name.clone();
         let agent = by.session();
+        let (by_run, key, note, held, preview_url) = match by {
+            ReportWriter::Run {
+                run,
+                key,
+                note,
+                held,
+                preview_url,
+                ..
+            } => (
+                Some(run.as_str()),
+                Some(key.as_str()),
+                note.clone(),
+                *held,
+                preview_url.as_deref(),
+            ),
+            _ => (None, None, None, false, None),
+        };
         let now = self.now();
         let fix_json = serde_json::to_string(&fix).expect("fixes serialise");
         self.add_comment_then(ctx, tid, comment, |tx, t, _| {
@@ -2709,12 +2854,28 @@ impl Store {
                     return Err(CoreError::LeaseLost);
                 }
             }
+            if by_run.is_some() {
+                check_run_may_propose_in(tx, tid, &now)?;
+            }
             // `t` is the thread as it was before the summary: a person's
             // comment would have reopened a closed one.
             if t.status == "resolved" {
                 return Err(CoreError::NotClaimable);
             }
-            // A person's next fix supersedes the one still waiting.
+            let mut of_run = by_run.map(str::to_string);
+            // Only a fix held itself keeps from the reporter what a held
+            // one kept from them; any other reaches them, link or not.
+            if !held && let Some(run) = held_fix_run_in(tx, tid)? {
+                if fix.verify_url.is_none() {
+                    return Err(CoreError::invalid(
+                        "verify_url_required",
+                        "the reporter has nothing to check until this fix has a link",
+                    ));
+                }
+                of_run = of_run.or(run);
+            }
+            // A next fix supersedes the one still waiting: a verdict is on
+            // what the reporter was shown.
             tx.execute(
                 "UPDATE report_fixes SET outcome = 'superseded' WHERE thread_id = ?1
                    AND outcome = 'pending'",
@@ -2727,10 +2888,34 @@ impl Store {
             )?;
             tx.execute(
                 "INSERT INTO report_fixes (thread_id, n, fix_json, proposer_name,
-                    proposer_session_id, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![tid, n, fix_json, proposer, agent, now],
+                    proposer_session_id, created_at, proposer_run_id, proposal_key, held,
+                    preview_url)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    tid,
+                    n,
+                    fix_json,
+                    proposer,
+                    agent,
+                    now,
+                    of_run,
+                    key,
+                    held,
+                    preview_url
+                ],
             )?;
+            crate::queue_notifiers::note_fix_in(tx, &now, tid, n)?;
+            if let Some(body) = note {
+                let c = NewComment {
+                    author_kind: AUTHOR_AGENT,
+                    author_name: proposer.clone(),
+                    author_public_id: None,
+                    via_session_id: None,
+                    body,
+                    via_page: false,
+                };
+                self.add_members_comment_in(tx, ctx, tid, c)?;
+            }
             tx.execute(
                 "UPDATE threads SET report_phase = 'fix_proposed' WHERE id = ?1",
                 params![tid],
@@ -2748,11 +2933,250 @@ impl Store {
             rec.ids.artifact = Some(aid);
             rec.ids.thread = Some(tid.to_string());
             rec.ids.session = agent.map(str::to_string);
+            if let Some(run) = by_run {
+                rec = rec.with("run", run);
+            }
             self.record_audit(tx, ctx, rec)?;
             Ok(())
         })?;
         self.report(qid, tid, Visibility::All)?
             .ok_or(CoreError::NotFound)
+    }
+
+    /// Whether a fix of report `tid` was made under proposal `key`.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn fix_proposed_under(&self, tid: &str, key: &str) -> Result<bool> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM report_fixes WHERE thread_id = ?1
+                    AND proposal_key = ?2)",
+                params![tid, key],
+                |r| r.get(0),
+            )?)
+        })
+    }
+
+    /// `Ok` when a run may propose a fix on report `tid` of queue `qid`
+    /// now: what [`Store::propose_fix`] will check, asked before anything
+    /// is pushed.
+    ///
+    /// # Errors
+    /// [`CoreError::NotAMember`] for no such queue, `NotFound` for no such
+    /// report of it; [`CoreError::ThreadTaken`] under anyone's live lease;
+    /// [`CoreError::NotClaimable`] for a `verified` or `resolved` report.
+    pub fn check_run_may_propose(&self, qid: &str, tid: &str) -> Result<()> {
+        let now = self.now();
+        self.with_read(|c| {
+            queue_in(c, qid)?.ok_or(CoreError::NotAMember)?;
+            report_artifact_in(c, qid, tid)?;
+            check_run_may_propose_in(c, tid, &now)
+        })
+    }
+
+    /// The run report `tid`'s latest fix stands on: the one that proposed it,
+    /// or the held fix a person's or an agent's took over from. `None` when
+    /// none has been proposed, or an agent's session or a person made it with
+    /// no such fix.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn last_fix_run(&self, tid: &str) -> Result<Option<String>> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT proposer_run_id FROM report_fixes WHERE thread_id = ?1
+                 ORDER BY n DESC LIMIT 1",
+                params![tid],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
+        })
+    }
+
+    /// The fix of a run ([`Store::last_fix_run`]) that waits on report `tid`,
+    /// as whether it is held ([`FixAttempt::held`]): `None` when no such fix
+    /// waits.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn waiting_run_fix_held(&self, tid: &str) -> Result<Option<bool>> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT held FROM report_fixes WHERE thread_id = ?1
+                    AND outcome = 'pending' AND proposer_run_id IS NOT NULL
+                 ORDER BY n DESC LIMIT 1",
+                params![tid],
+                |r| r.get(0),
+            )
+            .optional()?)
+        })
+    }
+
+    /// Every open report whose latest fix a run proposed, rejected or still
+    /// waiting, whose reporter wrote after its last run began: where a word
+    /// may wait for ClaxBot.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn reports_of_run_fixes(&self) -> Result<Vec<String>> {
+        self.with_read(|c| {
+            let mut q = c.prepare_cached(
+                "SELECT f.thread_id FROM report_fixes f JOIN threads t ON t.id = f.thread_id
+                 WHERE t.status = 'open' AND f.proposer_run_id IS NOT NULL
+                   AND f.outcome IN ('rejected', 'pending')
+                   AND f.n = (SELECT MAX(n) FROM report_fixes m WHERE m.thread_id = f.thread_id)
+                   AND EXISTS (SELECT 1 FROM comments c WHERE c.thread_id = f.thread_id
+                        AND c.reporter_id IS NOT NULL
+                        AND c.created_at > (SELECT MAX(r.created_at) FROM bot_runs r
+                             WHERE EXISTS (SELECT 1 FROM json_each(r.thread_ids_json)
+                                            WHERE value = f.thread_id)))",
+            )?;
+            let rows = q.query_map([], |r| r.get(0))?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// Sets `verify_url` on the fix run `run` proposed that waits on report
+    /// `tid` of queue `qid`, its preview having come up after it, recorded
+    /// as a `queue.fix {queue_id, thread_id, n, verify_url}`, and holds it
+    /// no longer: its reporter has something to check, and reads what they
+    /// read of it before beside that link. Answers whether it changed
+    /// anything: no fix of that run waiting, or one with that URL already,
+    /// changes nothing. A person's fix is theirs: no preview touches it.
+    ///
+    /// # Errors
+    /// `invalid_fix` for a bad URL; [`CoreError::NotAMember`], `NotFound`.
+    pub fn set_fix_verify_url(
+        &self,
+        ctx: &AuditCtx,
+        qid: &str,
+        tid: &str,
+        run: &str,
+        url: &str,
+    ) -> Result<bool> {
+        let now = self.now();
+        self.with_tx(|tx| {
+            queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
+            let aid = report_artifact_in(tx, qid, tid)?;
+            let row: Option<(u32, String)> = tx
+                .query_row(
+                    "SELECT n, fix_json FROM report_fixes WHERE thread_id = ?1
+                       AND outcome = 'pending' AND proposer_run_id = ?2
+                       AND proposal_key IS NOT NULL
+                     ORDER BY n DESC LIMIT 1",
+                    params![tid, run],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let Some((n, json)) = row else {
+                return Ok(false);
+            };
+            let mut fix: NewFix = serde_json::from_str(&json).map_err(|_| CoreError::Corrupt {
+                artifact_id: aid.clone(),
+                column: "report_fixes.fix_json",
+                version: None,
+            })?;
+            if fix.verify_url.as_deref() == Some(url) {
+                return Ok(false);
+            }
+            fix.verify_url = Some(url.to_string());
+            fix.check()?;
+            tx.execute(
+                "UPDATE report_fixes SET fix_json = ?3, held = 0, preview_missed = 0
+                  WHERE thread_id = ?1 AND n = ?2",
+                params![
+                    tid,
+                    n,
+                    serde_json::to_string(&fix).expect("fixes serialise")
+                ],
+            )?;
+            crate::queue_notifiers::note_fix_in(tx, &now, tid, n)?;
+            let mut rec = queue_record(AuditKind::QueueFix, &now, qid)
+                .with("thread_id", tid)
+                .with("n", n)
+                .with("verify_url", url);
+            rec.ids.artifact = Some(aid);
+            rec.ids.thread = Some(tid.to_string());
+            self.record_audit(tx, ctx, rec)?;
+            Ok(true)
+        })
+    }
+
+    /// Keeps `url` on the held fix run `run` proposed that waits on report
+    /// `tid`: its preview answered, and no person has let that out, so it is
+    /// for the queue's members ([`clax_core::report::FixForMembers`]). Answers
+    /// whether it changed anything.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn set_fix_preview(&self, tid: &str, run: &str, url: &str) -> Result<bool> {
+        self.with_tx(|tx| {
+            let changed = tx.execute(
+                "UPDATE report_fixes SET preview_url = ?3, preview_missed = 0
+                  WHERE thread_id = ?1 AND proposer_run_id = ?2 AND outcome = 'pending'
+                    AND proposal_key IS NOT NULL AND held AND preview_url IS NOT ?3",
+                params![tid, run, url],
+            )?;
+            crate::queue_notifiers::note_run_fix_in(tx, &self.now(), tid, run)?;
+            Ok(changed > 0)
+        })
+    }
+
+    /// Notes that the wait for the preview of the held fix run `run` proposed
+    /// on report `tid` ended with none seen, and writes the notice of that. Answers
+    /// whether it changed anything: a fix with a preview, or noted already, is
+    /// left as it is and writes nothing, so a replay after that notice was
+    /// forgotten tells nobody again.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn set_fix_preview_missed(&self, tid: &str, run: &str) -> Result<bool> {
+        self.with_tx(|tx| {
+            let changed = tx.execute(
+                "UPDATE report_fixes SET preview_missed = 1
+                  WHERE thread_id = ?1 AND proposer_run_id = ?2 AND outcome = 'pending'
+                    AND proposal_key IS NOT NULL AND held AND preview_url IS NULL
+                    AND NOT preview_missed",
+                params![tid, run],
+            )?;
+            if changed > 0 {
+                crate::queue_notifiers::note_run_fix_in(tx, &self.now(), tid, run)?;
+            }
+            Ok(changed > 0)
+        })
+    }
+
+    /// Whether a run for `person` (a person key), asked for by `grant`'s
+    /// agent when given, may read the reports of queue `qid`, as a member's
+    /// agent through the queue's routes may: the owner or a person still
+    /// connected, with a role in the queue (the queue's maker's is admin),
+    /// and, for an agent, a grant that has not ended and holds Comments
+    /// `read`. A reporter or a service grant is no person: it has no role.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn run_reads_queue(&self, person: &str, grant: Option<&str>, qid: &str) -> Result<bool> {
+        let owner = person == super::roles::OWNER;
+        let connected = owner
+            || self
+                .viewer_by_public_id(person)?
+                .is_some_and(|v| v.person && v.person_revoked_at.is_none());
+        let key = (!owner).then_some(person);
+        if !connected || self.queue_role(qid, key)?.is_none() {
+            return Ok(false);
+        }
+        let Some(g) = grant else {
+            return Ok(true);
+        };
+        match self.bot_rights(person, Some(g)) {
+            Ok(rights) => Ok(rights.is_some_and(|r| {
+                r.allows_somewhere(clax_core::rights::RightType::Comments, "read")
+            })),
+            Err(CoreError::Invalid { .. }) => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 
     /// [`Store::verify_report_touched`]'s report.
@@ -2808,6 +3232,7 @@ impl Store {
             if state_of(&s.status, s.phase.as_deref(), false) != State::FixProposed {
                 return Err(CoreError::NotFixProposed);
             }
+            check_not_held_in(tx, tid, &by)?;
             let n: u32 = tx
                 .query_row(
                     "SELECT MAX(n) FROM report_fixes WHERE thread_id = ?1",
@@ -2927,6 +3352,7 @@ impl Store {
             let q = queue_in(c, qid)?.ok_or(CoreError::NotAMember)?;
             let s = check_verdict_in(c, &q, tid, &by)?;
             reopenable(&s)?;
+            check_not_held_in(c, tid, &by)?;
             Ok(s.artifact_id)
         })?;
         let aid = ArtifactId::parse(&aid)?;
@@ -2968,6 +3394,7 @@ impl Store {
             let q = queue_in(tx, qid)?.ok_or(CoreError::NotAMember)?;
             let s = check_verdict_in(tx, &q, tid, &by)?;
             reopenable(&s)?;
+            check_not_held_in(tx, tid, &by)?;
             let capture: u32 = tx.query_row(
                 "SELECT reopen_count + 1 FROM threads WHERE id = ?1",
                 params![tid],
@@ -3029,6 +3456,9 @@ impl Store {
             let rejects = last.as_ref().filter(|(_, outcome, _)| {
                 outcome == FixOutcome::Pending.as_str() || outcome == FixOutcome::Verified.as_str()
             });
+            if let Some((n, _, _)) = rejects {
+                crate::queue_notifiers::note_fix_rejected_in(tx, &now, tid, *n)?;
+            }
             let proposer = match rejects.and_then(|(_, _, p)| p.as_deref()) {
                 Some(sid) => {
                     let live: bool = tx.query_row(
@@ -3172,12 +3602,14 @@ impl Store {
     /// [`CoreError::NotAMember`] for no such queue.
     pub fn reporter_badge(&self, qid: &str, reporter_id: &str) -> Result<Badge> {
         self.with_read(|c| {
-            queue_in(c, qid)?.ok_or(CoreError::NotAMember)?;
+            let q = queue_in(c, qid)?.ok_or(CoreError::NotAMember)?;
             let report_ids: Vec<String> = c
                 .prepare_cached(
                     "SELECT t.id FROM threads t JOIN artifacts a ON a.id = t.artifact_id
                      WHERE a.deleted_at IS NULL AND t.queue_id = ?1 AND t.reporter_id = ?2
-                       AND ((t.status = 'open' AND t.report_phase = 'fix_proposed')
+                       AND ((t.status = 'open' AND t.report_phase = 'fix_proposed'
+                             AND NOT EXISTS (SELECT 1 FROM report_fixes f WHERE f.thread_id = t.id
+                                  AND f.outcome = 'pending' AND f.held))
                          OR EXISTS (SELECT 1 FROM comments c WHERE c.thread_id = t.id
                               AND c.reporter_id IS NOT ?2 AND NOT c.triage_only
                               AND (t.reporter_seen_at IS NULL OR c.created_at >= t.reporter_seen_at)))
@@ -3188,6 +3620,7 @@ impl Store {
             Ok(Badge {
                 waiting: report_ids.len() as u32,
                 report_ids,
+                public_notice: q.public_notice,
             })
         })
     }

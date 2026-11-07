@@ -5,25 +5,26 @@
   // Provider, Web, Pricing and Usage, one at a time by `?tab=`, with links to the
   // audit log and, on the localhost daemon, its settings. Anyone else is told
   // the page is for admins and fetches nothing more. The owner alone changes
-  // roles (the People tab shows them read-only to other admins).
+  // roles (the People tab shows them read-only to other admins), and alone
+  // sees Repositories, the instance's GitHub App and its approvals.
   import { onMount, type Component } from "svelte";
   import type { Role } from "./api";
   import { hosted, isAdmin, myRole } from "./me";
   import BotPage from "./BotPage.svelte";
 
   let { now }: { now?: () => Date } = $props();
-  type Tab = "people" | "provider" | "web" | "pricing" | "usage";
-  const TABS: { id: Tab; label: string }[] = [{ id: "people", label: "People & flags" }, { id: "provider", label: "Provider" }, { id: "web", label: "Web" }, { id: "pricing", label: "Pricing" }, { id: "usage", label: "Usage" }];
+  type Tab = "people" | "provider" | "web" | "repos" | "pricing" | "usage";
+  const TABS: { id: Tab; label: string; owner?: boolean }[] = [{ id: "people", label: "People & flags" }, { id: "provider", label: "Provider" }, { id: "web", label: "Web" }, { id: "repos", label: "Repositories", owner: true }, { id: "pricing", label: "Pricing" }, { id: "usage", label: "Usage" }];
   const asked = new URLSearchParams(location.search).get("tab");
   const tab: Tab = TABS.some(t => t.id === asked) ? asked as Tab : "people";
   let role = $state<Role | null>(null);
   let local = $state(false);
   let Body = $state<Component<{ role: Role; now?: () => Date }> | null>(null);
   const LOAD: Record<Tab, () => Promise<{ default: unknown }>> = {
-    people: () => import("./AdminPeople.svelte"), provider: () => import("./AdminProvider.svelte"), web: () => import("./AdminWeb.svelte"), pricing: () => import("./AdminPricing.svelte"), usage: () => import("./AdminUsage.svelte"),
+    people: () => import("./AdminPeople.svelte"), provider: () => import("./AdminProvider.svelte"), web: () => import("./AdminWeb.svelte"), repos: () => import("./AdminRepos.svelte"), pricing: () => import("./AdminPricing.svelte"), usage: () => import("./AdminUsage.svelte"),
   };
   const tabs = $derived([
-    ...TABS.map(t => ({ id: t.id as string, label: t.label, href: `/admin?tab=${t.id}` })),
+    ...TABS.filter(t => !t.owner || role === "owner").map(t => ({ id: t.id as string, label: t.label, href: `/admin?tab=${t.id}` })),
     { id: "audit", label: "Audit", href: "/audit" },
     ...(local ? [{ id: "settings", label: "Settings", href: "/settings" }] : []),
   ]);

@@ -121,10 +121,23 @@ pub struct OpCtx<'a> {
     pub seq: i64,
     /// `<run>:<step>:<seq>`: the same on every attempt of the step.
     pub key: String,
+    /// The run holds confidential material
+    /// ([`crate::workspace::Offer::confidential`]): a reply
+    /// ([`BotHost::plan_reply`], `threads.reply`) must not reach anyone
+    /// outside the report's queue, and `threads.read` gives the run the
+    /// queue's notes. On a reply alone it is also set once a fix keeps the
+    /// run from the report's reporter: that gives the run no notes to read.
+    pub members_only: bool,
 }
 
 /// The journal place of the first notice a step posts.
 pub const NOTICE_SEQ: i64 = 1_000_000;
+
+/// What a workspace call's place is offset by to journal its intent, before
+/// its effect: the call's own place keeps its answer, so a step executed
+/// again tells a call never begun, one begun and never answered, and one
+/// answered.
+pub const INTENT_SEQ: i64 = 2_000_000;
 
 impl<'a> OpCtx<'a> {
     #[must_use]
@@ -136,7 +149,16 @@ impl<'a> OpCtx<'a> {
             step,
             attempt,
             seq,
+            members_only: false,
         }
+    }
+
+    /// This call, for a run whose words go to the queue's members alone or
+    /// not.
+    #[must_use]
+    pub fn members_only(mut self, members_only: bool) -> OpCtx<'a> {
+        self.members_only = members_only;
+        self
     }
 }
 
@@ -249,6 +271,34 @@ pub struct RequestContext {
     pub brief: Option<String>,
 }
 
+/// A fix a run proposes on its report ([`BotHost::record_fix`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProposedFix {
+    pub summary: String,
+    pub url: Option<String>,
+    pub commit: Option<String>,
+    pub verify_url: Option<String>,
+    /// [`crate::workspace::Proposal::key`]: one proposal is one attempt.
+    pub key: String,
+    /// What the queue's members read beside a run's fix: the model's words,
+    /// the pull request and the preview.
+    pub members_note: Option<String>,
+    /// The reporter has nothing to check it on: it takes no verdict of
+    /// theirs ([`clax_core::report::FixAttempt::held`]).
+    pub held: bool,
+    /// A held fix's preview, up already: for the queue's members alone.
+    pub preview_url: Option<String>,
+    /// The pull request, whatever [`ProposedFix::url`] shows a reporter: for
+    /// what the queue's people are told must be done with a held fix.
+    pub pull_request: Option<String>,
+    /// Its commit, likewise.
+    pub pushed_commit: Option<String>,
+    /// What deploys its preview, in a sentence, for the same people: none
+    /// where the target says nothing ([`crate::workspace::Offer::preview_gate`])
+    /// or a preview is up already.
+    pub preview_step: Option<String>,
+}
+
 /// The operations of the `clax` API that need Clax's server code, and the
 /// replies the run loop posts itself. Implemented by the server over the
 /// routes' code paths: rights, publish checks and audit included, as the
@@ -287,7 +337,9 @@ pub trait BotHost: MaybeSendSync {
     ) -> Result<WritePlan<'s>, HostError>;
 
     /// Checks posting `markdown` as ClaxBot's reply on thread `thread_id`
-    /// (one of the run's) and answers how.
+    /// (one of the run's) and answers how. With [`OpCtx::members_only`], as
+    /// for a `threads.reply`, it is a note for the queue's members alone
+    /// ([`Store::add_members_comment_journaled`]), announced to no one else.
     async fn plan_reply<'s>(
         &'s self,
         cx: &OpCtx<'_>,
@@ -297,6 +349,63 @@ pub trait BotHost: MaybeSendSync {
 
     /// Shows (or stops showing) ClaxBot as working on the run's threads.
     async fn working(&self, _run: &Run, _on: bool) {}
+
+    /// That the run may propose on its report now, asked before anything
+    /// is pushed: the report is not closed and no one's claim holds it, or
+    /// the fix under [`OpCtx::key`] is on it already, for a step executed
+    /// again.
+    async fn check_fix(&self, _cx: &OpCtx<'_>) -> Result<(), HostError> {
+        Ok(())
+    }
+
+    /// Proposes `fix` on the report the run works on, as ClaxBot acting
+    /// for the run's person ([`OpCtx::audit`]), for its reporter's verdict:
+    /// the fix is an agent's, kept with the run. [`ProposedFix::key`] makes
+    /// it one attempt however often it is called, and a fix still waiting
+    /// is superseded: a verdict is on what the reporter was shown.
+    async fn record_fix(&self, _cx: &OpCtx<'_>, _fix: &ProposedFix) -> Result<(), HostError> {
+        Err(HostError::new(
+            "forbidden",
+            "this host does not take fixes from a run",
+        ))
+    }
+
+    /// The preview of the fix run `run` proposed serves at `verify_url`.
+    /// With `for_reporter` the fix takes the link and its reporter is told
+    /// in fixed words; without, a held fix keeps it for the queue's members,
+    /// who alone are told. The run may have ended; called again it adds
+    /// nothing, and a fix no longer the run's takes nothing.
+    async fn preview_ready(
+        &self,
+        _run: &Run,
+        _audit: &AuditCtx,
+        _verify_url: &str,
+        _for_reporter: bool,
+    ) -> Result<(), HostError> {
+        Err(HostError::new(
+            "forbidden",
+            "this host does not take previews from a run",
+        ))
+    }
+
+    /// The wait for the preview of the fix run `run` proposed ended with
+    /// none: while that fix is the report's, waiting and held, the queue's
+    /// members are told [`crate::workspace::PREVIEW_MISSED`]. The run may have
+    /// ended; called again it adds nothing.
+    async fn preview_missed(&self, _run: &Run, _audit: &AuditCtx) -> Result<(), HostError> {
+        Ok(())
+    }
+
+    /// Fixed words for the queue's members alone, on the report `run` works
+    /// on. Called again it adds nothing.
+    async fn note_members(
+        &self,
+        _run: &Run,
+        _audit: &AuditCtx,
+        _body: &str,
+    ) -> Result<(), HostError> {
+        Ok(())
+    }
 
     /// Starts the runs that were waiting when a driver starts: the
     /// follow-ups queued on threads no run works on (a run's end committed
@@ -334,9 +443,33 @@ pub struct FakeState {
     /// People who may read but not write: checked when a write is planned
     /// and again inside its transaction.
     pub readers: Vec<String>,
+    /// Each fix recorded, in order, once per report it waits on.
+    pub fixes: Vec<ProposedFix>,
+    /// Each preview told of, and whether it was for the reporter.
+    pub previews: Vec<(String, bool)>,
+    /// The runs whose wait for a preview ended with none seen.
+    pub previews_missed: Vec<String>,
+    /// Each note for the queue's members, by [`BotHost::note_members`].
+    pub member_notes: Vec<String>,
     /// An error to answer the next call of an op with (`"context"` for
     /// the next [`BotHost::context`]).
     pub fail_next: BTreeMap<String, HostError>,
+    /// [`BotHost::record_fix`] never answers, as a host cut off by a Stop.
+    pub record_fix_hangs: bool,
+    /// [`BotHost::record_fix`] was reached and is not answering.
+    pub record_fix_reached: bool,
+    /// Done once, as the next reply is planned.
+    pub before_reply: Option<BeforeReply>,
+}
+
+/// What a test does as a [`FakeBotHost`] plans a reply, after the run has
+/// said who the reply is for.
+pub struct BeforeReply(pub Box<dyn FnOnce() + Send>);
+
+impl std::fmt::Debug for BeforeReply {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("BeforeReply")
+    }
 }
 
 /// A [`BotHost`] over the store for tests: threads, replies, resolves,
@@ -478,6 +611,10 @@ impl FakeBotHost {
         thread_id: &str,
         markdown: &str,
     ) -> Result<WritePlan<'s>, HostError> {
+        let before = self.lock().before_reply.take();
+        if let Some(BeforeReply(act)) = before {
+            act();
+        }
         self.thread(cx.run, thread_id)?;
         let (ctx, tid, body, key, person) = (
             cx.audit.clone(),
@@ -486,6 +623,7 @@ impl FakeBotHost {
             cx.key.clone(),
             cx.run.person.clone(),
         );
+        let members_only = cx.members_only;
         Ok(Box::new(move |entry: CallEntry| {
             Box::pin(async move {
                 let c = clax_store::threads::NewComment {
@@ -497,9 +635,13 @@ impl FakeBotHost {
                     via_page: false,
                 };
                 let guard = |_: &clax_store::Tx<'_>| self.may_write(&person);
-                let j = self
-                    .store
-                    .add_comment_journaled(&ctx, &tid, c, &entry, &guard)?;
+                let j = if members_only {
+                    self.store
+                        .add_members_comment_journaled(&ctx, &tid, c, &entry, &guard)?
+                } else {
+                    self.store
+                        .add_comment_journaled(&ctx, &tid, c, &entry, &guard)?
+                };
                 self.log_write(key, "threads.reply", vec![json!(tid), json!(body)]);
                 Ok(j)
             }) as PlanFuture<'s>
@@ -760,5 +902,82 @@ impl BotHost for FakeBotHost {
 
     async fn working(&self, _run: &Run, on: bool) {
         self.lock().working.push(on);
+    }
+
+    async fn check_fix(&self, _cx: &OpCtx<'_>) -> Result<(), HostError> {
+        match self.lock().fail_next.remove("check_fix") {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    async fn record_fix(&self, cx: &OpCtx<'_>, fix: &ProposedFix) -> Result<(), HostError> {
+        if let Some(e) = self.lock().fail_next.remove("record_fix") {
+            return Err(e);
+        }
+        let hangs = self.lock().record_fix_hangs;
+        if hangs {
+            self.lock().record_fix_reached = true;
+            std::future::pending::<()>().await;
+        }
+        self.lock().fixes.push(fix.clone());
+        let t = cx
+            .run
+            .thread_ids
+            .iter()
+            .find_map(|t| self.store.get_thread(t).ok().flatten())
+            .filter(|t| t.status != "resolved")
+            .ok_or_else(|| HostError::new("not_found", "the run works on no report"))?;
+        let Some(qid) = t.queue_id else {
+            return Ok(());
+        };
+        let by = clax_store::queues::ReportWriter::Run {
+            run: cx.run.id.clone(),
+            name: "ClaxBot".into(),
+            key: fix.key.clone(),
+            note: fix.members_note.clone(),
+            held: fix.held,
+            preview_url: fix.preview_url.clone(),
+        };
+        let new = clax_core::report::NewFix {
+            summary: fix.summary.clone(),
+            url: fix.url.clone(),
+            commit: fix.commit.clone(),
+            release: None,
+            verify_url: fix.verify_url.clone(),
+            verify_after: None,
+        };
+        self.store
+            .propose_fix(cx.audit, &qid, &t.id, &by, new)
+            .map(drop)
+            .map_err(|e| host_error(&e))
+    }
+
+    async fn preview_ready(
+        &self,
+        _run: &Run,
+        _audit: &AuditCtx,
+        verify_url: &str,
+        for_reporter: bool,
+    ) -> Result<(), HostError> {
+        self.lock()
+            .previews
+            .push((verify_url.to_string(), for_reporter));
+        Ok(())
+    }
+
+    async fn preview_missed(&self, run: &Run, _audit: &AuditCtx) -> Result<(), HostError> {
+        self.lock().previews_missed.push(run.id.clone());
+        Ok(())
+    }
+
+    async fn note_members(
+        &self,
+        _run: &Run,
+        _audit: &AuditCtx,
+        body: &str,
+    ) -> Result<(), HostError> {
+        self.lock().member_notes.push(body.to_string());
+        Ok(())
     }
 }

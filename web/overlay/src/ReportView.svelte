@@ -5,10 +5,11 @@
   // and where to check it, with "It's fixed" and "Still broken". A comment
   // never changes the report's state; only a verdict does. "Still broken"
   // hands over to the overlay, which asks for a note and offers a new capture.
-  // While a fix waits, a reply reaches the agent that proposed it while its
-  // session lives and its person is a member of the queue (that agent may
-  // answer), and the queue's people always; a person's fix is answered by
-  // the queue's people alone. The reply box says who will hear it.
+  // While a fix waits, a reply reaches the queue's people always, and may
+  // reach the agent that proposed it (a session while it lives; ClaxBot only
+  // where the queue's repository opts in); a person's fix is answered by the
+  // queue's people alone. The reply box says who will hear it. A held fix
+  // has nothing to check yet, so it offers no verdict: the server takes none.
   import type { Report } from "../../sdk/src/types";
   import { OUTCOME, failureText, safeLink, waitingFix } from "./model";
 
@@ -79,10 +80,10 @@
         </p>
       {/if}
       {#if waiting.verify_after}<p class="small muted">Ready to check from {waiting.verify_after.replace(/^release:/, "release ")}.</p>{/if}
-      <div class="verdict">
+      {#if !waiting.held}<div class="verdict">
         <button type="button" onclick={() => onStillBroken(r)}>Still broken</button>
         <button type="button" class="primary" disabled={verifying} onclick={() => void verify()}>{verifying ? "Sending…" : "It's fixed"}</button>
-      </div>
+      </div>{/if}
     </section>
   {/if}
 
@@ -92,10 +93,8 @@
     <form onsubmit={e => { e.preventDefault(); void reply(); }}>
       <textarea rows={2} aria-label="Reply" placeholder="Reply…" bind:value={text}
         onkeydown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); void reply(); } }}></textarea>
-      {#if waiting && waiting.proposer_kind !== "person"}
-        <p class="reply-note small muted">A reply goes to {waiting.proposer_name} while they are still at work, and to the queue's people. If the fix did not work, press Still broken.</p>
-      {:else if waiting}
-        <p class="reply-note small muted">A reply goes to the queue's people, {waiting.proposer_name} among them. If the fix did not work, press Still broken.</p>
+      {#if waiting}
+        <p class="reply-note small muted">A reply goes to the queue's people{waiting.held ? "." : `; ${waiting.proposer_name} may read it too. If the fix did not work, press Still broken.`}</p>
       {/if}
       <div class="actions"><button type="submit" class="primary" disabled={sending || !text.trim()}>{sending ? "Sending…" : "Reply"}</button></div>
     </form>

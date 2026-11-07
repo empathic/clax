@@ -63,8 +63,9 @@ impl Transport {
     /// resolved here, and its answers that are not
     /// [`clax_core::config::public_address`]es (loopback, private,
     /// link-local, unique-local among them) are never connected to; a name
-    /// with none left fails as unresolved. A hosted daemon's client, which
-    /// sends the instance's key.
+    /// with none left fails as unresolved. No proxy in the environment is
+    /// used, since one would resolve the name itself. A hosted daemon's
+    /// client, which sends the instance's key.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn public_only() -> Transport {
         Transport {
@@ -72,6 +73,7 @@ impl Transport {
                 .connect_timeout(std::time::Duration::from_secs(10))
                 .redirect(reqwest::redirect::Policy::none())
                 .dns_resolver(std::sync::Arc::new(PublicOnly))
+                .no_proxy()
                 .build()
                 .expect("a reqwest client with default TLS"),
         }
@@ -91,7 +93,6 @@ impl Transport {
 
     /// Sends `method url` with `headers` and, when given, `json` as the
     /// body. `Err` when no answer came (the message may name the URL).
-    #[cfg(not(target_arch = "wasm32"))]
     pub async fn send(
         &self,
         method: &str,
@@ -99,16 +100,30 @@ impl Transport {
         headers: &[(&str, String)],
         json: Option<&Value>,
     ) -> Result<Reply, String> {
+        let body = json.map(|v| ("application/json", v.to_string()));
+        self.send_body(method, url, headers, body).await
+    }
+
+    /// [`Transport::send`] with `body`, its content type and text.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn send_body(
+        &self,
+        method: &str,
+        url: &str,
+        headers: &[(&str, String)],
+        body: Option<(&str, String)>,
+    ) -> Result<Reply, String> {
         use futures::StreamExt;
         let method = reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
         let mut rb = self.client.request(method, url);
         for (k, v) in headers {
-            rb = rb.header(*k, v);
+            let mut value = reqwest::header::HeaderValue::from_str(v)
+                .map_err(|_| format!("the {k} header's value cannot be sent"))?;
+            value.set_sensitive(k.eq_ignore_ascii_case("authorization"));
+            rb = rb.header(*k, value);
         }
-        if let Some(v) = json {
-            rb = rb
-                .header("content-type", "application/json")
-                .body(v.to_string());
+        if let Some((kind, text)) = body {
+            rb = rb.header("content-type", kind).body(text);
         }
         let res = rb.send().await.map_err(|e| e.to_string())?;
         let retry_after = res
@@ -127,12 +142,12 @@ impl Transport {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub async fn send(
+    pub async fn send_body(
         &self,
         method: &str,
         url: &str,
         headers: &[(&str, String)],
-        json: Option<&Value>,
+        body: Option<(&str, String)>,
     ) -> Result<Reply, String> {
         use futures::StreamExt;
         use wasm_bindgen::{JsCast, JsValue};
@@ -149,9 +164,9 @@ impl Transport {
         for (k, v) in headers {
             h.append(k, v).map_err(js)?;
         }
-        if let Some(v) = json {
-            h.append("content-type", "application/json").map_err(js)?;
-            init.set_body(&JsValue::from_str(&v.to_string()));
+        if let Some((kind, text)) = body {
+            h.append("content-type", kind).map_err(js)?;
+            init.set_body(&JsValue::from_str(&text));
         }
         init.set_headers(&h);
         let req = web_sys::Request::new_with_str_and_init(url, &init).map_err(js)?;
@@ -232,6 +247,8 @@ fn public_addrs(addrs: impl Iterator<Item = std::net::SocketAddr>) -> Vec<std::n
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// A public-only client never connects to a name that resolves to a
     /// loopback address, where the plain client does.
@@ -254,6 +271,44 @@ mod tests {
             panic!("connected to localhost");
         };
         assert!(e.contains("error sending request"), "{e}");
+    }
+
+    /// A public-only client, in a process whose environment names a proxy.
+    /// Run by [`a_public_only_client_uses_no_proxy_in_the_environment`], since
+    /// a test cannot change the environment of its own process.
+    #[tokio::test]
+    #[ignore = "run in a process of its own"]
+    async fn public_only_with_a_proxy_in_the_environment() {
+        let client = Transport::public_only();
+        let sent = client.send("GET", "http://forge.invalid/", &[], None);
+        assert!(sent.await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_public_only_client_uses_no_proxy_in_the_environment() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = format!("http://{}", listener.local_addr().unwrap());
+        // Counted before it is closed, and a client that came waits for that.
+        let reached = Arc::new(AtomicUsize::new(0));
+        let count = reached.clone();
+        tokio::spawn(async move {
+            while listener.accept().await.is_ok() {
+                count.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        let test = "transport::tests::public_only_with_a_proxy_in_the_environment";
+        let out = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--ignored"])
+            .env("HTTP_PROXY", &proxy)
+            .env("http_proxy", &proxy)
+            .env_remove("NO_PROXY")
+            .env_remove("no_proxy")
+            .output()
+            .await
+            .unwrap();
+        let said = String::from_utf8_lossy(&out.stdout);
+        assert!(said.contains("1 passed"), "{said}");
+        assert_eq!(reached.load(Ordering::SeqCst), 0, "it went to the proxy");
     }
 
     #[test]

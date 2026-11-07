@@ -134,6 +134,21 @@
 //! and lasts no longer than its run; after an eviction the reader
 //! reconnects with its `Last-Event-ID` and the new server replays the
 //! committed steps.
+//!
+//! With a workspace service (`crate::workspace`) the object keeps what the
+//! workspace keeps (`clax_bot_remote::Kept`, its latest snapshot among it) in
+//! its storage, for the next incarnation's offers. Reports' changes are
+//! followed after every request and around the alarm's drive. Socket messages
+//! and pushes change no report. The workspace's own timed work, the previews'
+//! poll among it, is in the timed work above, the alarm wanted while it has
+//! any, and goes before a drive and after a request that may write, so that
+//! neither reads offers that have lapsed.
+//!
+//! # Notices
+//!
+//! A queue's notices (`clax_server::notifiers`) go from the alarm, after the
+//! drive and within [`NOTICES_DEADLINE`], the alarm wanted for the next due.
+//! With no `CLAX_KEK` none can go, and none is waited for.
 
 use clax_http::state::InstanceFeedback;
 use std::cell::{Cell, RefCell};
@@ -203,6 +218,9 @@ const OPTIMIZE_MS: f64 = clax_store::OPTIMIZE_INTERVAL.as_millis() as f64;
 const CATALOG_RETRY_MS: f64 = 3_600_000.0;
 /// The longest an alarm spends on a price catalog refresh.
 const CATALOG_DEADLINE: std::time::Duration = std::time::Duration::from_secs(45);
+/// The longest an alarm spends sending a queue's notices. A pass cut short
+/// leaves what it took to come due again.
+const NOTICES_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
 /// The most bytes of one room socket message (as the daemon's room route).
 const MAX_ROOM_MESSAGE: usize = 64 * 1024;
 
@@ -392,13 +410,85 @@ fn kv_get(state: &State, key: &str) -> Result<Option<String>> {
 }
 
 fn kv_put(state: &State, key: &str, value: &str) -> Result<()> {
-    let sql = kv_table(state)?;
+    kv_write(&kv_table(state)?, key, value)
+}
+
+fn kv_write(sql: &worker::SqlStorage, key: &str, value: &str) -> Result<()> {
     run(
-        &sql,
+        sql,
         "INSERT INTO _clax_instance (key, value) VALUES (?, ?)
          ON CONFLICT (key) DO UPDATE SET value = excluded.value",
         vec![JsValue::from(key), JsValue::from(value)],
     )
+}
+
+/// The storage key of what the workspace keeps.
+const WORKSPACE_KEPT_KEY: &str = "workspace_kept";
+
+/// Keeps what the workspace keeps in the object's own rows, so a new
+/// incarnation answers `Workspace::offer` before it hears from the service.
+/// Held in a `SendWrapper`, as the Worker's other JavaScript-backed values
+/// are.
+struct KeptWorkspace(worker::send::SendWrapper<worker::SqlStorage>);
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl clax_bot_remote::Keeper for KeptWorkspace {
+    async fn save(&self, kept: &clax_bot_remote::Kept) {
+        let done = serde_json::to_string(kept)
+            .map_err(rust_err)
+            .and_then(|json| kv_write(&self.0.0, WORKSPACE_KEPT_KEY, &json));
+        if let Err(e) = done {
+            worker::console_error!("what the workspace keeps was not kept: {e}");
+        }
+    }
+}
+
+/// The runs' workspace as the Worker's settings say (`crate::workspace`), and
+/// what the routes say of it. A set-up that cannot be used runs nothing, and
+/// the instance serves on.
+fn workspace_of(
+    state: &State,
+    env: &Env,
+) -> (
+    clax_http::bot::RuntimeFacts,
+    Option<Arc<crate::workspace::WorkerWorkspace>>,
+) {
+    use crate::workspace::{Settings, Setup, facts, setup_of, workspace};
+    let setup = setup_of(&Settings {
+        url: &var(env, "CLAX_WORKSPACE_SERVICE_URL"),
+        secret: &secret(env, "CLAX_WORKSPACE_SERVICE_TOKEN"),
+        front_id: &secret(env, "CLAX_WORKSPACE_ACCESS_CLIENT_ID"),
+        front_secret: &secret(env, "CLAX_WORKSPACE_ACCESS_CLIENT_SECRET"),
+        preview_hosts: &var(env, "CLAX_WORKSPACE_PREVIEW_HOSTS"),
+        forge_hosts: &var(env, "CLAX_WORKSPACE_FORGE_HOSTS"),
+        instance: &var(env, "CLAX_WORKSPACE_SERVICE_INSTANCE"),
+        object: &var(env, "CLAX_INSTANCE"),
+        loopback: var(env, "CLAX_TEST_ROUTES") == "1"
+            && var(env, "CLAX_TEST_LOOPBACK_PROVIDER") == "1",
+    });
+    if let Setup::Unusable(why) = &setup {
+        worker::console_error!("ClaxBot has no workspace: {why}");
+    }
+    let Setup::On(service) = &setup else {
+        return (facts(&setup, None), None);
+    };
+    // What cannot be read is no word from the service: it fails closed.
+    let kept = kv_get(state, WORKSPACE_KEPT_KEY)
+        .ok()
+        .flatten()
+        .and_then(|json| serde_json::from_str::<clax_bot_remote::Kept>(&json).ok());
+    let made = kv_table(state).map(|sql| {
+        let keeper = Arc::new(KeptWorkspace(worker::send::SendWrapper::new(sql)));
+        workspace(service, keeper, kept.clone())
+    });
+    match made {
+        Ok(w) => (facts(&setup, kept.as_ref()), w),
+        Err(e) => {
+            worker::console_error!("ClaxBot has no workspace: {e}");
+            (facts(&Setup::Unusable(String::new()), None), None)
+        }
+    }
 }
 
 /// The commit the Worker was built from when its build named one:
@@ -691,24 +781,43 @@ fn worker_bot(
     });
     let enabled = sandbox.is_ok();
     let sandbox = sandbox.unwrap_or_else(|()| Arc::new(clax_server::bot::UnavailableSandbox));
+    let (facts, workspace) = workspace_of(state, env);
+    let web_configured = if web.is_some() {
+        clax_bot::web::WebShape::BOTH
+    } else {
+        clax_bot::web::WebShape::default()
+    };
     let mut first = crate::bot::routes_bot(kek, enabled, Arc::new(clax_http::bot::NoRuns));
     first.catalog_url = catalog_url(env);
+    // What the host decides a follow-up by: the state it holds is this one.
+    first.web_configured = web_configured;
+    first.web_check = check.clone();
+    let _ = first.runtime_facts.set(facts);
+    let runtime_facts = first.runtime_facts.clone();
     let (events, views, keys) = (first.events.clone(), first.views.clone(), first.keys());
     let (first_catalog_url, catalog_flight) =
         (first.catalog_url.clone(), first.catalog_flight.clone());
     app.bot = Arc::new(first);
     // The server's own host, over the state the routes see.
-    let server_host = Arc::new(clax_server::bot::ServerHost::new(app.clone()));
-    let host: Arc<dyn clax_bot::BotHost> = server_host.clone();
+    let server_host = clax_server::bot::ServerHost::new(app.clone());
+    let server_host = Arc::new(match workspace.clone() {
+        Some(w) => server_host.with_workspace(w),
+        None => server_host,
+    });
     let (bot, kicks) = crate::bot::WorkerBot::new(crate::bot::Parts {
         store: app.store.clone(),
         sandbox,
-        host,
+        host: server_host.clone(),
+        workspace,
         enabled,
         keys: keys.clone(),
         events: events.clone(),
         web: web.clone(),
         resume_after: resume_after(env),
+        tests: crate::bot::TestTimes {
+            alarm_budget: test_ms(env, "CLAX_TEST_ALARM_BUDGET_MS"),
+            tend_every: test_ms(env, "CLAX_TEST_TEND_MS"),
+        },
     });
     // A run's end may start a follow-up: it goes to the driver as the
     // routes' wakes do, and wants the alarm.
@@ -722,12 +831,9 @@ fn worker_bot(
         events,
         catalog_url: first_catalog_url,
         catalog_flight,
-        web_configured: if web.is_some() {
-            clax_bot::web::WebShape::BOTH
-        } else {
-            clax_bot::web::WebShape::default()
-        },
+        web_configured,
         web_check: check,
+        runtime_facts,
         admin_web_check: web.clone().map(|w| {
             Arc::new(AdminWebView(worker::send::SendWrapper::new(w)))
                 as Arc<dyn clax_http::bot::AdminWebCheck>
@@ -741,11 +847,16 @@ fn worker_bot(
 /// `CLAX_TEST_RESUME_AFTER_MS` (a test that waits for a resume from the
 /// alarm alone).
 fn resume_after(env: &Env) -> std::time::Duration {
-    let set = (var(env, "CLAX_TEST_ROUTES") == "1")
-        .then(|| var(env, "CLAX_TEST_RESUME_AFTER_MS").parse::<u64>().ok())
+    test_ms(env, "CLAX_TEST_RESUME_AFTER_MS").unwrap_or(crate::bot::RESUME_AFTER)
+}
+
+/// The test var `name`, of at least a second; none without the test routes.
+fn test_ms(env: &Env, name: &str) -> Option<std::time::Duration> {
+    (var(env, "CLAX_TEST_ROUTES") == "1")
+        .then(|| var(env, name).parse::<u64>().ok())
         .flatten()
-        .filter(|ms| *ms >= 1_000);
-    set.map_or(crate::bot::RESUME_AFTER, std::time::Duration::from_millis)
+        .filter(|ms| *ms >= 1_000)
+        .map(std::time::Duration::from_millis)
 }
 
 /// The storage key of the web fixtures `POST /_worker/web-fixtures` last
@@ -1399,7 +1510,16 @@ impl InstanceDo {
             Ok(t) => t.map(|t| t.timestamp_millis() as f64),
             Err(_) => Some(now),
         };
-        [sweep, grants, optimize, unseen]
+        let workspace = inst.bot.next_tend();
+        // With no key-encryption key nothing can be sent to be due.
+        let notices = match inst.app.bot.kek {
+            Some(_) => match inst.app.store.call(|st| st.notices_next_due()).await {
+                Ok(t) => t.map(|t| t.timestamp_millis() as f64),
+                Err(_) => Some(now),
+            },
+            None => None,
+        };
+        [sweep, grants, optimize, unseen, workspace, notices]
             .into_iter()
             .flatten()
             .reduce(f64::min)
@@ -1809,14 +1929,19 @@ impl DurableObject for InstanceDo {
             return res;
         }
         self.revive(&inst).await;
-        if !matches!(
+        let writes = !matches!(
             *req.method(),
             axum::http::Method::GET | axum::http::Method::HEAD
-        ) {
+        );
+        if writes {
             self.wrote.set(true);
         }
         let mut res = inst.router.clone().call(req).await.map_err(rust_err)?;
         inst.start_wanted_web_check();
+        if writes {
+            inst.bot.tend_for_a_request(now_ms()).await;
+        }
+        inst.bot.follow_reports().await;
         inst.bot.take_wakes(now_ms());
         let out = match Self::opened(&mut res) {
             Some((carried, att)) => self.accept(&inst, carried, att),
@@ -1882,9 +2007,13 @@ impl DurableObject for InstanceDo {
             return Response::ok("");
         };
         self.revive(&inst).await;
+        let woke = now_ms();
         self.timed_work(&inst).await;
+        inst.bot.follow_reports().await;
+        inst.bot.take_wakes(now_ms());
         if inst.bot.is_due(now_ms()) {
             let bot = &inst.bot;
+            bot.tend_before_drive(woke, now_ms()).await;
             let budget = bot.budget();
             bot.begin();
             // The alarm that follows an invocation ended early.
@@ -1905,6 +2034,7 @@ impl DurableObject for InstanceDo {
                     });
                     clax_rt::time::sleep(wait).await;
                     self.timed_work(&inst).await;
+                    inst.bot.follow_reports().await;
                     inst.settle().await;
                     // Keeps the seats, and the alarm RESUME_AFTER ahead.
                     self.schedule(&inst).await;
@@ -1913,18 +2043,41 @@ impl DurableObject for InstanceDo {
             futures_util::pin_mut!(drive);
             futures_util::pin_mut!(timed);
             let _ = futures_util::future::select(drive, timed).await;
+            // What the drive changed: a run's fix, a reporter's word meanwhile.
+            inst.bot.follow_reports().await;
+            inst.bot.take_wakes(now_ms());
         }
         inst.start_wanted_web_check();
         inst.settle().await;
         self.schedule(&inst).await;
-        // Last: after the runs and with the next alarm already set, so a
-        // slow catalog delays neither.
+        // After the runs, so that a site that hangs delays none of them, and
+        // with the next alarm already set, so that an invocation the platform
+        // ends here leaves one. That alarm fires only once this one returns:
+        // a site that hangs holds it back, for at most NOTICES_DEADLINE.
+        self.deliver_notices(&inst).await;
+        // Last, for the same reasons, and within CATALOG_DEADLINE.
         self.refresh_catalog(&inst).await;
         Response::ok("")
     }
 }
 
 impl InstanceDo {
+    /// The notices due, for at most [`NOTICES_DEADLINE`], and the alarm set
+    /// for those left and for each tried again.
+    async fn deliver_notices(&self, inst: &Instance) {
+        let pass = clax_server::notifiers::deliver_due(&inst.app);
+        if clax_rt::time::timeout(NOTICES_DEADLINE, pass)
+            .await
+            .is_err()
+        {
+            worker::console_warn!(
+                "notices were not all sent within {} s",
+                NOTICES_DEADLINE.as_secs()
+            );
+        }
+        self.schedule(inst).await;
+    }
+
     /// The price catalog, once its cache is a day old by the store's clock
     /// (`clax_server::catalog::refresh_if_stale`), tried at most once in
     /// [`CATALOG_RETRY_MS`] and for at most [`CATALOG_DEADLINE`]; a failure
@@ -1949,11 +2102,12 @@ impl InstanceDo {
     }
 
     /// The instance's timed work that is due (the module docs' Alarm):
-    /// the sweep, grants expired, sessions unseen, the planner refresh and
-    /// the prune of ended ClaxBot runs.
+    /// the sweep, grants expired, sessions unseen, the planner refresh, the
+    /// prune of ended ClaxBot runs and the workspace's own.
     async fn timed_work(&self, inst: &Instance) {
         inst.app.sweep().await;
         let now = now_ms();
+        inst.bot.tend(now).await;
         let grants_due = inst
             .app
             .store

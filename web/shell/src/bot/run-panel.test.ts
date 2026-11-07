@@ -11,6 +11,7 @@ import { writable } from "svelte/store";
 import type { ArtifactController } from "../view/artifact-controller";
 import ArtifactBot from "./ArtifactBot.svelte";
 import { nav } from "../nav";
+import { rememberTarget } from "../view/send-target";
 
 const click = (el: Element) => flush(() => { dispatchTrusted(el, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })); });
 const button = (root: Element, text: string) => [...root.querySelectorAll("button")].find(b => b.textContent?.trim() === text)!;
@@ -40,6 +41,28 @@ beforeEach(() => { forget(); botView.run = null; botView.started = []; botView.a
 afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
 
 describe("the run panel", () => {
+  it("shows a sealed run as its status and a plain line, with no null in it", async () => {
+    const stream = sse();
+    daemon({
+      "GET /api/bot/runs/r1": json({
+        ...run(), status: "finished", ended_at: "2026-10-21T14:03:00Z", sealed: true, model: null, key_source: null,
+        acting_for: null, artifact_id: null, thread_ids: [], reason: null, credits_milli: 0, steps: undefined,
+        tokens: { input: 0, cached: 0, output: 0 }, draft: null, last_event_id: null,
+      }),
+      "GET /api/bot/runs/r1/events": () => new Response(stream.body, { headers: { "content-type": "text/event-stream" } }),
+    });
+    botView.me = meBot();
+    mount(RunPanel, { aid: "7q3k9mzx2b4t", runs: [] });
+    botView.open("r1");
+    flush();
+    await settle();
+    const panel = document.querySelector<HTMLElement>("#bot-run-panel")!;
+    expect(panel.textContent).toContain("This run's details are for the people of its report's queue.");
+    expect(panel.textContent).not.toContain("null");
+    expect(panel.textContent).not.toContain("you can follow it");
+    expect(panel.querySelector(".st")!.textContent).not.toBe("");
+  });
+
   it("follows a run live: narration, the live script open with its calls, the credits, and Stop", async () => {
     const stream = sse();
     const calls = daemon({
@@ -384,12 +407,12 @@ describe("a Send to ClaxBot", () => {
     expect(host.setNotice).toHaveBeenLastCalledWith("ClaxBot is already working on this thread: its run is open.");
   });
 
-  it("lists ClaxBot first among the artifact's agents, and remembers it as the choice", () => {
+  it("lists ClaxBot first among the artifact's agents, and reads it back as the choice remembered", () => {
     botView.list("7q3k9mzx2b4t", true, null, meBot());
     const agents = withBot([{ handle: "a_cl", harness: "claude", live: true, name: "clax-claude" }]);
     expect(agents.map(a => a.handle)).toEqual([BOT, "a_cl"]);
     expect(agents[0]).toMatchObject({ name: "ClaxBot", builtin: true, line: "Runs in Clax · instance key · 1,690 credits left" });
-    botView.choose("7q3k9mzx2b4t", true);
+    rememberTarget("7q3k9mzx2b4t", BOT);
     botView.list("7q3k9mzx2b4t", true, null, meBot());
     expect(botView.chosen).toBe(true);
     // Unavailable, it is listed but never the choice.

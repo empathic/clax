@@ -28,6 +28,7 @@
   import { COMMENTS_OFF } from "../failure";
   import type { Thread } from "../threads";
   import { ownTarget, sendsFor } from "../view/send-menu";
+  import { rememberTarget } from "../view/send-target";
   import { unsent } from "../view/batch-model";
   import { BOT, botView, sendToBot, withBot } from "../bot/send.svelte";
   import { type ArtifactController, type Loaded, type ViewState, commentsOff } from "../view/artifact-controller";
@@ -47,13 +48,14 @@
     if (target && target !== s.sendTo) ctl.chooseTarget(target);
     send();
   };
-  const choose = (h: string) => { botView.choose(ctl.id, h === BOT); if (h !== BOT) ctl.chooseTarget(h); };
+  const chooseBot = () => { botView.choose(true); rememberTarget(ctl.id, BOT); };
+  const choose = (h: string) => { if (h === BOT) chooseBot(); else { botView.choose(false); ctl.chooseTarget(h); } };
   // A thread sent to the agent that no agent is running to take, and that
   // ClaxBot has not taken: ClaxBot offers to, where it is available to
   // this viewer (`BotOffer`).
   const stranded = (t: Thread) => t.status === "open" && t.sent_to_agent && t.feedback_state?.state === "agent_ended" && !botView.claimed.includes(t.id);
   const offered = (t: Thread) => !!botView.agent?.live && !s.spectator && stranded(t);
-  const always = (t: Thread) => { botView.choose(ctl.id, true); void sendToBot(ctl, [t.id]); };
+  const always = (t: Thread) => { chooseBot(); void sendToBot(ctl, [t.id]); };
   // With ClaxBot chosen here ("Always here", or the Send menu), this
   // viewer's own threads written since the view opened that end up with
   // no agent to take them go to ClaxBot without asking, once each.

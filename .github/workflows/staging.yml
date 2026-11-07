@@ -90,7 +90,7 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with: { package_json_file: web/package.json }
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with: { node-version: 26 }
+        with: { node-version: 26, package-manager-cache: false }
       - name: Install Rust toolchain
         run: rustup toolchain install && rustup target add wasm32-unknown-unknown
       - name: Install clang, lld and llvm
@@ -105,7 +105,8 @@ jobs:
           scripts/pnpm-install-stamped.sh crates/clax-worker
           scripts/build-web.sh
           crates/clax-worker/build.sh
-          tar -cf "$RUNNER_TEMP/worker.tar" target/clax-worker/build target/clax-worker/built-from.json web/dist
+          # `h`: Bazel's build is a link to its output.
+          tar -chf "$RUNNER_TEMP/worker.tar" target/clax-worker/build target/clax-worker/built-from.json web/dist
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: { name: worker, path: "${{ runner.temp }}/worker.tar", if-no-files-found: error }
       - name: Attest the Worker
@@ -125,6 +126,13 @@ jobs:
       NUMBER: ${{ needs.pull-request.outputs.number }}
       STAGING_HOST_ZONE: ${{ vars.STAGING_HOST_ZONE }}
       STAGING_SITE_ZONE: ${{ vars.STAGING_SITE_ZONE }}
+      # ClaxBot's workspace service, a second one and never production's: a
+      # service serves one instance (docs/prod.md, "ClaxBot's workspace
+      # service"). None of it set, staging has none.
+      CLAX_WORKSPACE_SERVICE_URL: ${{ vars.CLAX_WORKSPACE_SERVICE_URL }}
+      CLAX_WORKSPACE_PREVIEW_HOSTS: ${{ vars.CLAX_WORKSPACE_PREVIEW_HOSTS }}
+      CLAX_WORKSPACE_FORGE_HOSTS: ${{ vars.CLAX_WORKSPACE_FORGE_HOSTS }}
+      CLAX_WORKSPACE_SERVICE_INSTANCE: ${{ vars.CLAX_WORKSPACE_SERVICE_INSTANCE }}
       OAUTH_CLIENT_ID: ${{ secrets.OAUTH_CLIENT_ID }}
       OWNER_GITHUB: ${{ secrets.OWNER_GITHUB }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -155,7 +163,7 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with: { package_json_file: web/package.json }
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with: { node-version: 26 }
+        with: { node-version: 26, package-manager-cache: false }
       # The tools scripts/cloudflare-setup.sh checks for, though it builds
       # nothing here.
       - name: Install Rust toolchain
@@ -203,6 +211,10 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_CLIENT_SECRET }}
+          # A new Worker has nowhere to hold this before its deploy.
+          CLAX_WORKSPACE_SERVICE_TOKEN: ${{ secrets.CLAX_WORKSPACE_SERVICE_TOKEN }}
+          CLAX_WORKSPACE_ACCESS_CLIENT_ID: ${{ secrets.CLAX_WORKSPACE_ACCESS_CLIENT_ID }}
+          CLAX_WORKSPACE_ACCESS_CLIENT_SECRET: ${{ secrets.CLAX_WORKSPACE_ACCESS_CLIENT_SECRET }}
           # The deploy record, with the owner token, stays in the runner's
           # temporary directory, never uploaded.
           CLAX_DEPLOY_HOME: ${{ runner.temp }}/clax-deploy
@@ -219,6 +231,10 @@ jobs:
           else
             echo "::warning::no reel on Cloudflare Stream: staging's landing page shows no player (see the reel step)"
           fi
+          [ -z "$CLAX_WORKSPACE_SERVICE_URL" ] || args+=(--workspace-service-url "$CLAX_WORKSPACE_SERVICE_URL")
+          [ -z "$CLAX_WORKSPACE_PREVIEW_HOSTS" ] || args+=(--workspace-preview-hosts "$CLAX_WORKSPACE_PREVIEW_HOSTS")
+          [ -z "$CLAX_WORKSPACE_FORGE_HOSTS" ] || args+=(--workspace-forge-hosts "$CLAX_WORKSPACE_FORGE_HOSTS")
+          [ -z "$CLAX_WORKSPACE_SERVICE_INSTANCE" ] || args+=(--workspace-service-instance "$CLAX_WORKSPACE_SERVICE_INSTANCE")
           scripts/cloudflare-setup.sh "${args[@]}" --ci --no-build --smoke --i-know-what-i-am-doing
 
       # One comment per pull request, updated on every deploy.

@@ -110,6 +110,30 @@ pub struct Bot {
     /// check of its AI binding. None (the default): nothing, as on the
     /// daemon.
     pub admin_web_check: Option<Arc<dyn AdminWebCheck>>,
+    /// The workspace this host is running, set once as it boots
+    /// ([`Bot::runtime`]): routes read this and never its files.
+    pub runtime_facts: Arc<std::sync::OnceLock<RuntimeFacts>>,
+}
+
+/// What a person connecting a repository is told of the host's containers,
+/// from the workspace that was built. Left unset, or by default, there is no
+/// workspace: nothing is cloned.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RuntimeFacts {
+    /// A workspace is set up, whether or not it came up.
+    pub configured: bool,
+    /// Anyone but this daemon's operator runs its containers. So too for a
+    /// workspace that failed: that warning is the one worth reading.
+    pub third_party: bool,
+    /// An allow-list holds the containers' egress.
+    pub egress_held: bool,
+    /// The workspace is set up and could not be built, so nothing runs.
+    pub failed: bool,
+    /// The queues an operator's file names, whose target wins over a link.
+    pub operator_queues: Vec<String>,
+    /// It runs those queues' targets alone: a queue's link, however complete,
+    /// stays dormant. So on a Worker, whose workspace service holds no store.
+    pub operator_only: bool,
 }
 
 /// The host's check of its web source for the admin's view of the web
@@ -151,6 +175,7 @@ impl Default for Bot {
             web_configured: clax_bot::web::WebShape::default(),
             web_check: Arc::default(),
             admin_web_check: None,
+            runtime_facts: Arc::default(),
         }
     }
 }
@@ -234,6 +259,12 @@ impl Bot {
                 },
             ),
         )
+    }
+
+    /// What this host's workspace is, as it came up.
+    #[must_use]
+    pub fn runtime(&self) -> RuntimeFacts {
+        self.runtime_facts.get().cloned().unwrap_or_default()
     }
 
     /// The key-encryption key, or 503 `no_kek`.

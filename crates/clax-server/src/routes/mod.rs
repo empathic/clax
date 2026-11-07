@@ -40,6 +40,8 @@ pub mod perf;
 pub mod permissions;
 pub mod questions;
 pub mod queue_agent;
+pub mod queue_notifier;
+pub mod queue_repo;
 pub mod queue_reporter;
 pub mod queues;
 pub mod remote_apps;

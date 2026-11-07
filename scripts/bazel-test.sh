@@ -221,6 +221,7 @@ if [ "$ci" = 1 ]; then
     _run "justfile" ./scripts/test-justfile.sh
     _run "no hard links (tracked files)" ./scripts/check-no-hard-links.sh
     _run "pipefail pipes (tracked files)" ./scripts/check-pipefail-pipes.sh
+    _run "ClaxBot's listed paths (tracked files)" python3 scripts/check-claxbot-paths.py tree deploy/claxbot-workspace/clax.toml
     if [ "${#failed[@]}" -gt 0 ]; then
         printf 'error: failed under Bazel: %s\n' "${failed[@]}" >&2
         echo "error: the quick checks failed; the tests did not run" >&2

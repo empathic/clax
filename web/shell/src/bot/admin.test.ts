@@ -34,6 +34,21 @@ describe("Admin", () => {
     expect(calls.some(c => c.url.startsWith("/api/admin"))).toBe(false);
   });
 
+  it("shows Repositories to the owner alone, since the App reaches every installation", async () => {
+    const tabs = async (role: "owner" | "admin") => {
+      stubFetch({ "GET /api/me/bot": meBot({ role }), "GET /api/admin/people": [] });
+      const m = mount(AdminPage, {});
+      await settle();
+      const labels = [...m.root.querySelectorAll("a")].map(a => a.textContent);
+      m.unmount();
+      document.body.replaceChildren();
+      return labels;
+    };
+    expect(await tabs("admin")).not.toContain("Repositories");
+    forget();
+    expect(await tabs("owner")).toContain("Repositories");
+  });
+
   it("opens the tab the address names, among links to the audit log and, locally, Settings", async () => {
     history.replaceState(null, "", "/admin?tab=usage");
     stubFetch({ "GET /api/me/bot": meBot({ role: "admin" }), "GET /api/admin/usage": usage() });
