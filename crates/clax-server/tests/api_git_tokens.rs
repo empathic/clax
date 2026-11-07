@@ -1655,33 +1655,31 @@ async fn on_a_host_that_names_no_pusher_the_owners_agent_token_pushes() {
         .await;
     assert_eq!(s, 201, "{v}");
     let token = v["token"].as_str().unwrap().to_string();
-    let r = h
-        .ts
-        .client
-        .post(format!("{}/api/sessions", h.ts.base))
-        .header("host", &h.host)
-        .bearer_auth(&token)
-        .json(&json!({"harness": "claude", "cwd": ""}))
-        .send()
-        .await
-        .unwrap();
+    let r =
+        h.ts.client
+            .post(format!("{}/api/sessions", h.ts.base))
+            .header("host", &h.host)
+            .bearer_auth(&token)
+            .json(&json!({"harness": "claude", "cwd": ""}))
+            .send()
+            .await
+            .unwrap();
     assert_eq!(r.status(), 201);
     let v: Value = r.json().await.unwrap();
     let sid = v["session"]["id"].as_str().unwrap().to_string();
     let secret = v["session_secret"].as_str().unwrap().to_string();
     // Its pushes are recorded as the owner's, which they are: it may push.
-    let r = h
-        .ts
-        .client
-        .post(format!("{}/api/sessions/{sid}/git-token/{aid}", h.ts.base))
-        .header("host", &h.host)
-        .bearer_auth(&token)
-        .header("x-clax-session", &sid)
-        .header(clax_core::remote::SESSION_SECRET_HEADER, &secret)
-        .json(&json!({"scope": "write"}))
-        .send()
-        .await
-        .unwrap();
+    let r =
+        h.ts.client
+            .post(format!("{}/api/sessions/{sid}/git-token/{aid}", h.ts.base))
+            .header("host", &h.host)
+            .bearer_auth(&token)
+            .header("x-clax-session", &sid)
+            .header(clax_core::remote::SESSION_SECRET_HEADER, &secret)
+            .json(&json!({"scope": "write"}))
+            .send()
+            .await
+            .unwrap();
     let status = r.status().as_u16();
     let v: Value = r.json().await.unwrap_or(Value::Null);
     assert_eq!(status, 200, "{v}");
