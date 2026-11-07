@@ -71,9 +71,15 @@ daytona snapshot push clax-workspace:1 --name clax-workspace-1 \
 ```
 
 - **Size is the snapshot's.** `--cpu`, `--memory` and `--disk`, in cores and GB, are
-  "allocated to the underlying sandboxes", and default to 1, 1 and 3. A cold build
-  of Clax peaked near 7 GB of memory and 6.7 GB of disk, and 4, 8 and 10 is also
-  the most an organization gets unless Daytona raises it. Daytona's API lists the
+  "allocated to the underlying sandboxes", and default to 1, 1 and 3; 4, 8 and 10
+  is also the most an organization gets unless Daytona raises it. A model's cold
+  run in this image, measured in local Docker on 2026-11-07 with no memory limit
+  and about 16 cores, needed about 5.5 GiB of memory (`docker stats`; the
+  cgroup's `memory.peak` read 7.5 GB, which counts reclaimable file cache) and
+  left 5 to 7.4 GB in `~/.cache` (a web fix, then a Rust crate's tests), beside
+  the image itself, 3.4 GB. Memory fits 8 with room, and fewer cores run
+  fewer compiles at once. Disk may not fit 10: the choice is an open record on these lines
+  (`qualifier threads deploy/claxbot-workspace/README.md`). Daytona's API lists the
   same fields on `POST /sandbox`, but its SDKs take them only with an image and
   never with a snapshot, so nothing here sends them: to change a size, push another
   snapshot.

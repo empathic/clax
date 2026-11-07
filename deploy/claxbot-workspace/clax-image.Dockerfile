@@ -5,7 +5,7 @@
 #   docker build -t clax-workspace -f clax-image.Dockerfile .
 #
 # Daytona runs it as a snapshot, x86-64 and sized there: arm64 fails on the
-# Android NDK, and a cold build peaked near 7 GB of memory and 6.7 GB of disk.
+# Android NDK. What a cold build takes is in README.md, "A snapshot on Daytona".
 # `image` then names the snapshot (README.md, "A snapshot on Daytona"):
 #
 #   docker build --platform linux/amd64 -t clax-workspace:1 -f clax-image.Dockerfile .
