@@ -1002,6 +1002,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tower-service",
+ "tracing",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-streams 0.7.0",

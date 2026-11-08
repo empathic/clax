@@ -740,6 +740,7 @@ CRATES = {
             "@crates_wasm//:sha2-0.11.0",
             "@crates_wasm//:tokio-1.53.1",
             "@crates_wasm//:tower-service-0.3.3",
+            "@crates_wasm//:tracing-0.1.44",
             "@crates_wasm//:wasm-bindgen-0.2.129",
             "@crates_wasm//:wasm-bindgen-futures-0.4.79",
             "@crates_wasm//:wasm-streams-0.7.0",
