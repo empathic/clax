@@ -279,6 +279,39 @@ say "Deploying"
 if [ "$smoke" = 1 ] && [ "$dry" = 0 ]; then
   record="$records/$PUBLIC_HOST.json"
   [ -f "$record" ] || fail "no deploy record $record to smoke"
+  # The Worker's log while the smoke runs (wrangler tail), since a step that
+  # fails inside the Worker says why only there; on a failure its errors are
+  # printed, credentials masked (tail-errors.mjs). A tail that does not
+  # connect is reported and the smoke goes on without it.
+  tail_dir="$(mktemp -d "${TMPDIR:-/tmp}/clax-tail.XXXXXX")"
+  tail_pid=""
+  tail_worker="$(node -e 'const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); process.stdout.write(r.worker ?? "")' "$record")"
+  tail_account="$(node -e 'const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); process.stdout.write(r.account ?? "")' "$record")"
+  tail_origin="$(node -e 'const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); process.stdout.write(r.public_origin ?? "")' "$record")"
+  if [ -n "$tail_worker" ] && [ -n "$tail_origin" ]; then
+    (cd "$worker" && CLOUDFLARE_ACCOUNT_ID="${tail_account:-${CLOUDFLARE_ACCOUNT_ID:-}}" WRANGLER_SEND_METRICS=false FORCE_COLOR=0 \
+      exec ./node_modules/.bin/wrangler tail "$tail_worker" --format json) > "$tail_dir/out" 2> "$tail_dir/err" &
+    tail_pid=$!
+    # With --format json wrangler prints nothing when it connects: it is
+    # connected once it reports a request, so ask for /health until it does.
+    for _ in $(seq 1 30); do
+      [ -s "$tail_dir/out" ] && break
+      kill -0 "$tail_pid" 2>/dev/null || break
+      curl -s -o /dev/null --max-time 5 "$tail_origin/health" || true
+      sleep 1
+    done
+    if [ ! -s "$tail_dir/out" ]; then
+      if kill -0 "$tail_pid" 2>/dev/null; then
+        why="it reported no request in 30 s"
+        kill "$tail_pid" 2>/dev/null || true
+      else
+        why="it exited: $(tail -n 1 "$tail_dir/err" 2>/dev/null)"
+      fi
+      wait "$tail_pid" 2>/dev/null || true
+      tail_pid=""
+      echo "cloudflare-setup: the smoke runs without the Worker's log: wrangler tail $tail_worker did not connect ($why)"
+    fi
+  fi
   smoke_status=0
   if [ "$staging" = 1 ]; then
     # Staging's deploy gave the Worker a new owner token, in the record:
@@ -296,6 +329,15 @@ if [ "$smoke" = 1 ] && [ "$dry" = 0 ]; then
     say "Deploying again without the diagnostics routes"
     (cd "$worker" && node deploy.mjs ${args[@]+"${args[@]}"} --no-diag --no-build --yes)
   fi
+  if [ -n "$tail_pid" ]; then
+    kill "$tail_pid" 2>/dev/null || true
+    wait "$tail_pid" 2>/dev/null || true
+    if [ "$smoke_status" != 0 ]; then
+      say "The Worker's errors while the smoke ran (wrangler tail $tail_worker)"
+      (cd "$worker" && node tail-errors.mjs "$tail_dir/out") || true
+    fi
+  fi
+  rm -rf "$tail_dir"
   [ "$smoke_status" = 0 ] || fail "the smoke failed (exit $smoke_status); see its output above"
 fi
 
