@@ -413,10 +413,16 @@ export function wranglerError(r) {
  * and what it served (a request's method and path, without its query; a
  * queue batch; an alarm; a scheduled run). Nothing else of an invocation is
  * printed: not its headers, its query or its `cf` object. Credentials are
- * masked (maskTokens). Text that is not such an object is skipped. */
+ * masked (maskTokens). Text that is not such an object is skipped. A last
+ * line counts the invocations of each kind, naming a log without a queue
+ * batch, since an event that never arrived logs nothing. */
 export function tailErrors(text) {
   const out = [];
+  const seen = { request: 0, queue: 0, alarm: 0, scheduled: 0, other: 0 };
   for (const ev of jsonObjects(text)) {
+    const k = ev.event?.request?.url ? "request" : ev.event?.queue ? "queue" : ev.event?.cron !== undefined ? "scheduled"
+      : ev.eventType === "alarm" || ev.event?.scheduledTime ? "alarm" : "other";
+    seen[k]++;
     const at = Number.isFinite(ev.eventTimestamp) ? new Date(ev.eventTimestamp).toISOString() : "?";
     const e = ev.event ?? {};
     let what = "invocation";
@@ -437,6 +443,12 @@ export function tailErrors(text) {
       lines.push(`${l.level} ${msg}`);
     }
     for (const l of lines) out.push(maskTokens(`${head}: ${l}`));
+  }
+  const total = Object.values(seen).reduce((a, b) => a + b, 0);
+  if (total) {
+    out.push(`${total} invocation(s) in the log: ` +
+      Object.entries(seen).filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(", ") +
+      (seen.queue ? "" : " (no queue batch)"));
   }
   return out;
 }

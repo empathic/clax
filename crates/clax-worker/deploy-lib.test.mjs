@@ -500,10 +500,14 @@ test("the Worker's errors from wrangler tail: what served each, its errors, cred
     "2026-11-07T19:53:40.000Z clax-pr-73 queue clax-artifacts-events-pr-73 (1 message(s)): outcome exception",
     "2026-11-07T19:53:40.000Z clax-pr-73 queue clax-artifacts-events-pr-73 (1 message(s)): exception Error: token art_v1_<masked> refused",
     "2026-11-07T19:53:40.000Z clax-pr-73 queue clax-artifacts-events-pr-73 (1 message(s)): error recording the pushes to jd2eeq9f8zdm answered 500",
+    "3 invocation(s) in the log: 2 request, 1 queue",
   ]);
   // The request's query and headers never appear.
   assert.ok(!tailErrors(TAIL).join("\n").includes("s3cr3t"));
   assert.deepEqual(tailErrors("no JSON here\n{not json}\n"), []);
+  // A log of requests alone says that no queue batch came.
+  const quiet = JSON.stringify({ outcome: "ok", scriptName: "w", logs: [], event: { request: { url: "https://x/health", method: "GET" } } });
+  assert.deepEqual(tailErrors(quiet), ["1 invocation(s) in the log: 1 request (no queue batch)"]);
 });
 
 test("credentials are masked in what the tail prints", () => {
