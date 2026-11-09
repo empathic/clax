@@ -514,12 +514,16 @@ impl CallerParts {
     }
 }
 
-/// Who is subscribing to `/api/events`, for filtering `doc` events. An
-/// `EventSource` cannot send headers, so the token is accepted as `?token=`
-/// (percent-decoded) as well as in `Authorization`, and `GET /api/events`
-/// also takes the events cookie ([`Subscriber::or_events_cookie`]); a wrong,
-/// missing, or invalidly encoded token counts as none.
-/// The query string of this route must never be logged.
+/// Who is subscribing to `/api/events` or an artifact's room socket, for
+/// filtering `doc` events and fixing the socket's level. An `EventSource`
+/// cannot send headers, so `/api/events` accepts the token as `?token=`
+/// (percent-decoded, [`crate::auth::query_token_route`]) and also takes the
+/// events cookie ([`Subscriber::or_events_cookie`]); a browser's WebSocket
+/// cannot set `Authorization`, so the room socket accepts it as the
+/// `clax.bearer.<token>` subprotocol ([`crate::auth::protocol_bearer`]) and
+/// never in its URL. `Authorization` counts on both. A wrong, missing, or
+/// invalidly encoded token counts as none. Neither the query string nor
+/// `Sec-WebSocket-Protocol` is ever logged.
 pub struct Subscriber {
     token: bool,
     who: Identity,
@@ -534,13 +538,17 @@ impl FromRequestParts<AppState> for Subscriber {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
+        let path = parts.uri.path();
         // A value that is not validly encoded is no token.
-        let query_token = query_param(parts, "token")
-            .flatten()
-            .is_some_and(|v| crate::auth::token_matches(&v, &state.token));
+        let query_token = crate::auth::query_token_route(path)
+            && query_param(parts, "token")
+                .flatten()
+                .is_some_and(|v| crate::auth::token_matches(&v, &state.token));
+        let protocol_token = crate::auth::protocol_token_route(path)
+            && crate::auth::has_protocol_token(&parts.headers, &state.token);
         let who = Identity::from_parts(&parts.headers, &parts.extensions, &state.token);
         Ok(Subscriber {
-            token: query_token || who.token,
+            token: query_token || protocol_token || who.token,
             who,
             site: parts.extensions.get::<SiteCaller>().cloned(),
         })

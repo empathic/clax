@@ -3,9 +3,11 @@
 //! document of the artifact in both frame modes and reuses the document's
 //! peer label when it reconnects; a page never reaches it (a foreign `Origin`
 //! is refused before the upgrade). The caller's level is fixed when the
-//! socket opens ([`Subscriber::resolve`]: the `?token=` query parameter, never
-//! logged, with or without the viewer cookie; see `docs/contract.md` "Room
-//! protocol") and decides which topics it may send on: a topic declared `"interact"` in `capabilities.room.topics` admits
+//! socket opens ([`Subscriber::resolve`]: the token in `Authorization`, or
+//! offered as the `clax.bearer.<token>` subprotocol beside `clax` since a
+//! browser's WebSocket sets no headers, never in the URL and never logged,
+//! with or without the viewer cookie; the daemon echoes `clax` alone; see
+//! `docs/contract.md` "Room protocol") and decides which topics it may send on: a topic declared `"interact"` in `capabilities.room.topics` admits
 //! `interact` and above, every other topic `admin` and above; presence admits
 //! everyone. Frames are the JSON objects of `docs/contract.md` "Room protocol".
 //! A person beyond the artifact's live seats is a spectator (spec
@@ -102,7 +104,8 @@ impl Budget {
     }
 }
 
-/// The route's own query field; `token` is read by [`Subscriber`].
+/// The route's own query field; the token is read by [`Subscriber`], from
+/// headers only (a `?token=` here is ignored).
 #[derive(Deserialize)]
 pub struct RoomQuery {
     peer: String,
@@ -225,7 +228,10 @@ pub async fn room(
         viewer,
     };
     let ended = crate::routes::events::owner_session_ended(&s, &extensions);
+    // Echoes `clax` when offered (a browser that offered subprotocols fails
+    // the handshake without one), never the bearer beside it.
     Ok(ws
+        .protocols([clax_http::auth::ROOM_PROTOCOL])
         .max_message_size(MAX_ROOM_MESSAGE_BYTES)
         .max_frame_size(MAX_ROOM_MESSAGE_BYTES)
         .on_upgrade(move |socket| {
@@ -1064,6 +1070,14 @@ pub async fn room_socket(
         .await?;
     let opened = RoomSocket::open(&s, admitted, &[]).map(|(r, f)| (r.holding(slot), f));
     let mut res = axum::http::StatusCode::OK.into_response();
+    // The subprotocol the host's handshake answers with: `clax` when
+    // offered, never the bearer beside it.
+    if clax_http::auth::offers_room_protocol(&headers) {
+        res.headers_mut().insert(
+            axum::http::header::SEC_WEBSOCKET_PROTOCOL,
+            axum::http::HeaderValue::from_static(clax_http::auth::ROOM_PROTOCOL),
+        );
+    }
     res.extensions_mut()
         .insert(RoomOpened(std::sync::Arc::new(std::sync::Mutex::new(
             Some((opened, q.peer, creds)),

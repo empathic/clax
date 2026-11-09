@@ -58,16 +58,18 @@ const A: &str = "aaaaaaaaaaaaaaaa";
 const B: &str = "bbbbbbbbbbbbbbbb";
 const C: &str = "cccccccccccccccc";
 
-/// The socket URL; `token` is appended as the owner shell appends it.
-fn url(ts: &TestServer, aid: &str, peer: &str, token: Option<&str>) -> String {
-    let base = format!(
+/// The socket URL, which never carries the token.
+fn url(ts: &TestServer, aid: &str, peer: &str) -> String {
+    format!(
         "{}/api/artifacts/{aid}/room?peer={peer}",
         ts.base.replacen("http://", "ws://", 1)
-    );
-    match token {
-        Some(t) => format!("{base}&token={t}"),
-        None => base,
-    }
+    )
+}
+
+/// `token` offered as a browser offers it: the `clax.bearer.` subprotocol
+/// beside `clax`.
+fn bearer_protocols(token: &str) -> (&'static str, String) {
+    ("sec-websocket-protocol", format!("clax, clax.bearer.{token}"))
 }
 
 async fn try_connect(
@@ -77,7 +79,11 @@ async fn try_connect(
     token: Option<&str>,
     headers: &[(&str, String)],
 ) -> Result<Client, u16> {
-    let mut req = url(ts, aid, peer, token).into_client_request().unwrap();
+    let mut req = url(ts, aid, peer).into_client_request().unwrap();
+    if let Some(t) = token {
+        let (k, v) = bearer_protocols(t);
+        req.headers_mut().insert(k, v.parse().unwrap());
+    }
     // Without the token or a cookie of its own, a browser of this
     // machine's with no name ([`TestServer::local_browser`]): a local
     // daemon opens no socket for a request with no credential at all.
@@ -99,8 +105,17 @@ async fn try_connect(
             v.parse().unwrap(),
         );
     }
+    let offered = req.headers().contains_key("sec-websocket-protocol");
     match tokio_tungstenite::connect_async(req).await {
-        Ok((ws, _)) => Ok(Client { ws }),
+        Ok((ws, res)) => {
+            // The daemon names `clax` alone, never the bearer offered beside it.
+            let chosen = res
+                .headers()
+                .get("sec-websocket-protocol")
+                .map(|v| v.to_str().unwrap().to_string());
+            assert_eq!(chosen, offered.then(|| "clax".to_string()));
+            Ok(Client { ws })
+        }
         Err(tokio_tungstenite::tungstenite::Error::Http(res)) => Err(res.status().as_u16()),
         Err(e) => panic!("connect: {e}"),
     }
@@ -272,6 +287,53 @@ async fn the_token_alone_is_owner_and_a_wrong_token_is_no_token() {
     assert_eq!(
         nobody.until(|f| f["t"] == "ack" || f["t"] == "nack").await["code"],
         "not_permitted"
+    );
+}
+
+#[tokio::test]
+async fn the_token_in_the_url_is_no_token_and_authorization_is() {
+    let ts = TestServer::spawn().await;
+    let aid = artifact(&ts, caps()).await;
+    let in_url = format!("{}&token={}", url(&ts, &aid, A), ts.token);
+    // Alone, a `?token=` is no credential: a local daemon refuses it.
+    let req = in_url.as_str().into_client_request().unwrap();
+    match tokio_tungstenite::connect_async(req).await {
+        Err(tokio_tungstenite::tungstenite::Error::Http(res)) => {
+            assert_eq!(res.status().as_u16(), 401)
+        }
+        other => panic!("upgraded on a token in the URL: {:?}", other.map(|_| ())),
+    }
+    // Beside a browser's cookie it adds nothing: the browser's own level.
+    let mut req = in_url.as_str().into_client_request().unwrap();
+    req.headers_mut().insert(
+        "cookie",
+        format!("clax_viewer={}", ts.local_browser())
+            .parse()
+            .unwrap(),
+    );
+    let (ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    let mut c = Client { ws };
+    assert_eq!(c.next().await["t"], "welcome");
+    c.send(json!({"t": "emit", "id": 1, "room": null, "topic": "clear"}))
+        .await;
+    assert_eq!(
+        c.until(|f| f["t"] == "ack" || f["t"] == "nack").await["code"],
+        "not_permitted"
+    );
+    // `Authorization`, from a client that can set it, is the token.
+    let mut c = connect(
+        &ts,
+        &aid,
+        B,
+        None,
+        &[("authorization", format!("Bearer {}", ts.token))],
+    )
+    .await;
+    c.send(json!({"t": "emit", "id": 2, "room": null, "topic": "clear"}))
+        .await;
+    assert_eq!(
+        c.until(|f| f["t"] == "ack" || f["t"] == "nack").await,
+        json!({"t": "ack", "id": 2})
     );
 }
 

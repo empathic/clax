@@ -1603,8 +1603,9 @@ fn stream_artifacts(body: &[u8]) -> Option<Vec<String>> {
 /// `session`: `cxo_` and a key of the session's ([`keyed`]). `GET
 /// /api/token` hands it to the owner's browser in place of the daemon
 /// token, and the gate takes it, only beside that session's cookie, as the
-/// daemon token (in `Authorization: Bearer`, or the `token` query parameter
-/// a WebSocket carries). So the owner's shell holds what a local owner's
+/// daemon token (in `Authorization: Bearer`, the `clax.bearer.` subprotocol
+/// a WebSocket carries, or the `token` query parameter an `EventSource`
+/// carries). So the owner's shell holds what a local owner's
 /// does without the daemon token ever reaching a browser, and signing out
 /// ends it.
 pub fn shell_token(token: &str, session: &str) -> String {
@@ -1618,7 +1619,9 @@ pub fn shell_token(token: &str, session: &str) -> String {
 pub const SHELL_TOKEN_PREFIX: &str = "cxo_";
 
 /// The shell token `req` presents, if any: `Authorization: Bearer cxo_…`,
-/// or a `token=cxo_…` query parameter.
+/// a `clax.bearer.cxo_…` WebSocket subprotocol (a room socket's,
+/// [`crate::auth::protocol_bearer`]), or a `token=cxo_…` query parameter
+/// (an `EventSource`'s).
 fn shell_token_presented(req: &Request) -> Option<String> {
     let bearer = req
         .headers()
@@ -1627,6 +1630,7 @@ fn shell_token_presented(req: &Request) -> Option<String> {
         .and_then(|v| v.split_once(' '))
         .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
         .map(|(_, t)| t.trim_start_matches(' ').to_string());
+    let protocol = crate::auth::protocol_bearer(req.headers()).map(str::to_string);
     let query = req.uri().query().and_then(|q| {
         q.split('&')
             .find_map(|kv| kv.strip_prefix("token="))
@@ -1634,6 +1638,7 @@ fn shell_token_presented(req: &Request) -> Option<String> {
     });
     bearer
         .into_iter()
+        .chain(protocol)
         .chain(query)
         .find(|t| t.starts_with(SHELL_TOKEN_PREFIX))
 }
@@ -1644,6 +1649,23 @@ fn swap_shell_token(req: &mut Request, token: &str) -> Result<(), ApiError> {
         HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| ApiError::unauthorized())?;
     if req.headers().contains_key(header::AUTHORIZATION) {
         req.headers_mut().insert(header::AUTHORIZATION, bearer);
+    }
+    let prefix = crate::auth::BEARER_PROTOCOL_PREFIX;
+    let protocols: Vec<String> = req
+        .headers()
+        .get_all(header::SEC_WEBSOCKET_PROTOCOL)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .map(|p| match p.trim().strip_prefix(prefix) {
+            Some(t) if t.starts_with(SHELL_TOKEN_PREFIX) => format!("{prefix}{token}"),
+            _ => p.trim().to_string(),
+        })
+        .collect();
+    if !protocols.is_empty() {
+        let v = HeaderValue::from_str(&protocols.join(", "))
+            .map_err(|_| ApiError::unauthorized())?;
+        req.headers_mut().insert(header::SEC_WEBSOCKET_PROTOCOL, v);
     }
     if let Some(q) = req.uri().query() {
         let q: Vec<String> = q
@@ -2266,13 +2288,25 @@ mod tests {
             shell_token_presented(&req("/api/x", Some("Bearer tok"))),
             None
         );
-        let mut r = req(&format!("/api/artifacts/a/room?peer=p&token={t}"), None);
+        let mut r = req(&format!("/api/events?artifact=a&token={t}"), None);
+        assert_eq!(shell_token_presented(&r), Some(t.clone()));
+        swap_shell_token(&mut r, "tok").unwrap();
+        assert_eq!(r.uri().to_string(), "/api/events?artifact=a&token=tok");
+        assert!(r.headers().get(header::AUTHORIZATION).is_none());
+        // A room socket's subprotocol: the bearer one is swapped, the
+        // protocol it speaks kept.
+        let mut r = req("/api/artifacts/a/room?peer=p", None);
+        r.headers_mut().insert(
+            header::SEC_WEBSOCKET_PROTOCOL,
+            HeaderValue::from_str(&format!("clax, clax.bearer.{t}")).unwrap(),
+        );
         assert_eq!(shell_token_presented(&r), Some(t.clone()));
         swap_shell_token(&mut r, "tok").unwrap();
         assert_eq!(
-            r.uri().to_string(),
-            "/api/artifacts/a/room?peer=p&token=tok"
+            r.headers()[header::SEC_WEBSOCKET_PROTOCOL],
+            "clax, clax.bearer.tok"
         );
+        assert_eq!(r.uri().to_string(), "/api/artifacts/a/room?peer=p");
         assert!(r.headers().get(header::AUTHORIZATION).is_none());
         let mut r = req("/api/x", Some(&format!("Bearer {t}")));
         swap_shell_token(&mut r, "tok").unwrap();

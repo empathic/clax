@@ -758,20 +758,20 @@ fn authorized(headers: &HeaderMap, token: &str) -> bool {
         || crate::auth::has_scheme(headers, crate::extension::SCHEME)
 }
 
-/// Whether `req` is one of the routes that take the token as `?token=`
-/// (percent-decoded), since an `EventSource` or a WebSocket sends no
-/// headers: `GET /api/events` and an artifact's room socket
-/// (`/api/artifacts/<aid>/room`, [`crate::db_caller::Subscriber`]), and
-/// carries it.
+/// Whether `req` carries the token where its route takes it in place of
+/// `Authorization`: as `?token=` (percent-decoded) on `GET /api/events`,
+/// since an `EventSource` sends no headers
+/// ([`crate::auth::query_token_route`]), or as the `clax.bearer.<token>`
+/// subprotocol on an artifact's room socket, since a browser's WebSocket
+/// sets no `Authorization` ([`crate::auth::protocol_token_route`],
+/// [`crate::db_caller::Subscriber`]).
 fn query_token(req: &Request, token: &str) -> bool {
-    let segs: Vec<&str> = req.uri().path().split('/').collect();
-    let takes = matches!(
-        segs.as_slice(),
-        ["", "api", "events"] | ["", "api", "artifacts", _, "room"]
-    );
-    takes
+    let path = req.uri().path();
+    (crate::auth::query_token_route(path)
         && url::form_urlencoded::parse(req.uri().query().unwrap_or("").as_bytes())
-            .any(|(k, v)| k == "token" && crate::auth::token_matches(&v, token))
+            .any(|(k, v)| k == "token" && crate::auth::token_matches(&v, token)))
+        || (crate::auth::protocol_token_route(path)
+            && crate::auth::has_protocol_token(req.headers(), token))
 }
 
 /// The page a browser gets for a page load with no credential on a local
@@ -853,7 +853,8 @@ fn refuse(method: &Method, path: &str, headers: &HeaderMap) -> Response {
 /// without its proof ([`UnprovenSession`]) on the same terms; an
 /// `Authorization` the later layers check (the token, an agent credential
 /// of another machine with its `Clax-Signature`, the extension's), the
-/// token as `?token=` where a route takes it ([`query_token`]), a tailnet
+/// token as `?token=` or a WebSocket subprotocol where a route takes it
+/// ([`query_token`]), a tailnet
 /// user `tailscale serve` named ([`crate::auth::TailscaleUser`]), or a
 /// `clax_viewer` cookie
 /// naming a viewer the daemon minted (a connected person's among them). A

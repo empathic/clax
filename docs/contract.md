@@ -8242,11 +8242,16 @@ viewer changes (the Clax viewer reports it, or, opened directly, the site's
 `whoami` says so as the page comes back into view) it opens a new socket
 under the same label at the new level, which replaces the old one.
 
-**The socket.** `GET /api/artifacts/<aid>/room?peer=<label>[&token=<bearer>]`
-(on a site, `/_clax/api/room?peer=<label>`, never with a token) upgrades to
-a WebSocket. `<label>` is 16 characters of `[0-9a-z]`. A WebSocket cannot
-send an `Authorization` header, so the shell appends `token` when it holds
-the token; the query string is never logged. The level is fixed when the
+**The socket.** `GET /api/artifacts/<aid>/room?peer=<label>` (on a site,
+`/_clax/api/room?peer=<label>`, never with a token) upgrades to a
+WebSocket. `<label>` is 16 characters of `[0-9a-z]`. The token rides in a
+header, never in the URL: `Authorization: Bearer <token>` from a client
+that can set it, or, since a browser's WebSocket cannot, the subprotocol
+pair `new WebSocket(url, ["clax", "clax.bearer.<token>"])`. The daemon
+answers `Sec-WebSocket-Protocol: clax` whenever `clax` is offered and never
+echoes the bearer; neither the header nor the query string is logged. A
+`?token=` on this route is ignored (OAuth 2.1 drops the query method; it
+lands in access logs, history and `Referer`). The level is fixed when the
 socket opens, as for the `db` routes: a valid token from a browser (the
 owner or events cookie, or a viewer cookie) is `admin`, as the owner; a
 valid token from no browser is `owner`; without the token, the viewer the

@@ -1639,8 +1639,20 @@ impl DurableObject for InstanceDo {
         }
         let mut res = inst.router.clone().call(req).await.map_err(rust_err)?;
         inst.bot.take_wakes(now_ms());
+        // The subprotocol the router chose for a socket (a room's `clax`),
+        // which the handshake must name.
+        let protocol = res
+            .headers()
+            .get(axum::http::header::SEC_WEBSOCKET_PROTOCOL)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
         let out = match Self::opened(&mut res) {
-            Some((carried, att)) => self.accept(&inst, carried, att),
+            Some((carried, att)) => self.accept(&inst, carried, att).and_then(|r| {
+                if let Some(p) = &protocol {
+                    r.headers().set("Sec-WebSocket-Protocol", p)?;
+                }
+                Ok(r)
+            }),
             None => {
                 inst.settle().await;
                 Response::try_from(res)

@@ -267,6 +267,65 @@ pub fn token_matches(presented: &str, token: &str) -> bool {
     constant_time_eq(presented.as_bytes(), token.as_bytes())
 }
 
+/// Whether `path` is the one route that takes the token as `?token=`
+/// (percent-decoded): `GET /api/events`, since an `EventSource` sends no
+/// headers. The room socket does not: a WebSocket carries the token in
+/// `Sec-WebSocket-Protocol` ([`protocol_token_route`]), never in its URL.
+pub fn query_token_route(path: &str) -> bool {
+    path == "/api/events"
+}
+
+/// The subprotocol a room socket speaks (`docs/contract.md` "Room
+/// protocol"): the one the daemon echoes in `Sec-WebSocket-Protocol`.
+pub const ROOM_PROTOCOL: &str = "clax";
+
+/// The prefix of the subprotocol that carries a bearer on a WebSocket
+/// upgrade, `clax.bearer.<token>`, offered beside [`ROOM_PROTOCOL`]
+/// (`new WebSocket(url, ["clax", "clax.bearer." + token])`): a browser
+/// cannot set `Authorization` on a WebSocket, and a token in the URL lands
+/// in access logs, history and `Referer` (OAuth 2.1 drops the query
+/// method). The daemon never echoes it back.
+pub const BEARER_PROTOCOL_PREFIX: &str = "clax.bearer.";
+
+/// Whether `path` is a route that takes the token in
+/// `Sec-WebSocket-Protocol` ([`protocol_bearer`]): an artifact's room
+/// socket, `/api/artifacts/<aid>/room`.
+pub fn protocol_token_route(path: &str) -> bool {
+    matches!(
+        path.split('/').collect::<Vec<_>>().as_slice(),
+        ["", "api", "artifacts", _, "room"]
+    )
+}
+
+/// The bearer `headers` offer as a [`BEARER_PROTOCOL_PREFIX`] subprotocol
+/// in `Sec-WebSocket-Protocol` (any of its values, comma-separated), if
+/// any.
+pub fn protocol_bearer(headers: &axum::http::HeaderMap) -> Option<&str> {
+    headers
+        .get_all(axum::http::header::SEC_WEBSOCKET_PROTOCOL)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .find_map(|p| p.trim().strip_prefix(BEARER_PROTOCOL_PREFIX))
+}
+
+/// Whether `headers` offer [`ROOM_PROTOCOL`] in `Sec-WebSocket-Protocol`:
+/// the handshake's answer must then name it.
+pub fn offers_room_protocol(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get_all(axum::http::header::SEC_WEBSOCKET_PROTOCOL)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .any(|p| p.trim() == ROOM_PROTOCOL)
+}
+
+/// True when `headers` offer the daemon's token as a WebSocket subprotocol
+/// ([`protocol_bearer`], compared in constant time).
+pub fn has_protocol_token(headers: &axum::http::HeaderMap, token: &str) -> bool {
+    protocol_bearer(headers).is_some_and(|t| token_matches(t, token))
+}
+
 /// The name of the events cookie, the owner browser session's cookie on the
 /// event streams (`/api/events`, `/api/stream`; [`crate::local_trust`]):
 /// `clax_events_<port>`, the port from the request's `Host` (80 when it
@@ -741,6 +800,36 @@ pub fn is_local_host(host: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_websocket_offers_the_token_as_a_subprotocol_and_only_the_room_takes_it() {
+        use super::*;
+        use axum::http::{HeaderMap, HeaderValue, header::SEC_WEBSOCKET_PROTOCOL};
+        let with = |vals: &[&str]| {
+            let mut h = HeaderMap::new();
+            for v in vals {
+                h.append(SEC_WEBSOCKET_PROTOCOL, HeaderValue::from_str(v).unwrap());
+            }
+            h
+        };
+        let h = with(&["clax, clax.bearer.tok"]);
+        assert_eq!(protocol_bearer(&h), Some("tok"));
+        assert!(has_protocol_token(&h, "tok"));
+        assert!(!has_protocol_token(&h, "other"));
+        assert!(offers_room_protocol(&h));
+        // Across header lines, in any order.
+        let h = with(&["clax.bearer.tok", "clax"]);
+        assert!(has_protocol_token(&h, "tok") && offers_room_protocol(&h));
+        let h = with(&["clax"]);
+        assert_eq!(protocol_bearer(&h), None);
+        assert!(!offers_room_protocol(&with(&["claxx, clax.bearer.tok"])));
+        assert!(!has_protocol_token(&HeaderMap::new(), ""));
+        assert!(protocol_token_route("/api/artifacts/7q3k9mzx2b4t/room"));
+        assert!(!protocol_token_route("/api/events"));
+        assert!(!protocol_token_route("/api/artifacts/7q3k9mzx2b4t/live"));
+        assert!(query_token_route("/api/events"));
+        assert!(!query_token_route("/api/artifacts/7q3k9mzx2b4t/room"));
+    }
 
     #[test]
     fn the_events_cookie_is_named_for_the_port() {
