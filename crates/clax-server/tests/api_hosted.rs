@@ -5698,6 +5698,42 @@ async fn a_person_approves_a_machines_device_sign_in_and_it_gets_their_agent_tok
 }
 
 #[tokio::test]
+async fn a_device_sign_ins_agent_token_expires_after_30_days() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let sam = site.person(&owner, "Sam").await;
+    let v = site.start_device("sams-laptop").await;
+    let (dc, uc) = (
+        v["device_code"].as_str().unwrap().to_string(),
+        v["user_code"].as_str().unwrap().to_string(),
+    );
+    let (s, v) = site
+        .post(&sam, &format!("/api/hosted/device/{uc}/approve"), json!({}))
+        .await;
+    assert_eq!(s, 200, "{v}");
+    site.clock.advance(5);
+    let (s, v) = site.poll_device(&dc).await;
+    assert_eq!(s, 200, "{v}");
+    let ttl = 30 * 24 * 3600;
+    assert_eq!(v["expires_in"].as_i64(), Some(ttl), "{v}");
+    assert!(v["expires_at"].as_str().is_some(), "{v}");
+    let token = v["token"].as_str().unwrap().to_string();
+    let artifacts = || {
+        site.ts
+            .client
+            .get(site.url("/api/artifacts"))
+            .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+            .bearer_auth(&token)
+            .send()
+    };
+    assert_eq!(artifacts().await.unwrap().status(), 200);
+    site.clock.advance(ttl - 1);
+    assert_eq!(artifacts().await.unwrap().status(), 200, "a second before");
+    site.clock.advance(1);
+    assert_eq!(artifacts().await.unwrap().status(), 401, "expired");
+}
+
+#[tokio::test]
 async fn a_device_sign_in_is_refused_when_denied_expired_or_unknown() {
     let site = Site::new().await;
     let owner = site.owner().await;

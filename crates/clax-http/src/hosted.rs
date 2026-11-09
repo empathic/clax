@@ -126,6 +126,10 @@ pub struct Hosted {
     pub github: Option<crate::github::GitHub>,
     /// Each GitHub member's caps.
     pub member_caps: clax_store::github::MemberCaps,
+    /// How long an agent token lasts from its issue, in seconds
+    /// ([`Hosted::with_agent_token_ttl_days`]; the store's
+    /// [`clax_store::hosted::AGENT_TOKEN_TTL_SECS`] by default).
+    pub agent_token_ttl_secs: i64,
     /// Whether pages may be listed in the public gallery
     /// ([`Hosted::with_public_gallery`]); off, nothing is listed and no
     /// one may list a page.
@@ -404,6 +408,7 @@ impl Hosted {
             retired_content: None,
             github: None,
             member_caps: Default::default(),
+            agent_token_ttl_secs: clax_store::hosted::AGENT_TOKEN_TTL_SECS,
             public_gallery: false,
             legal: None,
             sites: None,
@@ -445,6 +450,17 @@ impl Hosted {
         Hosted {
             github,
             member_caps: clax_store::github::MemberCaps { max_artifacts },
+            ..self
+        }
+    }
+
+    /// This hosted mode issuing agent tokens that last `days` days
+    /// (`[hosted] agent_token_ttl_days`).
+    pub fn with_agent_token_ttl_days(self, days: u64) -> Hosted {
+        Hosted {
+            agent_token_ttl_secs: i64::try_from(days)
+                .unwrap_or(i64::MAX / 86_400)
+                .saturating_mul(86_400),
             ..self
         }
     }
@@ -528,6 +544,7 @@ impl Hosted {
         Hosted::new(&c.public_origin, secret.as_deref()).map(|h| {
             h.behind_cloudflare(c.behind_cloudflare)
                 .with_github(github, c.member_max_artifacts)
+                .with_agent_token_ttl_days(c.agent_token_ttl_days)
                 .with_public_gallery(c.public_gallery)
                 .with_legal(c.legal.clone())
                 .with_sites(

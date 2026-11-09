@@ -1352,9 +1352,11 @@ struct DeviceTokenBody {
 }
 
 /// `POST /api/hosted/device/token {device_code}` (the machine) → once the
-/// sign-in is approved, `{token, token_type, grant_id, person: {public_id,
-/// display_name}, origin, mcp_url}`, this once: an agent token of the
-/// person who approved it. Before that, 400 `authorization_pending`; 400
+/// sign-in is approved, `{token, token_type, expires_at, expires_in,
+/// grant_id, person: {public_id, display_name}, origin, mcp_url}`, this
+/// once: an agent token of the person who approved it, good until
+/// `expires_at` (`[hosted] agent_token_ttl_days`, 30 by default; the
+/// machine signs in again after). Before that, 400 `authorization_pending`; 400
 /// `slow_down` for a poll sooner than `interval` after the last; 400
 /// `access_denied` once denied (or the token revoked before this poll);
 /// 400 `expired_token` for an unknown, expired or spent code.
@@ -1389,6 +1391,8 @@ async fn device_token(
         ),
         DevicePoll::Issued {
             token,
+            expires_at,
+            expires_in,
             grant_id,
             person,
             person_name,
@@ -1396,6 +1400,8 @@ async fn device_token(
             Json(json!({
                 "token": token.expose(),
                 "token_type": "Bearer",
+                "expires_at": expires_at,
+                "expires_in": expires_in,
                 "grant_id": grant_id,
                 "person": {"public_id": person, "display_name": person_name},
                 "origin": h.origin,

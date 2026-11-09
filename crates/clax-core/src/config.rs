@@ -1220,6 +1220,17 @@ impl HomeConfig {
         if setup_secret_env.trim().is_empty() {
             return Err(bad("setup_secret_env", "setup_secret_env is empty".into()));
         }
+        let agent_token_ttl_days = t
+            .agent_token_ttl_days
+            .unwrap_or(DEFAULT_AGENT_TOKEN_TTL_DAYS);
+        if !(1..=MAX_AGENT_TOKEN_TTL_DAYS).contains(&agent_token_ttl_days) {
+            return Err(bad(
+                "agent_token_ttl_days",
+                format!(
+                    "agent_token_ttl_days must be 1 to {MAX_AGENT_TOKEN_TTL_DAYS}, not {agent_token_ttl_days}"
+                ),
+            ));
+        }
         let github = t
             .github_client_id
             .filter(|c| !c.trim().is_empty())
@@ -1273,6 +1284,7 @@ impl HomeConfig {
             behind_cloudflare: t.behind_cloudflare.unwrap_or(false),
             github,
             member_max_artifacts: t.member_max_artifacts.unwrap_or(DEFAULT_MAX_ARTIFACTS),
+            agent_token_ttl_days,
             public_gallery: t.public_gallery.unwrap_or(false),
             legal,
             site_domain,
@@ -1820,6 +1832,13 @@ impl Default for BotScript {
 /// (`[hosted] member_max_artifacts`; the store's `MemberCaps`).
 pub const DEFAULT_MAX_ARTIFACTS: u64 = 200;
 
+/// How many days an agent token lasts when `[hosted]
+/// agent_token_ttl_days` is absent.
+pub const DEFAULT_AGENT_TOKEN_TTL_DAYS: u64 = 30;
+
+/// The most days `[hosted] agent_token_ttl_days` may give an agent token.
+pub const MAX_AGENT_TOKEN_TTL_DAYS: u64 = 365;
+
 /// `[hosted]`: hosted mode, in which the daemon serves the public internet
 /// at `public_origin` (behind a proxy that terminates TLS and keeps the
 /// `Host` header): people sign in through the browser with session cookies,
@@ -1843,6 +1862,11 @@ pub struct HostedConfig {
     /// (`member_max_artifacts`, [`DEFAULT_MAX_ARTIFACTS`]
     /// when absent).
     pub member_max_artifacts: u64,
+    /// How many days an agent token (`cxa_…`, minted on People or by a
+    /// device sign-in) lasts from its issue (`agent_token_ttl_days`, 1 to
+    /// [`MAX_AGENT_TOKEN_TTL_DAYS`], [`DEFAULT_AGENT_TOKEN_TTL_DAYS`] when
+    /// absent). Tokens already issued keep their expiry.
+    pub agent_token_ttl_days: u64,
     /// Whether pages may be listed in the public gallery that signed-out
     /// visitors see (`public_gallery`, false when absent).
     pub public_gallery: bool,
@@ -2090,6 +2114,7 @@ struct HostedTable {
     github_api_base: Option<String>,
     github_oauth_base: Option<String>,
     member_max_artifacts: Option<u64>,
+    agent_token_ttl_days: Option<u64>,
     public_gallery: Option<bool>,
     legal: Option<String>,
     terms_url: Option<String>,
@@ -2919,6 +2944,29 @@ mod tests {
             assert!(m.contains("config.toml") && m.contains("[bot]"), "{t}: {m}");
             assert_eq!(c.serve_port().unwrap(), Some(7481), "{t}");
             assert!(c.sample().is_ok(), "{t}");
+        }
+    }
+
+    #[test]
+    fn hosted_agent_token_ttl_is_30_days_unless_set_within_a_year() {
+        let ttl = |extra: &str| {
+            with(&format!(
+                "[hosted]\npublic_origin = \"https://clax.example\"\n{extra}"
+            ))
+            .hosted()
+            .map(|h| h.unwrap().agent_token_ttl_days)
+        };
+        assert_eq!(ttl("").unwrap(), DEFAULT_AGENT_TOKEN_TTL_DAYS);
+        assert_eq!(DEFAULT_AGENT_TOKEN_TTL_DAYS, 30);
+        assert_eq!(ttl("agent_token_ttl_days = 7\n").unwrap(), 7);
+        assert_eq!(ttl("agent_token_ttl_days = 365\n").unwrap(), 365);
+        for bad in [
+            "agent_token_ttl_days = 0\n",
+            "agent_token_ttl_days = 366\n",
+            "agent_token_ttl_days = \"30\"\n",
+        ] {
+            let e = ttl(bad).unwrap_err().to_string();
+            assert!(e.contains("hosted"), "{bad}: {e}");
         }
     }
 

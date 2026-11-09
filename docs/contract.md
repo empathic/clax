@@ -1148,8 +1148,11 @@ the same routes):
   `browser_required` with `Authorization`, 403 `forbidden_origin` without
   the public origin's `Origin`. Rate-limited as sign-in codes are.
 - `POST /api/hosted/device/token {device_code}` (the machine) → once
-  approved, `{token, token_type: "Bearer", grant_id, person: {public_id,
-  display_name}, origin, mcp_url}`, this once. Before that 400
+  approved, `{token, token_type: "Bearer", expires_at, expires_in,
+  grant_id, person: {public_id, display_name}, origin, mcp_url}`, this
+  once. The token lasts `expires_in` seconds (`[hosted]
+  agent_token_ttl_days`, 30 days by default), after which it is refused as
+  a revoked one is and the machine signs in again. Before that 400
   `authorization_pending`; 400 `slow_down` for a poll sooner than `interval`
   after the last; 400 `access_denied` once denied (or the token revoked
   before the poll); 400 `expired_token` for a code unknown, expired or

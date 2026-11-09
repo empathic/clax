@@ -56,6 +56,11 @@ pub const SESSION_PREFIX: &str = "cxs_";
 pub const SIGNIN_PREFIX: &str = "cxl_";
 /// Prefix of an agent token (a bearer grant's access token).
 pub const AGENT_TOKEN_PREFIX: &str = "cxa_";
+/// How long an agent token lasts from its issue unless the daemon's
+/// configuration says otherwise (`[hosted] agent_token_ttl_days`,
+/// [`Store::set_agent_token_ttl`]): 30 days. A token past it is refused
+/// as a revoked one is; the person signs the machine in again.
+pub const AGENT_TOKEN_TTL_SECS: i64 = 30 * 24 * 3600;
 /// Longest agent token label, in characters.
 pub const MAX_LABEL_CHARS: usize = super::people::MAX_CLIENT_NAME_CHARS;
 
@@ -757,7 +762,8 @@ impl Store {
     /// `grant.token` under `ctx`: a bearer grant, approved at once, whose
     /// rights are the person's. Its key and its manage and continuation
     /// tokens are random and handed to no one, so nothing signs for it;
-    /// it lapses unused for 30 days, as every grant does.
+    /// it lapses unused for 30 days, as every grant does, and its token
+    /// expires [`Store::agent_token_ttl`] after its issue however used.
     ///
     /// # Errors
     /// `forbidden` for a guest or anyone else not a member; `invalid_args`
@@ -773,7 +779,7 @@ impl Store {
         let label = agent_label(label)?;
         self.with_tx(|tx| {
             let grant = self.bearer_grant_in(tx, ctx, viewer_id, &label, peer_ip)?;
-            let token = self.issue_bearer_token_in(tx, ctx, &grant.id)?;
+            let (token, _, _) = self.issue_bearer_token_in(tx, ctx, &grant.id)?;
             Ok((AgentToken::of(&grant), token))
         })
     }
@@ -829,23 +835,42 @@ impl Store {
         Ok(grant)
     }
 
-    /// Issues bearer grant `gid`'s agent token in `tx`, recording
-    /// `grant.token` under `ctx`.
+    /// Lets every agent token issued from now on last `secs` seconds
+    /// (at least one); tokens already issued keep their expiry.
+    pub fn set_agent_token_ttl(&self, secs: i64) {
+        self.agent_token_ttl_secs
+            .store(secs.max(1), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// How long an agent token issued now lasts, in seconds
+    /// ([`AGENT_TOKEN_TTL_SECS`] unless [`Store::set_agent_token_ttl`]).
+    pub fn agent_token_ttl(&self) -> i64 {
+        self.agent_token_ttl_secs
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Issues bearer grant `gid`'s agent token in `tx`, good for
+    /// [`Store::agent_token_ttl`] seconds (the third value) until the
+    /// second (a store time), recording `grant.token` under `ctx`.
     pub(super) fn issue_bearer_token_in(
         &self,
         tx: &Transaction<'_>,
         ctx: &AuditCtx,
         gid: &str,
-    ) -> Result<Secret> {
+    ) -> Result<(Secret, String, i64)> {
         let token = secret::token(AGENT_TOKEN_PREFIX);
-        let now = self.now();
+        let ttl = self.agent_token_ttl();
+        let at = self.now_utc();
+        let now = clax_core::time::stamp(at);
+        let expires_at = clax_core::time::stamp(at + Duration::seconds(ttl));
         tx.execute(
-            "INSERT INTO grant_tokens (sha256, grant_id, created_at) VALUES (?1, ?2, ?3)",
-            params![token.sha256_hex(), gid, now],
+            "INSERT INTO grant_tokens (sha256, grant_id, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![token.sha256_hex(), gid, now, expires_at],
         )?;
         let rec = grant_record(AuditKind::GrantToken, &now, gid).with("op", "issue");
         self.record_audit(tx, ctx, rec)?;
-        Ok(token)
+        Ok((token, expires_at, ttl))
     }
 
     /// Member `viewer_id`'s agent tokens, newest first, live and ended.
@@ -882,19 +907,22 @@ impl Store {
     }
 
     /// The grant a bearer agent token `token` holds, while the token and
-    /// its grant are live: what the remote MCP endpoint authenticates by,
-    /// before [`Store::grant_caller`] gives its rights.
+    /// its grant are live and the token has not expired (its `expires_at`,
+    /// [`Store::issue_bearer_token_in`]; one with none is expired): what
+    /// the remote MCP endpoint authenticates by, before
+    /// [`Store::grant_caller`] gives its rights.
     pub fn bearer_grant(&self, token: &str) -> Result<Option<String>> {
         if !token.starts_with(AGENT_TOKEN_PREFIX) {
             return Ok(None);
         }
         let hash = sha256_hex(token);
+        let now = self.now();
         self.with_read(|c| {
             Ok(c.query_row(
                 "SELECT g.id FROM grant_tokens t JOIN grants g ON g.id = t.grant_id
                  WHERE t.sha256 = ?1 AND t.revoked_at IS NULL AND g.status = 'approved'
-                   AND g.bearer = 1",
-                params![hash],
+                   AND g.bearer = 1 AND t.expires_at > ?2",
+                params![hash, now],
                 |r| r.get(0),
             )
             .optional()?)
@@ -1320,6 +1348,45 @@ mod tests {
         for free in ["Adam", "Sam", "Lee", "Samuel Leeds"] {
             assert!(st.create_guest(&AuditCtx::DAEMON, free).is_ok(), "{free}");
         }
+    }
+
+    #[test]
+    fn an_agent_token_expires_after_its_ttl_and_a_new_ttl_holds_for_new_tokens() {
+        let (_d, st, clock) = store();
+        let ada = st.hosted_setup(&AuditCtx::DAEMON, "Ada").unwrap().who.viewer;
+        let (t, token) = st
+            .mint_agent_token(&AuditCtx::DAEMON, &ada.id, "laptop", "203.0.113.9")
+            .unwrap();
+        assert_eq!(st.agent_token_ttl(), AGENT_TOKEN_TTL_SECS);
+        clock.advance(AGENT_TOKEN_TTL_SECS - 1);
+        assert_eq!(
+            st.bearer_grant(token.expose()).unwrap().as_deref(),
+            Some(t.id.as_str()),
+            "live a second before its expiry"
+        );
+        clock.advance(1);
+        assert_eq!(st.bearer_grant(token.expose()).unwrap(), None, "expired");
+        // A shorter TTL holds for tokens issued after it is set.
+        st.set_agent_token_ttl(3600);
+        let (_, short) = st
+            .mint_agent_token(&AuditCtx::DAEMON, &ada.id, "phone", "203.0.113.9")
+            .unwrap();
+        assert!(st.bearer_grant(short.expose()).unwrap().is_some());
+        clock.advance(3600);
+        assert_eq!(st.bearer_grant(short.expose()).unwrap(), None);
+        // A token with no expiry (none the store wrote) is refused.
+        let (_, bare) = st
+            .mint_agent_token(&AuditCtx::DAEMON, &ada.id, "bare", "203.0.113.9")
+            .unwrap();
+        st.with_tx(|tx| {
+            tx.execute(
+                "UPDATE grant_tokens SET expires_at = NULL WHERE sha256 = ?1",
+                params![sha256_hex(bare.expose())],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(st.bearer_grant(bare.expose()).unwrap(), None);
     }
 
     #[test]

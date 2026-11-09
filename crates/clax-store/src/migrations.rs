@@ -2137,6 +2137,16 @@ pub const MIGRATIONS: &[&str] = &[
         responders_json TEXT NOT NULL CHECK (json_valid(responders_json) AND json_type(responders_json) = 'array'),
         updated_at TEXT NOT NULL
     ) WITHOUT ROWID;",
+    // 67: when an agent token expires (`grant_tokens.expires_at`, a store
+    // time; `crate::hosted::AGENT_TOKEN_TTL_SECS` after its issue). A live
+    // agent token issued before it gets 30 days from the migration, so no
+    // machine is signed out at once; other grants' tokens keep none (only
+    // a bearer grant's is checked against it). Numbered after the
+    // responders lineage's 66; renumbered when it lands past other lanes'.
+    "ALTER TABLE grant_tokens ADD COLUMN expires_at TEXT;
+    UPDATE grant_tokens SET expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+30 days')
+     WHERE revoked_at IS NULL
+       AND grant_id IN (SELECT id FROM grants WHERE bearer = 1);",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -2210,8 +2220,12 @@ pub const REPORTER_VIEW_MIGRATION: u32 = TAILSCALE_LOGIN_MIGRATION + 1;
 pub const INSTALLS_MIGRATION: u32 = REPORTER_VIEW_MIGRATION + 1;
 
 /// The migration that adds who answers a queue (`queue_responders`), as
-/// a schema version, and this build's last.
+/// a schema version.
 pub const RESPONDERS_MIGRATION: u32 = INSTALLS_MIGRATION + 1;
+
+/// The migration that adds `grant_tokens.expires_at` (an agent token's
+/// expiry), as a schema version, and this build's last.
+pub const AGENT_TOKEN_EXPIRY_MIGRATION: u32 = RESPONDERS_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -2371,11 +2385,11 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 
 /// What each migration after the app's leaves in the schema, in order:
 /// ClaxBot's ([`CLAXBOT_MIGRATION`]), then [`LEGACY_PATHS_MIGRATION`] to
-/// [`RESPONDERS_MIGRATION`]. They follow the app's in every
+/// [`AGENT_TOKEN_EXPIRY_MIGRATION`]. They follow the app's in every
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 17] = [
+const MARKS_AFTER_APP: [Mark<'static>; 18] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
@@ -2393,6 +2407,7 @@ const MARKS_AFTER_APP: [Mark<'static>; 17] = [
     Mark::Table("queue_reporters"),
     Mark::Table("installs"),
     Mark::Table("queue_responders"),
+    Mark::Column("grant_tokens", "expires_at"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -5443,7 +5458,12 @@ mod tests {
         assert!(MIGRATIONS[first + 23].contains("CREATE TABLE installs ("));
         assert_eq!(super::RESPONDERS_MIGRATION, super::INSTALLS_MIGRATION + 1);
         assert!(MIGRATIONS[first + 24].contains("CREATE TABLE queue_responders ("));
-        assert_eq!(MIGRATIONS.len() as u32, super::RESPONDERS_MIGRATION);
+        assert_eq!(
+            super::AGENT_TOKEN_EXPIRY_MIGRATION,
+            super::RESPONDERS_MIGRATION + 1
+        );
+        assert!(MIGRATIONS[first + 25].contains("ADD COLUMN expires_at"));
+        assert_eq!(MIGRATIONS.len() as u32, super::AGENT_TOKEN_EXPIRY_MIGRATION);
     }
 
     #[test]
@@ -5596,7 +5616,8 @@ mod tests {
         assert_eq!(super::REPORTER_VIEW_MIGRATION, 64);
         assert_eq!(super::INSTALLS_MIGRATION, 65);
         assert_eq!(super::RESPONDERS_MIGRATION, 66);
-        assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
+        assert_eq!(super::AGENT_TOKEN_EXPIRY_MIGRATION, 67);
+        assert_eq!(user_version(&c), super::AGENT_TOKEN_EXPIRY_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
@@ -6376,7 +6397,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
+        assert_eq!(user_version(&c), super::AGENT_TOKEN_EXPIRY_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -6880,7 +6901,7 @@ mod tests {
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
+            assert_eq!(user_version(&c), super::AGENT_TOKEN_EXPIRY_MIGRATION);
             (columns_of(&c), every_row(&c))
         };
 
@@ -6888,8 +6909,8 @@ mod tests {
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(
             user_version(&c),
-            super::RESPONDERS_MIGRATION + 1,
-            "ClaxBot's 50 and the migrations 51 to 66 after it are one later now"
+            super::AGENT_TOKEN_EXPIRY_MIGRATION + 1,
+            "ClaxBot's 50 and the migrations 51 to 67 after it are one later now"
         );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
@@ -6908,7 +6929,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), super::RESPONDERS_MIGRATION);
+        assert_eq!(user_version(&copied), super::AGENT_TOKEN_EXPIRY_MIGRATION);
         assert_eq!(
             every_row(&copied),
             before,
@@ -6922,7 +6943,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (super::RESPONDERS_MIGRATION + 1, schema, rows)
+            (super::AGENT_TOKEN_EXPIRY_MIGRATION + 1, schema, rows)
         );
     }
 
@@ -7196,7 +7217,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, super::RESPONDERS_MIGRATION);
+        assert_eq!(last, super::AGENT_TOKEN_EXPIRY_MIGRATION);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));
@@ -7569,7 +7590,7 @@ mod tests {
         drop(st);
         {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
+            assert_eq!(user_version(&c), super::AGENT_TOKEN_EXPIRY_MIGRATION);
             assert_eq!(table_count(&c, "briefs"), 1);
         }
         // Another wip database already holding that viewer and its login.
@@ -7605,7 +7626,7 @@ mod tests {
         );
         drop(st);
         let c = Connection::open(home2.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
+        assert_eq!(user_version(&c), super::AGENT_TOKEN_EXPIRY_MIGRATION);
         assert_eq!(table_count(&c, "briefs"), 1, "main's 40 ran");
         assert_eq!(table_count(&c, "tags"), 1);
     }
@@ -7648,7 +7669,7 @@ mod tests {
         );
         drop(st);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
+        assert_eq!(user_version(&c), super::AGENT_TOKEN_EXPIRY_MIGRATION);
         assert!(super::has_column(&c, "device_codes", "return_to").unwrap());
         assert_eq!(table_count(&c, "queues"), 1, "main's 59 ran");
     }
@@ -7691,7 +7712,7 @@ mod tests {
         );
         drop(st);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::RESPONDERS_MIGRATION);
+        assert_eq!(user_version(&c), super::AGENT_TOKEN_EXPIRY_MIGRATION);
         for table in [
             "owner_browser_sessions",
             "report_fixes",

@@ -563,6 +563,7 @@ impl AppState {
             hosted: {
                 if let Some(h) = &p.hosted {
                     p.store.set_member_caps(Some(h.member_caps));
+                    p.store.set_agent_token_ttl(h.agent_token_ttl_secs);
                 }
                 p.hosted
             },

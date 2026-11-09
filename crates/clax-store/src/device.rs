@@ -79,9 +79,13 @@ pub enum DevicePoll {
     Denied,
     /// Unknown, expired, or its token was issued already.
     Expired,
-    /// Approved: the agent token, issued this once, and whose it is.
+    /// Approved: the agent token, issued this once, when it expires (a
+    /// store time, `expires_in` seconds from now: [`Store::agent_token_ttl`]),
+    /// and whose it is.
     Issued {
         token: Secret,
+        expires_at: String,
+        expires_in: i64,
         grant_id: String,
         person: String,
         person_name: Option<String>,
@@ -364,9 +368,12 @@ impl Store {
                         params![viewer],
                         |r| r.get(0),
                     )?;
-                    let token = self.issue_bearer_token_in(tx, ctx, &gid)?;
+                    let (token, expires_at, expires_in) =
+                        self.issue_bearer_token_in(tx, ctx, &gid)?;
                     Ok(DevicePoll::Issued {
                         token,
+                        expires_at,
+                        expires_in,
                         grant_id: gid,
                         person,
                         person_name,
@@ -490,6 +497,8 @@ mod tests {
         clock.advance(DEVICE_INTERVAL_SECS);
         let DevicePoll::Issued {
             token,
+            expires_at,
+            expires_in,
             grant_id,
             person_name,
             ..
@@ -501,7 +510,15 @@ mod tests {
         };
         assert_eq!(grant_id, t.id);
         assert_eq!(person_name.as_deref(), Some("Ada"));
-        assert_eq!(st.bearer_grant(token.expose()).unwrap(), Some(t.id));
+        // 30 days from the poll that issued it.
+        assert_eq!(expires_in, crate::hosted::AGENT_TOKEN_TTL_SECS);
+        assert_eq!(
+            expires_at,
+            clax_core::time::stamp(
+                st.now_utc() + Duration::seconds(crate::hosted::AGENT_TOKEN_TTL_SECS)
+            )
+        );
+        assert_eq!(st.bearer_grant(token.expose()).unwrap(), Some(t.id.clone()));
         clock.advance(DEVICE_INTERVAL_SECS);
         assert!(matches!(
             st.poll_device(&AuditCtx::DAEMON, start.device_code.expose())

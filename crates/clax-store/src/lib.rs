@@ -262,6 +262,9 @@ pub struct Store {
     resumed_at: Mutex<String>,
     /// Each GitHub member's caps ([`Store::set_member_caps`]).
     member_caps: RwLock<Option<github::MemberCaps>>,
+    /// How long an agent token lasts from its issue, in seconds
+    /// ([`Store::set_agent_token_ttl`]).
+    agent_token_ttl_secs: std::sync::atomic::AtomicI64,
     /// The artifacts whose comments an outside route carries
     /// ([`Store::set_routed_artifacts`]): sent to no agent session.
     routed: RwLock<clax_core::config::RoutedArtifacts>,
@@ -454,6 +457,9 @@ impl Store {
             pushed_listener: RwLock::new(None),
             resumed_at: Mutex::new(stamp(clock.now())),
             member_caps: RwLock::new(None),
+            agent_token_ttl_secs: std::sync::atomic::AtomicI64::new(
+                hosted::AGENT_TOKEN_TTL_SECS,
+            ),
             routed: RwLock::new(clax_core::config::RoutedArtifacts::Listed(Vec::new())),
             apps: RwLock::default(),
             bot_overrides: RwLock::default(),
