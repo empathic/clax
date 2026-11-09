@@ -829,11 +829,30 @@ async function smoke(c, o) {
       const v = await until(queue ? "the pushed event's version" : "the pushed version", async () => ((await version()) >= 3 ? await version() : false), limit);
       return { detail: `version ${v}${queue ? ", through the queue's pushed event" : ", recorded as the stand-in took the push"}` };
     } catch (e) {
-      // Tell a lost event from a reconcile that fails.
-      const rec = await c.diag(`reconcile?artifact=${aid}`, "POST").catch((x) => ({ json: { error: x.message } }));
+      // Tell a lost event from a reconcile that fails: the reconcile asked
+      // directly (diagnostics, with the owner token), and the subscription
+      // and the queue as Cloudflare holds them.
+      let ran = true;
+      const rec = await c.diag(`reconcile?artifact=${aid}`, "POST").catch((x) => {
+        ran = false;
+        return { json: { error: x.message } };
+      });
       const after = await version().catch(() => "?");
-      throw new Error(`${e.message}; a direct reconcile answered ${short(rec.json)} and the artifact is then at version ${after}` +
-        (after >= 3 ? " (the reconcile works: the event never arrived; is the repository subscribed?)" : " (the reconcile itself does not record the push)"));
+      const why = !ran ? " (no reconcile ran)"
+        : after >= 3 ? " (the reconcile works: the event never arrived; is the repository subscribed?)"
+        : " (the reconcile itself does not record the push)";
+      let held = "";
+      if (queue && subscription) {
+        // This step's `queue` says whether there is one; its name is o.queue.
+        const queueName = o.queue ?? "clax-artifacts-events";
+        const wr = join(HERE, "node_modules/.bin/wrangler");
+        const env = { ...process.env, WRANGLER_SEND_METRICS: "false", FORCE_COLOR: "0", ...(o.account ? { CLOUDFLARE_ACCOUNT_ID: o.account } : {}) };
+        const sub = await run(wr, ["queues", "subscription", "get", queueName, "--id", subscription, "--json"], { cwd: HERE, env });
+        const info = await run(wr, ["queues", "info", queueName], { cwd: HERE, env });
+        held = `; the subscription as Cloudflare holds it: ${short((sub.out || sub.err).trim().replace(/\s+/g, " "), 600)}` +
+          `; the queue: ${short((info.out || info.err).trim().replace(/\s+/g, " "), 400)}`;
+      }
+      throw new Error(`${e.message}; a direct reconcile answered ${short(rec.json)} and the artifact is then at version ${after}${why}${held}`);
     }
   }, ["git push"]);
 
