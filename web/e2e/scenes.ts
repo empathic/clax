@@ -202,7 +202,7 @@ export const SCENES: Scene[] = [
   // version button is hidden, the more menu's Versions item opens it as a sheet.
   { name: "versions", path: () => "/", prepare: async (page, s) => {
     await changelog(page, s);
-    const button = page.getByRole("button", { name: /^Version 2 of 2/ });
+    const button = page.getByRole("button", { name: /^Latest, version 2\b/ });
     if (await button.isVisible()) await button.click();
     else {
       await page.getByRole("button", { name: "More", exact: true }).click();

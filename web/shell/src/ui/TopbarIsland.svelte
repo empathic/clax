@@ -2,10 +2,11 @@
   // The top bar island: the artifact view's controls (in the owner's browser,
   // this artifact's count of calls to Claude today, first; the roster and the
   // working summary, loaded after the first paint, which opens the people
-  // panel (its own lazy chunk, holding the viewer's name); Reload when a newer
-  // version is out; Comment, Threads, the version
-  // button with its changelog menu and a Latest link beside it on an older
-  // version, Clone where the viewer may clone the artifact with git (loaded
+  // panel (its own lazy chunk, holding the viewer's name); Reload when what
+  // the page uses changed under it; Comment, Threads, the version control
+  // (`Latest ▾`, or a split button whose main part reads `Reload for latest`
+  // once a newer version is out, or `v12 of 46` on an older version, and
+  // goes to the latest, beside the ▾ that opens its changelog menu), Clone where the viewer may clone the artifact with git (loaded
   // after the first paint; at phone width the more menu lists it), and the
   // more menu with open raw and copy link, and the theme switch), and Share
   // on a hosted Clax where the viewer may share the artifact (loaded after
@@ -69,15 +70,14 @@
   {@const off = commentsOff(s)}
   <SampleCount {ctl} />
   {#if Who}<Who {ctl} {s} open={ctl.openCount(s)} />{/if}
-  {#if (s.newer || s.declarationStale) && !s.deleted}<button class="primary reload" onclick={() => (s.newer ? ctl.reloadLatest() : ctl.reloadHere())}>Reload</button>{/if}
+  {#if s.declarationStale && !s.newer && !s.deleted}<button class="primary reload" onclick={() => ctl.reloadHere()}>Reload</button>{/if}
   <button class="comment" data-shell-control="comment" aria-pressed={s.commenting} disabled={s.deleted || !!live || !!s.spectator || off || s.showDraft !== null}
     title={live ? "Comment on the live page with the Clax extension" : s.spectator ? "Commenting is paused while you're viewing" : off ? COMMENTS_OFF : s.showDraft !== null ? "Comments go on published versions" : undefined}
     onclick={() => ctl.toggleComment()}>Comment <span class="kc" aria-hidden="true">C</span></button>
   <button class="threads hide-sm" data-shell-control="threads" aria-pressed={s.panel} onclick={() => ctl.togglePanel()}>Threads <span class="cnt">{ctl.openCount(s)}</span></button>
-  <VersionMenu {shown} {latest} live={!!live} dot={s.decided?.dot ?? false} open={s.menu === "versions"} onToggle={() => ctl.openMenu("versions")}
+  <VersionMenu {shown} {latest} newer={s.deleted ? null : s.newer} onLatest={s.deleted ? undefined : () => ctl.reloadLatest()} live={!!live} dot={s.decided?.dot ?? false} open={s.menu === "versions"} onToggle={() => ctl.openMenu("versions")}
     input={() => ({ versions: s.data.versions, latest, shown, now: new Date(), threads: s.threads, numbers: ctl.numbers(s), me: s.me?.public_id ?? null, live: !!live })}
     hrefFor={n => ctl.here(n === latest ? null : n, s)} onChoose={n => { ctl.closeMenu(); ctl.chooseVersion(n); }} />
-  {#if shown < latest && !s.newer && !s.deleted}<a class="latest hide-sm" href={ctl.here(null, s)}>Latest</a>{/if}
   {@const forkable = !!MoreMenu && (ownerShell || !!s.data.artifact.may_fork) && !live && !s.deleted}
   {#if forkable}<button class="fork hide-sm" data-shell-control="fork" disabled={forking} title={`Fork v${shown} into an artifact of your own`} onclick={() => fork(shown)}>Fork</button>{/if}
   {#if s.data.artifact.app && !s.deleted}

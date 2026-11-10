@@ -326,14 +326,16 @@ input, select { line-height: 1.2; }
 
 /* The changelog (spec §8): no band over the page. The version menu's panel
    and the Addressed group carry their own styles. */
-.version-menu { position: relative; }
-.vbtn { display: flex; align-items: baseline; gap: 5px; padding: 0 10px; height: 32px; position: relative; font: 600 14px/32px var(--font); }
-.vbtn span { font: 400 12.5px var(--font); color: var(--muted); }
+.version-menu { position: relative; display: flex; align-items: center; }
+.vbtn, .vmain { display: flex; align-items: baseline; gap: 5px; padding: 0 10px; height: 32px; position: relative; font: 600 14px/32px var(--font); }
+.vbtn span, .vmain:not(.primary) span { font: 400 12.5px var(--font); color: var(--muted); }
+/* The split button: the main part and the ▾ share a seam. */
+.version-menu.split .vmain { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.version-menu.split .vbtn { padding: 0 8px; border-top-left-radius: 0; border-bottom-left-radius: 0; }
 .vbtn .new { position: absolute; top: 5px; right: 3px; width: 7px; height: 7px; border-radius: 50%; background: var(--agent); }
 /* Pins sit over the artifact, whose colours Clax does not set: literal colours. */
 .thread-pin.addressed, .thread-pin.addressed:not(:disabled):hover { background-color: #fff; border-color: #2f6f2a; color: #1c1b19; }
 .thread-pin[data-v]::after { content: attr(data-v); position: absolute; left: 22px; top: 2px; font: 600 10.5px/14px var(--font); background: #fff; color: #1c1b19; border: 1px solid #2f6f2a; border-radius: var(--radius-xs); padding: 0 4px; white-space: nowrap; }
-.topbar a.latest { font: 600 14px var(--font); color: var(--accent-ink); padding: 0 6px; }
 /* Needs your eyes (spec §8): the rest group's swatch; the needs group's
    and the markers' styles load with them (ui/NeedsGroup.svelte, ui/Markers.svelte). */
 .rest h2 .sw { border-radius: 50%; width: 10px; height: 10px; background: var(--border-strong); }

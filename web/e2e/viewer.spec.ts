@@ -34,7 +34,7 @@ test("viewer renders content with the bridge, and offers Reload on republish", a
   await expect(page.locator(".who .sum b.l1")).toHaveText("v2 published");
   await page.getByRole("button", { name: "Reload" }).click();
   await expect((await contentFrame(page, artifact.id, 2)).locator("#h")).toHaveText("v2");
-  await page.getByRole("button", { name: /^Version 2 of 2/ }).click();
+  await page.getByRole("button", { name: /^Latest, version 2\b/ }).click();
   await page.getByRole("dialog", { name: "Versions" }).getByRole("link", { name: /^v1\b/ }).click();
   await expect(page).toHaveURL(new RegExp(`/a/${artifact.id}/v/1$`));
   await expect((await contentFrame(page, artifact.id, 1)).locator("#h")).toHaveText("v1");

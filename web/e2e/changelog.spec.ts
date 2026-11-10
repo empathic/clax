@@ -53,14 +53,14 @@ async function commentAs(page: Page, aid: string, name: string, body: string): P
     const tid = await commentAs(page, artifact.id, "alex", "Two columns");
     await publishNext(d.base, d.token, s.id, artifact.id, 1, { addresses: [tid], note: "Two columns" });
     await openArtifact(page, d.base, artifact.id, 2);
-    await page.getByRole("button", { name: /^Version 2 of 2/ }).click();
+    await page.getByRole("button", { name: /^Latest, version 2\b/ }).click();
     const dialog = page.getByRole("dialog", { name: "Versions" });
     await expect(dialog.locator(".vrow").first()).toContainText("Two columns");
     await expect(dialog.locator(".vrow").first().locator(".pc")).toHaveCount(1);
     await expect(dialog.locator("a[aria-current=page]")).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
-    await page.getByRole("button", { name: /^Version 2 of 2/ }).click();
+    await page.getByRole("button", { name: /^Latest, version 2\b/ }).click();
     await dialog.getByRole("link", { name: /^v1\b/ }).click();
     await expect(page).toHaveURL(new RegExp(`/a/${artifact.id}/v/1$`));
   });
