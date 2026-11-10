@@ -9,10 +9,12 @@
 #
 # In a checkout holding origin/main and the merge commit with its history
 # (fetch-depth 0), it:
-#   1  cherry-picks (-x) onto origin/main, in a temporary worktree, each
-#      commit of the release branch that neither main nor prod before the
-#      merge has (the "Release X.Y.Z" commit, and any fix made on the
-#      branch); a conflict stops it, naming the commit
+#   1  merges the merge commit into origin/main, in a temporary worktree,
+#      without committing: all that prod has and main lacks, which is the
+#      release branch's own commits (the "Release X.Y.Z" commit, and any
+#      fix made on the branch) and those of any earlier release merged
+#      into prod whose carry never reached main (its Deploy prod run failed
+#      first). A conflict stops it, naming the files
 #   2  checks the versions agree at X.Y.Z (scripts/check-version.sh)
 #   3  pins the plugins to the published vX.Y.Z (scripts/pin-release.sh)
 #   4  makes that tree one commit on main's tip through GitHub's Git Data
@@ -58,21 +60,30 @@ fi
 existing="$(open_pr)"
 if [ -z "$existing" ]; then
     main="$(git -C "$ROOT" rev-parse --verify origin/main)"
+    main_tree="$(git -C "$ROOT" rev-parse "$main^{tree}")"
+    # What the carry brings, for its message: the commits of prod main
+    # lacks, back to the newest commit of prod's first-parent line that
+    # merges into main changing nothing (a release already carried, or
+    # prod's beginning on main).
+    carried=""
+    while IFS= read -r p; do
+        if [ "$(git -C "$ROOT" merge-tree --write-tree "$main" "$p" 2>/dev/null)" = "$main_tree" ]; then
+            carried="$p"
+            break
+        fi
+    done < <(git -C "$ROOT" rev-list --first-parent --max-count=50 "$merge^1")
     picks=()
-    while IFS= read -r c; do picks+=("$c"); done < <(git -C "$ROOT" rev-list --reverse --no-merges "$merge^2" ^"$main" ^"$merge^1")
-    [ "${#picks[@]}" -gt 0 ] || { echo "carry-release: $merge's release branch has no commit main lacks" >&2; exit 1; }
-
+    while IFS= read -r c; do picks+=("$c"); done < <(git -C "$ROOT" rev-list --reverse --no-merges "$merge" ^"$main" ${carried:+^"$carried"})
+    [ "${#picks[@]}" -gt 0 ] || { echo "carry-release: prod's $merge has no commit main lacks" >&2; exit 1; }
     wt="$(mktemp -d)"
     trap 'git -C "$ROOT" worktree remove --force "$wt" >/dev/null 2>&1 || true; rm -rf "$wt"' EXIT
     git -C "$ROOT" worktree add --quiet --detach "$wt" "$main"
     g() { git -C "$wt" -c user.name="Clax release" -c user.email=release@invalid -c commit.gpgsign=false "$@"; }
-    for c in "${picks[@]}"; do
-        if ! g cherry-pick -x "$c" >/dev/null 2>&1; then
-            g cherry-pick --abort >/dev/null 2>&1 || true
-            echo "carry-release: $(git -C "$ROOT" log -1 --format='%h "%s"' "$c") does not apply to main's tip ${main:0:12}: carry it by hand (docs/prod.md, \"Releasing\")" >&2
-            exit 1
-        fi
-    done
+    if ! g merge --no-commit --no-ff "$merge" >/dev/null 2>&1; then
+        conflicts="$(g diff --name-only --diff-filter=U | tr '\n' ' ')"
+        echo "carry-release: prod's ${merge:0:12} does not merge into main's tip ${main:0:12}: ${conflicts:-it }conflicts: carry it by hand (docs/prod.md, \"Releasing\")" >&2
+        exit 1
+    fi
     have="$("$wt/scripts/check-version.sh" --print)"
     [ "$have" = "$version" ] || { echo "carry-release: main with the release's commits is at $have, not $version" >&2; exit 1; }
     "$wt/scripts/pin-release.sh" "v$version"
@@ -99,7 +110,7 @@ if [ -z "$existing" ]; then
     want_tree="$(g write-tree)"
     [ "$tree" = "$want_tree" ] || { echo "carry-release: GitHub made tree $tree, not the carry's $want_tree" >&2; exit 1; }
 
-    body="$(printf '%s\n\nThe release branch'"'"'s commits, cherry-picked from %s:\n\n%s\n\nand the plugins pinned to v%s (scripts/pin-release.sh).\n' \
+    body="$(printf '%s\n\nWhat prod has and main lacked, merged from %s:\n\n%s\n\nand the plugins pinned to v%s (scripts/pin-release.sh).\n' \
         "$subject" "${merge:0:12}" "$(git -C "$ROOT" log --no-walk=unsorted --format='- %h %s' "${picks[@]}")" "$version")"
     made="$(jq -n --arg m "$body" --arg t "$tree" --arg p "$main" '{message: $m, tree: $t, parents: [$p]}' \
         | gh api "repos/$GH_REPO/git/commits" --method POST --input - --jq '"\(.sha) \(.verification.verified)"')"

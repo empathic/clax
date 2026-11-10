@@ -2947,7 +2947,10 @@ page, remote, push mode, `auto`, `forked_from` or
 Every change publishes a `confirmation` event `{confirmation}` on the
 owner's `inbox` stream topic. The shell shows each open one as a card in
 the inbox and as a toast on every page of the owner's: "Confirm: <words>",
-the agent sessions live now, and **Confirm** / **Decline**.
+"Confirm only if you asked for this.", how many agent sessions are live now
+(a line that opens to name them), and **Confirm** / **Decline**. No event
+says a confirmation expired: the shell reads the open ones again as the
+earliest falls due, and a card answered 410 says "Expired" and leaves.
 
 The CLI waits on every such call the same way: it prints one line,
 `Confirm in your browser: <confirm_url>`, to stderr, long-polls `GET
@@ -2965,10 +2968,10 @@ result.
 
 #### Passkeys
 
-The owner may require Touch ID or another passkey to confirm: WebAuthn
+The owner may require a passkey to confirm: WebAuthn
 with user verification (`userVerification: "required"`), ES256 or EdDSA,
-no attestation. The first confirmation card offers it ("Require Touch ID or
-a passkey to confirm", **Set up** / **Don't ask again**, remembered), and
+no attestation. The first confirmation card offers it ("Require a passkey
+to confirm", **Set up** / **Don't ask again**, remembered), and
 Settings' Confirmations section turns it on or off and lists and removes
 the passkeys. While an agent is live, registering one is itself a
 confirmed decision: the daemon checks the registration (spending its
@@ -3005,8 +3008,9 @@ printing what it removed: the recovery from a passkey the owner cannot use
   origin, require_passkey, required, offer_dismissed, passkeys:
   [{credential_id, alg, created_at, added_by: {via, agents_live}}]}`:
   `added_by` says from which browser each was added (`a browser session`
-  or `the Clax app`) and the owner's agents live then, which the first-use
-  offer, a confirmation that requires a passkey, and Settings show.
+  or `the Clax app`) and the owner's agents live then, which Settings
+  shows. A confirmation that requires a passkey says only that it asks
+  for one.
 - `POST /api/passkeys/challenge {purpose, confirmation_id?, credential_id?}`
   (the owner's browser) → `{challenge, rp_id, user_id, timeout_ms, allow}`:
   `purpose` is `register`, `confirm` (with `confirmation_id`), `disable`

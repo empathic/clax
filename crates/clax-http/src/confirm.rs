@@ -57,8 +57,8 @@
 //! an external driver, can register one there.
 //!
 //! **Passkeys** (opt-in, [`clax_store::passkeys`]): the owner may require
-//! a passkey to confirm (Touch ID, or any passkey: WebAuthn with user
-//! verification, [`clax_core::webauthn`]). While that is on and a passkey
+//! a passkey to confirm (WebAuthn with user verification,
+//! [`clax_core::webauthn`]). While that is on and a passkey
 //! is registered ([`clax_store::Store::passkeys_required`]), approving a
 //! confirmation from a browser session also takes an assertion over a
 //! challenge bound to that confirmation ([`check_assertion`]), and a
@@ -471,7 +471,7 @@ pub struct Assertion {
 pub fn passkey_required() -> ApiError {
     ApiError::forbidden(
         "passkey_required",
-        "confirming needs your passkey (Touch ID or another): confirm in Clax's inbox",
+        "confirming needs your passkey: confirm in Clax's inbox",
     )
 }
 

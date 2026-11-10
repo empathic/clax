@@ -84,6 +84,21 @@ export function healthOf(body, want) {
   return { waiting: `the instance from before this deploy (${was}, started ${j.started_at ?? "?"}) still answers; waiting for build ${want}` };
 }
 
+/** The build `/healthz` (its body) reports when it was uploaded from
+ * `commit`: `{ build }`, or null when the body is not /healthz's JSON, names
+ * another commit or only a prefix of this one, or names no build. `commit` is
+ * the full commit a deploy would upload (CLAX_BUILD_COMMIT). */
+export function liveBuildOf(body, commit) {
+  let j = null;
+  try {
+    j = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (!j || typeof j !== "object" || !commit || !/^[0-9a-f]{40,64}$/.test(commit)) return null;
+  return j.commit === commit && typeof j.build === "string" && j.build ? { build: j.build } : null;
+}
+
 /** The commit `git ls-remote origin refs/heads/prod` printed for prod, or
  * null when it printed none (no such branch, or the call failed). */
 export function prodTipOf(lsRemote) {

@@ -252,7 +252,10 @@ natively). Under Bazel, rules_js fetches each project's packages from its
 lockfile (`@npm_web`, `@npm_pi`) and runs the project's own `package.json`
 scripts through `bazel/js/npm_script.mjs` (taken from `../changelist`): in
 a private copy of exactly the declared files, so a deleted module or
-package is really gone (`scripts/bazel-web.test.sh` checks this). Inputs
+package is really gone (`scripts/bazel-web.test.sh` checks this). The
+packages are not copied: each is linked to its directory in rules_js's
+store, which Bazel writes whole, so a run copies the project's own files
+and not the tens of thousands in its packages. Inputs
 named in `skips` (the warmed `clax`) are read where Bazel put them rather
 than copied. `scripts/pnpm-lock-check.py` fails when a `package.json` and
 its lockfile disagree. Node is the toolchain `MODULE.bazel` pins (22, as

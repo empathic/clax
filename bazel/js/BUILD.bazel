@@ -8,10 +8,14 @@ copy_to_bin(
     visibility = ["//visibility:public"],
 )
 
-# What the runner imports (scratch.mjs: where its private copy may go).
+# What the runner imports: where its private copy may go (scratch.mjs) and
+# how it is made (project-copy.mjs).
 copy_to_bin(
     name = "runner_lib",
-    srcs = ["scratch.mjs"],
+    srcs = [
+        "project-copy.mjs",
+        "scratch.mjs",
+    ],
     visibility = ["//visibility:public"],
 )
 
@@ -20,6 +24,15 @@ js_test(
     name = "scratch_test",
     data = [":runner_lib"],
     entry_point = "scratch.test.mjs",
+    node_options = ["--test"],
+    patch_node_fs = False,
+)
+
+# node --test bazel/js/project-copy.test.mjs, as a Bazel test.
+js_test(
+    name = "project_copy_test",
+    data = [":runner_lib"],
+    entry_point = "project-copy.test.mjs",
     node_options = ["--test"],
     patch_node_fs = False,
 )

@@ -83,7 +83,11 @@
 // environment's),
 // --account <ID> (else CLOUDFLARE_ACCOUNT_ID, else the login's one account),
 // --rotate-secrets, --diag (--no-diag, the default, keeps them off),
-// --no-build, --wait <s> (default 600), --out <path>, --config-only,
+// --no-build, --unless-live (upload nothing when the public host's /healthz
+// already reports this commit and the deploy has no secret to upload: the
+// record is written for the build that runs, and the health and site checks
+// are made of it, so a run again of a deploy that failed after its upload
+// restarts no instance), --wait <s> (default 600), --out <path>, --config-only,
 // --dry-run, --yes (no questions; fails on what it would ask),
 // --retired-content-origin <https origin> (the content host an instance
 // served assets on before site hosts; else the record's), --reel-url
@@ -142,7 +146,7 @@ import { homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
 import { dirname, join, resolve } from "node:path";
 import { cloudflare, expiryRule, hasRule } from "./cloudflare-api.mjs";
-import { PREVIEW_ASSET_DAYS, buildId, builtCommitOf, builtFromRefusal, checkCiOptions, checkStaging, ciSecretsRefusal, doneText, envOf, healthOf, kekPlan, partialTriggerUpdate, prodTipOf, productionGate, reelVars, secretsToMake, siteZoneOf, versionIdOf, wildcardRecordOf, wranglerError } from "./deploy-lib.mjs";
+import { PREVIEW_ASSET_DAYS, buildId, builtCommitOf, builtFromRefusal, checkCiOptions, checkStaging, ciSecretsRefusal, doneText, envOf, healthOf, kekPlan, liveBuildOf, partialTriggerUpdate, prodTipOf, productionGate, reelVars, secretsToMake, siteZoneOf, versionIdOf, wildcardRecordOf, wranglerError } from "./deploy-lib.mjs";
 import { BUILD, BUILT_FROM, HERE, baseConfig, embedsWebUi } from "./harness.mjs";
 
 const WRANGLER = join(HERE, "node_modules/.bin/wrangler");
@@ -194,6 +198,7 @@ export function parseArgs(argv) {
     else if (flag === "--diag") o.diag = true;
     else if (flag === "--no-diag") o.diag = false;
     else if (flag === "--no-build") o.build = false;
+    else if (flag === "--unless-live") o.unlessLive = true;
     else if (flag === "--config-only") o.configOnly = true;
     else if (flag === "--rotate-secrets") o.rotate = true;
     else if (flag === "--help" || flag === "-h") o.help = true;
@@ -936,6 +941,14 @@ async function main() {
   // Only prod's tip at the time of the upload goes to production: prod
   // may have moved while this deploy built.
   if (o.production && !o.dryRun) await checkProduction(o);
+  // --unless-live: what answers on the public host now, when it was
+  // uploaded from this commit and this deploy has no secret to give it.
+  let live = null;
+  if (o.unlessLive && !o.dryRun) {
+    if (secrets) info("--unless-live: this deploy uploads secrets, so it uploads the Worker too");
+    else live = liveBuildOf(await healthBody(`https://${pub}/healthz`), commit);
+  }
+  if (live) return await deployed({ r: { out: "", err: "" }, running: live.build });
   step(o.dryRun ? "wrangler deploy --dry-run" : "wrangler deploy");
   const args = ["deploy", "--config", configPath];
   let secretsFile;
@@ -974,71 +987,93 @@ async function main() {
     return;
   }
 
-  // An older record's content_origin is kept as the retired one; its
-  // version_id was an earlier deploy's.
-  const { content_origin: _old, retired_content_origin: _kept, version_id: _was, site_zone: _zone, queue: _queue, namespace: _namespace, ...kept } = record;
-  const versionId = versionIdOf(r.out + r.err);
-  const next = {
-    ...kept,
-    ...(retired ? { retired_content_origin: retired } : {}),
-    public_origin: `https://${pub}`,
-    site_domain: site,
-    ...(zone !== site ? { site_zone: zone } : {}),
-    env: o.res.env,
-    worker: o.name,
-    // What smoke-remote.mjs and teardown.mjs act on (deploy-lib.mjs envOf).
-    bucket: o.res.bucket,
-    ...(o.store === "artifacts" ? { queue: o.res.queue, namespace: o.res.namespace } : {}),
-    account,
-    store: o.store,
-    diag: o.diag,
-    deployed_at: new Date().toISOString(),
-    build,
-    // The Cloudflare Worker version this deploy made (`wrangler rollback
-    // <version ID>` returns to it), when wrangler named it.
-    ...(versionId ? { version_id: versionId } : {}),
-    ...(github.client_id ? { github_client_id: github.client_id } : {}),
-    ...(github.owner ? { owner_github: github.owner } : {}),
-    ...legal,
-    ...(secrets?.SETUP_SECRET ? { setup_secret: secrets.SETUP_SECRET, setup_done: false } : {}),
-    ...(secrets?.CLAX_TOKEN ? { owner_token: secrets.CLAX_TOKEN } : {}),
-  };
-  writeRecord(pub, next);
+  return await deployed({ r, running: build });
 
-  step(`Waiting for https://${pub}/healthz to report build ${build} (custom domains take a few minutes the first time)`);
-  let kekReported;
-  const healthy = await waitHealthy(`https://${pub}/healthz`, o.wait, (res, body) => {
-    if (!res.ok) return false;
-    const h = healthOf(body, build);
-    if (h.done) kekReported = h.kek;
-    return h.done ? true : h.waiting;
-  });
-  // ClaxBot's stored keys open only under CLAX_KEK: an instance that
-  // reports none has lost it, or was never given one.
-  const kekLost = healthy && kekReported === false;
-  if (kekLost) info(`WARNING: https://${pub}/healthz reports no CLAX_KEK: put the instance's key back from its backup (docs/prod.md, "CLAX_KEK")`);
-  if (!healthy) {
-    info(`not healthy within ${o.wait} s. Check: the zone of ${pub} is on account ${account}; ` +
-      `Workers > ${o.name} > Settings > Domains & Routes lists ${pub} and *.${site}/*; \`npx wrangler tail ${o.name}\``);
+  /** Writes the record of the build that runs on the public host (`running`:
+   * the one `wrangler deploy` just uploaded, printing `r`, or with
+   * --unless-live the one found there), then waits for it to answer and
+   * checks a site host. */
+  async function deployed({ r, running }) {
+    if (running !== build) {
+      step(`wrangler deploy: skipped (--unless-live)`);
+      info(`https://${pub}/healthz reports build ${running}, uploaded from this commit ${commit.slice(0, 12)}: nothing is uploaded and the instance is not restarted`);
+    }
+    // An older record's content_origin is kept as the retired one; its
+    // version_id was an earlier deploy's.
+    const { content_origin: _old, retired_content_origin: _kept, version_id: _was, site_zone: _zone, queue: _queue, namespace: _namespace, ...kept } = record;
+    const versionId = versionIdOf(r.out + r.err);
+    const next = {
+      ...kept,
+      ...(retired ? { retired_content_origin: retired } : {}),
+      public_origin: `https://${pub}`,
+      site_domain: site,
+      ...(zone !== site ? { site_zone: zone } : {}),
+      env: o.res.env,
+      worker: o.name,
+      // What smoke-remote.mjs and teardown.mjs act on (deploy-lib.mjs envOf).
+      bucket: o.res.bucket,
+      ...(o.store === "artifacts" ? { queue: o.res.queue, namespace: o.res.namespace } : {}),
+      account,
+      store: o.store,
+      diag: o.diag,
+      deployed_at: new Date().toISOString(),
+      build: running,
+      // The Cloudflare Worker version this deploy made (`wrangler rollback
+      // <version ID>` returns to it), when wrangler named it.
+      ...(versionId ? { version_id: versionId } : {}),
+      ...(github.client_id ? { github_client_id: github.client_id } : {}),
+      ...(github.owner ? { owner_github: github.owner } : {}),
+      ...legal,
+      ...(secrets?.SETUP_SECRET ? { setup_secret: secrets.SETUP_SECRET, setup_done: false } : {}),
+      ...(secrets?.CLAX_TOKEN ? { owner_token: secrets.CLAX_TOKEN } : {}),
+    };
+    writeRecord(pub, next);
+
+    step(`Waiting for https://${pub}/healthz to report build ${running} (custom domains take a few minutes the first time)`);
+    let kekReported;
+    const healthy = await waitHealthy(`https://${pub}/healthz`, o.wait, (res, body) => {
+      if (!res.ok) return false;
+      const h = healthOf(body, running);
+      if (h.done) kekReported = h.kek;
+      return h.done ? true : h.waiting;
+    });
+    // ClaxBot's stored keys open only under CLAX_KEK: an instance that
+    // reports none has lost it, or was never given one.
+    const kekLost = healthy && kekReported === false;
+    if (kekLost) info(`WARNING: https://${pub}/healthz reports no CLAX_KEK: put the instance's key back from its backup (docs/prod.md, "CLAX_KEK")`);
+    if (!healthy) {
+      info(`not healthy within ${o.wait} s. Check: the zone of ${pub} is on account ${account}; ` +
+        `Workers > ${o.name} > Settings > Domains & Routes lists ${pub} and *.${site}/*; \`npx wrangler tail ${o.name}\``);
+    }
+    // The wildcard's DNS record and certificate are the account's, not the
+    // deploy's: a shorter wait, then the steps that are left. A site domain
+    // below its zone (a preview's) has a record this deploy may just have
+    // made, whose certificate Total TLS issues only then: the full wait.
+    const siteOk = await checkSiteHost(site, zone, account, zone === site ? Math.min(o.wait, 120) : o.wait);
+
+    step("Done");
+    // The first-time setup text only when this deploy generated the secrets.
+    console.log(doneText({ pub, name: o.name, diag: o.diag, generated: secrets, record: recordPath(pub), smoke: `node smoke-remote.mjs --deploy ${recordPath(pub)}`, ci: o.ci }));
+    if (o.diag) diagReminder(pub);
+    // A --ci deploy passes only when the instance answers as this build on
+    // the public host, with its CLAX_KEK, and on a site host.
+    const failed = [
+      ...(healthy ? [] : [`https://${pub}/healthz did not report build ${running} within ${o.wait} s`]),
+      ...(kekLost ? [`https://${pub}/healthz reports no CLAX_KEK`] : []),
+      ...(siteOk ? [] : [`a site host of ${site} is not served`]),
+    ];
+    if (o.ci && failed.length) throw new Error(failed.join("; "));
   }
-  // The wildcard's DNS record and certificate are the account's, not the
-  // deploy's: a shorter wait, then the steps that are left. A site domain
-  // below its zone (a preview's) has a record this deploy may just have
-  // made, whose certificate Total TLS issues only then: the full wait.
-  const siteOk = await checkSiteHost(site, zone, account, zone === site ? Math.min(o.wait, 120) : o.wait);
+}
 
-  step("Done");
-  // The first-time setup text only when this deploy generated the secrets.
-  console.log(doneText({ pub, name: o.name, diag: o.diag, generated: secrets, record: recordPath(pub), smoke: `node smoke-remote.mjs --deploy ${recordPath(pub)}`, ci: o.ci }));
-  if (o.diag) diagReminder(pub);
-  // A --ci deploy passes only when the instance answers as this build on
-  // the public host, with its CLAX_KEK, and on a site host.
-  const failed = [
-    ...(healthy ? [] : [`https://${pub}/healthz did not report build ${build} within ${o.wait} s`]),
-    ...(kekLost ? [`https://${pub}/healthz reports no CLAX_KEK`] : []),
-    ...(siteOk ? [] : [`a site host of ${site} is not served`]),
-  ];
-  if (o.ci && failed.length) throw new Error(failed.join("; "));
+/** What `url` answers to one GET, or "" when it does not answer 200. */
+async function healthBody(url) {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(10_000), redirect: "manual" });
+    return res.ok ? await res.text() : "";
+  } catch {
+    return "";
+  }
 }
 
 /** The reminder a deploy with the diagnostics routes on prints. */

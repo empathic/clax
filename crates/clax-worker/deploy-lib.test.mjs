@@ -31,6 +31,7 @@ import {
   wildcardRecordOf,
   wranglerError,
 } from "./deploy-lib.mjs";
+import { liveBuildOf } from "./deploy-lib.mjs";
 
 // What `wrangler deploy` printed when the custom-domains call failed after
 // the upload (Cloudflare API code 10013); running it again succeeded.
@@ -88,6 +89,19 @@ test("the wait is done only when /healthz names the build just uploaded", () => 
   for (const kek of [true, false]) {
     assert.deepEqual(healthOf(JSON.stringify({ version: "0.6.0", build: want, kek }), want), { done: true, kek });
   }
+});
+
+test("--unless-live takes only a /healthz naming the whole commit and a build", () => {
+  const commit = "97f93b34034a55e9b04a24f7f0bd0a59d32058f6";
+  const build = "97f93b34034a-20261110T152837Z-2f4d2626";
+  assert.deepEqual(liveBuildOf(JSON.stringify({ build, commit, kek: true, version: "0.7.0" }), commit), { build });
+  // Another commit, a prefix of this one, no build, no commit to compare, not JSON.
+  assert.equal(liveBuildOf(JSON.stringify({ build, commit: "f57ec462bb3b".padEnd(40, "0") }), commit), null);
+  assert.equal(liveBuildOf(JSON.stringify({ build, commit: commit.slice(0, 12) }), commit), null);
+  assert.equal(liveBuildOf(JSON.stringify({ commit }), commit), null);
+  assert.equal(liveBuildOf(JSON.stringify({ build, commit: "" }), ""), null);
+  assert.equal(liveBuildOf("", commit), null);
+  assert.equal(liveBuildOf("<html>", commit), null);
 });
 
 test("CLAX_KEK: the Worker's is kept; one without gets the key given; only a preview's may be new", () => {

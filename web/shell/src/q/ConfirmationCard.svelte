@@ -2,27 +2,30 @@
 
 <script lang="ts">
   // A decision waiting for the owner's click (docs/contract.md, "Browser
-  // confirmations"): "Confirm: <decision in words>", the agent sessions
-  // live now (any of which could have made the call with the daemon
-  // token), and **Confirm** / **Decline**. Answered, the card says how,
-  // and keeps the keyboard's focus; a refusal (a browser session that may
-  // not confirm, one expired or answered elsewhere) shows the daemon's own
-  // words and keeps the buttons. Every word shown is text. Its styles
+  // confirmations"): "Confirm: <decision in words>", "Confirm only if you
+  // asked for this.", how many agent sessions are live now (any of which
+  // could have made the call with the daemon token; the line opens to
+  // name them), and **Confirm** / **Decline**. Answered, the card says how,
+  // and keeps the keyboard's focus. One the daemon answers has expired
+  // says "Expired", drops its buttons and leaves after a moment; any other
+  // refusal (a browser session that may not confirm) shows the daemon's
+  // own words and keeps the buttons, and one answered elsewhere or unknown
+  // has the feed read the open ones again. Every word shown is text. Its styles
   // travel with it (injected on mount): the inbox and the toasts both
   // show it. Where the owner requires a passkey, **Confirm** asks the
-  // browser for one (Touch ID, or another) first. On first use, where a
+  // browser for one first, and the card says so. On first use, where a
   // passkey can be used here and none is set up, the card offers "Require
-  // Touch ID or a passkey to confirm" (**Set up** / **Don't ask again**,
+  // a passkey to confirm" (**Set up** / **Don't ask again**,
   // remembered; Settings still sets one up). While a passkey registration
   // waits for its confirmation, the first other open card carries its line
-  // (**Confirm adding it** / **Cancel**) in place of its card. Wherever passkeys are named (the offer, a confirmation
-  // that requires one), the card lists those registered and how each was
-  // added, so one the owner did not add shows.
+  // (**Confirm adding it** / **Cancel**) in place of its card. Settings
+  // lists the passkeys registered and how each was added.
+  import { after } from "../clock";
   import { relativeTime } from "../format";
+  import { Refused } from "../held";
   import { type ConfirmationView, agentLabel, answerConfirmation, carriesSetup, confirmations, registersPasskey } from "./confirm.svelte";
   import { type PasskeySettings, assertFor, passkeySettings, putSettings, unavailableHere } from "./passkey";
-  import PasskeyList from "./PasskeyList.svelte";
-  import PasskeySetup, { ended, setup } from "./PasskeySetup.svelte";
+    import PasskeySetup, { ended, setup } from "./PasskeySetup.svelte";
 
   let { c, now, onanswered }: {
     c: ConfirmationView;
@@ -47,6 +50,9 @@
   const carries = $derived(status === "open" && carriesSetup(open, c));
   const waiting = $derived(open.some(registersPasskey));
   const notNow = () => { void putSettings({ offer_dismissed: true }).then(s => { keys = s; }, () => {}); };
+  const running = $derived(`${c.agents.length} agent${c.agents.length === 1 ? "" : "s"} running now could have asked as you`);
+  /** How long a card found expired here stays, saying so, where no one else removes it. */
+  const LEAVE_MS = 2500;
   const OUTCOME: Record<string, string> = { approved: "Confirmed", declined: "Declined", expired: "Expired: make the call again for a new one" };
 
   /** The card's element, found by query, as the inbox's other cards find theirs. */
@@ -58,13 +64,23 @@
       const s = approve ? await passkeySettings(true) : null;
       if (s) keys = s;
       const assertion = s?.required ? await assertFor({ purpose: "confirm", confirmation_id: c.id }) : undefined;
-      const after = await answerConfirmation(c.id, approve, assertion);
-      made = after.status;
-      onanswered?.(after);
+      const answered = await answerConfirmation(c.id, approve, assertion);
+      made = answered.status;
+      onanswered?.(answered);
       // A passkey registration's: the daemon added it on approval.
-      void ended(after);
+      void ended(answered);
       queueMicrotask(() => self()?.focus({ preventScroll: true }));
-    } catch (x) { err = x instanceof Error ? x.message : String(x); } finally { busy = false; }
+    } catch (x) {
+      if (x instanceof Refused && x.status === 410) {
+        // Past its time: nothing to answer. The toasts remove it (`onanswered`); elsewhere the feed does.
+        const over: ConfirmationView = { ...c, status: "expired" };
+        made = "expired";
+        if (onanswered) onanswered(over); else after(LEAVE_MS, () => confirmations().take(over));
+        return;
+      }
+      err = x instanceof Error ? x.message : String(x);
+      if (x instanceof Refused && (x.status === 409 || x.status === 404)) void confirmations().refresh();
+    } finally { busy = false; }
   }
 </script>
 
@@ -74,29 +90,30 @@
     <span class="cwhat">Confirm: {c.words}</span>
     <time datetime={c.created_at}>{relativeTime(c.created_at, now ?? new Date())}</time>
   </header>
-  {#if c.agents.length}
-    <p class="cwhy">Agents running now could have asked for this as you:</p>
-    <ul class="cagents" aria-label="Agents running now">{#each c.agents as a (a.handle)}<li>{agentLabel(a)}</li>{/each}</ul>
-  {/if}
   {#if status === "open"}
+    <p class="cwhy">Confirm only if you asked for this.</p>
+    {#if c.agents.length}
+      <details class="cagents">
+        <summary>{running}</summary>
+        <ul aria-label="Agents running now">{#each c.agents as a (a.handle)}<li>{agentLabel(a)}</li>{/each}</ul>
+      </details>
+    {/if}
     <div class="acts">
       <button type="button" class="primary" disabled={busy} onclick={() => answer(true)}>Confirm</button>
       <button type="button" class="ghost" disabled={busy} onclick={() => answer(false)}>Decline</button>
+      {#if keys?.required}<span class="ckey">Confirm asks for your passkey.</span>{/if}
     </div>
   {:else}
     <p class="outcome" role="status">{OUTCOME[status] ?? status}</p>
   {/if}
   {#if err}<p class="err" role="alert">{err}</p>{/if}
-  {#if keys?.passkeys.length && (offer || keys.required)}
-    <div class="ckeys"><span>{keys.required ? "Confirming asks for one of these passkeys:" : "Passkeys registered:"}</span><PasskeyList keys={keys.passkeys} {now} /></div>
-  {/if}
   {#if setUp}
-    <p class="coffer" role="status">Passkey added: Confirm now asks for Touch ID or your passkey.</p>
+    <p class="coffer" role="status">Passkey added: Confirm now asks for your passkey.</p>
   {:else if carries}
     <div class="coffer"><PasskeySetup onDone={s => { keys = s; }} /></div>
   {:else if offer && !waiting && !registersPasskey(c)}
     <div class="coffer">
-      <span>Require Touch ID or a passkey to confirm</span>
+      <span>Require a passkey to confirm</span>
       <PasskeySetup onDone={s => { keys = s; }} />
       <button type="button" class="ghost" onclick={notNow}>Don't ask again</button>
     </div>
@@ -114,11 +131,13 @@
     .cfcard .cwhat { min-width: 0; }
     .cfcard time { margin-left: auto; font: 400 11.5px var(--font); color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
     .cfcard .cwhy { color: var(--muted); font-size: 12.5px; }
-    .cfcard .cagents { margin: 0; padding-left: 18px; font-size: 12.5px; overflow-wrap: anywhere; }
-    .cfcard .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+    .cfcard .cagents { font-size: 12.5px; color: var(--muted); min-width: 0; }
+    .cfcard .cagents summary { cursor: pointer; width: fit-content; max-width: 100%; }
+    .cfcard .cagents ul { margin: 4px 0 0; padding-left: 18px; max-height: 12.5em; overflow-y: auto; overflow-wrap: anywhere; }
+    .cfcard .acts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
+    .cfcard .ckey { margin-left: 4px; font-size: 12.5px; color: var(--muted); }
     .cfcard .outcome { font-weight: 600; font-size: 13px; }
     .cfcard .err { color: var(--danger); font-size: 13px; }
-    .cfcard .ckeys { display: grid; gap: 4px; font-size: 12.5px; color: var(--muted); }
     .cfcard .coffer { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 12.5px; color: var(--muted); }
     @media (max-width: 520px) { .cfcard .acts button { flex: 1 1 100%; } }
   }
