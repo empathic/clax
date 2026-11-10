@@ -1597,15 +1597,24 @@ failed deploy rolls nothing back (`docs/prod.md`, "Rollback").
 ### What `just release` does
 
 `just release` runs `scripts/release.sh` as it is (no build system in
-between). Until `origin/prod`'s version is the release's, it prepares the
-pull request (steps 2-9): it switches to `release/<version>`, cut from
+between). With no version, it prints the current release, the versions
+`origin/prod` and `origin/main` are at, any release pull request open
+into `prod`, and the next patch, minor and major versions, and changes
+nothing. Given a version, the steps run in order, each once the one before
+it is done, and the dry run lists them, with Deploy prod's jobs after the
+merge and which of them run at once. Until `origin/prod`'s version is the
+release's, it prepares the pull request (steps 2-9), in a worktree of its
+own, `target/release/worktree-<version>`, leaving the checkout it is run
+from as it is (where `release/<version>` is checked out already, it works
+there instead): it checks out `release/<version>`, cut from
 `origin/prod` (or the branch as it stands, here or on origin); makes a
 signed merge of `origin/main` into it, "Merge origin/main into
 release/<version>" (`main` carries every earlier release's version and
 pin, so the version files merge cleanly); runs `scripts/bump-version.sh`,
 `just bazel-sync` until it changes nothing, and `scripts/check-version.sh`
 (the version files agree); makes the signed commit "Release <version>";
-pushes the branch; and opens its pull request into `prod` with `gh pr
+pushes the branch, then removes the worktree and the local branch it
+made; and opens its pull request into `prod` with `gh pr
 create`, with the release's checklist, printing its URL. It runs no build
 and no tests: CI runs every gate on the pull request, including the check
 that it raises the version and that its head is a `release/X.Y.Z` branch
