@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { relativeTime } from "./format";
 import { FakeWorker, workerWith } from "./test/fake-worker";
@@ -79,11 +81,28 @@ async function mountGallery() {
   return root;
 }
 
+describe("the card's version badge", () => {
+  const strip = (t: string) => t.replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = strip(readFileSync(join(__dirname, "theme.css"), "utf8"));
+  const rule = (sel: string) => [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(m => m[1].trim() === sel).map(m => m[2]).join(";");
+  it("is quiet: muted, no bigger than the meta line, and enlarged by no group or width", () => {
+    const v = rule(".card .v");
+    expect(v).toMatch(/color: var\(--muted\)/);
+    const size = Number(/font: \d+ (\d+(?:\.\d+)?)px/.exec(v)![1]);
+    const meta = Number(/font-size: (\d+(?:\.\d+)?)px/.exec(rule(".card .by"))![1]);
+    expect(size).toBeLessThanOrEqual(meta);
+    // Only the one rule sizes it: neither the phone width nor the "needs
+    // your eyes" group sets a display size on it again.
+    expect(css.match(/\.card \.v\b/g)).toHaveLength(1);
+    expect(strip(readFileSync(join(__dirname, "ui/NeedsGroup.svelte"), "utf8"))).not.toMatch(/\.v\b/);
+  });
+});
+
 describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
   beforeEach(() => { vi.resetModules(); });
   afterEach(() => { unmountGallery?.(); unmountGallery = null; vi.unstubAllGlobals(); document.body.replaceChildren(); edits = {}; });
 
-  it("renders cards led by the version numeral, with title and link, and no description", async () => {
+  it("renders cards led by the title, with the version as a badge on the meta line, the link, and no description", async () => {
     stubApi();
     const root = await mountGallery();
     const cards = root.querySelectorAll("a.card");
@@ -91,6 +110,13 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(cards[0].getAttribute("href")).toBe("/a/7q3k9mzx2b4t");
     expect(cards[0].textContent).toContain("Pinned one");
     expect(cards[0].querySelector(".v")?.textContent).toBe("v3");
+    // The title comes first; the version heads the meta line, shown as
+    // "v3" to the eye and said as "Version 3" to a screen reader.
+    expect(cards[0].querySelector(".cb2")?.firstElementChild?.tagName).toBe("H3");
+    const v = cards[0].querySelector(".by > .v")!;
+    expect(v.getAttribute("aria-hidden")).toBe("true");
+    expect(v.nextElementSibling?.className).toBe("sr");
+    expect(v.nextElementSibling?.textContent).toBe("Version 3, ");
     expect(cards[0].querySelector("p")).toBeNull();
     // One star: the Pin button's once the token is known, not the title's too.
     await waitFor(() => root.querySelector('.card-tools button[title="Unpin"]'), "the Unpin button");

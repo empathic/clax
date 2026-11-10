@@ -23,7 +23,7 @@
   :global {
     .needs h2 .sw { border-radius: 0 8px 8px 0; background: var(--you); }
     .needs .cards { grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
-    .needs .card .v { font-size: 30px; } .needs .card h3 { font-size: 17px; }
-    @media (max-width: 700px) { .needs .cards { grid-template-columns: 1fr; } .needs .card .v { font-size: 22px; } .needs .card h3 { font-size: 15px; } }
+    .needs .card h3 { font-size: 17px; }
+    @media (max-width: 700px) { .needs .cards { grid-template-columns: 1fr; } .needs .card h3 { font-size: 15px; } }
   }
 </style>

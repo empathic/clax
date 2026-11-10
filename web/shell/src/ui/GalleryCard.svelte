@@ -1,6 +1,7 @@
 <script lang="ts">
-  // One gallery card: the version numeral first, the title (starred when
-  // pinned and no Pin button shows it), who published it (a live page: its
+  // One gallery card: the title (starred when pinned and no Pin button
+  // shows it), then a meta line led by the version as a small, muted badge
+  // (shown as "v<n>", said as "Version <n>"), who published it (a live page: its
   // URL, its scheme stripped here as `publisherText` does, so the gallery's
   // entry does not load the artifact view's module) and when, the
   // markers and the rally chip, its tags (each a button that adds it to the
@@ -19,9 +20,8 @@
 <div class="card-wrap">
   <a class="card" href={`/a/${p.a.id}`} title={p.a.description ?? undefined}>
     <span class="cb2">
-      <span class="v g">v{p.a.current_version}</span>
       <h3>{p.a.title}{#if p.a.pinned && !p.token}<span class="pin" title="Pinned">{" ★"}</span>{/if}</h3>
-      <span class="by">{#if p.a.owner_live}<span class="live-dot" role="img" aria-label="session is live" title="Session is live"></span>{/if}{p.a.live ? p.a.live.page_url.replace(/^\w+:\/\//, "") : p.a.owner_name || p.a.owner_harness || p.a.brief?.by || "command line"} · {relativeTime(p.a.updated_at)}</span>
+      <span class="by"><span class="v" aria-hidden="true">v{p.a.current_version}</span><span class="sr">{`Version ${p.a.current_version}, `}</span>{#if p.a.owner_live}<span class="live-dot" role="img" aria-label="session is live" title="Session is live"></span>{/if}{p.a.live ? p.a.live.page_url.replace(/^\w+:\/\//, "") : p.a.owner_name || p.a.owner_harness || p.a.brief?.by || "command line"} · {relativeTime(p.a.updated_at)}</span>
     </span>
     {#if p.markers || rally(p.a)}
       <span class="mks">{@render p.markers?.()}{#if rally(p.a)}<span class="chip rally">rally of 10</span>{/if}</span>
