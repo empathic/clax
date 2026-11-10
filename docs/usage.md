@@ -1527,8 +1527,11 @@ staging; merging it releases it. The only local step is cutting it.
 
 ### The runbook
 
-1. **Cut** the release pull request, from any branch with a clean
-   checkout:
+1. **Cut** the release pull request, from a checkout on `main` at
+   `origin/main`'s commit (preflight refuses any other branch, a detached
+   HEAD, and a `main` behind or ahead of origin's; a run that only says
+   where a release is, its pull request open or merged, runs from
+   anywhere):
 
    ```
    just release 0.6.0                              # a dry run: the checks, and every step with whether it is done

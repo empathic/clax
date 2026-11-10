@@ -29,7 +29,8 @@
 # from stays on its branch, with its changes, untouched. (When release/X.Y.Z
 # is checked out in some worktree already, they work there, and leave it.)
 #
-#    1  preflight: gh signed in; X.Y.Z newer than every v* tag and than
+#    1  preflight: while there are steps to do, the checkout it is run from
+#       is on main, at origin/main's commit; gh signed in; X.Y.Z newer than every v* tag and than
 #       origin/prod's version; commit signing works; the tools present;
 #       release/X.Y.Z, where there is one, ahead of origin/prod only by
 #       merges of origin/main and the release commit, and its worktree
@@ -372,6 +373,23 @@ check_version() {
     fi
 }
 
+# While the release is still to prepare, the checkout the script runs from
+# is on main, at origin/main's commit:
+# the script and the scripts it runs are then the ones the release ships,
+# and nothing unpushed or behind is mistaken for what is released. Its
+# uncommitted changes and untracked files are not read.
+check_checkout() {
+    local branch head main
+    branch="$(g symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+    if [ "$branch" != main ]; then
+        problem "this checkout ($ROOT) is on ${branch:-no branch (a detached HEAD)}, not main: run just release from a checkout of main"
+        return 0
+    fi
+    head="$(g rev-parse HEAD)"
+    main="$(g rev-parse --verify --quiet origin/main || true)"
+    [ "$head" = "$main" ] || problem "this checkout's main (${head:0:12}) is not origin/main (${main:0:12}): bring it level (git pull --ff-only, or push what it adds through a pull request) and run this again"
+}
+
 # In the release branch's worktree, uncommitted changes and untracked
 # files: refused, but for the changes a step makes while it waits for its
 # commit. The checkout the script runs from is not read.
@@ -387,7 +405,7 @@ check_clean() {
     problem "uncommitted changes in $WT: $(echo "$dirty" | tr '\n' ' ')"
 }
 
-# Preparing: any branch; the release branch, where there is one, holds
+# Preparing: the release branch, where there is one, holds
 # origin/prod and adds only merges of origin/main and the release commit.
 check_prepare() {
     local i subject
@@ -427,6 +445,9 @@ preflight() {
         g fetch --quiet --no-tags origin "+refs/heads/$RB:refs/remotes/origin/$RB" || problem "cannot fetch $RB from origin"
     fi
     refresh || problem "$REFRESH_ERR"
+    # While the run has steps of its own to do: one that only says where a
+    # release is (its pull request open, or merged) runs from anywhere.
+    if [ "$PHASE" = 1 ] && [ "$PR_STATE" != OPEN ]; then check_checkout; fi
     if [ -n "${PROD_TIP:-}" ] && [ "$PHASE" = 1 ]; then
         check_clean
         check_prepare
