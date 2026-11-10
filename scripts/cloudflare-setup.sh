@@ -58,6 +58,12 @@
 # Worker built from another commit. The deploy workflow builds in a step
 # without the Cloudflare token, then deploys with --no-build.
 #
+# --unless-live (passed on to deploy.mjs) uploads nothing when the public
+# host's /healthz already reports this checkout's commit: the record is
+# written for the build that runs, and the health check, the site host
+# check and the smoke are made of it. Deploy prod passes it, so a run
+# again of a release restarts no instance.
+#
 # Every other option is passed to crates/clax-worker/deploy.mjs (see the top of
 # that file), e.g. --store memory, --account <ID>, --rotate-secrets, --yes,
 # --github-client-id <ID> --owner-github <login> (GitHub sign-in; the client

@@ -175,7 +175,7 @@ pub async fn answer(
                 let Some(a) = &b.assertion else {
                     return Err(clax_core::CoreError::invalid(
                         "passkey_required",
-                        "confirming needs your passkey (Touch ID or another)",
+                        "confirming needs your passkey",
                     ));
                 };
                 confirm::check_assertion(&st, db, &format!("confirm:{id}"), a)?;

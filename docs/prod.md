@@ -367,7 +367,9 @@ loop runs locally end to end.
 
 Deploy prod runs on every push to `prod`, which is a release pull
 request's merge, and by hand (Actions, Deploy prod, Run workflow, branch
-`prod`), which runs it again for `prod`'s tip. It builds nothing that
+`prod`), which runs it again for `prod`'s tip (with `redeploy`, uploading
+the Worker even when clax.dev already runs it: to apply a changed
+variable, say). It builds nothing that
 ships; its jobs, in order:
 
 - **candidate**, with no environment and no secret:
@@ -404,7 +406,14 @@ ships; its jobs, in order:
   names a commit with another tree than the checkout's (the candidate was
   built from the release branch's head; the checkout is the merge commit,
   with the same tree); it deploys, waits for `/healthz` to report the
-  build, checks a site host and runs the smoke. The deploy record stays on
+  build, checks a site host and runs the smoke. With `--unless-live`,
+  which the step passes unless the run was started by hand with
+  `redeploy`, a Worker whose `/healthz` already reports the merge commit
+  is not uploaded again: the record is written for the build that runs,
+  and the checks and the smoke are made of it, so a run again restarts no
+  instance. The smoke's push step warns, and does not fail, when
+  Cloudflare delivers no `pushed` event and the publish after the push
+  records it instead. The deploy record stays on
   the runner. The job summary gives the commit, the head it was built
   from, the record's build, the Cloudflare Worker version the deploy made
   (the record's `version_id`, from `wrangler deploy`'s "Current Version
@@ -414,6 +423,8 @@ ships; its jobs, in order:
   a release of the version from that tree already is kept, one from
   another tree fails the job (`scripts/release-exists-check.sh --tree`).
   The tag, made with the workflow's token, runs no workflow.
+- **fleet:** so `fleet-image.yml` is run on the tag here, and waited for,
+  unless a run of the tag passed or is running.
 - **carry**, in the `release` environment: `scripts/carry-release.sh`, as
   the release App ("The release App", above).
 - **pi:** once CI's `bazel` job passed on the carry's commit of `main`
@@ -425,7 +436,8 @@ ships; its jobs, in order:
 
 A failure fails the run and GitHub notifies the owner; nothing is rolled
 back. Each job finds what an earlier run did, so a failed run is rerun
-once its cause is fixed.
+once its cause is fixed, and finishes the release without deploying
+clax.dev again.
 
 ## CLAX_KEK
 

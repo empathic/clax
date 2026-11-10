@@ -1565,11 +1565,18 @@ staging; merging it releases it. The only local step is cutting it.
      fails.
    - **deploy**, once approved: clax.dev from the candidate Worker
      (`--no-build`, which refuses a Worker built from another tree), then
-     `/healthz`, a site host and the smoke.
+     `/healthz`, a site host and the smoke. When clax.dev already runs
+     the merge commit (a run again), nothing is uploaded
+     (`--unless-live`): only the checks and the smoke run.
    - **publish:** the tag `v<version>` on the merge commit and the GitHub
      release, from the candidate's files.
+   - **fleet:** `fleet-image.yml`, run on the tag and waited for (a tag
+     made with a workflow's token starts no workflow): the `clax-fleet`
+     image of the version, and `clax-fleet.yaml` on the release.
    - **carry:** as the release GitHub App, `scripts/carry-release.sh`
-     cherry-picks the release branch's own commits onto `main`'s tip,
+     merges `prod`'s merge commit into `main`'s tip (all that `prod` has
+     and `main` lacks: the release branch's own commits, and those of an
+     earlier release whose carry never reached `main`),
      pins the plugins to the new release (`scripts/pin-release.sh`),
      makes that one commit through GitHub's API (so GitHub signs it),
      opens the pull request `carry/<version>` into `main`, waits for CI's
@@ -1586,26 +1593,47 @@ staging; merging it releases it. The only local step is cutting it.
    lacks ("Releasing the SDK package").
 
 Each Deploy prod job finds what an earlier run of it did, so a failed run
-is rerun (`gh run rerun <ID> --failed`) once its cause is fixed: a release
-of the version made from the merge commit's tree is kept (one from
-another tree fails the job), a merged carry is found and an open one
-waited for and merged, and a Pi version npm has is not published again. A
-carry whose commits do not apply to `main` (`main` changed a line the
-bump changes) fails, naming the commit: carry it by hand, as below. A
-failed deploy rolls nothing back (`docs/prod.md`, "Rollback").
+is rerun (`gh run rerun <ID> --failed`) once its cause is fixed: a Worker
+already running the merge commit is not uploaded again (the instance is
+not restarted; only Actions, Deploy prod, Run workflow on `prod` with
+`redeploy` uploads it again), a release of the version made from the
+merge commit's tree is kept (one from another tree fails the job), a run
+of `fleet-image.yml` on the tag that passed or is running is this one, a
+merged carry is found and an open one waited for and merged, and a Pi
+version npm has is not published again. A carry that conflicts with
+`main` (`main` changed a line the bump changes) fails, naming the files:
+carry it by hand, as below. A release whose run never got as far as its
+carry is carried by the next release's. A failed deploy rolls nothing
+back (`docs/prod.md`, "Rollback").
+
+The smoke's push step passes when the pushed commit becomes a version,
+through Cloudflare's `pushed` event or, when none arrives within its wait,
+through the publish after it (the instance records unrecorded commits
+before every publish). An event that did not arrive is a warning on the
+run, not a failure: Clax subscribes no repository to those events, so no
+one's push depends on them (`crates/clax-worker/README.md`).
 
 ### What `just release` does
 
 `just release` runs `scripts/release.sh` as it is (no build system in
-between). Until `origin/prod`'s version is the release's, it prepares the
-pull request (steps 2-9): it switches to `release/<version>`, cut from
+between). With no version, it prints the current release, the versions
+`origin/prod` and `origin/main` are at, any release pull request open
+into `prod`, and the next patch, minor and major versions, and changes
+nothing. Given a version, the steps run in order, each once the one before
+it is done, and the dry run lists them, with Deploy prod's jobs after the
+merge and which of them run at once. Until `origin/prod`'s version is the
+release's, it prepares the pull request (steps 2-9), in a worktree of its
+own, `target/release/worktree-<version>`, leaving the checkout it is run
+from as it is (where `release/<version>` is checked out already, it works
+there instead): it checks out `release/<version>`, cut from
 `origin/prod` (or the branch as it stands, here or on origin); makes a
 signed merge of `origin/main` into it, "Merge origin/main into
 release/<version>" (`main` carries every earlier release's version and
 pin, so the version files merge cleanly); runs `scripts/bump-version.sh`,
 `just bazel-sync` until it changes nothing, and `scripts/check-version.sh`
 (the version files agree); makes the signed commit "Release <version>";
-pushes the branch; and opens its pull request into `prod` with `gh pr
+pushes the branch, then removes the worktree and the local branch it
+made; and opens its pull request into `prod` with `gh pr
 create`, with the release's checklist, printing its URL. It runs no build
 and no tests: CI runs every gate on the pull request, including the check
 that it raises the version and that its head is a `release/X.Y.Z` branch
@@ -1643,8 +1671,14 @@ after it. Fix the cause and run the same command again: each step's state
 is read from git and GitHub (the version files, the commits by subject,
 the release branch here and on origin and its pull request's state), so
 the run resumes at the first step not done. Uncommitted changes are
-accepted only while the bump (steps 4-6) waits for its commit. A merge of
-`origin/main` that conflicts stops step 3 with the files: merge by hand
+accepted only while the bump (steps 4-6) waits for its commit. Where
+`prod` and `origin/main` changed the same lines, and `main` is at `prod`'s
+version (its release was carried), step 3's merge takes `main`'s and names
+the files (the carry puts a release's changes on `main` as one commit of
+its own, so git takes lines `main` changed again since for changed on both
+sides). Any other merge of `origin/main` that conflicts (`prod` holds a
+release not carried to `main`, or a file one side changed and the other
+removed) stops step 3 with the files: merge by hand
 with the same subject (`git merge -S origin/main -m "Merge origin/main
 into release/<version>"`, resolve, then `git commit -S`: git does not
 carry `-S` past a conflict) and run the command again. A commit amended
@@ -1665,7 +1699,7 @@ git push origin release/0.4.0
 gh pr create --base prod --head release/0.4.0 --title "Release 0.4.0"
 # once CI and staging pass, merge it with a merge commit; Deploy prod does the rest.
 # A carry by hand, once v0.4.0 is published, in a worktree of origin/main:
-git cherry-pick -x <each commit of release/0.4.0 that main and the previous prod lack>
+git merge --no-commit --no-ff <the merge commit on prod>   # all that prod has and main lacks
 scripts/pin-release.sh v0.4.0     # PINNED_VERSION and the four SHA256 values, in every wrapper copy
 scripts/check-version.sh
 git commit -S -am "chore(release): 0.4.0, with the plugins pinned to it"
@@ -1848,5 +1882,5 @@ Clax traffic on the LAN is not encrypted: serve on the LAN (`clax serve --bind 0
 Writes, and reads of the session list (working directories, process IDs, harness session IDs), need the token in `~/.clax/daemon.json` (mode 0600, served only to a browser holding an owner browser session, which only a one-use login link opens), or a connected person's machine key. A connected person's agents publish, reply, resolve and write page data with that person's rights, as the owner set them. They sign every request with their machine's key, which never leaves that machine, so a request seen on the network cannot be replayed. Connecting machines, approvals, rights and raises change only in the owner's or the person's own browser: no agent, tool or CLI command can change them. What another person wrote reaches an agent only once that agent's person approves its author. An agent of the owner's that has a shell runs as the owner's OS user, and is trusted as the owner. Every `/api` route answers only to a `Host` of `localhost`, `127.0.0.1`, `[::1]`, or the exact IP and port the connection arrived on (403 `forbidden_host` otherwise), which defeats DNS rebinding. The comment routes need no token, but they need a credential (an owner browser session, or a viewer cookie the daemon minted) and refuse requests from another origin, including published pages: a request with no credential is refused before any route. The viewer cookie never leaves the daemon; viewers are named by a public ID, comment threads carry no session IDs, and the daemon's `codex` path is served only with the token. Each artifact's content is served on a site of its own, `<id>.localhost`, never on the daemon's own host: a page runs on that origin alone, and only the owner's shell and the artifact's own pages may frame it. The site answers only a site session (made through the shell, `/_clax/session/start` and a one-use code), so a page reached under any other name, a rebound one among them, reads nothing.
 
 
-While an agent of yours is running, the decisions that matter made with the daemon token (answering an agent's question, pushing, connecting a public Clax, widening who may open a page, pairing the extension) wait for your click in a browser of yours; `docs/contract.md`, "Browser confirmations", lists them. Any of your browser sessions may confirm. An agent running as you can open a browser session too, so you may also require Touch ID or another passkey to confirm (offered on the first confirmation, and in Settings, Confirmations); each passkey shows when it was added, from which browser, and which agents were running then. A passkey you did not add, or one you can no longer use (a lost authenticator, Clax now served at a LAN address, where passkeys do not work), can lock you out of confirming. To recover, stop Clax (`clax stop`) and run `clax passkeys reset`: it refuses while the daemon for the home runs, then removes every passkey, stops requiring one, and prints what it removed. An agent that runs as you could do the same, as it could stop Clax; the passkey keeps a running Clax's confirmations to your presence.
+While an agent of yours is running, the decisions that matter made with the daemon token (answering an agent's question, pushing, connecting a public Clax, widening who may open a page, pairing the extension) wait for your click in a browser of yours; `docs/contract.md`, "Browser confirmations", lists them. Any of your browser sessions may confirm. An agent running as you can open a browser session too, so you may also require a passkey to confirm (offered on the first confirmation, and in Settings, Confirmations); Settings lists each passkey with when it was added, from which browser, and which agents were running then. A passkey you did not add, or one you can no longer use (a lost authenticator, Clax now served at a LAN address, where passkeys do not work), can lock you out of confirming. To recover, stop Clax (`clax stop`) and run `clax passkeys reset`: it refuses while the daemon for the home runs, then removes every passkey, stops requiring one, and prints what it removed. An agent that runs as you could do the same, as it could stop Clax; the passkey keeps a running Clax's confirmations to your presence.
 Runtime capabilities arrive in a later phase.

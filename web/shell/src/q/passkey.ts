@@ -1,5 +1,5 @@
 // The owner's passkeys for browser confirmations (docs/contract.md,
-// "Browser confirmations", "Passkeys"): opt-in Touch ID or another passkey
+// "Browser confirmations", "Passkeys"): an opt-in passkey
 // (WebAuthn with user verification) on every confirmation. The routes are
 // the owner's browser's (`/api/passkeys…`); the ceremonies are the
 // browser's own (`navigator.credentials`), which only a secure context

@@ -662,6 +662,27 @@ async fn a_link_says_when_its_remote_signed_this_clax_out() {
 }
 
 #[tokio::test]
+async fn a_push_naming_no_remote_says_the_only_remote_signed_out() {
+    let public = Public::new().await;
+    let local = TestServer::spawn().await;
+    let rid = connect(&local, &public).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let aid = local
+        .publish("Plan", &[("index.html", "<h1>v1</h1>")])
+        .await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // Signed out as the linked sync does on meeting the revoked token,
+    // before any push of the person's meets it.
+    assert!(local.store.sign_out_remote(&rid).unwrap());
+    let (s, v) = owner_post(&local, &format!("/api/artifacts/{aid}/push"), json!({})).await;
+    assert_eq!((s, code(&v)), (502, "remote_signed_out"), "{v}");
+}
+
+#[tokio::test]
 async fn the_clax_apps_route_meeting_a_revoked_token_signs_the_remote_out() {
     let public = Public::new().await;
     let local = TestServer::spawn().await;

@@ -14,9 +14,13 @@ name: Deploy prod
 #              approves: deploys that Worker to clax.dev
 #              (scripts/cloudflare-setup.sh --no-build, which refuses a
 #              Worker built from another tree), waits for /healthz, checks a
-#              site host and smokes it as an agent token
+#              site host and smokes it as an agent token. When clax.dev
+#              already runs this commit (a run again), it uploads nothing
+#              (--unless-live) and only checks and smokes what runs
 #   publish    tags vX.Y.Z on the merge commit and makes the GitHub release
 #              from the candidate's files, the ones staging's testers had
+#   fleet      the clax-fleet image of the tag: fleet-image.yml, run on it
+#              (a tag made with a workflow's token starts no workflow)
 #   carry      in the `release` environment, as the release App: the
 #              release and the plugins' pin into main, merged once main's
 #              CI passes (scripts/carry-release.sh), so the marketplaces
@@ -30,8 +34,11 @@ name: Deploy prod
 #
 # A failure fails the run, and GitHub notifies the owner; nothing is rolled
 # back (docs/prod.md, "Rollback"). Run again, each job finds what it did
-# done: the release made from the same tree, the carry merged, the package
-# on npm. Beside the deploy, the reel job builds the landing page's reel
+# done: the Worker running, the release made from the same tree, the tag's
+# image built, the carry merged, the package on npm; so a run that failed
+# after its upload is finished by running it again, and clax.dev is not
+# deployed twice. A run by hand with `redeploy` uploads the Worker even so
+# (to apply a changed variable, say). Beside the deploy, the reel job builds the landing page's reel
 # from the same commit; the deploy puts it on Cloudflare Stream and points
 # the Worker's REEL_URL at it (CLOUDFLARE_API_TOKEN needs Stream: Edit, and
 # the account Stream). A reel that fails to build or upload never fails the
@@ -44,7 +51,12 @@ name: Deploy prod
 on:
   push:
     branches: [prod]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      redeploy:
+        description: Upload the Worker again even when clax.dev already runs prod's tip
+        type: boolean
+        default: false
   schedule:
     - cron: "17 * * * *"
 
@@ -219,9 +231,12 @@ jobs:
 
       # Deploys the candidate (--no-build installs and builds nothing, and
       # refuses a Worker built from another tree); only this step has the
-      # secrets.
-      - name: Deploy (scripts/cloudflare-setup.sh --ci --production --no-build --smoke)
+      # secrets. --unless-live: when /healthz already reports this commit,
+      # an earlier run uploaded it, and this one uploads nothing; it checks
+      # and smokes what runs. A run by hand with `redeploy` uploads anyway.
+      - name: Deploy (scripts/cloudflare-setup.sh --ci --production --no-build --unless-live --smoke)
         env:
+          REDEPLOY: ${{ inputs.redeploy }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLAX_SMOKE_TOKEN: ${{ secrets.CLAX_SMOKE_TOKEN }}
           # The deploy record (setup secrets included on a first deploy)
@@ -243,6 +258,7 @@ jobs:
           else
             echo "::warning::no reel on Cloudflare Stream: the landing page shows no player (see the Stream step)"
           fi
+          if [ "$REDEPLOY" != true ]; then args+=(--unless-live); fi
           scripts/cloudflare-setup.sh "${args[@]}" --account "$CLOUDFLARE_ACCOUNT_ID" \
             --ci --production --no-build --smoke --i-know-what-i-am-doing
 
@@ -304,6 +320,46 @@ jobs:
           [ -z "$have" ] || { echo "::error::v$VERSION is released already, from tree $have, not this one ($tree)"; exit 1; }
           gh release create "v$VERSION" "$RUNNER_TEMP"/dist/* \
             --target "$GITHUB_SHA" --title "Clax $VERSION" --generate-notes
+
+  # The clax-fleet image of the release's tag (fleet-image.yml, which also
+  # adds clax-fleet.yaml to the release). The tag is made with this
+  # workflow's token, which starts no workflow, so the run is started here,
+  # on the tag, and waited for. A run of the tag that passed, or is still
+  # running, is this one (a run again).
+  fleet:
+    needs: [candidate, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions: { contents: read, actions: write }
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: v${{ needs.candidate.outputs.version }}
+    steps:
+      - name: Run fleet-image.yml on the tag
+        run: |
+          set -euo pipefail
+          # The newest run of the tag that did not fail: "<ID> <status>".
+          newest() {
+            gh run list --workflow fleet-image.yml --branch "$TAG" --limit 20 \
+              --json databaseId,status,conclusion \
+              --jq '[.[] | select(.status != "completed" or .conclusion == "success")][0] // empty | "\(.databaseId) \(.status)"'
+          }
+          have="$(newest)"
+          if [ -z "$have" ]; then
+            gh workflow run fleet-image.yml --ref "$TAG"
+            for _ in $(seq 30); do
+              have="$(newest)"
+              [ -n "$have" ] && break
+              sleep 10
+            done
+            [ -n "$have" ] || { echo "::error::no fleet-image.yml run of $TAG started"; exit 1; }
+          fi
+          if [ "${have#* }" = completed ]; then
+            echo "fleet-image.yml passed on $TAG already (run ${have% *})"
+            exit 0
+          fi
+          gh run watch "${have% *}" --exit-status --interval 30
 
   # The release and its pin into main, as the release App: a workflow's own
   # token starts no CI on what it makes, and main takes a pull request
