@@ -1750,7 +1750,7 @@ impl InstanceDo {
 
 impl DurableObject for InstanceDo {
     fn new(state: State, env: Env) -> Self {
-        console_error_panic_hook::set_once();
+        crate::log::init();
         // The runtime answers the shell's keep-alive without waking us.
         if let Ok(pair) = worker::worker_sys::WebSocketRequestResponsePair::new("ping", "pong") {
             state.set_websocket_auto_response(&pair);

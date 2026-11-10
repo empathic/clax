@@ -100,7 +100,7 @@ impl AppDataDo {
 
 impl DurableObject for AppDataDo {
     fn new(state: State, _env: Env) -> Self {
-        console_error_panic_hook::set_once();
+        crate::log::init();
         AppDataDo {
             state,
             opened: RefCell::new(None),

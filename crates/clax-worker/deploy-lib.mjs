@@ -420,3 +420,89 @@ export function wranglerError(r) {
   const end = lines.findIndex((l, i) => i > at && (/^If you think this is a bug/.test(l) || l.startsWith("🪵")));
   return lines.slice(at, end < 0 ? undefined : end).join(" ").replace(/^✘ \[ERROR\] /, "");
 }
+
+/** The Worker's errors in `text`, the output of `wrangler tail --format
+ * json` (one JSON object per invocation, one after another): for each
+ * invocation, its exceptions, its logs at level error or warn, and its
+ * outcome when not "ok", one line each, headed by the invocation's time
+ * and what it served (a request's method and path, without its query; a
+ * queue batch; an alarm; a scheduled run). Nothing else of an invocation is
+ * printed: not its headers, its query or its `cf` object. Credentials are
+ * masked (maskTokens). Text that is not such an object is skipped. A last
+ * line counts the invocations of each kind, naming a log without a queue
+ * batch, since an event that never arrived logs nothing. */
+export function tailErrors(text) {
+  const out = [];
+  const seen = { request: 0, queue: 0, alarm: 0, scheduled: 0, other: 0 };
+  for (const ev of jsonObjects(text)) {
+    const k = ev.event?.request?.url ? "request" : ev.event?.queue ? "queue" : ev.event?.cron !== undefined ? "scheduled"
+      : ev.eventType === "alarm" || ev.event?.scheduledTime ? "alarm" : "other";
+    seen[k]++;
+    const at = Number.isFinite(ev.eventTimestamp) ? new Date(ev.eventTimestamp).toISOString() : "?";
+    const e = ev.event ?? {};
+    let what = "invocation";
+    if (e.request?.url) {
+      let path = e.request.url;
+      try { path = new URL(e.request.url).pathname; } catch { /* not a URL */ }
+      what = `${e.request.method ?? "?"} ${path}${e.response?.status ? ` → ${e.response.status}` : ""}`;
+    } else if (e.queue) what = `queue ${e.queue} (${e.batchSize ?? "?"} message(s))`;
+    else if (e.cron !== undefined) what = `scheduled ${e.cron}`;
+    else if (ev.eventType === "alarm" || e.scheduledTime) what = "alarm";
+    const head = `${at} ${ev.scriptName ?? ""}${ev.entrypoint ? `:${ev.entrypoint}` : ""} ${what}`.replace(/ {2,}/g, " ");
+    const lines = [];
+    if (ev.outcome && ev.outcome !== "ok") lines.push(`outcome ${ev.outcome}`);
+    for (const x of ev.exceptions ?? []) lines.push(`exception ${x.name ?? "Error"}: ${x.message ?? ""}`);
+    for (const l of ev.logs ?? []) {
+      if (l.level !== "error" && l.level !== "warn") continue;
+      const msg = (Array.isArray(l.message) ? l.message : [l.message]).map((m) => (typeof m === "string" ? m : JSON.stringify(m))).join(" ");
+      lines.push(`${l.level} ${msg}`);
+    }
+    for (const l of lines) out.push(maskTokens(`${head}: ${l}`));
+  }
+  const total = Object.values(seen).reduce((a, b) => a + b, 0);
+  if (total) {
+    out.push(`${total} invocation(s) in the log: ` +
+      Object.entries(seen).filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(", ") +
+      (seen.queue ? "" : " (no queue batch)"));
+  }
+  return out;
+}
+
+/** `s` with credentials masked: Artifacts' tokens (`art_v1_…`), a bearer
+ * credential, and any run of 32 or more token characters (Clax's tokens,
+ * secrets and cookies; a commit's 40-hex ID is masked with them, which the
+ * errors can spare). */
+export function maskTokens(s) {
+  return s
+    .replace(/art_v1_[A-Za-z0-9_.-]+(\?expires=\d+)?/g, "art_v1_<masked>")
+    .replace(/\b(Bearer|bearer)\s+\S+/g, "$1 <masked>")
+    .replace(/[A-Za-z0-9_=-]{32,}/g, "<masked>");
+}
+
+/** Each top-level JSON object in `text`, which holds objects one after
+ * another (pretty-printed or not) among other lines. */
+function* jsonObjects(text) {
+  let depth = 0, start = -1, inString = false, escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"' && depth > 0) inString = true;
+    else if (ch === "{") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === "}" && depth > 0) {
+      depth--;
+      if (depth === 0) {
+        try {
+          const v = JSON.parse(text.slice(start, i + 1));
+          if (v && typeof v === "object") yield v;
+        } catch { /* not JSON after all */ }
+      }
+    }
+  }
+}

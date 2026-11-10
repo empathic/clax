@@ -414,7 +414,7 @@ impl RepoDO {
 
 impl DurableObject for RepoDO {
     fn new(state: State, env: Env) -> Self {
-        console_error_panic_hook::set_once();
+        crate::log::init();
         RepoDO {
             state,
             env,

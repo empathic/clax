@@ -1635,3 +1635,53 @@ async fn a_revoked_persons_page_clones_through_nothing_until_they_are_reinstated
     assert_eq!(s, 200, "{v}");
     clones(200).await;
 }
+
+#[tokio::test]
+async fn on_a_host_that_names_no_pusher_the_owners_agent_token_pushes() {
+    let h = Hosted::new().await;
+    h.fake
+        .anonymous
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let owner = h.owner().await;
+    let aid = aid_of(&h.ts.publish("Plan", &[("index.html", "<p>one</p>")]).await);
+    // An agent token the owner minted, and a session it registered.
+    let (s, v, _) = h
+        .send(
+            reqwest::Method::POST,
+            "/api/hosted/agent-tokens",
+            Some(&owner),
+            Some(json!({"label": "laptop"})),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let token = v["token"].as_str().unwrap().to_string();
+    let r =
+        h.ts.client
+            .post(format!("{}/api/sessions", h.ts.base))
+            .header("host", &h.host)
+            .bearer_auth(&token)
+            .json(&json!({"harness": "claude", "cwd": ""}))
+            .send()
+            .await
+            .unwrap();
+    assert_eq!(r.status(), 201);
+    let v: Value = r.json().await.unwrap();
+    let sid = v["session"]["id"].as_str().unwrap().to_string();
+    let secret = v["session_secret"].as_str().unwrap().to_string();
+    // Its pushes are recorded as the owner's, which they are: it may push.
+    let r =
+        h.ts.client
+            .post(format!("{}/api/sessions/{sid}/git-token/{aid}", h.ts.base))
+            .header("host", &h.host)
+            .bearer_auth(&token)
+            .header("x-clax-session", &sid)
+            .header(clax_core::remote::SESSION_SECRET_HEADER, &secret)
+            .json(&json!({"scope": "write"}))
+            .send()
+            .await
+            .unwrap();
+    let status = r.status().as_u16();
+    let v: Value = r.json().await.unwrap_or(Value::Null);
+    assert_eq!(status, 200, "{v}");
+    assert_eq!(h.fake.rows().pop().unwrap().scope, Scope::Write);
+}

@@ -17,6 +17,7 @@ import {
   envOf,
   healthOf,
   kekPlan,
+  maskTokens,
   partialTriggerUpdate,
   prodTipOf,
   productionGate,
@@ -25,6 +26,7 @@ import {
   siteZoneOf,
   smokeCannot,
   smokeCredential,
+  tailErrors,
   versionIdOf,
   wildcardRecordOf,
   wranglerError,
@@ -474,4 +476,56 @@ test("a wrangler error keeps Cloudflare's reason, without colour", () => {
   assert.equal(wranglerError({ code: 1, out: "", err: "✘ [ERROR] Missing entry-point\n" }), "Missing entry-point");
   assert.equal(wranglerError({ code: 1, out: "Uploading…\nsomething broke", err: "" }), "something broke");
   assert.equal(wranglerError({ code: 3, out: "", err: "" }), "exit 3");
+});
+
+// What `wrangler tail --format json` printed for a request, a queue batch
+// and a quiet request: pretty-printed objects one after another, after
+// wrangler's own banner.
+const TAIL = `Successfully created tail, expires at 2026-11-08T03:00:00Z
+Connected to clax-pr-73, waiting for logs...
+${JSON.stringify({
+  outcome: "ok",
+  scriptName: "clax-pr-73",
+  exceptions: [],
+  logs: [
+    { message: ['fork a-jd2eeq9f8zdm: repo_unavailable: {"code": 1}'], level: "error", timestamp: 1 },
+    { message: ["an info line"], level: "log", timestamp: 2 },
+  ],
+  eventTimestamp: Date.UTC(2026, 10, 7, 19, 53, 31),
+  event: {
+    request: { url: "https://pr-73.clax-staging.dev/mcp?secret=s3cr3t", method: "POST", headers: { authorization: "Bearer clax_x" } },
+    response: { status: 200 },
+  },
+}, null, 2)}
+${JSON.stringify({
+  outcome: "exception",
+  scriptName: "clax-pr-73",
+  exceptions: [{ name: "Error", message: "token art_v1_abcDEF123?expires=1762560000 refused" }],
+  logs: [{ message: ["recording the pushes to jd2eeq9f8zdm answered 500"], level: "error", timestamp: 3 }],
+  eventTimestamp: Date.UTC(2026, 10, 7, 19, 53, 40),
+  event: { queue: "clax-artifacts-events-pr-73", batchSize: 1 },
+})}
+${JSON.stringify({ outcome: "ok", scriptName: "clax-pr-73", exceptions: [], logs: [{ message: ["fine"], level: "log" }], eventTimestamp: 0, event: { request: { url: "https://x/health", method: "GET" } } })}
+`;
+
+test("the Worker's errors from wrangler tail: what served each, its errors, credentials masked", () => {
+  assert.deepEqual(tailErrors(TAIL), [
+    '2026-11-07T19:53:31.000Z clax-pr-73 POST /mcp → 200: error fork a-jd2eeq9f8zdm: repo_unavailable: {"code": 1}',
+    "2026-11-07T19:53:40.000Z clax-pr-73 queue clax-artifacts-events-pr-73 (1 message(s)): outcome exception",
+    "2026-11-07T19:53:40.000Z clax-pr-73 queue clax-artifacts-events-pr-73 (1 message(s)): exception Error: token art_v1_<masked> refused",
+    "2026-11-07T19:53:40.000Z clax-pr-73 queue clax-artifacts-events-pr-73 (1 message(s)): error recording the pushes to jd2eeq9f8zdm answered 500",
+    "3 invocation(s) in the log: 2 request, 1 queue",
+  ]);
+  // The request's query and headers never appear.
+  assert.ok(!tailErrors(TAIL).join("\n").includes("s3cr3t"));
+  assert.deepEqual(tailErrors("no JSON here\n{not json}\n"), []);
+  // A log of requests alone says that no queue batch came.
+  const quiet = JSON.stringify({ outcome: "ok", scriptName: "w", logs: [], event: { request: { url: "https://x/health", method: "GET" } } });
+  assert.deepEqual(tailErrors(quiet), ["1 invocation(s) in the log: 1 request (no queue batch)"]);
+});
+
+test("credentials are masked in what the tail prints", () => {
+  assert.equal(maskTokens("Bearer abc.def and bearer x"), "Bearer <masked> and bearer <masked>");
+  assert.equal(maskTokens("a secret 0123456789abcdef0123456789abcdef01 here"), "a secret <masked> here");
+  assert.equal(maskTokens("/api/artifacts/jd2eeq9f8zdm/fork stays"), "/api/artifacts/jd2eeq9f8zdm/fork stays");
 });
