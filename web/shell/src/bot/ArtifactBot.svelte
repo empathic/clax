@@ -7,7 +7,8 @@
   // lists ClaxBot to the Send menu (`botView`): as the artifact's agents list
   // it (`builtin`), else as this person's ClaxBot says. It shows a ClaxBot
   // button while the artifact has runs (marked while one is active) that
-  // opens the run panel, the week's meter beside it, and, from 80 % of the
+  // opens the run panel, the week's meter beside it (marked "your key" on
+  // the person's own model key: `meterWords`), and, from 80 % of the
   // week's credits, the usage banner under the top bar. The panel opens by
   // itself on a run this browser starts, and on `#run=<ID>` (or `#run`, the
   // newest active run) in the address, which the New dialog and the audit
@@ -20,7 +21,7 @@
   import { nav } from "../nav";
   import { type BotRun, type RunEvent, type RunSummary, getRun, listRuns } from "./api";
   import { myBot, refresh } from "./me";
-  import { credits, ended, meter } from "./model";
+  import { credits, ended, meter, meterWords } from "./model";
   import { botView } from "./send.svelte";
   import RunPanel from "./RunPanel.svelte";
   import UsageBanner from "./UsageBanner.svelte";
@@ -31,6 +32,7 @@
   let runs = $state<RunSummary[]>([]);
   const active = $derived(runs.some(r => !ended(r)));
   const week = $derived(botView.me?.enabled ? meter(botView.me.week) : null);
+  const weekWords = $derived(botView.me?.enabled ? meterWords(botView.me) : null);
   const shown = $derived(runs.length > 0 || botView.started.length > 0);
   // The first lines of the threads a run answers, as the view holds them.
   const quotes = (ids: string[]) => ids.flatMap(id => {
@@ -131,7 +133,7 @@
     <span class="dot" aria-hidden="true"></span>ClaxBot<span class="bot-sr">{active ? ", working" : ", runs"}</span>
   </button>
 {/if}
-{#if week}<a class="botwk hide-sm" class:warn={week.warn} class:out={week.exhausted} href="/me" title="Your ClaxBot credits this week">{credits(week.spent)} / {credits(week.total)}</a>{/if}
+{#if week && weekWords}<a class="botwk hide-sm" class:warn={week.warn} class:out={week.exhausted} href="/me" title={weekWords.title} aria-label={weekWords.label}>{weekWords.own ? "your key · " : ""}{credits(week.spent)} / {credits(week.total)}</a>{/if}
 
 <style>
   :global {

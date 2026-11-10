@@ -4,18 +4,21 @@
   // ClaxBot in the gallery's header (spec 2026-10-21-claxbot §11.4, §11.5),
   // loaded with the gallery's lazy module: the week's meter when ClaxBot is
   // on for this person ("ClaxBot · 310 of 2,000 credits", linking to `/me`;
-  // the numbers alone at phone width), and Admin for the owner and admins.
+  // the numbers alone at phone width), marked "your key" when their runs use
+  // their own model key (credits then pay only for what every key is charged:
+  // `meterWords`), and Admin for the owner and admins.
   // It also puts the usage banner at the top of the page (`UsageBanner`,
   // mounted ahead of the page's content, as the gallery's sites are).
   import { mount, onMount, unmount } from "svelte";
   import type { MeBot, Role } from "./api";
   import { isAdmin, myBot, myRole } from "./me";
-  import { credits, meter } from "./model";
+  import { credits, meter, meterWords } from "./model";
   import UsageBanner from "./UsageBanner.svelte";
 
   let me = $state<MeBot | null>(null);
   let role = $state<Role | null>(null);
   const m = $derived(me?.enabled ? meter(me.week) : null);
+  const words = $derived(me?.enabled ? meterWords(me) : null);
   const here = location.pathname;
   onMount(() => {
     let view: Record<string, unknown> | null = null;
@@ -35,9 +38,9 @@
   });
 </script>
 
-{#if m}
-  <a class="bot-meter" class:warn={m.warn} class:out={m.exhausted} href="/me" aria-current={here === "/me" ? "page" : undefined} aria-label={`ClaxBot: ${credits(m.spent)} of ${credits(m.total)} credits used this week`}>
-    <span class="word">ClaxBot ·</span> {credits(m.spent)}<span class="word">{` of ${credits(m.total)} credits`}</span>
+{#if m && words}
+  <a class="bot-meter" class:warn={m.warn} class:out={m.exhausted} href="/me" aria-current={here === "/me" ? "page" : undefined} aria-label={words.label} title={words.title}>
+    <span class="word">{words.own ? "ClaxBot · your key ·" : "ClaxBot ·"}</span> {credits(m.spent)}<span class="word">{` of ${credits(m.total)} credits`}</span>
   </a>
 {/if}
 {#if isAdmin(role)}<a class="admin-link" href="/admin" aria-current={here === "/admin" ? "page" : undefined}>Admin</a>{/if}

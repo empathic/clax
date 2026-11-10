@@ -243,6 +243,18 @@ describe("the gallery header's ClaxBot", () => {
     expect(main.querySelector(".bbanner")).toBeNull();
   });
 
+  it("marks the meter 'your key' on the person's own key, saying what its credits pay for", async () => {
+    stubFetch({ "GET /api/me/bot": meBot({ key: { own: { set: true, last4: "4f2c", set_at: null, last_ok_at: null }, use_own: true }, week: week({ spent_milli: 3_120 }) }) });
+    const m = mount(HeaderBot, {});
+    await settle();
+    const meter = m.root.querySelector<HTMLAnchorElement>(".bot-meter")!;
+    expect(meter.textContent!.replace(/\s+/g, " ").trim()).toBe("ClaxBot · your key · 3.12 of 2,000 credits");
+    expect(meter.getAttribute("href")).toBe("/me");
+    expect(meter.getAttribute("aria-label")).toBe("ClaxBot on your key: 3.12 of 2,000 credits used this week, for run fees, script compute, storage and web calls");
+    expect(meter.title).toContain("pays for your tokens");
+    m.unmount();
+  });
+
   it("shows nothing where the daemon has no ClaxBot", async () => {
     stubFetch({});
     const m = mount(HeaderBot, {});
