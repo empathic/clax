@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dispatchTrusted } from "../../../bridge/test/trusted";
 import { settle } from "../people/fixtures";
 import { flush, mount } from "../test/svelte";
-import { meBot, run } from "./fixtures";
+import { meBot, run, week } from "./fixtures";
 import { forget } from "./me";
 import { RunFeed } from "./run-feed.svelte";
 import RunPanel from "./RunPanel.svelte";
@@ -312,6 +312,23 @@ describe("ClaxBot in the artifact view", () => {
     expect(panel.querySelector(".stop")).toBeNull();
     expect(panel.textContent).toContain("Sam's run: you can follow it, and only they can stop it.");
     m.unmount();
+  });
+
+  it("marks the week's meter 'your key' on the person's own key, and leaves it bare on the instance's", async () => {
+    history.replaceState(null, "", "/a/7q3k9mzx2b4t");
+    const ownKey = { own: { set: true, last4: "4f2c", set_at: null, last_ok_at: null }, use_own: true };
+    daemon({ "GET /api/me/bot": json(meBot({ key: ownKey, week: week({ weekly_milli: 3_000_000, spent_milli: 21_000 }) })), "GET /api/bot/runs?artifact=7q3k9mzx2b4t": json({ runs: [] }) });
+    const m = mount(ArtifactBot, { ctl: view() });
+    await settle();
+    const wk = m.root.querySelector<HTMLAnchorElement>(".botwk")!;
+    expect(wk.textContent).toBe("your key · 21 / 3,000");
+    expect(wk.title).toContain("Credits pay only for run fees, script compute, storage and web calls.");
+    botView.me = meBot();
+    flush();
+    expect(wk.textContent).toBe("310 / 2,000");
+    expect(wk.title).toBe("Your ClaxBot credits this week");
+    m.unmount();
+    history.replaceState(null, "", "/");
   });
 
   it("names the threads a run answers, and shows one when chosen", async () => {

@@ -5,8 +5,76 @@ import { flush, mount } from "./test/svelte";
 import { MOUNT_TIMEOUT_MS } from "./test/timeouts";
 import MoreMenu from "./ui/MoreMenu.svelte";
 import PhoneTabs from "./ui/PhoneTabs.svelte";
+import VersionMenu from "./ui/VersionMenu.svelte";
 import { InboxFeed } from "./q/feed.svelte";
 import InboxLink from "./q/InboxLink.svelte";
+
+describe("the version control", () => {
+  const props = (over: Record<string, unknown> = {}) => {
+    const onToggle = vi.fn(), onLatest = vi.fn();
+    return { onToggle, onLatest, p: { shown: 46, latest: 46, newer: null, dot: false, open: false, onToggle, onLatest, input: () => ({}) as never, hrefFor: () => "", onChoose() {}, ...over } };
+  };
+  const parts = (root: HTMLElement) => ({ main: root.querySelector<HTMLButtonElement>("button.vmain"), menu: root.querySelector<HTMLButtonElement>("button.vbtn")! });
+
+  it("on the latest version is one menu button reading Latest, the number in its name", () => {
+    const { p, onToggle, onLatest } = props();
+    const m = mount(VersionMenu, p);
+    const { main, menu } = parts(m.root);
+    expect(main).toBeNull();
+    expect(m.root.querySelector(".version-menu.split")).toBeNull();
+    expect(menu.textContent).toContain("Latest");
+    expect(menu.getAttribute("aria-label")).toBe("Latest, version 46");
+    expect(menu.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(menu.getAttribute("aria-expanded")).toBe("false");
+    flush(() => menu.click());
+    expect(onToggle).toHaveBeenCalledTimes(1);
+    expect(onLatest).not.toHaveBeenCalled();
+    m.unmount();
+  });
+
+  it("once a newer version is out, splits into Reload for latest, which loads it, and the menu", () => {
+    const { p, onToggle, onLatest } = props({ newer: 47, dot: true });
+    const m = mount(VersionMenu, p);
+    const { main, menu } = parts(m.root);
+    expect(m.root.querySelector(".version-menu.split")).not.toBeNull();
+    expect(main!.textContent).toBe("Reload for latest");
+    expect(main!.matches(".primary.reload:not(.hide-sm)")).toBe(true);
+    expect(main!.getAttribute("aria-label")).toBe("Reload for latest, version 47");
+    expect(main!.hasAttribute("aria-haspopup")).toBe(false);
+    expect(menu.getAttribute("aria-label")).toBe("Versions, a newer version you have not seen");
+    expect(menu.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(menu.dataset.shellControl).toBe("versions");
+    flush(() => main!.click());
+    expect(onLatest).toHaveBeenCalledTimes(1);
+    expect(onToggle).not.toHaveBeenCalled();
+    flush(() => menu.click());
+    expect(onToggle).toHaveBeenCalledTimes(1);
+    m.unmount();
+  });
+
+  it("on an older version the viewer chose, reads v12 of 46 and goes back to the latest", () => {
+    const { p, onToggle, onLatest } = props({ shown: 12, newer: 47 });
+    const m = mount(VersionMenu, p);
+    const { main, menu } = parts(m.root);
+    expect(main!.textContent).toBe("v12of 47");
+    expect(main!.classList.contains("hide-sm")).toBe(true);
+    expect(main!.getAttribute("aria-label")).toBe("v12 of 47, back to the latest");
+    flush(() => main!.click());
+    expect(onLatest).toHaveBeenCalledTimes(1);
+    expect(onToggle).not.toHaveBeenCalled();
+    expect(menu.getAttribute("aria-label")).toBe("Versions");
+    m.unmount();
+  });
+
+  it("with no way to the latest (a deleted artifact), keeps one menu button naming the version shown", () => {
+    const { p } = props({ shown: 12, onLatest: undefined });
+    const m = mount(VersionMenu, p);
+    const { main, menu } = parts(m.root);
+    expect(main).toBeNull();
+    expect(menu.getAttribute("aria-label")).toBe("v12 of 46");
+    m.unmount();
+  });
+});
 
 describe("Echo top bar parts", () => {
   it("Inbox links to /inbox with the unread count, hidden at 0, and shows to the owner only", async () => {
@@ -252,7 +320,8 @@ describe("the top bar on a live page", { timeout: MOUNT_TIMEOUT_MS }, () => {
   it("calls the versions snapshots in the version menu", async () => {
     const view = await mountView(async () => new Response(JSON.stringify(liveArtifact())));
     const vbtn = await waitFor(() => view.root.querySelector<HTMLButtonElement>("button.vbtn"), "the version button");
-    expect(vbtn.getAttribute("aria-label")).toBe("Snapshot 2 of 2");
+    expect(vbtn.getAttribute("aria-label")).toBe("Latest, snapshot 2");
+    expect(vbtn.textContent).toContain("Latest");
     flush(() => vbtn.click());
     const rows = await waitFor(() => { const r = view.root.querySelectorAll(".vrow"); return r.length === 2 && r; }, "the version rows");
     expect(rows[0].querySelector(".h")?.textContent).toContain("snapshot");

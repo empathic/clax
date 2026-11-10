@@ -166,7 +166,16 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(root.querySelector("button.reload")).toBeNull();
     current = 4;
     (await waitFor(() => FakeES.last, "event stream")).emit("resync", {});
-    await waitFor(() => root.querySelector("button.reload"), "the Reload button");
+    const reload = await waitFor(() => root.querySelector<HTMLButtonElement>("button.reload"), "the Reload button");
+    // The version control's main part, beside its menu button.
+    expect(reload.closest(".version-menu.split")?.querySelector("button.vbtn")).not.toBeNull();
+    expect(reload.textContent).toBe("Reload for latest");
+    expect(reload.getAttribute("aria-label")).toBe("Reload for latest, version 4");
+    const assign = vi.fn();
+    (await import("./nav")).nav.assign = assign;
+    reload.click();
+    expect(assign).toHaveBeenCalledTimes(1);
+    expect(assign.mock.calls[0][0]).not.toContain("/v/");
   });
 
   it("reloads the threads when the event stream (re)connects", async () => {

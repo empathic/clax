@@ -33,7 +33,8 @@
   // (`NewTile`) leads the first section's grid (searched or filtered
   // too), and the empty gallery. For a person who may report problems with
   // Clax, the header carries the feedback menu (`feedback/`), whatever the
-  // artifact list answers.
+  // artifact list answers. On a hosted Clax, "seen as <name>" is the
+  // account menu's button, whose items include Sign out.
   import { onDestroy, onMount } from "svelte";
   import { ApiError, type Artifact, type AttentionSummary, type TagRef, deleteArtifact, getAttention, getToken, listArtifacts, patchArtifact } from "../api";
   import { REQUEST_STUCK, connTrouble } from "../conn-notice";
@@ -55,6 +56,10 @@
   // documents to link (`legal`).
   let site = $state<string | null>(null);
   let legal = $state<{ terms_url: string; privacy_url: string } | null>(null);
+  // On a hosted daemon, for whoever the browser is signed in as: the account
+  // menu (`hosted/AccountMenu`, its own chunk), which carries "seen as
+  // <name>" and Sign out. A local daemon has none.
+  let account = $state<{ C: typeof import("../hosted/AccountMenu.svelte").default; name: string | null; guest: boolean } | null>(null);
   let query = $state("");
   // This browser's viewer (`GET /api/viewers/me`): its name, public ID, and
   // whether it is a connected person's.
@@ -154,7 +159,7 @@
   const g = $derived(shown && gw && !flat ? gw.groups(shown, att) : null);
   // This browser's viewer, asked once (after the token: on this machine that makes it the owner's).
   let mine: Promise<import("../people/PeopleLink.svelte").Viewer>;
-  onMount(() => { mine = getToken().then(t => { token = t; if (t?.startsWith("cxo_")) site = location.host; if (!t || t.startsWith("cxo_")) void fetch("/api/hosted/me").then(r => r.ok && r.json()).then((h: import("../hosted/api").HostedMe | false) => { if (h && !destroyed) { site = location.host; legal = h.legal ?? null; if (legal) void import("../hosted/legal").then(m => m.ask(h.legal!)); } }, () => {}); return fetch("/api/viewers/me"); }).then(r => r.json()).then(b => (viewer = b?.viewer), () => null); if (inbox) void lazy().then(loadQ, () => {}); else if (sub) void lazy().then(m => { void loadQ(m); if (!destroyed) unPeople = m.page(sub, document.querySelector("main.gal")!); }, () => {}); else void refresh(true); });
+  onMount(() => { mine = getToken().then(t => { token = t; if (t?.startsWith("cxo_")) site = location.host; if (!t || t.startsWith("cxo_")) void fetch("/api/hosted/me").then(r => r.ok && r.json()).then((h: import("../hosted/api").HostedMe | false) => { if (h && !destroyed) { site = location.host; legal = h.legal ?? null; if (h.signed_in && h.person) { const p = h.person; void import("../hosted/AccountMenu.svelte").then(m => { if (!destroyed) account = { C: m.default, name: p.display_name, guest: p.guest }; }, () => {}); } if (legal) void import("../hosted/legal").then(m => m.ask(h.legal!)); } }, () => {}); return fetch("/api/viewers/me"); }).then(r => r.json()).then(b => (viewer = b?.viewer), () => null); if (inbox) void lazy().then(loadQ, () => {}); else if (sub) void lazy().then(m => { void loadQ(m); if (!destroyed) unPeople = m.page(sub, document.querySelector("main.gal")!); }, () => {}); else void refresh(true); });
   onDestroy(() => { destroyed = true; unPeople?.(); life.dispose(); cancelStart?.(); sync?.stop(); Q?.stop(); });
   // Back and forward walk the tag filters.
   const popped = () => { sel = tagsFromUrl(location.search); };
@@ -163,7 +168,7 @@
 <svelte:window onpopstate={popped} />
 
 <header class="gbar">
-  <a href="/" class="home" aria-label="Gallery"><Mark /></a><h1>Clax</h1><span class="sub hide-sm">{site ?? "local artifacts"}{#if me}{` · seen as ${me}`}{/if}</span>
+  <a href="/" class="home" aria-label="Gallery"><Mark /></a><h1>Clax</h1><span class="sub hide-sm">{site ?? "local artifacts"}{#if account}{" ·"}{:else if me}{` · seen as ${me}`}{/if}</span>{#if account}<account.C name={account.name ?? me ?? "you"} guest={account.guest} />{/if}
   {#if !inbox && !sub}<input type="search" class="search" placeholder="Search artifacts" aria-label="Search artifacts" value={query} oninput={e => { query = e.currentTarget.value; }} />{/if}
   {#if Q}<Q.InboxLink current={inbox} />{/if}
   {#if lm}<lm.Links current={sub} owner={!!token} {viewer} />{/if}

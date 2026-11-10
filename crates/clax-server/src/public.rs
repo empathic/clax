@@ -1677,19 +1677,20 @@ async fn push_once(
     let lock = push_lock(aid.as_str(), &rid);
     let _held = lock.lock().await;
     let (id, r2) = (aid.clone(), rid.clone());
-    let (artifact, link, token, assets) = s
+    let (artifact, link, token, now, assets) = s
         .store_call(move |st| {
             let a = st
                 .get_artifact(&id)?
                 .ok_or(clax_core::CoreError::NotFound)?;
             let link = st.remote_link(id.as_str(), &r2)?;
             let token = st.remote_token(&r2)?;
+            let now = st.find_remote(&r2)?;
             let assets: HashMap<String, String> = st
                 .list_assets(&id)?
                 .into_iter()
                 .map(|a| (a.id, a.content_type))
                 .collect();
-            Ok((a, link, token, assets))
+            Ok((a, link, token, now, assets))
         })
         .await?;
     if artifact.kind != "html" {
@@ -1697,6 +1698,11 @@ async fn push_once(
             "live_page",
             "a live page is not pushed: it has no versions to publish",
         ));
+    }
+    // The remote may have been signed out since the caller read it: the
+    // linked task (`crate::linked`) meets a revoked token too.
+    if now.is_some_and(|r| r.status == "signed_out") {
+        return Err(signed_out(&remote.origin));
     }
     let Some(token) = token else {
         return Err(ApiError::bad_request(

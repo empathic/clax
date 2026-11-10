@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { WEB_LINES, meBot, run, week } from "./fixtures";
-import { actorLabel, after, applyEvent, availability, banner, callCost, credits, fromText, margins, meter, money, parseEvent, perUnitMilli, percent, rangeFrom, resetDay, runCost, runStatus, sections, tail, tokens, turnActivity, unavailableFix, unavailableText, webPrices, webSource } from "./model";
+import { OWN_KEY_SPEND, actorLabel, after, applyEvent, availability, banner, callCost, credits, fromText, margins, meter, meterWords, money, parseEvent, perUnitMilli, percent, rangeFrom, resetDay, runCost, runStatus, sections, tail, tokens, turnActivity, unavailableFix, unavailableText, webPrices, webSource } from "./model";
 
 describe("ClaxBot's numbers", () => {
   it("shows milli-credits as credits, micro-USD as dollars and basis points as percentages", () => {
@@ -55,6 +55,29 @@ describe("the week's meter", () => {
     expect(out.detail).toContain("paused until Monday, Oct 26");
     // Unenforced: the numbers, never the pause.
     expect(banner(meBot({ unenforced: true, week: week({ spent_milli: 2_100_000 }) }))!.kind).toBe("warn");
+  });
+
+  // On their own key, tokens charge no credits but the lines charged on
+  // every key (the run fee, compute, storage, web) do, and the limit still
+  // pauses ClaxBot: the meter stays, saying whose key and what it counts.
+  const own = (o: Parameters<typeof meBot>[0] = {}) => meBot({ key: { own: { set: true, last4: "4f2c", set_at: null, last_ok_at: null }, use_own: true }, ...o });
+
+  it("says whose key the meter counts for, and what credits pay for on the person's own", () => {
+    expect(meterWords(meBot())).toEqual({ own: false, label: "ClaxBot: 310 of 2,000 credits used this week", title: "Your ClaxBot credits this week" });
+    const w = meterWords(own({ week: week({ spent_milli: 3_120 }) }));
+    expect(w.own).toBe(true);
+    expect(w.label).toBe(`ClaxBot on your key: 3.12 of 2,000 credits used this week, for ${OWN_KEY_SPEND}`);
+    expect(w.title).toContain("your key, which pays for your tokens");
+    // A key set but not in use is the instance's.
+    expect(meterWords(meBot({ key: { own: { set: true, last4: "4f2c", set_at: null, last_ok_at: null }, use_own: false } })).own).toBe(false);
+  });
+
+  it("tells a person on their own key that the banner's credits are not tokens", () => {
+    expect(banner(own({ week: week({ spent_milli: 1_760_000 }) }))!.detail).toBe(`ClaxBot keeps working until you reach it. Resets Monday, Oct 26. On your key, credits pay for ${OWN_KEY_SPEND}, not tokens.`);
+    const out = banner(own({ week: week({ spent_milli: 2_000_000 }) }))!;
+    expect(out.kind).toBe("exhausted");
+    expect(out.detail).toContain("paused until Monday, Oct 26. On your key, credits pay for");
+    expect(banner(meBot({ week: week({ spent_milli: 1_760_000 }) }))!.detail).not.toContain("your key");
   });
 });
 
