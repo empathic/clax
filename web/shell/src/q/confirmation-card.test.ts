@@ -31,11 +31,14 @@ function view(over: Partial<ConfirmationView> = {}): ConfirmationView {
 afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
 
 describe("ConfirmationCard", () => {
-  it("asks to confirm the decision in words and lists the agents live now", () => {
+  it("asks to confirm the decision in words and counts the agents live now, named when opened", () => {
     const m = mount(ConfirmationCard, { c: view(), now });
     const card = m.root.querySelector(".cfcard")!;
     expect(card.getAttribute("data-confirmation")).toBe(ID);
     expect(card.querySelector(".cwhat")!.textContent).toBe("Confirm: push “Plan” to https://clax.dev");
+    expect(card.querySelector(".cwhy")!.textContent).toBe("Confirm only if you asked for this.");
+    expect(card.querySelector<HTMLDetailsElement>(".cagents")!.open).toBe(false);
+    expect(card.querySelector(".cagents summary")!.textContent).toBe("2 agents running now could have asked as you");
     expect([...card.querySelectorAll(".cagents li")].map(l => l.textContent)).toEqual(["ada in /w/site", "codex a-9q2m"]);
     expect(buttons(m.root).map(b => b.textContent!.trim())).toEqual(["Confirm", "Decline"]);
   });
@@ -65,6 +68,22 @@ describe("ConfirmationCard", () => {
     expect(buttons(m.root)).toHaveLength(2);
   });
 
+  it("says one the daemon finds expired has expired, and drops its buttons", async () => {
+    for (const n of [0, 1]) {
+      stubFetch({ [`POST /api/confirmations/${ID}`]: [410, { error: { code: "confirmation_expired", message: "this confirmation has expired: make the call again, without it, for a new one" } }] });
+      const heard: ConfirmationView[] = [];
+      const m = mount(ConfirmationCard, { c: view(), now, onanswered: (c: ConfirmationView) => heard.push(c) });
+      click(buttons(m.root)[n]);
+      await settle();
+      expect(m.root.querySelector(".outcome")!.textContent).toBe("Expired: make the call again for a new one");
+      expect(m.root.querySelector('[role="alert"]')).toBeNull();
+      expect(buttons(m.root)).toHaveLength(0);
+      expect(heard.map(c => [c.id, c.status])).toEqual([[ID, "expired"]]);
+      m.unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("shows every word as text", () => {
     const m = mount(ConfirmationCard, { c: view({ words: HOSTILE, agents: [{ name: HOSTILE, harness: "claude", handle: "a-1", cwd: "", started_at: "2026-10-29T09:00:00.000Z" }] }), now });
     expect(m.root.querySelector("img")).toBeNull();
@@ -92,6 +111,27 @@ describe("ConfirmationFeed", () => {
     expect(feed.open.map(c => c.id)).toEqual([ID, "cf_ff"]);
     on!({ type: "confirmation", confirmation: view({ status: "approved" }) });
     expect(feed.open.map(c => c.id)).toEqual(["cf_ff"]);
+  });
+
+  it("reads the open ones again as one falls due, and hears one gone then as expired", async () => {
+    vi.useFakeTimers();
+    try {
+      const due = view({ created_at: new Date(Date.now() - 540_000).toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString() });
+      let listed = [due];
+      let reads = 0;
+      const feed = new ConfirmationFeed({ list: async () => { reads++; return listed; } });
+      const ended: [string, string][] = [];
+      feed.onEnded(c => ended.push([c.id, c.status]));
+      await feed.refresh();
+      expect(feed.open.map(c => c.id)).toEqual([ID]);
+      listed = [];
+      await vi.advanceTimersByTimeAsync(59_000);
+      expect(reads).toBe(1);
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(reads).toBe(2);
+      expect(feed.open).toEqual([]);
+      expect(ended).toEqual([[ID, "expired"]]);
+    } finally { vi.useRealTimers(); }
   });
 
   it("shows no toasts while the page lists the open ones itself, as the inbox does", async () => {

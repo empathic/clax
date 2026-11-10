@@ -12,8 +12,8 @@
   // what the daemon reads back; a file that did not read when the daemon
   // started, and tables whose values do not check, are said at the top. A
   // hosted daemon has no settings screen (404), and says so. Below the
-  // fields, Confirmations: whether confirming requires Touch ID or a
-  // passkey, and the passkeys registered (`q/PasskeySettings.svelte`).
+  // fields, Confirmations: whether confirming requires a passkey,
+  // and the passkeys registered (`q/PasskeySettings.svelte`).
   import { onMount } from "svelte";
   import { refusal } from "../people/refusal";
   import { type ProviderModels, type Settings, providerModels, saveSettings, settings, testProvider } from "./api";

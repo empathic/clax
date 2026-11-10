@@ -61,7 +61,7 @@ describe("passkeys for confirmations", () => {
     await passkeySettings(true);
     const m = mount(ConfirmationCard, { c: card(), now });
     await settle();
-    expect(m.root.querySelector(".coffer")!.textContent).toContain("Require Touch ID or a passkey to confirm");
+    expect(m.root.querySelector(".coffer")!.textContent).toContain("Require a passkey to confirm");
     click(byText(m.root, "Don't ask again"));
     await settle();
     expect(calls.filter(c => c.method === "PUT")).toEqual([{ url: "/api/passkeys/settings", method: "PUT", body: { offer_dismissed: true } }]);
@@ -88,7 +88,7 @@ describe("passkeys for confirmations", () => {
       ["POST", "/api/passkeys", { credential_id: "AQ", public_key: "Bg", alg: -7, authenticator_data: "Bw", client_data_json: "BQ" }],
       ["PUT", "/api/passkeys/settings", { required: true }],
     ]);
-    expect(m.root.querySelector(".coffer")!.textContent).toBe("Passkey added: Confirm now asks for Touch ID or your passkey.");
+    expect(m.root.querySelector(".coffer")!.textContent).toBe("Passkey added: Confirm now asks for your passkey.");
   });
 
   it("a registration held for confirmation rides on the card that offered it, and the daemon adds it once approved there", async () => {
@@ -122,7 +122,7 @@ describe("passkeys for confirmations", () => {
       ["POST", "/api/passkeys", { credential_id: "AQ", public_key: "Bg", alg: -7, authenticator_data: "Bw", client_data_json: "BQ" }],
       ["POST", `/api/confirmations/${REG}`, { approve: true }],
     ]);
-    expect(offering.root.querySelector(".coffer")!.textContent).toBe("Passkey added: Confirm now asks for Touch ID or your passkey.");
+    expect(offering.root.querySelector(".coffer")!.textContent).toBe("Passkey added: Confirm now asks for your passkey.");
   });
 
   it("a registration still waiting after a reload rides on another card, or shows alone, and approving its card adds it", async () => {
@@ -181,7 +181,7 @@ describe("passkeys for confirmations", () => {
       confirmations().take({ ...registration(REG), status });
       await settle();
       expect(m.root.querySelector(".pk-held")).toBeNull();
-      if (status === "approved") expect(m.root.querySelector(".coffer")!.textContent).toBe("Passkey added: Confirm now asks for Touch ID or your passkey.");
+      if (status === "approved") expect(m.root.querySelector(".coffer")!.textContent).toBe("Passkey added: Confirm now asks for your passkey.");
       else expect(m.root.querySelector(".pk-setup .err")!.textContent).toBe("The passkey was not added: its confirmation was declined.");
       m.unmount();
     }
@@ -197,8 +197,9 @@ describe("passkeys for confirmations", () => {
     const m = mount(ConfirmationCard, { c: card(), now });
     await settle();
     expect(m.root.querySelector(".coffer")).toBeNull();
-    // The passkeys it asks for say how each was added.
-    expect(m.root.querySelector(".ckeys")!.textContent).toContain("from a browser session; agents running then: ada (claude)");
+    // It says a passkey is asked for; Settings lists them.
+    expect(m.root.querySelector(".ckey")!.textContent).toBe("Confirm asks for your passkey.");
+    expect(m.root.querySelector(".pk-list")).toBeNull();
     click(byText(m.root, "Confirm"));
     await settle();
     expect((got[0] as { publicKey: PublicKeyCredentialRequestOptions }).publicKey.userVerification).toBe("required");
@@ -223,7 +224,7 @@ describe("the Settings switch", () => {
     const m = mount(PasskeySettings, { now });
     await settle();
     expect(sw(m.root).getAttribute("aria-checked")).toBe("true");
-    expect(m.root.querySelector(".pk-list")!.textContent).toContain("from the Clax app; agents running then: none");
+    expect(m.root.querySelector(".pk-list")!.textContent).toContain("from the Clax app; no agents running then");
     expect(m.root.textContent).toContain("clax passkeys reset");
     click(sw(m.root));
     await settle();
