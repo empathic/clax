@@ -16,7 +16,7 @@ use clax_core::content::{ContentStore, contract, wait};
 use clax_core::working::{Clock, ManualClock};
 use clax_git::http::{HttpRequest, HttpResponse, Transport};
 use clax_git::memory::{MemoryHost, MemoryRepo};
-use clax_git::object::parse_tree;
+use clax_git::object::{Commit, parse_tree};
 use clax_git::server::{Access, GitRequest, ReceiveOptions, ServeOptions, serve, split_git_path};
 use clax_git::versions::repo_name;
 use clax_git::{CommitMeta, GitError, ObjectId, ObjectKind, Repo, RepoHost, TreeEntry};
@@ -229,9 +229,20 @@ impl ArtifactsRepoApi for Handle {
         self.repo.read_commit_meta(id).await
     }
 
+    /// As Artifacts' `readTree` answers: a tree's entries, and for a
+    /// commit's ID its root tree's entries (seen on a deployed Worker: the
+    /// commit's ID gave the entries of the tree it names, as `git ls-tree`
+    /// peels a commit).
     async fn read_tree(&self, id: &ObjectId) -> clax_git::Result<Option<Vec<TreeEntry>>> {
         match self.repo.read_object(id).await? {
             Some(o) if o.kind == ObjectKind::Tree => Ok(Some(parse_tree(&o.data)?)),
+            Some(o) if o.kind == ObjectKind::Commit => {
+                let tree = Commit::parse(&o.data)?.tree;
+                match self.repo.read_object(&tree).await? {
+                    Some(t) if t.kind == ObjectKind::Tree => Ok(Some(parse_tree(&t.data)?)),
+                    _ => Ok(None),
+                }
+            }
             _ => Ok(None),
         }
     }

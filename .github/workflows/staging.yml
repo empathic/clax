@@ -63,11 +63,16 @@ jobs:
 
   # The release binaries, SHA256SUMS, install.sh and SOURCE_TREE, attested,
   # as the workflow artifact release-dist.
+  #
+  # contents: write is for release.yml's publish job alone, which a
+  # candidate skips: GitHub refuses to start a run whose called workflow has
+  # a job asking for more than its caller grants, skipped or not. Every
+  # other job of release.yml asks for contents: read.
   binaries:
     uses: ./.github/workflows/release.yml
     with: { candidate: true }
     permissions:
-      contents: read
+      contents: write
       actions: read
       id-token: write
       attestations: write
@@ -105,7 +110,11 @@ jobs:
           scripts/pnpm-install-stamped.sh crates/clax-worker
           scripts/build-web.sh
           crates/clax-worker/build.sh
-          tar -cf "$RUNNER_TEMP/worker.tar" target/clax-worker/build target/clax-worker/built-from.json web/dist
+          # -h: with Bazel (the runner has Bazelisk), target/clax-worker/build
+          # is a link into Bazel's output; the archive holds its files.
+          tar -chf "$RUNNER_TEMP/worker.tar" target/clax-worker/build target/clax-worker/built-from.json web/dist
+          tar -tf "$RUNNER_TEMP/worker.tar" | grep -x target/clax-worker/build/index_bg.wasm >/dev/null \
+            || { echo "::error::worker.tar holds no target/clax-worker/build/index_bg.wasm"; exit 1; }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: { name: worker, path: "${{ runner.temp }}/worker.tar", if-no-files-found: error }
       - name: Attest the Worker

@@ -323,10 +323,24 @@ impl<B: ArtifactsApi, T: Transport> ArtifactsRepo<B, T> {
             .copied()
     }
 
-    async fn tree(&self, id: &ObjectId) -> clax_git::Result<Option<Object>> {
+    /// Tree `id`, read with `readTree`. `readTree` of a commit's ID answers
+    /// the entries of the commit's tree, which hash to that tree's ID, not
+    /// the commit's: for an object of unknown kind (`known` false) a tree
+    /// that does not hash back is no tree, `None`; for one known to be a
+    /// tree it is an error.
+    async fn tree(&self, id: &ObjectId, known: bool) -> clax_git::Result<Option<Object>> {
         let Some(entries) = self.handle.read_tree(id).await? else {
             return Ok(None);
         };
+        let data = encode_tree(&entries)?;
+        if hash_object(ObjectKind::Tree, &data) != *id {
+            if !known {
+                return Ok(None);
+            }
+            return Err(GitError::RepoUnavailable(format!(
+                "Tree {id} read through the binding does not hash back to its ID"
+            )));
+        }
         {
             let mut kinds = self.kinds.lock().unwrap_or_else(|e| e.into_inner());
             for e in &entries {
@@ -337,21 +351,20 @@ impl<B: ArtifactsApi, T: Transport> ArtifactsRepo<B, T> {
                 }
             }
         }
-        let data = encode_tree(&entries)?;
-        if hash_object(ObjectKind::Tree, &data) != *id {
-            return Err(GitError::RepoUnavailable(format!(
-                "Tree {id} read through the binding does not hash back to its ID"
-            )));
-        }
         Ok(Some(Object::new(ObjectKind::Tree, data)))
     }
 
-    async fn blob(&self, id: &ObjectId) -> clax_git::Result<Option<Object>> {
-        Ok(self
-            .handle
-            .read_blob(id)
-            .await?
-            .map(|b| Object::new(ObjectKind::Blob, b)))
+    /// Blob `id`, read with `readBlob`. For an object of unknown kind
+    /// (`known` false) bytes that do not hash back as a blob are no blob,
+    /// `None`, whatever `readBlob` answers for another kind's ID.
+    async fn blob(&self, id: &ObjectId, known: bool) -> clax_git::Result<Option<Object>> {
+        let Some(b) = self.handle.read_blob(id).await? else {
+            return Ok(None);
+        };
+        if !known && hash_object(ObjectKind::Blob, &b) != *id {
+            return Ok(None);
+        }
+        Ok(Some(Object::new(ObjectKind::Blob, b)))
     }
 
     async fn commit(&self, id: &ObjectId) -> clax_git::Result<Option<Object>> {
@@ -405,15 +418,17 @@ impl<B: ArtifactsApi, T: Transport> Transport for Authed<'_, B, T> {
 impl<B: ArtifactsApi, T: Transport> Repo for ArtifactsRepo<B, T> {
     async fn read_object(&self, id: &ObjectId) -> clax_git::Result<Option<Object>> {
         match self.kind_of(id) {
-            Some(ObjectKind::Blob) => return self.blob(id).await,
-            Some(ObjectKind::Tree) => return self.tree(id).await,
+            Some(ObjectKind::Blob) => return self.blob(id, true).await,
+            Some(ObjectKind::Tree) => return self.tree(id, true).await,
             Some(ObjectKind::Commit) => return self.commit(id).await,
             _ => {}
         }
-        if let Some(o) = self.tree(id).await? {
+        // Of unknown kind: each read that does not hash back is another
+        // kind's answer (a commit's ID gives `readTree` its tree).
+        if let Some(o) = self.tree(id, false).await? {
             return Ok(Some(o));
         }
-        if let Some(o) = self.blob(id).await? {
+        if let Some(o) = self.blob(id, false).await? {
             return Ok(Some(o));
         }
         self.commit(id).await

@@ -106,7 +106,7 @@ resources:
   # github.com/empathic/clax//deploy/k8s/release?ref=<commit>
   # 0.6.0 attaches none: until the first release after it does, use the
   # line above.
-  - https://github.com/empathic/clax/releases/download/v0.6.0/clax-fleet.yaml
+  - https://github.com/empathic/clax/releases/download/v0.7.1/clax-fleet.yaml
 images:
   # The name the manifests give the image, not `clax-fleet`: kustomize
   # matches what it has already rewritten, so `name: clax-fleet` here
@@ -138,10 +138,10 @@ until the first release after it, name a candidate from main
 (`:sha-<commit>`, with `@refs/heads/main` as the identity) instead:
 
 ```
-cosign verify ghcr.io/empathic/clax-fleet:0.6.0 \
+cosign verify ghcr.io/empathic/clax-fleet:0.7.1 \
   --certificate-identity-regexp '^https://github\.com/empathic/clax/\.github/workflows/fleet-image\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
-docker buildx imagetools inspect ghcr.io/empathic/clax-fleet:0.6.0 --format '{{json .SBOM}}'
+docker buildx imagetools inspect ghcr.io/empathic/clax-fleet:0.7.1 --format '{{json .SBOM}}'
 ```
 
 A cluster that admits only signed images (Kyverno's `verifyImages`, or
@@ -213,7 +213,7 @@ Check a catalog before applying it, with the image (until a release after
 0.6.0 publishes it, a candidate from main or your own build, by its name):
 
 ```
-docker run --rm -v "$PWD":/c ghcr.io/empathic/clax-fleet:0.6.0 check-catalog /c/fleet.toml
+docker run --rm -v "$PWD":/c ghcr.io/empathic/clax-fleet:0.7.1 check-catalog /c/fleet.toml
 ```
 
 **`create = true` is for a new instance's first start.** It lets the

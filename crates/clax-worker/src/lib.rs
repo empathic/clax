@@ -105,6 +105,7 @@ mod app_data;
 pub mod bot;
 pub mod diag;
 mod instance;
+mod log;
 pub mod repos;
 pub mod sandbox;
 mod store;
@@ -144,7 +145,7 @@ use crate::store::DoPageStore;
 /// reading or cancelling that one throws past wasm-bindgen).
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, _ctx: worker::Context) -> Result<Response> {
-    console_error_panic_hook::set_once();
+    crate::log::init();
     let path = req.path();
     let url_host = req.url()?.host_str().map(str::to_owned);
     let host = req.headers().get("host")?.unwrap_or_default();
@@ -483,7 +484,7 @@ pub(crate) async fn owner_reaches(env: &Env, artifact: &str) -> Result<bool> {
 #[event(queue)]
 async fn queue(batch: worker::MessageBatch<Value>, env: Env, _ctx: worker::Context) -> Result<()> {
     use worker::MessageExt;
-    console_error_panic_hook::set_once();
+    crate::log::init();
     let messages = batch.messages()?;
     let plan = clax_git::events::plan_batch(messages.iter().map(|m| m.body()));
     for i in plan.ack {
@@ -846,7 +847,7 @@ impl ClaxDb {
 
 impl DurableObject for ClaxDb {
     fn new(state: State, _env: Env) -> Self {
-        console_error_panic_hook::set_once();
+        crate::log::init();
         ClaxDb {
             state,
             opened: std::cell::RefCell::new(None),
