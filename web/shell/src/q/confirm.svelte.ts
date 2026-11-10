@@ -5,8 +5,11 @@
 // as a toast (`ConfirmToasts.svelte`), listing the agent sessions live now.
 // The feed follows the owner's `inbox` topic (its `confirmation` events)
 // through the inbox feed's subscription (`InboxFeed.hear`), and fetches
-// the open ones each time the topic goes live or resyncs. A browser that
-// is not the owner's is refused the list (403) and stops.
+// the open ones each time the topic goes live or resyncs. The daemon
+// publishes no event when one expires, so the feed reads the open ones
+// again as the earliest falls due, and one gone then has expired. A
+// browser that is not the owner's is refused the list (403) and stops.
+import { after, wall } from "../clock";
 import { browserCall, Refused } from "../held";
 import type { StreamEvent } from "../stream";
 import type { Assertion } from "./passkey";
@@ -67,10 +70,17 @@ export function agentLabel(a: ConfirmAgent): string {
 /** What the feed follows: the inbox feed, or anything that hands on its topic's events. */
 type Source = { hear(f: (e: StreamEvent) => void): () => void };
 
+/** How long after a confirmation's time the feed asks the daemon, whose clock decides. */
+const EXPIRY_SLACK_MS = 1000;
+/** How long until it asks again about one this browser's clock calls due and the daemon still lists. */
+const RECHECK_MS = 30_000;
+const dueAt = (c: ConfirmationView) => Date.parse(c.expires_at);
+
 /** The page's open confirmations, following the owner's `inbox` topic. */
 export class ConfirmationFeed {
   declare private s: { open: ConfirmationView[]; listed: number };
   declare private unwatch: (() => void) | null;
+  declare private unexpire: (() => void) | null;
   declare private changed: Set<() => void>;
   declare private ended: Set<(c: ConfirmationView) => void>;
   declare private readonly list: typeof listConfirmations;
@@ -79,6 +89,7 @@ export class ConfirmationFeed {
     const s = $state({ open: [] as ConfirmationView[], listed: 0 });
     this.s = s;
     this.unwatch = null;
+    this.unexpire = null;
     this.changed = new Set();
     this.ended = new Set();
     this.list = opts.list ?? listConfirmations;
@@ -103,7 +114,18 @@ export class ConfirmationFeed {
   }
   private set open(v: ConfirmationView[]) {
     this.s.open = v;
+    this.awaitExpiry();
     for (const f of [...this.changed]) f();
+  }
+
+  /** Reads the open ones again once the earliest falls due. */
+  private awaitExpiry(): void {
+    this.unexpire?.();
+    this.unexpire = null;
+    const due = Math.min(...this.s.open.map(dueAt).filter(Number.isFinite));
+    if (!Number.isFinite(due)) return;
+    const wait = due - wall() + EXPIRY_SLACK_MS;
+    this.unexpire = after(wait > 0 ? wait : RECHECK_MS, () => { this.unexpire = null; void this.refresh(); }, "confirmation-expiry");
   }
 
   /** Calls `f` after each change of `open`, until the returned function runs. */
@@ -121,13 +143,20 @@ export class ConfirmationFeed {
   stop(): void {
     this.unwatch?.();
     this.unwatch = null;
+    this.unexpire?.();
+    this.unexpire = null;
   }
 
-  /** Fetches the open ones; a browser that is not the owner's stops following. */
+  /** Fetches the open ones; one listed before, due by now and gone has
+   * expired, and is heard ended so. A browser that is not the owner's
+   * stops following. */
   async refresh(): Promise<void> {
     const r = await this.list().catch(() => null);
     if (r === "forbidden") { this.stop(); return; }
-    if (Array.isArray(r)) this.open = r;
+    if (!Array.isArray(r)) return;
+    const gone = this.s.open.filter(x => dueAt(x) <= wall() && !r.some(y => y.id === x.id));
+    this.open = r;
+    for (const c of gone) for (const f of [...this.ended]) f({ ...c, status: "expired" });
   }
 
   /** Takes a confirmation as it is now: an open one is listed (or

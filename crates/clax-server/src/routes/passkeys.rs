@@ -1,6 +1,6 @@
 //! The owner's passkeys for browser confirmations ([`clax_http::confirm`],
-//! [`clax_store::passkeys`]): opt-in user verification (Touch ID, or any
-//! passkey) on every confirmation.
+//! [`clax_store::passkeys`]): an opt-in passkey (user verification) on every
+//! confirmation.
 //!
 //! - `GET /api/passkeys`: whether passkeys can be used here, whether they
 //!   are required, whether the first-use offer was put off, and the
