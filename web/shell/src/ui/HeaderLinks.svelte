@@ -10,9 +10,8 @@
   let { current, owner, viewer }: { current?: string; owner: boolean; viewer: Viewer } = $props();
   let Bot = $state<typeof import("../bot/HeaderBot.svelte").default | null>(null);
   void import("../bot/HeaderBot.svelte").then(m => { Bot = m.default; }, () => {});
-  // The gear's props follow this component's.
-  const gear = $state<{ show: "settings"; current?: string; owner: boolean; viewer: Viewer }>({ show: "settings", owner: false, viewer: undefined });
-  $effect(() => { gear.current = current; gear.owner = owner; gear.viewer = viewer; });
+  // The gear reads this component's props as they are now, each time it asks.
+  const gear = { show: "settings" as const, get current() { return current; }, get owner() { return owner; }, get viewer() { return viewer; } };
   onMount(() => {
     const bar = document.querySelector(".gbar");
     if (!bar) return;
