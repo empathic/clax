@@ -542,8 +542,8 @@ case_3c() {
     else fail "resume at the pull request (rc=$rc: $(git -C "$C/repo" status --porcelain; git -C "$C/repo" branch; git -C "$C/repo" worktree list); $(cat "$C/out"))"; fi
 }
 case_3d() {
-    # A merge of main that conflicts: the run stops saying how to merge by
-    # hand; merged so, the next run goes on.
+    # prod and main changed the same lines: the merge takes main's, saying
+    # in which file, and the run goes on.
     new_case
     git -C "$C/repo" switch -q prod
     echo prod > "$C/repo/fix.txt"
@@ -557,22 +557,68 @@ case_3d() {
     git -C "$C/repo" push -q origin main
     PROD0="$(o rev-parse prod)" MAIN0="$(o rev-parse main)"
     act; rc=$?
-    if [ "$rc" = 1 ] && has "step 3 (Merge main into it) failed" && has "conflicts in: fix.txt" \
+    if [ "$rc" = 0 ] && prepared_ok && has "prod and origin/main changed the same lines in: fix.txt; the merge takes origin/main's there" \
+        && [ "$(o show release/0.6.0:fix.txt)" = main ]; then
+        pass "where prod and main changed the same lines, the merge takes main's and says in which file"
+    else fail "a merge of main over the same lines (rc=$rc: $(cat "$C/out"))"; fi
+}
+case_3d2() {
+    # A merge of main git cannot settle by lines (prod changed a file main
+    # removed): the run stops saying how to merge by hand; merged so, the
+    # next run goes on.
+    new_case
+    git -C "$C/repo" switch -q prod
+    echo "prod/" >> "$C/repo/.gitignore"
+    git -C "$C/repo" -c commit.gpgsign=false commit -q -am "Fix on prod"
+    git -C "$C/repo" push -q origin prod
+    git -C "$C/repo" switch -q main
+    git -C "$C/repo" rm -q .gitignore
+    git -C "$C/repo" -c commit.gpgsign=false commit -q -m "Remove it on main"
+    git -C "$C/repo" push -q origin main
+    PROD0="$(o rev-parse prod)" MAIN0="$(o rev-parse main)"
+    # main removed .gitignore, so its checkout shows target/, which the run
+    # makes: the checkout's commit is checked, not its status.
+    act; rc=$?
+    if [ "$rc" = 1 ] && has "step 3 (Merge main into it) failed" && has "conflicts in: .gitignore" \
         && has "Merge by hand in $WT, signed and with this subject:" \
         && has "git -C $WT merge -S origin/main -m \"Merge origin/main into release/0.6.0\"" \
         && [ "$(git -C "$WT" rev-parse HEAD)" = "$PROD0" ] && [ -z "$(git -C "$WT" status --porcelain)" ] \
-        && [ "$(git -C "$C/repo" rev-parse HEAD)" = "$MAIN0" ] && [ -z "$(git -C "$C/repo" status --porcelain)" ] \
+        && [ "$(git -C "$C/repo" rev-parse HEAD)" = "$MAIN0" ] \
         && [ "$(count "bump 0.6.0")" = 0 ]; then
         pass "a merge of main that conflicts stops at step 3, saying how to merge by hand in the worktree"
     else fail "a merge of main that conflicts (rc=$rc: $(cat "$C/out"))"; fi
     git -C "$WT" merge -q -S origin/main -m "Merge origin/main into release/0.6.0" >/dev/null 2>&1
-    echo main > "$WT/fix.txt"
-    git -C "$WT" add fix.txt
+    git -C "$WT" rm -q .gitignore
     git -C "$WT" commit -q -S --no-edit
     act; rc=$?
-    if [ "$rc" = 0 ] && prepared_ok && has "step 3/10 Merge main into it: done already"; then
+    if [ "$rc" = 0 ] && has "step 3/10 Merge main into it: done already"; then
         pass "merged by hand as told, the next run goes on"
     else fail "resume after a merge by hand (rc=$rc: $(cat "$C/out"))"; fi
+}
+case_3d3() {
+    # prod holds a release main was never carried (prod is at 0.5.1, main at
+    # 0.5.0): lines both changed are not taken from main; the run stops.
+    new_case
+    git -C "$C/repo" switch -q prod
+    sed -i.bak 's/^CLAX_VERSION=.*/CLAX_VERSION="0.5.1"/' "$C/repo/scripts/ensure-clax.sh" "$C/repo/plugins/pi/scripts/ensure-clax.sh"
+    rm "$C/repo/scripts/ensure-clax.sh.bak" "$C/repo/plugins/pi/scripts/ensure-clax.sh.bak"
+    echo prod > "$C/repo/fix.txt"
+    git -C "$C/repo" add -A
+    git -C "$C/repo" -c commit.gpgsign=false commit -q -m "Release 0.5.1"
+    git -C "$C/repo" push -q origin prod
+    git -C "$C/repo" switch -q main
+    echo main > "$C/repo/fix.txt"
+    git -C "$C/repo" add fix.txt
+    git -C "$C/repo" -c commit.gpgsign=false commit -q -m "Fix on main"
+    git -C "$C/repo" push -q origin main
+    PROD0="$(o rev-parse prod)"
+    act; rc=$?
+    if [ "$rc" = 1 ] && has "step 3 (Merge main into it) failed" && has "conflicts in: fix.txt" \
+        && has "origin/prod is at 0.5.1 and origin/main at 0.5.0: prod holds a release not carried to main" \
+        && [ "$(git -C "$WT" rev-parse HEAD)" = "$PROD0" ] && [ -z "$(git -C "$WT" status --porcelain)" ] \
+        && [ "$(count "bump 0.6.0")" = 0 ]; then
+        pass "while prod holds a release not carried to main, lines both changed stop step 3 for a merge by hand"
+    else fail "a merge over the same lines with an uncarried release on prod (rc=$rc: $(cat "$C/out"))"; fi
 }
 case_18() {
 
@@ -847,7 +893,7 @@ case_42() {
 
 JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 [ "$JOBS" -le 8 ] || JOBS=8
-CASES="case_1 case_2 case_2b case_2c case_3 case_3b case_3c case_3d case_3e case_3f case_18 case_18b case_19 case_21 case_22 case_22b case_22c case_23 case_24 case_25 case_26 case_27 case_29 case_30 case_31 case_31b case_31c case_32 case_33 case_36 case_37 case_38 case_39 case_40 case_40b case_41 case_42"
+CASES="case_1 case_2 case_2b case_2c case_3 case_3b case_3c case_3d case_3d2 case_3d3 case_3e case_3f case_18 case_18b case_19 case_21 case_22 case_22b case_22c case_23 case_24 case_25 case_26 case_27 case_29 case_30 case_31 case_31b case_31c case_32 case_33 case_36 case_37 case_38 case_39 case_40 case_40b case_41 case_42"
 # A case's subshell exits 0 once its last check has run; one that dies on
 # the way (an unbound variable under set -u, say) exits otherwise, and fails
 # the gate whatever it printed before. Each case's status is collected by its

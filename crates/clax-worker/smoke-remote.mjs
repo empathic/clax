@@ -49,7 +49,10 @@
 // wrangler login, a queue subscription for the artifact's repository;
 // `git push`, and the push becoming a version (on Artifacts through the
 // queue's `pushed` event; when none arrives, a direct reconcile tells the
-// event's absence from a reconcile failure); a comment arriving live on a
+// event's absence from a reconcile failure, and the publish after it,
+// before which the instance records every commit still unrecorded, must
+// record the push: the event's absence is then a warning, `WARN` in the
+// summary and an annotation under GitHub Actions, not a failure); a comment arriving live on a
 // WebSocket stream; when the admin turned web search and fetch on
 // (`GET /api/admin/web`), a ClaxBot run whose script makes one real search
 // and one real fetch of https://developers.cloudflare.com/ through the AI
@@ -67,7 +70,8 @@
 // step failed. --json prints the whole report as JSON at the end; --probe
 // runs the Artifacts probe whatever the store (under `wrangler dev --local`
 // every call on the binding throws); --queue-wait <s> (default 120) bounds
-// the wait for the pushed event; --no-subscribe makes no subscription;
+// the wait for the pushed event; --require-event keeps a pushed event that
+// did not arrive a failure; --no-subscribe makes no subscription;
 // --store artifacts|memory names the store until the diagnostics say (else
 // the record's), which an agent token's smoke, without them, goes by.
 
@@ -837,6 +841,29 @@ async function smoke(c, o) {
     }
   }, ["git push"]);
 
+  // On Artifacts, a push whose event did not arrive in time: the path every
+  // repository has, subscribed or not, is the publish after it, before
+  // which the instance records every commit still unrecorded (src/lib.rs,
+  // Pushes). When that records the push, the step above is a warning, not
+  // a failure, and the steps that need it run.
+  await step("the push is recorded before the next publish", async () => {
+    const lost = results.find((r) => r.name === "the push becomes a version" && r.status === "fail");
+    if (!lost) skip("the push became a version already, or was not made");
+    if (store.value !== "artifacts") skip("the stand-in records a push as it takes it: the step above stays failed");
+    if (flag("--require-event")) skip("--require-event: the step above stays failed");
+    const version = async () => (await c.owner(`/api/artifacts/${aid}`)).json.artifact.current_version;
+    // A publish on version 2 is refused once the push is version 3, or
+    // lands after it; either way the push is recorded.
+    const published = await c.tool("publish", { id: aid, if_version: 2, html: PAGE(`after the push ${RUN}`) })
+      .then((r) => `answered ${short(r.text, 160)}`, (x) => `was refused: ${short(x.message, 160)}`);
+    const after = await version();
+    if (!(after >= 3)) throw new Error(`the publish after the push ${published}, leaving the artifact at version ${after}: the push is recorded neither by the event nor before a publish`);
+    lost.status = "warn";
+    failed.delete(lost.name);
+    if (process.env.GITHUB_ACTIONS === "true") console.log(`::warning title=No pushed event from Cloudflare::the smoke's push was recorded before the next publish instead: ${short(lost.detail, 300)}`);
+    return { detail: `version 3 (the artifact is at ${after}; the publish ${published}); the pushed event's absence above is a warning` };
+  }, ["git push"]);
+
   await step("read the pushed version (mcp)", async () => {
     const r = await c.tool("read", { url_or_id: aid, version: 3 });
     if (!r.text.includes(`pushed ${RUN}`)) throw new Error(`version 3 reads ${short(r.text)}`);
@@ -1088,9 +1115,10 @@ async function main() {
     if (revokeMinted) console.log(`     the minted agent token: ${await revokeMinted()}`);
     await stop();
   }
-  const counts = { ok: 0, fail: 0, skip: 0 };
+  const counts = { ok: 0, fail: 0, skip: 0, warn: 0 };
   for (const r of results) counts[r.status] += 1;
-  console.log(`\n${counts.ok} ok, ${counts.fail} failed, ${counts.skip} skipped in ${Math.round((performance.now() - t0) / 1000)} s`);
+  console.log(`\n${counts.ok} ok, ${counts.fail} failed, ${counts.skip} skipped${counts.warn ? `, ${counts.warn} warned` : ""} in ${Math.round((performance.now() - t0) / 1000)} s`);
+  for (const r of results.filter((r) => r.status === "warn")) console.log(`  WARN ${r.name}: ${short(r.detail, 400)}`);
   for (const r of results.filter((r) => r.status === "fail")) console.log(`  FAIL ${r.name}: ${short(r.detail, 400)}`);
   const cannot = results.filter((r) => r.cannot).map((r) => r.name);
   if (cannot.length) console.log(`  not as ${CREDENTIAL_NAMES[acting]} (skipped, each named above): ${cannot.join("; ")}`);

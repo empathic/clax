@@ -157,6 +157,10 @@ else fail "the carry merges into main and prints main's new commit (rc=$rc: $out
     && [ "$(g show "$new_main:later")" = later ] \
     && pass "it carries the release commit and the branch's fix, and keeps main's later work" \
     || fail "it carries the release commit and the branch's fix, and keeps main's later work"
+body="$(g log -1 --format=%B "$(g rev-parse refs/heads/carry/0.7.0)")"
+if grep -q "Release 0.7.0" <<< "$body" && grep -q "fix: found on staging" <<< "$body" && ! grep -q "Release 0.6.0\|feat: a feature\|after the cut" <<< "$body"; then
+    pass "the carry's commit lists the release branch's commits alone"
+else fail "the carry's commit lists the release branch's commits alone ($body)"; fi
 grep -qx "PINNED=v0.7.0" <(g show "$new_main:scripts/ensure-clax.sh") && pass "the plugins are pinned in the same commit" \
     || fail "the plugins are pinned in the same commit"
 [ "$(g ls-tree "$new_main" scripts/ensure-clax.sh | cut -d' ' -f1)" = 100755 ] && pass "an executable file stays executable" \
@@ -197,14 +201,42 @@ if [ "$rc" = 0 ] && [ "$(g rev-parse "$(g rev-parse main)^")" = "$MAIN_BEFORE" ]
     pass "run again once CI passes, it merges the open pull request without opening another"
 else fail "run again once CI passes, it merges the open pull request (rc=$rc: $out)"; fi
 
-# main changed the version file after the cut: the release commit conflicts.
+# main changed the version file after the cut: the release conflicts.
 reset
 g switch -q main; echo 0.6.1 > "$R/VERSION"; g commit -q -am "chore: a version on main"; g switch -q --detach prod
 g fetch -q origin
 out="$("$R/scripts/carry-release.sh" 0.7.0 "$M" 2>&1)"; rc=$?
-if [ "$rc" = 1 ] && grep -q '"Release 0.7.0" does not apply to main' <<< "$out" && ! grep -q "git/commits" "$T/state/calls"; then
-    pass "a commit that does not apply to main stops the carry, naming it"
-else fail "a commit that does not apply to main stops the carry, naming it (rc=$rc: $out)"; fi
+if [ "$rc" = 1 ] && grep -q "does not merge into main's tip .*: VERSION conflicts" <<< "$out" && ! grep -q "git/commits" "$T/state/calls"; then
+    pass "a release that conflicts with main stops the carry, naming the file"
+else fail "a release that conflicts with main stops the carry, naming the file (rc=$rc: $out)"; fi
+[ "$(git -C "$R" worktree list | wc -l | tr -d ' ')" = 1 ] \
+    && pass "a carry that stops removes its worktree" || fail "a carry that stops removes its worktree"
+
+# 0.7.0 was merged into prod and never carried (its Deploy prod run failed
+# before the carry); 0.7.1 is cut from that prod, with main merged in. Its
+# carry brings main both releases: all that prod has and main lacks.
+g update-ref refs/heads/main "$MAIN_BEFORE"
+rm -f "$T/state/prs.json"; : > "$T/state/calls"; g update-ref -d refs/heads/carry/0.7.0
+g switch -q -c release/0.7.1 prod
+g merge -q --no-ff main -m "Merge origin/main into release/0.7.1"
+echo 0.7.1 > "$R/VERSION"; g commit -q -am "Release 0.7.1"
+g switch -q prod
+g merge -q --no-ff release/0.7.1 -m "Merge pull request #90 from empathic/release/0.7.1"
+M2="$(g rev-parse HEAD)"
+g switch -q --detach prod
+g fetch -q origin
+out="$("$R/scripts/carry-release.sh" 0.7.1 "$M2" 2>&1)"; rc=$?
+new_main="$(g rev-parse main)"
+if [ "$rc" = 0 ] && grep -qx "commit=$new_main" <<< "$out" && [ "$(g rev-parse "$new_main^")" = "$MAIN_BEFORE" ] \
+    && [ "$(g show "$new_main:VERSION")" = 0.7.1 ] && [ "$(g show "$new_main:fix")" = fixed ] \
+    && [ "$(g show "$new_main:later")" = later ] && grep -qx "PINNED=v0.7.1" <(g show "$new_main:scripts/ensure-clax.sh"); then
+    pass "a release after one never carried carries both: the earlier branch's fix, the version and the pin"
+else fail "a release after one never carried carries both (rc=$rc: $out)"; fi
+body="$(g log -1 --format=%B "$(g rev-parse refs/heads/carry/0.7.1)")"
+if grep -q "Release 0.7.1" <<< "$body" && grep -q "fix: found on staging" <<< "$body" && grep -q "Release 0.7.0" <<< "$body" \
+    && ! grep -q "Release 0.6.0\|feat: a feature" <<< "$body"; then
+    pass "the carry's commit lists the commits of both releases, and none main has"
+else fail "the carry's commit lists the commits of both releases, and none main has ($body)"; fi
 
 if "$R/scripts/carry-release.sh" 0.7 "$M" >/dev/null 2>&1; then fail "a version that is not X.Y.Z is a usage error"
 else [ "$?" = 2 ] && pass "a version that is not X.Y.Z is a usage error" || fail "a version that is not X.Y.Z exits 2"; fi
