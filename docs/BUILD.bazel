@@ -27,6 +27,21 @@ copy_to_bin(
     visibility = ["//web:__pkg__"],
 )
 
+# The license text of web/bridge, web/overlay and web/sdk, which the SDK
+# package carries (web/scripts/build-sdk.mjs).
+copy_to_bin(
+    name = "lgpl_license",
+    srcs = ["licenses/LGPL-2.1-only.txt"],
+    visibility = ["//web:__pkg__"],
+)
+
+# The GPL-2.0 text apps/clax_app's :licence_check compares the app's LICENSE
+# with.
+exports_files(
+    ["licenses/GPL-2.0-only.txt"],
+    visibility = ["//apps/clax_app:__pkg__"],
+)
+
 # The docs the release script test checks (scripts/test-release.files).
 exports_files(
     [
