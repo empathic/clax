@@ -198,4 +198,11 @@ describe("Api", () => {
     const s = setup([new Response("oops", { status: 502, statusText: "Bad Gateway" })]);
     await expect(s.api.me()).rejects.toEqual(new ApiFailure("http_502", "Bad Gateway", 502));
   });
+
+  it("says an answer held for confirmation is held, not the status's text", async () => {
+    const held = { status: "confirmation_pending", confirmation_id: "cf_01", confirm_url: "http://localhost:7480/inbox?confirm=cf_01" };
+    const s = setup([new Response(JSON.stringify(held), { status: 202, statusText: "Accepted" })]);
+    await expect(s.api.closeQuestion(TID, "answer", { answers: [] } as never)).rejects.toEqual(
+      new ApiFailure("confirmation_pending", "Answer it in Clax: it asks to confirm it.", 202));
+  });
 });

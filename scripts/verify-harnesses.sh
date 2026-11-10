@@ -36,6 +36,8 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd -P)"
+# The JSON reading and the watchdog below.
+HELPER="$REPO/scripts/verify-harnesses.py"
 OLD="arti""fax"   # the previous product name, assembled
 
 refuse() { echo "verify-harnesses: $*" >&2; exit 2; }
@@ -81,12 +83,7 @@ inside_real_home "$BASE" \
 GIT_DESC="$(git -C "$REPO" describe --always --dirty 2>/dev/null || echo "unknown")"
 # The executable of the `clax` binary in cargo's JSON messages on stdin.
 artifact_exe() {
-    perl -MJSON::PP -ne '
-        my $m = eval { JSON::PP::decode_json($_) } or next;
-        next unless ($m->{reason} // "") eq "compiler-artifact";
-        next unless ($m->{target}{name} // "") eq "clax" && grep { $_ eq "bin" } @{ $m->{target}{kind} || [] };
-        print "$m->{executable}\n" if defined $m->{executable};
-    ' | tail -n 1
+    python3 "$HELPER" artifact-exe | tail -n 1
 }
 if [ -n "${CLAX_BIN:-}" ]; then
     [ -x "$CLAX_BIN" ] || refuse "CLAX_BIN ($CLAX_BIN) is not executable"
@@ -105,34 +102,10 @@ SAFE_PATH="$CLAX_DIR:$PATH:$REPO/plugins/pi/node_modules/.bin"
 
 # Runs a command with the scratch environment, killing it and everything it
 # started after $1 seconds (exit 124). Ctrl-C and other signals stop it too.
-# shellcheck disable=SC2016 # Perl code, expanded by perl
-WATCHDOG='
-    my $t = shift;
-    my $pid = 0;
-    my $stop = sub {
-        return unless $pid;
-        kill "TERM", -$pid;
-        for (1 .. 20) { last if waitpid($pid, WNOHANG) != 0; select(undef, undef, undef, 0.1); }
-        kill "KILL", -$pid;
-        waitpid($pid, 0);
-    };
-    for my $s (qw(INT TERM HUP)) {
-        $SIG{$s} = sub { $stop->(); $SIG{$s} = "DEFAULT"; kill $s, $$; exit 1 };
-    }
-    $SIG{ALRM} = sub { $stop->(); exit 124 };
-    $pid = fork() // die "fork: $!\n";
-    if ($pid == 0) { setpgrp(0, 0); exec { $ARGV[0] } @ARGV or die "exec $ARGV[0]: $!\n"; }
-    alarm $t;
-    waitpid($pid, 0);
-    my $st = $?;
-    alarm 0;
-    kill "KILL", -$pid;
-    exit($st & 127 ? 128 + ($st & 127) : $st >> 8);
-'
 SCRATCH_ENV=()
 sx() { # seconds, command...
     local t="$1"; shift
-    perl -MPOSIX=WNOHANG -e "$WATCHDOG" "$t" env -i "${SCRATCH_ENV[@]}" "$@"
+    python3 "$HELPER" watchdog "$t" env -i "${SCRATCH_ENV[@]}" "$@"
 }
 
 # The scratch root, removed on every exit. Nothing is created before the
@@ -227,16 +200,8 @@ uses() { case " ${HARNESSES[*]+"${HARNESSES[*]}"} " in *" $1 "*) return 0 ;; esa
 # that cannot be parsed prints "?unparseable <file>".
 reg_names() {
     case "$1" in
-        claude) perl -MJSON::PP -e '
-            for my $f (@ARGV) {
-                open(my $fh, "<", $f) or next;
-                my $j = eval { local $/; JSON::PP::decode_json(<$fh>) };
-                if (ref $j ne "HASH") { print "?unparseable $f\n"; next }
-                my @maps = $f =~ /known_marketplaces\.json$/ ? ($j)
-                    : $f =~ /installed_plugins\.json$/ ? ($j->{plugins})
-                    : ($j->{enabledPlugins}, $j->{extraKnownMarketplaces});
-                for my $m (@maps) { print "$_\n" for ref $m eq "HASH" ? sort keys %$m : () }
-            }' "$S_CLAUDE/settings.json" "$S_CLAUDE/plugins/known_marketplaces.json" "$S_CLAUDE/plugins/installed_plugins.json" ;;
+        claude) python3 "$HELPER" claude-names \
+            "$S_CLAUDE/settings.json" "$S_CLAUDE/plugins/known_marketplaces.json" "$S_CLAUDE/plugins/installed_plugins.json" ;;
         codex) [ -e "$S_CODEX/config.toml" ] || return 0
             sed -n -e 's/^[[:space:]]*\[marketplaces\.\(.*\)\][[:space:]]*$/\1/p' \
                 -e 's/^[[:space:]]*\[plugins\.\(.*\)\][[:space:]]*$/\1/p' "$S_CODEX/config.toml" | tr -d '"'"'" ;;
@@ -248,13 +213,7 @@ lacks_old() { ! names_old "$1"; }
 # Pi's package sources, one per line, as settings.json stores them.
 pi_packages() {
     [ -e "$S_PI/settings.json" ] || return 0
-    perl -MJSON::PP -e '
-        open(my $fh, "<", $ARGV[0]) or exit;
-        my $j = eval { local $/; JSON::PP::decode_json(<$fh>) };
-        if (ref $j ne "HASH") { print "?unparseable $ARGV[0]\n"; exit }
-        for my $p (@{ ref $j->{packages} eq "ARRAY" ? $j->{packages} : [] }) {
-            print ref $p eq "HASH" ? ($p->{source} // "") : $p, "\n";
-        }' "$S_PI/settings.json"
+    python3 "$HELPER" pi-packages "$S_PI/settings.json"
 }
 # Each harness's registry files, concatenated.
 reg() {

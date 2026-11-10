@@ -29,6 +29,7 @@ fn clax(home: &Path) -> Command {
     let mut c = Command::new(crate::common::clax());
     c.env_clear()
         .env("CLAX_HOME", home)
+        .env("CLAX_GALLERY__QUICKSTART", "false")
         .env("CLAX_NO_OPEN", "1");
     c
 }

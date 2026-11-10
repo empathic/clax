@@ -439,7 +439,7 @@ pub async fn thread(
             }
             for tid in &e.linked {
                 if let Some(t) = st.get_thread(tid)? {
-                    publish_thread(&ctx, st, &t)?;
+                    publish_thread(&ctx, st, &t);
                 }
             }
             let (author_name, author_public_id) = author(st, &who)?;
@@ -622,7 +622,7 @@ pub async fn snapshot(
             });
             for tid in &linked {
                 if let Some(t) = st.get_thread(tid)? {
-                    publish_thread(&ctx, st, &t)?;
+                    publish_thread(&ctx, st, &t);
                 }
             }
             Ok(Some((p, a, v.n, linked, resolved.rule)))
@@ -655,7 +655,7 @@ impl axum::extract::FromRequestParts<AppState> for OwnerWrite {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let who = Identity::from_parts(&parts.headers, &parts.extensions, &state.token);
-        if who.token || who.extension {
+        if who.token || who.browser == clax_http::identity::Browser::Extension {
             Ok(OwnerWrite(who))
         } else {
             Err(ApiError::forbidden(
@@ -909,7 +909,7 @@ fn announce_refiled(
             });
         }
         if let Some(t) = st.get_thread(&m.thread_id)? {
-            publish_thread(ctx, st, &t)?;
+            publish_thread(ctx, st, &t);
         }
     }
     Ok(())

@@ -184,7 +184,7 @@ async fn seen_marks_are_per_viewer_monotonic_and_refuse_foreign_origins() {
         json!({"seen": 1})
     );
     assert_eq!(get(other.cookie.clone()).await, json!({"seen": null}));
-    assert_eq!(put(None, 1, None).await.status(), 400);
+    assert_eq!(put(None, 1, None).await.status(), 401, "no credential");
     assert_eq!(
         put(Some(alex.cookie.clone()), 4, Some("http://evil.example"))
             .await

@@ -19,12 +19,12 @@ import { createServer } from "node:http";
 import { mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { HERE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { HERE, STATE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
 
 const require = createRequire(join(HERE, "../../web/package.json"));
 const { chromium } = require("@playwright/test");
 
-const ROOT = join(HERE, "target/e2e-github");
+const ROOT = join(STATE, "e2e-github");
 const SECRET = "e2e setup secret " + Math.random().toString(36).slice(2);
 const TOKEN = "e2e-owner-token-" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 
@@ -146,7 +146,8 @@ async function main() {
     const theirs = await mp.request.get(`${origin}/api/artifacts/${aid}`);
     check(theirs.status() === 404, "the new person cannot read the owner's artifact", theirs.status());
     const list = await (await mp.request.get(`${origin}/api/artifacts`)).json();
-    check((list.artifacts ?? []).length === 0, "the new person's gallery holds nothing of the owner's", list);
+    // Their gallery may hold their own seeded quickstart, never the owner's page.
+    check(!(list.artifacts ?? []).some((a) => a.id === aid), "the new person's gallery holds nothing of the owner's", list);
 
     await op.goto(`${origin}/people`);
     await op.getByTestId("github-login").first().waitFor();

@@ -39,6 +39,7 @@ async function registry(): Promise<{ REGISTRY: Record<string, HandlerFactory>; l
   }));
   vi.doMock("./artifact", async orig => { await gate; return orig(); });
   vi.doMock("./device", async orig => { await gate; return orig(); });
+  vi.doMock("./shell", async orig => { await gate; return orig(); });
   at.unwatch.push((await import("./gesture")).unwatchShell);
   const { REGISTRY } = await import("./registry");
   return { REGISTRY, link: (await import("./device-link")).deviceLink };
@@ -95,15 +96,29 @@ describe("a lazy capability judges the viewer's gesture when the call arrives, n
       const { REGISTRY, link } = await registry();
       link.call = async (cap, method) => { sent.push(`${cap}.${method}`); return null; };
       at.verdict = arrival;
-      const calls = [REGISTRY.share(env(), null as never).call("text", ["hi"]), REGISTRY.home(env(), null as never).call("openInbox", [])];
+      // Settled from the start: a call refused at arrival rejects before
+      // the frame opens, and must not go unhandled meanwhile.
+      const calls = Promise.allSettled([REGISTRY.share(env(), null as never).call("text", ["hi"]), REGISTRY.home(env(), null as never).call("openInbox", [])]);
       await settle();
       at.verdict = loaded;
       at.open();
-      return (await Promise.allSettled(calls)).map(r => r.status === "fulfilled" ? r.value : (r.reason as { code?: string }).code);
+      return (await calls).map(r => r.status === "fulfilled" ? r.value : (r.reason as { code?: string }).code);
     };
     expect(await run("ok", "no_gesture")).toEqual([null, null]);
     expect(sent.sort()).toEqual(["home.openInbox", "share.text"]);
     expect(await run("no_gesture", "ok")).toEqual(["no_gesture", "no_gesture"]);
     expect(sent).toHaveLength(2);
+  });
+
+  it("shells_comment_mode_is_judged_when_the_call_arrives", async () => {
+    const { REGISTRY } = await registry();
+    const commentMode = vi.fn((on: boolean) => on);
+    const e = { ...env(), commentMode } as unknown as CapEnv;
+    const call = REGISTRY.shell(e, null as never).call("commentMode", [true]);
+    await settle();
+    at.verdict = "no_gesture";
+    at.open();
+    await expect(call).resolves.toBe(true);
+    expect(commentMode).toHaveBeenCalledWith(true);
   });
 });

@@ -1,5 +1,5 @@
 import { type Page } from "@playwright/test";
-import { test, expect, type Daemon, api, commentModeIn, publish, publishAs, registerSession, setName } from "./fixtures";
+import { test, expect, type Daemon, api, commentModeIn, publish, publishAs, publishNext, registerSession, setName } from "./fixtures";
 import { settle } from "./time";
 
 let d: Daemon;
@@ -173,6 +173,29 @@ test("the thread panel fits a phone", async ({ page }) => {
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(375);
 });
 
+test("a thread list longer than the viewer scrolls in the sidebar alone, never the window", async ({ page }) => {
+  const { artifact } = await publish(d.base, d.token, "Long threads", { "index.html": PAGE });
+  const ids: string[] = [];
+  for (let i = 0; i < 12; i++) {
+    const form = new FormData();
+    form.set("anchor", JSON.stringify({ kind: "element", selector: "body > main > h2", quote: "Quarterly goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null }));
+    form.set("body", `thread ${i}: ${"a longer comment that wraps over several lines ".repeat(4)}`);
+    form.set("version", "1");
+    const res = await fetch(`${d.base}/api/artifacts/${artifact.id}/threads`, { method: "POST", body: form, headers: { origin: d.base } });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    ids.push((await res.json()).thread.id);
+  }
+  // Each card then lists "vN agent addressed it" for v2 to v4, whose
+  // visually hidden separators lie far down the list.
+  const sid = (await registerSession(d.base, d.token)).id;
+  for (const v of [1, 2, 3]) await publishNext(d.base, d.token, sid, artifact.id, v, { note: "addressed", addresses: ids });
+  await page.setViewportSize({ width: 1280, height: 700 });
+  await page.goto(`${d.base}/a/${artifact.id}`);
+  await expect(page.locator(".thread-card .hist .nl .sep").first()).toBeAttached();
+  await expect.poll(() => page.locator("aside.sidebar").evaluate(s => s.scrollHeight > s.clientHeight)).toBe(true);
+  expect(await page.evaluate(() => document.scrollingElement!.scrollHeight)).toBe(700);
+});
+
 test("Escape in the shell cancels comment mode", async ({ page }) => {
   const { artifact } = await publish(d.base, d.token, "Escape", { "index.html": PAGE });
   await page.goto(`${d.base}/a/${artifact.id}`);
@@ -191,7 +214,9 @@ test("Escape in the shell cancels comment mode", async ({ page }) => {
 
 test("thread cards are reachable and selectable from the keyboard", async ({ page }) => {
   const { artifact } = await publish(d.base, d.token, "Keyboard", { "index.html": PAGE });
-  for (const [selector, quote, body] of [["body > main > h2", "Quarterly goals", "first"], ["body > main > p", "Grow revenue", "second"]]) {
+  // Made last, the "first" thread is listed first: the cards put the
+  // thread that changed last on top.
+  for (const [selector, quote, body] of [["body > main > p", "Grow revenue", "second"], ["body > main > h2", "Quarterly goals", "first"]]) {
     const form = new FormData();
     form.set("anchor", JSON.stringify({ kind: "element", selector, quote, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null }));
     form.set("body", body);

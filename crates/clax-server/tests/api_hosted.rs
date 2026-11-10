@@ -46,6 +46,55 @@ impl Site {
         Site { ts, clock, origin }
     }
 
+    /// [`Site::new`] whose web build carries the quickstart release `mark`.
+    async fn with_quickstart(mark: &str) -> Site {
+        let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
+        let release =
+            clax_core::quickstart::Release::from_tree(&clax_testkit::quickstart_tree(mark))
+                .map(Arc::new);
+        let ts = TestServer::spawn_hosted_with(clock.clone(), Some(SECRET), |s| {
+            s.quickstart = release;
+        })
+        .await;
+        let origin = format!("http://localhost:{}", ts.addr.port());
+        Site { ts, clock, origin }
+    }
+
+    /// This site restarted on the same home carrying the quickstart release
+    /// `mark`: its people and artifacts stay.
+    async fn restarted_with_quickstart(&self, mark: &str) -> Site {
+        let release =
+            clax_core::quickstart::Release::from_tree(&clax_testkit::quickstart_tree(mark))
+                .map(Arc::new);
+        let ts = self
+            .ts
+            .reopened_hosted_with(self.clock.clone(), Some(SECRET), |s| {
+                s.quickstart = release;
+            })
+            .await;
+        let origin = format!("http://localhost:{}", ts.addr.port());
+        Site {
+            ts,
+            clock: self.clock.clone(),
+            origin,
+        }
+    }
+
+    /// A browser signed in as `of` through a sign-in link `of` made.
+    async fn linked(&self, of: &Browser) -> Browser {
+        let (s, v) = self.post(of, "/api/hosted/signin-links", json!({})).await;
+        assert_eq!(s, 200, "{v}");
+        let code = v["url"].as_str().unwrap().rsplit('/').next().unwrap();
+        let mut b = Browser::default();
+        self.sign_in(
+            &mut b,
+            &format!("/api/hosted/signin-links/{code}/accept"),
+            json!({}),
+        )
+        .await;
+        b
+    }
+
     /// [`Site::new`] with the public gallery on.
     async fn with_public_gallery() -> Site {
         let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
@@ -258,8 +307,15 @@ async fn a_local_daemon_serves_none_of_it() {
         .post_json("/api/hosted/setup", json!({"secret": "x", "name": "Ada"}))
         .await;
     assert_eq!(r.status(), 404);
-    // This machine's browser still gets the token.
-    assert_eq!(ts.get("/api/token").await.status(), 200);
+    // This machine's browser of the owner's still gets the token.
+    let res = ts
+        .client
+        .get(format!("{}/api/token", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
 }
 
 #[tokio::test]
@@ -452,6 +508,75 @@ async fn every_browser_change_must_come_from_the_public_origin() {
     }
     let (s, v) = site.thread(&owner, &aid, "hello").await;
     assert_eq!(s, 201, "{v}");
+}
+
+#[tokio::test]
+async fn an_invited_person_starts_with_the_quickstart() {
+    let site = Site::with_quickstart("a").await;
+    let owner = site.owner().await;
+    let sam = site.member(&owner, "Sam").await;
+    let (s, me) = site.get(&sam, "/api/people/me").await;
+    assert_eq!(s, 200, "{me}");
+    let pid = me["person"]["public_id"].as_str().unwrap();
+    let (s, list) = site.get(&sam, "/api/artifacts").await;
+    assert_eq!(s, 200, "{list}");
+    let list = list["artifacts"].as_array().unwrap();
+    assert_eq!(list.len(), 1, "{list:?}");
+    assert_eq!(list[0]["title"], clax_core::quickstart::TITLE);
+    assert_eq!(list[0]["pinned"], true);
+    // The listing names no maker: the person's quickstart row holds it.
+    let held = site.ts.store.quickstart_of(Some(pid)).unwrap().unwrap();
+    assert_eq!(
+        held.artifact_id.map(|a| a.to_string()).as_deref(),
+        list[0]["id"].as_str()
+    );
+    // The owner's own sign-in at setup seeded nothing on a hosted daemon.
+    let (_, mine) = site.get(&owner, "/api/artifacts").await;
+    assert!(mine["artifacts"].as_array().unwrap().is_empty(), "{mine}");
+}
+
+#[tokio::test]
+async fn an_invited_person_gets_the_new_release_at_a_later_sign_in_link() {
+    let site = Site::with_quickstart("a").await;
+    let owner = site.owner().await;
+    let sam = site.member(&owner, "Sam").await;
+    let (_, me) = site.get(&sam, "/api/people/me").await;
+    let pid = me["person"]["public_id"].as_str().unwrap().to_string();
+    let before = site.ts.store.quickstart_of(Some(&pid)).unwrap().unwrap();
+    assert_eq!(before.version_n, Some(1));
+
+    let site = site.restarted_with_quickstart("b").await;
+    let phone = site.linked(&sam).await;
+    let after = site.ts.store.quickstart_of(Some(&pid)).unwrap().unwrap();
+    assert_eq!(after.artifact_id, before.artifact_id);
+    assert_eq!(after.version_n, Some(2));
+    assert_ne!(after.release, before.release);
+    let (_, list) = site.get(&phone, "/api/artifacts").await;
+    assert_eq!(list["artifacts"].as_array().unwrap().len(), 1, "{list}");
+}
+
+#[tokio::test]
+async fn a_member_without_a_quickstart_gets_it_at_the_next_sign_in_link() {
+    // No release at the first start: the invite seeded nothing.
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let sam = site.member(&owner, "Sam").await;
+    let (_, list) = site.get(&sam, "/api/artifacts").await;
+    assert!(list["artifacts"].as_array().unwrap().is_empty(), "{list}");
+
+    let site = site.restarted_with_quickstart("a").await;
+    let phone = site.linked(&sam).await;
+    let (_, list) = site.get(&phone, "/api/artifacts").await;
+    let list = list["artifacts"].as_array().unwrap();
+    assert_eq!(list.len(), 1, "{list:?}");
+    assert_eq!(list[0]["title"], clax_core::quickstart::TITLE);
+    // A second sign-in makes no second copy.
+    let again = site.linked(&sam).await;
+    let (_, list) = site.get(&again, "/api/artifacts").await;
+    assert_eq!(list["artifacts"].as_array().unwrap().len(), 1, "{list}");
+    // The owner's own link seeds nothing.
+    let (_, mine) = site.get(&owner, "/api/artifacts").await;
+    assert!(mine["artifacts"].as_array().unwrap().is_empty(), "{mine}");
 }
 
 #[tokio::test]
@@ -747,6 +872,12 @@ async fn a_member_mints_agent_tokens_with_their_rights_and_revokes_them() {
             .as_str()
             .unwrap()
             .contains(&format!("url = \"{mcp}\""))
+    );
+    assert_eq!(
+        v["grok_command"].as_str().unwrap(),
+        format!(
+            "grok mcp add --transport http clax_hosted {mcp} --header \"Authorization: Bearer {token}\""
+        )
     );
     let gid = v["id"].as_str().unwrap().to_string();
     // The token's grant has Sam's rights.
@@ -2500,6 +2631,250 @@ async fn room_clears(site: &Site, aid: &str) -> Value {
             return f;
         }
     }
+}
+
+#[tokio::test]
+async fn an_editors_restore_of_a_version_that_declared_others_is_admin_only() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let owner_pid = site.pid(&owner).await;
+    let mia = site.person(&owner, "Mia").await;
+    let mut agent = site.token_agent(&mia, "laptop").await;
+    assert_eq!(agent.initialize("claude-code").await, 200);
+    let wide = json!({"db": {}});
+    let (_, r) = agent
+        .call(
+            "publish",
+            json!({"html": "<h1>1</h1>", "title": "Mia's", "capabilities": wide.clone()}),
+        )
+        .await;
+    assert_eq!(tool_code(&r), "", "{r}");
+    let id = site
+        .ts
+        .store
+        .list_artifacts()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.title == "Mia's")
+        .unwrap()
+        .id;
+    let (_, r) = agent
+        .call(
+            "publish",
+            json!({"id": id, "if_version": 1, "html": "<h1>2</h1>", "capabilities": {}}),
+        )
+        .await;
+    assert_eq!(tool_code(&r), "", "{r}");
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/hosted/artifacts/{id}/shares"),
+            json!({"person": owner_pid, "access": "editor"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let restore = async |version: u32, if_version: u32| {
+        json_of(
+            site.ts
+                .client
+                .post(site.url(&format!("/api/artifacts/{id}/versions:restore")))
+                .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+                .bearer_auth(&site.ts.token)
+                .json(&json!({"version": version, "if_version": if_version}))
+                .send()
+                .await
+                .unwrap(),
+        )
+        .await
+    };
+    // Version 1 declared more than the page does now: the maker's to bring back.
+    let (s, v) = restore(1, 2).await;
+    assert_eq!((s, code(&v)), (403, "admin_only"), "{v}");
+    assert_eq!(
+        site.ts
+            .store
+            .list_versions(&clax_core::ArtifactId::parse(&id).unwrap())
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        site.ts
+            .store
+            .get_artifact(&clax_core::ArtifactId::parse(&id).unwrap())
+            .unwrap()
+            .unwrap()
+            .capabilities,
+        json!({})
+    );
+    // A version that declared what is in force restores.
+    let (s, v) = restore(2, 2).await;
+    assert_eq!(s, 201, "{v}");
+    assert_eq!(v["artifact"]["capabilities"], json!({}), "{v}");
+}
+
+#[tokio::test]
+async fn an_editors_clax_json_that_changes_the_declaration_is_admin_only() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let owner_pid = site.pid(&owner).await;
+    let mia = site.person(&owner, "Mia").await;
+    let mut agent = site.token_agent(&mia, "laptop").await;
+    assert_eq!(agent.initialize("claude-code").await, 200);
+    let (_, r) = agent
+        .call(
+            "publish",
+            json!({"html": "<h1>1</h1>", "title": "Mia's", "capabilities": {}}),
+        )
+        .await;
+    assert_eq!(tool_code(&r), "", "{r}");
+    let id = site
+        .ts
+        .store
+        .list_artifacts()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.title == "Mia's")
+        .unwrap()
+        .id;
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/hosted/artifacts/{id}/shares"),
+            json!({"person": owner_pid, "access": "editor"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let publish = async |manifest: &str| {
+        json_of(
+            site.ts
+                .client
+                .post(site.url(&format!("/api/artifacts/{id}/versions")))
+                .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+                .bearer_auth(&site.ts.token)
+                .json(&json!({"if_version": 1, "files": {
+                    "index.html": {"content": "<h1>2</h1>"},
+                    "clax.json": {"content": manifest},
+                }}))
+                .send()
+                .await
+                .unwrap(),
+        )
+        .await
+    };
+    // The file declares as the argument does: a change is the maker's.
+    let (s, v) = publish(r#"{"capabilities": {"db": {}}}"#).await;
+    assert_eq!((s, code(&v)), (403, "admin_only"), "{v}");
+    let aid = clax_core::ArtifactId::parse(&id).unwrap();
+    assert_eq!(site.ts.store.list_versions(&aid).unwrap().len(), 1);
+    // The declaration in force, as the file, is the editor's to publish.
+    let (s, v) = publish(r#"{"capabilities": {}}"#).await;
+    assert_eq!(s, 201, "{v}");
+}
+
+#[tokio::test]
+async fn a_members_page_waits_for_its_maker() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let owner_pid = site.pid(&owner).await;
+    let mia = site.person(&owner, "Mia").await;
+    let mut agent = site.token_agent(&mia, "laptop").await;
+    assert_eq!(agent.initialize("claude-code").await, 200);
+    let (_, r) = agent
+        .call(
+            "publish",
+            json!({"html": "<h1>1</h1>", "title": "Mia's controls",
+                "capabilities": {"shell": {}, "sample": {}, "net": {"hosts": ["x.clax.invalid"]}}}),
+        )
+        .await;
+    assert_eq!(tool_code(&r), "", "{r}");
+    let id = site
+        .ts
+        .store
+        .list_artifacts()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.title == "Mia's controls")
+        .unwrap()
+        .id;
+    let (s, v) = site
+        .put(
+            &mia,
+            &format!("/api/hosted/artifacts/{id}/shares"),
+            json!({"person": owner_pid, "access": "editor"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let path = format!("/api/artifacts/{id}");
+    let approve = format!("/api/artifacts/{id}/capability-approval");
+    // The editor gets the declaration in force, and no approval to give.
+    let (s, v) = site.get(&owner, &path).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["artifact"]["capabilities_in_force"], json!({}), "{v}");
+    assert_eq!(v["artifact"].get("pending_capabilities"), None, "{v}");
+    assert_eq!(v["artifact"].get("may_approve"), None, "{v}");
+    let (s, v) = site.get(&mia, &path).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["artifact"]["may_approve"], json!(true), "{v}");
+    let pending = v["artifact"]["pending_capabilities"].clone();
+    assert_eq!(
+        pending["capabilities"],
+        json!(["net", "sample", "shell"]),
+        "{v}"
+    );
+    let shown =
+        json!({"version": pending["version"], "declaration_sha256": pending["declaration_sha256"]});
+    let (s, v) = site
+        .send(&owner, reqwest::Method::PUT, &approve, shown.clone())
+        .await;
+    assert_eq!((s, code(&v)), (403, "admin_only"), "{v}");
+    // Its maker approves it, and the editor's view has it in force.
+    let (s, v) = site.send(&mia, reqwest::Method::PUT, &approve, shown).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        v["approval"]["by"],
+        json!(format!("person:{}", site.pid(&mia).await))
+    );
+    let declared = json!({"shell": {}, "sample": {}, "net": {"hosts": ["x.clax.invalid"]}});
+    let (_, v) = site.get(&owner, &path).await;
+    assert_eq!(v["artifact"]["capabilities_in_force"], declared, "{v}");
+    // A member's approval grants nothing: the grants stand for the owner's
+    // consent, given on the page's first use.
+    let aid = clax_core::ArtifactId::parse(&id).unwrap();
+    let net = site.ts.store.net_access(&aid).unwrap();
+    assert!(net.grants.is_empty() && !net.all_granted(), "{net:?}");
+    assert_eq!(site.ts.store.sample_grant(&aid).unwrap(), None);
+
+    // The owner's approval of their own page grants what waited.
+    let (status, made) = json_of(
+        site.ts
+            .client
+            .post(site.url("/api/artifacts"))
+            .header(HOST, format!("localhost:{}", site.ts.addr.port()))
+            .bearer_auth(&site.ts.token)
+            .json(&json!({"title": "Ada's", "capabilities": declared,
+                "files": {"index.html": {"content": "<h1>a</h1>"}}}))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, 201, "{made}");
+    let own = made["artifact"]["id"].as_str().unwrap().to_string();
+    let p = &made["pending_capabilities"];
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::PUT,
+            &format!("/api/artifacts/{own}/capability-approval"),
+            json!({"version": p["version"], "declaration_sha256": p["declaration_sha256"]}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["approval"]["by"], json!("owner"), "{v}");
+    let own = clax_core::ArtifactId::parse(&own).unwrap();
+    assert!(site.ts.store.net_access(&own).unwrap().all_granted());
+    assert!(site.ts.store.sample_grant(&own).unwrap().is_some());
 }
 
 #[tokio::test]
@@ -5178,6 +5553,38 @@ impl Site {
 }
 
 #[tokio::test]
+async fn a_device_sign_in_carries_a_loopback_return_to_and_refuses_any_other() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let sam = site.person(&owner, "Sam").await;
+    let (s, v) = site
+        .machine(
+            "/api/hosted/device/code",
+            json!({"client_name": "box", "return_to": "http://localhost:7480/a/x?publish=1"}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let uc = v["user_code"].as_str().unwrap().to_string();
+    let (s, v) = site.get(&sam, &format!("/api/hosted/device/{uc}")).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["return_to"], "http://localhost:7480/a/x?publish=1");
+    // Without one, the page has nowhere to go.
+    let plain = site.start_device("box").await;
+    let uc = plain["user_code"].as_str().unwrap();
+    let (_, v) = site.get(&sam, &format!("/api/hosted/device/{uc}")).await;
+    assert!(v["return_to"].is_null(), "{v}");
+    for bad in ["https://evil.example/", "http://localhost.evil.example/"] {
+        let (s, v) = site
+            .machine(
+                "/api/hosted/device/code",
+                json!({"client_name": "box", "return_to": bad}),
+            )
+            .await;
+        assert_eq!((s, code(&v)), (400, "invalid_args"), "{bad}: {v}");
+    }
+}
+
+#[tokio::test]
 async fn a_person_approves_a_machines_device_sign_in_and_it_gets_their_agent_token_once() {
     let site = Site::new().await;
     let owner = site.owner().await;
@@ -5374,6 +5781,7 @@ async fn a_local_daemon_has_no_device_sign_in() {
     let r = ts
         .client
         .post(format!("{}/api/hosted/device/code", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .json(&json!({"client_name": "box"}))
         .send()
         .await
@@ -7232,6 +7640,7 @@ async fn a_local_daemons_agent_reads_its_clip_by_path_as_before() {
     let res = ts
         .client
         .get(format!("{}/_clip/{aid}/{tid}?k=00", ts.base))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .send()
         .await
         .unwrap();
@@ -8441,6 +8850,66 @@ async fn the_owners_people_names_no_page_of_another_person() {
     assert!(me.to_string().contains(&mias), "{me}");
 }
 
+/// The owner saving a person's rights as People showed them (the
+/// locations out of the owner's reach hidden, only counted) keeps those
+/// locations: the owner never saw them, so cannot mean to drop them.
+#[tokio::test]
+async fn saving_a_persons_rights_as_people_shows_them_keeps_the_hidden_locations() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let (mia, mia_id) = site
+        .person_with(&owner, "Mia", json!("clax:collaborator"))
+        .await;
+    let mias = site.made_by(&mia, "Mia's secret plan").await;
+    let rights = |locations: Value| {
+        json!([
+            {"type": "clax-artifacts", "actions": ["create"], "locations": ["*"]},
+            {"type": "clax-artifacts", "actions": ["read", "update"], "locations": locations},
+        ])
+    };
+    let (s, v) = site
+        .put(
+            &owner,
+            &format!("/api/people/{mia_id}/rights"),
+            json!({"rights": rights(json!(["own", mias]))}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (s, people) = site.get(&owner, "/api/people").await;
+    assert_eq!(s, 200, "{people}");
+    let shown = people["people"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["public_id"] == json!(mia_id))
+        .unwrap()["rights"]
+        .clone();
+    assert!(!shown.to_string().contains(&mias), "{shown}");
+    assert!(shown.to_string().contains("hidden_locations"), "{shown}");
+    // The owner saves what People showed.
+    let mut edited = shown.clone();
+    for o in edited.as_array_mut().unwrap() {
+        o.as_object_mut().unwrap().remove("hidden_locations");
+    }
+    let (s, v) = site
+        .put(
+            &owner,
+            &format!("/api/people/{mia_id}/rights"),
+            json!({"rights": edited}),
+        )
+        .await;
+    assert_eq!(s, 200, "{v}");
+    let (_, me) = site.get(&mia, "/api/people/me").await;
+    let kept = me["person"]["rights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["actions"] == json!(["read", "update"]))
+        .cloned()
+        .unwrap_or_default();
+    assert!(kept["locations"].to_string().contains(&mias), "{me}");
+}
+
 #[tokio::test]
 async fn an_owner_row_grant_reaches_only_the_owners_reach() {
     let site = Site::new().await;
@@ -8670,6 +9139,7 @@ impl BotWorld {
                     key_source: KeySource::Instance,
                     base_version: 1,
                     agent_grant: None,
+                    web: String::new(),
                 },
             )
             .unwrap();
@@ -9409,25 +9879,32 @@ async fn an_admins_export_holds_their_own_search_words_alone() {
         assert_eq!(s, 200, "{v}");
     }
     // The owner exports with the token, Ana, an admin, from her browser.
-    let ana = site
-        .req(
+    // One export runs at a time, holding its turn until its body is read,
+    // so each is read through before the next is asked for.
+    let read = |r: reqwest::Response| async move { (r.status(), r.text().await.unwrap()) };
+    let ana = read(
+        site.req(
             &w.ana,
             reqwest::Method::GET,
             "/api/toolpath/export?shape=journal",
         )
         .send()
         .await
-        .unwrap();
-    let owner = daemon_token_get(site, "/api/toolpath/export?shape=journal")
-        .send()
-        .await
-        .unwrap();
-    for (who, r, own, others) in [
+        .unwrap(),
+    )
+    .await;
+    let owner = read(
+        daemon_token_get(site, "/api/toolpath/export?shape=journal")
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    for (who, (status, body), own, others) in [
         ("owner", owner, "ownerwords", ["quokkaterms", "anawords"]),
         ("Ana", ana, "anawords", ["quokkaterms", "ownerwords"]),
     ] {
-        assert_eq!(r.status(), 200, "{who}");
-        let body = r.text().await.unwrap();
+        assert_eq!(status, 200, "{who}: {body}");
         // Every view is there, with the other filters it was given.
         assert_eq!(body.matches("group=changes").count(), 3, "{who}: {body}");
         assert!(body.contains(own), "{who}: {body}");
@@ -9533,4 +10010,150 @@ async fn the_owner_forks_another_persons_page_only_once_it_is_shared_with_them()
     assert_eq!(s, 200, "{v}");
     let (s, v) = site.post(&owner, &fork, json!({})).await;
     assert_eq!(s, 201, "{v}");
+}
+
+/// A queue's wake reaches a member's agent whole exactly when its rights
+/// read reports (Comments `read` somewhere), as `queue_get` serves them:
+/// an agent token whose rights may watch the queue and no more is told of
+/// the report as `no_access`; once its person's rights read comments, the
+/// next report comes whole; narrowed again after it watched, the next one
+/// is `no_access` again.
+#[tokio::test]
+async fn a_queue_wake_reaches_a_members_agent_whole_only_when_it_reads_reports() {
+    let site = Site::new().await;
+    let owner = site.owner().await;
+    let watch_only = json!([{"type": "clax-comments", "actions": ["watch"], "locations": ["*"]}]);
+    let (sam, pid) = site.person_with(&owner, "Sam", watch_only.clone()).await;
+    let (s, v) = site
+        .post(
+            &owner,
+            "/api/queues",
+            json!({"name": "App reports", "origins": ["https://app.example.com"], "reporters_see": "own"}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let qid = v["queue"]["id"].as_str().unwrap().to_string();
+    let (s, v) = site
+        .send(
+            &owner,
+            reqwest::Method::PUT,
+            &format!("/api/queues/{qid}/members/{pid}"),
+            json!({"role": "triage"}),
+        )
+        .await;
+    assert!(s < 300, "{s} {v}");
+    let (s, v) = site
+        .post(
+            &sam,
+            "/api/hosted/agent-tokens",
+            json!({"label": "sam-laptop"}),
+        )
+        .await;
+    assert_eq!(s, 201, "{v}");
+    let mut agent = TokenAgent {
+        site: &site,
+        token: v["token"].as_str().unwrap().to_string(),
+        session: None,
+    };
+    assert_eq!(agent.initialize("fixer").await, 200);
+    let (s, r) = agent.call("queue_watch", json!({"queue": qid})).await;
+    assert_eq!((s, tool_code(&r).as_str()), (200, ""), "{r}");
+    let tok = clax_store::queues::ReporterToken {
+        queue_id: qid.clone(),
+        service_grant_id: "g1".into(),
+        reporter_id: "emp-1".into(),
+        origin: "https://app.example.com".into(),
+        public_key: String::new(),
+        expires_at: "2099-01-01T00:00:00.000Z".into(),
+        profile: None,
+    };
+    let file = |body: &str| {
+        site.ts
+            .store
+            .file_report(
+                &clax_core::audit::AuditCtx::DAEMON,
+                &qid,
+                Some(&tok),
+                clax_store::queues::ExternalScope::Maker,
+                clax_store::queues::NewReport {
+                    external_id: Some(format!("page:{body}")),
+                    url: "https://app.example.com/invoices/7".into(),
+                    title: "Invoice 7".into(),
+                    anchor: serde_json::from_value(clax_testkit::element_anchor()).unwrap(),
+                    body: body.into(),
+                    author_name: "emp-1".into(),
+                    metadata: Value::Null,
+                    revision: None,
+                    clip: None,
+                    context: None,
+                    server: None,
+                    diagnostics: None,
+                },
+            )
+            .unwrap()
+            .id
+    };
+    let text = |r: &Value| {
+        r["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|c| c["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let wait = json!({"timeout_s": 1});
+    let set_rights = |rights: Value| {
+        let (site, owner, pid) = (&site, &owner, pid.clone());
+        async move {
+            let (s, v) = site
+                .send(
+                    owner,
+                    reqwest::Method::PUT,
+                    &format!("/api/people/{pid}/rights"),
+                    json!({"rights": rights}),
+                )
+                .await;
+            assert!(s < 300, "{s} {v}");
+        }
+    };
+
+    // Watch only: told the report is out of reach, never given it.
+    let first = file("The first total is wrong");
+    let (_, r) = agent.call("wait_for_feedback", wait.clone()).await;
+    let t = text(&r);
+    assert!(t.contains("you no longer have access"), "{t}");
+    assert!(
+        t.contains(&first) && !t.contains("The first total is wrong"),
+        "{t}"
+    );
+    let (_, r) = agent
+        .call("queue_get", json!({"queue": qid, "report_id": first}))
+        .await;
+    assert_eq!(tool_code(&r), "not_permitted", "{r}");
+
+    // Rights that read comments: the next report comes whole.
+    let reads =
+        json!([{"type": "clax-comments", "actions": ["read", "watch"], "locations": ["*"]}]);
+    set_rights(reads).await;
+    let second = file("The second total is wrong");
+    let (_, r) = agent.call("wait_for_feedback", wait.clone()).await;
+    let t = text(&r);
+    assert!(t.contains("The second total is wrong"), "{t}");
+    assert!(
+        t.contains(&format!("This is a new report in queue {qid}")),
+        "{t}"
+    );
+    assert!(t.contains(&second), "{t}");
+
+    // Narrowed after it watched: no_access again.
+    set_rights(watch_only).await;
+    let third = file("The third total is wrong");
+    let (_, r) = agent.call("wait_for_feedback", wait).await;
+    let t = text(&r);
+    assert!(t.contains("you no longer have access"), "{t}");
+    assert!(
+        t.contains(&third) && !t.contains("The third total is wrong"),
+        "{t}"
+    );
 }

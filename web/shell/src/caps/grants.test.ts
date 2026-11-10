@@ -98,4 +98,14 @@ describe("Grants", () => {
     expect(new Grants(key, storage as unknown as Storage, { sample: {} }, true, ask).state("sample")).toBe("unavailable");
     expect(new Grants(key, storage as unknown as Storage, { sample: {} }, false, ask, { sample: true }).state("sample")).toBe("unavailable");
   });
+
+  it("revoke_clears_a_stored_grant", async () => {
+    const { g, storage } = make("allow");
+    await g.request(["comments"]);
+    expect(g.state("comments")).toBe("granted");
+    g.revoke("comments");
+    expect(g.state("comments")).toBe("prompt");
+    expect(JSON.parse(storage.getItem(grantsKey("7q3k9mzx2b4t", "u_00000000000000000000aa"))!)).toEqual([]);
+    expect(make("deny", storage).g.state("comments")).toBe("prompt");
+  });
 });

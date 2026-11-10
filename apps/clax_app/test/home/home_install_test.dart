@@ -114,6 +114,7 @@ void main() {
           'getArtifact',
           'listArtifacts',
           'createArtifact',
+          'approveCapabilities',
           'batchDocs',
         ]),
       ),

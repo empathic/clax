@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Northwind Customers</title>
+<style>
+  /* Northwind's customer accounts, a plain table: the first version of the
+     page in the reel's globe vignette (web/reel/vignettes/globe.ts). The
+     company, its customers and every number are invented; the cities are
+     real places. Light only, as the reel is filmed. */
+  :root {
+    color-scheme: light;
+    --bg: #ffffff;
+    --fg: #1f2328;
+    --muted: #656d76;
+    --line: #d8dee4;
+    --head: #f6f8fa;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 28px 24px 40px; }
+  h1 { margin: 0 0 4px; font-size: 22px; font-weight: 600; }
+  p { margin: 0 0 18px; color: var(--muted); }
+  .wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { background: var(--head); font-weight: 600; font-size: 12.5px; color: var(--muted); border-top: 1px solid var(--line); }
+  .n { text-align: right; }
+  tfoot td { font-weight: 600; border-bottom: 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Northwind Customers</h1>
+  <p>40 active accounts &middot; annual recurring revenue (ARR) as of October 31 &middot; HQ: Portland, Oregon</p>
+  <div class="wrap">
+  <table>
+    <thead>
+      <tr><th>Account</th><th>City</th><th>Country</th><th class="n">Lat</th><th class="n">Lon</th><th class="n">ARR</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Andes Copper</td><td>Santiago</td><td>Chile</td><td class="n">-33.45</td><td class="n">-70.67</td><td class="n">$226k</td></tr>
+      <tr><td>Bayline Software</td><td>San Francisco</td><td>United States</td><td class="n">37.77</td><td class="n">-122.42</td><td class="n">$976k</td></tr>
+      <tr><td>Bosphorus Trade</td><td>Istanbul</td><td>Türkiye</td><td class="n">41.01</td><td class="n">28.98</td><td class="n">$212k</td></tr>
+      <tr><td>Brightwater Foods</td><td>Dublin</td><td>Ireland</td><td class="n">53.35</td><td class="n">-6.26</td><td class="n">$236k</td></tr>
+      <tr><td>Coral Coast Bank</td><td>Sydney</td><td>Australia</td><td class="n">-33.87</td><td class="n">151.21</td><td class="n">$815k</td></tr>
+      <tr><td>Dune Logistics</td><td>Dubai</td><td>UAE</td><td class="n">25.20</td><td class="n">55.27</td><td class="n">$540k</td></tr>
+      <tr><td>Eko Fintech</td><td>Lagos</td><td>Nigeria</td><td class="n">6.52</td><td class="n">3.38</td><td class="n">$248k</td></tr>
+      <tr><td>Fjordline Media</td><td>Stockholm</td><td>Sweden</td><td class="n">59.33</td><td class="n">18.07</td><td class="n">$149k</td></tr>
+      <tr><td>Halvorsen Freight</td><td>Oslo</td><td>Norway</td><td class="n">59.91</td><td class="n">10.75</td><td class="n">$412k</td></tr>
+      <tr><td>Hanriver Games</td><td>Seoul</td><td>South Korea</td><td class="n">37.57</td><td class="n">126.98</td><td class="n">$623k</td></tr>
+      <tr><td>Harbour Line</td><td>Hong Kong</td><td>China</td><td class="n">22.32</td><td class="n">114.17</td><td class="n">$588k</td></tr>
+      <tr><td>Hudson Yard Capital</td><td>New York</td><td>United States</td><td class="n">40.71</td><td class="n">-74.01</td><td class="n">$1,215k</td></tr>
+      <tr><td>Indus Health</td><td>Mumbai</td><td>India</td><td class="n">19.08</td><td class="n">72.88</td><td class="n">$466k</td></tr>
+      <tr><td>Kestrel Analytics</td><td>London</td><td>United Kingdom</td><td class="n">51.51</td><td class="n">-0.13</td><td class="n">$1,180k</td></tr>
+      <tr><td>Kopje Mining</td><td>Johannesburg</td><td>South Africa</td><td class="n">-26.20</td><td class="n">28.05</td><td class="n">$355k</td></tr>
+      <tr><td>Koramangala Soft</td><td>Bengaluru</td><td>India</td><td class="n">12.97</td><td class="n">77.59</td><td class="n">$731k</td></tr>
+      <tr><td>Kraków Data Works</td><td>Kraków</td><td>Poland</td><td class="n">50.06</td><td class="n">19.94</td><td class="n">$98k</td></tr>
+      <tr><td>Kumo Systems</td><td>Tokyo</td><td>Japan</td><td class="n">35.68</td><td class="n">139.69</td><td class="n">$1,094k</td></tr>
+      <tr><td>Lakeshore Insurance</td><td>Chicago</td><td>United States</td><td class="n">41.88</td><td class="n">-87.63</td><td class="n">$867k</td></tr>
+      <tr><td>Lima Cloud</td><td>Lima</td><td>Peru</td><td class="n">-12.05</td><td class="n">-77.04</td><td class="n">$92k</td></tr>
+      <tr><td>Lion City Pay</td><td>Singapore</td><td>Singapore</td><td class="n">1.35</td><td class="n">103.82</td><td class="n">$962k</td></tr>
+      <tr><td>Maison Ardent</td><td>Paris</td><td>France</td><td class="n">48.86</td><td class="n">2.35</td><td class="n">$684k</td></tr>
+      <tr><td>Maple North</td><td>Toronto</td><td>Canada</td><td class="n">43.65</td><td class="n">-79.38</td><td class="n">$509k</td></tr>
+      <tr><td>Mile High Outdoor</td><td>Denver</td><td>United States</td><td class="n">39.74</td><td class="n">-104.99</td><td class="n">$198k</td></tr>
+      <tr><td>Nilo Agritech</td><td>Cairo</td><td>Egypt</td><td class="n">30.04</td><td class="n">31.24</td><td class="n">$109k</td></tr>
+      <tr><td>Pampa Foods</td><td>Buenos Aires</td><td>Argentina</td><td class="n">-34.60</td><td class="n">-58.38</td><td class="n">$301k</td></tr>
+      <tr><td>Paulista Retail</td><td>São Paulo</td><td>Brazil</td><td class="n">-23.55</td><td class="n">-46.63</td><td class="n">$742k</td></tr>
+      <tr><td>Peachtree Health</td><td>Atlanta</td><td>United States</td><td class="n">33.75</td><td class="n">-84.39</td><td class="n">$342k</td></tr>
+      <tr><td>Pudong Mobility</td><td>Shanghai</td><td>China</td><td class="n">31.23</td><td class="n">121.47</td><td class="n">$402k</td></tr>
+      <tr><td>Reforma Media</td><td>Mexico City</td><td>Mexico</td><td class="n">19.43</td><td class="n">-99.13</td><td class="n">$455k</td></tr>
+      <tr><td>Savanna Telecom</td><td>Nairobi</td><td>Kenya</td><td class="n">-1.29</td><td class="n">36.82</td><td class="n">$176k</td></tr>
+      <tr><td>Selat Ventures</td><td>Jakarta</td><td>Indonesia</td><td class="n">-6.21</td><td class="n">106.85</td><td class="n">$133k</td></tr>
+      <tr><td>Solano Energía</td><td>Madrid</td><td>Spain</td><td class="n">40.42</td><td class="n">-3.70</td><td class="n">$357k</td></tr>
+      <tr><td>Table Bay Wines</td><td>Cape Town</td><td>South Africa</td><td class="n">-33.92</td><td class="n">18.42</td><td class="n">$87k</td></tr>
+      <tr><td>Taipei Circuit</td><td>Taipei</td><td>Taiwan</td><td class="n">25.03</td><td class="n">121.57</td><td class="n">$287k</td></tr>
+      <tr><td>Tiergarten Labs</td><td>Berlin</td><td>Germany</td><td class="n">52.52</td><td class="n">13.40</td><td class="n">$905k</td></tr>
+      <tr><td>Vela Robotics</td><td>Milan</td><td>Italy</td><td class="n">45.46</td><td class="n">9.19</td><td class="n">$274k</td></tr>
+      <tr><td>Waitematā Health</td><td>Auckland</td><td>New Zealand</td><td class="n">-36.85</td><td class="n">174.76</td><td class="n">$121k</td></tr>
+      <tr><td>Yarra Studio</td><td>Melbourne</td><td>Australia</td><td class="n">-37.81</td><td class="n">144.96</td><td class="n">$264k</td></tr>
+      <tr><td>Zuidas Capital</td><td>Amsterdam</td><td>Netherlands</td><td class="n">52.37</td><td class="n">4.90</td><td class="n">$318k</td></tr>
+    </tbody>
+    <tfoot>
+      <tr><td>Total</td><td></td><td></td><td></td><td></td><td class="n">$18,749k</td></tr>
+    </tfoot>
+  </table>
+  </div>
+</main>
+</body>
+</html>

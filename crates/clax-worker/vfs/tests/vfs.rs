@@ -202,3 +202,55 @@ fn databases_with_different_stores_are_independent() {
     assert!(s1.files.borrow().contains_key("e1.db"));
     assert!(!s1.files.borrow().contains_key("e2.db"));
 }
+
+/// Connections on many threads fail VFS calls at the same time, each its
+/// own refused commits: every one fails alone, and the store keeps the last
+/// commit, as the VFS keeps a failed call's message per thread.
+#[test]
+fn connections_on_many_threads_fail_at_once() {
+    let start = std::sync::Arc::new(std::sync::Barrier::new(8));
+    let threads: Vec<_> = (0..8)
+        .map(|t| {
+            let start = start.clone();
+            std::thread::spawn(move || {
+                let store = Rc::new(MemStore::default());
+                let c = open(&format!("threads-{t}.db"), store.clone()).unwrap();
+                c.execute_batch("CREATE TABLE t(k, v); INSERT INTO t VALUES (1, 'a');")
+                    .unwrap();
+                *store.fail_commits.borrow_mut() = true;
+                start.wait();
+                for i in 0..50 {
+                    let err = c.execute("INSERT INTO t VALUES (?1, 'b')", [i + 2]);
+                    assert!(err.is_err(), "{err:?}");
+                }
+                *store.fail_commits.borrow_mut() = false;
+                assert_eq!(count(&c), 1);
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+}
+
+/// A connection moved to another thread finds none of its files in that
+/// thread's registry: its writes there fail and reach no store.
+#[test]
+fn a_connection_moved_to_another_thread_fails_there() {
+    let store = Rc::new(MemStore::default());
+    let c = open("moved.db", store.clone()).unwrap();
+    c.execute_batch("CREATE TABLE t(k); INSERT INTO t VALUES (1);")
+        .unwrap();
+    let commits = *store.commits.borrow();
+    let (c, wrote) = std::thread::spawn(move || {
+        let wrote = c.execute("INSERT INTO t VALUES (2)", []);
+        (c, wrote.is_ok())
+    })
+    .join()
+    .unwrap();
+    assert!(!wrote, "the moved connection wrote");
+    assert_eq!(*store.commits.borrow(), commits);
+    drop(c);
+    let c = open("moved.db", store).unwrap();
+    assert_eq!(count(&c), 1);
+}

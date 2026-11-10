@@ -58,10 +58,14 @@ pub enum Kind {
     /// An automatic push of a new version to a public Clax was refused
     /// (`detail_json`: the remote and the refusal).
     Push,
+    /// An agent asks the owner to connect this home to a Clax instance
+    /// (`detail_json`: the request's ID, origin, name, URL and reason;
+    /// [`crate::remote_requests`]).
+    RemoteRequest,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 9] = [
+    pub const ALL: [Kind; 10] = [
         Kind::Reply,
         Kind::Version,
         Kind::Published,
@@ -71,6 +75,7 @@ impl Kind {
         Kind::Connection,
         Kind::Ended,
         Kind::Push,
+        Kind::RemoteRequest,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -84,6 +89,7 @@ impl Kind {
             Kind::Connection => "connection",
             Kind::Ended => "ended",
             Kind::Push => "push",
+            Kind::RemoteRequest => "remote_request",
         }
     }
 
@@ -1208,10 +1214,11 @@ fn stamp(c: &Connection, now: &str) -> Result<String> {
 
 /// Inserts the item and its index entry unless its key (for its recipient,
 /// [`keyed`]) exists, stamped `now` (see [`stamp`]); its `seq`. A hidden
-/// artifact (a draft) gets no item.
+/// artifact (a draft) and a followed remote artifact's mirror (whose page
+/// is the remote's) get no item.
 fn insert_at(c: &Connection, n: New<'_>, now: &str) -> Result<Option<i64>> {
     if let Some(aid) = n.artifact_id
-        && super::drafts::is_hidden_in(c, aid)?
+        && (super::drafts::is_hidden_in(c, aid)? || super::remotes::is_mirror_in(c, aid)?)
     {
         return Ok(None);
     }
@@ -1252,6 +1259,44 @@ fn insert_at(c: &Connection, n: New<'_>, now: &str) -> Result<Option<i64>> {
         params![seq, text],
     )?;
     Ok(Some(seq))
+}
+
+/// Connection request `rid` opened by session `sid`: a `remote_request`
+/// item for the owner (only the owner's agents ask), in the asking
+/// agent's thread `at` (artifact and thread) when it was working in one,
+/// with `detail` (the request's ID, origin, name, URL and reason) and
+/// `text` to search by. Keyed by the request, so it is made once.
+pub(crate) fn note_remote_request(
+    c: &Connection,
+    rid: &str,
+    sid: &str,
+    at: (Option<&str>, Option<&str>),
+    detail: Value,
+    text: &str,
+    now: &str,
+) -> Result<Option<i64>> {
+    // A hidden draft makes no item: the request goes to the inbox alone.
+    let at = match at.0 {
+        Some(aid) if super::drafts::is_hidden_in(c, aid)? => (None, None),
+        _ => at,
+    };
+    insert_at(
+        c,
+        New {
+            artifact_id: at.0,
+            thread_id: at.1,
+            session_id: Some(sid),
+            detail: Some(detail),
+            text: text.to_string(),
+            ..New::of(Kind::RemoteRequest, remote_request_key(rid))
+        },
+        now,
+    )
+}
+
+/// The inbox key of connection request `rid`'s item.
+pub(crate) fn remote_request_key(rid: &str) -> String {
+    format!("remote_request:{rid}")
 }
 
 /// An agent comment `cid` on thread `tid` of artifact `aid`: a `reply`
@@ -1630,6 +1675,18 @@ pub(crate) fn note_connection(
 pub(crate) fn connection_decided(c: &Connection, gid: &str, now: &str) -> Result<()> {
     c.execute(READ_BY_KEY, params![format!("connection:{gid}"), now])?;
     Ok(())
+}
+
+/// The `connection` items whose requests ended without the owner's answer
+/// (expired, or gone since) are read: nothing is left to decide. How many.
+pub(crate) fn connections_lapsed(c: &Connection, now: &str) -> Result<usize> {
+    Ok(c.execute(
+        "UPDATE inbox_items SET read_at = ?1
+         WHERE kind = 'connection' AND read_at IS NULL AND grant_id IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM grants g
+                           WHERE g.id = inbox_items.grant_id AND g.status = 'pending')",
+        params![now],
+    )?)
 }
 
 /// Viewer `viewer_id` looked at `tids` of `aid` at `at`: when it is the
@@ -2353,8 +2410,9 @@ impl Store {
                             }
                         }
                     }
-                    // An approval request's thread, for its card.
-                    Kind::Approval => {
+                    // An approval request's thread, for its card; a
+                    // connection request's, where its agent worked.
+                    Kind::Approval | Kind::RemoteRequest => {
                         if let (Some(tid), true) = (&i.thread_id, live) {
                             s.thread = thread_ref(c, tid)?;
                         }
@@ -2712,6 +2770,28 @@ mod tests {
         st.deny_grant(DAEMON, &b.id).unwrap();
         assert!(!unread(&b.id), "denied");
         assert_eq!(st.inbox_unread(None).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_connection_request_that_lapses_unanswered_is_read() {
+        use crate::people::tests::{KEY_A, KEY_B, pending};
+        let (_d, clock, st) = crate::people::tests::store();
+        let (a, _, _) = pending(&st, KEY_A);
+        let unread = |gid: &str| -> Option<bool> {
+            inbox_of(&st, None)
+                .iter()
+                .find(|i| i.grant_id.as_deref() == Some(gid))
+                .map(|i| i.read_at.is_none())
+        };
+        assert_eq!(unread(&a.id), Some(true));
+        clock.advance(crate::people::PENDING_TTL_SECS + 1);
+        // A newer request, still waiting, stays unread.
+        let (b, _, _) = pending(&st, KEY_B);
+        st.expire_grants().unwrap();
+        assert_eq!(st.grant(&a.id).unwrap().status, "expired");
+        assert_eq!(unread(&a.id), Some(false), "nothing left to decide");
+        assert_eq!(unread(&b.id), Some(true));
+        assert_eq!(st.inbox_unread(None).unwrap(), 1);
     }
 
     #[test]

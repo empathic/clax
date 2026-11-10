@@ -135,6 +135,7 @@ async fn bad_requests_name_their_code() {
             "{}/api/artifacts/{aid}/threads/{tid}/resolve",
             ts.base
         ))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .send()
         .await
         .unwrap();

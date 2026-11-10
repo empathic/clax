@@ -82,7 +82,7 @@ fn a_call_reaches_the_host_and_its_answer_is_recorded() {
     assert_eq!(answer["ok"], false);
     assert_eq!(
         serde_json::from_str::<Value>(answer["json"].as_str().unwrap()).unwrap(),
-        json!({"code": "not_found", "message": "no"})
+        json!({"code": "not_found", "message": "no", "retryable": false})
     );
     let outcome = s.outcome(End::Cancelled, 3, 9);
     assert_eq!(outcome.calls.len(), 1);
@@ -375,4 +375,21 @@ fn a_run_that_loaded_no_isolate_reports_no_memory() {
     );
     assert_eq!(out.error.unwrap().kind, ErrorKind::Unavailable);
     assert_eq!(out.mem_peak_bytes, 0);
+}
+
+#[test]
+fn a_host_errors_answer_says_whether_it_is_retryable() {
+    let answer = |e: HostError| -> Value {
+        let a: Value = serde_json::from_str(&answer_json(&Err(e))).unwrap();
+        assert_eq!(a["ok"], false);
+        serde_json::from_str(a["json"].as_str().unwrap()).unwrap()
+    };
+    assert_eq!(
+        answer(HostError::new("web_unavailable", "down").retryable()),
+        json!({"code": "web_unavailable", "message": "down", "retryable": true})
+    );
+    assert_eq!(
+        answer(HostError::new("web_cap", "used")),
+        json!({"code": "web_cap", "message": "used", "retryable": false})
+    );
 }

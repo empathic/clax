@@ -1,11 +1,10 @@
 //! `publish_public`: an agent publishes an artifact on a public Clax only
 //! once the owner approves in Clax, and only as often as they allowed.
 
-use clax_core::model::Session;
 use clax_core::working::ManualClock;
-use clax_mcp::client::DaemonClient;
 use clax_mcp::tools::{ClaxTools, PublishPublicArgs};
 use clax_testkit::TestServer;
+use clax_testkit::mcp::agent_tools;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
@@ -68,16 +67,6 @@ async fn signed_in() -> (TestServer, TestServer) {
     (public, local)
 }
 
-async fn agent(ts: &TestServer) -> ClaxTools {
-    let s: Session = serde_json::from_value(ts.register_session("claude", "pp-1").await).unwrap();
-    ClaxTools::new(
-        DaemonClient::new(ts.base.clone(), ts.token.clone(), Some(s.id.clone())),
-        format!("http://localhost:{}", ts.addr.port()),
-        Some(s),
-        ts.home.log_path(),
-    )
-}
-
 async fn call(t: &ClaxTools, args: Value) -> (bool, Value) {
     let r = t
         .publish_public(Parameters(
@@ -91,7 +80,7 @@ async fn call(t: &ClaxTools, args: Value) -> (bool, Value) {
 #[tokio::test]
 async fn publish_public_waits_for_the_owner_and_publishes_only_what_they_approved() {
     let (public, local) = signed_in().await;
-    let t = agent(&local).await;
+    let t = agent_tools(&local, "pp-1").await;
     let aid = local
         .publish("Plan", &[("index.html", "<h1>Plan</h1>")])
         .await["artifact"]["id"]
@@ -172,7 +161,7 @@ async fn publish_public_waits_for_the_owner_and_publishes_only_what_they_approve
 async fn an_answer_after_the_wait_ran_out_leaves_the_push_to_the_next_call() {
     let (public, local) = signed_in().await;
     let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));
-    let t = agent(&local).await.with_clock(clock.clone());
+    let t = agent_tools(&local, "pp-1").await.with_clock(clock.clone());
     let aid = local
         .publish("Plan", &[("index.html", "<h1>Plan</h1>")])
         .await["artifact"]["id"]

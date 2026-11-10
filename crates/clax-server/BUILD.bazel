@@ -11,13 +11,15 @@ cargo_package(
     # The runtime contract's type definitions src/shell/mod.rs serves.
     compile_data = ["//web:contract_files"],
     # clax-http's sources the route-table guards read (src/routes/guards.rs),
-    # the JSON fixtures the tests include (tests/api_mcp_http.rs), and the
-    # older builds' migrations tests/api_threads.rs includes.
+    # the JSON fixtures the tests include (tests/api_mcp_http.rs), the
+    # older builds' migrations tests/api_threads.rs includes, and the SDK's
+    # error codes tests/api_queue_reporter.rs checks refusals against.
     test_compile_data = glob(["tests/fixtures/**"]) + [
         "//crates/clax-core:toolpath_vectors",
         "//crates/clax-http:rust_sources",
         "//crates/clax-store:old_migrations",
         "//web:contract_files",
+        "//web:sdk_error_codes",
         "//web:shell_cases",
     ],
     test_data = [

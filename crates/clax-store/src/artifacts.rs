@@ -32,7 +32,9 @@ pub struct MetaPatch {
     pub via_page: bool,
 }
 
-/// The `artifact.create` record of `a` (spec §6.1), at `at`.
+/// The `artifact.create` record of `a` (spec §6.1), at `at`: with
+/// `forked_from {artifact_id, n}` (and the source as its second artifact)
+/// when `a` was made from another artifact.
 pub(super) fn create_record(a: &Artifact, at: &str) -> AuditRecord {
     let mut r = AuditRecord::new(AuditKind::ArtifactCreate, at)
         .with("title", a.title.as_str())
@@ -40,6 +42,13 @@ pub(super) fn create_record(a: &Artifact, at: &str) -> AuditRecord {
         .with("icon", a.icon.clone())
         .with("capabilities", a.capabilities.clone())
         .with("contract_version", a.contract_version.as_str());
+    if let Some(f) = &a.forked_from {
+        r = r.with(
+            "forked_from",
+            serde_json::json!({"artifact_id": f.artifact_id, "n": f.version}),
+        );
+        r.ids.artifact2 = Some(f.artifact_id.clone());
+    }
     r.ids.artifact = Some(a.id.clone());
     r
 }
@@ -211,9 +220,13 @@ fn skip_corrupt<T>(rows: Vec<Result<T>>) -> Result<Vec<T>> {
     Ok(out)
 }
 
+/// An artifact's columns, `kind` served as `external` for an external
+/// artifact (`crate::external`), whose row keeps `html`.
 pub(super) const SELECT: &str =
     "SELECT id, title, description, icon, created_at, updated_at, current_version,
-    owner_session_id, pinned, capabilities_json, contract_version, kind, person,
+    owner_session_id, pinned, capabilities_json, contract_version,
+    CASE WHEN EXISTS (SELECT 1 FROM external_artifacts x WHERE x.artifact_id = artifacts.id)
+         THEN 'external' ELSE kind END AS kind, person,
     text_authors_json, forked_from_id, forked_from_version, legacy_paths,
     (SELECT json_group_array(json_array(g.id, g.name, g.colour))
        FROM artifact_tags x JOIN tags g ON g.id = x.tag_id
@@ -240,13 +253,15 @@ impl Store {
     }
 
     /// Live artifacts (not deleted, at least one version, not hidden
-    /// drafts): pinned first, then most recently updated, ties broken by ID.
+    /// drafts, not followed remote artifacts' mirrors): pinned first, then
+    /// most recently updated, ties broken by ID.
     /// Rows with a malformed JSON column are logged and left out (see
     /// [`Store::corrupt_rows`]).
     pub fn list_artifacts(&self) -> Result<Vec<Artifact>> {
         self.with_read(|c| {
             let mut stmt = c.prepare(&format!(
                 "{SELECT} WHERE deleted_at IS NULL AND current_version > 0 AND hidden = 0
+                   AND remote_mirror = 0
                  ORDER BY pinned DESC, updated_at DESC, id"
             ))?;
             let rows = stmt.query_map([], row_to_artifact)?;
@@ -317,7 +332,11 @@ impl Store {
     /// bump `updated_at` (metadata edits are not new content). Recorded,
     /// in the same transaction, as `artifact.update` under `ctx`, naming in
     /// `fields` each field the patch sets, even to the value it had (an
-    /// explicit request); a patch that sets nothing records nothing.
+    /// explicit request); a patch that sets nothing records nothing. A
+    /// patch that changes the declaration of a seeded quickstart stops
+    /// Clax's updates to it for good, in the same transaction
+    /// ([`super::quickstart::stop_in`]), so a later release never puts back
+    /// a name the patch removed.
     ///
     /// # Errors
     /// `NotFound` when the artifact does not exist or is deleted;
@@ -396,6 +415,16 @@ impl Store {
                     text
                 ],
             )?;
+            if let Some(caps) = &patch.capabilities {
+                // The current version keeps the declaration the artifact
+                // now has, so the two never disagree.
+                tx.execute(
+                    "UPDATE versions SET capabilities_json = ?2
+                     WHERE artifact_id = ?1
+                       AND n = (SELECT current_version FROM artifacts WHERE id = ?1)",
+                    params![id.as_str(), caps.to_string()],
+                )?;
+            }
             let mut fields = serde_json::Map::new();
             let mut set = |k: &str, v: Option<serde_json::Value>| {
                 if let Some(v) = v {
@@ -409,6 +438,10 @@ impl Store {
             set("capabilities", patch.capabilities.clone());
             if let Some(caps) = &patch.capabilities {
                 self.drop_undeclared_grants(tx, ctx, id, caps)?;
+                super::capability_approvals::narrow_in(self, tx, ctx, id, caps)?;
+                if *caps != before.capabilities {
+                    super::quickstart::stop_in(tx, id, &self.now())?;
+                }
             }
             if !fields.is_empty() {
                 let mut rec =
@@ -443,6 +476,15 @@ impl Store {
         let _lock = self.lock_content(id).await?;
         self.with_tx(|tx| {
             let now = self.now();
+            // An external artifact's row goes with the mark (a trigger
+            // drops it): what it was is journaled first.
+            let external: Option<(String, Option<String>)> = tx
+                .query_row(
+                    "SELECT external_id, metadata_json FROM external_artifacts WHERE artifact_id = ?1",
+                    params![id.as_str()],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
             let Some((title, current)) = tx
                 .query_row(
                     "UPDATE artifacts SET deleted_at = ?2 WHERE id = ?1 AND deleted_at IS NULL
@@ -455,6 +497,16 @@ impl Store {
                 return Err(CoreError::NotFound);
             };
             self.record_audit(tx, ctx, delete_record(&now, id.as_str(), &title, current))?;
+            if let Some((external_id, meta)) = external {
+                let mut r = AuditRecord::new(AuditKind::ExternalDelete, now.as_str())
+                    .with("external_id", external_id)
+                    .with(
+                        "metadata_sha256",
+                        clax_core::queue::metadata_sha256(meta.as_deref().unwrap_or("null")),
+                    );
+                r.ids.artifact = Some(id.as_str().to_string());
+                self.record_audit(tx, ctx, r)?;
+            }
             self.artifact_going_tx(tx, id.as_str())?;
             super::approvals::withdraw_artifact_in(self, tx, ctx, id.as_str(), &now)?;
             super::elevations::drop_artifact_in(self, tx, ctx, id.as_str())?;
@@ -619,14 +671,16 @@ impl Store {
     }
 
     /// IDs of live-looking artifact rows that never recorded a version (a
-    /// creation that died before version 1), sorted.
+    /// creation that died before version 1), sorted. A followed remote
+    /// artifact's mirror, which never has one, is not among them.
     ///
     /// # Errors
     /// Database errors only.
     pub fn zero_version_artifacts(&self) -> Result<Vec<String>> {
         self.with_read(|c| {
             let mut stmt = c.prepare(
-                "SELECT id FROM artifacts WHERE current_version = 0 AND deleted_at IS NULL ORDER BY id",
+                "SELECT id FROM artifacts WHERE current_version = 0 AND deleted_at IS NULL
+                   AND remote_mirror = 0 ORDER BY id",
             )?;
             Ok(stmt
                 .query_map([], |r| r.get(0))?
@@ -663,7 +717,9 @@ impl Store {
     /// artifact's row and its first version's transaction (a create, or
     /// ClaxBot's `artifacts.create`). A younger one may be a create under
     /// way, and is kept, as is a live page (`kind` `live`), which has no
-    /// version until its first snapshot. A driver runs it when it starts.
+    /// version until its first snapshot, and a followed remote artifact's
+    /// mirror (`remote_mirror`), which never has one. A driver runs it when
+    /// it starts.
     /// Returns how many it removed.
     ///
     /// # Errors
@@ -676,7 +732,7 @@ impl Store {
         let ids: Vec<String> = self.with_read(|c| {
             let mut stmt = c.prepare(
                 "SELECT id FROM artifacts WHERE current_version = 0 AND deleted_at IS NULL
-                   AND kind <> 'live' AND created_at < ?1 ORDER BY id",
+                   AND kind <> 'live' AND remote_mirror = 0 AND created_at < ?1 ORDER BY id",
             )?;
             Ok(stmt
                 .query_map(params![before], |r| r.get(0))?
@@ -702,7 +758,8 @@ impl Store {
         let removed = self.with_tx(|tx| {
                 let still: bool = tx.query_row(
                     "SELECT EXISTS (SELECT 1 FROM artifacts
-                        WHERE id = ?1 AND current_version = 0 AND deleted_at IS NULL)",
+                        WHERE id = ?1 AND current_version = 0 AND deleted_at IS NULL
+                          AND remote_mirror = 0)",
                     params![id],
                     |r| r.get(0),
                 )?;
@@ -732,7 +789,7 @@ impl Store {
                     tx.execute(sql, params![id])?;
                 }
                 Ok(tx.execute(
-                    "DELETE FROM artifacts WHERE id = ?1 AND current_version = 0 AND deleted_at IS NULL",
+                    "DELETE FROM artifacts WHERE id = ?1 AND current_version = 0 AND deleted_at IS NULL AND remote_mirror = 0",
                     params![id],
                 )?)
             })?;
@@ -1140,6 +1197,39 @@ fn fields_set(p: &ValidatedPublish, first: bool) -> Vec<&'static str> {
         .collect()
 }
 
+/// Version `n` of `id`'s stored declaration; `NotFound` when the artifact
+/// is missing or deleted or has no version `n`, `None` when it is not known.
+fn recorded_declaration(c: &rusqlite::Connection, id: &str, n: u32) -> Result<Option<String>> {
+    c.query_row(
+        "SELECT v.capabilities_json FROM versions v JOIN artifacts a ON a.id = v.artifact_id
+         WHERE v.artifact_id = ?1 AND v.n = ?2 AND a.deleted_at IS NULL",
+        params![id, n],
+        |r| r.get(0),
+    )
+    .optional()?
+    .ok_or(CoreError::NotFound)
+}
+
+fn parse_declaration(raw: &str, id: &str, n: u32) -> Result<serde_json::Value> {
+    serde_json::from_str(raw).map_err(|_| CoreError::Corrupt {
+        artifact_id: id.to_string(),
+        column: "capabilities_json",
+        version: Some(n),
+    })
+}
+
+/// [`Store::version_capabilities`] on `c`.
+pub(crate) fn version_capabilities_in(
+    c: &rusqlite::Connection,
+    id: &str,
+    n: u32,
+) -> Result<serde_json::Value> {
+    match recorded_declaration(c, id, n)? {
+        Some(raw) => parse_declaration(&raw, id, n),
+        None => super::docs::caps_in(c, &ArtifactId::parse(id).map_err(|_| CoreError::NotFound)?),
+    }
+}
+
 impl Store {
     /// Creates an artifact and writes its version 1. `p.files` are all stored;
     /// nothing is carried forward. The artifact is invisible until version 1 is
@@ -1250,6 +1340,23 @@ impl Store {
         session_id: Option<&str>,
         then: impl FnOnce(&rusqlite::Transaction<'_>, u32) -> Result<T>,
     ) -> Result<(Artifact, Version, T)> {
+        self.create_artifact_quota_async(ctx, id, p, session_id, true, then)
+            .await
+    }
+
+    /// [`Store::create_artifact_then_async`], checking the member's
+    /// artifact cap only when `capped`: the seeded quickstart is made
+    /// without counting against it ([`Store::check_quota_in`] does not
+    /// count it either).
+    pub(crate) async fn create_artifact_quota_async<T>(
+        &self,
+        ctx: &AuditCtx,
+        id: &ArtifactId,
+        p: ValidatedPublish,
+        session_id: Option<&str>,
+        capped: bool,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, u32) -> Result<T>,
+    ) -> Result<(Artifact, Version, T)> {
         let id = id.clone();
         let now = self.now();
         let title = p
@@ -1273,7 +1380,9 @@ impl Store {
                 None => None,
             },
         };
-        self.check_quota(creator.as_deref())?;
+        if capped {
+            self.check_quota(creator.as_deref())?;
+        }
         #[cfg(test)]
         self.point("artifact.create.insert");
         self.with_tx(|tx| {
@@ -1284,7 +1393,9 @@ impl Store {
                 "DELETE FROM artifacts WHERE id = ?1 AND current_version = 0",
                 params![id.as_str()],
             )?;
-            self.check_quota_in(tx, creator.as_deref())?;
+            if capped {
+                self.check_quota_in(tx, creator.as_deref())?;
+            }
             tx.execute(
                 "INSERT INTO artifacts (id, title, description, icon, created_at, updated_at, current_version,
                     pinned, capabilities_json, contract_version, owner_session_id, person)
@@ -1440,8 +1551,10 @@ impl Store {
     /// otherwise, checked again inside the version's transaction). Each file
     /// keeps version `n`'s bytes, content type and hash, so the new version's
     /// `content_sha256` equals `n`'s; files of the current version that `n`
-    /// lacks are not carried. Title, description, icon and capabilities stay
-    /// as they are, and documents are not touched. `session_id` is recorded
+    /// lacks are not carried. Title, description and icon stay as they are,
+    /// and the capabilities become the declaration version `n` was
+    /// published under ([`Store::version_capabilities`]; the current one
+    /// stays when `n`'s is not known), and documents are not touched. `session_id` is recorded
     /// on the new version, and the version as `version.publish` under `ctx`
     /// with `restored_from: n`; its `carried` names only the files (other
     /// than `index.html`) whose bytes equal the previous version's.
@@ -1458,6 +1571,28 @@ impl Store {
         session_id: Option<&str>,
     ) -> Result<(Artifact, Version)> {
         self.block_on(self.restore_version_async(ctx, id, n, if_version, session_id))
+    }
+
+    /// The capability declaration version `n` of `id` was published under,
+    /// or the artifact's current one when it is not known (a version made
+    /// before versions kept theirs, other than the then-current one).
+    ///
+    /// # Errors
+    /// `NotFound` for an unknown or deleted artifact or version `n`;
+    /// `Corrupt` when a stored declaration is malformed.
+    pub fn version_capabilities(&self, id: &str, n: u32) -> Result<serde_json::Value> {
+        self.with_read(|c| version_capabilities_in(c, id, n))
+    }
+
+    /// Version `n`'s own recorded declaration, `None` when it is not known.
+    fn recorded_version_capabilities(
+        &self,
+        id: &ArtifactId,
+        n: u32,
+    ) -> Result<Option<serde_json::Value>> {
+        let raw = self.with_read(|c| recorded_declaration(c, id.as_str(), n))?;
+        raw.map(|raw| parse_declaration(&raw, id.as_str(), n))
+            .transpose()
     }
 
     /// [`Store::restore_version`], awaiting its content store. Version
@@ -1485,9 +1620,10 @@ impl Store {
     /// [`Store::restore_version_async`] that also sets `declaration`'s
     /// title, icon and capabilities (a full set) in the same version, and
     /// labels and notes it with `declaration`'s label and note when it has
-    /// them. The caller validates `declaration`
-    /// ([`RestoreDeclaration::validated`]); the restored files are never
-    /// checked, as history.
+    /// them; its capabilities are written as the version's `clax.json`
+    /// ([`clax_core::manifest::render`]), in place of version `n`'s. The
+    /// caller validates `declaration` ([`RestoreDeclaration::validated`]);
+    /// the restored files are never checked, as history.
     pub async fn restore_version_declaring_async(
         &self,
         ctx: &AuditCtx,
@@ -1519,6 +1655,20 @@ impl Store {
                 }),
             );
         }
+        // A declaration given with the restore is written as its
+        // `clax.json`, as a publish's `capabilities` is, so the file and
+        // the declaration agree.
+        let manifest = clax_core::manifest::MANIFEST_PATH;
+        if let Some(caps) = &declaration.capabilities {
+            files.insert(
+                manifest.to_string(),
+                FileChange::Put(DecodedFile {
+                    bytes: clax_core::manifest::render(caps),
+                    content_type: clax_core::publish::content_type_for(manifest),
+                }),
+            );
+        }
+        let rewritten = declaration.capabilities.is_some();
         let p = ValidatedPublish {
             title: declaration.title,
             description: None,
@@ -1529,7 +1679,10 @@ impl Store {
                     .unwrap_or_else(|| format!("Restored v{n}")),
             ),
             if_version: Some(if_version),
-            capabilities: declaration.capabilities,
+            capabilities: match declaration.capabilities {
+                Some(c) => Some(c),
+                None => self.recorded_version_capabilities(id, n)?,
+            },
             files,
             note: Some(
                 declaration
@@ -1554,6 +1707,7 @@ impl Store {
             .iter()
             .filter(|(path, meta)| {
                 *path != INDEX
+                    && !(rewritten && *path == manifest)
                     && meta.sha256.is_some()
                     && previous.get(*path).map(|m| &m.sha256) == Some(&meta.sha256)
             })
@@ -1915,8 +2069,9 @@ impl Store {
                 version_authors(tx, id.as_str(), expected, p, session_id, &files)?;
             tx.execute(
                 "INSERT INTO versions (artifact_id, n, label, created_at, session_id, files_json, note,
-                    content_sha256, person, by_page, file_authors_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    content_sha256, person, by_page, file_authors_json, capabilities_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                         COALESCE(?12, (SELECT capabilities_json FROM artifacts WHERE id = ?1)))",
                 params![
                     id.as_str(),
                     n,
@@ -1931,7 +2086,8 @@ impl Store {
                     authors
                         .files
                         .as_ref()
-                        .map(|f| serde_json::to_string(f).expect("serialisable map"))
+                        .map(|f| serde_json::to_string(f).expect("serialisable map")),
+                    p.capabilities.as_ref().map(|c| c.to_string()),
                 ],
             )?;
             link_version(tx, id.as_str(), n, p, &self.now())?;
@@ -1966,6 +2122,7 @@ impl Store {
             )?;
             if let Some(caps) = &p.capabilities {
                 self.drop_undeclared_grants(tx, ctx, id, caps)?;
+                super::capability_approvals::narrow_in(self, tx, ctx, id, caps)?;
             }
             super::inbox::note_version(
                 tx,
@@ -2516,6 +2673,125 @@ mod tests {
             ..Default::default()
         })
         .unwrap()
+    }
+
+    fn declaring(
+        files: &[(&str, Option<&str>)],
+        if_version: Option<u32>,
+        caps: serde_json::Value,
+    ) -> clax_core::publish::ValidatedPublish {
+        let mut p = publish(files, if_version);
+        p.capabilities = Some(caps);
+        p
+    }
+
+    #[test]
+    fn each_version_keeps_its_declaration() {
+        let (_d, store) = store();
+        let v1 = serde_json::json!({"db": {}});
+        let v2 = serde_json::json!({"db": {}, "net": {"hosts": ["a.example"]}});
+        let (a, _) = store
+            .create_artifact(
+                DAEMON,
+                declaring(&[("index.html", Some("<p>1"))], None, v1.clone()),
+                None,
+            )
+            .unwrap();
+        let id = clax_core::ArtifactId::parse(&a.id).unwrap();
+        store
+            .publish_version(
+                DAEMON,
+                &id,
+                declaring(&[("index.html", Some("<p>2"))], Some(1), v2.clone()),
+                None,
+            )
+            .unwrap();
+        // A version that declares nothing keeps the declaration in force.
+        store
+            .publish_version(
+                DAEMON,
+                &id,
+                publish(&[("index.html", Some("<p>3"))], Some(2)),
+                None,
+            )
+            .unwrap();
+        assert_eq!(store.version_capabilities(&a.id, 1).unwrap(), v1);
+        assert_eq!(store.version_capabilities(&a.id, 2).unwrap(), v2);
+        assert_eq!(store.version_capabilities(&a.id, 3).unwrap(), v2);
+        assert!(matches!(
+            store.version_capabilities(&a.id, 9),
+            Err(clax_core::CoreError::NotFound)
+        ));
+        // A version whose declaration is not known reads as the current one.
+        store
+            .with_tx(|tx| {
+                tx.execute(
+                    "UPDATE versions SET capabilities_json = NULL WHERE artifact_id = ?1 AND n = 1",
+                    params![a.id],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(store.version_capabilities(&a.id, 1).unwrap(), v2);
+        // A patch of the declaration changes the current version's too.
+        let patch = serde_json::json!({"db": {}, "net": {"hosts": ["b.example"]}});
+        store
+            .update_meta(
+                DAEMON,
+                &id,
+                MetaPatch {
+                    capabilities: Some(patch.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(store.version_capabilities(&a.id, 3).unwrap(), patch);
+        assert_eq!(store.version_capabilities(&a.id, 2).unwrap(), v2);
+    }
+
+    #[test]
+    fn restore_takes_the_restored_versions_declaration() {
+        let (_d, store) = store();
+        let v1 = serde_json::json!({"db": {}});
+        let v2 = serde_json::json!({"db": {}, "net": {"hosts": ["a.example"]}});
+        let (a, _) = store
+            .create_artifact(
+                DAEMON,
+                declaring(&[("index.html", Some("<p>1"))], None, v1.clone()),
+                None,
+            )
+            .unwrap();
+        let id = clax_core::ArtifactId::parse(&a.id).unwrap();
+        store
+            .publish_version(
+                DAEMON,
+                &id,
+                declaring(&[("index.html", Some("<p>2"))], Some(1), v2.clone()),
+                None,
+            )
+            .unwrap();
+        let (now, v) = store.restore_version(DAEMON, &id, 1, 2, None).unwrap();
+        assert_eq!(v.n, 3);
+        assert_eq!(now.capabilities, v1);
+        assert_eq!(store.version_capabilities(&a.id, 3).unwrap(), v1);
+        // An unknown declaration leaves the current one in force.
+        store
+            .with_tx(|tx| {
+                tx.execute(
+                    "UPDATE versions SET capabilities_json = NULL WHERE artifact_id = ?1 AND n = 2",
+                    params![a.id],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let (now, _) = store.restore_version(DAEMON, &id, 2, 3, None).unwrap();
+        assert_eq!(now.capabilities, v1);
+        // A fork's version 1 takes the forked version's declaration.
+        let (fork, _) = store
+            .fork_artifact(DAEMON, &id, Some(1), None, None)
+            .unwrap();
+        assert_eq!(fork.capabilities, v1);
+        assert_eq!(store.version_capabilities(&fork.id, 1).unwrap(), v1);
     }
 
     #[test]

@@ -20,7 +20,7 @@
 </script>
 
 <div class="version-menu">
-  <button type="button" class="vbtn hide-sm" bind:this={button} aria-haspopup="dialog" aria-expanded={open} aria-label={`${live ? "Snapshot" : "Version"} ${shown} of ${latest}${dot ? ", a newer version you have not seen" : ""}`} onclick={onToggle}>
+  <button type="button" class="vbtn hide-sm" data-shell-control="versions" bind:this={button} aria-haspopup="dialog" aria-expanded={open} aria-label={`${live ? "Snapshot" : "Version"} ${shown} of ${latest}${dot ? ", a newer version you have not seen" : ""}`} onclick={onToggle}>
     v{shown}<span>of {latest} ▾</span>{#if dot}<i class="new" aria-hidden="true"></i>{/if}
   </button>
   {#if open && Panel}

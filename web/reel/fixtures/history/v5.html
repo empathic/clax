@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Northwind Launch Plan</title>
+<style>
+  /* Version 5 of Northwind's launch plan, seeded for the reel's history
+     vignette (web/reel/vignettes/history.ts): a planning board with its
+     numbers and a timeline. Northwind, its launch and its people are
+     invented. Light only, as the reel is filmed. */
+  :root { --bg: #f3f4f8; --col: #e8eaf1; --card: #ffffff; --fg: #121417; --muted: #5d6470; --line: #dde1e8; --accent: #4f46e5;
+    --sam: #2f6fdb; --mia: #0f9d8a; --priya: #e8590c; --jon: #7c3aed; --alex: #d63384; --risk: #c92a2a; --ok: #2f9e44; color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { padding: 20px 22px; max-width: 1040px; margin: 0 auto; }
+  header { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+  .logo { width: 38px; height: 38px; border-radius: 10px; background: linear-gradient(135deg, #4f46e5, #0ea5e9); color: #fff; display: grid; place-items: center; font: 800 18px system-ui, sans-serif; }
+  .kicker { margin: 0; color: var(--muted); font-size: 11px; letter-spacing: 0.07em; text-transform: uppercase; }
+  h1 { margin: 0; font-size: 22px; letter-spacing: -0.01em; }
+  .live { margin-left: auto; display: flex; align-items: center; gap: 8px; background: #121417; color: #fff; padding: 7px 14px; border-radius: 99px; font-weight: 600; }
+  .live b { font-size: 16px; }
+  .kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+  .kpi { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; }
+  .kpi span { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .kpi b { display: block; font-size: 26px; letter-spacing: -0.02em; margin-top: 2px; }
+  .kpi i { display: block; height: 5px; border-radius: 99px; background: var(--col); margin-top: 6px; overflow: hidden; }
+  .kpi i::after { content: ""; display: block; height: 100%; width: var(--w); background: var(--c); border-radius: 99px; }
+  .timeline { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px 12px; margin-bottom: 12px; }
+  .timeline h2, .col h2 { margin: 0 0 8px; font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; text-transform: uppercase; letter-spacing: 0.06em; }
+  .weeks { display: grid; grid-template-columns: 110px repeat(4, minmax(0, 1fr)); font-size: 11px; color: var(--muted); border-bottom: 1px solid var(--line); padding-bottom: 4px; margin-bottom: 6px; }
+  .row { display: grid; grid-template-columns: 110px repeat(12, minmax(0, 1fr)); align-items: center; height: 20px; }
+  .row em { font-style: normal; font-size: 12px; color: var(--fg); }
+  .seg { height: 12px; border-radius: 99px; background: var(--c); }
+  .today { position: relative; }
+  .board { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; align-items: start; }
+  .col { background: var(--col); border-radius: 12px; padding: 8px; }
+  .col h2 { margin: 2px 4px 8px; }
+  .card { background: var(--card); border-radius: 9px; padding: 8px 10px; margin-bottom: 6px; border: 1px solid var(--line); border-left: 3px solid var(--c); box-shadow: 0 1px 2px rgba(20, 24, 31, 0.07); }
+  .card b { display: block; font-weight: 600; margin-bottom: 5px; }
+  .meta { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
+  .av { width: 18px; height: 18px; border-radius: 50%; color: #fff; font: 700 10px/18px system-ui, sans-serif; text-align: center; font-style: normal; }
+  .flag { margin-left: auto; padding: 1px 7px; border-radius: 99px; font-size: 10px; font-weight: 700; background: #fdecec; color: var(--risk); }
+  .flag.ok { background: #e7f5ea; color: var(--ok); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="logo">N</div>
+    <div><p class="kicker">Northwind Atlas · Launch, November 18</p><h1>Launch plan</h1></div>
+    <div class="live">Launch in <b>15 days</b></div>
+  </header>
+  <div class="kpis">
+    <div class="kpi"><span>Tasks done</span><b>3 / 8</b><i style="--w:38%;--c:var(--accent)"></i></div>
+    <div class="kpi"><span>RSVPs</span><b>412</b><i style="--w:82%;--c:var(--mia)"></i></div>
+    <div class="kpi"><span>Press briefings</span><b>9</b><i style="--w:60%;--c:var(--sam)"></i></div>
+    <div class="kpi"><span>At risk</span><b style="color:var(--risk)">1</b><i style="--w:12%;--c:var(--risk)"></i></div>
+  </div>
+  <section class="timeline">
+    <h2>Timeline <span>Oct 27 – Nov 18</span></h2>
+    <div class="weeks"><span></span><span>Oct 27</span><span>Nov 3</span><span>Nov 10</span><span>Nov 17</span></div>
+    <div class="row"><em>Venue &amp; catering</em><span class="seg" style="grid-column:2/7;--c:var(--sam)"></span></div>
+    <div class="row"><em>Press</em><span class="seg" style="grid-column:3/9;--c:var(--priya)"></span></div>
+    <div class="row"><em>Support</em><span class="seg" style="grid-column:5/9;--c:var(--jon)"></span></div>
+    <div class="row"><em>Keynote</em><span class="seg" style="grid-column:8/13;--c:var(--alex)"></span></div>
+    <div class="row"><em>Website</em><span class="seg" style="grid-column:10/14;--c:var(--mia)"></span></div>
+  </section>
+  <div class="board">
+    <section class="col"><h2>To do <span>3</span></h2>
+      <div class="card" style="--c:var(--priya)"><b>Print the badges</b><div class="meta"><i class="av" style="background:var(--priya)">P</i>Nov 10<span class="flag">At risk</span></div></div>
+      <div class="card" style="--c:var(--alex)"><b>Rehearse the keynote</b><div class="meta"><i class="av" style="background:var(--alex)">A</i>Nov 16</div></div>
+      <div class="card" style="--c:var(--mia)"><b>Go live on the website</b><div class="meta"><i class="av" style="background:var(--mia)">M</i>Nov 18</div></div>
+    </section>
+    <section class="col"><h2>In progress <span>2</span></h2>
+      <div class="card" style="--c:var(--priya)"><b>Finish the press kit</b><div class="meta"><i class="av" style="background:var(--priya)">P</i>Nov 4<span class="flag ok">On track</span></div></div>
+      <div class="card" style="--c:var(--sam)"><b>Confirm the caterer</b><div class="meta"><i class="av" style="background:var(--sam)">S</i>Nov 11<span class="flag ok">On track</span></div></div>
+    </section>
+    <section class="col"><h2>Done <span>3</span></h2>
+      <div class="card" style="--c:var(--sam)"><b>Book the venue</b><div class="meta"><i class="av" style="background:var(--sam)">S</i>Oct 28</div></div>
+      <div class="card" style="--c:var(--mia)"><b>Send the invitations</b><div class="meta"><i class="av" style="background:var(--mia)">M</i>Oct 30</div></div>
+      <div class="card" style="--c:var(--jon)"><b>Brief the support team</b><div class="meta"><i class="av" style="background:var(--jon)">J</i>Nov 7</div></div>
+    </section>
+  </div>
+</main>
+</body>
+</html>

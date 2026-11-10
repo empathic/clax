@@ -28,3 +28,16 @@ export function safeNext(raw: string | null | undefined, origin: string): string
 export function nextOfPage(): string | null {
   return safeNext(new URLSearchParams(location.search).get("next"), location.origin);
 }
+
+/** `url` as a page on this machine a device sign-in may return to, or null: the rule of crates/clax-http/src/loopback.rs `loopback_return` (scheme `http`; host `localhost`, `127.0.0.1` or `[::1]`; no userinfo or fragment; at most 2048 bytes). */
+export function loopbackReturn(url: string | null | undefined): string | null {
+  if (!url || url.length > MAX_NEXT) return null;
+  try {
+    const u = new URL(url);
+    const local = u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname === "[::1]";
+    if (u.protocol !== "http:" || !local || u.username || u.password || u.hash || url.includes("#")) return null;
+    return u.href.length <= MAX_NEXT ? u.href : null;
+  } catch {
+    return null;
+  }
+}

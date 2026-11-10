@@ -1,5 +1,6 @@
-//! Keeps the web UI the Worker embeds (`web/dist`, `src/web.rs`) in step
-//! with the checkout.
+//! Names the web UI the Worker embeds (`src/web.rs`): `CLAX_WEB_DIST_DIR`
+//! when set (Bazel sets it to its build of `web/dist`), else the checkout's
+//! `web/dist`, and keeps the crate in step with it.
 //!
 //! rust-embed's `include_bytes!` makes Cargo track the files that existed
 //! when the crate last compiled, but not files added since: a Worker built
@@ -17,8 +18,12 @@ use std::path::PathBuf;
 
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo"));
-    let dist = manifest.join("../../web/dist");
     println!("cargo::rerun-if-changed=build.rs");
+    println!("cargo::rerun-if-env-changed=CLAX_WEB_DIST_DIR");
+    let dist = std::env::var_os("CLAX_WEB_DIST_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| manifest.join("../../web/dist"));
+    println!("cargo::rustc-env=CLAX_WEB_DIST_DIR={}", dist.display());
     println!("cargo::rerun-if-changed={}", dist.display());
     let wasm = std::env::var("CARGO_CFG_TARGET_ARCH").is_ok_and(|a| a == "wasm32");
     if wasm && !dist.join("index.html").is_file() {

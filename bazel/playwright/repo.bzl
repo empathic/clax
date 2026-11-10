@@ -1,8 +1,9 @@
 """The Chromium the browser tests run, pinned by checksum.
 
 `@chromium//:browsers` is a directory laid out as PLAYWRIGHT_BROWSERS_PATH
-expects for the locked @playwright/test: the host's Chromium and Chromium
-headless shell from browsers.bzl, which scripts/bazel-sync.sh derives from
+expects for the locked @playwright/test: the host's Chromium, Chromium
+headless shell and Playwright's ffmpeg (which `recordVideo` encodes with)
+from browsers.bzl, which scripts/bazel-sync.sh derives from
 web/pnpm-lock.yaml. Nothing is downloaded while a test runs.
 """
 

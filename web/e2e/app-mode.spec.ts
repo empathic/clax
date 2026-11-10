@@ -5,14 +5,22 @@
 // the app's own history of pages, fragments and pushState routes, and the
 // overlays an app that names them `native` draws itself. The app's side is
 // ./app-host.ts.
-import { type CDPSession, type Frame, type Locator, type Page } from "@playwright/test";
+import { writeFile } from "node:fs/promises";
+import { type CDPSession, type Frame, type Locator, type Page, type TestInfo } from "@playwright/test";
 import { hostChannel, host, initHost, NONCE, noFrames, ofType, toHost } from "./app-host";
-import { test, expect, type Daemon, api, contentFrame, publishAs, publishNext, record, registerSession, streamLive } from "./fixtures";
+import { test, expect, type Daemon, api, approve, contentFrame, publishAs, publishNext, record, registerSession, streamLive } from "./fixtures";
 import { ask } from "./questions-helpers";
 import { advance, quietEval } from "./time";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
+// What a test attaches when it fails, before its page closes.
+let onFailure: ((page: Page, info: TestInfo) => Promise<void>) | null = null;
+test.afterEach(async ({ page }, info) => {
+  const attach = onFailure;
+  onFailure = null;
+  if (attach && info.status !== info.expectedStatus) await attach(page, info);
+});
 test.use({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 800 } });
 
 const PAGE = `<!doctype html><html><head><title>App</title><style>body{margin:0;font:18px/28px sans-serif}main{padding:24px}h2{margin:0 0 24px}.tall{height:3000px}</style>
@@ -25,6 +33,11 @@ async function openApp(page: Page, title: string, mode: "subdomain" | "sandbox",
   const { artifact } = opts.capabilities
     ? await api(d.base, d.token, "/api/artifacts", { method: "POST", session: s.id, body: JSON.stringify({ title, capabilities: opts.capabilities, files: { "index.html": { content: html, encoding: "utf8" } } }) }) as { artifact: { id: string } }
     : await publishAs(d.base, d.token, s.id, title, { "index.html": html });
+  if (opts.capabilities) {
+    // Approved, then any grant approving made revoked: the page asks first.
+    await approve(d.base, d.token, artifact.id);
+    await api(d.base, d.token, `/api/artifacts/${artifact.id}/net-grants`, { method: "DELETE" });
+  }
   if (mode === "sandbox") await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage unavailable */ } });
   await hostChannel(page);
   await record(page);
@@ -39,14 +52,18 @@ async function openApp(page: Page, title: string, mode: "subdomain" | "sandbox",
 const hovers = (page: Page) => quietEval<string[]>(page, "window.claxMsgs.filter(m => m.type === 'clax:hover').map(m => m.selector)");
 
 /** Holds one finger on `target` until the bridge's hold arms (it outlines
- * what is under the finger, `selector`), then lifts it. */
+ * what is under the finger, `selector`), then lifts it; the app's host
+ * attests the press and the release, as it does for every finger on the
+ * WebView. */
 async function holdOn(page: Page, cdp: CDPSession, target: Locator, selector: string) {
   const b = (await target.boundingBox())!;
   const at = { x: b.x + Math.min(40, b.width / 2), y: b.y + b.height / 2 };
   const seen = (await hovers(page)).length;
+  await host(page, `attestPointer({ pointer: 1, phase: "down", x: ${at.x}, y: ${at.y} })`);
   await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [at] });
   await expect.poll(async () => (await hovers(page)).slice(seen)).toContain(selector);
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await host(page, `attestPointer({ pointer: 1, phase: "up", x: ${at.x}, y: ${at.y} })`);
 }
 
 /** The last scroll position the page reported to the shell. */
@@ -192,7 +209,8 @@ test("a picked row of elements is labelled with a space between their texts, as 
 });
 
 /** A page that keeps one note in its documents: Add writes it, and the page
- * shows it while it exists. */
+ * shows it while it exists. Add is wired once its documents are: the button
+ * is marked `data-wired` then. */
 const NOTES = `<!doctype html><html><head><title>Notes</title><style>body{margin:0;font:18px/28px sans-serif}main{padding:24px}h2{margin:0 0 24px}.tall{height:3000px}</style>
 </head>
 <body><main><h2 id="t">Notes</h2><p id="note">none</p><button id="add">Add</button><div class="tall"></div><p id="end">The end</p></main>
@@ -200,7 +218,9 @@ const NOTES = `<!doctype html><html><head><title>Notes</title><style>body{margin
 (async () => {
   const db = await claude.use("db");
   db.doc("notes/n1").onSnapshot(s => { document.getElementById("note").textContent = s.exists ? s.data().text : "none"; });
-  document.getElementById("add").onclick = () => db.doc("notes/n1").set({ text: "kept" });
+  const add = document.getElementById("add");
+  add.onclick = () => db.doc("notes/n1").set({ text: "kept" });
+  add.dataset.wired = "";
 })();
 </script></body></html>`;
 
@@ -208,7 +228,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: a published version is offered, not loaded, and lands in place on reloadLatest with the documents and scroll kept; a restore likewise`, async ({ page }) => {
     const { id, sid, frame } = await openApp(page, `App notes ${mode}`, mode, true, { html: NOTES, capabilities: { db: {} } });
     await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
-    await frame.locator("#add").tap();
+    await frame.locator("#add[data-wired]").tap();
     await expect(frame.locator("#note")).toHaveText("kept");
     await streamLive(page);
     const y = await scrollAndReport(page, frame, 1200);
@@ -294,7 +314,12 @@ test.describe("a short view", () => {
     expect(await framed()).toBe(false);
     await host(page, "enterCommentMode()");
     await expect.poll(framed).toBe(true);
-    await frame.locator("#t").tap();
+    // The app's host attests the finger's press and release.
+    const b = (await frame.locator("#t").boundingBox())!;
+    const at = { x: b.x + Math.min(40, b.width / 2), y: b.y + b.height / 2 };
+    await host(page, `attestPointer({ pointer: 1, phase: "down", x: ${at.x}, y: ${at.y} })`);
+    await page.touchscreen.tap(at.x, at.y);
+    await host(page, `attestPointer({ pointer: 1, phase: "up", x: ${at.x}, y: ${at.y} })`);
     await expect.poll(async () => (await ofType(page, "state")).at(-1)?.draft ?? null).toMatchObject({ label: "“Quarterly goals”" });
     await expect(page.locator(".composer")).toBeHidden();
     await expect(page.getByRole("button", { name: "Send", exact: true })).toHaveCount(0);
@@ -310,6 +335,22 @@ test("back() moves through the app's own fragments and pages in place, and acros
   const { artifact } = await publishAs(d.base, d.token, s.id, "Routes", { "index.html": ROUTES, "other.html": "<!doctype html><title>O</title><h1 id=o>Other</h1>" });
   const id = artifact.id;
   await hostChannel(page);
+  // The page's reports to the shell, in the order the shell hears them, and
+  // the host's posts: attached when the test fails, as the trail they make is
+  // what the last assertion checks.
+  await page.addInitScript(() => {
+    if (window.top !== window) return;
+    const heard: unknown[] = [];
+    (window as unknown as { claxHeard: unknown[] }).claxHeard = heard;
+    addEventListener("message", e => { const m = e.data; if (typeof m?.type === "string" && /^clax:(hello|hash|route|navigate)$/.test(m.type)) heard.push({ type: m.type, file: m.file, hash: m.hash, depth: m.depth }); });
+  });
+  onFailure = async (shown, info) => {
+    const heard = await shown.evaluate(() => (window as unknown as { claxHeard?: unknown[] }).claxHeard ?? []);
+    // A file in the test's output folder, which CI keeps (ci.yml's test logs).
+    const path = info.outputPath("trail.json");
+    await writeFile(path, JSON.stringify({ heard, toHost: await toHost(shown) }, null, 1));
+    await info.attach("trail", { path, contentType: "application/json" });
+  };
   await page.goto(`${d.base}/a/${id}?app=1`);
   const f1 = await contentFrame(page, id, 1);
   await initHost(page);
@@ -331,9 +372,13 @@ test("back() moves through the app's own fragments and pages in place, and acros
   await expect.poll(async () => (await ofType(page, "landed")).length, { timeout: 10_000 }).toBe(1);
   const other = page.frames().find(f => /\/v\/2\/other\.html$/.test(f.url()))!;
   await expect(other.locator("#o")).toHaveText("Other, later");
-  // Back: the index page of version 2, then its route, then its start.
+  // Back: the index page of version 2, then its route, then its start. The
+  // next back() waits for the index page to greet: its greeting starts the
+  // trail of a new document, and drops a move a back() made before it.
+  const readies = (await ofType(page, "ready")).length;
   await host(page, "back()");
   await expect.poll(() => page.frames().some(f => /\/v\/2\/(#.*)?$/.test(f.url()))).toBe(true);
+  await expect.poll(async () => (await ofType(page, "ready")).slice(readies).some(r => r.file === "index.html")).toBe(true);
   expect(new URL(page.url()).pathname).toBe(`/a/${id}`);
   await host(page, "back()");
   const index = page.frames().find(f => /\/v\/2\/(#.*)?$/.test(f.url()))!;
@@ -607,6 +652,7 @@ claude.use("permissions").then(async perm => { document.getElementById("out").te
 <script src="slow.js"></script><p id="after">parsed</p></body></html>`;
     const s = await registerSession(d.base, d.token, "app");
     const { artifact } = await api(d.base, d.token, "/api/artifacts", { method: "POST", session: s.id, body: JSON.stringify({ title: "Native slow page", capabilities: NET_CAPS, files: { "index.html": { content: html, encoding: "utf8" } } }) }) as { artifact: { id: string } };
+    await approve(d.base, d.token, artifact.id);
     let release!: () => void;
     const held = new Promise<void>(r => { release = r; });
     await page.route("**/slow.js", async route => { await held; await route.fulfill({ contentType: "text/javascript", body: "window.slow = true;" }); });

@@ -93,7 +93,11 @@ void main() {
       await rendered();
       final served = await api.getArtifact(draftId);
       expect(served.versions.map((v) => v.n), [1, 2, 3, 4]);
-      expect(served.versions.last.files.keys.toSet(), {'index.html', 'app.js'});
+      expect(served.versions.last.files.keys.toSet(), {
+        'index.html',
+        'app.js',
+        'clax.json',
+      });
 
       state.draft.stage([
         const DbOp(

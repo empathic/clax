@@ -25,7 +25,7 @@
   import { tick } from "svelte";
   import { onHost } from "../transport";
 
-  let { rawHref, canCopy, onCopy, onVersions, pageHref = null, getHref = null, onFork, onClone = null, onShare = null, onPublish = null, legal = null }: { rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null; getHref?: string | null; onFork?(): void; onClone?: (() => void) | null; onShare?: (() => void) | null; onPublish?: { label: string; open(): void } | null; legal?: { terms_url: string; privacy_url: string } | null } = $props();
+  let { rawHref, canCopy, onCopy, onVersions, pageHref = null, getHref = null, onFork, onClone = null, onShare = null, onPublish = null, onPermissions = null, legal = null }: { rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null; getHref?: string | null; onFork?(): void; onClone?: (() => void) | null; onShare?: (() => void) | null; onPublish?: { label: string; open(): void } | null; onPermissions?: (() => void) | null; legal?: { terms_url: string; privacy_url: string } | null } = $props();
   let open = $state(false);
   const app = onHost();
   // Phone width, as the bar's `hide-sm` rule draws it; read on each open.
@@ -88,6 +88,7 @@
       {#if phone && onClone}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onClone(); }}>Clone with git…</button>{/if}
       {#if phone && onShare}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onShare(); }}>Share…</button>{/if}
       {#if phone && onPublish}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onPublish.open(); }}>{onPublish.label}</button>{/if}
+      {#if onPermissions}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onPermissions(); }}>Permissions…</button>{/if}
       {#if legal}
         <hr />
         <a role="menuitem" tabindex="-1" href={legal.terms_url} target="_blank" rel="noopener" onclick={close}>Terms of Service</a>

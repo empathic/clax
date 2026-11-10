@@ -1,0 +1,10 @@
+{
+  "targets": {
+    "menu": ".vmenu",
+    "chip": "button.vbtn"
+  },
+  "shots": [
+    { "at": "@menu-0.2", "until": "scrub+0.1", "targets": ["menu"], "label": "the version menu" },
+    { "at": "restore-0.2", "targets": ["chip"], "label": "restored, as a new version" }
+  ]
+}

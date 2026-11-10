@@ -114,6 +114,7 @@ async fn lookups_refuse_foreign_origins() {
             "{}/api/viewers?ids=u_ffffffffffffffffffffff",
             ts.base
         ))
+        .header("cookie", format!("clax_viewer={}", ts.local_browser()))
         .header("origin", "http://evil.test")
         .send()
         .await
@@ -128,6 +129,7 @@ async fn the_shells_own_https_origin_is_its_own_and_another_https_one_is_not() {
     let get = |origin: &'static str, host: &'static str| {
         ts.client
             .get(format!("{}/api/viewers/me", ts.base))
+            .header("cookie", format!("clax_viewer={}", ts.local_browser()))
             .header("origin", origin)
             .header("host", host)
             .send()
@@ -148,10 +150,12 @@ async fn the_shells_own_https_origin_is_its_own_and_another_https_one_is_not() {
 async fn a_request_another_site_or_origin_made_without_an_origin_is_refused_and_creates_no_viewer()
 {
     let ts = TestServer::spawn().await;
+    let browser = format!("clax_viewer={}", ts.local_browser());
     for site in ["cross-site", "same-site"] {
         let res = ts
             .client
             .get(format!("{}/api/viewers/me", ts.base))
+            .header("cookie", &browser)
             .header("sec-fetch-site", site)
             .send()
             .await
@@ -161,15 +165,29 @@ async fn a_request_another_site_or_origin_made_without_an_origin_is_refused_and_
         let v: Value = res.json().await.unwrap();
         assert_eq!(v["error"]["code"], "forbidden_origin", "{site}");
     }
-    // The shell's own fetches, a typed URL, and scripts that send no such header.
+    // The shell's own fetches, a typed URL, and scripts that send no such
+    // header: its viewer, no new one.
     for site in [Some("same-origin"), Some("none"), None] {
-        let mut req = ts.client.get(format!("{}/api/viewers/me", ts.base));
+        let mut req = ts
+            .client
+            .get(format!("{}/api/viewers/me", ts.base))
+            .header("cookie", &browser);
         if let Some(s) = site {
             req = req.header("sec-fetch-site", s);
         }
         let res = req.send().await.unwrap();
         assert_eq!(res.status(), 200, "{site:?}");
-        assert!(res.headers().get("set-cookie").is_some(), "{site:?}");
+        assert!(res.headers().get("set-cookie").is_none(), "{site:?}");
+    }
+    // With no credential at all, whatever it says of itself, it mints none.
+    for site in [Some("same-origin"), Some("none"), Some("cross-site"), None] {
+        let mut req = ts.client.get(format!("{}/api/viewers/me", ts.base));
+        if let Some(s) = site {
+            req = req.header("sec-fetch-site", s);
+        }
+        let res = req.send().await.unwrap();
+        assert_eq!(res.status(), 401, "{site:?}");
+        assert!(res.headers().get("set-cookie").is_none(), "{site:?}");
     }
 }
 

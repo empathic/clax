@@ -10,9 +10,18 @@ import 'package:flutter_test/flutter_test.dart';
 
 /// One request the fake core saw.
 class _Req {
-  _Req(this.method, this.path, this.query, this.headers, this.body);
+  _Req(
+    this.method,
+    this.path,
+    this.query,
+    this.headers,
+    this.body, {
+    this.person = false,
+  });
 
   final String method;
+  /// Whether the call spoke as the person ([ClaxTransport.send]'s `person`).
+  final bool person;
   final String path;
   final Map<String, String>? query;
   final Map<String, String> headers;
@@ -41,7 +50,7 @@ class _Core implements ClaxTransport {
     required Duration timeout,
     bool person = false,
   }) async {
-    final r = _Req(method, path, query, headers, body);
+    final r = _Req(method, path, query, headers, body, person: person);
     seen.add(r);
     final h = routes['$method $path'];
     if (h == null) fail('unrouted call: $method $path');
@@ -122,6 +131,7 @@ void main() {
       throwsA(isA<RemoteMoved>().having((e) => e.remoteVersion, 'remoteVersion', 5)),
     );
     expect(core.seen.single.json, {'mode': 'app', 'version': 3, 'remote': 'r1'});
+    expect(core.seen.single.person, isTrue, reason: 'a push is the person’s');
 
     answer = _err(400, 'uses_assets');
     await expectLater(api.publish('a1', version: 3), throwsA(isA<UsesAssets>()));
@@ -404,6 +414,11 @@ void main() {
     expect(core.seen.last.json, {'access': null, 'listed': false});
     await api.setComments('r1', 'ra1', true);
     expect(core.seen.last.json, {'on': true});
+    // Sharing and widening are the person's decisions; reading is the app's.
+    expect(
+      [for (final r in core.seen) '${r.method} ${r.person}'],
+      ['GET false', 'PUT true', 'PUT true', 'DELETE false', 'PUT true', 'PUT true', 'PUT true'],
+    );
   });
 
   test('remotes: list, add as the app, poll and remove', () async {
@@ -441,6 +456,8 @@ void main() {
       'kind': 'clax-app',
       'machine': 'Sam’s phone',
     });
+    // Connecting is the person's decision: it speaks as them.
+    expect(core.seen.last.person, isTrue);
     expect((await api.poll('r1')).connected, isTrue);
     // A refused sign-in's remote still reads pending: the poll's status
     // is what says so.

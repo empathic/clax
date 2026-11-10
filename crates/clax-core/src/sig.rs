@@ -334,17 +334,19 @@ pub struct SigHeader {
 impl fmt::Display for SigHeader {
     /// The header's value: `t=…, n=…, s=…`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "t={}, n={}, s={}", self.t, self.nonce, b64(&self.sig))
+        write!(
+            f,
+            "t={}, n={}, s={}",
+            self.t,
+            self.nonce,
+            crate::secret::base64url(&self.sig)
+        )
     }
 }
 
 /// A fresh nonce: [`NONCE_LEN`] base64url characters (16 random bytes).
 pub fn new_nonce() -> String {
-    b64(&random_bytes::<16>())
-}
-
-fn b64(bytes: &[u8]) -> String {
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    crate::secret::base64url(&random_bytes::<16>())
 }
 
 /// `s` decoded from canonical unpadded base64url into exactly `N` bytes.
@@ -423,7 +425,7 @@ pub fn verify(public: &[u8], input: &SignInput<'_>, sig: &[u8]) -> bool {
 
 /// A public key in unpadded base64url, as the store keeps it.
 pub fn encode_public(public: &[u8; PUBLIC_LEN]) -> String {
-    b64(public)
+    crate::secret::base64url(public)
 }
 
 /// The public key in unpadded base64url `s`.
@@ -884,7 +886,7 @@ mod tests {
 
     /// The `i`th test nonce: 22 base64url characters.
     fn nn(i: u32) -> String {
-        b64(&u128::from(i).to_be_bytes())
+        crate::secret::base64url(&u128::from(i).to_be_bytes())
     }
 
     #[test]
@@ -1201,6 +1203,57 @@ mod tests {
         assert_eq!(encode_public(&k.public()).len(), 43);
         let fp = fingerprint(&k.public());
         assert!(fp.starts_with("SHA256:") && fp.len() == 7 + 64);
+    }
+
+    /// The vector `web/sdk/src/sign.test.ts` checks the TypeScript signer
+    /// against: a fixed key (PKCS#8 v2 of the seed `[0x42; 32]`, as a
+    /// queue service grant's `private_key` carries one) signs a reporter
+    /// request with no agent headers.
+    #[test]
+    fn sdk_vector_is_fixed() {
+        let seed = [0x42u8; 32];
+        let public = decode_public("IVL40Zt5HSRFMkLhXy6rbLfP-ntqXtMAl5YOBpiB2xI").unwrap();
+        let mut doc = vec![
+            0x30, 0x53, 0x02, 0x01, 0x01, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22,
+            0x04, 0x20,
+        ];
+        doc.extend_from_slice(&seed);
+        doc.extend_from_slice(&[0xa1, 0x23, 0x03, 0x21, 0x00]);
+        doc.extend_from_slice(&public);
+        let k = KeyPair::from_pkcs8(&doc).unwrap();
+        assert_eq!(k.public(), public);
+        assert_eq!(
+            crate::secret::base64url(&doc),
+            "MFMCAQEwBQYDK2VwBCIEIEJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCoSMDIQAhUvjRm3kdJEUyQuFfLqtst8_6e2pe0wCXlg4GmIHbEg"
+        );
+        let i = input(
+            "POST",
+            "/api/queues/q1/reporter/reports?cursor=c1",
+            "clax.example:8443",
+            1_760_000_000,
+            "AAECAwQFBgcICQoLDA0ODw",
+            br#"{"body":"hi"}"#,
+            "cxr_vector",
+        );
+        assert_eq!(
+            String::from_utf8(i.canonical()).unwrap(),
+            "clax-ed25519 v2\n\
+             POST\n\
+             /api/queues/q1/reporter/reports?cursor=c1\n\
+             clax.example:8443\n\
+             1760000000\n\
+             AAECAwQFBgcICQoLDA0ODw\n\
+             8f1de4697a700dd8df293b4b51025bff262ca9f65a2af030cd50acb3818eebfd\n\
+             1c2cec895430450c4ba5de411b6e3fa57ec583b47af14a0901bb47d3743e9ab1\n\
+             a00d0d823baf03fa53cba1260dd2f71fc7e8694679ce444737a7168dfab351e8"
+        );
+        let h = k.sign(&i).unwrap();
+        assert_eq!(
+            h.to_string(),
+            "t=1760000000, n=AAECAwQFBgcICQoLDA0ODw, \
+             s=8DwcAbZkGf5Qhq47ATzagkKAuIr-T4h6vKczyevVcv1UchPiD_ba5rmjr8HyInFyYULBDia1-PZesVfaOyxtBA"
+        );
+        assert!(verify(&public, &i, &h.sig));
     }
 
     #[test]

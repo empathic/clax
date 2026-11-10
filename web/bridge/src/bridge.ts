@@ -70,7 +70,7 @@
 import { loadParts } from "clax-bridge-parts";
 import { now } from "../../shell/src/clock";
 import type { Resolved } from "./anchor";
-import { acceptFromShell, forwardedKey, shellOrigins } from "./channel";
+import { acceptFromShell, forwardedKey, pageShortcut, shellOrigins } from "./channel";
 import { commentsContext } from "./comments-context";
 import { type ErrorRing, installErrorRing } from "./inspect";
 import { hashFor, helloFor, isFirstBridge, readMeta } from "./meta";
@@ -354,6 +354,14 @@ type PartName = keyof Parts;
     e.preventDefault();
     if (link.kind === "page") post({ type: "clax:navigate", file: link.file, ...(link.hash ? { hash: link.hash } : {}) });
     else followInPlace(link.hash, location);
+  });
+
+  // The viewer's C in the page is the shell's C (`pageShortcut`), told to the
+  // shell once welcomed, and only if the page has not cancelled it a task
+  // later, when every listener of the page's, on the window too, has run.
+  if (framed) addEventListener("keydown", e => {
+    const key = welcomed ? pageShortcut(e) : null;
+    if (key) setTimeout(() => { if (!e.defaultPrevented) post({ type: "clax:shortcut", key }); });
   });
 
   // The shell keeps its address bar's fragment in step with the page's.

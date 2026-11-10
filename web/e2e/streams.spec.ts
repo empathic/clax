@@ -1,6 +1,7 @@
 import { type Browser, type BrowserContext, type CDPSession, type Page } from "@playwright/test";
-import { test, expect, type Daemon, publish, setName, startDaemon } from "./fixtures";
+import { asLocalViewer, test, expect, type Daemon, publish, setName, signInTo, startDaemon } from "./fixtures";
 import { advance, settle } from "./time";
+import { backoff } from "../shell/src/lifecycle";
 
 // As in Chrome: the new headless mode, with the back/forward cache on
 // (Playwright turns it off by default).
@@ -49,6 +50,44 @@ async function workerRequests(browser: Browser) {
   await cdp.send("Target.setDiscoverTargets", { discover: true });
   return { urls, enabled: ready, close: () => cdp.detach() };
 }
+
+/** Evaluates `expression` in each of the browser's shared workers (the
+ * stream hubs, shell/src/stream-worker.ts), through the DevTools protocol;
+ * the value of each, in turn. */
+async function inHubs(browser: Browser, expression: string): Promise<unknown[]> {
+  const cdp = await browser.newBrowserCDPSession();
+  const out: unknown[] = [];
+  try {
+    const { targetInfos } = await cdp.send("Target.getTargets");
+    for (const w of targetInfos.filter(t => t.type === "shared_worker")) {
+      const { sessionId } = await cdp.send("Target.attachToTarget", { targetId: w.targetId, flatten: false });
+      const answered = new Promise<{ result?: { result?: { value?: unknown } } }>(resolve => {
+        const on = (e: { sessionId?: string; message: string }) => {
+          const m = JSON.parse(e.message);
+          if (e.sessionId === sessionId && m.id === 1) { cdp.off("Target.receivedMessageFromTarget", on); resolve(m); }
+        };
+        cdp.on("Target.receivedMessageFromTarget", on);
+      });
+      await cdp.send("Target.sendMessageToTarget", { sessionId, message: JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression, returnByValue: true } }) });
+      out.push((await answered).result?.result?.value);
+      await cdp.send("Target.detachFromTarget", { sessionId });
+    }
+  } finally {
+    await cdp.detach();
+  }
+  return out;
+}
+/** The milliseconds left of each of the browser's stream hubs' wait before
+ * it reconnects: a wait labelled `stream-retry` on the hub's clock
+ * (shell/src/clock.ts, shell/src/stream-hub.ts); hubs with none are left out. */
+const hubWaits = async (browser: Browser) =>
+  (await inHubs(browser, `globalThis.claxTestClock?.dueIn("stream-retry") ?? null`)).filter((v): v is number => typeof v === "number");
+/** The longest wait the backoff gives (its cap, spread up by its 20%). */
+const BACKOFF_MAX = backoff(Infinity, () => 1);
+/** Runs each hub's pending reconnect now, by advancing its clock to the
+ * wait, rather than waiting out the backoff; a hub with none is left as it is. */
+const hubRetryNow = (browser: Browser) =>
+  inHubs(browser, `{ const c = globalThis.claxTestClock, due = c?.dueIn("stream-retry"); if (due != null) c.advance(Math.max(0, due)); }`);
 
 /** The daemon still holds the one stream it held at `then`: one open, at
  * the same level, and none opened since. */
@@ -159,8 +198,10 @@ test("the stream carries no token in its URL, and a token that arrives late give
   const a = (await publish(d.base, d.token, "Cookie", { "index.html": "<h1>C</h1>" })).artifact.id;
   const reqs = await workerRequests(browser);
   const ctx = await browser.newContext();
-  // The page's token requests fail until the test lets them through: the
-  // stream opens without the events cookie, as an unnamed viewer's.
+  // A browser of this machine with no session yet, whose token requests
+  // fail until the test lets them through: the stream opens without the
+  // events cookie, as an unnamed viewer's.
+  await asLocalViewer(ctx, d);
   let failToken = true;
   await ctx.route("**/api/token", r => (failToken ? r.fulfill({ status: 500, body: "{}" }) : r.continue()));
   const page = await ctx.newPage();
@@ -175,6 +216,8 @@ test("the stream carries no token in its URL, and a token that arrives late give
   const opens = () => reqs.urls.filter(u => u.startsWith("GET ") && new URL(u.slice(4)).pathname === "/api/stream").length;
   const before = opens();
   const opened = (await streams()).opened;
+  // The browser logs in, and its token requests answer.
+  await signInTo(ctx, d.base);
   failToken = false;
   await setName(page, "Wren");
   await expect.poll(opens).toBeGreaterThan(before);
@@ -184,7 +227,7 @@ test("the stream carries no token in its URL, and a token that arrives late give
   // owner's browser's (`admin`, named or not).
   await expect.poll(async () => (await streams()).levels).toEqual(["admin"]);
   expect((await streams()).opened - opened, "streams opened for the token").toBe(1);
-  const ev = (await ctx.cookies()).filter(c => c.name === `clax_events_${new URL(d.base).port}`);
+  const ev = (await ctx.cookies()).filter(c => c.name === `clax_events_${new URL(d.base).port}` && c.domain === new URL(d.base).hostname);
   expect(ev.map(c => c.path).sort()).toEqual(["/api/events", "/api/stream"]);
   for (const c of ev) {
     expect(c.httpOnly).toBe(true);
@@ -207,6 +250,7 @@ for (const who of ["owner", "LAN viewer"] as const) {
     test(`a ${who}'s rename with ${n} tab${n > 1 ? "s" : ""} on the artifact opens ${want} stream${want === 1 ? "" : "s"}`, async ({ browser }) => {
       const a = (await publish(d.base, d.token, "Rename", { "index.html": "<h1>R</h1>" })).artifact.id;
       const ctx = await browser.newContext();
+      if (who !== "owner") await asLocalViewer(ctx, d);
       if (who !== "owner") await ctx.route("**/api/token", r => r.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: { code: "forbidden" } }) }));
       const tabs = await openTabs(ctx, Array.from({ length: n }, () => `${d.base}/a/${a}`), async p => {
         await expect(p.locator(".topbar h1")).toHaveText("Rename", { timeout: 20_000 });
@@ -389,33 +433,54 @@ test("without shared workers the tabs elect one leader to hold the stream, and t
   await ctx.close();
 });
 
+// Waits for its condition with no deadline of its own: the test's timeout
+// is the only bound.
+const untilDone = { timeout: 0 };
+
 test("a daemon restart shows the notice in every tab, which reconnect with backoff and catch up", async ({ browser }) => {
-  test.setTimeout(30_000);
+  // No step waits on a wall clock: the daemon's two starts wait until it
+  // answers (startDaemon), every other step until its condition holds, and
+  // the hub's backoff is run at once on its clock (`hubRetryNow`). The
+  // timeout only stops a hung test, as the suite's other daemon-starting
+  // tests' do: a loaded machine can take far longer than the config's
+  // default over two daemon starts and two page loads.
+  test.setTimeout(120_000);
   let own = await startDaemon();
   try {
     const id = (await publish(own.base, own.token, "Restart", { "index.html": "<h1>R</h1>" })).artifact.id;
     const ctx = await browser.newContext();
     const tabs = await openTabs(ctx, [`${own.base}/`, `${own.base}/a/${id}`], async (p, url) => {
-      if (url.includes("/a/")) await expect(p.locator(".topbar h1")).toHaveText("Restart", { timeout: 20_000 });
-      else await expect(card(p, id)).toBeVisible({ timeout: 20_000 });
-      await expect.poll(() => live(p), { timeout: 20_000 }).toBeGreaterThan(0);
+      if (url.includes("/a/")) await expect(p.locator(".topbar h1")).toHaveText("Restart", untilDone);
+      else await expect(card(p, id)).toBeVisible(untilDone);
+      await expect.poll(() => live(p), untilDone).toBeGreaterThan(0);
     });
     const { home, port } = own;
     await own.stop({ keepHome: true });
     for (const p of tabs) {
       const notice = p.locator(".conn-notice");
-      await expect(notice).toBeVisible({ timeout: 15_000 });
+      await expect(notice).toBeVisible(untilDone);
       await expect(notice).toHaveText("Live updates paused. Reconnecting…");
       await expect(notice).toHaveAttribute("role", "status");
     }
+    // The hub retries with backoff: it is waiting, on its clock, to try
+    // again, for no longer than the backoff's cap.
+    await expect.poll(async () => (await hubWaits(browser)).length, untilDone).toBe(1);
+    const [wait] = await hubWaits(browser);
+    expect(wait).toBeGreaterThan(0);
+    expect(wait).toBeLessThanOrEqual(BACKOFF_MAX);
     own = await startDaemon({ home, port });
-    for (const p of tabs) await expect(p.locator(".conn-notice")).toBeHidden({ timeout: 40_000 });
-    await expect.poll(async () => (await streams(own)).open, { timeout: 10_000 }).toBe(1);
+    // The hub reconnects after its backoff: run each wait it has pending
+    // until the stream is back and every tab's notice is gone.
+    await expect.poll(async () => {
+      await hubRetryNow(browser);
+      return (await Promise.all(tabs.map(p => p.locator(".conn-notice").isHidden()))).every(Boolean);
+    }, untilDone).toBe(true);
+    await expect.poll(async () => (await streams(own)).open, untilDone).toBe(1);
     // The new daemon has a new token: the stream renewed its cookie, and holds the owner's level.
     expect((await streams(own)).levels).toEqual(["admin"]);
     await publish(own.base, own.token, "Restart", { "index.html": "<h1>R2</h1>" }, 1, id);
-    await expect(card(tabs[0], id).locator(".v")).toHaveText("v2", { timeout: 5000 });
-    await expect(tabs[1].locator("button.reload")).toBeVisible({ timeout: 5000 });
+    await expect(card(tabs[0], id).locator(".v")).toHaveText("v2", untilDone);
+    await expect(tabs[1].locator("button.reload")).toBeVisible(untilDone);
     await ctx.close();
   } finally {
     await own.stop();

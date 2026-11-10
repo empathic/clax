@@ -1,0 +1,12 @@
+# One pod at a time leaves for a voluntary disruption (a drain, an
+# upgrade); its shard's instances wait for it to come back.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: clax
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: clax
+      app.kubernetes.io/component: fleet

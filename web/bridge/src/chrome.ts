@@ -41,13 +41,15 @@ export function sampleChrome(win: Window, at: At = (x, y) => win.document?.eleme
  * then after the page changes, scrolls or resizes or the light or dark
  * appearance changes, at most once every
  * `CHROME_EVERY_MS`, and only when a colour changed. It runs for the
- * document's life. */
+ * document's life: a sample due after the window lost its document (timers
+ * that outlive it, as Node's do under jsdom) is dropped. */
 export function reportChrome(win: Window, post: (m: { type: "clax:chrome"; top: string; bottom: string }) => void, timers: Timers = windowTimers(win), at?: At): void {
   let timer: number | null = null;
   let last = "";
   const soon = () => {
     timer ??= timers.set(() => {
       timer = null;
+      if (!win.document) return;
       const c = sampleChrome(win, at);
       if (c.top + c.bottom !== last) { last = c.top + c.bottom; post({ type: "clax:chrome", ...c }); }
     }, CHROME_EVERY_MS);

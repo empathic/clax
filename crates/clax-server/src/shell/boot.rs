@@ -226,16 +226,9 @@ pub async fn assemble(
     let ShellRoute::Artifact { id, version, file } = route else {
         return Ok(None);
     };
-    let who = clax_http::identity::Identity::of(
-        headers,
-        &s.token,
-        clax_http::identity::peer_of(extensions),
-    );
-    // A hosted daemon's browser is the viewer its session signs in as.
-    let who = match extensions.get::<clax_http::hosted::HostedRequest>() {
-        Some(h) => h.identity(who),
-        None => who,
-    };
+    // A hosted daemon's browser is the viewer its session signs in as; a
+    // local daemon's owner browser holds an owner browser session.
+    let who = clax_http::identity::Identity::from_parts(headers, extensions, &s.token);
     let owner_browser = who.is_owner();
     let codex = s.feedback_ctx().codex_push();
     let wakes = crate::routes::sessions::Wakes::of(s);
@@ -321,6 +314,9 @@ pub async fn assemble(
                 Err(_) => false,
             };
             artifact["may_tag"] = json!(may_tag);
+            let may_approve = caller
+                .as_ref()
+                .is_ok_and(|c| crate::routes::permissions::may_approve(c, may_tag, hosted));
             // Whether the caller may resolve its threads, as `GET
             // /api/artifacts/<id>` says.
             let may_resolve = crate::routes::threads::browser_resolves(
@@ -333,6 +329,17 @@ pub async fn assemble(
                 a.id.as_str(),
             )?;
             artifact["may_resolve"] = json!(may_resolve);
+            // Whether the caller may edit it, as `GET /api/artifacts/<id>`
+            // says.
+            artifact["may_edit"] = json!(crate::routes::artifacts::browser_edits(
+                st,
+                caller
+                    .as_ref()
+                    .unwrap_or(&clax_http::auth::Caller::Anonymous),
+                member.as_ref(),
+                hosted,
+                a.id.as_str(),
+            )?);
             let may_fork = match caller {
                 Ok(c) if a.kind != clax_core::live::KIND_LIVE => {
                     crate::routes::artifacts::fork_refusal(st, &c, member_rights.as_deref(), &a.id)?
@@ -343,6 +350,8 @@ pub async fn assemble(
             artifact["may_fork"] = json!(may_fork);
             // As `GET /api/artifacts/<id>` says.
             crate::routes::app_bundles::stamp_app_fields(st, &a, &mut artifact)?;
+            // As `GET /api/artifacts/<id>` says.
+            crate::routes::app_bundles::stamp_capabilities(st, &a, may_approve, &mut artifact)?;
             // Who started it from a brief, as `GET /api/artifacts/<id>` says.
             if let Some(by) = st.brief_starters(&[a.id.as_str()])?.remove(&a.id) {
                 artifact["brief"] =

@@ -111,6 +111,18 @@ impl Kek {
         Kek(clax_core::secret::random_bytes::<32>())
     }
 
+    /// The first 4 bytes of the SHA-256 of the key's 32 bytes, in
+    /// lowercase hex: which key this is, without the key. The hosted key
+    /// is 64 hex digits, so `xxd -r -p | shasum -a 256 | cut -c1-8` gives
+    /// the same of a copy. Shown to admins alone, never in public.
+    pub fn fingerprint(&self) -> String {
+        use sha2::Digest;
+        sha2::Sha256::digest(self.0)[..4]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
     /// The KEK in `home`'s `secrets/kek` ([`clax_core::Home::kek_path`]),
     /// made there first when missing. It is never replaced, since every
     /// sealed secret depends on it.
@@ -214,6 +226,9 @@ impl Kek {
     }
 }
 
+/// The one origin the Cloudflare token is bound to and may be opened for.
+pub const CLOUDFLARE_ORIGIN: &str = "https://api.cloudflare.com";
+
 /// Where a secret is kept.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SecretSlot {
@@ -221,6 +236,8 @@ pub enum SecretSlot {
     Instance,
     /// A person's own model key, by person key.
     Own(String),
+    /// The instance's Cloudflare API token, which the web tools use.
+    Cloudflare,
 }
 
 impl SecretSlot {
@@ -228,12 +245,13 @@ impl SecretSlot {
         match self {
             SecretSlot::Instance => "instance",
             SecretSlot::Own(_) => "own",
+            SecretSlot::Cloudflare => "cloudflare",
         }
     }
 
     pub(crate) fn person(&self) -> &str {
         match self {
-            SecretSlot::Instance => "",
+            SecretSlot::Instance | SecretSlot::Cloudflare => "",
             SecretSlot::Own(p) => p,
         }
     }
@@ -352,10 +370,15 @@ impl Store {
         };
         // Bound to the provider in effect now: the key is only ever sent
         // there ([`Store::open_for_use`]).
-        let host = self
-            .bot_setting(crate::bot_settings::Setting::BaseUrl)?
-            .as_str()
-            .and_then(clax_core::config::key_host);
+        let host = match slot {
+            // The Cloudflare token goes to Cloudflare's API alone, whatever
+            // the model provider's base URL is.
+            SecretSlot::Cloudflare => Some(CLOUDFLARE_ORIGIN.to_string()),
+            _ => self
+                .bot_setting(crate::bot_settings::Setting::BaseUrl)?
+                .as_str()
+                .and_then(clax_core::config::key_host),
+        };
         self.with_tx(|tx| {
             let now = self.now();
             tx.execute(
@@ -431,8 +454,12 @@ impl Store {
         // Only to a URL the policy allows, and only to the origin the key
         // was set for.
         let refused = |why: String| CoreError::invalid("key_host_mismatch", why);
+        // The Cloudflare token is outside the model base-URL policy: its one
+        // origin is fixed ([`CLOUDFLARE_ORIGIN`]).
         let target = clax_core::config::key_host(base_url)
-            .filter(|_| self.base_url_policy().allows(base_url))
+            .filter(|_| {
+                matches!(slot, SecretSlot::Cloudflare) || self.base_url_policy().allows(base_url)
+            })
             .ok_or_else(|| {
                 refused(format!(
                     "{base_url} is not a URL a model key may be sent to"
@@ -604,6 +631,51 @@ mod tests {
     }
 
     #[test]
+    fn the_cloudflare_token_seals_and_opens() {
+        let (_d, st) = store();
+        let kek = Kek::from_bytes([7; 32]);
+        let token = "cf-token-0123456789abcdefghij-wxyz";
+        let meta = st
+            .set_secret(DAEMON, &kek, &SecretSlot::Cloudflare, token)
+            .unwrap();
+        assert_eq!(meta.last4, "wxyz");
+        let cf = "https://api.cloudflare.com/client/v4/accounts/x/ai/run";
+        let opened = st
+            .open_for_use(&kek, &SecretSlot::Cloudflare, cf)
+            .unwrap()
+            .unwrap();
+        assert_eq!(opened.expose(), token);
+        // Only Cloudflare's API origin, whatever the model base URL is.
+        assert!(matches!(
+            st.open_for_use(&kek, &SecretSlot::Cloudflare, API),
+            Err(CoreError::Invalid {
+                code: "key_host_mismatch",
+                ..
+            })
+        ));
+        st.set_bot_settings(
+            DAEMON,
+            &[(
+                crate::bot_settings::Setting::BaseUrl,
+                Some(serde_json::json!("https://models.example.com")),
+            )],
+        )
+        .unwrap();
+        assert!(
+            st.open_for_use(&kek, &SecretSlot::Cloudflare, cf)
+                .unwrap()
+                .is_some()
+        );
+        // It is its own slot: the instance's model key is not it.
+        assert!(
+            st.open_for_use(&kek, &SecretSlot::Instance, API)
+                .unwrap()
+                .is_none()
+        );
+        assert!(st.clear_secret(DAEMON, &SecretSlot::Cloudflare).unwrap());
+    }
+
+    #[test]
     fn a_sealing_is_bound_to_its_slot() {
         let (_d, st) = store();
         let kek = Kek::generate();
@@ -653,6 +725,17 @@ mod tests {
         let ev = st.events_after(0, 100).unwrap();
         let set = ev.iter().find(|e| e.kind == "admin.key").unwrap();
         assert!(set.body.contains("\"person\":\"*owner\""), "{}", set.body);
+    }
+
+    #[test]
+    fn a_kek_fingerprint_is_the_sha256_prefix_of_its_bytes() {
+        // `printf '%064d' 0 | xxd -r -p | shasum -a 256 | cut -c1-8`
+        assert_eq!(Kek::from_bytes([0; 32]).fingerprint(), "66687aad");
+        let hex = "0123456789abcdef".repeat(4);
+        let bytes: Vec<u8> = (0..32)
+            .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap())
+            .collect();
+        assert_eq!(Kek::from_slice(&bytes).unwrap().fingerprint(), "4884fdaa");
     }
 
     #[test]

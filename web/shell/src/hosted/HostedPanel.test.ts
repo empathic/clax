@@ -39,6 +39,31 @@ describe("HostedPanel", () => {
     expect(m.root.querySelector('[role="alert"]')!.textContent).toBe("That name is taken, or reads too like a name already here: choose another.");
   });
 
+  it("shows a new token's commands for Claude Code, Codex and Grok Build", async () => {
+    const mcp = "https://clax.example/mcp/json";
+    stubFetch({
+      "GET /api/hosted/agent-tokens": { tokens: [] },
+      "GET /api/hosted/links": { links: [] },
+      "GET /api/artifacts": { artifacts: [] },
+      "POST /api/hosted/agent-tokens": [201, {
+        id: "g1", label: "laptop", created_at: "2026-10-27T10:00:00Z", token: "cxa_t", mcp_url: mcp,
+        claude_command: `claude mcp add --transport http clax ${mcp} --header "Authorization: Bearer cxa_t"`,
+        codex_config: `[mcp_servers.clax]\nurl = "${mcp}"\n`,
+        grok_command: `grok mcp add --transport http clax_hosted ${mcp} --header "Authorization: Bearer cxa_t"`,
+      }],
+    });
+    const m = mount(HostedPanel, { me });
+    await settle();
+    flush(() => { m.root.querySelector("form.mint")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+    await settle();
+    const minted = m.root.querySelector(".minted")!;
+    expect(minted.textContent).toContain("Or to Grok Build:");
+    expect([...minted.querySelectorAll(".cmd code")].map(c => c.textContent)).toEqual([
+      `claude mcp add --transport http clax ${mcp} --header "Authorization: Bearer cxa_t"`,
+      `grok mcp add --transport http clax_hosted ${mcp} --header "Authorization: Bearer cxa_t"`,
+    ]);
+  });
+
   it("lists the person's devices apart from their agent tokens", async () => {
     const tok = (id: string, label: string, kind: "device" | "agent") => ({ id, label, status: "approved", created_at: "2026-10-20T10:00:00Z", last_used_at: null, ended_at: null, kind });
     stubFetch({

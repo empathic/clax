@@ -3,8 +3,8 @@
 //! owner's consent before the first grant.
 //!
 //! - `POST /api/artifacts/<id>/net:fetch`: one fetch under [`clax_http::net`]'s
-//!   rules, to a host the live version declares in `capabilities.net.hosts`
-//!   and the owner granted. A draft uses its live app's grants
+//!   rules, to a host the live version declares in `capabilities.net.hosts`,
+//!   whose declaration the owner approved, and the owner granted. A draft uses its live app's grants
 //!   ([`clax_store::Store::net_access`]) and is never granted itself.
 //! - `GET /api/artifacts/<id>/net-grants`: the declared hosts and grants.
 //! - `PUT /api/artifacts/<id>/net-grants`: grants every declared host.
@@ -60,7 +60,9 @@ fn net_error(e: &NetError) -> ApiError {
 /// body?}` (`body` a string) → `{url, status, headers, body}`, `url` the
 /// final URL after redirects, `body` the response as text when it is UTF-8;
 /// any other response (an image, say) comes as `body_base64` instead. 404 for an unknown artifact; 403 `not_declared` when
-/// the live version does not declare the URL's host, `not_granted` when the
+/// the live version does not declare the URL's host, `not_approved` when it
+/// does but its declaration of the host waits for approval in Clax
+/// (for a draft: its live app's approval), `not_granted` when the
 /// owner has not allowed it (for a draft: has not allowed its live app),
 /// `redirect_refused` or `blocked_address`; 400
 /// `invalid_argument` or `https_only`; 413 `too_large`; 504 `timeout`; 502
@@ -77,7 +79,7 @@ pub async fn fetch(
     // The cache keeps a draft's entries apart from its live app's too.
     let app = id.to_string();
     let access = s.store_call(move |st| st.net_access(&id)).await?;
-    if access.declared.is_empty() {
+    if access.declared.is_empty() && access.waiting.is_empty() {
         return Err(ApiError::forbidden(
             "not_declared",
             "this artifact declares no network hosts (capabilities.net.hosts)",
@@ -85,6 +87,12 @@ pub async fn fetch(
     }
     let url = https_url(&b.url).map_err(|e| net_error(&e))?;
     let host = url.host_str().unwrap_or_default();
+    if access.waiting.iter().any(|h| h == host) {
+        return Err(ApiError::forbidden(
+            "not_approved",
+            format!("{host} waits for approval in Clax"),
+        ));
+    }
     if !access.declared.iter().any(|h| h == host) {
         return Err(ApiError::forbidden(
             "not_declared",
@@ -111,8 +119,8 @@ pub async fn fetch(
 }
 
 /// `GET /api/artifacts/<id>/net-grants` (token): `{declared: [host],
-/// grants: [{host, granted_at}], granted}`, `granted` true when every
-/// declared host is granted. 404 for an unknown artifact.
+/// grants: [{host, granted_at}], granted}`, `declared` the hosts in force
+/// (approved), `granted` true when every one of them is granted. 404 for an unknown artifact.
 pub async fn grants(
     State(s): State<AppState>,
     _d: clax_http::agent::DeniedToGrants,

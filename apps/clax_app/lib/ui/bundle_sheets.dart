@@ -58,6 +58,7 @@ List<String> capabilityWords(Map<String, Object?> caps) => [
       'db' => 'keep its own data',
       'sample' => 'use Claude (on your API key)',
       'net' => 'use the internet: ${_hosts(value).join(', ')}',
+      'shell' => 'point at Clax’s own buttons',
       _ => deviceCapWords[key] ?? 'use “$key”',
     },
 ];

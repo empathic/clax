@@ -269,6 +269,13 @@ export type PanelToWorker =
    * one at `pageUrl`, the item's live page), else a new tab opens it on the
    * paired daemon. */
   | { t: "open-url"; url: string; pageUrl: string | null }
+  /** Opens a daemon path in a new tab, the browser signed in as the
+   * owner's on the way (the panel's "Open in Clax"). */
+  | { t: "open-clax"; path: string }
+  /** Opens the confirmation a pairing is held for in Clax's inbox, in a
+   * new tab, the browser signed in as the owner's on the way. The worker
+   * names the confirmation. */
+  | { t: "confirm-pairing" }
   /** Whether the panel's document is visible: the worker reports the owner here only while it is. */
   | { t: "visible"; on: boolean }
   | { t: "ping" };
@@ -517,7 +524,8 @@ export function isFromPanel(m: unknown): m is PanelToWorker {
       && m.ids.length <= (m.read ? MAX_MARK : 1) && m.ids.every(itemId);
     case "inbox-mark-all": return has("req", "filter", "upto") && count(m.req) && (m.filter === null || filter(m.filter)) && (m.upto === null || count(m.upto));
     case "open-url": return has("url", "pageUrl") && daemonPath(m.url) && (m.pageUrl === null || url(m.pageUrl));
-    case "retry": case "ping": return has();
+    case "open-clax": return has("path") && daemonPath(m.path);
+    case "retry": case "ping": case "confirm-pairing": return has();
     default: return false;
   }
 }
@@ -526,4 +534,4 @@ export function isFromPanel(m: unknown): m is PanelToWorker {
  * pairing whose daemon is gone (restarted on another port, or stopped; the
  * native host answers the running one, starting it if need be). The panel
  * offers Retry for these, and Retry pairs again. */
-export const RETRYABLE = /* @__PURE__ */ new Set(["host_missing", "host_failed", "daemon_unavailable", "bad_reply", "unknown_credential", "http_401", "paired_recently", "daemon_unreachable", "host_slow"]);
+export const RETRYABLE = /* @__PURE__ */ new Set(["host_missing", "host_failed", "daemon_unavailable", "bad_reply", "unknown_credential", "http_401", "paired_recently", "daemon_unreachable", "host_slow", "pairing_declined", "pairing_expired"]);

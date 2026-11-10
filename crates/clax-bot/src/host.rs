@@ -334,7 +334,8 @@ pub struct FakeState {
     /// People who may read but not write: checked when a write is planned
     /// and again inside its transaction.
     pub readers: Vec<String>,
-    /// An error to answer the next call of an op with.
+    /// An error to answer the next call of an op with (`"context"` for
+    /// the next [`BotHost::context`]).
     pub fail_next: BTreeMap<String, HostError>,
 }
 
@@ -521,7 +522,11 @@ fn host_op(op: &str, access: api::Access) -> Result<(), HostError> {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl BotHost for FakeBotHost {
     async fn context(&self, _run: &Run) -> Result<RequestContext, HostError> {
-        Ok(self.lock().context.clone())
+        let mut st = self.lock();
+        if let Some(e) = st.fail_next.remove("context") {
+            return Err(e);
+        }
+        Ok(st.context.clone())
     }
 
     async fn read(&self, cx: &OpCtx<'_>, op: &str, args: &[Value]) -> Result<Value, HostError> {

@@ -191,6 +191,52 @@ async fn legal_page(
     crate::shell::legal_page(&s, &req, file)
 }
 
+/// `GET /start/…`: the landing page, for anyone; 404 when the build
+/// carries no quickstart release. `/start/` is the shell's minimal chrome
+/// (the gallery entry, which shows the landing view there) around the
+/// quickstart page, `/start/index.html`; every other path is a file of the
+/// quickstart release this build carries ([`LANDING`]), 404 when it has
+/// none by that name. `/start` itself redirects to the directory. The
+/// reel's files redirect to where hosted mode serves the reel from
+/// ([`Hosted::with_reel`]), when it names a place.
+///
+/// [`Hosted::with_reel`]: clax_http::hosted::Hosted::with_reel
+async fn landing(
+    State(s): State<AppState>,
+    d: clax_http::agent::DeniedToGrants,
+    uri: axum::http::Uri,
+    req: HeaderMap,
+) -> Result<Response, ApiError> {
+    let Some(release) = s.quickstart.clone() else {
+        return Err(ApiError::not_found());
+    };
+    if uri.path() == "/start" {
+        return Ok(axum::response::Redirect::to(LANDING).into_response());
+    }
+    let file = uri.path().strip_prefix(LANDING).unwrap_or("");
+    if file.is_empty() {
+        return crate::shell::gallery_page(State(s), d, req).await;
+    }
+    if let Some(to) = reel_elsewhere(&s, file) {
+        return Ok(axum::response::Redirect::temporary(&to).into_response());
+    }
+    crate::shell::landing_file(&release, &req, file)
+}
+
+/// Where a hosted daemon serves the reel's file `file` (`reel.mp4`,
+/// `reel-poster.jpg`) from, when it names a place ([`Hosted::with_reel`]):
+/// the landing page's, and a seeded quickstart's (`crate::routes::site`).
+///
+/// [`Hosted::with_reel`]: clax_http::hosted::Hosted::with_reel
+pub(crate) fn reel_elsewhere(s: &AppState, file: &str) -> Option<String> {
+    let reel = s.hosted.as_ref()?.reel.clone()?;
+    match file {
+        "reel.mp4" => Some(reel.video),
+        "reel-poster.jpg" => reel.poster,
+        _ => None,
+    }
+}
+
 /// `GET /api/hosted/me` → `{origin, setup_open, github, signed_in, person,
 /// legal}`; `legal` is null when the instance shows no documents, else
 /// `{terms_url, privacy_url, version, agreed}`, `agreed` null for a guest
@@ -382,6 +428,9 @@ async fn accept_invite(
         &s,
         json!({"what": "person_joined", "person": signed.who.viewer.public_id}),
     );
+    // The new person's quickstart: awaited before the response so the first
+    // page load sees it; errors are logged only, never failing the accept.
+    crate::quickstart::seed(&s, Some(&signed.who.viewer.public_id)).await;
     Ok(signed_in_response(&h, signed, json!({}), "person"))
 }
 
@@ -493,6 +542,11 @@ async fn accept_signin_link(
     if replaced {
         access_changed(&s, None);
     }
+    // A person's quickstart moves to the current release (a seed that
+    // failed is retried); the owner's and a guest's gallery is not seeded.
+    if !signed.who.owner && !signed.who.guest {
+        crate::quickstart::sign_in(&s, &signed.who.viewer.public_id).await;
+    }
     Ok(signed_in_response(&h, signed, json!({}), "person"))
 }
 
@@ -546,9 +600,11 @@ struct TokenBody {
 }
 
 /// `POST /api/hosted/agent-tokens {label?}` (a member) → `{id, label,
-/// token, mcp_url, claude_command, codex_config, created_at}`: an agent
-/// token for the caller's remote agents, shown this once, with the commands
-/// that add it to Claude Code and Codex. Its rights are the caller's.
+/// token, mcp_url, claude_command, codex_config, grok_command,
+/// created_at}`: an agent token for the caller's remote agents, shown this
+/// once, with the commands that add it to Claude Code, Codex and Grok Build
+/// (as the MCP server `clax_hosted`, a name apart from the `clax` and
+/// `clax_grok` servers the plugins add in Grok). Its rights are the caller's.
 /// `mcp_url` is the MCP adapter's, which serves agent tokens
 /// (`crate::routes::mcp_http::PATH`: `/mcp/json` on the daemon, `/mcp` on
 /// a Durable Object).
@@ -586,6 +642,9 @@ async fn mint_token(
                 ),
                 "codex_config": format!(
                     "[mcp_servers.clax]\nurl = \"{mcp_url}\"\nhttp_headers = {{ \"Authorization\" = \"Bearer {secret}\" }}\n"
+                ),
+                "grok_command": format!(
+                    "grok mcp add --transport http clax_hosted {mcp_url} --header \"Authorization: Bearer {secret}\""
                 ),
             })),
         )
@@ -1215,18 +1274,24 @@ struct DeviceCodeBody {
     /// (the approval page says so).
     #[serde(default)]
     client_kind: Option<String>,
+    /// A page on the machine itself (`http` on `localhost`, `127.0.0.1` or
+    /// `[::1]`) that the approval page sends its person to once the
+    /// sign-in is decided.
+    #[serde(default)]
+    return_to: Option<String>,
 }
 
-/// `POST /api/hosted/device/code {client_name, client_kind?}` (another
-/// machine's Clax,
-/// no credential) → `{device_code, user_code, verification_uri,
+/// `POST /api/hosted/device/code {client_name, client_kind?, return_to?}`
+/// (another machine's Clax, no credential) → `{device_code, user_code, verification_uri,
 /// verification_uri_complete, expires_at, expires_in, interval}`: starts a
 /// device sign-in ([`clax_store::device`]). The machine shows the
 /// person the user code and opens `verification_uri_complete`, where a
 /// signed-in member approves it, then polls `POST
 /// /api/hosted/device/token` every `interval` seconds. Rate-limited per
-/// client; 400 `invalid_args` for a bad name or a `client_kind` other
-/// than `clax-app`, 400 `limit_reached` with too many waiting.
+/// client; 400 `invalid_args` for a bad name, a `client_kind` other
+/// than `clax-app` or a `return_to` that is not a loopback page
+/// ([`clax_http::loopback::loopback_return`]), 400 `limit_reached` with too
+/// many waiting.
 async fn device_code(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -1245,9 +1310,25 @@ async fn device_code(
             "client_kind is clax-app or absent",
         ));
     }
+    let return_to = match b.return_to.as_deref() {
+        None => None,
+        Some(u) => Some(clax_http::loopback::loopback_return(u).ok_or_else(|| {
+            ApiError::bad_request(
+                "invalid_args",
+                "return_to is an http address on localhost, 127.0.0.1 or [::1], without credentials or a fragment",
+            )
+        })?),
+    };
     let peer = h.client(&headers, &extensions).to_string();
     let start = s
-        .store_call(move |st| st.start_device_kind(&b.client_name, &peer, b.client_kind.as_deref()))
+        .store_call(move |st| {
+            st.start_device_kind(
+                &b.client_name,
+                &peer,
+                b.client_kind.as_deref(),
+                return_to.as_deref(),
+            )
+        })
         .await?;
     let user = start.user_code.expose().to_string();
     Ok(no_store(
@@ -1326,10 +1407,12 @@ async fn device_token(
 }
 
 /// `GET /api/hosted/device/<user code>` (a member's browser) →
-/// `{client_name, peer_ip, client_kind, created_at, expires_at,
+/// `{client_name, peer_ip, client_kind, return_to, created_at, expires_at,
 /// same_address}`: the machine a waiting sign-in names, and its kind
 /// (`clax-app` for the Clax app, whose token may manage the sharing of
-/// the person's artifacts; else `null`), for its approval page, and whether it
+/// the person's artifacts; else `null`), the loopback page it asked to
+/// send its person to once decided (`return_to`, else `null`), for its
+/// approval page, and whether it
 /// asked from this browser's own address (a code someone else started
 /// does not, which the page says). 404 `not_found` for a code that is
 /// unknown, decided or expired. Rate-limited as sign-in codes are.
@@ -1410,6 +1493,9 @@ pub fn router() -> Router<AppState> {
         .route("/join/{code}", get(signin_page))
         .route("/terms", get(legal_page))
         .route("/privacy", get(legal_page))
+        .route("/start", get(landing))
+        .route("/start/", get(landing))
+        .route("/start/{*file}", get(landing))
         .route("/api/hosted/me", get(me))
         .route("/api/hosted/legal/agree", post(legal_agree))
         .route("/api/hosted/setup", post(setup))

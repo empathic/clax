@@ -2262,6 +2262,8 @@ impl Store {
             if release_unconnected(self, tx, &EXPIRY, None, &now)? > 0 {
                 self.visibility_changed();
             }
+            // A request that lapsed unanswered leaves nothing to decide.
+            super::inbox::connections_lapsed(tx, &now)?;
             Ok(out)
         })
     }

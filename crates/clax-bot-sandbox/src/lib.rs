@@ -44,8 +44,9 @@
 //! record says [`CODE_INVALID_ARGS`]. Calls reach the host one at a time,
 //! in the order the script made them, and each settles its Promise:
 //! resolved with the returned value, or rejected with an `Error` whose
-//! `name` is `"HostError"`, whose `code` is [`HostError::code`] and whose
-//! `message` is [`HostError::message`]. The script may catch it; a host
+//! `name` is `"HostError"`, whose `code` is [`HostError::code`], whose
+//! `message` is [`HostError::message`] and whose `retryable` is
+//! [`HostError::retryable`] (always a boolean). The script may catch it; a host
 //! error it does not catch ends the run with [`ErrorKind::HostError`]
 //! (only the sandbox's own host errors count: a value made to look like one
 //! is a thrown value like any other).
@@ -291,19 +292,48 @@ pub fn validate_ops<S: AsRef<str>>(ops: &[S]) -> Result<(), String> {
 }
 
 /// A host call that failed, as the script sees it: a stable machine code
-/// (`not_found`, `forbidden`, …) and a message for the model.
+/// (`not_found`, `forbidden`, …), a message for the model, and whether the
+/// same call may succeed if made again (`retryable`). The script's thrown
+/// error carries all three (`e.code`, `e.message`, `e.retryable`, false
+/// unless the host said otherwise).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostError {
     pub code: String,
     pub message: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retryable: bool,
 }
 
 impl HostError {
+    /// A failure that making the call again would not change.
     pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
         HostError {
             code: code.into(),
             message: message.into(),
+            retryable: false,
         }
+    }
+
+    /// This failure, marked as one the same call may get past if made
+    /// again.
+    #[must_use]
+    pub fn retryable(self) -> Self {
+        HostError {
+            retryable: true,
+            ..self
+        }
+    }
+
+    /// The JSON the prelude's `settle` takes for a failed call:
+    /// `{code, message, retryable}`.
+    #[must_use]
+    pub fn reply_json(&self) -> String {
+        serde_json::json!({
+            "code": self.code,
+            "message": self.message,
+            "retryable": self.retryable,
+        })
+        .to_string()
     }
 }
 
@@ -567,7 +597,8 @@ pub const LOGS_TRUNCATED: &str = "[logs truncated]";
 ///   (compiled under the file name `file`, which it looks for in stack
 ///   traces to find the line) and reports its end through `done`;
 /// - `settle(id, ok, json)` settles a host call: `ok` true with the
-///   result's JSON, false with the JSON of a [`HostError`].
+///   result's JSON, false with a [`HostError`]'s
+///   [`HostError::reply_json`], `{code, message, retryable}`.
 pub const PRELUDE: &str = include_str!("prelude.js");
 
 /// What [`wrap`] puts before the code: its own line, as the `Function`

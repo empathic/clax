@@ -83,6 +83,7 @@ impl<'a> RealClients<'a> {
             .env("HOME", self.scratch.path())
             .env("TMPDIR", self.scratch.path())
             .env("CLAX_HOME", self.w.ts.home.root())
+            .env("CLAX_GALLERY__QUICKSTART", "false")
             .env("CLAX_NO_OPEN", "1")
             .env("CLAX_CODEX_BIN", "")
             .env("RUST_LOG", "error")

@@ -1,7 +1,7 @@
 // Runs ClaxBot's sandbox conformance suite (clax_bot_sandbox::conformance)
 // against the Worker Loader sandbox (src/sandbox/) under `wrangler dev
 // --local`: builds the Worker (./build.sh), starts it on free ports with a
-// fresh `--persist-to` under target/sandbox-test/ and the test routes on,
+// fresh `--persist-to` under target/clax-worker/sandbox-test/ and the test routes on,
 // lists the cases (GET /_worker/sandbox on the instance) and runs each
 // (POST /_worker/sandbox?case=…), one at a time. A case of mode `run` must
 // pass as on every sandbox; one of mode `differs` must end with the error
@@ -20,9 +20,9 @@
 import { mkdirSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
-import { HERE, build, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { HERE, STATE, build, pruneRuns, start, writeConfig } from "./harness.mjs";
 
-const ROOT = join(HERE, "target/sandbox-test");
+const ROOT = join(STATE, "sandbox-test");
 const KEEP_RUNS = 3;
 const TOKEN = "sandbox-test-token-0123456789abcdef0123456789";
 // One case's request: well over any case's own limits (the slowest runs

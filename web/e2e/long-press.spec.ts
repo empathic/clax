@@ -27,10 +27,13 @@ async function holdOn(cdp: CDPSession, target: Locator) {
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
 }
 
-async function openOnPhone(page: Page, title: string, _mode: "subdomain") {
+/** Opens a fresh artifact on a phone, in comment mode by a tap; `park`
+ * runs once it shows, before the tap. */
+async function openOnPhone(page: Page, title: string, _mode: "subdomain", park?: () => Promise<void>) {
   const { artifact } = await publish(d.base, d.token, title, { "index.html": PAGE });
   await record(page);
   const frame = await openArtifact(page, d.base, artifact.id, 1);
+  await park?.();
   const comment = page.getByRole("button", { name: "Comment", exact: true });
   const b = (await comment.boundingBox())!;
   await page.touchscreen.tap(b.x + b.width / 2, b.y + b.height / 2);
@@ -64,6 +67,24 @@ for (const mode of ["subdomain"] as const) {
     expect(start.anchor).toMatchObject({ kind: "element", selector: "#link" });
     await expect(page.locator(".composer")).toBeVisible();
     expect(await frame.evaluate(() => location.hash)).toBe("");
+    await ctx.close();
+  });
+
+  // A mouse resting on the top bar (a laptop with a touch screen, or Linux
+  // Chromium's mouse at (0, 0)): after the finger, Chromium hit-tests the
+  // mouse again where it rests and sends the shell its boundary events
+  // there, which are no departure of the finger from the page.
+  test(`${mode}: a long-press picks with a mouse resting on the top bar`, async ({ browser }) => {
+    const ctx = await browser.newContext({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 800 } });
+    const page = await ctx.newPage();
+    const { frame, cdp } = await openOnPhone(page, `Hold parked ${mode}`, mode, async () => {
+      const bar = (await page.locator("header.topbar").boundingBox())!;
+      await page.mouse.move(bar.x + 40, bar.y + bar.height / 2);
+    });
+    await holdOn(cdp, frame.locator("#t"));
+    const start = await last(page, "clax:pick-start");
+    expect(start.anchor).toMatchObject({ kind: "element", selector: "#t" });
+    await expect(page.locator(".composer")).toBeVisible();
     await ctx.close();
   });
 }

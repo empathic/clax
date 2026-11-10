@@ -1,0 +1,18 @@
+# Where clients reach the fleet, through an in-cluster Ingress controller
+# (examples/ingress.yaml). Any pod answers any instance: one that does not
+# run it forwards the request to the one that does, WebSockets and event
+# streams included, so no session affinity is needed. To expose it as a
+# LoadBalancer or NodePort instead, also admit the outside addresses in
+# networkpolicy.yaml (its commented ipBlock), which otherwise drops them.
+apiVersion: v1
+kind: Service
+metadata:
+  name: clax
+spec:
+  selector:
+    app.kubernetes.io/name: clax
+    app.kubernetes.io/component: fleet
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

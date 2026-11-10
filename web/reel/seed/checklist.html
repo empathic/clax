@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Launch checklist</title>
+<style>
+  /* Northwind's launch checklist: a seeded page for the reel's realtime
+     vignette (web/reel/vignettes/realtime.ts). The team and its launch are
+     invented. Light only, as the reel is filmed. */
+  :root {
+    --bg: #f7f6f3;
+    --card: #ffffff;
+    --fg: #1d1c1a;
+    --muted: #6b6862;
+    --line: #e4e1da;
+    --accent: #3b5bdb;
+    --done: #2f9e44;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 17px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 640px; margin: 56px auto; padding: 0 16px; }
+  header p { margin: 0 0 4px; color: var(--muted); font-size: 14px; letter-spacing: 0.04em; text-transform: uppercase; }
+  h1 { margin: 0 0 6px; font-size: 32px; letter-spacing: -0.01em; }
+  .summary { margin: 0 0 28px; color: var(--muted); }
+  ul { list-style: none; margin: 0; padding: 0; background: var(--card); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+  li { border-top: 1px solid var(--line); }
+  li:first-child { border-top: 0; }
+  label { display: flex; align-items: center; gap: 14px; padding: 16px 20px; cursor: pointer; }
+  input[type="checkbox"] { width: 22px; height: 22px; margin: 0; accent-color: var(--done); cursor: pointer; }
+  .title { flex: 1; }
+  .who { color: var(--muted); font-size: 14px; }
+  li.done .title { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--muted); }
+  .loading { padding: 16px 20px; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <p>Northwind · Launch, November 18</p>
+    <h1>Launch checklist</h1>
+    <div class="summary" id="summary">&nbsp;</div>
+  </header>
+  <ul id="list"><li class="loading">Loading…</li></ul>
+</main>
+<script>
+(async () => {
+  const db = await claude.use("db");
+  const list = document.getElementById("list");
+  const summary = document.getElementById("summary");
+  // One row per item, in order; a tick writes the item's `done`.
+  db.collection("items").orderBy("order").onSnapshot(snap => {
+    const items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    list.replaceChildren(...items.map(item => {
+      const li = document.createElement("li");
+      li.className = item.done ? "done" : "";
+      li.innerHTML = `<label><input type="checkbox"><span class="title"></span><span class="who"></span></label>`;
+      const box = li.querySelector("input");
+      box.checked = !!item.done;
+      box.setAttribute("aria-label", item.title);
+      box.dataset.item = item.id;
+      box.addEventListener("change", () => db.doc(`items/${item.id}`).update({ done: box.checked }));
+      li.querySelector(".title").textContent = item.title;
+      li.querySelector(".who").textContent = item.owner;
+      return li;
+    }));
+    const done = items.filter(i => i.done).length;
+    summary.textContent = `${done} of ${items.length} done`;
+  });
+})();
+</script>
+</body>
+</html>

@@ -457,6 +457,52 @@ describe("app mode's host", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(posted.length).toBe(sent);
   });
 
+  it("history: the page's reports of back()'s moves are no entries when a later back() overtakes them", async () => {
+    const { frame, host } = await appView();
+    hello(frame, 1);
+    for (const hash of ["", "#/item/3", "#/item/4"]) fromFrame(frame.contentWindow!, { type: "clax:hash", hash });
+    await settle();
+    host.back();
+    host.back();
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: false });
+    // The page's reports of both moves come after the second back().
+    fromFrame(frame.contentWindow!, { type: "clax:hash", hash: "#/item/3" });
+    fromFrame(frame.contentWindow!, { type: "clax:hash", hash: "" });
+    await settle();
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: false });
+    // A move of the page's own is an entry again.
+    fromFrame(frame.contentWindow!, { type: "clax:hash", hash: "#/item/5" });
+    await settle();
+    expect(ofType("history").at(-1)).toEqual({ type: "history", back: true });
+  });
+
+  for (const at of ["before the page greets", "before the page reports where it loaded"] as const) {
+    it(`history: a back() made ${at} after back() to another page is one move, not an entry`, async () => {
+      const { frame, host } = await appView();
+      const win = frame.contentWindow!;
+      hello(frame, 1);
+      for (const hash of ["", "#/item/3", ""]) fromFrame(win, { type: "clax:hash", hash });
+      fromFrame(win, { type: "clax:navigate", file: "other.html", hash: "" });
+      hello(frame, 1, "other.html");
+      fromFrame(win, { type: "clax:hash", hash: "" });
+      await settle();
+      // Back to index.html: a new document, which greets and then reports
+      // the fragment it loaded at.
+      host.back();
+      if (at === "before the page greets") host.back();
+      hello(frame, 1, "index.html");
+      if (at === "before the page reports where it loaded") host.back();
+      fromFrame(win, { type: "clax:hash", hash: "" });
+      fromFrame(win, { type: "clax:hash", hash: "#/item/3" });
+      await settle();
+      expect(ofType("history").at(-1)).toEqual({ type: "history", back: true });
+      host.back();
+      fromFrame(win, { type: "clax:hash", hash: "" });
+      await settle();
+      expect(ofType("history").at(-1)).toEqual({ type: "history", back: false });
+    });
+  }
+
   it("history: the page's pushState routes are the app's own history too, and back() returns the page to the route before in place", async () => {
     const { frame, host } = await appView();
     hello(frame, 1);

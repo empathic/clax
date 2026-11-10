@@ -45,11 +45,16 @@ export PLAYWRIGHT_INSTALL
 # it when it is made, never inside a gate's time limit (scripts/fake-exe.sh
 # does the same for the gates' fakes).
 export CLAX_TEST_BIN="$GATES_TMP/debug/clax"
+# The daemons the tests start keep their homes unseeded (the Clax Quickstart
+# is off: [gallery] quickstart).
+export CLAX_GALLERY__QUICKSTART=false
 
 # --- lanes ------------------------------------------------------------------
 
 lane_web() {
+    run "web sdk build"         bash -c 'cd web && pnpm run build:sdk' &&
     run "web bundle size"       bash -c 'cd web && node scripts/bundle-size.mjs' &&
+    run "web sdk package"       bash -c 'cd web && pnpm run test:sdk --reporter=dot' &&
     run "web lint"              bash -c 'cd web && pnpm run lint' &&
     run "web typecheck"         bash -c 'cd web && pnpm run typecheck'
 }
@@ -62,6 +67,9 @@ lane_scripts() {
     run "justfile"              scripts/test-justfile.sh &&
     run "release scripts"       scripts/test-release.sh &&
     run "release command"       scripts/test-release-script.sh &&
+    run "SDK release command"   scripts/test-release-sdk.sh &&
+    run "version bump"          scripts/test-check-version-bump.sh &&
+    run "prod GitHub setup"     scripts/test-setup-prod-github.sh &&
     run "tool hook gate"        scripts/test-tool-hook.sh &&
     run "extension signing"     scripts/test-extension-signing.sh &&
     run "stable bin"            scripts/test-stable-bin.sh &&
@@ -129,20 +137,15 @@ lane_lint() {
     run "cargo clippy"          cargo clippy --workspace --all-targets -- -D warnings &&
     mark linted
 }
-# crates/clax-worker is a workspace of its own (the Worker builds for wasm32
-# only, and its rusqlite cannot share the root's lockfile): its fmt (its own
-# members only: `--all` would format the Clax crates it uses by path too,
-# which `cargo fmt --check` above covers), its
-# tests and clippy natively (the SQLite VFS's tests among them), the config
-# deploy.mjs generates (test-deploy-config.mjs), then the wasm build under `wrangler dev --local` across a restart (test-wasm.mjs).
+# crates/clax-worker, whose format check, tests and clippy (the SQLite
+# VFS's among them) the workspace's lanes above run: the config deploy.mjs
+# generates (test-deploy-config.mjs), then the wasm build under `wrangler
+# dev --local` across a restart (test-wasm.mjs).
 # The e2e lane then runs the Clax instance in two browsers on that build
 # (e2e.mjs), then as a hosted Clax with its site hosts (e2e-hosted.mjs),
 # after the other browser suites.
 lane_worker() {
-    run "worker npm ci"         scripts/npm-ci-stamped.sh crates/clax-worker --silent &&
-    run "worker cargo fmt"      bash -c 'cd crates/clax-worker && cargo fmt -- --check' &&
-    run "worker cargo test"     bash -c 'cd crates/clax-worker && cargo test -q --workspace' &&
-    run "worker cargo clippy"   bash -c 'cd crates/clax-worker && cargo clippy -q --workspace --all-targets -- -D warnings' &&
+    run "worker pnpm install"   scripts/pnpm-install-stamped.sh crates/clax-worker --silent &&
     run "worker deploy config"  bash -c 'cd crates/clax-worker && node test-deploy-config.mjs' &&
     run "worker wasm"           bash -c 'cd crates/clax-worker && node test-wasm.mjs' &&
     mark worker-built
@@ -208,7 +211,7 @@ echo "all gates passed"
 # --- helpers (defined before main runs; see the note at the top) -------------
 
 # Seconds since the epoch, to the millisecond.
-now() { perl -MTime::HiRes=time -e 'printf "%.3f\n", time'; }
+now() { python3 -c 'import time; print("%.3f" % time.time())'; }
 
 # run NAME CMD...: runs one gate, records its time and prints its verdict.
 # Its output goes to a log, printed in full when it fails.
@@ -229,7 +232,7 @@ run() {
         set -e
     fi
     local dt
-    dt="$(perl -e 'printf "%.1f", $ARGV[1] - $ARGV[0]' "$t0" "$(now)")"
+    dt="$(awk -v t0="$t0" -v t1="$(now)" 'BEGIN { printf "%.1f", t1 - t0 }')"
     printf '%s\t%s\t%s\n' "$name" "$dt" "$rc" >> "$GATES_TMP/times"
     if [ "$rc" = 0 ]; then
         # A gate that passed without judging (no budgets on this platform,
@@ -246,7 +249,7 @@ run() {
 
 # Writes stdin to stdout in one write where it fits, so concurrent lanes'
 # verdicts do not interleave mid-line.
-flush() { perl -e 'local $/; my $s = <STDIN>; syswrite STDOUT, $s if defined $s'; }
+flush() { python3 -c 'import os, sys; os.write(1, sys.stdin.buffer.read())'; }
 
 # lane NAME FUNCTION: runs FUNCTION in the background; NAME.done marks its end.
 lane() {
@@ -291,7 +294,7 @@ finish() {
         echo
         echo "gate times (reported only; a slow gate never fails the run):"
         awk -F'\t' '{ printf "  %-30s %7ss%s\n", $1, $2, ($3 == 0 ? "" : "  (failed)") }' "$GATES_TMP/times"
-        perl -e 'printf "  %-30s %7.1fs\n", "total (wall clock)", $ARGV[1] - $ARGV[0]' "$START" "$(now)"
+        awk -v t0="$START" -v t1="$(now)" 'BEGIN { printf "  %-30s %7.1fs\n", "total (wall clock)", t1 - t0 }'
     fi
     rm -rf "$GATES_TMP"
     exit "$rc"

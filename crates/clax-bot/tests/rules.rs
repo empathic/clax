@@ -112,6 +112,7 @@ async fn the_fake_host_passes_the_host_conformance_suite() {
                     key_source: KeySource::Instance,
                     base_version: 1,
                     agent_grant: None,
+                    web: String::new(),
                 },
             )
             .unwrap()

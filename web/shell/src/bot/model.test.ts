@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { meBot, run, week } from "./fixtures";
-import { actorLabel, after, applyEvent, availability, banner, credits, fromText, margins, meter, money, parseEvent, perUnitMilli, percent, rangeFrom, resetDay, runCost, runStatus, sections, tail, tokens, turnActivity, unavailableFix, unavailableText } from "./model";
+import { WEB_LINES, meBot, run, week } from "./fixtures";
+import { actorLabel, after, applyEvent, availability, banner, callCost, credits, fromText, margins, meter, money, parseEvent, perUnitMilli, percent, rangeFrom, resetDay, runCost, runStatus, sections, tail, tokens, turnActivity, unavailableFix, unavailableText, webPrices, webSource } from "./model";
 
 describe("ClaxBot's numbers", () => {
   it("shows milli-credits as credits, micro-USD as dollars and basis points as percentages", () => {
@@ -185,5 +185,23 @@ describe("the settings", () => {
     expect(fromText("[1,2]", [])).toEqual([1, 2]);
     expect(fromText("", null)).toBeNull();
     expect(fromText("a", "b")).toBe("a");
+  });
+});
+
+describe("web calls", () => {
+  it("words a fetch's source and a call's cost", () => {
+    expect(webSource("comment")).toBe("from the sender's comment");
+    expect(webSource("search #2")).toBe("from search #2");
+    expect(webSource("page #5")).toBe("from page #5");
+    expect(webSource(undefined)).toBeNull();
+    expect(callCost(250)).toBe("0.25 credits");
+    expect(callCost(1000)).toBe("1 credit");
+    expect(callCost(0)).toBeNull();
+    expect(callCost(undefined)).toBeNull();
+  });
+
+  it("reads the web prices from the pricing lines, per thousand requests", () => {
+    expect(webPrices(WEB_LINES, 10_000)).toEqual({ search: { ceramic: 25_000, exa: 700_000, linkup: 500_000 }, fetch: 50_000 });
+    expect(webPrices([], 10_000)).toEqual({ search: {}, fetch: null });
   });
 });

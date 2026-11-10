@@ -1,0 +1,19 @@
+{
+  "targets": {
+    "pad": "frame:#pad",
+    "composer": ".composer",
+    "strip": ".strip.ag",
+    "thread": ".thread-card[data-thread]",
+    "pill": "button.who",
+    "game": "frame:#arena"
+  },
+  "shots": [
+    { "at": "ask+0.57", "targets": ["pad"], "label": "the sketch pad Alex picks" },
+    { "at": "@composer-0.2", "targets": ["composer"], "label": "the request, typed" },
+    { "at": "@thread-0.2", "until": "reveal+0.5", "targets": ["strip", "thread", "pill"], "label": "the agent working on it" },
+    { "at": "reveal+1.6", "targets": ["game"], "label": "Star Chase, two players scoring" }
+  ],
+  "clean": [
+    { "at": "reveal+0.5", "until": "reveal+1.23", "label": "the sketch pad becomes a game" }
+  ]
+}

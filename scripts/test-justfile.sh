@@ -14,7 +14,7 @@ while IFS= read -r line; do
     fi
 done < <(just --list --unsorted)
 recipes="$(just --summary)"
-for r in dev watch install uninstall serve stop doctor wrapper-test install-test demo-room-sample release; do
+for r in dev watch install uninstall serve stop doctor wrapper-test install-test demo-room-sample release release-sdk; do
     case " $recipes " in *" $r "*) ;; *) echo "missing recipe: $r" >&2; missing=1 ;; esac
 done
 for r in dev-install dev-uninstall installer-test; do
@@ -29,15 +29,17 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 mkdir "$tmp/scripts"
 cp justfile "$tmp/"
-for s in run.sh check-wasm.sh bazel-gc.sh release.sh; do
+for s in run.sh check-wasm.sh bazel-gc.sh release.sh release-sdk.sh cloudflare-setup.sh; do
     printf '#!/bin/sh\nfor a in "$@"; do printf "%%s\\n" "$a"; done\n' > "$tmp/scripts/$s"
     chmod +x "$tmp/scripts/$s"
 done
+# The dev daemon's recipes source this for the checkout's dev home and port.
+printf 'watch_settings() { DEV_HOME=%s/home DEV_PORT=7481; }\n' "$tmp" > "$tmp/scripts/dev-home.sh"
 args=(-E 'test(foo)' 'a b' '$(touch pwned)' ';' '*')
 want="$(printf '%s\n' "${args[@]}")"
 for r in build build-native web web-native web-test web-test-native web-e2e web-e2e-native \
-    pi-test pi-test-native test test-native check check-native ci ci-native perf serve \
-    check-wasm bazel-gc release; do
+    pi-test pi-test-native test test-native check check-native ci ci-native perf serve clax \
+    check-wasm check-wasm-native bazel-gc release release-sdk clax-dev-deploy; do
     got="$(cd "$tmp" && just "$r" "${args[@]}" 2>&1 | tail -n "${#args[@]}")" || true
     if [ "$got" != "$want" ] || [ -e "$tmp/pwned" ]; then
         echo "just $r does not pass its arguments intact; got:" >&2
@@ -45,4 +47,26 @@ for r in build build-native web web-native web-test web-test-native web-e2e web-
         missing=1
     fi
 done
+# clax-dev-deploy deploys clax.dev, the production instance, and nothing
+# else: it always passes --production (docs/prod.md, "Deploying from a
+# laptop").
+got="$(cd "$tmp" && just clax-dev-deploy --smoke 2>&1 | tail -n 4)" || true
+if [ "$got" != "$(printf '%s\n' --legal bundled --production --smoke)" ]; then
+    echo "just clax-dev-deploy does not pass --legal bundled --production; got:" >&2
+    printf '%s\n' "$got" | sed 's/^/    | /' >&2
+    missing=1
+fi
+# env-deploy deploys another environment, never prod (clax-dev-deploy's),
+# and hands the rest on intact after --env.
+got="$(cd "$tmp" && just env-deploy dev "${args[@]}" 2>&1 | tail -n "$((${#args[@]} + 4))")" || true
+if [ "$got" != "$(printf '%s\n' --legal bundled --env dev "${args[@]}")" ] || [ -e "$tmp/pwned" ]; then
+    echo "just env-deploy does not pass --legal bundled --env and its arguments intact; got:" >&2
+    printf '%s\n' "$got" | sed 's/^/    | /' >&2
+    missing=1
+fi
+if got="$(cd "$tmp" && just env-deploy prod 2>&1)" || [[ "$got" != *"just clax-dev-deploy"* ]]; then
+    echo "just env-deploy prod is not refused; got:" >&2
+    printf '%s\n' "$got" | sed 's/^/    | /' >&2
+    missing=1
+fi
 exit "$missing"

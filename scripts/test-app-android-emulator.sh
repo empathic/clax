@@ -66,15 +66,19 @@ echo \$\$ > "$tmp/emulator.pid"
 exec tail -f /dev/null
 STUB
 
-# adb: records each call with its server port; the device is up and
-# booted (with "never" in adb.mode, it never answers); `emu kill` ends the
-# stub emulator.
+# adb: records each call with its server port; the device is up (with
+# "never" in adb.mode, it never answers), and booted once the stub emulator
+# has become the program it runs as (tail), as a real one has its final
+# command by then; `emu kill` ends the stub emulator.
 cat > "$tmp/sdk/platform-tools/adb" <<STUB
 #!/usr/bin/env bash
 echo "port=\$ANDROID_ADB_SERVER_PORT \$*" >> "$tmp/adb.calls"
 case "\$*" in
     *get-state) if [ "\$(cat "$tmp/adb.mode" 2>/dev/null)" = never ]; then echo offline; else echo device; fi ;;
-    *"shell getprop sys.boot_completed") echo 1 ;;
+    *"shell getprop sys.boot_completed")
+        pid="\$(cat "$tmp/emulator.pid" 2>/dev/null)"
+        comm="\$(ps -o comm= -p "\$pid" 2>/dev/null | tr -d ' ')"
+        if [ -n "\$pid" ] && [ "\${comm##*/}" = tail ]; then echo 1; else echo 0; fi ;;
     *"emu kill") kill "\$(cat "$tmp/emulator.pid")" ;;
     kill-server) ;;
     *) exit 1 ;;

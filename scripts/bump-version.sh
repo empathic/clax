@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# Writes a new Clax version into every place scripts/check-version.sh reads,
-# regenerates the skills' tool blocks (which name the plugin version), then
-# runs check-version.sh. Usage: bump-version.sh X.Y.Z
+# Writes a new Clax version into every place scripts/check-version.sh reads
+# (the Kubernetes overlays' image tag included), regenerates the skills'
+# tool blocks (which name the plugin version), then runs check-version.sh.
+# Usage: bump-version.sh X.Y.Z
 #
-# Both lockfiles name the workspace crates' versions: Cargo.lock, and
-# crates/clax-worker/Cargo.lock (the Worker's own workspace uses them by
-# path). Each is rewritten here, offline, for every member whose manifest
-# takes `version.workspace`, so a `--locked` build passes without a
-# `cargo update`.
+# Cargo.lock names the workspace crates' versions. It is rewritten here,
+# offline, for every member whose manifest takes `version.workspace`, so a
+# `--locked` build passes without a `cargo update`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 [ $# = 1 ] || { echo "usage: bump-version.sh X.Y.Z" >&2; exit 2; }
@@ -21,10 +20,11 @@ if not re.fullmatch(r'\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?', new):
 # of them have matched, so a pattern that fails to match changes nothing.
 pending = {}
 
+# count=None: every match, of which there must be one or more.
 def sub(path, pattern, count=1):
     text = pending[path] if path in pending else pathlib.Path(path).read_text()
-    out, n = re.subn(pattern, lambda m: m.group(1) + new + m.group(3), text, count=count, flags=re.M)
-    if n != count:
+    out, n = re.subn(pattern, lambda m: m.group(1) + new + m.group(3), text, count=count or 0, flags=re.M)
+    if (n < 1) if count is None else (n != count):
         sys.exit(f"{path}: expected {count} version(s) matching {pattern!r}, found {n}; no file was changed")
     pending[path] = out
 
@@ -43,21 +43,18 @@ def workspace_versioned():
 
 sub("Cargo.toml", r'(\[workspace\.package\]\s*\nversion\s*=\s*")([^"]+)(")')
 crates = workspace_versioned()
-worker_lock = "crates/clax-worker/Cargo.lock"
-worker_text = pathlib.Path(worker_lock).read_text()
 for crate in crates:
-    pattern = r'(^name = "%s"\nversion = ")([^"]+)(")' % re.escape(crate)
-    sub("Cargo.lock", pattern)
-    # The Worker's lock holds the crates it builds, and no other.
-    if re.search(pattern, worker_text, re.M):
-        sub(worker_lock, pattern)
-if worker_lock not in pending:
-    sys.exit(f"{worker_lock}: names no workspace crate; no file was changed")
+    sub("Cargo.lock", r'(^name = "%s"\nversion = ")([^"]+)(")' % re.escape(crate))
 for f in ("plugins/claude-code/.claude-plugin/plugin.json", "plugins/clax/.codex-plugin/plugin.json", "plugins/clax-grok/.grok-plugin/plugin.json", "plugins/pi/package.json"):
     sub(f, r'(^  "version": ")([^"]+)(")')
 sub(".claude-plugin/marketplace.json", r'("version": ")([^"]+)(")', count=2)
 for f in ("scripts/ensure-clax.sh", "plugins/claude-code/scripts/ensure-clax.sh", "plugins/clax/scripts/ensure-clax.sh", "plugins/clax-grok/scripts/ensure-clax.sh", "plugins/pi/scripts/ensure-clax.sh"):
     sub(f, r'(^CLAX_VERSION=")([^"]+)(")')
+# The clax-fleet image the Kubernetes overlay runs, which the release tag's
+# fleet-image workflow publishes, and the docs' examples of it.
+sub("deploy/k8s/sqlite/kustomization.yaml", r'(^    newTag: ")([^"]+)(")')
+sub("docs/kubernetes.md", r'(/releases/download/v)([0-9][0-9A-Za-z.-]*)(/clax-fleet\.yaml)')
+sub("docs/kubernetes.md", r'(ghcr\.io/empathic/clax-fleet:)([0-9][0-9A-Za-z.-]*)()', count=None)
 for path, text in pending.items():
     pathlib.Path(path).write_text(text)
 PY

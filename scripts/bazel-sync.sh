@@ -10,14 +10,20 @@
 #                         and the workspace lints as rustc flags
 #                         (scripts/bazel-derive.py workspace); a
 #                         dev-dependency that turns features on fails it
+#   bazel/wasm/crates.MODULE.bazel
+#                         the crate specs @crates_wasm, the hosted Worker's
+#                         wasm32 crates, resolves (scripts/bazel-derive.py
+#                         wasm-specs)
 #   bazel/release_files.bzl
 #                         the release script test's files as labels
 #                         (scripts/test-release.files)
 #   bazel/playwright/browsers.bzl
 #                         the Chromium builds the locked Playwright runs
+#   bazel/wasm/Cargo.lock Cargo.lock, pruned to what @crates_wasm resolves:
+#                         seeded from Cargo.lock, so it takes its versions
 #   MODULE.bazel.lock     the pinned third-party crates (Cargo.lock) and
 #                         packages (each pnpm-lock.yaml), resolved again
-#                         when resolving rewrote Cargo.lock
+#                         when resolving rewrote either Cargo.lock
 # Checked: the Rust version in MODULE.bazel against rust-toolchain.toml, a
 # BUILD.bazel in every workspace crate, no job or core limit in .bazelrc,
 # and each third-party crate's features against Cargo's.
@@ -58,12 +64,25 @@ _stale() {
     stale=1
 }
 
-generated="$(./scripts/bazel-derive.py workspace)"
-if [ "$mode" = write ]; then
-    printf '%s\n' "$generated" > bazel/workspace.bzl
-elif ! printf '%s\n' "$generated" | diff -q - bazel/workspace.bzl >/dev/null 2>&1; then
-    _stale bazel/workspace.bzl
-fi
+# What reads the workspace's resolve (the wasm32 dependencies, the
+# specs of @crates_wasm): from a Cargo.lock that matches the manifests, so
+# a sync writes them once resolving has rewritten it (below).
+_derive_from_cargo() {
+    local generated
+    generated="$(./scripts/bazel-derive.py workspace)" || exit 1
+    if [ "$mode" = write ]; then
+        printf '%s\n' "$generated" > bazel/workspace.bzl
+    elif ! printf '%s\n' "$generated" | diff -q - bazel/workspace.bzl >/dev/null 2>&1; then
+        _stale bazel/workspace.bzl
+    fi
+    generated="$(./scripts/bazel-derive.py wasm-specs)" || exit 1
+    if [ "$mode" = write ]; then
+        printf '%s\n' "$generated" > bazel/wasm/crates.MODULE.bazel
+    elif ! printf '%s\n' "$generated" | diff -q - bazel/wasm/crates.MODULE.bazel >/dev/null 2>&1; then
+        _stale bazel/wasm/crates.MODULE.bazel
+    fi
+}
+[ "$mode" = check ] && _derive_from_cargo
 
 generated="$(./scripts/bazel-derive.py release-files)"
 if [ "$mode" = write ]; then
@@ -113,25 +132,41 @@ fi
 # pnpm-lock.yaml, so resolving the modules is enough to notice a change.
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
-if [ "$mode" = write ]; then
+# Resolving the modules: MODULE.bazel.lock, and each Cargo.lock as
+# crate_universe rewrites it.
+_resolve() {
+    # @crates_wasm resolves from Cargo.lock's versions: a copy of it, which
+    # crate_universe prunes to what the Worker's specs reach.
+    cp Cargo.lock bazel/wasm/Cargo.lock
     # crate_universe rewrites a Cargo.lock that its manifests no longer
-    # match (a workspace crate's version left behind by a bump) after
-    # MODULE.bazel.lock has recorded the old file's hash; resolving again
-    # records the new one. Cargo.lock must hold still within three rounds.
+    # match (a workspace crate's version left behind by a bump, the pruned
+    # copy) after MODULE.bazel.lock has recorded the old file's hash;
+    # resolving again records the new one. Both must hold still within
+    # three rounds.
     for round in 1 2 3; do
-        before="$(cksum < Cargo.lock)"
+        before="$(cat Cargo.lock bazel/wasm/Cargo.lock | cksum)"
         if ! "$bazel" mod deps --lockfile_mode=update >/dev/null 2>"$log"; then
             cat "$log" >&2
             echo "error: bazel could not resolve the modules; MODULE.bazel.lock was not rewritten" >&2
             exit 1
         fi
-        [ "$(cksum < Cargo.lock)" = "$before" ] && break
+        [ "$(cat Cargo.lock bazel/wasm/Cargo.lock | cksum)" = "$before" ] && break
         if [ "$round" = 3 ]; then
-            echo "error: Cargo.lock changed on every resolution; MODULE.bazel.lock may not match it" >&2
+            echo "error: a Cargo.lock changed on every resolution; MODULE.bazel.lock may not match it" >&2
             exit 1
         fi
-        echo "bazel: resolving the modules rewrote Cargo.lock; resolving again" >&2
+        echo "bazel: resolving the modules rewrote a Cargo.lock; resolving again" >&2
     done
+}
+if [ "$mode" = write ]; then
+    _resolve
+    # The specs @crates_wasm resolves from follow the resolved Cargo.lock;
+    # when they change, it resolves once more with them.
+    specs="$(cksum < bazel/wasm/crates.MODULE.bazel)"
+    _derive_from_cargo
+    if [ "$(cksum < bazel/wasm/crates.MODULE.bazel)" != "$specs" ]; then
+        _resolve
+    fi
 elif ! "$bazel" mod deps --lockfile_mode=error >/dev/null 2>"$log"; then
     # Bazel names the lockfile when that is what is wrong; anything else
     # (a syntax error, no network) is its own failure and is shown as such.
@@ -154,5 +189,5 @@ if [ "$stale" = 1 ]; then exit 1; fi
 if [ "$mode" = check ]; then
     echo "bazel: derived files are up to date"
 else
-    echo "bazel: wrote bazel/workspace.bzl, bazel/release_files.bzl and MODULE.bazel.lock"
+    echo "bazel: wrote bazel/workspace.bzl, bazel/release_files.bzl, bazel/wasm/crates.MODULE.bazel, bazel/wasm/Cargo.lock and MODULE.bazel.lock"
 fi

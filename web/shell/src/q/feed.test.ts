@@ -212,6 +212,36 @@ describe("InboxFeed", () => {
     expect(counts).toEqual([3, 0, 2]);
   });
 
+  it("keeps the count of an event heard while a request was in flight, whose answer was read before that event's change", async () => {
+    // Each request waits until the test answers it, with the count as the daemon read it.
+    const pending: ((unread: number) => void)[] = [];
+    vi.stubGlobal("fetch", vi.fn((url: string) => new Promise<Response>(res => {
+      pending.push(unread => res(new Response(JSON.stringify(url.endsWith("/read") ? { item: item("reply", { read: true }), unread } : { ...SUMMARY, unread }), { status: 200 })));
+    })));
+    const feed = new InboxFeed({ after: fakeClock().after });
+    const stream = fakeStream();
+    feed.start(stream);
+    stream.emit("ready");
+    await settle();
+    // A question asked after the daemon read the summary it is sending.
+    stream.emit("inbox_item", { item: item("question", { id: "I1", seq: 1 }), unread: 1 });
+    pending.shift()!(0);
+    await settle();
+    expect([feed.unread, feed.owner]).toEqual([1, true]);
+    // An answer to a request sent after the latest event is taken.
+    const marking = feed.mark("01JA00000000000000000000AA", true);
+    await settle();
+    pending.shift()!(0);
+    await marking;
+    expect(feed.unread).toBe(0);
+    // So is a summary's, once the events heard before it was sent.
+    stream.emit("resync", { topic: "inbox" });
+    await settle();
+    pending.shift()!(4);
+    await settle();
+    expect(feed.unread).toBe(4);
+  });
+
   it("fetches `latest` once after a burst of item changes", async () => {
     const calls = stubFetch(() => [200, SUMMARY]);
     const clock = fakeClock();

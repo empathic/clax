@@ -1,11 +1,12 @@
-// The `net` capability in the Clax app's view (`?app=1`): the owner is asked
-// once per view for the app's hosts in the chromeless view too; "Don't allow"
-// stands, and Allow makes the daemon's grant. The declared host is under
-// `.invalid`, so the daemon's fetch after a grant never reaches a network
-// (`upstream_error`).
+// The `net` capability in the Clax app's view (`?app=1`): once the owner
+// approved the declaration and then revoked the grant approving made, the
+// owner is asked once per view for the app's hosts in the chromeless view
+// too; "Don't allow" stands, and Allow makes the daemon's grant again. The
+// declared host is under `.invalid`, so the daemon's fetch after a grant
+// never reaches a network (`upstream_error`).
 import type { Frame, Page } from "@playwright/test";
 import { hostChannel, initHost } from "./app-host";
-import { test, expect, type Daemon, api, contentFrame } from "./fixtures";
+import { test, expect, type Daemon, api, approve, contentFrame } from "./fixtures";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -22,6 +23,9 @@ const PAGE = `<!doctype html><html><head><title>Forecast</title></head><body><p>
 
 async function openApp(page: Page, title: string, hosts = ["api.clax.invalid"]): Promise<{ id: string; frame: Frame }> {
   const { artifact } = await api(d.base, d.token, "/api/artifacts", { method: "POST", body: JSON.stringify({ title, capabilities: { net: { hosts } }, files: { "index.html": { content: PAGE, encoding: "utf8" } } }) }) as { artifact: { id: string } };
+  // Approved, then the grant approving made revoked: the page asks again.
+  await approve(d.base, d.token, artifact.id);
+  await api(d.base, d.token, `/api/artifacts/${artifact.id}/net-grants`, { method: "DELETE" });
   await hostChannel(page);
   await page.goto(`${d.base}/a/${artifact.id}?app=1`);
   const frame = await contentFrame(page, artifact.id, 1);

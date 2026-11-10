@@ -28,6 +28,8 @@ export type ArtifactEvent =
   | { type: "tags"; artifact_id: string | null }
   /** The artifact's Comments switch is now `comments` (a sharer turned it). */
   | { type: "comments"; artifact_id: string; comments: boolean }
+  /** The artifact's capability approval changed (an approval or a withdrawal): refetch it and its declaration in force. */
+  | { type: "permissions"; artifact_id: string }
   /** Who has the artifact open, here or away, or was here lately: its whole list. */
   | { type: "presence"; artifact_id: string; people: PresenceView[] }
   /** The watcher's topics went live: on first subscribing, after the page
