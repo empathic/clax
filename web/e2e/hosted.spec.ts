@@ -200,9 +200,9 @@ test("setup, an invite joined in a second browser, a sign-in link for a third, a
     await guest.goto(`${origin}/signin`);
     await expect(guest.getByText("You are a guest named Mia.", { exact: false })).toBeVisible();
 
-    // Sam signs the phone out.
+    // Sam signs the phone out, from the end of Settings' navigation.
     await phone.goto(`${origin}/settings/account`);
-    await phone.getByRole("button", { name: "Sign out" }).click();
+    await phone.getByRole("navigation", { name: "Settings" }).getByRole("button", { name: "Sign out" }).click();
     await phone.waitForURL(`${origin}/signin`);
     await expect(phone.getByText("You are not signed in.")).toBeVisible();
   } finally {
@@ -238,8 +238,7 @@ test("the owner's browser has the owner's surfaces, a person's rights limit thei
     await owner.getByRole("button", { name: "Create the first person" }).click();
     await owner.waitForURL(`${origin}/`);
     // The bar names the site; the owner's pin, delete and inbox are there.
-    await expect(owner.locator(".gbar .sub")).toHaveText(`${new URL(origin).host} ·`);
-    await expect(owner.locator(".gbar .acct-btn")).toHaveText("seen as Ada");
+    await expect(owner.locator(".gbar .sub")).toHaveText(`${new URL(origin).host} · seen as Ada`);
     await expect(owner.getByRole("button", { name: "Pin Plan" })).toBeVisible();
     await expect(owner.locator("a.inbox-link")).toBeVisible();
     await shots(owner, "gallery-owner");

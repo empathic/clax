@@ -16,7 +16,12 @@
   // link to a Settings address anywhere on the page, a search result, and
   // back and forward. An address ending `#<ID>` scrolls to that heading
   // and focuses it once the screen has drawn it.
+  //
+  // On a hosted Clax, Sign out ends the navigation and the overview, for
+  // every member on every screen: it forgets the person's reporter, ends
+  // the session and lands on `/signin`; a refusal shows beside it.
   import { onDestroy, onMount, tick, type Component } from "svelte";
+  import { refusal } from "../people/refusal";
   import type { EventStream } from "../stream";
   import { context } from "./context";
   import { GO, openPalette } from "./palette";
@@ -102,6 +107,18 @@
     e.preventDefault();
     go(a.href);
   }
+  // Signing out (a hosted Clax): the hosted calls load when it is pressed.
+  let leaving = $state(false);
+  let outErr = $state<string | null>(null);
+  async function signOut() {
+    if (leaving) return;
+    leaving = true; outErr = null;
+    try {
+      const [api, so] = await Promise.all([import("../hosted/api"), import("../hosted/signout")]);
+      await so.forgetThenSignOut(api.signOut);
+      location.assign("/signin");
+    } catch (e) { outErr = refusal(e); leaving = false; }
+  }
   const onGo = (e: Event) => { e.preventDefault(); go((e as CustomEvent<string>).detail); };
 
   onMount(() => {
@@ -112,6 +129,15 @@
 </script>
 
 <svelte:window onpopstate={show} />
+
+{#snippet out()}
+  {#if ctx?.hosted && ctx.member}
+    <div class="stg-out">
+      <button type="button" class="ghost" disabled={leaving} onclick={signOut}>{leaving ? "Signing out…" : "Sign out"}</button>
+      {#if outErr}<p class="stg-err" role="alert">{outErr}</p>{/if}
+    </div>
+  {/if}
+{/snippet}
 
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 <div class="stg" class:on-screen={!!screen} bind:this={root} onclick={clicked}>
@@ -130,6 +156,7 @@
           {#each g.screens as s (s.id)}<li><a href={`/settings/${s.id}`} aria-current={s.id === screen.id ? "page" : undefined}>{s.title}</a></li>{/each}
         </ul>
       {/each}
+      {@render out()}
     </nav>
     <div class="stg-body">
       <div class="stg-back"><a href="/settings">‹ All settings</a><button type="button" class="ghost" aria-label="Search settings" onclick={openPalette}><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5 14 14" /></svg></button></div>
@@ -152,6 +179,7 @@
             </ul>
           </section>
         {/each}
+        {@render out()}
       {/if}
     </div>
   {/if}
@@ -174,6 +202,9 @@
     .stg-nav li a { display: flex; align-items: center; min-height: 32px; padding: 2px 8px; border-radius: var(--radius-sm); color: var(--fg); text-decoration: none; font-size: 14px; }
     .stg-nav li a:hover { background: var(--hover); }
     .stg-nav li a[aria-current="page"] { background: var(--hover); font-weight: 600; box-shadow: inset 2px 0 0 var(--accent); }
+    .stg-out { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border); }
+    .stg-out button { color: var(--fg); font-weight: 600; }
+    .stg-err { margin: 6px 0 0; color: var(--danger); font-size: 13px; }
     .stg-body { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
     .stg-back { display: none; align-items: center; justify-content: space-between; gap: 8px; }
     .stg-back a { font-weight: 600; font-size: 14px; color: var(--fg); text-decoration: none; padding: 8px 4px; }

@@ -1,7 +1,7 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
-  // Admin › Usage (spec 2026-10-21-claxbot §7, §10): one week's credits, the
+  // Settings, Usage (spec 2026-10-21-claxbot §7, §10): one week's credits, the
   // revenue the paid ones stand for (credits × price), what they cost, what
   // the free tier cost, and the gross margin before and after the free
   // tier; then the totals by person and by cost line. The week is

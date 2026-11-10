@@ -109,6 +109,30 @@ describe("Settings", () => {
     expect(m.root.querySelector(".stg-cards")).toBeNull();
   });
 
+  it("ends its navigation and its overview with Sign out on a hosted Clax, which ends the session", async () => {
+    who = { hosted: true, owner: false, member: true, admin: false, bot: false };
+    const calls = stubFetch({ "POST /api/hosted/signout": {} });
+    const m = mount(Settings, {});
+    await settle();
+    const out = [...m.root.querySelectorAll<HTMLButtonElement>(".stg-over button")].find(b => b.textContent === "Sign out")!;
+    click(out);
+    await vi.waitFor(() => expect(calls.some(c => c.method === "POST" && c.url === "/api/hosted/signout")).toBe(true));
+  });
+
+  it("says why when signing out is refused, and has no Sign out on a Clax on this machine", async () => {
+    who = { hosted: true, owner: false, member: true, admin: false, bot: false };
+    stubFetch({ "POST /api/hosted/signout": [403, { error: { code: "forbidden", message: "the public origin did not send this" } }] });
+    const m = mount(Settings, {});
+    await settle();
+    click([...m.root.querySelectorAll<HTMLButtonElement>(".stg-over button")].find(b => b.textContent === "Sign out")!);
+    await vi.waitFor(() => expect(m.root.querySelector(".stg-out [role=alert]")?.textContent).toBe("The public origin did not send this."));
+    m.unmount();
+    who = { hosted: false, owner: true, member: true, admin: false, bot: false };
+    const local = mount(Settings, {});
+    await settle();
+    expect(local.root.querySelector(".stg-out")).toBeNull();
+  });
+
   it("takes an address the search dialog chose, in place", async () => {
     stubFetch({ "GET /api/remotes/mutes": { mutes: [] } });
     const m = mount(Settings, {});

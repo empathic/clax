@@ -249,7 +249,7 @@ describe("the gallery header's ClaxBot", () => {
     await settle();
     const meter = m.root.querySelector<HTMLAnchorElement>(".bot-meter")!;
     expect(meter.textContent!.replace(/\s+/g, " ").trim()).toBe("ClaxBot · your key · 3.12 of 2,000 credits");
-    expect(meter.getAttribute("href")).toBe("/me");
+    expect(meter.getAttribute("href")).toBe("/settings/claxbot");
     expect(meter.getAttribute("aria-label")).toBe("ClaxBot on your key: 3.12 of 2,000 credits used this week, for run fees, script compute, storage and web calls");
     expect(meter.title).toContain("pays for your tokens");
     m.unmount();

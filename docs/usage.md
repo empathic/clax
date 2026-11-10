@@ -263,6 +263,9 @@ the screens that are theirs.
 | | Remotes | The instances you answered Never for (a Clax on your machine) |
 | | Audit log | What happened here, newest first |
 
+On a hosted Clax, **Sign out** ends Settings' navigation and its overview,
+on every screen; nothing else in the header signs you out.
+
 Each screen has its own address (`/settings/<screen>`, such as
 `/settings/people`), and a section of one its own (`/settings/agents#ht-h`
 is Agent tokens). The pages these screens were before, `/people`, `/admin`

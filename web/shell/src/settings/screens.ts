@@ -49,7 +49,7 @@ export const SCREENS: Screen[] = [
     items: [
       { title: "This browser", at: "#hm-h", words: "signed in as who am i" },
       { title: "Sign in another device", at: "#hm-h", words: "link phone laptop" },
-      { title: "Sign out", at: "#hm-h", words: "log out logout" },
+      { title: "Sign out", at: "#hm-h", words: "log out logout leave end session" },
       { title: "Devices", at: "#hd-h", words: "clax app revoke device" },
     ],
   },

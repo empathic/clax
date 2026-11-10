@@ -1,7 +1,7 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
-  // Admin › Provider (spec 2026-10-21-claxbot D3, D15, §8.1): the model API
+  // Settings, Model provider (spec 2026-10-21-claxbot D3, D15, §8.1): the model API
   // ClaxBot calls with the instance key: which API it speaks (Anthropic's
   // Messages, OpenAI's Chat Completions, Gemini; picking one fills in a
   // known base URL for it unless one of its own is set), its base URL, the key
