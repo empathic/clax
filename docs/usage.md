@@ -1565,11 +1565,18 @@ staging; merging it releases it. The only local step is cutting it.
      fails.
    - **deploy**, once approved: clax.dev from the candidate Worker
      (`--no-build`, which refuses a Worker built from another tree), then
-     `/healthz`, a site host and the smoke.
+     `/healthz`, a site host and the smoke. When clax.dev already runs
+     the merge commit (a run again), nothing is uploaded
+     (`--unless-live`): only the checks and the smoke run.
    - **publish:** the tag `v<version>` on the merge commit and the GitHub
      release, from the candidate's files.
+   - **fleet:** `fleet-image.yml`, run on the tag and waited for (a tag
+     made with a workflow's token starts no workflow): the `clax-fleet`
+     image of the version, and `clax-fleet.yaml` on the release.
    - **carry:** as the release GitHub App, `scripts/carry-release.sh`
-     cherry-picks the release branch's own commits onto `main`'s tip,
+     merges `prod`'s merge commit into `main`'s tip (all that `prod` has
+     and `main` lacks: the release branch's own commits, and those of an
+     earlier release whose carry never reached `main`),
      pins the plugins to the new release (`scripts/pin-release.sh`),
      makes that one commit through GitHub's API (so GitHub signs it),
      opens the pull request `carry/<version>` into `main`, waits for CI's
@@ -1586,13 +1593,25 @@ staging; merging it releases it. The only local step is cutting it.
    lacks ("Releasing the SDK package").
 
 Each Deploy prod job finds what an earlier run of it did, so a failed run
-is rerun (`gh run rerun <ID> --failed`) once its cause is fixed: a release
-of the version made from the merge commit's tree is kept (one from
-another tree fails the job), a merged carry is found and an open one
-waited for and merged, and a Pi version npm has is not published again. A
-carry whose commits do not apply to `main` (`main` changed a line the
-bump changes) fails, naming the commit: carry it by hand, as below. A
-failed deploy rolls nothing back (`docs/prod.md`, "Rollback").
+is rerun (`gh run rerun <ID> --failed`) once its cause is fixed: a Worker
+already running the merge commit is not uploaded again (the instance is
+not restarted; only Actions, Deploy prod, Run workflow on `prod` with
+`redeploy` uploads it again), a release of the version made from the
+merge commit's tree is kept (one from another tree fails the job), a run
+of `fleet-image.yml` on the tag that passed or is running is this one, a
+merged carry is found and an open one waited for and merged, and a Pi
+version npm has is not published again. A carry that conflicts with
+`main` (`main` changed a line the bump changes) fails, naming the files:
+carry it by hand, as below. A release whose run never got as far as its
+carry is carried by the next release's. A failed deploy rolls nothing
+back (`docs/prod.md`, "Rollback").
+
+The smoke's push step passes when the pushed commit becomes a version,
+through Cloudflare's `pushed` event or, when none arrives within its wait,
+through the publish after it (the instance records unrecorded commits
+before every publish). An event that did not arrive is a warning on the
+run, not a failure: Clax subscribes no repository to those events, so no
+one's push depends on them (`crates/clax-worker/README.md`).
 
 ### What `just release` does
 
@@ -1652,8 +1671,14 @@ after it. Fix the cause and run the same command again: each step's state
 is read from git and GitHub (the version files, the commits by subject,
 the release branch here and on origin and its pull request's state), so
 the run resumes at the first step not done. Uncommitted changes are
-accepted only while the bump (steps 4-6) waits for its commit. A merge of
-`origin/main` that conflicts stops step 3 with the files: merge by hand
+accepted only while the bump (steps 4-6) waits for its commit. Where
+`prod` and `origin/main` changed the same lines, and `main` is at `prod`'s
+version (its release was carried), step 3's merge takes `main`'s and names
+the files (the carry puts a release's changes on `main` as one commit of
+its own, so git takes lines `main` changed again since for changed on both
+sides). Any other merge of `origin/main` that conflicts (`prod` holds a
+release not carried to `main`, or a file one side changed and the other
+removed) stops step 3 with the files: merge by hand
 with the same subject (`git merge -S origin/main -m "Merge origin/main
 into release/<version>"`, resolve, then `git commit -S`: git does not
 carry `-S` past a conflict) and run the command again. A commit amended
@@ -1674,7 +1699,7 @@ git push origin release/0.4.0
 gh pr create --base prod --head release/0.4.0 --title "Release 0.4.0"
 # once CI and staging pass, merge it with a merge commit; Deploy prod does the rest.
 # A carry by hand, once v0.4.0 is published, in a worktree of origin/main:
-git cherry-pick -x <each commit of release/0.4.0 that main and the previous prod lack>
+git merge --no-commit --no-ff <the merge commit on prod>   # all that prod has and main lacks
 scripts/pin-release.sh v0.4.0     # PINNED_VERSION and the four SHA256 values, in every wrapper copy
 scripts/check-version.sh
 git commit -S -am "chore(release): 0.4.0, with the plugins pinned to it"

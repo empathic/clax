@@ -37,7 +37,9 @@
 #    2  git worktree add -b release/X.Y.Z target/release/worktree-X.Y.Z
 #       origin/prod (or on that branch, when it exists here or on origin)
 #    3  a signed merge of origin/main into it, "Merge origin/main into
-#       release/X.Y.Z" (none when it has origin/main already)
+#       release/X.Y.Z" (none when it has origin/main already); where prod
+#       and main changed the same lines, and main is at prod's version (its
+#       release was carried), it takes main's, naming the files
 #    4  scripts/bump-version.sh X.Y.Z
 #    5  just bazel-sync, until it changes nothing (at most 4 runs)
 #    6  scripts/check-version.sh: the version files agree
@@ -515,14 +517,36 @@ step_2() {
 # The branch starts at origin/prod's tip, so the pull request's merge into
 # prod changes nothing it holds: the merge's tree is the head's, the one CI
 # and staging tested (scripts/find-candidate.sh refuses any other).
+#
+# Where prod and main changed the same lines, and main is at prod's
+# version, the merge takes main's (-X theirs), and says in which files. The
+# carry puts a release's changes on main as one commit of its own, not
+# prod's commits, so git takes lines main has changed again since for
+# changed on both sides; main at prod's version has prod's release carried,
+# so its lines are the newer. While main is at another version, prod holds
+# a release whose carry has not reached main, and lines both changed may be
+# prod's alone: that merge, like one git cannot settle by lines (a file
+# one side changed and the other removed), stops the run to be made by hand.
 step_3() {
-    local files
+    local files prod_v main_v
     w fetch --quiet --no-tags origin main
     if w merge-base --is-ancestor origin/main HEAD; then say "  $RB has origin/main already"; return 0; fi
     if ! w merge -S --no-ff -q -m "$MERGE_SUBJECT" origin/main; then
         files="$(w diff --name-only --diff-filter=U | tr '\n' ' ' | sed 's/ $//')"
         w merge --abort 2>/dev/null || true
+        prod_v="$(version_at "origin/$PROD")"
+        main_v="$(version_at origin/main)"
+        if [ -n "$prod_v" ] && [ "$prod_v" = "$main_v" ] && w merge -S --no-ff -q -X theirs -m "$MERGE_SUBJECT" origin/main; then
+            tell "  prod and origin/main changed the same lines in: ${files:-(see the log)}; the merge takes origin/main's there"
+            is_signed_commit "$(w rev-parse HEAD)" || { say "  the merge carries no signature"; return 1; }
+            return 0
+        fi
+        w merge --abort 2>/dev/null || true
         say "  the merge of origin/main into $RB conflicts in: ${files:-(see the log)}"
+        if [ "$prod_v" != "$main_v" ]; then
+            say "  (origin/$PROD is at ${prod_v:-an unknown version} and origin/main at ${main_v:-an unknown version}: $PROD holds a release not carried to main,"
+            say "  so lines both changed are not taken from main unseen)"
+        fi
         say "  Merge by hand in $WT, signed and with this subject:"
         say "    git -C $WT merge -S origin/main -m \"$MERGE_SUBJECT\""
         say "  resolve, then commit it signed (git commit -S; git does not carry -S past a conflict),"
