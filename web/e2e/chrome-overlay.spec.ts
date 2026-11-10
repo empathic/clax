@@ -1154,7 +1154,7 @@ test.describe("with a person connected on the LAN", () => {
       // Sam's browser, made his by the link, comments on that page.
       const samPage = await live.ctx.newPage();
       await samPage.goto(link);
-      await samPage.waitForURL(/\/people$/);
+      await samPage.waitForURL(/\/settings\/agents$/);
       const samThread = await samPage.evaluate(async aid => {
         const form = new FormData();
         form.set("anchor", JSON.stringify({ kind: "element", selector: "body > main > h2", quote: "Quarterly goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }));

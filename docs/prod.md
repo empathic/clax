@@ -187,7 +187,7 @@ on (`crates/clax-worker/README.md`, "ClaxBot's runs").
 
 The deploy's smoke runs as an agent token, never the owner token, which
 never goes to GitHub. Signed in to clax.dev as the owner, make an agent
-token named `smoke` (People, Agent tokens: Machine `smoke`, Create token;
+token named `smoke` (Settings, Agents & machines, Agent tokens: Machine `smoke`, Create token;
 the token is the part after `Bearer ` in the command it shows) and set it
 as `CLAX_SMOKE_TOKEN`. The smoke runs every step an agent can and names
 each owner-only step it skips.
@@ -467,8 +467,8 @@ just env-deploy …                      # its first deploy
 unset CLAX_KEK
 ```
 
-Once deployed, the owner checks the backup is the Worker's key: Admin,
-Provider shows the key's fingerprint (never public), and this prints the
+Once deployed, the owner checks the backup is the Worker's key: Settings, Model
+provider shows the key's fingerprint (never public), and this prints the
 backup's, with the key in `CLAX_KEK` as above:
 
 ```

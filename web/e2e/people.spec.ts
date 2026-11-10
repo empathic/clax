@@ -1,4 +1,4 @@
-// People (`/people`, spec 2026-10-08-multi-agent-multi-person §3.1, §3.4,
+// People (`/settings/people`, and a person's own Agents & machines; spec 2026-10-08-multi-agent-multi-person §3.1, §3.4,
 // §9.6, §17) in a browser: the owner invites a person, who connects with
 // `clax connect` from a scratch home and registers an agent; the owner
 // sees them appear; the person's browser (made theirs by the browser link)
@@ -32,9 +32,11 @@ test("the owner invites a person who connects, narrows their machine from their 
   const personCtx = await browser.newContext();
   try {
     const owner = await ownerCtx.newPage();
+    // The page that was `/people` goes to its screen in Settings.
     await owner.goto(`${d.base}/people`);
+    await owner.waitForURL(`${d.base}/settings/people`);
     await expect(owner.getByRole("heading", { name: "People", level: 2 })).toBeVisible();
-    await expect(owner.locator(".gbar a.people-link")).toHaveAttribute("aria-current", "page");
+    await expect(owner.locator(".gbar a.settings-link")).toHaveAttribute("aria-current", "page");
     await owner.getByRole("button", { name: "Invite a person" }).click();
     await expect(owner.getByRole("textbox", { name: "Name", exact: true })).toBeFocused();
     await expect(owner.getByRole("textbox", { name: "Name", exact: true })).toHaveAttribute("maxlength", "60");
@@ -77,12 +79,12 @@ test("the owner invites a person who connects, narrows their machine from their 
     // Sam's browser: the link makes it Sam's, and People shows Sam alone.
     const person = await personCtx.newPage();
     await person.goto(link!);
-    await person.waitForURL(/\/people$/);
+    await person.waitForURL(/\/settings\/agents$/);
     await expect(person.locator("article.person")).toHaveCount(1);
     await expect(person.locator("article.person h3")).toContainText("Sam");
     await expect(person.getByRole("button", { name: "Invite a person" })).toHaveCount(0);
     await expect(person.getByRole("switch")).toHaveCount(0);
-    await expect(person.locator(".gbar a.people-link")).toBeVisible();
+    await expect(person.locator(".gbar a.settings-link")).toBeVisible();
     // Sam turns Delete artifacts off for every agent of the machine.
     await person.locator(".machine summary").click();
     await person.locator(".machine .caps label", { hasText: "Delete artifacts" }).locator("input").uncheck();
@@ -160,10 +162,10 @@ test("the owner invites a person who connects, narrows their machine from their 
     await expect(owner.getByRole("heading", { name: "People", level: 2 })).toBeFocused();
     await expect(person.locator(".ppl")).toContainText("You are no longer connected: the owner disconnected you.");
     await expect(person.locator("article.person")).toHaveCount(0);
-    await expect(person.locator(".gbar a.people-link")).toHaveCount(0);
+    await expect(person.locator(".gbar a.settings-link")).toHaveCount(0);
     await person.reload();
-    await expect(person.locator(".ppl")).toContainText("People is for the owner of this Clax and the people they connect.");
-    await expect(person.locator(".gbar a.people-link")).toHaveCount(0);
+    await expect(person.locator(".stg")).toContainText("Settings are for the owner of this Clax and the people they connect.");
+    await expect(person.locator(".gbar a.settings-link")).toHaveCount(0);
   } finally {
     await ownerCtx.close();
     await personCtx.close();

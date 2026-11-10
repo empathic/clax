@@ -803,6 +803,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         .route("/tags", get(shell::gallery_page))
         .route("/admin", get(shell::gallery_page))
         .route("/settings", get(shell::gallery_page))
+        .route("/settings/{screen}", get(shell::gallery_page))
         .route("/me", get(shell::gallery_page))
         .route("/audit", get(shell::gallery_page))
         .route("/a/{aid}", get(shell::artifact_page))

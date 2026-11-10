@@ -717,7 +717,7 @@ async fn the_claxbot_pages_are_the_gallery() {
     let ts = TestServer::spawn().await;
     let a = ts.get("/").await;
     let (status, page) = (a.status(), a.text().await.unwrap());
-    for path in ["/admin", "/settings", "/me", "/audit"] {
+    for path in ["/admin", "/settings", "/settings/people", "/me", "/audit"] {
         let b = ts.get(path).await;
         assert_eq!(status, b.status(), "{path}");
         assert_eq!(page, b.text().await.unwrap(), "{path}");

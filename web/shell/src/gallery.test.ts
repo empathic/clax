@@ -499,12 +499,14 @@ describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
     return root;
   }
 
-  it("shows People in the header to the owner and to a connected person, and not to a LAN viewer", async () => {
+  it("shows the Settings gear in the header to the owner and to a connected person, and not to a LAN viewer", async () => {
     for (const who of ["owner", "person"] as const) {
       stubAs(who);
       const root = await mountAt("/");
-      const link = await waitFor(() => root.querySelector<HTMLAnchorElement>(".gbar a.people-link"), `People for the ${who}`);
-      expect(link.getAttribute("href")).toBe("/people");
+      const link = await waitFor(() => root.querySelector<HTMLAnchorElement>(".gbar a.settings-link"), `Settings for the ${who}`);
+      expect(link.getAttribute("href")).toBe("/settings");
+      // The gear is the header's last control.
+      expect(root.querySelector(".gbar")!.lastElementChild).toBe(link);
       expect(link.hasAttribute("aria-current")).toBe(false);
       unmountGallery!(); unmountGallery = null; await freshModules();
     }
@@ -514,7 +516,7 @@ describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => calls.some(c => c.url === "/api/viewers/me") && calls.some(c => c.url === "/api/token"), "the viewer and token requests");
     // The header's links come from the lazy module: once it has loaded, the viewer is known too.
     await vi.dynamicImportSettled();
-    expect(root.querySelector(".people-link")).toBeNull();
+    expect(root.querySelector(".settings-link")).toBeNull();
   });
 
   it("gives a connected person's browser its inbox at /inbox, Inbox in the header, and the inbox and questions topics", async () => {
@@ -528,11 +530,11 @@ describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(calls.some(c => c.url === "/api/inbox?limit=1")).toBe(false);
   });
 
-  it("is the People page at /people: no artifacts are fetched, and the page follows the people and agents topics", async () => {
+  it("is Settings at /settings/people, showing People: no artifacts are fetched, and the screen follows the people and agents topics", async () => {
     const calls = stubAs("owner");
-    const root = await mountAt("/people");
-    await waitFor(() => root.querySelector(".ppl .person"), "the People page");
-    expect(root.querySelector(".gbar a.people-link")!.getAttribute("aria-current")).toBe("page");
+    const root = await mountAt("/settings/people");
+    await waitFor(() => root.querySelector(".stg .ppl h2")?.textContent === "People" && root.querySelector(".stg .ppl .note"), "the People screen");
+    expect(root.querySelector(".gbar a.settings-link")!.getAttribute("aria-current")).toBe("page");
     expect(root.querySelector(".gbar .search")).toBeNull();
     expect(calls.some(c => c.url === "/api/artifacts")).toBe(false);
     await workerWith("people", "agents");
@@ -547,7 +549,7 @@ describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
       unmountGallery!(); unmountGallery = null; await freshModules();
     }
     const calls = stubAs("owner");
-    const root = await mountAt("/people/x");
+    const root = await mountAt("/tags/x");
     await waitFor(() => calls.some(c => c.url === "/api/artifacts") && root.querySelector("a.card"), "the gallery");
     expect(root.querySelector(".ppl")).toBeNull();
   });

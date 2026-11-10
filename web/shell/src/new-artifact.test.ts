@@ -296,9 +296,9 @@ describe("the New dialog with ClaxBot", () => {
       m.unmount();
       return got;
     };
-    expect(await fixOf("not_configured", "owner")).toEqual(["Set a model key under Admin → Provider →", "/admin?tab=provider"]);
-    expect(await fixOf("not_configured", "member")).toEqual(["Use your own Anthropic key under You →", "/me"]);
-    expect(await fixOf("model_not_priced", "owner")).toEqual(["Price it under Admin → Pricing →", "/admin?tab=pricing"]);
+    expect(await fixOf("not_configured", "owner")).toEqual(["Set a model key under Settings → Model provider →", "/settings/provider"]);
+    expect(await fixOf("not_configured", "member")).toEqual(["Use your own Anthropic key under Settings → Your ClaxBot →", "/settings/claxbot#me-k"]);
+    expect(await fixOf("model_not_priced", "owner")).toEqual(["Price it under Settings → Pricing →", "/settings/pricing"]);
     expect(await fixOf("model_not_priced", "member")).toBeNull();
   });
 });

@@ -125,7 +125,7 @@ test("a connected person decides an approval and answers a question in their own
     // Sam's browser, made his by the link, has an inbox: Inbox in the header and the card.
     const s = await samCtx.newPage();
     await s.goto(link);
-    await s.waitForURL(/\/people$/);
+    await s.waitForURL(/\/settings\/agents$/);
     await s.goto(`${lan}/inbox`);
     await expect(s.locator(".gbar .inbox-link")).toBeVisible();
     const card = s.locator(".acard");
@@ -176,7 +176,7 @@ test("a connected person decides an approval and answers a question in their own
     await expect(cc).toContainText("key SHA256:");
     await cc.getByRole("button", { name: "Approve…" }).click();
     await expect(cc.locator('input[name="code"]')).toBeFocused();
-    await expect(cc.getByRole("link", { name: "Invite" })).toHaveAttribute("href", "/people?invite");
+    await expect(cc.getByRole("link", { name: "Invite" })).toHaveAttribute("href", "/settings/people?invite");
     const approve = cc.getByRole("button", { name: "Approve", exact: true });
     await expect(approve).toBeDisabled();
     await cc.locator('input[name="code"]').fill(code);

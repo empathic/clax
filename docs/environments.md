@@ -219,7 +219,7 @@ The next push to a pull request deploys its preview.
    The settings are kept in `~/.config/clax/deploy/setup.dev.env`, and
    later runs need no flags.
 3. Sign in to dev as the owner, make an agent token named `smoke`
-   (settings, Agent tokens), and set it as the `preview` environment's
+   (Settings, Agents & machines, Agent tokens), and set it as the `preview` environment's
    `CLAX_DEV_SMOKE_TOKEN`.
 
 Every green push to `main` deploys dev from then on. Until

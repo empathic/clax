@@ -105,7 +105,7 @@ test("the New artifact tile leads the gallery, and ClaxBot builds what it makes 
   await expect(card.getByLabel("Calls")).toContainText("db.list items");
   await expect(run.locator(".finish")).toContainText("Built the splitter.");
   await expect(run.locator(".cost")).toHaveText("This run: 3 credits");
-  await expect(run.getByRole("link", { name: "Audit ↗" })).toHaveAttribute("href", /\/audit\?artifact=[a-z0-9]{12}&q=r1$/);
+  await expect(run.getByRole("link", { name: "Audit ↗" })).toHaveAttribute("href", /\/settings\/audit\?artifact=[a-z0-9]{12}&q=r1$/);
   // The top bar's ClaxBot button closes and opens it.
   await page.getByRole("button", { name: /^ClaxBot/ }).click();
   await expect(run).toHaveCount(0);
@@ -124,7 +124,7 @@ test("at its limit, the gallery says ClaxBot is paused and the Send menu lists i
   const banner = page.getByRole("alert").filter({ hasText: "This week's credits are used up." });
   await expect(banner).toContainText("ClaxBot is paused until Monday, Oct 26.");
   await banner.getByRole("button", { name: "Ask an admin for a lift" }).click();
-  await expect(banner).toContainText("Admin › People & flags");
+  await expect(banner).toContainText("Settings › Roles & ClaxBot access");
   await openArtifact(page, d.base, artifact.id, 1);
   // The artifact view says so too, under its top bar.
   await expect(page.locator(".bot-banner-at").getByRole("alert")).toContainText("This week's credits are used up.");
@@ -136,9 +136,9 @@ test("at its limit, the gallery says ClaxBot is paused and the Send menu lists i
   await expect(bot).toContainText("Weekly credits used · resets Mon Oct 26");
 });
 
-test("Settings reads the daemon's own settings route and writes a change to config.toml, after restart", async ({ page, freshDaemon: d }) => {
+test("Settings' Configuration reads the daemon's own settings route and writes a change to config.toml, after restart", async ({ page, freshDaemon: d }) => {
   await stubBot(page, { json: { "GET /api/admin/provider/models": { models: [{ id: "claude-sonnet-5-5", display_name: "Claude Sonnet 5.5" }, { id: "claude-opus-5-5", display_name: "Claude Opus 5.5" }], fetched_at: "x" } } });
-  await page.goto(`${d.base}/settings`);
+  await page.goto(`${d.base}/settings/config`);
   // The port in effect is the one it listens on, with what chose it.
   const port = page.locator("#set-serve-port");
   await expect(port).toHaveValue(String(d.port));
@@ -153,7 +153,7 @@ test("Settings reads the daemon's own settings route and writes a change to conf
   expect(back.fields.find(f => f.key === "bot.max_steps")?.pending).toBe(9);
 });
 
-test("Settings, You and Audit show at phone width without a sideways scroll", async ({ page, daemon: d }) => {
+test("Settings' overview, Configuration, Your ClaxBot and Audit log show at phone width without a sideways scroll", async ({ page, daemon: d }) => {
   await stubBot(page, { json: {
     "GET /api/me/usage": { week: { start: WEEK.start, end: WEEK.end }, totals: [], runs: [] },
     "GET /api/audit": { events: [{ seq: 48212, at: "2026-10-21T14:05:58Z", actor: { id: "agent:claxbot", name: "ClaxBot" }, on_behalf_of: { id: "p_owner", name: "Alex" }, kind: "bot.script", summary: "\"Fix rounding and arrow direction\" · 3 calls · 2 credits", artifact_id: null, run: "r1" }], next_cursor: null },
@@ -161,12 +161,20 @@ test("Settings, You and Audit show at phone width without a sideways scroll", as
   } });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${d.base}/settings`);
+  await expect(page.getByRole("link", { name: /^Configuration/ })).toBeVisible();
+  expect(await sideways(page)).toEqual([]);
+  await page.getByRole("link", { name: /^Configuration/ }).click();
   await expect(page.locator("#set-serve-port")).toHaveValue(String(d.port));
   expect(await sideways(page)).toEqual([]);
+  // At phone width the navigation gives way to a link back to the overview.
+  await expect(page.getByRole("navigation", { name: "Settings" })).toBeHidden();
+  await expect(page.getByRole("link", { name: "‹ All settings" })).toBeVisible();
   await page.goto(`${d.base}/me`);
+  await page.waitForURL(`${d.base}/settings/claxbot`);
   await expect(page.getByRole("meter", { name: "Your credits this week" })).toHaveAttribute("aria-valuetext", "310 of 2,000 credits");
   expect(await sideways(page)).toEqual([]);
   await page.goto(`${d.base}/audit`);
+  await page.waitForURL(`${d.base}/settings/audit`);
   await page.getByRole("button", { name: /ClaxBot for Alex/ }).click();
   await expect(page.getByLabel("Stored body")).toContainText("\"via\": \"bot\"");
   expect(await sideways(page)).toEqual([]);

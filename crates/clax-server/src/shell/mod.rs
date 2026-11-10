@@ -179,8 +179,10 @@ pub fn landing_file(
     }))
 }
 
-/// `/`, `/inbox`, `/people` and `/tags`: the gallery's entry, which shows
-/// the gallery, the inbox, People or the tags by its path.
+/// The gallery shell's pages (`/`, `/inbox`, `/tags`, `/queues…`,
+/// `/settings` and `/settings/<screen>`, and the pages that moved into
+/// Settings: `/people`, `/admin`, `/me`, `/audit`): the gallery's entry,
+/// which shows the page its path names.
 pub async fn gallery_page(
     axum::extract::State(s): axum::extract::State<clax_http::state::AppState>,
     _d: clax_http::agent::DeniedToGrants,

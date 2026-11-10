@@ -1,7 +1,7 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
-  // `/audit` (spec 2026-10-21-claxbot §9.2): the audit log, newest first, as
+  // Settings, Audit log (spec 2026-10-21-claxbot §9.2): the audit log, newest first, as
   // the daemon lets this person see it (admins: everything; anyone else: what
   // they did, on what they own, and runs for them). Filters (text, who
   // acted, kind group, artifact, time range) are the address's query, so a
@@ -46,7 +46,7 @@
     if (artifact) p.set("artifact", artifact);
     if (range !== "7d") p.set("range", range);
     const s = p.toString();
-    history.replaceState(history.state, "", `/audit${s ? `?${s}` : ""}`);
+    history.replaceState(history.state, "", `${location.pathname}${s ? `?${s}` : ""}`);
   }
   async function load(more = false) {
     const t = ++ticket;
@@ -88,7 +88,7 @@
   const title = (id: string | null) => (id ? artifacts.find(a => a.id === id)?.title ?? id : null);
   const body = (b: unknown) => JSON.stringify(b, null, 2);
   onMount(() => {
-    document.title = "Audit · Clax";
+    document.title = "Audit log · Settings · Clax";
     void load();
     void listArtifacts().then(l => { artifacts = l.map(a => ({ id: a.id, title: a.title })); }, () => {});
     void myBot().then(b => { canExport = !!b?.can_export; });
@@ -99,7 +99,7 @@
 
 {#snippet actions()}{#if canExport}<button type="button" disabled={exporting} onclick={exp}>{exporting ? "Exporting…" : "Export Toolpath"}</button>{/if}{/snippet}
 
-<BotPage title="Audit" lede="Every view and every change, by people, admins and ClaxBot, as the Toolpath journal records them." {actions}>
+<BotPage title="Audit log" lede="Every view and every change, by people, admins and ClaxBot, as the Toolpath journal records them." {actions}>
   <form class="aud-f" role="search" aria-label="Filter the audit log" onsubmit={e => { e.preventDefault(); void load(); }}>
     <input type="search" aria-label="Search the audit log" placeholder="Search" bind:value={q} oninput={typed} />
     <select aria-label="Who acted" onchange={e => { actor = e.currentTarget.value; void load(); }}>

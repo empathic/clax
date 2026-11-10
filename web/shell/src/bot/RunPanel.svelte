@@ -158,7 +158,7 @@
       {#if run}<p class="cost">{runCost(run)}</p>{/if}
       <div class="wk">
         {#if week}<Meter m={week} small label="Your credits this week" /><span>{credits(week.spent)} / {credits(week.total)}</span>{/if}
-        <a href={`/audit?artifact=${encodeURIComponent(aid)}${botView.run ? `&q=${encodeURIComponent(botView.run)}` : ""}`}>Audit ↗</a>
+        <a href={`/settings/audit?artifact=${encodeURIComponent(aid)}${botView.run ? `&q=${encodeURIComponent(botView.run)}` : ""}`}>Audit ↗</a>
       </div>
     </footer>
   </aside>

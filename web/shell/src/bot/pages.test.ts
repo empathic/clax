@@ -27,7 +27,7 @@ describe("Settings", () => {
     });
     const m = mount(SettingsPage, {});
     await settle();
-    expect([...m.root.querySelectorAll(".bcard h3")].map(h => h.textContent)).toEqual(["[serve]", "[bot]", "Remotes"]);
+    expect([...m.root.querySelectorAll(".bcard h3")].map(h => h.textContent)).toEqual(["[serve]", "[bot]"]);
     const port = m.root.querySelector<HTMLInputElement>("#set-serve-port")!;
     expect(port.readOnly).toBe(true);
     const portField = port.closest(".field")!.textContent!;
@@ -63,11 +63,11 @@ describe("Settings", () => {
     expect(alerts[1]).toBe("[sample] is not used: max_tokens must be at least 16");
   });
 
-  it("on a daemon without a settings screen, says where it is configured", async () => {
+  it("on a daemon without a configuration screen, says where it is configured", async () => {
     stubFetch({});
     const m = mount(SettingsPage, {});
     await settle();
-    expect(m.root.textContent).toContain("This Clax has no settings screen");
+    expect(m.root.textContent).toContain("This Clax has no configuration screen");
   });
 });
 
@@ -224,7 +224,7 @@ describe("Audit's export", () => {
 });
 
 describe("the gallery header's ClaxBot", () => {
-  it("shows the week's meter and Admin for an admin, and the banner at the limit", async () => {
+  it("shows the week's meter, linking to Your ClaxBot, and the banner at the limit", async () => {
     const main = document.createElement("main");
     main.className = "gal";
     document.body.append(main);
@@ -234,11 +234,11 @@ describe("the gallery header's ClaxBot", () => {
     const meter = m.root.querySelector<HTMLAnchorElement>(".bot-meter")!;
     expect(meter.getAttribute("aria-label")).toBe("ClaxBot: 2,000 of 2,000 credits used this week");
     expect(meter.classList.contains("out")).toBe(true);
-    expect(m.root.querySelector(".admin-link")!.getAttribute("href")).toBe("/admin");
+    expect(meter.getAttribute("href")).toBe("/settings/claxbot");
     const banner = main.querySelector('.bbanner[role="alert"]')!;
     expect(banner.textContent).toContain("This week's credits are used up.");
     click(button(banner, "Ask an admin for a lift"));
-    expect(banner.querySelector("#bbanner-ask")!.textContent).toContain("Admin › People & flags");
+    expect(banner.querySelector("#bbanner-ask")!.textContent).toContain("Settings › Roles & ClaxBot access");
     m.unmount();
     expect(main.querySelector(".bbanner")).toBeNull();
   });

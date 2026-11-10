@@ -1,19 +1,18 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
-  // `/settings` (spec 2026-10-21-claxbot D4, §8; crates/clax-server/src/
-  // routes/settings.rs), the localhost daemon's: every config field, by
-  // section, with the value in effect and where it comes from (default,
-  // `config.toml`, the environment), a value the daemon takes at its next
-  // start marked "after restart", and a field's note. A field the
-  // environment sets is read-only here, as is `bin`. Model fields are the
-  // provider's model selector (↻ and a custom ID), with Test connection
-  // beside them. Save writes the fields changed to `config.toml` and shows
-  // what the daemon reads back; a file that did not read when the daemon
-  // started, and tables whose values do not check, are said at the top. A
-  // hosted daemon has no settings screen (404), and says so. Below the
-  // fields, Confirmations: whether confirming requires a passkey,
-  // and the passkeys registered (`q/PasskeySettings.svelte`).
+  // Settings, Configuration (spec 2026-10-21-claxbot D4, §8;
+  // crates/clax-server/src/routes/settings.rs), the localhost daemon's:
+  // every config field, by section, with the value in effect and where it
+  // comes from (default, `config.toml`, the environment), a value the
+  // daemon takes at its next start marked "after restart", and a field's
+  // note. A field the environment sets is read-only here, as is `bin`.
+  // Model fields are the provider's model selector (↻ and a custom ID),
+  // with Test connection beside them. Save writes the fields changed to
+  // `config.toml` and shows what the daemon reads back; a file that did
+  // not read when the daemon started, and tables whose values do not
+  // check, are said at the top. A hosted daemon has no configuration
+  // screen (404), and says so.
   import { onMount } from "svelte";
   import { refusal } from "../people/refusal";
   import { type ProviderModels, type Settings, providerModels, saveSettings, settings, testProvider } from "./api";
@@ -22,8 +21,6 @@
   import ModelSelect from "./ModelSelect.svelte";
   import SourceBadge from "./SourceBadge.svelte";
   import Switch from "./Switch.svelte";
-  import PasskeySettings from "../q/PasskeySettings.svelte";
-  import RemoteMutes from "./RemoteMutes.svelte";
 
   let s = $state<Settings | null>(null);
   let none = $state(false);
@@ -66,15 +63,15 @@
     } catch (e) { err = refusal(e); } finally { busy = false; }
   }
   onMount(() => {
-    document.title = "Settings · Clax";
+    document.title = "Configuration · Settings · Clax";
     void settings().then(x => { if (x) { take(x); if (x.fields.some(f => isModel(f.key))) listModels(); } else none = true; }, e => { err = refusal(e); });
   });
 </script>
 
-<BotPage title="Settings" lede="This Clax's configuration: config.toml in its home, overridden by CLAX_* environment variables. Each field says where its value comes from; a field the environment sets is read-only here.">
+<BotPage title="Configuration" lede="This Clax's configuration: config.toml in its home, overridden by CLAX_* environment variables. Each field says where its value comes from; a field the environment sets is read-only here.">
   {#if err}<p class="err" role="alert">{err}</p>{/if}
   {#if none}
-    <p class="note">This Clax has no settings screen: it is configured where it is hosted. Admins set ClaxBot's provider and prices under <a href="/admin">Admin</a>.</p>
+    <p class="note">This Clax has no configuration screen: it is configured where it is hosted. Admins set ClaxBot's provider and prices under <a href="/settings/provider">Model provider</a> and <a href="/settings/pricing">Pricing</a>.</p>
   {:else if s}
     {#if s.started_with_invalid_config}
       <div class="sbad" role="alert"><p><b>Clax started without its config.toml:</b> {s.start_error ?? "the file did not read"}. The values below are the defaults until it starts again with a file that reads.</p></div>
@@ -112,8 +109,6 @@
       {#if hasModels}<button type="button" onclick={runTest}>Test connection</button>{/if}
       <span role="status">{#if test}<span class={test.ok ? "ok" : "err"}>{test.text}</span>{:else if saved}<span class="ok">{saved}</span>{:else if changed.length}<span class="note">{changed.length} changed{restart ? ", takes effect after a restart" : ""}</span>{/if}</span>
     </div>
-    <PasskeySettings />
-    <RemoteMutes />
   {:else if !err}
     <p class="note" role="status">Loading the settings…</p>
   {/if}

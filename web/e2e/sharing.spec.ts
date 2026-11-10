@@ -74,7 +74,7 @@ test("the owner shares one artifact with one person and a login, shares it by li
     await owner.waitForURL(`${origin}/`);
 
     // Sam's invite offers no rights: Sam gets their own space.
-    await owner.goto(`${origin}/people`);
+    await owner.goto(`${origin}/settings/people`);
     await owner.getByRole("button", { name: "Invite a person" }).click();
     await expect(owner.locator(".invite select")).toHaveCount(0);
     await expect(owner.locator(".invite")).toContainText("They get their own space");
