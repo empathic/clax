@@ -711,8 +711,10 @@ overview() {
     say "  Then Deploy prod runs on the merge, each job once those it follows are done:"
     say "     candidate, reel     at once: the candidate staging tested, found and verified; the landing page's reel"
     say "     deploy              after both, and your approval: clax.dev, from the candidate"
-    say "     publish, teardown   at once, after deploy: the GitHub release $TAG; the pull request's staging instance"
-    say "     carry               after publish: the release and the plugins' pin, onto main"
+    say "     publish, teardown   at once, after deploy: the tag $TAG and its release, as a draft; the pull request's staging instance"
+    say "     fleet               after publish: the clax-fleet image of $TAG, and clax-fleet.yaml on the draft"
+    say "     release             after fleet: the GitHub release $TAG, published"
+    say "     carry               after release: the release and the plugins' pin, onto main"
     say "     pi                  after carry: the Pi package, on npm"
     if [ "$LEARNED_FROM" -gt 0 ]; then
         from="the steps' durations in $LEARNED_FROM earlier run log(s) under target/release/"

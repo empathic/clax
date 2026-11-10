@@ -418,13 +418,18 @@ ships; its jobs, in order:
   from, the record's build, the Cloudflare Worker version the deploy made
   (the record's `version_id`, from `wrangler deploy`'s "Current Version
   ID") and what `/healthz` answers.
-- **publish:** the GitHub release `vX.Y.Z`, tagged on the merge commit,
+- **publish:** the tag `vX.Y.Z` on the merge commit and the GitHub
+  release as a draft (a published release is immutable, the repository's
+  setting, so every asset is on it before it is published),
   from `release-dist`, once its `SOURCE_TREE` is the merge commit's tree;
   a release of the version from that tree already is kept, one from
   another tree fails the job (`scripts/release-exists-check.sh --tree`).
   The tag, made with the workflow's token, runs no workflow.
 - **fleet:** so `fleet-image.yml` is run on the tag here, and waited for,
-  unless a run of the tag passed or is running.
+  unless a run of the tag passed or is running. It adds `clax-fleet.yaml`
+  to the draft.
+- **release:** publishes the draft, once it holds `clax-fleet.yaml`; a
+  release published already is kept.
 - **carry**, in the `release` environment: `scripts/carry-release.sh`, as
   the release App ("The release App", above).
 - **pi:** once CI's `bazel` job passed on the carry's commit of `main`
