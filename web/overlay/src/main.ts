@@ -9,9 +9,10 @@
 //
 // Its interface lives in a shadow root on <html>: the page's rules do not
 // reach it and its own do not reach the page. Keys typed into it stop at
-// that root, so the page's shortcuts do not hear them. Its styles are set
-// through the CSSOM (the host's `style`, the root's adopted sheets), so a
-// page whose CSP `style-src` lacks 'unsafe-inline' does not refuse them.
+// that root, so the page's shortcuts do not hear them. Its styles, the
+// host's own among them (`:host` in tokens.css), are the root's adopted
+// sheet, set through the CSSOM, so a page whose CSP `style-src` lacks
+// 'unsafe-inline' does not refuse them. The host has no `style` attribute.
 import { mount, unmount } from "svelte";
 import { OVERLAY_TAG } from "../../bridge/src/anchor";
 import { metaRefusesInlineStyle, withoutWebFonts } from "../../bridge/src/clip";
@@ -91,10 +92,6 @@ interface Mounted {
  * styles nothing. */
 const COMPONENT_CSS: string = "__CLAX_OVERLAY_COMPONENT_CSS__";
 
-/** Inline style of the host: fixed, sized to nothing and passing every
- * pointer event, so the page's rules can neither hide nor move it. */
-const HOST_CSS = "all:initial!important;position:fixed!important;left:0!important;top:0!important;width:0!important;height:0!important;display:block!important;pointer-events:none!important;visibility:visible!important;opacity:1!important;z-index:2147483647!important;";
-
 /** Starts recording the page's recent errors (spec 2026-10-29-feedback-loop
  * §4.4) before the overlay starts, so errors from the page's own start are
  * kept; `overlay()` starts it too. Nothing recorded leaves the page unless
@@ -134,7 +131,6 @@ export function overlay(opts: OverlayOptions, doc: Document = document): Overlay
   };
 
   const host = doc.createElement(OVERLAY_TAG);
-  host.style.cssText = HOST_CSS;
   const root = host.attachShadow({ mode: "open" });
   addSheet(root, [TOKENS, COMPONENT_CSS].join("\n"));
   const target = doc.createElement("div");

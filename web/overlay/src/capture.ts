@@ -152,6 +152,14 @@ export async function steppingAside<T>(els: Element[], capture: () => Promise<T>
   }
 }
 
+/** What stepping the overlay's host aside makes transparent: the elements
+ * of its shadow root, since the host's own `:host` rule (tokens.css) holds
+ * its opacity at 1 against any style given the host itself; the host when
+ * it has no open root. */
+function heldBy(host: Element): Element[] {
+  return host.shadowRoot ? Array.from(host.shadowRoot.children) : [host];
+}
+
 /** The browser's screenshot of this tab for `mode`, cropped to the pick
  * (cut to the viewport) for Element and Area. When it cannot be had, the
  * DOM capture (`deps.fallback`, else made now) is answered with `error`
@@ -164,7 +172,7 @@ export async function captureExact(mode: Mode, target: Picked | null, win: Windo
   if (crop === null) {
     error = OUT_OF_VIEW;
   } else {
-    const aside = [...(deps.host ? [deps.host] : []), ...ignoredElements(win.document), ...(deps.aside ?? [])];
+    const aside = [...(deps.host ? heldBy(deps.host) : []), ...ignoredElements(win.document), ...(deps.aside ?? [])];
     const display = deps.display ?? ((w: Window, c?: Rect) => captureDisplay(w, c));
     const shown = crop ?? viewportOf(win);
     const scroll = { x: win.scrollX || 0, y: win.scrollY || 0 };

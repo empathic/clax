@@ -185,6 +185,37 @@ test("a site's user files a report through the overlay; an agent claims, replies
   }
 });
 
+test("the overlay's host has no style attribute, and the page's !important rules neither hide nor move it", async ({ browser }) => {
+  test.setTimeout(60_000);
+  const { d, origin } = await hostedDaemon();
+  const site = await startDeployerSite(origin);
+  try {
+    const owner = await ownerOf(browser, origin);
+    await queueWithGrant(owner, origin, site);
+    const emp1 = await reporterOn(browser, site, "emp-1");
+    await expect(emp1.locator(".launcher")).toBeVisible();
+    // The page's own rules, through a constructed sheet its policy allows.
+    const host = await emp1.evaluate(() => {
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(`clax-overlay { display: none !important; position: static !important; visibility: hidden !important; opacity: 0 !important; z-index: 0 !important; width: 50vw !important; }
+        * { letter-spacing: 0.5em !important; pointer-events: auto !important; }`);
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+      const el = [...document.querySelectorAll("clax-overlay")].find(h => h.shadowRoot?.querySelector(".launcher"))!;
+      const cs = getComputedStyle(el);
+      return {
+        style: el.getAttribute("style"),
+        computed: [cs.display, cs.position, cs.left, cs.top, cs.width, cs.height, cs.visibility, cs.opacity, cs.zIndex, cs.pointerEvents, cs.letterSpacing],
+      };
+    });
+    expect(host).toEqual({ style: null, computed: ["block", "fixed", "0px", "0px", "0px", "0px", "visible", "1", "2147483647", "none", "normal"] });
+    await expect(emp1.locator(".launcher")).toBeVisible();
+    expect(await cspViolations(emp1)).toEqual([]);
+  } finally {
+    await site.stop();
+    await d.stop();
+  }
+});
+
 test("a reporter files the visible page, says a fix is still broken with a new capture, then confirms the next fix", async ({ browser }) => {
   test.setTimeout(90_000);
   const { d, origin } = await hostedDaemon();

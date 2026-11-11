@@ -36,6 +36,19 @@ describe("overlay()", () => {
     }
   });
 
+  // A style attribute's !important text spacing fails WCAG 1.4.12 checks
+  // (axe's avoid-inline-spacing): the host's rules are its root's `:host`.
+  it("gives its host no style attribute", () => {
+    const handle = overlay(opts);
+    try {
+      const host = document.querySelector(OVERLAY_TAG)!;
+      expect(host.hasAttribute("style")).toBe(false);
+      expect(host.shadowRoot).not.toBeNull();
+    } finally {
+      handle.close();
+    }
+  });
+
   // As a React app in StrictMode does in development: its effect's setup,
   // cleanup and setup again, in one task.
   it("leaves nothing in the page when closed in the task that started it", () => {
