@@ -260,7 +260,7 @@ function writeMetadata(moduleIds) {
   writeFileSync(join(out, "README.md"), readFileSync(join(web, "sdk", "README.md")));
   writeFileSync(join(out, "LICENSE"), licenseNotice());
   mkdirSync(join(out, "LICENSES"), { recursive: true });
-  writeFileSync(join(out, "LICENSES", `${LICENSE}.txt`), readFileSync(join(repo, "LICENSES", `${LICENSE}.txt`)));
+  writeFileSync(join(out, "LICENSES", `${LICENSE}.txt`), readFileSync(join(repo, "docs", "licenses", `${LICENSE}.txt`)));
   writeFileSync(join(out, "THIRD-PARTY-NOTICES.txt"), thirdPartyNotices(moduleIds));
 }
 

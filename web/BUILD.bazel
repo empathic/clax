@@ -176,7 +176,7 @@ npm_script_build(
     srcs = [
         ":files_sdk",
         ":node_modules",
-        "//:lgpl_license",
+        "//docs:lgpl_license",
     ],
     out_dirs = ["dist-sdk"],
     script = "build:sdk",
@@ -324,7 +324,7 @@ npm_script_test(
         ":dist_sdk",
         ":files",
         ":node_modules",
-        "//:lgpl_license",
+        "//docs:lgpl_license",
         "@nodejs//:npm_bin",
         "@nodejs//:npm_files",
     ],

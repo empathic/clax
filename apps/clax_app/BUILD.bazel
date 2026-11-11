@@ -515,13 +515,13 @@ sh_test(
 )
 
 # The app's LICENSE, its licences page's Clax entry, carries the text of
-# LICENSES/GPL-2.0-only.txt.
+# docs/licenses/GPL-2.0-only.txt.
 sh_test(
     name = "licence_check",
     srcs = ["tool/licence-check.sh"],
     data = [
         "LICENSE",
-        "//:LICENSES/GPL-2.0-only.txt",
+        "//docs:licenses/GPL-2.0-only.txt",
     ],
 )
 

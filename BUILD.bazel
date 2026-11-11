@@ -10,8 +10,6 @@ exports_files([
     "install.sh",
     ".bazelversion",
     "README.md",
-    # Read by apps/clax_app's :licence_check.
-    "LICENSES/GPL-2.0-only.txt",
     ".claude-plugin/marketplace.json",
 ])
 
@@ -20,14 +18,6 @@ exports_files([
 copy_to_bin(
     name = "cargo_toml",
     srcs = ["Cargo.toml"],
-    visibility = ["//web:__pkg__"],
-)
-
-# The license text of web/bridge, web/overlay and web/sdk, which the SDK
-# package carries (web/scripts/build-sdk.mjs).
-copy_to_bin(
-    name = "lgpl_license",
-    srcs = ["LICENSES/LGPL-2.1-only.txt"],
     visibility = ["//web:__pkg__"],
 )
 

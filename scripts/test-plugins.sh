@@ -336,8 +336,8 @@ then pass "plugins/pi/package.json ships scripts/ (the wrapper)"; else fail "plu
 # packages as "*" peers (Pi's docs/packages.md, "Dependencies") marked
 # optional, so `npm install -g`, which Pi runs, does not install a second Pi
 # (about 200 MB) beside the package, no .qual files, and a LICENSE that
-# carries the GPL-2.0 text of LICENSES/.
-if out="$(python3 - plugins/pi/package.json plugins/pi/LICENSE LICENSES/GPL-2.0-only.txt 2>&1 <<'PY'
+# carries the GPL-2.0 text of docs/licenses/.
+if out="$(python3 - plugins/pi/package.json plugins/pi/LICENSE docs/licenses/GPL-2.0-only.txt 2>&1 <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 lic, gpl = open(sys.argv[2]).read(), open(sys.argv[3]).read()
@@ -351,7 +351,7 @@ meta = d.get("peerDependenciesMeta", {})
 if any(not meta.get(n, {}).get("optional") for n in peers): bad.append("a peer is not optional in peerDependenciesMeta")
 if "!**/.qual" not in d.get("files", []): bad.append('files lacks "!**/.qual"')
 if not (lic.startswith("Clax for Pi") and "Copyright (C) 2026 Empathic, Inc." in lic and lic.endswith(gpl)):
-    bad.append("plugins/pi/LICENSE does not end with LICENSES/GPL-2.0-only.txt under its copyright header")
+    bad.append("plugins/pi/LICENSE does not end with docs/licenses/GPL-2.0-only.txt under its copyright header")
 print("; ".join(bad))
 sys.exit(1 if bad else 0)
 PY

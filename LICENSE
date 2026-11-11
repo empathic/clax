@@ -2,17 +2,28 @@ Clax
 Copyright (C) 2026 Empathic, Inc.
 Contact: Alex Kesling <alex@empathic.dev>
 
-Clax is free software. Each part is licensed under one of the licenses below,
-whose full texts are in the LICENSES/ directory:
+Clax is free software, licensed under the GNU General Public License,
+version 2 only, or the GNU Affero General Public License, version 3 only,
+part by part as listed below:
 
   GPL-2.0-only     GNU General Public License, version 2 only
-                   (LICENSES/GPL-2.0-only.txt)
+                   (docs/licenses/GPL-2.0-only.txt)
   AGPL-3.0-only    GNU Affero General Public License, version 3 only
-                   (LICENSES/AGPL-3.0-only.txt)
+                   (docs/licenses/AGPL-3.0-only.txt)
+
+Two parts are made to be copied into other people's software, and only
+those two carry a more permissive license. Neither license applies to
+anything else in Clax:
+
   LGPL-2.1-only    GNU Lesser General Public License, version 2.1 only
-                   (LICENSES/LGPL-2.1-only.txt)
+                   (docs/licenses/LGPL-2.1-only.txt): web/sdk/, web/overlay/
+                   and web/bridge/ only
   0BSD             Zero-Clause BSD License
-                   (LICENSES/0BSD.txt)
+                   (docs/licenses/0BSD.txt): Clax's own files in
+                   apps/clax_app/assets/kit only
+
+docs/licenses/README.md lists every part with its license, as the list
+below does.
 
 "Only" means what it says: no later version of the GNU licenses applies,
 and "any later version" wording in the license texts themselves does not
