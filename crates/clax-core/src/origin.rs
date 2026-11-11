@@ -288,6 +288,7 @@ fn label_matches(p: &str, o: &str) -> bool {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 
