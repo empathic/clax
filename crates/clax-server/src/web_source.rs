@@ -903,6 +903,7 @@ impl DaemonWeb {
     /// resolving fetched names with `lookup` and admitting loopback, while
     /// the token is still opened for Cloudflare's origin alone.
     #[cfg(test)]
+    #[warn(clippy::disallowed_methods)]
     fn sending_to(mut self, base: Url, lookup: Arc<dyn Lookup>) -> DaemonWeb {
         self.send_to = Some(base);
         self.lookup = lookup;
@@ -1178,6 +1179,7 @@ impl WebSource for NoHostsWeb {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use clax_bot::web::{OP_FETCH, Provider, charged};
