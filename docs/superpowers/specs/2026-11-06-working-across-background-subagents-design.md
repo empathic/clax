@@ -1,28 +1,31 @@
 # Working marks across background subagents
 
-Status: design, 2026-11-06.
+Status: design, 2026-11-06; revised 2026-11-11 to the agent-tracked design.
 
 ## Problem
 
 A working record (`crates/clax-core/src/working.rs`) shows a person that a
 harness session is acting on an artifact's threads. The turn-end hook ends
-every record of the session (`crates/clax-hooks/src/events.rs:474`, Pi's
-`agent_end` in `plugins/pi/src/clax.ts:2691`). When the agent hands a
-thread's work to a subagent that runs in the background, the parent's turn
-ends while that work goes on, so the page stops showing it, although the
-thread is still being worked on and will get a reply.
+every record of the session (`POST /api/sessions/<id>/working/end`, from
+`crates/clax-hooks/src/events.rs` and Pi's `agent_end`). When the agent
+hands a thread's work to a subagent that runs in the background, the
+parent's turn ends while that work goes on, so the page stops showing it,
+although the thread is still being worked on and will get a reply.
 
 ## Structure: the owner pulls, implementers work
 
 The agent that takes a thread (its owner: `threads.target_session_id`,
-`crates/clax-store/src/threads.rs:163`) is the only agent that speaks for it
-in Clax. It may hand the work to subagents; those implementers never call
+`crates/clax-store/src/threads.rs`) is the only agent that speaks for it in
+Clax. It may hand the work to subagents; those implementers never call
 `working`, `comments_reply`, `comments_resolve` or `comments_handoff` on
 the owner's thread. They report to the owner, and the owner replies once
-every implementer of the thread has reported. Nothing in Clax tracks
-implementers by identity: the owner's working record stays on while its
-harness reports background subagents running, and each harness's existing
-renewal keeps it alive.
+every implementer of the thread has reported.
+
+The owner also says which threads it handed off. Only the owner knows
+which thread a subagent works on: a harness reports at most that some
+subagent is running (Claude Code's and Grok Build's Stop inputs), never
+for which thread, so a rule built on that report keeps every thread of the
+session marked, a thread answered in the same turn included.
 
 ## What each harness gives (researched 2026-11-06)
 
@@ -70,72 +73,48 @@ Evidence:
 
 ## Design
 
-1. **Claude Code: the Stop hook keeps the records while a subagent runs.**
-   When the Stop input's `background_tasks` (Claude Code's key only)
-   has an entry with `type` `"subagent"` and `status` `"running"`, the hook
-   allows the stop without posting `working/end`. Other entry types do not
-   count: the comment follower and dev servers are background shells that
-   run for the whole session. A subagent waiting on a background shell of
-   its own is listed only as that shell, so its parent's record ends early;
-   the parent is still woken and replies.
-2. **Grok: unchanged in this pass.** Holding the records at Stop without
-   a renewal that reaches the parent would only delay the mark's end by
-   120 s, and the renewal rests on Grok behaviour read from source, never
-   run. Grok's `Stop` keeps ending the records; its `backgroundTasks` key
-   is not read. The second pass, and what it must verify first, is under
-   "Second pass: Grok Build" below.
-3. **Codex: the owner waits.** The Codex skill tells the owner to wait for
-   its subagents (`wait_agent`) before ending a turn that has a Clax thread
-   in progress. No code changes; the existing Stop behaviour is right, and
-   a record that ends at a Stop whose children will never be answered is
-   accurate.
-4. **Pi (a later PR): renew through long tool calls and packages.** The
-   extension renews every `RENEW_EVERY_MS` while a tool call executes
-   and while a background subagent of either package is outstanding (at
-   most `MAX_SUBAGENT_MS`, 60 minutes, each). At `agent_end` it leaves the
-   records alone while any is outstanding, and ends them when the last
-   completes outside a turn. Claude Code and Codex land first; Pi and Grok
-   behave as today until their PRs. Without either package, no change.
-5. **Every skill states the owner/implementer rule.**
-6. **No server change.** Records, their 120 s lapse and the page stay as
-   they are.
+1. **`working` takes `background: true`.** With it, the threads in
+   `thread_ids` (required) join the record's threads instead of replacing
+   them and are flagged background (`Record::background`). The record's
+   view lists them as `background_thread_ids`, absent when none.
+2. **A turn end and a publish keep background threads.**
+   `POST …/working/end` (`End::TurnEnd`) and a publish (`End::Publish`)
+   end a record's other threads and leave its background threads; a
+   record with none ends as before. A publish addresses only the other
+   threads unasked (`Working::foreground_threads_of`); `addresses` can
+   still name a background thread.
+3. **A background thread ends** when the owner replies to or resolves it,
+   clears it (`done: true`, with or without `thread_ids`), when its
+   session ends, or when the record lapses.
+4. **A record naming background threads lapses after 600 s**
+   (`BACKGROUND_TTL_SECS`) without renewal, not 120 s. In Claude Code and
+   Codex a subagent's tool calls renew it (their `PostToolUse` carries the
+   parent's `session_id`); in Grok Build and Pi's subagent packages,
+   subagents are sessions of their own and nothing renews it until the
+   owner acts again, so the longer lapse is what keeps it.
+5. **Every harness the same way.** No hook reads the harness's
+   background-task list; the change is the daemon, the `working` tool
+   (Rust MCP server and Pi extension) and the skills.
+6. **Codex: the owner waits.** Codex does not wake the parent when a child
+   finishes (only its under-development `wake_on_agent_messages`
+   feature does), so the skill tells a Codex owner to wait for its
+   subagents (`wait_agent`, present in multi-agent v1 and, by default, v2)
+   before ending a turn that has a thread in progress.
 
 ## Not done
 
-- A `background: true` flag on `working`: the hooks of Claude Code and
-  Grok already know; Codex never wakes the owner to reply; Pi has events.
+- Ending at the turn end only when the harness lists no running subagent
+  (Claude Code's `background_tasks`, Grok Build's `backgroundTasks`):
+  session-wide, so it keeps threads the agent already answered, and does
+  nothing for Codex or Pi.
 - Per-subagent working records, keyed by harness agent IDs: needs a
   different record key and agent cooperation to name each subagent's
-  threads; one owner record is what the person needs.
+  threads; one owner record flagging threads is what the person needs.
 - `SubagentStart`/`SubagentStop` counting for Claude Code: they fire again
   on every pause and resume, and one interactive run had a `SubagentStop`
-  with no matching start; `background_tasks` on `Stop` is the harness's
-  own answer.
+  with no matching start.
 - Codex waking the owner: revisit when `wake_on_agent_messages` is stable;
-  it then joins design point 1 if Codex's Stop lists running children.
-- Renewing during a single long tool call in Claude Code, Codex or Grok
-  (the 120 s lapse during a long Bash): an existing limitation of every
-  harness, separate from subagents.
-
-## Second pass: Grok Build
-
-Design, once a live Grok Build confirms it: the Stop rule of design point 1
-also reads `backgroundTasks`; the Grok plugin gains a `PostToolUse` hook
-(the shared `scripts/tool-hook.sh` gate) and a `SubagentStart` hook that
-records the child's ID as an alias of the parent's session ID in
-`<CLAX_HOME>/run/grok-subagent/<child ID>`; the tool hook resolves an
-aliased `sessionId` to the parent before renewing; `SubagentStop` with
-`phase` `"observe"` removes the alias.
-
-Verify first, with a hook that logs every input during a run whose parent
-launches a background subagent and ends its turn:
-
-- the Stop input's `backgroundTasks` spells a subagent entry's `type` as
-  `"subagent"` (the source builds it from `BackgroundTaskType::Subagent`;
-  its serialisation was not found in `xai-org/grok-build@2bdd1d6a`);
-- a child's tool calls fire the plugin's `PostToolUse` with the child's
-  `sessionId`, and `SubagentStart` carries the parent's `sessionId` and the
-  child's `subagentId`;
-- the parent is woken when the child finishes;
-- Clax's existing Grok Stop-hook block works live (`docs/follow-ups.md`
-  lists it as unverified).
+  the skill's wait rule can then go.
+- Showing background threads differently on the page ("in the
+  background, free for comments"): the view carries
+  `background_thread_ids` for it; the page does not use it yet.
