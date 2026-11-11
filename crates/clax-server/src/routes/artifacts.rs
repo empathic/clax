@@ -550,8 +550,9 @@ pub async fn create(
 /// What a version of `artifact` that session `sid` published does for the
 /// session once it lands, for every path that publishes from a session
 /// (`POST /api/artifacts`, its versions, a job's publish step): the
-/// session watches the artifact; its working records on it end (`End::Publish`),
-/// the threads they named having been linked to the version by the publish
+/// session watches the artifact; its working records on it end (`End::Publish`)
+/// but for their background threads, the other threads they named having
+/// been linked to the version by the publish
 /// (`ValidatedPublish::working_threads`, from [`working_threads_of`]); its
 /// draft on it ends; and, when `retarget`, the artifact's untargeted
 /// feedback is targeted to it.
@@ -582,15 +583,15 @@ pub(crate) fn published_from(
     Ok(())
 }
 
-/// The threads session `sid` is working on in artifact `aid`, which a
-/// publish from it links to its version: read before
-/// [`published_from`] clears them.
+/// The threads session `sid` is working on in artifact `aid`, background
+/// threads aside, which a publish from it links to its version: read
+/// before [`published_from`] clears them.
 pub(crate) fn working_threads_of(
     ctx: &clax_realtime::feedback::FeedbackCtx,
     sid: &str,
     aid: &str,
 ) -> Vec<String> {
-    ctx.working.threads_of(sid, aid)
+    ctx.working.foreground_threads_of(sid, aid)
 }
 
 /// `POST /api/artifacts:new` body.

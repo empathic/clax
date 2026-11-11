@@ -538,12 +538,14 @@ const ASK_NOTE: &str =
 pub struct WorkingArgs {
     /// Artifact URL or ID, or a web page's URL (its live page).
     pub url_or_id: String,
-    /// Threads of the artifact you are acting on (at most 20); replaces the ones named before.
+    /// Threads of the artifact you are acting on (at most 20 on the record); replaces the ones named before, background threads aside.
     pub thread_ids: Option<Vec<String>>,
     /// What you are doing, in a few words (at most 140 characters).
     pub message: Option<String>,
     /// Clear it now (with `thread_ids`, only those threads).
     pub done: Option<bool>,
+    /// The threads in `thread_ids` are handed to work that goes on after your turn (subagents in the background): they join the threads named before instead of replacing them, and stay marked through the end of your turn, a publish and later calls; a `message` given with them stays with them.
+    pub background: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
@@ -3102,6 +3104,13 @@ impl ClaxTools {
                 check_thread_id(tid)?;
             }
         }
+        let background = a.background.unwrap_or(false);
+        if background && a.done.unwrap_or(false) {
+            return Err(invalid("background and done do not go together"));
+        }
+        if background && a.thread_ids.as_ref().is_none_or(Vec::is_empty) {
+            return Err(invalid("background needs the thread_ids it applies to"));
+        }
         self.require_session().await?;
         if a.done.unwrap_or(false) {
             let r = self
@@ -3121,22 +3130,34 @@ impl ClaxTools {
         if let Some(m) = &a.message {
             body["message"] = json!(m);
         }
+        if background {
+            body["background"] = json!(true);
+        }
         let r = self
             .client
             .set_working(&id, &body)
             .await
             .map_err(|e| self.fail(e))?;
         let w = &r["working"];
-        Ok(json!({
+        let in_background = w["background_thread_ids"].is_array();
+        let mut out = json!({
             "artifact_id": id,
             "url": self.artifact_url(&id),
             "working": true,
             "message": w["message"],
             "thread_ids": w["thread_ids"],
             "started_at": w["started_at"],
-            "expires_in_s": clax_core::working::WORKING_TTL_SECS,
+            "expires_in_s": if in_background {
+                clax_core::working::BACKGROUND_TTL_SECS
+            } else {
+                clax_core::working::WORKING_TTL_SECS
+            },
             "message_truncated": r["message_truncated"],
-        }))
+        });
+        if in_background {
+            out["background_thread_ids"] = w["background_thread_ids"].clone();
+        }
+        Ok(out)
     }
 
     async fn do_draft(&self, a: DraftArgs) -> Outcome {
@@ -4212,7 +4233,7 @@ direct_tools!(
 #[tool_router]
 impl ClaxTools {
     #[tool(
-        description = "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, the new version number, and `waiting` when a declared capability awaits approval in Clax. Add a short `note` (at most 280 characters) saying what changed, and list the comment threads this version addresses in `addresses`; threads you were marked working on are added for you. The person sees both as the version's changelog; nothing is resolved by it. Pass `tags` to add existing tags (see `tags`).",
+        description = "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, the new version number, and `waiting` when a declared capability awaits approval in Clax. Add a short `note` (at most 280 characters) saying what changed, and list the comment threads this version addresses in `addresses`; threads you were marked working on, background threads aside, are added for you. The person sees both as the version's changelog; nothing is resolved by it. Pass `tags` to add existing tags (see `tags`).",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -4497,7 +4518,7 @@ impl ClaxTools {
     }
 
     #[tool(
-        description = "Tell the person you are working on an artifact: its page's top bar shows `<harness> working on N` (or `<harness>: <message>`), its gallery card a chip, and `<harness> is working on it` on each thread in `thread_ids`. Comments sent to you mark you working automatically; call this for other work or to add a short `message` (at most 140 characters). It clears when you reply to those threads, publish the artifact, end your turn, or go 2 minutes without a tool call; `done: true` clears it now.",
+        description = "Tell the person you are working on an artifact: its page's top bar shows `<harness> working on N` (or `<harness>: <message>`), its gallery card a chip, and `<harness> is working on it` on each thread in `thread_ids`. Comments sent to you mark you working automatically; call this for other work or to add a short `message` (at most 140 characters). It clears when you reply to those threads, publish the artifact, end your turn, or go 2 minutes without a tool call; `done: true` clears it now. Threads you hand to subagents that work on after your turn take `background: true`: they join the others and stay marked through the end of your turn, a publish and later calls, until you reply to or resolve them, clear them with `done: true`, or 10 minutes pass without a tool call; the publish that carries a handed-off thread's change names it in `addresses`.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

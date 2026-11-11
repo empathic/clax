@@ -809,6 +809,7 @@ async fn working_marks_the_artifact_and_done_clears_it() {
                 thread_ids: Some(vec![tid.clone()]),
                 message: Some("Two columns".into()),
                 done: None,
+                background: None,
             }))
             .await
             .unwrap(),
@@ -839,6 +840,125 @@ async fn working_marks_the_artifact_and_done_clears_it() {
         v,
         json!({"artifact_id": aid, "url": v["url"], "working": false, "cleared": true, "feedback": v["feedback"]})
     );
+}
+
+#[tokio::test]
+async fn working_in_the_background_keeps_threads_past_the_turn_end() {
+    let ts = TestServer::spawn().await;
+    let (tools, sid) = session_tools(&ts).await;
+    let (pub_, _) = blocks(
+        &tools
+            .publish(Parameters(PublishArgs {
+                html: Some("<h2>Goals</h2>".into()),
+                title: Some("T".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap(),
+    );
+    let aid = pub_["artifact_id"].as_str().unwrap().to_string();
+    let thread = |body: &'static str| {
+        let (ts, aid) = (&ts, aid.clone());
+        async move {
+            ts.thread(&aid, 1, body).await["id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+    };
+    let (tid, quick) = (thread("@agent columns").await, thread("@agent quick").await);
+    let working = |args: WorkingArgs| {
+        let tools = &tools;
+        async move { tools.working(Parameters(args)).await.unwrap() }
+    };
+    let (v, _) = blocks(
+        &working(WorkingArgs {
+            url_or_id: aid.clone(),
+            thread_ids: Some(vec![quick.clone()]),
+            ..Default::default()
+        })
+        .await,
+    );
+    assert_eq!(v["expires_in_s"], 120);
+    let (v, _) = blocks(
+        &working(WorkingArgs {
+            url_or_id: aid.clone(),
+            thread_ids: Some(vec![tid.clone()]),
+            background: Some(true),
+            ..Default::default()
+        })
+        .await,
+    );
+    assert_eq!(v["thread_ids"], json!([quick, tid]));
+    assert_eq!(v["background_thread_ids"], json!([tid]));
+    assert_eq!(v["expires_in_s"], 600);
+    let res = ts
+        .post_json(&format!("/api/sessions/{sid}/working/end"), json!({}))
+        .await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.json::<Value>().await.unwrap()["cleared"], 1);
+    let public: Value = ts
+        .get(&format!("/api/artifacts/{aid}/working"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(public["working"].as_array().unwrap().len(), 1, "{public}");
+    assert_eq!(public["working"][0]["thread_ids"], json!([tid]));
+    assert_eq!(public["working"][0]["background_thread_ids"], json!([tid]));
+
+    let err = |r: CallToolResult| -> String {
+        assert_eq!(r.is_error, Some(true));
+        let v: Value = serde_json::from_str(&r.content[0].as_text().unwrap().text).unwrap();
+        v["error"]["code"].as_str().unwrap().to_string()
+    };
+    // A record past 20 threads is the daemon's refusal, passed on.
+    let mut others = Vec::new();
+    for _ in 0..20 {
+        others.push(thread("plain").await);
+    }
+    assert_eq!(
+        err(working(WorkingArgs {
+            url_or_id: aid.clone(),
+            thread_ids: Some(others),
+            ..Default::default()
+        })
+        .await),
+        "invalid_args"
+    );
+    // The tool's own checks: refused before any daemon call, so a tool
+    // with no session refuses them as invalid_args, not no_session.
+    let sessionless = ClaxTools::new(
+        DaemonClient::new(ts.base.clone(), ts.token.clone(), None),
+        ts.base.clone(),
+        None,
+        ts.home.log_path(),
+    );
+    for args in [
+        WorkingArgs {
+            url_or_id: aid.clone(),
+            background: Some(true),
+            ..Default::default()
+        },
+        WorkingArgs {
+            url_or_id: aid.clone(),
+            thread_ids: Some(vec![]),
+            background: Some(true),
+            ..Default::default()
+        },
+        WorkingArgs {
+            url_or_id: aid.clone(),
+            thread_ids: Some(vec![tid.clone()]),
+            background: Some(true),
+            done: Some(true),
+            ..Default::default()
+        },
+    ] {
+        assert_eq!(
+            err(sessionless.working(Parameters(args)).await.unwrap()),
+            "invalid_args"
+        );
+    }
 }
 
 #[tokio::test]

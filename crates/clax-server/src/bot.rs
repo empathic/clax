@@ -1085,17 +1085,26 @@ fn working_actor(run: &Run) -> clax_core::working::Actor {
 pub fn show_working(state: &AppState, run: &Run, on: bool) {
     let who = working_actor(run);
     let changed = if on {
+        // At most the cap, so the update cannot be refused.
+        let threads = run
+            .thread_ids
+            .iter()
+            .take(clax_core::working::MAX_WORKING_THREADS)
+            .cloned()
+            .collect();
         state
             .working
             .set(
                 &who,
                 &run.artifact_id,
                 clax_core::working::SetWorking {
-                    thread_ids: Some(run.thread_ids.clone()),
+                    thread_ids: Some(threads),
                     message: Some("ClaxBot is working on this".into()),
+                    background: false,
                 },
             )
-            .1
+            .map(|(_, changed)| changed)
+            .unwrap_or_default()
     } else {
         state
             .working
