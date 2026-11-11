@@ -809,6 +809,7 @@ async fn working_marks_the_artifact_and_done_clears_it() {
                 thread_ids: Some(vec![tid.clone()]),
                 message: Some("Two columns".into()),
                 done: None,
+                background: None,
             }))
             .await
             .unwrap(),
@@ -839,6 +840,73 @@ async fn working_marks_the_artifact_and_done_clears_it() {
         v,
         json!({"artifact_id": aid, "url": v["url"], "working": false, "cleared": true, "feedback": v["feedback"]})
     );
+}
+
+#[tokio::test]
+async fn working_in_the_background_keeps_threads_past_the_turn_end() {
+    let ts = TestServer::spawn().await;
+    let (tools, sid) = session_tools(&ts).await;
+    let (pub_, _) = blocks(
+        &tools
+            .publish(Parameters(PublishArgs {
+                html: Some("<h2>Goals</h2>".into()),
+                title: Some("T".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap(),
+    );
+    let aid = pub_["artifact_id"].as_str().unwrap().to_string();
+    let tid = ts.thread(&aid, 1, "@agent columns").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (v, _) = blocks(
+        &tools
+            .working(Parameters(WorkingArgs {
+                url_or_id: aid.clone(),
+                thread_ids: Some(vec![tid.clone()]),
+                background: Some(true),
+                ..Default::default()
+            }))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(v["background_thread_ids"], json!([tid]));
+    assert_eq!(v["expires_in_s"], 600);
+    ts.post_json(&format!("/api/sessions/{sid}/working/end"), json!({}))
+        .await;
+    let public: Value = ts
+        .get(&format!("/api/artifacts/{aid}/working"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(public["working"][0]["thread_ids"], json!([tid]));
+    let err = |r: CallToolResult| -> String {
+        assert_eq!(r.is_error, Some(true));
+        let v: Value = serde_json::from_str(&r.content[0].as_text().unwrap().text).unwrap();
+        v["error"]["code"].as_str().unwrap().to_string()
+    };
+    for args in [
+        WorkingArgs {
+            url_or_id: aid.clone(),
+            background: Some(true),
+            ..Default::default()
+        },
+        WorkingArgs {
+            url_or_id: aid.clone(),
+            thread_ids: Some(vec![tid.clone()]),
+            background: Some(true),
+            done: Some(true),
+            ..Default::default()
+        },
+    ] {
+        assert_eq!(
+            err(tools.working(Parameters(args)).await.unwrap()),
+            "invalid_args"
+        );
+    }
 }
 
 #[tokio::test]

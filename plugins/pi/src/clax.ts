@@ -271,6 +271,7 @@ const WorkingArgs = Type.Object({
   thread_ids: opt(Type.Array(Type.String(), { description: "Threads of the artifact you are acting on (at most 20); replaces the ones named before." })),
   message: opt(str("What you are doing, in a few words (at most 140 characters).")),
   done: opt(Type.Boolean({ description: "Clear it now (with `thread_ids`, only those threads)." })),
+  background: opt(Type.Boolean({ description: "The threads in `thread_ids` are handed to work that goes on after your turn (subagents in the background): they join the threads named before instead of replacing them, and stay marked through the end of your turn and a publish." })),
 }, strict);
 
 const DraftArgs = Type.Object({
@@ -1994,18 +1995,23 @@ class Tools {
       if (a.thread_ids.length > 20) throw invalid("at most 20 thread_ids");
       for (const t of a.thread_ids) checkThreadId(t);
     }
+    if (a.background && a.done) throw invalid("background and done do not go together");
+    if (a.background && !a.thread_ids?.length) throw invalid("background needs the thread_ids it applies to");
     const url = this.artifactUrl(c, id);
     if (a.done) {
       const r = await this.call(() => c.clearWorking(id, a.thread_ids));
       return { artifact_id: id, url, working: r.working !== null, cleared: r.cleared };
     }
-    const body: { thread_ids?: string[]; message?: string } = {};
+    const body: { thread_ids?: string[]; message?: string; background?: boolean } = {};
     if (a.thread_ids) body.thread_ids = a.thread_ids;
     if (a.message !== undefined) body.message = a.message;
+    if (a.background) body.background = true;
     const r = await this.call(() => c.setWorking(id, body));
+    const background = r.working.background_thread_ids;
     return {
       artifact_id: id, url, working: true, message: r.working.message, thread_ids: r.working.thread_ids,
-      started_at: r.working.started_at, expires_in_s: 120, message_truncated: r.message_truncated,
+      started_at: r.working.started_at, expires_in_s: background ? 600 : 120, message_truncated: r.message_truncated,
+      ...(background ? { background_thread_ids: background } : {}),
     };
   }
 
@@ -2743,7 +2749,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
     };
 
     define("publish", "Clax publish",
-      "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, the new version number, and `waiting` when a declared capability awaits approval in Clax. Add a short `note` (at most 280 characters) saying what changed, and list the comment threads this version addresses in `addresses`; threads you were marked working on are added for you. The person sees both as the version's changelog; nothing is resolved by it. Pass `tags` to add existing tags (see `tags`).",
+      "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, the new version number, and `waiting` when a declared capability awaits approval in Clax. Add a short `note` (at most 280 characters) saying what changed, and list the comment threads this version addresses in `addresses`; threads you were marked working on, background threads aside, are added for you. The person sees both as the version's changelog; nothing is resolved by it. Pass `tags` to add existing tags (see `tags`).",
       "Publish an HTML page (artifact) to the local Clax server, or a new version of one",
       PublishArgs, (ctx, a) => tools.publish(ctx, a));
     define("read", "Clax read",
@@ -2811,7 +2817,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       "Watch a Clax artifact for comments sent to you, or stop watching it",
       WatchArgs, (ctx, a) => tools.watch(ctx, a));
     define("working", "Clax working",
-      "Tell the person you are working on an artifact: its page's top bar shows `<harness> working on N` (or `<harness>: <message>`), its gallery card a chip, and `<harness> is working on it` on each thread in `thread_ids`. Comments sent to you mark you working automatically; call this for other work or to add a short `message` (at most 140 characters). It clears when you reply to those threads, publish the artifact, end your turn, or go 2 minutes without a tool call; `done: true` clears it now.",
+      "Tell the person you are working on an artifact: its page's top bar shows `<harness> working on N` (or `<harness>: <message>`), its gallery card a chip, and `<harness> is working on it` on each thread in `thread_ids`. Comments sent to you mark you working automatically; call this for other work or to add a short `message` (at most 140 characters). It clears when you reply to those threads, publish the artifact, end your turn, or go 2 minutes without a tool call; `done: true` clears it now. Threads you hand to subagents that work on after your turn take `background: true`: they join the others and stay marked through the end of your turn and a publish, until you reply to or resolve them, clear them with `done: true`, or 10 minutes pass without a tool call.",
       "Show the person you are working on a Clax artifact, or clear it",
       WorkingArgs, (ctx, a) => tools.working(ctx, a));
     define("draft", "Clax draft",

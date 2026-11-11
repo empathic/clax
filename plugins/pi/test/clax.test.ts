@@ -653,7 +653,7 @@ describe("clax Pi extension", () => {
       clax_db_delete: [{ url_or_id: id, collection: "tasks", doc_id: "t1", if_version: 1 }],
       clax_db_str_replace: [{ url_or_id: id, collection: "tasks", doc_id: "t1", field: "html", old_str: "a", new_str: "b", replace_all: true, if_version: 1 }],
       clax_db_batch: [{ url_or_id: id, writes: [{ op: "set", collection: "tasks", doc_id: "t1", data: {} }, { op: "delete", collection: "tasks", doc_id: "t2", if_version: 1 }] }],
-      clax_working: [{ url_or_id: id }, { url_or_id: id, thread_ids: ["t1"], message: "m", done: true }],
+      clax_working: [{ url_or_id: id }, { url_or_id: id, thread_ids: ["t1"], message: "m", done: true }, { url_or_id: id, thread_ids: ["t1"], background: true }],
       clax_draft: [
         { url_or_id: id, html: "<p>x</p>" },
         { url_or_id: id, file_path: "a.html", files: { "a.css": { content: "x" }, "b.css": null }, if_version: 1, note: "n" },
@@ -699,7 +699,7 @@ describe("clax Pi extension", () => {
       clax_ask: [{ bogus: 1 }, { questions: [] }, { questions: [{ question: "Q" }] }, { questions: [{ question: "Q", header: "H", nope: 1 }] }, { questions: [{ question: "Q", header: "H", options: [{ label: "A", nope: 1 }] }] }, { approval: { thread_id: "x", nope: 1 } }],
       clax_where_to_ask: [{ bogus: 1 }],
       clax_connect_instance: [{ bogus: 1 }, { timeout_s: -1 }],
-      clax_working: [{ url_or_id: id, done: "yes" }, { url_or_id: id, bogus: 1 }],
+      clax_working: [{ url_or_id: id, done: "yes" }, { url_or_id: id, bogus: 1 }, { url_or_id: id, background: "yes" }],
       clax_git_remote: [{ url_or_id: id }, { url_or_id: id, scope: "admin" }, { url_or_id: id, scope: "read", bogus: 1 }],
       clax_draft: [{ html: "<p>x</p>" }, { url_or_id: id, bogus: 1 }, { url_or_id: id, done: "yes" }, { url_or_id: id, files: { "a.css": { content: "x", nope: 1 } } }],
       clax_db_get: [{ url_or_id: id, collection: "tasks" }, { url_or_id: id, collection: "tasks", doc_id: "t1", as_level: "owner" }],
@@ -1609,6 +1609,24 @@ describe("comments", () => {
     const bad = await pi.callTool("clax_working", { url_or_id: pub.artifact_id, thread_ids: ["x"] }, ctx);
     expect(bad.isError).toBe(true);
     expect(JSON.parse(bad.content[0].text!).error.code).toBe("invalid_args");
+  });
+
+  it("clax_working keeps background threads past agent_end, as the MCP tool does", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-working-background");
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    const pub = JSON.parse((await pi.callTool("clax_publish", { html: "<h2>Goals</h2>", title: "B" }, ctx)).content[0].text!);
+    const tid = await browserThread(pub.artifact_id, "@agent two columns");
+    const set = await pi.callTool("clax_working", { url_or_id: pub.artifact_id, thread_ids: [tid], background: true }, ctx);
+    expect(set.isError).toBe(false);
+    expect(JSON.parse(set.content[0].text!)).toMatchObject({ working: true, thread_ids: [tid], background_thread_ids: [tid], expires_in_s: 600 });
+    await pi.emit("agent_end", { type: "agent_end", messages: [] }, ctx);
+    const seen = await (await fetch(`${daemon.base}/api/artifacts/${pub.artifact_id}/working`, { headers: { cookie: await browserCookie() } })).json();
+    expect(seen.working[0]).toMatchObject({ thread_ids: [tid], background_thread_ids: [tid] });
+    for (const args of [{ url_or_id: pub.artifact_id, background: true }, { url_or_id: pub.artifact_id, thread_ids: [tid], background: true, done: true }]) {
+      const bad = await pi.callTool("clax_working", args, ctx);
+      expect(bad.isError).toBe(true);
+      expect(JSON.parse(bad.content[0].text!).error.code).toBe("invalid_args");
+    }
   });
 
   it("clax_draft shows people a draft over the current version and done drops it, as the MCP tool does", async () => {
