@@ -89,9 +89,12 @@ pub struct SetBody {
 }
 
 /// `PUT /api/sessions/<sid>/working/<aid>` (W): creates or updates the
-/// record; given fields replace, except that with `background: true` the
+/// record; given fields replace, except that `thread_ids` replace only the
+/// threads that are not background, and with `background: true` the
 /// `thread_ids` (required, at least one) join the record's threads and are
-/// flagged background, so the turn end and a publish keep them.
+/// flagged background, so the turn end and a publish keep them
+/// ([`clax_core::working::SetWorking`]). `invalid_args` when the record
+/// would name more than [`MAX_WORKING_THREADS`] threads.
 /// `{working, message_truncated}`. A new record records `working.start` as
 /// the session's agent. The session's live leases on the reports among the
 /// record's threads are renewed.
@@ -138,7 +141,7 @@ pub async fn put(
                     message,
                     background: b.background,
                 },
-            );
+            )?;
             settle(st, &audit, &events, &w, &changed);
             // Working on a claimed report renews the session's lease on it
             // (spec 2026-10-27-clax-sdk-design §7.4).
@@ -298,10 +301,13 @@ pub async fn renew(
     Ok(Json(json!({"renewed": n})))
 }
 
-/// `POST /api/sessions/<sid>/working/end` (W; the turn ended): `{cleared}`.
-/// Each record it ends is finished work: a `finished` inbox item, and
-/// records `working.stop` (reason `explicit`) as the session's agent. A
-/// record's background threads are kept, and its other threads end.
+/// `POST /api/sessions/<sid>/working/end` (W; the turn ended): `{cleared}`,
+/// how many records it ended. Each record it ends is finished work: a
+/// `finished` inbox item, and records `working.stop` (reason `explicit`)
+/// as the session's agent. A record with background threads ends with its
+/// other threads and message, and its background threads go on in a fresh
+/// record (`working.start`); one with nothing but background work is kept
+/// and not counted.
 pub async fn end(
     State(s): State<AppState>,
     _a: TokenOrAgent<clax_http::agent::WorkingEnd>,

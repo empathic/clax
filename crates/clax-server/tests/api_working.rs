@@ -328,22 +328,42 @@ async fn working_threads(ts: &TestServer, aid: &str) -> Vec<Value> {
     v["working"].as_array().unwrap().clone()
 }
 
-#[tokio::test]
-async fn a_background_thread_outlives_a_publish_and_the_turn_and_ends_with_the_reply() {
-    let (ts, _) = server().await;
-    let (sid, aid, handed_off) = setup(&ts).await;
-    let quick = ts.thread(&aid, 1, "@agent a quick question").await["id"]
+async fn thread_id(ts: &TestServer, aid: &str, body: &str) -> String {
+    ts.thread(aid, 1, body).await["id"]
         .as_str()
         .unwrap()
-        .to_string();
-    assert_eq!(
-        put(&ts, &sid, &aid, json!({"thread_ids": [quick]}))
-            .await
-            .status(),
-        200
-    );
+        .to_string()
+}
+
+async fn publish_v2(ts: &TestServer, sid: &str, aid: &str, body: Value) -> Value {
+    let res = ts
+        .authed(
+            ts.client
+                .post(format!("{}/api/artifacts/{aid}/versions", ts.base)),
+        )
+        .header("x-clax-session", sid)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    res.json().await.unwrap()
+}
+
+/// A record naming `quick` and, handed off, `handed_off` (the setup's thread).
+async fn handed_off(ts: &TestServer) -> (String, String, String, String) {
+    let (sid, aid, handed_off) = setup(ts).await;
+    let quick = thread_id(ts, &aid, "@agent a quick question").await;
+    let r = put(
+        ts,
+        &sid,
+        &aid,
+        json!({"thread_ids": [quick], "message": "Answering"}),
+    )
+    .await;
+    assert_eq!(r.status(), 200);
     let v: Value = put(
-        &ts,
+        ts,
         &sid,
         &aid,
         json!({"thread_ids": [handed_off], "background": true}),
@@ -354,19 +374,67 @@ async fn a_background_thread_outlives_a_publish_and_the_turn_and_ends_with_the_r
     .unwrap();
     assert_eq!(v["working"]["thread_ids"], json!([quick, handed_off]));
     assert_eq!(v["working"]["background_thread_ids"], json!([handed_off]));
+    (sid, aid, quick, handed_off)
+}
 
+#[tokio::test]
+async fn the_turn_end_finishes_the_foreground_work_and_keeps_the_background_thread() {
+    let (ts, _) = server().await;
+    let (sid, aid, quick, handed_off) = handed_off(&ts).await;
     let res = ts
-        .authed(
-            ts.client
-                .post(format!("{}/api/artifacts/{aid}/versions", ts.base)),
-        )
-        .header("x-clax-session", &sid)
-        .json(&json!({"if_version": 1, "files": {"index.html": {"content": "<main>v2</main>", "encoding": "utf8"}}}))
-        .send()
+        .post_json(&format!("/api/sessions/{sid}/working/end"), json!({}))
+        .await;
+    assert_eq!(res.status(), 200);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(v["cleared"], 1, "the foreground work's record ended");
+    let w = working_threads(&ts, &aid).await;
+    assert_eq!(w.len(), 1, "{w:?}");
+    assert_eq!(w[0]["thread_ids"], json!([handed_off]));
+    assert_eq!(w[0]["background_thread_ids"], json!([handed_off]));
+    assert_eq!(w[0]["message"], Value::Null);
+    let p: Value = ts
+        .get_authed("/api/inbox?kind=finished&read=all")
+        .await
+        .json()
         .await
         .unwrap();
-    assert_eq!(res.status(), 201);
-    let v: Value = res.json().await.unwrap();
+    let items = p["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{p}");
+    assert_eq!(items[0]["work"]["message"], "Answering");
+    assert_eq!(items[0]["work"]["threads"].as_array().unwrap().len(), 1);
+    assert_eq!(items[0]["work"]["threads"][0]["id"], quick.as_str());
+
+    let res = ts
+        .post_json(&format!("/api/sessions/{sid}/working/end"), json!({}))
+        .await;
+    assert_eq!(res.json::<Value>().await.unwrap()["cleared"], 0);
+    // Done with the handed-off thread: finished work of its own.
+    let url = format!("{}/api/sessions/{sid}/working/{aid}", ts.base);
+    ts.authed(ts.client.delete(&url)).send().await.unwrap();
+    let p: Value = ts
+        .get_authed("/api/inbox?kind=finished&read=all")
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(p["items"].as_array().unwrap().len(), 2, "{p}");
+    assert_eq!(
+        p["items"][0]["work"]["threads"][0]["id"],
+        handed_off.as_str()
+    );
+}
+
+#[tokio::test]
+async fn a_background_thread_outlives_a_publish_and_a_plain_call_and_ends_with_the_reply() {
+    let (ts, _) = server().await;
+    let (sid, aid, quick, handed_off) = handed_off(&ts).await;
+    let v = publish_v2(
+        &ts,
+        &sid,
+        &aid,
+        json!({"if_version": 1, "files": {"index.html": {"content": "<main>v2</main>", "encoding": "utf8"}}}),
+    )
+    .await;
     assert_eq!(
         v["version"]["addresses"],
         json!([quick]),
@@ -374,16 +442,76 @@ async fn a_background_thread_outlives_a_publish_and_the_turn_and_ends_with_the_r
     );
     let w = working_threads(&ts, &aid).await;
     assert_eq!(w[0]["thread_ids"], json!([handed_off]));
+    assert_eq!(w[0]["message"], Value::Null);
 
-    ts.post_json(&format!("/api/sessions/{sid}/working/end"), json!({}))
-        .await;
-    let w = working_threads(&ts, &aid).await;
-    assert_eq!(w.len(), 1, "the turn end keeps the background thread");
-    assert_eq!(w[0]["background_thread_ids"], json!([handed_off]));
+    let next = thread_id(&ts, &aid, "@agent another").await;
+    let v: Value = put(&ts, &sid, &aid, json!({"thread_ids": [next]}))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["working"]["thread_ids"], json!([handed_off, next]));
+    assert_eq!(v["working"]["background_thread_ids"], json!([handed_off]));
 
     ts.reply_as_agent(&sid, &aid, &handed_off, "Done: two columns.")
         .await;
-    assert!(working_threads(&ts, &aid).await.is_empty());
+    let w = working_threads(&ts, &aid).await;
+    assert_eq!(w[0]["thread_ids"], json!([next]));
+    assert!(w[0].get("background_thread_ids").is_none(), "{w:?}");
+}
+
+#[tokio::test]
+async fn a_publish_that_addresses_a_background_thread_links_it_and_keeps_it_marked() {
+    let (ts, _) = server().await;
+    let (sid, aid, quick, handed_off) = handed_off(&ts).await;
+    let v = publish_v2(
+        &ts,
+        &sid,
+        &aid,
+        json!({"if_version": 1, "addresses": [handed_off],
+               "files": {"index.html": {"content": "<main>v2</main>", "encoding": "utf8"}}}),
+    )
+    .await;
+    let mut addressed: Vec<String> =
+        serde_json::from_value(v["version"]["addresses"].clone()).unwrap();
+    addressed.sort();
+    let mut want = vec![quick, handed_off.clone()];
+    want.sort();
+    assert_eq!(addressed, want);
+    let w = working_threads(&ts, &aid).await;
+    assert_eq!(w[0]["background_thread_ids"], json!([handed_off]));
+}
+
+#[tokio::test]
+async fn a_put_that_would_name_more_than_20_threads_is_refused() {
+    let (ts, _) = server().await;
+    let (sid, aid, handed_off) = setup(&ts).await;
+    let mut others = Vec::new();
+    for i in 0..20 {
+        others.push(thread_id(&ts, &aid, &format!("plain {i}")).await);
+    }
+    assert_eq!(
+        put(
+            &ts,
+            &sid,
+            &aid,
+            json!({"thread_ids": [handed_off], "background": true})
+        )
+        .await
+        .status(),
+        200
+    );
+    for body in [
+        json!({"thread_ids": others}),
+        json!({"thread_ids": others, "background": true}),
+    ] {
+        let r = put(&ts, &sid, &aid, body.clone()).await;
+        assert_eq!(r.status(), 400, "{body}");
+        let v: Value = r.json().await.unwrap();
+        assert_eq!(v["error"]["code"], "invalid_args", "{body}");
+    }
+    let w = working_threads(&ts, &aid).await;
+    assert_eq!(w[0]["thread_ids"], json!([handed_off]), "nothing changed");
 }
 
 #[tokio::test]
