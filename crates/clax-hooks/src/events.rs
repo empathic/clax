@@ -371,7 +371,10 @@ fn rendered_text(res: &Value) -> Option<String> {
 /// (prints nothing) when nothing is pending. Only watches with replies armed
 /// count. While `stop_hook_active` is set, only never-delivered rows can block,
 /// so a stop is blocked at most once per new comment. When it allows the
-/// stop, it ends the session's working records (the turn is over). For Grok
+/// stop, it ends the session's working records (the turn is over), unless
+/// a subagent is still running in the background
+/// ([`HookInput::has_running_subagent`]): its tool calls keep renewing the
+/// records, and the turn its report starts ends them. For Grok
 /// Build, a Stop whose reason is not `end_turn` allows the stop without asking
 /// the daemon.
 ///
@@ -470,6 +473,11 @@ pub fn stop_with(
                 && let Ok(Some(reason)) = unwoken(harness, &sid, daemon, w)
             {
                 return Ok(HookOutput::block(&reason));
+            }
+            // Work handed to a background subagent goes on after the turn:
+            // the records stay until a later turn ends with none running.
+            if input.has_running_subagent() {
+                return Ok(HookOutput::none());
             }
             // The turn really ends: its working records end with it.
             daemon.post(&format!("/api/sessions/{sid}/working/end"), &json!({}))?;
@@ -1124,6 +1132,48 @@ mod tests {
             HookOutput::none()
         );
         assert_eq!(*d.posts.borrow(), ["/api/sessions/S/working/end"]);
+    }
+
+    const RUNNING_SUBAGENT: &str =
+        r#""background_tasks":[{"id":"a","type":"subagent","status":"running"}]"#;
+
+    #[test]
+    fn a_stop_with_a_background_subagent_running_keeps_the_working_records() {
+        let d = fake(None);
+        let i = HookInput::parse(&format!(r#"{{"session_id":"s1",{RUNNING_SUBAGENT}}}"#));
+        assert_eq!(stop("claude", &i, &d).unwrap(), HookOutput::none());
+        assert!(d.posts.borrow().is_empty(), "{:?}", d.posts.borrow());
+    }
+
+    #[test]
+    fn a_stop_with_only_background_shells_running_ends_the_working_records() {
+        let d = fake(None);
+        let i = HookInput::parse(
+            r#"{"session_id":"s1","background_tasks":[{"id":"b","type":"shell","status":"running","command":"clax feedback follow"}]}"#,
+        );
+        assert_eq!(stop("claude", &i, &d).unwrap(), HookOutput::none());
+        assert_eq!(*d.posts.borrow(), ["/api/sessions/S/working/end"]);
+    }
+
+    #[test]
+    fn a_stop_with_feedback_blocks_whether_or_not_a_subagent_runs() {
+        let d = fake(Some("[clax] 1 comment sent to you:\nX"));
+        let i = HookInput::parse(&format!(r#"{{"session_id":"s1",{RUNNING_SUBAGENT}}}"#));
+        assert_eq!(
+            stop("claude", &i, &d).unwrap(),
+            HookOutput::block("[clax] 1 comment sent to you:\nX")
+        );
+        assert!(d.posts.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_grok_stop_ends_the_working_records_whatever_its_background_tasks() {
+        let d = fake(None);
+        let i = HookInput::parse(
+            r#"{"sessionId":"s1","hookEventName":"Stop","reason":"end_turn","backgroundTasks":[{"id":"a","type":"subagent","status":"running","agentType":"explore"}]}"#,
+        );
+        assert_eq!(stop("grok", &i, &d).unwrap(), HookOutput::none());
+        assert_eq!(*d.posts.borrow(), ["/api/sessions/G/working/end"]);
     }
 
     #[test]

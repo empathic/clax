@@ -4819,11 +4819,13 @@ daemon's `/mcp`), `unknown_session`, `daemon_unreachable`.
 Replying to or resolving a thread it names takes that thread out of it. It
 clears when you reply to or resolve the last thread it names, publish the
 artifact, end your turn, or go 120 s without renewing it, and when your
-session ends. Renewal is automatic:
+session ends. In Claude Code, a turn that ends with a subagent still
+running in the background keeps it: the subagent's tool calls renew it,
+and the turn its report starts ends it. Renewal is automatic:
 
 | Harness | Renewed by | Not automatic |
 |---|---|---|
-| Claude Code | tool calls, at most once a minute (`PostToolUse` hook); clax tool calls; each message the person sends (the prompt hook); a Stop hook that hands you comments (a Stop hook that allows the stop ends the turn instead) | work asked for in the terminal (call `working`); a turn you interrupt with Esc runs no Stop hook, so its mark lapses within 2 minutes |
+| Claude Code | tool calls, at most once a minute (`PostToolUse` hook), a background subagent's included; clax tool calls; each message the person sends (the prompt hook); a Stop hook that hands you comments (a Stop hook that allows the stop ends the turn instead, unless its input lists a subagent still running in the background) | work asked for in the terminal (call `working`); a turn you interrupt with Esc runs no Stop hook, so its mark lapses within 2 minutes |
 | Codex | clax tool calls; a Stop hook that hands you comments; tool calls through the `PostToolUse` hook: not yet measured (`scripts/smoke-codex.sh --hooks`) | a `codex queue` delivery to a session with no TUI marks it for up to 2 minutes; `codex exec` without trusted hooks never ends the turn; terminal requests |
 | Pi | tool calls (at most every 15 s) | terminal requests; a Pi process killed without `session_shutdown` |
 
