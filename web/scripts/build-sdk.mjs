@@ -15,8 +15,10 @@
 // CommonJS file, service.cjs, under its `require` condition, for a
 // CommonJS backend on a Node that cannot require an ES module (before
 // 20.19 and 22.12); its ClaxError is its own, so such a backend takes
-// ClaxError from the service entry too. Nothing
-// is minified (the consumer's bundler minifies) and nothing is left to a
+// ClaxError from the service entry too. The JavaScript is not minified
+// (the consumer's bundler minifies it); the overlay's CSS, which reaches
+// its script as string literals no consumer's bundler can minify, is
+// minified here, by esbuild as in /_clax/overlay.js. Nothing is left to a
 // dependency: the package declares none. Each entry has declarations
 // under types/, emitted by TypeScript from the sources and kept to what the
 // entries' declarations import, with relative specifiers ending in `.js`
@@ -298,7 +300,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     plugins: [svelte({ configFile: join(web, "svelte.config.js"), compilerOptions: { discloseVersion: false } }), componentCssIntoScript("overlay.js"), packageFiles],
     define: { "process.env.NODE_ENV": JSON.stringify("production") },
     build: {
-      outDir: out, emptyOutDir: false, minify: false, sourcemap: false, cssCodeSplit: false,
+      outDir: out, emptyOutDir: false, minify: false, cssMinify: "esbuild", sourcemap: false, cssCodeSplit: false,
       // The oldest browsers the package's code runs in already: those with
       // Object.hasOwn (web/bridge/src/describe.ts), which /_clax/overlay.js
       // needs too. Vite's default target lowers the syntax for older ones,
