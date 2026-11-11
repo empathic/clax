@@ -81,7 +81,11 @@ describe("capture", () => {
   });
 
   it("an exact capture of a pick is cropped to the pick, with the overlay stepped aside", async () => {
+    // The overlay's host keeps its opacity by its own `:host` rule, so what
+    // its root holds is stepped aside, and the host's style is left alone.
     const host = document.createElement("clax-overlay");
+    const held = document.createElement("div");
+    host.attachShadow({ mode: "open" }).append(held);
     // Another Clax overlay (the extension's) guards its host's style: it is
     // never touched.
     const other = document.createElement("clax-overlay");
@@ -96,14 +100,15 @@ describe("capture", () => {
     let seen: string[] = [];
     let crop: unknown;
     const display = async (_w: Window, c?: unknown): Promise<DisplayResult> => {
-      seen = [host, other, chat, tip, extra].map(e => `${e.style.getPropertyValue("opacity")}${e.style.getPropertyPriority("opacity")}`);
+      seen = [host, held, other, chat, tip, extra].map(e => `${e.style.getPropertyValue("opacity")}${e.style.getPropertyPriority("opacity")}`);
       crop = c;
       return { ok: true, png: png(9), thisTab: true };
     };
     const c = await captureExact("element", pick(), window, { display, host, aside: [extra], painted: async () => {} });
     expect(crop).toEqual({ x: 100, y: 100, w: 200, h: 100 });
-    expect(seen).toEqual(["0important", "", "0important", "0important", "0important"]);
-    expect([host, other, chat, tip, extra].map(e => e.style.getPropertyValue("opacity"))).toEqual(["", "", "0.5", "", ""]);
+    expect(seen).toEqual(["", "0important", "", "0important", "0important", "0important"]);
+    expect([host, held, other, chat, tip, extra].map(e => e.style.getPropertyValue("opacity"))).toEqual(["", "", "", "0.5", "", ""]);
+    expect(host.hasAttribute("style")).toBe(false);
     expect(c).toMatchObject({ error: null, note: null, info: { mode: "element", method: "display" } });
     expect(await bytesOf(c.png!)).toEqual(new Uint8Array([9]));
     host.remove();
