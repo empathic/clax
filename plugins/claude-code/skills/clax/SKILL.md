@@ -391,6 +391,15 @@ when you stop without replying or publishing.
   `working: true` with the stored `message`, `thread_ids` and `expires_in_s`,
   or `working: false` after `done`.
 
+Subagents: you own the threads you take. When you hand a thread's work to
+subagents, they do not call `working`, `comments_reply`,
+`comments_resolve` or `comments_handoff` on it: they report to you, and
+you reply once every subagent working on the thread has reported. In
+Claude Code your page stays marked working while they run in the
+background. Codex does not wake you when a subagent finishes, so in Codex
+wait for your subagents (`wait_agent`) before ending a turn that has a
+thread in progress.
+
 When the person wants to iterate live ("watch for my comments", "I'll leave
 comments on it"), loop: call `wait_for_feedback`, handle whatever arrives, and
 call it again after handling the result, whatever `call_again` says, while the
