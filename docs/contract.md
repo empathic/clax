@@ -4811,21 +4811,28 @@ when another agent taking part in the artifact shows the same
 mark you working automatically; call `working` for work that did not start
 from a comment, or to add a message. `thread_ids` and `message` replace the
 stored ones when given; `done: true` clears the record, or with `thread_ids`
-only those threads. Errors: `invalid_id`, `invalid_args` (a thread ID that is
-not a ULID, more than 20), `not_found` (no such artifact), `unknown_thread`
+only those threads. With `background: true`, the threads in `thread_ids`
+(required) join the stored ones instead of replacing them and are flagged
+background: work on them goes on after your turn, in subagents. The result
+lists them as `background_thread_ids`. Errors: `invalid_id`, `invalid_args`
+(a thread ID that is not a ULID, more than 20, `background` without
+`thread_ids` or with `done`), `not_found` (no such artifact), `unknown_thread`
 (not a thread of the artifact), `thread_not_open`, `no_session` (the
 daemon's `/mcp`), `unknown_session`, `daemon_unreachable`.
 
 Replying to or resolving a thread it names takes that thread out of it. It
 clears when you reply to or resolve the last thread it names, publish the
 artifact, end your turn, or go 120 s without renewing it, and when your
-session ends. In Claude Code, a turn that ends with a subagent still
-running in the background keeps it: the subagent's tool calls renew it,
-and the turn its report starts ends it. Renewal is automatic:
+session ends. Background threads are the exception: the end of your turn
+and a publish leave them (a publish addresses only the other threads
+unless `addresses` names them), and a record naming any lapses 600 s
+after its last renewal, so work that renews it rarely, or not at all
+where the harness runs subagents as sessions of their own (Grok Build,
+Pi's subagent packages), stays marked. Renewal is automatic:
 
 | Harness | Renewed by | Not automatic |
 |---|---|---|
-| Claude Code | tool calls, at most once a minute (`PostToolUse` hook), a background subagent's included; clax tool calls; each message the person sends (the prompt hook); a Stop hook that hands you comments (a Stop hook that allows the stop ends the turn instead, unless its input lists a subagent still running in the background) | work asked for in the terminal (call `working`); a turn you interrupt with Esc runs no Stop hook, so its mark lapses within 2 minutes |
+| Claude Code | tool calls, at most once a minute (`PostToolUse` hook); clax tool calls; each message the person sends (the prompt hook); a Stop hook that hands you comments (a Stop hook that allows the stop ends the turn instead) | work asked for in the terminal (call `working`); a turn you interrupt with Esc runs no Stop hook, so its mark lapses within 2 minutes |
 | Codex | clax tool calls; a Stop hook that hands you comments; tool calls through the `PostToolUse` hook: not yet measured (`scripts/smoke-codex.sh --hooks`) | a `codex queue` delivery to a session with no TUI marks it for up to 2 minutes; `codex exec` without trusted hooks never ends the turn; terminal requests |
 | Pi | tool calls (at most every 15 s) | terminal requests; a Pi process killed without `session_shutdown` |
 

@@ -153,8 +153,8 @@ Arguments:
   characters ("Two columns; third bullet dropped"). Shown as this version's
   changelog.
 - `addresses` (array of thread IDs, optional): the comment threads this
-  version addresses. Threads you were marked working on are added for you.
-  Listing a thread does not resolve it.
+  version addresses. Threads you were marked working on, background threads
+  aside, are added for you. Listing a thread does not resolve it.
 - `capabilities` (object, optional): the page's runtime capabilities
   declaration, as a full set, written as the version's `clax.json` (see
   "Runtime capabilities").
@@ -387,18 +387,23 @@ to each thread after publishing the change, so the version lists the thread
 as addressed before your reply clears it. Call `working` with `done: true`
 when you stop without replying or publishing.
 
-- `working` (`url_or_id`; optional `thread_ids`, `message`, `done`):
-  `working: true` with the stored `message`, `thread_ids` and `expires_in_s`,
-  or `working: false` after `done`.
+- `working` (`url_or_id`; optional `thread_ids`, `message`, `done`,
+  `background`): `working: true` with the stored `message`, `thread_ids`,
+  `background_thread_ids` (when any) and `expires_in_s`, or
+  `working: false` after `done`.
 
-Subagents: you own the threads you take. When you hand a thread's work to
-subagents, they do not call `working`, `comments_reply`,
-`comments_resolve` or `comments_handoff` on it: they report to you, and
-you reply once every subagent working on the thread has reported. In
-Claude Code your page stays marked working while they run in the
-background. Codex does not wake you when a subagent finishes, so in Codex
-wait for your subagents (`wait_agent`) before ending a turn that has a
-thread in progress.
+Subagents: you own the threads you take. When you hand a thread to
+subagents whose work goes on after your turn, call `working` with that
+thread in `thread_ids` and `background: true`: it stays marked through the
+end of your turn and a publish, while the threads you answered end as
+usual. It ends when you reply to or resolve it, or call `working` with
+`done: true` and the thread, or after 10 minutes in which nothing in your
+session calls a tool. Your subagents do not call `working`,
+`comments_reply`, `comments_resolve` or `comments_handoff` on the thread:
+they report to you, and you reply once every one of them has reported.
+Codex does not wake you when a subagent finishes, so in Codex wait for
+your subagents (`wait_agent`) before ending a turn that has a thread in
+progress.
 
 When the person wants to iterate live ("watch for my comments", "I'll leave
 comments on it"), loop: call `wait_for_feedback`, handle whatever arrives, and
