@@ -271,8 +271,9 @@ jobs:
           install_only: true
       - name: Render clax-fleet.yaml
         run: scripts/render-fleet-manifests.sh "$IMAGE@$DIGEST" "$RUNNER_TEMP/clax-fleet.yaml"
-      # release.yml makes the release once every platform's binary is built,
-      # which may finish after this; wait for it, then attach the manifests.
+      # The release is a draft until this file is on it (Deploy prod's
+      # publish job drafts it and its release job publishes it: a published
+      # release is immutable). Wait for the draft, then attach the manifests.
       - name: Attach it to the release
         env:
           GH_TOKEN: ${{ github.token }}

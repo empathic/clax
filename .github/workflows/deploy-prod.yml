@@ -18,9 +18,13 @@ name: Deploy prod
 #              already runs this commit (a run again), it uploads nothing
 #              (--unless-live) and only checks and smokes what runs
 #   publish    tags vX.Y.Z on the merge commit and makes the GitHub release
-#              from the candidate's files, the ones staging's testers had
+#              from the candidate's files, the ones staging's testers had,
+#              as a draft: the repository's releases are immutable once
+#              published, so every asset is on it first
 #   fleet      the clax-fleet image of the tag: fleet-image.yml, run on it
-#              (a tag made with a workflow's token starts no workflow)
+#              (a tag made with a workflow's token starts no workflow),
+#              which adds clax-fleet.yaml to the draft
+#   release    publishes the draft, once it holds clax-fleet.yaml
 #   carry      in the `release` environment, as the release App: the
 #              release and the plugins' pin into main, merged once main's
 #              CI passes (scripts/carry-release.sh), so the marketplaces
@@ -34,8 +38,8 @@ name: Deploy prod
 #
 # A failure fails the run, and GitHub notifies the owner; nothing is rolled
 # back (docs/prod.md, "Rollback"). Run again, each job finds what it did
-# done: the Worker running, the release made from the same tree, the tag's
-# image built, the carry merged, the package on npm; so a run that failed
+# done: the Worker running, the release drafted from the same tree, the
+# tag's image built, the release published, the carry merged, the package on npm; so a run that failed
 # after its upload is finished by running it again, and clax.dev is not
 # deployed twice. A run by hand with `redeploy` uploads the Worker even so
 # (to apply a changed variable, say). Beside the deploy, the reel job builds the landing page's reel
@@ -303,7 +307,12 @@ jobs:
         with: { ref: "${{ github.sha }}", persist-credentials: false }
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with: { name: release-dist, path: "${{ runner.temp }}/dist" }
-      - name: Create the release vX.Y.Z on the merge commit
+      # A draft: a published release is immutable (the repository's
+      # setting), and clax-fleet.yaml joins it only once the tag's image is
+      # built (the fleet job), so the release job publishes it after that.
+      # A draft makes no tag, and the fleet job runs on the tag, so the tag
+      # is made here first.
+      - name: Tag vX.Y.Z on the merge commit and draft its release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -312,17 +321,24 @@ jobs:
           tree="$(git rev-parse 'HEAD^{tree}')"
           [ "$(cat "$RUNNER_TEMP/dist/SOURCE_TREE")" = "$tree" ] \
             || { echo "::error::the candidate's SOURCE_TREE is not the merge commit's tree $tree"; exit 1; }
+          tagged="$(git ls-remote "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "refs/tags/v$VERSION" | cut -f1)"
+          if [ -z "$tagged" ]; then
+            gh api "repos/$GH_REPO/git/refs" --method POST -f ref="refs/tags/v$VERSION" -f sha="$GITHUB_SHA" >/dev/null
+          elif [ "$tagged" != "$GITHUB_SHA" ]; then
+            echo "::error::the tag v$VERSION is on $tagged, not the merge commit $GITHUB_SHA"
+            exit 1
+          fi
           have="$(scripts/release-exists-check.sh --tree "v$VERSION")"
           if [ "$have" = "$tree" ]; then
-            echo "v$VERSION is released already, from this tree"
+            echo "v$VERSION has its release already, from this tree"
             exit 0
           fi
           [ -z "$have" ] || { echo "::error::v$VERSION is released already, from tree $have, not this one ($tree)"; exit 1; }
           gh release create "v$VERSION" "$RUNNER_TEMP"/dist/* \
-            --target "$GITHUB_SHA" --title "Clax $VERSION" --generate-notes
+            --draft --verify-tag --title "Clax $VERSION" --generate-notes
 
   # The clax-fleet image of the release's tag (fleet-image.yml, which also
-  # adds clax-fleet.yaml to the release). The tag is made with this
+  # adds clax-fleet.yaml to the draft release). The tag is made with this
   # workflow's token, which starts no workflow, so the run is started here,
   # on the tag, and waited for. A run of the tag that passed, or is still
   # running, is this one (a run again).
@@ -361,11 +377,35 @@ jobs:
           fi
           gh run watch "${have% *}" --exit-status --interval 30
 
+  # Publishes the draft, which GitHub then keeps as it is: the candidate's
+  # files and clax-fleet.yaml. A release published already is this one (a
+  # run again).
+  release:
+    needs: [candidate, publish, fleet]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: { contents: write }
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: v${{ needs.candidate.outputs.version }}
+    steps:
+      - name: Publish the release
+        run: |
+          set -euo pipefail
+          state="$(gh release view "$TAG" --json isDraft,assets --jq '"\(.isDraft) \([.assets[].name] | index("clax-fleet.yaml") != null)"')"
+          if [ "${state% *}" = false ]; then
+            echo "$TAG is published already"
+            exit 0
+          fi
+          [ "${state#* }" = true ] || { echo "::error::the draft of $TAG has no clax-fleet.yaml: the fleet-image.yml run of $TAG adds it"; exit 1; }
+          gh release edit "$TAG" --draft=false --latest
+
   # The release and its pin into main, as the release App: a workflow's own
   # token starts no CI on what it makes, and main takes a pull request
   # only once its CI passed.
   carry:
-    needs: [candidate, publish]
+    needs: [candidate, release]
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     # Its branch policy admits prod only; it holds the App's ID and key.

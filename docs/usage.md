@@ -1572,10 +1572,12 @@ staging; merging it releases it. The only local step is cutting it.
      the merge commit (a run again), nothing is uploaded
      (`--unless-live`): only the checks and the smoke run.
    - **publish:** the tag `v<version>` on the merge commit and the GitHub
-     release, from the candidate's files.
+     release, from the candidate's files, as a draft (a published release
+     is immutable, so every asset is on it first).
    - **fleet:** `fleet-image.yml`, run on the tag and waited for (a tag
      made with a workflow's token starts no workflow): the `clax-fleet`
-     image of the version, and `clax-fleet.yaml` on the release.
+     image of the version, and `clax-fleet.yaml` on the draft.
+   - **release:** publishes the draft, once it holds `clax-fleet.yaml`.
    - **carry:** as the release GitHub App, `scripts/carry-release.sh`
      merges `prod`'s merge commit into `main`'s tip (all that `prod` has
      and `main` lacks: the release branch's own commits, and those of an
