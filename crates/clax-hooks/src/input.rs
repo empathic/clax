@@ -54,24 +54,6 @@ impl HookInput {
     pub fn is_grok_envelope(&self) -> bool {
         self.rest.contains_key("hookEventName")
     }
-
-    /// Whether Claude Code's Stop input lists a subagent still running in
-    /// the background: a `background_tasks` entry with `type` `"subagent"`
-    /// and `status` `"running"`. Background shells and monitors, such as
-    /// Clax's own comment follower, do not count. Grok Build's
-    /// `backgroundTasks` is not read: its subagents' tool calls do not
-    /// renew the parent's working records, so keeping them would only
-    /// delay their end.
-    pub fn has_running_subagent(&self) -> bool {
-        self.rest
-            .get("background_tasks")
-            .and_then(Value::as_array)
-            .is_some_and(|tasks| {
-                tasks
-                    .iter()
-                    .any(|t| t["type"] == "subagent" && t["status"] == "running")
-            })
-    }
 }
 
 #[cfg(test)]
@@ -116,36 +98,6 @@ mod tests {
         assert!(!i.is_grok_envelope());
         assert_eq!(i.stop_reason(), None);
         assert_eq!(i.stop_hook_active, Some(true));
-    }
-
-    #[test]
-    fn a_running_subagent_is_a_running_subagent_entry_of_background_tasks() {
-        let has = |j: &str| HookInput::parse(j).has_running_subagent();
-        assert!(has(
-            r#"{"background_tasks":[{"id":"a","type":"subagent","status":"running","agent_type":"general-purpose"}]}"#
-        ));
-        assert!(has(
-            r#"{"background_tasks":[{"id":"b","type":"shell","status":"running"},{"id":"a","type":"subagent","status":"running"}]}"#
-        ));
-        assert!(
-            !has(
-                r#"{"background_tasks":[{"id":"b","type":"shell","status":"running","command":"clax feedback follow"}]}"#
-            ),
-            "a background shell, such as the comment follower, is not a subagent"
-        );
-        assert!(!has(
-            r#"{"background_tasks":[{"id":"a","type":"subagent","status":"completed"}]}"#
-        ));
-        assert!(
-            !has(
-                r#"{"backgroundTasks":[{"id":"a","type":"subagent","status":"running","agentType":"explore"}]}"#
-            ),
-            "Grok Build's key is not read"
-        );
-        assert!(!has(r#"{"background_tasks":[]}"#));
-        assert!(!has(r#"{"background_tasks":"x"}"#));
-        assert!(!has(r#"{"background_tasks":["subagent"]}"#));
-        assert!(!has(r#"{"session_id":"s"}"#));
     }
 
     #[test]
