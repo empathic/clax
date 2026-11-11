@@ -119,25 +119,26 @@ git -c commit.gpgsign=false commit -m "feat(hooks): a turn that ends with a back
 **Files:**
 - Modify: the "Showing that you are working" paragraph of `plugins/claude-code/skills/clax/SKILL.md:380`, `plugins/clax/skills/clax/SKILL.md:383`, `plugins/pi/skills/clax/SKILL.md:378`, `plugins/clax-grok/skills/clax/SKILL.md:377`
 
-- [ ] **Step 1: Add the paragraph to all four skills, after "Showing that you are working"**
+- [ ] **Step 1: Add the paragraph to all four skills, at the end of the "Showing that you are working" part of "## Comment loop"**
+
+`scripts/test-plugins.sh` requires "## Comment loop" to be the same in all four skills, so the paragraph is word for word the same and names the harnesses where they differ:
 
 ```markdown
 Subagents: you own the threads you take. When you hand a thread's work to
 subagents, they do not call `working`, `comments_reply`,
 `comments_resolve` or `comments_handoff` on it: they report to you, and
-you reply once every subagent working on the thread has reported. Your
-page stays marked working while they run in the background.
+you reply once every subagent working on the thread has reported. In
+Claude Code your page stays marked working while they run in the
+background. Codex does not wake you when a subagent finishes, so in Codex
+wait for your subagents (`wait_agent`) before ending a turn that has a
+thread in progress.
 ```
 
-The last sentence ("Your page stays marked…") is for Claude Code only in this PR.
-
-In `plugins/clax/skills/clax/SKILL.md` (Codex), replace the last sentence with: "Codex does not wake you when a subagent finishes, so wait for your subagents (`wait_agent`) before ending a turn that has a thread in progress."
-
-In `plugins/pi/skills/clax/SKILL.md` and `plugins/clax-grok/skills/clax/SKILL.md`, drop the last sentence: their marks still end with the turn until PR 2 and PR 3, which add it.
+PR 2 and PR 3 extend its second sentence to Pi and Grok Build.
 
 - [ ] **Step 2: Run the skill checks**
 
-Run: `scripts/sync-skill-tools.py --check` (or the mode `just check` runs it in) and `scripts/check-version.sh`
+Run: `scripts/test-plugins.sh` and `scripts/check-version.sh`
 Expected: PASS.
 
 - [ ] **Step 3: Commit**
@@ -166,7 +167,7 @@ Review focus: a background completion that arrives while a turn is running must 
 - Create: `plugins/pi/test/keepalive.test.ts`
 - Modify: `plugins/pi/src/clax.ts:2680-2697` (replace the `tool_call`/`agent_end` renewal with `Keepalive`)
 - Modify: `plugins/pi/test/fake-api.ts` (`FakePi` gains an `events` bus: `on(name, handler)` returning an unsubscribe, and `emitBus(name, data)`)
-- Modify: `plugins/pi/test/clax.test.ts:1643` (the existing renewal test, adjusted), `docs/contract.md` Pi row, `plugins/pi/skills/clax/SKILL.md` (add "Your page stays marked working while they run, with `pi-subagents` or `@tintinweb/pi-subagents`." to the subagents paragraph PR 1 added)
+- Modify: `plugins/pi/test/clax.test.ts:1643` (the existing renewal test, adjusted), `docs/contract.md` Pi row, `plugins/*/skills/clax/SKILL.md` (all four, kept identical: the subagents paragraph's second sentence names Pi with `pi-subagents` or `@tintinweb/pi-subagents`)
 
 **Interfaces:**
 - Produces, in `keepalive.ts`:
@@ -223,11 +224,11 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add plugins/pi/src/keepalive.ts plugins/pi/src/clax.ts plugins/pi/test plugins/pi/skills/clax/SKILL.md docs/contract.md
+git add plugins/pi/src/keepalive.ts plugins/pi/src/clax.ts plugins/pi/test plugins/*/skills/clax/SKILL.md docs/contract.md
 git -c commit.gpgsign=false commit -m "feat(pi): working marks last through long tool calls and background subagents"
 ```
 
 
 # PR 3 (later): Grok Build
 
-The design and the checks it needs first are in the spec, "Second pass: Grok Build". In short: a live Grok run must confirm how `backgroundTasks` spells a subagent entry, that a child's tool calls fire the plugin's `PostToolUse` with the child's `sessionId`, and that the parent is woken; then the Stop rule reads `backgroundTasks`, the Grok plugin gains `PostToolUse`, `SubagentStart` and `SubagentStop` hooks, and a `run/grok-subagent/<child ID>` alias lets a child's renewals reach its parent. That PR also adds the "Your page stays marked…" sentence to the Grok skill, corrects `docs/verification.md:500-504` (Grok has a `PostToolUse` event) and answers qualifier alternative fcca66e6 on `scripts/tool-hook.sh`.
+The design and the checks it needs first are in the spec, "Second pass: Grok Build". In short: a live Grok run must confirm how `backgroundTasks` spells a subagent entry, that a child's tool calls fire the plugin's `PostToolUse` with the child's `sessionId`, and that the parent is woken; then the Stop rule reads `backgroundTasks`, the Grok plugin gains `PostToolUse`, `SubagentStart` and `SubagentStop` hooks, and a `run/grok-subagent/<child ID>` alias lets a child's renewals reach its parent. That PR also names Grok Build in the four skills' subagents paragraph, corrects `docs/verification.md:500-504` (Grok has a `PostToolUse` event) and answers qualifier alternative fcca66e6 on `scripts/tool-hook.sh`.
