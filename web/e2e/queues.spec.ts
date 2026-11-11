@@ -186,7 +186,6 @@ test("a site's user files a report through the overlay; an agent claims, replies
 });
 
 test("the overlay's host has no style attribute, and the page's !important rules neither hide nor move it", async ({ browser }) => {
-  test.setTimeout(60_000);
   const { d, origin } = await hostedDaemon();
   const site = await startDeployerSite(origin);
   try {
