@@ -2080,15 +2080,28 @@ mod tests {
 
     #[tokio::test]
     async fn a_page_that_never_answers_times_out() {
-        let server = Server::start(|_| None).await;
+        let arrived = Arc::new(tokio::sync::Notify::new());
+        let a = arrived.clone();
+        let server = Server::start(move |_| {
+            a.notify_one();
+            None
+        })
+        .await;
         let s = source(&server, true);
+        let deadline = Duration::from_secs(3600);
         let limits = FetchLimits {
-            timeout: Duration::from_millis(50),
+            timeout: deadline,
             ..FetchLimits::default()
         };
-        let e = fetch(&s, &server.url("site.test", "/"), Format::Auto, limits)
-            .await
-            .unwrap_err();
+        // The deadline passes on the paused clock once the request has
+        // reached the page, so the fetch has gone out by then.
+        let url = server.url("site.test", "/");
+        let (r, ()) = tokio::join!(fetch(&s, &url, Format::Auto, limits), async {
+            arrived.notified().await;
+            tokio::time::pause();
+            tokio::time::advance(deadline).await;
+        });
+        let e = r.unwrap_err();
         assert_eq!(
             (e.code, e.went_out, e.retryable),
             (CODE_WEB_TIMEOUT, true, true),
@@ -2097,7 +2110,6 @@ mod tests {
         // Cancelled, it ends cancelled.
         let cancel = CancelToken::new();
         let c = cancel.clone();
-        let url = server.url("site.test", "/");
         let limits = FetchLimits::default();
         let call = s.fetch(&url, Format::Auto, &limits, &any, &cancel);
         let (r, ()) = tokio::join!(call, async move { c.cancel() });
