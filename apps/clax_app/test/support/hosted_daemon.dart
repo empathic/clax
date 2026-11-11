@@ -7,9 +7,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'paths.dart';
 import 'settle.dart' show stuckAfter, waitUntil;
 
-/// The `sh -c` script the daemon runs under (`sh -c _held sh <clax> serve
-/// …`), as web/e2e/fixtures.ts runs its daemons: a background reader of the
-/// shell's standard input (a pipe this process holds and never writes; fd
+/// The `sh -c` script the daemon runs under
+/// (`sh -c _held sh <clax> serve …`), as web/e2e/fixtures.ts runs its
+/// daemons: a background reader of the shell's standard input (a pipe this process holds and never writes; fd
 /// 3, since a background job's own input is /dev/null) sends the daemon
 /// SIGTERM when that input ends, and the shell execs the daemon, which
 /// keeps the shell's PID (so [Process.kill] and the exit code are the
