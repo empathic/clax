@@ -76,16 +76,29 @@ Evidence:
 1. **`working` takes `background: true`.** With it, the threads in
    `thread_ids` (required) join the record's threads instead of replacing
    them and are flagged background (`Record::background`). The record's
-   view lists them as `background_thread_ids`, absent when none.
-2. **A turn end and a publish keep background threads.**
+   view lists them as `background_thread_ids`, absent when none. A later
+   call without it replaces only the threads that are not background; a
+   background thread it names stays background. A `message` given with
+   `background: true` belongs to the background threads, any other to the
+   rest of the work. A call that would make the record name more than 20
+   threads fails (`invalid_args`) and changes nothing.
+2. **A turn end and a publish end only the foreground work.**
    `POST …/working/end` (`End::TurnEnd`) and a publish (`End::Publish`)
-   end a record's other threads and leave its background threads; a
-   record with none ends as before. A publish addresses only the other
-   threads unasked (`Working::foreground_threads_of`); `addresses` can
-   still name a background thread.
+   end a live record with background threads as if it held only its
+   other threads and their message: `working.stop`, and at a turn end the
+   `finished` inbox item for that work. Its background threads go on in a
+   fresh record (`Record::split_background`: a new key, `working.start`),
+   so a later end of that record is reported under its own key and the
+   inbox, which keeps one `finished` item per key, loses neither. A record
+   with nothing but background work is left as it is; a record with no
+   background threads ends as before. A publish addresses only the other
+   threads unasked (`Working::foreground_threads_of`); the publish that
+   carries a background thread's change names it in `addresses`.
 3. **A background thread ends** when the owner replies to or resolves it,
-   clears it (`done: true`, with or without `thread_ids`), when its
-   session ends, or when the record lapses.
+   clears it (`done: true`, with or without `thread_ids`), when a viewer
+   resolves or deletes it, when its session ends, or when the record
+   lapses. A record that loses its last background thread and goes on is
+   renewed then, so its 120 s lapse counts from that moment.
 4. **A record naming background threads lapses after 600 s**
    (`BACKGROUND_TTL_SECS`) without renewal, not 120 s. In Claude Code and
    Codex a subagent's tool calls renew it (their `PostToolUse` carries the
