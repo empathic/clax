@@ -84,12 +84,17 @@ pub struct SetBody {
     thread_ids: Option<Vec<String>>,
     #[serde(default)]
     message: Option<String>,
+    #[serde(default)]
+    background: bool,
 }
 
 /// `PUT /api/sessions/<sid>/working/<aid>` (W): creates or updates the
-/// record; given fields replace. `{working, message_truncated}`. A new
-/// record records `working.start` as the session's agent. The session's
-/// live leases on the reports among the record's threads are renewed.
+/// record; given fields replace, except that with `background: true` the
+/// `thread_ids` (required, at least one) join the record's threads and are
+/// flagged background, so the turn end and a publish keep them.
+/// `{working, message_truncated}`. A new record records `working.start` as
+/// the session's agent. The session's live leases on the reports among the
+/// record's threads are renewed.
 pub async fn put(
     State(s): State<AppState>,
     TokenOrAgent(a): TokenOrAgent<clax_http::agent::WorkingPut>,
@@ -100,6 +105,12 @@ pub async fn put(
     let (sid, _) = path(p)?;
     let id = a.artifact()?;
     let b = body(req)?;
+    if b.background && b.thread_ids.as_ref().is_none_or(Vec::is_empty) {
+        return Err(ApiError::bad_request(
+            "invalid_args",
+            "background needs the thread_ids it applies to",
+        ));
+    }
     let (message, truncated) = match b.message.as_deref() {
         Some(m) => clean_message(m),
         None => (None, false),
@@ -125,6 +136,7 @@ pub async fn put(
                 SetWorking {
                     thread_ids: b.thread_ids,
                     message,
+                    background: b.background,
                 },
             );
             settle(st, &audit, &events, &w, &changed);
@@ -288,7 +300,8 @@ pub async fn renew(
 
 /// `POST /api/sessions/<sid>/working/end` (W; the turn ended): `{cleared}`.
 /// Each record it ends is finished work: a `finished` inbox item, and
-/// records `working.stop` (reason `explicit`) as the session's agent.
+/// records `working.stop` (reason `explicit`) as the session's agent. A
+/// record's background threads are kept, and its other threads end.
 pub async fn end(
     State(s): State<AppState>,
     _a: TokenOrAgent<clax_http::agent::WorkingEnd>,

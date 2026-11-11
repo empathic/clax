@@ -317,3 +317,86 @@ async fn the_roster_names_every_live_record_with_its_session_for_the_token_only(
     let v: Value = ts.get_authed("/api/working").await.json().await.unwrap();
     assert_eq!(v["working"], json!([]), "a lapsed record leaves the roster");
 }
+
+async fn working_threads(ts: &TestServer, aid: &str) -> Vec<Value> {
+    let v: Value = ts
+        .get(&format!("/api/artifacts/{aid}/working"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    v["working"].as_array().unwrap().clone()
+}
+
+#[tokio::test]
+async fn a_background_thread_outlives_a_publish_and_the_turn_and_ends_with_the_reply() {
+    let (ts, _) = server().await;
+    let (sid, aid, handed_off) = setup(&ts).await;
+    let quick = ts.thread(&aid, 1, "@agent a quick question").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        put(&ts, &sid, &aid, json!({"thread_ids": [quick]}))
+            .await
+            .status(),
+        200
+    );
+    let v: Value = put(
+        &ts,
+        &sid,
+        &aid,
+        json!({"thread_ids": [handed_off], "background": true}),
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(v["working"]["thread_ids"], json!([quick, handed_off]));
+    assert_eq!(v["working"]["background_thread_ids"], json!([handed_off]));
+
+    let res = ts
+        .authed(
+            ts.client
+                .post(format!("{}/api/artifacts/{aid}/versions", ts.base)),
+        )
+        .header("x-clax-session", &sid)
+        .json(&json!({"if_version": 1, "files": {"index.html": {"content": "<main>v2</main>", "encoding": "utf8"}}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(
+        v["version"]["addresses"],
+        json!([quick]),
+        "the publish addresses the threads worked on now, not the one handed off"
+    );
+    let w = working_threads(&ts, &aid).await;
+    assert_eq!(w[0]["thread_ids"], json!([handed_off]));
+
+    ts.post_json(&format!("/api/sessions/{sid}/working/end"), json!({}))
+        .await;
+    let w = working_threads(&ts, &aid).await;
+    assert_eq!(w.len(), 1, "the turn end keeps the background thread");
+    assert_eq!(w[0]["background_thread_ids"], json!([handed_off]));
+
+    ts.reply_as_agent(&sid, &aid, &handed_off, "Done: two columns.")
+        .await;
+    assert!(working_threads(&ts, &aid).await.is_empty());
+}
+
+#[tokio::test]
+async fn background_names_the_threads_it_applies_to() {
+    let (ts, _) = server().await;
+    let (sid, aid, _) = setup(&ts).await;
+    for body in [
+        json!({"background": true}),
+        json!({"background": true, "thread_ids": []}),
+    ] {
+        let r = put(&ts, &sid, &aid, body.clone()).await;
+        assert_eq!(r.status(), 400, "{body}");
+        let v: Value = r.json().await.unwrap();
+        assert_eq!(v["error"]["code"], "invalid_args", "{body}");
+    }
+}
