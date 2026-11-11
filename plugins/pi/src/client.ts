@@ -841,7 +841,7 @@ export class DaemonClient {
   }
 
   /** `PUT /api/sessions/<sid>/working/<id>`: `{working, message_truncated}`. */
-  setWorking(id: string, body: { thread_ids?: string[]; message?: string }): Promise<any> {
+  setWorking(id: string, body: { thread_ids?: string[]; message?: string; background?: boolean }): Promise<any> {
     return this.json(() => `${this.sessionPath()}/working/${id}`, this.jsonBody("PUT", body));
   }
 

@@ -532,7 +532,7 @@
   "tools": [
     {
       "name": "publish",
-      "description": "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, the new version number, and `waiting` when a declared capability awaits approval in Clax. Add a short `note` (at most 280 characters) saying what changed, and list the comment threads this version addresses in `addresses`; threads you were marked working on are added for you. The person sees both as the version's changelog; nothing is resolved by it. Pass `tags` to add existing tags (see `tags`).",
+      "description": "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, the new version number, and `waiting` when a declared capability awaits approval in Clax. Add a short `note` (at most 280 characters) saying what changed, and list the comment threads this version addresses in `addresses`; threads you were marked working on, background threads aside, are added for you. The person sees both as the version's changelog; nothing is resolved by it. Pass `tags` to add existing tags (see `tags`).",
       "annotations": {
         "readOnlyHint": false,
         "destructiveHint": false,
@@ -712,7 +712,7 @@
     },
     {
       "name": "working",
-      "description": "Tell the person you are working on an artifact: its page's top bar shows `<harness> working on N` (or `<harness>: <message>`), its gallery card a chip, and `<harness> is working on it` on each thread in `thread_ids`. Comments sent to you mark you working automatically; call this for other work or to add a short `message` (at most 140 characters). It clears when you reply to those threads, publish the artifact, end your turn, or go 2 minutes without a tool call; `done: true` clears it now.",
+      "description": "Tell the person you are working on an artifact: its page's top bar shows `<harness> working on N` (or `<harness>: <message>`), its gallery card a chip, and `<harness> is working on it` on each thread in `thread_ids`. Comments sent to you mark you working automatically; call this for other work or to add a short `message` (at most 140 characters). It clears when you reply to those threads, publish the artifact, end your turn, or go 2 minutes without a tool call; `done: true` clears it now. Threads you hand to subagents that work on after your turn take `background: true`: they join the others and stay marked through the end of your turn and a publish, until you reply to or resolve them, clear them with `done: true`, or 10 minutes pass without a tool call.",
       "annotations": {
         "readOnlyHint": false,
         "destructiveHint": false,
