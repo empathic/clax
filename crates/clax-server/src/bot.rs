@@ -1093,6 +1093,7 @@ pub fn show_working(state: &AppState, run: &Run, on: bool) {
                 clax_core::working::SetWorking {
                     thread_ids: Some(run.thread_ids.clone()),
                     message: Some("ClaxBot is working on this".into()),
+                    background: false,
                 },
             )
             .1

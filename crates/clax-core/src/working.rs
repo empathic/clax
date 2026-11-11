@@ -1,7 +1,13 @@
 //! The working signal (spec §10 "Working"): which harness session is acting
 //! on which artifact, and on which of its threads, now. Records live in
-//! memory only. Each lapses [`WORKING_TTL_SECS`] after its last renewal, so a
-//! daemon restart starts with none and never shows stale work.
+//! memory only. Each lapses [`WORKING_TTL_SECS`] after its last renewal
+//! ([`BACKGROUND_TTL_SECS`] while it names background threads), so a daemon
+//! restart starts with none and never shows stale work.
+//!
+//! A thread the agent hands to work that goes on after its turn (subagents
+//! running in the background) is flagged background: a turn end and a
+//! publish keep it, and it ends when the agent replies to or resolves it,
+//! clears it, or the record lapses.
 
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use serde::Serialize;
@@ -10,6 +16,10 @@ use std::sync::{Arc, Mutex};
 
 /// Seconds after its last renewal that a record lapses.
 pub const WORKING_TTL_SECS: i64 = 120;
+/// Seconds after its last renewal that a record naming background threads
+/// lapses: work in the background may renew it only through its own tool
+/// calls, or not at all where the harness runs it as another session.
+pub const BACKGROUND_TTL_SECS: i64 = 600;
 /// Longest message, in characters, after [`clean_message`].
 pub const MAX_MESSAGE_CHARS: usize = 140;
 /// Most threads one record names.
@@ -81,6 +91,10 @@ pub struct WorkingView {
     pub name: Option<String>,
     pub message: Option<String>,
     pub thread_ids: Vec<String>,
+    /// Those of `thread_ids` handed to work in the background, which
+    /// outlive the agent's turn; absent when none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub background_thread_ids: Vec<String>,
     pub started_at: String,
     pub last_heartbeat: String,
     /// The session the record is of, for the visibility filter (a
@@ -99,11 +113,14 @@ pub struct SessionWorking {
     pub expires_at: String,
 }
 
-/// An explicit update: each `Some` field replaces the stored one.
+/// An explicit update: each `Some` field replaces the stored one, except
+/// that with `background` the `thread_ids` join the record's threads (none
+/// is dropped) and are flagged background.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SetWorking {
     pub thread_ids: Option<Vec<String>>,
     pub message: Option<String>,
+    pub background: bool,
 }
 
 /// Why a working record ended (audit spec 2026-10-06 §6.5).
@@ -190,7 +207,9 @@ impl Changed {
 /// Why a record ends. Only [`End::Done`] (the agent said so) and
 /// [`End::TurnEnd`] (its turn ended) report the record as finished work
 /// (spec 2026-10-06-agent-questions-and-inbox-design §7.1); a publish, a
-/// reply or resolve, a lapse and the session's end make none.
+/// reply or resolve, a lapse and the session's end make none. A turn end
+/// and a publish keep a record's background threads: they end only its
+/// other threads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum End {
     Done,
@@ -204,6 +223,10 @@ pub enum End {
 impl End {
     fn finishes(self) -> bool {
         matches!(self, End::Done | End::TurnEnd)
+    }
+
+    fn spares_background(self) -> bool {
+        matches!(self, End::TurnEnd | End::Publish)
     }
 
     /// The reason the audit journal records for a record ended this way
@@ -235,6 +258,8 @@ struct Record {
     name: Option<String>,
     message: Option<String>,
     threads: Vec<String>,
+    /// Those of `threads` flagged background, in the order flagged.
+    background: Vec<String>,
     /// The record has named a thread at some point: losing its last one clears it.
     had_threads: bool,
     started_at: DateTime<Utc>,
@@ -254,6 +279,7 @@ impl Record {
             name: self.name.clone(),
             message: self.message.clone(),
             thread_ids: self.threads.clone(),
+            background_thread_ids: self.background.clone(),
             started_at: stamp(self.started_at),
             last_heartbeat: stamp(self.heartbeat),
             session_id: sid.to_string(),
@@ -275,6 +301,21 @@ impl Record {
             }
         }
         self.had_threads |= !self.threads.is_empty();
+    }
+    /// How long after its last renewal the record lapses.
+    fn ttl(&self) -> Duration {
+        Duration::seconds(if self.background.is_empty() {
+            WORKING_TTL_SECS
+        } else {
+            BACKGROUND_TTL_SECS
+        })
+    }
+    /// Keeps only the background threads; whether any other went.
+    fn spare_background(&mut self) -> bool {
+        let n = self.threads.len();
+        let background = &self.background;
+        self.threads.retain(|t| background.contains(t));
+        self.threads.len() != n
     }
 }
 
@@ -334,7 +375,7 @@ impl Working {
     }
 
     fn live(&self, r: &Record, now: DateTime<Utc>) -> bool {
-        now - r.heartbeat < Duration::seconds(WORKING_TTL_SECS)
+        now - r.heartbeat < r.ttl()
     }
 
     /// The record of `who` on `aid`, made when missing (`true`), renewed.
@@ -356,6 +397,7 @@ impl Working {
                     name: who.name.clone(),
                     message: None,
                     threads: Vec::new(),
+                    background: Vec::new(),
                     had_threads: false,
                     started_at: now,
                     heartbeat: now,
@@ -388,10 +430,7 @@ impl Working {
         let (end, reason) = if self.live(r, now) {
             (now, reason)
         } else {
-            (
-                r.heartbeat + Duration::seconds(WORKING_TTL_SECS),
-                StopReason::Ttl,
-            )
+            (r.heartbeat + r.ttl(), StopReason::Ttl)
         };
         Transition::Stopped {
             session_id: sid.to_string(),
@@ -409,7 +448,7 @@ impl Working {
             view: r.view(sid),
             session_id: sid.to_string(),
             artifact_id: aid.to_string(),
-            expires_at: stamp(r.heartbeat + Duration::seconds(WORKING_TTL_SECS)),
+            expires_at: stamp(r.heartbeat + r.ttl()),
         }
     }
 
@@ -430,16 +469,29 @@ impl Working {
     }
 
     /// Creates or updates the record; `Some` fields replace (an empty thread
-    /// list clears the threads without clearing the record). Always renews.
+    /// list clears the threads without clearing the record), except that
+    /// with `background` the threads are added and flagged background.
+    /// Always renews.
     pub fn set(&self, who: &Actor, aid: &str, s: SetWorking) -> (SessionWorking, Changed) {
         let now = self.now();
         let mut map = self.records.lock().unwrap();
         let mut changed = self.prune(&mut map, now);
         let (made, r) = Self::upsert(&mut map, who, aid, now);
         if let Some(t) = s.thread_ids {
-            r.threads.clear();
-            r.had_threads = false;
-            r.add(&t);
+            if s.background {
+                r.add(&t);
+                for x in &t {
+                    if r.threads.contains(x) && !r.background.contains(x) {
+                        r.background.push(x.clone());
+                    }
+                }
+            } else {
+                r.threads.clear();
+                r.had_threads = false;
+                r.add(&t);
+                let threads = &r.threads;
+                r.background.retain(|x| threads.contains(x));
+            }
         }
         if let Some(m) = s.message {
             r.message = Some(m);
@@ -520,6 +572,14 @@ impl Working {
         };
         let before = self.live(r, now).then(|| r.ended(sid, aid));
         let removed = match threads {
+            None if why.spares_background() && !r.background.is_empty() => {
+                let changed = if r.spare_background() {
+                    Changed::one(aid)
+                } else {
+                    Changed::default()
+                };
+                return (changed, Vec::new());
+            }
             None => true,
             Some(ts) => {
                 let n = r.threads.len();
@@ -527,6 +587,7 @@ impl Working {
                 if r.threads.len() == n {
                     return (Changed::default(), Vec::new());
                 }
+                r.background.retain(|t| !ts.contains(t));
                 r.had_threads && r.threads.is_empty()
             }
         };
@@ -576,12 +637,20 @@ impl Working {
     /// Every record of `sid`, for reason `why` ([`End::TurnEnd`] or
     /// [`End::SessionEnd`]); the removed live records are also returned as
     /// [`Ended`] when `why` finishes work. A lapsed record is removed but
-    /// never reported: it ended by lapsing.
+    /// never reported: it ended by lapsing. A turn end keeps a live
+    /// record's background threads, ending only its other threads.
     pub fn end_session(&self, sid: &str, why: End) -> (Changed, Vec<Ended>) {
         let now = self.now();
         let mut changed = Changed::default();
         let mut ended = Vec::new();
         self.records.lock().unwrap().retain(|(s, aid), r| {
+            if s == sid && why.spares_background() && !r.background.is_empty() && self.live(r, now)
+            {
+                if r.spare_background() {
+                    changed.artifacts.insert(aid.clone());
+                }
+                return true;
+            }
             let keep = s != sid;
             if !keep {
                 changed.artifacts.insert(aid.clone());
@@ -628,7 +697,7 @@ impl Working {
             .lock()
             .unwrap()
             .values()
-            .map(|r| r.heartbeat + Duration::seconds(WORKING_TTL_SECS))
+            .map(|r| r.heartbeat + r.ttl())
             .min()
     }
 
@@ -674,6 +743,23 @@ impl Working {
         map.get(&(sid.to_string(), aid.to_string()))
             .filter(|r| self.live(r, now))
             .map(|r| r.threads.clone())
+            .unwrap_or_default()
+    }
+
+    /// The threads the live record (`sid`, `aid`) names that are not
+    /// background: those a publish addresses unasked.
+    pub fn foreground_threads_of(&self, sid: &str, aid: &str) -> Vec<String> {
+        let now = self.now();
+        let map = self.records.lock().unwrap();
+        map.get(&(sid.to_string(), aid.to_string()))
+            .filter(|r| self.live(r, now))
+            .map(|r| {
+                r.threads
+                    .iter()
+                    .filter(|t| !r.background.contains(t))
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -827,6 +913,7 @@ mod tests {
             SetWorking {
                 thread_ids: None,
                 message: Some("Tightening spacing".into()),
+                ..SetWorking::default()
             },
         );
         assert!(!changed.is_empty());
@@ -840,7 +927,7 @@ mod tests {
             "a1",
             SetWorking {
                 thread_ids: Some(vec![]),
-                message: None,
+                ..SetWorking::default()
             },
         );
         assert!(s.view.thread_ids.is_empty());
@@ -888,6 +975,7 @@ mod tests {
             SetWorking {
                 thread_ids: None,
                 message: Some("Refactoring".into()),
+                ..SetWorking::default()
             },
         );
         assert!(
@@ -949,6 +1037,7 @@ mod tests {
         let msg = SetWorking {
             thread_ids: Some(ids(&["t1"])),
             message: Some("Recoloured".into()),
+            ..SetWorking::default()
         };
         w.set(&claude("s1"), "a1", msg.clone());
         let (changed, ended) = w.clear("s1", "a1", None, End::Done);
@@ -1046,6 +1135,7 @@ mod tests {
             SetWorking {
                 thread_ids: Some(ids(&["t1"])),
                 message: Some("m".into()),
+                ..SetWorking::default()
             },
         );
         let key = w.for_artifact("a1")[0].key.clone();
@@ -1144,5 +1234,135 @@ mod tests {
             clean_message(&"é".repeat(140)),
             (Some("é".repeat(140)), false)
         );
+    }
+
+    fn background(ts: &[&str]) -> SetWorking {
+        SetWorking {
+            thread_ids: Some(ids(ts)),
+            background: true,
+            ..SetWorking::default()
+        }
+    }
+
+    #[test]
+    fn background_threads_join_the_record_without_replacing_its_threads() {
+        let (_c, w) = fixture();
+        w.mark(&claude("s1"), "a1", &ids(&["t2"]));
+        let (v, changed) = w.set(&claude("s1"), "a1", background(&["t1"]));
+        assert_eq!(changed.artifacts, ["a1".to_string()].into());
+        assert_eq!(v.view.thread_ids, ids(&["t2", "t1"]));
+        assert_eq!(v.view.background_thread_ids, ids(&["t1"]));
+    }
+
+    #[test]
+    fn a_turn_end_keeps_the_background_threads_and_ends_the_others() {
+        let (_c, w) = fixture();
+        w.mark(&claude("s1"), "a1", &ids(&["t1", "t2"]));
+        w.set(&claude("s1"), "a1", background(&["t1"]));
+        w.mark(&claude("s1"), "a2", &ids(&["t3"]));
+        let (changed, ended) = w.end_session("s1", End::TurnEnd);
+        assert_eq!(
+            changed.artifacts,
+            ["a1".to_string(), "a2".to_string()].into()
+        );
+        assert_eq!(
+            ended
+                .iter()
+                .map(|e| e.artifact_id.as_str())
+                .collect::<Vec<_>>(),
+            ["a2"],
+            "only the record that ended is finished work"
+        );
+        let v = w.for_artifact("a1");
+        assert_eq!(v[0].thread_ids, ids(&["t1"]));
+        assert_eq!(v[0].background_thread_ids, ids(&["t1"]));
+        assert!(w.for_artifact("a2").is_empty());
+        let (changed, _) = w.end_session("s1", End::TurnEnd);
+        assert!(changed.is_empty(), "a later turn end leaves them be");
+        assert_eq!(w.for_artifact("a1")[0].thread_ids, ids(&["t1"]));
+    }
+
+    #[test]
+    fn a_publish_keeps_the_background_threads_and_done_clears_them() {
+        let (_c, w) = fixture();
+        w.mark(&claude("s1"), "a1", &ids(&["t2"]));
+        w.set(&claude("s1"), "a1", background(&["t1"]));
+        assert_eq!(w.foreground_threads_of("s1", "a1"), ids(&["t2"]));
+        w.clear("s1", "a1", None, End::Publish);
+        assert_eq!(w.threads_of("s1", "a1"), ids(&["t1"]));
+        assert!(w.foreground_threads_of("s1", "a1").is_empty());
+        let (_, ended) = w.clear("s1", "a1", None, End::Done);
+        assert_eq!(ended.len(), 1);
+        assert!(w.for_artifact("a1").is_empty());
+    }
+
+    #[test]
+    fn replying_to_the_last_background_thread_ends_the_record() {
+        let (_c, w) = fixture();
+        w.set(&claude("s1"), "a1", background(&["t1", "t2"]));
+        w.end_session("s1", End::TurnEnd);
+        w.thread_done("s1", "a1", "t1", StopReason::Explicit);
+        assert_eq!(w.for_artifact("a1")[0].background_thread_ids, ids(&["t2"]));
+        w.thread_done("s1", "a1", "t2", StopReason::Explicit);
+        assert!(w.for_artifact("a1").is_empty());
+    }
+
+    #[test]
+    fn a_record_with_background_threads_lapses_after_the_longer_ttl() {
+        let (c, w) = fixture();
+        let (v, _) = w.set(&claude("s1"), "a1", background(&["t1"]));
+        let lapse = c.now() + Duration::seconds(BACKGROUND_TTL_SECS);
+        assert_eq!(v.expires_at, stamp(lapse));
+        assert_eq!(w.next_lapse(), Some(lapse));
+        c.advance(WORKING_TTL_SECS + 1);
+        assert_eq!(w.for_artifact("a1").len(), 1);
+        c.advance(BACKGROUND_TTL_SECS - WORKING_TTL_SECS - 1);
+        let changed = w.sweep();
+        assert!(w.for_artifact("a1").is_empty());
+        assert!(matches!(
+            changed.transitions[..],
+            [Transition::Stopped {
+                reason: StopReason::Ttl,
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn renaming_the_threads_keeps_the_background_flag_only_on_threads_still_named() {
+        let (c, w) = fixture();
+        w.set(&claude("s1"), "a1", background(&["t1"]));
+        let (v, _) = w.set(
+            &claude("s1"),
+            "a1",
+            SetWorking {
+                thread_ids: Some(ids(&["t2"])),
+                ..SetWorking::default()
+            },
+        );
+        assert!(v.view.background_thread_ids.is_empty());
+        assert_eq!(
+            v.expires_at,
+            stamp(c.now() + Duration::seconds(WORKING_TTL_SECS))
+        );
+    }
+
+    #[test]
+    fn the_session_end_ends_background_threads_too() {
+        let (_c, w) = fixture();
+        w.set(&claude("s1"), "a1", background(&["t1"]));
+        w.end_session("s1", End::SessionEnd);
+        assert!(w.for_artifact("a1").is_empty());
+    }
+
+    #[test]
+    fn background_threads_are_served_only_when_there_are_some() {
+        let (_c, w) = fixture();
+        w.mark(&claude("s1"), "a1", &ids(&["t1"]));
+        let v = serde_json::to_value(&w.for_artifact("a1")[0]).unwrap();
+        assert!(v.get("background_thread_ids").is_none(), "{v}");
+        w.set(&claude("s1"), "a1", background(&["t1"]));
+        let v = serde_json::to_value(&w.for_artifact("a1")[0]).unwrap();
+        assert_eq!(v["background_thread_ids"], serde_json::json!(["t1"]));
     }
 }
