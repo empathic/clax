@@ -1616,13 +1616,17 @@ describe("comments", () => {
     await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
     const pub = JSON.parse((await pi.callTool("clax_publish", { html: "<h2>Goals</h2>", title: "B" }, ctx)).content[0].text!);
     const tid = await browserThread(pub.artifact_id, "@agent two columns");
+    const quick = await browserThread(pub.artifact_id, "@agent a quick question");
+    const fg = await pi.callTool("clax_working", { url_or_id: pub.artifact_id, thread_ids: [quick] }, ctx);
+    expect(JSON.parse(fg.content[0].text!)).toMatchObject({ working: true, thread_ids: [quick], expires_in_s: 120 });
     const set = await pi.callTool("clax_working", { url_or_id: pub.artifact_id, thread_ids: [tid], background: true }, ctx);
     expect(set.isError).toBe(false);
-    expect(JSON.parse(set.content[0].text!)).toMatchObject({ working: true, thread_ids: [tid], background_thread_ids: [tid], expires_in_s: 600 });
+    expect(JSON.parse(set.content[0].text!)).toMatchObject({ working: true, thread_ids: [quick, tid], background_thread_ids: [tid], expires_in_s: 600 });
     await pi.emit("agent_end", { type: "agent_end", messages: [] }, ctx);
     const seen = await (await fetch(`${daemon.base}/api/artifacts/${pub.artifact_id}/working`, { headers: { cookie: await browserCookie() } })).json();
+    expect(seen.working).toHaveLength(1);
     expect(seen.working[0]).toMatchObject({ thread_ids: [tid], background_thread_ids: [tid] });
-    for (const args of [{ url_or_id: pub.artifact_id, background: true }, { url_or_id: pub.artifact_id, thread_ids: [tid], background: true, done: true }]) {
+    for (const args of [{ url_or_id: pub.artifact_id, background: true }, { url_or_id: pub.artifact_id, thread_ids: [], background: true }, { url_or_id: pub.artifact_id, thread_ids: [tid], background: true, done: true }]) {
       const bad = await pi.callTool("clax_working", args, ctx);
       expect(bad.isError).toBe(true);
       expect(JSON.parse(bad.content[0].text!).error.code).toBe("invalid_args");

@@ -538,13 +538,13 @@ const ASK_NOTE: &str =
 pub struct WorkingArgs {
     /// Artifact URL or ID, or a web page's URL (its live page).
     pub url_or_id: String,
-    /// Threads of the artifact you are acting on (at most 20); replaces the ones named before.
+    /// Threads of the artifact you are acting on (at most 20 on the record); replaces the ones named before, background threads aside.
     pub thread_ids: Option<Vec<String>>,
     /// What you are doing, in a few words (at most 140 characters).
     pub message: Option<String>,
     /// Clear it now (with `thread_ids`, only those threads).
     pub done: Option<bool>,
-    /// The threads in `thread_ids` are handed to work that goes on after your turn (subagents in the background): they join the threads named before instead of replacing them, and stay marked through the end of your turn and a publish.
+    /// The threads in `thread_ids` are handed to work that goes on after your turn (subagents in the background): they join the threads named before instead of replacing them, and stay marked through the end of your turn, a publish and later calls; a `message` given with them stays with them.
     pub background: Option<bool>,
 }
 
@@ -4518,7 +4518,7 @@ impl ClaxTools {
     }
 
     #[tool(
-        description = "Tell the person you are working on an artifact: its page's top bar shows `<harness> working on N` (or `<harness>: <message>`), its gallery card a chip, and `<harness> is working on it` on each thread in `thread_ids`. Comments sent to you mark you working automatically; call this for other work or to add a short `message` (at most 140 characters). It clears when you reply to those threads, publish the artifact, end your turn, or go 2 minutes without a tool call; `done: true` clears it now. Threads you hand to subagents that work on after your turn take `background: true`: they join the others and stay marked through the end of your turn and a publish, until you reply to or resolve them, clear them with `done: true`, or 10 minutes pass without a tool call.",
+        description = "Tell the person you are working on an artifact: its page's top bar shows `<harness> working on N` (or `<harness>: <message>`), its gallery card a chip, and `<harness> is working on it` on each thread in `thread_ids`. Comments sent to you mark you working automatically; call this for other work or to add a short `message` (at most 140 characters). It clears when you reply to those threads, publish the artifact, end your turn, or go 2 minutes without a tool call; `done: true` clears it now. Threads you hand to subagents that work on after your turn take `background: true`: they join the others and stay marked through the end of your turn, a publish and later calls, until you reply to or resolve them, clear them with `done: true`, or 10 minutes pass without a tool call; the publish that carries a handed-off thread's change names it in `addresses`.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

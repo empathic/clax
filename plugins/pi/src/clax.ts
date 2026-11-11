@@ -268,10 +268,10 @@ const QueueReplyArgs = Type.Object({ queue: queueId, report_id: reportId, body: 
 
 const WorkingArgs = Type.Object({
   url_or_id: pageOrId,
-  thread_ids: opt(Type.Array(Type.String(), { description: "Threads of the artifact you are acting on (at most 20); replaces the ones named before." })),
+  thread_ids: opt(Type.Array(Type.String(), { description: "Threads of the artifact you are acting on (at most 20 on the record); replaces the ones named before, background threads aside." })),
   message: opt(str("What you are doing, in a few words (at most 140 characters).")),
   done: opt(Type.Boolean({ description: "Clear it now (with `thread_ids`, only those threads)." })),
-  background: opt(Type.Boolean({ description: "The threads in `thread_ids` are handed to work that goes on after your turn (subagents in the background): they join the threads named before instead of replacing them, and stay marked through the end of your turn and a publish." })),
+  background: opt(Type.Boolean({ description: "The threads in `thread_ids` are handed to work that goes on after your turn (subagents in the background): they join the threads named before instead of replacing them, and stay marked through the end of your turn, a publish and later calls; a `message` given with them stays with them." })),
 }, strict);
 
 const DraftArgs = Type.Object({
@@ -2817,7 +2817,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       "Watch a Clax artifact for comments sent to you, or stop watching it",
       WatchArgs, (ctx, a) => tools.watch(ctx, a));
     define("working", "Clax working",
-      "Tell the person you are working on an artifact: its page's top bar shows `<harness> working on N` (or `<harness>: <message>`), its gallery card a chip, and `<harness> is working on it` on each thread in `thread_ids`. Comments sent to you mark you working automatically; call this for other work or to add a short `message` (at most 140 characters). It clears when you reply to those threads, publish the artifact, end your turn, or go 2 minutes without a tool call; `done: true` clears it now. Threads you hand to subagents that work on after your turn take `background: true`: they join the others and stay marked through the end of your turn and a publish, until you reply to or resolve them, clear them with `done: true`, or 10 minutes pass without a tool call.",
+      "Tell the person you are working on an artifact: its page's top bar shows `<harness> working on N` (or `<harness>: <message>`), its gallery card a chip, and `<harness> is working on it` on each thread in `thread_ids`. Comments sent to you mark you working automatically; call this for other work or to add a short `message` (at most 140 characters). It clears when you reply to those threads, publish the artifact, end your turn, or go 2 minutes without a tool call; `done: true` clears it now. Threads you hand to subagents that work on after your turn take `background: true`: they join the others and stay marked through the end of your turn, a publish and later calls, until you reply to or resolve them, clear them with `done: true`, or 10 minutes pass without a tool call; the publish that carries a handed-off thread's change names it in `addresses`.",
       "Show the person you are working on a Clax artifact, or clear it",
       WorkingArgs, (ctx, a) => tools.working(ctx, a));
     define("draft", "Clax draft",
