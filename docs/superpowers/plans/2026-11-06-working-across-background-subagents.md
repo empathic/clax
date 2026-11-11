@@ -2,7 +2,7 @@
 
 **Goal:** A thread whose work the agent hands to subagents that run on after its turn stays marked working until the agent replies, in every harness, without marking the other threads of the session.
 
-**Architecture:** The agent says which threads it handed off (`working` with `background: true`). The daemon's working registry flags them; a turn end and a publish keep them; the 600 s lapse covers harnesses whose subagents cannot renew the parent. No hook logic per harness.
+**Architecture:** The agent says which threads it handed off (`working` with `background: true`). The daemon's working registry flags them; a turn end and a publish end the rest of the record's work and keep them; the 600 s lapse covers harnesses whose subagents cannot renew the parent. No hook logic per harness.
 
 **Spec:** `docs/superpowers/specs/2026-11-06-working-across-background-subagents-design.md`
 
@@ -25,7 +25,7 @@
 
 - [x] `BACKGROUND_TTL_SECS = 600`; `SetWorking::background`; `Record::background`; `WorkingView::background_thread_ids` (skipped when empty).
 - [x] `set` with `background` adds and flags the threads; without it, replacing the threads keeps flags only on threads still named.
-- [x] `End::TurnEnd` and `End::Publish` spare background threads (`end_session`, `clear` with no threads); removing a thread drops its flag; `Working::foreground_threads_of`.
+- [x] `End::TurnEnd` and `End::Publish` end a live record's foreground work (its finished item and `working.stop`) and carry its background threads on in a fresh record (`Working::end_record`, `Record::split_background`); a plain `set` replaces only foreground threads; a call past 20 threads on the record fails; removing a thread drops its flag, and the last background thread's removal renews the record; `Working::foreground_threads_of`.
 - [x] The lapse, `expires_at` and `next_lapse` use 600 s while a record names background threads.
 - [x] Tests: the eight background tests at the end of the module's tests.
 
