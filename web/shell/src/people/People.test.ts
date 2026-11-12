@@ -209,6 +209,31 @@ describe("People", () => {
     expect(gone).toHaveBeenCalledTimes(1);
   });
 
+  it("goes on saying a disconnected person was disconnected when the page loads again", async () => {
+    let revoked = false;
+    stubFetch({
+      "GET /api/people/me": () => (revoked ? [403, { error: { code: "forbidden", message: "only the owner or a connected person has People" } }] : { person: { public_id: "p1", display_name: "Sam", owner: false, rights: COLLAB }, grants: [grant()], agents: [agent()] }),
+      "GET /api/approvals": { approvals: [] },
+      "GET /api/approvals/requests": { requests: [], open: 0, banner: null },
+    });
+    let hear: ((e: { type: string }) => void) | null = null;
+    const watch = vi.fn((_t: string[], on: (e: { type: string }) => void) => { hear = on; return () => {}; });
+    const gone = vi.fn();
+    addEventListener("clax:people-gone", gone);
+    const m = mount(People, { stream: { watch } as unknown as import("../stream").EventStream });
+    await settle();
+    revoked = true;
+    // A revoke is more than one event on the person's stream: each loads the page.
+    hear!({ type: "refused" });
+    await settle();
+    hear!({ type: "agent_removed" });
+    await settle();
+    removeEventListener("clax:people-gone", gone);
+    expect(m.root.textContent).toContain("You are no longer connected: the owner disconnected you.");
+    expect(m.root.textContent).not.toContain("People is for the owner of this Clax");
+    expect(gone).toHaveBeenCalledTimes(1);
+  });
+
   it("focuses Name when the invite form opens, and Invite a person when it closes", async () => {
     stubFetch(ownerRoutes());
     const m = mount(People, {});
