@@ -5,8 +5,9 @@
 // public origin and `localhost` as the site domain (each artifact's site at
 // `http://<ID>.localhost:<port>`), and one people seat. It checks that
 //
-// - a request body over 96 MiB, over 16 MiB, or over 256 KiB with no
-//   credential, declared or chunked, is refused 413;
+// - a request body declared over 96 MiB, over 16 MiB declared or chunked,
+//   or over 256 KiB with no credential, declared or chunked, is refused
+//   413;
 // - the first person sets up with the secret, invites Sam, who joins in a
 //   second browser in a space of their own, and Sam signs a third browser
 //   in with a sign-in link;
@@ -137,6 +138,35 @@ function oversized(base, path, chunked, mib = 97, extra = {}) {
       if (!answered) req.end();
     };
     more();
+  });
+}
+
+/** The status of a POST to `path` whose body declares no length and has not
+ * ended: `bytes` of it written at once, then the request held open until
+ * the answer comes. A refusal that takes its last byte to decide is
+ * answered with none of the body still on its way. `wrangler dev`'s proxy
+ * relays that answer; one sent while bytes are still arriving it sometimes
+ * loses (a 500, "Network connection lost", on Linux). */
+function unended(base, path, bytes) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(path, base);
+    const headers = { "content-type": "application/json", origin: base };
+    let answered = false;
+    const req = request({ host: u.hostname, port: u.port, path: u.pathname, method: "POST", headers }, (res) => {
+      answered = true;
+      clearTimeout(hung);
+      res.resume();
+      req.destroy();
+      resolve(res.statusCode);
+    });
+    const hung = setTimeout(() => {
+      req.destroy(new Error(`FAIL no answer to ${bytes} bytes of an unended body within the ${HANG_MS / 1000} s hang guard`));
+    }, HANG_MS);
+    req.on("error", (e) => {
+      clearTimeout(hung);
+      if (!answered) reject(e);
+    });
+    req.write(Buffer.alloc(bytes, 0x20));
   });
 }
 
@@ -294,6 +324,9 @@ async function main() {
     // object, a chunked body once it is past the limit. Under `wrangler
     // dev` the request after an answer to a body still being sent can fail
     // (its proxy loses the connection), so one that may fail follows each.
+    // The same proxy can lose the answer itself while bytes are arriving,
+    // so the body with no credential stops one byte past its limit and
+    // stays open: the 413 answers that byte, before the body's end.
     const settle = () => fetch(`${origin}/healthz`).catch(() => undefined);
     const bearer = { authorization: `Bearer ${TOKEN}` };
     const anonymous = await oversized(origin, "/api/hosted/setup", false, 1);
@@ -303,8 +336,8 @@ async function main() {
     const chunked16 = await oversized(origin, "/api/artifacts", true, 17, bearer);
     check(chunked16 === 413, "a chunked body past 16 MiB is refused 413", chunked16);
     await settle();
-    const chunked96 = await oversized(origin, "/api/hosted/setup", true);
-    check(chunked96 === 413, "a chunked body past 96 MiB is refused 413", chunked96);
+    const chunkedAnonymous = await unended(origin, "/api/hosted/setup", 256 * 1024 + 1);
+    check(chunkedAnonymous === 413, "a chunked body with no credential is refused 413 one byte past 256 KiB, before its end", chunkedAnonymous);
     await settle();
     check((await fetch(`${origin}/healthz`)).ok, "the instance answers after the oversized bodies");
 
