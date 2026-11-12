@@ -703,7 +703,10 @@ MANAGED() { echo "${CLAX_HOME:-$HOME/.clax}/bin/$P"; }
 requests() { grep -c . "$REQLOG" | tr -d ' '; }
 listing() { PATH="$ORIG_PATH" ls -A "$1" 2>/dev/null | tr '\n' ' '; }
 leftovers() { PATH="$ORIG_PATH" ls -A "$HOME/.clax/bin" 2>/dev/null | grep '^\.' || true; }
-sha_of() { shasum -a 256 "$1" | awk '{ print $1 }'; }
+sha_of() {
+    if command -v sha256sum > /dev/null 2>&1; then sha256sum "$1" | awk '{ print $1 }'
+    else shasum -a 256 "$1" | awk '{ print $1 }'; fi
+}
 
 new_env; : > "$REQLOG"
 prun ok which

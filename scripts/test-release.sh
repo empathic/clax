@@ -102,9 +102,13 @@ else fail "a stray image version in the docs is named ($out)"; fi
 fresh "$T/half"
 sed -i.bak 's/^CLAX_VERSION=/CLAX_VERSION_GONE=/' "$T/half/plugins/clax/scripts/ensure-clax.sh"
 rm "$T/half/plugins/clax/scripts/ensure-clax.sh.bak"
-before="$(cd "$T/half" && find . -type f | sort | xargs shasum)"
+sums_of_tree() {
+    if command -v sha256sum >/dev/null 2>&1; then (cd "$1" && find . -type f | sort | xargs sha256sum)
+    else (cd "$1" && find . -type f | sort | xargs shasum -a 256); fi
+}
+before="$(sums_of_tree "$T/half")"
 out="$(cd "$T/half" && scripts/bump-version.sh 9.8.7 2>&1)"; rc=$?
-after="$(cd "$T/half" && find . -type f | sort | xargs shasum)"
+after="$(sums_of_tree "$T/half")"
 if [ "$rc" != 0 ] && [ "$before" = "$after" ] && echo "$out" | grep "no file was changed" >/dev/null; then
     pass "a bump that cannot match every version changes no file"
 else fail "a bump that cannot match every version changes no file (rc=$rc: $out)"; fi
@@ -153,7 +157,10 @@ i=0
 while [ ! -s "$T/port" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
 BASE="http://127.0.0.1:$(cat "$T/port")"
 WRAPPERS="scripts/ensure-clax.sh plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/ensure-clax.sh plugins/clax-grok/scripts/ensure-clax.sh plugins/pi/scripts/ensure-clax.sh"
-sums_of() { (cd "$1" && for w in $WRAPPERS; do shasum "$w"; done); }
+sums_of() {
+    if command -v sha256sum >/dev/null 2>&1; then (cd "$1" && for w in $WRAPPERS; do sha256sum "$w"; done)
+    else (cd "$1" && for w in $WRAPPERS; do shasum -a 256 "$w"; done); fi
+}
 
 fresh "$T/pin"
 out="$(cd "$T/pin" && CLAX_RELEASE_BASE_URL="$BASE/ok" scripts/pin-release.sh "v$V" 2>&1)"; rc=$?

@@ -14,7 +14,8 @@ bad() { echo "FAIL: $1"; fails=1; }
 # of its own.
 printf '#!/bin/sh\necho "clax 0.0.0"\n' > "$d/clax"
 chmod +x "$d/clax"
-sum="$(shasum -a 256 "$d/clax")"
+if command -v sha256sum >/dev/null 2>&1; then sum="$(sha256sum "$d/clax")"
+else sum="$(shasum -a 256 "$d/clax")"; fi
 sum="${sum%% *}"
 
 # Two runs at once on one store: both print the same executable copy, and

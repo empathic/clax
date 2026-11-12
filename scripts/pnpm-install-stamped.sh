@@ -11,7 +11,7 @@ set -euo pipefail
 dir="$1"; shift
 cd "$dir"
 stamp="node_modules/.clax-install-stamp"
-want="$( { cat pnpm-lock.yaml; node --version; pnpm --version; } | shasum -a 256 | cut -d' ' -f1)"
+want="$( { cat pnpm-lock.yaml; node --version; pnpm --version; } | if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi | cut -d' ' -f1)"
 if [ "${CLAX_PNPM_INSTALL:-}" != "always" ] && [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$want" ]; then
     echo "pnpm install: $dir/node_modules matches pnpm-lock.yaml; skipped"
     exit 0

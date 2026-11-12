@@ -63,7 +63,10 @@ exec(code)
 open(f, "w").write(json.dumps(t, indent=2) + "\n")
 EOF
 }
-_tree_sum() { (cd "$d/w" && find . -type f | sort | xargs shasum -a 256); }
+_tree_sum() {
+    (cd "$d/w" && if command -v sha256sum >/dev/null 2>&1; then find . -type f | sort | xargs sha256sum
+    else find . -type f | sort | xargs shasum -a 256; fi)
+}
 
 # 1. The committed outputs are what the source writes.
 _copy
