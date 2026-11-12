@@ -959,6 +959,7 @@ pub async fn run_all(sandbox: &dyn Sandbox) -> Vec<(&'static str, Result<(), Str
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

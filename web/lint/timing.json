@@ -1,0 +1,55 @@
+{
+  "$schema": "../node_modules/oxlint/configuration_schema.json",
+  // The test-timing rules (AGENTS.md: no sleeps standing in for a
+  // condition, no wall-clock budgets in any check), on test files only, in
+  // their own oxlint run (package.json's "lint": the second oxlint).
+  //
+  // The rules are errors: a finding fails //web:lint.
+  //
+  // An exemption is one site, with its reason:
+  //   // oxlint-disable-next-line clax-timing/<rule> -- <why real time is the contract here>
+  // This run cannot report a stale one: it turns every other rule off, so
+  // --report-unused-disable-directives would name every other rule's
+  // directive too.
+  "categories": { "correctness": "off" },
+  "plugins": [],
+  "jsPlugins": ["./timing.mjs"],
+  "overrides": [
+    {
+      // The test files: unit tests, the browser tests and their helpers,
+      // Pi's tests, the home app's tests and the Worker's test scripts.
+      "files": [
+        "**/*.test.ts",
+        "**/*.test.js",
+        "**/*.test.mjs",
+        "**/*.spec.ts",
+        "**/e2e/**",
+        "**/shell/src/test/**",
+        "**/shell/test-setup.ts",
+        "**/bridge/test/**",
+        "**/extension/test/**",
+        "**/sdk/test/**",
+        "**/plugins/pi/test/**",
+        "**/clax_app/home/tests/**",
+        "**/clax_app/home_unit/**",
+        "**/clax-worker/e2e*.mjs",
+        "**/clax-worker/test-*.mjs",
+        "**/clax-worker/harness.mjs"
+      ],
+      // web/perf measures (`just perf`, gating nothing) and web/reel records
+      // (manual targets): both time real work on purpose.
+      "excludeFiles": ["**/perf/**", "**/reel/**"],
+      "rules": {
+        "no-restricted-properties": [
+          "error",
+          { "property": "waitForTimeout", "message": "a fixed wait in a test: wait on the condition itself (expect, expect.poll, until), or advance a clock" }
+        ],
+        "clax-timing/timer-delay": "error",
+        "clax-timing/literal-timeout": "error",
+        "clax-timing/clock-arithmetic": "error",
+        "clax-timing/disabled-test": "error",
+        "clax-timing/counted-turns": "error"
+      }
+    }
+  ]
+}

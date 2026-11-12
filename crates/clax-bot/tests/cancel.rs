@@ -37,9 +37,8 @@ async fn a_cancel_mid_turn_stops_the_run_and_charges_what_the_call_used() {
     let mut live = env.hub.subscribe(&env.store, &run, None).unwrap();
     let mut deltas = 0;
     while deltas < PARTIAL_DELTAS {
-        let e = tokio::time::timeout(PROMPTLY, live.next())
+        let e = within("the turn streams", live.next())
             .await
-            .expect("the turn streams")
             .unwrap()
             .unwrap();
         if e.event == "turn_delta" {
@@ -50,7 +49,7 @@ async fn a_cancel_mid_turn_stops_the_run_and_charges_what_the_call_used() {
         .cancel_run(&clax_bot::run::bot_ctx("*owner"), &run)
         .unwrap();
     cancel.cancel();
-    let out = tokio::time::timeout(PROMPTLY, task).await.unwrap().unwrap();
+    let out = within("the cancelled tick ends", task).await.unwrap();
     assert_eq!(out.next, Next::Done(RunStatus::Stopped));
     assert_eq!(out.kind, Some(StepKind::Stopped));
     let r = env.run_row(&run);
@@ -109,8 +108,8 @@ async fn a_cancel_mid_script_charges_what_it_used_and_keeps_no_draft() {
         op: "artifact.get",
         token: token.clone(),
     };
-    let out = tokio::time::timeout(
-        PROMPTLY,
+    let out = within(
+        "the cancelled tick ends",
         clax_bot::tick(
             &deps,
             &run,
@@ -123,7 +122,6 @@ async fn a_cancel_mid_script_charges_what_it_used_and_keeps_no_draft() {
         ),
     )
     .await
-    .unwrap()
     .unwrap();
     assert_eq!(out.next, Next::Done(RunStatus::Stopped));
     assert_eq!(env.run_row(&run).reason.as_deref(), Some("cancelled"));

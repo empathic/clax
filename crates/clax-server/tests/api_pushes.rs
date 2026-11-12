@@ -5,15 +5,12 @@
 use clax_testkit::TestServer;
 use futures::StreamExt;
 use std::sync::Arc;
-use std::time::Duration;
 
 use clax_content_git::MemGitContent;
 use clax_core::working::SystemClock;
 use clax_git::tree::{Changes, build_tree};
 use clax_git::versions::repo_name;
 use clax_git::{Commit, MAIN, Person, RefUpdate, Repo, Signature};
-
-const READ_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Pushes one commit on `main` of `aid`'s repository putting `index.html`.
 async fn push(content: &MemGitContent, aid: &str, html: &str, message: &str) {
@@ -64,28 +61,26 @@ async fn next_version(
     stream: &mut (impl StreamExt<Item = Result<bytes::Bytes, reqwest::Error>> + Unpin),
     buf: &mut String,
 ) -> serde_json::Value {
-    let deadline = tokio::time::Instant::now() + READ_TIMEOUT;
-    loop {
-        if let Some(end) = buf.find("\n\n") {
-            let block = buf[..end].to_string();
-            buf.drain(..end + 2);
-            if block.lines().any(|l| l == "event: version") {
-                let data = block
-                    .lines()
-                    .find_map(|l| l.strip_prefix("data: "))
-                    .unwrap();
-                return serde_json::from_str(data).unwrap();
+    // Keep-alive comments arrive meanwhile: the hang guard is on the event.
+    clax_testkit::within("a version event", async {
+        loop {
+            if let Some(end) = buf.find("\n\n") {
+                let block = buf[..end].to_string();
+                buf.drain(..end + 2);
+                if block.lines().any(|l| l == "event: version") {
+                    let data = block
+                        .lines()
+                        .find_map(|l| l.strip_prefix("data: "))
+                        .unwrap();
+                    return serde_json::from_str(data).unwrap();
+                }
+                continue;
             }
-            continue;
+            let chunk = stream.next().await.expect("the stream still open").unwrap();
+            buf.push_str(std::str::from_utf8(&chunk).unwrap());
         }
-        // Keep-alive comments arrive meanwhile: the bound is on the event.
-        let chunk = tokio::time::timeout_at(deadline, stream.next())
-            .await
-            .expect("a version event within 20 s")
-            .expect("the stream still open")
-            .unwrap();
-        buf.push_str(std::str::from_utf8(&chunk).unwrap());
-    }
+    })
+    .await
 }
 
 #[tokio::test]

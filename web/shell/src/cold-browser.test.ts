@@ -1,17 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { COLD_HEADING } from "./cold-browser";
-import { MOUNT_TIMEOUT_MS, WAIT_MS } from "./test/timeouts";
+import { MOUNT_TIMEOUT_MS } from "./test/timeouts";
+import { waitFor } from "./test/wait-for";
 
-/** Polls until `check` returns a truthy value; fails after `WAIT_MS`. */
-async function waitFor<T>(check: () => T | null | undefined | false, what: string): Promise<T> {
-  const deadline = Date.now() + WAIT_MS;
-  for (;;) {
-    const v = check();
-    if (v) return v;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await new Promise(r => setTimeout(r, 10));
-  }
-}
 
 const ARTIFACT = { id: "7q3k9mzx2b4t", title: "Roadmap", description: null, icon: null, pinned: false, current_version: 1, updated_at: "2026-10-29T10:00:00Z" };
 const NO_CREDENTIAL = () => new Response(JSON.stringify({ error: { code: "no_credential", message: "this needs a credential" } }), { status: 401 });

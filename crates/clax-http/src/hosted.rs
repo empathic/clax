@@ -2088,6 +2088,7 @@ pub fn signed_in_response(h: &Hosted, signed: SignedIn, mut shape: Value, key: &
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

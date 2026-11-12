@@ -92,6 +92,7 @@ pub fn decode_component(s: &str) -> Option<String> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

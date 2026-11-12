@@ -8,6 +8,8 @@ HERE="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(cd "$(mktemp -d)" && pwd -P)"
 # shellcheck source=scripts/fake-exe.sh
 . "$HERE/scripts/fake-exe.sh"
+# shellcheck source=scripts/lib/wait.sh
+. "$HERE/scripts/lib/wait.sh"
 SERVER_PID=""
 # shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
@@ -149,8 +151,7 @@ grep -v aarch64-unknown-linux-musl "$REL/good/v$V/SHA256SUMS" | sed "s/  clax-${
 : > "$T/requests.log"
 "$PY" "$HERE/scripts/fake-release-server.py" "$REL" "$T/requests.log" "$T/port" &
 SERVER_PID=$!
-i=0
-while [ ! -s "$T/port" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
+wait_for "the fake release server's port" test -s "$T/port" || exit 1
 BASE="http://127.0.0.1:$(cat "$T/port")"
 WRAPPERS="scripts/ensure-clax.sh plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/ensure-clax.sh plugins/clax-grok/scripts/ensure-clax.sh plugins/pi/scripts/ensure-clax.sh"
 sums_of() { (cd "$1" && for w in $WRAPPERS; do shasum "$w"; done); }

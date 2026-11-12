@@ -10,21 +10,36 @@ Serves <root>/good/<path> at /<mode>/<path> and <root>/wrong/<path> at
   none     404 for everything
   badsum   SHA256SUMS with every checksum zeroed
   partial  archives: the full Content-Length, half the body, then a close
-  slow     waits 60 s before answering
-  gate     waits until the file <root>/gate-open exists (at most 60 s), then
-           answers as ok does
+  slow     never answers: holds the request until the client goes away
+  gate     waits until the file <root>/gate-open exists, then answers as ok
+           does; a client that goes away first gets no answer
   wrong    the files under <root>/wrong
 Binds 127.0.0.1 on a port the kernel picks and writes it to <port file>.
 """
 import http.server
 import os
 import re
+import select
 import sys
 import threading
-import time
 
 ROOT, LOG, PORT_FILE = sys.argv[1:4]
 LOG_LOCK = threading.Lock()
+
+
+def client_gone(conn, wait):
+    """Whether the client closed its side of `conn` within `wait` seconds
+    (None: however long that takes). Bytes it sends meanwhile are read and
+    dropped."""
+    while True:
+        readable, _, _ = select.select([conn], [], [], wait)
+        if not readable:
+            return False
+        try:
+            if not conn.recv(4096):
+                return True
+        except OSError:
+            return True
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -54,11 +69,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         tree = "wrong" if mode == "wrong" else "good"
         path = os.path.join(ROOT, tree, rest)
         if mode == "slow":
-            time.sleep(60)
+            client_gone(self.connection, None)
+            return
         if mode == "gate":
-            deadline = time.time() + 60
-            while not os.path.exists(os.path.join(ROOT, "gate-open")) and time.time() < deadline:
-                time.sleep(0.05)
+            while not os.path.exists(os.path.join(ROOT, "gate-open")):
+                if client_gone(self.connection, 0.05):
+                    return
         if ".." in rest or not os.path.isfile(path):
             self.send_error(404)
             return

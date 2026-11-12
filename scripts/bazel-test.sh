@@ -210,7 +210,10 @@ if [ "$ci" = 1 ]; then
     for toml in crates/*/clippy.toml; do
         [ -f "$toml" ] || continue
         crate="$(dirname "$toml")"
+        # The lint .bazelrc's build:clippy allows for the timing rules is
+        # turned back on, so the crate's own disallowed methods are errors.
         _build "rust clippy ($crate)" --keep_going --config=clippy --output_groups=clippy_checks \
+            "--@rules_rust//rust/settings:clippy_flag=-Wclippy::disallowed_methods" \
             "--@rules_rust//rust/settings:clippy.toml=//$crate:clippy.toml" "//$crate/..."
     done
     # Not the hosted Worker's builds (//bazel/wasm/...): a wasm32 build of

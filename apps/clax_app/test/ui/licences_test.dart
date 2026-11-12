@@ -7,6 +7,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../support/settle.dart';
+
 /// The bundle's NOTICES.Z (//apps/clax_app:notices, as the app bundles
 /// it), parsed as [ServicesBinding] parses it in the app, where
 /// flutter_test registers none: entries split by a line of 80 dashes, each
@@ -91,12 +93,7 @@ void main() {
     await tester.tap(find.text('Licences'));
     // The page reads the registry off the main isolate.
     final rows = find.textContaining(RegExp(r'^\d+ licenses?\.$'));
-    for (var i = 0; i < 100 && rows.evaluate().isEmpty; i++) {
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 50)),
-      );
-      await tester.pump();
-    }
+    await settle(tester, rows);
     expect(rows, findsWidgets);
     await tester.scrollUntilVisible(
       find.text('webview_flutter'),

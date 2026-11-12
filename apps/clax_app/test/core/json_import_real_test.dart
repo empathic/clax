@@ -24,6 +24,7 @@ import '../queue/queue_host_test.dart' show stateWhere;
 import '../queue/worker_agent_test.dart' show unscriptedFile;
 import '../support/paths.dart';
 import '../support/real_core.dart';
+import '../support/settle.dart' show stuckAfter;
 
 /// The fixtures' artifacts (test/fixtures/json-state), replaced by the
 /// real core's.
@@ -96,13 +97,13 @@ void main() {
 
       runner.run(const ClaimOwner(1));
       expect(
-        await claim.future.timeout(const Duration(minutes: 1)),
+        await claim.future.timeout(stuckAfter),
         isA<OwnerClaimed>(),
       );
 
       final first = loaded.stream.first;
       runner.run(const LoadJobs(2));
-      final jobs = await first.timeout(const Duration(minutes: 1));
+      final jobs = await first.timeout(stuckAfter);
 
       final s = summaries.single;
       expect(s.already, isFalse);
@@ -155,7 +156,7 @@ void main() {
       seed();
       final second = loaded.stream.first;
       runner.run(const LoadJobs(3));
-      final again = await second.timeout(const Duration(minutes: 1));
+      final again = await second.timeout(stuckAfter);
       expect(summaries.last.already, isTrue);
       expect(summaries.last.jobs, s.jobs);
       expect(again.map((j) => j.id).toSet(), jobs.map((j) => j.id).toSet());
@@ -289,7 +290,7 @@ void main() {
       final stopped = (await stateWhere(
         host.client,
         (s) => s.jobs.isNotEmpty && s.jobs.single.state == JobState.stopped,
-      ).timeout(const Duration(minutes: 1))).jobs.single;
+      ).timeout(stuckAfter)).jobs.single;
       host.client.send(KeepGoing(stopped.id));
 
       final job = await ended(host, support);
@@ -398,7 +399,7 @@ Future<String> _thread(HttpClaxApi api, String aid, String body) async {
     '/api/artifacts/$aid/threads',
     headers: {'content-type': 'multipart/form-data; boundary=$boundary'},
     body: Uint8List.fromList(utf8.encode(text.toString())),
-    timeout: const Duration(seconds: 35),
+    timeout: stuckAfter,
   );
   final answer = utf8.decode(r.body);
   expect(r.status, inInclusiveRange(200, 299), reason: answer);

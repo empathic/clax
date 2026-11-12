@@ -691,6 +691,7 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     #[test]
     fn bot_web_is_laid_over_the_stored_web_settings() {

@@ -319,6 +319,7 @@ pub async fn count_until(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -394,8 +395,6 @@ mod tests {
         let notified = n.notified();
         w.wake("q");
         w.wake("nobody");
-        tokio::time::timeout(std::time::Duration::from_secs(5), notified)
-            .await
-            .expect("woken");
+        crate::test_util::within("the poll's wake", notified).await;
     }
 }

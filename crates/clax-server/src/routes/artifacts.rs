@@ -2011,6 +2011,7 @@ pub async fn fork(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::pending_of;
     use clax_core::capabilities::Added;

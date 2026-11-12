@@ -2697,6 +2697,7 @@ fn encode_path(path: &str) -> String {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     /// The shim's and `/mcp`'s clients are agent channels; the CLI's tool
     /// commands mark theirs as the CLI decides.

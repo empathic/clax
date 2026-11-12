@@ -5,12 +5,27 @@
 // still be typing for the page (spec §8, "Keys"; decisions Q2 and Q6).
 import { type Frame, type Locator, type Page } from "@playwright/test";
 import { test, expect, type Daemon, api, contentFrame, openArtifact, postThread, publishWith } from "./fixtures";
-import { settle } from "./time";
+import { fence, pauseTime, quietEval, settle } from "./time";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
 
 const PAGE = `<!doctype html><html><head><title>Keys</title></head><body><main><h2 id="t">Target</h2><p>Type here.</p></main></body></html>`;
+
+/** Every thread write (a request other than a read under the artifact's
+ * threads) `page` starts from now on. The shell starts one as it handles
+ * the key or click that asks for it, so after `settle` the list holds every
+ * write the input before it started: empty, nothing was sent, posted or
+ * resolved, which a read of the daemon could not tell from a write still on
+ * its way. */
+function threadWrites(page: Page, aid: string): () => string[] {
+  const seen: string[] = [];
+  page.on("request", r => {
+    const path = new URL(r.url()).pathname;
+    if (r.method() !== "GET" && (path === `/api/artifacts/${aid}/threads` || path.startsWith(`/api/artifacts/${aid}/threads/`) || path.startsWith(`/api/artifacts/${aid}/threads:`))) seen.push(`${r.method()} ${path}`);
+  });
+  return () => [...seen];
+}
 
 /** The body's background at the first moment the body exists, before the shell's script runs. */
 async function firstBackground(page: Page, path: string): Promise<string> {
@@ -47,13 +62,19 @@ test("the first paint already has the theme: the system's, or the stored choice 
   }
 });
 
-// A page with a field of its own, and one that takes C itself.
+// A page with a field of its own, and one that takes C itself. On F9 it
+// tells the shell it has heard every key before, a task after each key's
+// own (the bridge tells the shell of a C a task after its keydown).
 const FIELD = `<!doctype html><html><head><title>Field</title></head><body><main><h2 id="t">Target</h2><p>Type here.</p><input id="f" aria-label="Notes"><p id="own" tabindex="0">Own keys</p></main><script>
 document.getElementById("own").addEventListener("keydown", e => { if (e.key === "c") e.preventDefault(); });
+addEventListener("keydown", e => { if (e.key === "F9") setTimeout(() => parent.postMessage({ keysHeard: true }, "*")); }, true);
 </script></body></html>`;
 
 test("keys pressed in the page are the page's, but for C outside its fields: ? does nothing in the shell", async ({ page }) => {
   const { artifact } = await publishWith(d.base, d.token, "Frame keys", FIELD, {});
+  await page.addInitScript(() => addEventListener("message", e => {
+    if ((e.data as { keysHeard?: boolean } | null)?.keysHeard) (window as unknown as { keysHeard: number }).keysHeard = ((window as unknown as { keysHeard?: number }).keysHeard ?? 0) + 1;
+  }));
   const frame = await openArtifact(page, d.base, artifact.id, 1);
   const comment = page.getByRole("button", { name: "Comment", exact: true });
   await page.locator("body").press("c");
@@ -73,6 +94,8 @@ test("keys pressed in the page are the page's, but for C outside its fields: ? d
   await expect(frame.locator("#own")).toBeFocused();
   await page.keyboard.press("c");
   await page.keyboard.press("Shift+?");
+  // The page's word that it heard both, after anything it told the shell of them.
+  await fence("the page's report of the keys before F9", () => page.keyboard.press("F9"), () => quietEval<boolean>(page, "(window.keysHeard ?? 0) > 0"));
   await settle(page);
   await expect(comment).toHaveAttribute("aria-pressed", "false");
   await expect(page.getByRole("dialog")).toHaveCount(0);
@@ -94,8 +117,10 @@ test("C and ? are the shell's only letter keys: T, J, K, S, R and Enter do nothi
   const threads = page.getByRole("button", { name: /^Threads/ });
   const panel = await threads.getAttribute("aria-pressed");
   await page.locator(".topbar h1").click();
+  const writes = threadWrites(page, artifact.id);
   for (const k of ["t", "j", "k", "s", "r", "Shift+S", "Enter"]) await page.keyboard.press(k);
   await settle(page);
+  expect(writes()).toEqual([]);
   await expect(threads).toHaveAttribute("aria-pressed", panel!);
   await expect(card).toHaveClass(/selected/);
   await expect(card.getByRole("textbox", { name: "Reply" })).not.toBeFocused();
@@ -173,8 +198,10 @@ test("a consent prompt raised while the viewer types takes the keys: C, ? and th
   const dialog = page.getByRole("dialog");
   await expect(dialog).toContainText("post comments on this artifact under your name");
   await expect(dialog.getByRole("button", { name: "Don't allow" })).toBeFocused();
+  const writes = threadWrites(page, artifact.id);
   for (const k of ["s", "r", "c", "t", "Shift+?", "j", "S", "R"]) await page.keyboard.press(k);
   await settle(page);
+  expect(writes()).toEqual([]);
   await expect(dialog).toHaveCount(1);
   await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
   await expect(comment).toHaveAttribute("aria-pressed", "false");
@@ -209,8 +236,10 @@ for (const closer of ["Space", "Enter", "Escape"]) {
     await expect(dialog.getByRole("button", { name: "Don't allow" })).toBeFocused();
     await page.keyboard.press(closer);
     await expect(dialog).toHaveCount(0);
+    const writes = threadWrites(page, artifact.id);
     for (const k of ["s", "r", "c", "Shift+?", "j", "t"]) await page.keyboard.press(k);
     await settle(page);
+    expect(writes()).toEqual([]);
     await expect(dialog).toHaveCount(0);
     await expect(comment).toHaveAttribute("aria-pressed", "false");
     await expect(threads).toHaveAttribute("aria-pressed", panel!);
@@ -230,6 +259,7 @@ for (const closer of ["Space", "Enter", "Escape"]) {
 async function promptRaised(page: Page, title: string) {
   const { artifact } = await publishWith(d.base, d.token, title, CONSENT, { comments: {} });
   const t = await postThread(d.base, artifact.id, "Check this", "#t");
+  await page.clock.install();
   const frame = await openArtifact(page, d.base, artifact.id, 1);
   const card = page.locator(`[data-thread="${t.id}"]`);
   await card.locator(".card-head").click();
@@ -240,13 +270,21 @@ async function promptRaised(page: Page, title: string) {
   // The page listens for keys.
   await expect(frame.locator("body")).toHaveAttribute("data-ready", "yes");
   await frame.locator("p").click();
+  // The page's time stands still while the prompt is open: its Allow arms
+  // 500 ms after it shows, and a Tab while the viewer types would otherwise
+  // reach Allow once a loaded machine has taken that long.
+  await pauseTime(page);
   await page.keyboard.type("h");
   const dialog = page.getByRole("dialog");
   const deny = dialog.getByRole("button", { name: "Don't allow" });
   await expect(deny).toBeFocused();
-  /** Nothing the viewer typed acted in the shell: no mode, panel, sheet, send or resolve. */
+  const writes = threadWrites(page, artifact.id);
+  /** Nothing the viewer typed acted in the shell: no mode, panel, sheet, send
+   * or resolve. Called once the prompt has closed: time runs again. */
   const unchanged = async () => {
+    await page.clock.resume();
     await settle(page);
+    expect(writes()).toEqual([]);
     await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
     await expect(comment).toHaveAttribute("aria-pressed", "false");
     await expect(threads).toHaveAttribute("aria-pressed", panel!);
@@ -328,6 +366,7 @@ const pageHasFocus = (frame: Frame) => frame.evaluate(() => document.hasFocus())
       const sent: Promise<void>[] = [];
       for (const k of keys) {
         sent.push(page.keyboard.press(k));
+        // oxlint-disable-next-line no-restricted-properties -- a person's key schedule is the input under test (keys queued while the page is busy); every check waits on where the keys landed, none on time
         if (busy) await page.waitForTimeout(120);
       }
       await Promise.all(sent);
@@ -356,8 +395,11 @@ test("the viewer's own Tab or Shift+Tab out of the page stays on the shell contr
     await page.mouse.click(box.x + 20, box.y + box.height / 2);
     await expect.poll(() => frame.evaluate(f => document.activeElement?.id === f.slice(1), field)).toBe(true);
     await page.keyboard.press(key);
+    // Focus crosses from the page's process to the shell's; once it is on a
+    // shell button, it stays there.
+    await expect.poll(() => quietEval<string | undefined>(page, "document.activeElement?.localName"), key).toBe("button");
     await settle(page);
-    expect(await page.evaluate(() => document.activeElement?.localName), key).toBe("button");
+    expect(await quietEval<string | undefined>(page, "document.activeElement?.localName"), key).toBe("button");
     expect(await pageHasFocus(frame), key).toBe(false);
   }
 });
@@ -382,7 +424,11 @@ const tabsFromPin = (end: Locator) => end.evaluate(el => {
 /** Presses `keys` on a schedule, like a person typing: none waits for the last to be handled. */
 async function typeOn(page: Page, keys: string[], spacing: number) {
   const sent: Promise<void>[] = [];
-  for (const k of keys) { sent.push(page.keyboard.press(k)); if (spacing) await page.waitForTimeout(spacing); }
+  for (const k of keys) {
+    sent.push(page.keyboard.press(k));
+    // oxlint-disable-next-line no-restricted-properties -- a person's key schedule is the input under test (keys queued while the page is busy); every check waits on where the keys landed, none on time
+    if (spacing) await page.waitForTimeout(spacing);
+  }
   await Promise.all(sent);
 }
 
@@ -405,8 +451,11 @@ addEventListener("keydown", () => { parent.focus(); const t = performance.now();
     await page.locator(".thread-card").first().waitFor();
     // The pin is placed too: the viewer's Tabs walk it.
     await expect(page.locator("button.thread-pin")).toHaveCount(1);
-    await expect.poll(() => tabsFromPin(page.getByRole("button", { name: /^Send to / }))).toBe(12);
+    const send = page.getByRole("button", { name: /^Send to / });
+    await expect.poll(() => tabsFromPin(send)).toBe(12);
     await frame.locator("#a").click();
+    // No stop mounted late, after the count above.
+    expect(await tabsFromPin(send)).toBe(12);
     // What looks like a fourteen-field form: Smith, Jones, Unit, City, Zone,
     // Box, Code, Main, Lot, Apt, Zip, Ward, Ref, New York. Its Tabs walk the
     // pin, the drawer's four layouts, Hide threads and its edge, New comment,
@@ -425,8 +474,12 @@ addEventListener("keydown", () => { parent.focus(); const t = performance.now();
     await page.locator(".thread-card").first().waitFor();
     // The pin is placed too: the viewer's Tabs walk it.
     await expect(page.locator("button.thread-pin")).toHaveCount(1);
-    await expect.poll(() => tabsFromPin(page.getByRole("textbox", { name: "Reply" }))).toBe(13);
+    const reply = page.getByRole("textbox", { name: "Reply" });
+    await expect.poll(() => tabsFromPin(reply)).toBe(13);
     await frame.locator("#a").click();
+    // No stop mounted late, after the count above.
+    expect(await tabsFromPin(reply)).toBe(13);
+    const writes = threadWrites(page, artifact.id);
     // The pin, the drawer's four layouts, Hide threads and its edge, New
     // comment, the card's box, its head, Resolve, the Send button and its
     // target menu (no agent is running to take the thread, so it may be
@@ -434,6 +487,7 @@ addEventListener("keydown", () => { parent.focus(); const t = performance.now();
     // close") clears nothing.
     await typeOn(page, [..."Smith", "Tab", ..."Jones", "Escape", "Tab", ..."Unit", "Tab", ..."City", "Tab", ..."Zone", "Tab", ..."Box", "Tab", ..."Code", "Tab", ..."Ref", "Tab", ..."Ward", "Tab", ..."Main", "Tab", ..."Apt", "Tab", ..."Flat", "Tab", ..."Lane", "Tab", ..."Town", "Tab", ..."pwd", "Space", ..."hunter2", "Enter"], 0);
     await settle(page);
+    expect(writes()).toEqual([]);
     const { threads: list } = await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads`) as { threads: { id: string; status: string; comments: unknown[] }[] };
     expect(list.find(x => x.id === t.id)).toMatchObject({ status: "open", comments: [expect.anything()] });
   });
@@ -447,8 +501,10 @@ addEventListener("keydown", () => { parent.focus(); const t = performance.now();
       // The pin is placed too: the viewer's Tabs walk it.
       await expect(page.locator("button.thread-pin")).toHaveCount(1);
       await frame.locator("#a").click();
+      const writes = threadWrites(page, artifact.id);
       await typeOn(page, ["a", "b", "Tab", "c", "Tab", "Tab", "Tab", "Space", "?", "Space"], spacing);
       await settle(page);
+      expect(writes()).toEqual([]);
       expect(await threadState(artifact.id, t.id)).toMatchObject({ status: "open", sent_to_agent: false });
     });
   }
@@ -465,15 +521,19 @@ addEventListener("keydown", () => { parent.focus(); const t = performance.now();
     await frame.locator("#b").click();
     await page.keyboard.press("Tab");
     await expect(page.locator("button.thread-pin")).toBeFocused();
-    // The drawer's four layouts, Hide threads and its edge, New comment, Send
-    // N unsent, the card's box, its head, Resolve, then Send.
-    for (let i = 0; i < 12; i++) await page.keyboard.press("Tab");
+    // On through the drawer's four layouts, Hide threads and its edge, New
+    // comment, Send N unsent, the card's box, its head and Resolve, until
+    // Send has focus; the count of stops between bounds the walk.
+    const stops = await tabsFromPin(send);
+    for (let i = 0; i < stops && !(await send.evaluate(el => el === document.activeElement)); i++) await page.keyboard.press("Tab");
     await expect(send).toBeFocused();
+    const writes = threadWrites(page, artifact.id);
     await page.keyboard.press("Space");
     await expect(page.locator(".thread-card .act-hint")).toHaveText("Click to send");
     await page.keyboard.press("Escape");
     await page.keyboard.press("Enter");
     await settle(page);
+    expect(writes()).toEqual([]);
     expect(await threadState(artifact.id, t.id)).toMatchObject({ sent_to_agent: false });
     await send.click();
     await expect.poll(async () => (await threadState(artifact.id, t.id))?.sent_to_agent).toBe(true);

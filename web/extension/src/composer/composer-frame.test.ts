@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, type Mounted } from "../../../shell/src/test/svelte";
 import { clipMessage } from "./clip-message";
 import ComposerFrame from "./ComposerFrame.svelte";
+import { settled } from "../../../shell/src/test/settled";
 
 const PICK = "0123456789abcdef0123456789abcdef";
 const T1 = "01J9AAAAAAAAAAAAAAAAAAAAAA";
@@ -27,7 +28,7 @@ function fakePort() {
     close: () => { closed = true; },
   };
 }
-const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0)); flushSync(); };
+const settle = settled;
 
 let port: ReturnType<typeof fakePort>;
 /** The callbacks of the ResizeObservers the composer made (jsdom has none of its own). */

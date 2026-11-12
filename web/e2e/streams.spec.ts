@@ -1,6 +1,7 @@
 import { type Browser, type BrowserContext, type CDPSession, type Page } from "@playwright/test";
-import { asLocalViewer, test, expect, type Daemon, publish, setName, signInTo, startDaemon } from "./fixtures";
-import { advance, settle } from "./time";
+import { asLocalViewer, test, expect, type Daemon, fence, publish, registerSession, setName, signInTo, startDaemon, until } from "./fixtures";
+import { ask } from "./questions-helpers";
+import { advance } from "./time";
 import { backoff } from "../shell/src/lifecycle";
 
 // As in Chrome: the new headless mode, with the back/forward cache on
@@ -103,12 +104,110 @@ const live = (p: Page) => p.evaluate(() => (window as unknown as { claxStreamLiv
 /** A page's count of stream events handed to it. */
 const heard = (p: Page) => p.evaluate(() => (window as unknown as { claxStreamEvents?: number }).claxStreamEvents ?? 0);
 
-// A bound on waiting, not a speed check: how fast a view comes up is the
-// time-to-usable perf gate's to judge, scaled to the machine.
-const quick = { timeout: 10_000 };
+/** What `watchHubPorts` keeps in each page: the stream events its hub
+ * handed it and the topics that went live for it, per topic; the reconnect
+ * asks it sent; the topics it last sent; and its port to the hub. */
+type HubLine = { heard: Record<string, number>; live: Record<string, number>; asks: number; topics: string[]; port?: MessagePort };
+
+/** Has every page of `ctx` keep a `HubLine` (`claxHubLine`) of the messages
+ * on its port to the stream hub (the shared worker the shell makes, its
+ * protocol stream-hub.ts's `TabMsg` and `HubMsg`): the shell's own
+ * SharedWorker is wrapped before any page script runs, and the line's
+ * listener hears each message before the shell's handler does. */
+async function watchHubPorts(ctx: BrowserContext) {
+  await ctx.addInitScript(() => {
+    const Shared = window.SharedWorker;
+    if (!Shared) return;
+    const line = { heard: {}, live: {}, asks: 0, topics: [] } as HubLine;
+    (window as unknown as { claxHubLine: HubLine }).claxHubLine = line;
+    const bump = (counts: Record<string, number>, t: string) => { counts[t] = (counts[t] ?? 0) + 1; };
+    window.SharedWorker = class extends Shared {
+      constructor(url: string | URL, options?: string | WorkerOptions) {
+        super(url, options);
+        const port = this.port;
+        line.port = port;
+        port.addEventListener("message", e => {
+          const m = e.data as { t?: string; topic?: string; topics?: string[] } | null;
+          if (m?.t === "event" && m.topic) bump(line.heard, m.topic);
+          if (m?.t === "live") for (const t of m.topics ?? []) bump(line.live, t);
+        });
+        const send = port.postMessage.bind(port) as (m: unknown) => void;
+        port.postMessage = ((m: { t?: string; topics?: string[] } | null) => {
+          if (m?.t === "reconnect") line.asks++;
+          if (m?.t === "topics") line.topics = [...(m.topics ?? [])];
+          send(m);
+        }) as MessagePort["postMessage"];
+      }
+    };
+  });
+}
+/** A page's `HubLine`, less its port. */
+const hubLine = (p: Page) => p.evaluate(() => {
+  const { port: _, ...rest } = (window as unknown as { claxHubLine: HubLine }).claxHubLine;
+  return rest;
+});
+
+/** The topics an owner's hidden tab keeps (web/shell/src/stream.ts). */
+const BACKGROUND = ["questions", "inbox"];
+/** A page's count of stream events handed to it on topics other than the background ones. */
+const heardForeground = async (p: Page) => Object.entries((await hubLine(p)).heard).filter(([t]) => !BACKGROUND.includes(t)).reduce((n, [, k]) => n + k, 0);
+
+/** The fence for an absence check on the events hidden owner tabs hear:
+ * an agent's question, on the `questions` topic each of `tabs` (watched by
+ * `watchHubPorts`) keeps, waited on until every one of them has it. The
+ * daemon sends the browser's events on its one stream in order, and the hub
+ * hands each to the tabs that want it as it comes, so an event the daemon
+ * sent before the question has reached each of them by then, or never will. */
+async function questionFence(tabs: Page[]) {
+  const questions = () => Promise.all(tabs.map(async p => (await hubLine(p)).heard.questions ?? 0));
+  const before = await questions();
+  const s = await registerSession(d.base, d.token);
+  await fence("an agent's question, heard on each tab's questions topic",
+    () => ask(d.base, d.token, s.id, { source: "ask", in_terminal: true, questions: [{ question: "Fenced?", header: "Fence" }] }),
+    async () => (await questions()).every((n, i) => n > before[i]));
+}
+
+/** Waits until the hub has handled every message `p` (watched by
+ * `watchHubPorts`) sent it so far: on the tab's own port, the tab lets its
+ * `topic` go and takes it again, and the hub says it is live for it once
+ * more. The hub handles a port's messages in order, and a topic goes live
+ * only on a stream that is up: by then any stream the hub opened for an
+ * earlier message has said `ready`, so the daemon counts it. The tab's own
+ * views hear one more `ready` for the topic, and refetch. */
+async function hubHas(p: Page, topic: string) {
+  const { topics, live: was } = await hubLine(p);
+  expect(topics, `a topic the tab watches, ${topic}`).toContain(topic);
+  await fence(`the hub's live for ${topic}, again`,
+    () => p.evaluate(t => {
+      const line = (window as unknown as { claxHubLine: HubLine }).claxHubLine;
+      const all = line.topics;
+      line.port!.postMessage({ t: "topics", topics: all.filter(x => x !== t) });
+      line.port!.postMessage({ t: "topics", topics: all });
+    }, topic),
+    async () => ((await hubLine(p)).live[topic] ?? 0) > (was[topic] ?? 0));
+}
+
+/** The fence for an absence check on the streams the hub opens for the
+ * reconnect asks of `tabs` (watched by `watchHubPorts`): each tab has sent
+ * an ask since it had sent `asked`, and the hub has handled it (`hubHas`). */
+async function asksFence(tabs: Page[], asked: number[]) {
+  await until("every tab's reconnect ask", async () => (await Promise.all(tabs.map(hubLine))).every((l, i) => l.asks > asked[i]));
+  for (const p of tabs) await hubHas(p, (await hubLine(p)).topics[0]);
+}
+
+/** Waits until `p` (watched by `watchHubPorts`), hidden for HIDDEN_MS, has
+ * let every topic but its background ones go, and the hub has that. */
+async function released(p: Page) {
+  await until("the hidden tab to keep only its background topics", async () => (await hubLine(p)).topics.every(t => BACKGROUND.includes(t)));
+  await hubHas(p, "questions");
+}
+
+// Each waits as long as its view takes to come up, under the suite's hang
+// guard: how fast is the time-to-usable perf gate's to judge, scaled to the
+// machine.
 const card = (p: Page, id: string) => p.locator(`a.card[href="/a/${id}"]`);
-const galleryReady = (p: Page, id: string) => expect(card(p, id)).toBeVisible(quick);
-const artifactReady = (p: Page, title: string) => expect(p.locator(".topbar h1")).toHaveText(title, quick);
+const galleryReady = (p: Page, id: string) => expect(card(p, id)).toBeVisible();
+const artifactReady = (p: Page, title: string) => expect(p.locator(".topbar h1")).toHaveText(title);
 
 /** Records in the page the time (`Date.now()`) at which `selector` first
  * matches an element whose text includes `text`. */
@@ -139,7 +238,6 @@ async function openTabs(ctx: BrowserContext, urls: string[], ready: (p: Page, ur
 }
 
 test("one tab moving between the gallery and two artifacts holds at most one stream, and Back still uses the back/forward cache", async ({ page }) => {
-  test.setTimeout(120_000);
   const a = (await publish(d.base, d.token, "Stream one", { "index.html": "<h1>One</h1>" })).artifact.id;
   const b = (await publish(d.base, d.token, "Stream two", { "index.html": "<h1>Two</h1>" })).artifact.id;
   // The shell never opens `/api/events` (it stays for agents).
@@ -163,7 +261,7 @@ test("one tab moving between the gallery and two artifacts holds at most one str
     const ms = Date.now() - t0;
     // The daemon sees a closed stream go once the connection closes.
     let open = (await streams()).open;
-    await expect.poll(async () => (open = (await streams()).open), quick).toBeLessThanOrEqual(1).catch(() => {});
+    await expect.poll(async () => (open = (await streams()).open)).toBeLessThanOrEqual(1).catch(() => {});
     counts.push(open);
     times.push(ms);
     expect(open, `at most one stream after ${label}; open after each step: ${counts.join(",")}`).toBeLessThanOrEqual(1);
@@ -252,20 +350,24 @@ for (const who of ["owner", "LAN viewer"] as const) {
       const ctx = await browser.newContext();
       if (who !== "owner") await asLocalViewer(ctx, d);
       if (who !== "owner") await ctx.route("**/api/token", r => r.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: { code: "forbidden" } }) }));
+      await watchHubPorts(ctx);
       const tabs = await openTabs(ctx, Array.from({ length: n }, () => `${d.base}/a/${a}`), async p => {
-        await expect(p.locator(".topbar h1")).toHaveText("Rename", { timeout: 20_000 });
-        await expect.poll(() => live(p), { timeout: 20_000 }).toBeGreaterThan(0);
+        await expect(p.locator(".topbar h1")).toHaveText("Rename");
+        await expect.poll(() => live(p)).toBeGreaterThan(0);
       });
       await expect.poll(async () => (await streams()).open).toBe(1);
       const start = await streams();
       const heard0 = await Promise.all(tabs.map(heard));
       const live0 = await Promise.all(tabs.map(live));
+      const asked0 = await Promise.all(tabs.map(async p => (await hubLine(p)).asks));
       await setName(tabs[0], "Wren");
       // Every tab has handled the presence event the rename causes, and with
-      // a reopen, gone live on the new stream; then each tab's asks are sent.
+      // a reopen, gone live on the new stream.
       await expect.poll(async () => (await Promise.all(tabs.map(heard))).every((h, i) => h > heard0[i])).toBe(true);
       if (want) await expect.poll(async () => (await Promise.all(tabs.map(live))).every((l, i) => l > live0[i])).toBe(true);
-      for (const p of tabs) await settle(p);
+      // Each tab asked the hub for the new caller's stream, and the hub has
+      // handled every ask, any stream they opened counted.
+      await asksFence(tabs, asked0);
       const end = await streams();
       console.log(`${who}, ${n} tab(s): one rename opened ${end.opened - start.opened} stream(s); levels ${start.levels} -> ${end.levels}`);
       expect(end.opened - start.opened, "streams opened for the rename").toBe(want);
@@ -277,18 +379,18 @@ for (const who of ["owner", "LAN viewer"] as const) {
 }
 
 test("thirty tabs share one stream; a new tab joins it, and a publish reaches every tab that wants it and no other", async ({ browser }) => {
-  test.setTimeout(60_000);
   const ids: string[] = [];
   for (let i = 0; i < 10; i++) ids.push((await publish(d.base, d.token, `Tab ${i}`, { "index.html": `<h1>Tab ${i}</h1>` })).artifact.id);
   const ctx = await browser.newContext();
+  await watchHubPorts(ctx);
   const urls = [...Array.from({ length: 10 }, () => `${d.base}/`), ...ids.flatMap(id => [`${d.base}/a/${id}`, `${d.base}/a/${id}`])];
   const tabs = await openTabs(ctx, urls, async (p, url) => {
-    if (url.includes("/a/")) await expect(p.locator(".topbar h1")).toHaveText(/^Tab \d$/, { timeout: 20_000 });
-    else await expect(card(p, ids[0])).toBeVisible({ timeout: 20_000 });
-    await expect.poll(() => live(p), { timeout: 20_000 }).toBeGreaterThan(0);
+    if (url.includes("/a/")) await expect(p.locator(".topbar h1")).toHaveText(/^Tab \d$/);
+    else await expect(card(p, ids[0])).toBeVisible();
+    await expect.poll(() => live(p)).toBeGreaterThan(0);
   });
   expect(tabs).toHaveLength(30);
-  await expect.poll(async () => (await streams()).open, { timeout: 5000 }).toBe(1);
+  await expect.poll(async () => (await streams()).open).toBe(1);
   const thirty = await streams();
   // A reopen would make every tab go live again, the tabs of other artifacts too.
 
@@ -303,7 +405,7 @@ test("thirty tabs share one stream; a new tab joins it, and a publish reaches ev
     if (url.includes("/a/")) await artifactReady(p, "Tab 3");
     else await galleryReady(p, ids[0]);
     times.push(Date.now() - t0);
-    await expect.poll(() => live(p), { timeout: 5000 }).toBeGreaterThan(0);
+    await expect.poll(() => live(p)).toBeGreaterThan(0);
     tabs.push(p);
   }
   await sameStream(thirty, "the new tabs joined the one stream");
@@ -316,20 +418,23 @@ test("thirty tabs share one stream; a new tab joins it, and a publish reaches ev
     else await stampWhen(p, `a.card[href="/a/${ids[3]}"] .v`, "v2");
   }
   const others = tabs.filter(p => !relevant.includes(p));
-  const before = await Promise.all(others.map(heard));
+  const before = await Promise.all(others.map(heardForeground));
   const othersLive = await Promise.all(others.map(live));
   const t0 = Date.now();
   await publish(d.base, d.token, "Tab 3", { "index.html": "<h1>Tab 3, again</h1>" }, 1, ids[3]);
-  // Judged by arrival in every tab within expect's timeout; how fast is logged.
+  // Judged by arrival in every tab; how fast is logged, not judged.
   await expect.poll(async () => (await Promise.all(relevant.map(seenAt))).every(t => t !== null)).toBe(true);
   const lat = (await Promise.all(relevant.map(seenAt))).map(t => t! - t0);
-  const after = await Promise.all(others.map(heard));
+  // Every other tab keeps the background topics: a question an agent asks
+  // after the publish reaches each, and whatever the publish sent them has.
+  await questionFence(others);
+  const after = await Promise.all(others.map(heardForeground));
   console.log(`32 tabs: ${thirty.open} stream open at 30 (${thirty.held} held); new tabs ready in ${times.join(", ")} ms; the publish reached ${relevant.length} tabs in ${Math.min(...lat)}–${Math.max(...lat)} ms`);
   await sameStream(thirty, "the publish went over the one stream");
   expect(await Promise.all(others.map(live)), "no other tab went live again").toEqual(othersLive);
-  expect(after, "tabs of other artifacts hear none of it").toEqual(before);
+  expect(after, "tabs of other artifacts hear none of it but their background topics' events").toEqual(before);
   await ctx.close();
-  await expect.poll(async () => (await streams()).open, { timeout: 10_000 }).toBe(0);
+  await expect.poll(async () => (await streams()).open).toBe(0);
 });
 
 /** How long a hidden page keeps its topics (web/shell/src/stream.ts). */
@@ -348,123 +453,116 @@ async function controllableVisibility(ctx: BrowserContext) {
 const setVisibility = (p: Page, v: DocumentVisibilityState) => p.evaluate(s => (window as unknown as { claxSetVisibility: (s: string) => void }).claxSetVisibility(s), v);
 
 test("a hidden tab releases its topics, hears nothing, and catches up when it shows; with every tab hidden the stream closes", async ({ browser }) => {
-  test.setTimeout(30_000);
   const id = (await publish(d.base, d.token, "Hidden", { "index.html": "<h1>H</h1>" })).artifact.id;
   const ctx = await browser.newContext();
   await controllableVisibility(ctx);
+  await watchHubPorts(ctx);
   const [shown, hidden] = await openTabs(ctx, [`${d.base}/`, `${d.base}/`], async p => {
-    await expect(card(p, id)).toBeVisible({ timeout: 20_000 });
-    await expect.poll(() => live(p), { timeout: 20_000 }).toBeGreaterThan(0);
+    await expect(card(p, id)).toBeVisible();
+    await expect.poll(() => live(p)).toBeGreaterThan(0);
   });
   await setVisibility(hidden, "hidden");
   // Hidden for HIDDEN_MS on the shell's clock: it releases its topics, and
   // the hub has that before the publish below.
   await advance(hidden, HIDDEN_MS);
-  const heardBefore = await heard(hidden);
+  await released(hidden);
+  const foregroundBefore = await heardForeground(hidden);
   const liveBefore = await live(hidden);
   await publish(d.base, d.token, "Hidden", { "index.html": "<h1>H2</h1>" }, 1, id);
-  await expect(card(shown, id).locator(".v")).toHaveText("v2", { timeout: 2000 });
-  // The hub hands an event to every tab that wants it at once: once the shown
-  // tab has it, the hidden tab would have too.
-  await settle(hidden);
-  expect(await heard(hidden), "the hidden tab hears no events").toBe(heardBefore);
+  await expect(card(shown, id).locator(".v")).toHaveText("v2");
+  // The hidden tab keeps only its background topics: a question an agent
+  // asks after the publish reaches it, and nothing else has.
+  await questionFence([hidden]);
+  expect(await heardForeground(hidden), "the hidden tab hears no events but its background topics'").toBe(foregroundBefore);
   await expect(card(hidden, id).locator(".v")).toHaveText("v1");
   // Shown again: its topics go live once more, and it refetches.
   await setVisibility(hidden, "visible");
-  await expect.poll(() => live(hidden), { timeout: 5000 }).toBeGreaterThan(liveBefore);
-  await expect(card(hidden, id).locator(".v")).toHaveText("v2", { timeout: 5000 });
+  await expect.poll(() => live(hidden)).toBeGreaterThan(liveBefore);
+  await expect(card(hidden, id).locator(".v")).toHaveText("v2");
   // With every tab hidden, these owner tabs keep only their background
   // topics (`questions` and `inbox`, for notifications): the stream stays
   // open, and neither tab hears the gallery's events.
   await setVisibility(hidden, "hidden");
   await setVisibility(shown, "hidden");
   for (const p of [hidden, shown]) await advance(p, HIDDEN_MS);
-  const before = [await heard(hidden), await heard(shown)];
+  for (const p of [hidden, shown]) await released(p);
+  const before = [await heardForeground(hidden), await heardForeground(shown)];
   await publish(d.base, d.token, "Hidden", { "index.html": "<h1>H3</h1>" }, 2, id);
-  for (const p of [hidden, shown]) await settle(p);
-  expect([await heard(hidden), await heard(shown)], "hidden tabs hear no gallery events").toEqual(before);
+  await questionFence([hidden, shown]);
+  expect([await heardForeground(hidden), await heardForeground(shown)], "hidden tabs hear no gallery events").toEqual(before);
   expect((await streams()).open).toBe(1);
   await setVisibility(shown, "visible");
-  await expect(card(shown, id).locator(".v")).toHaveText("v3", { timeout: 5000 });
+  await expect(card(shown, id).locator(".v")).toHaveText("v3");
   await ctx.close();
 });
 
 test("a hidden tab that is not the owner's holds no background topics: with every such tab hidden the stream closes", async ({ browser }) => {
-  test.setTimeout(30_000);
   const id = (await publish(d.base, d.token, "Hidden", { "index.html": "<h1>H</h1>" })).artifact.id;
   const ctx = await browser.newContext();
   await controllableVisibility(ctx);
   // A browser that is not the owner's gets no token, and loads nothing of the inbox.
   await ctx.route("**/api/token", r => r.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: { code: "forbidden" } }) }));
   const [tab] = await openTabs(ctx, [`${d.base}/`], async p => {
-    await expect(card(p, id)).toBeVisible({ timeout: 20_000 });
-    await expect.poll(() => live(p), { timeout: 20_000 }).toBeGreaterThan(0);
+    await expect(card(p, id)).toBeVisible();
+    await expect.poll(() => live(p)).toBeGreaterThan(0);
   });
   await setVisibility(tab, "hidden");
   await advance(tab, HIDDEN_MS);
-  await expect.poll(async () => (await streams()).open, { timeout: 10_000 }).toBe(0);
+  await expect.poll(async () => (await streams()).open).toBe(0);
   await setVisibility(tab, "visible");
-  await expect.poll(async () => (await streams()).open, { timeout: 10_000 }).toBe(1);
+  await expect.poll(async () => (await streams()).open).toBe(1);
   await ctx.close();
 });
 
 test("without shared workers the tabs elect one leader to hold the stream, and the next takes over when it closes", async ({ browser }) => {
-  test.setTimeout(30_000);
   const id = (await publish(d.base, d.token, "Leader", { "index.html": "<h1>L</h1>" })).artifact.id;
   const ctx = await browser.newContext();
   await ctx.addInitScript(() => { delete (window as unknown as { SharedWorker?: unknown }).SharedWorker; });
   const tabs = await openTabs(ctx, [`${d.base}/`, `${d.base}/a/${id}`, `${d.base}/`, `${d.base}/a/${id}`, `${d.base}/`, `${d.base}/`], async (p, url) => {
-    if (url.includes("/a/")) await expect(p.locator(".topbar h1")).toHaveText("Leader", { timeout: 20_000 });
-    else await expect(card(p, id)).toBeVisible({ timeout: 20_000 });
-    await expect.poll(() => live(p), { timeout: 20_000 }).toBeGreaterThan(0);
+    if (url.includes("/a/")) await expect(p.locator(".topbar h1")).toHaveText("Leader");
+    else await expect(card(p, id)).toBeVisible();
+    await expect.poll(() => live(p)).toBeGreaterThan(0);
   });
-  await expect.poll(async () => (await streams()).open, { timeout: 5000 }).toBe(1);
+  await expect.poll(async () => (await streams()).open).toBe(1);
   // The first tab leads; it closes, and another tab takes the stream over:
   // every remaining tab's topics go live again on the new connection.
   const before = await Promise.all(tabs.slice(1).map(live));
   await tabs[0].close();
-  await expect.poll(async () => (await Promise.all(tabs.slice(1).map(live))).every((n, i) => n > before[i]), { timeout: 10_000 }).toBe(true);
-  await expect.poll(async () => (await streams()).open, { timeout: 10_000 }).toBe(1);
+  await expect.poll(async () => (await Promise.all(tabs.slice(1).map(live))).every((n, i) => n > before[i])).toBe(true);
+  await expect.poll(async () => (await streams()).open).toBe(1);
   await publish(d.base, d.token, "Leader", { "index.html": "<h1>L2</h1>" }, 1, id);
   for (const p of tabs.slice(1)) {
-    if (p.url().includes("/a/")) await expect(p.locator("button.reload")).toBeVisible({ timeout: 5000 });
-    else await expect(card(p, id).locator(".v")).toHaveText("v2", { timeout: 5000 });
+    if (p.url().includes("/a/")) await expect(p.locator("button.reload")).toBeVisible();
+    else await expect(card(p, id).locator(".v")).toHaveText("v2");
   }
   await ctx.close();
 });
 
-// Waits for its condition with no deadline of its own: the test's timeout
-// is the only bound.
-const untilDone = { timeout: 0 };
-
 test("a daemon restart shows the notice in every tab, which reconnect with backoff and catch up", async ({ browser }) => {
   // No step waits on a wall clock: the daemon's two starts wait until it
   // answers (startDaemon), every other step until its condition holds, and
-  // the hub's backoff is run at once on its clock (`hubRetryNow`). The
-  // timeout only stops a hung test, as the suite's other daemon-starting
-  // tests' do: a loaded machine can take far longer than the config's
-  // default over two daemon starts and two page loads.
-  test.setTimeout(120_000);
+  // the hub's backoff is run at once on its clock (`hubRetryNow`). Only
+  // the suite's hang guard bounds the whole.
   let own = await startDaemon();
   try {
     const id = (await publish(own.base, own.token, "Restart", { "index.html": "<h1>R</h1>" })).artifact.id;
     const ctx = await browser.newContext();
     const tabs = await openTabs(ctx, [`${own.base}/`, `${own.base}/a/${id}`], async (p, url) => {
-      if (url.includes("/a/")) await expect(p.locator(".topbar h1")).toHaveText("Restart", untilDone);
-      else await expect(card(p, id)).toBeVisible(untilDone);
-      await expect.poll(() => live(p), untilDone).toBeGreaterThan(0);
+      if (url.includes("/a/")) await expect(p.locator(".topbar h1")).toHaveText("Restart");
+      else await expect(card(p, id)).toBeVisible();
+      await expect.poll(() => live(p)).toBeGreaterThan(0);
     });
     const { home, port } = own;
     await own.stop({ keepHome: true });
     for (const p of tabs) {
       const notice = p.locator(".conn-notice");
-      await expect(notice).toBeVisible(untilDone);
+      await expect(notice).toBeVisible();
       await expect(notice).toHaveText("Live updates paused. Reconnecting…");
       await expect(notice).toHaveAttribute("role", "status");
     }
     // The hub retries with backoff: it is waiting, on its clock, to try
     // again, for no longer than the backoff's cap.
-    await expect.poll(async () => (await hubWaits(browser)).length, untilDone).toBe(1);
+    await expect.poll(async () => (await hubWaits(browser)).length).toBe(1);
     const [wait] = await hubWaits(browser);
     expect(wait).toBeGreaterThan(0);
     expect(wait).toBeLessThanOrEqual(BACKOFF_MAX);
@@ -474,13 +572,13 @@ test("a daemon restart shows the notice in every tab, which reconnect with backo
     await expect.poll(async () => {
       await hubRetryNow(browser);
       return (await Promise.all(tabs.map(p => p.locator(".conn-notice").isHidden()))).every(Boolean);
-    }, untilDone).toBe(true);
-    await expect.poll(async () => (await streams(own)).open, untilDone).toBe(1);
+    }).toBe(true);
+    await expect.poll(async () => (await streams(own)).open).toBe(1);
     // The new daemon has a new token: the stream renewed its cookie, and holds the owner's level.
     expect((await streams(own)).levels).toEqual(["admin"]);
     await publish(own.base, own.token, "Restart", { "index.html": "<h1>R2</h1>" }, 1, id);
-    await expect(card(tabs[0], id).locator(".v")).toHaveText("v2", untilDone);
-    await expect(tabs[1].locator("button.reload")).toBeVisible(untilDone);
+    await expect(card(tabs[0], id).locator(".v")).toHaveText("v2");
+    await expect(tabs[1].locator("button.reload")).toBeVisible();
     await ctx.close();
   } finally {
     await own.stop();

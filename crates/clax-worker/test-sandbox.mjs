@@ -20,14 +20,11 @@
 import { mkdirSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
-import { HERE, STATE, build, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { HANG_MS, HERE, STATE, build, pruneRuns, start, writeConfig } from "./harness.mjs";
 
 const ROOT = join(STATE, "sandbox-test");
 const KEEP_RUNS = 3;
 const TOKEN = "sandbox-test-token-0123456789abcdef0123456789";
-// One case's request: well over any case's own limits (the slowest runs
-// for about two seconds), so a case that holds the runtime fails.
-const CASE_LIMIT_MS = 60_000;
 
 /** A listener on 127.0.0.1 on a free port, for the network probe to
  * try: it notes every connection, request and upgrade it sees. */
@@ -87,7 +84,8 @@ async function main() {
         const res = await fetch(`${w.base}/_worker/sandbox?case=${c.name}&port=${listener.port}`, {
           method: "POST",
           headers,
-          signal: AbortSignal.timeout(CASE_LIMIT_MS),
+          // A case that holds the runtime fails at the hang guard.
+          signal: AbortSignal.timeout(HANG_MS),
         });
         const text = await res.text();
         try {

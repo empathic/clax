@@ -5,8 +5,9 @@
 // public origin and `localhost` as the site domain (each artifact's site at
 // `http://<ID>.localhost:<port>`), and one people seat. It checks that
 //
-// - a request body over 96 MiB, over 16 MiB, or over 256 KiB with no
-//   credential, declared or chunked, is refused 413;
+// - a request body declared over 96 MiB, over 16 MiB declared or chunked,
+//   or over 256 KiB with no credential, declared or chunked, is refused
+//   413;
 // - the first person sets up with the secret, invites Sam, who joins in a
 //   second browser in a space of their own, and Sam signs a third browser
 //   in with a sign-in link;
@@ -52,7 +53,7 @@ import { mkdirSync } from "node:fs";
 import { request } from "node:http";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { HERE, STATE, build, freePort, pruneRuns, start, writeConfig } from "./harness.mjs";
+import { HANG_MS, HERE, STATE, build, frameAt, freePort, pruneRuns, start, until, writeConfig } from "./harness.mjs";
 
 const require = createRequire(join(HERE, "../../web/package.json"));
 const { chromium } = require("@playwright/test");
@@ -60,27 +61,11 @@ const { chromium } = require("@playwright/test");
 const ROOT = join(STATE, "e2e-hosted");
 const TOKEN = "e2e-owner-token-" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 const SECRET = "e2e setup secret " + Math.random().toString(36).slice(2);
-const LIMIT = 20_000;
 const SHOTS = process.env.CLAX_E2E_SHOTS ?? "";
 
 function check(ok, what, detail) {
   if (!ok) throw new Error(`FAIL ${what}: ${JSON.stringify(detail)}`);
   console.log(`ok   ${what}`);
-}
-
-async function until(what, f, ms = LIMIT) {
-  const end = Date.now() + ms;
-  let last;
-  for (;;) {
-    try {
-      last = await f();
-      if (last) return last;
-    } catch (e) {
-      last = e instanceof Error ? e.message : e;
-    }
-    if (Date.now() > end) throw new Error(`FAIL ${what}: ${JSON.stringify(last)}`);
-    await new Promise((r) => setTimeout(r, 150));
-  }
 }
 
 /** The owner token's API call (the CLI's credential on a hosted instance). */
@@ -156,6 +141,35 @@ function oversized(base, path, chunked, mib = 97, extra = {}) {
   });
 }
 
+/** The status of a POST to `path` whose body declares no length and has not
+ * ended: `bytes` of it written at once, then the request held open until
+ * the answer comes. A refusal that takes its last byte to decide is
+ * answered with none of the body still on its way. `wrangler dev`'s proxy
+ * relays that answer; one sent while bytes are still arriving it sometimes
+ * loses (a 500, "Network connection lost", on Linux). */
+function unended(base, path, bytes) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(path, base);
+    const headers = { "content-type": "application/json", origin: base };
+    let answered = false;
+    const req = request({ host: u.hostname, port: u.port, path: u.pathname, method: "POST", headers }, (res) => {
+      answered = true;
+      clearTimeout(hung);
+      res.resume();
+      req.destroy();
+      resolve(res.statusCode);
+    });
+    const hung = setTimeout(() => {
+      req.destroy(new Error(`FAIL no answer to ${bytes} bytes of an unended body within the ${HANG_MS / 1000} s hang guard`));
+    }, HANG_MS);
+    req.on("error", (e) => {
+      clearTimeout(hung);
+      if (!answered) reject(e);
+    });
+    req.write(Buffer.alloc(bytes, 0x20));
+  });
+}
+
 async function newPage(browser, name) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const p = await ctx.newPage();
@@ -179,14 +193,19 @@ function watchLive(page) {
 async function threads(page) {
   const toggle = page.locator("button.threads");
   if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
-  await page.locator(".new-comment-open").waitFor({ timeout: LIMIT });
+  await page.locator(".new-comment-open").waitFor({ timeout: HANG_MS });
 }
 
+/** Names the viewer `name` (a new name) in the people menu, once the
+ * name's save is answered: a comment posted sooner may reach the server
+ * from a viewer with no name yet. */
 async function setName(page, name) {
   await page.getByRole("button", { name: "People and agents" }).click();
   const field = page.getByRole("dialog", { name: "People and agents" }).getByLabel("Your name");
   await field.fill(name);
+  const saved = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/viewers/me" && r.request().method() === "PUT", { timeout: HANG_MS });
   await field.press("Enter");
+  await saved;
   await page.keyboard.press("Escape");
 }
 
@@ -196,7 +215,7 @@ async function comment(page, text) {
   const composer = page.locator(".new-comment .composer");
   await composer.locator("textarea").fill(text);
   await composer.getByRole("button", { name: "Post comment" }).click();
-  await composer.waitFor({ state: "detached", timeout: LIMIT });
+  await composer.waitFor({ state: "detached", timeout: HANG_MS });
 }
 
 /** A thread `p`'s browser posts on `aid` as the shell does: its status and error code. */
@@ -222,9 +241,8 @@ async function call(p, method, path, body) {
 
 /** The frame of `id`'s version `n` in the artifact page, on the artifact's
  * site host. */
-async function contentFrame(page, id, n) {
-  const url = new RegExp(`^http://${id}\\.localhost:\\d+/(_clax/v/${n}/)?([?#].*)?$`);
-  return until(`the frame of v${n}`, () => page.frame({ url }));
+function contentFrame(page, id, n) {
+  return frameAt(page, new RegExp(`^http://${id}\\.localhost:\\d+/(_clax/v/${n}/)?([?#].*)?$`));
 }
 
 /** `GET <url>` without following a redirect: its status, `Location`, the
@@ -306,6 +324,9 @@ async function main() {
     // object, a chunked body once it is past the limit. Under `wrangler
     // dev` the request after an answer to a body still being sent can fail
     // (its proxy loses the connection), so one that may fail follows each.
+    // The same proxy can lose the answer itself while bytes are arriving,
+    // so the body with no credential stops one byte past its limit and
+    // stays open: the 413 answers that byte, before the body's end.
     const settle = () => fetch(`${origin}/healthz`).catch(() => undefined);
     const bearer = { authorization: `Bearer ${TOKEN}` };
     const anonymous = await oversized(origin, "/api/hosted/setup", false, 1);
@@ -315,8 +336,8 @@ async function main() {
     const chunked16 = await oversized(origin, "/api/artifacts", true, 17, bearer);
     check(chunked16 === 413, "a chunked body past 16 MiB is refused 413", chunked16);
     await settle();
-    const chunked96 = await oversized(origin, "/api/hosted/setup", true);
-    check(chunked96 === 413, "a chunked body past 96 MiB is refused 413", chunked96);
+    const chunkedAnonymous = await unended(origin, "/api/hosted/setup", 256 * 1024 + 1);
+    check(chunkedAnonymous === 413, "a chunked body with no credential is refused 413 one byte past 256 KiB, before its end", chunkedAnonymous);
     await settle();
     check((await fetch(`${origin}/healthz`)).ok, "the instance answers after the oversized bodies");
 
@@ -333,7 +354,7 @@ async function main() {
     await ada.getByLabel("Your name").fill("Ada");
     await ada.getByRole("button", { name: "Create the first person" }).click();
     await ada.waitForURL(`${origin}/`);
-    await ada.locator("a.card", { hasText: "Tide tables" }).waitFor({ timeout: LIMIT });
+    await ada.locator("a.card", { hasText: "Tide tables" }).waitFor({ timeout: HANG_MS });
     check(true, "the first person sets up with the secret and sees the gallery");
     check((await fetch(`${origin}/setup`)).status === 404, "setup is closed once done");
 
@@ -350,7 +371,7 @@ async function main() {
     await sam.goto(join);
     await sam.getByRole("button", { name: "Join as Sam" }).click();
     await sam.waitForURL(`${origin}/`);
-    await sam.locator("main").waitFor({ timeout: LIMIT });
+    await sam.locator("main").waitFor({ timeout: HANG_MS });
     check((await sam.locator("a.card", { hasText: "Tide tables" }).count()) === 0, "Sam joins with the invite in a second browser, in a space of their own");
 
 
@@ -365,7 +386,7 @@ async function main() {
     await laptop.getByRole("button", { name: "Sign in as Sam" }).click();
     await laptop.waitForURL(`${origin}/`);
     await laptop.goto(`${origin}/people`);
-    await laptop.locator(".hosted-me", { hasText: "Signed in as Sam" }).waitFor({ timeout: LIMIT });
+    await laptop.locator(".hosted-me", { hasText: "Signed in as Sam" }).waitFor({ timeout: HANG_MS });
     check(true, "the sign-in link signs a third browser in as Sam");
 
     // An agent token, minted in the browser, used by an agent on /mcp.
@@ -382,7 +403,7 @@ async function main() {
     const agentAid = pub.json?.id ?? pub.json?.artifact?.id ?? /\b([0-9a-z]{12})\b/.exec(pub.text)?.[1];
     check(!pub.error && agentAid, "the agent publishes with Sam's token", pub.text.slice(0, 300));
     await laptop.goto(`${origin}/`);
-    await laptop.locator("a.card", { hasText: "Sam's notes" }).waitFor({ timeout: LIMIT });
+    await laptop.locator("a.card", { hasText: "Sam's notes" }).waitFor({ timeout: HANG_MS });
     check(true, "Sam sees the agent's page in the gallery");
     const local = await tool(origin, token, "publish", { file_path: "/etc/hosts", title: "Hosts" });
     check(local.error && local.text.includes("invalid_args"), "the agent's tools read no file of the Worker's machine", local.text.slice(0, 300));
@@ -411,11 +432,11 @@ async function main() {
     await sd.locator(".hints button", { hasText: "Sam" }).click();
     await sd.getByRole("combobox", { name: "Access for the person added" }).selectOption("editor");
     await sd.getByRole("button", { name: "Add", exact: true }).click();
-    await sd.getByRole("combobox", { name: "Access for Sam" }).waitFor({ timeout: LIMIT });
+    await sd.getByRole("combobox", { name: "Access for Sam" }).waitFor({ timeout: HANG_MS });
     await shot(ada, "share-dialog");
     await sd.getByRole("button", { name: "Done" }).click();
     await laptop.goto(`${origin}/`);
-    await laptop.locator("a.card", { hasText: "Harbour log" }).waitFor({ timeout: LIMIT });
+    await laptop.locator("a.card", { hasText: "Harbour log" }).waitFor({ timeout: HANG_MS });
     check(true, "Ada shares the Harbour log with Sam from Share, and it reaches Sam's gallery");
     const watched = await tool(origin, token, "watch", { url_or_id: harbour.id });
     check(!watched.error, "Sam's agent watches the owner's page", watched.text.slice(0, 300));
@@ -423,7 +444,7 @@ async function main() {
     const samAgent = agents.find((a) => a.name === "e2e");
     check(samAgent?.handle && samAgent.person?.name === "Sam", "the page's participants name the token's agent, as Sam's", agents);
     await laptop.goto(`${origin}/inbox`);
-    await laptop.locator("main").waitFor({ timeout: LIMIT });
+    await laptop.locator("main").waitFor({ timeout: HANG_MS });
     await ada.goto(`${origin}/a/${harbour.id}`);
     const posted = await ada.evaluate(async (hid) => {
       const form = new FormData();
@@ -442,11 +463,11 @@ async function main() {
     const withheld = await tool(origin, token, "comments_read", { url_or_id: harbour.id, thread_id: tid });
     check(!withheld.text.includes("Log the spring tide."), "the agent reads the owner's comment withheld before Sam decides", withheld.text.slice(0, 300));
     const card = laptop.locator("article.acard", { hasText: "Log the spring tide." });
-    await card.waitFor({ timeout: LIMIT });
+    await card.waitFor({ timeout: HANG_MS });
     check((await card.locator(".agent").textContent()) === "e2e", "the approval card reaches Sam's open inbox live, naming the agent");
     await shot(laptop, "member-inbox-approval");
     await card.getByRole("button", { name: "Allow this thread, including later replies" }).click();
-    await card.locator(".outcome").filter({ hasText: /./ }).waitFor({ timeout: LIMIT });
+    await card.locator(".outcome").filter({ hasText: /./ }).waitFor({ timeout: HANG_MS });
     const got = await until("the agent reads the comment once Sam allows the thread", async () => {
       const r = await tool(origin, token, "comments_read", { url_or_id: harbour.id, thread_id: tid });
       return r.text.includes("Log the spring tide.") && r;
@@ -464,7 +485,7 @@ async function main() {
     // The page in its artifact page's frame.
     await ada.goto(`${origin}/a/${id}`);
     const af = await contentFrame(ada, id, 1);
-    check((await af.locator("#h").textContent({ timeout: LIMIT })) === "Tide tables", "the page renders in the frame");
+    check((await af.locator("#h").textContent({ timeout: HANG_MS })) === "Tide tables", "the page renders in the frame");
 
     // Each artifact's site, on its own host. A private site needs a site
     // session, which `/site-signin` on the public host hands out.
@@ -487,7 +508,7 @@ async function main() {
     const tab = await ada.context().newPage();
     pages.push(tab);
     await tab.goto(`${site}/`);
-    await tab.locator("h2", { hasText: "Harbour log" }).waitFor({ timeout: LIMIT });
+    await tab.locator("h2", { hasText: "Harbour log" }).waitFor({ timeout: HANG_MS });
     check(new URL(tab.url()).origin === site, "the owner's browser opens the private site through the handshake", tab.url());
 
     // No path-first route of the Worker is reached on a site host: each is
@@ -515,11 +536,11 @@ async function main() {
     // Two artifacts' sites keep their storage apart in one browser.
     await tab.evaluate(() => localStorage.setItem("x", "harbour"));
     await tab.goto(`${siteOf(id)}/`);
-    await tab.locator("#h").waitFor({ timeout: LIMIT });
+    await tab.locator("#h").waitFor({ timeout: HANG_MS });
     check((await tab.evaluate(() => localStorage.getItem("x"))) === null, "one site does not see another's localStorage");
     await tab.evaluate(() => localStorage.setItem("x", "tide"));
     await tab.goto(`${site}/`);
-    await tab.locator("h2", { hasText: "Harbour log" }).waitFor({ timeout: LIMIT });
+    await tab.locator("h2", { hasText: "Harbour log" }).waitFor({ timeout: HANG_MS });
     check((await tab.evaluate(() => localStorage.getItem("x"))) === "harbour", "each site keeps its own localStorage");
 
     // A db document lives in its artifact's own object, not the instance.
@@ -575,7 +596,7 @@ async function main() {
     await ada.getByRole("combobox", { name: "Page to share" }).selectOption({ label: "Tide tables" });
     await ada.getByRole("combobox", { name: "What its link allows" }).selectOption("commenter");
     await ada.getByRole("button", { name: "Share by link" }).click();
-    await ada.locator(".hosted-links .line", { hasText: "Tide tables" }).waitFor({ timeout: LIMIT });
+    await ada.locator(".hosted-links .line", { hasText: "Tide tables" }).waitFor({ timeout: HANG_MS });
     const mia = await newPage(browser, "mia");
     pages.push(mia);
     const miaLive = watchLive(mia);
@@ -593,7 +614,7 @@ async function main() {
     await ada.goto(`${origin}/a/${id}`);
     const af2 = await contentFrame(ada, id, 1);
     await threads(ada);
-    await ada.locator(".thread-card", { hasText: "Add the moon phase." }).waitFor({ timeout: LIMIT });
+    await ada.locator(".thread-card", { hasText: "Add the moon phase." }).waitFor({ timeout: HANG_MS });
     check(true, "the owner sees the guest's comment");
     await shot(ada, "owner-view");
 
@@ -644,7 +665,7 @@ async function main() {
     // Sam, beyond the one seat (the guest holds it, the owner's is reserved).
     const samLive = watchLive(sam);
     await sam.goto(`${origin}/a/${id}`);
-    await sam.locator(".banner.spectate").waitFor({ timeout: LIMIT });
+    await sam.locator(".banner.spectate").waitFor({ timeout: HANG_MS });
     check(true, "Sam is a spectator: the one seat is the guest's");
     await shot(sam, "spectator");
     await until("a spectator's live socket closes", () => samLive.open === 0);
@@ -668,7 +689,7 @@ async function main() {
       const p = await ctx.newPage();
       pages.push(p);
       await p.goto(`${siteOf(board.id)}/`);
-      await p.locator("h2", { hasText: "Tide board" }).waitFor({ timeout: LIMIT });
+      await p.locator("h2", { hasText: "Tide board" }).waitFor({ timeout: HANG_MS });
       await p.evaluate((label) => {
         const room = { frames: [], closed: null, acks: 0 };
         const ws = new WebSocket(`${location.origin.replace(/^http/, "ws")}/_clax/api/room?peer=${label}`);
@@ -715,16 +736,17 @@ async function main() {
     check(snap2.seats_free === 0, "after the wake the snapshot still counts no free seat", snap2.seats_free);
     const miaAfter = await postThread(mia, id, "Still here after the wake.");
     check(miaAfter.status === 201, "after the wake the seated guest still comments", miaAfter);
-    await ada.locator(".thread-card", { hasText: "Still here after the wake." }).waitFor({ timeout: LIMIT });
+    await ada.locator(".thread-card", { hasText: "Still here after the wake." }).waitFor({ timeout: HANG_MS });
     check(true, "after the wake the guest's comment reaches the owner live");
     const presence = await api(origin, `/api/artifacts/${id}/presence`);
     const people = (presence.people ?? presence.presence ?? []).map((p) => p.public_id);
     check(people.includes(miaId) && people.includes(adaId), "after the wake presence still lists the owner and the guest", presence);
+    // Any pointer of the guest's the owner hears from here on came through
+    // the woken sockets.
+    const woken = adaLive.frames.length;
     await until("the woken live sockets carry pointers again", async () => {
       await wave(mia, mf);
-      const n = adaLive.frames.length;
-      await new Promise((r) => setTimeout(r, 300));
-      return adaLive.frames.slice(n).some((f) => f.includes(miaId) && f.includes("cursor"));
+      return adaLive.frames.slice(woken).some((f) => f.includes(miaId) && f.includes("cursor"));
     });
     check(true, "after the wake the guest's pointer still reaches the owner");
 

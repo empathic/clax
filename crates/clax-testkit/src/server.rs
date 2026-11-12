@@ -1834,6 +1834,10 @@ impl TestServer {
     /// a few seconds, whichever is first; each answer short of `n` is asked
     /// again, so a slow machine only makes the wait longer. Panics, naming
     /// `what` and the last count, past the [`HANG`](crate::HANG) guard.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the waiter route's answers are asked again until the HANG guard"
+    )]
     async fn count_until(&self, path: &str, n: u64, what: &str) {
         let start = std::time::Instant::now();
         loop {

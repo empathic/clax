@@ -8,12 +8,18 @@ const BOARD = `<!doctype html><html><head><title>Board</title></head><body>
 <button id="add">Add</button><button id="lock">Lock</button>
 <pre id="out">waiting</pre><pre id="lockout"></pre><pre id="err"></pre><pre id="grammar"></pre>
 <script>
+// Whether the shell has told this page of a document's change from its
+// event stream (\`db/changed\` with a path) yet.
+let told = false;
+addEventListener("message", e => {
+  const m = e.data;
+  if (m && m.type === "clax:event" && m.ns === "db" && m.topic === "changed" && m.data && m.data.path) told = true;
+});
 (async () => {
   const db = await claude.use("db");
   const out = document.getElementById("out");
   db.collection("cards").orderBy("at").onSnapshot(s => {
-    const last = s.docs.at(-1);
-    out.textContent = JSON.stringify({ n: s.size, lag: last ? Date.now() - last.data().at : null, changes: s.docChanges().map(c => c.type) });
+    out.textContent = JSON.stringify({ n: s.size, told, changes: s.docChanges().map(c => c.type) });
   }, e => { document.getElementById("err").textContent = "snapshot:" + e.code; });
   document.getElementById("add").onclick = () => db.collection("cards").add({ at: Date.now() })
     .catch(e => { document.getElementById("err").textContent = e.code; });
@@ -31,16 +37,17 @@ test("a write in one tab reaches the other tab's onSnapshot through the event st
     const [pa, pb] = [await ctx.newPage(), await ctx.newPage()];
     const a = await openArtifact(pa, d.base, artifact.id, 1);
     const b = await openArtifact(pb, d.base, artifact.id, 1);
-    await expect(a.locator("#out")).toHaveText(JSON.stringify({ n: 0, lag: null, changes: [] }));
-    await expect(b.locator("#out")).toHaveText(JSON.stringify({ n: 0, lag: null, changes: [] }));
+    await expect(a.locator("#out")).toHaveText(JSON.stringify({ n: 0, told: false, changes: [] }));
+    await expect(b.locator("#out")).toHaveText(JSON.stringify({ n: 0, told: false, changes: [] }));
     await expect(a.locator("#grammar")).toHaveText("TypeError");
     await a.locator("#add").click();
     await expect(b.locator("#out")).toContainText('"n":1');
     const seen = JSON.parse((await b.locator("#out").textContent())!);
     expect(seen.changes).toEqual(["added"]);
-    // Pushed, not polled: well inside the first stream retry (RETRY_MS[0], 5 s) and
-    // the outage poll (POLL_MS, 30 s), with room for a loaded machine.
-    expect(seen.lag).toBeLessThan(4_000);
+    // Pushed, not polled: the snapshot with the card came after the shell
+    // passed on the card's change from its event stream (a page whose
+    // shell's stream is up polls nothing, bridge/src/caps/origin.ts).
+    expect(seen.told).toBe(true);
     await a.locator("#lock").click();
     await expect(a.locator("#lockout")).toHaveText("true");
     await b.locator("#lock").click();

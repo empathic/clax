@@ -443,6 +443,7 @@ pub fn write_file(path: &Path, text: &str) -> Result<()> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use serde_json::json;

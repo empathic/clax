@@ -97,6 +97,7 @@ impl Visit for Fields {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};

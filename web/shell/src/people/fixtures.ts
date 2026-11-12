@@ -3,6 +3,7 @@
 import { vi } from "vitest";
 import type { PeopleAgent, PeopleGrant, PeoplePerson, Rights } from "../api";
 import { PRESETS } from "./model";
+import { settled } from "../test/settled";
 
 export const COLLAB: Rights = PRESETS["clax:collaborator"];
 export const grant = (o: Partial<PeopleGrant> = {}): PeopleGrant => ({
@@ -35,9 +36,5 @@ export function stubFetch(routes: Record<string, unknown>) {
   }));
   return calls;
 }
-/** Lets the page's fetches and their updates land. */
-export async function settle() {
-  const { flushSync } = await import("svelte");
-  for (let i = 0; i < 6; i++) await new Promise(r => setTimeout(r, 0));
-  flushSync();
-}
+/** Lets the page's fetches and their updates land: `settled()` (test/settled.ts). */
+export const settle = settled;

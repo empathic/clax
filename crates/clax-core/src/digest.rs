@@ -44,6 +44,7 @@ pub fn manifest_digest(files: &BTreeMap<String, FileMeta>) -> Option<String> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

@@ -1633,12 +1633,10 @@ impl Catalog {
         *self.body.lock().unwrap() = None;
     }
 
-    /// Waits (at most 30 s) for the next request: whether it was answered
-    /// 200.
+    /// Waits for the next request: whether it was answered 200.
     async fn hit(&mut self) -> bool {
-        tokio::time::timeout(std::time::Duration::from_secs(30), self.hits.recv())
+        clax_testkit::within("a catalog request", self.hits.recv())
             .await
-            .expect("a catalog request within 30 s")
             .expect("the catalog server runs")
     }
 }

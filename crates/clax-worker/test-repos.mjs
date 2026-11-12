@@ -29,16 +29,15 @@ import { request as httpRequest } from "node:http";
 import { connect, createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { HANG_MS, timeout, until } from "./harness.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // As harness.mjs's STATE: the test runner's TEST_TMPDIR, else
 // target/clax-worker at the repository root.
 const ROOT = join(process.env.TEST_TMPDIR || join(HERE, "../../target/clax-worker"), "repos-test");
 const KEEP_RUNS = 3;
-const START_LIMIT_MS = 60_000;
+/** How long a wrangler sent SIGTERM is given to end before SIGKILL. */
 const STOP_LIMIT_MS = 10_000;
-/** A bound for a hung git or jj, not a time budget. */
-const HANG_MS = 120_000;
 const ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
 const TOKEN = "repos-owner-token-" + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 
@@ -59,8 +58,6 @@ function exited(child) {
     else child.once("exit", () => ok());
   });
 }
-
-const timeout = (ms) => new Promise((r) => setTimeout(() => r("timeout"), ms));
 
 function pruneRuns() {
   if (!existsSync(ROOT)) return;
@@ -128,14 +125,9 @@ async function start(dir, config, n, vars = []) {
     }
   };
   const base = `http://127.0.0.1:${port}`;
-  const until = Date.now() + START_LIMIT_MS;
   try {
-    for (;;) {
-      if (gone) throw new Error(`wrangler dev exited before it was ready; see ${log}:\n${readFileSync(log, "utf8").slice(-2000)}`);
-      if (Date.now() > until) throw new Error(`wrangler dev was not ready within ${START_LIMIT_MS / 1000} s; see ${log}`);
-      if (await fetch(`${base}/`).then(() => true, () => false)) break;
-      await new Promise((r) => setTimeout(r, 200));
-    }
+    await until(`wrangler dev answering; see ${log}`, () => gone || fetch(`${base}/`).then(() => true, () => false), 200);
+    if (gone) throw new Error(`wrangler dev exited before it was ready; see ${log}:\n${readFileSync(log, "utf8").slice(-2000)}`);
   } catch (e) {
     await stop();
     throw e;
@@ -403,13 +395,9 @@ async function checkGitTokenRoutes(base, home, work, jj) {
   sh(agentDir, `${read.body.clone_command} first`);
   const ended = await api(base, "PATCH", `/api/sessions/${sid}`, { ended: true });
   check(ended.status === 200, "the agent session ends", ended);
-  // The revocation runs beside the answer: bounded, not timed.
-  const until = Date.now() + 20_000;
-  let refused = false;
-  while (!refused && Date.now() < until) {
-    refused = run(home, "sh", agentDir, ["-c", `${read.body.clone_command} again-${Date.now()}`]).status !== 0;
-    if (!refused) await new Promise((r) => setTimeout(r, 200));
-  }
+  // The revocation runs beside the answer: waited on, under the hang guard.
+  let tries = 0;
+  const refused = await until("an ended session's token refused", () => run(home, "sh", agentDir, ["-c", `${read.body.clone_command} again-${++tries}`]).status !== 0, 200);
   check(refused, "an ended session's token clones nothing", null);
 
   const anon = await fetch(`${base}/api/artifacts/${id}/git-token`, {

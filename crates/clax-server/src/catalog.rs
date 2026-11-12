@@ -203,6 +203,7 @@ pub fn spawn_refresher(s: AppState, every: Duration) -> tokio::task::JoinHandle<
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

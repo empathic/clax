@@ -74,7 +74,7 @@ test("a question asked while the view is open is counted, closeQuestions hides i
   await app.open();
   await expect.poll(async () => (await ofType(page, "ready")).length).toBeGreaterThan(0);
   const { question } = await ask(d.base, d.token, app.sid, { source: "ask", artifact_id: app.aid, questions: [{ question: "Ship it?", header: "Ship", options: [{ label: "Yes" }, { label: "No" }] }] });
-  await expect.poll(() => questions(page), { timeout: 15_000 }).toEqual({ open: 1, showing: false });
+  await expect.poll(() => questions(page)).toEqual({ open: 1, showing: false });
 
   const sheet = page.locator(".app-questions");
   await host(page, "openQuestions()");

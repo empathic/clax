@@ -4,7 +4,7 @@
 // goes back to the version, and sees the draft clear when the agent
 // publishes.
 import type { Frame, Page } from "@playwright/test";
-import { test, expect, type Daemon, api, contentFrame, openArtifact, publishAs, registerSession, streamLive } from "./fixtures";
+import { test, expect, type Daemon, api, contentFrame, frameAt, openArtifact, publishAs, registerSession, streamLive } from "./fixtures";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -26,8 +26,7 @@ async function liveToken(aid: string): Promise<string> {
 /** The frame showing the draft revision `token` (any, when absent) of `aid`, once loaded. */
 async function draftFrame(page: Page, aid: string, token = "[A-Za-z0-9_-]{22}"): Promise<Frame> {
   const url = new RegExp(`${aid}\\.localhost:\\d+/_clax/draft/a_[^/]+/${token}/`);
-  await expect.poll(() => page.frame({ url }) !== null, { timeout: 10_000 }).toBe(true);
-  const f = page.frame({ url })!;
+  const f = await frameAt(page, url);
   await f.waitForLoadState("load");
   return f;
 }

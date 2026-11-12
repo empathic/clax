@@ -19,6 +19,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../support/fake_inspector.dart';
 import 'loop_support.dart';
+import '../support/settle.dart' show waitUntil;
 import 'tools/support.dart' show StepClock;
 
 const page = '<!doctype html><title>Runs</title><button>Save</button>';
@@ -2014,20 +2015,14 @@ class TrackedAsked implements AskedQuestions {
   }
 
   /// [until] from loop_support.dart, with the calls in flight waited out
-  /// before each turn, so a real file's writes count as no turns.
-  Future<void> until(
-    FutureOr<bool> Function() condition, {
-    int turns = 2000,
-  }) async {
-    for (var i = 0; i < turns; i++) {
-      if (await condition()) return;
-      while (_pending.isNotEmpty) {
-        await Future.wait(_pending.toList());
-      }
-      await Future<void>.delayed(Duration.zero);
-    }
-    throw StateError('condition not reached: $condition');
-  }
+  /// before each check.
+  Future<void> until(FutureOr<bool> Function() condition) =>
+      waitUntil(() async {
+        while (_pending.isNotEmpty) {
+          await Future.wait(_pending.toList());
+        }
+        return condition();
+      }, what: '$condition');
 
   @override
   Future<void> put(AskedEntry e) => _track(inner.put(e));

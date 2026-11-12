@@ -659,6 +659,7 @@ impl AppState {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::VisGen;
     use clax_core::Home;
@@ -678,10 +679,14 @@ mod tests {
         let id = st.live_approvals(None).unwrap()[0].id.clone();
         st.revoke_approval(&AuditCtx::DAEMON, &id, None).unwrap();
         assert_eq!(g.wait_after(seen).await, 1);
-        // Not yet: a bump from elsewhere wakes it.
-        let (g2, st2) = (g.clone(), st.clone());
-        let waiter = tokio::spawn(async move { g2.wait_after(1).await });
-        tokio::task::yield_now().await;
+        // Not yet: polled once, it waits, and a bump from elsewhere wakes it.
+        let st2 = st.clone();
+        let mut waiter = Box::pin(g.wait_after(1));
+        assert_eq!(
+            futures::FutureExt::now_or_never(&mut waiter),
+            None,
+            "waits for the next bump"
+        );
         tokio::task::spawn_blocking(move || {
             st2.approve(
                 &AuditCtx::DAEMON,
@@ -694,6 +699,6 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(waiter.await.unwrap(), 2);
+        assert_eq!(crate::test_util::within("the bump's wake", waiter).await, 2);
     }
 }

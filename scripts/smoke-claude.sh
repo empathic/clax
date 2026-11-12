@@ -35,6 +35,8 @@ export CLAX_NO_OPEN=1
 cleanup() { "$BIN" stop >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 die() { echo "smoke: FAIL: $1" >&2; exit 1; }
+# shellcheck source=scripts/lib/wait.sh
+. scripts/lib/wait.sh
 
 rm -rf "$HOME_DIR" "$CWD"
 mkdir -p "$HOME_DIR" "$CWD"
@@ -98,12 +100,8 @@ if [ "$MODE" = --plugin-dir ]; then
     sessions_check "any(s.get('harness_session_id') for s in sessions)" \
         || die "no claude session carries a harness_session_id"
     echo "smoke: session carries a harness session ID"
-    ended=""
-    for _ in $(seq 1 20); do
-        if sessions_check "any(s.get('ended_at') for s in sessions)"; then ended=1; break; fi
-        sleep 0.5
-    done
-    [ -n "$ended" ] || die "claude session has no ended_at after the run (SessionEnd)"
+    wait_for "the claude session's ended_at (SessionEnd)" sessions_check "any(s.get('ended_at') for s in sessions)" \
+        || die "claude session has no ended_at after the run (SessionEnd)"
     echo "smoke: session ended (SessionEnd hook ran)"
 fi
 

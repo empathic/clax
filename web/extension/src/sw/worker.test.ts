@@ -111,8 +111,15 @@ let d: Daemon;
 let w: Worker;
 let session: Record<string, unknown>;
 let local: Record<string, unknown>;
-const tick = () => vi.advanceTimersByTimeAsync(0);
-const settle = async () => { for (let i = 0; i < 5; i++) await tick(); };
+/** The real setImmediate, taken before any test turns fake timers on. */
+const realImmediate = globalThis.setImmediate;
+/** Resolves once the worker has nothing left in hand: every promise chain
+ * the test's last step started has run to its end, or to a wait on a timer
+ * or on the fake daemon. The worker's own zero-delay work is microtasks
+ * (promises, queueMicrotask), which fake timers leave real, and its timers
+ * all have delays, which only an advance runs; a real immediate runs once
+ * every microtask queued before it, and every one those queue, has run. */
+const settle = () => new Promise<void>(r => realImmediate(() => r()));
 const subscribes = (cred: string) => d.log.filter(l => l.method === "POST" && l.path.startsWith("/api/stream/") && l.cred === cred);
 const lookups = (cred: string) => d.log.filter(l => l.path.startsWith("/api/live/pages") && l.cred === cred);
 

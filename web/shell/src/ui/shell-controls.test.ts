@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { artifact, artifactViewHooks, mountView, waitFor } from "../test/artifact-view";
-import { flush, mount } from "../test/svelte";
+import { mount } from "../test/svelte";
 import { MOUNT_TIMEOUT_MS } from "../test/timeouts";
 import PhoneTabs from "./PhoneTabs.svelte";
 import Publish from "./Publish.svelte";
@@ -8,6 +8,7 @@ import SendButton from "./SendButton.svelte";
 import Sidebar from "./Sidebar.svelte";
 import VersionMenu from "./VersionMenu.svelte";
 import { SHELL_CONTROLS, findControl, inView, isShellControl, isShown, revealIfOutside } from "./shell-controls";
+import { settled } from "../test/settled";
 
 const marked = (name: string, host: HTMLElement = document.body, tag = "button") => {
   const el = document.createElement(tag);
@@ -142,7 +143,7 @@ describe("the shell's marked controls", () => {
     });
 
     describe("Publish", () => {
-      const settle = async () => { for (let i = 0; i < 5; i++) { await new Promise(r => setTimeout(r)); flush(); } };
+      const settle = settled;
       const daemon = (links: unknown[]) => vi.stubGlobal("fetch", vi.fn(async (url: string) => {
         if (url === "/api/token") return new Response(JSON.stringify({ token: "t-local" }));
         if (url.endsWith("/remotes")) return new Response(JSON.stringify({ links, remotes: [{ id: "r_1", origin: "https://clax.example", name: "clax.example", status: "connected", person_name: "Ada" }] }));

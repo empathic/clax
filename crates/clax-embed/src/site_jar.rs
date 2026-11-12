@@ -93,6 +93,7 @@ fn parse(set: &str) -> Option<(String, Option<String>)> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use axum::http::HeaderValue;

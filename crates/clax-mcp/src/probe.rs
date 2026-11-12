@@ -119,6 +119,7 @@ pub fn stdio<S: rmcp::ServerHandler>(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use crate::standdown::StandDown;
@@ -146,6 +147,9 @@ mod tests {
         (cw, BufReader::new(cr).lines())
     }
 
+    /// Sends `msg`, and for a request waits for its reply: the server
+    /// answers every request, so a reply that never comes is a hang, which
+    /// the test runner names.
     async fn rpc(
         w: &mut tokio::io::WriteHalf<tokio::io::DuplexStream>,
         r: &mut tokio::io::Lines<BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>>,
@@ -153,11 +157,7 @@ mod tests {
     ) -> Option<Value> {
         w.write_all(format!("{msg}\n").as_bytes()).await.unwrap();
         msg.get("id")?;
-        let line = tokio::time::timeout(std::time::Duration::from_secs(5), r.next_line())
-            .await
-            .expect("reply in time")
-            .unwrap()
-            .expect("a reply line");
+        let line = r.next_line().await.unwrap().expect("a reply line");
         Some(serde_json::from_str(&line).unwrap())
     }
 

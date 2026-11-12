@@ -46,6 +46,7 @@ pub fn skill_block(text: &str) -> Option<(String, usize)> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

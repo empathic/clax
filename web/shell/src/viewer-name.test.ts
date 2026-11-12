@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { settled } from "./test/settled";
 import { mount } from "./test/svelte";
 import { forgetViewer } from "./threads";
 import ViewerName from "./ui/ViewerName.svelte";
@@ -20,13 +21,13 @@ describe("ViewerName", () => {
     }));
     const view = mount(ViewerName, { setNotice: vi.fn() });
     const root = view.root;
-    await new Promise(r => setTimeout(r, 0));
+    await settled();
     const input = root.querySelector<HTMLInputElement>('input[aria-label="Your name"]')!;
     input.value = "Alex";
     input.dispatchEvent(new Event("input", { bubbles: true }));
-    await new Promise(r => setTimeout(r, 0));
+    await settled();
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    await new Promise(r => setTimeout(r, 20));
+    await settled();
     expect(calls).toEqual(["GET"]);
     answerGet();
     await vi.waitFor(() => expect(calls).toEqual(["GET", "PUT"]));

@@ -2751,6 +2751,7 @@ pub(crate) fn grant_caller_in(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 pub(crate) mod tests {
     use super::*;
     use crate::RegisterSession;

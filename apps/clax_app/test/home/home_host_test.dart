@@ -24,6 +24,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../support/fake_queue.dart';
 import '../support/paths.dart';
+import '../support/settle.dart' show stuckAfter;
 
 const _page = {'index.html': '<!doctype html><title>x</title>'};
 
@@ -279,7 +280,7 @@ void main() {
       }
 
       icons.addListener(on);
-      await landed.future.timeout(const Duration(seconds: 10));
+      await landed.future.timeout(stuckAfter);
       icons.removeListener(on);
     }
     await pumpEventQueue();

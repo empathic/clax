@@ -5,6 +5,7 @@ import { BOT, botView } from "./bot/send.svelte";
 import { flush, mount } from "./test/svelte";
 import type { Thread, Viewer } from "./threads";
 import ShellSidebar from "./ui/ShellSidebar.svelte";
+import { settled } from "./test/settled";
 
 const AID = "7q3k9mzx2b4t";
 const ME: Viewer = { public_id: "u_alex", display_name: "Alex", created_at: "2026-10-09T10:00:00.000Z", owner: true };
@@ -16,7 +17,7 @@ const thread = (id: string, created_at: string, author = ME.public_id): Thread =
   comments: [{ id: `c_${id}`, thread_id: id, author_kind: "viewer", author_name: "Alex", author_public_id: author, via_harness: null, body: "@agent use the new layout", created_at }],
 });
 await import("./bot/BotOffer.svelte");
-const settle = async () => { for (let i = 0; i < 8; i++) await new Promise(r => setTimeout(r, 0)); flush(); };
+const settle = settled;
 const click = (el: Element) => flush(() => { dispatchTrusted(el, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })); });
 
 /** The sidebar over `threads`, with the daemon answering a run start. */

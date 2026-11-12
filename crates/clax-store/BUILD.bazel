@@ -1,4 +1,3 @@
-load("@bazel_skylib//rules:native_binary.bzl", "native_test")
 load("//bazel:cargo.bzl", "cargo_package")
 
 cargo_package(
@@ -8,24 +7,56 @@ cargo_package(
     # (src/migrations.rs).
     test_compile_data = glob(["tests/fixtures/**"]) + ["//crates/clax-core:toolpath_vectors"],
     test_data = ["//crates/clax-core:toolpath_vectors"],
-    # The rerun of the store's tests on one connection is the target below.
+    # The unit tests run as six targets of about equal length:
+    # clax_store_lib_test (every module no group names) and
+    # clax_store_lib_test__2 … __6. They run again on one connection as
+    # clax_store_one_connection_test__1 … __6: the rerun
+    # tests::the_store_tests_pass_on_one_connection makes under Cargo,
+    # which CLAX_TEST_STORE_ONE_CONNECTION=apart leaves out here.
+    split_lib_test = {
+        "groups": [
+            # The migrations' tests, the longest, in two.
+            [
+                "migrations::tests::every_",
+                "migrations::tests::repair::",
+            ],
+            ["migrations::"],
+            [
+                "app_data::",
+                "feedback::",
+                "sessions::",
+            ],
+            [
+                "approvals::",
+                "artifacts::",
+                "backfill::",
+                "inbox::",
+                "jobs::",
+                "queues::",
+            ],
+            [
+                "credits::",
+                "engagement::",
+                "exec::",
+                "forks::",
+                "joined::",
+                "site::",
+                "threads::",
+                "toolpath::",
+                "viewers::",
+                "visibility::",
+            ],
+        ],
+        "reruns": {"one_connection": {
+            # The pool's own tests open the pool in either mode.
+            "args": [
+                "--skip",
+                "exec::tests::",
+            ],
+            "env": {"CLAX_TEST_STORE": "single"},
+        }},
+    },
     test_env = {"CLAX_TEST_STORE_ONE_CONNECTION": "apart"},
-)
-
-# The store's tests again, on one connection
-# (tests::the_store_tests_pass_on_one_connection, alone): a target of its
-# own, so the two runs of the suite go side by side, each within a test
-# target's time, rather than one after the other in clax_store_lib_test.
-native_test(
-    name = "clax_store_one_connection_test",
-    src = ":clax_store_lib_test",
-    out = "clax_store_one_connection_test",
-    args = [
-        "--exact",
-        "tests::the_store_tests_pass_on_one_connection",
-    ],
-    # Four libtest threads, as every Rust test (bazel/cargo.bzl).
-    tags = ["cpu:4"],
 )
 
 # The older builds' migrations (tests/fixtures/old-migrations), which the

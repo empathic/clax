@@ -1304,6 +1304,7 @@ mod binding {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use clax_bot::web::{CODE_URL_NOT_ALLOWED, Provider};

@@ -1162,9 +1162,14 @@ pub async fn reopen(
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "t0 is an origin only: the budget is given each time, t0 plus a fixed offset"
+    )]
     #[test]
     fn the_budget_allows_a_burst_of_80_then_40_a_second() {
         let t0 = Instant::now();

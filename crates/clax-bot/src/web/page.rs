@@ -1356,6 +1356,7 @@ pub fn handling(content_type: &str, format: super::Format) -> Handling {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

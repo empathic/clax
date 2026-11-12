@@ -608,6 +608,7 @@ impl Store {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use crate::Store;
     use crate::test_util::DAEMON;

@@ -13,6 +13,7 @@ import 'package:clax_app/queue/runner.dart';
 import 'package:flutter_test/flutter_test.dart' hide Retry;
 
 import '../support/real_core.dart';
+import '../support/settle.dart' show stuckAfter;
 
 /// The queue's reply step against the real embedded core: a change whose
 /// version names no session (as one imported from the app's ledger) has
@@ -62,7 +63,7 @@ void main() {
           },
         );
         runner.run(e);
-        return answer.timeout(const Duration(minutes: 1));
+        return answer.timeout(stuckAfter);
       }
 
       final claimed = await run(const ClaimOwner(1));
@@ -90,7 +91,7 @@ void main() {
             EffectRunner.ownerHeader: token,
           },
           body: Uint8List.fromList(utf8.encode(jsonEncode(body))),
-          timeout: const Duration(minutes: 1),
+          timeout: stuckAfter,
         );
         return (a.status, jsonDecode(utf8.decode(a.body)));
       }

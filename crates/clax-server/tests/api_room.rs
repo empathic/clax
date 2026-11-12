@@ -1,8 +1,8 @@
 use clax_testkit::TestServer;
 use clax_testkit::TestViewer;
+use clax_testkit::within;
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use std::time::Duration;
 use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
 
 type Ws =
@@ -20,27 +20,21 @@ impl Client {
             .unwrap();
     }
 
-    /// The next frame within `ms`, or `None`; a close is `{"t": "_close", code, reason}`.
-    async fn next_within(&mut self, ms: u64) -> Option<Value> {
+    /// The next frame; a close is `{"t": "_close", code, reason}`.
+    async fn next(&mut self) -> Value {
         loop {
-            let m = tokio::time::timeout(Duration::from_millis(ms), self.ws.next())
+            let m = within("a room frame", self.ws.next())
                 .await
-                .ok()??;
+                .expect("a frame before the socket ends");
             match m.expect("readable") {
-                Message::Text(t) => return Some(serde_json::from_str(t.as_str()).unwrap()),
+                Message::Text(t) => return serde_json::from_str(t.as_str()).unwrap(),
                 Message::Close(c) => {
                     let c = c.expect("a close frame");
-                    return Some(
-                        json!({"t": "_close", "code": u16::from(c.code), "reason": c.reason.as_str()}),
-                    );
+                    return json!({"t": "_close", "code": u16::from(c.code), "reason": c.reason.as_str()});
                 }
                 _ => continue,
             }
         }
-    }
-
-    async fn next(&mut self) -> Value {
-        self.next_within(5000).await.expect("a frame within 5 s")
     }
 
     /// Skips frames until one satisfies `pred`.
@@ -302,9 +296,18 @@ async fn named_rooms_are_isolated_and_leaving_is_seen() {
         .await;
     let m = a.until(|f| f["t"] == "msg").await;
     assert_eq!(m["room"], "table-1");
+    // A lobby message from b after its table-1 one: whatever c was sent of
+    // table-1 would reach it first.
+    b.send(json!({"t": "emit", "id": 4, "room": null, "topic": "reaction"}))
+        .await;
     let mut lobby_only = Vec::new();
-    while let Some(f) = c.next_within(300).await {
+    loop {
+        let f = c.next().await;
+        let sentinel = f["t"] == "msg" && f["room"].is_null();
         lobby_only.push(f);
+        if sentinel {
+            break;
+        }
     }
     assert!(
         lobby_only.iter().all(|f| f["room"] != "table-1"),
@@ -439,7 +442,12 @@ async fn a_second_socket_with_the_same_label_replaces_the_first() {
         old.until(|f| f["t"] == "_close").await,
         json!({"t": "_close", "code": 4409, "reason": "replaced"})
     );
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // The replaced socket's connection closes once its session has ended
+    // and dropped all it held.
+    within("the replaced socket's end", async {
+        while let Some(Ok(_)) = old.ws.next().await {}
+    })
+    .await;
     let mut later = connect(&ts, &aid, B, None, &[cookie(&owner)]).await;
     let snap = later.next().await;
     let labels: Vec<&str> = snap["peers"]
@@ -538,23 +546,19 @@ async fn a_message_over_the_size_cap_closes_the_socket() {
                 .into(),
         ))
         .await;
-    let mut closed = false;
-    for _ in 0..4 {
-        match tokio::time::timeout(Duration::from_secs(5), a.ws.next()).await {
-            Ok(None | Some(Err(_))) => {
-                closed = true;
-                break;
+    within("the socket closes", async {
+        loop {
+            match a.ws.next().await {
+                None | Some(Err(_)) => return,
+                Some(Ok(Message::Close(c))) => {
+                    assert_eq!(c.map(|c| u16::from(c.code)), Some(1009));
+                    return;
+                }
+                Some(Ok(_)) => continue,
             }
-            Ok(Some(Ok(Message::Close(c)))) => {
-                assert_eq!(c.map(|c| u16::from(c.code)), Some(1009));
-                closed = true;
-                break;
-            }
-            Ok(Some(Ok(_))) => continue,
-            Err(_) => break,
         }
-    }
-    assert!(closed, "the socket closes");
+    })
+    .await;
     // A message within the cap is read (and refused by its own bounds, quietly).
     let mut b = connect(&ts, &aid, B, None, &[]).await;
     b.next().await;

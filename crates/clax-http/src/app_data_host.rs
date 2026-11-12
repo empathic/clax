@@ -502,6 +502,7 @@ impl crate::state::AppState {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use clax_core::audit::AuditCtx;

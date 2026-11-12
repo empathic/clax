@@ -33,7 +33,6 @@ const call = (page: Page, method: string, path: string, body?: unknown) => page.
 }, [method, path, body] as const);
 
 test("on a hosted instance with nothing configured everyone files a report about Clax from its shell; the menu's badge follows the fix", async ({ browser }) => {
-  test.setTimeout(120_000);
   const { d, origin } = await hostedDaemon();
   try {
     const owner = await ownerOf(browser, origin);

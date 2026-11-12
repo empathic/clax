@@ -10,9 +10,10 @@ import { QuestionFeed } from "./feed.svelte";
 import { view } from "./fixtures";
 import SidebarQuestions from "./SidebarQuestions.svelte";
 import ThreadLinks from "./ThreadLinks.svelte";
+import { settled } from "../test/settled";
 
 const AID = "7q3k9mzx2b4t";
-const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0)); flush(); };
+const settle = settled;
 
 /** A feed holding `qs` open, filled as its topic goes live. */
 async function feedOf(qs: QuestionView[]) {

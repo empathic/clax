@@ -47,14 +47,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Waits up to $1 seconds for the command after it to succeed.
-until_ok() {
-    local deadline=$((SECONDS + $1)); shift
-    until "$@"; do
-        [ "$SECONDS" -lt "$deadline" ] || return 1
-        sleep 1
-    done
-}
+# shellcheck source=scripts/lib/wait.sh
+. "$here/scripts/lib/wait.sh"
 
 docker image inspect "$image" >/dev/null || { say "$image is not in the local Docker"; exit 2; }
 
@@ -120,7 +114,7 @@ forward() {
     local log="$work/forward-$1.log"
     k port-forward "pod/$1" :7480 > "$log" 2>&1 &
     pids+=("$!")
-    until_ok 30 port_in "$log" || { say "port-forward to $1 did not start:"; cat "$log" >&2; return 1; }
+    wait_for "the port-forward to $1" port_in "$log" || { say "port-forward to $1 did not start:"; cat "$log" >&2; return 1; }
     printf -v "$2" '%s' "$port"
 }
 forward clax-0 p0

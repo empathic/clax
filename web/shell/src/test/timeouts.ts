@@ -17,8 +17,9 @@ export const MOUNT_TIMEOUT_MS = 60_000;
 export const CHILD_TIMEOUT_MS = 90_000;
 
 /** How long a test polls for a condition before it fails naming what it
- * waited for, and how long `vi.waitFor` and `vi.waitUntil` wait unless told
- * otherwise (shell/test-setup.ts): under [`MOUNT_TIMEOUT_MS`], so that on a
- * loaded machine a test fails only on a condition that never comes, and
- * says which, before the test's own limit ends it. */
+ * waited for, and how long `vi.waitFor` and `vi.waitUntil`
+ * (shell/test-setup.ts) and `expect.poll` (vitest.config.ts) wait unless
+ * told otherwise: under [`MOUNT_TIMEOUT_MS`], so that on a loaded machine a
+ * test fails only on a condition that never comes, and says which, before
+ * the test's own limit ends it. */
 export const WAIT_MS = MOUNT_TIMEOUT_MS - 10_000;

@@ -5,6 +5,7 @@ import type { Thread, Viewer } from "./threads";
 import ShellSidebar from "./ui/ShellSidebar.svelte";
 import Sidebar from "./ui/Sidebar.svelte";
 import { waitingLabel } from "./waiting";
+import { settled } from "./test/settled";
 
 const TID = "01J9T0000000000000000000AA";
 const base = { artifact_id: "7q3k9mzx2b4t", version_n: 1, has_clip: false, clip_url: null, created_at: "2026-10-09T10:00:00.000Z", resolved_at: null, resolved_by: null, feedback_state: null };
@@ -23,7 +24,7 @@ await import("./people/ApprovalCard.svelte");
 await import("./ui/thread-approvals");
 await import("./ui/ThreadApproval.svelte");
 await import("./ui/NewComment.svelte");
-const settle = async () => { for (let i = 0; i < 8; i++) await new Promise(r => setTimeout(r, 0)); flush(); };
+const settle = settled;
 
 function render(threads: Thread[], more: Record<string, unknown> = {}) {
   return mount(Sidebar, { versions: [], shown: 1, agent: "claude", threads, resolved: {}, now: new Date("2026-10-09T10:05:00.000Z"), selected: null,

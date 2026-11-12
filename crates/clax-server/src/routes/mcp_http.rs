@@ -386,6 +386,7 @@ pub fn router(state: &AppState) -> Router<AppState> {
 }
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod tests {
     use super::{host_allowed, parse_session_header, session_header};
 

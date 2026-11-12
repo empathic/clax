@@ -172,10 +172,11 @@ async fn search_filters_paging_and_marks() {
 
 #[tokio::test]
 async fn dates_filter_in_the_stored_form() {
-    let ts = TestServer::spawn().await;
+    let clock = std::sync::Arc::new(clax_core::working::ManualClock::at("2026-03-14T12:00:00Z"));
+    let ts = TestServer::spawn_with_clock(clock).await;
     let (sid, aid, tid) = owner_thread(&ts).await;
     ts.reply_as_agent(&sid, &aid, &tid, "now").await;
-    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let today = "2026-03-14";
     let p = get(&ts, &format!("/api/inbox?kind=reply&since={today}")).await;
     assert_eq!(p["items"].as_array().unwrap().len(), 1);
     let p = get(&ts, &format!("/api/inbox?kind=reply&until={today}")).await;
@@ -186,10 +187,9 @@ async fn dates_filter_in_the_stored_form() {
     );
     let p = get(&ts, "/api/inbox?kind=reply&until=2020-01-01").await;
     assert_eq!(p["items"].as_array().unwrap().len(), 0);
-    // An offset time is compared as the same instant in UTC.
-    let later = (chrono::Utc::now() + chrono::Duration::hours(1))
-        .with_timezone(&chrono::FixedOffset::east_opt(5 * 3600).unwrap())
-        .to_rfc3339();
+    // An offset time is compared as the same instant in UTC: an hour
+    // after the reply.
+    let later = "2026-03-14T18:00:00+05:00";
     let p = get(
         &ts,
         &format!("/api/inbox?kind=reply&until={}", later.replace('+', "%2B")),

@@ -68,4 +68,5 @@ pub mod working;
 pub mod world;
 
 #[cfg(test)]
+#[warn(clippy::disallowed_methods)]
 mod guards;

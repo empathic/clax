@@ -536,8 +536,17 @@ impl Env {
         )
         .unwrap();
         store.set_bot_overrides(ov);
-        let sandbox: Arc<dyn Sandbox> =
-            Arc::new(clax_bot_js::QuickJs::new(clax_bot::api::op_names()));
+        // The watchdog's floor is the hang guard: a script ends by itself or
+        // by the CPU budget the engine measures, never by the wall time a
+        // loaded machine takes to run it.
+        let sandbox: Arc<dyn Sandbox> = Arc::new(
+            clax_bot_js::QuickJs::new(clax_bot::api::op_names()).with_watchdog(
+                clax_bot_js::Watchdog {
+                    factor: 1,
+                    floor: HANG,
+                },
+            ),
+        );
         let host = Arc::new(FakeBotHost::new(store.clone(), thread_context(&aid, &t1)));
         Env {
             _dir: dir,
@@ -791,5 +800,24 @@ impl Env {
     }
 }
 
-/// How long a test waits for something that happens promptly.
-pub const PROMPTLY: Duration = Duration::from_secs(30);
+/// How long a test's wait on something that will happen may take before
+/// the test calls it a hang: `clax_testkit::HANG`. A hang guard only: a
+/// loaded machine reaches every condition far sooner, so it never decides
+/// whether a test passes.
+pub const HANG: Duration = Duration::from_secs(120);
+
+/// `fut`'s output, bounded by the [`HANG`] guard: panics naming `what`
+/// when `fut` has none by then (`clax_testkit::within`, which these tests
+/// do not reach).
+///
+/// # Panics
+/// Past the [`HANG`] guard.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "within is the HANG guard on a wait"
+)]
+pub async fn within<F: std::future::IntoFuture>(what: &str, fut: F) -> F::Output {
+    tokio::time::timeout(HANG, fut)
+        .await
+        .unwrap_or_else(|_| panic!("{what}: not after {HANG:?} (hang guard)"))
+}
