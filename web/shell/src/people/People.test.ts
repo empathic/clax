@@ -242,6 +242,11 @@ describe("People", () => {
     expect(m.root.querySelector(".approvals")).toBeNull();
     expect(m.root.textContent).toContain("You are no longer connected: the owner disconnected you.");
     expect(gone).toHaveBeenCalledTimes(1);
+    // A second event after the revocation changes neither.
+    hear!({ type: "refused" });
+    await settle();
+    expect(m.root.textContent).toContain("You are no longer connected: the owner disconnected you.");
+    expect(gone).toHaveBeenCalledTimes(1);
   });
 
   it("focuses Name when the invite form opens, and Invite a person when it closes", async () => {

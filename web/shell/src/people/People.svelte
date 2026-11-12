@@ -65,6 +65,7 @@
   // The open dialog is the first invite's: the switch shows in it, not apart.
   let firstInvite = $state(false);
   let gone = false;
+  let was = false;
   let off: (() => void) | null = null;
   const msg = refusal;
 
@@ -73,11 +74,13 @@
     try { m = await api.me(); } catch (e) {
       if (gone) return;
       const had = !!me;
-      denied = peopleDenied(e, had && !me?.person.owner); me = null; list = null; invites = []; pending = []; approvals = []; requests = []; banner = null; inviting = false;
+      // A later event finds no one to forget: the screen still says they were disconnected.
+      was ||= had && !me?.person.owner;
+      denied = peopleDenied(e, was); me = null; list = null; invites = []; pending = []; approvals = []; requests = []; banner = null; inviting = false;
       if (had) dispatchEvent(new Event("clax:people-gone"));
       return;
     }
-    denied = null;
+    denied = null; was = false;
     const owner = m.person.owner;
     try {
       const [l, inv, pend, aps, reqs] = await Promise.all([
