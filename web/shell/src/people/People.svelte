@@ -61,6 +61,9 @@
   let admin = $state(false);
   let gone = false;
   let off: (() => void) | null = null;
+  // The page was a connected person's when People was last refused them:
+  // kept across the loads that follow, each refused too, until one answers.
+  let disconnected = false;
   const msg = refusal;
 
   async function load() {
@@ -68,11 +71,12 @@
     try { m = await api.me(); } catch (e) {
       if (gone) return;
       const had = !!me;
-      denied = peopleDenied(e, had && !me?.person.owner); me = null; list = null; invites = []; pending = []; approvals = []; requests = []; banner = null; inviting = false;
+      if (me) disconnected = !me.person.owner;
+      denied = peopleDenied(e, disconnected); me = null; list = null; invites = []; pending = []; approvals = []; requests = []; banner = null; inviting = false;
       if (had) dispatchEvent(new Event("clax:people-gone"));
       return;
     }
-    denied = null;
+    denied = null; disconnected = false;
     const owner = m.person.owner;
     try {
       const [l, inv, pend, aps, reqs] = await Promise.all([
