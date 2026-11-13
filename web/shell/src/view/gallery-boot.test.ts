@@ -4,13 +4,16 @@ import { type GalleryBoot, answered, readGalleryBoot } from "./gallery-boot";
 const boot = (): GalleryBoot => ({
   v: 1,
   kind: "gallery",
-  status: { viewer: 200, hosted: 404, feedback: 200, artifacts: 200, attention: 200 },
+  status: { viewer: 200, hosted: 404, feedback: 200, bot: 404, summary: 200, artifacts: 200, attention: 200, questions: 200 },
   viewer: { viewer: { public_id: "v1", display_name: "Ada </script>", person: true, person_revoked_at: null }, may_create: true },
   hosted: null,
   feedback: { enabled: false, instance: null, queue: null, context: null },
+  bot: null,
   inbox: true,
   artifacts: { artifacts: [] },
   attention: { artifacts: { a1: { addressed: [], addressed_v: null, new_replies: [], open_in: ["t1"], seen: 1 } } },
+  summary: { unread: 0, questions: [], latest: [] },
+  questions: { questions: [], open: 0 },
 });
 
 describe("readGalleryBoot", () => {
@@ -48,7 +51,7 @@ describe("readGalleryBoot", () => {
     expect(b.feedback).toBeNull();
     expect(b.attention).toBeNull();
     expect(b.inbox).toBeNull();
-    for (const f of ["viewer", "hosted", "feedback", "attention"] as const) expect(answered(b, f), f).toBe(false);
+    for (const f of ["viewer", "hosted", "feedback", "bot", "attention", "summary", "questions"] as const) expect(answered(b, f), f).toBe(false);
     expect(b.artifacts).toEqual(boot().artifacts);
     expect(answered(b, "artifacts")).toBe(true);
     // The block itself is left as it was.
@@ -56,13 +59,15 @@ describe("readGalleryBoot", () => {
   });
 
   it("keeps a page's absent list fields absent through history", () => {
-    const header: Partial<GalleryBoot> = { ...boot(), status: { viewer: 200, hosted: 404, feedback: 200 } };
+    const header: Partial<GalleryBoot> = { ...boot(), status: { viewer: 200, hosted: 404, feedback: 200, bot: 404, summary: 200 } };
     delete header.artifacts;
     delete header.attention;
+    delete header.questions;
     block(JSON.stringify(header));
     const b = readGalleryBoot(document, "back_forward")!;
     expect("attention" in b).toBe(false);
     expect("artifacts" in b).toBe(false);
+    expect("questions" in b).toBe(false);
   });
 
   it("refuses a block that does not parse, is not version 1, or is the artifact page's", () => {

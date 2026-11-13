@@ -14,21 +14,30 @@
 //!
 //! ```json
 //! {"v": 1, "kind": "gallery",
-//!  "status": {"viewer": 200, "hosted": 404, "feedback": 200,
-//!             "artifacts": 200, "attention": 200},
+//!  "status": {"viewer": 200, "hosted": 404, "feedback": 200, "bot": 404,
+//!             "summary": 200, "artifacts": 200, "attention": 200,
+//!             "questions": 200},
 //!  "viewer": {"viewer": {…}, "may_create": true},
 //!  "hosted": null,
 //!  "feedback": {"enabled": false, …},
+//!  "bot": null,
 //!  "inbox": true,
 //!  "artifacts": {"artifacts": […]},
-//!  "attention": {"artifacts": {…}}}
+//!  "attention": {"artifacts": {…}},
+//!  "summary": {"unread": 2, "questions": […], "latest": […]},
+//!  "questions": {"questions": […], "open": 1}}
 //! ```
 //!
 //! Each route field ([`Field`]) is the JSON body its route answers this
 //! browser: `viewer` `GET /api/viewers/me`, `hosted` `GET /api/hosted/me`,
-//! `feedback` `GET /_app/feedback/config`, and on `/` alone (the only page
-//! that lists artifacts) `artifacts` `GET /api/artifacts` and `attention`
-//! `GET /api/viewers/me/attention`. The route answers it itself: the
+//! `feedback` `GET /_app/feedback/config`, `bot` `GET /api/me/bot` (the
+//! header's ClaxBot meter and Queues for an admin), `summary` `GET
+//! /api/inbox/summary` (Inbox's count in the header, and on `/` the unread
+//! summary above the cards), and on `/` alone (the only page that lists
+//! artifacts) `artifacts` `GET /api/artifacts`, `attention` `GET
+//! /api/viewers/me/attention` and the summary's open questions,
+//! `questions` `GET /api/questions?status=open&limit=200`. The inbox's
+//! routes refuse a browser without one. The route answers it itself: the
 //! daemon sends it, in process, through its whole router
 //! ([`crate::integrations::instance::Instance::router`]), so every layer and
 //! handler (the host rule, the local credential gate, a hosted daemon's gate
@@ -86,11 +95,17 @@ pub enum Field {
     Hosted,
     /// `GET /_app/feedback/config`.
     Feedback,
+    /// `GET /api/me/bot` (`meBot()` in `web/shell/src/bot/api.ts`).
+    Bot,
     /// `GET /api/artifacts`, the gallery's list (`listArtifacts()` in
     /// `web/shell/src/api.ts`).
     Artifacts,
     /// `GET /api/viewers/me/attention` (`getAttention()`).
     Attention,
+    /// `GET /api/inbox/summary` (`inboxSummary()` in `web/shell/src/q/api.ts`).
+    Summary,
+    /// `GET /api/questions?status=open&limit=200` (`listQuestions()`).
+    Questions,
 }
 
 impl Field {
@@ -100,8 +115,11 @@ impl Field {
             Field::Viewer => "viewer",
             Field::Hosted => "hosted",
             Field::Feedback => "feedback",
+            Field::Bot => "bot",
             Field::Artifacts => "artifacts",
             Field::Attention => "attention",
+            Field::Summary => "summary",
+            Field::Questions => "questions",
         }
     }
 
@@ -111,22 +129,35 @@ impl Field {
             Field::Viewer => "/api/viewers/me",
             Field::Hosted => "/api/hosted/me",
             Field::Feedback => "/_app/feedback/config",
+            Field::Bot => "/api/me/bot",
             Field::Artifacts => "/api/artifacts",
             Field::Attention => "/api/viewers/me/attention",
+            Field::Summary => "/api/inbox/summary",
+            Field::Questions => "/api/questions?status=open&limit=200",
         }
     }
 }
 
-/// The fields the page at `path` uses: the header's on every gallery page,
-/// and the list's on `/` alone.
+/// The fields the page at `path` uses: the header's on every gallery page
+/// (the inbox's unread summary among them: Inbox's count), and the list's
+/// and the open questions on `/` alone.
 pub fn fields_for(path: &str) -> &'static [Field] {
-    const HEADER: &[Field] = &[Field::Viewer, Field::Hosted, Field::Feedback];
+    const HEADER: &[Field] = &[
+        Field::Viewer,
+        Field::Hosted,
+        Field::Feedback,
+        Field::Bot,
+        Field::Summary,
+    ];
     const LIST: &[Field] = &[
         Field::Viewer,
         Field::Hosted,
         Field::Feedback,
+        Field::Bot,
+        Field::Summary,
         Field::Artifacts,
         Field::Attention,
+        Field::Questions,
     ];
     if path == "/" { LIST } else { HEADER }
 }
@@ -386,10 +417,23 @@ mod tests {
         let names = |p: &str| fields_for(p).iter().map(|f| f.name()).collect::<Vec<_>>();
         assert_eq!(
             names("/"),
-            ["viewer", "hosted", "feedback", "artifacts", "attention"]
+            [
+                "viewer",
+                "hosted",
+                "feedback",
+                "bot",
+                "summary",
+                "artifacts",
+                "attention",
+                "questions"
+            ]
         );
         for p in ["/inbox", "/tags", "/queues/q/t", "/settings/you", "/people"] {
-            assert_eq!(names(p), ["viewer", "hosted", "feedback"], "{p}");
+            assert_eq!(
+                names(p),
+                ["viewer", "hosted", "feedback", "bot", "summary"],
+                "{p}"
+            );
         }
     }
 

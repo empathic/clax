@@ -1,4 +1,4 @@
-import type { Artifact, AttentionSummary } from "../api";
+import type { Artifact, AttentionSummary, InboxSummary, QuestionView } from "../api";
 import type { HostedMe } from "../hosted/api";
 
 /** A field of the gallery's bootstrap that one route answers: its name in
@@ -7,8 +7,11 @@ export const GALLERY_ROUTES = {
   viewer: "/api/viewers/me",
   hosted: "/api/hosted/me",
   feedback: "/_app/feedback/config",
+  bot: "/api/me/bot",
   artifacts: "/api/artifacts",
   attention: "/api/viewers/me/attention",
+  summary: "/api/inbox/summary",
+  questions: "/api/questions?status=open&limit=200",
 } as const;
 export type GalleryField = keyof typeof GALLERY_ROUTES;
 
@@ -17,6 +20,10 @@ export type ViewerMe = {
   viewer: { public_id?: string; display_name?: string | null; person?: boolean; person_revoked_at?: string | null; owner?: boolean } | null;
   may_create?: boolean;
 };
+
+/** `GET /api/me/bot`'s body, as far as the gallery's header reads it: the
+ * caller's role (Queues for an admin), and whether ClaxBot is on (its meter). */
+export type BotMe = { enabled?: boolean; role?: "owner" | "admin" | "member" } & Record<string, unknown>;
 
 /** The daemon's first-load data for a gallery page (`/`, `/inbox`, `/tags`,
  * `/queues…`, `/settings…`, `/people`, `/admin`, `/me`, `/audit`), from
@@ -31,7 +38,10 @@ export type ViewerMe = {
  * - No `status[f]` (the route failed (5xx, 408, 429) or was slow, or the
  *   field was left out, as on back/forward): `f` is null and the shell asks
  *   the route itself.
- * - `artifacts` and `attention` are there on `/` alone (absent elsewhere).
+ * - `artifacts`, `attention` and `questions` are there on `/` alone
+ *   (absent elsewhere); `summary` (Inbox's count) on every page.
+ *   `summary` and `questions` are the inbox's (refused, 401 or 403, to a
+ *   browser without one).
  * - `inbox`: whether this browser has an inbox, as `inboxBrowser` in
  *   `owner.ts` decides it (a live connected person's, or the owner's);
  *   null when not known, and the shell asks.
@@ -44,15 +54,18 @@ export type GalleryBoot = {
   hosted: HostedMe | null;
   /** `GET /_app/feedback/config`'s body, for `readConfig` (`feedback/boot.ts`). */
   feedback: unknown;
+  bot: BotMe | null;
   inbox: boolean | null;
   artifacts?: { artifacts: Artifact[] } | null;
   attention?: { artifacts: Record<string, AttentionSummary> } | null;
+  summary?: InboxSummary | null;
+  questions?: { questions: QuestionView[]; open: number } | null;
 };
 
 /** The fields that depend on who this browser is, which a page from the
  * browser's cache may hold for someone else's cookie: all but `artifacts`,
  * which the gallery's stream refreshes. */
-const VIEWER_FIELDS = ["viewer", "hosted", "feedback", "attention"] as const;
+const VIEWER_FIELDS = ["viewer", "hosted", "feedback", "bot", "attention", "summary", "questions"] as const;
 
 /** How this document was reached (`back_forward` for history), from
  * Navigation Timing, as `readBoot` (`boot.ts`) reads it. */

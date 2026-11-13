@@ -74,10 +74,11 @@ async fn assert_fields_are_the_routes(ts: &TestServer, b: &Value, cookie: &str, 
         ("viewer", "/api/viewers/me"),
         ("hosted", "/api/hosted/me"),
         ("feedback", "/_app/feedback/config"),
+        ("bot", "/api/me/bot"),
+        ("summary", "/api/inbox/summary"),
     ];
     if list {
-        fields.push(("artifacts", "/api/artifacts"));
-        fields.push(("attention", "/api/viewers/me/attention"));
+        fields.extend(LIST_FIELDS);
     }
     for (name, path) in fields {
         let (status, body) = fetched(ts, path, cookie).await;
@@ -86,10 +87,19 @@ async fn assert_fields_are_the_routes(ts: &TestServer, b: &Value, cookie: &str, 
         assert_eq!(b[name], want, "{name}");
     }
     if !list {
-        assert!(b.get("artifacts").is_none() && b.get("attention").is_none());
-        assert!(b["status"].get("artifacts").is_none());
+        for (name, _) in LIST_FIELDS {
+            assert!(b.get(name).is_none(), "{name}: {b}");
+            assert!(b["status"].get(name).is_none(), "{name}: {b}");
+        }
     }
 }
+
+/// The fields `/` alone carries, with their routes.
+const LIST_FIELDS: [(&str, &str); 3] = [
+    ("artifacts", "/api/artifacts"),
+    ("attention", "/api/viewers/me/attention"),
+    ("questions", "/api/questions?status=open&limit=200"),
+];
 
 #[tokio::test]
 async fn a_local_viewer_gets_what_each_route_answers_it() {
@@ -127,6 +137,14 @@ async fn a_local_viewer_gets_what_each_route_answers_it() {
         b["inbox"], false,
         "a viewer who is no person, not the owner"
     );
+    for name in ["summary", "questions"] {
+        let status = b["status"][name].as_u64().unwrap();
+        assert!(
+            status == 401 || status == 403,
+            "the inbox is refused to a browser without one: {name} {b}"
+        );
+        assert_eq!(b[name], Value::Null, "{name}");
+    }
     assert!(!html.contains(&ts.token));
     assert!(!html.contains(&ts.local_browser()), "never the cookie");
 }
@@ -238,8 +256,44 @@ async fn a_local_owners_navigation_gets_no_block_and_a_proven_load_never_the_tok
     assert_eq!(b["viewer"]["viewer"]["owner"], true, "{b}");
     assert_eq!(b["inbox"], true, "the owner's browser");
     assert_eq!(b["artifacts"]["artifacts"][0]["title"], "Secret plans");
+    assert_fields_are_the_routes(&ts, &b, &ts.owner_cookie(), true).await;
     assert!(!html.contains(&ts.token), "the token never enters the page");
     assert!(b.get("token").is_none());
+}
+
+#[tokio::test]
+async fn the_owners_pages_carry_the_inbox_summary_and_the_gallery_its_open_questions() {
+    let dist = dist();
+    let ts = TestServer::spawn_with_web(dist.path()).await;
+    let sid = ts.register_session("claude", "h1").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let asked = ts
+        .authed(
+            ts.client
+                .post(format!("{}/api/sessions/{sid}/questions", ts.base))
+                .json(
+                    &json!({"source": "ask", "questions": [{"question": "Which?",
+                    "header": "Pick", "options": [{"label": "A"}, {"label": "B"}]}]}),
+                ),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(asked.status(), 201);
+    let qid = asked.json::<Value>().await.unwrap()["question"]["id"].clone();
+    let cookie = ts.owner_cookie();
+    let b = block(&local(&ts, "/", &cookie).await.text().await.unwrap()).unwrap();
+    assert_fields_are_the_routes(&ts, &b, &cookie, true).await;
+    assert_eq!(b["summary"]["unread"], 1, "{b}");
+    assert_eq!(b["summary"]["questions"][0]["id"], qid);
+    assert_eq!(b["questions"]["questions"][0]["id"], qid);
+    assert_eq!(b["questions"]["open"], 1);
+    // The pages beside the gallery carry the summary (Inbox's count) alone.
+    let b = block(&local(&ts, "/inbox", &cookie).await.text().await.unwrap()).unwrap();
+    assert_fields_are_the_routes(&ts, &b, &cookie, false).await;
+    assert_eq!(b["summary"]["unread"], 1, "{b}");
 }
 
 #[tokio::test]
@@ -488,8 +542,11 @@ async fn hosted_fields(ts: &TestServer, b: &Value, session: &str) {
         ("viewer", "/api/viewers/me"),
         ("hosted", "/api/hosted/me"),
         ("feedback", "/_app/feedback/config"),
+        ("bot", "/api/me/bot"),
         ("artifacts", "/api/artifacts"),
         ("attention", "/api/viewers/me/attention"),
+        ("summary", "/api/inbox/summary"),
+        ("questions", "/api/questions?status=open&limit=200"),
     ] {
         let r = at(ts, reqwest::Method::GET, path, Some(session))
             .send()
