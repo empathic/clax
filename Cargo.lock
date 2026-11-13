@@ -469,6 +469,7 @@ dependencies = [
  "clax-rt",
  "clax-sample",
  "clax-store",
+ "clax-surface",
  "encoding_rs",
  "futures",
  "html5ever",
@@ -515,6 +516,7 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "chrono",
+ "clax-bot",
  "clax-commands",
  "clax-core",
  "clax-embedded",
@@ -549,6 +551,7 @@ dependencies = [
  "clax-hooks",
  "clax-mcp",
  "clax-store",
+ "clax-surface",
  "http",
  "nix",
  "reqwest 0.12.28",
@@ -946,11 +949,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "clax-surface"
+version = "0.7.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "clax-testkit"
 version = "0.7.1"
 dependencies = [
  "async-trait",
  "axum",
+ "clax-bot",
  "clax-core",
  "clax-fake-exe",
  "clax-http",
@@ -959,10 +971,12 @@ dependencies = [
  "clax-sample",
  "clax-server",
  "clax-store",
+ "clax-surface",
  "futures",
  "reqwest 0.12.28",
  "ring",
  "rusqlite",
+ "serde",
  "serde_json",
  "sha2",
  "tempfile",

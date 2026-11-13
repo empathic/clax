@@ -113,6 +113,10 @@ mod l10 {
         ("remote_apps::record_install", Owner),
         ("settings::get", Bot),
         ("settings::put", Bot),
+        ("bot_surfaces::list", NoArtifact),
+        ("bot_surfaces::register", NoArtifact),
+        ("bot_surfaces::start", NoArtifact),
+        ("bot_surfaces::serve", NoArtifact),
         ("bot::me_get", Bot),
         ("bot::me_put", Bot),
         ("bot::key_put", Bot),
@@ -376,6 +380,7 @@ mod l10 {
             "approvals" => include_str!("approvals.rs"),
             "audit_trail" => include_str!("audit_trail.rs"),
             "bot" => include_str!("bot.rs"),
+            "bot_surfaces" => include_str!("bot_surfaces.rs"),
             "artifacts" => include_str!("artifacts.rs"),
             "assets" => include_str!("assets.rs"),
             "connect" => include_str!("connect.rs"),
@@ -587,6 +592,10 @@ mod l10 {
     /// ([`AuditCtx`](clax_core::audit::AuditCtx) or
     /// [`DeferredAudit`](clax_http::audit::DeferredAudit)), and why.
     const UNAUDITED: &[(&str, &str)] = &[
+        (
+            "bot_surfaces::serve",
+            "a host's long-poll: each answer it brings is journaled as its run's call",
+        ),
         ("working::renew", "a heartbeat (§6.11)"),
         (
             "queue_agent::renew",

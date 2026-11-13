@@ -1,10 +1,17 @@
-//! ClaxBot runs and their steps (migration 50, spec
+//! ClaxBot runs and their steps (migrations 50, 64 and 65, spec
 //! 2026-10-21-claxbot-design §4.2, §6.3).
 //!
 //! A **run** is ClaxBot working one request for one person. It moves
 //! `queued` → `running` (a driver claimed it) → `finished`, `gave_up` or
 //! `stopped`; a cancel makes it `stopping` until the driver writes its
-//! `stopped` step. A run is a sequence of **steps**, each begun
+//! `stopped` step. A running run whose step awaits a call that is slow
+//! to answer is **parked** by its driver ([`Store::park_run`]): it keeps
+//! its open step and its threads and has no driver, until the call's
+//! answer or deadline is journaled ([`crate::bot_pending`]) or it is
+//! cancelled, each of which makes it `queued` again (`stopping`, for a
+//! cancel), due at once, for a driver to claim and execute the step again
+//! (spec 2026-11-10-claxbot-surfaces-design, "Calls that wait"). A run
+//! is a sequence of **steps**, each begun
 //! ([`Store::begin_step`]) and then committed ([`Store::commit_bot_step`])
 //! before the next begins, so a run survives a restart: a step begun but
 //! not committed is found again ([`Store::open_step`]) and executed again.
@@ -35,11 +42,22 @@
 //! (`base_version`): each path it wrote, with its content, or deleted.
 //! The artifact changes only when the run publishes it, through the
 //! artifact's own publish path.
+//!
+//! A run is also kept as a **kind**, a **request** and **bindings**
+//! (migration 64, spec 2026-11-10-claxbot-surfaces-design, "A run"):
+//! `bot_runs.kind`, `request_json` ([`ClaxRequest`]) and `bindings_json`
+//! ([`Bindings`]), written when the run is made from the same values as
+//! its `request`, `thread_ids`, `artifact_id` and `web`, and never
+//! changed. [`RunAsMade`] is the three as they are kept, which the run
+//! loop reads with the run's row and steps
+//! ([`Store::run_with_steps_as_made`]); [`Run`] is read from the
+//! earlier columns, of which `request`, `thread_ids`, `artifact_id`,
+//! `base_version` and `web` are the `clax` surface's own.
 
 use super::Store;
 use super::credits::{KeySource, Metered, UsageRow, charge_in, check_model_priced};
 use super::roles::set_by;
-use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
+use clax_core::audit::{AuditCtx, AuditIds, AuditKind, AuditRecord};
 use clax_core::{CoreError, Result};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
@@ -80,6 +98,7 @@ named! {
         Queued = "queued",
         Running = "running",
         Stopping = "stopping",
+        Parked = "parked",
         Finished = "finished",
         GaveUp = "gave_up",
         Stopped = "stopped",
@@ -95,13 +114,63 @@ impl RunStatus {
             RunStatus::Finished | RunStatus::GaveUp | RunStatus::Stopped | RunStatus::Failed
         )
     }
+
+    /// Whether the run has not ended: `queued`, `running`, `stopping` or
+    /// `parked`. Such a run holds its threads (a second send of one
+    /// returns it, and follow-ups queue behind it), is listed for a
+    /// driver that starts, and keeps the cost lines that price it.
+    pub fn is_live(self) -> bool {
+        !self.is_terminal()
+    }
 }
 
-named! {
-    /// What started a run.
-    RequestKind {
-        Thread = "thread",
-        Brief = "brief",
+/// The statuses of a run that has not ended ([`RunStatus::is_live`]), as
+/// SQL's `IN` takes them: the one spelling of the set for every query
+/// that filters on it. The index `bot_runs_live` (migration 65) is over
+/// the same list, so those queries read it.
+pub(crate) const LIVE: &str = "('queued', 'running', 'stopping', 'parked')";
+
+/// What a run's request is, as the `request` column has it: one of the
+/// two kinds of Clax's own surface, or that the run is of another
+/// surface's kind, which `bot_runs.kind` names ([`RunAsMade::kind`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestKind {
+    /// `clax.thread`: threads sent to ClaxBot.
+    Thread,
+    /// `clax.brief`: the brief of a new artifact.
+    Brief,
+    /// A kind of a surface other than Clax's ([`Store::create_run_of`]):
+    /// a run with no thread, and no artifact unless it binds `clax`.
+    Other,
+}
+
+impl RequestKind {
+    /// The kinds of Clax's own surface: every value but
+    /// [`RequestKind::Other`], which is no kind of its own.
+    pub const ALL: &'static [RequestKind] = &[RequestKind::Thread, RequestKind::Brief];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RequestKind::Thread => "thread",
+            RequestKind::Brief => "brief",
+            RequestKind::Other => "other",
+        }
+    }
+
+    /// The kind of Clax's own surface named `s` (`thread`, `brief`);
+    /// `None` for any other name, `other` included.
+    pub fn parse(s: &str) -> Option<RequestKind> {
+        RequestKind::ALL.iter().copied().find(|k| k.as_str() == s)
+    }
+
+    /// What a `bot_runs.request` of `s` is: a kind of Clax's surface, or
+    /// `other`.
+    fn of_column(s: &str) -> Option<RequestKind> {
+        match s {
+            "other" => Some(RequestKind::Other),
+            s => RequestKind::parse(s),
+        }
     }
 }
 
@@ -137,9 +206,13 @@ impl StepKind {
 pub struct Run {
     /// A ULID.
     pub id: String,
+    /// The artifact of the run's `clax` binding; empty for a run that has
+    /// none ([`Run::artifact`]).
     pub artifact_id: String,
     /// The person key the run acts for.
     pub person: String,
+    /// The kind of a `clax` run. A run of another surface's kind is told
+    /// apart by [`RunAsMade::kind`], never by this.
     pub request: RequestKind,
     pub thread_ids: Vec<String>,
     pub status: RunStatus,
@@ -147,7 +220,7 @@ pub struct Run {
     pub reason: Option<String>,
     pub model: String,
     pub key_source: KeySource,
-    /// The version its draft is based on.
+    /// The version its draft is based on; 0 for a run with no artifact.
     pub base_version: u32,
     /// Credits charged so far.
     pub credits_milli: i64,
@@ -160,6 +233,9 @@ pub struct Run {
     /// When a driver that let the run wait (a stalled sandbox's backoff,
     /// an unreachable model's retry) is to look at it again; `None`: at
     /// once. A driver that starts honours it ([`Store::set_run_due`]).
+    /// For a parked run it is the deadline of what it waits on
+    /// ([`Store::park_run`]), `None` for no deadline; no driver claims a
+    /// parked run, at that time or any other.
     pub due_at: Option<String>,
     /// The grant of the agent that asked for the run (a person's agent of
     /// another machine, or an agent token), whose rights bound the run's
@@ -170,6 +246,81 @@ pub struct Run {
     /// tools), `"search"`, `"fetch"` or `"search,fetch"`. Written when the
     /// run is made and never changed.
     pub web: String,
+}
+
+/// What `bot_runs` keeps of a run's parking, beside [`Run`]
+/// ([`Store::run_parking`]).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Parking {
+    /// When the run parked; `None` for a run that is not parked.
+    pub parked_at: Option<String>,
+    /// How long the run has been parked in all, in milliseconds, not
+    /// counting a parking that has not ended: what a limit on a run's
+    /// time leaves out.
+    pub parked_ms: i64,
+    /// What the run waits on, as the driver that parked it said; `None`
+    /// for a run that is not parked. The store reads none of it.
+    pub waiting_on: Option<Value>,
+    /// How often the run's open step has parked (0 for a run with no
+    /// open step): a step's `attempt` counts the times it was begun,
+    /// after a crash too, so a limit on parks counts these.
+    pub parks: i64,
+}
+
+/// A place in a run's call journal: call `seq` of step `step_n`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct JournalPlace {
+    pub step_n: i64,
+    pub seq: i64,
+}
+
+/// What [`Store::park_run`] found or did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Park {
+    /// The run is parked: by this call, or already (then unchanged).
+    Parked(Run),
+    /// The place the driver would wait on is in the journal already, so
+    /// the run was not parked and nothing changed: the driver, which
+    /// still holds it, executes the step again now.
+    Answered(Run),
+}
+
+/// What a run was made as, which `bot_runs` keeps beside [`Run`]'s
+/// columns and never changes: what the run loop knows a run by.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunAsMade {
+    /// The run's kind as `<surface>.<kind>` (`bot_runs.kind`):
+    /// `clax.thread`, `clax.brief`, or a kind of another surface.
+    pub kind: String,
+    /// The run's bindings as `bot_runs.bindings_json` keeps them: read
+    /// with [`Bindings::parse`].
+    pub bindings_json: String,
+    /// The run's request as `bot_runs.request_json` keeps it, the value
+    /// its kind's surface gave when the run was made (for `clax`, a
+    /// [`ClaxRequest`]).
+    pub request_json: String,
+}
+
+impl RunAsMade {
+    /// The run's bindings, read ([`Bindings::read`]).
+    ///
+    /// # Errors
+    /// [`BindingsError::Unsupported`] for bindings a later build wrote,
+    /// which this build cannot drive: whoever drives the run ends it
+    /// rather than try again. [`BindingsError::Invalid`] for text that
+    /// is not bindings.
+    pub fn bindings(&self) -> std::result::Result<Bindings, BindingsError> {
+        Bindings::read(&self.bindings_json)
+    }
+}
+
+impl Run {
+    /// The run's artifact, for a run that has one: a run with no `clax`
+    /// binding has none (`bot_runs.artifact_id` is NULL).
+    #[must_use]
+    pub fn artifact(&self) -> Option<&str> {
+        Some(self.artifact_id.as_str()).filter(|a| !a.is_empty())
+    }
 }
 
 /// One step.
@@ -211,6 +362,539 @@ pub struct NewRun {
     pub agent_grant: Option<String>,
     /// The shape of its web grant ([`Run::web`]).
     pub web: String,
+}
+
+/// The surface every run made so far is of: Clax's own, which declares
+/// the kinds `thread` and `brief`.
+pub const CLAX_SURFACE: &str = "clax";
+
+/// The version of [`Bindings`] a `clax` run is written with
+/// ([`Bindings::clax`]): the one every run made by [`Store::create_run`]
+/// has.
+pub const BINDINGS_VERSION: u32 = 1;
+
+/// The version of [`Bindings`] a run of any other surface's kind is
+/// written with ([`Bindings::bound`]).
+pub const BINDINGS_VERSION_2: u32 = 2;
+
+/// A run's bindings, as `bot_runs.bindings_json` keeps them: fixed when
+/// the run is made. [`Bindings::parse`] (or [`Bindings::read`]) is the
+/// only way to read the column; its text is this type's serialisation
+/// ([`Bindings::to_json`]).
+///
+/// `v` is the version that says what the other fields mean. This build
+/// reads two and refuses every other ([`BindingsError::Unsupported`]),
+/// never reading one as another.
+///
+/// **Version 1** ([`BINDINGS_VERSION`]) is what a `clax` run has:
+///
+/// ```json
+/// {"v":1,"bindings":[{"surface":"clax","hash":null,
+///   "scope":{"artifact":"7q3k9mzx2b4t"},
+///   "granted":["web.search","web.fetch"]}]}
+/// ```
+///
+/// One binding for each surface the run has, each with `surface`, `hash`,
+/// `scope` and `granted`. It does not hold the operations a run has:
+/// `granted` is only what the run was given beyond the operations every
+/// run of the surface has ([`StoredBinding::granted`]), which the
+/// surface's provider says.
+///
+/// **Version 2** ([`BINDINGS_VERSION_2`]) is what a run of another
+/// surface's kind has:
+///
+/// ```json
+/// {"v":2,"bindings":[{"surface":"shell","hash":"9f86…0a08",
+///   "registration":"0123456789abcdef0123456789abcdef",
+///   "prompt":"6030…c752",
+///   "scope":null,"operations":["shell.windows","shell.ask"]}]}
+/// ```
+///
+/// Each binding has `surface`, `hash`, `scope` and `operations`: every
+/// operation the run has of that surface ([`StoredBinding::operations`]),
+/// fixed when the run was made, so nothing is asked of the running build.
+/// `registration` is the registration that serves the binding
+/// ([`crate::bot_surfaces::Registration::id`]); a binding without one
+/// (Clax's own surface, bound into such a run) leaves the member out.
+/// `prompt` is the SHA-256 of the prompt file the run was started with
+/// ([`StoredBinding::prompt`]); a binding started with none, which is
+/// sent the standard prompt, leaves the member out.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Bindings {
+    v: u32,
+    bindings: Vec<StoredBinding>,
+}
+
+/// One surface a run has, as [`Bindings`] keeps it: read only as part of
+/// its [`Bindings`], whose version says what its fields mean.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoredBinding {
+    surface: String,
+    hash: Option<String>,
+    registration: Option<String>,
+    /// Version 2's `prompt`; `None` in version 1.
+    prompt: Option<String>,
+    scope: Value,
+    /// Version 1's `granted`; empty in version 2.
+    granted: Vec<String>,
+    /// Version 2's `operations`; `None` in version 1.
+    operations: Option<Vec<String>>,
+}
+
+/// A stored binding is written with its version's members, in a fixed
+/// order: `surface`, `hash`, `scope`, `granted` for version 1 (the bytes
+/// a `clax` run has always had), and `surface`, `hash`, `registration`
+/// when it has one, `prompt` when it has one, `scope`, `operations` for
+/// version 2.
+impl Serialize for StoredBinding {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut m = s.serialize_map(None)?;
+        m.serialize_entry("surface", &self.surface)?;
+        m.serialize_entry("hash", &self.hash)?;
+        match &self.operations {
+            None => {
+                m.serialize_entry("scope", &self.scope)?;
+                m.serialize_entry("granted", &self.granted)?;
+            }
+            Some(operations) => {
+                if let Some(registration) = &self.registration {
+                    m.serialize_entry("registration", registration)?;
+                }
+                if let Some(prompt) = &self.prompt {
+                    m.serialize_entry("prompt", prompt)?;
+                }
+                m.serialize_entry("scope", &self.scope)?;
+                m.serialize_entry("operations", operations)?;
+            }
+        }
+        m.end()
+    }
+}
+
+impl StoredBinding {
+    /// A binding of version 2: surface `surface` as its definition
+    /// `hash` has it (`None` for a surface whose definition is not kept
+    /// by hash, as Clax's own), served by `registration` (`None` for
+    /// Clax's own), started with the prompt file whose SHA-256 is
+    /// `prompt` (`None` for a run that is sent the standard prompt), on
+    /// `scope`, with `operations`, each named as the surface's
+    /// definition names it.
+    #[must_use]
+    pub fn bound(
+        surface: impl Into<String>,
+        hash: Option<String>,
+        registration: Option<String>,
+        prompt: Option<String>,
+        scope: Value,
+        operations: Vec<String>,
+    ) -> StoredBinding {
+        StoredBinding {
+            surface: surface.into(),
+            hash,
+            registration,
+            prompt,
+            scope,
+            granted: Vec::new(),
+            operations: Some(operations),
+        }
+    }
+
+    /// The surface's name: [`CLAX_SURFACE`] for Clax's own.
+    #[must_use]
+    pub fn surface(&self) -> &str {
+        &self.surface
+    }
+
+    /// The SHA-256 of the surface's definition as the run was made with
+    /// it, in lowercase hex; `None` (`null`) for a binding made before
+    /// definitions were kept by hash, which every binding of version 1
+    /// is.
+    #[must_use]
+    pub fn hash(&self) -> Option<&str> {
+        self.hash.as_deref()
+    }
+
+    /// The registration that serves the binding
+    /// ([`crate::bot_surfaces::Registration::id`]): `None` for a binding
+    /// of version 1, and for one of version 2 that names none (Clax's
+    /// own surface).
+    #[must_use]
+    pub fn registration(&self) -> Option<&str> {
+        self.registration.as_deref()
+    }
+
+    /// The SHA-256, in lowercase hex, of the prompt file the run was
+    /// started with: the one its registration had then, whose text is
+    /// kept under it ([`Store::surface_prompt`]) for as long as the run
+    /// is. `None` for a binding of version 1, and for one of version 2
+    /// started with no prompt file, whose run is sent the standard
+    /// prompt.
+    #[must_use]
+    pub fn prompt(&self) -> Option<&str> {
+        self.prompt.as_deref()
+    }
+
+    /// The provider's own value for what the run is bound to: for `clax`,
+    /// `{"artifact": "<artifact ID>"}`.
+    #[must_use]
+    pub fn scope(&self) -> &Value {
+        &self.scope
+    }
+
+    /// For a binding of version 1: the operations granted to this run
+    /// beyond those every run of the surface has, as the surface names
+    /// them, without the surface's name. For `clax` these are the web
+    /// operations the run was made with (`web.search`, `web.fetch`, in
+    /// that order: what [`Run::web`] records). An empty list is a run
+    /// with the surface's standing operations and no more, not a run
+    /// with none. Empty for a binding of version 2, which says its
+    /// operations whole ([`StoredBinding::operations`]).
+    #[must_use]
+    pub fn granted(&self) -> &[String] {
+        &self.granted
+    }
+
+    /// For a binding of version 2: every operation the run has of the
+    /// surface, as it was made; an empty list is a run with none. `None`
+    /// for a binding of version 1, which does not hold them: its
+    /// operations are the surface's standing ones, by its provider's
+    /// rule, and [`StoredBinding::granted`].
+    #[must_use]
+    pub fn operations(&self) -> Option<&[String]> {
+        self.operations.as_deref()
+    }
+}
+
+/// Why a run's bindings could not be read ([`Bindings::read`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BindingsError {
+    /// The bindings are of a version this build does not read: a later
+    /// build wrote them. The run cannot be driven by this build, and no
+    /// retry changes that.
+    Unsupported {
+        /// The version they say.
+        version: u64,
+    },
+    /// The text is not bindings of the version it says: what is wrong
+    /// with it.
+    Invalid(String),
+}
+
+impl std::fmt::Display for BindingsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BindingsError::Unsupported { version } => write!(
+                f,
+                "bindings of version {version}; this build reads versions {BINDINGS_VERSION} \
+                 and {BINDINGS_VERSION_2}"
+            ),
+            BindingsError::Invalid(why) => f.write_str(why),
+        }
+    }
+}
+
+impl std::error::Error for BindingsError {}
+
+/// `bindings_invalid` for either case, with its message: what
+/// [`Bindings::parse`] answers.
+impl From<BindingsError> for CoreError {
+    fn from(e: BindingsError) -> CoreError {
+        CoreError::invalid("bindings_invalid", e.to_string())
+    }
+}
+
+/// The names `value` lists, when it is a list of text.
+fn names(value: &Value) -> Option<Vec<String>> {
+    value
+        .as_array()?
+        .iter()
+        .map(|o| o.as_str().map(str::to_string))
+        .collect()
+}
+
+impl Bindings {
+    /// The bindings of a `clax` run on artifact `artifact_id` whose web
+    /// grant has the shape `web` ([`Run::web`]: `search` and `fetch`,
+    /// comma-separated; any other part names no operation): version 1.
+    #[must_use]
+    pub fn clax(artifact_id: &str, web: &str) -> Bindings {
+        let has = |part: &str| web.split(',').any(|p| p == part);
+        let granted = [("search", "web.search"), ("fetch", "web.fetch")]
+            .into_iter()
+            .filter(|(part, _)| has(part))
+            .map(|(_, op)| op.to_string())
+            .collect();
+        Bindings {
+            v: BINDINGS_VERSION,
+            bindings: vec![StoredBinding {
+                surface: CLAX_SURFACE.to_string(),
+                hash: None,
+                registration: None,
+                prompt: None,
+                scope: serde_json::json!({ "artifact": artifact_id }),
+                granted,
+                operations: None,
+            }],
+        }
+    }
+
+    /// Bindings of version 2 holding `bindings` ([`StoredBinding::bound`])
+    /// in that order.
+    ///
+    /// # Errors
+    /// [`BindingsError::Invalid`] for no binding, a binding with an empty
+    /// surface name, two bindings of one surface, or an operation named
+    /// twice in one binding: what [`Bindings::read`] refuses too.
+    pub fn bound(bindings: Vec<StoredBinding>) -> std::result::Result<Bindings, BindingsError> {
+        let made = Bindings {
+            v: BINDINGS_VERSION_2,
+            bindings,
+        };
+        Bindings::read(&made.to_json())
+    }
+
+    /// The version these bindings are of: [`BINDINGS_VERSION`] or
+    /// [`BINDINGS_VERSION_2`].
+    #[must_use]
+    pub fn version(&self) -> u32 {
+        self.v
+    }
+
+    /// [`Bindings::read`], its error as `bindings_invalid`.
+    ///
+    /// # Errors
+    /// `bindings_invalid`, with [`BindingsError`]'s message.
+    pub fn parse(json: &str) -> Result<Bindings> {
+        Ok(Bindings::read(json)?)
+    }
+
+    /// The bindings `json` holds (a `bot_runs.bindings_json`), of
+    /// version 1 or 2. A field this build does not know is ignored, and
+    /// a `scope` is the surface's own value, taken whatever it is
+    /// (`null` included). A key the text repeats is read as its last
+    /// value, as `serde_json` reads any object.
+    ///
+    /// # Errors
+    /// [`BindingsError::Unsupported`] for a `v` that is a whole number
+    /// other than 1 and 2. [`BindingsError::Invalid`], with a message
+    /// that says which, for:
+    /// - text that is not JSON, or is JSON other than an object;
+    /// - no `v`, or a `v` that is not a whole number;
+    /// - no `bindings`, `bindings` that is not a list, or an empty one;
+    /// - a binding that is not an object or lacks one of `surface`,
+    ///   `hash`, `scope` and its version's list of operations (`granted`
+    ///   in version 1, `operations` in version 2; a `hash` of `null` is
+    ///   present);
+    /// - a `surface` that is not text or is empty, a `hash` that is
+    ///   neither text nor `null`, in version 2 a `registration` or a
+    ///   `prompt` that is neither text nor `null`, a list of operations that is not a
+    ///   list of names, or one that names an operation twice;
+    /// - two bindings of one surface.
+    pub fn read(json: &str) -> std::result::Result<Bindings, BindingsError> {
+        let bad = BindingsError::Invalid;
+        let value: Value =
+            serde_json::from_str(json).map_err(|e| bad(format!("bindings are not JSON: {e}")))?;
+        let Some(object) = value.as_object() else {
+            return Err(bad(format!("bindings are not a JSON object: {value}")));
+        };
+        let version = match object.get("v") {
+            None => return Err(bad("bindings without a version (`v`)".into())),
+            Some(v) => match v.as_u64() {
+                Some(n) if n == u64::from(BINDINGS_VERSION) => BINDINGS_VERSION,
+                Some(n) if n == u64::from(BINDINGS_VERSION_2) => BINDINGS_VERSION_2,
+                Some(n) => return Err(BindingsError::Unsupported { version: n }),
+                None => {
+                    return Err(bad(format!(
+                        "bindings whose version (`v`) is {v}, which is not a whole number"
+                    )));
+                }
+            },
+        };
+        let list = match object.get("bindings") {
+            None => return Err(bad("bindings without `bindings`".into())),
+            Some(Value::Array(list)) => list,
+            Some(other) => return Err(bad(format!("`bindings` is not a list: {other}"))),
+        };
+        if list.is_empty() {
+            return Err(bad("a run has at least one binding".into()));
+        }
+        let mut bindings: Vec<StoredBinding> = Vec::with_capacity(list.len());
+        for (i, item) in list.iter().enumerate() {
+            let Some(fields) = item.as_object() else {
+                return Err(bad(format!("binding {i} is not a JSON object: {item}")));
+            };
+            let field = |name: &str| {
+                fields
+                    .get(name)
+                    .ok_or_else(|| bad(format!("binding {i} has no `{name}`")))
+            };
+            let surface = match field("surface")? {
+                Value::String(s) if s.is_empty() => {
+                    return Err(bad(format!("binding {i} has an empty surface name")));
+                }
+                Value::String(s) => s.clone(),
+                other => {
+                    return Err(bad(format!(
+                        "binding {i} has a `surface` that is not text: {other}"
+                    )));
+                }
+            };
+            let text_or_null = |name: &str, value: &Value| match value {
+                Value::Null => Ok(None),
+                Value::String(h) => Ok(Some(h.clone())),
+                other => Err(bad(format!(
+                    "the binding of surface {surface} has a `{name}` that is neither text \
+                     nor null: {other}"
+                ))),
+            };
+            let hash = text_or_null("hash", field("hash")?)?;
+            let scope = field("scope")?.clone();
+            let listed = if version == BINDINGS_VERSION {
+                "granted"
+            } else {
+                "operations"
+            };
+            let listed_value = field(listed)?;
+            let ops = names(listed_value).ok_or_else(|| {
+                bad(format!(
+                    "the binding of surface {surface} has a `{listed}` that is not a list \
+                     of names: {listed_value}"
+                ))
+            })?;
+            for (n, op) in ops.iter().enumerate() {
+                if ops[..n].contains(op) {
+                    return Err(bad(if version == BINDINGS_VERSION {
+                        format!("the binding of surface {surface} is granted {op} twice")
+                    } else {
+                        format!("the binding of surface {surface} names {op} twice")
+                    }));
+                }
+            }
+            if bindings.iter().any(|o| o.surface == surface) {
+                return Err(bad(format!("two bindings of surface {surface}")));
+            }
+            bindings.push(if version == BINDINGS_VERSION {
+                StoredBinding {
+                    surface,
+                    hash,
+                    registration: None,
+                    prompt: None,
+                    scope,
+                    granted: ops,
+                    operations: None,
+                }
+            } else {
+                let registration = match fields.get("registration") {
+                    None => None,
+                    Some(value) => text_or_null("registration", value)?,
+                };
+                let prompt = match fields.get("prompt") {
+                    None => None,
+                    Some(value) => text_or_null("prompt", value)?,
+                };
+                StoredBinding {
+                    surface,
+                    hash,
+                    registration,
+                    prompt,
+                    scope,
+                    granted: Vec::new(),
+                    operations: Some(ops),
+                }
+            });
+        }
+        Ok(Bindings {
+            v: version,
+            bindings,
+        })
+    }
+
+    /// The text `bot_runs.bindings_json` holds for these bindings.
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).expect("serialisable bindings")
+    }
+
+    /// Each surface the run has, in the order they were bound.
+    #[must_use]
+    pub fn all(&self) -> &[StoredBinding] {
+        &self.bindings
+    }
+
+    /// The run's binding of `surface`, when it has one.
+    #[must_use]
+    pub fn of(&self, surface: &str) -> Option<&StoredBinding> {
+        self.bindings.iter().find(|b| b.surface == surface)
+    }
+}
+
+/// The request of a `clax` run (`clax.thread` or `clax.brief`), as
+/// `bot_runs.request_json` keeps it: the IDs the `clax` surface was given,
+/// which it resolves to their contents at the run's first turn, not when
+/// the run is made.
+///
+/// ```json
+/// {"thread_ids":["01ARZ3NDEKTSV4RRFFQ69G5FAV"]}
+/// ```
+///
+/// A `clax.thread` run's are the threads sent; a `clax.brief` run's is the
+/// one thread whose first comment is the brief. The value is the
+/// surface's own, so it carries no version: `bot_runs.kind` names the
+/// surface and kind that say how to read it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct ClaxRequest {
+    pub thread_ids: Vec<String>,
+}
+
+/// A run of a kind of a surface other than Clax's, to make
+/// ([`Store::create_run_of`]): it has no artifact, no base version, no
+/// threads and no web grant of its own.
+#[derive(Clone, Debug)]
+pub struct NewRunOf {
+    /// The run's kind as `<surface>.<kind>` (`shell.triage`); the
+    /// surface is not `clax`.
+    pub kind: String,
+    /// The request as the kind's surface gave it.
+    pub request: Value,
+    /// The run's bindings, of version 2 ([`Bindings::bound`]), the
+    /// kind's surface among them.
+    pub bindings: Bindings,
+    /// The person key the run acts for.
+    pub person: String,
+    pub model: String,
+    pub key_source: KeySource,
+    /// The registration that started the run
+    /// ([`crate::bot_surfaces::Registration::id`]).
+    pub started_by: String,
+    /// The run that started this one, for a child run.
+    pub parent_run: Option<String>,
+    /// The grant of the agent that asked for it ([`Run::agent_grant`]).
+    pub agent_grant: Option<String>,
+}
+
+impl NewRun {
+    /// The run's kind as `<surface>.<kind>` (`bot_runs.kind`):
+    /// `clax.thread` or `clax.brief`.
+    #[must_use]
+    pub fn kind(&self) -> String {
+        format!("{CLAX_SURFACE}.{}", self.request.as_str())
+    }
+
+    /// The run's bindings (`bot_runs.bindings_json`): the `clax` surface
+    /// on its artifact.
+    #[must_use]
+    pub fn bindings(&self) -> Bindings {
+        Bindings::clax(&self.artifact_id, &self.web)
+    }
+
+    /// The run's request (`bot_runs.request_json`).
+    #[must_use]
+    pub fn clax_request(&self) -> ClaxRequest {
+        ClaxRequest {
+            thread_ids: self.thread_ids.clone(),
+        }
+    }
 }
 
 /// A change to a run's draft.
@@ -264,19 +948,46 @@ const RUN_COLS: &str = "id, artifact_id, person, request, thread_ids_json, statu
     key_source, base_version, credits_milli, claimed_by, claimed_at, created_at, updated_at, ended_at,
     agent_grant, due_at, web";
 
+/// Column `i` of a `bot_runs` row, `column`, as the `T` its text names.
+/// A value `parse` does not know is an error naming the column and the
+/// value, never another `T`: a status or a request kind a later build
+/// wrote is not one of this build's.
+fn known<T>(
+    r: &Row<'_>,
+    i: usize,
+    column: &str,
+    parse: fn(&str) -> Option<T>,
+) -> rusqlite::Result<T> {
+    let text: String = r.get(i)?;
+    parse(&text).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            i,
+            rusqlite::types::Type::Text,
+            format!("bot_runs.{column} is {text:?}, which this build does not know").into(),
+        )
+    })
+}
+
+/// A `bot_runs` row ([`RUN_COLS`]) as a [`Run`].
+///
+/// # Errors
+/// A conversion failure for a `status` or a `request` this build does not
+/// know ([`known`]). A row without an artifact or a base version is read
+/// ([`Run::artifact`]); the `request` of a run of another surface's kind
+/// is [`RequestKind::Other`].
 fn row_to_run(r: &Row<'_>) -> rusqlite::Result<Run> {
     let s = |i: usize| r.get::<_, String>(i);
     Ok(Run {
         id: s(0)?,
-        artifact_id: s(1)?,
+        artifact_id: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
         person: s(2)?,
-        request: RequestKind::parse(&s(3)?).unwrap_or(RequestKind::Thread),
+        request: known(r, 3, "request", RequestKind::of_column)?,
         thread_ids: serde_json::from_str(&s(4)?).unwrap_or_default(),
-        status: RunStatus::parse(&s(5)?).unwrap_or(RunStatus::Stopped),
+        status: known(r, 5, "status", RunStatus::parse)?,
         reason: r.get(6)?,
         model: s(7)?,
         key_source: KeySource::parse(&s(8)?).unwrap_or(KeySource::Instance),
-        base_version: r.get(9)?,
+        base_version: r.get::<_, Option<u32>>(9)?.unwrap_or_default(),
         credits_milli: r.get(10)?,
         claimed_by: r.get(11)?,
         claimed_at: r.get(12)?,
@@ -287,6 +998,32 @@ fn row_to_run(r: &Row<'_>) -> rusqlite::Result<Run> {
         due_at: r.get(17)?,
         web: s(18)?,
     })
+}
+
+/// Files `rec` on `subject` ([`Store::commit_bot_step_on`]).
+fn file_on(rec: &mut AuditRecord, subject: &AuditIds) {
+    let AuditIds {
+        artifact,
+        artifact2,
+        thread,
+        session,
+        question,
+        call,
+        origin,
+    } = subject;
+    rec.ids.artifact = artifact.clone();
+    for (own, given) in [
+        (&mut rec.ids.artifact2, artifact2),
+        (&mut rec.ids.thread, thread),
+        (&mut rec.ids.session, session),
+        (&mut rec.ids.question, question),
+        (&mut rec.ids.call, call),
+        (&mut rec.ids.origin, origin),
+    ] {
+        if own.is_none() {
+            own.clone_from(given);
+        }
+    }
 }
 
 fn row_to_step(r: &Row<'_>) -> rusqlite::Result<Step> {
@@ -323,7 +1060,7 @@ pub(crate) fn run_in(c: &Connection, id: &str) -> Result<Option<Run>> {
 fn active_on_in(c: &Connection, threads: &[String]) -> Result<Option<Run>> {
     let mut q = c.prepare_cached(&format!(
         "SELECT {RUN_COLS} FROM bot_runs
-          WHERE status IN ('queued', 'running', 'stopping')
+          WHERE status IN {LIVE}
             AND EXISTS (SELECT 1 FROM json_each(thread_ids_json) j
                          WHERE j.value IN (SELECT value FROM json_each(?1)))
           ORDER BY created_at DESC, id DESC LIMIT 1"
@@ -419,6 +1156,31 @@ pub(crate) fn check_claim(run: &Run, driver: &str) -> Result<()> {
     }
 }
 
+/// Ends run `id`'s parking at `at` on `c` ([`Store::unpark_run`]);
+/// whether it was parked.
+pub(crate) fn unpark_in(c: &Connection, id: &str, at: &str) -> Result<bool> {
+    let parked_at: Option<Option<String>> = c
+        .prepare_cached("SELECT parked_at FROM bot_runs WHERE id = ?1 AND status = 'parked'")?
+        .query_row(params![id], |r| r.get(0))
+        .optional()?;
+    let Some(parked_at) = parked_at else {
+        return Ok(false);
+    };
+    let time = |t: &str| chrono::DateTime::parse_from_rfc3339(t).ok();
+    let waited = parked_at
+        .as_deref()
+        .and_then(time)
+        .zip(time(at))
+        .map_or(0, |(from, to)| (to - from).num_milliseconds().max(0));
+    c.execute(
+        "UPDATE bot_runs SET status = 'queued', parked_ms = parked_ms + ?2, parked_at = NULL,
+           waiting_on = NULL, due_at = NULL, updated_at = ?3
+         WHERE id = ?1",
+        params![id, waited, at],
+    )?;
+    Ok(true)
+}
+
 /// The step a driver of run `id` works on next on `c`: its open step, else
 /// the one after the last.
 fn next_n_in(c: &Connection, id: &str) -> Result<i64> {
@@ -459,7 +1221,7 @@ impl Store {
     }
 
     /// [`Store::create_run`] unless a run that has not ended (queued,
-    /// running or stopping) names one of `new`'s threads: then that run,
+    /// running, stopping or parked) names one of `new`'s threads: then that run,
     /// and nothing is made, in the same transaction, so two sends of one
     /// thread never make two runs.
     ///
@@ -594,6 +1356,101 @@ impl Store {
         self.with_read(|c| active_on_in(c, threads))
     }
 
+    /// Makes a queued run of a kind of a surface other than Clax's,
+    /// recording `bot.run_start {run, request: "other", kind,
+    /// thread_ids: [], model, key_source, started_by, parent_run?}` under
+    /// `ctx` with no artifact: the record is found by the person it was
+    /// made for. The row has no artifact and no base version
+    /// ([`Run::artifact`] is `None`), no threads, `request` `other`
+    /// ([`RequestKind::Other`]), and `new`'s kind, bindings, request,
+    /// `started_by` and `parent_run`.
+    ///
+    /// Such a run names no thread, so the rule that one run works a
+    /// thread at a time ([`Store::create_run_exclusive`]) does not bear
+    /// on it. What [`Store::create_run`] holds every run to, it is held
+    /// to: its model's tokens resolve to a rate.
+    ///
+    /// # Errors
+    /// `run_invalid` for a kind that is not `<surface>.<kind>` or is of
+    /// `clax`, for bindings that are not of version 2 or lack the kind's
+    /// surface, or for an empty person; `NotFound` for a `started_by`
+    /// that is no registration or a `parent_run` that is no run;
+    /// `model_not_priced` ([`Store::create_run`]); the store's.
+    pub fn create_run_of(&self, ctx: &AuditCtx, new: NewRunOf) -> Result<Run> {
+        let surface = match new.kind.split_once('.') {
+            Some((surface, kind)) if !surface.is_empty() && !kind.is_empty() => surface,
+            _ => {
+                return Err(invalid(format!(
+                    "a run's kind is `<surface>.<kind>`, not {:?}",
+                    new.kind
+                )));
+            }
+        };
+        if surface == CLAX_SURFACE {
+            return Err(invalid(format!(
+                "{} is a kind of Clax's own surface, whose runs are made on an artifact",
+                new.kind
+            )));
+        }
+        if new.bindings.version() != BINDINGS_VERSION_2 {
+            return Err(invalid(format!(
+                "a run of {} is made with bindings of version {BINDINGS_VERSION_2}",
+                new.kind
+            )));
+        }
+        if new.bindings.of(surface).is_none() {
+            return Err(invalid(format!(
+                "a run of {} has a binding of surface {surface}",
+                new.kind
+            )));
+        }
+        if new.person.is_empty() {
+            return Err(invalid("a run acts for a person"));
+        }
+        self.with_tx(|tx| {
+            crate::bot_surfaces::registration_in(tx, &new.started_by)?
+                .ok_or(CoreError::NotFound)?;
+            if let Some(parent) = &new.parent_run {
+                run_in(tx, parent)?.ok_or(CoreError::NotFound)?;
+            }
+            check_model_priced(tx, &self.bot_overrides(), &new.model, new.key_source)?;
+            let id = clax_core::new_ulid();
+            let now = self.now();
+            tx.execute(
+                "INSERT INTO bot_runs (id, person, request, status, model, key_source,
+                    created_at, updated_at, agent_grant, kind, bindings_json, request_json,
+                    started_by, parent_run)
+                 VALUES (?1, ?2, 'other', 'queued', ?3, ?4, ?5, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    id,
+                    new.person,
+                    new.model,
+                    new.key_source.as_str(),
+                    now,
+                    new.agent_grant,
+                    new.kind,
+                    new.bindings.to_json(),
+                    new.request.to_string(),
+                    new.started_by,
+                    new.parent_run
+                ],
+            )?;
+            let mut rec = AuditRecord::new(AuditKind::BotRunStart, now)
+                .with("run", id.as_str())
+                .with("request", RequestKind::Other.as_str())
+                .with("kind", new.kind.as_str())
+                .with("thread_ids", Vec::<String>::new())
+                .with("model", new.model.as_str())
+                .with("key_source", new.key_source.as_str())
+                .with("started_by", new.started_by.as_str());
+            if let Some(parent) = &new.parent_run {
+                rec = rec.with("parent_run", parent.as_str());
+            }
+            self.record_audit(tx, ctx, rec)?;
+            Ok(run_in(tx, &id)?.expect("the run was just made"))
+        })
+    }
+
     fn create_run_in(
         &self,
         tx: &rusqlite::Transaction<'_>,
@@ -614,8 +1471,10 @@ impl Store {
             let now = self.now();
             tx.execute(
                 "INSERT INTO bot_runs (id, artifact_id, person, request, thread_ids_json, status,
-                    model, key_source, base_version, created_at, updated_at, agent_grant, web)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, ?7, ?8, ?9, ?9, ?10, ?11)",
+                    model, key_source, base_version, created_at, updated_at, agent_grant, web,
+                    kind, bindings_json, request_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, ?7, ?8, ?9, ?9, ?10, ?11,
+                    ?12, ?13, ?14)",
                 params![
                     id,
                     new.artifact_id,
@@ -627,7 +1486,10 @@ impl Store {
                     new.base_version,
                     now,
                     new.agent_grant,
-                    new.web
+                    new.web,
+                    new.kind(),
+                    new.bindings().to_json(),
+                    serde_json::to_string(&new.clax_request()).expect("serialisable IDs")
                 ],
             )?;
             let mut rec = AuditRecord::new(AuditKind::BotRunStart, now)
@@ -669,6 +1531,41 @@ impl Store {
         })
     }
 
+    /// [`Store::run_with_steps`], with what the run was made as
+    /// ([`RunAsMade`]), read from the run's row in the same statement
+    /// as the rest of it.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn run_with_steps_as_made(&self, id: &str) -> Result<Option<(Run, RunAsMade, Vec<Step>)>> {
+        self.with_read(|c| {
+            let found = c
+                .prepare_cached(&format!(
+                    "SELECT {RUN_COLS}, kind, bindings_json, request_json FROM bot_runs
+                      WHERE id = ?1"
+                ))?
+                .query_row(params![id], |r| {
+                    let made = RunAsMade {
+                        kind: r.get(19)?,
+                        bindings_json: r.get(20)?,
+                        request_json: r.get(21)?,
+                    };
+                    Ok((row_to_run(r)?, made))
+                })
+                .optional()?;
+            let Some((run, made)) = found else {
+                return Ok(None);
+            };
+            let mut q = c.prepare_cached(&format!(
+                "SELECT {STEP_COLS} FROM bot_steps WHERE run_id = ?1 ORDER BY n"
+            ))?;
+            let steps = q
+                .query_map(params![id], row_to_step)?
+                .collect::<rusqlite::Result<_>>()?;
+            Ok(Some((run, made, steps)))
+        })
+    }
+
     /// Up to `limit` runs on artifact `aid`, newest first.
     ///
     /// # Errors
@@ -683,6 +1580,48 @@ impl Store {
     /// The store's.
     pub fn runs_for_person(&self, person: &str, limit: u32) -> Result<Vec<Run>> {
         self.with_read(|c| runs_where(c, "person = ?1", &person, limit))
+    }
+
+    /// Up to `limit` runs registration `registration` started
+    /// (`bot_runs.started_by`), newest first.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn runs_started_by(&self, registration: &str, limit: u32) -> Result<Vec<Run>> {
+        self.with_read(|c| runs_where(c, "started_by = ?1", &registration, limit))
+    }
+
+    /// How many runs registration `registration` started that have not
+    /// ended: queued, running, stopping or parked.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn live_runs_started_by(&self, registration: &str) -> Result<usize> {
+        self.with_read(|c| {
+            let n: i64 = c
+                .prepare_cached(&format!(
+                    "SELECT COUNT(*) FROM bot_runs WHERE started_by = ?1 AND status IN {LIVE}"
+                ))?
+                .query_row(params![registration], |r| r.get(0))?;
+            Ok(usize::try_from(n).unwrap_or(0))
+        })
+    }
+
+    /// Who started run `id` and from which run, as `(started_by,
+    /// parent_run)`: a registration's ID and a run's, each `None` where
+    /// the run has none (every run of Clax's own kinds). `None` for no
+    /// such run.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn run_origin(&self, id: &str) -> Result<Option<(Option<String>, Option<String>)>> {
+        self.with_read(|c| {
+            Ok(
+                c.prepare_cached("SELECT started_by, parent_run FROM bot_runs WHERE id = ?1")?
+                    .query_row(params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .optional()?,
+            )
+        })
     }
 
     /// Up to `limit` runs whose request names thread `tid`, newest first:
@@ -744,15 +1683,16 @@ impl Store {
         })
     }
 
-    /// Every run that has not ended (`queued`, `running`, `stopping`),
-    /// oldest first: what a driver resumes on start.
+    /// Every run that has not ended (`queued`, `running`, `stopping`,
+    /// `parked`), oldest first: what a driver resumes on start. A parked
+    /// run among them is not claimable ([`Store::claim_run`]).
     ///
     /// # Errors
     /// The store's.
     pub fn live_runs(&self) -> Result<Vec<Run>> {
         self.with_read(|c| {
             let mut q = c.prepare_cached(&format!(
-                "SELECT {RUN_COLS} FROM bot_runs WHERE status IN ('queued', 'running', 'stopping')
+                "SELECT {RUN_COLS} FROM bot_runs WHERE status IN {LIVE}
                   ORDER BY created_at, id"
             ))?;
             let rows = q.query_map([], row_to_run)?;
@@ -766,6 +1706,13 @@ impl Store {
     /// or less takes it whatever its age); it is renewed each time. Returns the run when `driver` now holds it, `None` when
     /// another driver does or the run has ended.
     ///
+    /// A parked run is never claimed, whatever the lease and whether or
+    /// not its `due_at` has passed: the answer is `None` and nothing
+    /// changes. It has no driver until what it waits on is journaled
+    /// ([`Store::answer_call`], [`Store::expire_calls`]), it is cancelled
+    /// or it is unparked ([`Store::unpark_run`]); a driver that claimed
+    /// it earlier would hold an answered run from the others.
+    ///
     /// # Errors
     /// `NotFound`; the store's.
     pub fn claim_run(&self, id: &str, driver: &DriverId, lease_secs: i64) -> Result<Option<Run>> {
@@ -774,9 +1721,10 @@ impl Store {
         let stale = clax_core::time::stamp(now - chrono::Duration::seconds(lease_secs.max(0)));
         self.with_tx(|tx| {
             let run = run_in(tx, id)?.ok_or(CoreError::NotFound)?;
-            if run.status.is_terminal() {
+            if run.status.is_terminal() || run.status == RunStatus::Parked {
                 return Ok(None);
             }
+            let stamp = clax_core::time::stamp(now);
             let free = match (&run.claimed_by, &run.claimed_at) {
                 (None, _) => true,
                 (Some(d), _) if d == driver => true,
@@ -786,7 +1734,6 @@ impl Store {
             if !free {
                 return Ok(None);
             }
-            let stamp = clax_core::time::stamp(now);
             tx.execute(
                 "UPDATE bot_runs SET claimed_by = ?2, claimed_at = ?3, updated_at = ?3,
                    status = CASE status WHEN 'queued' THEN 'running' ELSE status END
@@ -831,10 +1778,145 @@ impl Store {
         })
     }
 
+    /// Parks run `id` at `now` for `driver`, which holds its claim and is
+    /// executing its open step, `place.step_n`: the run becomes `parked`
+    /// and unclaimed, with `waiting_on` (what it waits on, for whoever
+    /// shows the run; the store reads none of it) and `due_at`, the
+    /// deadline of what it waits on (`None`: none), by which
+    /// [`Store::expire_calls`] is to be run. The step stays begun and
+    /// uncommitted, to be executed again, and counts one more park
+    /// ([`Parking::parks`]).
+    ///
+    /// `place` is the journal place whose row the driver would wait for.
+    /// When the journal holds it already (the answer came before the
+    /// park), the run is not parked: [`Park::Answered`], nothing changed,
+    /// the claim kept. Checking and parking are one transaction, and so
+    /// is journaling an answer and unparking ([`Store::answer_call`]), so
+    /// an answer is never journaled for a run that then parks unwoken.
+    ///
+    /// A run that is parked already is returned as it is
+    /// ([`Park::Parked`]), whoever asks and whatever they pass: a park
+    /// made again changes nothing.
+    ///
+    /// # Errors
+    /// `NotFound`; `run_not_claimed` unless `driver` holds the run;
+    /// `run_invalid` for a run that is not running (a stopping run's next
+    /// step is its stopped step) or whose open step is not
+    /// `place.step_n`; the store's.
+    pub fn park_run(
+        &self,
+        id: &str,
+        driver: &DriverId,
+        place: JournalPlace,
+        waiting_on: &Value,
+        due_at: Option<chrono::DateTime<chrono::Utc>>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Park> {
+        let driver = driver.as_str();
+        let (at, due) = (
+            clax_core::time::stamp(now),
+            due_at.map(clax_core::time::stamp),
+        );
+        self.with_tx(|tx| {
+            let run = run_in(tx, id)?.ok_or(CoreError::NotFound)?;
+            if run.status == RunStatus::Parked {
+                return Ok(Park::Parked(run));
+            }
+            check_claim(&run, driver)?;
+            if run.status != RunStatus::Running {
+                return Err(invalid(format!(
+                    "run {id} is {}, not running",
+                    run.status.as_str()
+                )));
+            }
+            if open_step_in(tx, id)?.is_none_or(|s| s.n != place.step_n) {
+                return Err(invalid(format!(
+                    "step {} of run {id} is not begun and uncommitted",
+                    place.step_n
+                )));
+            }
+            if journal_at(tx, id, place.step_n, place.seq)?.is_some() {
+                return Ok(Park::Answered(run));
+            }
+            tx.execute(
+                "UPDATE bot_runs SET status = 'parked', parked_at = ?2, waiting_on = ?3,
+                   due_at = ?4, claimed_by = NULL, claimed_at = NULL, updated_at = ?2
+                 WHERE id = ?1",
+                params![id, at, waiting_on.to_string(), due],
+            )?;
+            tx.execute(
+                "UPDATE bot_steps SET parks = parks + 1 WHERE run_id = ?1 AND n = ?2",
+                params![id, place.step_n],
+            )?;
+            Ok(Park::Parked(run_in(tx, id)?.expect("the run exists")))
+        })
+    }
+
+    /// Ends run `id`'s parking at `now`: it is `queued` again and
+    /// unclaimed, due at once, so a driver may claim it and execute its
+    /// open step again; the time it was parked is added to its
+    /// `parked_ms`, and its `parked_at` and `waiting_on` are cleared.
+    /// Returns the run after, or `None`, changing nothing, for a run that
+    /// is not parked: made again, it does nothing.
+    ///
+    /// # Errors
+    /// `NotFound`; the store's.
+    pub fn unpark_run(&self, id: &str, now: chrono::DateTime<chrono::Utc>) -> Result<Option<Run>> {
+        let at = clax_core::time::stamp(now);
+        self.with_tx(|tx| {
+            run_in(tx, id)?.ok_or(CoreError::NotFound)?;
+            if !unpark_in(tx, id, &at)? {
+                return Ok(None);
+            }
+            run_in(tx, id)
+        })
+    }
+
+    /// What run `id` keeps of its parking, or `None` for no such run.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn run_parking(&self, id: &str) -> Result<Option<Parking>> {
+        self.with_read(|c| {
+            Ok(c.prepare_cached(
+                "SELECT parked_at, parked_ms, waiting_on,
+                        COALESCE((SELECT parks FROM bot_steps
+                                   WHERE run_id = bot_runs.id AND committed_at IS NULL), 0)
+                   FROM bot_runs WHERE id = ?1",
+            )?
+            .query_row(params![id], |r| {
+                Ok(Parking {
+                    parked_at: r.get(0)?,
+                    parked_ms: r.get(1)?,
+                    waiting_on: r
+                        .get::<_, Option<String>>(2)?
+                        .and_then(|w| serde_json::from_str(&w).ok()),
+                    parks: r.get(3)?,
+                })
+            })
+            .optional()?)
+        })
+    }
+
+    /// How many runs acting for `person` are parked now.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn parked_runs_of(&self, person: &str) -> Result<i64> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT count(*) FROM bot_runs WHERE person = ?1 AND status = 'parked'",
+                params![person],
+                |r| r.get(0),
+            )?)
+        })
+    }
+
     /// Renews `driver`'s claim on run `id` (now, by the store's clock), so a
     /// turn longer than the lease keeps it. Returns whether `driver` still
-    /// holds the run; `false` once another driver took it over or the run
-    /// ended, and the driver then stops working on it.
+    /// holds the run; `false` once another driver took it over, the run
+    /// parked (which lets go of the claim) or the run ended, and the
+    /// driver then stops working on it.
     ///
     /// # Errors
     /// The store's.
@@ -842,8 +1924,10 @@ impl Store {
         let driver = driver.as_str();
         self.with_tx(|tx| {
             Ok(tx.execute(
-                "UPDATE bot_runs SET claimed_at = ?3 WHERE id = ?1 AND claimed_by = ?2
-                   AND status IN ('queued', 'running', 'stopping')",
+                &format!(
+                    "UPDATE bot_runs SET claimed_at = ?3 WHERE id = ?1 AND claimed_by = ?2
+                       AND status IN {LIVE}"
+                ),
                 params![id, driver, self.now()],
             )? > 0)
         })
@@ -972,6 +2056,39 @@ impl Store {
         n: i64,
         commit: StepCommit,
     ) -> Result<Committed> {
+        self.commit_bot_step_on(ctx, id, driver, n, commit, None, &[])
+    }
+
+    /// [`Store::commit_bot_step`] with what a run of any surface adds to
+    /// a commit, in the commit's transaction.
+    ///
+    /// `subject` is what the step's records are filed on: each of the
+    /// step's events and the run's `bot.run_end` take the subject's
+    /// artifact (none, for a subject without one: the record is then
+    /// found by the person it was made for), and each other ID of the
+    /// subject where the record names none of its own. `None` files them
+    /// on the run's artifact, as the row has it.
+    ///
+    /// `ends`, for a terminal step, is how the run ended for each
+    /// registration to be told, kept until it acknowledges
+    /// ([`Store::ends_for`], [`Store::ack_end`]). The run ends and its
+    /// ends are kept together, or neither.
+    ///
+    /// # Errors
+    /// As [`Store::commit_bot_step`]; `run_invalid` for `ends` given with
+    /// a step that does not end the run; `NotFound` for an end whose
+    /// registration does not exist. Each commits nothing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_bot_step_on(
+        &self,
+        ctx: &AuditCtx,
+        id: &str,
+        driver: &DriverId,
+        n: i64,
+        commit: StepCommit,
+        subject: Option<&AuditIds>,
+        ends: &[crate::bot_pending::EndFor],
+    ) -> Result<Committed> {
         let driver = driver.as_str();
         let at = self.now_utc();
         let ov = self.bot_overrides();
@@ -1012,8 +2129,23 @@ impl Store {
                 "UPDATE bot_steps SET committed_at = ?3, payload_json = ?4 WHERE run_id = ?1 AND n = ?2",
                 params![id, n, now, commit.payload.to_string()],
             )?;
+            // A call of the step still pending was not reached by the
+            // attempt that commits: it stops waiting, unjournaled.
+            tx.execute(
+                "UPDATE bot_pending_calls SET answered_at = ?3
+                  WHERE run_id = ?1 AND step_n = ?2 AND answered_at IS NULL",
+                params![id, n, now],
+            )?;
             let total = run.credits_milli + credits;
             let end = open.kind.ends_as();
+            if end.is_none() && !ends.is_empty() {
+                return Err(invalid(format!(
+                    "step {n} of run {id} does not end the run, so no end is kept with it"
+                )));
+            }
+            for kept in ends {
+                crate::bot_pending::record_end_in(tx, id, kept, None, &now)?;
+            }
             match end {
                 Some(status) => tx.execute(
                     "UPDATE bot_runs SET credits_milli = ?2, status = ?3, reason = ?4, updated_at = ?5,
@@ -1025,8 +2157,13 @@ impl Store {
                     params![id, total, now],
                 )?,
             };
+            let of_the_row = AuditIds {
+                artifact: run.artifact().map(str::to_string),
+                ..AuditIds::default()
+            };
+            let subject = subject.unwrap_or(&of_the_row);
             for mut rec in commit.events {
-                rec.ids.artifact = Some(run.artifact_id.clone());
+                file_on(&mut rec, subject);
                 rec.body.insert("run".into(), id.into());
                 rec.body.insert("step".into(), n.into());
                 if matches!(rec.kind, AuditKind::BotTurn | AuditKind::BotScript) {
@@ -1040,7 +2177,7 @@ impl Store {
                     .with("outcome", status.as_str())
                     .with("reason", commit.reason.clone())
                     .with("credits_milli", total);
-                rec.ids.artifact = Some(run.artifact_id.clone());
+                file_on(&mut rec, subject);
                 self.record_audit(tx, ctx, rec)?;
             }
             let step = Step {
@@ -1057,17 +2194,24 @@ impl Store {
         })
     }
 
-    /// Asks run `id` to stop, as `ctx`: a queued or running run becomes
-    /// `stopping`, recorded as `bot.cancel {run, by}` (`by` the person key
-    /// of who asked, `*system` for Clax itself), and its driver writes its
-    /// `stopped` step at the next boundary. Returns the run after; an ended
-    /// or stopping run is unchanged and records nothing.
+    /// Asks run `id` to stop, as `ctx`: a queued, running or parked run
+    /// becomes `stopping`, recorded as `bot.cancel {run, by}` (`by` the
+    /// person key of who asked, `*system` for Clax itself), and its driver
+    /// writes its `stopped` step at the next boundary. A parked run's
+    /// parking ends first, as [`Store::unpark_run`] ends it, so a driver
+    /// may claim it at once. The pending calls of a run asked to stop
+    /// ([`crate::bot_pending`]) stop waiting, unjournaled, so an answer
+    /// that comes later is refused. Returns the run after; an ended or
+    /// stopping run is unchanged and records nothing.
     ///
     /// # Errors
     /// `NotFound`; the store's.
     pub fn cancel_run(&self, ctx: &AuditCtx, id: &str) -> Result<Run> {
         self.with_tx(|tx| {
             let now = self.now();
+            // A parked run is queued again, unclaimed, before it is asked
+            // to stop.
+            unpark_in(tx, id, &now)?;
             let changed = tx.execute(
                 "UPDATE bot_runs SET status = 'stopping', updated_at = ?2
                   WHERE id = ?1 AND status IN ('queued', 'running')",
@@ -1075,10 +2219,15 @@ impl Store {
             )?;
             let run = run_in(tx, id)?.ok_or(CoreError::NotFound)?;
             if changed > 0 {
+                tx.execute(
+                    "UPDATE bot_pending_calls SET answered_at = ?2
+                      WHERE run_id = ?1 AND answered_at IS NULL",
+                    params![id, now],
+                )?;
                 let mut rec = AuditRecord::new(AuditKind::BotCancel, now)
                     .with("run", id)
                     .with("by", set_by(ctx));
-                rec.ids.artifact = Some(run.artifact_id.clone());
+                rec.ids.artifact = run.artifact().map(str::to_string);
                 self.record_audit(tx, ctx, rec)?;
             }
             Ok(run)
@@ -1357,12 +2506,20 @@ impl Store {
     }
 
     /// Removes what ended runs no longer need, by the store's clock: the
-    /// call journal (`bot_calls`) and the page store (`bot_web_pages`) of
-    /// each run that ended over [`BOT_JOURNAL_KEEP`] ago, and the draft
-    /// overlay (`bot_draft_files`) of each that ended over
-    /// [`BOT_DRAFT_KEEP`] ago. The runs, their
-    /// steps, usage and audit events stay. How many rows of each it
-    /// removed.
+    /// call journal (`bot_calls`), the page store (`bot_web_pages`) and
+    /// the pending calls (`bot_pending_calls`) of each run that ended over
+    /// [`BOT_JOURNAL_KEEP`] ago, the draft overlay (`bot_draft_files`) of
+    /// each that ended over [`BOT_DRAFT_KEEP`] ago, and each run's end
+    /// kept for a registration (`bot_run_ends`) over
+    /// [`crate::bot_pending::BOT_END_KEEP`] ago, acknowledged or not; and
+    /// the surfaces' registrations, definitions and prompt files that
+    /// nothing needs ([`crate::bot_surfaces::BOT_REGISTRATION_KEEP`],
+    /// [`crate::bot_surfaces::BOT_DEF_KEEP`]: a registration that
+    /// started a run the store has is kept, a definition a
+    /// registration, a pending call or a run's bindings name, and a
+    /// prompt file a registration or a run's bindings name). The
+    /// runs, their steps, usage and audit events stay. How many rows of
+    /// each it removed.
     ///
     /// # Errors
     /// The store's.
@@ -1374,6 +2531,7 @@ impl Store {
             )
         };
         let (journal, draft) = (before(BOT_JOURNAL_KEEP), before(BOT_DRAFT_KEEP));
+        let ends = before(crate::bot_pending::BOT_END_KEEP);
         self.with_tx(|tx| {
             let calls = tx.execute(
                 "DELETE FROM bot_calls WHERE run_id IN
@@ -1390,10 +2548,30 @@ impl Store {
                    (SELECT id FROM bot_runs WHERE ended_at IS NOT NULL AND ended_at < ?1)",
                 params![draft],
             )?;
+            let pending_calls = tx.execute(
+                "DELETE FROM bot_pending_calls WHERE run_id IN
+                   (SELECT id FROM bot_runs WHERE ended_at IS NOT NULL AND ended_at < ?1)",
+                params![journal],
+            )?;
+            let run_ends = tx.execute(
+                "DELETE FROM bot_run_ends WHERE created_at < ?1",
+                params![ends],
+            )?;
+            let (registrations, surface_defs, surface_prompts) =
+                crate::bot_surfaces::prune_surfaces_in(
+                    tx,
+                    &before(crate::bot_surfaces::BOT_REGISTRATION_KEEP),
+                    &before(crate::bot_surfaces::BOT_DEF_KEEP),
+                )?;
             Ok(Pruned {
                 calls,
                 pages,
                 draft_files,
+                pending_calls,
+                run_ends,
+                registrations,
+                surface_defs,
+                surface_prompts,
             })
         })
     }
@@ -1419,6 +2597,16 @@ pub struct Pruned {
     pub pages: usize,
     /// Draft overlay rows.
     pub draft_files: usize,
+    /// Pending calls.
+    pub pending_calls: usize,
+    /// Run ends kept for a registration.
+    pub run_ends: usize,
+    /// Surfaces' registrations that nothing needs.
+    pub registrations: usize,
+    /// Surfaces' definitions that nothing names.
+    pub surface_defs: usize,
+    /// Surfaces' prompt files that nothing names.
+    pub surface_prompts: usize,
 }
 
 /// A store transaction a journaled write runs on ([`Store::with_bot_journal`]);
@@ -1556,7 +2744,30 @@ pub(crate) fn call_in(c: &Connection, e: &CallEntry) -> Result<Option<CallEntry>
     .optional()?)
 }
 
+/// The journal's entry at call `seq` of step `step_n` of run `run_id`,
+/// when it holds one.
+pub(crate) fn journal_at(
+    c: &Connection,
+    run_id: &str,
+    step_n: i64,
+    seq: i64,
+) -> Result<Option<CallEntry>> {
+    Ok(c.prepare_cached(&format!(
+        "SELECT {CALL_COLS} FROM bot_calls WHERE run_id = ?1 AND step_n = ?2 AND seq = ?3"
+    ))?
+    .query_row(params![run_id, step_n, seq], row_to_call)
+    .optional()?)
+}
+
+/// Journals `e` at `at` on `c`. A pending call of its place
+/// ([`crate::bot_pending`]) stops waiting with it: once the place has
+/// its row, whoever wrote it, an answer to that call is refused.
 pub(crate) fn insert_call(c: &Connection, e: &CallEntry, at: &str) -> Result<()> {
+    c.prepare_cached(
+        "UPDATE bot_pending_calls SET answered_at = ?4
+          WHERE run_id = ?1 AND step_n = ?2 AND seq = ?3 AND answered_at IS NULL",
+    )?
+    .execute(params![e.run_id, e.step_n, e.seq, at])?;
     c.execute(
         "INSERT INTO bot_calls (run_id, step_n, seq, attempt, op, args_hash, ok, result_json, at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -1670,7 +2881,7 @@ mod tests {
     use crate::roles::OWNER;
     use crate::test_util::{DAEMON, artifact, store, store_with_clock};
     use clax_core::audit::Actor;
-    use clax_core::working::ManualClock;
+    use clax_core::working::{Clock, ManualClock};
     use serde_json::json;
     use std::sync::Arc;
 
@@ -1799,6 +3010,588 @@ mod tests {
             "run_invalid",
             "committed"
         );
+    }
+
+    /// What `bot_runs` keeps of run `id` beside what [`Run`] reads: its
+    /// kind, bindings and request.
+    fn kept(st: &Store, id: &str) -> (String, Bindings, Value) {
+        st.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT kind, bindings_json, request_json FROM bot_runs WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
+            )?)
+        })
+        .map(|(kind, bindings, request)| {
+            (
+                kind,
+                Bindings::parse(&bindings).expect("bindings"),
+                serde_json::from_str(&request).expect("a request"),
+            )
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_new_run_keeps_its_kind_its_clax_binding_and_its_request() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None).to_string();
+        let make = |request, threads: &[&str], web: &str| {
+            st.create_run(
+                &bot(),
+                NewRun {
+                    artifact_id: aid.clone(),
+                    person: OWNER.into(),
+                    request,
+                    thread_ids: threads.iter().map(|t| t.to_string()).collect(),
+                    model: "claude-sonnet-5-5".into(),
+                    key_source: KeySource::Instance,
+                    base_version: 1,
+                    agent_grant: None,
+                    web: web.into(),
+                },
+            )
+            .unwrap()
+        };
+        let binding = |granted: &[&str]| Bindings {
+            v: 1,
+            bindings: vec![StoredBinding {
+                surface: "clax".into(),
+                hash: None,
+                registration: None,
+                prompt: None,
+                scope: json!({"artifact": aid}),
+                granted: granted.iter().map(|o| o.to_string()).collect(),
+                operations: None,
+            }],
+        };
+
+        let thread = make(RequestKind::Thread, &["t1", "t2"], "search,fetch");
+        assert_eq!(
+            kept(&st, &thread.id),
+            (
+                "clax.thread".to_string(),
+                binding(&["web.search", "web.fetch"]),
+                json!({"thread_ids": ["t1", "t2"]})
+            )
+        );
+        let brief = make(RequestKind::Brief, &["t3"], "");
+        assert_eq!(
+            kept(&st, &brief.id),
+            (
+                "clax.brief".to_string(),
+                binding(&[]),
+                json!({"thread_ids": ["t3"]})
+            )
+        );
+        assert_eq!(
+            kept(&st, &make(RequestKind::Thread, &["t4"], "fetch").id).1,
+            binding(&["web.fetch"])
+        );
+        assert_eq!(
+            kept(&st, &make(RequestKind::Thread, &["t5"], "search").id).1,
+            binding(&["web.search"])
+        );
+        // The run reads as it did: from the columns it always had.
+        assert_eq!(
+            (
+                thread.request,
+                thread.thread_ids.clone(),
+                thread.web.as_str()
+            ),
+            (
+                RequestKind::Thread,
+                vec!["t1".to_string(), "t2".to_string()],
+                "search,fetch"
+            )
+        );
+        assert_eq!(
+            (thread.artifact_id.as_str(), thread.base_version),
+            (aid.as_str(), 1)
+        );
+        // The stored text, byte for byte.
+        let text: String = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT bindings_json || ' ' || request_json FROM bot_runs WHERE id = ?1",
+                    params![brief.id],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(
+            text,
+            format!(
+                r#"{{"v":1,"bindings":[{{"surface":"clax","hash":null,"scope":{{"artifact":"{aid}"}},"granted":[]}}]}} {{"thread_ids":["t3"]}}"#
+            )
+        );
+    }
+
+    #[test]
+    fn a_runs_status_may_be_parked_and_no_other_new_word() {
+        let (_d, st) = store();
+        let run = new_run(&st);
+        let set = |status: &str| {
+            st.with_write(|c| {
+                c.execute(
+                    "UPDATE bot_runs SET status = ?2 WHERE id = ?1",
+                    params![run.id, status],
+                )?;
+                Ok(())
+            })
+        };
+        set("parked").unwrap();
+        let stored: String = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT status FROM bot_runs WHERE id = ?1",
+                    params![run.id],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(stored, "parked");
+        for word in ["napping", "Parked", ""] {
+            assert!(set(word).is_err(), "{word:?} is no status");
+        }
+        for status in RunStatus::ALL {
+            set(status.as_str()).unwrap();
+        }
+    }
+
+    /// Fails unless `r` is the conversion failure of `column` holding
+    /// `value`, showing what `r` was.
+    #[track_caller]
+    fn assert_unknown<T: std::fmt::Debug>(r: Result<T>, column: &str, value: &str) {
+        let (names, holds) = (format!("bot_runs.{column}"), format!("{value:?}"));
+        match &r {
+            Err(CoreError::Db(rusqlite::Error::FromSqlConversionFailure(_, _, why)))
+                if why.to_string().contains(&names) && why.to_string().contains(&holds) => {}
+            other => panic!(
+                "expected a conversion failure naming {names} and its value {holds}; \
+                 got {other:?}"
+            ),
+        }
+    }
+
+    /// A status or a request kind the table holds and this build does not
+    /// know is an error wherever the run is read, never another status or
+    /// kind: a run a later build left waiting does not read as ended, nor
+    /// a review as a thread.
+    #[test]
+    fn a_run_with_a_status_or_request_this_build_does_not_know_is_not_read() {
+        let (_d, st) = store();
+        let run = new_run(&st);
+        let other = new_run(&st);
+        // The table's CHECK takes only the statuses this build knows; a
+        // later build's is written past it.
+        let set = |column: &str, value: &str| {
+            st.with_write(|c| {
+                c.pragma_update(None, "ignore_check_constraints", true)?;
+                let done = c.execute(
+                    &format!("UPDATE bot_runs SET {column} = ?2 WHERE id = ?1"),
+                    params![run.id, value],
+                );
+                c.pragma_update(None, "ignore_check_constraints", false)?;
+                done?;
+                Ok(())
+            })
+            .unwrap();
+        };
+        let threads = ["t1".to_string()];
+
+        set("status", "napping");
+        assert_unknown(st.run(&run.id), "status", "napping");
+        assert_unknown(st.runs_for_person(OWNER, 10), "status", "napping");
+        assert_unknown(
+            st.claim_run(&run.id, &DriverId::named("d1"), 60),
+            "status",
+            "napping",
+        );
+        assert_unknown(st.cancel_run(&bot(), &run.id), "status", "napping");
+        // No query counts it among the runs that have not ended, so those
+        // do not read it; the run beside it still reads.
+        assert_eq!(st.live_runs().unwrap(), std::slice::from_ref(&other));
+        assert_eq!(st.active_run_on(&threads).unwrap(), Some(other.clone()));
+        assert_eq!(st.run(&other.id).unwrap(), Some(other));
+
+        set("status", "queued");
+        assert_eq!(st.run(&run.id).unwrap().unwrap().status, RunStatus::Queued);
+        set("request", "review");
+        assert_unknown(st.run(&run.id), "request", "review");
+        assert_unknown(st.runs_for_thread("t1", 10), "request", "review");
+        assert_unknown(st.live_runs(), "request", "review");
+        set("request", "brief");
+        assert_eq!(
+            st.run(&run.id).unwrap().unwrap().request,
+            RequestKind::Brief
+        );
+    }
+
+    /// A run is read with what it was made as: its kind, bindings and
+    /// request as they are kept. A row with no artifact and no base version, of a kind that
+    /// is not Clax's, is read: it has no artifact, its commit files the
+    /// step's records and the run's end on the subject it is given, or
+    /// on none, and a cancel of it names no artifact.
+    #[test]
+    fn a_run_without_an_artifact_is_read_and_its_records_are_filed_on_the_subject_given() {
+        let (_d, st) = store();
+        let run = new_run(&st);
+        assert_eq!(run.artifact(), Some(run.artifact_id.as_str()));
+        let (kind, bindings, request) = kept(&st, &run.id);
+        let (row, made, steps) = st.run_with_steps_as_made(&run.id).unwrap().unwrap();
+        assert_eq!((&row, steps.len()), (&run, 0));
+        assert_eq!(made.kind, kind);
+        assert_eq!(Bindings::parse(&made.bindings_json).unwrap(), bindings);
+        assert_eq!(
+            serde_json::from_str::<Value>(&made.request_json).unwrap(),
+            request
+        );
+        assert_eq!(st.run_with_steps_as_made("no such run").unwrap(), None);
+
+        let bindings =
+            r#"{"v":1,"bindings":[{"surface":"shell","hash":null,"scope":null,"granted":[]}]}"#;
+        st.with_write(|c| {
+            c.execute(
+                "UPDATE bot_runs SET artifact_id = NULL, base_version = NULL, kind = 'shell.triage',
+                   bindings_json = ?2, request_json = '{\"ask\":\"x\"}' WHERE id = ?1",
+                params![run.id, bindings],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let read = st.run(&run.id).unwrap().unwrap();
+        assert_eq!(
+            (
+                read.artifact(),
+                read.artifact_id.as_str(),
+                read.base_version
+            ),
+            (None, "", 0)
+        );
+        let (row, made, _) = st.run_with_steps_as_made(&run.id).unwrap().unwrap();
+        assert_eq!(row, read);
+        assert_eq!(
+            made,
+            RunAsMade {
+                kind: "shell.triage".into(),
+                bindings_json: bindings.into(),
+                request_json: r#"{"ask":"x"}"#.into(),
+            }
+        );
+        assert_eq!(st.live_runs().unwrap(), std::slice::from_ref(&read));
+
+        // Its steps commit: with no subject, on no artifact; with one, on
+        // that, an ID the record has of its own kept.
+        let d = DriverId::named("d1");
+        st.claim_run(&run.id, &d, 60).unwrap().unwrap();
+        st.begin_step(&run.id, &d, 1, StepKind::Turn).unwrap();
+        let mut own = turn_record(st.now(), "m", KeySource::Instance, 0, 0, 0, "end_turn");
+        own.ids.thread = Some("the records own".into());
+        let commit = |events| StepCommit {
+            payload: json!({}),
+            events,
+            ..StepCommit::default()
+        };
+        st.commit_bot_step(&bot(), &run.id, &d, 1, commit(vec![own.clone()]))
+            .unwrap();
+        st.begin_step(&run.id, &d, 2, StepKind::Turn).unwrap();
+        let elsewhere = artifact(&st, None).to_string();
+        let subject = AuditIds {
+            artifact: Some(elsewhere.clone()),
+            thread: Some("the subjects".into()),
+            origin: Some("the subjects".into()),
+            ..AuditIds::default()
+        };
+        st.commit_bot_step_on(
+            &bot(),
+            &run.id,
+            &d,
+            2,
+            commit(vec![own]),
+            Some(&subject),
+            &[],
+        )
+        .unwrap();
+        st.begin_step(&run.id, &d, 3, StepKind::GiveUp).unwrap();
+        st.commit_bot_step_on(
+            &bot(),
+            &run.id,
+            &d,
+            3,
+            commit(Vec::new()),
+            Some(&subject),
+            &[],
+        )
+        .unwrap();
+        let other = new_run(&st);
+        st.with_write(|c| {
+            c.execute(
+                "UPDATE bot_runs SET artifact_id = NULL, base_version = NULL WHERE id = ?1",
+                params![other.id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        st.cancel_run(&bot(), &other.id).unwrap();
+        let filed: Vec<(String, [Option<String>; 3])> = st
+            .events_after(0, 1000)
+            .unwrap()
+            .into_iter()
+            .filter(|e| matches!(e.kind.as_str(), "bot.turn" | "bot.run_end" | "bot.cancel"))
+            .map(|e| (e.kind, [e.ids.artifact, e.ids.thread, e.ids.origin]))
+            .collect();
+        let s = |text: &str| Some(text.to_string());
+        let there = Some(elsewhere);
+        assert_eq!(
+            filed,
+            [
+                ("bot.turn".to_string(), [None, s("the records own"), None]),
+                (
+                    "bot.turn".to_string(),
+                    [there.clone(), s("the records own"), s("the subjects")]
+                ),
+                (
+                    "bot.run_end".to_string(),
+                    [there, s("the subjects"), s("the subjects")]
+                ),
+                ("bot.cancel".to_string(), [None, None, None]),
+            ]
+        );
+    }
+
+    #[test]
+    fn bindings_are_read_only_at_the_version_this_build_knows() {
+        let made = Bindings::clax("7q3k9mzx2b4t", "search,fetch");
+        let text = made.to_json();
+        assert_eq!(
+            text,
+            r#"{"v":1,"bindings":[{"surface":"clax","hash":null,"scope":{"artifact":"7q3k9mzx2b4t"},"granted":["web.search","web.fetch"]}]}"#
+        );
+        let read = Bindings::parse(&text).unwrap();
+        assert_eq!(read, made);
+        let clax = read.of("clax").expect("the clax binding");
+        assert_eq!(
+            (clax.surface(), clax.hash(), clax.scope(), clax.granted()),
+            (
+                "clax",
+                None,
+                &json!({"artifact": "7q3k9mzx2b4t"}),
+                &["web.search".to_string(), "web.fetch".to_string()][..]
+            )
+        );
+        assert!(read.of("shell").is_none());
+        assert_eq!(read.all(), std::slice::from_ref(clax));
+        assert!(
+            Bindings::clax("a", "fetch,other,Search")
+                .of("clax")
+                .unwrap()
+                .granted()
+                == ["web.fetch"]
+        );
+        // A field this build does not know is ignored.
+        let more = text.replace(r#""hash":null"#, r#""hash":"ab12","reader_view":"none""#);
+        assert_eq!(
+            Bindings::parse(&more).unwrap().of("clax").unwrap().hash(),
+            Some("ab12")
+        );
+
+        // A scope is the surface's own value: `null` is one.
+        let null_scope = text.replace(r#"{"artifact":"7q3k9mzx2b4t"}"#, "null");
+        assert_eq!(
+            Bindings::parse(&null_scope)
+                .unwrap()
+                .of("clax")
+                .unwrap()
+                .scope(),
+            &Value::Null
+        );
+        // A repeated key is read as its last value, as serde_json reads it.
+        assert_eq!(
+            Bindings::parse(&text.replace(r#"{"v":1,"#, r#"{"v":2,"v":1,"#)).unwrap(),
+            made
+        );
+    }
+
+    /// Each text [`Bindings::parse`] refuses, with what its message says
+    /// is wrong with it.
+    #[test]
+    fn bindings_that_are_refused_say_what_is_wrong_with_them() {
+        let binding = r#"{"surface":"clax","hash":null,"scope":{},"granted":[]}"#;
+        let one = |b: &str| format!(r#"{{"v":1,"bindings":[{b}]}}"#);
+        let versioned = |v: &str| format!(r#"{{"v":{v},"bindings":[{binding}]}}"#);
+        let cases: Vec<(String, &str)> = vec![
+            ("not json".into(), "bindings are not JSON"),
+            ("".into(), "bindings are not JSON"),
+            ("[]".into(), "bindings are not a JSON object: []"),
+            ("null".into(), "bindings are not a JSON object: null"),
+            (r#""v""#.into(), "bindings are not a JSON object"),
+            (
+                format!(r#"{{"bindings":[{binding}]}}"#),
+                "bindings without a version (`v`)",
+            ),
+            (
+                versioned("3"),
+                "bindings of version 3; this build reads versions 1 and 2",
+            ),
+            (
+                versioned("0"),
+                "bindings of version 0; this build reads versions 1 and 2",
+            ),
+            // A repeated key is read as its last value.
+            (
+                format!(r#"{{"v":1,"v":3,"bindings":[{binding}]}}"#),
+                "bindings of version 3",
+            ),
+            (
+                versioned("1.0"),
+                "version (`v`) is 1.0, which is not a whole number",
+            ),
+            (
+                versioned("-1"),
+                "version (`v`) is -1, which is not a whole number",
+            ),
+            (
+                versioned(r#""1""#),
+                r#"version (`v`) is "1", which is not a whole number"#,
+            ),
+            (
+                versioned("null"),
+                "version (`v`) is null, which is not a whole number",
+            ),
+            (r#"{"v":1}"#.into(), "bindings without `bindings`"),
+            (
+                r#"{"v":1,"bindings":{}}"#.into(),
+                "`bindings` is not a list: {}",
+            ),
+            (
+                r#"{"v":1,"bindings":null}"#.into(),
+                "`bindings` is not a list: null",
+            ),
+            (
+                r#"{"v":1,"bindings":[]}"#.into(),
+                "a run has at least one binding",
+            ),
+            (
+                one(r#""clax""#),
+                r#"binding 0 is not a JSON object: "clax""#,
+            ),
+            (
+                format!(r#"{{"v":1,"bindings":[{binding},[]]}}"#),
+                "binding 1 is not a JSON object: []",
+            ),
+            (
+                one(r#"{"hash":null,"scope":{},"granted":[]}"#),
+                "binding 0 has no `surface`",
+            ),
+            (
+                one(r#"{"surface":"clax","scope":{},"granted":[]}"#),
+                "binding 0 has no `hash`",
+            ),
+            (
+                one(r#"{"surface":"clax","hash":null,"granted":[]}"#),
+                "binding 0 has no `scope`",
+            ),
+            (
+                one(r#"{"surface":"clax","hash":null,"scope":{}}"#),
+                "binding 0 has no `granted`",
+            ),
+            // Under version 1 the name `operations` would be read as the
+            // run's whole set, which `granted` is not: a version-1 binding
+            // spelled with it has no `granted`, and is refused.
+            (
+                one(r#"{"surface":"clax","hash":null,"scope":{},"operations":[]}"#),
+                "binding 0 has no `granted`",
+            ),
+            (
+                one(r#"{"surface":"","hash":null,"scope":{},"granted":[]}"#),
+                "binding 0 has an empty surface name",
+            ),
+            (
+                one(r#"{"surface":7,"hash":null,"scope":{},"granted":[]}"#),
+                "binding 0 has a `surface` that is not text: 7",
+            ),
+            (
+                one(r#"{"surface":null,"hash":null,"scope":{},"granted":[]}"#),
+                "binding 0 has a `surface` that is not text: null",
+            ),
+            (
+                one(r#"{"surface":"clax","hash":12,"scope":{},"granted":[]}"#),
+                "the binding of surface clax has a `hash` that is neither text nor null: 12",
+            ),
+            (
+                one(r#"{"surface":"clax","hash":null,"scope":{},"granted":"web.fetch"}"#),
+                r#"the binding of surface clax has a `granted` that is not a list of names: "web.fetch""#,
+            ),
+            (
+                one(r#"{"surface":"clax","hash":null,"scope":{},"granted":["web.fetch",1]}"#),
+                r#"the binding of surface clax has a `granted` that is not a list of names: ["web.fetch",1]"#,
+            ),
+            (
+                one(r#"{"surface":"clax","hash":null,"scope":{},"granted":null}"#),
+                "the binding of surface clax has a `granted` that is not a list of names: null",
+            ),
+            (
+                one(
+                    r#"{"surface":"clax","hash":null,"scope":{},"granted":["web.fetch","web.search","web.fetch"]}"#,
+                ),
+                "the binding of surface clax is granted web.fetch twice",
+            ),
+            (
+                format!(r#"{{"v":1,"bindings":[{binding},{binding}]}}"#),
+                "two bindings of surface clax",
+            ),
+        ];
+        for (json, says) in cases {
+            match Bindings::parse(&json) {
+                Err(CoreError::Invalid { code, message }) => {
+                    assert_eq!(code, "bindings_invalid", "the code refusing {json}");
+                    assert!(
+                        message.contains(says),
+                        "{json} was expected to be refused saying {says:?}; it was refused \
+                         saying {message:?}"
+                    );
+                }
+                other => panic!(
+                    "{json} was expected to be refused saying {says:?}; parse returned {other:?}"
+                ),
+            }
+        }
+    }
+
+    /// A run keeps the artifact it was made on after the artifact is
+    /// deleted, and reads back; no new run is made on a deleted artifact.
+    #[test]
+    fn a_run_reads_back_after_its_artifact_is_deleted() {
+        let (_d, st) = store();
+        let run = new_run(&st);
+        let aid = clax_core::ArtifactId::parse(&run.artifact_id).unwrap();
+        st.delete_artifact(DAEMON, &aid).unwrap();
+        assert_eq!(st.run(&run.id).unwrap(), Some(run.clone()));
+        assert_eq!(
+            st.runs_for_artifact(&run.artifact_id, 10).unwrap(),
+            std::slice::from_ref(&run)
+        );
+        assert_eq!(st.live_runs().unwrap(), std::slice::from_ref(&run));
+        assert_eq!(
+            kept(&st, &run.id).1.bindings[0].scope,
+            json!({"artifact": run.artifact_id})
+        );
+        let again = st.create_run(
+            &bot(),
+            NewRun {
+                artifact_id: run.artifact_id.clone(),
+                person: OWNER.into(),
+                request: RequestKind::Thread,
+                thread_ids: vec!["t2".into()],
+                model: "claude-sonnet-5-5".into(),
+                key_source: KeySource::Instance,
+                base_version: 1,
+                agent_grant: None,
+                web: String::new(),
+            },
+        );
+        assert!(matches!(again, Err(CoreError::NotFound)), "{again:?}");
     }
 
     /// An ended run's call journal goes a day after it ended and its draft
@@ -2509,6 +4302,1128 @@ mod tests {
             .map(|c| c.seq)
             .collect();
         assert_eq!(journal, [0, 1, 3], "the refused reply journaled nothing");
+    }
+
+    fn d(name: &str) -> DriverId {
+        DriverId::named(name)
+    }
+
+    /// A store on a clock stopped at 10:00 on 2026-11-11, and that clock.
+    fn store_at_ten() -> (tempfile::TempDir, Store, Arc<ManualClock>) {
+        let clock = Arc::new(ManualClock::at("2026-11-11T10:00:00Z"));
+        let (dir, st) = store_with_clock(clock.clone());
+        (dir, st, clock)
+    }
+
+    /// A run driver `d1` holds, its first step, a script, begun.
+    fn run_in_a_script(st: &Store) -> Run {
+        let run = new_run(st);
+        st.claim_run(&run.id, &d("d1"), 60).unwrap().unwrap();
+        st.begin_step(&run.id, &d("d1"), 1, StepKind::Script)
+            .unwrap();
+        st.run(&run.id).unwrap().unwrap()
+    }
+
+    const FIRST_CALL: JournalPlace = JournalPlace { step_n: 1, seq: 0 };
+
+    /// Parks `run`, which `d1` holds in step 1, on its first call, due
+    /// `due_in_secs` from the clock's time (never for `None`).
+    fn park(st: &Store, clock: &ManualClock, run: &Run, due_in_secs: Option<i64>) -> Run {
+        let now = clock.now();
+        let parked = st
+            .park_run(
+                &run.id,
+                &d("d1"),
+                FIRST_CALL,
+                &json!({"surface": "shell", "op": "ask"}),
+                due_in_secs.map(|s| now + chrono::Duration::seconds(s)),
+                now,
+            )
+            .unwrap();
+        match parked {
+            Park::Parked(run) => run,
+            Park::Answered(run) => panic!("not parked: {run:?}"),
+        }
+    }
+
+    #[test]
+    fn the_statuses_of_a_run_that_has_not_ended_are_spelled_once() {
+        let live: Vec<String> = RunStatus::ALL
+            .iter()
+            .filter(|s| s.is_live())
+            .map(|s| format!("'{}'", s.as_str()))
+            .collect();
+        assert_eq!(LIVE, format!("({})", live.join(", ")));
+        for status in RunStatus::ALL {
+            assert_ne!(status.is_live(), status.is_terminal(), "{status:?}");
+        }
+        assert!(RunStatus::Parked.is_live());
+        assert_eq!(RunStatus::parse("parked"), Some(RunStatus::Parked));
+        // The index over those runs is over the same statuses.
+        let (_d, st) = store();
+        let index: String = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT sql FROM sqlite_schema WHERE name = 'bot_runs_live'",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert!(
+            index.ends_with(&format!("WHERE status IN {LIVE}")),
+            "{index}"
+        );
+    }
+
+    #[test]
+    fn a_run_parks_for_the_driver_that_holds_it_and_lets_go_of_its_claim() {
+        let (_d, st, clock) = store_at_ten();
+        let run = run_in_a_script(&st);
+        let on = json!({"surface": "shell", "op": "ask"});
+        let due = clock.now() + chrono::Duration::hours(24);
+        assert_eq!(st.parked_runs_of(OWNER).unwrap(), 0);
+        assert_eq!(
+            st.run_parking(&run.id).unwrap(),
+            Some(Parking {
+                parked_at: None,
+                parked_ms: 0,
+                waiting_on: None,
+                parks: 0
+            })
+        );
+        assert_eq!(st.run_parking("nope").unwrap(), None);
+
+        // Refused: another driver, another step, no such run.
+        assert_eq!(
+            code(st.park_run(&run.id, &d("d2"), FIRST_CALL, &on, Some(due), clock.now())),
+            "run_not_claimed"
+        );
+        let second_step = JournalPlace { step_n: 2, seq: 0 };
+        assert_eq!(
+            code(st.park_run(&run.id, &d("d1"), second_step, &on, Some(due), clock.now())),
+            "run_invalid"
+        );
+        assert!(matches!(
+            st.park_run("nope", &d("d1"), FIRST_CALL, &on, Some(due), clock.now()),
+            Err(CoreError::NotFound)
+        ));
+        assert_eq!(
+            st.run(&run.id).unwrap().unwrap(),
+            run,
+            "a refused park changes nothing"
+        );
+
+        clock.advance(10);
+        let parked = st
+            .park_run(&run.id, &d("d1"), FIRST_CALL, &on, Some(due), clock.now())
+            .unwrap();
+        let Park::Parked(parked) = parked else {
+            panic!("not parked: {parked:?}");
+        };
+        assert_eq!(
+            parked,
+            Run {
+                status: RunStatus::Parked,
+                claimed_by: None,
+                claimed_at: None,
+                due_at: Some("2026-11-12T10:00:00.000Z".into()),
+                updated_at: "2026-11-11T10:00:10.000Z".into(),
+                ..run.clone()
+            }
+        );
+        assert_eq!(st.run(&run.id).unwrap().unwrap(), parked);
+        assert_eq!(
+            st.run_parking(&run.id).unwrap(),
+            Some(Parking {
+                parked_at: Some("2026-11-11T10:00:10.000Z".into()),
+                parked_ms: 0,
+                waiting_on: Some(on.clone()),
+                parks: 1
+            })
+        );
+        assert_eq!(st.parked_runs_of(OWNER).unwrap(), 1);
+        assert_eq!(st.parked_runs_of("u_mia").unwrap(), 0);
+        // Its step stays begun and uncommitted.
+        let open = st.open_step(&run.id).unwrap().unwrap();
+        assert_eq!((open.n, open.attempt, open.committed_at), (1, 1, None));
+
+        // Parked again, by anyone and with anything, nothing changes.
+        clock.advance(5);
+        for driver in ["d1", "d2"] {
+            assert_eq!(
+                st.park_run(
+                    &run.id,
+                    &d(driver),
+                    second_step,
+                    &json!("other"),
+                    None,
+                    clock.now()
+                )
+                .unwrap(),
+                Park::Parked(parked.clone())
+            );
+        }
+        assert_eq!(st.run(&run.id).unwrap().unwrap(), parked);
+
+        // The driver that parked it no longer steps it.
+        assert_eq!(
+            code(st.begin_step(&run.id, &d("d1"), 1, StepKind::Script)),
+            "run_not_claimed"
+        );
+        assert_eq!(
+            code(st.commit_bot_step(&bot(), &run.id, &d("d1"), 1, StepCommit::default())),
+            "run_not_claimed"
+        );
+    }
+
+    #[test]
+    fn only_a_running_run_parks() {
+        let (_d, st, clock) = store_at_ten();
+        let run = run_in_a_script(&st);
+        let stopping = st.cancel_run(&bot(), &run.id).unwrap();
+        assert_eq!(stopping.status, RunStatus::Stopping);
+        assert_eq!(
+            code(st.park_run(&run.id, &d("d1"), FIRST_CALL, &json!({}), None, clock.now())),
+            "run_invalid"
+        );
+        assert_eq!(st.run(&run.id).unwrap().unwrap(), stopping);
+        // A run between steps has no step to wait in.
+        let idle = new_run(&st);
+        st.claim_run(&idle.id, &d("d1"), 60).unwrap().unwrap();
+        assert_eq!(
+            code(st.park_run(
+                &idle.id,
+                &d("d1"),
+                FIRST_CALL,
+                &json!({}),
+                None,
+                clock.now()
+            )),
+            "run_invalid"
+        );
+    }
+
+    #[test]
+    fn a_run_whose_awaited_place_is_journaled_does_not_park() {
+        let (_d, st, clock) = store_at_ten();
+        let run = run_in_a_script(&st);
+        let entry = st
+            .call_entry(&run.id, &d("d1"), 1, 1, 0, "shell.ask", "h0")
+            .unwrap()
+            .answered(true, json!("yes"));
+        st.record_bot_call(&entry).unwrap();
+        let held = st.run(&run.id).unwrap().unwrap();
+        assert_eq!(
+            st.park_run(&run.id, &d("d1"), FIRST_CALL, &json!({}), None, clock.now())
+                .unwrap(),
+            Park::Answered(held.clone())
+        );
+        assert_eq!(st.run(&run.id).unwrap().unwrap(), held);
+        assert_eq!(held.claimed_by.as_deref(), Some("d1"));
+        assert_eq!(st.parked_runs_of(OWNER).unwrap(), 0);
+        // Another place of the step is still to wait for.
+        let next = JournalPlace { step_n: 1, seq: 1 };
+        assert!(matches!(
+            st.park_run(&run.id, &d("d1"), next, &json!({}), None, clock.now())
+                .unwrap(),
+            Park::Parked(_)
+        ));
+    }
+
+    #[test]
+    fn unparking_makes_a_run_claimable_and_counts_the_time_it_was_parked() {
+        let (_d, st, clock) = store_at_ten();
+        let run = run_in_a_script(&st);
+        assert_eq!(st.unpark_run(&run.id, clock.now()).unwrap(), None);
+        assert_eq!(
+            st.run(&run.id).unwrap().unwrap(),
+            run,
+            "a run that is not parked is left as it is"
+        );
+        assert!(matches!(
+            st.unpark_run("nope", clock.now()),
+            Err(CoreError::NotFound)
+        ));
+
+        park(&st, &clock, &run, Some(3600));
+        clock.advance(90);
+        let woken = st.unpark_run(&run.id, clock.now()).unwrap().unwrap();
+        assert_eq!(
+            woken,
+            Run {
+                status: RunStatus::Queued,
+                claimed_by: None,
+                claimed_at: None,
+                due_at: None,
+                updated_at: "2026-11-11T10:01:30.000Z".into(),
+                ..run.clone()
+            }
+        );
+        assert_eq!(
+            st.run_parking(&run.id).unwrap(),
+            Some(Parking {
+                parked_at: None,
+                parked_ms: 90_000,
+                waiting_on: None,
+                parks: 1
+            })
+        );
+        // Unparked again, nothing changes.
+        clock.advance(30);
+        assert_eq!(st.unpark_run(&run.id, clock.now()).unwrap(), None);
+        assert_eq!(st.run(&run.id).unwrap().unwrap(), woken);
+        assert_eq!(st.run_parking(&run.id).unwrap().unwrap().parked_ms, 90_000);
+
+        // A driver claims it as it claims a run a driver lost, and its
+        // open step is begun again.
+        let held = st.claim_run(&run.id, &d("d2"), 60).unwrap().unwrap();
+        assert_eq!(
+            (held.status, held.claimed_by.as_deref()),
+            (RunStatus::Running, Some("d2"))
+        );
+        let again = st
+            .begin_step(&run.id, &d("d2"), 1, StepKind::Script)
+            .unwrap();
+        assert_eq!((again.n, again.attempt), (1, 2));
+        // A second parking adds to the first.
+        st.park_run(&run.id, &d("d2"), FIRST_CALL, &json!({}), None, clock.now())
+            .unwrap();
+        clock.advance(30);
+        st.unpark_run(&run.id, clock.now()).unwrap().unwrap();
+        let twice = st.run_parking(&run.id).unwrap().unwrap();
+        assert_eq!(
+            (twice.parked_ms, twice.parks),
+            (120_000, 2),
+            "two parks in a step begun twice"
+        );
+    }
+
+    /// No driver claims a parked run: not one resuming every run with a
+    /// lease of 0, not after the time it parked until.
+    #[test]
+    fn a_parked_run_is_never_claimed_until_it_is_unparked() {
+        let (_d, st, clock) = store_at_ten();
+        let run = run_in_a_script(&st);
+        let parked = park(&st, &clock, &run, Some(3600));
+        for lease in [60, 0] {
+            for driver in ["d1", "d2"] {
+                assert!(
+                    st.claim_run(&run.id, &d(driver), lease).unwrap().is_none(),
+                    "parked, {driver} with lease {lease}"
+                );
+            }
+        }
+        clock.advance(2 * 3600);
+        assert!(
+            st.claim_run(&run.id, &d("d2"), 0).unwrap().is_none(),
+            "past its due time"
+        );
+        assert_eq!(
+            st.run(&run.id).unwrap().unwrap(),
+            parked,
+            "a claim that is refused changes nothing"
+        );
+        st.unpark_run(&run.id, clock.now()).unwrap().unwrap();
+        let held = st.claim_run(&run.id, &d("d2"), 60).unwrap().unwrap();
+        assert_eq!(
+            (held.status, held.claimed_by.as_deref(), held.due_at),
+            (RunStatus::Running, Some("d2"), None)
+        );
+    }
+
+    #[test]
+    fn a_second_send_of_a_parked_runs_thread_returns_that_run() {
+        let (_d, st, clock) = store_at_ten();
+        let run = run_in_a_script(&st);
+        let parked = park(&st, &clock, &run, None);
+        let threads = ["t1".to_string()];
+        assert_eq!(st.active_run_on(&threads).unwrap(), Some(parked.clone()));
+        let again = st
+            .create_run_exclusive(
+                &bot(),
+                NewRun {
+                    artifact_id: run.artifact_id.clone(),
+                    person: OWNER.into(),
+                    request: RequestKind::Thread,
+                    thread_ids: vec!["t0".into(), "t1".into()],
+                    model: "claude-sonnet-5-5".into(),
+                    key_source: KeySource::Instance,
+                    base_version: 1,
+                    agent_grant: None,
+                    web: String::new(),
+                },
+            )
+            .unwrap();
+        assert_eq!(again, Err(parked.clone()), "no second run is made");
+        assert_eq!(st.runs_for_thread("t1", 10).unwrap().len(), 1);
+        // A follow-up queues behind it, and its thread is not one left
+        // waiting with no run.
+        assert_eq!(
+            st.queue_follow_up_if_active("t1", "u_mia").unwrap(),
+            Some(parked)
+        );
+        assert_eq!(st.follow_ups("t1").unwrap(), ["u_mia"]);
+        assert!(st.waiting_follow_up_threads().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_parked_run_is_among_the_runs_that_have_not_ended() {
+        let (_d, st, clock) = store_at_ten();
+        let run = run_in_a_script(&st);
+        clock.advance(1);
+        let queued = new_run(&st);
+        let parked = park(&st, &clock, &run, None);
+        assert_eq!(st.live_runs().unwrap(), [parked, queued]);
+    }
+
+    #[test]
+    fn a_parked_runs_claim_is_not_renewed_until_a_driver_holds_it_again() {
+        let (_d, st, clock) = store_at_ten();
+        let run = run_in_a_script(&st);
+        assert!(st.renew_lease(&run.id, &d("d1")).unwrap());
+        park(&st, &clock, &run, Some(60));
+        assert!(
+            !st.renew_lease(&run.id, &d("d1")).unwrap(),
+            "the driver that parked it let go of it"
+        );
+        assert_eq!(st.run(&run.id).unwrap().unwrap().claimed_by, None);
+        clock.advance(60);
+        st.unpark_run(&run.id, clock.now()).unwrap().unwrap();
+        st.claim_run(&run.id, &d("d2"), 60).unwrap().unwrap();
+        assert!(st.renew_lease(&run.id, &d("d2")).unwrap());
+        assert!(!st.renew_lease(&run.id, &d("d1")).unwrap());
+    }
+
+    #[test]
+    fn cancelling_a_parked_run_makes_it_stopping_and_claimable_at_once() {
+        let (_d, st, clock) = store_at_ten();
+        let run = run_in_a_script(&st);
+        park(&st, &clock, &run, None);
+        clock.advance(45);
+        let stopping = st.cancel_run(&bot(), &run.id).unwrap();
+        assert_eq!(
+            (
+                stopping.status,
+                stopping.claimed_by.clone(),
+                stopping.due_at.clone()
+            ),
+            (RunStatus::Stopping, None, None)
+        );
+        assert_eq!(
+            st.run_parking(&run.id).unwrap(),
+            Some(Parking {
+                parked_at: None,
+                parked_ms: 45_000,
+                waiting_on: None,
+                parks: 1
+            })
+        );
+        let cancels = |st: &Store| {
+            st.with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT count(*) FROM audit_events WHERE kind = 'bot.cancel'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )?)
+            })
+            .unwrap()
+        };
+        assert_eq!(cancels(&st), 1);
+        // Asked again, nothing changes and nothing is recorded.
+        assert_eq!(st.cancel_run(&bot(), &run.id).unwrap(), stopping);
+        assert_eq!(cancels(&st), 1);
+        // A driver takes it and writes its stopped step.
+        st.claim_run(&run.id, &d("d2"), 60).unwrap().unwrap();
+        st.begin_step(&run.id, &d("d2"), 1, StepKind::Stopped)
+            .unwrap();
+        let end = st
+            .commit_bot_step(
+                &bot(),
+                &run.id,
+                &d("d2"),
+                1,
+                StepCommit {
+                    reason: Some("cancelled".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(end.run.status, RunStatus::Stopped);
+        assert_eq!(st.parked_runs_of(OWNER).unwrap(), 0);
+    }
+
+    const DEF_HASH: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+    const SHELL: &str = "0123456789abcdef0123456789abcdef";
+    /// The SHA-256 of a prompt file, as a binding names it.
+    const PROMPT_HASH: &str = "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752";
+
+    /// A `shell` binding of version 2 served by [`SHELL`], and `clax`
+    /// bound beside it.
+    fn shell_bindings() -> Bindings {
+        Bindings::bound(vec![
+            StoredBinding::bound(
+                "shell",
+                Some(DEF_HASH.into()),
+                Some(SHELL.into()),
+                None,
+                Value::Null,
+                vec!["shell.windows".into(), "shell.ask".into()],
+            ),
+            StoredBinding::bound(
+                "clax",
+                None,
+                None,
+                None,
+                json!({"artifact": "7q3k9mzx2b4t"}),
+                Vec::new(),
+            ),
+        ])
+        .unwrap()
+    }
+
+    #[test]
+    fn bindings_of_version_2_hold_each_surfaces_registration_and_operations() {
+        let made = shell_bindings();
+        assert_eq!(made.version(), 2);
+        let text = made.to_json();
+        assert_eq!(
+            text,
+            format!(
+                r#"{{"v":2,"bindings":[{{"surface":"shell","hash":"{DEF_HASH}","registration":"{SHELL}","scope":null,"operations":["shell.windows","shell.ask"]}},{{"surface":"clax","hash":null,"scope":{{"artifact":"7q3k9mzx2b4t"}},"operations":[]}}]}}"#
+            )
+        );
+        let read = Bindings::parse(&text).unwrap();
+        assert_eq!(read, made);
+        assert_eq!(read.to_json(), text);
+        let shell = read.of("shell").expect("the shell binding");
+        assert_eq!(
+            (
+                shell.surface(),
+                shell.hash(),
+                shell.registration(),
+                shell.scope(),
+                shell.operations(),
+                shell.granted()
+            ),
+            (
+                "shell",
+                Some(DEF_HASH),
+                Some(SHELL),
+                &Value::Null,
+                Some(&["shell.windows".to_string(), "shell.ask".to_string()][..]),
+                &[][..]
+            )
+        );
+        // A binding with no registration leaves the member out, and one
+        // with no operations has none: an empty list is not "the standing
+        // ones".
+        let clax = read.of("clax").unwrap();
+        assert_eq!(
+            (clax.registration(), clax.operations()),
+            (None, Some(&[][..]))
+        );
+        // `registration: null` reads as none; an unknown member is ignored.
+        let spelled = text
+            .replace(
+                r#""hash":null,"scope""#,
+                r#""hash":null,"registration":null,"scope""#,
+            )
+            .replace(r#""scope":null"#, r#""scope":null,"reader_view":"names""#);
+        assert_eq!(Bindings::parse(&spelled).unwrap(), made);
+
+        // A binding started with a prompt file names it by its hash,
+        // after its registration; one started with none leaves the
+        // member out (above), and `prompt: null` reads as none.
+        assert_eq!(shell.prompt(), None);
+        let prompted = Bindings::bound(vec![StoredBinding::bound(
+            "shell",
+            Some(DEF_HASH.into()),
+            Some(SHELL.into()),
+            Some(PROMPT_HASH.into()),
+            Value::Null,
+            vec!["shell.ask".into()],
+        )])
+        .unwrap();
+        let prompted_text = prompted.to_json();
+        assert_eq!(
+            prompted_text,
+            format!(
+                r#"{{"v":2,"bindings":[{{"surface":"shell","hash":"{DEF_HASH}","registration":"{SHELL}","prompt":"{PROMPT_HASH}","scope":null,"operations":["shell.ask"]}}]}}"#
+            )
+        );
+        let read_prompted = Bindings::parse(&prompted_text).unwrap();
+        assert_eq!(read_prompted, prompted);
+        assert_eq!(
+            read_prompted.of("shell").unwrap().prompt(),
+            Some(PROMPT_HASH)
+        );
+        let null_prompt = text.replace(
+            r#""scope":null,"operations":["shell.windows""#,
+            r#""prompt":null,"scope":null,"operations":["shell.windows""#,
+        );
+        assert_ne!(null_prompt, text);
+        assert_eq!(Bindings::parse(&null_prompt).unwrap(), made);
+
+        // A binding of version 1 says no operations, no registration and
+        // no prompt file, whatever its text holds.
+        let v1 = Bindings::clax("7q3k9mzx2b4t", "fetch");
+        assert_eq!(v1.version(), 1);
+        let clax = v1.of("clax").unwrap();
+        assert_eq!((clax.operations(), clax.registration()), (None, None));
+        assert_eq!(clax.prompt(), None);
+        let v1_spelled = v1.to_json().replace(
+            r#""hash":null,"#,
+            &format!(r#""hash":null,"prompt":"{PROMPT_HASH}","#),
+        );
+        assert_ne!(v1_spelled, v1.to_json());
+        assert_eq!(Bindings::parse(&v1_spelled).unwrap(), v1);
+        assert_eq!(clax.granted(), ["web.fetch"]);
+
+        // What version 2 refuses.
+        let one = |b: &str| format!(r#"{{"v":2,"bindings":[{b}]}}"#);
+        let refused = [
+            (
+                one(r#"{"surface":"shell","hash":null,"scope":null,"granted":[]}"#),
+                "binding 0 has no `operations`",
+            ),
+            (
+                one(r#"{"surface":"shell","hash":null,"scope":null,"operations":"all"}"#),
+                "`operations` that is not a list of names",
+            ),
+            (
+                one(r#"{"surface":"shell","hash":null,"scope":null,"operations":["a","a"]}"#),
+                "the binding of surface shell names a twice",
+            ),
+            (
+                one(
+                    r#"{"surface":"shell","hash":null,"registration":7,"scope":null,"operations":[]}"#,
+                ),
+                "has a `registration` that is neither text nor null: 7",
+            ),
+            (
+                one(r#"{"surface":"shell","hash":null,"prompt":7,"scope":null,"operations":[]}"#),
+                "has a `prompt` that is neither text nor null: 7",
+            ),
+            (
+                r#"{"v":2,"bindings":[]}"#.to_string(),
+                "a run has at least one binding",
+            ),
+        ];
+        for (text, why) in refused {
+            match Bindings::read(&text) {
+                Err(BindingsError::Invalid(message)) => {
+                    assert!(message.contains(why), "{text}: {message}");
+                }
+                other => panic!("{text}: {other:?}"),
+            }
+        }
+        let binding = |surface: &str, ops: &[&str]| {
+            StoredBinding::bound(
+                surface,
+                None,
+                None,
+                None,
+                Value::Null,
+                ops.iter().map(|o| o.to_string()).collect(),
+            )
+        };
+        for bindings in [
+            vec![],
+            vec![binding("", &[])],
+            vec![binding("shell", &[]), binding("shell", &[])],
+            vec![binding("shell", &["a", "a"])],
+        ] {
+            assert!(
+                matches!(
+                    Bindings::bound(bindings.clone()),
+                    Err(BindingsError::Invalid(_))
+                ),
+                "{bindings:?}"
+            );
+        }
+    }
+
+    /// Bindings of a version a later build wrote are told apart from
+    /// bindings that are malformed: the run cannot be driven by this
+    /// build, whatever is tried again.
+    #[test]
+    fn bindings_of_a_later_version_are_unsupported_not_malformed() {
+        let later = r#"{"v":3,"bindings":[{"surface":"shell","hash":null,"scope":null,"operations":[],"joins":[]}]}"#;
+        assert_eq!(
+            Bindings::read(later),
+            Err(BindingsError::Unsupported { version: 3 })
+        );
+        assert_eq!(
+            Bindings::read(r#"{"v":0,"bindings":[]}"#),
+            Err(BindingsError::Unsupported { version: 0 })
+        );
+        let made = RunAsMade {
+            kind: "shell.triage".into(),
+            bindings_json: later.into(),
+            request_json: "{}".into(),
+        };
+        assert_eq!(
+            made.bindings(),
+            Err(BindingsError::Unsupported { version: 3 })
+        );
+        match Bindings::parse(later) {
+            Err(CoreError::Invalid { code, message }) => {
+                assert_eq!(code, "bindings_invalid");
+                assert_eq!(
+                    message,
+                    "bindings of version 3; this build reads versions 1 and 2"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(
+            Bindings::read("not json"),
+            Err(BindingsError::Invalid(_))
+        ));
+        let made = RunAsMade {
+            bindings_json: shell_bindings().to_json(),
+            ..made
+        };
+        assert_eq!(made.bindings(), Ok(shell_bindings()));
+    }
+
+    /// A store with the registration [`SHELL`] of the surface `shell`.
+    fn store_with_shell() -> (tempfile::TempDir, Store, Arc<ManualClock>) {
+        let (dir, st, clock) = store_at_ten();
+        st.put_surface_def(DEF_HASH, "{}", clock.now()).unwrap();
+        let new = crate::bot_surfaces::NewRegistration {
+            name: "shell".into(),
+            def_hash: DEF_HASH.into(),
+            prompt: None,
+            settings: json!({}),
+            registered_by: OWNER.into(),
+            replaces: None,
+        };
+        st.issue_registration(DAEMON, SHELL, new, clock.now())
+            .unwrap()
+            .expect("issued");
+        (dir, st, clock)
+    }
+
+    #[test]
+    fn registrations_and_definitions_that_nothing_needs_are_pruned() {
+        const IDLE: &str = "11111111111111111111111111111111";
+        const SERVED: &str = "22222222222222222222222222222222";
+        const IDLE_DEF: &str = "60303ae22b998861bce3b28f33eec1be758a213c86c93c076dbe9f558c11c752";
+        const UNUSED: &str = "fd61a03af4f77d870fc21e05e7e80678095c92d808cfb3b5c279ee04c74aca13";
+        let (_d, st, clock) = store_with_shell();
+        // SHELL starts a run and is never served; IDLE is never served
+        // and starts none; SERVED starts none and is served later.
+        st.create_run_of(DAEMON, triage()).unwrap();
+        st.put_surface_def(IDLE_DEF, "{}", clock.now()).unwrap();
+        st.put_surface_def(UNUSED, "{}", clock.now()).unwrap();
+        for (id, hash) in [(IDLE, IDLE_DEF), (SERVED, DEF_HASH)] {
+            let new = crate::bot_surfaces::NewRegistration {
+                name: "shell".into(),
+                def_hash: hash.into(),
+                prompt: None,
+                settings: json!({}),
+                registered_by: OWNER.into(),
+                replaces: None,
+            };
+            st.issue_registration(DAEMON, id, new, clock.now())
+                .unwrap()
+                .expect("issued");
+        }
+        // Within the hour, nothing goes.
+        clock.advance(3600);
+        assert_eq!(st.prune_ended_runs().unwrap(), Pruned::default());
+        // After it, the definition that nothing names.
+        clock.advance(1);
+        let one_def = Pruned {
+            surface_defs: 1,
+            ..Pruned::default()
+        };
+        assert_eq!(st.prune_ended_runs().unwrap(), one_def);
+        assert_eq!(st.surface_def(UNUSED).unwrap(), None);
+        assert!(st.surface_def(IDLE_DEF).unwrap().is_some());
+        // After seven days: the registration that was not served and
+        // started no run, and with it its definition. The one that was
+        // served since stays, and so does the one whose run the store
+        // has, with the definition they and the run's bindings name.
+        clock.advance(6 * 24 * 3600);
+        assert!(st.touch_registration(SERVED, clock.now()).unwrap());
+        clock.advance(24 * 3600);
+        let pruned = st.prune_ended_runs().unwrap();
+        assert_eq!((pruned.registrations, pruned.surface_defs), (1, 1));
+        assert_eq!(st.registration(IDLE).unwrap(), None);
+        assert_eq!(st.surface_def(IDLE_DEF).unwrap(), None);
+        assert!(st.registration(SERVED).unwrap().is_some());
+        assert!(st.registration(SHELL).unwrap().is_some());
+        assert!(st.surface_def(DEF_HASH).unwrap().is_some());
+        // Seven days after it was last served, the served one too; the
+        // run's own stays for as long as the run does.
+        clock.advance(7 * 24 * 3600 + 1);
+        assert_eq!(st.prune_ended_runs().unwrap().registrations, 1);
+        assert_eq!(st.registration(SERVED).unwrap(), None);
+        assert!(st.registration(SHELL).unwrap().is_some());
+        assert!(st.surface_def(DEF_HASH).unwrap().is_some());
+        assert_eq!(st.live_runs_started_by(SHELL).unwrap(), 1);
+        assert_eq!(st.live_runs_started_by(IDLE).unwrap(), 0);
+    }
+
+    /// A prompt file is kept for as long as a registration's row or a
+    /// run's bindings name it, and an hour after it was last given
+    /// otherwise.
+    #[test]
+    fn a_prompt_file_a_run_or_a_registration_names_is_kept_and_one_nothing_names_is_pruned() {
+        use clax_core::audit::sha256_hex;
+        let (_d, st, clock) = store_with_shell();
+        let hash_of = |text: &str| sha256_hex(text.as_bytes());
+        let (run_prompt, reg_prompt, unused) =
+            ("You are the desk.", "You are the shell.", "You are no one.");
+        // A run started with one prompt file, whose registration has
+        // gone on with another since; and one nothing names.
+        st.change_registration(
+            DAEMON,
+            SHELL,
+            DEF_HASH,
+            Some(run_prompt),
+            &json!({}),
+            clock.now(),
+        )
+        .unwrap();
+        let bindings = Bindings::bound(vec![StoredBinding::bound(
+            "shell",
+            Some(DEF_HASH.into()),
+            Some(SHELL.into()),
+            Some(hash_of(run_prompt)),
+            Value::Null,
+            vec!["shell.ask".into()],
+        )])
+        .unwrap();
+        let run = st
+            .create_run_of(
+                DAEMON,
+                NewRunOf {
+                    bindings,
+                    ..triage()
+                },
+            )
+            .unwrap();
+        st.change_registration(
+            DAEMON,
+            SHELL,
+            DEF_HASH,
+            Some(reg_prompt),
+            &json!({}),
+            clock.now(),
+        )
+        .unwrap();
+        st.put_surface_prompt(&hash_of(unused), unused, clock.now())
+            .unwrap();
+        let kept = |text: &str| st.surface_prompt(&hash_of(text)).unwrap();
+        // Within the hour, nothing goes.
+        clock.advance(3600);
+        assert_eq!(st.prune_ended_runs().unwrap(), Pruned::default());
+        assert_eq!(kept(unused).as_deref(), Some(unused));
+        // Given again, the one nothing names is kept an hour from then.
+        st.put_surface_prompt(&hash_of(unused), unused, clock.now())
+            .unwrap();
+        clock.advance(3600);
+        assert_eq!(st.prune_ended_runs().unwrap(), Pruned::default());
+        // After it: the one nothing names goes; the run's and the
+        // registration's stay.
+        clock.advance(1);
+        let one_prompt = Pruned {
+            surface_prompts: 1,
+            ..Pruned::default()
+        };
+        assert_eq!(st.prune_ended_runs().unwrap(), one_prompt);
+        assert_eq!(kept(unused), None);
+        assert_eq!(kept(run_prompt).as_deref(), Some(run_prompt));
+        assert_eq!(kept(reg_prompt).as_deref(), Some(reg_prompt));
+        // Long after, with the registration on yet another: the run's
+        // is kept for as long as the run is, the registration's former
+        // one goes.
+        st.change_registration(DAEMON, SHELL, DEF_HASH, None, &json!({}), clock.now())
+            .unwrap();
+        clock.advance(30 * 24 * 3600);
+        assert_eq!(st.prune_ended_runs().unwrap().surface_prompts, 1);
+        assert_eq!(kept(reg_prompt), None);
+        assert_eq!(kept(run_prompt).as_deref(), Some(run_prompt));
+        let (_, made, _) = st
+            .run_with_steps_as_made(&run.id)
+            .unwrap()
+            .expect("the run");
+        assert_eq!(
+            made.bindings().unwrap().of("shell").unwrap().prompt(),
+            Some(hash_of(run_prompt).as_str())
+        );
+    }
+
+    fn triage() -> NewRunOf {
+        NewRunOf {
+            kind: "shell.triage".into(),
+            request: json!({"ask": "Tidy the desktop", "touches": []}),
+            bindings: shell_bindings(),
+            person: "u_mia".into(),
+            model: "claude-sonnet-5-5".into(),
+            key_source: KeySource::Instance,
+            started_by: SHELL.into(),
+            parent_run: None,
+            agent_grant: None,
+        }
+    }
+
+    #[test]
+    fn a_run_of_another_surfaces_kind_is_made_with_no_artifact_and_read() {
+        let (_d, st, _clock) = store_with_shell();
+        let run = st.create_run_of(&bot(), triage()).unwrap();
+        assert_eq!(
+            run,
+            Run {
+                id: run.id.clone(),
+                artifact_id: String::new(),
+                person: "u_mia".into(),
+                request: RequestKind::Other,
+                thread_ids: Vec::new(),
+                status: RunStatus::Queued,
+                reason: None,
+                model: "claude-sonnet-5-5".into(),
+                key_source: KeySource::Instance,
+                base_version: 0,
+                credits_milli: 0,
+                claimed_by: None,
+                claimed_at: None,
+                created_at: "2026-11-11T10:00:00.000Z".into(),
+                updated_at: "2026-11-11T10:00:00.000Z".into(),
+                ended_at: None,
+                due_at: None,
+                agent_grant: None,
+                web: String::new(),
+            }
+        );
+        assert_eq!(run.artifact(), None);
+        // The row itself: no artifact, no base version, no thread.
+        let row: String = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT quote(artifact_id) || ' ' || quote(base_version) || ' ' || request
+                            || ' ' || thread_ids_json || ' ' || quote(web) || ' ' || kind || ' '
+                            || started_by || ' ' || quote(parent_run) || ' ' || request_json
+                       FROM bot_runs WHERE id = ?1",
+                    params![run.id],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(
+            row,
+            format!(
+                r#"NULL NULL other [] '' shell.triage {SHELL} NULL {{"ask":"Tidy the desktop","touches":[]}}"#
+            )
+        );
+        let (read, made, steps) = st.run_with_steps_as_made(&run.id).unwrap().unwrap();
+        assert_eq!(read, run);
+        assert!(steps.is_empty());
+        assert_eq!(made.kind, "shell.triage");
+        assert_eq!(made.bindings(), Ok(shell_bindings()));
+        assert_eq!(made.bindings_json, shell_bindings().to_json());
+        assert_eq!(
+            st.run_origin(&run.id).unwrap(),
+            Some((Some(SHELL.to_string()), None))
+        );
+        assert_eq!(st.run_origin("nope").unwrap(), None);
+
+        // It is listed under its person and its registration and among
+        // the runs that have not ended; it holds no thread and is on no
+        // artifact.
+        assert_eq!(
+            st.runs_for_person("u_mia", 10).unwrap(),
+            std::slice::from_ref(&run)
+        );
+        assert_eq!(
+            st.runs_started_by(SHELL, 10).unwrap(),
+            std::slice::from_ref(&run)
+        );
+        assert!(st.runs_started_by("nope", 10).unwrap().is_empty());
+        assert_eq!(st.live_runs().unwrap(), std::slice::from_ref(&run));
+        assert_eq!(st.active_run_on(&[]).unwrap(), None);
+        assert!(st.runs_for_artifact("", 10).unwrap().is_empty());
+        // A second run of the kind for the same person is another run:
+        // no thread makes the two exclusive.
+        let second = st.create_run_of(&bot(), triage()).unwrap();
+        assert_ne!(second.id, run.id);
+        // A child names the run that started it; a run of clax's kinds
+        // names neither.
+        let child = st
+            .create_run_of(
+                &bot(),
+                NewRunOf {
+                    parent_run: Some(run.id.clone()),
+                    ..triage()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            st.run_origin(&child.id).unwrap(),
+            Some((Some(SHELL.to_string()), Some(run.id.clone())))
+        );
+        assert_eq!(st.run_origin(&new_run(&st).id).unwrap(), Some((None, None)));
+
+        // Its start is recorded with no artifact, under whom it acts for.
+        let (artifact, actor, body): (Option<String>, String, String) = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT artifact_id, actor, body FROM audit_events
+                      WHERE kind = 'bot.run_start' ORDER BY seq LIMIT 1",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(artifact, None);
+        assert!(actor.contains("bot"), "{actor}");
+        let body: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            (
+                &body["run"],
+                &body["request"],
+                &body["kind"],
+                &body["thread_ids"],
+                &body["started_by"],
+                body.get("parent_run")
+            ),
+            (
+                &json!(run.id),
+                &json!("other"),
+                &json!("shell.triage"),
+                &json!([]),
+                &json!(SHELL),
+                None
+            )
+        );
+    }
+
+    #[test]
+    fn a_run_of_another_surfaces_kind_is_refused_when_it_is_not_one() {
+        let (_d, st, _clock) = store_with_shell();
+        let refused = |new: NewRunOf| code(st.create_run_of(&bot(), new));
+        for kind in ["triage", "shell.", ".triage", ""] {
+            assert_eq!(
+                refused(NewRunOf {
+                    kind: kind.into(),
+                    ..triage()
+                }),
+                "run_invalid",
+                "{kind:?}"
+            );
+        }
+        assert_eq!(
+            refused(NewRunOf {
+                kind: "clax.thread".into(),
+                ..triage()
+            }),
+            "run_invalid"
+        );
+        assert_eq!(
+            refused(NewRunOf {
+                bindings: Bindings::clax("7q3k9mzx2b4t", ""),
+                ..triage()
+            }),
+            "run_invalid",
+            "bindings of version 1"
+        );
+        assert_eq!(
+            refused(NewRunOf {
+                kind: "review.note".into(),
+                ..triage()
+            }),
+            "run_invalid",
+            "no binding of the kind's surface"
+        );
+        assert_eq!(
+            refused(NewRunOf {
+                person: String::new(),
+                ..triage()
+            }),
+            "run_invalid"
+        );
+        for new in [
+            NewRunOf {
+                started_by: "nope".into(),
+                ..triage()
+            },
+            NewRunOf {
+                parent_run: Some("nope".into()),
+                ..triage()
+            },
+        ] {
+            assert!(matches!(
+                st.create_run_of(&bot(), new),
+                Err(CoreError::NotFound)
+            ));
+        }
+        assert!(st.live_runs().unwrap().is_empty(), "nothing was made");
+        // A model with no price is refused as for any run.
+        st.set_bot_settings(
+            DAEMON,
+            &[(
+                crate::bot_settings::Setting::RequireExplicitPrice,
+                Some(json!(true)),
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            refused(NewRunOf {
+                model: "unpriced-model".into(),
+                ..triage()
+            }),
+            "model_not_priced"
+        );
+        st.create_run_of(&bot(), triage()).unwrap();
+    }
+
+    /// A `clax` run is written and read as before bindings had a second
+    /// version, and is driven beside a run of another surface's kind.
+    #[test]
+    fn a_clax_run_keeps_version_1_beside_a_run_of_another_surfaces_kind() {
+        let (_d, st, _clock) = store_with_shell();
+        let run = new_run(&st);
+        let (kind, bindings, _) = kept(&st, &run.id);
+        assert_eq!(kind, "clax.thread");
+        assert_eq!(bindings.version(), 1);
+        let text: String = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT request || ' ' || bindings_json FROM bot_runs WHERE id = ?1",
+                    params![run.id],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(
+            text,
+            format!(
+                r#"thread {{"v":1,"bindings":[{{"surface":"clax","hash":null,"scope":{{"artifact":"{}"}},"granted":[]}}]}}"#,
+                run.artifact_id
+            )
+        );
+        let other = st.create_run_of(&bot(), triage()).unwrap();
+        // Both are claimed, stepped and committed the same way.
+        for id in [&run.id, &other.id] {
+            st.claim_run(id, &d("d1"), 60).unwrap().unwrap();
+            st.begin_step(id, &d("d1"), 1, StepKind::Turn).unwrap();
+            let done = st
+                .commit_bot_step(&bot(), id, &d("d1"), 1, StepCommit::default())
+                .unwrap();
+            assert_eq!(done.run.status, RunStatus::Running);
+        }
+        assert_eq!(
+            st.run(&run.id).unwrap().unwrap().request,
+            RequestKind::Thread
+        );
+        assert_eq!(
+            st.active_run_on(&["t1".to_string()]).unwrap().unwrap().id,
+            run.id
+        );
     }
 
     #[test]

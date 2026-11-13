@@ -331,6 +331,11 @@ pub struct AppState {
     /// ClaxBot's keys and run driver seam ([`crate::bot`]); the daemon
     /// and the Worker install theirs after [`AppState::assemble`].
     pub bot: Arc<crate::bot::Bot>,
+    /// The surfaces hosts registered with this daemon, and the broker
+    /// their calls go through ([`crate::bot_surfaces`]): no registration
+    /// at any start. The native daemon's alone: a Worker has none.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub bot_surfaces: Arc<crate::bot_surfaces::Surfaces>,
     /// Where the instance's own feedback integration comes from
     /// ([`InstanceFeedback`]), which the host sets after
     /// [`AppState::assemble`]; [`InstanceFeedback::Own`] by default.
@@ -462,6 +467,12 @@ impl AppState {
         Ok(AppState {
             settings,
             bot: Arc::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            bot_surfaces: Arc::new(crate::bot_surfaces::Surfaces::new(
+                p.store.clone(),
+                p.question_sleeper.clone(),
+                clax_bot::bot_surfaces::HubLimits::default(),
+            )),
             feedback: InstanceFeedback::Own,
             home: p.home,
             token: p.token,

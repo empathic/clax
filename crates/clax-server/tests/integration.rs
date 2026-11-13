@@ -31,6 +31,10 @@ mod api_attention;
 mod api_auth;
 #[cfg(any(not(clax_split), clax_split = "api_batch"))]
 mod api_batch;
+#[cfg(any(not(clax_split), clax_split = "api_bot_surfaces"))]
+mod api_bot_surfaces;
+#[cfg(any(not(clax_split), clax_split = "api_bot_surfaces_bounds"))]
+mod api_bot_surfaces_bounds;
 #[cfg(any(not(clax_split), clax_split = "api_briefs"))]
 mod api_briefs;
 #[cfg(any(not(clax_split), clax_split = "api_caching"))]

@@ -1,0 +1,95 @@
+{
+  "audit": {
+    "kinds": [
+      "bot.run_start",
+      "bot.run_end"
+    ],
+    "records": [
+      {
+        "actor": {
+          "on_behalf_of": "*owner",
+          "type": "bot"
+        },
+        "at": "2026-10-21T10:00:00.000Z",
+        "body": {
+          "clax_commit": "<commit>",
+          "clax_version": "<version>",
+          "key_source": "instance",
+          "model": "claude-sonnet-5-5",
+          "request": "thread",
+          "run": "<run>",
+          "thread_ids": [
+            "<thread-1>"
+          ],
+          "v": 1,
+          "via": "daemon"
+        },
+        "ids": {
+          "artifact": "<artifact>",
+          "artifact2": null,
+          "call": null,
+          "origin": null,
+          "question": null,
+          "session": null,
+          "thread": null
+        },
+        "kind": "bot.run_start"
+      },
+      {
+        "actor": {
+          "on_behalf_of": "*owner",
+          "type": "bot"
+        },
+        "at": "2026-10-21T10:00:00.000Z",
+        "body": {
+          "clax_commit": "<commit>",
+          "clax_version": "<version>",
+          "credits_milli": 1000,
+          "outcome": "stopped",
+          "reason": "not_configured",
+          "run": "<run>",
+          "v": 1,
+          "via": "daemon"
+        },
+        "ids": {
+          "artifact": "<artifact>",
+          "artifact2": null,
+          "call": null,
+          "origin": null,
+          "question": null,
+          "session": null,
+          "thread": null
+        },
+        "kind": "bot.run_end"
+      }
+    ]
+  },
+  "journal": [
+    {
+      "attempt": 1,
+      "ok": true,
+      "op": "reply",
+      "result": {
+        "comment_id": "<comment>"
+      },
+      "seq": 1000000,
+      "step": 1
+    }
+  ],
+  "roster_calls": [
+    {
+      "on": false,
+      "run_status": "stopped",
+      "step": 2
+    }
+  ],
+  "usage": [
+    {
+      "absorbed": false,
+      "credits_milli": 1000,
+      "line": "harness.run",
+      "qty": 1,
+      "step": 1
+    }
+  ]
+}

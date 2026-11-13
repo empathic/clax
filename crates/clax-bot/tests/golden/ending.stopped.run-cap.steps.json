@@ -1,0 +1,63 @@
+{
+  "last_step": {
+    "kind": "stopped",
+    "payload": {
+      "notice": "I stopped before finishing: this run reached its limit of 2 steps. I ran 1 script and edited extra.css. My draft is saved, unpublished: open it from the run panel.",
+      "reason": "run_cap"
+    }
+  },
+  "notices_in_the_journal": [
+    {
+      "ok": true,
+      "op": "reply",
+      "seq": 1000000,
+      "step": 3
+    }
+  ],
+  "reason": "run_cap",
+  "replies": [
+    {
+      "text": "I stopped before finishing: this run reached its limit of 2 steps. I ran 1 script and edited extra.css. My draft is saved, unpublished: open it from the run panel.",
+      "thread": "<thread-1>"
+    }
+  ],
+  "roster": {
+    "shown_working_at_no_step": 0,
+    "shown_working_before": [
+      {
+        "kind": "turn",
+        "shown": true,
+        "step": 1
+      },
+      {
+        "kind": "script",
+        "shown": true,
+        "step": 2
+      },
+      {
+        "kind": "stopped",
+        "shown": false,
+        "step": 3
+      }
+    ],
+    "stopped_showing": [
+      {
+        "calls_after_it": 0,
+        "run_status": "stopped"
+      }
+    ]
+  },
+  "status": "stopped",
+  "steps": [
+    "turn",
+    "script",
+    "stopped"
+  ],
+  "writes_in_order": [
+    {
+      "key": "<run>:3:1000000",
+      "op": "threads.reply",
+      "thread": "<thread-1>"
+    }
+  ]
+}

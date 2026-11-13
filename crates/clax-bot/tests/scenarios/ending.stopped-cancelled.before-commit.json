@@ -1,0 +1,164 @@
+{
+  "audit": [
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "clax_commit": "<build>",
+        "clax_version": "<build>",
+        "key_source": "instance",
+        "model": "claude-sonnet-5-5",
+        "request": "thread",
+        "run": "<run>",
+        "thread_ids": [
+          "<thread-1>",
+          "<thread-2>"
+        ],
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "call": null,
+        "thread": null
+      },
+      "kind": "bot.run_start"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "by": "*owner",
+        "clax_commit": "<build>",
+        "clax_version": "<build>",
+        "run": "<run>",
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "call": null,
+        "thread": null
+      },
+      "kind": "bot.cancel"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:01:01.000Z",
+      "body": {
+        "clax_commit": "<build>",
+        "clax_version": "<build>",
+        "credits_milli": 1000,
+        "outcome": "stopped",
+        "reason": "cancelled",
+        "run": "<run>",
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "call": null,
+        "thread": null
+      },
+      "kind": "bot.run_end"
+    }
+  ],
+  "events": [
+    {
+      "data": {
+        "attempt": 1,
+        "kind": "stopped",
+        "step": 1
+      },
+      "event": "step_started",
+      "id": "1.1:0"
+    },
+    {
+      "data": {
+        "attempt": 2,
+        "kind": "stopped",
+        "step": 1
+      },
+      "event": "step_started",
+      "id": "1.2:0"
+    },
+    {
+      "data": {
+        "attempt": 2,
+        "credits_milli": 1000,
+        "kind": "stopped",
+        "run_credits_milli": 1000,
+        "step": 1,
+        "summary": {
+          "notice": null,
+          "reason": "cancelled"
+        }
+      },
+      "event": "step_done",
+      "id": "1.2:1000000"
+    },
+    {
+      "data": {
+        "attempt": 2,
+        "credits_milli": 1000,
+        "outcome": "stopped",
+        "reason": "cancelled",
+        "step": 1
+      },
+      "event": "run_end",
+      "id": "1.2:1000001"
+    }
+  ],
+  "follow_ups": [
+    [],
+    []
+  ],
+  "journal": [],
+  "reached_the_host": [],
+  "replies": [],
+  "roster": [
+    {
+      "on": false,
+      "status": "stopped",
+      "step": 2
+    }
+  ],
+  "run": {
+    "credits_milli": 1000,
+    "reason": "cancelled",
+    "status": "stopped"
+  },
+  "steps": [
+    {
+      "attempt": 2,
+      "committed_at": "2026-10-21T10:01:01.000Z",
+      "failures": 0,
+      "kind": "stopped",
+      "n": 1,
+      "payload": {
+        "notice": null,
+        "reason": "cancelled"
+      },
+      "started_at": "2026-10-21T10:00:00.000Z"
+    }
+  ],
+  "usage": [
+    {
+      "absorbed": false,
+      "credits_milli": 1000,
+      "line": "harness.run",
+      "qty": 1,
+      "step": 1
+    }
+  ],
+  "writes": []
+}

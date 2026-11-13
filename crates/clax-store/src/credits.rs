@@ -1814,8 +1814,11 @@ impl Store {
         {
             let line = line_in(tx, id)?.ok_or(CoreError::NotFound)?;
             let in_use: i64 = tx.query_row(
-                "SELECT count(*) FROM bot_runs WHERE status IN ('queued', 'running', 'stopping')
-                   AND (?1 IS NULL OR model = ?1)",
+                &format!(
+                    "SELECT count(*) FROM bot_runs WHERE status IN {}
+                       AND (?1 IS NULL OR model = ?1)",
+                    crate::bot_runs::LIVE
+                ),
                 params![line.model],
                 |r| r.get(0),
             )?;
@@ -2558,6 +2561,71 @@ mod tests {
         ));
         assert!(st.cost_line("claude-opus-5-5.input").unwrap().is_some());
         st.delete_model_rates(DAEMON, "claude-haiku-5-5").unwrap();
+    }
+
+    /// A parked run has not ended: the lines that price it stay, as they
+    /// do for a run a driver holds.
+    #[test]
+    fn a_cost_line_that_prices_a_parked_run_is_kept() {
+        use crate::bot_runs::{DriverId, JournalPlace, NewRun, Park, RequestKind, StepKind};
+        let (_d, st) = store();
+        let aid = crate::test_util::artifact(&st, None).to_string();
+        let run = st
+            .create_run(
+                DAEMON,
+                NewRun {
+                    artifact_id: aid,
+                    person: OWNER.into(),
+                    request: RequestKind::Thread,
+                    thread_ids: vec![],
+                    model: "claude-opus-5-5".into(),
+                    key_source: KeySource::Instance,
+                    base_version: 1,
+                    agent_grant: None,
+                    web: String::new(),
+                },
+            )
+            .unwrap();
+        let driver = DriverId::mint();
+        st.claim_run(&run.id, &driver, 60).unwrap().unwrap();
+        st.begin_step(&run.id, &driver, 1, StepKind::Script)
+            .unwrap();
+        let parked = st
+            .park_run(
+                &run.id,
+                &driver,
+                JournalPlace { step_n: 1, seq: 0 },
+                &json!({"surface": "shell"}),
+                None,
+                st.now_utc(),
+            )
+            .unwrap();
+        assert!(matches!(parked, Park::Parked(_)), "{parked:?}");
+        for refused in [
+            st.delete_model_rates(DAEMON, "claude-opus-5-5").map(|_| ()),
+            st.delete_cost_line(DAEMON, &token_line("claude-opus-5-5", Unit::MtokOutput)),
+            st.delete_cost_line(DAEMON, LINE_SCRIPT_COMPUTE),
+        ] {
+            assert!(
+                matches!(
+                    refused,
+                    Err(CoreError::Invalid {
+                        code: "cost_line_in_use",
+                        ..
+                    })
+                ),
+                "{refused:?}"
+            );
+        }
+        assert!(st.cost_line("claude-opus-5-5.input").unwrap().is_some());
+        // Once it has ended they may go.
+        st.cancel_run(DAEMON, &run.id).unwrap();
+        st.claim_run(&run.id, &driver, 60).unwrap().unwrap();
+        st.begin_step(&run.id, &driver, 1, StepKind::Stopped)
+            .unwrap();
+        st.commit_bot_step(DAEMON, &run.id, &driver, 1, Default::default())
+            .unwrap();
+        st.delete_model_rates(DAEMON, "claude-opus-5-5").unwrap();
     }
 
     #[test]

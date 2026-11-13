@@ -47,6 +47,10 @@ impl ManualClock {
     pub fn advance(&self, secs: i64) {
         *self.0.lock().unwrap() += Duration::seconds(secs);
     }
+    /// Moves the clock on by `ms` milliseconds.
+    pub fn advance_millis(&self, ms: i64) {
+        *self.0.lock().unwrap() += Duration::milliseconds(ms);
+    }
 }
 
 impl Clock for ManualClock {

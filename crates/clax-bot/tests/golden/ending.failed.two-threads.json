@@ -1,0 +1,66 @@
+{
+  "last_step": {
+    "kind": "failed",
+    "payload": {
+      "notice": "I stopped: I could not save my work. I had not run any scripts yet.",
+      "reason": "internal_error"
+    }
+  },
+  "notices_in_the_journal": [
+    {
+      "ok": true,
+      "op": "reply",
+      "seq": 1000000,
+      "step": 1
+    },
+    {
+      "ok": true,
+      "op": "reply",
+      "seq": 1000001,
+      "step": 1
+    }
+  ],
+  "reason": "internal_error",
+  "replies": [
+    {
+      "text": "I stopped: I could not save my work. I had not run any scripts yet.",
+      "thread": "<thread-1>"
+    },
+    {
+      "text": "I stopped: I could not save my work. I had not run any scripts yet.",
+      "thread": "<thread-2>"
+    }
+  ],
+  "roster": {
+    "shown_working_at_no_step": 0,
+    "shown_working_before": [
+      {
+        "kind": "failed",
+        "shown": true,
+        "step": 1
+      }
+    ],
+    "stopped_showing": [
+      {
+        "calls_after_it": 0,
+        "run_status": "failed"
+      }
+    ]
+  },
+  "status": "failed",
+  "steps": [
+    "failed"
+  ],
+  "writes_in_order": [
+    {
+      "key": "<run>:1:1000000",
+      "op": "threads.reply",
+      "thread": "<thread-1>"
+    },
+    {
+      "key": "<run>:1:1000001",
+      "op": "threads.reply",
+      "thread": "<thread-2>"
+    }
+  ]
+}

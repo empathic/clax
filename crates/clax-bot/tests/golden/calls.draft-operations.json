@@ -1,0 +1,503 @@
+[
+  {
+    "calls": [
+      {
+        "code": null,
+        "ms": "<measured>",
+        "ok": true,
+        "op": "files.list",
+        "target": null
+      },
+      {
+        "code": null,
+        "ms": "<measured>",
+        "ok": true,
+        "op": "files.read",
+        "target": "index.html"
+      },
+      {
+        "code": "invalid_args",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "files.read",
+        "target": null
+      },
+      {
+        "code": "invalid_args",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "files.read",
+        "target": null
+      },
+      {
+        "code": "invalid_args",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "files.read",
+        "target": null
+      },
+      {
+        "code": "not_found",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "files.read",
+        "target": "nope.html"
+      },
+      {
+        "code": null,
+        "ms": "<measured>",
+        "ok": true,
+        "op": "files.write",
+        "target": "extra.css"
+      },
+      {
+        "code": "invalid_args",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "files.write",
+        "target": null
+      },
+      {
+        "code": null,
+        "ms": "<measured>",
+        "ok": true,
+        "op": "files.replace",
+        "target": "index.html"
+      },
+      {
+        "code": "no_match",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "files.replace",
+        "target": "index.html"
+      },
+      {
+        "code": "no_match",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "files.replace",
+        "target": "index.html"
+      },
+      {
+        "code": "no_match",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "files.replace",
+        "target": "index.html"
+      },
+      {
+        "code": "not_found",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "files.replace",
+        "target": "nope.html"
+      },
+      {
+        "code": null,
+        "ms": "<measured>",
+        "ok": true,
+        "op": "files.delete",
+        "target": "extra.css"
+      },
+      {
+        "code": "not_found",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "files.delete",
+        "target": "nope.css"
+      },
+      {
+        "code": "invalid_args",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "draft.publish",
+        "target": null
+      },
+      {
+        "code": "invalid_args",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "draft.publish",
+        "target": null
+      },
+      {
+        "code": "invalid_args",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "draft.publish",
+        "target": null
+      },
+      {
+        "code": "invalid_args",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "draft.publish",
+        "target": null
+      },
+      {
+        "code": "invalid_args",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "draft.publish",
+        "target": null
+      },
+      {
+        "code": "forbidden",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "threads.read",
+        "target": "<thread-2>"
+      },
+      {
+        "code": "forbidden",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "threads.reply",
+        "target": "<thread-2>"
+      },
+      {
+        "code": "forbidden",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "artifacts.create",
+        "target": null
+      },
+      {
+        "code": null,
+        "ms": "<measured>",
+        "ok": true,
+        "op": "draft.check",
+        "target": "<artifact>"
+      },
+      {
+        "code": null,
+        "ms": "<measured>",
+        "ok": true,
+        "op": "files.write",
+        "target": "bad.html"
+      },
+      {
+        "code": null,
+        "ms": "<measured>",
+        "ok": true,
+        "op": "draft.check",
+        "target": "<artifact>"
+      },
+      {
+        "code": null,
+        "ms": "<measured>",
+        "ok": true,
+        "op": "files.delete",
+        "target": "bad.html"
+      },
+      {
+        "code": null,
+        "ms": "<measured>",
+        "ok": true,
+        "op": "draft.publish",
+        "target": "<artifact>"
+      },
+      {
+        "code": "already_published",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "draft.publish",
+        "target": "<artifact>"
+      }
+    ],
+    "journal": [
+      {
+        "attempt": 1,
+        "ok": true,
+        "op": "files.list",
+        "result": null,
+        "seq": 0,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": true,
+        "op": "files.read",
+        "result": null,
+        "seq": 1,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "files.read",
+        "result": {
+          "code": "invalid_args",
+          "message": "clax.files.read: argument 1 (path) is missing"
+        },
+        "seq": 2,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "files.read",
+        "result": {
+          "code": "invalid_args",
+          "message": "clax.files.read: argument 1 (path) must be a string"
+        },
+        "seq": 3,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "files.read",
+        "result": {
+          "code": "invalid_args",
+          "message": "clax.files.read: takes at most 1 argument, got 2"
+        },
+        "seq": 4,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "files.read",
+        "result": {
+          "code": "not_found",
+          "message": "the draft has no file \"nope.html\""
+        },
+        "seq": 5,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": true,
+        "op": "files.write",
+        "result": null,
+        "seq": 6,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "files.write",
+        "result": {
+          "code": "invalid_args",
+          "message": "clax.files.write: takes at most 2 arguments, got 3"
+        },
+        "seq": 7,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": true,
+        "op": "files.replace",
+        "result": null,
+        "seq": 8,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "files.replace",
+        "result": {
+          "code": "no_match",
+          "message": "old is empty"
+        },
+        "seq": 9,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "files.replace",
+        "result": {
+          "code": "no_match",
+          "message": "index.html does not contain the text to replace; read it again"
+        },
+        "seq": 10,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "files.replace",
+        "result": {
+          "code": "no_match",
+          "message": "the text to replace occurs 15 times in index.html; include more of it so it occurs once"
+        },
+        "seq": 11,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "files.replace",
+        "result": {
+          "code": "not_found",
+          "message": "the draft has no file \"nope.html\""
+        },
+        "seq": 12,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": true,
+        "op": "files.delete",
+        "result": null,
+        "seq": 13,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "files.delete",
+        "result": {
+          "code": "not_found",
+          "message": "the draft has no file \"nope.css\""
+        },
+        "seq": 14,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "draft.publish",
+        "result": {
+          "code": "invalid_args",
+          "message": "clax.draft.publish: argument 1 (opts) must be an object"
+        },
+        "seq": 15,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "draft.publish",
+        "result": {
+          "code": "invalid_args",
+          "message": "clax.draft.publish: argument 1 (opts) has no field \"nope\" (fields: note, addresses)"
+        },
+        "seq": 16,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "draft.publish",
+        "result": {
+          "code": "invalid_args",
+          "message": "clax.draft.publish: argument 1 (opts).note must be a string"
+        },
+        "seq": 17,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "draft.publish",
+        "result": {
+          "code": "invalid_args",
+          "message": "clax.draft.publish: argument 1 (opts).addresses must be an array"
+        },
+        "seq": 18,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "draft.publish",
+        "result": {
+          "code": "invalid_args",
+          "message": "clax.draft.publish: argument 1 (opts).addresses[1] must be a string"
+        },
+        "seq": 19,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "threads.read",
+        "result": {
+          "code": "forbidden",
+          "message": "thread <thread-2> is not part of this request"
+        },
+        "seq": 20,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "threads.reply",
+        "result": {
+          "code": "forbidden",
+          "message": "thread <thread-2> is not part of this request"
+        },
+        "seq": 21,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "artifacts.create",
+        "result": {
+          "code": "forbidden",
+          "message": "only a new artifact's brief may create artifacts"
+        },
+        "seq": 22,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": true,
+        "op": "draft.check",
+        "result": null,
+        "seq": 23,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": true,
+        "op": "files.write",
+        "result": null,
+        "seq": 24,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": true,
+        "op": "draft.check",
+        "result": null,
+        "seq": 25,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": true,
+        "op": "files.delete",
+        "result": null,
+        "seq": 26,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": true,
+        "op": "draft.publish",
+        "result": {
+          "version": 2
+        },
+        "seq": 27,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "draft.publish",
+        "result": {
+          "code": "already_published",
+          "message": "this script already published the draft; publish again from a later script"
+        },
+        "seq": 28,
+        "step": 2
+      }
+    ],
+    "step": 2
+  }
+]

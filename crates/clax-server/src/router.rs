@@ -13,7 +13,7 @@ use crate::routes::{
     snapshot, stream, surface, tags, threads, token, toolpath, viewers, watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use crate::routes::{events, mcp, net};
+use crate::routes::{bot_surfaces, events, mcp, net};
 use crate::shell;
 use crate::shell::get_page;
 use axum::{
@@ -900,6 +900,37 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     // The tool set's JSON-RPC adapter: `/mcp` on a Durable Object, beside
     // rmcp's `/mcp` in the daemon.
     let r = r.merge(mcp_http::router(&state));
+    // The ClaxBot surfaces host protocol (`clax_http::bot_surfaces`): a
+    // host on this machine registers a surface with the daemon's token,
+    // starts runs of its kinds and long-polls for their calls. The native
+    // daemon's alone, and not a hosted one's: a Durable Object holds no
+    // request open, and a hosted daemon has no token a host holds. Each
+    // body is bounded by the hub's limit, and a `serve` by the longest it
+    // is held on top of the deadline every request has.
+    #[cfg(not(target_arch = "wasm32"))]
+    let r = if state.hosted.is_none() {
+        let limits = state.bot_surfaces.limits();
+        let body = DefaultBodyLimit::max(limits.request_bytes);
+        let host = Router::new()
+            .route("/api/bot/surfaces", get(bot_surfaces::list))
+            .route(
+                "/api/bot/surfaces/{name}",
+                put(bot_surfaces::register.layer(body)),
+            )
+            .route(
+                "/api/bot/surfaces/{name}/runs",
+                post(bot_surfaces::start.layer(body)),
+            );
+        let held = Router::new().route(
+            "/api/bot/surfaces/{name}/serve",
+            post(bot_surfaces::serve.layer(body)),
+        );
+        let held_for = state.request_timeout + Duration::from_millis(limits.serve_wait_ms);
+        r.merge(with_timeout(host, state.request_timeout))
+            .merge(with_timeout(held, held_for))
+    } else {
+        r
+    };
     // A ClaxBot run's events, for as long as the run and its reader last.
     let r = r.route("/api/bot/runs/{id}/events", get(bot::events));
     // A hosted server sends ClaxBot's instance key only to a public https

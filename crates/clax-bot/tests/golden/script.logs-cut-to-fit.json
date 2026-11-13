@@ -1,0 +1,19 @@
+{
+  "content": {
+    "calls": [],
+    "logs": [
+      "<4002 bytes, starting \"00yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\">",
+      "<4002 bytes, starting \"01yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\">",
+      "<4002 bytes, starting \"02yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\">",
+      "<4002 bytes, starting \"03yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\">",
+      "<4002 bytes, starting \"04yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\">",
+      "<4002 bytes, starting \"05yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\">",
+      "<4002 bytes, starting \"06yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\">",
+      "<4002 bytes, starting \"07yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\">",
+      "[logs truncated]"
+    ],
+    "value": "<61440 bytes, starting \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\">"
+  },
+  "content_bytes": 93531,
+  "is_error": null
+}

@@ -474,14 +474,14 @@ pub async fn usage(
                 let Some((run, steps)) = st.run_with_steps(rid)? else {
                     continue;
                 };
-                let title = st
-                    .get_artifact(&ArtifactId::parse(&run.artifact_id)?)?
-                    .filter(|_| {
-                        scope
-                            .as_ref()
-                            .is_none_or(|m| m.lists(st, &run.artifact_id))
-                    })
-                    .map(|a| a.title);
+                // A run of a host's kind has no artifact, and so no title.
+                let title = match run.artifact() {
+                    Some(aid) => st
+                        .get_artifact(&ArtifactId::parse(aid)?)?
+                        .filter(|_| scope.as_ref().is_none_or(|m| m.lists(st, aid)))
+                        .map(|a| a.title),
+                    None => None,
+                };
                 let tokens: i64 = u
                     .lines
                     .iter()
@@ -493,7 +493,7 @@ pub async fn usage(
                     .get(clax_store::credits::LINE_SCRIPT_COMPUTE)
                     .map_or(0, |t| t.qty);
                 runs.push(json!({
-                    "id": run.id, "artifact_id": run.artifact_id, "artifact_title": title,
+                    "id": run.id, "artifact_id": run.artifact(), "artifact_title": title,
                     "started_at": run.created_at, "status": run.status.as_str(),
                     "scripts": steps.iter().filter(|s| s.kind.as_str() == "script").count(),
                     "cpu_gb_s": compute as f64 / Unit::CpuGbS.base() as f64,
@@ -620,7 +620,9 @@ pub fn reads_artifact(
 }
 
 /// What `caller` may do with `run`, or 404 when they may not see it (a
-/// run is not known to exist to someone who may not). On a hosted daemon
+/// run is not known to exist to someone who may not). A run with no
+/// artifact (one of a host's kind, [`Run::artifact`]) is its person's and
+/// an admin's, and no one else's. On a hosted daemon
 /// an admin is [`RunAccess::Admin`] only at an artifact they made, else
 /// [`RunAccess::AdminReader`] where they read it ([`reads_artifact`]),
 /// else [`RunAccess::Overseer`].
@@ -637,6 +639,15 @@ pub fn run_access(
     if person_of(caller).as_deref() == Some(run.person.as_str()) {
         return Ok(RunAccess::Acting);
     }
+    let Some(aid) = run.artifact() else {
+        // A run with no artifact has no readers: its person, and an admin
+        // (who oversees it where admins act within their own reach).
+        return match role_of(st, caller)?.is_admin() {
+            true if s_hosted => Ok(RunAccess::Overseer),
+            true => Ok(RunAccess::Admin),
+            false => Err(CoreError::NotFound),
+        };
+    };
     if role_of(st, caller)?.is_admin() {
         if !s_hosted {
             return Ok(RunAccess::Admin);
@@ -645,15 +656,15 @@ pub fn run_access(
             Caller::Person { viewer } => Some(viewer.public_id.as_str()),
             _ => None,
         };
-        if st.artifact_created_by(&run.artifact_id, maker)? {
+        if st.artifact_created_by(aid, maker)? {
             return Ok(RunAccess::Admin);
         }
-        if reads_artifact(st, s_hosted, caller, &run.artifact_id, live)? {
+        if reads_artifact(st, s_hosted, caller, aid, live)? {
             return Ok(RunAccess::AdminReader);
         }
         return Ok(RunAccess::Overseer);
     }
-    if reads_artifact(st, s_hosted, caller, &run.artifact_id, live)? {
+    if reads_artifact(st, s_hosted, caller, aid, live)? {
         return Ok(RunAccess::Reader);
     }
     Err(CoreError::NotFound)
@@ -677,7 +688,12 @@ pub fn draft_url(run: &str) -> String {
     format!("/api/bot/runs/{run}/draft/")
 }
 
-/// Run `run` as the routes show it, without its steps.
+/// Run `run` as the routes show it, without its steps. A parked run, and
+/// no other, has `waiting_on: {surface, op, since, deadline}`: the call
+/// it waits on, since when, and when the call is settled if nothing
+/// answers it (`null` for no deadline). `artifact_id` is
+/// the run's artifact, and `null` for a run that has none (one of a
+/// host's kind, whose `request` is `other`).
 ///
 /// # Errors
 /// The store's.
@@ -695,8 +711,8 @@ pub fn run_view(st: &Store, run: &Run) -> clax_core::Result<Value> {
         && !st.draft_files(&run.id)?.is_empty())
     .then(|| json!({"url": draft_url(&run.id)}));
     let mut names = Names::new(st);
-    Ok(json!({
-        "id": run.id, "artifact_id": run.artifact_id, "thread_ids": run.thread_ids,
+    let mut v = json!({
+        "id": run.id, "artifact_id": run.artifact(), "thread_ids": run.thread_ids,
         "request": run.request.as_str(), "status": run.status.as_str(), "reason": run.reason,
         "model": run.model, "key_source": run.key_source.as_str(),
         "acting_for": names.person(&run.person)?,
@@ -705,7 +721,18 @@ pub fn run_view(st: &Store, run: &Run) -> clax_core::Result<Value> {
         "tokens": {"input": input, "cached": cached, "output": output},
         "draft": draft,
         "last_event_id": last_event_id(st, run)?,
-    }))
+    });
+    // What a parked run waits on: a member no other run has.
+    if run.status == RunStatus::Parked
+        && let Some(parking) = st.run_parking(&run.id)?
+        && let Some(on) = parking.waiting_on
+    {
+        v["waiting_on"] = json!({
+            "surface": on["surface"], "op": on["op"],
+            "since": parking.parked_at, "deadline": on["deadline"],
+        });
+    }
+    Ok(v)
 }
 
 /// What of run view `v` ([`run_view`]) an overseer
@@ -721,6 +748,9 @@ pub fn for_overseer(v: &mut Value) {
         "last_event_id",
     ] {
         v[k] = Value::Null;
+    }
+    if let Some(members) = v.as_object_mut() {
+        members.remove("waiting_on");
     }
 }
 
@@ -799,7 +829,7 @@ pub async fn get(
             // On a hosted daemon the view names its run's artifact, so only
             // admins who reach it read it.
             if hosted {
-                rec.ids.artifact = Some(run.artifact_id.clone());
+                rec.ids.artifact = run.artifact().map(str::to_string);
             }
             record_view(st, &bot, &who, &caller, &run.id, rec)?;
             Ok(v)
@@ -846,6 +876,29 @@ pub fn run_active(id: &str) -> CoreError {
     CoreError::invalid("run_active", id.to_string())
 }
 
+/// What every run is held to before it is made, of whatever kind: that
+/// ClaxBot may start a run for `person` now ([`refusal`]); else the
+/// refusal's error (403 class), recorded as `bot.refused {person, reason,
+/// artifact}` under `ctx`, with `artifact` for a run on one. Answers the
+/// key the run will run on and the model it takes.
+///
+/// # Errors
+/// As above; the store's.
+pub fn admit_run(
+    st: &Store,
+    bot: &Bot,
+    ctx: &AuditCtx,
+    person: &str,
+    artifact: Option<&str>,
+) -> clax_core::Result<(KeySource, String)> {
+    if let Some(code) = refusal(st, bot, person)? {
+        st.record_refused(ctx, person, code, artifact)?;
+        return Err(refused_error(st, person, code)?);
+    }
+    let key_source = key_source(st, bot, person)?.unwrap_or(KeySource::Instance);
+    Ok((key_source, model_of(st)?))
+}
+
 /// Starts a run of `request` on artifact `aid` for `sender`, as `ctx`:
 /// 409 `run_active` (with its ID) while a run that has not ended names
 /// one of `thread_ids`, so one thread has one active run and a second send
@@ -870,11 +923,7 @@ pub fn start_run(
     if let Some(active) = st.active_run_on(&thread_ids)? {
         return Err(run_active(&active.id));
     }
-    if let Some(code) = refusal(st, bot, person)? {
-        st.record_refused(ctx, person, code, Some(aid.as_str()))?;
-        return Err(refused_error(st, person, code)?);
-    }
-    let key_source = key_source(st, bot, person)?.unwrap_or(KeySource::Instance);
+    let (key_source, model) = admit_run(st, bot, ctx, person, Some(aid.as_str()))?;
     st.create_run_exclusive(
         ctx,
         clax_store::bot_runs::NewRun {
@@ -882,7 +931,7 @@ pub fn start_run(
             person: person.to_string(),
             request,
             thread_ids,
-            model: model_of(st)?,
+            model,
             key_source,
             base_version: art.current_version,
             agent_grant: sender.agent_grant.clone(),
@@ -1301,7 +1350,11 @@ async fn serve_draft(
                     (c, ct)
                 }));
             }
-            let id = ArtifactId::parse(&run.artifact_id)?;
+            // A run with no artifact has no version under its draft.
+            let Some(aid) = run.artifact() else {
+                return Ok(None);
+            };
+            let id = ArtifactId::parse(aid)?;
             Ok(st
                 .read_file_async(&id, run.base_version, &file)
                 .await?
@@ -1638,7 +1691,7 @@ pub async fn events(
             }
             let mut rec = clax_http::bot::view(st, AuditKind::ViewRun).with("run", run.id.as_str());
             if hosted {
-                rec.ids.artifact = Some(run.artifact_id.clone());
+                rec.ids.artifact = run.artifact().map(str::to_string);
             }
             record_view(st, &bot, &who, &c, &run.id, rec)?;
             Ok((access, bot.events.subscribe(st, &run.id, after)?))

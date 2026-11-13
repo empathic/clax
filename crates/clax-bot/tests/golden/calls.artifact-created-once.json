@@ -1,0 +1,69 @@
+[
+  {
+    "calls": [
+      {
+        "code": null,
+        "ms": "<measured>",
+        "ok": true,
+        "op": "artifacts.create",
+        "target": null
+      },
+      {
+        "code": "forbidden",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "artifacts.create",
+        "target": null
+      }
+    ],
+    "journal": [
+      {
+        "attempt": 1,
+        "ok": true,
+        "op": "artifacts.create",
+        "result": {
+          "id": "<the created artifact>"
+        },
+        "seq": 0,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "artifacts.create",
+        "result": {
+          "code": "forbidden",
+          "message": "this run already created an artifact"
+        },
+        "seq": 1,
+        "step": 2
+      }
+    ],
+    "step": 2
+  },
+  {
+    "calls": [
+      {
+        "code": "forbidden",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "artifacts.create",
+        "target": null
+      }
+    ],
+    "journal": [
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "artifacts.create",
+        "result": {
+          "code": "forbidden",
+          "message": "this run already created an artifact"
+        },
+        "seq": 0,
+        "step": 4
+      }
+    ],
+    "step": 4
+  }
+]

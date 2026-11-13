@@ -1,0 +1,13 @@
+load("//bazel:cargo.bzl", "cargo_package")
+
+cargo_package(
+    # What the tests read (src/tests/mod.rs) beside their own files: the
+    # design's two example surface files of a host's, and, for the host
+    # protocol's messages (src/tests/wire), their contract fixture and the
+    # design, whose examples they read.
+    test_compile_data = [
+        "//docs:claxbot_surface_examples",
+        "//docs:claxbot_surfaces_contract",
+        "//docs:claxbot_surfaces_design",
+    ],
+)

@@ -1,0 +1,51 @@
+{
+  "last_step": {
+    "kind": "stopped",
+    "payload": {
+      "notice": "I stopped: ClaxBot is not turned on for you. I had not run any scripts yet.",
+      "reason": "no_flag"
+    }
+  },
+  "notices_in_the_journal": [
+    {
+      "ok": true,
+      "op": "reply",
+      "seq": 1000000,
+      "step": 1
+    }
+  ],
+  "reason": "no_flag",
+  "replies": [
+    {
+      "text": "I stopped: ClaxBot is not turned on for you. I had not run any scripts yet.",
+      "thread": "<thread-1>"
+    }
+  ],
+  "roster": {
+    "shown_working_at_no_step": 0,
+    "shown_working_before": [
+      {
+        "kind": "stopped",
+        "shown": false,
+        "step": 1
+      }
+    ],
+    "stopped_showing": [
+      {
+        "calls_after_it": 0,
+        "run_status": "stopped"
+      }
+    ]
+  },
+  "status": "stopped",
+  "steps": [
+    "stopped"
+  ],
+  "writes_in_order": [
+    {
+      "key": "<run>:1:1000000",
+      "op": "threads.reply",
+      "thread": "<thread-1>"
+    }
+  ]
+}

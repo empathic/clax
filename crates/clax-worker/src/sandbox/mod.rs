@@ -31,6 +31,15 @@
 //! (the aborted request's failure may reach the instance first: the run
 //! waits a moment for the last message before reading the failure).
 //!
+//! # Operations
+//!
+//! The job the driver takes names the script's operations: the script's
+//! own list ([`clax_bot_sandbox::Script::ops`], checked with
+//! [`clax_bot_sandbox::validate_ops`] before anything is loaded) or else
+//! the sandbox's, checked once when it was made. The instance checks every
+//! call and record against the same list. Each script has an isolate of
+//! its own, so nothing of one script's `clax` reaches the next.
+//!
 //! # Limits and metering
 //!
 //! - **Calls, logs, the result and arguments** are bounded as natively: in
@@ -61,6 +70,15 @@
 //! any later message from the isolate with a stop, which aborts it. A
 //! script busy without calling the host runs on until the platform's CPU
 //! limit ends it.
+//!
+//! # Parking
+//!
+//! A host call [`clax_bot_sandbox::Host::ask`] answers
+//! [`clax_bot_sandbox::HostReply::Waiting`] ends the run at once with
+//! [`ErrorKind::Parked`], the call recorded with
+//! [`clax_bot_sandbox::CODE_WAITING`]: the isolate's call is answered with
+//! the stop, as on a cancel, so its script is never told and nothing it
+//! queued runs (its driver reports the host gone and aborts the isolate).
 
 use std::collections::HashSet;
 
@@ -181,7 +199,8 @@ impl Watchdog {
 }
 
 /// The [`clax_bot_sandbox::Sandbox`] over the Worker Loader binding (see
-/// the module docs), whose `clax` has the operations it was built with.
+/// the module docs), whose `clax` has the operations it was built with,
+/// or a script's own ([`clax_bot_sandbox::Script::ops`]).
 /// Without the binding every run ends with [`ErrorKind::Unavailable`].
 // Read by the wasm32 run only.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -251,6 +270,16 @@ impl Sandbox for LoaderSandbox {
         if let Err(e) = limits.validate() {
             return ScriptOutcome::failed(ErrorKind::InvalidLimits, e);
         }
+        let ops = match script.ops_or(&self.ops) {
+            Ok(ops) => ops,
+            Err(e) => {
+                return ScriptOutcome {
+                    error: Some(e),
+                    wall_us: micros_since(started),
+                    ..ScriptOutcome::default()
+                };
+            }
+        };
         let Some(binding) = &self.loader else {
             return ScriptOutcome::failed(
                 ErrorKind::Unavailable,
@@ -267,11 +296,14 @@ impl Sandbox for LoaderSandbox {
         if cancel.is_cancelled() {
             return ScriptOutcome::failed(ErrorKind::Cancelled, "the run was cancelled");
         }
-        let state = RunState::new(&self.op_set, *limits);
+        let state = match &script.ops {
+            None => RunState::new(&self.op_set, *limits),
+            Some(_) => RunState::new(&ops.iter().cloned().collect(), *limits),
+        };
         loader::run(
             binding,
             script,
-            &self.ops,
+            ops,
             limits,
             state,
             host,
@@ -456,6 +488,8 @@ pub enum End {
     /// The isolate reported a record the driver cannot have made.
     Forged(String),
     Cancelled,
+    /// The host had no answer to a call yet ([`RunState::waiting`]).
+    Parked,
     Watchdog {
         busy_ms: u64,
     },
@@ -631,6 +665,18 @@ impl RunState {
         });
     }
 
+    /// Records a host call the host has no answer to yet: the run parks
+    /// on it ([`End::Parked`]).
+    pub fn waiting(&mut self, op: String, args_bytes: u64, us: u64) {
+        self.calls.push(CallRecord {
+            op,
+            ok: false,
+            code: Some(clax_bot_sandbox::CODE_WAITING.into()),
+            args_bytes,
+            us,
+        });
+    }
+
     /// The run's outcome for `end`, the isolate busy for `busy_us` of the
     /// run's `wall_us`.
     #[must_use]
@@ -660,6 +706,10 @@ impl RunState {
             End::Cancelled => Err(ScriptError::new(
                 ErrorKind::Cancelled,
                 "the run was cancelled",
+            )),
+            End::Parked => Err(ScriptError::new(
+                ErrorKind::Parked,
+                "the script waits on a host call that has no answer yet",
             )),
             End::Watchdog { busy_ms } => Err(ScriptError::new(
                 ErrorKind::CpuLimit,

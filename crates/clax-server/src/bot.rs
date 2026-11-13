@@ -1187,6 +1187,16 @@ pub fn driver_with_web(
         Arc::new(StoreClock(state.store.clone())),
     )
     .with_web(web);
+    // A run bound to a surface a host registered calls its host through
+    // the daemon's broker, which the host's routes serve
+    // (`clax_http::bot_surfaces`).
+    let mut deps = deps;
+    let broker: Arc<dyn clax_bot::broker::CallBroker> = state.bot_surfaces.broker().clone();
+    deps.providers
+        .set_resolver(Arc::new(clax_bot::outside::Registrations::new(
+            broker,
+            deps.policy.clone(),
+        )));
     let driver = Arc::new(clax_bot::Driver::new(
         clax_store::bot_runs::DriverId::mint(),
         Arc::new(deps),

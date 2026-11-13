@@ -5,8 +5,13 @@ load("//bazel:warm.bzl", "warm_binary")
 cargo_package(
     # The modules of tests/integration.rs in three test targets (bazel/cargo.bzl).
     split_tests = {"integration": {"groups": 3}},
-    # The launcher tests/cli.rs checks the release pins.
-    test_compile_data = ["//scripts:ensure-clax.sh"],
+    # The launcher tests/cli.rs checks the release pins, and the surface
+    # files tests/bot_surface.rs checks and converts.
+    test_compile_data = [
+        "//crates/clax-bot:src/clax.d.ts",
+        "//docs:claxbot_surface_examples",
+        "//scripts:ensure-clax.sh",
+    ],
     test_data = [
         "//:marketplaces",
         "//plugins:embedded",

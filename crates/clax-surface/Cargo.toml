@@ -1,0 +1,15 @@
+[package]
+name = "clax-surface"
+version.workspace = true
+edition.workspace = true
+license = "GPL-2.0-only OR AGPL-3.0-only"
+description = "ClaxBot surface definitions: the model, the readers of the .d.ts and manifest notations and their checks, the printers, and the check of a call's values against a definition"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+# `unbounded_depth`: a manifest's reader bounds how deep its JSON nests
+# itself, by the limits it reads under (src/manifest.rs, `Tree`).
+serde_json = { workspace = true, features = ["unbounded_depth"] }

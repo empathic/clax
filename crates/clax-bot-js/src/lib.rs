@@ -45,16 +45,29 @@
 //!   host and stops the script.
 //!
 //! A stop for CPU, calls or cancellation is QuickJS's uncatchable
-//! interrupt: no `catch` or `finally` in the script runs.
+//! interrupt: no `catch` or `finally` in the script runs. A park
+//! ([`HostReply::Waiting`]) stops nothing in the engine: the run returns
+//! while the engine waits on the call's reply, which never comes, and the
+//! engine thread ends once the run drops its side of the channel.
 //!
 //! Nothing but `clax` and `console` is added to a standard QuickJS
 //! context, and the prelude's lockdown removes code generation from
 //! strings: no `fetch`, timers, module loader or `eval`.
+//!
+//! # Operations
+//!
+//! A script's `clax` is built by the prelude in the run's own context,
+//! from the script's own list ([`Script::ops`], checked with
+//! [`validate_ops`] before anything runs) or else from the sandbox's,
+//! checked once when it was made. Nothing of a run outlives it, so the
+//! next script on the sandbox starts from a fresh runtime whatever its
+//! list. The sandbox's own list costs a run nothing more than it did
+//! before scripts could carry one: the same shared list and set of names.
 
 use clax_bot_sandbox::{
-    CODE_CANCELLED, CODE_INVALID_ARGS, CODE_SCRIPT_FINISHED, CallRecord, CancelToken, ErrorKind,
-    Host, HostError, Limits, LogBuffer, PRELUDE, Sandbox, Script, ScriptError, ScriptOutcome,
-    Thrown, check_body, validate_ops, wrap,
+    CODE_CANCELLED, CODE_INVALID_ARGS, CODE_SCRIPT_FINISHED, CODE_WAITING, CallRecord, CancelToken,
+    ErrorKind, Host, HostError, HostReply, Limits, LogBuffer, PRELUDE, Sandbox, Script,
+    ScriptError, ScriptOutcome, Thrown, check_body, validate_ops, wrap,
 };
 use futures_channel::mpsc;
 use futures_util::StreamExt;
@@ -152,7 +165,8 @@ struct Pool {
 }
 
 /// The QuickJS [`Sandbox`], whose `clax` has the operations it was built
-/// with. Clones share their abandoned-thread count and cap.
+/// with, or a script's own ([`Script::ops`]). Clones share their
+/// abandoned-thread count and cap.
 #[derive(Clone)]
 pub struct QuickJs {
     ops: Arc<[String]>,
@@ -362,6 +376,20 @@ impl Sandbox for QuickJs {
         if let Err(e) = limits.validate() {
             return ScriptOutcome::failed(ErrorKind::InvalidLimits, e);
         }
+        let (ops, op_set) = match script.ops_or(&self.ops) {
+            Err(e) => {
+                return ScriptOutcome {
+                    error: Some(e),
+                    wall_us: micros(started.elapsed()),
+                    ..ScriptOutcome::default()
+                };
+            }
+            Ok(_) if script.ops.is_none() => (self.ops.clone(), self.op_set.clone()),
+            Ok(list) => (
+                Arc::<[String]>::from(list),
+                Arc::new(list.iter().cloned().collect::<HashSet<String>>()),
+            ),
+        };
         if let Err(e) = QuickJs::self_test() {
             return ScriptOutcome::failed(ErrorKind::Unavailable, e);
         }
@@ -399,8 +427,8 @@ impl Sandbox for QuickJs {
         let engine = Engine {
             script: script.clone(),
             limits: *limits,
-            ops: self.ops.clone(),
-            op_set: self.op_set.clone(),
+            ops,
+            op_set,
             clock: self.clock.clone(),
             run: run.clone(),
         };
@@ -485,7 +513,30 @@ impl Sandbox for QuickJs {
                     let result = tokio::select! {
                         biased;
                         () = cancel.cancelled() => None,
-                        r = host.call(&op, args) => Some(r),
+                        r = host.ask(&op, args) => Some(r),
+                    };
+                    // No answer yet: the run ends at the call. The engine
+                    // thread, blocked on its reply, ends when the reply
+                    // channel drops with this future.
+                    let result = match result {
+                        Some(HostReply::Waiting) => {
+                            calls.push(CallRecord {
+                                op,
+                                ok: false,
+                                code: Some(CODE_WAITING.into()),
+                                args_bytes,
+                                us: micros(t.elapsed()),
+                            });
+                            guard.armed = false;
+                            return stopped(
+                                ErrorKind::Parked,
+                                "the script waits on a host call that has no answer yet".into(),
+                                busy,
+                                calls,
+                            );
+                        }
+                        Some(HostReply::Answer(r)) => Some(r),
+                        None => None,
                     };
                     let Some(result) = result else {
                         calls.push(CallRecord {

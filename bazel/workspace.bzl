@@ -12,7 +12,8 @@ CRATES = {
             "//crates/clax-core:clax_core",
             "//crates/clax-rt:clax_rt",
             "//crates/clax-sample:clax_sample",
-            "//crates/clax-store:clax_store"
+            "//crates/clax-store:clax_store",
+            "//crates/clax-surface:clax_surface"
         ],
         "dev_deps": [
             "//crates/clax-bot-js:clax_bot_js"
@@ -43,7 +44,8 @@ CRATES = {
             "//crates/clax-core:clax_core",
             "//crates/clax-rt:clax_rt",
             "//crates/clax-sample:clax_sample",
-            "//crates/clax-store:clax_store"
+            "//crates/clax-store:clax_store",
+            "//crates/clax-surface:clax_surface"
         ],
         "wasm_proc_macro_deps": [
             "@crates_wasm//:async-trait-0.1.92"
@@ -100,6 +102,7 @@ CRATES = {
         },
         "default_features": [],
         "deps": [
+            "//crates/clax-bot:clax_bot",
             "//crates/clax-commands:clax_commands",
             "//crates/clax-core:clax_core",
             "//crates/clax-embedded:clax_embedded",
@@ -132,7 +135,8 @@ CRATES = {
             "//crates/clax-core:clax_core",
             "//crates/clax-hooks:clax_hooks",
             "//crates/clax-mcp:clax_mcp",
-            "//crates/clax-store:clax_store"
+            "//crates/clax-store:clax_store",
+            "//crates/clax-surface:clax_surface"
         ],
         "dev_deps": [
             "//crates/clax-fake-exe:clax_fake_exe"
@@ -672,10 +676,33 @@ CRATES = {
             "@crates_wasm//:async-trait-0.1.92"
         ]
     },
-    "crates/clax-testkit": {
+    "crates/clax-surface": {
         "bins": {},
         "default_features": [],
+        "deps": [],
+        "dev_deps": [],
+        "edition": "2024",
+        "features": [],
+        "has_build_script": False,
+        "lib": "clax_surface",
+        "lib_root": "src/lib.rs",
+        "name": "clax-surface",
+        "tests": {},
+        "version": "0.7.1",
+        "wasm_deps": [
+            "@crates_wasm//:serde-1.0.229",
+            "@crates_wasm//:serde_json-1.0.151"
+        ],
+        "wasm_path_deps": [],
+        "wasm_proc_macro_deps": []
+    },
+    "crates/clax-testkit": {
+        "bins": {
+            "fake_host": "src/bin/fake_host.rs"
+        },
+        "default_features": [],
         "deps": [
+            "//crates/clax-bot:clax_bot",
             "//crates/clax-core:clax_core",
             "//crates/clax-fake-exe:clax_fake_exe",
             "//crates/clax-http:clax_http",
@@ -683,7 +710,8 @@ CRATES = {
             "//crates/clax-realtime:clax_realtime",
             "//crates/clax-sample:clax_sample",
             "//crates/clax-server:clax_server",
-            "//crates/clax-store:clax_store"
+            "//crates/clax-store:clax_store",
+            "//crates/clax-surface:clax_surface"
         ],
         "dev_deps": [],
         "edition": "2024",

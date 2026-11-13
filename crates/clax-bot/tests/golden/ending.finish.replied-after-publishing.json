@@ -1,0 +1,85 @@
+{
+  "last_step": {
+    "kind": "finish",
+    "payload": {
+      "posted": false,
+      "sources": [],
+      "summary": "Made the heading blue and published version 2."
+    }
+  },
+  "notices_in_the_journal": [],
+  "reason": null,
+  "replies": [
+    {
+      "text": "The heading is blue now.",
+      "thread": "<thread-1>"
+    }
+  ],
+  "roster": {
+    "shown_working_at_no_step": 0,
+    "shown_working_before": [
+      {
+        "kind": "turn",
+        "shown": true,
+        "step": 1
+      },
+      {
+        "kind": "script",
+        "shown": true,
+        "step": 2
+      },
+      {
+        "kind": "turn",
+        "shown": true,
+        "step": 3
+      },
+      {
+        "kind": "script",
+        "shown": true,
+        "step": 4
+      },
+      {
+        "kind": "turn",
+        "shown": true,
+        "step": 5
+      },
+      {
+        "kind": "turn",
+        "shown": true,
+        "step": 6
+      },
+      {
+        "kind": "finish",
+        "shown": false,
+        "step": 7
+      }
+    ],
+    "stopped_showing": [
+      {
+        "calls_after_it": 0,
+        "run_status": "finished"
+      }
+    ]
+  },
+  "status": "finished",
+  "steps": [
+    "turn",
+    "script",
+    "turn",
+    "script",
+    "turn",
+    "turn",
+    "finish"
+  ],
+  "writes_in_order": [
+    {
+      "key": "<run>:2:3",
+      "op": "draft.publish"
+    },
+    {
+      "key": "<run>:2:4",
+      "op": "threads.reply",
+      "thread": "<thread-1>"
+    }
+  ]
+}

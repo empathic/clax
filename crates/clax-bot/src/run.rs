@@ -14,8 +14,9 @@
 //!   (`payload.next`).
 //! - `script`: the turn's `run_script` code in the sandbox (see
 //!   [`crate::script`]).
-//! - `finish`, `give_up`, `stopped`, `failed`: terminal; each but a
-//!   cancelled stop tells the run's threads why ([`OpCtx`] notices).
+//! - `finish`, `give_up`, `stopped`, `failed`: terminal
+//!   ([`crate::ending`]): what a run's end does beside ending it is each
+//!   of its surfaces' own ([`SurfaceProvider::ending`] and `ended`).
 //!
 //! # What a model call costs
 //!
@@ -33,13 +34,23 @@
 //! script ([`Wait::Stalled`]), when the model stayed unreachable
 //! ([`Wait::Retry`]) or when too little of the tick's budget is left for a
 //! turn ([`Wait::Budget`]). A step whose commit fails
-//! `max_commit_failures` times ends the run `failed`.
+//! `max_commit_failures` times ends the run `failed`; so does one whose
+//! [`RunPolicy`] fails that often before it (see [`crate::policy`], "A
+//! policy that fails").
 
+use crate::ending::Ending;
 use crate::events::{Event, EventSink, step_summary};
-use crate::host::{BotHost, NOTICE_SEQ, OpCtx, run_plan};
+use crate::finish::{self, Finish};
+use crate::history::{Control, committed_and_open, push, transcript, usage_of};
+use crate::host::{BotHost, NOTICE_SEQ};
+use crate::policy::{
+    self, DefaultPolicy, HistoryAsk, HistoryFor, OverflowPath, Overflows, RunLimits, RunPolicy,
+    Shown,
+};
 use crate::prompt;
+use crate::registry::{Providers, RunSurfaces};
+use crate::surface::{End, SurfaceProvider};
 use crate::web::WebSource;
-use crate::web::page::{sources as web_sources, sources_markdown};
 use clax_bot_sandbox::{CancelToken, Limits, MaybeSendSync, Sandbox};
 use clax_core::audit::{Actor, AuditCtx, AuditRecord, Via};
 use clax_core::gitctx::GitField;
@@ -51,6 +62,7 @@ use clax_sample::messages::{
     Tool, ToolCall, ToolChoice, Usage,
 };
 use clax_store::Store;
+use clax_store::bot_pending::EndFor;
 use clax_store::bot_runs::{
     Committed, DriverId, Run, RunStatus, Step, StepCommit, StepKind, call_record, turn_record,
 };
@@ -248,8 +260,11 @@ pub struct Deps {
     pub store: Arc<Store>,
     pub client: MessagesClient,
     pub sandbox: Arc<dyn Sandbox>,
-    pub host: Arc<dyn BotHost>,
     pub settings: Arc<dyn SettingsSource>,
+    /// What the environment decides about each run: its limits and what
+    /// the model is sent of its history. [`Deps::new`] starts with the
+    /// defaults, which are the run loop on `settings` alone.
+    pub policy: Arc<dyn RunPolicy>,
     pub keys: Keys,
     /// The clock of credits weeks, run time and the driver's waits (the
     /// store's own, in production).
@@ -260,10 +275,11 @@ pub struct Deps {
     pub retry_later: Duration,
     /// For tests: where to stop as if crashed.
     pub crash: Option<CrashHook>,
-    /// Where `clax.web.*` calls are sent (spec
-    /// 2026-11-02-claxbot-web-tools §4.3); `None` on a host without one,
-    /// where every web call is refused `web_disabled`.
-    pub web: Option<Arc<dyn WebSource>>,
+    /// The provider of each surface a run may be bound to
+    /// ([`Providers`]). [`Deps::new`] registers Clax's own over the
+    /// host it is given, which the deps do not keep; a binding of a surface with none registered is served by
+    /// [`crate::registry::Unavailable`].
+    pub providers: Providers,
 }
 
 impl std::fmt::Debug for Deps {
@@ -271,14 +287,17 @@ impl std::fmt::Debug for Deps {
         f.debug_struct("Deps")
             .field("keys", &self.keys)
             .field("retry", &self.retry)
-            .field("web", &self.web.is_some())
+            .field("providers", &self.providers)
             .finish_non_exhaustive()
     }
 }
 
 impl Deps {
-    /// Deps with the default retry policy, a 30 s wait after the model
-    /// stays unreachable, no crash hook and no web source.
+    /// Deps with the default run policy ([`DefaultPolicy`]), the default
+    /// retry policy, a 30 s wait after the model stays unreachable, no
+    /// crash hook and no web source, and with Clax's own surface
+    /// provided over `host` ([`Deps::providers`]): the provider holds
+    /// the host, and the deps do not.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         store: Arc<Store>,
@@ -289,25 +308,63 @@ impl Deps {
         keys: Keys,
         clock: Arc<dyn Clock>,
     ) -> Deps {
+        let mut providers = Providers::new();
+        providers.register_clax(store.clone(), host, None, clock.clone());
         Deps {
             store,
             client,
             sandbox,
-            host,
             settings,
+            policy: Arc::new(DefaultPolicy),
             keys,
             clock,
             retry: RetryPolicy::default(),
             retry_later: Duration::from_secs(30),
             crash: None,
-            web: None,
+            providers,
         }
     }
 
-    /// These deps, sending web calls to `web`.
+    /// These deps, asking `policy` about each run.
+    #[must_use]
+    pub fn with_policy(mut self, policy: Arc<dyn RunPolicy>) -> Deps {
+        self.policy = policy;
+        self
+    }
+
+    /// These deps, sending the web calls of Clax's own surface to `web`
+    /// (the registry's `set_clax_web`).
     #[must_use]
     pub fn with_web(mut self, web: Arc<dyn WebSource>) -> Deps {
-        self.web = Some(web);
+        self.providers.set_clax_web(Some(web));
+        self
+    }
+
+    /// These deps, with no web source: Clax's own surface refuses every
+    /// web call `web_disabled` (the registry's `set_clax_web`).
+    #[must_use]
+    pub fn without_web(mut self) -> Deps {
+        self.providers.set_clax_web(None);
+        self
+    }
+
+    /// These deps, with `provider` registered for the bindings of
+    /// `surface` ([`Providers::register`]).
+    #[must_use]
+    pub fn with_provider(
+        mut self,
+        surface: impl Into<String>,
+        provider: Arc<dyn SurfaceProvider>,
+    ) -> Deps {
+        self.providers.register(surface, provider);
+        self
+    }
+
+    /// These deps, with `providers` and no other: Clax's own surface is
+    /// provided only when `providers` holds it.
+    #[must_use]
+    pub fn with_providers(mut self, providers: Providers) -> Deps {
+        self.providers = providers;
         self
     }
 
@@ -473,6 +530,11 @@ pub enum Wait {
     Budget,
     /// A [`CrashPoint`] hook stopped the tick.
     Crashed,
+    /// The run is parked on a call that waits: no driver holds it. It
+    /// is ticked again when the call's answer is journaled (whoever
+    /// journals it wakes the driver, [`crate::Driver::wake`]), at the
+    /// call's deadline, or on a cancel.
+    Parked,
 }
 
 /// What the driver does next with the run.
@@ -531,127 +593,6 @@ pub(crate) fn fenced(e: &CoreError) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// History
-// ---------------------------------------------------------------------------
-
-/// What the committed steps add up to.
-#[derive(Debug, Default)]
-pub(crate) struct History {
-    pub system: Option<String>,
-    pub messages: Vec<Message>,
-    /// The next step the last committed step asked for.
-    pub next: Value,
-    /// The last turn's next step was the nudge.
-    pub nudged: bool,
-    /// The threads replied on since a script last changed the draft or
-    /// published (in that script or after it): a reply before the work,
-    /// such as the plan, leaves the `finish` summary to be posted.
-    pub replied: BTreeSet<String>,
-    /// The version the draft is based on, when a script moved it (a
-    /// publish, a rebase).
-    pub base: Option<u32>,
-    pub published: Option<u32>,
-    pub created: bool,
-    pub changed: BTreeSet<String>,
-    pub scripts: u32,
-    pub committed: usize,
-    /// The last turn's usage.
-    pub last_usage: Option<Usage>,
-}
-
-fn blocks(v: &Value) -> Vec<Block> {
-    v.as_array()
-        .map(|a| a.iter().cloned().map(Block::from_json).collect())
-        .unwrap_or_default()
-}
-
-pub(crate) fn push(messages: &mut Vec<Message>, role: Role, content: Vec<Block>) {
-    if content.is_empty() {
-        return;
-    }
-    match messages.last_mut() {
-        Some(m) if m.role == role => m.content.extend(content),
-        _ => messages.push(Message { role, content }),
-    }
-}
-
-fn usage_of(v: &Value) -> Usage {
-    let n = |k: &str| v[k].as_u64().unwrap_or(0);
-    Usage {
-        input_tokens: n("input_tokens"),
-        cache_creation_input_tokens: n("cache_creation_input_tokens"),
-        cache_read_input_tokens: n("cache_read_input_tokens"),
-        output_tokens: n("output_tokens"),
-        billed_micro_usd: v["billed_micro_usd"].as_u64(),
-    }
-}
-
-impl History {
-    fn of(steps: &[Step]) -> History {
-        let mut h = History {
-            next: json!({"kind": "turn"}),
-            ..History::default()
-        };
-        for s in steps.iter().filter(|s| s.committed_at.is_some()) {
-            h.committed += 1;
-            let p = s.payload.clone().unwrap_or(Value::Null);
-            if let Some(b) = p["base"].as_u64() {
-                h.base = u32::try_from(b).ok();
-            }
-            if let Some(v) = p["published"]["version"].as_u64() {
-                h.published = u32::try_from(v).ok();
-            }
-            match s.kind {
-                StepKind::Turn => {
-                    if let Some(sys) = p["system"].as_str() {
-                        h.system = Some(sys.to_string());
-                    }
-                    push(&mut h.messages, Role::User, blocks(&p["user"]));
-                    push(&mut h.messages, Role::Assistant, blocks(&p["assistant"]));
-                    let next = p["next"].clone();
-                    if next["kind"] == "turn" {
-                        push(&mut h.messages, Role::User, blocks(&next["user"]));
-                    }
-                    h.nudged = next["nudge"].as_bool().unwrap_or(false);
-                    h.last_usage = Some(usage_of(&p["usage"]));
-                    h.next = next;
-                }
-                StepKind::Script => {
-                    h.scripts += 1;
-                    push(
-                        &mut h.messages,
-                        Role::User,
-                        vec![Block::from_json(p["result"].clone())],
-                    );
-                    // A script that changed the draft or published starts
-                    // the replies over: one before it (the plan) does not
-                    // say what was done.
-                    let wrote = p["changed"].as_array().is_some_and(|c| !c.is_empty())
-                        || !p["published"].is_null();
-                    if wrote {
-                        h.replied.clear();
-                    }
-                    for t in p["replied"].as_array().into_iter().flatten() {
-                        if let Some(t) = t.as_str() {
-                            h.replied.insert(t.to_string());
-                        }
-                    }
-                    for c in p["changed"].as_array().into_iter().flatten() {
-                        if let Some(c) = c.as_str() {
-                            h.changed.insert(c.to_string());
-                        }
-                    }
-                    h.created |= p["created"].as_bool().unwrap_or(false);
-                    h.next = json!({"kind": "turn"});
-                }
-                _ => h.next = json!({"kind": "end"}),
-            }
-        }
-        h
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Turns
 // ---------------------------------------------------------------------------
 
@@ -673,7 +614,13 @@ fn stop_reason_str(r: Option<&StopReason>) -> String {
 /// (eager), so a script shows in the run panel while it is written; input
 /// that does not parse comes back as [`ToolCall::Invalid`] and is answered
 /// with an error result.
-fn tools() -> Vec<Tool> {
+///
+/// `max_result_bytes` is the most the JSON of a script's returned value
+/// may take ([`RunLimits::script`]), which `run_script`'s description
+/// tells the model ([`policy::bytes_text`]). `finish` takes the run's
+/// kind's result ([`Finish::tool`]).
+fn tools(max_result_bytes: u64, finish: &Finish<'_>) -> Vec<Tool> {
+    let (finish_description, finish_schema) = finish.tool();
     let tool = |name: &str, description: &str, schema: Value| Tool {
         name: name.into(),
         description: description.into(),
@@ -684,20 +631,18 @@ fn tools() -> Vec<Tool> {
     vec![
         tool(
             "run_script",
-            "Runs JavaScript against the clax API. `code` is the body of an async function; \
-             what it returns (JSON, at most 64 KiB) comes back with its console.log lines, \
-             the calls it made and any error.",
+            &format!(
+                "Runs JavaScript against the clax API. `code` is the body of an async function; \
+                 what it returns (JSON, at most {}) comes back with its console.log lines, \
+                 the calls it made and any error.",
+                policy::bytes_text(max_result_bytes)
+            ),
             json!({"type": "object", "properties": {
                 "title": {"type": "string", "description": "What the script does, in a few words."},
                 "code": {"type": "string", "description": "The body of an async function."}},
                 "required": ["title", "code"], "additionalProperties": false}),
         ),
-        tool(
-            "finish",
-            "Ends the run: the work is done. The summary tells the person what you did.",
-            json!({"type": "object", "properties": {"summary": {"type": "string"}},
-                   "required": ["summary"], "additionalProperties": false}),
-        ),
+        tool("finish", &finish_description, finish_schema),
         tool(
             "give_up",
             "Ends the run without finishing, saying why.",
@@ -723,8 +668,12 @@ fn with_breakpoint(mut messages: Vec<Message>) -> Vec<Message> {
     messages
 }
 
-/// What a turn's reply asks for next.
-fn next_after(msg: &AssistantMessage, nudged: bool) -> Value {
+/// Why a run whose model's context window is full gives up.
+const WINDOW_FULL: &str = "The conversation outgrew the model's context window.";
+
+/// What a turn's reply asks for next; a call of `finish` is read as
+/// `finish` says ([`Finish::read`]).
+fn next_after(msg: &AssistantMessage, nudged: bool, finish: &Finish<'_>) -> Value {
     let calls = msg.tool_calls();
     let err = |id: &str, m: &str| Block::tool_result(id, m, true).to_json();
     match msg.stop_reason {
@@ -733,8 +682,7 @@ fn next_after(msg: &AssistantMessage, nudged: bool) -> Value {
                           "reason": "The model declined the request."});
         }
         Some(StopReason::ModelContextWindowExceeded) => {
-            return json!({"kind": "give_up", "code": "context_window",
-                          "reason": "The conversation outgrew the model's context window."});
+            return json!({"kind": "give_up", "code": "context_window", "reason": WINDOW_FULL});
         }
         Some(StopReason::PauseTurn) => return json!({"kind": "turn", "user": []}),
         Some(StopReason::MaxTokens) => {
@@ -771,6 +719,11 @@ fn next_after(msg: &AssistantMessage, nudged: bool) -> Value {
             ToolCall::Invalid { .. } => json!({"kind": "turn",
                 "user": [call.invalid_result().expect("an invalid call").to_json()]}),
             ToolCall::Valid { id, name, input } => {
+                if name == "finish"
+                    && let Some(next) = finish.read(id, input)
+                {
+                    return next;
+                }
                 let s = |k: &str| input[k].as_str().map(str::to_string);
                 match (
                     name.as_str(),
@@ -781,9 +734,6 @@ fn next_after(msg: &AssistantMessage, nudged: bool) -> Value {
                 ) {
                     ("run_script", Some(title), Some(code), _, _) => {
                         json!({"kind": "script", "tool_use_id": id, "title": title, "code": code})
-                    }
-                    ("finish", _, _, Some(summary), _) => {
-                        json!({"kind": "finish", "summary": summary})
                     }
                     ("give_up", _, _, _, Some(reason)) => {
                         json!({"kind": "give_up", "code": "model", "reason": reason})
@@ -1052,9 +1002,6 @@ fn observed_entry(model: &str, ks: KeySource, u: Usage, streamed: usize, rates: 
     e
 }
 
-/// How many deltas a turn streams between two records of what it used.
-const OBSERVE_EVERY: usize = 16;
-
 /// Script compute in the line's base, MiB·ms: CPU time at the configured
 /// memory limit, rounded up.
 #[must_use]
@@ -1138,9 +1085,25 @@ pub async fn tick(
 ) -> Result<TickOutcome> {
     let started = clax_rt::time::Instant::now();
     let store = &*deps.store;
-    let settings = deps.settings.settings()?;
+    let instance = deps.settings.settings()?;
+    // A parked run is no driver's: before its call's deadline the tick
+    // has nothing to do, and claims nothing. At the deadline the call's
+    // failure is journaled, which makes the run due, and the tick goes
+    // on to claim it and run its step again.
+    if let Some(parked) = store.run(run_id)?.filter(|r| r.status == RunStatus::Parked) {
+        let now = deps.clock.now();
+        let late = parked
+            .due_at
+            .as_deref()
+            .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+            .is_some_and(|at| at.to_utc() <= now);
+        if !late {
+            return Ok(TickOutcome::wait(Wait::Parked, None, None));
+        }
+        expire_waits(store, run_id, now)?;
+    }
     if store
-        .claim_run(run_id, driver, settings.lease_secs)?
+        .claim_run(run_id, driver, instance.lease_secs)?
         .is_none()
     {
         let r = store.run(run_id)?.ok_or(CoreError::NotFound)?;
@@ -1155,17 +1118,47 @@ pub async fn tick(
             TickOutcome::wait(Wait::NotOurs, None, None)
         });
     }
-    let (run, steps) = store.run_with_steps(run_id)?.ok_or(CoreError::NotFound)?;
-    let hist = History::of(&steps);
+    let (run, made, steps) = store
+        .run_with_steps_as_made(run_id)?
+        .ok_or(CoreError::NotFound)?;
     let n = store.next_step_n(run_id)?;
-    let open = steps.into_iter().find(|s| s.committed_at.is_none());
+    let (steps, open) = committed_and_open(steps);
+    // The run as the run loop knows it and the provider of each of its
+    // bindings, from the row just read.
+    let surfaces = deps.providers.bind_or_unreadable(&run, &made)?;
+    // A policy that fails leaves the instance's settings in its place for
+    // this tick, which takes no step under them but a stop or one the
+    // model already asked for ([`Tick::policy_failed`]).
+    let asked = deps
+        .policy
+        .run_settings(&surfaces.info, instance.clone())
+        .and_then(|settings| Ok((deps.policy.limits(&surfaces.info, &settings)?, settings)));
+    let (settings, limits, policy_error) = match asked {
+        Ok((limits, settings)) => (settings, limits, None),
+        Err(e) => (
+            instance.clone(),
+            RunLimits::of(&instance),
+            Some(e.to_string()),
+        ),
+    };
+    let overflows = Overflows::of(&steps);
+    // The time the run spent parked is no part of its minutes.
+    let parked = store
+        .run_parking(run_id)?
+        .map_or(0, |p| u64::try_from(p.parked_ms).unwrap_or(0));
     let t = Tick {
+        parked: Duration::from_millis(parked),
         deps,
         store,
         settings,
+        limits,
+        policy_error,
+        overflows,
         ctx: bot_ctx(&run.person),
         run,
-        hist,
+        hist: Control::of(&steps),
+        surfaces,
+        steps,
         n,
         open,
         driver,
@@ -1178,13 +1171,68 @@ pub async fn tick(
     }
 }
 
+/// Ends the wait of a parked run whose call's deadline has come: the
+/// store journals, for each pending call of the run that is due (and of
+/// no other run: each run's deadline is its own driver entry's), the
+/// failure the
+/// host protocol gives it by what is known of the call
+/// ([`crate::bot_surfaces::unanswered`]: `unavailable`, `expired` or
+/// `unknown_outcome`), which makes its run due. A run that is parked
+/// still (its call has no pending row: its surface keeps its calls
+/// elsewhere) is unparked, and its step run again asks the surface.
+fn expire_waits(store: &Store, run_id: &str, now: chrono::DateTime<chrono::Utc>) -> Result<()> {
+    store.expire_calls_of(run_id, now, &crate::broker::stored::deadline_failure)?;
+    if store
+        .run(run_id)?
+        .is_some_and(|r| r.status == RunStatus::Parked)
+    {
+        store.unpark_run(run_id, now)?;
+    }
+    Ok(())
+}
+
+/// The reason of a run stopped because it was cancelled.
+pub(crate) const CANCELLED: &str = "cancelled";
+
+/// The stop of a run that reached a cap: `limit` is the cap with its
+/// value, as the run's policy states it (`40 steps`, `200 credits`,
+/// `30 minutes`).
+fn capped(limit: String) -> End {
+    End::Stopped {
+        reason: "run_cap".into(),
+        limit: Some(limit),
+        credits_reset: None,
+    }
+}
+
 pub(crate) struct Tick<'a> {
+    /// How long the run has been parked in all, before this tick.
+    pub parked: Duration,
     pub deps: &'a Deps,
     pub store: &'a Store,
     pub settings: RunSettings,
+    /// What bounds the run, as its policy answered for this tick.
+    pub limits: RunLimits,
+    /// Why the policy could not say this tick's settings or limits, when
+    /// it could not: `settings` and `limits` are then the instance's.
+    pub policy_error: Option<String>,
+    /// The overflows the committed steps record.
+    pub overflows: Overflows,
     pub ctx: AuditCtx,
+    /// The run's row. The run loop reads what every run has of it (its
+    /// ID, person, model, status, credits and times); its kind, request
+    /// and bindings it reads from `surfaces`, and nothing of a
+    /// surface's own columns.
     pub run: Run,
-    pub hist: History,
+    /// What the tick decides by, of the committed steps.
+    pub hist: Control,
+    /// The run as the run loop knows it, with its bindings' providers
+    /// and what its audit records are filed on, made once from `run`
+    /// ([`Providers::bind`]).
+    pub surfaces: RunSurfaces,
+    /// The run's committed steps as the tick read them, in order
+    /// ([`committed_and_open`]): what [`transcript`] shows a model of.
+    pub steps: Vec<Step>,
     pub n: i64,
     /// The step begun and not committed, as the tick found it.
     pub open: Option<Step>,
@@ -1193,33 +1241,12 @@ pub(crate) struct Tick<'a> {
     pub started: clax_rt::time::Instant,
 }
 
-/// Why a run stops, and what it tells its threads.
-pub(crate) struct Stop {
-    pub reason: &'static str,
-    pub notice: Option<String>,
-}
-
-impl Stop {
-    pub(crate) fn cancelled() -> Stop {
-        Stop {
-            reason: "cancelled",
-            notice: None,
-        }
-    }
-}
-
-/// What a stopped run's notice opens with, for `reason`.
-fn stop_lead(reason: &str) -> &'static str {
-    match reason {
-        "no_flag" => "I stopped: ClaxBot is not turned on for you.",
-        "disabled" => "I stopped: ClaxBot is turned off on this Clax.",
-        "not_configured" => "I stopped: no model key is set up for ClaxBot.",
-        "model_not_priced" => "I stopped: the model this run uses has no price set.",
-        "key_rejected" => "I stopped: the model provider refused the key.",
-        "model_error" => "I stopped: the model provider answered with an error.",
-        "internal_error" => "I stopped: I could not save my work.",
-        _ => "I stopped before finishing.",
-    }
+/// How a turn's model call ended, when the turn commits.
+enum Answer {
+    Message(AssistantMessage),
+    /// The provider refused the request as too long and the policy shows
+    /// less: the turn's next step.
+    TooLong(Value),
 }
 
 impl Tick<'_> {
@@ -1242,6 +1269,8 @@ impl Tick<'_> {
         Ok(s)
     }
 
+    /// How long the run has been at work: since it was made, less the
+    /// time it was parked.
     fn elapsed(&self) -> Duration {
         chrono::DateTime::parse_from_rfc3339(&self.run.created_at)
             .map(|c| {
@@ -1250,48 +1279,37 @@ impl Tick<'_> {
                     .unwrap_or_default()
             })
             .unwrap_or_default()
+            .saturating_sub(self.parked)
     }
 
-    /// What is left of the run's time.
-    fn remaining(&self) -> Duration {
-        Duration::from_secs(u64::from(self.settings.max_run_minutes) * 60)
-            .saturating_sub(self.elapsed())
+    /// What is left of the run's time; `None` for a run with no cap on
+    /// it.
+    fn remaining(&self) -> Option<Duration> {
+        self.limits
+            .max_run_time()
+            .map(|cap| cap.saturating_sub(self.elapsed()))
     }
 
-    /// What is left of the tick's budget and the run's time.
-    fn available(&self) -> Duration {
-        match self.opts.budget {
-            Some(b) => b
-                .saturating_sub(self.started.elapsed())
-                .min(self.remaining()),
-            None => self.remaining(),
-        }
+    /// What is left of the tick's budget and the run's time; `None` when
+    /// neither bounds it.
+    fn available(&self) -> Option<Duration> {
+        policy::least(
+            self.opts
+                .budget
+                .map(|b| b.saturating_sub(self.started.elapsed())),
+            self.remaining(),
+        )
     }
 
-    /// The journal entry of call `seq` (`op` on `args`, the JSON array the
-    /// script passed) of `attempt`: made for this driver alone.
-    pub(crate) fn entry(
-        &self,
-        attempt: i64,
-        seq: i64,
-        op: &str,
-        args: &Value,
-    ) -> std::result::Result<clax_store::CallEntry, clax_bot_sandbox::HostError> {
-        self.store
-            .call_entry(
-                &self.run.id,
-                self.driver,
-                self.n,
-                attempt,
-                seq,
-                op,
-                &crate::host::args_hash(args),
-            )
-            .map_err(|e| crate::host::host_error(&e))
+    /// Whether less than a turn's least time is left of `bound`.
+    fn too_short(&self, bound: Option<Duration>) -> bool {
+        bound.is_some_and(|b| b < self.settings.min_turn_budget)
     }
 
-    pub(crate) fn op_ctx(&self, attempt: i64, seq: i64) -> OpCtx<'_> {
-        OpCtx::new(&self.run, &self.ctx, self.n, attempt, seq)
+    /// The stop of a run that reached its cap on minutes.
+    fn minutes_stop(&self) -> End {
+        let minutes = self.limits.max_run_minutes.unwrap_or_default();
+        capped(format!("{minutes} minutes"))
     }
 
     /// Commits the open step and tells the run's events; the step's
@@ -1301,8 +1319,23 @@ impl Tick<'_> {
         &self,
         attempt: i64,
         kind: StepKind,
+        commit: StepCommit,
+        observed: Observed,
+    ) -> Result<std::result::Result<Committed, Wait>> {
+        self.commit_ending(attempt, kind, commit, observed, &[])
+    }
+
+    /// [`Tick::commit`], for a terminal step: `ends` is how the run
+    /// ends for each registration its bindings' providers named
+    /// ([`SurfaceProvider::end_for`]), kept in the commit's
+    /// transaction.
+    pub(crate) fn commit_ending(
+        &self,
+        attempt: i64,
+        kind: StepKind,
         mut commit: StepCommit,
         observed: Observed,
+        ends: &[EndFor],
     ) -> Result<std::result::Result<Committed, Wait>> {
         if self
             .deps
@@ -1323,24 +1356,28 @@ impl Tick<'_> {
             )?);
         }
         let summary = step_summary(kind, &commit.payload);
-        let c =
-            match self
-                .store
-                .commit_bot_step(&self.ctx, &self.run.id, self.driver, self.n, commit)
-            {
-                Ok(c) => c,
-                Err(e) => {
-                    if !fenced(&e) {
-                        tracing::warn!(
-                            "clax-bot: committing step {} of run {}: {e}",
-                            self.n,
-                            self.run.id
-                        );
-                        let _ = self.store.note_commit_failure(&self.run.id, self.n);
-                    }
-                    return Err(e);
+        let c = match self.store.commit_bot_step_on(
+            &self.ctx,
+            &self.run.id,
+            self.driver,
+            self.n,
+            commit,
+            Some(&self.surfaces.subject),
+            ends,
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                if !fenced(&e) {
+                    tracing::warn!(
+                        "clax-bot: committing step {} of run {}: {e}",
+                        self.n,
+                        self.run.id
+                    );
+                    let _ = self.store.note_commit_failure(&self.run.id, self.n);
                 }
-            };
+                return Err(e);
+            }
+        };
         self.emit(
             attempt,
             Event::StepDone {
@@ -1413,44 +1450,28 @@ impl Tick<'_> {
             .unwrap_or(self.run.key_source)
     }
 
-    fn reset_date(&self) -> String {
-        week_end(week_start(self.deps.clock.now()))
-            .format("on %A %-d %B %Y at %H:%M UTC")
-            .to_string()
-    }
-
-    fn credits_notice(&self) -> String {
-        format!(
-            "I stopped before finishing: you have used this week's ClaxBot credits. {} \
-             Your credits reset {}.",
-            self.what_i_did(),
-            self.reset_date()
-        )
-    }
-
-    fn cap_notice(&self, limit: &str) -> String {
-        format!(
-            "I stopped before finishing: this run reached its limit of {limit}. {}",
-            self.what_i_did()
-        )
+    /// The stop of a run whose person has spent the week's credits,
+    /// with when they reset.
+    fn credits_stop(&self) -> End {
+        End::Stopped {
+            reason: Refusal::CreditsExhausted.code().into(),
+            limit: None,
+            credits_reset: Some(week_end(week_start(self.deps.clock.now()))),
+        }
     }
 
     /// The stop for refusal `r`.
-    fn refused(&self, r: Refusal) -> Stop {
-        let notice = match r {
-            Refusal::CreditsExhausted => self.credits_notice(),
-            other => format!("{} {}", stop_lead(other.code()), self.what_i_did()),
-        };
-        Stop {
-            reason: r.code(),
-            notice: Some(notice),
+    fn refused(&self, r: Refusal) -> End {
+        match r {
+            Refusal::CreditsExhausted => self.credits_stop(),
+            other => End::stopped(other.code()),
         }
     }
 
     /// Why the run must stop before a turn or a script, if it must.
-    fn must_stop(&self) -> Result<Option<Stop>> {
+    fn must_stop(&self) -> Result<Option<End>> {
         if self.run.status == RunStatus::Stopping || self.opts.cancel.is_cancelled() {
-            return Ok(Some(Stop::cancelled()));
+            return Ok(Some(End::stopped(CANCELLED)));
         }
         if let Some(r) = refusal(
             self.store,
@@ -1462,70 +1483,29 @@ impl Tick<'_> {
         )? {
             return Ok(Some(self.refused(r)));
         }
-        let cap = if self.hist.committed >= self.settings.max_steps as usize {
-            Some(format!("{} steps", self.settings.max_steps))
-        } else if self.run.credits_milli
-            >= i64::try_from(self.settings.max_run_credits.saturating_mul(1000)).unwrap_or(i64::MAX)
-        {
-            Some(format!("{} credits", self.settings.max_run_credits))
-        } else if self.remaining().is_zero() {
-            Some(format!("{} minutes", self.settings.max_run_minutes))
-        } else {
-            None
+        // The limits of a tick whose policy failed are not the policy's.
+        if self.policy_error.is_some() {
+            return Ok(None);
+        }
+        // Each cap the policy sets, in this order; one it does not set
+        // stops nothing.
+        let steps = self
+            .limits
+            .max_steps
+            .filter(|max| self.hist.committed >= *max as usize)
+            .map(|max| format!("{max} steps"));
+        let credits = || {
+            let max = self.limits.max_run_credits?;
+            let milli = self.limits.max_run_credits_milli()?;
+            (self.run.credits_milli >= milli).then(|| format!("{max} credits"))
         };
-        Ok(cap.map(|limit| Stop {
-            reason: "run_cap",
-            notice: Some(self.cap_notice(&limit)),
-        }))
-    }
-
-    /// What the run did, for a stopped run's notice.
-    fn what_i_did(&self) -> String {
-        let mut s = match self.hist.scripts {
-            0 => "I had not run any scripts yet.".to_string(),
-            1 => "I ran 1 script".to_string(),
-            k => format!("I ran {k} scripts"),
+        let minutes = || {
+            let max = self.limits.max_run_minutes?;
+            self.remaining()?
+                .is_zero()
+                .then(|| format!("{max} minutes"))
         };
-        if self.hist.scripts > 0 {
-            if self.hist.changed.is_empty() {
-                s.push('.');
-            } else {
-                let files: Vec<&str> = self.hist.changed.iter().map(String::as_str).collect();
-                s.push_str(&format!(" and edited {}.", files.join(", ")));
-            }
-        }
-        if let Some(v) = self.hist.published {
-            s.push_str(&format!(" I published version {v}."));
-        }
-        if !self.hist.changed.is_empty() {
-            s.push_str(" My draft is saved, unpublished: open it from the run panel.");
-        }
-        s
-    }
-
-    /// Posts `markdown` on each of the run's threads (a brief's run, on the
-    /// brief's thread), journaled at the step's notice places; failures are
-    /// logged, not fatal.
-    async fn notify(&self, attempt: i64, markdown: &str) {
-        self.notify_at(attempt, NOTICE_SEQ, markdown).await;
-    }
-
-    /// [`Self::notify`], the `i`th thread's post at journal place `first + i`.
-    async fn notify_at(&self, attempt: i64, first: i64, markdown: &str) {
-        for (i, t) in self.run.thread_ids.iter().enumerate() {
-            let seq = first + i as i64;
-            let cx = self.op_ctx(attempt, seq);
-            let res = match (
-                self.entry(attempt, seq, "reply", &json!([t, markdown])),
-                self.deps.host.plan_reply(&cx, t, markdown).await,
-            ) {
-                (Ok(entry), Ok(plan)) => run_plan(plan, entry).await.map(drop),
-                (Err(e), _) | (_, Err(e)) => Err(e),
-            };
-            if let Err(e) = res {
-                tracing::warn!("clax-bot: run {} could not reply on {t}: {e}", self.run.id);
-            }
-        }
+        Ok(steps.or_else(credits).or_else(minutes).map(capped))
     }
 
     /// `bot.call` records for the journal's calls of this step that no
@@ -1545,89 +1525,17 @@ impl Tick<'_> {
             .collect()
     }
 
-    /// Ends the run with a `stopped` step for `stop`, charging `usage`.
-    pub(crate) async fn stop(
-        &self,
-        stop: Stop,
-        usage: Vec<Metered>,
-        extra: Value,
-        events: Vec<AuditRecord>,
-        reported: &BTreeSet<i64>,
-        observed: Observed,
-    ) -> Result<TickOutcome> {
-        let s = self.begin(StepKind::Stopped)?;
-        if let Some(notice) = &stop.notice {
-            self.notify(s.attempt, notice).await;
-        }
-        let mut payload = json!({"reason": stop.reason, "notice": stop.notice});
-        if let (Some(p), Some(e)) = (payload.as_object_mut(), extra.as_object()) {
-            p.extend(e.clone());
-        }
-        let mut usage = usage;
-        usage.extend(step_usage(
-            &self.settings,
-            self.n,
-            0,
-            &payload,
-            self.key_source(),
-        ));
-        let mut events = events;
-        events.extend(self.unreported_calls(reported));
-        let c = self.commit(
-            s.attempt,
-            StepKind::Stopped,
-            StepCommit {
-                payload,
-                usage,
-                events,
-                draft: Vec::new(),
-                reason: Some(stop.reason.to_string()),
-            },
-            observed,
-        )?;
-        self.deps.host.working(&self.run, false).await;
-        Ok(self.outcome(StepKind::Stopped, c))
+    /// A stop with nothing of its own to charge: `end` is an
+    /// [`End::Stopped`].
+    pub(crate) async fn stop_plain(&self, end: End) -> Result<TickOutcome> {
+        self.end(Ending::stopped(end)).await
     }
 
-    /// A stop with nothing of its own to charge.
-    pub(crate) async fn stop_plain(&self, stop: Stop) -> Result<TickOutcome> {
-        self.stop(
-            stop,
-            Vec::new(),
-            Value::Null,
-            Vec::new(),
-            &BTreeSet::new(),
-            Observed::default(),
-        )
-        .await
-    }
-
-    /// Ends the run `failed`: its step could not be committed.
-    async fn fail(&self) -> Result<TickOutcome> {
-        let s = self.begin(StepKind::Failed)?;
-        let notice = format!("{} {}", stop_lead("internal_error"), self.what_i_did());
-        self.notify(s.attempt, &notice).await;
-        let commit = || StepCommit {
-            payload: json!({"reason": "internal_error", "notice": notice}),
-            reason: Some("internal_error".into()),
-            ..StepCommit::default()
-        };
-        // The model calls its attempts made are absorbed; when even that
-        // cannot be written, the run ends without them.
-        let c = match self.commit(s.attempt, StepKind::Failed, commit(), Observed::default()) {
-            Err(e) if !fenced(&e) => self.commit(
-                s.attempt,
-                StepKind::Failed,
-                commit(),
-                Observed {
-                    none: true,
-                    ..Observed::default()
-                },
-            )?,
-            other => other?,
-        };
-        self.deps.host.working(&self.run, false).await;
-        Ok(self.outcome(StepKind::Failed, c))
+    /// Ends the run `failed` for `reason`: its step could not be
+    /// committed (`internal_error`), or its policy failed or answered
+    /// messages that cannot be sent, where `error` says how.
+    async fn fail(&self, reason: &str, error: Option<&str>) -> Result<TickOutcome> {
+        self.end(Ending::failed(reason, error)).await
     }
 
     async fn step(&self) -> Result<TickOutcome> {
@@ -1636,13 +1544,28 @@ impl Tick<'_> {
             .as_ref()
             .is_some_and(|o| o.failures >= self.settings.max_commit_failures)
         {
-            return self.fail().await;
+            // The failures of a step whose policy fails are the policy's.
+            return match &self.policy_error {
+                Some(e) => self.fail(policy::POLICY_ERROR, Some(e)).await,
+                None => self.fail("internal_error", None).await,
+            };
         }
         let next = self.hist.next.clone();
         let kind = next["kind"].as_str().unwrap_or("turn");
+        // A cancel wins over everything, a step the model asked for
+        // included: a stopping run takes no step but its `stopped` one
+        // (`Store::begin_step` refuses any other).
+        if self.run.status == RunStatus::Stopping {
+            return self.stop_plain(End::stopped(CANCELLED)).await;
+        }
+        // A run this build cannot read as it was made takes no step
+        // but its last: it ends `failed`, for what could not be read.
+        if let Some((code, why)) = self.surfaces.unreadable() {
+            return self.fail(code, Some(why)).await;
+        }
         // A terminal step the model asked for runs whatever the limits.
         match kind {
-            "finish" => return self.finish(next["summary"].as_str().unwrap_or("")).await,
+            "finish" => return self.end(finish::ending(&next)).await,
             "give_up" => {
                 return self
                     .give_up(
@@ -1656,15 +1579,22 @@ impl Tick<'_> {
         if let Some(stop) = self.must_stop()? {
             return self.stop_plain(stop).await;
         }
-        self.deps.host.working(&self.run, true).await;
+        if let Some(e) = &self.policy_error {
+            let kind = if kind == "script" {
+                StepKind::Script
+            } else {
+                StepKind::Turn
+            };
+            return self.policy_failed(kind, e).await;
+        }
+        self.working().await;
         if kind == "script" {
-            return self
-                .script(
-                    next["tool_use_id"].as_str().unwrap_or(""),
-                    next["title"].as_str().unwrap_or(""),
-                    next["code"].as_str().unwrap_or(""),
-                )
-                .await;
+            let (tool_use_id, title, code) = (
+                next["tool_use_id"].as_str().unwrap_or(""),
+                next["title"].as_str().unwrap_or(""),
+                next["code"].as_str().unwrap_or(""),
+            );
+            return self.script_step(tool_use_id, title, code).await;
         }
         let Some(key) = choose_key(
             self.store,
@@ -1678,65 +1608,58 @@ impl Tick<'_> {
         self.turn(key).await
     }
 
-    async fn finish(&self, summary: &str) -> Result<TickOutcome> {
-        let s = self.begin(StepKind::Finish)?;
-        let post = self.hist.replied.is_empty() && !summary.is_empty();
-        let pages = self.store.web_pages(&self.run.id)?;
-        let sources = sources_markdown(&pages);
-        match (&sources, post) {
-            (Some(list), true) => {
-                self.notify(s.attempt, &format!("{summary}{list}")).await;
-            }
-            (None, true) => self.notify(s.attempt, summary).await,
-            // The run replied itself: the list stands alone, after the
-            // summary's place.
-            (Some(list), false) => {
-                self.notify_at(s.attempt, NOTICE_SEQ + 1, list.trim_start())
-                    .await;
-            }
-            (None, false) => {}
-        }
-        let payload = json!({
-            "summary": summary,
-            "posted": post,
-            "sources": web_sources(&pages).iter()
-                .map(|s| json!({"title": s.title.as_deref().unwrap_or(&s.url), "url": s.url}))
-                .collect::<Vec<_>>(),
-        });
-        let usage = step_usage(&self.settings, self.n, 0, &payload, self.key_source());
-        let c = self.commit(
-            s.attempt,
-            StepKind::Finish,
-            StepCommit {
-                payload,
-                usage,
-                ..StepCommit::default()
-            },
-            Observed::default(),
-        )?;
-        self.deps.host.working(&self.run, false).await;
-        Ok(self.outcome(StepKind::Finish, c))
+    /// Runs the script the last turn asked for, over the run's surfaces
+    /// ([`Tick::surfaces`]).
+    async fn script_step(&self, tool_use_id: &str, title: &str, code: &str) -> Result<TickOutcome> {
+        let bound = &self.surfaces;
+        self.script(&bound.info, &bound.surfaces(), tool_use_id, title, code)
+            .await
     }
 
+    /// Ends the run because it gave up, for `reason`.
     async fn give_up(&self, code: &str, reason: &str) -> Result<TickOutcome> {
-        let s = self.begin(StepKind::GiveUp)?;
-        let notice = format!("I gave up: {reason} {}", self.what_i_did());
-        self.notify(s.attempt, &notice).await;
-        let payload = json!({"code": code, "reason": reason, "notice": notice});
-        let usage = step_usage(&self.settings, self.n, 0, &payload, self.key_source());
-        let c = self.commit(
-            s.attempt,
-            StepKind::GiveUp,
-            StepCommit {
-                payload,
-                usage,
-                reason: Some(code.to_string()),
-                ..StepCommit::default()
-            },
-            Observed::default(),
-        )?;
-        self.deps.host.working(&self.run, false).await;
-        Ok(self.outcome(StepKind::GiveUp, c))
+        self.end(Ending::gave_up(code, reason)).await
+    }
+
+    /// What a tick does when the policy failed before a step of `kind`
+    /// did anything: the failure is counted against the step as a failed
+    /// commit is, and the tick waits to ask again, or, at
+    /// [`RunSettings::max_commit_failures`], ends the run `failed`
+    /// (`policy_error`).
+    async fn policy_failed(&self, kind: StepKind, error: &str) -> Result<TickOutcome> {
+        tracing::warn!(
+            "clax-bot: the policy failed for run {}: {error}",
+            self.run.id
+        );
+        self.begin_on(kind, self.key_source())?;
+        let failures = self.store.note_commit_failure(&self.run.id, self.n)?;
+        if failures >= self.settings.max_commit_failures {
+            return self.fail(policy::POLICY_ERROR, Some(error)).await;
+        }
+        Ok(TickOutcome::wait(
+            Wait::Retry(self.deps.retry_later),
+            Some(self.n),
+            Some(kind),
+        ))
+    }
+
+    /// Stops a run whose model call the policy's bound on one call ended
+    /// (`error` says how), the tick's attempts spent.
+    async fn timed_out(&self, error: &str) -> Result<TickOutcome> {
+        self.end(Ending::stopped(End::stopped(policy::MODEL_TIMEOUT)).with_error(json!(error)))
+            .await
+    }
+
+    /// Ends a run whose history after an overflow is not the shorter one
+    /// the overflow's ask answered (`overflow` is the last turn's
+    /// `next.overflow`): as the overflow would have ended it had the
+    /// policy shown no less.
+    async fn overflow_ending(&self, overflow: &Value) -> Result<TickOutcome> {
+        if overflow["path"] != OverflowPath::Refused.as_str() {
+            return self.give_up("context_window", WINDOW_FULL).await;
+        }
+        self.end(Ending::stopped(End::stopped("model_error")).with_error(overflow["error"].clone()))
+            .await
     }
 
     /// The `max_tokens` the person's credits pay for after the turn's
@@ -1751,11 +1674,17 @@ impl Tick<'_> {
     /// an own key is waived (one that applies on the instance key) costs
     /// nothing. Unlimited for an unenforced person and when no unit costs
     /// anything (an own key on instance-key rates).
+    ///
+    /// `cached_prefix` says the request repeats the last turn's: a
+    /// request a policy put together shares no prefix with the one
+    /// before it, and all of its input is priced as not read from a
+    /// cache.
     fn affordable(
         &self,
         ks: KeySource,
         request_bytes: usize,
-    ) -> Result<std::result::Result<u32, Stop>> {
+        cached_prefix: bool,
+    ) -> Result<std::result::Result<u32, End>> {
         let max = self.settings.max_tokens;
         let rate = |unit: Unit| -> Result<Option<Rate>> {
             Ok(self
@@ -1784,10 +1713,10 @@ impl Tick<'_> {
             .store
             .week_usage(&self.run.person, self.deps.clock.now())?
             .remaining_milli();
-        let run_left = i64::try_from(self.settings.max_run_credits.saturating_mul(1000))
-            .unwrap_or(i64::MAX)
-            .saturating_sub(self.run.credits_milli)
-            .max(0);
+        // A run with no cap on its credits has the week's.
+        let run_left = self.limits.max_run_credits_milli().map_or(i64::MAX, |cap| {
+            cap.saturating_sub(self.run.credits_milli).max(0)
+        });
         let left = week_left.min(run_left);
         let [uncached_rate, cached_rate, output_rate] = rates;
         let credits = |rate: Option<Rate>, qty: u64| -> Result<i64> {
@@ -1804,7 +1733,7 @@ impl Tick<'_> {
             )
         };
         let tokens = (request_bytes / 4) as u64;
-        let input = match self.hist.last_usage {
+        let input = match self.hist.last_usage.filter(|_| cached_prefix) {
             Some(u) => {
                 let prefix = u.cache_read_input_tokens + u.cache_creation_input_tokens;
                 credits(cached_rate, prefix.min(tokens))?
@@ -1820,68 +1749,175 @@ impl Tick<'_> {
             return Ok(Ok(n));
         }
         Ok(Err(if run_left < week_left {
-            Stop {
-                reason: "run_cap",
-                notice: Some(
-                    self.cap_notice(&format!("{} credits", self.settings.max_run_credits)),
-                ),
-            }
+            capped(format!(
+                "{} credits",
+                self.limits.max_run_credits.unwrap_or_default()
+            ))
         } else {
-            Stop {
-                reason: Refusal::CreditsExhausted.code(),
-                notice: Some(self.credits_notice()),
-            }
+            self.credits_stop()
         }))
     }
 
-    async fn turn(&self, (key, ks, slot): ChosenKey) -> Result<TickOutcome> {
-        if self.remaining() < self.settings.min_turn_budget {
-            return self
-                .stop_plain(Stop {
-                    reason: "run_cap",
-                    notice: Some(
-                        self.cap_notice(&format!("{} minutes", self.settings.max_run_minutes)),
-                    ),
-                })
-                .await;
+    /// The next step of a turn whose model reported its context window
+    /// full (see [`crate::policy`], "A full context window"): a turn on
+    /// the shorter history the policy answers, or `None` when the run
+    /// ends as it does without one. `sent_bytes` is the size of the
+    /// messages a policy answered for this turn (`None` when it was sent
+    /// the core's projection), `user` the request the turn added and
+    /// `assistant` the overflowing answer's blocks. The answer is held to
+    /// what a turn relies on by the turn that sends it.
+    fn overflowed(
+        &self,
+        path: OverflowPath,
+        sent_bytes: Option<u64>,
+        user: &[Block],
+        assistant: &[Block],
+    ) -> Option<Value> {
+        let running = self.overflows.running + 1;
+        if self
+            .limits
+            .max_overflow_retries
+            .is_some_and(|max| running > max)
+        {
+            return None;
         }
-        if self.available() < self.settings.min_turn_budget {
+        let mut core = transcript(&self.steps).messages;
+        push(&mut core, Role::User, user.to_vec());
+        let sent = match sent_bytes {
+            Some(b) => usize::try_from(b).unwrap_or(usize::MAX),
+            None => policy::messages_bytes(&core),
+        };
+        push(&mut core, Role::Assistant, assistant.to_vec());
+        let ask = HistoryAsk::new(HistoryFor::Overflow(path), self.overflows.level + 1);
+        // A policy that fails here shows no less: the turn is committed
+        // with what it used, and the run ends.
+        let shorter = match self.deps.policy.history(&self.surfaces.info, &core, &ask) {
+            Ok(Shown::Messages(shorter)) => shorter,
+            Ok(_) => return None,
+            Err(e) => {
+                tracing::warn!("clax-bot: the policy failed for run {}: {e}", self.run.id);
+                return None;
+            }
+        };
+        let shown = policy::messages_bytes(&shorter);
+        if shown >= sent {
+            return None;
+        }
+        Some(json!({"kind": "turn", "user": [], "overflow": {
+            "level": ask.level,
+            "path": path.as_str(),
+            "sent_bytes": sent,
+            "shown_bytes": shown,
+            "shown_sha256": policy::messages_sha256(&shorter),
+        }}))
+    }
+
+    async fn turn(&self, (key, ks, slot): ChosenKey) -> Result<TickOutcome> {
+        if self.too_short(self.remaining()) {
+            return self.stop_plain(self.minutes_stop()).await;
+        }
+        if self.too_short(self.available()) {
             return Ok(TickOutcome::wait(
                 Wait::Budget,
                 Some(self.n),
                 Some(StepKind::Turn),
             ));
         }
-        let first = self.hist.committed == 0 || self.hist.system.is_none();
+        // The system text and whether this is the first request are the
+        // steps', whatever a policy shows of them.
+        let core = transcript(&self.steps);
+        let stored_system = core.system.clone();
+        let first = self.hist.committed == 0 || core.system.is_none();
         let (system, user) = if first {
-            let cx = match self.deps.host.context(&self.run).await {
-                Ok(cx) => cx,
+            // The request is the kind's surface's to resolve, and the
+            // run loop's to render.
+            let info = &self.surfaces.info;
+            let kind = self.surfaces.kind_provider();
+            // The prompt file the run was started with, when the kind's
+            // surface has one of its own. One that cannot be given is
+            // never replaced by another.
+            let own = match kind.prompt() {
+                Ok(own) => own,
+                Err(e) if e.retryable => {
+                    return Err(CoreError::invalid(
+                        "prompt_unread",
+                        format!("the prompt file of run {}: {}", self.run.id, e.message),
+                    ));
+                }
+                Err(e) => {
+                    tracing::warn!("clax-bot: run {} has no prompt file: {e}", self.run.id);
+                    return self.fail(&e.code, Some(&e.message)).await;
+                }
+            };
+            let request = kind.request(info).await.map_err(|e| e.to_string());
+            let request = request.and_then(|resolved| {
+                let bound = self.surfaces.definitions();
+                let system = prompt::system_of(info, kind.definition(), &bound, own)?;
+                let message = prompt::request_of(info, kind.definition(), &resolved, own)?;
+                Ok((system, message))
+            });
+            match request {
+                Ok((system, request)) => (system, vec![Block::text(request)]),
                 Err(e) => {
                     tracing::warn!("clax-bot: run {} has no request context: {e}", self.run.id);
                     return self
-                        .stop(
-                            Stop {
-                                reason: "request_gone",
-                                notice: None,
-                            },
-                            Vec::new(),
-                            json!({"error": e.to_string()}),
-                            Vec::new(),
-                            &BTreeSet::new(),
-                            Observed::default(),
-                        )
+                        .end(Ending::stopped(End::stopped("request_gone")).with_error(json!(e)))
                         .await;
                 }
-            };
-            (
-                prompt::system_prompt(self.run.request, crate::web::WebShape::parse(&self.run.web)),
-                vec![Block::text(prompt::request_message(self.run.request, &cx))],
-            )
+            }
         } else {
-            (self.hist.system.clone().unwrap_or_default(), Vec::new())
+            (core.system.unwrap_or_default(), Vec::new())
         };
-        let mut messages = self.hist.messages.clone();
+        let mut messages = core.messages;
         push(&mut messages, Role::User, user.clone());
+        // What the policy shows of them, and its record when that is not
+        // the core's projection.
+        let ask = HistoryAsk::new(HistoryFor::NextTurn, self.overflows.level);
+        let answered = match self
+            .deps
+            .policy
+            .history(&self.surfaces.info, &messages, &ask)
+        {
+            Ok(answered) => answered,
+            Err(e) => return self.policy_failed(StepKind::Turn, &e.to_string()).await,
+        };
+        // After an overflow the turn is sent the shorter history the
+        // overflow's ask answered, or the run ends.
+        let after_overflow = self.hist.next.get("overflow").filter(|o| o.is_object());
+        let shown = match answered {
+            Shown::Messages(m) => {
+                let m = match policy::check_shown(&self.steps, stored_system.as_deref(), &user, m) {
+                    Ok(m) => m,
+                    Err(broken) => {
+                        return self
+                            .fail(&policy::history_reason(&broken), Some(&broken))
+                            .await;
+                    }
+                };
+                let record = policy::shown_record(ask.level, &m);
+                if let Some(overflow) = after_overflow
+                    && overflow["shown_sha256"] != record["sha256"]
+                {
+                    return self.overflow_ending(overflow).await;
+                }
+                messages = m;
+                Some(record)
+            }
+            _ => {
+                if let Some(overflow) = after_overflow {
+                    return self.overflow_ending(overflow).await;
+                }
+                None
+            }
+        };
+        let sent_bytes = shown.as_ref().and_then(|r| r["bytes"].as_u64());
+        // `finish` takes the kind's result.
+        let finish = Finish::of(
+            &self.surfaces.info,
+            self.surfaces.kind_provider().definition(),
+            self.limits.max_invalid_results,
+            &self.hist.next,
+        );
         let mut req = MessagesRequest {
             model: self.run.model.clone(),
             max_tokens: self.settings.max_tokens,
@@ -1890,7 +1926,7 @@ impl Tick<'_> {
                 cache_control: Some(CacheControl::default()),
             }],
             messages: with_breakpoint(messages),
-            tools: tools(),
+            tools: tools(self.limits.script.max_result_bytes, &finish),
             tool_choice: Some(ToolChoice::Auto {
                 disable_parallel_tool_use: true,
             }),
@@ -1903,29 +1939,42 @@ impl Tick<'_> {
             betas: Vec::new(),
             extra: serde_json::Map::new(),
         };
-        req.max_tokens = match self.affordable(ks, req.body().to_string().len())? {
+        let request_bytes = req.body().to_string().len();
+        req.max_tokens = match self.affordable(ks, request_bytes, shown.is_none())? {
             Ok(n) => n,
             Err(stop) => return self.stop_plain(stop).await,
         };
+        if self.limits.model_call_timeout.is_some_and(|t| t.is_zero()) {
+            return self.timed_out("no time is allowed for a model call").await;
+        }
         let mut s = self.begin_on(StepKind::Turn, ks)?;
         // The rates the call that answers snapshotted, to charge it at.
         let mut call_rates: Value;
         let lost = AtomicBool::new(false);
         let mut failed = 0;
         let cancel = &self.opts.cancel;
-        let msg = loop {
+        let observe_every = self.limits.observe_every.get();
+        let answer = loop {
             let total = self.available();
-            if total < self.settings.min_turn_budget {
+            if self.too_short(total) {
                 return Ok(TickOutcome::wait(
                     Wait::Retry(self.deps.retry_later),
                     Some(self.n),
                     Some(StepKind::Turn),
                 ));
             }
+            // The call ends with the tick's budget, the run's time and
+            // the policy's bound on one call, whichever is first.
             let client = self.deps.client.clone().with_timeouts(Timeouts {
-                total: Some(total),
+                total: policy::least(total, self.limits.model_call_timeout),
                 ..self.deps.client.timeouts()
             });
+            // The policy's bound, when it is the first of them.
+            let timeout = self
+                .limits
+                .model_call_timeout
+                .filter(|t| total.is_none_or(|a| *t <= a));
+            let called = clax_rt::time::Instant::now();
             let attempt = s.attempt;
             let events = self.opts.events;
             let (store, run_id, n, driver) = (self.store, self.run.id.clone(), self.n, self.driver);
@@ -1988,7 +2037,7 @@ impl Tick<'_> {
                     };
                     p.1 += bytes;
                     deltas += 1;
-                    if deltas.is_multiple_of(OBSERVE_EVERY) {
+                    if deltas.is_multiple_of(observe_every) {
                         on_delta(p.0, p.1);
                     }
                     drop(p);
@@ -2033,23 +2082,23 @@ impl Tick<'_> {
                 // Cancelled mid-turn: what the call used so far is the
                 // person's to pay.
                 return self
-                    .stop(
-                        Stop::cancelled(),
-                        Vec::new(),
-                        Value::Null,
-                        Vec::new(),
-                        &BTreeSet::new(),
-                        Observed {
+                    .end(Ending {
+                        observed: Observed {
                             charge: Some(s.attempt),
                             ..Observed::default()
                         },
-                    )
+                        ..Ending::stopped(End::stopped(CANCELLED))
+                    })
                     .await;
             };
             match got {
-                Ok(m) => break m,
+                Ok(m) => break Answer::Message(m),
                 Err(e) if e.retryable() => match self.deps.retry.delay(failed, &e) {
-                    Some(d) if d + self.settings.min_turn_budget <= self.available() => {
+                    Some(d)
+                        if self
+                            .available()
+                            .is_none_or(|a| d + self.settings.min_turn_budget <= a) =>
+                    {
                         failed += 1;
                         let waited = watched(
                             self.store,
@@ -2078,9 +2127,17 @@ impl Tick<'_> {
                             ));
                         }
                         if !waited {
-                            return self.stop_plain(Stop::cancelled()).await;
+                            return self.stop_plain(End::stopped(CANCELLED)).await;
                         }
                         s = self.begin_on(StepKind::Turn, ks)?;
+                    }
+                    // The policy's bound on a call ended the last of the
+                    // tick's attempts: the run stops, where a provider
+                    // that cannot be reached is waited for.
+                    _ if matches!(e, MessagesError::StreamCut { .. })
+                        && timeout.is_some_and(|t| called.elapsed() >= t) =>
+                    {
+                        return self.timed_out(&e.to_string()).await;
                     }
                     _ => {
                         tracing::warn!("clax-bot: run {} waits for the model: {e}", self.run.id);
@@ -2092,6 +2149,15 @@ impl Tick<'_> {
                     }
                 },
                 Err(e) => {
+                    // A request refused as too long goes on when the
+                    // policy shows less; else it stops as any refusal.
+                    if self.deps.policy.is_overflow(&e)
+                        && let Some(mut next) =
+                            self.overflowed(OverflowPath::Refused, sent_bytes, &user, &[])
+                    {
+                        next["overflow"]["error"] = json!(e.to_string());
+                        break Answer::TooLong(next);
+                    }
                     let reason = match e {
                         MessagesError::Auth { .. } => "key_rejected",
                         MessagesError::BadBaseUrl | MessagesError::Redirected { .. } => {
@@ -2099,51 +2165,67 @@ impl Tick<'_> {
                         }
                         _ => "model_error",
                     };
-                    let notice = format!("{} {}", stop_lead(reason), self.what_i_did());
                     return self
-                        .stop(
-                            Stop {
-                                reason,
-                                notice: Some(notice),
-                            },
-                            Vec::new(),
-                            json!({"error": e.to_string()}),
-                            Vec::new(),
-                            &BTreeSet::new(),
-                            Observed::default(),
-                        )
+                        .end(Ending::stopped(End::stopped(reason)).with_error(json!(e.to_string())))
                         .await;
                 }
             }
         };
-        if let Some(slot) = slot {
-            let _ = self.store.mark_secret_ok(&slot);
-        }
-        let next = next_after(&msg, self.hist.nudged);
-        let stop = stop_reason_str(msg.stop_reason.as_ref());
-        let assistant: Vec<Value> = msg.content.iter().map(Block::to_json).collect();
+        // What the step keeps of the answer: a refused request has no
+        // blocks and used nothing.
+        let (assistant, stop, model, u, next) = match answer {
+            Answer::Message(msg) => {
+                if let Some(slot) = slot {
+                    let _ = self.store.mark_secret_ok(&slot);
+                }
+                let mut next = next_after(&msg, self.hist.nudged, &finish);
+                if msg.stop_reason == Some(StopReason::ModelContextWindowExceeded)
+                    && let Some(shorter) =
+                        self.overflowed(OverflowPath::StopReason, sent_bytes, &user, &msg.content)
+                {
+                    next = shorter;
+                }
+                let assistant: Vec<Value> = msg.content.iter().map(Block::to_json).collect();
+                (
+                    assistant,
+                    stop_reason_str(msg.stop_reason.as_ref()),
+                    msg.model,
+                    msg.usage,
+                    next,
+                )
+            }
+            Answer::TooLong(next) => (
+                Vec::new(),
+                "prompt_too_long".to_string(),
+                self.run.model.clone(),
+                Usage::default(),
+                next,
+            ),
+        };
         let mut payload = json!({
             "assistant": assistant,
             "stop_reason": stop,
-            "model": msg.model,
+            "model": model,
             "key_source": ks.as_str(),
             "max_tokens": req.max_tokens,
             "usage": {
-                "input_tokens": msg.usage.input_tokens,
-                "cache_read_input_tokens": msg.usage.cache_read_input_tokens,
-                "cache_creation_input_tokens": msg.usage.cache_creation_input_tokens,
-                "output_tokens": msg.usage.output_tokens,
+                "input_tokens": u.input_tokens,
+                "cache_read_input_tokens": u.cache_read_input_tokens,
+                "cache_creation_input_tokens": u.cache_creation_input_tokens,
+                "output_tokens": u.output_tokens,
             },
             "next": next,
         });
-        if let Some(b) = msg.usage.billed_micro_usd {
+        if let Some(b) = u.billed_micro_usd {
             payload["usage"]["billed_micro_usd"] = json!(b);
         }
         if first {
             payload["system"] = json!(system);
             payload["user"] = Value::Array(user.iter().map(Block::to_json).collect());
         }
-        let u = msg.usage;
+        if let Some(shown) = shown {
+            payload["shown"] = shown;
+        }
         let event = turn_record(
             self.store.now(),
             &self.run.model,
@@ -2158,9 +2240,9 @@ impl Tick<'_> {
             i64::try_from(u.cache_creation_input_tokens).unwrap_or(i64::MAX),
         );
         let mut usage = priced(
-            token_rows(&self.run.model, msg.usage, ks, false),
+            token_rows(&self.run.model, u, ks, false),
             &call_rates,
-            msg.usage.billed_micro_usd,
+            u.billed_micro_usd,
             ks,
             &|line, ks| line_token_rate(self.store, line, ks),
         )?;

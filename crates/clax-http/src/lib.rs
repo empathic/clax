@@ -16,6 +16,8 @@ pub mod audit;
 pub mod auth;
 pub mod blocking;
 pub mod bot;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod bot_surfaces;
 pub mod confirm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod conn;

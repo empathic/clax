@@ -1,5 +1,6 @@
 pub mod asset;
 pub mod bin;
+pub mod bot;
 pub mod comments;
 pub mod connect;
 pub mod db;

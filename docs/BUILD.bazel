@@ -11,6 +11,38 @@ filegroup(
     ],
 )
 
+# The ClaxBot surfaces design's example surface files of a host's, which
+# crates/clax-surface's tests read (src/tests/mod.rs), crates/clax-cli's
+# check and convert (tests/bot_surface.rs) and crates/clax-bot's render a
+# prompt for (src/prompt/live.rs).
+filegroup(
+    name = "claxbot_surface_examples",
+    srcs = glob(["superpowers/specs/2026-11-10-claxbot-surfaces/*.d.ts"]),
+    visibility = [
+        "//crates/clax-bot:__pkg__",
+        "//crates/clax-cli:__pkg__",
+        "//crates/clax-surface:__pkg__",
+    ],
+)
+
+# The contract fixture of the ClaxBot surfaces host protocol
+# (contract.md, "ClaxBot surfaces"), which the tests of the protocol's
+# messages (crates/clax-surface/src/tests/wire) and of its hub
+# (crates/clax-bot/src/bot_surfaces/tests.rs) replay.
+filegroup(
+    name = "claxbot_surfaces_contract",
+    srcs = ["claxbot-surfaces/contract.json"],
+    visibility = ["//crates:__subpackages__"],
+)
+
+# The ClaxBot surfaces design, whose examples of the host protocol's
+# messages crates/clax-surface's tests read (src/tests/wire).
+filegroup(
+    name = "claxbot_surfaces_design",
+    srcs = ["superpowers/specs/2026-11-10-claxbot-surfaces-design.md"],
+    visibility = ["//crates/clax-surface:__pkg__"],
+)
+
 # The Kubernetes guide, whose overlay of one's own clax-fleet's tests check
 # against deploy/k8s (crates/clax-fleet/src/main.rs).
 filegroup(

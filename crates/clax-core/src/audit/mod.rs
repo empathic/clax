@@ -120,6 +120,7 @@ kinds! {
     BotRunEnd = "bot.run_end",
     BotCancel = "bot.cancel",
     BotRefused = "bot.refused",
+    BotSurfaceRegistered = "bot.surface.registered",
     ViewRun = "view.run",
     ViewAdmin = "view.admin",
     ViewAudit = "view.audit",
@@ -275,7 +276,7 @@ pub enum KindGroup {
     /// Every kind outside `view.*`, `bot.*` and `admin.*`: changes to
     /// artifacts, threads, people and their agents.
     Changes,
-    /// `bot.*`: ClaxBot runs.
+    /// `bot.*`: ClaxBot runs, and the surfaces registered for them.
     Bot,
     /// `admin.credits` and `admin.cost_line`: credits and limits.
     Credits,
@@ -839,6 +840,7 @@ mod tests {
             "bot.run_end",
             "bot.cancel",
             "bot.refused",
+            "bot.surface.registered",
             "view.run",
             "view.admin",
             "view.audit",
@@ -1031,7 +1033,7 @@ mod tests {
             in_group(KindGroup::Views),
             ["view.run", "view.admin", "view.audit", "view.usage"]
         );
-        assert_eq!(in_group(KindGroup::Bot).len(), 8);
+        assert_eq!(in_group(KindGroup::Bot).len(), 9);
         assert_eq!(in_group(KindGroup::Admin).len(), 7);
         assert_eq!(
             in_group(KindGroup::Credits),

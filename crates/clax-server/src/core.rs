@@ -241,6 +241,10 @@ impl Core {
         let mut tasks = background_tasks(&state, cfg.reap_interval);
         tasks.extend(listeners);
         tasks.push(crate::bot::start_driver(&bot_driver));
+        // The registered surfaces' deadlines (`clax_http::bot_surfaces`).
+        tasks.push(tokio::spawn(clax_http::bot_surfaces::run_timer(
+            state.clone(),
+        )));
         // The artifacts whose documents the instance still holds move to
         // their own stores now, one at a time, rather than each at its
         // first call.

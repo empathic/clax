@@ -1,0 +1,6 @@
+{
+  "content_bytes": 102415,
+  "content_ends": "xxxxxxxxxxxxxxxxxxxxxxxxxxx… [truncated]",
+  "content_starts": "{\"calls\":[],\"error\":{\"kind\":\"thrown\",\"message\":\"Error: xxxxxxxxxxxxxxxxxxxxxxxxx",
+  "is_error": true
+}

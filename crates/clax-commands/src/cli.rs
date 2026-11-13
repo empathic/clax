@@ -169,6 +169,10 @@ pub enum Cmd {
     /// audit journal's state.
     #[command(subcommand)]
     Toolpath(commands::toolpath::Cmd),
+    /// Tools for the author of a ClaxBot surface: check a surface
+    /// definition, or write it in the other notation.
+    #[command(subcommand)]
+    Bot(commands::bot::Cmd),
     /// Print a haiku about Clax, one of ten, chosen at random.
     Haiku,
     /// Print the version; with --verbose, also the commit it was built from.
@@ -280,7 +284,7 @@ pub fn env_port(env: Option<std::ffi::OsString>) -> Option<anyhow::Result<u16>> 
 /// `approvals` changes print the remote People link), the agent
 /// sides that run over it (`mcp`, `hook`, `feedback`), and this machine's
 /// own (its local daemon with `serve` and `stop`, installing, `doctor`,
-/// `bin`, `version`, `haiku`). Every other command says it is not
+/// `bin`, `bot`, `version`, `haiku`). Every other command says it is not
 /// available on a remote Clax and exits 2.
 fn remote_ok(cmd: &Cmd) -> bool {
     match cmd {
@@ -303,6 +307,7 @@ fn remote_ok(cmd: &Cmd) -> bool {
         | Cmd::Init(_)
         | Cmd::Uninit(_)
         | Cmd::Bin { .. }
+        | Cmd::Bot(_)
         | Cmd::Haiku
         | Cmd::Version(_) => true,
         Cmd::Publish(_)
@@ -385,9 +390,13 @@ pub(crate) fn main() {
             std::process::exit(code);
         }
     };
-    let home = match home_from_env() {
-        Ok(home) => home,
-        Err(e) => {
+    let home = match (&cli.cmd, home_from_env()) {
+        // `clax bot` reads the files it is given and nothing else: it
+        // runs where no Clax home can be named, with one that names
+        // nothing, and never looks at it.
+        (Cmd::Bot(_), _) => clax_core::Home::at(std::path::PathBuf::new()),
+        (_, Ok(home)) => home,
+        (_, Err(e)) => {
             if matches!(cli.cmd, Cmd::NativeHost(_)) {
                 commands::native_host::run_without_home(&e);
             }
@@ -433,6 +442,7 @@ pub(crate) fn main() {
         Cmd::Bin { cmd } => commands::bin::run(&cli, &home, cmd.as_ref()),
         Cmd::Extension(c) => commands::extension::run(&cli, &home, c),
         Cmd::Toolpath(c) => commands::toolpath::run(&cli, &home, c),
+        Cmd::Bot(c) => commands::bot::run(&cli, c),
         Cmd::Haiku => commands::haiku::run(&cli),
         Cmd::Version(a) => commands::version::run(&cli, a),
         Cmd::NativeHost(a) => commands::native_host::run(&cli, &home, a),
