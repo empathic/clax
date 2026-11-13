@@ -55,20 +55,22 @@ type Raw = Omit<Line, "here" | "pending" | "waiting">;
 /** `list` sorted by `at` (ISO strings), equal times keeping their order. */
 const byAt = <T extends { at: string }>(list: T[]): T[] => [...list].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
 
-/** A thread's facts in time order; at equal times: made, sent, a person's
- * comment, an agent's, addressed, resolved. A version number no known
- * version has is skipped. */
+/** A thread's facts: made first, then the others in time order; at equal
+ * times: sent, a person's comment, an agent's, addressed, resolved. A fact
+ * timed before the first comment (a send) still follows it. A version
+ * number no known version has is skipped. */
 function factsOf(t: Thread, versionAt: Map<number, string>): Fact[] {
   const [first, ...rest] = t.comments;
-  const out: Fact[] = [{ at: first?.created_at ?? t.created_at, kind: "made", c: first }];
+  const made: Fact = { at: first?.created_at ?? t.created_at, kind: "made", c: first };
+  const out: Fact[] = [];
   (t.sends ?? []).forEach((s, i) => out.push({ at: s.sent_at, kind: "sent", batch: s.batch_id, first: i === 0 }));
   for (const c of rest) if (c.author_kind !== "agent") out.push({ at: c.created_at, kind: "person", c });
   for (const c of rest) if (c.author_kind === "agent") out.push({ at: c.created_at, kind: "agent", c });
   for (const n of t.addressed_in ?? []) { const at = versionAt.get(n); if (at !== undefined) out.push({ at, kind: "addressed", v: n }); }
   if (t.status === "resolved" && t.resolved_at) out.push({ at: t.resolved_at, kind: "resolved", by: t.resolved_by ?? "", line: true });
-  const sorted = byAt(out);
-  // A resolve with no time is placed after the thread's last fact and writes no line.
-  if (t.status === "resolved" && !t.resolved_at) sorted.push({ at: sorted[sorted.length - 1].at, kind: "resolved", by: t.resolved_by ?? "", line: false });
+  const sorted = [made, ...byAt(out)];
+  // A resolve with no time is placed after the thread's latest fact and writes no line.
+  if (t.status === "resolved" && !t.resolved_at) sorted.push({ at: sorted.reduce((m, f) => (f.at > m ? f.at : m), ""), kind: "resolved", by: t.resolved_by ?? "", line: false });
   return sorted;
 }
 
@@ -94,7 +96,8 @@ function walk(t: Thread, facts: Fact[], implicit: boolean, me: Viewer | null | u
       case "made":
         seg++; answered = false; sent = implicit;
         s = implicit ? { kind: "with-agent", working: false } : { kind: "unsent" };
-        lines.push({ key: `made:${t.id}`, at: f.at, kind: "made", who: f.c?.author_name ?? "", agent: f.c?.author_kind === "agent", mine: mine(f.c), ids: [t.id] });
+        // A thread with no comment has no one who made it: no line.
+        if (f.c) lines.push({ key: `made:${t.id}`, at: f.at, kind: "made", who: f.c.author_name, agent: f.c.author_kind === "agent", mine: mine(f.c), ids: [t.id] });
         break;
       case "sent":
         sent = true; s = { kind: "with-agent", working: false };

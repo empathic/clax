@@ -227,6 +227,21 @@ describe("timeline", () => {
     ]);
   });
 
+  it("walks a thread from its first comment even when a send is timed before it", () => {
+    const a = thread("a", { sent_to_agent: true, sends: [send("b1", AT(0, 30), 1)] });
+    const tl = run([a]);
+    expect(tl.stateOf.get("a")).toEqual({ kind: "with-agent", working: false });
+    expect(tl.waiting).toEqual([]);
+    expect(tl.lines.at(-1)).toMatchObject({ pending: 1, waiting: 0 });
+    expect(unsent([a], []).map(t => t.id)).toEqual([]);
+  });
+
+  it("writes no line with an empty author for a thread with no comments", () => {
+    const tl = run([{ ...thread("a"), comments: [] }]);
+    expect(tl.lines.filter(l => l.kind !== "version").map(l => l.who)).toEqual([]);
+    expect(tl.stateOf.get("a")).toEqual({ kind: "unsent" });
+  });
+
   it("reads one walk for the present and the history: the newest line's counts match the present, but for stalled threads", () => {
     const fs = (id: string, state: FeedbackState["state"]): FeedbackState => ({ thread_id: id, state, tier: null, since: AT(2), resends: 0, exhausted: false });
     const cases: { threads: Thread[]; versions: Version[]; claimed: string[] }[] = [
