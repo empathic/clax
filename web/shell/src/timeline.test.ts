@@ -151,6 +151,29 @@ describe("Sidebar views", () => {
     view.unmount();
   });
 
+  it("gives focus back to a row's own button when its thread moves to a newer line", async () => {
+    const { view, root, row, props, a, b } = setup();
+    await loaded(root);
+    const button = row(a)!;
+    // The browser takes focus from a moved element; the move here does too.
+    const move = Node.prototype.insertBefore;
+    Node.prototype.insertBefore = function <T extends Node>(this: Node, n: T, ref: Node | null): T {
+      if (n instanceof Element && n.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
+      return move.call(this, n, ref) as T;
+    };
+    try {
+      button.focus();
+      const later = { ...a, comments: [...a.comments, comment(`${a.id}.2`, "viewer", at(13, 11), "Agreed")] };
+      view.update({ ...props, threads: [later, b] });
+    } finally {
+      Node.prototype.insertBefore = move;
+    }
+    expect(texts(root)[0]).toBe("Mia replied");
+    expect(row(a)).toBe(button);
+    expect(document.activeElement).toBe(button);
+    view.unmount();
+  });
+
   it("keeps the card open, with its reply box, when the viewer's own reply on an addressed row writes a newer line", async () => {
     const onReply = vi.fn();
     const { view, root, row, card, props, a, b } = setup({ onReply });

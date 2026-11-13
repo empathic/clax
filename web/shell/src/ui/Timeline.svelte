@@ -71,13 +71,14 @@
   // The rows shown, in order; the open, selectable ones are a Shift range's order.
   const shown = $derived(entries.flatMap(x => (x.kind === "row" ? [x.id] : [])));
   const order = $derived(shown.filter(id => { const t = byId.get(id); return !!t && p.expanded.includes(id) && selectable(t, false); }));
-  // The card that holds focus keeps it when its row moves: moving an element
-  // can take focus from it to nowhere, and it is given back. `held` is what
-  // focus is in inside a card; it is let go once focus has gone elsewhere
-  // (to another element, or to nowhere for longer than the move). A moved
-  // card holding focus is scrolled into view.
+  // A row that holds focus (its button, what is above it, or its card)
+  // keeps it when it moves: moving an element can take focus from it to
+  // nowhere, and it is given back. `held` is what focus is in inside a
+  // row; it is let go once focus has gone elsewhere (to another element,
+  // or to nowhere for longer than the move). A moved card holding focus is
+  // scrolled into view.
   let held: HTMLElement | null = null;
-  const focusin = (e: FocusEvent) => { held = e.target instanceof HTMLElement && e.target.closest(".thread-card") ? e.target : null; };
+  const focusin = (e: FocusEvent) => { held = e.target instanceof HTMLElement && e.target.closest(".tl-thread") ? e.target : null; };
   const focusout = (e: FocusEvent) => {
     const t = e.target;
     if (e.relatedTarget) held = null;
