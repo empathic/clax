@@ -1,7 +1,7 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
-  // People's part on a hosted daemon (crates/clax-server/src/hosted.rs), for
+  // Settings' parts on a hosted daemon (crates/clax-server/src/hosted.rs), for
   // a member (the owner or a person): this browser (who it is signed in
   // as, a one-use sign-in link for another device, sign out), the person's
   // devices (the Clax app signed in as them, which may manage the sharing
@@ -11,13 +11,17 @@
   // marked Public when the public gallery lists it. Only the owner and a
   // page's maker share it; the daemon says so otherwise. Changing a link's
   // access here keeps its listing (the artifact's Share dialog sets it).
+  // `parts` names the ones shown: Account shows this browser and the
+  // devices, Agents & machines the agent tokens, Shared links the links.
   import { onMount } from "svelte";
   import { listArtifacts } from "../api";
   import * as api from "./api";
   import { forgetThenSignOut } from "./signout";
   import { refusal } from "../people/refusal";
 
-  let { me }: { me: api.HostedMe } = $props();
+  type Shown = "me" | "devices" | "tokens" | "links";
+  let { me, parts = ["me", "devices", "tokens", "links"] }: { me: api.HostedMe; parts?: Shown[] } = $props();
+  const has = (p: Shown) => parts.includes(p);
   const person = $derived(me.person);
   // A refusal shows in the part whose action it answers; a failed load at the end.
   type Part = "me" | "devices" | "tokens" | "links" | "load";
@@ -61,6 +65,7 @@
   onMount(() => { void load(); });
 </script>
 
+{#if has("me")}
 <section class="pcard hosted-me" aria-labelledby="hm-h">
   <h3 id="hm-h">This browser</h3>
   <div class="line"><span>Signed in as <strong>{person?.display_name ?? "an unnamed person"}</strong>{person?.owner ? " (the owner)" : ""}</span><span class="sp"></span>
@@ -73,13 +78,14 @@
   {/if}
   {#if err?.at === "me"}<p class="err" role="alert">{err.text}</p>{/if}
 </section>
+{/if}
 
 {#snippet tokenLine(t: api.AgentToken, at: Part)}
   <div class="line tok"><span class="mname">{t.label}</span><span class="meta">made {day(t.created_at)} · last used {day(t.last_used_at)}{t.status !== "approved" ? ` · ${t.status}` : ""}</span><span class="sp"></span>
     {#if t.status === "approved"}<button type="button" class="ghost danger" aria-label="Revoke the token for {t.label}" onclick={() => act(at, () => api.revokeToken(t.id))}>Revoke</button>{/if}</div>
 {/snippet}
 
-{#if devices.length}
+{#if has("devices") && devices.length}
   <section class="pcard hosted-devices" aria-labelledby="hd-h">
     <h3 id="hd-h">Devices</h3>
     <p class="note">The Clax app on your devices, signed in as you. Each holds an agent token of yours, with your rights, and may also change who can see or edit the pages you made{person?.owner ? " and, as the owner, any page on this site" : ""}, and whether anyone may comment on them.</p>
@@ -88,6 +94,7 @@
   </section>
 {/if}
 
+{#if has("tokens")}
 <section class="pcard hosted-tokens" aria-labelledby="ht-h">
   <h3 id="ht-h">Agent tokens</h3>
   <p class="note">An agent on any machine connects to this Clax as you, with your rights, by its token. Make one per machine.</p>
@@ -111,7 +118,9 @@
   {#each agentTokens as t (t.id)}{@render tokenLine(t, "tokens")}{/each}
   {#if err?.at === "tokens"}<p class="err" role="alert">{err.text}</p>{/if}
 </section>
+{/if}
 
+{#if has("links")}
 <section class="pcard hosted-links" aria-labelledby="hl-h">
   <h3 id="hl-h">Shared by link</h3>
   <p class="note">Anyone with a shared page's link sees it. To comment there they give a name and become a guest, whose comments reach your agents only once you approve them.</p>
@@ -138,6 +147,7 @@
   {/if}
   {#if err?.at === "links"}<p class="err" role="alert">{err.text}</p>{/if}
 </section>
+{/if}
 {#if err?.at === "load"}<p class="err" role="alert">{err.text}</p>{/if}
 
 <style>

@@ -371,7 +371,7 @@ if [ -n "$OAUTH_CLIENT_ID" ]; then
     info "gh secret set OWNER_GITHUB --env production --repo $repo --body $OWNER_GITHUB"
 fi
 info "gh secret set CLOUDFLARE_API_TOKEN --env production --repo $repo   # the token docs/prod.md describes"
-info "gh secret set CLAX_SMOKE_TOKEN --env production --repo $repo       # an agent token named smoke, from https://$public_host/people (Agent tokens)"
+info "gh secret set CLAX_SMOKE_TOKEN --env production --repo $repo       # an agent token named smoke, from https://$public_host/settings/agents (Agent tokens)"
 info "gh secret set CLOUDFLARE_API_TOKEN --env staging --repo $repo      # prod's account, zones $STAGING_HOST_ZONE and $STAGING_SITE_ZONE (docs/prod.md, \"Staging\")"
 info "gh secret set CLOUDFLARE_ACCOUNT_ID --env staging --repo $repo --body $CLOUDFLARE_ACCOUNT_ID"
 info "gh secret set OAUTH_CLIENT_ID --env staging --repo $repo           # the staging GitHub OAuth App's client ID"

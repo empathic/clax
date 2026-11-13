@@ -11,12 +11,16 @@
   // an inbox: the owner's (the token is served to it) or a connected
   // person's (`GET /api/viewers/me` says so), so a person's agents' questions
   // wait in Clax and are answered there; anyone else at `/inbox` is told
-  // the browser has no inbox, and nothing more of it is fetched. At `/people` the
-  // page is People (its own chunk, through the lazy module, with the page's
-  // stream), and no artifacts are fetched; so is `/queues`, the report queues
-  // (with a queue's view at `/queues/<qid>` and a report's at
-  // `/queues/<qid>/<tid>`). **People** and **Queues** are in the header for the owner and
-  // for a connected person, once the lazy module has loaded.
+  // the browser has no inbox, and nothing more of it is fetched. At `/settings`
+  // and `/settings/<screen>` the page is Settings (its own chunk, through
+  // the lazy module, with the page's stream), and no artifacts are fetched;
+  // so is `/queues`, the report queues (with a queue's view at
+  // `/queues/<qid>` and a report's at `/queues/<qid>/<tid>`). **Queues** and
+  // the **Settings** gear, the header's last control, are there for the
+  // owner and for a connected person, once the lazy module has loaded
+  // (it puts the gear there). The pages that moved into Settings
+  // (`/people`, `/admin`, `/me`, `/audit`) go to their screens there, by
+  // the lazy module too (`settings/moved.ts`).
   // Every one of these pages ends with a link to Clax's source on GitHub,
   // and, on a hosted Clax that shows Terms of Service and a Privacy Policy,
   // links to them; a person who has not agreed to them is asked to
@@ -28,13 +32,11 @@
   // A tag filter, like a search (which matches tag names too), shows one
   // list. The bar links to the tags at `/tags`, the Tags page (its own
   // chunk, through the lazy module, like People), where no artifacts are
-  // fetched; so are ClaxBot's pages, `/admin`, `/settings`, `/me` and
-  // `/audit` (`bot/`). Once the lazy module loads, the New artifact tile
+  // fetched. Once the lazy module loads, the New artifact tile
   // (`NewTile`) leads the first section's grid (searched or filtered
   // too), and the empty gallery. For a person who may report problems with
   // Clax, the header carries the feedback menu (`feedback/`), whatever the
-  // artifact list answers. On a hosted Clax, "seen as <name>" is the
-  // account menu's button, whose items include Sign out.
+  // artifact list answers. Signing out of a hosted Clax is in Settings.
   import { onDestroy, onMount } from "svelte";
   import { ApiError, type Artifact, type AttentionSummary, type TagRef, deleteArtifact, getAttention, getToken, listArtifacts, patchArtifact } from "../api";
   import { REQUEST_STUCK, connTrouble } from "../conn-notice";
@@ -56,14 +58,10 @@
   // documents to link (`legal`).
   let site = $state<string | null>(null);
   let legal = $state<{ terms_url: string; privacy_url: string } | null>(null);
-  // On a hosted daemon, for whoever the browser is signed in as: the account
-  // menu (`hosted/AccountMenu`, its own chunk), which carries "seen as
-  // <name>" and Sign out. A local daemon has none.
-  let account = $state<{ C: typeof import("../hosted/AccountMenu.svelte").default; name: string | null; guest: boolean } | null>(null);
   let query = $state("");
   // This browser's viewer (`GET /api/viewers/me`): its name, public ID, and
   // whether it is a connected person's.
-  let viewer = $state<import("../people/PeopleLink.svelte").Viewer>(null);
+  let viewer = $state<import("../people/MemberLinks.svelte").Viewer>(null);
   const me = $derived(viewer?.display_name);
   const meId = $derived(viewer?.public_id ?? null);
   // This viewer's attention, by artifact: {} until it arrives (or on failure),
@@ -76,11 +74,13 @@
   let feed = $state<import("./working-feed.svelte").WorkingFeed | null>(null);
   let sync: import("./card-sync").CardSync | null = null;
   // The page's path, with a queue's and a report's view (`/queues/<qid>`,
-  // `/queues/<qid>/<tid>`) read as the Queues page: the only sub-paths a page has.
-  const top = location.pathname.replace(/^\/queues\/.+/, "/queues");
+  // `/queues/<qid>/<tid>`) read as the Queues page and a Settings screen
+  // (`/settings/<screen>`) as Settings: the only sub-paths a page has.
+  const top = location.pathname.replace(/^\/(queues|settings)\/.+/, "/$1");
   const inbox = top === "/inbox";
-  // The pages beside the gallery and the inbox, each its own chunk (`gallery-working` `page`).
-  const sub = /^\/(people|tags|queues|admin|settings|me|audit)$/.exec(top)?.[1] as import("./gallery-working").Page | undefined;
+  // The pages beside the gallery and the inbox, each its own chunk
+  // (`gallery-working` `page`): any other one-word path the daemon serves this entry at.
+  const sub = inbox ? undefined : /^\/([a-z]+)$/.exec(top)?.[1] as import("./gallery-working").Page | undefined;
   // The tag filter: the artifacts shown carry every one. It holds tag IDs
   // once the tags are known (`canonical`), and the address (`?tag=`) names
   // each tag by its name, so a rename follows in place and a deleted tag
@@ -158,8 +158,8 @@
   const flat = $derived(!!query.trim() || sel.length > 0);
   const g = $derived(shown && gw && !flat ? gw.groups(shown, att) : null);
   // This browser's viewer, asked once (after the token: on this machine that makes it the owner's).
-  let mine: Promise<import("../people/PeopleLink.svelte").Viewer>;
-  onMount(() => { mine = getToken().then(t => { token = t; if (t?.startsWith("cxo_")) site = location.host; if (!t || t.startsWith("cxo_")) void fetch("/api/hosted/me").then(r => r.ok && r.json()).then((h: import("../hosted/api").HostedMe | false) => { if (h && !destroyed) { site = location.host; legal = h.legal ?? null; if (h.signed_in && h.person) { const p = h.person; void import("../hosted/AccountMenu.svelte").then(m => { if (!destroyed) account = { C: m.default, name: p.display_name, guest: p.guest }; }, () => {}); } if (legal) void import("../hosted/legal").then(m => m.ask(h.legal!)); } }, () => {}); return fetch("/api/viewers/me"); }).then(r => r.json()).then(b => (viewer = b?.viewer), () => null); if (inbox) void lazy().then(loadQ, () => {}); else if (sub) void lazy().then(m => { void loadQ(m); if (!destroyed) unPeople = m.page(sub, document.querySelector("main.gal")!); }, () => {}); else void refresh(true); });
+  let mine: Promise<import("../people/MemberLinks.svelte").Viewer>;
+  onMount(() => { mine = getToken().then(t => { token = t; if (t?.startsWith("cxo_")) site = location.host; if (!t || t.startsWith("cxo_")) void fetch("/api/hosted/me").then(r => r.ok && r.json()).then((h: import("../hosted/api").HostedMe | false) => { if (h && !destroyed) { site = location.host; legal = h.legal ?? null; if (legal) void import("../hosted/legal").then(m => m.ask(h.legal!)); } }, () => {}); return fetch("/api/viewers/me"); }).then(r => r.json()).then(b => (viewer = b?.viewer), () => null); if (inbox) void lazy().then(loadQ, () => {}); else if (sub) void lazy().then(m => { void loadQ(m); if (!destroyed) unPeople = m.page(sub, document.querySelector("main.gal")!); }, () => {}); else void refresh(true); });
   onDestroy(() => { destroyed = true; unPeople?.(); life.dispose(); cancelStart?.(); sync?.stop(); Q?.stop(); });
   // Back and forward walk the tag filters.
   const popped = () => { sel = tagsFromUrl(location.search); };
@@ -168,7 +168,7 @@
 <svelte:window onpopstate={popped} />
 
 <header class="gbar">
-  <a href="/" class="home" aria-label="Gallery"><Mark /></a><h1>Clax</h1><span class="sub hide-sm">{site ?? "local artifacts"}{#if account}{" ·"}{:else if me}{` · seen as ${me}`}{/if}</span>{#if account}<account.C name={account.name ?? me ?? "you"} guest={account.guest} />{/if}
+  <a href="/" class="home" aria-label="Gallery"><Mark /></a><h1>Clax</h1><span class="sub hide-sm">{site ?? "local artifacts"}{#if me}{` · seen as ${me}`}{/if}</span>
   {#if !inbox && !sub}<input type="search" class="search" placeholder="Search artifacts" aria-label="Search artifacts" value={query} oninput={e => { query = e.currentTarget.value; }} />{/if}
   {#if Q}<Q.InboxLink current={inbox} />{/if}
   {#if lm}<lm.Links current={sub} owner={!!token} {viewer} />{/if}

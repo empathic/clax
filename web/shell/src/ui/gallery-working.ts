@@ -10,6 +10,7 @@ import type { WorkingFeed } from "./working-feed.svelte";
 import { markers } from "../view/attention-model";
 import { agentNames, chips, type Working } from "../view/working-model";
 import { pageStream } from "../stream";
+import { moved } from "../settings/moved";
 
 export { groups } from "../view/attention-model";
 export { default as HaikuLine } from "./HaikuLine.svelte";
@@ -55,24 +56,28 @@ export const summary = () => import("../q/GallerySummary.svelte");
 export { default as NewTile } from "./NewTile.svelte";
 
 /** The gallery shell's pages besides the gallery and the inbox, each its own chunk. */
-export type Page = "people" | "tags" | "queues" | "admin" | "settings" | "me" | "audit";
-const PAGES: Record<Page, () => Promise<{ default: unknown }>> = {
-  people: () => import("../people/People.svelte"),
+export type Page = "tags" | "queues" | "settings" | "people" | "admin" | "me" | "audit";
+const PAGES: Partial<Record<Page, () => Promise<{ default: unknown }>>> = {
   tags: () => import("./TagsPage.svelte"),
   queues: () => import("../queues/Queues.svelte"),
-  admin: () => import("../bot/AdminPage.svelte"),
-  settings: () => import("../bot/SettingsPage.svelte"),
-  me: () => import("../bot/MePage.svelte"),
-  audit: () => import("../bot/AuditPage.svelte"),
+  settings: () => import("../settings/Settings.svelte"),
 };
 
-/** `/people`, `/tags`, `/queues`, `/admin`, `/settings`, `/me` and `/audit`: mounts
+/** `/tags`, `/queues` and `/settings` (with its screens, `/settings/<screen>`): mounts
  * that page (its own chunk) at the end of `target`, following the page's
- * stream. The result removes it. */
+ * stream. The result removes it. A page that moved into Settings
+ * (`/people`, `/admin`, `/me`, `/audit`) is replaced by its screen's
+ * address there, keeping its query and fragment. */
 export function page(name: Page, target: Element): () => void {
   let view: Record<string, unknown> | null = null;
   let gone = false;
-  void PAGES[name]().then(p => { if (!gone) view = mount(p.default as Component<{ stream: ReturnType<typeof pageStream> }>, { target, props: { stream: pageStream() } }); }, () => {});
+  const load = PAGES[name];
+  if (!load) {
+    const to = moved(location.pathname, location.search);
+    if (to) location.replace(`${to}${location.hash}`);
+    return () => {};
+  }
+  void load().then(p => { if (!gone) view = mount(p.default as Component<{ stream: ReturnType<typeof pageStream> }>, { target, props: { stream: pageStream() } }); }, () => {});
   return () => { gone = true; if (view) void unmount(view); };
 }
 

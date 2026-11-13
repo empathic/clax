@@ -1,7 +1,7 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
-  // Admin › Pricing (spec 2026-10-21-claxbot §7.2, §7.4; docs/contract.md
+  // Settings, Pricing (spec 2026-10-21-claxbot §7.2, §7.4; docs/contract.md
   // "Pricing"): what one credit sells for and the free credits everyone gets
   // each week; each model's token rates as charged now and where each comes
   // from (its rate card set here, or an estimate: tokenulator.dev's price

@@ -79,7 +79,7 @@
   {#if status === "pending"}
     {#if open}
       <form onsubmit={approve}>
-        <p class="meta">Approving makes a new person. To add this machine to someone already connected, or to you, make an invite instead: <a href="/people?invite">Invite</a></p>
+        <p class="meta">Approving makes a new person. To add this machine to someone already connected, or to you, make an invite instead: <a href="/settings/people?invite">Invite</a></p>
         <div class="row">
           <label class="field">Code shown on {g!.client.name}
             <input name="code" onkeydown={esc} autocomplete="off" spellcheck="false" autocapitalize="characters" placeholder="WXYZ-4821" value={code} oninput={e => { code = e.currentTarget.value; }} /></label>

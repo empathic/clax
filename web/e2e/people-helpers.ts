@@ -68,7 +68,7 @@ export async function connect(browser: Browser, command: string, name: string, y
   const ctx = await browser.newContext();
   const page = await ctx.newPage();
   await page.goto(link);
-  await page.waitForURL(/\/people$/);
+  await page.waitForURL(/\/settings\/agents$/);
   return { name, home, ctx, page, lan: new URL(link).origin };
 }
 

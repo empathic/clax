@@ -1,7 +1,7 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
-  // `/me` (spec 2026-10-21-claxbot D11, §7, §11.7): this person's ClaxBot
+  // Settings, Your ClaxBot (spec 2026-10-21-claxbot D11, §7, §11.7): this person's ClaxBot
   // this week (credits against their allowance, by cost line), the model key
   // their runs use (their own Anthropic key, set, replaced or removed here,
   // write-only, and the switch to use it; off, the instance's), and their
@@ -46,13 +46,13 @@
     try { await fn(); take(await refresh()); } catch (e) { err = refusal(e); } finally { busy = false; }
   }
   onMount(() => {
-    document.title = "You · Clax";
+    document.title = "Your ClaxBot · Settings · Clax";
     void refresh().then(take, e => { err = refusal(e); });
     void meUsage().then(u => { usage = u; }, () => {});
   });
 </script>
 
-<BotPage title="You" lede="Your ClaxBot this week and the key it uses for you. A credit is one unit of spend: script compute always, and model tokens on the instance's key.">
+<BotPage title="Your ClaxBot" lede="Your ClaxBot this week and the key it uses for you. A credit is one unit of spend: script compute always, and model tokens on the instance's key.">
   {#if err}<p class="err" role="alert">{err}</p>{/if}
   {#if none}
     <p class="note">ClaxBot is not on this Clax.</p>
@@ -112,7 +112,7 @@
           </tbody>
         </table>
       </div>
-      <p class="note"><a href="/audit?actor=claxbot">Everything ClaxBot did for you</a>, in the audit log.</p>
+      <p class="note"><a href="/settings/audit?actor=claxbot">Everything ClaxBot did for you</a>, in the audit log.</p>
     </section>
   {:else if !err}
     <p class="note" role="status">Loading…</p>

@@ -15,7 +15,7 @@ const ownerRoutes = (o: Record<string, unknown> = {}) => ({
   ...o,
 });
 
-beforeEach(() => { history.replaceState(null, "", "/people"); });
+beforeEach(() => { history.replaceState(null, "", "/settings/people"); });
 afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
 
 describe("People", () => {
@@ -30,16 +30,16 @@ describe("People", () => {
     expect(m.root.querySelector(".revoked")!.textContent).toContain("Old");
     // Sam's content reaches the owner's agents: listed with Revoke.
     expect(m.root.querySelector('[data-person="p1"] .approvals')!.textContent).toContain("everywhere");
-    expect(document.title).toBe("People · Clax");
+    expect(document.title).toBe("People · Settings · Clax");
   });
 
-  it("opens Invite at once for `/people?invite`, the connection card's link, and leaves the URL at /people", async () => {
-    history.replaceState(null, "", "/people?invite");
+  it("opens Invite at once for `?invite`, the connection card's link, and leaves the address without it", async () => {
+    history.replaceState(null, "", "/settings/people?invite");
     stubFetch(ownerRoutes());
     const m = mount(People, {});
     await settle();
     expect(m.root.querySelector(".invite")).not.toBeNull();
-    expect(location.pathname + location.search).toBe("/people");
+    expect(location.pathname + location.search).toBe("/settings/people");
   });
 
   it("shows the switch once while the first invite's dialog is open, in the dialog", async () => {
@@ -62,13 +62,48 @@ describe("People", () => {
     expect(m.root.querySelector('.invite [role="switch"]')).not.toBeNull();
   });
 
+  it("shows the owner their own agents and machines on Agents & machines, and nothing of anyone else", async () => {
+    stubFetch(ownerRoutes());
+    const m = mount(People, { part: "agents" });
+    await settle();
+    expect(m.root.querySelector("h2")!.textContent).toBe("Agents & machines");
+    expect([...m.root.querySelectorAll(".person")]).toHaveLength(1);
+    expect(m.root.querySelector(".person h3")!.textContent).toContain("(you)");
+    expect(m.root.textContent).not.toContain("Mia");
+    expect([...m.root.querySelectorAll("button")].some(b => b.textContent === "Invite a person")).toBe(false);
+    expect(m.root.querySelector('[role="switch"]')).toBeNull();
+    expect(document.title).toBe("Agents & machines · Settings · Clax");
+  });
+
+  it("shows the owner everyone but themselves on People, each section under an ID a link can name", async () => {
+    stubFetch(ownerRoutes());
+    const m = mount(People, {});
+    await settle();
+    expect(m.root.querySelector(".person h3 .you")).toBeNull();
+    expect(m.root.querySelector("#ppl-requests")!.textContent).toBe("Connection requests");
+    expect(m.root.querySelector("#ppl-unconnected")).not.toBeNull();
+    expect(m.root.querySelector("#ppl-revoked")!.textContent).toBe("Revoked");
+  });
+
+  it("tells a connected person that People is the owner's, and where their own is", async () => {
+    stubFetch({
+      "GET /api/people/me": { person: { public_id: "p1", display_name: "Sam", owner: false, rights: COLLAB }, grants: [grant()], agents: [agent()] },
+      "GET /api/approvals": { approvals: [] },
+      "GET /api/approvals/requests": { requests: [], open: 0, banner: null },
+    });
+    const m = mount(People, {});
+    await settle();
+    expect(m.root.querySelector(".person")).toBeNull();
+    expect(m.root.querySelector<HTMLAnchorElement>(".note a")!.getAttribute("href")).toBe("/settings/agents");
+  });
+
   it("shows a connected person only themselves, their machines and their agents", async () => {
     const calls = stubFetch({
       "GET /api/people/me": { person: { public_id: "p1", display_name: "Sam", owner: false, rights: COLLAB }, grants: [grant()], agents: [agent()] },
       "GET /api/approvals": { approvals: [{ id: "a2", approver: "p1", author: { public_id: "o1", name: "Alex" }, scope: "everywhere", artifact_id: null, thread_id: null, created_at: "", created_via: "connect", request_id: null }] },
       "GET /api/approvals/requests": { requests: [], open: 0, banner: null },
     });
-    const m = mount(People, {});
+    const m = mount(People, { part: "agents" });
     await settle();
     expect([...m.root.querySelectorAll(".person")]).toHaveLength(1);
     expect(m.root.querySelector(".person h3")!.textContent).toContain("Sam");
@@ -166,7 +201,7 @@ describe("People", () => {
       ] },
       "GET /api/approvals/requests": { requests: [req("r1", "open"), req("r2", "denied")], open: 1, banner: null },
     });
-    const m = mount(People, {});
+    const m = mount(People, { part: "agents" });
     await settle();
     const rows = [...m.root.querySelectorAll(".approvals .line:not(.wait)")].map(l => [...l.querySelectorAll("span")].slice(0, 2).map(s => s.textContent));
     expect(rows).toEqual([["The owner", "everywhere"], [`${H}Mia`, "in one thread on “Quarterly Review”"]]);
@@ -180,12 +215,12 @@ describe("People", () => {
       "GET /api/approvals": { approvals: [{ id: "a2", approver: "p1", author: { public_id: "o1", name: "Viewer", owner: true }, scope: "everywhere", artifact_id: null, thread_id: null, created_at: "", created_via: "connect", request_id: null }] },
       "GET /api/approvals/requests": { requests: [], open: 0, banner: null },
     });
-    const m = mount(People, {});
+    const m = mount(People, { part: "agents" });
     await settle();
     expect(m.root.querySelector(".approvals .line span")!.textContent).toBe("Viewer (the owner)");
   });
 
-  it("clears the page and tells the header when People stops being the viewer's", async () => {
+  it("clears the screen and tells the header when it stops being the viewer's", async () => {
     let revoked = false;
     stubFetch({
       "GET /api/people/me": () => (revoked ? [403, { error: { code: "forbidden", message: "only the owner or a connected person has People" } }] : { person: { public_id: "p1", display_name: "Sam", owner: false, rights: COLLAB }, grants: [grant()], agents: [agent()] }),
@@ -196,7 +231,7 @@ describe("People", () => {
     const watch = vi.fn((_t: string[], on: (e: { type: string }) => void) => { hear = on; return () => {}; });
     const gone = vi.fn();
     addEventListener("clax:people-gone", gone);
-    const m = mount(People, { stream: { watch } as unknown as import("../stream").EventStream });
+    const m = mount(People, { part: "agents", stream: { watch } as unknown as import("../stream").EventStream });
     await settle();
     expect(m.root.querySelector(".person")).not.toBeNull();
     revoked = true;
@@ -205,6 +240,11 @@ describe("People", () => {
     removeEventListener("clax:people-gone", gone);
     expect(m.root.querySelector(".person")).toBeNull();
     expect(m.root.querySelector(".approvals")).toBeNull();
+    expect(m.root.textContent).toContain("You are no longer connected: the owner disconnected you.");
+    expect(gone).toHaveBeenCalledTimes(1);
+    // A second event after the revocation changes neither.
+    hear!({ type: "refused" });
+    await settle();
     expect(m.root.textContent).toContain("You are no longer connected: the owner disconnected you.");
     expect(gone).toHaveBeenCalledTimes(1);
   });

@@ -133,7 +133,7 @@
     <span class="dot" aria-hidden="true"></span>ClaxBot<span class="bot-sr">{active ? ", working" : ", runs"}</span>
   </button>
 {/if}
-{#if week && weekWords}<a class="botwk hide-sm" class:warn={week.warn} class:out={week.exhausted} href="/me" title={weekWords.title} aria-label={weekWords.label}>{weekWords.own ? "your key · " : ""}{credits(week.spent)} / {credits(week.total)}</a>{/if}
+{#if week && weekWords}<a class="botwk hide-sm" class:warn={week.warn} class:out={week.exhausted} href="/settings/claxbot" title={weekWords.title} aria-label={weekWords.label}>{weekWords.own ? "your key · " : ""}{credits(week.spent)} / {credits(week.total)}</a>{/if}
 
 <style>
   :global {

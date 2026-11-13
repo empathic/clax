@@ -73,7 +73,7 @@ describe("the run panel", () => {
     expect(panel.querySelector('pre[aria-label="Output"]')!.textContent).toContain("8312");
     expect(panel.querySelector(".cost")!.textContent).toBe("This run: 3 credits · 38k tokens on your key");
     expect(panel.querySelector(".wk")!.textContent).toContain("310 / 2,000");
-    expect(panel.querySelector<HTMLAnchorElement>(".wk a")!.getAttribute("href")).toBe("/audit?artifact=7q3k9mzx2b4t&q=r1");
+    expect(panel.querySelector<HTMLAnchorElement>(".wk a")!.getAttribute("href")).toBe("/settings/audit?artifact=7q3k9mzx2b4t&q=r1");
     click(button(panel, "Stop"));
     await settle();
     expect(calls.find(c => c.method === "POST")!.url).toBe("/api/bot/runs/r1/cancel");

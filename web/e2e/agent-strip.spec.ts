@@ -150,7 +150,7 @@ test("the inbox groups by agent, threads name their owners and wait for approval
     // Sam's browser: his approval card above the thread, and his agent by name only.
     const s = await samCtx.newPage();
     await s.goto(link);
-    await s.waitForURL(/\/people$/);
+    await s.waitForURL(/\/settings\/agents$/);
     await s.goto(`${lan}/a/${aid}?thread=${tid}`);
     const samCard = s.locator(`.thread-card[data-thread="${tid}"]`);
     const above = s.locator(".thread-approval .acard");

@@ -37,7 +37,7 @@ test("the owner and the agent's person read a wait beside the lost access", asyn
   let mia: Person | undefined;
   try {
     const owner = await ownerCtx.newPage();
-    await owner.goto(`${d.base}/people`);
+    await owner.goto(`${d.base}/settings/people`);
     await owner.getByRole("button", { name: "Invite a person" }).click();
     await owner.getByRole("textbox", { name: "Name", exact: true }).fill("Sam");
     await owner.getByRole("button", { name: "Create invite" }).click();
@@ -87,7 +87,7 @@ test("the owner and the agent's person read a wait beside the lost access", asyn
     await expect(waiting(owner)).toHaveText("waiting for Sam's approval · the agent no longer has access");
     const person = await personCtx.newPage();
     await person.goto(link);
-    await person.waitForURL(/\/people$/);
+    await person.waitForURL(/\/settings\/agents$/);
     await person.goto(new URL(`/a/${aid}`, link).href);
     await expect(waiting(person)).toHaveText("waiting for your approval · the agent no longer has access");
   } finally {

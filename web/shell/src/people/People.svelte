@@ -2,30 +2,33 @@
 
 <script lang="ts">
   import { peopleDenied, refusal } from "./refusal";
-  // `/people` (spec 2026-10-08-multi-agent-multi-person §3.1, §3.4, §9.5,
-  // §9.6, §17, §18). For the owner: invites (with the command, its expiry
-  // and the LAN warning; the `*unconnected` switch beside the first),
-  // connection requests waiting (approved in the inbox), the switch, the
-  // owner's own other machines and agents, every connected person (rights,
-  // machines, agents, the approvals of theirs the owner made and what waits
-  // on the owner), the people on other Clax the owner approved or is asked
-  // about (authors of comments mirrored from a public copy, keyed
-  // `remote:<origin>#<ID>`, named "<name> (on <remote>)" by the daemon),
-  // and revoked people as history. For a connected person:
-  // themselves alone, their machines and agents, the approvals they made
-  // and what waits on them. Anyone else is told People is not theirs.
-  // Every change is the browser's (M20) and refetches the page; the page
-  // also refetches on the stream's `people` (the owner's) and `agents`
-  // topics, so a person who connects appears, and on its refusal. When
-  // People stops being theirs (a person revoked), the page clears and says
-  // so, and the header's People link is told to check again. `/people?invite`
-  // opens Invite at once for the owner. On a hosted daemon (`GET
-  // /api/hosted/me` answers) the page leads with this browser's sign-in,
-  // agent tokens and pages shared by link (`HostedPanel`, a chunk of its
-  // own fetched beside that request, so a local daemon's page carries none
-  // of it and a hosted one waits on no extra round trip), invites are
-  // links, and the viewers who are not connected are guests. For the owner
-  // and admins, the heading row links to Admin (spec 2026-10-21-claxbot §11.5).
+  // Settings' screens about people and their agents (spec
+  // 2026-10-08-multi-agent-multi-person §3.1, §3.4, §9.5, §9.6, §17, §18),
+  // one at a time by `part`:
+  // - `people` (the owner's): invites (with the command, its expiry and the
+  //   LAN warning; the `*unconnected` switch beside the first), connection
+  //   requests waiting (approved in the inbox), the switch, every connected
+  //   person (rights, machines, agents, the approvals of theirs the owner
+  //   made and what waits on the owner), the people on other Clax the owner
+  //   approved or is asked about (authors of comments mirrored from a
+  //   public copy, keyed `remote:<origin>#<ID>`, named "<name> (on
+  //   <remote>)" by the daemon), and revoked people as history.
+  //   `/settings/people?invite` opens Invite at once.
+  // - `agents` (the owner's and a connected person's): themselves alone,
+  //   their machines and agents, and for a person the approvals they made
+  //   and what waits on them; on a hosted daemon, led by their agent tokens.
+  // - `account` and `sharing` (a hosted daemon's): this browser's sign-in
+  //   and devices, and the pages shared by link.
+  // Anyone else is told the screen is not theirs. Every change is the
+  // browser's (M20) and refetches the screen; it also refetches on the
+  // stream's `people` (the owner's) and `agents` topics, so a person who
+  // connects appears, and on its refusal. When it stops being theirs (a
+  // person revoked), the screen clears and says so, and the header's
+  // links are told to check again. The hosted parts (`HostedPanel`) are a
+  // chunk of their own fetched beside `GET /api/hosted/me`, so a local
+  // daemon's screen carries none of it and a hosted one waits on no extra
+  // round trip; there invites are links, and the viewers who are not
+  // connected are guests.
   import { onDestroy, onMount, tick, type Component } from "svelte";
   import { listArtifacts } from "../api";
   import type { PeopleApproval, PeopleGrant, PeopleInvite, PeopleList, PeopleMe, PeopleRequest } from "../api";
@@ -37,7 +40,11 @@
   import UnconnectedSwitch from "./UnconnectedSwitch.svelte";
   import * as hostedApi from "../hosted/api";
 
-  let { stream, now }: { stream?: EventStream; now?: () => Date } = $props();
+  type Part = "people" | "agents" | "account" | "sharing";
+  let { stream, now, part = "people" }: { stream?: EventStream; now?: () => Date; part?: Part } = $props();
+  const TITLE: Record<Part, string> = { people: "People", agents: "Agents & machines", account: "Account", sharing: "Shared links" };
+  /** The hosted panel's parts each screen shows. */
+  const HOSTED: Record<Part, ("me" | "devices" | "tokens" | "links")[]> = { people: [], agents: ["tokens"], account: ["me", "devices"], sharing: ["links"] };
   const clock = () => now?.() ?? new Date();
   let me = $state<PeopleMe | null>(null);
   let denied = $state<string | null>(null);
@@ -54,12 +61,11 @@
   let artifactsWanted = false;
   let inviting = $state(false);
   let hosted = $state<hostedApi.HostedMe | null>(null);
-  let HostedPanel = $state<Component<{ me: hostedApi.HostedMe }> | null>(null);
+  let HostedPanel = $state<Component<{ me: hostedApi.HostedMe; parts: ("me" | "devices" | "tokens" | "links")[] }> | null>(null);
   // The open dialog is the first invite's: the switch shows in it, not apart.
   let firstInvite = $state(false);
-  // Whether this browser's person administers ClaxBot (`bot/me`, its own chunk).
-  let admin = $state(false);
   let gone = false;
+  let was = false;
   let off: (() => void) | null = null;
   const msg = refusal;
 
@@ -68,11 +74,13 @@
     try { m = await api.me(); } catch (e) {
       if (gone) return;
       const had = !!me;
-      denied = peopleDenied(e, had && !me?.person.owner); me = null; list = null; invites = []; pending = []; approvals = []; requests = []; banner = null; inviting = false;
+      // A later event finds no one to forget: the screen still says they were disconnected.
+      was ||= had && !me?.person.owner;
+      denied = peopleDenied(e, was); me = null; list = null; invites = []; pending = []; approvals = []; requests = []; banner = null; inviting = false;
       if (had) dispatchEvent(new Event("clax:people-gone"));
       return;
     }
-    denied = null;
+    denied = null; was = false;
     const owner = m.person.owner;
     try {
       const [l, inv, pend, aps, reqs] = await Promise.all([
@@ -80,9 +88,9 @@
       ]);
       if (gone) return;
       me = m; list = l; invites = inv?.invites ?? []; pending = pend?.grants ?? [];
-      // `/people?invite` (the inbox's connection card links here): Invite opens at once.
-      if (owner && new URLSearchParams(location.search).has("invite")) {
-        history.replaceState(history.state, "", "/people");
+      // `?invite` (the inbox's connection card links here): Invite opens at once.
+      if (owner && part === "people" && new URLSearchParams(location.search).has("invite")) {
+        history.replaceState(history.state, "", location.pathname);
         firstInvite = invites.length === 0; inviting = true;
       }
       approvals = aps.approvals; requests = reqs.requests.filter(r => r.status === "open"); banner = reqs.banner;
@@ -136,14 +144,13 @@
    * such (the daemon names an unnamed owner "The owner"). */
   const authorOf = (a: { name: string; owner?: boolean }) => (a.owner && a.name !== "The owner" ? `${a.name} (the owner)` : a.name);
   onMount(() => {
-    document.title = "People · Clax";
-    void import("../bot/me").then(async m => m.isAdmin(await m.myRole())).then(a => { if (!gone) admin = a; }, () => {});
+    document.title = `${TITLE[part]} · Settings · Clax`;
     reload();
-    const panel = import("../hosted/HostedPanel.svelte").then(m => m.default, () => null);
+    const panel = HOSTED[part].length ? import("../hosted/HostedPanel.svelte").then(m => m.default, () => null) : null;
     void hostedApi.me().then(h => {
       if (gone) return;
       hosted = h;
-      if (h?.person) void panel.then(c => { if (!gone && c) HostedPanel = c; });
+      if (h?.person) void panel?.then(c => { if (!gone && c) HostedPanel = c; });
     }, () => {});
   });
   onDestroy(() => { gone = true; off?.(); });
@@ -151,24 +158,24 @@
 
 <div class="ppl">
   <div class="phead">
-    <h2 tabindex="-1">People</h2>
-    {#if owner}<span class="pcount">{people.length === 1 ? "1 person" : `${people.length} people`}</span>{/if}
+    <h2 tabindex="-1">{TITLE[part]}</h2>
+    {#if owner && part === "people"}<span class="pcount">{people.length === 1 ? "1 person" : `${people.length} people`}</span>{/if}
     <span class="sp"></span>
-    {#if admin}<a class="padmin" href="/admin">Admin</a>{/if}
-    {#if owner && !inviting}<button type="button" class="primary invite-open" onclick={() => { firstInvite = invites.length === 0; inviting = true; }}>Invite a person</button>{/if}
+    {#if owner && part === "people" && !inviting}<button type="button" class="primary invite-open" onclick={() => { firstInvite = invites.length === 0; inviting = true; }}>Invite a person</button>{/if}
   </div>
   {#if denied}<p class="note">{denied}</p>{/if}
   {#if err}<p class="err" role="alert">{err}</p>{/if}
-  {#if banner}<p class="banner">{banner}</p>{/if}
-  {#if hosted?.person && me && HostedPanel}<HostedPanel me={hosted} />{/if}
+  {#if banner && part !== "account" && part !== "sharing"}<p class="banner">{banner}</p>{/if}
+  {#if hosted?.person && me && HostedPanel}<HostedPanel me={hosted} parts={HOSTED[part]} />{/if}
 
-  {#if owner && list}
+  {#if part === "people" && me && !owner}<p class="note">The people connected to this Clax are the owner's to see. Your own agents and machines are under <a href="/settings/agents">Agents &amp; machines</a>.</p>{/if}
+  {#if part === "people" && owner && list}
     {#if inviting}
       <InviteDialog first={firstInvite} unconnected={list.unconnected} now={clock()} onMade={reload} onSwitched={reload} onClose={closeInvite} hosted={!!hosted} />
     {/if}
     {#if live.length}
       <section class="pcard">
-        <h3 tabindex="-1">Invites</h3>
+        <h3 id="ppl-invites" tabindex="-1">Invites</h3>
         {#each live as i (i.id)}
           <div class="line"><span>{i.owner ? "You, on another machine" : i.person.display_name}</span><span class="meta">expires in {expiresIn(i.expires_at, clock())}</span><span class="sp"></span>
             <button type="button" class="ghost" aria-label={i.owner ? "Revoke the invite for your other machine" : `Revoke ${i.person.display_name}'s invite`} onclick={e => act(e, () => api.revokeInvite(i.id))}>Revoke</button></div>
@@ -177,7 +184,7 @@
     {/if}
     {#if pending.length}
       <section class="pcard requests">
-        <h3 tabindex="-1">Connection requests</h3>
+        <h3 id="ppl-requests" tabindex="-1">Connection requests</h3>
         {#each pending as g (g.id)}
           <div class="line"><span class="mname">{g.client.name}</span><span class="key">key {g.client.key ?? "unknown"}</span><span class="ip">{g.client.peer_ip}</span><span class="sp"></span>
             <a href="/inbox?kind=connection">Approve in the inbox</a>
@@ -187,17 +194,17 @@
     {/if}
     {#if !inviting || !firstInvite}
       <section class="pcard">
-        <h3>{hosted ? "Guests" : "People on your LAN who are not connected"}</h3>
+        <h3 id="ppl-unconnected">{hosted ? "Guests" : "People on your LAN who are not connected"}</h3>
         <UnconnectedSwitch sw={list.unconnected} onChanged={reload} hosted={!!hosted} />
       </section>
     {/if}
   {/if}
 
-  {#if self}
+  {#if part === "agents" && self}
     <PersonCard view="self" owner={owner} who={self} {artifacts} onChanged={reload} />
   {/if}
 
-  {#if owner}
+  {#if part === "people" && owner}
     {#each people as p (p.public_id)}
       <PersonCard view="owner" who={p} approvals={approvals.filter(a => a.author.public_id === p.public_id)} waiting={requests.filter(r => r.author.public_id === p.public_id)} ofYours={p.approvals_of_yours ?? []} {artifacts} {needArtifacts} onChanged={reload} />
     {:else}
@@ -205,7 +212,7 @@
     {/each}
     {#if remoteApprovals.length || remoteWaiting.length}
       <section class="pcard approvals remote-authors">
-        <h3 tabindex="-1">People on other Clax</h3>
+        <h3 id="ppl-remote" tabindex="-1">People on other Clax</h3>
         <p class="note">They commented on the public copies of your apps. Your agents read their comments once you approve them.</p>
         {#each remoteApprovals as ap (ap.id)}
           <div class="line"><span>{ap.author.name}</span><span class="meta">{scopeOf(ap)}</span><span class="sp"></span>
@@ -219,13 +226,13 @@
     {/if}
     {#if revoked.length}
       <section class="pcard revoked">
-        <h3>Revoked</h3>
+        <h3 id="ppl-revoked">Revoked</h3>
         {#each revoked as p (p.public_id)}<PersonCard view="owner" who={p} hosted={!!hosted} onChanged={reload} />{/each}
       </section>
     {/if}
-  {:else if me}
+  {:else if part === "agents" && me && !owner}
     <section class="pcard approvals">
-      <h3 tabindex="-1">Who reaches your agents</h3>
+      <h3 id="ppl-reach" tabindex="-1">Who reaches your agents</h3>
       {#each approvals as ap (ap.id)}
         <div class="line"><span>{authorOf(ap.author)}</span><span class="meta">{scopeOf(ap)}</span><span class="sp"></span>
           <button type="button" class="ghost" aria-label="Revoke the approval of {authorOf(ap.author)}, {scopeOf(ap)}" onclick={e => act(e, () => api.revokeApproval(ap.id))}>Revoke</button></div>
@@ -247,8 +254,6 @@
     .ppl h2 { margin: 0; font-size: 22px; line-height: 1.2; }
     .ppl .pcount, .ppl .meta, .ppl .ip { color: var(--muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
     .ppl .sp { flex: 1; }
-    .ppl .padmin { font-weight: 600; font-size: 13.5px; padding: 6px 8px; border-radius: var(--radius-sm); }
-    .ppl .padmin:hover { background: var(--hover); }
     .ppl .err { margin: 0; color: var(--danger); font-size: 13px; }
     .ppl .note, .ppl .none { margin: 4px 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
     .ppl .banner { margin: 0; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--danger-tint); font-size: 13.5px; }

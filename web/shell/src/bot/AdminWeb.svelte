@@ -1,7 +1,7 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
-  // Admin › Web (spec 2026-11-02-claxbot-web-tools §8, §9.1): whether
+  // Settings, Web access (spec 2026-11-02-claxbot-web-tools §8, §9.1): whether
   // ClaxBot may search the web and read pages (two switches), the search
   // provider with its price from the Pricing lines, the per-run caps, which
   // URLs a fetch may take (and the allowlist's hosts), and, on the daemon,

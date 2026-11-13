@@ -522,14 +522,15 @@ async fn queue(batch: worker::MessageBatch<Value>, env: Env, _ctx: worker::Conte
 
 /// Whether `path` is one of the gallery shell's pages, which the daemon
 /// serves as its shell page (`clax_server::router`): `/`, `/inbox`,
-/// `/people`, `/tags`, `/admin`, `/settings`, `/me`, `/audit`, and the
-/// Queues page with a queue's and a report's views (`/queues`,
-/// `/queues/<qid>`, `/queues/<qid>/<tid>`).
+/// `/people`, `/tags`, `/admin`, `/settings`, `/me`, `/audit`, a Settings
+/// screen (`/settings/<screen>`), and the Queues page with a queue's and a
+/// report's views (`/queues`, `/queues/<qid>`, `/queues/<qid>/<tid>`).
 fn shell_page(path: &str) -> bool {
     let segs: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     matches!(
         segs.as_slice(),
         [""] | ["inbox" | "people" | "tags" | "admin" | "settings" | "me" | "audit"]
+            | ["settings", _]
             | ["queues"]
             | ["queues", _]
             | ["queues", _, _]
@@ -947,6 +948,7 @@ mod tests {
             "/",
             "/inbox",
             "/audit",
+            "/settings/people",
             "/queues",
             "/queues/01J0000000000000000000000A",
             "/queues/01J0000000000000000000000A/01J0000000000000000000000B",

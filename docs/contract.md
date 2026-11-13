@@ -5987,7 +5987,7 @@ thread views carry `feedback_state: null`.
 
 A person's machine connects in one of two ways:
 
-- **An invite.** The owner, in People (`/people`) in a browser, makes one:
+- **An invite.** The owner, in Settings, People (`/settings/people`) in a browser, makes one:
   `POST /api/people/invites {name | viewer | me, rights?}` → 201 `{invite:
   {id, command, expires_at, person}}`. `name` makes a new person, `viewer`
   makes an existing LAN viewer (by public ID) a person, and `me` invites a
@@ -6667,6 +6667,7 @@ router), and a test fails when it differs:
 | `GET /queues/{qid}` | Denied | no |
 | `GET /queues/{qid}/{tid}` | Denied | no |
 | `GET /settings` | Denied | no |
+| `GET /settings/{screen}` | Denied | no |
 | `GET /site-signin` | Denied | yes: 403 `not_for_agents` |
 | `GET /tags` | Denied | no |
 <!-- route-table:end -->

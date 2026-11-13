@@ -41,7 +41,7 @@ test("each reader reads its own person's agent's reply as its agent's, and anoth
   const personCtx = await browser.newContext();
   try {
     const owner = await ownerCtx.newPage();
-    await owner.goto(`${d.base}/people`);
+    await owner.goto(`${d.base}/settings/people`);
     await owner.getByRole("button", { name: "Invite a person" }).click();
     await owner.getByRole("textbox", { name: "Name", exact: true }).fill("Sam");
     await owner.getByRole("button", { name: "Create invite" }).click();
@@ -86,7 +86,7 @@ test("each reader reads its own person's agent's reply as its agent's, and anoth
 
     const person = await personCtx.newPage();
     await person.goto(link);
-    await person.waitForURL(/\/people$/);
+    await person.waitForURL(/\/settings\/agents$/);
     await person.goto(new URL(`/a/${aid}`, link).href);
     await expect(card(person, "Done here").locator(".by .author").last()).toHaveText(`${name} (Alex's agent, via claude)`);
     await expect(card(person, "Done there").locator(".by .author").last()).toHaveText("sam-notes (agent, via claude)");

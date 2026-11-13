@@ -56,7 +56,7 @@ async function signIn(browser, origin) {
   await ada.getByLabel("Your name").fill("Ada");
   await ada.getByRole("button", { name: "Create the first person" }).click();
   await ada.waitForURL(`${origin}/`);
-  await ada.goto(`${origin}/people`);
+  await ada.goto(`${origin}/settings/people`);
   await ada.getByRole("button", { name: "Invite a person" }).click();
   await ada.getByRole("textbox", { name: "Name", exact: true }).fill("Sam");
   await ada.getByRole("button", { name: "Create invite" }).click();

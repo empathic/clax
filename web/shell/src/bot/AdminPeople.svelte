@@ -1,7 +1,7 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
-  // Admin › People & flags (spec 2026-10-21-claxbot §5, §7.4): every
+  // Settings, Roles & ClaxBot access (spec 2026-10-21-claxbot §5, §7.4): every
   // connected person with their role (the owner changes it; the owner's own
   // row cannot), whether they may use ClaxBot, whose key their runs use,
   // their weekly credits (the free tier and the lift an admin grants, with a

@@ -91,12 +91,12 @@ describe("the Send menu's ClaxBot line", () => {
   });
 
   it("sends an admin to the Admin tab that fixes why it cannot run, anyone else to what is theirs", () => {
-    expect(unavailableFix("not_configured", true)).toEqual({ text: "Set a model key under Admin → Provider", href: "/admin?tab=provider" });
-    expect(unavailableFix("not_configured", false)).toEqual({ text: "Use your own Anthropic key under You", href: "/me" });
-    expect(unavailableFix("model_not_priced", true)?.href).toBe("/admin?tab=pricing");
-    expect(unavailableFix("no_flag", true)?.href).toBe("/admin?tab=people");
-    expect(unavailableFix("no_credits", true)?.href).toBe("/admin?tab=people");
-    expect(unavailableFix("no_credits", false)?.href).toBe("/me");
+    expect(unavailableFix("not_configured", true)).toEqual({ text: "Set a model key under Settings → Model provider", href: "/settings/provider" });
+    expect(unavailableFix("not_configured", false)).toEqual({ text: "Use your own Anthropic key under Settings → Your ClaxBot", href: "/settings/claxbot#me-k" });
+    expect(unavailableFix("model_not_priced", true)?.href).toBe("/settings/pricing");
+    expect(unavailableFix("no_flag", true)?.href).toBe("/settings/roles");
+    expect(unavailableFix("no_credits", true)?.href).toBe("/settings/roles");
+    expect(unavailableFix("no_credits", false)?.href).toBe("/settings/claxbot");
     expect([unavailableFix("model_not_priced", false), unavailableFix("no_flag", false), unavailableFix(null, true)]).toEqual([null, null, null]);
   });
 });

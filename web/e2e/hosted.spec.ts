@@ -81,9 +81,13 @@ test("setup, an invite joined in a second browser, a sign-in link for a third, a
     expect((await owner.request.get(`${origin}/setup`)).status()).toBe(404);
 
     // The owner invites Sam; the invite is a link.
-    await owner.locator("a.people-link").click();
-    await owner.waitForURL(`${origin}/people`);
+    await owner.locator("a.settings-link").click();
+    await owner.waitForURL(`${origin}/settings`);
+    await owner.getByRole("link", { name: /^Account/ }).click();
+    await owner.waitForURL(`${origin}/settings/account`);
     await expect(owner.locator(".hosted-me")).toContainText("Signed in as Ada (the owner)");
+    await owner.getByRole("navigation", { name: "Settings" }).getByRole("link", { name: "People", exact: true }).click();
+    await owner.waitForURL(`${origin}/settings/people`);
     await owner.getByRole("button", { name: "Invite a person" }).click();
     await expect(owner.getByRole("radio", { name: "Me, on another machine" })).toHaveCount(0);
     await owner.getByRole("textbox", { name: "Name", exact: true }).fill("Sam");
@@ -106,7 +110,7 @@ test("setup, an invite joined in a second browser, a sign-in link for a third, a
     await expect(again.getByText("This invite is not valid.")).toBeVisible();
 
     // Sam signs a third browser in with a one-use link.
-    await sam.goto(`${origin}/people`);
+    await sam.goto(`${origin}/settings/account`);
     await sam.getByRole("button", { name: "Sign in another device" }).click();
     const link = (await sam.locator(".hosted-me code").textContent())!;
     expect(link).toMatch(new RegExp(`^${origin}/signin/cxl_`));
@@ -122,15 +126,15 @@ test("setup, an invite joined in a second browser, a sign-in link for a third, a
     expect((await unconfirmed.json()).error.code).toBe("session_exists");
     // A sign-in page returns to its `?next=` when it is a path here.
     const phone = await page(browser);
-    await phone.goto(`${link}?next=${encodeURIComponent("/people")}`);
+    await phone.goto(`${link}?next=${encodeURIComponent("/settings/account")}`);
     await expect(phone.getByTestId("signed-in-now")).toHaveCount(0);
     await phone.getByRole("button", { name: "Sign in as Sam" }).click();
-    await phone.waitForURL(`${origin}/people`);
+    await phone.waitForURL(`${origin}/settings/account`);
     await expect(phone.locator(".hosted-me")).toContainText("Signed in as Sam");
     // Signed in, `/signin?next=` goes on there; a next that could leave
     // the origin is ignored, and the page stays.
-    await phone.goto(`${origin}/signin?next=${encodeURIComponent("/people")}`);
-    await phone.waitForURL(`${origin}/people`);
+    await phone.goto(`${origin}/signin?next=${encodeURIComponent("/settings/account")}`);
+    await phone.waitForURL(`${origin}/settings/account`);
     for (const hostile of ["//evil.example/", "https://evil.example/", "/\\evil.example", "javascript:alert(1)"]) {
       await phone.goto(`${origin}/signin?next=${encodeURIComponent(hostile)}`);
       await expect(phone.getByText("You are signed in as Sam", { exact: false })).toBeVisible();
@@ -148,7 +152,7 @@ test("setup, an invite joined in a second browser, a sign-in link for a third, a
     const back = new URL(tab.url()).searchParams.get("next")!;
     expect(new URL(back, origin).pathname).toBe("/site-signin");
     await expect(tab.getByText("You are not signed in.")).toBeVisible();
-    await owner.goto(`${origin}/people`);
+    await owner.goto(`${origin}/settings/account`);
     await owner.getByRole("button", { name: "Sign in another device" }).click();
     const own = (await owner.locator(".hosted-me code").textContent())!;
     const other = await visitor.newPage();
@@ -165,14 +169,14 @@ test("setup, an invite joined in a second browser, a sign-in link for a third, a
     await expect(spent.getByRole("button", { name: "Sign in as Sam" })).toHaveCount(0);
 
     // An agent token, with the command Claude Code takes.
-    await phone.goto(`${origin}/people`);
+    await phone.goto(`${origin}/settings/agents`);
     await phone.getByLabel("Machine").fill("sam-laptop");
     await phone.getByRole("button", { name: "Create token" }).click();
     await expect(phone.locator(".minted code").first()).toContainText(`claude mcp add --transport http clax ${origin}/mcp/json --header "Authorization: Bearer cxa_`);
     await expect(phone.locator(".hosted-tokens .tok")).toContainText("sam-laptop");
 
     // The owner shares the page by link, for comments.
-    await owner.goto(`${origin}/people`);
+    await owner.goto(`${origin}/settings/sharing`);
     await owner.getByRole("combobox", { name: "Page to share" }).selectOption({ label: "Launch plan" });
     await owner.getByRole("combobox", { name: "What its link allows" }).selectOption("commenter");
     await owner.getByRole("button", { name: "Share by link" }).click();
@@ -196,11 +200,9 @@ test("setup, an invite joined in a second browser, a sign-in link for a third, a
     await guest.goto(`${origin}/signin`);
     await expect(guest.getByText("You are a guest named Mia.", { exact: false })).toBeVisible();
 
-    // Sam signs the phone out from the gallery header's account menu.
-    await phone.goto(`${origin}/`);
-    await phone.locator(".gbar .acct-btn").click();
-    await expect(phone.getByRole("menuitem", { name: "Your account" })).toHaveAttribute("href", "/people");
-    await phone.getByRole("menuitem", { name: "Sign out" }).click();
+    // Sam signs the phone out, from the end of Settings' navigation.
+    await phone.goto(`${origin}/settings/account`);
+    await phone.getByRole("navigation", { name: "Settings" }).getByRole("button", { name: "Sign out" }).click();
     await phone.waitForURL(`${origin}/signin`);
     await expect(phone.getByText("You are not signed in.")).toBeVisible();
   } finally {
@@ -236,8 +238,7 @@ test("the owner's browser has the owner's surfaces, a person's rights limit thei
     await owner.getByRole("button", { name: "Create the first person" }).click();
     await owner.waitForURL(`${origin}/`);
     // The bar names the site; the owner's pin, delete and inbox are there.
-    await expect(owner.locator(".gbar .sub")).toHaveText(`${new URL(origin).host} ·`);
-    await expect(owner.locator(".gbar .acct-btn")).toHaveText("seen as Ada");
+    await expect(owner.locator(".gbar .sub")).toHaveText(`${new URL(origin).host} · seen as Ada`);
     await expect(owner.getByRole("button", { name: "Pin Plan" })).toBeVisible();
     await expect(owner.locator("a.inbox-link")).toBeVisible();
     await shots(owner, "gallery-owner");
@@ -268,14 +269,15 @@ test("the owner's browser has the owner's surfaces, a person's rights limit thei
     await expect(sam.frameLocator("iframe.frame").locator("h1")).toHaveText("Budget");
     const missing = await sam.goto(`${origin}/a/${plan.id}`);
     expect(missing?.status()).toBe(404);
-    await sam.goto(`${origin}/people`);
+    await sam.goto(`${origin}/settings/account`);
     await expect(sam.locator(".hosted-me")).toContainText("Signed in as Sam");
     await shots(sam, "people-person");
 
     // A guest on a shared page names themselves in the people menu.
-    await owner.goto(`${origin}/people`);
+    await owner.goto(`${origin}/settings/account`);
     await expect(owner.locator(".hosted-me")).toContainText("Signed in as Ada");
     await shots(owner, "people-owner");
+    await owner.goto(`${origin}/settings/sharing`);
     await owner.getByRole("combobox", { name: "Page to share" }).selectOption({ label: "Plan" });
     await owner.getByRole("button", { name: "Share by link" }).click();
     await expect(owner.locator(".hosted-links .line")).toContainText("Plan");
@@ -499,19 +501,21 @@ test("the Clax app signs in by device code: the page says it may manage the shar
     await expect(owner.getByTestId("device-app")).toContainText("may also change who can see or edit the pages you made and, as the owner, any page on this site");
     await shots(owner, "device-app");
     await owner.getByRole("button", { name: "Approve" }).click();
-    await expect(owner.locator(".signin")).toContainText("Clax on Pixel is signed in as you. It shows on People among your devices");
-    // People lists it under Devices, apart from agent tokens.
-    await owner.goto(`${origin}/people`);
+    await expect(owner.locator(".signin")).toContainText("Clax on Pixel is signed in as you. It shows in Settings under Account, Devices");
+    // Settings lists it under Account's Devices, apart from the agent tokens.
+    await owner.goto(`${origin}/settings/account`);
     await expect(owner.locator(".hosted-devices h3")).toHaveText("Devices");
     await expect(owner.locator(".hosted-devices .mname")).toHaveText(["Clax on Pixel"]);
-    await expect(owner.locator(".hosted-tokens .mname")).toHaveCount(0);
     await shots(owner, "people-devices");
+    await owner.goto(`${origin}/settings/agents`);
+    await expect(owner.locator(".hosted-tokens h3")).toHaveText("Agent tokens");
+    await expect(owner.locator(".hosted-tokens .mname")).toHaveCount(0);
   } finally {
     await d.stop();
   }
 });
 
-test("People's hosted part shows a refusal as a sentence", async ({ browser }) => {
+test("Settings' hosted parts show a refusal as a sentence", async ({ browser }) => {
   const { d, origin } = await hostedDaemon();
   try {
     const owner = await page(browser);
@@ -519,9 +523,9 @@ test("People's hosted part shows a refusal as a sentence", async ({ browser }) =
     await owner.getByLabel("Your name").fill("Ada");
     await owner.getByRole("button", { name: "Create the first person" }).click();
     await owner.waitForURL(`${origin}/`);
-    await owner.goto(`${origin}/people`);
+    await owner.goto(`${origin}/settings/agents`);
     // The daemon refuses a token in its own words, lower case and with no
-    // full stop (here, its rate limit); People says it as a sentence.
+    // full stop (here, its rate limit); the screen says it as a sentence.
     await owner.route("**/api/hosted/agent-tokens", r => (r.request().method() === "POST"
       ? r.fulfill({ status: 429, contentType: "application/json", body: JSON.stringify({ error: { code: "rate_limited", message: "too many tokens made from this address" } }) })
       : r.continue()));

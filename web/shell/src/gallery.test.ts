@@ -141,37 +141,10 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
       await waitFor(() => root.querySelector(".gbar .sub")?.textContent?.startsWith(location.host), `the site in the bar (token ${token})`);
       expect(root.querySelector(".gbar .sub")?.textContent).toBe(`${location.host} · seen as Ada`);
       expect(calls.length).toBeGreaterThan(0);
-      expect(root.querySelector(".acct-btn"), "no account menu without a person signed in").toBeNull();
+      // Signing out is in Settings: the bar has no menu of its own for it.
+      expect(root.querySelector(".gbar .sub button, .gbar .acct-btn")).toBeNull();
       unmountGallery?.(); unmountGallery = null; vi.unstubAllGlobals(); document.body.replaceChildren();
     }
-  });
-
-  it("makes 'seen as' the account menu, with Sign out, for whoever a hosted Clax has signed in, owner or not", async () => {
-    for (const [token, owner] of [[200, true], [403, false]] as const) {
-      await freshModules();
-      stubApi(token);
-      const plain = globalThis.fetch as (u: string, i?: RequestInit) => Promise<Response>;
-      vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
-        if (url === "/api/token" && token === 200) return new Response(JSON.stringify({ token: "cxo_shell" }));
-        if (url === "/api/hosted/me") return new Response(JSON.stringify({ origin: "https://clax.example", setup_open: false, signed_in: true, person: { public_id: "u_alex", display_name: "Alex Kesling", owner, guest: false } }));
-        return plain(url, init);
-      }));
-      const root = await mountGallery();
-      const btn = await waitFor(() => root.querySelector<HTMLButtonElement>(".gbar .acct-btn"), `the account menu (token ${token})`);
-      expect(btn.textContent?.replace(/\s+/g, " ").trim()).toBe("seen as Alex Kesling");
-      expect(root.querySelector(".gbar .sub")?.textContent).toBe(`${location.host} ·`);
-      btn.click();
-      const out = await waitFor(() => [...root.querySelectorAll<HTMLElement>(".gbar [role=menuitem]")].find(i => i.textContent === "Sign out"), "Sign out");
-      expect(out).toBeTruthy();
-      unmountGallery?.(); unmountGallery = null; vi.unstubAllGlobals(); document.body.replaceChildren();
-    }
-  });
-
-  it("has no account menu on a local daemon", async () => {
-    stubApi();
-    const root = await mountGallery();
-    await waitFor(() => root.querySelector(".gbar .sub")?.textContent?.includes("seen as Ada"), "the viewer's name in the bar");
-    expect(root.querySelector(".acct-btn")).toBeNull();
   });
 
   it("puts the pinned artifact first even when the API lists it second", async () => {
@@ -499,12 +472,14 @@ describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
     return root;
   }
 
-  it("shows People in the header to the owner and to a connected person, and not to a LAN viewer", async () => {
+  it("shows the Settings gear in the header to the owner and to a connected person, and not to a LAN viewer", async () => {
     for (const who of ["owner", "person"] as const) {
       stubAs(who);
       const root = await mountAt("/");
-      const link = await waitFor(() => root.querySelector<HTMLAnchorElement>(".gbar a.people-link"), `People for the ${who}`);
-      expect(link.getAttribute("href")).toBe("/people");
+      const link = await waitFor(() => root.querySelector<HTMLAnchorElement>(".gbar a.settings-link"), `Settings for the ${who}`);
+      expect(link.getAttribute("href")).toBe("/settings");
+      // The gear is the header's last control.
+      expect(root.querySelector(".gbar")!.lastElementChild).toBe(link);
       expect(link.hasAttribute("aria-current")).toBe(false);
       unmountGallery!(); unmountGallery = null; await freshModules();
     }
@@ -514,7 +489,7 @@ describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => calls.some(c => c.url === "/api/viewers/me") && calls.some(c => c.url === "/api/token"), "the viewer and token requests");
     // The header's links come from the lazy module: once it has loaded, the viewer is known too.
     await vi.dynamicImportSettled();
-    expect(root.querySelector(".people-link")).toBeNull();
+    expect(root.querySelector(".settings-link")).toBeNull();
   });
 
   it("gives a connected person's browser its inbox at /inbox, Inbox in the header, and the inbox and questions topics", async () => {
@@ -528,11 +503,11 @@ describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(calls.some(c => c.url === "/api/inbox?limit=1")).toBe(false);
   });
 
-  it("is the People page at /people: no artifacts are fetched, and the page follows the people and agents topics", async () => {
+  it("is Settings at /settings/people, showing People: no artifacts are fetched, and the screen follows the people and agents topics", async () => {
     const calls = stubAs("owner");
-    const root = await mountAt("/people");
-    await waitFor(() => root.querySelector(".ppl .person"), "the People page");
-    expect(root.querySelector(".gbar a.people-link")!.getAttribute("aria-current")).toBe("page");
+    const root = await mountAt("/settings/people");
+    await waitFor(() => root.querySelector(".stg .ppl h2")?.textContent === "People" && root.querySelector(".stg .ppl .note"), "the People screen");
+    expect(root.querySelector(".gbar a.settings-link")!.getAttribute("aria-current")).toBe("page");
     expect(root.querySelector(".gbar .search")).toBeNull();
     expect(calls.some(c => c.url === "/api/artifacts")).toBe(false);
     await workerWith("people", "agents");
@@ -547,7 +522,7 @@ describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
       unmountGallery!(); unmountGallery = null; await freshModules();
     }
     const calls = stubAs("owner");
-    const root = await mountAt("/people/x");
+    const root = await mountAt("/tags/x");
     await waitFor(() => calls.some(c => c.url === "/api/artifacts") && root.querySelector("a.card"), "the gallery");
     expect(root.querySelector(".ppl")).toBeNull();
   });

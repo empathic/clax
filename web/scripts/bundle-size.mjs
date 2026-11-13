@@ -7,9 +7,9 @@
 // scripts, and each page with the scripts and stylesheets it names), of the
 // question module (`questions`: the `q` chunk, which the gallery loads
 // through its lazy module, with what it imports that the gallery has not
-// loaded by then), of the People and Queues pages (`people`, `queues`: each one's chunk, which the
-// gallery loads at `/people` and `/queues` through its lazy module, with what it imports
-// that the gallery has not loaded by then), and of app mode's host chunk (`host`:
+// loaded by then), of Settings' People screen and the Queues page (`people`, `queues`: the
+// chunks the gallery loads at `/settings/people` (Settings and its People screen) and `/queues`
+// through its lazy module, with what they import that the gallery has not loaded by then), and of app mode's host chunk (`host`:
 // what the artifact entry loads for `?app=1` beyond itself),
 // of the embeddable overlay (`overlay`: dist/_clax/overlay.js, which loads
 // nothing more), and of the SDK package's overlay entry (`sdkOverlay`:
@@ -103,6 +103,11 @@ function part(name) {
   return [...seen].reduce((n, k) => n + gz(`_clax/bridge/${partsManifest[k].file}`), 0);
 }
 
+// The gallery's lazy module's key in the manifest: its source, or its chunk
+// when another chunk imports from it too (Vite then keys it by the chunk).
+const lazyKey = () => Object.keys(manifest).find(m => m.endsWith("src/ui/gallery-working.ts"))
+  ?? Object.keys(manifest).find(m => manifest[m].name === "gallery-working" && manifest[m].isDynamicEntry);
+
 // The app's transport (`transport`), a classic script of its own that only
 // the shell documents an embedded core serves load, before their entry.
 const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), bridge: gz("_clax/bridge.js"), transport: gz("_clax/transport.js") };
@@ -116,7 +121,7 @@ const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), 
 // imports from it). What the module itself loads on demand is not counted.
 {
   const key = k => Object.keys(manifest).find(m => m.endsWith(k));
-  const lazy = key("src/ui/gallery-working.ts");
+  const lazy = lazyKey();
   const stream = key("src/view/artifact-stream.ts");
   // The artifact entry loads these after its first paint, before its stream opens.
   const painted = ["src/ui/MoreMenu.svelte", "src/ui/Who.svelte"].map(key);
@@ -126,17 +131,18 @@ const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), 
   const beyond = hosts => { const loaded = files(hosts); return [...files([q])].filter(f => !loaded.has(f)).reduce((n, f) => n + gz(f), 0); };
   sizes.questions = Math.max(beyond(["index.html", lazy]), beyond(["artifact.html", stream, ...painted]));
 }
-// The People and Queues pages: each one's chunk and what it imports beyond
-// the gallery's entry and its lazy module, through which `/people` and
+// Settings' People screen and the Queues page: their chunks and what they
+// import beyond the gallery's entry and its lazy module, through which
+// `/settings/people` (Settings, which loads its People screen) and
 // `/queues` load them.
 {
-  const lazy = Object.keys(manifest).find(m => m.endsWith("src/ui/gallery-working.ts"));
+  const lazy = lazyKey();
   if (!lazy) throw new Error("dist has no gallery-working chunk");
   const loaded = new Set([...closure("index.html"), ...closure(lazy)].map(k => manifest[k].file));
-  for (const [key, src] of [["people", "src/people/People.svelte"], ["queues", "src/queues/Queues.svelte"]]) {
-    const page = Object.keys(manifest).find(m => m.endsWith(src));
-    if (!page) throw new Error(`dist has no ${src} chunk`);
-    sizes[key] = [...new Set([...closure(page)].map(k => manifest[k].file))].filter(f => !loaded.has(f)).reduce((n, f) => n + gz(f), 0);
+  for (const [key, srcs] of [["people", ["src/settings/Settings.svelte", "src/people/People.svelte"]], ["queues", ["src/queues/Queues.svelte"]]]) {
+    const pages = srcs.map(src => Object.keys(manifest).find(m => m.endsWith(src)));
+    if (pages.some(p => !p)) throw new Error(`dist has no ${srcs.join(" or ")} chunk`);
+    sizes[key] = [...new Set(pages.flatMap(page => [...closure(page)].map(k => manifest[k].file)))].filter(f => !loaded.has(f)).reduce((n, f) => n + gz(f), 0);
   }
 }
 for (const [name, key] of Object.entries(partKeys)) sizes[key] = part(name);

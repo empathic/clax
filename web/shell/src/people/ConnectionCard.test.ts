@@ -55,7 +55,7 @@ describe("ConnectionCard", () => {
     click(button(m.root, "Approve…")!);
     await settle();
     const invite = [...m.root.querySelectorAll("a")].find(a => a.textContent === "Invite")!;
-    expect(invite.getAttribute("href")).toBe("/people?invite");
+    expect(invite.getAttribute("href")).toBe("/settings/people?invite");
     expect(invite.closest("p")!.textContent).toContain("someone already connected, or to you");
   });
 

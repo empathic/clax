@@ -1431,6 +1431,7 @@ pub fn guest_need(method: &Method, path: &str, query: Option<&str>) -> GuestNeed
         | ["queues", _, _]
         | ["admin"]
         | ["settings"]
+        | ["settings", _]
         | ["me"]
         | ["audit"]
             if get =>
@@ -2437,6 +2438,7 @@ mod tests {
             (Method::GET, "/queues", None, Gallery),
             (Method::GET, "/admin", None, Gallery),
             (Method::GET, "/settings", None, Gallery),
+            (Method::GET, "/settings/people", None, Gallery),
             (Method::GET, "/me", None, Gallery),
             (Method::GET, "/audit", None, Gallery),
             (

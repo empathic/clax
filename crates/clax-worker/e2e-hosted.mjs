@@ -338,8 +338,10 @@ async function main() {
     check((await fetch(`${origin}/setup`)).status === 404, "setup is closed once done");
 
     // An invite, joined in a second browser.
-    await ada.locator("a.people-link").click();
-    await ada.waitForURL(`${origin}/people`);
+    await ada.locator("a.settings-link").click();
+    await ada.waitForURL(`${origin}/settings`);
+    await ada.getByRole("link", { name: /^People/ }).click();
+    await ada.waitForURL(`${origin}/settings/people`);
     await ada.getByRole("button", { name: "Invite a person" }).click();
     await ada.getByRole("textbox", { name: "Name", exact: true }).fill("Sam");
     await ada.getByRole("button", { name: "Create invite" }).click();
@@ -355,7 +357,7 @@ async function main() {
 
 
     // A sign-in link for a third browser.
-    await sam.goto(`${origin}/people`);
+    await sam.goto(`${origin}/settings/account`);
     await sam.getByRole("button", { name: "Sign in another device" }).click();
     const link = (await sam.locator(".hosted-me code").textContent()) ?? "";
     check(link.startsWith(`${origin}/signin/`), "a sign-in link is made", link);
@@ -364,11 +366,12 @@ async function main() {
     await laptop.goto(link);
     await laptop.getByRole("button", { name: "Sign in as Sam" }).click();
     await laptop.waitForURL(`${origin}/`);
-    await laptop.goto(`${origin}/people`);
+    await laptop.goto(`${origin}/settings/account`);
     await laptop.locator(".hosted-me", { hasText: "Signed in as Sam" }).waitFor({ timeout: LIMIT });
     check(true, "the sign-in link signs a third browser in as Sam");
 
     // An agent token, minted in the browser, used by an agent on /mcp.
+    await laptop.goto(`${origin}/settings/agents`);
     await laptop.getByLabel("Machine").fill("sam-laptop");
     await laptop.getByRole("button", { name: "Create token" }).click();
     const cmd = (await laptop.locator(".minted code").first().textContent()) ?? "";
@@ -571,7 +574,7 @@ async function main() {
     check(true, "deleting an artifact erases its object's store");
 
     // The owner shares the page by link, for comments; a guest names themselves and comments.
-    await ada.goto(`${origin}/people`);
+    await ada.goto(`${origin}/settings/sharing`);
     await ada.getByRole("combobox", { name: "Page to share" }).selectOption({ label: "Tide tables" });
     await ada.getByRole("combobox", { name: "What its link allows" }).selectOption("commenter");
     await ada.getByRole("button", { name: "Share by link" }).click();

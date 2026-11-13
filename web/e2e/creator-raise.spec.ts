@@ -98,7 +98,7 @@ test("a creator raises another person's agent on their artifact from its People 
     // on Mia's agent's row, for the actions he holds there.
     const s = await samCtx.newPage();
     await s.goto(links.Sam);
-    await s.waitForURL(/\/people$/);
+    await s.waitForURL(/\/settings\/agents$/);
     await s.goto(`${lan}/a/${notes}`);
     await s.locator("button.who").click();
     const row = s.locator(".people .prow.agent").filter({ hasText: "notes-fix" });
@@ -118,7 +118,7 @@ test("a creator raises another person's agent on their artifact from its People 
     // The owner's People: Mia's agent raised by Sam, read-only; Sam's card
     // lists his approval of the owner's content, and Mia's none.
     const o = await ownerCtx.newPage();
-    await o.goto(`${d.base}/people`);
+    await o.goto(`${d.base}/settings/people`);
     const card = (name: string) => o.locator("article.person[data-person]").filter({ has: o.locator("h3", { hasText: new RegExp(`^${name}$`) }) });
     await expect(card("Mia").locator(".agent .note.by")).toHaveText("Raised by Sam until this session ends: Publish new versions on “Sam's Notes”");
     await expect(card("Sam").locator(".approvals.yours .line")).toHaveText("Allowed everywhere");

@@ -20,7 +20,7 @@
     <p><b>{b.text}</b> {b.detail}</p>
     {#if b.kind === "exhausted"}
       <button type="button" class="ghost" aria-expanded={asking} aria-controls="bbanner-ask" onclick={() => { asking = !asking; }}>Ask an admin for a lift</button>
-      {#if asking}<p id="bbanner-ask" class="ask">An admin can raise your weekly credits under Admin › People &amp; flags. Tell one what you need ClaxBot for this week; <a href="/me">You</a> shows what you have used.</p>{/if}
+      {#if asking}<p id="bbanner-ask" class="ask">An admin can raise your weekly credits under Settings › Roles &amp; ClaxBot access. Tell one what you need ClaxBot for this week; <a href="/settings/claxbot">Your ClaxBot</a> shows what you have used.</p>{/if}
     {/if}
   </div>
 {/if}

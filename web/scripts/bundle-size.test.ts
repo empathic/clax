@@ -48,7 +48,8 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
   for (const f of ["p.js", "pd.js", "u.js", "ud.js"]) dist(`_clax/shell/${f}`, f.repeat(100));
   dist(".vite/manifest.json", JSON.stringify({
     "index.html": { file: "_clax/shell/a.js" }, "artifact.html": { file: "_clax/shell/a.js", dynamicImports: ["src/app/host.ts"] },
-    "src/ui/gallery-working.ts": { file: "_clax/shell/w.js", isDynamicEntry: true, imports: ["index.html", "_s.js"], dynamicImports: ["_index-q.js", "src/people/People.svelte", "src/queues/Queues.svelte"] },
+    "src/ui/gallery-working.ts": { file: "_clax/shell/w.js", isDynamicEntry: true, imports: ["index.html", "_s.js"], dynamicImports: ["_index-q.js", "src/settings/Settings.svelte", "src/queues/Queues.svelte"] },
+    "src/settings/Settings.svelte": { file: "_clax/shell/p.js", isDynamicEntry: true, imports: ["index.html", "_s.js"], dynamicImports: ["src/people/People.svelte"] },
     "src/people/People.svelte": { file: "_clax/shell/p.js", isDynamicEntry: true, imports: ["index.html", "_s.js", "_pd.js"] },
     "_pd.js": { file: "_clax/shell/pd.js" },
     "src/queues/Queues.svelte": { file: "_clax/shell/u.js", isDynamicEntry: true, imports: ["index.html", "_s.js", "_ud.js"] },

@@ -22,7 +22,7 @@ const ALEX = adminPerson({ person: "p_alex", name: "Alex", role: "owner", key_so
 const SAM = adminPerson();
 const MIA = adminPerson({ person: "p_mia", name: "Mia", role: "admin", flags: { claxbot: false, claxbot_unenforced: true }, key_source: "instance" });
 
-beforeEach(() => { forget(); history.replaceState(null, "", "/admin"); });
+beforeEach(() => { forget(); history.replaceState(null, "", "/settings/roles"); });
 afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
 
 describe("Admin", () => {
@@ -30,17 +30,17 @@ describe("Admin", () => {
     const calls = stubFetch({ "GET /api/me/bot": meBot({ role: "member" }) });
     const m = mount(AdminPage, {});
     await settle();
-    expect(m.root.textContent).toContain("Admin is for the owner and the admins they name");
+    expect(m.root.textContent).toContain("This screen is for the owner and the admins they name");
     expect(calls.some(c => c.url.startsWith("/api/admin"))).toBe(false);
   });
 
-  it("opens the tab the address names, among links to the audit log and, locally, Settings", async () => {
-    history.replaceState(null, "", "/admin?tab=usage");
+  it("shows the screen its tab names, under that screen's name", async () => {
     stubFetch({ "GET /api/me/bot": meBot({ role: "admin" }), "GET /api/admin/usage": usage() });
-    const m = mount(AdminPage, {});
+    const m = mount(AdminPage, { tab: "usage" });
     await vi.waitFor(() => expect(m.root.textContent).toContain("Credits spent (paid)"));
-    const tabs = [...m.root.querySelectorAll(".bpg-tabs a")].map(a => [a.textContent, a.getAttribute("aria-current")]);
-    expect(tabs).toEqual([["People & flags", null], ["Provider", null], ["Web", null], ["Pricing", null], ["Usage", "page"], ["Audit", null], ["Settings", null]]);
+    expect(m.root.querySelector("h2")!.textContent).toBe("Usage");
+    expect(document.title).toBe("Usage · Settings · Clax");
+    expect(m.root.querySelector(".bpg-tabs")).toBeNull();
   });
 });
 

@@ -41,7 +41,7 @@ test("Mia's comment to Sam's agent waits for Sam's approval, which only those co
   try {
     // The owner invites Sam from People.
     const owner = await ownerCtx.newPage();
-    await owner.goto(`${d.base}/people`);
+    await owner.goto(`${d.base}/settings/people`);
     await owner.getByRole("button", { name: "Invite a person" }).click();
     await owner.getByRole("textbox", { name: "Name", exact: true }).fill("Sam");
     await owner.getByRole("button", { name: "Create invite" }).click();
@@ -241,7 +241,7 @@ test("Sam raises one of Mia's agents on his artifact; Mia's narrowing caps the r
 
     // Mia's People shows Sam's raise; her narrowing of notes-fix caps it,
     // and lifting the narrowing gives it back.
-    await mia.page.goto(`${mia.lan}/people`);
+    await mia.page.goto(`${mia.lan}/settings/agents`);
     const agentRow = mia.page.locator(".agent").filter({ has: mia.page.locator(".aname", { hasText: /^notes-fix$/ }) });
     await expect(agentRow.locator(".raised-by .note.by")).toHaveText("Raised by Sam until this session ends: Publish new versions on “Sam's Notes”");
     await agentRow.locator(".narrow summary").click();
@@ -287,7 +287,7 @@ test("a comment waiting for Sam's agent is held while the agent has no access, a
     const owner = await ownerCtx.newPage();
     const tid = await ownerThread(d, aid, "Please check the totals.");
     await sendFrom(owner, d.base, aid, tid, handle);
-    await sam.page.goto(`${sam.lan}/people`);
+    await sam.page.goto(`${sam.lan}/settings/agents`);
     const row = sam.page.locator(".agent").filter({ has: sam.page.locator(".aname", { hasText: /^sam-notes$/ }) });
     await row.locator(".narrow summary").click();
     const read = row.locator(".narrow .caps label", { hasText: "Read artifacts" }).locator("input");

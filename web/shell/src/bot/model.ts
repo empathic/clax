@@ -111,10 +111,10 @@ export function unavailableText(reason: Unavailable | null | undefined, week?: W
  * when only an admin can help. */
 export function unavailableFix(reason: Unavailable | null | undefined, admin: boolean): { text: string; href: string } | null {
   switch (reason) {
-    case "not_configured": return admin ? { text: "Set a model key under Admin → Provider", href: "/admin?tab=provider" } : { text: "Use your own Anthropic key under You", href: "/me" };
-    case "model_not_priced": return admin ? { text: "Price it under Admin → Pricing", href: "/admin?tab=pricing" } : null;
-    case "no_flag": return admin ? { text: "Turn it on under Admin → People & flags", href: "/admin?tab=people" } : null;
-    case "no_credits": return admin ? { text: "Give a lift under Admin → People & flags", href: "/admin?tab=people" } : { text: "See your usage under You", href: "/me" };
+    case "not_configured": return admin ? { text: "Set a model key under Settings → Model provider", href: "/settings/provider" } : { text: "Use your own Anthropic key under Settings → Your ClaxBot", href: "/settings/claxbot#me-k" };
+    case "model_not_priced": return admin ? { text: "Price it under Settings → Pricing", href: "/settings/pricing" } : null;
+    case "no_flag": return admin ? { text: "Turn it on under Settings → Roles & ClaxBot access", href: "/settings/roles" } : null;
+    case "no_credits": return admin ? { text: "Give a lift under Settings → Roles & ClaxBot access", href: "/settings/roles" } : { text: "See your usage under Settings → Your ClaxBot", href: "/settings/claxbot" };
     default: return null;
   }
 }
