@@ -268,9 +268,13 @@ view?: { now: "timeline" | "threads"; onChange(v: "timeline" | "threads"): void 
 ```
 
 - With `view`, a tab row (`role="tablist"`, two `role="tab"` buttons,
-  arrow keys move between them) sits at the top of the sidebar, above the
-  questions slot. Its right end shows "N need you" when `waiting` is not
-  empty: a button that selects the newest waiting thread (`onSelect`).
+  arrow keys move between them) sits directly above the list it switches,
+  below the items that stay in both views. Its right end shows "N need
+  you" when `waiting` is not empty: a button that selects the newest
+  waiting thread (`onSelect`). The tab row, the model and the timeline
+  load together as one lazy component (`ui/SidebarViews.svelte`), which
+  takes today's sections as a snippet, so `Sidebar.svelte` imports nothing
+  new statically.
 - Everything above the sections today stays in both views, in today's
   order: the questions slot, New comment, the live writers, the working
   strips, Send unsent, the selection bar.
