@@ -50,14 +50,56 @@
   const whole = (i: number, d: Day) => i === 0 || unfolded.includes(d.date);
   const pendingIn = (d: Day) => d.lines.flatMap(l => l.here).filter(id => isPending(p.tl.stateOf.get(id) ?? { kind: "resolved" }));
   const waits = (l: Line) => l.here.some(id => isWaiting(p.tl.stateOf.get(id) ?? { kind: "resolved" }));
+  let list: HTMLElement | undefined = $state();
+  // What is shown, in order, as one flat list: day headings, line heads and
+  // thread rows, each keyed by what it stands for. A row is keyed by its
+  // thread alone, so when the thread's newest line changes its row, and
+  // the card open under it, move rather than being made anew. `end` closes
+  // a line's group (its head, or its last row).
+  type Item = { key: string; d: Day; i: number } & ({ kind: "day" } | { kind: "line"; l: Line; end: boolean } | { kind: "row"; id: string; end: boolean });
+  const entries = $derived(ds.flatMap((d, i): Item[] => [
+    { key: `day:${d.date}`, kind: "day", d, i },
+    ...(whole(i, d)
+      ? d.lines.flatMap((l): Item[] => [
+        { key: `line:${l.key}`, kind: "line", d, i, l, end: !l.here.length },
+        ...l.here.map((id, k): Item => ({ key: `row:${id}`, kind: "row", d, i, id, end: k === l.here.length - 1 })),
+      ])
+      : pendingIn(d).map((id): Item => ({ key: `row:${id}`, kind: "row", d, i, id, end: false }))),
+  ]));
   // The rows shown, in order; the open, selectable ones are a Shift range's order.
-  const shown = $derived(ds.flatMap((d, i) => (whole(i, d) ? d.lines.flatMap(l => l.here) : pendingIn(d))));
+  const shown = $derived(entries.flatMap(x => (x.kind === "row" ? [x.id] : [])));
   const order = $derived(shown.filter(id => { const t = byId.get(id); return !!t && p.expanded.includes(id) && selectable(t, false); }));
+  // The card that holds focus keeps it when its row moves: moving an element
+  // can take focus from it to nowhere, and it is given back. `held` is what
+  // focus is in inside a card; it is let go once focus has gone elsewhere
+  // (to another element, or to nowhere for longer than the move). A moved
+  // card holding focus is scrolled into view.
+  let held: HTMLElement | null = null;
+  const focusin = (e: FocusEvent) => { held = e.target instanceof HTMLElement && e.target.closest(".thread-card") ? e.target : null; };
+  const focusout = (e: FocusEvent) => {
+    const t = e.target;
+    if (e.relatedTarget) held = null;
+    else queueMicrotask(() => { if (held === t && document.activeElement !== t) held = null; });
+  };
+  let under = new Map<string, string>();
+  $effect(() => {
+    const now = new Map<string, string>();
+    let line = "";
+    for (const x of entries) if (x.kind === "row") now.set(x.id, line); else line = x.key;
+    const was = under;
+    under = now;
+    const el = held;
+    if (!el?.isConnected) return;
+    const a = document.activeElement;
+    if (a !== el && (!a || a === document.body)) el.focus({ preventScroll: true });
+    const card = el.closest<HTMLElement>(".thread-card");
+    const id = card?.dataset.thread;
+    if (document.activeElement === el && id && was.has(id) && was.get(id) !== now.get(id)) card.scrollIntoView?.({ block: "nearest" });
+  });
   // A line's time: relative today, the clock time on an earlier day.
   const today = $derived(dayKey(p.now));
   const when = (d: Day, l: Line) => (d.date === today ? relativeTime(l.at, p.now) : new Date(l.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
 
-  let list: HTMLElement | undefined = $state();
   $effect(() => {
     const sel = p.selected;
     if (!sel) return;
@@ -86,10 +128,10 @@
   // The band: one row per line shown and per folded day (its counts after
   // its newest line), at the vertical centre of its heading as measured,
   // remeasured when what is shown changes or the list changes size.
-  const items = $derived(ds.flatMap((d, i) => (whole(i, d)
+  const marks = $derived(ds.flatMap((d, i) => (whole(i, d)
     ? d.lines.map(l => ({ key: l.key, pending: l.pending, waiting: l.waiting, v: l.kind === "version" ? l.v : undefined }))
     : [{ key: `day:${d.date}`, pending: d.lines[0].pending, waiting: d.lines[0].waiting, v: undefined }])));
-  const shape = $derived(`${items.map(x => x.key).join()}|${p.expanded.join()}`);
+  const shape = $derived(`${marks.map(x => x.key).join()}|${p.expanded.join()}`);
   let ys: Map<string, number> = $state.raw(new Map());
   let height = $state(0);
   const measure = () => {
@@ -107,45 +149,48 @@
   });
   const W = 30;
   const drawn = $derived.by(() => {
-    const rows: BandRow[] = items.flatMap(x => { const y = ys.get(x.key); return y === undefined ? [] : [{ y, pending: x.pending, waiting: x.waiting, v: x.v }]; });
+    const rows: BandRow[] = marks.flatMap(x => { const y = ys.get(x.key); return y === undefined ? [] : [{ y, pending: x.pending, waiting: x.waiting, v: x.v }]; });
     const present = rows.length ? [{ y: rows[0].y / 2, pending: p.tl.pending.length, waiting: p.tl.waiting.length }] : [];
     return band([...present, ...rows], { top: 0, x0: p.side === "right" ? W : 0, dir: p.side === "right" ? 1 : -1, unit: 4.5 });
   });
   const lines = $derived(strokes(drawn));
 </script>
 
-{#snippet row(id: string)}
+<!-- A row's ID is its key's, so it never changes; read untracked, the watch
+     on a collapsed row is not restarted when the list around it is recomputed. -->
+{#snippet row(id: string, end: boolean)}
   {@const t = byId.get(id)}
   {#if t}
     {@const st = rowStatus(p.tl.stateOf.get(id) ?? { kind: "resolved" })}
     {@const open = p.expanded.includes(id)}
-    <div class="tl-thread">
+    <div class={["tl-thread", end && "tl-end"]}>
       {@render p.above?.(t, p.now)}
-      <button type="button" class="tl-row" data-row={id} aria-expanded={open} onclick={() => p.onExpand(id, !open)} {@attach !open && seen(id)}
+      <button type="button" class="tl-row" data-row={id} aria-expanded={open} onclick={() => p.onExpand(id, !open)} {@attach !open && seen(untrack(() => id))}
         ><span class="tl-n">{p.detached.has(id) ? "detached" : (p.numbers.get(id) ?? "")}</span><span class="tl-q">{plainText(t.comments[0]?.body ?? "")}</span><span class={["tl-st", st.act && "act"]}>{st.text}</span></button>
       {#if open}{@render p.card(t, { order, close: () => p.onExpand(id, false) })}{/if}
     </div>
   {/if}
 {/snippet}
 
-<div class={["timeline", p.side]} bind:this={list}>
+<div class={["timeline", p.side]} bind:this={list} onfocusin={focusin} onfocusout={focusout}>
   <svg class="tl-band" width={W} height={height} aria-hidden="true">
     <path class="tl-band-a" d={drawn.agent} /><path class="tl-band-w" d={drawn.waiting} /><path class="tl-spine" d={lines.spine} /><path class="tl-tick" d={lines.ticks} />
   </svg>
-  {#each ds as d, i (d.date)}
-    {#if whole(i, d)}
-      <h3 class="tl-day">{#if i}<button type="button" class="tl-fold" aria-expanded="true" onclick={() => (unfolded = unfolded.filter(x => x !== d.date))}>{d.label}</button>{:else}{d.label}{/if}</h3>
-      {#each d.lines as l (l.key)}
-        {@const x = lineText(l, p.tl.stateOf)}
-        <div class={["tl-line", waits(l) && "wants"]}>
-          <div class="tl-head" data-band={l.key}><p class="tl-text">{x.text}</p><time class="tl-time" datetime={l.at}>{when(d, l)}</time></div>
-          {#if x.sub}<p class="tl-sub">{x.sub}</p>{/if}
-          {#each l.here as id (id)}{@render row(id)}{/each}
-        </div>
-      {/each}
+  {#each entries as e (e.key)}
+    {@const d = e.d}
+    {#if e.kind === "row"}
+      {@render row(e.id, e.end)}
+    {:else if e.kind === "line"}
+      {@const l = e.l}
+      {@const x = lineText(l, p.tl.stateOf)}
+      <div class={["tl-line", waits(l) && "wants", e.end && "tl-end"]}>
+        <div class="tl-head" data-band={l.key}><p class="tl-text">{x.text}</p><time class="tl-time" datetime={l.at}>{when(d, l)}</time></div>
+        {#if x.sub}<p class="tl-sub">{x.sub}</p>{/if}
+      </div>
+    {:else if whole(e.i, d)}
+      <h3 class="tl-day">{#if e.i}<button type="button" class="tl-fold" aria-expanded="true" onclick={() => (unfolded = unfolded.filter(x => x !== d.date))}>{d.label}</button>{:else}{d.label}{/if}</h3>
     {:else}
       <h3 class="tl-day"><button type="button" class="tl-fold" data-band={`day:${d.date}`} aria-expanded="false" onclick={() => (unfolded = [...unfolded, d.date])}>{daySummary(d)}</button></h3>
-      {#each pendingIn(d) as id (id)}{@render row(id)}{/each}
     {/if}
   {/each}
   {#if !p.threads.length}{@render p.empty?.()}{/if}
@@ -164,7 +209,8 @@
     .tl-fold { min-height: 24px; padding: 2px 0; gap: 6px; justify-content: flex-start; background: none; border: 0; border-radius: 0; font: inherit; color: inherit; white-space: normal; text-align: left; }
     .tl-fold:not(:disabled):hover { background: none; color: var(--fg); }
     .tl-fold::before { content: "▸"; color: var(--fg); } .tl-fold[aria-expanded="true"]::before { content: "▾"; }
-    .tl-line { padding: 10px 0; border-bottom: 1px solid var(--border); }
+    /* A line's group: its head, then its rows; the last of them closes it. */
+    .tl-line { padding-top: 10px; } .tl-end { padding-bottom: 10px; border-bottom: 1px solid var(--border); }
     .tl-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; align-items: baseline; }
     .tl-text { margin: 0; font-size: 14px; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; }
     .tl-line.wants .tl-text { color: var(--fg); }

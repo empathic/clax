@@ -87,7 +87,9 @@ describe("Sidebar views", () => {
     expect(root.querySelector(".tl-day")!.textContent).toBe("Today");
     expect(texts(root)).toEqual(["v2 · published by claude", "You sent a comment", "Mia commented, sent to no one", "v1 · published by claude"]);
     const lines = Array.from(root.querySelectorAll(".tl-line"));
-    expect(lines.map(l => Array.from(l.querySelectorAll("button.tl-row"), r => r.getAttribute("data-row")))).toEqual([[b.id], [], [a.id], []]);
+    // A line's rows follow its head, up to the next line or day.
+    const rowsAfter = (l: Element) => { const out: (string | null)[] = []; for (let e = l.nextElementSibling; e?.classList.contains("tl-thread"); e = e.nextElementSibling) out.push(e.querySelector("button.tl-row")!.getAttribute("data-row")); return out; };
+    expect(lines.map(rowsAfter)).toEqual([[b.id], [], [a.id], []]);
     expect(row(b)!.querySelector(".tl-q")!.textContent).toBe("Starter should be $9");
     expect(row(b)!.querySelector(".tl-st")!.textContent).toBe("✓ v2");
     expect(row(a)!.querySelector(".tl-st")!.textContent).toBe("Send");
@@ -109,6 +111,55 @@ describe("Sidebar views", () => {
     expect(row(b)!.parentElement!.contains(card(b))).toBe(true);
     flush(() => row(b)!.click());
     expect(card(b)).toBeNull();
+    view.unmount();
+  });
+
+  it("keeps an open card, its draft and its focus when a new comment moves its thread to a newer line", async () => {
+    const { view, root, row, card, props, a, b } = setup();
+    await loaded(root);
+    flush(() => row(a)!.click());
+    const before = card(a)!;
+    const input = before.querySelector<HTMLInputElement>('input[aria-label="Reply"]')!;
+    input.focus();
+    flush(() => { input.value = "half a thought"; input.dispatchEvent(new Event("input", { bubbles: true })); });
+    // Someone else replies: the thread's newest line is now a newer one.
+    const later = { ...a, comments: [...a.comments, comment(`${a.id}.2`, "viewer", at(13, 11), "Agreed")] };
+    const scrolled: Element[] = [];
+    const own = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this); };
+    try {
+      view.update({ ...props, threads: [later, b] });
+    } finally {
+      Element.prototype.scrollIntoView = own;
+    }
+    expect(texts(root)[0]).toBe("Mia replied");
+    // It moved to another line: it is scrolled into view.
+    expect(scrolled).toEqual([before]);
+    expect(card(a)).toBe(before);
+    expect(card(a)!.querySelector('input[aria-label="Reply"]')).toBe(input);
+    expect(input.value).toBe("half a thought");
+    expect(document.activeElement).toBe(input);
+    view.unmount();
+  });
+
+  it("keeps the card open, with its reply box, when the viewer's own reply on an addressed row writes a newer line", async () => {
+    const onReply = vi.fn();
+    const { view, root, row, card, props, a, b } = setup({ onReply });
+    await loaded(root);
+    flush(() => row(b)!.click());
+    const before = card(b)!;
+    const input = before.querySelector<HTMLInputElement>('input[aria-label="Reply"]')!;
+    input.focus();
+    flush(() => { input.value = "Not quite"; input.dispatchEvent(new Event("input", { bubbles: true })); });
+    flush(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+    expect(onReply).toHaveBeenCalledWith(b, "Not quite");
+    const replied = { ...b, comments: [...b.comments, comment(`${b.id}.3`, "viewer", at(13, 11), "Not quite", "Alex")] };
+    view.update({ ...props, onReply, threads: [a, replied] });
+    expect(texts(root)[0]).toBe("You replied");
+    expect(row(b)!.getAttribute("aria-expanded")).toBe("true");
+    expect(card(b)).toBe(before);
+    expect(card(b)!.querySelector('input[aria-label="Reply"]')).toBe(input);
+    expect(document.activeElement).toBe(input);
     view.unmount();
   });
 
