@@ -676,7 +676,7 @@ async fn the_policys_tool_result_size_is_where_a_result_is_cut() {
     let code = r#"throw new Error("x".repeat(5000));"#;
     let (result, _) = script_result(&env, Fake::limits(|l| l.tool_result_bytes = 2000), code).await;
     let text = result["content"].as_str().unwrap();
-    assert_eq!(text.len(), 2000 + CUT.len());
+    assert_eq!(text.len(), 2000);
     assert!(text.ends_with(CUT));
     // The default keeps all of it.
     let (result, _) = script_result(&env, Fake::limits(|_| {}), code).await;

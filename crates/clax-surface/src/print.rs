@@ -320,7 +320,7 @@ impl ModelMembers<'_> {
 pub const CONTENT_DECLARATION: &str = "\
 /** What Clax keeps of some bytes, named by a handle: an operation answers or takes one where its type says `Content`. Pass a handle on as it was given. Return an `Image` from a script, anywhere in its value, to see it. */
 interface Content { id: string; media_type: string; bytes: number; sha256: string; name?: string; width?: number; height?: number; meta?: Record<string, unknown> }
-/** A `Content` of an image: its `media_type` is image/png, image/jpeg, image/webp or image/gif. */
+/** A `Content` of an image: its `media_type` is image/png, image/jpeg, image/webp or image/gif, and its `width` and `height` are the size it is displayed at. */
 type Image = Content;
 ";
 

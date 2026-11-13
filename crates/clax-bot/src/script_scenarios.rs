@@ -1322,7 +1322,7 @@ throw new Error("é".repeat(60 * 1024));"#,
             let (text, second) = told(steps, 4);
             assert_eq!(second, Value::Null, "not JSON once cut");
             assert!(text.ends_with("… [truncated]"));
-            assert!(text.contains(r#""published":{"version":3}"#) || text.len() > 100 << 10);
+            assert!(text.len() <= 100 << 10, "{} bytes", text.len());
             assert_eq!(last_call(&steps[3]["payload"]), "draft.publish");
         }),
         // A step resumed with only the first calls of its script in the

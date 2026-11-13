@@ -175,7 +175,7 @@ pub struct ContentRow {
     pub bytes: u64,
     /// As Clax determined it.
     pub media_type: String,
-    /// An image's, as `clax_core::media::sniff` read it.
+    /// An image's displayed size, as `clax_core::media::sniff` read it.
     pub width: Option<u32>,
     pub height: Option<u32>,
     /// The provider's own object, from the first answer that named it.

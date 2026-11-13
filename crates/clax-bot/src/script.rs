@@ -299,12 +299,18 @@ impl Host for StepHost<'_> {
     }
 }
 
+/// What ends a script's `tool_result` text that had to be cut, within
+/// its bound.
+const RESULT_TRUNCATED: &str = "… [truncated]";
+
 /// A script's `tool_result` text and whether it is an error. The text is
 /// JSON: `value`, `logs`, `calls` and `error`, the fields the step's
 /// sessions add (`told`), and `replay` when the script run again took
 /// another path. Logs are trimmed to fit `max` bytes
 /// ([`crate::policy::RunLimits::tool_result_bytes`]), then the text cut
-/// to them: both after the sessions' fields are in it.
+/// to them: both after the sessions' fields are in it. A text that is
+/// cut is cut on a character boundary and ends with [`RESULT_TRUNCATED`],
+/// and is `max` bytes or fewer with it.
 fn tool_result_content(
     o: &ScriptOutcome,
     calls: &Calls,
@@ -345,11 +351,17 @@ fn tool_result_content(
             return (text, o.error.is_some());
         }
         if logs.is_empty() {
-            let mut cut = max;
+            // A bound too small for the marker is met without it.
+            let marker = if max >= RESULT_TRUNCATED.len() {
+                RESULT_TRUNCATED
+            } else {
+                ""
+            };
+            let mut cut = max - marker.len();
             while !text.is_char_boundary(cut) {
                 cut -= 1;
             }
-            return (format!("{}… [truncated]", &text[..cut]), o.error.is_some());
+            return (format!("{}{marker}", &text[..cut]), o.error.is_some());
         }
         logs.truncate(logs.len() / 2);
         logs.push(clax_bot_sandbox::LOGS_TRUNCATED.to_string());
@@ -901,6 +913,53 @@ mod tests {
                 "{} bytes for a bound of {max}",
                 text.len()
             );
+        }
+    }
+
+    /// A result with no logs to cut is cut with its marker inside its
+    /// bound: a result at its bound, one byte under it and one byte over
+    /// it, a two-byte character across the cut, and a bound too small
+    /// for the marker.
+    #[test]
+    fn a_cut_result_counts_its_marker_within_its_bound() {
+        let (mut outcome, calls, told) = logged(0);
+        outcome.value = Some(json!("x".repeat(200)));
+        let result = |o: &ScriptOutcome, max| tool_result_content(o, &calls, &told, None, max).0;
+        let whole = result(&outcome, usize::MAX);
+        // At its bound and one byte under it, it is left whole.
+        assert_eq!(result(&outcome, whole.len()), whole);
+        assert_eq!(result(&outcome, whole.len() + 1), whole);
+        // One byte over it, and further: cut to the bound, marker in it.
+        for max in [whole.len() - 1, whole.len() - 100] {
+            let text = result(&outcome, max);
+            assert_eq!(text.len(), max, "{text}");
+            let kept = text.strip_suffix(RESULT_TRUNCATED).expect("the marker");
+            assert!(whole.starts_with(kept));
+        }
+        // A two-byte character across the cut: the cut is before it.
+        outcome.value = Some(json!("é".repeat(200)));
+        let whole = result(&outcome, usize::MAX);
+        let mut straddled = 0;
+        for max in RESULT_TRUNCATED.len() + 40..whole.len() {
+            let text = result(&outcome, max);
+            assert!(
+                text.len() <= max,
+                "{} bytes for a bound of {max}",
+                text.len()
+            );
+            assert!(
+                text.len() + 1 >= max,
+                "{} bytes for a bound of {max}",
+                text.len()
+            );
+            let kept = text.strip_suffix(RESULT_TRUNCATED).expect("the marker");
+            assert!(whole.starts_with(kept));
+            straddled += usize::from(text.len() < max);
+        }
+        assert!(straddled > 0, "no cut fell inside a character");
+        // A bound too small for the marker is met without it.
+        for max in 0..RESULT_TRUNCATED.len() {
+            assert!(result(&outcome, max).len() <= max);
         }
     }
 }

@@ -10772,7 +10772,10 @@ Bytes never travel in a call. A value of type `Content` is a handle
 `Image` one whose `media_type` is `image/png`, `image/jpeg`,
 `image/webp` or `image/gif`; `media_type`, `bytes`, `sha256`, `width`
 and `height` (an image's, read from its header) are the daemon's
-findings, `name` and `meta` the host's words.
+findings, `name` and `meta` the host's words. An image's `width` and
+`height` are its displayed size: a JPEG's after its EXIF orientation
+(5 to 8 swap the sides), a GIF's those of the canvas its first frame is
+drawn on (the logical screen, enlarged to hold that frame).
 
 ```
 PUT /api/bot/surfaces/desk/content?registration=0f3a…&run=…&name=desk.png

@@ -695,7 +695,7 @@
           "published": {
             "version": 3
           },
-          "result": "<102415 bytes, sha256 155cf094d9e24edd269ac53f76357b2bfbe20479005384c876568c3b9f7aa624, from \"{\\\"calls\\\":[{\\\"code\\\":null,\\\"ok\\\":true,\\\"op\\\":\\\"files.write\\\"},{\\\"code\\\"\">",
+          "result": "<102399 bytes, sha256 13e1a7af42dfd046fac1a8146575c50882d5686d884fbebd8ad4ef25b5cf17af, from \"{\\\"calls\\\":[{\\\"code\\\":null,\\\"ok\\\":true,\\\"op\\\":\\\"files.write\\\"},{\\\"code\\\"\">",
           "title": "Script"
         }
       },
@@ -1668,7 +1668,7 @@
         },
         "replied": [],
         "result": {
-          "content": "<102415 bytes, sha256 155cf094d9e24edd269ac53f76357b2bfbe20479005384c876568c3b9f7aa624, from \"{\\\"calls\\\":[{\\\"code\\\":null,\\\"ok\\\":true,\\\"op\\\":\\\"files.write\\\"},{\\\"code\\\"\">",
+          "content": "<102399 bytes, sha256 13e1a7af42dfd046fac1a8146575c50882d5686d884fbebd8ad4ef25b5cf17af, from \"{\\\"calls\\\":[{\\\"code\\\":null,\\\"ok\\\":true,\\\"op\\\":\\\"files.write\\\"},{\\\"code\\\"\">",
           "is_error": true,
           "tool_use_id": "tu_2",
           "type": "tool_result"

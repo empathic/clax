@@ -26,7 +26,8 @@
 //! not JSON). A host may also state `sha256`, `bytes`, `width` and
 //! `height` in the query: each is checked against Clax's finding, and a
 //! request whose statement differs is refused; a statement it does not
-//! know is refused, so a daemon never ignores one.
+//! know is refused, so a daemon never ignores one. A stated `width` and
+//! `height` are the image's displayed size, as `sniff` reads it.
 //!
 //! Who may: the daemon's token, as the other host routes
 //! ([`clax_http::bot_surfaces::DaemonToken`]). Every route asked with a
@@ -191,7 +192,11 @@ fn stated_agrees(
     ] {
         match (stated, found) {
             (Some(s), Some(f)) if s != f => {
-                return Err(mismatch(format!("the image's {what} is {f}, not {s}")));
+                return Err(mismatch(format!(
+                    "the image's {what} as displayed is {f}, not {s}: a JPEG's sides \
+                     after its EXIF orientation, a GIF's those of the canvas its first \
+                     frame is drawn on"
+                )));
             }
             (Some(_), None) => {
                 return Err(mismatch(format!(
@@ -509,5 +514,37 @@ mod tests {
         assert!(!agrees(q(None, Some(size + 1), None, None), found));
         assert!(!agrees(q(None, None, Some(3), None), found));
         assert!(!agrees(q(None, None, None, Some(1)), None));
+    }
+
+    #[test]
+    fn a_rotated_jpeg_is_stated_at_its_displayed_size() {
+        // SOI, an APP1 of EXIF whose Orientation is 6 (a quarter turn),
+        // and a frame header of 2x1 stored.
+        let mut jpeg = b"\xff\xd8\xff\xe1\x00\x22Exif\0\0MM\0\x2a\0\0\0\x08".to_vec();
+        jpeg.extend(b"\0\x01\x01\x12\0\x03\0\0\0\x01\0\x06\0\0\0\0\0\0");
+        jpeg.extend(b"\xff\xc0\0\x0b\x08\0\x01\0\x02\x01\x01\x11\0");
+        let found = judge("image/jpeg", &jpeg).unwrap();
+        assert_eq!(found.map(|f| (f.width, f.height)), Some((1, 2)));
+        let sha = clax_core::audit::sha256_hex(&jpeg);
+        let size = u64::try_from(jpeg.len()).unwrap();
+        let q = |width, height| ContentQuery {
+            registration: "r".into(),
+            run: "u".into(),
+            name: None,
+            sha256: None,
+            bytes: None,
+            width: Some(width),
+            height: Some(height),
+        };
+        assert!(stated_agrees(&q(1, 2), &sha, size, found).is_ok());
+        let stored = stated_agrees(&q(2, 1), &sha, size, found).unwrap_err();
+        assert_eq!(stored.code, CODE_CONTENT_MISMATCH);
+        assert!(
+            stored
+                .message
+                .starts_with("the image's width as displayed is 1, not 2: "),
+            "{}",
+            stored.message
+        );
     }
 }

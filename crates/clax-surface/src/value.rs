@@ -135,7 +135,8 @@ enum Side {
 /// - `Content` is a whole handle: `id`, `media_type`, `sha256` and
 ///   `bytes`, and optionally `name`, `width`, `height` (whole numbers,
 ///   zero or more) and `meta` (an object), and nothing else. `Image` is
-///   a handle whose `media_type` is one of [`IMAGE_MEDIA_TYPES`].
+///   a handle whose `media_type` is one of [`IMAGE_MEDIA_TYPES`]; its
+///   `width` and `height` are its displayed size in pixels.
 ///
 /// # Errors
 /// What is wrong, after the place it is wrong at (`value.items[2].id

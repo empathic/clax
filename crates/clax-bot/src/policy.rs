@@ -236,9 +236,10 @@ pub struct RunLimits {
     /// The most bytes of an image shown to the model; a larger one is
     /// left out and the tool result says why.
     pub image_bytes: u64,
-    /// The most pixels of either side of an image shown to the model, as
-    /// its header says them; a wider or taller one is left out and the
-    /// tool result says why. Its upload is not refused.
+    /// The most pixels of either side of an image shown to the model, of
+    /// its displayed size as `clax_core::media::sniff` reads it from the
+    /// header; a wider or taller one is left out and the tool result says
+    /// why. Its upload is not refused.
     pub image_side: u32,
 }
 
