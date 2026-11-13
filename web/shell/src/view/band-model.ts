@@ -53,18 +53,23 @@ export function band(rows: BandRow[], o: BandOpts): Band {
   const anchor = o.dir > 0 ? "end" : "start";
   if (!rows.length) return { agent: "", waiting: "", spine: null, ticks: [], versions: [], counts: [], gaps: [], anchor };
   const max = o.maxUnits ?? MAX_UNITS;
-  const X = (w: number) => o.x0 - o.dir * Math.min(w, max) * o.unit;
+  // A count past `max` is drawn `max` wide, both areas scaled alike so the
+  // waiting share keeps its proportion.
+  const X = (units: number) => o.x0 - o.dir * units * o.unit;
+  const scale = (p: number) => (p > max ? max / p : 1);
+  const W = (p: number) => Math.min(p, max);
   const end = rows[rows.length - 1].y + TAIL;
   // The top holds the newest row's width; the tail is width 0.
   const all = [{ ...rows[0], y: o.top }, ...rows, { y: end, pending: 0, waiting: 0 }];
-  const agent = area(all.map(p => ({ y: p.y, hi: X(p.pending - p.waiting), lo: X(0) })));
-  const waiting = area(all.map(p => ({ y: p.y, hi: X(p.pending), lo: X(p.pending - p.waiting) })));
+  const split = (p: BandRow) => X((p.pending - p.waiting) * scale(p.pending));
+  const agent = area(all.map(p => ({ y: p.y, hi: split(p), lo: X(0) })));
+  const waiting = area(all.map(p => ({ y: p.y, hi: X(W(p.pending)), lo: split(p) })));
   const ticks: Band["ticks"] = [], versions: Band["versions"] = [], counts: Band["counts"] = [], gaps: Band["gaps"] = [];
   rows.forEach((r, i) => {
     const below = rows[i + 1]?.pending ?? 0;
     const above = i ? rows[i - 1].y : o.top;
     if (r.v !== undefined) {
-      const x2 = r2(X(Math.max(r.pending, below)) - o.dir * TICK);
+      const x2 = r2(X(W(Math.max(r.pending, below))) - o.dir * TICK);
       ticks.push({ x1: r2(o.x0), x2, y: r2(r.y) });
       if (o.labels) versions.push({ x: r2(x2 - o.dir * PAD), y: r2(r.y), text: `v${r.v}` });
     }
@@ -73,7 +78,7 @@ export function band(rows: BandRow[], o: BandOpts): Band {
     if (o.labels && r.pending && r.pending !== below) {
       let j = i;
       while (j > 0 && rows[j - 1].pending === r.pending) j--;
-      counts.push({ x: r2(X(r.pending) - o.dir * PAD), y: r2((r.y + (j ? rows[j - 1].y : o.top)) / 2), text: String(r.pending) });
+      counts.push({ x: r2(X(W(r.pending)) - o.dir * PAD), y: r2((r.y + (j ? rows[j - 1].y : o.top)) / 2), text: String(r.pending) });
     }
     if (o.labels && r.gap) gaps.push({ y: r2((above + r.y) / 2), text: r.gap });
   });

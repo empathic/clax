@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Version } from "../api";
 import type { Comment, FeedbackState, Thread, Viewer } from "../threads";
+import { unsent } from "./batch-model";
 import { type Day, type Line, type ThreadState, type Timeline, daySummary, days, isPending, isWaiting, lineText, rowStatus, timeline } from "./timeline-model";
 import type { Working } from "./working-model";
 
@@ -182,9 +183,48 @@ describe("timeline", () => {
     expect(later.length).toBe(keys.length + 1);
   });
 
-  it("agrees with the batch bar on unsent: a thread no agent has stays unsent though a version names it", () => {
+  it("reads a never-sent thread a version addressed as addressed", () => {
     const tl = run([thread("a", { addressed_in: [2] })], [v1, version(2, AT(3), ["a"])]);
-    expect(tl.stateOf.get("a")).toEqual({ kind: "unsent" });
+    expect(tl.stateOf.get("a")).toEqual({ kind: "addressed", v: 2 });
+    expect(tl.pending).toEqual([]);
+  });
+
+  it("resolves a resolved thread with no resolve time after its last fact, with no line", () => {
+    const tl = run([thread("a", { status: "resolved", resolved_by: "viewer:p_me", sent_to_agent: true, sends: [send("b1", AT(2), 1)] })]);
+    expect(shape(tl)).toEqual([V1, ["sent", ["a"], ["a"], 0, 0]]);
+    expect(tl.stateOf.get("a")).toEqual({ kind: "resolved" });
+  });
+
+  it("keeps a resolved thread resolved through a later comment, which still writes its line", () => {
+    const a = thread("a", { comments: [C("a.1", "viewer", AT(1)), C("a.2", "viewer", AT(4))], status: "resolved", resolved_by: "viewer:p_me", resolved_at: AT(3) });
+    const tl = run([a]);
+    expect(shape(tl)).toEqual([V1, ["made", ["a"], [], 1, 1], ["resolved", ["a"], [], 0, 0], ["followed-up", ["a"], ["a"], 0, 0]]);
+    expect(tl.stateOf.get("a")).toEqual({ kind: "resolved" });
+  });
+
+  it("sorts a made line before a send at the same time, so both made lines fold into it", () => {
+    const b = send("b1", AT(3), 2);
+    const tl = run([thread("a", { sent_to_agent: true, sends: [b] }), thread("b", { comments: [C("b.1", "viewer", AT(3))], sent_to_agent: true, sends: [b] })]);
+    expect(shape(tl)).toEqual([V1, ["sent", ["a", "b"], ["a", "b"], 2, 0]]);
+  });
+
+  it("reads one walk for the present and the history: the newest line's counts match the present, but for stalled threads", () => {
+    const fs = (id: string, state: FeedbackState["state"]): FeedbackState => ({ thread_id: id, state, tier: null, since: AT(2), resends: 0, exhausted: false });
+    const cases: { threads: Thread[]; versions: Version[]; claimed: string[] }[] = [
+      { threads: [thread("a", { addressed_in: [2] }), thread("b")], versions: [v1, version(2, AT(3), ["a"])], claimed: [] },
+      { threads: [thread("a", { status: "resolved", resolved_by: "agent:claude" }), thread("b", { comments: [C("b.1", "viewer", AT(2)), C("b.2", "agent", AT(3))], sent_to_agent: true })], versions: [v1], claimed: [] },
+      { threads: [thread("a", { sent_to_agent: true, feedback_state: fs("a", "withheld") }), thread("b", { sent_to_agent: true, feedback_state: fs("b", "delivered") }), thread("c")], versions: [v1], claimed: ["c"] },
+      { threads: [thread("a", { comments: [C("a.1", "viewer", AT(1)), C("a.2", "viewer", AT(5))], addressed_in: [2] })], versions: [v1, version(2, AT(3), ["a"])], claimed: [] },
+    ];
+    for (const c of cases) {
+      const tl = run(c.threads, c.versions, { claimed: c.claimed });
+      const last = tl.lines.at(-1)!;
+      const stalled = [...tl.stateOf.values()].filter(s => s.kind === "stalled").length;
+      expect(last.pending).toBe(tl.pending.length);
+      expect(last.waiting).toBe(tl.waiting.length - stalled);
+      const listed = new Set(unsent(c.threads, c.claimed).map(t => t.id));
+      for (const [id, s] of tl.stateOf) if (s.kind === "unsent") expect(listed.has(id)).toBe(true);
+    }
   });
 });
 
@@ -200,10 +240,10 @@ describe("lineText", () => {
     expect(lineText(L({ mine: true, who: "Alex" }), none).text).toBe("You commented");
     expect(lineText(L({}), none).text).toBe("Mia commented");
     expect(lineText(L({ mine: true, who: "Alex", ids: ["a", "b", "c"] }), none).text).toBe("You made 3 comments");
-    const unsent = new Map<string, ThreadState>([["a", { kind: "unsent" }]]);
-    expect(lineText(L({ here: ["a"] }), unsent).text).toBe("Mia commented, sent to no one");
+    const nobody = new Map<string, ThreadState>([["a", { kind: "unsent" }]]);
+    expect(lineText(L({ here: ["a"] }), nobody).text).toBe("Mia commented, sent to no one");
     // Not listed under it, or no longer unsent: no clause.
-    expect(lineText(L({ here: [] }), unsent).text).toBe("Mia commented");
+    expect(lineText(L({ here: [] }), nobody).text).toBe("Mia commented");
     expect(lineText(L({ here: ["a"] }), new Map([["a", { kind: "with-agent", working: false }]])).text).toBe("Mia commented");
   });
   it("words a send by its batch's size, with its note on a second row", () => {

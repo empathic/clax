@@ -53,6 +53,15 @@ describe("band", () => {
     expect(band([{ y: 20, pending: 9, waiting: 0 }], { ...right, maxUnits: 2 }).agent).toBe("M47,0 V16 L56,24 V32 H56 V0 Z");
   });
 
+  it("scales both areas past the cap, so the waiting share keeps its proportion", () => {
+    // 12 pending, 3 waiting: 6 units in all, 4.5 for the agent, 1.5 waiting.
+    const b = band([{ y: 20, pending: 12, waiting: 3 }], { ...right, labels: true });
+    expect(b.agent).toBe("M35.75,0 V16 L56,24 V32 H56 V0 Z");
+    expect(b.waiting).toBe("M29,0 V16 L56,24 V32 H56 V24 L35.75,16 V0 Z");
+    expect(35.75 - 29).toBe(1.5 * 4.5);
+    expect(b.counts.map(c => c.text)).toEqual(["12"]);
+  });
+
   it("rounds coordinates to two decimals", () => {
     expect(band([{ y: 10.123, pending: 1, waiting: 0 }], { top: 0, x0: 30, dir: 1, unit: 4.333 }).agent).toBe("M25.67,0 V6.12 L30,14.12 V22.12 H30 V0 Z");
   });

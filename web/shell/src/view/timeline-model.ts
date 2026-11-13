@@ -6,7 +6,6 @@
 // just after it. Pure: no DOM, no clock of its own.
 import type { Version } from "../api";
 import { type Comment, type Thread, type Viewer, resolvedByLabel } from "../threads";
-import { unsent } from "./batch-model";
 import { agentName } from "./history-model";
 import type { Working } from "./working-model";
 
@@ -49,7 +48,7 @@ type Fact =
   | { at: string; kind: "person"; c: Comment }
   | { at: string; kind: "agent"; c: Comment }
   | { at: string; kind: "addressed"; v: number }
-  | { at: string; kind: "resolved"; by: string };
+  | { at: string; kind: "resolved"; by: string; line: boolean };
 /** A line before folding and merging. */
 type Raw = Omit<Line, "here" | "pending" | "waiting">;
 
@@ -66,8 +65,11 @@ function factsOf(t: Thread, versionAt: Map<number, string>): Fact[] {
   for (const c of rest) if (c.author_kind !== "agent") out.push({ at: c.created_at, kind: "person", c });
   for (const c of rest) if (c.author_kind === "agent") out.push({ at: c.created_at, kind: "agent", c });
   for (const n of t.addressed_in ?? []) { const at = versionAt.get(n); if (at !== undefined) out.push({ at, kind: "addressed", v: n }); }
-  if (t.status === "resolved" && t.resolved_at) out.push({ at: t.resolved_at, kind: "resolved", by: t.resolved_by ?? "" });
-  return byAt(out);
+  if (t.status === "resolved" && t.resolved_at) out.push({ at: t.resolved_at, kind: "resolved", by: t.resolved_by ?? "", line: true });
+  const sorted = byAt(out);
+  // A resolve with no time is placed after the thread's last fact and writes no line.
+  if (t.status === "resolved" && !t.resolved_at) sorted.push({ at: sorted[sorted.length - 1].at, kind: "resolved", by: t.resolved_by ?? "", line: false });
+  return sorted;
 }
 
 /** A thread's state after each of its facts, and the lines its facts write
@@ -85,7 +87,7 @@ function walk(t: Thread, facts: Fact[], implicit: boolean, me: Viewer | null | u
   const steps: { at: string; s: ThreadState }[] = [];
   const lines: Raw[] = [];
   let s: ThreadState = { kind: "unsent" };
-  let sent = false, answered = false;
+  let sent = false, answered = false, resolved = false;
   seg = -1;
   for (const f of facts) {
     switch (f.kind) {
@@ -113,37 +115,44 @@ function walk(t: Thread, facts: Fact[], implicit: boolean, me: Viewer | null | u
         break;
       case "resolved":
         s = { kind: "resolved" };
-        lines.push({ key: `resolved:${t.id}`, at: f.at, kind: "resolved", who: resolvedByLabel(f.by, me, t.resolved_by_name), agent: f.by.startsWith("agent:"), mine: !!me && f.by === `viewer:${me.public_id}`, ids: [t.id] });
+        resolved = true;
+        if (f.line) lines.push({ key: `resolved:${t.id}`, at: f.at, kind: "resolved", who: resolvedByLabel(f.by, me, t.resolved_by_name), agent: f.by.startsWith("agent:"), mine: !!me && f.by === `viewer:${me.public_id}`, ids: [t.id] });
         break;
     }
+    // A thread still resolved stays so: a later fact writes its line but
+    // changes no state.
+    if (resolved) s = { kind: "resolved" };
     steps.push({ at: f.at, s });
   }
   return { steps, lines };
 }
 
-/** The thread's state now: its history's last state, refined. A resolved
- * thread is resolved; one `unsent()` lists is unsent (and only those are);
- * one with the agent is `working` while a working record lists it, and
- * stalled while its delivery waits on a person. */
-function present(t: Thread, last: ThreadState, isUnsent: boolean, working: Set<string>): ThreadState {
-  if (t.status === "resolved") return { kind: "resolved" };
-  if (isUnsent) return { kind: "unsent" };
-  const s: ThreadState = last.kind === "unsent" ? { kind: "with-agent", working: false } : last;
-  if (s.kind !== "with-agent") return s;
+/** The thread's state now: the walk's last state (a claimed thread is with
+ * the agent from the walk's start), refined only while it is with the
+ * agent: `working` while a working record lists it, stalled while its
+ * delivery waits on a person. Every thread this calls unsent is one
+ * `unsent()` (`batch-model.ts`) lists: it is open, never sent and not
+ * claimed. A never-sent thread a version addressed is addressed. */
+function present(t: Thread, last: ThreadState, working: Set<string>): ThreadState {
+  if (last.kind !== "with-agent") return last;
   const fs = t.feedback_state?.state;
   if (fs && STALLED.has(fs)) return { kind: "stalled", why: fs as "withheld" | "declined" | "no_access" | "agent_ended" };
   return { kind: "with-agent", working: working.has(t.id) };
 }
+
+/** At equal times a version comes first, then a made line, then the rest:
+ * a made line never follows the send that stands for it. */
+const RANK: Partial<Record<LineKind, number>> = { version: 0, made: 1 };
+const rank = (k: LineKind) => RANK[k] ?? 2;
+const linesByAt = (list: Raw[]): Raw[] => [...list].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : rank(a.kind) - rank(b.kind)));
 
 const MERGES = new Set<LineKind>(["made", "followed-up", "resolved"]);
 
 export function timeline(i: TimelineInput): Timeline {
   const known = new Set(i.threads.map(t => t.id));
   const versionAt = new Map(i.versions.map(v => [v.n, v.created_at]));
-  const unsentIds = new Set(unsent(i.threads, i.claimed).map(t => t.id));
   const working = new Set(i.working.flatMap(w => w.thread_ids));
 
-  // Versions first, so a thread's line at a version's very time follows it.
   const raw: Raw[] = [];
   const versionLine = new Map<number, Raw>();
   for (const v of [...i.versions].sort((a, b) => a.n - b.n)) {
@@ -180,12 +189,12 @@ export function timeline(i: TimelineInput): Timeline {
         if (f.first) firstSends.set(line.key, (firstSends.get(line.key) ?? new Set()).add(t.id));
       }
     }
-    stateOf.set(t.id, present(t, w.steps.at(-1)?.s ?? { kind: "unsent" }, unsentIds.has(t.id), working));
+    stateOf.set(t.id, present(t, w.steps.at(-1)?.s ?? { kind: "unsent" }, working));
   }
 
   // A made line directly before its thread's first send (with only other
   // such made lines between) is folded into the sent line.
-  const sorted = byAt(raw);
+  const sorted = linesByAt(raw);
   const dropped = new Set<Raw>();
   sorted.forEach((line, k) => {
     if (line.kind !== "sent") return;

@@ -176,8 +176,16 @@ Two things refine only the present state, never the history:
   `waiting`). These are the states in which the card already asks a person
   to act (an approval, ClaxBot's offer in `ShellSidebar.svelte`).
 
-`unsent` here and `unsent()` in `view/batch-model.ts` must agree on which
-threads are unsent: the model calls it, or both call one predicate.
+One walk defines a thread's state: its present state is the walk's final
+state (a thread in `claimed` is with the agent from the walk's start),
+refined only by the two above. A never-sent thread that a version
+addressed is addressed. A resolved thread stays resolved through any later
+fact; one with no `resolved_at` is resolved after its last fact, with no
+line. So the newest line's `pending` equals `timeline.pending.length`, and
+its `waiting` is lower than `timeline.waiting.length` only by the stalled
+threads. Agreement with `unsent()` in `view/batch-model.ts` means only
+this: every thread whose state is `unsent` is in `unsent(threads,
+claimed)`.
 
 ### Lines
 
@@ -249,7 +257,9 @@ not zero, centred on the run, and each version's label at the end of its
 tick.
 
 A count wider than the room caps the drawn width (`maxUnits`, default 6
-comments) while the written count stays true.
+comments) while the written count stays true: past the cap both edges are
+scaled by `maxUnits / pending`, so the waiting share keeps its proportion
+and shows whenever `waiting` is not zero.
 
 This is the vignette's `band()` and `area()` (see "The vignette"), made a
 pure function returning strings so it is tested without a DOM.
