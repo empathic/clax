@@ -1,0 +1,14 @@
+[
+  {
+    "content": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "text": "Working on it.",
+        "type": "text"
+      }
+    ],
+    "role": "assistant"
+  }
+]

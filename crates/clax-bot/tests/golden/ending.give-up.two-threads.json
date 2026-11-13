@@ -1,0 +1,85 @@
+{
+  "last_step": {
+    "kind": "give_up",
+    "payload": {
+      "code": "model",
+      "notice": "I gave up: The page has no heading to colour. I ran 1 script and edited extra.css. My draft is saved, unpublished: open it from the run panel.",
+      "reason": "The page has no heading to colour."
+    }
+  },
+  "notices_in_the_journal": [
+    {
+      "ok": true,
+      "op": "reply",
+      "seq": 1000000,
+      "step": 4
+    },
+    {
+      "ok": true,
+      "op": "reply",
+      "seq": 1000001,
+      "step": 4
+    }
+  ],
+  "reason": "model",
+  "replies": [
+    {
+      "text": "I gave up: The page has no heading to colour. I ran 1 script and edited extra.css. My draft is saved, unpublished: open it from the run panel.",
+      "thread": "<thread-1>"
+    },
+    {
+      "text": "I gave up: The page has no heading to colour. I ran 1 script and edited extra.css. My draft is saved, unpublished: open it from the run panel.",
+      "thread": "<thread-2>"
+    }
+  ],
+  "roster": {
+    "shown_working_at_no_step": 0,
+    "shown_working_before": [
+      {
+        "kind": "turn",
+        "shown": true,
+        "step": 1
+      },
+      {
+        "kind": "script",
+        "shown": true,
+        "step": 2
+      },
+      {
+        "kind": "turn",
+        "shown": true,
+        "step": 3
+      },
+      {
+        "kind": "give_up",
+        "shown": false,
+        "step": 4
+      }
+    ],
+    "stopped_showing": [
+      {
+        "calls_after_it": 0,
+        "run_status": "gave_up"
+      }
+    ]
+  },
+  "status": "gave_up",
+  "steps": [
+    "turn",
+    "script",
+    "turn",
+    "give_up"
+  ],
+  "writes_in_order": [
+    {
+      "key": "<run>:4:1000000",
+      "op": "threads.reply",
+      "thread": "<thread-1>"
+    },
+    {
+      "key": "<run>:4:1000001",
+      "op": "threads.reply",
+      "thread": "<thread-2>"
+    }
+  ]
+}

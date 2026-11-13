@@ -4284,6 +4284,35 @@
     "credits_milli": 1
    },
    "backfilled": false
+  },
+  {
+   "seq": 127,
+   "at": "2026-10-06T14:09:36.127Z",
+   "kind": "bot.surface.registered",
+   "actor": {
+    "type": "owner",
+    "public_id": "u_4be1q8"
+   },
+   "ids": {
+    "artifact": null,
+    "artifact2": null,
+    "thread": null,
+    "session": null,
+    "question": null,
+    "call": null,
+    "origin": null
+   },
+   "body": {
+    "v": 1,
+    "clax_version": "0.3.1",
+    "clax_commit": "abc1234def5678abc1234def5678abc1234def56",
+    "via": "shell",
+    "registration": "01JBCB0T000000000000000S01",
+    "name": "shell",
+    "def_hash": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+    "registered_by": "u_4be1q8"
+   },
+   "backfilled": false
   }
  ]
 }

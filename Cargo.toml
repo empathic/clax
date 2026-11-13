@@ -18,6 +18,7 @@ members = [
     "crates/clax-rt",
     "crates/clax-content-git",
     "crates/clax-bot-sandbox",
+    "crates/clax-surface",
     "crates/clax-bot-js",
     "crates/clax-bot",
     # Patched copies of third-party crates, under names of their own
@@ -51,6 +52,7 @@ default-members = [
     "crates/clax-rt",
     "crates/clax-content-git",
     "crates/clax-bot-sandbox",
+    "crates/clax-surface",
     "crates/clax-bot-js",
     "crates/clax-bot",
     "third_party/clax-rquickjs-sys",

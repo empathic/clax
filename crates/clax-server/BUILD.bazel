@@ -12,12 +12,15 @@ cargo_package(
     compile_data = ["//web:contract_files"],
     # clax-http's sources the route-table guards read (src/routes/guards.rs),
     # the JSON fixtures the tests include (tests/api_mcp_http.rs), the
-    # older builds' migrations tests/api_threads.rs includes, and the SDK's
-    # error codes tests/api_queue_reporter.rs checks refusals against.
+    # older builds' migrations tests/api_threads.rs includes, the SDK's
+    # error codes tests/api_queue_reporter.rs checks refusals against, and
+    # the ClaxBot surfaces contract fixture tests/api_bot_surfaces.rs
+    # replays.
     test_compile_data = glob(["tests/fixtures/**"]) + [
         "//crates/clax-core:toolpath_vectors",
         "//crates/clax-http:rust_sources",
         "//crates/clax-store:old_migrations",
+        "//docs:claxbot_surfaces_contract",
         "//web:contract_files",
         "//web:sdk_error_codes",
         "//web:shell_cases",
@@ -36,6 +39,19 @@ cargo_package(
         "//web:dist",
         "@nodejs//:node_bin",
     ],
+    # The daemon's sources, which tests/daemon_sources.rs alone scans for
+    # the name of a host's surface: no other test is rerun for an edit of
+    # crates clax-server does not depend on.
+    test_data_of = {"daemon_sources": [
+        "//crates/clax-bot-js:rust_sources",
+        "//crates/clax-cli:rust_sources",
+        "//crates/clax-commands:rust_sources",
+        "//crates/clax-hooks:rust_sources",
+        "//crates/clax-http:rust_sources",
+        "//crates/clax-mcp:rust_sources",
+        "//crates/clax-realtime:rust_sources",
+        "//crates/clax-worker:rust_sources",
+    ]},
     test_env = {"CLAX_TEST_NODE": "$(rootpath @nodejs//:node_bin)"},
     tests_use_clax = [
         "clax_server_lib_test",

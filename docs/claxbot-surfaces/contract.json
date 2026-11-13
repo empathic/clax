@@ -1,0 +1,2604 @@
+{
+  "clax_surface": 1,
+  "about": [
+    "The contract of the ClaxBot surfaces host protocol (docs/contract.md, \"ClaxBot surfaces\"), as examples both sides replay.",
+    "`messages`: every message, each as the type named reads and writes it. `tolerated`: what a reader takes that is not written so: what a daemon may send that a host built on this version still reads, and what a host may leave out. `refused`: what the side that reads a message refuses.",
+    "`script`: one life of two registrations of the surface in `files`, in order, by a clock that starts at 0 (`at_ms`). A step with `host` is a request and its answer; one with `run` is what a run's side does or sees: `call` (a script's call for a registration: the ID the daemon gives it, or the error the script is thrown), `outcome` (what the script is answered or thrown, at that instant), `waiting` (the call is not settled), `ended` (a run of the registration's ended). Its calls are made under a policy that sends nothing again (one attempt): a run on the daemon has three (docs/contract.md, \"Sending a call again\"), so where its host answers `unavailable` (at_ms 59) or is not connected (at_ms 40000) the daemon first sends the call again, or waits for the host, until the call's deadline.",
+    "Where the script has an ID of 32 zeros, it is one the daemon never gave. A string `$file:<name>` stands for the text of `files[<name>]`. A string `$<name>` is an ID the daemon chose: the same name is the same ID throughout, and different names are different IDs. `$_` is any value. `held_ms` on a serve is how long the daemon holds it before it answers."
+  ],
+  "files": {
+    "desk.d.ts": "/** A desk and what is on it. Ask before you move anything. */\ndeclare const desk: {\n  /** The lamps on the desk. @read */\n  lamps(): Promise<Lamp[]>;\n  /** The desk as it looks now. @read */\n  snapshot(): Promise<Image>;\n  settings: {\n    /** Changes the desk's settings; a field left out keeps its value. @write @throws invalid */\n    set(patch: { theme?: \"light\" | \"dark\" }): Promise<null>;\n  };\n  /** Shows the person a note. @effect */\n  notify(text: string): Promise<null>;\n  /** Asks the person, and waits for their answer. @effect @waits @once @throws declined */\n  ask(question: string, choices?: string[]): Promise<string>;\n};\ninterface Lamp { id: string; on: boolean }\ninterface Kinds {\n  /** The request is what the person wants done to the desk. @allow desk.* */\n  tidy(request: { ask: Instruction }): { summary: string };\n  /** The request is what the person wants arranged on the desk; they may add to it while the run works. @allow desk.* */\n  arrange(request: { ask: Instruction }, message?: { say: Instruction }): { summary: string };\n}\n",
+    "desk.prompt.md": "The prompt file of the surface `desk`, which runs of its kinds are sent (docs/contract.md, \"Registering\"; the format is crates/clax-bot/src/prompt/file.rs's).\n\n--- system ---\nYou look after a desk for the person who sent the request, with their rights and no others.\n\n{kind}\n\n{core.code_mode}\n\nRules:\n- {core.data}\n- {core.finish}\n{rules}\n\n# The clax API\n\n```ts\n{declarations}\n```\n{surfaces}\n--- request ---\n{instructions}\n\n{fence}json\n{request}\n{fence}\n",
+    "desk.json": "{\n  \"clax_surface\": 1,\n  \"name\": \"desk\",\n  \"rules\": \"A desk and what is on it. Ask before you move anything.\",\n  \"operations\": [\n    {\n      \"name\": \"lamps\",\n      \"description\": \"The lamps on the desk.\",\n      \"access\": \"read\",\n      \"params\": [],\n      \"result\": {\"type\": \"array\", \"items\": {\"$ref\": \"#/interfaces/Lamp\"}}\n    },\n    {\n      \"name\": \"snapshot\",\n      \"description\": \"The desk as it looks now.\",\n      \"access\": \"read\",\n      \"params\": [],\n      \"result\": {\"$ref\": \"clax:Image\"}\n    },\n    {\n      \"name\": \"settings.set\",\n      \"description\": \"Changes the desk's settings; a field left out keeps its value.\",\n      \"access\": \"write\",\n      \"throws\": [\"invalid\"],\n      \"params\": [\n        {\"name\": \"patch\", \"schema\": {\"type\": \"object\", \"properties\": {\"theme\": {\"enum\": [\"light\", \"dark\"]}}, \"additionalProperties\": false}}\n      ],\n      \"result\": {\"type\": \"null\"}\n    },\n    {\n      \"name\": \"notify\",\n      \"description\": \"Shows the person a note.\",\n      \"access\": \"effect\",\n      \"params\": [\n        {\"name\": \"text\", \"schema\": {\"type\": \"string\"}}\n      ],\n      \"result\": {\"type\": \"null\"}\n    },\n    {\n      \"name\": \"ask\",\n      \"description\": \"Asks the person, and waits for their answer.\",\n      \"access\": \"effect\",\n      \"waits\": true,\n      \"once\": true,\n      \"throws\": [\"declined\"],\n      \"params\": [\n        {\"name\": \"question\", \"schema\": {\"type\": \"string\"}},\n        {\"name\": \"choices\", \"optional\": true, \"schema\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}}\n      ],\n      \"result\": {\"type\": \"string\"}\n    }\n  ],\n  \"interfaces\": {\n    \"Lamp\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"id\": {\"type\": \"string\"},\n        \"on\": {\"type\": \"boolean\"}\n      },\n      \"required\": [\"id\", \"on\"],\n      \"additionalProperties\": false\n    }\n  },\n  \"kinds\": [\n    {\n      \"name\": \"tidy\",\n      \"description\": \"The request is what the person wants done to the desk.\",\n      \"allow\": [\"desk.*\"],\n      \"request\": {\"type\": \"object\", \"properties\": {\"ask\": {\"$ref\": \"clax:Instruction\"}}, \"required\": [\"ask\"], \"additionalProperties\": false},\n      \"result\": {\"type\": \"object\", \"properties\": {\"summary\": {\"type\": \"string\"}}, \"required\": [\"summary\"], \"additionalProperties\": false}\n    },\n    {\n      \"name\": \"arrange\",\n      \"description\": \"The request is what the person wants arranged on the desk; they may add to it while the run works.\",\n      \"allow\": [\"desk.*\"],\n      \"request\": {\"type\": \"object\", \"properties\": {\"ask\": {\"$ref\": \"clax:Instruction\"}}, \"required\": [\"ask\"], \"additionalProperties\": false},\n      \"message\": {\"type\": \"object\", \"properties\": {\"say\": {\"$ref\": \"clax:Instruction\"}}, \"required\": [\"say\"], \"additionalProperties\": false},\n      \"result\": {\"type\": \"object\", \"properties\": {\"summary\": {\"type\": \"string\"}}, \"required\": [\"summary\"], \"additionalProperties\": false}\n    }\n  ]\n}\n"
+  },
+  "messages": [
+    {
+      "type": "RegisterRequest",
+      "json": {
+        "clax_surface": 1,
+        "notation": "dts",
+        "definition": "$file:desk.d.ts"
+      }
+    },
+    {
+      "type": "RegisterRequest",
+      "json": {
+        "clax_surface": 1,
+        "notation": "manifest",
+        "definition": "$file:desk.json",
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "prompt": "$file:desk.prompt.md",
+        "settings": {
+          "allow": [
+            "desk.*",
+            "desk.settings.set"
+          ],
+          "max_effects_per_run": "none",
+          "call_timeout_s": 30,
+          "wait_limit_s": 86400,
+          "runs": {
+            "max_steps": 40,
+            "max_run_minutes": 30
+          }
+        }
+      }
+    },
+    {
+      "type": "Registered",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "hash": "550f68055bfba1e87f7597600935c75a9872800b8f63758f8d8659e5283907d0",
+        "clax_surface": 1
+      }
+    },
+    {
+      "type": "ErrorResponse",
+      "json": {
+        "error": {
+          "code": "unknown_registration",
+          "message": "the surface has no such registration"
+        }
+      }
+    },
+    {
+      "type": "ErrorResponse",
+      "json": {
+        "error": {
+          "code": "invalid_definition",
+          "message": "line 2: an operation needs a doc comment",
+          "errors": [
+            {
+              "line": 2,
+              "message": "an operation needs a doc comment"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "ErrorResponse",
+      "json": {
+        "error": {
+          "code": "invalid_definition",
+          "message": "/operations/1/access: …\nthe rest was not looked at",
+          "errors": [
+            {
+              "pointer": "/operations/1/access",
+              "message": "…"
+            },
+            {
+              "pointer": "",
+              "message": "the rest was not looked at"
+            }
+          ],
+          "unread": 3
+        }
+      }
+    },
+    {
+      "type": "ErrorResponse",
+      "json": {
+        "error": {
+          "code": "unsupported_version",
+          "message": "`clax_surface` is 2, and this Clax speaks version 1 of the protocol",
+          "supported": [
+            1
+          ]
+        }
+      }
+    },
+    {
+      "type": "ErrorResponse",
+      "json": {
+        "error": {
+          "code": "not_yet",
+          "message": "this Clax does not bind other surfaces to a run yet: leave `bind` out"
+        }
+      }
+    },
+    {
+      "type": "ServeRequest",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "wait_ms": 12000,
+        "answers": []
+      }
+    },
+    {
+      "type": "ServeResponse",
+      "json": {
+        "calls": []
+      }
+    },
+    {
+      "type": "ServeResponse",
+      "json": {
+        "calls": [],
+        "ignored": [
+          "c1",
+          "no-such-call"
+        ]
+      }
+    },
+    {
+      "type": "StartRunRequest",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "kind": "arrange",
+        "request": {
+          "ask": "Tidy the desk."
+        }
+      }
+    },
+    {
+      "type": "StartRunRequest",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "kind": "arrange",
+        "request": {
+          "ask": "Tidy the desk."
+        },
+        "allow": [
+          "desk.lamps",
+          "desk.settings.*"
+        ],
+        "bind": {
+          "clax": {
+            "artifact": "7q3k9mzx2b4t"
+          }
+        }
+      }
+    },
+    {
+      "type": "StartRunResponse",
+      "json": {
+        "run": "run-1"
+      }
+    },
+    {
+      "type": "MessageRequest",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "message": {
+          "say": "Leave the right lamp on."
+        },
+        "key": "m-1"
+      }
+    },
+    {
+      "type": "MessageResponse",
+      "json": {
+        "message": "01JD5Y8Q2W3E4R5T6Y7V8X9Z0A",
+        "seq": 1,
+        "waiting": false
+      }
+    },
+    {
+      "type": "ServeResponse",
+      "json": {
+        "calls": [
+          {
+            "call": "event",
+            "run": "run-1",
+            "event": {
+              "type": "step",
+              "step": 1,
+              "kind": "turn",
+              "messages": [
+                1
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "ServeResponse",
+      "json": {
+        "calls": [
+          {
+            "id": "c1",
+            "call": "read",
+            "run": "run-1",
+            "op": "lamps",
+            "args": [],
+            "key": "run-1:2:0",
+            "expires_in_ms": 30000
+          },
+          {
+            "id": "c2",
+            "call": "write",
+            "run": "run-1",
+            "op": "settings.set",
+            "args": [
+              {
+                "theme": "dark"
+              }
+            ],
+            "key": "run-1:2:1",
+            "expires_in_ms": 30000
+          },
+          {
+            "id": "c3",
+            "call": "effect",
+            "run": "run-1",
+            "op": "ask",
+            "args": [
+              "Tidy the desk?",
+              null
+            ],
+            "key": "run-1:2:2",
+            "expires_in_ms": 86400000
+          },
+          {
+            "id": "c4",
+            "call": "effect",
+            "run": "run-2",
+            "op": "notify",
+            "args": [
+              "The desk is tidy."
+            ],
+            "key": "run-2:2:0",
+            "expires_in_ms": 30000
+          },
+          {
+            "id": "c5",
+            "call": "read",
+            "run": "run-6",
+            "op": "lamps",
+            "args": [],
+            "key": "run-6:2:0",
+            "expires_in_ms": 30000,
+            "joined": {
+              "clax": {
+                "artifact": "7q3k9mzx2b4t",
+                "thread_ids": [
+                  "01M7763Z341GPEZGS73XBQH3G1"
+                ]
+              }
+            }
+          },
+          {
+            "id": "e1",
+            "call": "ended",
+            "run": "run-3",
+            "end": {
+              "finished": {}
+            },
+            "result": {
+              "summary": "Tidied."
+            }
+          },
+          {
+            "id": "e2",
+            "call": "ended",
+            "run": "run-4",
+            "end": {
+              "gave_up": {
+                "code": "model",
+                "reason": "The desk is locked."
+              }
+            }
+          },
+          {
+            "id": "e3",
+            "call": "ended",
+            "run": "run-5",
+            "end": {
+              "failed": {
+                "code": "internal_error"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "ServeRequest",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "id": "c1",
+            "result": [
+              {
+                "id": "l1",
+                "on": true
+              }
+            ]
+          },
+          {
+            "id": "c2",
+            "result": null
+          },
+          {
+            "id": "c3",
+            "accepted": true
+          },
+          {
+            "id": "c4",
+            "accepted": true
+          },
+          {
+            "id": "c5",
+            "retry_after_ms": 5000
+          },
+          {
+            "id": "e1",
+            "result": null
+          },
+          {
+            "id": "e2",
+            "result": null
+          },
+          {
+            "id": "e3",
+            "result": null
+          }
+        ]
+      }
+    },
+    {
+      "type": "ServeResponse",
+      "json": {
+        "calls": [
+          {
+            "call": "event",
+            "run": "run-1",
+            "event": {
+              "type": "parked",
+              "step": 2,
+              "waiting_on": {
+                "surface": "desk",
+                "op": "ask",
+                "deadline": "2026-11-12T00:00:00.000Z"
+              }
+            }
+          },
+          {
+            "id": "c5",
+            "call": "read",
+            "run": "run-6",
+            "op": "lamps",
+            "args": [],
+            "key": "run-6:2:0",
+            "expires_in_ms": 20000,
+            "joined": {
+              "clax": {
+                "artifact": "7q3k9mzx2b4t",
+                "thread_ids": [
+                  "01M7763Z341GPEZGS73XBQH3G1"
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "MessageRequest",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "message": {
+          "say": "And the left."
+        }
+      }
+    },
+    {
+      "type": "MessageResponse",
+      "json": {
+        "message": "01JD5Y8Q2W3E4R5T6Y7V8X9Z0B",
+        "seq": 2,
+        "waiting": true
+      }
+    },
+    {
+      "type": "MessageRequest",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "message": {
+          "say": "Then the desk lamp."
+        },
+        "key": "m-3"
+      }
+    },
+    {
+      "type": "MessageResponse",
+      "json": {
+        "message": "01JD5Y8Q2W3E4R5T6Y7V8X9Z0C",
+        "seq": 3,
+        "waiting": true
+      }
+    },
+    {
+      "type": "RunState",
+      "json": {
+        "run": "run-1",
+        "kind": "arrange",
+        "status": "parked",
+        "steps": 1,
+        "waiting_on": {
+          "surface": "desk",
+          "op": "ask",
+          "deadline": "2026-11-12T00:00:00.000Z"
+        },
+        "messages_waiting": 2
+      }
+    },
+    {
+      "type": "ServeRequest",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "wait_ms": 12000,
+        "answers": [
+          {
+            "id": "c3",
+            "error": {
+              "code": "declined",
+              "message": "The person said no."
+            }
+          },
+          {
+            "id": "c4",
+            "result": null
+          },
+          {
+            "id": "c5",
+            "result": [
+              {
+                "id": "l1",
+                "on": true
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "ServeResponse",
+      "json": {
+        "calls": [
+          {
+            "call": "event",
+            "run": "run-1",
+            "event": {
+              "type": "resumed",
+              "step": 2
+            }
+          },
+          {
+            "call": "event",
+            "run": "run-1",
+            "event": {
+              "type": "step",
+              "step": 2,
+              "kind": "script"
+            }
+          },
+          {
+            "call": "event",
+            "run": "run-1",
+            "event": {
+              "type": "step",
+              "step": 3,
+              "kind": "turn",
+              "messages": [
+                2,
+                3
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "ServeResponse",
+      "json": {
+        "calls": [
+          {
+            "call": "event",
+            "run": "run-1",
+            "event": {
+              "type": "step",
+              "step": 4,
+              "kind": "script"
+            }
+          },
+          {
+            "call": "event",
+            "run": "run-1",
+            "event": {
+              "type": "step",
+              "step": 5,
+              "kind": "turn"
+            }
+          },
+          {
+            "id": "e6",
+            "call": "ended",
+            "run": "run-1",
+            "end": {
+              "finished": {}
+            },
+            "result": {
+              "summary": "Tidied, the right lamp left on."
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "RunState",
+      "json": {
+        "run": "run-1",
+        "kind": "arrange",
+        "status": "finished",
+        "steps": 6,
+        "messages_waiting": 0,
+        "end": {
+          "finished": {}
+        },
+        "result": {
+          "summary": "Tidied, the right lamp left on."
+        }
+      }
+    },
+    {
+      "type": "RunState",
+      "json": {
+        "run": "run-7",
+        "kind": "arrange",
+        "status": "stopped",
+        "steps": 3,
+        "messages_waiting": 2,
+        "undelivered": [
+          2,
+          3
+        ],
+        "end": {
+          "stopped": {
+            "reason": "cancelled"
+          }
+        }
+      }
+    },
+    {
+      "type": "ServeResponse",
+      "json": {
+        "calls": [
+          {
+            "id": "e7",
+            "call": "ended",
+            "run": "run-7",
+            "end": {
+              "stopped": {
+                "reason": "cancelled"
+              }
+            },
+            "undelivered": [
+              2,
+              3
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "tolerated": [
+    {
+      "type": "Registered",
+      "why": "a member a host does not know",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "hash": "550f68055bfba1e87f7597600935c75a9872800b8f63758f8d8659e5283907d0",
+        "clax_surface": 1,
+        "lease_ms": 300000
+      }
+    },
+    {
+      "type": "ErrorResponse",
+      "why": "a member a host does not know",
+      "json": {
+        "error": {
+          "code": "unknown_registration",
+          "message": "…",
+          "retry": false
+        },
+        "request_id": "x"
+      }
+    },
+    {
+      "type": "ServeResponse",
+      "why": "a kind of delivery a host does not know, which it skips, and a member of a call it does not know",
+      "json": {
+        "calls": [
+          {
+            "call": "notice",
+            "run": "run-1",
+            "event": {
+              "step": 2
+            }
+          },
+          {
+            "id": "c1",
+            "call": "read",
+            "run": "run-1",
+            "op": "lamps",
+            "args": [],
+            "key": "run-1:2:0",
+            "expires_in_ms": 29000,
+            "attempt": 2
+          }
+        ],
+        "next_wait_ms": 12000
+      }
+    },
+    {
+      "type": "ServeResponse",
+      "why": "a way for a run to end that a host does not know, which it reads as the run having ended",
+      "json": {
+        "calls": [
+          {
+            "id": "e9",
+            "call": "ended",
+            "run": "run-9",
+            "end": {
+              "timed_out": {
+                "after_ms": 5
+              }
+            },
+            "at": 7
+          }
+        ]
+      }
+    },
+    {
+      "type": "ServeRequest",
+      "why": "`answers` left out: none",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "wait_ms": 0
+      }
+    },
+    {
+      "type": "StartRunResponse",
+      "why": "a member a host does not know",
+      "json": {
+        "run": "run-1",
+        "url": "/runs/run-1"
+      }
+    },
+    {
+      "type": "RunState",
+      "why": "a member a host does not know, and a status it does not know, which it reads as text",
+      "json": {
+        "run": "run-2",
+        "kind": "tidy",
+        "status": "paused",
+        "steps": 0,
+        "messages_waiting": 0,
+        "cost_milli": 12
+      }
+    }
+  ],
+  "refused": [
+    {
+      "type": "RegisterRequest",
+      "why": "no version",
+      "json": {
+        "notation": "dts",
+        "definition": ""
+      }
+    },
+    {
+      "type": "RegisterRequest",
+      "why": "a notation that is neither",
+      "json": {
+        "clax_surface": 1,
+        "notation": "ts",
+        "definition": ""
+      }
+    },
+    {
+      "type": "RegisterRequest",
+      "why": "a member the message does not have",
+      "json": {
+        "clax_surface": 1,
+        "notation": "dts",
+        "definition": "$file:desk.d.ts",
+        "promt": "x"
+      }
+    },
+    {
+      "type": "RegisterRequest",
+      "why": "a setting the daemon does not have",
+      "json": {
+        "clax_surface": 1,
+        "notation": "dts",
+        "definition": "$file:desk.d.ts",
+        "settings": {
+          "wait_limit": "24h"
+        }
+      }
+    },
+    {
+      "type": "RegisterRequest",
+      "why": "a limit of `null`: no limit is \"none\", and a setting left out is left out",
+      "json": {
+        "clax_surface": 1,
+        "notation": "dts",
+        "definition": "$file:desk.d.ts",
+        "settings": {
+          "max_effects_per_run": null
+        }
+      }
+    },
+    {
+      "type": "RegisterRequest",
+      "why": "a limit that is neither a whole number nor \"none\"",
+      "json": {
+        "clax_surface": 1,
+        "notation": "dts",
+        "definition": "$file:desk.d.ts",
+        "settings": {
+          "call_timeout_s": -1
+        }
+      }
+    },
+    {
+      "type": "ServeRequest",
+      "why": "no `wait_ms`",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "answers": []
+      }
+    },
+    {
+      "type": "ServeRequest",
+      "why": "no `registration`",
+      "json": {
+        "wait_ms": 0,
+        "answers": []
+      }
+    },
+    {
+      "type": "ServeRequest",
+      "why": "a member the message does not have",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "wait_ms": 0,
+        "answers": [],
+        "wait": 12
+      }
+    },
+    {
+      "type": "ServeRequest",
+      "why": "`null` beside an answer's one member",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "id": "c1",
+            "result": 1,
+            "accepted": null
+          }
+        ]
+      }
+    },
+    {
+      "type": "StartRunRequest",
+      "why": "no `registration`",
+      "json": {
+        "kind": "tidy",
+        "request": {}
+      }
+    },
+    {
+      "type": "ServeRequest",
+      "why": "an answer that says nothing",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "id": "c1"
+          }
+        ]
+      }
+    },
+    {
+      "type": "ServeRequest",
+      "why": "an answer that says two things",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "id": "c1",
+            "result": 1,
+            "accepted": true
+          }
+        ]
+      }
+    },
+    {
+      "type": "ServeRequest",
+      "why": "`accepted` that is not `true`",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "id": "c1",
+            "accepted": false
+          }
+        ]
+      }
+    },
+    {
+      "type": "ServeRequest",
+      "why": "an error with a member it does not have",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "id": "c1",
+            "error": {
+              "code": "busy",
+              "message": "…",
+              "detail": "…"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "ServeRequest",
+      "why": "an answer with no ID",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "result": 1
+          }
+        ]
+      }
+    },
+    {
+      "type": "StartRunRequest",
+      "why": "no request",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "kind": "tidy"
+      }
+    },
+    {
+      "type": "StartRunRequest",
+      "why": "a member the message does not have",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "kind": "tidy",
+        "request": {},
+        "person": "*owner"
+      }
+    },
+    {
+      "type": "ServeResponse",
+      "why": "a delivery that does not say what it is",
+      "json": {
+        "calls": [
+          {
+            "id": "c1",
+            "run": "run-1"
+          }
+        ]
+      }
+    },
+    {
+      "type": "ServeResponse",
+      "why": "a call without its operation",
+      "json": {
+        "calls": [
+          {
+            "id": "c1",
+            "call": "read",
+            "run": "run-1",
+            "args": [],
+            "key": "k"
+          }
+        ]
+      }
+    },
+    {
+      "type": "MessageRequest",
+      "why": "no `message`",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55"
+      }
+    },
+    {
+      "type": "MessageRequest",
+      "why": "a member the message does not have",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "message": {},
+        "idempotency_key": "m-1"
+      }
+    },
+    {
+      "type": "RegisterRequest",
+      "why": "`registration` of `null`: a new registration leaves it out",
+      "json": {
+        "clax_surface": 1,
+        "notation": "dts",
+        "definition": "$file:desk.d.ts",
+        "registration": null
+      }
+    },
+    {
+      "type": "RegisterRequest",
+      "why": "`prompt` of `null`: no prompt file is `prompt` left out",
+      "json": {
+        "clax_surface": 1,
+        "notation": "dts",
+        "definition": "$file:desk.d.ts",
+        "prompt": null
+      }
+    },
+    {
+      "type": "StartRunRequest",
+      "why": "`allow` of `null`: all the kind allows is `allow` left out",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "kind": "tidy",
+        "request": {
+          "ask": "Tidy the desk."
+        },
+        "allow": null
+      }
+    },
+    {
+      "type": "StartRunRequest",
+      "why": "`bind` of `null`",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "kind": "tidy",
+        "request": {
+          "ask": "Tidy the desk."
+        },
+        "bind": null
+      }
+    },
+    {
+      "type": "MessageRequest",
+      "why": "`key` of `null`",
+      "json": {
+        "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+        "message": {
+          "say": "Leave the right lamp on."
+        },
+        "key": null
+      }
+    }
+  ],
+  "script": [
+    {
+      "at_ms": 0,
+      "note": "A definition as a .d.ts file. `snapshot` answers an Image: a daemon that keeps content withholds no operation.",
+      "host": "register",
+      "surface": "desk",
+      "request": {
+        "clax_surface": 1,
+        "notation": "dts",
+        "definition": "$file:desk.d.ts"
+      },
+      "status": 200,
+      "response": {
+        "registration": "$a",
+        "hash": "550f68055bfba1e87f7597600935c75a9872800b8f63758f8d8659e5283907d0",
+        "clax_surface": 1
+      }
+    },
+    {
+      "at_ms": 1,
+      "note": "The same definition as a manifest, with a prompt file and settings: a second registration of the name, with the same hash.",
+      "host": "register",
+      "surface": "desk",
+      "request": {
+        "clax_surface": 1,
+        "notation": "manifest",
+        "definition": "$file:desk.json",
+        "prompt": "$file:desk.prompt.md",
+        "settings": {
+          "allow": [
+            "desk.*"
+          ],
+          "max_effects_per_run": 5,
+          "call_timeout_s": 30,
+          "wait_limit_s": 86400,
+          "runs": {
+            "max_steps": 40,
+            "max_run_minutes": "none"
+          }
+        }
+      },
+      "status": 200,
+      "response": {
+        "registration": "$b",
+        "hash": "550f68055bfba1e87f7597600935c75a9872800b8f63758f8d8659e5283907d0",
+        "clax_surface": 1
+      }
+    },
+    {
+      "at_ms": 2,
+      "note": "Another version of the protocol: the refusal says which the daemon speaks.",
+      "host": "register",
+      "surface": "desk",
+      "request": {
+        "clax_surface": 2,
+        "notation": "dts",
+        "definition": "$file:desk.d.ts"
+      },
+      "status": 400,
+      "response": {
+        "error": {
+          "code": "unsupported_version",
+          "message": "$_",
+          "supported": [
+            1
+          ]
+        }
+      }
+    },
+    {
+      "at_ms": 3,
+      "note": "A .d.ts file that is not a definition: its first mistake, with its line.",
+      "host": "register",
+      "surface": "desk",
+      "request": {
+        "clax_surface": 1,
+        "notation": "dts",
+        "definition": "declare const desk: {\n  lamps(): Promise<Lamp[]>;\n};\n"
+      },
+      "status": 400,
+      "response": {
+        "error": {
+          "code": "invalid_definition",
+          "message": "$_",
+          "errors": [
+            {
+              "line": 2,
+              "message": "$_"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "at_ms": 4,
+      "note": "A manifest that is not a definition: the first mistake of each entry, with its JSON Pointer.",
+      "host": "register",
+      "surface": "desk",
+      "request": {
+        "clax_surface": 1,
+        "notation": "manifest",
+        "definition": "{\"clax_surface\": 1, \"name\": \"desk\", \"operations\": [{\"name\": \"lamps\", \"access\": \"read\", \"result\": {}}, {\"name\": \"ask\", \"description\": \"Asks.\", \"access\": \"ask\", \"result\": {}}]}"
+      },
+      "status": 400,
+      "response": {
+        "error": {
+          "code": "invalid_definition",
+          "message": "$_",
+          "errors": [
+            {
+              "pointer": "/operations/0",
+              "message": "$_"
+            },
+            {
+              "pointer": "/operations/1/access",
+              "message": "$_"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "at_ms": 5,
+      "note": "The definition's surface is `desk`, and the route names `shelf`.",
+      "host": "register",
+      "surface": "shelf",
+      "request": {
+        "clax_surface": 1,
+        "notation": "dts",
+        "definition": "$file:desk.d.ts"
+      },
+      "status": 400,
+      "response": {
+        "error": {
+          "code": "name_mismatch",
+          "message": "$_"
+        }
+      }
+    },
+    {
+      "at_ms": 6,
+      "note": "A reader view, which this daemon does not support yet.",
+      "host": "register",
+      "surface": "desk",
+      "request": {
+        "clax_surface": 1,
+        "notation": "dts",
+        "definition": "$file:desk.d.ts",
+        "settings": {
+          "reader_view": "names"
+        }
+      },
+      "status": 400,
+      "response": {
+        "error": {
+          "code": "invalid_settings",
+          "message": "$_"
+        }
+      }
+    },
+    {
+      "at_ms": 6,
+      "note": "An allow pattern that is not one.",
+      "host": "register",
+      "surface": "desk",
+      "request": {
+        "clax_surface": 1,
+        "notation": "dts",
+        "definition": "$file:desk.d.ts",
+        "settings": {
+          "allow": [
+            "no good"
+          ]
+        }
+      },
+      "status": 400,
+      "response": {
+        "error": {
+          "code": "invalid_settings",
+          "message": "$_"
+        }
+      }
+    },
+    {
+      "at_ms": 6,
+      "note": "A prompt that is not a prompt file of the surface: words with no sections.",
+      "host": "register",
+      "surface": "desk",
+      "request": {
+        "clax_surface": 1,
+        "notation": "dts",
+        "definition": "$file:desk.d.ts",
+        "prompt": "Keep the desk tidy.\n"
+      },
+      "status": 400,
+      "response": {
+        "error": {
+          "code": "invalid_prompt",
+          "message": "$_"
+        }
+      }
+    },
+    {
+      "at_ms": 7,
+      "note": "A serve for a registration the daemon does not hold.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "00000000000000000000000000000000",
+        "wait_ms": 0,
+        "answers": []
+      },
+      "status": 404,
+      "response": {
+        "error": {
+          "code": "unknown_registration",
+          "message": "$_"
+        }
+      }
+    },
+    {
+      "at_ms": 8,
+      "note": "A serve that names a registration of another surface.",
+      "host": "serve",
+      "surface": "shelf",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": []
+      },
+      "status": 404,
+      "response": {
+        "error": {
+          "code": "unknown_registration",
+          "message": "$_"
+        }
+      }
+    },
+    {
+      "at_ms": 9,
+      "note": "Going on as a registration takes an ID the daemon gave a registration of this surface, and no other.",
+      "host": "register",
+      "surface": "desk",
+      "request": {
+        "clax_surface": 1,
+        "notation": "dts",
+        "definition": "$file:desk.d.ts",
+        "registration": "00000000000000000000000000000000"
+      },
+      "status": 404,
+      "response": {
+        "error": {
+          "code": "unknown_registration",
+          "message": "$_"
+        }
+      }
+    },
+    {
+      "at_ms": 10,
+      "note": "A run served by $a calls a read, with 30 s to answer.",
+      "run": "call",
+      "registration": "$a",
+      "call": {
+        "run": "run-1",
+        "op": "desk.lamps",
+        "args": [],
+        "key": "run-1:1:0",
+        "deadline_ms": 30010
+      },
+      "id": "$lamps"
+    },
+    {
+      "at_ms": 11,
+      "note": "A run served by $b calls a write.",
+      "run": "call",
+      "registration": "$b",
+      "call": {
+        "run": "run-2",
+        "op": "desk.settings.set",
+        "args": [
+          {
+            "theme": "dark"
+          }
+        ],
+        "key": "run-2:1:0",
+        "deadline_ms": 30011
+      },
+      "id": "$set"
+    },
+    {
+      "at_ms": 20,
+      "note": "$a is sent its own call and not $b's. `op` is the name below the surface.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": []
+      },
+      "status": 200,
+      "response": {
+        "calls": [
+          {
+            "id": "$lamps",
+            "call": "read",
+            "run": "run-1",
+            "op": "lamps",
+            "args": [],
+            "key": "run-1:1:0",
+            "expires_in_ms": 29990
+          }
+        ]
+      }
+    },
+    {
+      "at_ms": 21,
+      "note": "$b is sent its own.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$b",
+        "wait_ms": 0,
+        "answers": []
+      },
+      "status": 200,
+      "response": {
+        "calls": [
+          {
+            "id": "$set",
+            "call": "write",
+            "run": "run-2",
+            "op": "settings.set",
+            "args": [
+              {
+                "theme": "dark"
+              }
+            ],
+            "key": "run-2:1:0",
+            "expires_in_ms": 29990
+          }
+        ]
+      }
+    },
+    {
+      "at_ms": 30,
+      "note": "The read's result.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "id": "$lamps",
+            "result": [
+              {
+                "id": "l1",
+                "on": true
+              }
+            ]
+          }
+        ]
+      },
+      "status": 200,
+      "response": {
+        "calls": []
+      }
+    },
+    {
+      "at_ms": 31,
+      "note": "The script is answered the value.",
+      "run": "outcome",
+      "id": "$lamps",
+      "result": [
+        {
+          "id": "l1",
+          "on": true
+        }
+      ]
+    },
+    {
+      "at_ms": 32,
+      "note": "The write's error, one the operation declares.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$b",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "id": "$set",
+            "error": {
+              "code": "invalid",
+              "message": "no such theme"
+            }
+          }
+        ]
+      },
+      "status": 200,
+      "response": {
+        "calls": []
+      }
+    },
+    {
+      "at_ms": 33,
+      "note": "The script is thrown the host's error.",
+      "run": "outcome",
+      "id": "$set",
+      "error": {
+        "code": "invalid"
+      }
+    },
+    {
+      "at_ms": 40,
+      "note": "An effect.",
+      "run": "call",
+      "registration": "$a",
+      "call": {
+        "run": "run-1",
+        "op": "desk.notify",
+        "args": [
+          "Lamp l1 is on."
+        ],
+        "key": "run-1:1:1",
+        "deadline_ms": 30040
+      },
+      "id": "$note"
+    },
+    {
+      "at_ms": 41,
+      "note": "Sent.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": []
+      },
+      "status": 200,
+      "response": {
+        "calls": [
+          {
+            "id": "$note",
+            "call": "effect",
+            "run": "run-1",
+            "op": "notify",
+            "args": [
+              "Lamp l1 is on."
+            ],
+            "key": "run-1:1:1",
+            "expires_in_ms": 29999
+          }
+        ]
+      }
+    },
+    {
+      "at_ms": 42,
+      "note": "Not answered, so listed again, with the same ID and key.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": []
+      },
+      "status": 200,
+      "response": {
+        "calls": [
+          {
+            "id": "$note",
+            "call": "effect",
+            "run": "run-1",
+            "op": "notify",
+            "args": [
+              "Lamp l1 is on."
+            ],
+            "key": "run-1:1:1",
+            "expires_in_ms": 29998
+          }
+        ]
+      }
+    },
+    {
+      "at_ms": 43,
+      "note": "The host has it: it is not sent again.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "id": "$note",
+            "accepted": true
+          }
+        ]
+      },
+      "status": 200,
+      "response": {
+        "calls": []
+      }
+    },
+    {
+      "at_ms": 44,
+      "note": "Accepting a call settles nothing.",
+      "run": "waiting",
+      "id": "$note"
+    },
+    {
+      "at_ms": 45,
+      "note": "Its result.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "id": "$note",
+            "result": null
+          }
+        ]
+      },
+      "status": 200,
+      "response": {
+        "calls": []
+      }
+    },
+    {
+      "at_ms": 46,
+      "note": "A result of `null` is a result.",
+      "run": "outcome",
+      "id": "$note",
+      "result": null
+    },
+    {
+      "at_ms": 47,
+      "note": "Another effect.",
+      "run": "call",
+      "registration": "$a",
+      "call": {
+        "run": "run-1",
+        "op": "desk.notify",
+        "args": [
+          "Lamp l1 is off."
+        ],
+        "key": "run-1:1:2",
+        "deadline_ms": 30047
+      },
+      "id": "$note2"
+    },
+    {
+      "at_ms": 48,
+      "note": "Sent.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": []
+      },
+      "status": 200,
+      "response": {
+        "calls": [
+          {
+            "id": "$note2",
+            "call": "effect",
+            "run": "run-1",
+            "op": "notify",
+            "args": [
+              "Lamp l1 is off."
+            ],
+            "key": "run-1:1:2",
+            "expires_in_ms": 29999
+          }
+        ]
+      }
+    },
+    {
+      "at_ms": 49,
+      "note": "`accepted` and then the result, in one serve: the result settles the call. What follows a result for the same call is ignored.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "id": "$note2",
+            "accepted": true
+          },
+          {
+            "id": "$note2",
+            "result": null
+          },
+          {
+            "id": "$note2",
+            "error": {
+              "code": "unavailable",
+              "message": "too late"
+            }
+          }
+        ]
+      },
+      "status": 200,
+      "response": {
+        "calls": [],
+        "ignored": [
+          "$note2"
+        ]
+      }
+    },
+    {
+      "at_ms": 49,
+      "note": "Answered.",
+      "run": "outcome",
+      "id": "$note2",
+      "result": null
+    },
+    {
+      "at_ms": 50,
+      "note": "Another read.",
+      "run": "call",
+      "registration": "$a",
+      "call": {
+        "run": "run-1",
+        "op": "desk.lamps",
+        "args": [],
+        "key": "run-1:2:0",
+        "deadline_ms": 30050
+      },
+      "id": "$lamps2"
+    },
+    {
+      "at_ms": 51,
+      "note": "Sent.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": []
+      },
+      "status": 200,
+      "response": {
+        "calls": [
+          {
+            "id": "$lamps2",
+            "call": "read",
+            "run": "run-1",
+            "op": "lamps",
+            "args": [],
+            "key": "run-1:2:0",
+            "expires_in_ms": 29999
+          }
+        ]
+      }
+    },
+    {
+      "at_ms": 52,
+      "note": "A result that is not a list of lamps. The serve is answered as any other.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "id": "$lamps2",
+            "result": {
+              "lamps": 2
+            }
+          }
+        ]
+      },
+      "status": 200,
+      "response": {
+        "calls": []
+      }
+    },
+    {
+      "at_ms": 53,
+      "note": "The script is thrown `invalid_result`.",
+      "run": "outcome",
+      "id": "$lamps2",
+      "error": {
+        "code": "invalid_result"
+      }
+    },
+    {
+      "at_ms": 54,
+      "note": "A second answer for a settled call, and one for an ID the daemon does not hold, are ignored.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "id": "$lamps2",
+            "result": []
+          },
+          {
+            "id": "no-such-call",
+            "result": 1
+          }
+        ]
+      },
+      "status": 200,
+      "response": {
+        "calls": [],
+        "ignored": [
+          "$lamps2",
+          "no-such-call"
+        ]
+      }
+    },
+    {
+      "at_ms": 55,
+      "note": "Another read.",
+      "run": "call",
+      "registration": "$a",
+      "call": {
+        "run": "run-1",
+        "op": "desk.lamps",
+        "args": [],
+        "key": "run-1:2:1",
+        "deadline_ms": 30055
+      },
+      "id": "$lamps3"
+    },
+    {
+      "at_ms": 56,
+      "note": "Sent.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": []
+      },
+      "status": 200,
+      "response": {
+        "calls": [
+          {
+            "id": "$lamps3",
+            "call": "read",
+            "run": "run-1",
+            "op": "lamps",
+            "args": [],
+            "key": "run-1:2:1",
+            "expires_in_ms": 29999
+          }
+        ]
+      }
+    },
+    {
+      "at_ms": 57,
+      "note": "An error whose code `lamps` does not declare (it declares none).",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "id": "$lamps3",
+            "error": {
+              "code": "declined",
+              "message": "not now"
+            }
+          }
+        ]
+      },
+      "status": 200,
+      "response": {
+        "calls": []
+      }
+    },
+    {
+      "at_ms": 58,
+      "note": "The script is thrown `invalid_result`, not the host's code.",
+      "run": "outcome",
+      "id": "$lamps3",
+      "error": {
+        "code": "invalid_result"
+      }
+    },
+    {
+      "at_ms": 59,
+      "note": "Another read.",
+      "run": "call",
+      "registration": "$a",
+      "call": {
+        "run": "run-1",
+        "op": "desk.lamps",
+        "args": [],
+        "key": "run-1:2:2",
+        "deadline_ms": 30059
+      },
+      "id": "$lamps4"
+    },
+    {
+      "at_ms": 59,
+      "note": "Sent.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": []
+      },
+      "status": 200,
+      "response": {
+        "calls": [
+          {
+            "id": "$lamps4",
+            "call": "read",
+            "run": "run-1",
+            "op": "lamps",
+            "args": [],
+            "key": "run-1:2:2",
+            "expires_in_ms": 30000
+          }
+        ]
+      }
+    },
+    {
+      "at_ms": 59,
+      "note": "`unavailable` is the one code every operation may be answered with: nothing happened.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "id": "$lamps4",
+            "error": {
+              "code": "unavailable",
+              "message": "the lamps are being moved"
+            }
+          }
+        ]
+      },
+      "status": 200,
+      "response": {
+        "calls": []
+      }
+    },
+    {
+      "at_ms": 59,
+      "note": "The script is thrown `unavailable`: this policy sends nothing again (the daemon's sends it again, 1 s and then 2 s later).",
+      "run": "outcome",
+      "id": "$lamps4",
+      "error": {
+        "code": "unavailable",
+        "retryable": true
+      }
+    },
+    {
+      "at_ms": 60,
+      "note": "A read with one second to answer, which no serve comes for.",
+      "run": "call",
+      "registration": "$a",
+      "call": {
+        "run": "run-1",
+        "op": "desk.lamps",
+        "args": [],
+        "key": "run-1:3:0",
+        "deadline_ms": 1060
+      },
+      "id": "$late1"
+    },
+    {
+      "at_ms": 1060,
+      "note": "Never sent: `unavailable`, and nothing happened.",
+      "run": "outcome",
+      "id": "$late1",
+      "error": {
+        "code": "unavailable",
+        "retryable": true
+      }
+    },
+    {
+      "at_ms": 1065,
+      "note": "A call past its deadline is not sent.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": []
+      },
+      "status": 200,
+      "response": {
+        "calls": []
+      }
+    },
+    {
+      "at_ms": 1070,
+      "note": "A read.",
+      "run": "call",
+      "registration": "$a",
+      "call": {
+        "run": "run-1",
+        "op": "desk.lamps",
+        "args": [],
+        "key": "run-1:4:0",
+        "deadline_ms": 2070
+      },
+      "id": "$late2"
+    },
+    {
+      "at_ms": 1071,
+      "note": "Sent.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": []
+      },
+      "status": 200,
+      "response": {
+        "calls": [
+          {
+            "id": "$late2",
+            "call": "read",
+            "run": "run-1",
+            "op": "lamps",
+            "args": [],
+            "key": "run-1:4:0",
+            "expires_in_ms": 999
+          }
+        ]
+      }
+    },
+    {
+      "at_ms": 2070,
+      "note": "Sent and not answered, a read: `expired`.",
+      "run": "outcome",
+      "id": "$late2",
+      "error": {
+        "code": "expired"
+      }
+    },
+    {
+      "at_ms": 2080,
+      "note": "A write.",
+      "run": "call",
+      "registration": "$a",
+      "call": {
+        "run": "run-1",
+        "op": "desk.settings.set",
+        "args": [
+          {
+            "theme": "light"
+          }
+        ],
+        "key": "run-1:5:0",
+        "deadline_ms": 3080
+      },
+      "id": "$late3"
+    },
+    {
+      "at_ms": 2081,
+      "note": "Sent.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": []
+      },
+      "status": 200,
+      "response": {
+        "calls": [
+          {
+            "id": "$late3",
+            "call": "write",
+            "run": "run-1",
+            "op": "settings.set",
+            "args": [
+              {
+                "theme": "light"
+              }
+            ],
+            "key": "run-1:5:0",
+            "expires_in_ms": 999
+          }
+        ]
+      }
+    },
+    {
+      "at_ms": 3080,
+      "note": "An answer at the deadline is too late, and is ignored.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "id": "$late3",
+            "result": null
+          }
+        ]
+      },
+      "status": 200,
+      "response": {
+        "calls": [],
+        "ignored": [
+          "$late3"
+        ]
+      }
+    },
+    {
+      "at_ms": 3081,
+      "note": "Sent and not answered, a write: `unknown_outcome`. It may have taken effect.",
+      "run": "outcome",
+      "id": "$late3",
+      "error": {
+        "code": "unknown_outcome"
+      }
+    },
+    {
+      "at_ms": 3090,
+      "note": "An effect.",
+      "run": "call",
+      "registration": "$a",
+      "call": {
+        "run": "run-1",
+        "op": "desk.notify",
+        "args": [
+          "Tidy up."
+        ],
+        "key": "run-1:6:0",
+        "deadline_ms": 33090
+      },
+      "id": "$busy"
+    },
+    {
+      "at_ms": 3091,
+      "note": "Sent.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": []
+      },
+      "status": 200,
+      "response": {
+        "calls": [
+          {
+            "id": "$busy",
+            "call": "effect",
+            "run": "run-1",
+            "op": "notify",
+            "args": [
+              "Tidy up."
+            ],
+            "key": "run-1:6:0",
+            "expires_in_ms": 29999
+          }
+        ]
+      }
+    },
+    {
+      "at_ms": 3092,
+      "note": "The host cannot take it now, and asks for it again in 5 s.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "id": "$busy",
+            "retry_after_ms": 5000
+          }
+        ]
+      },
+      "status": 200,
+      "response": {
+        "calls": []
+      }
+    },
+    {
+      "at_ms": 8091,
+      "note": "Not yet.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": []
+      },
+      "status": 200,
+      "response": {
+        "calls": []
+      }
+    },
+    {
+      "at_ms": 8092,
+      "note": "Sent again, with what is left of its deadline.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": []
+      },
+      "status": 200,
+      "response": {
+        "calls": [
+          {
+            "id": "$busy",
+            "call": "effect",
+            "run": "run-1",
+            "op": "notify",
+            "args": [
+              "Tidy up."
+            ],
+            "key": "run-1:6:0",
+            "expires_in_ms": 24998
+          }
+        ]
+      }
+    },
+    {
+      "at_ms": 8093,
+      "note": "Its result.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "id": "$busy",
+            "result": null
+          }
+        ]
+      },
+      "status": 200,
+      "response": {
+        "calls": []
+      }
+    },
+    {
+      "at_ms": 8094,
+      "note": "Answered.",
+      "run": "outcome",
+      "id": "$busy",
+      "result": null
+    },
+    {
+      "at_ms": 8100,
+      "note": "A read for $a.",
+      "run": "call",
+      "registration": "$a",
+      "call": {
+        "run": "run-1",
+        "op": "desk.lamps",
+        "args": [],
+        "key": "run-1:7:0",
+        "deadline_ms": 38100
+      },
+      "id": "$mine"
+    },
+    {
+      "at_ms": 8101,
+      "note": "$b answers $a's call: ignored. It is not sent $a's call either.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$b",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "id": "$mine",
+            "result": []
+          }
+        ]
+      },
+      "status": 200,
+      "response": {
+        "calls": [],
+        "ignored": [
+          "$mine"
+        ]
+      }
+    },
+    {
+      "at_ms": 8102,
+      "note": "The call still waits for $a.",
+      "run": "waiting",
+      "id": "$mine"
+    },
+    {
+      "at_ms": 8103,
+      "note": "The same call made again with its key (a step run again after a crash) is the call the daemon holds.",
+      "run": "call",
+      "registration": "$a",
+      "call": {
+        "run": "run-1",
+        "op": "desk.lamps",
+        "args": [],
+        "key": "run-1:7:0",
+        "deadline_ms": 38100
+      },
+      "id": "$mine"
+    },
+    {
+      "at_ms": 8104,
+      "note": "Another call under that key is refused.",
+      "run": "call",
+      "registration": "$a",
+      "call": {
+        "run": "run-1",
+        "op": "desk.notify",
+        "args": [
+          "Other."
+        ],
+        "key": "run-1:7:0",
+        "deadline_ms": 38100
+      },
+      "error": {
+        "code": "key_reused"
+      }
+    },
+    {
+      "at_ms": 8105,
+      "note": "Sent once, under one ID.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": []
+      },
+      "status": 200,
+      "response": {
+        "calls": [
+          {
+            "id": "$mine",
+            "call": "read",
+            "run": "run-1",
+            "op": "lamps",
+            "args": [],
+            "key": "run-1:7:0",
+            "expires_in_ms": 29995
+          }
+        ]
+      }
+    },
+    {
+      "at_ms": 8106,
+      "note": "Answered by its own registration.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "id": "$mine",
+            "result": []
+          }
+        ]
+      },
+      "status": 200,
+      "response": {
+        "calls": []
+      }
+    },
+    {
+      "at_ms": 8107,
+      "note": "Answered.",
+      "run": "outcome",
+      "id": "$mine",
+      "result": []
+    },
+    {
+      "at_ms": 8108,
+      "note": "An operation the definition does not have is refused before any host sees it.",
+      "run": "call",
+      "registration": "$a",
+      "call": {
+        "run": "run-1",
+        "op": "desk.unknown",
+        "args": [],
+        "key": "run-1:8:0",
+        "deadline_ms": 38108
+      },
+      "error": {
+        "code": "unknown_op"
+      }
+    },
+    {
+      "at_ms": 8200,
+      "note": "With nothing to send, a serve is held for its wait, 12 s at the most, and answered empty.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 12000,
+        "answers": []
+      },
+      "status": 200,
+      "response": {
+        "calls": []
+      },
+      "held_ms": 12000
+    },
+    {
+      "at_ms": 20300,
+      "note": "A call that waits: it has a day.",
+      "run": "call",
+      "registration": "$a",
+      "call": {
+        "run": "run-1",
+        "op": "desk.ask",
+        "args": [
+          "Tidy the desk?",
+          [
+            "yes",
+            "no"
+          ]
+        ],
+        "key": "run-1:9:0",
+        "deadline_ms": 86420300
+      },
+      "id": "$ask"
+    },
+    {
+      "at_ms": 20301,
+      "note": "Sent.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": []
+      },
+      "status": 200,
+      "response": {
+        "calls": [
+          {
+            "id": "$ask",
+            "call": "effect",
+            "run": "run-1",
+            "op": "ask",
+            "args": [
+              "Tidy the desk?",
+              [
+                "yes",
+                "no"
+              ]
+            ],
+            "key": "run-1:9:0",
+            "expires_in_ms": 86399999
+          }
+        ]
+      }
+    },
+    {
+      "at_ms": 20302,
+      "note": "`ask` is `@once`: its host says at once that it has the call, and is not sent it again.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "id": "$ask",
+            "accepted": true
+          }
+        ]
+      },
+      "status": 200,
+      "response": {
+        "calls": []
+      }
+    },
+    {
+      "at_ms": 40000,
+      "note": "No serve for more than 15 s: $a is not connected, and under this policy takes no new call (the daemon's waits for its host to the call's deadline).",
+      "run": "call",
+      "registration": "$a",
+      "call": {
+        "run": "run-1",
+        "op": "desk.lamps",
+        "args": [],
+        "key": "run-1:10:0",
+        "deadline_ms": 70000
+      },
+      "error": {
+        "code": "unavailable",
+        "retryable": true
+      }
+    },
+    {
+      "at_ms": 400000,
+      "note": "No serve for more than five minutes after that: the daemon has dropped the registration. (A daemon that restarts holds no registration, and drops none.)",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": []
+      },
+      "status": 404,
+      "response": {
+        "error": {
+          "code": "unknown_registration",
+          "message": "$_"
+        }
+      }
+    },
+    {
+      "at_ms": 400001,
+      "note": "A call for a registration the daemon does not hold.",
+      "run": "call",
+      "registration": "$a",
+      "call": {
+        "run": "run-1",
+        "op": "desk.lamps",
+        "args": [],
+        "key": "run-1:10:0",
+        "deadline_ms": 430000
+      },
+      "error": {
+        "code": "unavailable"
+      }
+    },
+    {
+      "at_ms": 400002,
+      "note": "The call that waits is kept: it has its own deadline.",
+      "run": "waiting",
+      "id": "$ask"
+    },
+    {
+      "at_ms": 86399000,
+      "note": "The host registers again as the registration it was, and is that registration.",
+      "host": "register",
+      "surface": "desk",
+      "request": {
+        "clax_surface": 1,
+        "notation": "dts",
+        "definition": "$file:desk.d.ts",
+        "registration": "$a"
+      },
+      "status": 200,
+      "response": {
+        "registration": "$a",
+        "hash": "550f68055bfba1e87f7597600935c75a9872800b8f63758f8d8659e5283907d0",
+        "clax_surface": 1
+      }
+    },
+    {
+      "at_ms": 86399100,
+      "note": "The person's answer, most of a day after the question.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "id": "$ask",
+            "result": "yes"
+          }
+        ]
+      },
+      "status": 200,
+      "response": {
+        "calls": []
+      }
+    },
+    {
+      "at_ms": 86399200,
+      "note": "The script is answered.",
+      "run": "outcome",
+      "id": "$ask",
+      "result": "yes"
+    },
+    {
+      "at_ms": 86400000,
+      "note": "run-1 finishes. Its end is recorded for the registration that started it.",
+      "run": "ended",
+      "registration": "$a",
+      "ended": {
+        "run": "run-1",
+        "end": {
+          "finished": {}
+        },
+        "result": {
+          "summary": "Tidied."
+        }
+      },
+      "id": "$end"
+    },
+    {
+      "at_ms": 86400001,
+      "note": "Sent.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": []
+      },
+      "status": 200,
+      "response": {
+        "calls": [
+          {
+            "id": "$end",
+            "call": "ended",
+            "run": "run-1",
+            "end": {
+              "finished": {}
+            },
+            "result": {
+              "summary": "Tidied."
+            }
+          }
+        ]
+      }
+    },
+    {
+      "at_ms": 86400002,
+      "note": "Sent again until an answer names it.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": []
+      },
+      "status": 200,
+      "response": {
+        "calls": [
+          {
+            "id": "$end",
+            "call": "ended",
+            "run": "run-1",
+            "end": {
+              "finished": {}
+            },
+            "result": {
+              "summary": "Tidied."
+            }
+          }
+        ]
+      }
+    },
+    {
+      "at_ms": 86400003,
+      "note": "Acknowledged, with any result.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": [
+          {
+            "id": "$end",
+            "result": null
+          }
+        ]
+      },
+      "status": 200,
+      "response": {
+        "calls": []
+      }
+    },
+    {
+      "at_ms": 86400004,
+      "note": "Not sent again.",
+      "host": "serve",
+      "surface": "desk",
+      "request": {
+        "registration": "$a",
+        "wait_ms": 0,
+        "answers": []
+      },
+      "status": 200,
+      "response": {
+        "calls": []
+      }
+    }
+  ]
+}

@@ -10,6 +10,13 @@ pub mod artifacts;
 pub mod assets;
 pub mod audit_trail;
 pub mod bot;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod bot_content;
+pub mod bot_joins;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod bot_messages;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod bot_surfaces;
 pub mod client_imports;
 pub mod confirmations;
 pub mod connect;

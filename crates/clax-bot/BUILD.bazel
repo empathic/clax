@@ -3,4 +3,31 @@ load("//bazel:cargo.bzl", "cargo_package")
 cargo_package(
     # The page contract the system prompt quotes (src/prompt.rs).
     compile_data = ["//docs:contract"],
+    # The tests' shared support, which a unit test that drives whole runs
+    # includes (src/script_scenarios.rs), and the contract fixture of
+    # the host protocol, which the hub's tests replay
+    # (src/bot_surfaces/tests.rs) and a run binds the surface of
+    # (tests/outside.rs), and the design's example surface files, whose
+    # prompts a golden pins (src/prompt/live.rs).
+    test_compile_data = glob(["tests/common/*.rs"]) + [
+        "//docs:claxbot_surface_examples",
+        "//docs:claxbot_surfaces_contract",
+    ],
+    # The sources of the crates the run loop depends on, which a test
+    # scans for the name of a host's surface (tests/outside.rs).
+    test_data = [
+        "//crates/clax-bot-sandbox:rust_sources",
+        "//crates/clax-core:rust_sources",
+        "//crates/clax-rt:rust_sources",
+        "//crates/clax-sample:rust_sources",
+        "//crates/clax-store:rust_sources",
+        "//crates/clax-surface:rust_sources",
+    ],
+)
+
+# Clax's own surface file, which crates/clax-cli's tests check and convert
+# with `clax bot surface` (tests/bot_surface.rs).
+exports_files(
+    ["src/clax.d.ts"],
+    visibility = ["//crates/clax-cli:__pkg__"],
 )

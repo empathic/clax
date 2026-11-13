@@ -22,6 +22,7 @@ def cargo_package(
         compile_data = [],
         test_compile_data = [],
         test_data = [],
+        test_data_of = {},
         tests_use_clax = [],
         test_env = {},
         shard_counts = {},
@@ -61,6 +62,9 @@ def cargo_package(
       test_compile_data: the same, for the tests only.
       test_data: files the tests read while they run. Paths built from
         CARGO_MANIFEST_DIR resolve as they do under Cargo.
+      test_data_of: {test name (as tests_use_clax names it): files}: what
+        that test target alone reads while it runs, beside test_data, so
+        an edit to them reruns it and no other.
       tests_use_clax: the test targets (by name, including `<lib>_lib_test`
         and `<bin>_bin_test`) that run the `clax` binary: they get it, its
         warm-up stamp and CLAX_TEST_BIN.
@@ -214,7 +218,7 @@ def cargo_package(
     ) + ["Cargo.toml"]
 
     def test_kwargs(name, integration = False, uses_clax = None):
-        data = own_files + test_data
+        data = own_files + test_data + test_data_of.get(name, [])
         # The daemons the tests start keep their homes unseeded.
         env = {"CLAX_GALLERY__QUICKSTART": "false"} | test_env
         if name in tests_use_clax or uses_clax in tests_use_clax:

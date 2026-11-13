@@ -5,8 +5,8 @@
 //!
 //! The binary (`clax-cli`) hands [`run`] what only it has ([`Env`]): the
 //! files it embeds, behind `clax_core::embedded::Bundle`, and the daemon it
-//! runs in process. So this crate depends on no server crate and on no
-//! embedded file: a daemon edit or a web UI edit rebuilds the binary, not
+//! runs in process, and ClaxBot's own surface. So this crate depends on no
+//! server crate and on no embedded file: a daemon edit or a web UI edit rebuilds the binary, not
 //! the commands. It reaches the store directly only for `doctor` and
 //! `init`'s credential revoke.
 //!
@@ -43,6 +43,10 @@ pub struct Env {
     pub serve: fn(&Home, ServeArgs) -> anyhow::Result<()>,
     /// The commit the binary was built from.
     pub build_commit: &'static str,
+    /// ClaxBot's own surface (`clax_bot::api::definition`), whose names
+    /// a host's surface may not take: `clax bot surface` reads a host's
+    /// file beside it. The commands reach no ClaxBot crate themselves.
+    pub bot_surface: fn() -> &'static clax_surface::Definition,
 }
 
 /// What `clax serve --foreground` asks of the daemon [`Env::serve`] runs.
@@ -95,6 +99,25 @@ pub(crate) fn serve(home: &Home, args: ServeArgs) -> anyhow::Result<()> {
         .get()
         .expect("clax_commands::run sets the binary's daemon first");
     (env.serve)(home, args)
+}
+
+/// ClaxBot's own surface, which the binary hands the commands. A unit
+/// test, which runs no binary, has none.
+pub(crate) fn bot_surface() -> Option<&'static clax_surface::Definition> {
+    match ENV.get() {
+        Some(env) => Some((env.bot_surface)()),
+        #[cfg(test)]
+        None => None,
+        #[cfg(not(test))]
+        None => panic!("clax_commands::run sets ClaxBot's surface first"),
+    }
+}
+
+/// The names a host's surface may not take: `clax`, the core's own
+/// surfaces, and the names ClaxBot's surface puts on `clax`.
+pub(crate) fn reserved_names() -> clax_surface::Reserved {
+    let clax: Vec<&clax_surface::Definition> = bot_surface().into_iter().collect();
+    clax_surface::Reserved::of(&clax)
 }
 
 #[cfg(test)]

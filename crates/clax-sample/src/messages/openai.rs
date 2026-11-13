@@ -7,10 +7,20 @@
 //!
 //! The system blocks become one `system` message; a user turn's
 //! `tool_result`s become `tool` messages ahead of its text; an assistant
-//! turn's `tool_use`s become its `tool_calls`. Thinking is not sent back
-//! (the API has no field for it), nor are cache breakpoints, betas or
-//! [`MessagesRequest::extra`]. `effort` is sent as `reasoning_effort` (`max`
-//! as `xhigh`); adaptive thinking itself has no counterpart.
+//! turn's `tool_use`s become its `tool_calls`. A `tool` message holds text
+//! alone, so the images of a turn's tool results (the base64 `image`
+//! blocks of their content) go in one `user` message after the turn's last
+//! `tool` message, so that the answers to one turn's calls stay together:
+//! its content is an array of parts, for each result with images a `text`
+//! part `Images of the result of tool call <ID>:` and then one `image_url`
+//! part per image, in order, whose URL is the `data:` URL of the image;
+//! a user turn's own text is the last `text` part of that message, and a
+//! mid-conversation system turn's text stays a `system` message after it.
+//! A turn whose results have no image is sent as it was before results
+//! could have any. Thinking is not sent back (the API has no field for
+//! it), nor are cache breakpoints, betas or [`MessagesRequest::extra`].
+//! `effort` is sent as `reasoning_effort` (`max` as `xhigh`); adaptive
+//! thinking itself has no counterpart.
 //!
 //! # Stream
 //!
@@ -24,8 +34,8 @@
 //! the usage, and OpenRouter's `cost` the billed cost ([`billed_micro_usd`]);
 //! `data: [DONE]` ends the message, which must have carried its usage.
 
+use super::{Answer, classify, images_of, protocol};
 use super::{Block, MessagesError, MessagesRequest, ModelInfo, Role, ToolChoice};
-use super::{classify, protocol};
 use serde_json::{Map, Value, json};
 
 /// The path of a call under the base URL.
@@ -83,11 +93,28 @@ fn micro_usd_up(dollars: f64) -> u64 {
     }
 }
 
+/// The content parts that show the images of the result of tool call
+/// `id`: none when `content` has no image.
+fn image_parts(out: &mut Vec<Value>, id: &str, content: &Value) {
+    let images = images_of(content);
+    if images.is_empty() {
+        return;
+    }
+    out.push(json!({"type": "text", "text": format!("Images of the result of tool call {id}:")}));
+    for (media_type, data) in images {
+        out.push(json!({
+            "type": "image_url",
+            "image_url": {"url": format!("data:{media_type};base64,{data}")},
+        }));
+    }
+}
+
 /// The message(s) `m` is in Chat Completions.
 fn push_message(out: &mut Vec<Value>, role: Role, content: &[Block]) {
     let mut text: Vec<String> = Vec::new();
     match role {
         Role::User | Role::System => {
+            let mut images: Vec<Value> = Vec::new();
             for b in content {
                 match (b, b.to_json()) {
                     (
@@ -98,17 +125,27 @@ fn push_message(out: &mut Vec<Value>, role: Role, content: &[Block]) {
                             ..
                         },
                         _,
-                    ) => out.push(tool_message(tool_use_id, content, *is_error)),
+                    ) => {
+                        out.push(tool_message(tool_use_id, content, *is_error));
+                        image_parts(&mut images, tool_use_id, content);
+                    }
                     (_, v) if v["type"] == "text" => {
                         text.push(v["text"].as_str().unwrap_or("").to_string());
                     }
-                    (_, v) if v["type"] == "tool_result" => out.push(tool_message(
-                        v["tool_use_id"].as_str().unwrap_or(""),
-                        &v["content"],
-                        v["is_error"] == true,
-                    )),
+                    (_, v) if v["type"] == "tool_result" => {
+                        let id = v["tool_use_id"].as_str().unwrap_or("");
+                        out.push(tool_message(id, &v["content"], v["is_error"] == true));
+                        image_parts(&mut images, id, &v["content"]);
+                    }
                     _ => {}
                 }
+            }
+            if !images.is_empty() {
+                if role == Role::User && !text.is_empty() {
+                    images.push(json!({"type": "text", "text": text.join("\n\n")}));
+                    text.clear();
+                }
+                out.push(json!({"role": "user", "content": images}));
             }
             if !text.is_empty() {
                 let role = if role == Role::System {
@@ -156,7 +193,16 @@ fn tool_message(id: &str, content: &Value, is_error: bool) -> Value {
 }
 
 /// The streaming request body of `req` for the host at `base_url`.
+/// The Chat Completions body of `req`, each tool's schema its
+/// [`super::Tool::input_schema`].
+#[cfg(test)]
 pub(super) fn body(req: &MessagesRequest, base_url: &str) -> Value {
+    body_marked(req, base_url, false)
+}
+
+/// The Chat Completions body of `req`; with `marked`, a tool's schema
+/// that has a text is its mark, for [`super::spliced`].
+pub(super) fn body_marked(req: &MessagesRequest, base_url: &str, marked: bool) -> Value {
     let mut messages = Vec::new();
     if !req.system.is_empty() {
         let system: Vec<&str> = req.system.iter().map(|s| s.text.as_str()).collect();
@@ -178,9 +224,11 @@ pub(super) fn body(req: &MessagesRequest, base_url: &str) -> Value {
         let tools: Vec<Value> = req
             .tools
             .iter()
-            .map(|t| {
+            .enumerate()
+            .map(|(n, t)| {
+                let schema = super::schema_of(&req.tools, n, marked);
                 json!({"type": "function", "function": {
-                    "name": t.name, "description": t.description, "parameters": t.input_schema,
+                    "name": t.name, "description": t.description, "parameters": schema,
                 }})
             })
             .collect();
@@ -383,17 +431,13 @@ impl Translator {
             } else {
                 &v
             };
-            let message = e["message"]
-                .as_str()
-                .unwrap_or("the provider reported an error")
-                .to_string();
+            let said = e["message"].as_str().map(str::to_string);
+            let message = said
+                .clone()
+                .unwrap_or_else(|| "the provider reported an error".into());
             let status = e["code"].as_u64().and_then(|c| u16::try_from(c).ok());
-            return Err(classify(
-                status.unwrap_or(0),
-                e["type"].as_str().unwrap_or(""),
-                message,
-                None,
-            ));
+            let answer = Answer::new(status.unwrap_or(0), e["type"].as_str().unwrap_or(""), said);
+            return Err(classify(answer, message, None));
         }
         if !self.started {
             self.started = true;

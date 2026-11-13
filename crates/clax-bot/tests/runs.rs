@@ -489,6 +489,102 @@ async fn a_rejected_key_stops_the_run_and_charges_no_tokens() {
     assert!(env.usage().iter().all(|r| !r.line.starts_with("claude-")));
 }
 
+/// The provider failure log's entries of `run`.
+fn failures_of(env: &Env, run: &str) -> Vec<clax_store::provider_failures::ProviderFailure> {
+    env.store
+        .provider_failures(&clax_store::provider_failures::FailureQuery {
+            run_id: Some(run.into()),
+            limit: 50,
+            ..Default::default()
+        })
+        .unwrap()
+        .failures
+}
+
+#[tokio::test]
+async fn a_rejected_instance_key_is_logged_for_admins_and_told_in_claxs_words() {
+    let env = Env::new().await;
+    env.api.push(Reply::Status(
+        401,
+        r#"{"type":"error","error":{"type":"authentication_error","message":"zx81 key revoked"}}"#
+            .into(),
+    ));
+    let run = env.run();
+    env.drive(&env.deps(), &run, &DriverId::mint()).await;
+    let stop = env
+        .store
+        .run_with_steps(&run)
+        .unwrap()
+        .unwrap()
+        .1
+        .pop()
+        .unwrap()
+        .payload
+        .unwrap();
+    let notice = stop["notice"].as_str().unwrap();
+    assert!(
+        notice.starts_with("I stopped: I could not use this Clax's model provider."),
+        "{notice}"
+    );
+    assert!(
+        !notice.contains("zx81") && !notice.contains("key"),
+        "{notice}"
+    );
+    assert_eq!(stop["error_detail"]["key_source"], "instance");
+    let logged = failures_of(&env, &run);
+    assert_eq!(logged.len(), 1);
+    assert_eq!(logged[0].class, "auth");
+    assert_eq!(logged[0].status, Some(401));
+    assert_eq!(logged[0].message.as_deref(), Some("zx81 key revoked"));
+    assert_eq!(logged[0].person, OWNER);
+    assert_eq!(logged[0].run_id.as_deref(), Some(run.as_str()));
+    assert!(
+        logged[0]
+            .message
+            .iter()
+            .chain(logged[0].request_id.iter())
+            .all(|t| !t.contains(INSTANCE_KEY))
+    );
+}
+
+#[tokio::test]
+async fn a_rejected_own_key_is_the_persons_to_see_and_is_not_logged() {
+    let env = Env::new().await;
+    env.store
+        .set_secret(
+            &AuditCtx::DAEMON,
+            &env.kek,
+            &SecretSlot::Own(OWNER.into()),
+            OWN_KEY,
+        )
+        .unwrap();
+    env.api.push(Reply::Status(
+        401,
+        r#"{"type":"error","error":{"type":"authentication_error","message":"zx81 key revoked"}}"#
+            .into(),
+    ));
+    let run = env.run_on("claude-sonnet-5-5", KeySource::Own);
+    env.drive(&env.deps(), &run, &DriverId::mint()).await;
+    assert_eq!(env.run_row(&run).reason.as_deref(), Some("key_rejected"));
+    let stop = env
+        .store
+        .run_with_steps(&run)
+        .unwrap()
+        .unwrap()
+        .1
+        .pop()
+        .unwrap()
+        .payload
+        .unwrap();
+    assert_eq!(
+        stop["notice"],
+        "I stopped: the model provider refused the key. I had not run any scripts yet."
+    );
+    assert_eq!(stop["error_detail"]["message"], "zx81 key revoked");
+    assert_eq!(stop["error_detail"]["key_source"], "own");
+    assert!(failures_of(&env, &run).is_empty());
+}
+
 #[tokio::test]
 async fn an_own_key_never_reaches_a_host_it_was_not_set_for() {
     let env = Env::new().await;

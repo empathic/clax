@@ -1,0 +1,13 @@
+{
+  "content": {
+    "calls": [],
+    "error": {
+      "kind": "syntax",
+      "message": "SyntaxError: Unexpected token (line 1)"
+    },
+    "logs": [],
+    "value": null
+  },
+  "content_bytes": 112,
+  "is_error": true
+}

@@ -97,7 +97,29 @@ fn without_others_words(e: &mut AuditEvent, reader: Option<&str>) {
     e.body["filters"] = Value::String(kept);
 }
 
-/// A time of a filter.
+/// Event `e` as one who is not an admin is shown it: the end of a run on
+/// the instance's key that stopped `key_rejected` reads `model_error`, as
+/// the run routes show it them
+/// ([`super::bot::run_without_instance_failure`]): what about the
+/// instance's key failed is the admins' to know.
+fn without_instance_failure(st: &Store, e: &mut AuditEvent) -> clax_core::Result<()> {
+    if e.kind != AuditKind::BotRunEnd.as_str() || e.body["reason"] != "key_rejected" {
+        return Ok(());
+    }
+    let on_instance = match e.run.as_deref() {
+        Some(r) => st
+            .run(r)?
+            .is_none_or(|r| r.key_source == clax_store::credits::KeySource::Instance),
+        None => true,
+    };
+    if on_instance {
+        e.body["reason"] = Value::String("model_error".into());
+        e.summary = e.summary.replace(", key_rejected", ", model_error");
+    }
+    Ok(())
+}
+
+/// A time of a filter./// A time of a filter.
 fn time(k: &str, v: &str) -> Result<chrono::DateTime<chrono::Utc>, ApiError> {
     if let Ok(t) = chrono::DateTime::parse_from_rfc3339(v) {
         return Ok(t.with_timezone(&chrono::Utc));
@@ -237,7 +259,12 @@ pub async fn list(
                 }
                 q.searcher.clone_from(&person);
             }
-            let page = st.query_audit(&reader, &q)?;
+            let mut page = st.query_audit(&reader, &q)?;
+            if matches!(reader, AuditReader::Person(_)) {
+                for e in &mut page.events {
+                    without_instance_failure(st, e)?;
+                }
+            }
             let mut names = Names::new(st);
             let events = page
                 .events
@@ -284,6 +311,9 @@ pub async fn get(
                 .ok_or(CoreError::NotFound)?;
             if hosted {
                 without_others_words(&mut e, person_of(&caller).as_deref());
+            }
+            if matches!(reader, AuditReader::Person(_)) {
+                without_instance_failure(st, &mut e)?;
             }
             event_view(&mut Names::new(st), &e, true)
         })

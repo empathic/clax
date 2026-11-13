@@ -1,0 +1,15 @@
+{
+  "content": {
+    "calls": [],
+    "error": {
+      "kind": "thrown",
+      "message": "{\"reason\":\"not an Error\"}"
+    },
+    "logs": [
+      "before"
+    ],
+    "value": null
+  },
+  "content_bytes": 111,
+  "is_error": true
+}

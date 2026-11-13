@@ -75,6 +75,167 @@ fn a_history_becomes_chat_completions_messages() {
     }
 }
 
+/// [`history`] with a second call beside the first, each result showing
+/// images; `text` is the user turn's own.
+fn history_with_images(text: bool) -> MessagesRequest {
+    let mut req = history(None);
+    req.messages[1].content.push(Block::ToolUse {
+        id: "call_8".into(),
+        name: "look".into(),
+        input: json!({}),
+    });
+    let png = ToolImage::new("image/png", vec![0x89, b'P', b'N', b'G']);
+    let jpeg = ToolImage::new("image/jpeg", vec![0xff, 0xd8, 0xff]);
+    let mut turn = vec![
+        Block::tool_result_with_images("call_7", "1", false, &[png.clone(), jpeg], true),
+        // As a history read back from JSON holds it.
+        Block::from_json(
+            Block::tool_result_with_images("call_8", "", true, &[png], true).to_json(),
+        ),
+        Block::tool_result("call_9", "none", false),
+    ];
+    if text {
+        turn.push(Block::text("Go on"));
+    }
+    req.messages[2].content = turn;
+    req
+}
+
+#[test]
+fn a_tool_results_images_follow_the_tool_messages_in_one_user_message() {
+    let image_parts = json!([
+        {"type": "text", "text": "Images of the result of tool call call_7:"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw=="}},
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/9j/"}},
+        {"type": "text", "text": "Images of the result of tool call call_8:"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw=="}},
+    ]);
+    let tools = json!([
+        {"role": "tool", "tool_call_id": "call_7", "content": "1"},
+        {"role": "tool", "tool_call_id": "call_8", "content": "Error: "},
+        {"role": "tool", "tool_call_id": "call_9", "content": "none"},
+    ]);
+    let base = "https://api.openai.com/v1";
+
+    let b = openai::body(&history_with_images(true), base);
+    let mut with_text = image_parts.clone();
+    with_text
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"type": "text", "text": "Go on"}));
+    assert_eq!(
+        b["messages"].as_array().unwrap()[3..6],
+        tools.as_array().unwrap()[..]
+    );
+    assert_eq!(
+        b["messages"][6],
+        json!({"role": "user", "content": with_text})
+    );
+    assert_eq!(b["messages"].as_array().unwrap().len(), 7);
+
+    let b = openai::body(&history_with_images(false), base);
+    assert_eq!(
+        b["messages"][6],
+        json!({"role": "user", "content": image_parts})
+    );
+    assert_eq!(b["messages"].as_array().unwrap().len(), 7);
+
+    // A system turn's text stays a system message, after the images.
+    let mut req = history_with_images(true);
+    req.messages[2].role = Role::System;
+    let b = openai::body(&req, base);
+    assert_eq!(
+        b["messages"][6],
+        json!({"role": "user", "content": image_parts})
+    );
+    assert_eq!(
+        b["messages"][7],
+        json!({"role": "system", "content": "Go on"})
+    );
+}
+
+#[test]
+fn a_tool_results_images_are_inline_data_after_the_turns_parts() {
+    let b = gemini::body(&history_with_images(true));
+    assert_eq!(
+        b["contents"][2],
+        json!({"role": "user", "parts": [
+            {"functionResponse": {"name": "run_script", "id": "call_7", "response": {"result": "1"}}},
+            {"functionResponse": {"name": "look", "id": "call_8", "response": {"error": ""}}},
+            {"functionResponse": {"name": "", "id": "call_9", "response": {"result": "none"}}},
+            {"text": "Go on"},
+            {"text": "Images of the result of run_script, call call_7:"},
+            {"inlineData": {"mimeType": "image/png", "data": "iVBORw=="}},
+            {"inlineData": {"mimeType": "image/jpeg", "data": "/9j/"}},
+            {"text": "Images of the result of look, call call_8:"},
+            {"inlineData": {"mimeType": "image/png", "data": "iVBORw=="}},
+        ]})
+    );
+}
+
+/// Two results of one function in one turn: each one's images are
+/// labelled by its call, by its ID or, for an ID made here, by its place.
+#[test]
+fn two_results_of_one_function_label_their_images_apart() {
+    let png = ToolImage::new("image/png", b"\x89PNG".to_vec());
+    let call = |id: &str| Block::ToolUse {
+        id: id.into(),
+        name: "run_script".into(),
+        input: json!({}),
+    };
+    let mut req = request();
+    for (a, b) in [("c1", "c2"), ("gemini_call_1", "gemini_call_2")] {
+        req.messages = vec![
+            Message {
+                role: Role::User,
+                content: vec![Block::text("Look")],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![call(a), call(b)],
+            },
+            Message {
+                role: Role::User,
+                content: vec![
+                    Block::tool_result_with_images(
+                        a,
+                        "first",
+                        false,
+                        std::slice::from_ref(&png),
+                        true,
+                    ),
+                    Block::tool_result_with_images(
+                        b,
+                        "second",
+                        false,
+                        std::slice::from_ref(&png),
+                        true,
+                    ),
+                ],
+            },
+        ];
+        let parts = gemini::body(&req)["contents"][2]["parts"].clone();
+        let labels: Vec<&str> = parts
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p["text"].as_str())
+            .collect();
+        let want = if a == "c1" {
+            vec![
+                "Images of the result of run_script, call c1:",
+                "Images of the result of run_script, call c2:",
+            ]
+        } else {
+            vec![
+                "Images of result 1 of this turn (run_script):",
+                "Images of result 2 of this turn (run_script):",
+            ]
+        };
+        assert_eq!(labels, want);
+    }
+}
+
 #[test]
 fn mistral_is_not_sent_stream_options_and_max_effort_is_xhigh() {
     let mut req = request();
@@ -383,7 +544,12 @@ async fn openai_errors_are_classified_with_the_key_redacted() {
     assert_eq!(
         err,
         MessagesError::InvalidRequest {
-            message: "bad key [redacted]".into()
+            message: "bad key [redacted]".into(),
+            answer: Answer::new(
+                400,
+                "invalid_request_error",
+                Some("bad key [redacted]".into())
+            ),
         }
     );
     let err = client

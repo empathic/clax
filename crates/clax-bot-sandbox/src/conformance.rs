@@ -9,13 +9,18 @@
 //! }
 //! ```
 //!
+//! A case runs one script ([`cases`]); a [`Sequence`] runs several, one
+//! after the other on the same sandbox ([`sequences`]), and holds that
+//! nothing of one script (its operations among it) reaches the next.
+//!
 //! Timing (`cpu_us`, `wall_us`, each call's `us`) and memory figures are
 //! not compared: they differ by machine. Everything else is, the call
 //! records included (by operation, outcome and code).
 
 use super::{
-    CODE_INVALID_ARGS, CODE_SCRIPT_FINISHED, CancelToken, ErrorKind, Host, HostError,
-    LOGS_TRUNCATED, Limits, Sandbox, Script, ScriptOutcome,
+    CODE_CANCELLED, CODE_INVALID_ARGS, CODE_SCRIPT_FINISHED, CODE_WAITING, CancelToken, ErrorKind,
+    Host, HostError, HostReply, LOGS_TRUNCATED, Limits, MAX_OP_BYTES, MAX_OPS, MAX_OPS_BYTES,
+    Sandbox, Script, ScriptOutcome,
 };
 use serde_json::{Value, json};
 use std::sync::Mutex;
@@ -29,7 +34,22 @@ pub struct Exchange {
     pub op: &'static str,
     /// The JSON array of the call's arguments.
     pub args: Value,
-    pub reply: Result<Value, HostError>,
+    /// What the host answers ([`Host::ask`]): a value, a host error, or
+    /// that it has no answer yet.
+    pub reply: HostReply,
+}
+
+impl Exchange {
+    /// The record the call ends with: whether the reply is a value, and
+    /// its code (a host error's, or [`CODE_WAITING`]).
+    #[must_use]
+    pub fn record(&self) -> (&'static str, bool, Option<&str>) {
+        match &self.reply {
+            HostReply::Answer(Ok(_)) => (self.op, true, None),
+            HostReply::Answer(Err(e)) => (self.op, false, Some(e.code.as_str())),
+            HostReply::Waiting => (self.op, false, Some(CODE_WAITING)),
+        }
+    }
 }
 
 /// The call records a case must end with.
@@ -64,11 +84,38 @@ pub struct Case {
     pub limits: Limits,
     /// Whether the run's token is cancelled before the run starts.
     pub cancelled: bool,
+    /// Whether the host cancels the run's token when it takes the case's
+    /// first call, and never answers it.
+    pub cancel_in_call: bool,
     /// The script's [`crate::Determinism`], when it has one.
     pub determinism: Option<crate::Determinism>,
+    /// The script's own operations ([`Script::ops`]); `None` for the
+    /// sandbox's, [`OPS`].
+    pub ops: Option<Vec<String>>,
     pub calls: Vec<Exchange>,
     pub records: Records,
     pub expect: Expect,
+}
+
+impl Case {
+    /// The script the case runs.
+    #[must_use]
+    pub fn script(&self) -> Script {
+        Script {
+            title: self.name.into(),
+            code: self.code.into(),
+            determinism: self.determinism,
+            ops: self.ops.clone(),
+        }
+    }
+}
+
+/// Scripts run one after the other on one sandbox, each checked as a
+/// [`Case`] is.
+#[derive(Clone, Debug)]
+pub struct Sequence {
+    pub name: &'static str,
+    pub steps: Vec<Case>,
 }
 
 fn ok(value: Value) -> Expect {
@@ -101,7 +148,9 @@ fn case(name: &'static str, code: &'static str, expect: Expect) -> Case {
         code,
         limits: Limits::default(),
         cancelled: false,
+        cancel_in_call: false,
         determinism: None,
+        ops: None,
         calls: Vec::new(),
         records: Records::FromCalls,
         expect,
@@ -112,7 +161,16 @@ fn call(op: &'static str, args: Value, reply: Value) -> Exchange {
     Exchange {
         op,
         args,
-        reply: Ok(reply),
+        reply: HostReply::Answer(Ok(reply)),
+    }
+}
+
+/// A call the host has no answer to yet: the run parks on it.
+fn waits(op: &'static str, args: Value) -> Exchange {
+    Exchange {
+        op,
+        args,
+        reply: HostReply::Waiting,
     }
 }
 
@@ -120,7 +178,7 @@ fn call_err(op: &'static str, args: Value, code: &str, message: &str) -> Exchang
     Exchange {
         op,
         args,
-        reply: Err(HostError::new(code, message)),
+        reply: HostReply::Answer(Err(HostError::new(code, message))),
     }
 }
 
@@ -198,7 +256,474 @@ pub fn cases() -> Vec<Case> {
     all.extend(limits());
     all.extend(confinement());
     all.extend(determinism());
+    all.extend(script_ops());
+    all.extend(refused_ops());
+    all.extend(parking());
     all
+}
+
+/// Runs that park on a call the host has no answer to, and scripts that
+/// try to look as if they had.
+fn parking() -> Vec<Case> {
+    vec![
+        Case {
+            calls: vec![
+                call("echo", json!([1]), json!(1)),
+                waits("files.read", json!(["q"])),
+            ],
+            expect: Expect {
+                logs: Some(vec!["before".into()]),
+                ..fails(ErrorKind::Parked, "")
+            },
+            ..case(
+                "a_waiting_call_parks_the_run_at_the_call",
+                "console.log('before');\nawait clax.echo(1);\n\
+                 try {\n  await Promise.all([clax.files.read('q'), clax.echo(2)]);\n  console.log('answered');\n\
+                 } catch (e) { console.log('caught') }\nfinally { console.log('finally') }\nreturn 'done'",
+                none(),
+            )
+        },
+        Case {
+            calls: vec![
+                call("echo", json!(["first"]), json!("one")),
+                waits("files.read", json!(["q"])),
+            ],
+            ..case(
+                "a_call_made_before_a_waiting_one_reaches_the_host",
+                "clax.echo('first'); await clax.files.read('q'); return 1",
+                fails(ErrorKind::Parked, ""),
+            )
+        },
+        Case {
+            calls: vec![waits("files.read", json!(["q"]))],
+            ..case(
+                "a_call_made_after_a_waiting_one_never_reaches_the_host",
+                "const a = clax.files.read('q'); const b = clax.echo(2); await b; return await a",
+                fails(ErrorKind::Parked, ""),
+            )
+        },
+        Case {
+            calls: vec![waits("files.read", json!(["q"]))],
+            expect: Expect {
+                logs: Some(vec![]),
+                ..fails(ErrorKind::Parked, "")
+            },
+            ..case(
+                "a_park_runs_no_catch_or_finally",
+                "try { await clax.files.read('q') }\n\
+                 catch (e) { console.log('caught'); await clax.echo('catch') }\n\
+                 finally { console.log('finally'); await clax.echo('finally') }\nreturn 1",
+                none(),
+            )
+        },
+        case(
+            "a_promise_that_never_settles_is_not_a_park",
+            "await new Promise(() => {})",
+            fails(ErrorKind::Thrown, "never settles"),
+        ),
+        case(
+            "a_look_alike_park_error_is_a_thrown_value",
+            "throw Object.assign(new Error('parked'), {name: 'Parked', code: 'waiting', kind: 'parked'})",
+            fails(ErrorKind::Thrown, "parked"),
+        ),
+        case(
+            "a_look_alike_waiting_host_error_is_a_thrown_value",
+            "const e = new Error('x'); e.name = 'HostError'; e.code = 'waiting'; throw e",
+            fails(ErrorKind::Thrown, "HostError"),
+        ),
+        case(
+            "a_returned_park_is_a_value",
+            "return {error: {kind: 'parked'}, calls: [{op: 'echo', code: 'waiting'}]}",
+            ok(json!({"error": {"kind": "parked"}, "calls": [{"op": "echo", "code": "waiting"}]})),
+        ),
+    ]
+}
+
+fn ops(names: &[&str]) -> Option<Vec<String>> {
+    Some(names.iter().map(|n| (*n).to_string()).collect())
+}
+
+/// What a script whose list is refused runs: nothing, so it logs nothing.
+const RUNS_NOTHING: &str = r#"console.log("ran"); return 1"#;
+
+/// A list a script carries, and the case that it ends the run with
+/// [`ErrorKind::InvalidOps`], before any of it runs.
+fn refused_list(name: &'static str, list: Vec<String>, contains: &'static str) -> Case {
+    Case {
+        ops: Some(list),
+        records: Records::Exactly(vec![]),
+        expect: Expect {
+            logs: Some(vec![]),
+            ..fails(ErrorKind::InvalidOps, contains)
+        },
+        ..case(name, RUNS_NOTHING, none())
+    }
+}
+
+/// The longest name a list may hold: `l.` and `x` to [`MAX_OP_BYTES`].
+fn longest_op() -> String {
+    format!("l.{}", "x".repeat(MAX_OP_BYTES - 2))
+}
+
+/// A list of [`MAX_OPS`] names: `s.o0` to `s.o4094` and [`longest_op`].
+fn most_ops() -> Vec<String> {
+    let mut list: Vec<String> = (0..MAX_OPS - 1).map(|i| format!("s.o{i}")).collect();
+    list.push(longest_op());
+    list
+}
+
+/// `count` names of [`MAX_OP_BYTES`] each: `b000.xxx…` onwards.
+fn heaviest_ops(count: usize) -> Vec<String> {
+    (0..count)
+        .map(|i| format!("b{i:03}.{}", "x".repeat(MAX_OP_BYTES - 5)))
+        .collect()
+}
+
+/// Scripts that carry their own operations.
+fn script_ops() -> Vec<Case> {
+    vec![
+        Case {
+            ops: ops(&["shell.windows", "echo"]),
+            calls: vec![call("shell.windows", json!([]), json!([{"id": 1}]))],
+            ..case(
+                "a_scripts_own_ops_replace_the_sandboxs",
+                "const w = await clax.shell.windows();\n\
+                 return [w, typeof clax.files, typeof clax.db, typeof clax.echo, Object.keys(clax).sort()]",
+                ok(json!([[{"id": 1}], "undefined", "undefined", "function", ["echo", "shell"]])),
+            )
+        },
+        Case {
+            ops: ops(&["shell.windows"]),
+            records: Records::Exactly(vec![]),
+            ..case(
+                "a_call_outside_the_scripts_ops_is_not_made",
+                "try { await clax.files.read('x'); return 'read' } catch (e) { return e.name }",
+                ok(json!("TypeError")),
+            )
+        },
+        Case {
+            ops: ops(&[
+                "shell.windows.panes.list",
+                "shell.windows.panes.focus",
+                "shell.windows.count",
+                "shell.tabs",
+            ]),
+            calls: vec![call("shell.windows.panes.list", json!([2]), json!(3))],
+            ..case(
+                "a_scripts_namespaces_nest_three_deep",
+                "const n = await clax.shell.windows.panes.list(2);\n\
+                 return [n, typeof clax.shell.windows.panes.focus, typeof clax.shell.windows.count,\n\
+                 typeof clax.shell.tabs, typeof clax.shell.windows.panes.nope,\n\
+                 Object.getPrototypeOf(clax.shell.windows.panes) === null, Object.keys(clax.shell.windows).sort()]",
+                ok(json!([
+                    3,
+                    "function",
+                    "function",
+                    "function",
+                    "undefined",
+                    true,
+                    ["count", "panes"]
+                ])),
+            )
+        },
+        Case {
+            ops: Some(vec![]),
+            ..case(
+                "a_script_with_no_ops_has_an_empty_clax",
+                "return [typeof clax, Object.keys(clax).length, typeof clax.echo]",
+                ok(json!(["object", 0, "undefined"])),
+            )
+        },
+        Case {
+            ops: Some(most_ops()),
+            calls: vec![call("s.o4094", json!([1]), json!("last"))],
+            ..case(
+                "a_script_may_have_the_most_ops",
+                "const r = await clax.s.o4094(1);\n\
+                 return [r, Object.keys(clax.s).length, typeof clax.l['x'.repeat(4094)], typeof clax.s.o0]",
+                ok(json!(["last", 4095, "function", "function"])),
+            )
+        },
+        Case {
+            ops: Some(heaviest_ops(MAX_OPS_BYTES / MAX_OP_BYTES)),
+            ..case(
+                "a_script_may_have_ops_of_the_most_bytes",
+                "return [Object.keys(clax).length, typeof clax.b063['x'.repeat(4091)]]",
+                ok(json!([64, "function"])),
+            )
+        },
+    ]
+}
+
+/// Lists a script may not carry, each refused before it runs.
+fn refused_ops() -> Vec<Case> {
+    let list = |names: &[&str]| ops(names).unwrap_or_default();
+    let mut too_many = most_ops();
+    too_many.push("s.more".into());
+    vec![
+        refused_list(
+            "ops_with_an_empty_name_are_refused",
+            list(&[""]),
+            "not a usable",
+        ),
+        refused_list(
+            "ops_with_an_empty_segment_are_refused",
+            list(&["shell..windows"]),
+            "not a usable",
+        ),
+        refused_list(
+            "ops_ending_in_a_dot_are_refused",
+            list(&["shell."]),
+            "not a usable",
+        ),
+        refused_list(
+            "ops_starting_with_a_dot_are_refused",
+            list(&[".shell"]),
+            "not a usable",
+        ),
+        refused_list(
+            "ops_that_are_not_identifiers_are_refused",
+            list(&["echo", "shell.win-dows"]),
+            "not a usable",
+        ),
+        refused_list(
+            "ops_that_are_not_ascii_are_refused",
+            list(&["shell.w\u{EF}ndows"]),
+            "not a usable",
+        ),
+        refused_list(
+            "ops_through_proto_are_refused",
+            list(&["__proto__.polluted"]),
+            "not a usable",
+        ),
+        refused_list(
+            "ops_named_constructor_are_refused",
+            list(&["shell.constructor"]),
+            "not a usable",
+        ),
+        refused_list(
+            "ops_named_prototype_are_refused",
+            list(&["prototype"]),
+            "not a usable",
+        ),
+        refused_list(
+            "ops_named_then_are_refused",
+            list(&["shell.then"]),
+            "not a usable",
+        ),
+        refused_list(
+            "ops_named_tojson_are_refused",
+            list(&["shell.toJSON"]),
+            "not a usable",
+        ),
+        refused_list(
+            "ops_named_tostring_are_refused",
+            list(&["shell.toString"]),
+            "not a usable",
+        ),
+        refused_list(
+            "ops_named_tolocalestring_are_refused",
+            list(&["toLocaleString"]),
+            "not a usable",
+        ),
+        refused_list(
+            "ops_named_valueof_are_refused",
+            list(&["shell.valueOf"]),
+            "not a usable",
+        ),
+        refused_list(
+            "ops_named_hasownproperty_are_refused",
+            list(&["shell.hasOwnProperty"]),
+            "not a usable",
+        ),
+        refused_list(
+            "ops_named_isprototypeof_are_refused",
+            list(&["shell.isPrototypeOf"]),
+            "not a usable",
+        ),
+        refused_list(
+            "ops_named_propertyisenumerable_are_refused",
+            list(&["shell.propertyIsEnumerable"]),
+            "not a usable",
+        ),
+        refused_list(
+            "ops_named_definegetter_are_refused",
+            list(&["shell.__defineGetter__"]),
+            "not a usable",
+        ),
+        refused_list(
+            "ops_named_definesetter_are_refused",
+            list(&["shell.__defineSetter__"]),
+            "not a usable",
+        ),
+        refused_list(
+            "ops_named_lookupgetter_are_refused",
+            list(&["shell.__lookupGetter__"]),
+            "not a usable",
+        ),
+        refused_list(
+            "ops_named_lookupsetter_are_refused",
+            list(&["shell.__lookupSetter__"]),
+            "not a usable",
+        ),
+        refused_list(
+            "namespaces_named_tojson_are_refused",
+            list(&["toJSON.read"]),
+            "not a usable",
+        ),
+        refused_list(
+            "ops_listed_twice_are_refused",
+            list(&["echo", "shell.windows", "echo"]),
+            "listed twice",
+        ),
+        refused_list(
+            "an_op_that_is_also_a_namespace_is_refused",
+            list(&["shell", "shell.windows"]),
+            "both an operation and a namespace",
+        ),
+        refused_list(
+            "a_namespace_that_is_also_an_op_is_refused",
+            list(&["shell.windows.list", "shell.windows"]),
+            "both an operation and a namespace",
+        ),
+        refused_list(
+            "more_than_the_most_ops_are_refused",
+            too_many,
+            "operations are listed",
+        ),
+        refused_list(
+            "an_op_name_over_its_bytes_is_refused",
+            vec![format!("{}x", longest_op())],
+            "bytes; an operation name is at most",
+        ),
+        refused_list(
+            "ops_over_their_bytes_together_are_refused",
+            heaviest_ops(MAX_OPS_BYTES / MAX_OP_BYTES + 1),
+            "bytes together",
+        ),
+    ]
+}
+
+/// What a script on the sandbox's own operations sees once an earlier one
+/// had `shell.windows`: none of it.
+fn sees_only_the_sandboxs(name: &'static str) -> Case {
+    case(
+        name,
+        "return [typeof clax.shell, typeof globalThis.leak, typeof clax.files.read, Object.keys(clax).sort()]",
+        ok(json!([
+            "undefined",
+            "undefined",
+            "function",
+            ["db", "echo", "files"]
+        ])),
+    )
+}
+
+/// Every sequence.
+#[must_use]
+pub fn sequences() -> Vec<Sequence> {
+    let shell = || ops(&["shell.windows"]);
+    vec![
+        Sequence {
+            name: "each_script_sees_only_its_own_ops",
+            steps: vec![
+                Case {
+                    ops: shell(),
+                    calls: vec![call("shell.windows", json!([]), json!(2))],
+                    ..case(
+                        "each_script_sees_only_its_own_ops_1",
+                        "globalThis.leak = clax; return [await clax.shell.windows(), typeof clax.echo]",
+                        ok(json!([2, "undefined"])),
+                    )
+                },
+                Case {
+                    ops: ops(&["echo"]),
+                    ..case(
+                        "each_script_sees_only_its_own_ops_2",
+                        "return [typeof clax.shell, typeof clax.echo, typeof clax.files, typeof globalThis.leak]",
+                        ok(json!(["undefined", "function", "undefined", "undefined"])),
+                    )
+                },
+                sees_only_the_sandboxs("each_script_sees_only_its_own_ops_3"),
+            ],
+        },
+        Sequence {
+            name: "a_scripts_ops_do_not_outlive_its_error",
+            steps: vec![
+                Case {
+                    ops: shell(),
+                    ..case(
+                        "a_scripts_ops_do_not_outlive_its_error_1",
+                        "globalThis.leak = clax; throw new Error('boom')",
+                        fails(ErrorKind::Thrown, "boom"),
+                    )
+                },
+                sees_only_the_sandboxs("a_scripts_ops_do_not_outlive_its_error_2"),
+            ],
+        },
+        Sequence {
+            name: "a_scripts_ops_do_not_outlive_its_cancel",
+            steps: vec![
+                Case {
+                    ops: shell(),
+                    cancel_in_call: true,
+                    calls: vec![call("shell.windows", json!([]), Value::Null)],
+                    records: Records::Exactly(vec![("shell.windows", false, Some(CODE_CANCELLED))]),
+                    ..case(
+                        "a_scripts_ops_do_not_outlive_its_cancel_1",
+                        "globalThis.leak = clax; await clax.shell.windows(); return 1",
+                        fails(ErrorKind::Cancelled, ""),
+                    )
+                },
+                sees_only_the_sandboxs("a_scripts_ops_do_not_outlive_its_cancel_2"),
+            ],
+        },
+        Sequence {
+            name: "a_scripts_ops_do_not_outlive_its_limit",
+            steps: vec![
+                Case {
+                    ops: shell(),
+                    limits: Limits {
+                        max_calls: 1,
+                        ..Limits::default()
+                    },
+                    calls: vec![call("shell.windows", json!([]), json!(1))],
+                    ..case(
+                        "a_scripts_ops_do_not_outlive_its_limit_1",
+                        "globalThis.leak = clax; for (;;) await clax.shell.windows()",
+                        fails(ErrorKind::CallLimit, ""),
+                    )
+                },
+                sees_only_the_sandboxs("a_scripts_ops_do_not_outlive_its_limit_2"),
+            ],
+        },
+        Sequence {
+            name: "a_park_leaves_the_sandbox_as_it_was",
+            steps: vec![
+                Case {
+                    ops: shell(),
+                    calls: vec![waits("shell.windows", json!([]))],
+                    ..case(
+                        "a_park_leaves_the_sandbox_as_it_was_1",
+                        "globalThis.leak = clax; await clax.shell.windows(); return 1",
+                        fails(ErrorKind::Parked, ""),
+                    )
+                },
+                sees_only_the_sandboxs("a_park_leaves_the_sandbox_as_it_was_2"),
+            ],
+        },
+        Sequence {
+            name: "a_refused_list_leaves_the_sandbox_as_it_was",
+            steps: vec![
+                refused_list(
+                    "a_refused_list_leaves_the_sandbox_as_it_was_1",
+                    vec!["shell.windows".into(), "shell".into()],
+                    "both an operation and a namespace",
+                ),
+                sees_only_the_sandboxs("a_refused_list_leaves_the_sandbox_as_it_was_2"),
+            ],
+        },
+    ]
 }
 
 /// The frozen clock and seeded random numbers of a script with a
@@ -399,7 +924,11 @@ catch (e) { return [e.name, e.code, e.message, e instanceof Error] }"#,
                 Exchange {
                     op: "echo",
                     args: json!([1]),
-                    reply: Err(HostError::new("web_unavailable", "the source failed").retryable()),
+                    reply: HostReply::Answer(Err(HostError::new(
+                        "web_unavailable",
+                        "the source failed",
+                    )
+                    .retryable())),
                 },
                 call_err("echo", json!([2]), "web_cap", "the run used its searches"),
             ],
@@ -822,6 +1351,9 @@ return [out, (() => {}) instanceof Function]"#,
 pub struct ScriptedHost {
     calls: Vec<Exchange>,
     state: Mutex<(usize, Vec<String>)>,
+    /// Cancelled when the first expected call arrives, which is then never
+    /// answered.
+    cancel: Option<CancelToken>,
 }
 
 impl ScriptedHost {
@@ -830,6 +1362,17 @@ impl ScriptedHost {
         ScriptedHost {
             calls,
             state: Mutex::new((0, Vec::new())),
+            cancel: None,
+        }
+    }
+
+    /// The same host, cancelling `token` when it takes its first expected
+    /// call, and never answering that call.
+    #[must_use]
+    pub fn cancelling(self, token: CancelToken) -> Self {
+        ScriptedHost {
+            cancel: Some(token),
+            ..self
         }
     }
 
@@ -852,31 +1395,54 @@ impl ScriptedHost {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Host for ScriptedHost {
     async fn call(&self, op: &str, args: Value) -> Result<Value, HostError> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let next = state.0;
-        match self.calls.get(next) {
-            Some(want) if want.op == op && want.args == args => {
-                state.0 += 1;
-                want.reply.clone()
-            }
-            want => {
-                let want = want.map_or("no call".to_string(), |w| format!("{} {}", w.op, w.args));
-                let shown: String = args.to_string().chars().take(200).collect();
-                state
-                    .1
-                    .push(format!("call {next}: got {op} {shown}, expected {want}"));
-                Err(HostError::new("conformance", "unexpected call"))
-            }
+        match self.ask(op, args).await {
+            HostReply::Answer(result) => result,
+            HostReply::Waiting => Err(HostError::new(
+                "conformance",
+                "the scripted host has no answer to this call yet",
+            )),
         }
+    }
+
+    async fn ask(&self, op: &str, args: Value) -> HostReply {
+        let reply = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let next = state.0;
+            match self.calls.get(next) {
+                Some(want) if want.op == op && want.args == args => {
+                    state.0 += 1;
+                    want.reply.clone()
+                }
+                want => {
+                    let want =
+                        want.map_or("no call".to_string(), |w| format!("{} {}", w.op, w.args));
+                    let shown: String = args.to_string().chars().take(200).collect();
+                    state
+                        .1
+                        .push(format!("call {next}: got {op} {shown}, expected {want}"));
+                    return HostReply::Answer(Err(HostError::new(
+                        "conformance",
+                        "unexpected call",
+                    )));
+                }
+            }
+        };
+        if let Some(token) = &self.cancel {
+            token.cancel();
+            std::future::pending::<()>().await;
+        }
+        reply
     }
 }
 
 /// Runs `case` on `sandbox` and checks its outcome; the outcome on success.
 pub async fn check(sandbox: &dyn Sandbox, case: &Case) -> Result<ScriptOutcome, String> {
-    let host = ScriptedHost::new(case.calls.clone());
-    let mut script = Script::new(case.name, case.code);
-    script.determinism = case.determinism;
     let cancel = CancelToken::new();
+    let mut host = ScriptedHost::new(case.calls.clone());
+    if case.cancel_in_call {
+        host = host.cancelling(cancel.clone());
+    }
+    let script = case.script();
     if case.cancelled {
         cancel.cancel();
     }
@@ -920,18 +1486,7 @@ pub async fn check(sandbox: &dyn Sandbox, case: &Case) -> Result<ScriptOutcome, 
         .map(|c| (c.op.as_str(), c.ok, c.code.as_deref()))
         .collect();
     let want: Option<Vec<(&str, bool, Option<&str>)>> = match &case.records {
-        Records::FromCalls => Some(
-            case.calls
-                .iter()
-                .map(|c| {
-                    (
-                        c.op,
-                        c.reply.is_ok(),
-                        c.reply.as_ref().err().map(|e| e.code.as_str()),
-                    )
-                })
-                .collect(),
-        ),
+        Records::FromCalls => Some(case.calls.iter().map(Exchange::record).collect()),
         Records::Exactly(records) => Some(records.clone()),
         Records::Unchecked => None,
     };
@@ -947,13 +1502,28 @@ pub async fn check(sandbox: &dyn Sandbox, case: &Case) -> Result<ScriptOutcome, 
     }
 }
 
-/// Runs every case on `sandbox`, one at a time: each case's name and its
-/// result.
+/// Runs `sequence`'s steps on `sandbox`, one after the other, checking
+/// each as [`check`] does; the first step's problems, if any.
+pub async fn check_sequence(sandbox: &dyn Sandbox, sequence: &Sequence) -> Result<(), String> {
+    for (i, step) in sequence.steps.iter().enumerate() {
+        check(sandbox, step)
+            .await
+            .map_err(|e| format!("step {} ({}): {e}", i + 1, step.name))?;
+    }
+    Ok(())
+}
+
+/// Runs every case, then every sequence, on `sandbox`, one at a time: each
+/// one's name and its result.
 pub async fn run_all(sandbox: &dyn Sandbox) -> Vec<(&'static str, Result<(), String>)> {
     let mut results = Vec::new();
     for case in cases() {
         let result = check(sandbox, &case).await.map(|_| ());
         results.push((case.name, result));
+    }
+    for sequence in sequences() {
+        let result = check_sequence(sandbox, &sequence).await;
+        results.push((sequence.name, result));
     }
     results
 }
@@ -962,9 +1532,17 @@ pub async fn run_all(sandbox: &dyn Sandbox) -> Vec<(&'static str, Result<(), Str
 mod tests {
     use super::*;
 
+    /// Every case, the steps of every sequence among them.
+    fn every_case() -> Vec<Case> {
+        let mut all = cases();
+        all.extend(sequences().into_iter().flat_map(|s| s.steps));
+        all
+    }
+
     #[test]
     fn case_names_are_unique() {
-        let mut names: Vec<_> = cases().iter().map(|c| c.name).collect();
+        let mut names: Vec<_> = every_case().iter().map(|c| c.name).collect();
+        names.extend(sequences().iter().map(|s| s.name));
         let n = names.len();
         names.sort_unstable();
         names.dedup();
@@ -974,17 +1552,55 @@ mod tests {
     #[test]
     fn every_scripted_call_uses_a_listed_op() {
         assert_eq!(crate::validate_ops(OPS), Ok(()));
-        for case in cases() {
+        for case in every_case() {
+            let listed: Vec<String> = case
+                .ops
+                .clone()
+                .unwrap_or_else(|| OPS.iter().map(|o| (*o).to_string()).collect());
             for call in &case.calls {
-                assert!(OPS.contains(&call.op), "{}: {}", case.name, call.op);
+                assert!(
+                    listed.iter().any(|o| o == call.op),
+                    "{}: {}",
+                    case.name,
+                    call.op
+                );
                 assert!(call.args.is_array(), "{}: args are an array", case.name);
             }
         }
     }
 
     #[test]
+    fn a_case_expects_invalid_ops_exactly_when_its_list_is_refused() {
+        for case in every_case() {
+            let refused = case
+                .ops
+                .as_ref()
+                .is_some_and(|o| crate::validate_ops(o).is_err());
+            let expected = matches!(case.expect.error, Some((ErrorKind::InvalidOps, _)));
+            assert_eq!(refused, expected, "{}", case.name);
+        }
+    }
+
+    #[test]
+    fn the_largest_lists_are_at_their_limits() {
+        let most = most_ops();
+        assert_eq!(most.len(), MAX_OPS);
+        assert_eq!(most[MAX_OPS - 2], "s.o4094");
+        assert_eq!(longest_op(), format!("l.{}", "x".repeat(4094)));
+        assert_eq!(longest_op().len(), MAX_OP_BYTES);
+        let heaviest = heaviest_ops(MAX_OPS_BYTES / MAX_OP_BYTES);
+        assert_eq!(
+            heaviest.iter().map(String::len).sum::<usize>(),
+            MAX_OPS_BYTES
+        );
+        assert_eq!(heaviest[63], format!("b063.{}", "x".repeat(4091)));
+        assert_eq!(crate::validate_ops(&most), Ok(()));
+        assert_eq!(crate::validate_ops(&heaviest), Ok(()));
+    }
+
+    #[test]
     fn every_case_but_the_invalid_one_has_valid_limits() {
-        for case in cases() {
+        for case in every_case() {
             let valid = case.limits.validate().is_ok();
             let wants_invalid = matches!(case.expect.error, Some((ErrorKind::InvalidLimits, _)));
             assert_eq!(valid, !wants_invalid, "{}", case.name);

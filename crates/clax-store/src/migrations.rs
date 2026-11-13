@@ -2149,6 +2149,315 @@ pub const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (run_id, url)
     ) WITHOUT ROWID;
     ALTER TABLE bot_runs ADD COLUMN web TEXT NOT NULL DEFAULT '';",
+    // 64: a run as a request and its bindings (spec
+    // 2026-11-10-claxbot-surfaces-design, "A run" and "Calls that wait").
+    // No row of `bot_runs` is copied or rewritten, so the migration writes
+    // the same few pages at any number of runs:
+    //
+    // - `kind` is the run's kind as `<surface>.<kind>`, `bindings_json` its
+    //   bindings (`crate::bot_runs::Bindings`) and `request_json` its
+    //   request as the kind's surface gave it
+    //   (`crate::bot_runs::ClaxRequest`), each added by `ADD COLUMN`,
+    //   which changes the schema's text alone. A run made before this
+    //   migration holds NULL in all three, and `Store::run_with_steps_as_made`
+    //   reads it as what `Store::create_run` writes for a run of its
+    //   columns: kind `clax.<request>`, one binding of `clax` scoped to its
+    //   artifact and granted the operations `web` names, and its thread IDs
+    //   as `Store::run` reads them. Every run made since writes all three.
+    // - The constraints are relaxed in the table's own text in
+    //   `sqlite_schema` ([`relax_bot_runs`], the migration's Rust step), as
+    //   SQLite's documentation of `ALTER TABLE` allows for a change that no
+    //   stored row can contradict (removing a CHECK or a NOT NULL, adding a
+    //   default): `artifact_id` and `base_version` may be NULL, for a run
+    //   that names no artifact; `request` is no longer held to `thread` and
+    //   `brief`; `thread_ids_json` stays NOT NULL and defaults to `[]` (a
+    //   run with no threads holds the empty list, which every reader of the
+    //   column takes); `status` takes `parked` beside the values it had,
+    //   which every stored row's status is among.
+    //
+    // `bot_runs` was rebuilt here before (every row and its three indexes
+    // copied in this one transaction), which on the hosted Worker's VFS,
+    // whose transactions may write 4,096 chunks of 4 KiB
+    // (`clax_do_vfs::MAX_TRANSACTION_BYTES`), failed from about 25,000
+    // runs. `crates/clax-worker/tests/store_on_vfs.rs` holds this
+    // migration's commit to a few chunks beside 4,000 runs.
+    //
+    // `bot_runs.bindings_json` is the migration's mark (`MARKS_AFTER_APP`).
+    "ALTER TABLE bot_runs ADD COLUMN kind TEXT;
+    ALTER TABLE bot_runs ADD COLUMN bindings_json TEXT;
+    ALTER TABLE bot_runs ADD COLUMN request_json TEXT;",
+    // 65: surfaces a host registers, calls that wait and a run's end kept
+    // for delivery (spec 2026-11-10-claxbot-surfaces-design, "Calls that
+    // wait", "Registration and authority", "A host's surface on a
+    // daemon"). No table is rebuilt and no row of `bot_runs` or
+    // `bot_steps` rewritten:
+    // the eight tables are new and empty, each `ALTER TABLE … ADD COLUMN`
+    // changes the schema's text alone (a row without the column reads its
+    // default), and the one index made again covers only the runs that
+    // have not ended. Its transaction was 36 chunks of 4 KiB on
+    // `clax-do-vfs` beside 4,000 ended runs
+    // (`crates/clax-worker/tests/store_on_vfs.rs`, which holds it under
+    // 48), against the hosted Worker's 4,096 a transaction (see migration
+    // 64).
+    //
+    // - `bot_surface_defs`: a surface's definition, once for each SHA-256
+    //   of its canonical manifest (`crate::bot_surfaces`).
+    // - `bot_surface_prompts`: a prompt file's text, once for each
+    //   SHA-256 of its bytes (`crate::bot_surfaces`): what a registration
+    //   (`prompt_hash`) and a run's binding (its `prompt` member) name, so
+    //   a run keeps the prompt file it was started with as it keeps its
+    //   definition. `kept_at` is when it was last given to be kept.
+    // - `bot_registrations`: a definition, an optional prompt file
+    //   (`prompt_hash`, its text in `bot_surface_prompts`) and settings,
+    //   given by a person under a name. Many of one name may be live; one
+    //   is live until `replaced_at`. `dropped_at` is when the hub dropped
+    //   it for good (its lease ended, or it made room for another), NULL
+    //   again once its host goes on as it.
+    // - `bot_pending_calls`: a call sent to a registration and not yet
+    //   journaled, one for each place `(run_id, step_n, seq)` of a run's
+    //   journal (`crate::bot_pending`). `expires_at` may be NULL: a call
+    //   with no deadline. `def_hash` is the definition the call was made
+    //   under, whatever its registration's is later. `waits` marks a call
+    //   its run may park on, and
+    //   `bot_pending_calls_waiting` holds a run to one such call waiting
+    //   at a time. The `retry_*` columns are the rule its run gave for
+    //   sending it again (NULL: none given), and `failures`, `not_before`,
+    //   `resend`, `later` and `last_*` how far it has got
+    //   (`crate::bot_pending::CallTries`), so that a hub that starts again
+    //   goes on with a call as it would have.
+    // - `bot_runs_by_starter` lists a registration's runs by
+    //   `started_by`; partial, it holds no row for a run of Clax's own.
+    // - `bot_run_ends`: how a run ended, for each registration to be told
+    //   of it, until it acknowledges (`delivered_at`); one unacknowledged
+    //   end of a run for a registration at a time
+    //   (`bot_run_ends_unacknowledged`), so a run that is continued and
+    //   ends again is told of again.
+    // - `bot_content`: an item of content a run holds, its `id` the
+    //   handle's (spec "Content: images, files and their metadata"). The
+    //   bytes are in the blob store under `sha256`, which
+    //   `bot_content_by_sha256` finds the rows of, so a blob no row names
+    //   can go. `surface` (and `registration_id`, for a registered one),
+    //   `op`, `key` and `step_n` say what brought it; `name` and
+    //   `meta_json` are the provider's; `media_type`, `bytes`, `width` and
+    //   `height` are Clax's findings; `shown` whether the model was shown
+    //   it. No foreign key to `bot_runs`, as for `bot_pending_calls`: it
+    //   is pruned with the run's call journal.
+    // - `bot_joins`: a surface's standing request (`surface`, the joining
+    //   registration's name) that its operations be bound into the runs
+    //   whose `joined` surface (`clax`) is scoped to `artifact_id`
+    //   (spec "A host's surface on a daemon"), one for each of the three,
+    //   so a `PUT …/joins` replaces them. `ops_json` is the join's allow
+    //   patterns, NULL for none given, which binds the surface's reads
+    //   that do not wait alone (writes, effects and reads that wait only
+    //   when the patterns name them). Deleting the artifact removes its
+    //   rows (the foreign key on a row delete, the trigger on the soft
+    //   delete), and pruning the registration that set them removes them.
+    // - `bot_messages`: a run's inbox (spec "A run's inbox"), in arrival
+    //   order (`seq`, one for each place of a run), sent by a
+    //   registration, `key` once for each run when the sender gave one;
+    //   `delivered_at` and `delivered_step` (the step it was delivered
+    //   before) stay NULL until it is delivered; `waiting` is whether its
+    //   run was parked when it arrived, what it was first answered and is
+    //   answered again when sent again under its key.
+    // - `bot_runs.started_by` (a registration's ID) and `parent_run` (the
+    //   run that started it) are written by `Store::create_run_of`; `parked_at`,
+    //   `parked_ms` and `waiting_on` are a parked run's
+    //   (`Store::park_run`); `pieces_json` is for the names and hashes of
+    //   the pieces a run's prompt was made of, written by nothing yet.
+    // - `bot_steps.parks` counts how often a step parked, which its
+    //   `attempt` does not tell: that counts the times it was begun, after
+    //   a crash too.
+    // - `bot_runs_live` is made again with `parked` among the statuses of
+    //   a run that has not ended (`crate::bot_runs::LIVE`), so the queries
+    //   that list those runs still use it.
+    //
+    // A build without this migration refuses a database that has it
+    // (`CoreError::SchemaNewer`), so none reads a parked run as a status
+    // it does not know. `bot_surface_defs` is the migration's mark
+    // (`MARKS_AFTER_APP`).
+    "CREATE TABLE bot_surface_defs (
+        hash TEXT PRIMARY KEY
+            CHECK (length(hash) = 64 AND hash NOT GLOB '*[^0-9a-f]*'),
+        manifest TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE bot_surface_prompts (
+        hash TEXT PRIMARY KEY
+            CHECK (length(hash) = 64 AND hash NOT GLOB '*[^0-9a-f]*'),
+        text TEXT NOT NULL,
+        kept_at TEXT NOT NULL
+    );
+    CREATE TABLE bot_registrations (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        def_hash TEXT NOT NULL,
+        prompt_hash TEXT,
+        settings_json TEXT NOT NULL,
+        registered_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        last_served_at TEXT,
+        replaced_at TEXT,
+        dropped_at TEXT
+    );
+    CREATE INDEX bot_registrations_by_name ON bot_registrations(name, created_at, id);
+    CREATE INDEX bot_registrations_by_person
+        ON bot_registrations(registered_by, created_at, id);
+    CREATE TABLE bot_pending_calls (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        step_n INTEGER NOT NULL,
+        seq INTEGER NOT NULL,
+        attempt INTEGER NOT NULL,
+        registration_id TEXT NOT NULL,
+        def_hash TEXT NOT NULL,
+        op TEXT NOT NULL,
+        args_json TEXT NOT NULL,
+        args_hash TEXT NOT NULL,
+        key TEXT NOT NULL,
+        access TEXT NOT NULL CHECK (access IN ('read', 'write', 'effect')),
+        waits INTEGER NOT NULL DEFAULT 0 CHECK (waits IN (0, 1)),
+        created_at TEXT NOT NULL,
+        expires_at TEXT,
+        sent_at TEXT,
+        accepted_at TEXT,
+        answered_at TEXT,
+        retry_attempts INTEGER CHECK (retry_attempts >= 0),
+        retry_backoff_ms INTEGER CHECK (retry_backoff_ms >= 0),
+        retry_backoff_max_ms INTEGER CHECK (retry_backoff_max_ms >= 0),
+        failures INTEGER NOT NULL DEFAULT 0 CHECK (failures >= 0),
+        not_before TEXT,
+        resend TEXT NOT NULL DEFAULT 'none' CHECK (resend IN ('none', 'planned', 'due')),
+        later INTEGER NOT NULL DEFAULT 0 CHECK (later IN (0, 1)),
+        last_code TEXT,
+        last_message TEXT,
+        last_retryable INTEGER CHECK (last_retryable IN (0, 1)),
+        UNIQUE (run_id, step_n, seq)
+    );
+    CREATE INDEX bot_pending_calls_open ON bot_pending_calls(registration_id, created_at, id)
+        WHERE answered_at IS NULL;
+    CREATE UNIQUE INDEX bot_pending_calls_waiting ON bot_pending_calls(run_id)
+        WHERE waits = 1 AND answered_at IS NULL;
+    CREATE TABLE bot_run_ends (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        registration_id TEXT NOT NULL,
+        end_json TEXT NOT NULL,
+        result_json TEXT,
+        created_at TEXT NOT NULL,
+        delivered_at TEXT
+    );
+    CREATE INDEX bot_run_ends_open ON bot_run_ends(registration_id, created_at, run_id)
+        WHERE delivered_at IS NULL;
+    CREATE UNIQUE INDEX bot_run_ends_unacknowledged ON bot_run_ends(run_id, registration_id)
+        WHERE delivered_at IS NULL;
+    CREATE TABLE bot_content (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        surface TEXT NOT NULL,
+        registration_id TEXT,
+        op TEXT,
+        key TEXT,
+        step_n INTEGER,
+        name TEXT,
+        sha256 TEXT NOT NULL
+            CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
+        bytes INTEGER NOT NULL CHECK (bytes >= 0),
+        media_type TEXT NOT NULL,
+        width INTEGER CHECK (width > 0),
+        height INTEGER CHECK (height > 0),
+        meta_json TEXT,
+        shown INTEGER NOT NULL DEFAULT 0 CHECK (shown IN (0, 1)),
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX bot_content_by_run ON bot_content(run_id, created_at, id);
+    CREATE INDEX bot_content_by_sha256 ON bot_content(sha256);
+    CREATE TABLE bot_joins (
+        surface TEXT NOT NULL,
+        joined TEXT NOT NULL,
+        artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        registration_id TEXT NOT NULL REFERENCES bot_registrations(id) ON DELETE CASCADE,
+        ops_json TEXT,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (surface, joined, artifact_id)
+    ) WITHOUT ROWID;
+    CREATE INDEX bot_joins_by_artifact ON bot_joins(artifact_id, joined, surface);
+    CREATE INDEX bot_joins_by_registration ON bot_joins(registration_id);
+    CREATE TRIGGER bot_joins_on_delete AFTER UPDATE OF deleted_at ON artifacts
+    WHEN NEW.deleted_at IS NOT NULL
+    BEGIN
+        DELETE FROM bot_joins WHERE artifact_id = NEW.id;
+    END;
+    CREATE TABLE bot_messages (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        seq INTEGER NOT NULL,
+        registration_id TEXT NOT NULL,
+        body_json TEXT NOT NULL,
+        key TEXT,
+        created_at TEXT NOT NULL,
+        delivered_at TEXT,
+        delivered_step INTEGER,
+        waiting INTEGER NOT NULL DEFAULT 0 CHECK (waiting IN (0, 1)),
+        UNIQUE (run_id, seq)
+    );
+    CREATE INDEX bot_messages_undelivered ON bot_messages(run_id, seq)
+        WHERE delivered_at IS NULL;
+    CREATE UNIQUE INDEX bot_messages_by_key ON bot_messages(run_id, key)
+        WHERE key IS NOT NULL;
+    ALTER TABLE bot_runs ADD COLUMN started_by TEXT;
+    CREATE INDEX bot_runs_by_starter ON bot_runs(started_by, created_at, id)
+        WHERE started_by IS NOT NULL;
+    ALTER TABLE bot_runs ADD COLUMN parent_run TEXT;
+    ALTER TABLE bot_runs ADD COLUMN parked_at TEXT;
+    ALTER TABLE bot_runs ADD COLUMN parked_ms INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE bot_runs ADD COLUMN waiting_on TEXT;
+    ALTER TABLE bot_runs ADD COLUMN pieces_json TEXT;
+    ALTER TABLE bot_steps ADD COLUMN parks INTEGER NOT NULL DEFAULT 0;
+    DROP INDEX bot_runs_live;
+    CREATE INDEX bot_runs_live ON bot_runs(created_at, id)
+        WHERE status IN ('queued', 'running', 'stopping', 'parked');",
+    // 66: a key's last problem (`crate::secrets::SecretMeta::last_problem`):
+    // `sealed_secrets.last_problem_json` holds what the last failed request
+    // made with the key was answered (`{at, class, status, type, message,
+    // request_id}`), NULL when none failed since the key was set or since a
+    // request with it last succeeded. One `ADD COLUMN`, which changes the
+    // schema's text alone (every row reads NULL), so its transaction writes
+    // the same few pages on the hosted Worker's VFS at any number of rows
+    // (see migration 64).
+    //
+    // And the provider failure log (`crate::provider_failures`):
+    // `bot_provider_failures` holds each failed request made with the
+    // instance's key, for admins: when, the person it was for, the run (or
+    // the admin action), the model, API and base URL's host, and what the
+    // provider answered (class, status, type, message, request ID; plain
+    // text, bounded, never the key). Kept by count, per person and in all,
+    // and by age. Indexed to list all newest first, one person's newest
+    // first, and one run's. A new, empty table: a few pages at any number of
+    // rows elsewhere.
+    //
+    // `sealed_secrets.last_problem_json` is the migration's mark
+    // (`MARKS_AFTER_APP`).
+    "ALTER TABLE sealed_secrets ADD COLUMN last_problem_json TEXT;
+    CREATE TABLE bot_provider_failures (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at TEXT NOT NULL,
+        person TEXT NOT NULL,
+        run_id TEXT,
+        request TEXT NOT NULL,
+        model TEXT,
+        api TEXT NOT NULL,
+        host TEXT,
+        key_source TEXT NOT NULL,
+        class TEXT NOT NULL,
+        status INTEGER,
+        provider_type TEXT,
+        message TEXT,
+        request_id TEXT
+    );
+    CREATE INDEX bot_provider_failures_by_time ON bot_provider_failures(at, id);
+    CREATE INDEX bot_provider_failures_by_person ON bot_provider_failures(person, at, id);
+    CREATE INDEX bot_provider_failures_by_run ON bot_provider_failures(run_id, at, id)
+        WHERE run_id IS NOT NULL;",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -2211,8 +2520,26 @@ pub const PRICE_CATALOG_MIGRATION: u32 = FEEDBACK_LOOP_MIGRATION + 1;
 
 /// The migration that lets a cost line count in thousands of requests
 /// (`kreq`) and seeds the web search and web fetch lines, as a schema
-/// version, and this build's last.
+/// version.
 pub const WEB_MIGRATION: u32 = PRICE_CATALOG_MIGRATION + 1;
+
+/// The migration that makes `bot_runs` hold a run as a request and its
+/// bindings (`kind`, `bindings_json`, `request_json`, an optional artifact
+/// and the `parked` status), as a schema version: it adds the columns and
+/// relaxes the table's text in place (`relax_bot_runs`), copying no row.
+pub const RUN_BINDINGS_MIGRATION: u32 = WEB_MIGRATION + 1;
+
+/// The migration that adds registered surfaces, calls that wait and run
+/// ends kept for delivery (`bot_surface_defs`, `bot_surface_prompts`,
+/// `bot_registrations`, `bot_pending_calls`, `bot_run_ends`, a parked run's columns of
+/// `bot_runs`), a run's content, joins and inbox (`bot_content`,
+/// `bot_joins`, `bot_messages`), as a schema version.
+pub const SURFACES_MIGRATION: u32 = RUN_BINDINGS_MIGRATION + 1;
+
+/// The migration that keeps a key's last problem
+/// (`sealed_secrets.last_problem_json`) and the provider failure log
+/// (`bot_provider_failures`), as a schema version, and this build's last.
+pub const KEY_PROBLEM_MIGRATION: u32 = SURFACES_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -2372,11 +2699,11 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 
 /// What each migration after the app's leaves in the schema, in order:
 /// ClaxBot's ([`CLAXBOT_MIGRATION`]), then [`LEGACY_PATHS_MIGRATION`] to
-/// [`WEB_MIGRATION`]. They follow the app's in every
+/// [`KEY_PROBLEM_MIGRATION`]. They follow the app's in every
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 14] = [
+const MARKS_AFTER_APP: [Mark<'static>; 17] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
@@ -2391,6 +2718,9 @@ const MARKS_AFTER_APP: [Mark<'static>; 14] = [
     Mark::Table("report_fixes"),
     Mark::Table("price_catalog"),
     Mark::Table("bot_person_prefs"),
+    Mark::Column("bot_runs", "bindings_json"),
+    Mark::Table("bot_surface_defs"),
+    Mark::Column("sealed_secrets", "last_problem_json"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -2712,7 +3042,94 @@ pub(super) fn rust_step_of(
     if version == WEB_MIGRATION {
         crate::credits::seed_web_lines(tx)?;
     }
+    if version == RUN_BINDINGS_MIGRATION {
+        relax_bot_runs(tx)?;
+    }
     Ok(())
+}
+
+/// The edits migration 64 makes to the text of `bot_runs` in
+/// `sqlite_schema`, each `(from, to)`: every one only removes a constraint,
+/// adds a default or widens a CHECK to more values, so no stored row breaks
+/// one, and none changes how a row is stored.
+const BOT_RUNS_RELAXED: [(&str, &str); 5] = [
+    ("artifact_id TEXT NOT NULL,", "artifact_id TEXT,"),
+    (
+        "request TEXT NOT NULL CHECK (request IN ('thread', 'brief')),",
+        "request TEXT NOT NULL,",
+    ),
+    (
+        "thread_ids_json TEXT NOT NULL,",
+        "thread_ids_json TEXT NOT NULL DEFAULT '[]',",
+    ),
+    (
+        "'stopping', 'finished',",
+        "'stopping', 'parked', 'finished',",
+    ),
+    ("base_version INTEGER NOT NULL,", "base_version INTEGER,"),
+];
+
+/// Migration 64's Rust step: relaxes the constraints of `bot_runs` by
+/// editing the table's text in `sqlite_schema` in the migration's
+/// transaction, as SQLite's documentation of `ALTER TABLE` gives it for
+/// changes that touch no stored row ("removing CHECK or FOREIGN KEY or
+/// NOT NULL constraints, or adding, removing, or changing default
+/// values"): with `writable_schema` on and the connection's defensive mode
+/// off for the while, the text is replaced, `schema_version` is raised by
+/// one so every other connection reads the schema again, and
+/// `writable_schema = RESET` has this one read it again. It writes the
+/// pages of `sqlite_schema` and the header, however many runs there are.
+///
+/// # Errors
+/// [`clax_core::CoreError::MigrationFailed`], changing nothing, when the
+/// table's text does not hold each of [`BOT_RUNS_RELAXED`]'s `from` exactly
+/// once: a `bot_runs` that migrations 50 and 63 did not make, which this
+/// edit is not known to be safe on.
+fn relax_bot_runs(tx: &rusqlite::Transaction<'_>) -> clax_core::Result<()> {
+    use rusqlite::config::DbConfig;
+    let sql: String = tx.query_row(
+        "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'bot_runs'",
+        [],
+        |r| r.get(0),
+    )?;
+    let mut relaxed = sql.clone();
+    for (from, to) in BOT_RUNS_RELAXED {
+        let found = relaxed.matches(from).count();
+        if found != 1 {
+            return Err(clax_core::CoreError::MigrationFailed {
+                at: RUN_BINDINGS_MIGRATION - 1,
+                detail: format!(
+                    "bot_runs is not as migrations 50 and 63 make it: its text holds {from:?} \
+                     {found} times, where its constraints are relaxed only on the one \
+                     they make; it was left unchanged. Its text: {sql}"
+                ),
+            });
+        }
+        relaxed = relaxed.replacen(from, to, 1);
+    }
+    let defensive = tx.db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE)?;
+    tx.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, false)?;
+    let edited = (|| -> clax_core::Result<()> {
+        let schema_version: i64 = tx.query_row("PRAGMA schema_version", [], |r| r.get(0))?;
+        tx.execute_batch("PRAGMA writable_schema = ON;")?;
+        tx.execute(
+            "UPDATE sqlite_schema SET sql = ?1 WHERE type = 'table' AND name = 'bot_runs'",
+            [&relaxed],
+        )?;
+        tx.execute_batch(&format!(
+            "PRAGMA schema_version = {};
+             PRAGMA writable_schema = RESET;",
+            schema_version + 1
+        ))?;
+        Ok(())
+    })();
+    if edited.is_err() {
+        // The transaction rolls the edit back; the connection is left
+        // with `writable_schema` off and its schema read again.
+        let _ = tx.execute_batch("PRAGMA writable_schema = RESET;");
+    }
+    tx.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, defensive)?;
+    edited
 }
 
 /// `linked_comments.author_key` and its index, as migration 48 makes them,
@@ -5357,7 +5774,13 @@ mod tests {
             super::FEEDBACK_LOOP_MIGRATION + 1
         );
         assert!(MIGRATIONS[first + 20].contains("CREATE TABLE price_catalog ("));
-        assert_eq!(MIGRATIONS.len() as u32, super::WEB_MIGRATION);
+        assert_eq!(super::RUN_BINDINGS_MIGRATION, super::WEB_MIGRATION + 1);
+        assert!(MIGRATIONS[first + 22].contains("ALTER TABLE bot_runs ADD COLUMN bindings_json"));
+        assert_eq!(super::SURFACES_MIGRATION, super::RUN_BINDINGS_MIGRATION + 1);
+        assert!(MIGRATIONS[first + 23].contains("CREATE TABLE bot_surface_defs ("));
+        assert_eq!(super::KEY_PROBLEM_MIGRATION, super::SURFACES_MIGRATION + 1);
+        assert!(MIGRATIONS[first + 24].contains("ADD COLUMN last_problem_json"));
+        assert_eq!(MIGRATIONS.len() as u32, super::KEY_PROBLEM_MIGRATION);
     }
 
     #[test]
@@ -5485,7 +5908,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_database_reaches_63() {
+    fn a_fresh_database_reaches_64() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         drop(Store::open(&home).unwrap());
@@ -5507,7 +5930,10 @@ mod tests {
         assert_eq!(super::FEEDBACK_LOOP_MIGRATION, 61);
         assert_eq!(super::PRICE_CATALOG_MIGRATION, 62);
         assert_eq!(super::WEB_MIGRATION, 63);
-        assert_eq!(user_version(&c), super::WEB_MIGRATION);
+        assert_eq!(super::RUN_BINDINGS_MIGRATION, 64);
+        assert_eq!(super::SURFACES_MIGRATION, 65);
+        assert_eq!(super::KEY_PROBLEM_MIGRATION, 66);
+        assert_eq!(user_version(&c), super::KEY_PROBLEM_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
@@ -6287,7 +6713,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::WEB_MIGRATION);
+        assert_eq!(user_version(&c), super::KEY_PROBLEM_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -6782,14 +7208,16 @@ mod tests {
         // migrations to 54, the return-to migration to 55, the version
         // declarations' to 56, the quickstart's to 57, the capability
         // approvals' to 58, the queues' to 59, the browser login's to 60,
-        // the feedback loop's to 61 and the price catalog's to 62 and the web lines' to 63.
+        // the feedback loop's to 61, the price catalog's to 62, the web lines' to 63,
+        // the run bindings' to 64, the surfaces' to 65 and the key problem's
+        // to 66.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::WEB_MIGRATION);
+            assert_eq!(user_version(&c), super::KEY_PROBLEM_MIGRATION);
             (columns_of(&c), every_row(&c))
         };
 
@@ -6797,8 +7225,8 @@ mod tests {
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(
             user_version(&c),
-            super::WEB_MIGRATION + 1,
-            "ClaxBot's 50 and the migrations 51 to 63 after it are one later now"
+            super::KEY_PROBLEM_MIGRATION + 1,
+            "ClaxBot's 50 and the migrations 51 to 66 after it are one later now"
         );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
@@ -6817,7 +7245,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), super::WEB_MIGRATION);
+        assert_eq!(user_version(&copied), super::KEY_PROBLEM_MIGRATION);
         assert_eq!(
             every_row(&copied),
             before,
@@ -6831,7 +7259,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (super::WEB_MIGRATION + 1, schema, rows)
+            (super::KEY_PROBLEM_MIGRATION + 1, schema, rows)
         );
     }
 
@@ -7105,7 +7533,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, super::WEB_MIGRATION);
+        assert_eq!(last, super::KEY_PROBLEM_MIGRATION);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));
@@ -7448,5 +7876,1287 @@ mod tests {
                 assert_eq!((schema_of(&c), every_row(&c)), (schema, rows), "{mark}");
             }
         }
+    }
+
+    /// The runs of [`at_63_with_runs`], by what each is.
+    const RUN_QUEUED: &str = "01JC0000000000000000000001";
+    const RUN_MID: &str = "01JC0000000000000000000002";
+    const RUN_ENDED: &str = "01JC0000000000000000000003";
+    const RUN_BRIEF: &str = "01JC0000000000000000000004";
+    const RUN_ORPHAN: &str = "01JC0000000000000000000005";
+    const RUN_STOPPING: &str = "01JC0000000000000000000006";
+    const RUN_GAVE_UP: &str = "01JC0000000000000000000007";
+    const RUN_FAILED: &str = "01JC0000000000000000000008";
+    const RUNS: [&str; 8] = [
+        RUN_QUEUED,
+        RUN_MID,
+        RUN_ENDED,
+        RUN_BRIEF,
+        RUN_ORPHAN,
+        RUN_STOPPING,
+        RUN_GAVE_UP,
+        RUN_FAILED,
+    ];
+
+    /// A home at migration 63, the schema before `bot_runs` was rebuilt,
+    /// as a daemon stopped mid-run leaves it: a queued thread run made for
+    /// an agent's grant; a run a driver holds, its first turn committed and
+    /// its second step, a script, begun and not committed, with two
+    /// journaled calls, a page, a draft file, a usage row and a follow-up
+    /// queued on one of its threads; a finished run on a person's own key;
+    /// a queued brief run; a stopped run whose artifact has no row; a run
+    /// asked to stop, one of whose thread IDs JSON spells with escapes;
+    /// one that gave up; and one that failed.
+    fn at_63_with_runs(home: &Home) -> Connection {
+        home.ensure_dirs().unwrap();
+        let mut c = Connection::open(home.db_path()).unwrap();
+        let before = super::Numbering {
+            migrations: &MIGRATIONS[..super::WEB_MIGRATION as usize],
+            main_marks: &MAIN_MARKS_ABOVE_38,
+        };
+        crate::migrate_with(&mut c, &before).unwrap();
+        assert_eq!(user_version(&c), super::WEB_MIGRATION);
+        c.execute_batch(&format!(
+            r#"INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
+                VALUES ('7q3k9mzx2b4t', 'Budget', 'x', 'x', 2, '0'),
+                       ('8r4m2nzy3c5v', 'Notes', 'x', 'x', 1, '0');
+             INSERT INTO versions (artifact_id, n, created_at, files_json)
+                VALUES ('7q3k9mzx2b4t', 1, 'x', '{{}}'), ('7q3k9mzx2b4t', 2, 'x', '{{}}'),
+                       ('8r4m2nzy3c5v', 1, 'x', '{{}}');
+             INSERT INTO threads (id, artifact_id, version_n, anchor_json, created_at)
+                VALUES ('t-q', '7q3k9mzx2b4t', 2, '{{}}', 'x'), ('t-a', '7q3k9mzx2b4t', 2, '{{}}', 'x'),
+                       ('t-b', '7q3k9mzx2b4t', 2, '{{}}', 'x'), ('t-e', '7q3k9mzx2b4t', 1, '{{}}', 'x'),
+                       ('t-brief', '8r4m2nzy3c5v', 1, '{{}}', 'x');
+             INSERT INTO bot_runs (id, artifact_id, person, request, thread_ids_json, status, reason,
+                    model, key_source, base_version, credits_milli, agent_grant, claimed_by,
+                    claimed_at, created_at, updated_at, ended_at, due_at, web)
+                VALUES
+                ('{RUN_QUEUED}', '7q3k9mzx2b4t', 'u_mia', 'thread', '["t-q"]', 'queued', NULL,
+                    'claude-sonnet-5-5', 'instance', 2, 0, 'g_agent', NULL, NULL,
+                    '2026-11-09T10:00:01.000Z', '2026-11-09T10:00:01.000Z', NULL, NULL,
+                    'search,fetch'),
+                ('{RUN_MID}', '7q3k9mzx2b4t', '*owner', 'thread', '["t-a","t-b"]', 'running', NULL,
+                    'claude-sonnet-5-5', 'instance', 2, 1200, NULL, 'drv_before',
+                    '2026-11-09T10:00:30.000Z', '2026-11-09T10:00:02.000Z',
+                    '2026-11-09T10:00:20.000Z', NULL, '2026-11-09T10:01:00.000Z', 'fetch'),
+                ('{RUN_ENDED}', '7q3k9mzx2b4t', '*owner', 'thread', '["t-e"]', 'finished', NULL,
+                    'claude-sonnet-5-5', 'own', 1, 300, NULL, NULL, NULL,
+                    '2026-11-09T09:00:00.000Z', '2026-11-09T09:02:00.000Z',
+                    '2026-11-09T09:02:00.000Z', NULL, ''),
+                ('{RUN_BRIEF}', '8r4m2nzy3c5v', '*owner', 'brief', '["t-brief"]', 'queued', NULL,
+                    'claude-sonnet-5-5', 'instance', 1, 0, NULL, NULL, NULL,
+                    '2026-11-09T10:00:03.000Z', '2026-11-09T10:00:03.000Z', NULL, NULL, 'search'),
+                ('{RUN_ORPHAN}', '9s5n3pza4d6w', 'u_mia', 'thread', '["t-gone"]', 'stopped',
+                    'cancelled', 'claude-sonnet-5-5', 'instance', 4, 0, NULL, NULL, NULL,
+                    '2026-11-08T09:00:00.000Z', '2026-11-08T09:01:00.000Z',
+                    '2026-11-08T09:01:00.000Z', NULL, ''),
+                ('{RUN_STOPPING}', '8r4m2nzy3c5v', 'u_mia', 'thread', '["t-s","q\"uo\\te é"]',
+                    'stopping', NULL, 'claude-sonnet-5-5', 'instance', 1, 40, NULL, NULL, NULL,
+                    '2026-11-09T10:00:04.000Z', '2026-11-09T10:00:09.000Z', NULL, NULL, 'search'),
+                ('{RUN_GAVE_UP}', '8r4m2nzy3c5v', 'u_mia', 'thread', '["t-g"]', 'gave_up',
+                    'context_window', 'claude-sonnet-5-5', 'instance', 1, 900, NULL, NULL, NULL,
+                    '2026-11-08T11:00:00.000Z', '2026-11-08T11:03:00.000Z',
+                    '2026-11-08T11:03:00.000Z', NULL, 'search,fetch'),
+                ('{RUN_FAILED}', '8r4m2nzy3c5v', '*owner', 'brief', '["t-f"]', 'failed',
+                    'commit_failed', 'claude-sonnet-5-5', 'own', 1, 0, 'g_agent', NULL, NULL,
+                    '2026-11-08T12:00:00.000Z', '2026-11-08T12:00:30.000Z',
+                    '2026-11-08T12:00:30.000Z', NULL, 'fetch');
+             INSERT INTO bot_steps (run_id, n, kind, started_at, attempt, committed_at,
+                    payload_json, observed_json, failures)
+                VALUES
+                ('{RUN_MID}', 1, 'turn', '2026-11-09T10:00:05.000Z', 1, '2026-11-09T10:00:20.000Z',
+                    '{{"messages":["hi"],"next":{{"script":"await clax.threads.reply()"}}}}', NULL, 0),
+                ('{RUN_MID}', 2, 'script', '2026-11-09T10:00:21.000Z', 1, NULL, NULL,
+                    '[{{"input_tokens":12}}]', 1),
+                ('{RUN_ENDED}', 1, 'turn', '2026-11-09T09:00:05.000Z', 1, '2026-11-09T09:01:00.000Z',
+                    '{{"messages":["done"]}}', NULL, 0),
+                ('{RUN_ENDED}', 2, 'finish', '2026-11-09T09:01:01.000Z', 1,
+                    '2026-11-09T09:02:00.000Z', '{{"summary":"Done."}}', NULL, 0);
+             INSERT INTO bot_calls (run_id, step_n, seq, attempt, op, args_hash, ok, result_json, at)
+                VALUES
+                ('{RUN_MID}', 2, 0, 1, 'threads.reply', 'h0', 1, '{{"comment_id":"c9"}}',
+                    '2026-11-09T10:00:22.000Z'),
+                ('{RUN_MID}', 2, 1, 1, 'web.fetch', 'h1', 0,
+                    '{{"code":"not_found","message":"no such page"}}', '2026-11-09T10:00:23.000Z');
+             INSERT INTO bot_web_pages (run_id, url, step_n, seq, final_url, status, content_type,
+                    text, total_chars, links_json)
+                VALUES ('{RUN_MID}', 'https://example.com/a', 2, 1, 'https://example.com/a', 404,
+                    'text/html', 'gone', 4, '[]');
+             INSERT INTO bot_draft_files (run_id, path, content, content_type)
+                VALUES ('{RUN_MID}', 'index.html', x'3c703e68693c2f703e', 'text/html'),
+                       ('{RUN_ENDED}', 'old.html', NULL, NULL);
+             INSERT INTO bot_follow_ups (thread_id, person, queued_at)
+                VALUES ('t-a', 'u_mia', '2026-11-09T10:00:10.000Z');
+             INSERT INTO usage_rows (person, run_id, step_n, line, unit, qty, rate_cost_micro_usd,
+                    margin_bp, credit_price_micro_usd, base_qty, cost_micro_usd, credits_milli,
+                    free_milli, key_source, week, at)
+                VALUES ('*owner', '{RUN_MID}', 1, 'harness.run', 'run', 1, 0, 9000, 10000, 1, 0,
+                    1200, 0, 'instance', '2026-11-09T00:00:00Z', '2026-11-09T10:00:20.000Z');
+             INSERT INTO audit_events (at, kind, actor, artifact_id, body)
+                VALUES ('2026-11-09T10:00:02.000Z', 'bot.run_start', 'bot', '7q3k9mzx2b4t',
+                        '{{"run":"{RUN_MID}","request":"thread"}}'),
+                       ('2026-11-09T10:00:20.000Z', 'bot.turn', 'bot', '7q3k9mzx2b4t',
+                        '{{"run":"{RUN_MID}","step":1,"credits_milli":1200}}');"#
+        ))
+        .unwrap();
+        c.execute_batch(OPENED_BEFORE).unwrap();
+        c
+    }
+
+    /// A run at 63 whose `web` or `thread_ids_json` is not what the fixture's
+    /// other runs hold, with what migration 64 is to make of it.
+    struct OddRun {
+        id: String,
+        web: &'static str,
+        thread_ids_json: String,
+        /// The `granted` list of its binding, as JSON.
+        granted: &'static str,
+        /// The threads [`crate::bot_runs::Run`] reads from it.
+        thread_ids: Vec<String>,
+    }
+
+    /// The artifact of every [`OddRun`]; it has no row.
+    const ODD_ARTIFACT: &str = "5k8w2qzr7h3j";
+
+    /// Ended runs on [`ODD_ARTIFACT`]: one for each `web` that is not
+    /// `search`, `fetch` or `search,fetch` as [`crate::bot_runs::Run::web`]
+    /// spells them, and one for each shape of `thread_ids_json` (no
+    /// threads, eight, IDs JSON must escape or might, and text that is not
+    /// a JSON array).
+    fn odd_runs() -> Vec<OddRun> {
+        let mut odd: Vec<OddRun> = Vec::new();
+        let mut add = |web, thread_ids_json: String, granted, thread_ids: &[&str]| {
+            odd.push(OddRun {
+                id: format!("01JD{:022}", odd.len()),
+                web,
+                thread_ids_json,
+                granted,
+                thread_ids: thread_ids.iter().map(|t| t.to_string()).collect(),
+            });
+        };
+        const BOTH: &str = r#"["web.search","web.fetch"]"#;
+        for (web, granted) in [
+            ("fetch,search", BOTH),
+            ("Search", "[]"),
+            ("search,search", r#"["web.search"]"#),
+            (",", "[]"),
+            ("search,fetch,extra", BOTH),
+            (" search,fetch", r#"["web.fetch"]"#),
+            ("searchfetch", "[]"),
+            ("search,fetch\n", r#"["web.search"]"#),
+        ] {
+            add(web, r#"["t-w"]"#.to_string(), granted, &["t-w"]);
+        }
+        let lists: [&[&str]; 3] = [
+            &[],
+            &["t-1", "t-2", "t-3", "t-4", "t-5", "t-6", "t-7", "t-8"],
+            &[
+                "q\"uote",
+                "back\\slash",
+                "ctl\u{1}\n\t\u{1f}",
+                "del\u{7f}",
+                "sep\u{2028}",
+                "é 日本 🙂",
+            ],
+        ];
+        for list in lists {
+            // As `Store::create_run` writes them.
+            add(
+                "search",
+                serde_json::to_string(list).unwrap(),
+                r#"["web.search"]"#,
+                list,
+            );
+        }
+        for text in [r#"{"t":1}"#, r#""t-x""#, "not json", "", "null", "7"] {
+            add("search", text.to_string(), r#"["web.search"]"#, &[]);
+        }
+        odd
+    }
+
+    /// Writes `odd` to `c`, a database at 63.
+    fn insert_odd_runs(c: &Connection, odd: &[OddRun]) {
+        for run in odd {
+            c.execute(
+                "INSERT INTO bot_runs (id, artifact_id, person, request, thread_ids_json, status,
+                        model, key_source, base_version, created_at, updated_at, ended_at, web)
+                 VALUES (?1, ?2, 'u_mia', 'thread', ?3, 'finished', 'claude-sonnet-5-5',
+                        'instance', 1, '2026-11-07T09:00:00.000Z', '2026-11-07T09:01:00.000Z',
+                        '2026-11-07T09:01:00.000Z', ?4)",
+                rusqlite::params![run.id, ODD_ARTIFACT, run.thread_ids_json, run.web],
+            )
+            .unwrap_or_else(|e| {
+                panic!(
+                    "a run with web {:?} and thread_ids_json {:?} was expected to be taken at \
+                     63; SQLite refused it: {e}",
+                    run.web, run.thread_ids_json
+                )
+            });
+        }
+    }
+
+    /// The tables that hold a run or name one.
+    const RUN_TABLES: [&str; 7] = [
+        "bot_runs",
+        "bot_steps",
+        "bot_calls",
+        "bot_web_pages",
+        "bot_draft_files",
+        "bot_follow_ups",
+        "usage_rows",
+    ];
+
+    /// `home`'s store five minutes after [`at_63_with_runs`]'s last write.
+    fn opened_after_the_runs(home: &Home) -> Store {
+        let clock =
+            std::sync::Arc::new(clax_core::working::ManualClock::at("2026-11-09T10:05:00Z"));
+        Store::open_with_clock(home, clock).unwrap()
+    }
+
+    #[test]
+    fn migration_64_keeps_every_run_and_gives_each_its_kind_bindings_and_request() {
+        use crate::bot_runs::{NewRun, Run, run_in};
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let odd = odd_runs();
+        let (cols, before, runs, audit, indexes): (Columns, _, Vec<Run>, Vec<String>, _) = {
+            let c = at_63_with_runs(&home);
+            insert_odd_runs(&c, &odd);
+            let indexes = run_indexes(&c);
+            assert_eq!(
+                indexes.iter().map(|i| i.0.as_str()).collect::<Vec<_>>(),
+                [
+                    "bot_runs_by_artifact",
+                    "bot_runs_by_person",
+                    "bot_runs_live",
+                    "sqlite_autoindex_bot_runs_1"
+                ]
+            );
+            let runs = RUNS
+                .iter()
+                .copied()
+                .chain(odd.iter().map(|o| o.id.as_str()))
+                .map(|id| run_in(&c, id).unwrap().expect("the fixture's run"))
+                .collect();
+            let cols: Columns = columns_of(&c)
+                .into_iter()
+                .filter(|(t, _)| RUN_TABLES.contains(&t.as_str()))
+                .collect();
+            assert_eq!(cols.len(), RUN_TABLES.len());
+            (
+                cols.clone(),
+                rows_in(&c, &cols),
+                runs,
+                run_audit(&c),
+                indexes,
+            )
+        };
+
+        let st = opened_after_the_runs(&home);
+        let c = Connection::open(home.db_path()).unwrap();
+        assert_eq!(user_version(&c), super::KEY_PROBLEM_MIGRATION);
+        assert_eq!(shape_of(&c), fresh_shape(), "a fresh database's schema");
+        assert_eq!(
+            run_indexes(&c),
+            with_parked_live(indexes),
+            "the table's indexes, each as it was made before, but for the statuses \
+             bot_runs_live covers after migration 65"
+        );
+        assert_eq!(
+            rows_in(&c, &cols),
+            before,
+            "every row of a run, in every column it had"
+        );
+        assert_eq!(run_audit(&c), audit, "the runs' audit records");
+        assert_eq!(
+            c.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "ok"
+        );
+
+        // The store reads each run as it read it before.
+        for run in &runs {
+            assert_eq!(st.run(&run.id).unwrap().as_ref(), Some(run), "{}", run.id);
+        }
+        let live: Vec<String> = st.live_runs().unwrap().into_iter().map(|r| r.id).collect();
+        assert_eq!(
+            live,
+            [RUN_QUEUED, RUN_MID, RUN_BRIEF, RUN_STOPPING],
+            "oldest first"
+        );
+        let (_, steps) = st.run_with_steps(RUN_MID).unwrap().unwrap();
+        assert_eq!(
+            steps
+                .iter()
+                .map(|s| (s.n, s.committed_at.is_some()))
+                .collect::<Vec<_>>(),
+            [(1, true), (2, false)]
+        );
+        assert_eq!(st.follow_ups("t-a").unwrap(), ["u_mia"]);
+        assert_eq!(
+            st.active_run_on(&["t-b".to_string()])
+                .unwrap()
+                .map(|r| r.id),
+            Some(RUN_MID.to_string())
+        );
+        assert_eq!(st.runs_for_artifact("7q3k9mzx2b4t", 10).unwrap().len(), 3);
+
+        // The migration wrote no run: each holds NULL in the new columns.
+        let unwritten: i64 = c
+            .query_row(
+                "SELECT count(*) FROM bot_runs
+                  WHERE kind IS NULL AND bindings_json IS NULL AND request_json IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            unwritten,
+            runs.len() as i64,
+            "runs the migration left unwritten"
+        );
+
+        // Each run is read as made with what making it now would write.
+        let new: std::collections::BTreeMap<String, (String, String, String)> = runs
+            .iter()
+            .map(|run| {
+                let (_, made, _) = st.run_with_steps_as_made(&run.id).unwrap().unwrap();
+                (
+                    run.id.clone(),
+                    (made.kind, made.bindings_json, made.request_json),
+                )
+            })
+            .collect();
+        for run in &runs {
+            let made = NewRun {
+                artifact_id: run.artifact_id.clone(),
+                person: run.person.clone(),
+                request: run.request,
+                thread_ids: run.thread_ids.clone(),
+                model: run.model.clone(),
+                key_source: run.key_source,
+                base_version: run.base_version,
+                agent_grant: run.agent_grant.clone(),
+                web: run.web.clone(),
+            };
+            assert_eq!(
+                new[&run.id],
+                (
+                    made.kind(),
+                    made.bindings().to_json(),
+                    serde_json::to_string(&made.clax_request()).unwrap()
+                ),
+                "{}",
+                run.id
+            );
+        }
+        assert_eq!(
+            new[RUN_QUEUED],
+            (
+                "clax.thread".to_string(),
+                r#"{"v":1,"bindings":[{"surface":"clax","hash":null,"scope":{"artifact":"7q3k9mzx2b4t"},"granted":["web.search","web.fetch"]}]}"#.to_string(),
+                r#"{"thread_ids":["t-q"]}"#.to_string()
+            )
+        );
+        assert_eq!(
+            new[RUN_BRIEF],
+            (
+                "clax.brief".to_string(),
+                r#"{"v":1,"bindings":[{"surface":"clax","hash":null,"scope":{"artifact":"8r4m2nzy3c5v"},"granted":["web.search"]}]}"#.to_string(),
+                r#"{"thread_ids":["t-brief"]}"#.to_string()
+            )
+        );
+        assert!(new[RUN_MID].1.ends_with(r#""granted":["web.fetch"]}]}"#));
+        assert!(new[RUN_ENDED].1.ends_with(r#""granted":[]}]}"#));
+        assert_eq!(new[RUN_MID].2, r#"{"thread_ids":["t-a","t-b"]}"#);
+        // A thread ID JSON spells with escapes is the same ID after.
+        assert_eq!(
+            new[RUN_STOPPING].2,
+            r#"{"thread_ids":["t-s","q\"uo\\te é"]}"#
+        );
+        let stopping = runs.iter().find(|r| r.id == RUN_STOPPING).unwrap();
+        assert_eq!(stopping.thread_ids, ["t-s", "q\"uo\\te é"]);
+        assert_eq!(
+            st.active_run_on(&["q\"uo\\te é".to_string()])
+                .unwrap()
+                .map(|r| r.id)
+                .as_deref(),
+            Some(RUN_STOPPING)
+        );
+        assert_eq!(new[RUN_GAVE_UP].0, "clax.thread");
+        assert_eq!(new[RUN_FAILED].0, "clax.brief");
+        for run in &runs {
+            let read = crate::bot_runs::Bindings::parse(&new[&run.id].1).unwrap();
+            assert_eq!(read, made_bindings(run), "{}", run.id);
+        }
+        // A `web` that is not spelled as a build writes it grants what
+        // its parts name, and a `thread_ids_json` of any shape gives the
+        // threads the run reads: each stated here, beside being what
+        // making the run now would write (above).
+        for o in &odd {
+            let run = runs.iter().find(|r| r.id == o.id).expect("the odd run");
+            let (web, threads) = (o.web, &o.thread_ids_json);
+            assert_eq!(
+                (run.web.as_str(), &run.thread_ids),
+                (web, &o.thread_ids),
+                "the run read at 63 from web {web:?} and thread_ids_json {threads:?}"
+            );
+            assert_eq!(
+                new[&o.id].1,
+                format!(
+                    r#"{{"v":1,"bindings":[{{"surface":"clax","hash":null,"scope":{{"artifact":"{ODD_ARTIFACT}"}},"granted":{}}}]}}"#,
+                    o.granted
+                ),
+                "the bindings of a run whose web is {web:?}"
+            );
+            assert_eq!(
+                new[&o.id].2,
+                format!(
+                    r#"{{"thread_ids":{}}}"#,
+                    serde_json::to_string(&o.thread_ids).unwrap()
+                ),
+                "the request of a run whose thread_ids_json is {threads:?}"
+            );
+        }
+        // The run whose artifact is gone keeps the artifact it named.
+        assert!(
+            st.get_artifact(&clax_core::ArtifactId::parse("9s5n3pza4d6w").unwrap())
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            new[RUN_ORPHAN]
+                .1
+                .contains(r#""scope":{"artifact":"9s5n3pza4d6w"}"#)
+        );
+
+        // Migrated again, nothing changes.
+        drop(st);
+        let mut c = c;
+        let (schema, rows) = (schema_of(&c), every_row(&c));
+        crate::migrate_with(&mut c, &super::NUMBERING).unwrap();
+        assert_eq!((schema_of(&c), every_row(&c)), (schema, rows));
+    }
+
+    /// `indexes` ([`run_indexes`]) as migration 65 leaves them:
+    /// `bot_runs_live` over the parked runs too, `bot_runs_by_starter`
+    /// added, the others as they were.
+    fn with_parked_live(indexes: Vec<(String, String)>) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = indexes
+            .into_iter()
+            .map(|(name, sql)| {
+                if name == "bot_runs_live" {
+                    let with = sql.replace("'stopping')", "'stopping', 'parked')");
+                    assert_ne!(with, sql, "bot_runs_live before migration 65: {sql}");
+                    (name, with)
+                } else {
+                    (name, sql)
+                }
+            })
+            .collect();
+        out.push((
+            "bot_runs_by_starter".into(),
+            "CREATE INDEX bot_runs_by_starter ON bot_runs(started_by, created_at, id)
+        WHERE started_by IS NOT NULL"
+                .into(),
+        ));
+        out.sort();
+        out
+    }
+
+    /// What making `run` now would keep as its bindings.
+    fn made_bindings(run: &crate::bot_runs::Run) -> crate::bot_runs::Bindings {
+        crate::bot_runs::Bindings::clax(&run.artifact_id, &run.web)
+    }
+
+    /// The indexes of `bot_runs` in `c`, each with the text that made it
+    /// (none for the primary key's), by name.
+    fn run_indexes(c: &Connection) -> Vec<(String, String)> {
+        c.prepare(
+            "SELECT name, COALESCE(sql, '') FROM sqlite_schema
+              WHERE tbl_name = 'bot_runs' AND type = 'index' ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+    }
+
+    /// Migration 64 keeps every constraint `bot_runs` had but the four it
+    /// is for: each kept one still refuses the write it refused, each
+    /// relaxed one takes it.
+    #[test]
+    fn migration_64_keeps_each_constraint_of_bot_runs_but_those_it_relaxes() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let required: Vec<String> = {
+            let c = at_63_with_runs(&home);
+            let set = |sql: &str| c.execute(&format!("UPDATE bot_runs SET {sql}"), []);
+            // What 63 refused.
+            for sql in [
+                "artifact_id = NULL",
+                "base_version = NULL",
+                "request = 'review'",
+                "status = 'parked'",
+            ] {
+                assert!(set(sql).is_err(), "63 takes {sql}");
+            }
+            c.prepare(
+                "SELECT name FROM pragma_table_info('bot_runs') WHERE \"notnull\" ORDER BY cid",
+            )
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+        };
+        assert_eq!(
+            required,
+            [
+                "artifact_id",
+                "person",
+                "request",
+                "thread_ids_json",
+                "status",
+                "model",
+                "key_source",
+                "base_version",
+                "credits_milli",
+                "created_at",
+                "updated_at",
+                "web"
+            ]
+        );
+        drop(opened_after_the_runs(&home));
+        let c = Connection::open(home.db_path()).unwrap();
+        assert_eq!(user_version(&c), super::KEY_PROBLEM_MIGRATION);
+        let before = every_row(&c);
+        let set = |sql: &str| {
+            c.execute(
+                &format!("UPDATE bot_runs SET {sql} WHERE id = ?1"),
+                [RUN_QUEUED],
+            )
+        };
+
+        // Kept: every column that had to hold a value but the two the
+        // migration frees. The three it adds hold NULL for a run made
+        // before it (`crate::bot_runs::as_made`).
+        for column in required
+            .iter()
+            .map(String::as_str)
+            .filter(|c| !["artifact_id", "base_version"].contains(c))
+        {
+            assert!(
+                set(&format!("{column} = NULL")).is_err(),
+                "{column} takes NULL"
+            );
+        }
+        for sql in [
+            "key_source = 'x'",
+            "key_source = ''",
+            "credits_milli = -1",
+            "status = 'napping'",
+            "status = ''",
+        ] {
+            assert!(set(sql).is_err(), "{sql} is taken");
+        }
+        assert!(
+            set(&format!("id = '{RUN_MID}'")).is_err(),
+            "two runs of one ID"
+        );
+        assert_eq!(every_row(&c), before, "a refused write changes nothing");
+
+        // Relaxed.
+        for sql in [
+            "artifact_id = NULL",
+            "base_version = NULL",
+            "request = 'review'",
+            "status = 'parked'",
+        ] {
+            assert_eq!(set(sql).unwrap(), 1, "{sql}");
+        }
+        for status in crate::bot_runs::RunStatus::ALL {
+            assert_eq!(set(&format!("status = '{}'", status.as_str())).unwrap(), 1);
+        }
+        // A run with no threads needs to name none.
+        c.execute(
+            "INSERT INTO bot_runs (id, person, request, status, model, key_source, created_at,
+                    updated_at, kind, bindings_json, request_json)
+             VALUES ('01JC0000000000000000000009', 'u_mia', 'review', 'queued', 'm', 'own', 'x',
+                    'x', 'shell.review', '{}', '{}')",
+            [],
+        )
+        .unwrap_or_else(|e| {
+            panic!(
+                "a run inserted without thread_ids_json, artifact_id, base_version, \
+                 credits_milli or web was expected to be taken after migration 64; SQLite \
+                 refused it: {e}"
+            )
+        });
+        let (threads, credits, web): (String, i64, String) = c
+            .query_row(
+                "SELECT thread_ids_json, credits_milli, web FROM bot_runs
+                  WHERE id = '01JC0000000000000000000009'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((threads.as_str(), credits, web.as_str()), ("[]", 0, ""));
+    }
+
+    /// The connection that ran migration 64 takes the writes it relaxes at
+    /// once, as a Durable Object's one connection serves the store it
+    /// migrated (`Store::open_on`): the edited text of `bot_runs` is the
+    /// schema it reads, and the database checks clean.
+    #[test]
+    fn migration_64_relaxes_bot_runs_on_the_connection_that_ran_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let mut c = at_63_with_runs(&home);
+        // A statement prepared before the migration, run again after it.
+        c.prepare_cached("SELECT count(*) FROM bot_runs WHERE status = 'finished'")
+            .unwrap()
+            .query_row([], |r| r.get::<_, i64>(0))
+            .unwrap();
+        crate::migrate_with(&mut c, &super::NUMBERING).unwrap();
+        assert_eq!(user_version(&c), super::KEY_PROBLEM_MIGRATION);
+        let finished: i64 = c
+            .prepare_cached("SELECT count(*) FROM bot_runs WHERE status = 'finished'")
+            .unwrap()
+            .query_row([], |r| r.get(0))
+            .unwrap();
+        assert_eq!(finished, 1);
+        for sql in [
+            "artifact_id = NULL",
+            "base_version = NULL",
+            "request = 'review'",
+            "status = 'parked'",
+        ] {
+            assert_eq!(
+                c.execute(
+                    &format!("UPDATE bot_runs SET {sql} WHERE id = ?1"),
+                    [RUN_QUEUED]
+                )
+                .unwrap_or_else(|e| panic!("{sql}: {e}")),
+                1,
+                "{sql}"
+            );
+        }
+        assert!(
+            c.execute(
+                "UPDATE bot_runs SET status = 'napping' WHERE id = ?1",
+                [RUN_QUEUED]
+            )
+            .is_err(),
+            "a status no build knows"
+        );
+        let freed: Vec<(String, bool, Option<String>)> = c
+            .prepare(
+                "SELECT name, \"notnull\", dflt_value FROM pragma_table_info('bot_runs')
+                  WHERE name IN ('artifact_id', 'base_version', 'thread_ids_json', 'kind')
+                  ORDER BY cid",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            freed,
+            [
+                ("artifact_id".to_string(), false, None),
+                (
+                    "thread_ids_json".to_string(),
+                    true,
+                    Some("'[]'".to_string())
+                ),
+                ("base_version".to_string(), false, None),
+                ("kind".to_string(), false, None),
+            ]
+        );
+        for check in ["integrity_check", "foreign_key_check"] {
+            let found: Vec<String> = c
+                .prepare(&format!("PRAGMA {check}"))
+                .unwrap()
+                .query_map([], |r| r.get::<_, rusqlite::types::Value>(0))
+                .unwrap()
+                .map(|v| format!("{:?}", v.unwrap()))
+                .collect();
+            let clean: &[String] = if check == "integrity_check" {
+                &[r#"Text("ok")"#.to_string()]
+            } else {
+                &[]
+            };
+            assert_eq!(found, clean, "PRAGMA {check}");
+        }
+    }
+
+    /// Migration 64 relaxes only the `bot_runs` migrations 50 and 63 make:
+    /// a table of other text is refused, and the database left at 63 as
+    /// it was.
+    #[test]
+    fn migration_64_refuses_a_bot_runs_it_does_not_know() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let mut c = at_63_with_runs(&home);
+        c.execute_batch(
+            "DROP TABLE bot_runs;
+             CREATE TABLE bot_runs (id TEXT PRIMARY KEY, artifact_id TEXT, web TEXT);",
+        )
+        .unwrap();
+        let (schema, rows) = (schema_of(&c), every_row(&c));
+        let refused = crate::migrate_with(&mut c, &super::NUMBERING);
+        assert!(
+            matches!(
+                &refused,
+                Err(clax_core::CoreError::MigrationFailed { at, detail })
+                    if *at == super::WEB_MIGRATION
+                        && detail.contains("bot_runs is not as migrations 50 and 63 make it")
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(user_version(&c), super::WEB_MIGRATION);
+        assert_eq!((schema_of(&c), every_row(&c)), (schema, rows));
+    }
+
+    /// The audit records of `c` that name a run, in order.
+    fn run_audit(c: &Connection) -> Vec<String> {
+        c.prepare(
+            "SELECT seq || ' ' || at || ' ' || kind || ' ' || actor || ' ' || artifact_id || ' ' || body
+               FROM audit_events WHERE json_extract(body, '$.run') IS NOT NULL ORDER BY seq",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+    }
+
+    /// A run a driver left mid-step before migration 64 is taken up after
+    /// it as any run a driver lost: claimed, its open step begun again and
+    /// answered from its journal, committed, and finished.
+    #[test]
+    fn a_run_mid_step_at_63_resumes_and_finishes_after_migration_64() {
+        use crate::bot_runs::{DraftChange, DriverId, RunStatus, StepCommit, StepKind};
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        drop(at_63_with_runs(&home));
+        let st = opened_after_the_runs(&home);
+        let d = DriverId::named("drv_after");
+
+        // The driver that held it is gone: its claim is taken whatever its age.
+        let run = st.claim_run(RUN_MID, &d, 0).unwrap().expect("claimed");
+        assert_eq!(
+            (run.status, run.claimed_by.as_deref(), run.credits_milli),
+            (RunStatus::Running, Some("drv_after"), 1200)
+        );
+        let open = st.open_step(RUN_MID).unwrap().expect("the open step");
+        assert_eq!((open.n, open.kind, open.attempt), (2, StepKind::Script, 1));
+        assert_eq!(open.observed, [serde_json::json!({"input_tokens": 12})]);
+        assert_eq!(open.failures, 1);
+        assert_eq!(st.next_step_n(RUN_MID).unwrap(), 2);
+        let again = st.begin_step(RUN_MID, &d, 2, StepKind::Script).unwrap();
+        assert_eq!(
+            (again.n, again.attempt, again.started_at.as_str()),
+            (2, 2, "2026-11-09T10:00:21.000Z"),
+            "the open step, begun again"
+        );
+
+        // Its journal answers the calls the first attempt made.
+        let journal = st.bot_calls(RUN_MID, 2).unwrap();
+        assert_eq!(
+            journal
+                .iter()
+                .map(|e| (
+                    e.seq(),
+                    e.attempt(),
+                    e.op(),
+                    e.args_hash(),
+                    e.ok(),
+                    e.result().clone()
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (
+                    0,
+                    1,
+                    "threads.reply",
+                    "h0",
+                    true,
+                    serde_json::json!({"comment_id": "c9"})
+                ),
+                (
+                    1,
+                    1,
+                    "web.fetch",
+                    "h1",
+                    false,
+                    serde_json::json!({"code": "not_found", "message": "no such page"})
+                ),
+            ]
+        );
+        let replayed = st
+            .call_entry(RUN_MID, &d, 2, 2, 0, "threads.reply", "h0")
+            .unwrap();
+        assert_eq!(st.record_bot_call(&replayed).unwrap(), journal[0]);
+        let next = st
+            .call_entry(RUN_MID, &d, 2, 2, 2, "threads.reply", "h2")
+            .unwrap()
+            .answered(true, serde_json::json!({"comment_id": "c10"}));
+        assert_eq!(st.record_bot_call(&next).unwrap(), next);
+        assert_eq!(
+            st.draft_files(RUN_MID).unwrap()[0].content.as_deref(),
+            Some(&b"<p>hi</p>"[..])
+        );
+
+        let done = st
+            .commit_bot_step(
+                DAEMON,
+                RUN_MID,
+                &d,
+                2,
+                StepCommit {
+                    payload: serde_json::json!({"result": "ok"}),
+                    draft: vec![DraftChange::Write {
+                        path: "index.html".into(),
+                        content: b"<p>bye</p>".to_vec(),
+                        content_type: Some("text/html".into()),
+                    }],
+                    events: vec![crate::bot_runs::call_record(
+                        "2026-11-09T10:05:00.000Z",
+                        "threads.reply",
+                        Some("t-a"),
+                        true,
+                    )],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(done.step.attempt, 2);
+        assert_eq!(done.run.status, RunStatus::Running);
+        assert_eq!(st.bot_calls(RUN_MID, 2).unwrap().len(), 3);
+        assert_eq!(
+            st.draft_files(RUN_MID).unwrap()[0].content.as_deref(),
+            Some(&b"<p>bye</p>"[..])
+        );
+        assert_eq!(
+            st.with_read(|c| Ok(run_audit(c).len())).unwrap(),
+            3,
+            "the call's record beside the two the run had"
+        );
+
+        st.begin_step(RUN_MID, &d, 3, StepKind::Finish).unwrap();
+        let end = st
+            .commit_bot_step(
+                DAEMON,
+                RUN_MID,
+                &d,
+                3,
+                StepCommit {
+                    payload: serde_json::json!({"summary": "Done."}),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            (end.run.status, end.run.claimed_by, end.run.credits_milli),
+            (RunStatus::Finished, None, 1200)
+        );
+        let (_, steps) = st.run_with_steps(RUN_MID).unwrap().unwrap();
+        assert_eq!(steps.len(), 3);
+        assert!(steps.iter().all(|s| s.committed_at.is_some()));
+        // The follow-up queued before the migration is still waiting, now
+        // on a thread no run works on; the queued runs are untouched.
+        assert_eq!(st.waiting_follow_up_threads().unwrap(), ["t-a"]);
+        assert_eq!(
+            st.next_follow_up("t-a").unwrap().map(|f| f.1).as_deref(),
+            Some("u_mia")
+        );
+        let live: Vec<String> = st.live_runs().unwrap().into_iter().map(|r| r.id).collect();
+        assert_eq!(live, [RUN_QUEUED, RUN_BRIEF, RUN_STOPPING]);
+        let queued = st.claim_run(RUN_QUEUED, &d, 60).unwrap().expect("claimed");
+        assert_eq!(queued.agent_grant.as_deref(), Some("g_agent"));
+        assert_eq!(
+            st.begin_step(RUN_QUEUED, &d, 1, StepKind::Turn).unwrap().n,
+            1
+        );
+    }
+
+    /// A home at migration 64 holding [`at_63_with_runs`]'s runs, the one
+    /// mid-step among them, as the build before migration 65 leaves it.
+    fn at_64_with_runs(home: &Home) -> Connection {
+        let mut c = at_63_with_runs(home);
+        let before = super::Numbering {
+            migrations: &MIGRATIONS[..super::RUN_BINDINGS_MIGRATION as usize],
+            main_marks: &MAIN_MARKS_ABOVE_38,
+        };
+        crate::migrate_with(&mut c, &before).unwrap();
+        assert_eq!(user_version(&c), super::RUN_BINDINGS_MIGRATION);
+        c
+    }
+
+    /// The tables migration 65 makes.
+    const SURFACE_TABLES: [&str; 8] = [
+        "bot_surface_defs",
+        "bot_surface_prompts",
+        "bot_registrations",
+        "bot_pending_calls",
+        "bot_run_ends",
+        "bot_content",
+        "bot_joins",
+        "bot_messages",
+    ];
+
+    /// Migration 65 changes no row: every run reads as it read at 64, in
+    /// every column it had; its new columns hold nothing; the tables it
+    /// makes are empty; and `bot_runs_live` covers the statuses of a run
+    /// that has not ended, `parked` among them.
+    #[test]
+    fn migration_65_keeps_every_run_and_adds_what_a_waiting_call_needs() {
+        use crate::bot_runs::{Run, run_in};
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let (cols, before, runs, audit, indexes): (Columns, _, Vec<Run>, Vec<String>, _) = {
+            let c = at_64_with_runs(&home);
+            for table in SURFACE_TABLES {
+                assert_eq!(table_count(&c, table), 0, "64 has no {table}");
+            }
+            let cols: Columns = columns_of(&c)
+                .into_iter()
+                .filter(|(t, _)| RUN_TABLES.contains(&t.as_str()))
+                .collect();
+            assert_eq!(cols.len(), RUN_TABLES.len());
+            let runs = RUNS
+                .iter()
+                .map(|id| run_in(&c, id).unwrap().expect("the fixture's run"))
+                .collect();
+            (
+                cols.clone(),
+                rows_in(&c, &cols),
+                runs,
+                run_audit(&c),
+                run_indexes(&c),
+            )
+        };
+
+        let st = opened_after_the_runs(&home);
+        let c = Connection::open(home.db_path()).unwrap();
+        assert_eq!(user_version(&c), super::KEY_PROBLEM_MIGRATION);
+        assert_eq!(shape_of(&c), fresh_shape(), "a fresh database's schema");
+        assert_eq!(
+            rows_in(&c, &cols),
+            before,
+            "every row of a run, in every column it had"
+        );
+        assert_eq!(run_audit(&c), audit, "the runs' audit records");
+        assert_eq!(run_indexes(&c), with_parked_live(indexes));
+        assert_eq!(
+            c.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "ok"
+        );
+        for run in &runs {
+            assert_eq!(st.run(&run.id).unwrap().as_ref(), Some(run), "{}", run.id);
+        }
+        let added: Vec<String> = c
+            .prepare(
+                "SELECT id || ' ' || quote(started_by) || ' ' || quote(parent_run) || ' '
+                        || quote(parked_at) || ' ' || parked_ms || ' ' || quote(waiting_on)
+                        || ' ' || quote(pieces_json)
+                   FROM bot_runs ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            added,
+            RUNS.iter()
+                .map(|id| format!("{id} NULL NULL NULL 0 NULL NULL"))
+                .collect::<Vec<_>>(),
+            "each run's new columns"
+        );
+        let parks: (i64, i64) = c
+            .query_row("SELECT count(*), sum(parks) FROM bot_steps", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(parks, (4, 0), "each step has parked no times");
+        for table in SURFACE_TABLES {
+            assert_eq!(table_count(&c, table), 1, "{table}");
+            let rows: i64 = c
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(rows, 0, "{table} starts empty");
+        }
+        let live: Vec<String> = st.live_runs().unwrap().into_iter().map(|r| r.id).collect();
+        assert_eq!(live, [RUN_QUEUED, RUN_MID, RUN_BRIEF, RUN_STOPPING]);
+        // A listing of the runs that have not ended, parked ones among
+        // them, reads the index.
+        let plan: Vec<String> = c
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN SELECT id FROM bot_runs WHERE status IN {}
+                  ORDER BY created_at, id",
+                crate::bot_runs::LIVE
+            ))
+            .unwrap()
+            .query_map([], |r| r.get(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            plan.iter().any(|step| step.contains("bot_runs_live")),
+            "the plan of the live listing: {plan:?}"
+        );
+        // A registration's runs, the newest first, and whether any run
+        // names a registration as its starter, read the starter's index.
+        for query in [
+            "SELECT id FROM bot_runs WHERE started_by = 'r' ORDER BY created_at DESC, id DESC",
+            "SELECT 1 FROM bot_registrations WHERE id NOT IN
+               (SELECT started_by FROM bot_runs WHERE started_by IS NOT NULL)",
+        ] {
+            let plan: Vec<String> = c
+                .prepare(&format!("EXPLAIN QUERY PLAN {query}"))
+                .unwrap()
+                .query_map([], |r| r.get(3))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            assert!(
+                plan.iter().any(|step| step.contains("bot_runs_by_starter"))
+                    && !plan.iter().any(|step| step.contains("TEMP B-TREE")),
+                "the plan of {query}: {plan:?}"
+            );
+        }
+
+        // Migrated again, nothing changes.
+        drop(st);
+        let mut c = c;
+        let (schema, rows) = (schema_of(&c), every_row(&c));
+        crate::migrate_with(&mut c, &super::NUMBERING).unwrap();
+        assert_eq!((schema_of(&c), every_row(&c)), (schema, rows));
+    }
+
+    /// Migration 65's tables for a run's content, a surface's joins and a
+    /// run's inbox, as a home at 64 migrated to 65 has them: each column
+    /// (name, type, NOT NULL, default, primary key place), each foreign
+    /// key, each index (unique, partial) with its columns, and the trigger
+    /// that removes an artifact's joins when it is deleted.
+    #[test]
+    fn migration_65_makes_the_content_joins_and_inbox_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        drop(at_64_with_runs(&home));
+        drop(opened_after_the_runs(&home));
+        let c = Connection::open(home.db_path()).unwrap();
+        let strings = |sql: &str| -> Vec<String> {
+            c.prepare(sql)
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        let columns = |table: &str| {
+            strings(&format!(
+                "SELECT name || ' ' || type || ' ' || \"notnull\" || ' '
+                        || coalesce(dflt_value, '-') || ' ' || pk
+                   FROM pragma_table_info('{table}') ORDER BY cid"
+            ))
+        };
+        let foreign_keys = |table: &str| {
+            strings(&format!(
+                "SELECT \"from\" || ' ' || \"table\" || '(' || \"to\" || ') ' || on_delete
+                   FROM pragma_foreign_key_list('{table}') ORDER BY \"from\""
+            ))
+        };
+        let indexes = |table: &str| {
+            strings(&format!(
+                "SELECT l.name || ' ' || l.\"unique\" || ' ' || l.partial || ' '
+                        || (SELECT group_concat(name, ',')
+                              FROM (SELECT name FROM pragma_index_info(l.name) ORDER BY seqno))
+                   FROM pragma_index_list('{table}') AS l
+                  WHERE l.origin != 'pk'
+                  ORDER BY l.name"
+            ))
+        };
+        assert_eq!(
+            columns("bot_content"),
+            [
+                "id TEXT 0 - 1",
+                "run_id TEXT 1 - 0",
+                "surface TEXT 1 - 0",
+                "registration_id TEXT 0 - 0",
+                "op TEXT 0 - 0",
+                "key TEXT 0 - 0",
+                "step_n INTEGER 0 - 0",
+                "name TEXT 0 - 0",
+                "sha256 TEXT 1 - 0",
+                "bytes INTEGER 1 - 0",
+                "media_type TEXT 1 - 0",
+                "width INTEGER 0 - 0",
+                "height INTEGER 0 - 0",
+                "meta_json TEXT 0 - 0",
+                "shown INTEGER 1 0 0",
+                "created_at TEXT 1 - 0",
+            ]
+        );
+        assert!(
+            foreign_keys("bot_content").is_empty(),
+            "pruned with the run"
+        );
+        assert_eq!(
+            indexes("bot_content"),
+            [
+                "bot_content_by_run 0 0 run_id,created_at,id",
+                "bot_content_by_sha256 0 0 sha256",
+            ]
+        );
+        assert_eq!(
+            columns("bot_joins"),
+            [
+                "surface TEXT 1 - 1",
+                "joined TEXT 1 - 2",
+                "artifact_id TEXT 1 - 3",
+                "registration_id TEXT 1 - 0",
+                "ops_json TEXT 0 - 0",
+                "created_at TEXT 1 - 0",
+            ]
+        );
+        assert_eq!(
+            foreign_keys("bot_joins"),
+            [
+                "artifact_id artifacts(id) CASCADE",
+                "registration_id bot_registrations(id) CASCADE",
+            ]
+        );
+        assert_eq!(
+            indexes("bot_joins"),
+            [
+                "bot_joins_by_artifact 0 0 artifact_id,joined,surface",
+                "bot_joins_by_registration 0 0 registration_id",
+            ]
+        );
+        assert_eq!(
+            strings(
+                "SELECT name FROM sqlite_schema
+                  WHERE type = 'trigger' AND tbl_name = 'artifacts' AND sql LIKE '%bot_joins%'"
+            ),
+            ["bot_joins_on_delete"]
+        );
+        assert_eq!(
+            columns("bot_messages"),
+            [
+                "id TEXT 0 - 1",
+                "run_id TEXT 1 - 0",
+                "seq INTEGER 1 - 0",
+                "registration_id TEXT 1 - 0",
+                "body_json TEXT 1 - 0",
+                "key TEXT 0 - 0",
+                "created_at TEXT 1 - 0",
+                "delivered_at TEXT 0 - 0",
+                "delivered_step INTEGER 0 - 0",
+                "waiting INTEGER 1 0 0",
+            ]
+        );
+        assert!(
+            foreign_keys("bot_messages").is_empty(),
+            "pruned with the run"
+        );
+        assert_eq!(
+            indexes("bot_messages"),
+            [
+                "bot_messages_by_key 1 1 run_id,key",
+                "bot_messages_undelivered 0 1 run_id,seq",
+                "sqlite_autoindex_bot_messages_2 1 0 run_id,seq",
+            ]
+        );
+        // The undelivered messages of a run, in arrival order, read the
+        // partial index.
+        let plan: Vec<String> = c
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT id FROM bot_messages
+                  WHERE run_id = 'r' AND delivered_at IS NULL ORDER BY seq",
+            )
+            .unwrap()
+            .query_map([], |r| r.get(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            plan.iter()
+                .any(|step| step.contains("bot_messages_undelivered")),
+            "the plan of a run's undelivered messages: {plan:?}"
+        );
+    }
+
+    /// The build before migration 65 refuses a database that has it, and
+    /// leaves it as it is: it would read a parked run as a status it does
+    /// not know.
+    #[test]
+    fn the_build_before_migration_65_refuses_a_database_that_has_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        drop(at_64_with_runs(&home));
+        drop(opened_after_the_runs(&home));
+        let mut c = Connection::open(home.db_path()).unwrap();
+        assert_eq!(user_version(&c), super::KEY_PROBLEM_MIGRATION);
+        let (schema, rows) = (schema_of(&c), every_row(&c));
+        let before = super::Numbering {
+            migrations: &MIGRATIONS[..super::RUN_BINDINGS_MIGRATION as usize],
+            main_marks: &MAIN_MARKS_ABOVE_38,
+        };
+        let refused = crate::migrate_with(&mut c, &before);
+        assert!(
+            matches!(
+                refused,
+                Err(clax_core::CoreError::SchemaNewer { found, known })
+                    if found == super::KEY_PROBLEM_MIGRATION
+                        && known == super::RUN_BINDINGS_MIGRATION
+            ),
+            "{refused:?}"
+        );
+        assert_eq!((schema_of(&c), every_row(&c)), (schema, rows));
+    }
+
+    /// A run a driver left mid-step before migration 65 is taken up after
+    /// it: claimed, its open step begun again with its journal, committed.
+    #[test]
+    fn a_run_mid_step_at_64_resumes_after_migration_65() {
+        use crate::bot_runs::{DriverId, RunStatus, StepCommit, StepKind};
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        drop(at_64_with_runs(&home));
+        let st = opened_after_the_runs(&home);
+        let d = DriverId::named("drv_after");
+        let run = st.claim_run(RUN_MID, &d, 0).unwrap().expect("claimed");
+        assert_eq!(
+            (run.status, run.claimed_by.as_deref(), run.credits_milli),
+            (RunStatus::Running, Some("drv_after"), 1200)
+        );
+        let again = st.begin_step(RUN_MID, &d, 2, StepKind::Script).unwrap();
+        assert_eq!(
+            (again.n, again.attempt, again.started_at.as_str()),
+            (2, 2, "2026-11-09T10:00:21.000Z")
+        );
+        assert_eq!(st.bot_calls(RUN_MID, 2).unwrap().len(), 2);
+        let done = st
+            .commit_bot_step(
+                DAEMON,
+                RUN_MID,
+                &d,
+                2,
+                StepCommit {
+                    payload: serde_json::json!({"result": "ok"}),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            (done.step.attempt, done.run.status),
+            (2, RunStatus::Running)
+        );
     }
 }

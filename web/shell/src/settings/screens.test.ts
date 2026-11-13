@@ -102,6 +102,12 @@ describe("Settings' search", () => {
     expect(titles("invite zebra", LOCAL_OWNER)).toEqual([]);
   });
 
+  it("finds a model key's failed requests: the instance key's for an admin, a person's own key's for them", () => {
+    expect(search("failures", LOCAL_OWNER)[0]).toMatchObject({ title: "Failures", where: "ClaxBot › Model provider", href: "/settings/provider#pv-f" });
+    expect(titles("failed request", LOCAL_OWNER)).toEqual(expect.arrayContaining(["Failures", "The key's last failed request", "Your key's last failed request"]));
+    expect(search("key failed", HOSTED_MEMBER).map(h => h.href)).toEqual(["/settings/claxbot#me-k"]);
+  });
+
   it("finds the queue settings that live on the Queues page, for those who see it", () => {
     expect(search("service grant", LOCAL_OWNER)[0]).toMatchObject({ title: "Service grants", where: "Elsewhere › Queues", href: "/queues" });
     expect(titles("service grant", HOSTED_MEMBER)).toEqual([]);

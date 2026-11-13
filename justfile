@@ -271,6 +271,10 @@ perf *ARGS:
 perf-native:
     CLAX_BUILD=native ./scripts/run.sh perf
 
+# Run the ClaxBot surfaces protocol on demand (no check runs it) between a real `clax serve` and fake_host processes, across a restart of the daemon, with a scripted model (scripts/smoke-bot-surfaces.sh; about a minute)
+smoke-bot-surfaces:
+    ./scripts/smoke-bot-surfaces.sh
+
 # Regenerate what Bazel derives from Cargo (after any Cargo.toml or Cargo.lock change); commit the result
 bazel-sync:
     ./scripts/bazel-sync.sh

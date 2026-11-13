@@ -1,0 +1,34 @@
+{
+  "last_step": {
+    "kind": "stopped",
+    "payload": {
+      "error": "not_found: no thread T1",
+      "notice": null,
+      "reason": "request_gone"
+    }
+  },
+  "notices_in_the_journal": [],
+  "reason": "request_gone",
+  "replies": [],
+  "roster": {
+    "shown_working_at_no_step": 0,
+    "shown_working_before": [
+      {
+        "kind": "stopped",
+        "shown": true,
+        "step": 1
+      }
+    ],
+    "stopped_showing": [
+      {
+        "calls_after_it": 0,
+        "run_status": "stopped"
+      }
+    ]
+  },
+  "status": "stopped",
+  "steps": [
+    "stopped"
+  ],
+  "writes_in_order": []
+}

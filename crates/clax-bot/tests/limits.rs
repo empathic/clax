@@ -128,6 +128,60 @@ async fn a_turn_asks_for_no_more_output_than_the_credits_left_pay_for() {
     assert_eq!(env.api.requests().len(), 2);
 }
 
+/// A turn that shows the model an image is estimated at
+/// [`clax_bot::run::IMAGE_INPUT_TOKENS`] for it, not at its base64 data
+/// read as text: a run with 30 credits left whose script returned the
+/// handle of a 1 MiB image (some 350 000 tokens as text) takes its next
+/// turn, which is sent the image, and is charged what the model reported.
+#[tokio::test]
+async fn a_turn_that_shows_an_image_is_not_priced_at_its_bytes_as_text() {
+    let env = Env::new().await;
+    env.settings.0.lock().unwrap().model_takes_images = true;
+    let run = env.run();
+    let pixels = vec![7u8; 1 << 20];
+    let row = env
+        .store
+        .put_bot_content(
+            &clax_store::bot_content::NewContent {
+                id: "c1",
+                run_id: &run,
+                surface: "clax",
+                registration_id: None,
+                name: None,
+                media_type: "image/png",
+                width: Some(512),
+                height: Some(512),
+                bytes: &pixels,
+            },
+            clax_store::bot_content::ContentLimits::default(),
+        )
+        .unwrap();
+    let code = format!(
+        "return {{id: \"c1\", sha256: \"{}\", media_type: \"image/png\"}};",
+        row.sha256
+    );
+    env.api.push(script_turn("tu_1", "Look", &code));
+    env.api.push(finish_turn("done"));
+    let deps = env.deps();
+    let d = DriverId::mint();
+    env.tick(&deps, &run, &d).await;
+    env.tick(&deps, &run, &d).await;
+    free_weekly(&env, spent(&env) + 30_000);
+    let before = spent(&env);
+    let out = env.drive(&deps, &run, &d).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    let reqs = env.api.requests();
+    assert_eq!(reqs.len(), 2, "the turn after the image is taken");
+    let shown = reqs[1].body.to_string();
+    assert!(shown.contains("\"type\":\"image\""), "the image is sent");
+    let asked = reqs[1].body["max_tokens"].as_u64().unwrap();
+    assert!((1024..32000).contains(&asked), "{asked}");
+    // The turn is charged what the model reported it used, not the
+    // estimate: the fake reports the same usage for every turn.
+    let charged = spent(&env) - before;
+    assert!(charged > 0 && charged < 30_000, "{charged}");
+}
+
 #[tokio::test]
 async fn an_unenforced_person_is_metered_and_never_stopped() {
     let env = Env::new().await;

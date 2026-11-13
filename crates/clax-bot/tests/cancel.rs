@@ -7,6 +7,7 @@ use clax_bot::events::{Event, EventSink};
 use clax_bot::{Next, TickOpts, Wait};
 use clax_bot_sandbox::{CancelToken, ErrorKind, Host, Limits, Sandbox, Script, ScriptOutcome};
 use clax_store::bot_runs::{DriverId, RunStatus, StepKind};
+use serde_json::json;
 use std::sync::Arc;
 
 #[tokio::test]
@@ -205,4 +206,50 @@ async fn compute_is_billed_at_the_larger_of_the_limit_and_the_peak() {
         .unwrap();
     // 1 ms of CPU at 256 MiB, not at the configured 64.
     assert_eq!(compute.qty, 256);
+}
+
+/// A run stopped after its model asked to finish, or to give up, takes
+/// its `stopped` step as any cancelled run does: the cancel wins, and
+/// what the model meant to say is not posted.
+#[tokio::test]
+async fn a_cancel_after_the_model_asked_to_end_the_run_stops_it() {
+    let give_up = || {
+        stream(
+            &[B::Tool(
+                "tu_gu",
+                "give_up",
+                json!({"reason": "I cannot do this."}).to_string(),
+            )],
+            "tool_use",
+            USAGE,
+        )
+    };
+    for (asked, kind) in [(finish_turn("All done."), "finish"), (give_up(), "give_up")] {
+        let env = Env::new().await;
+        env.api.push(asked);
+        let run = env.run();
+        let deps = env.deps();
+        let d = DriverId::mint();
+        assert_eq!(env.tick(&deps, &run, &d).await.kind, Some(StepKind::Turn));
+        let (_, steps) = env.store.run_with_steps(&run).unwrap().unwrap();
+        assert_eq!(steps[0].payload.as_ref().unwrap()["next"]["kind"], kind);
+        env.store
+            .cancel_run(&clax_bot::run::bot_ctx("*owner"), &run)
+            .unwrap();
+        let out = env.tick(&deps, &run, &d).await;
+        assert_eq!(out.kind, Some(StepKind::Stopped), "{kind}");
+        assert_eq!(out.next, Next::Done(RunStatus::Stopped));
+        let r = env.run_row(&run);
+        assert_eq!(
+            (r.status, r.reason.as_deref()),
+            (RunStatus::Stopped, Some("cancelled"))
+        );
+        // A cancelled run's stop has no notice, and nothing was posted.
+        let (_, steps) = env.store.run_with_steps(&run).unwrap().unwrap();
+        assert_eq!(
+            steps[1].payload,
+            Some(json!({"reason": "cancelled", "notice": null}))
+        );
+        assert!(env.replies().is_empty(), "{:?}", env.replies());
+    }
 }

@@ -303,6 +303,9 @@ pub struct InstanceDo {
     /// refresh.
     wrote: Cell<bool>,
     last_optimize: Cell<f64>,
+    /// Whether the last prune of ended ClaxBot runs left more: the next
+    /// alarm, [`MIN_ALARM_MS`] away, prunes again ([`prune_wanted`]).
+    prune_more: Cell<bool>,
     /// When the alarm last tried a price catalog refresh (ms), so a
     /// catalog that cannot be read is tried at most once in
     /// [`CATALOG_RETRY_MS`].
@@ -732,6 +735,7 @@ fn worker_bot(
             Arc::new(AdminWebView(worker::send::SendWrapper::new(w)))
                 as Arc<dyn clax_http::bot::AdminWebCheck>
         }),
+        joins: None,
     });
     (bot, web)
 }
@@ -1391,10 +1395,13 @@ impl InstanceDo {
             // Unknown: look again a sweep period from now.
             Err(_) => Some(now),
         };
-        let optimize = self
-            .wrote
-            .get()
-            .then(|| self.last_optimize.get() + OPTIMIZE_MS);
+        let optimize = prune_wanted(
+            self.wrote.get(),
+            self.last_optimize.get(),
+            self.prune_more.get(),
+            now,
+        )
+        .next;
         let unseen = match inst.app.next_unseen().await {
             Ok(t) => t.map(|t| t.timestamp_millis() as f64),
             Err(_) => Some(now),
@@ -1766,6 +1773,7 @@ impl DurableObject for InstanceDo {
             alarm: Cell::new(None),
             wrote: Cell::new(false),
             last_optimize: Cell::new(now_ms()),
+            prune_more: Cell::new(false),
             last_catalog_try: Cell::new(f64::NEG_INFINITY),
             bodies: BodyBudget::default(),
         }
@@ -1977,14 +1985,66 @@ impl InstanceDo {
         if unseen_due {
             let _ = inst.app.reap_unseen().await;
         }
-        if self.wrote.get() && now - self.last_optimize.get() >= OPTIMIZE_MS {
+        let wanted = prune_wanted(
+            self.wrote.get(),
+            self.last_optimize.get(),
+            self.prune_more.get(),
+            now,
+        );
+        if wanted.optimize {
             self.last_optimize.set(now);
             self.wrote.set(false);
             let _ = inst.app.store.call(|st| st.optimize()).await;
-            // Ended ClaxBot runs' journals and drafts past their keep, at
-            // the planner refresh's pace (a run's end is a write).
-            let _ = inst.app.store.call(|st| st.prune_ended_runs()).await;
         }
+        if wanted.prune {
+            // Ended ClaxBot runs' journals and drafts past their keep, at
+            // the planner refresh's pace (a run's end is a write), and at
+            // every alarm while a pass leaves more: one bounded pass an
+            // alarm, what one alarm may safely write.
+            let more = inst
+                .app
+                .store
+                .call(|st| st.prune_ended_runs_while(PRUNE_PASSES_PER_ALARM, None))
+                .await
+                .is_ok_and(|(p, _)| p.more);
+            self.prune_more.set(more);
+        }
+    }
+}
+
+/// The prune passes one alarm runs: one, bounded in its transactions'
+/// writes, which the hosted Worker caps; a pass that leaves more has the
+/// next alarm prune again ([`prune_wanted`]).
+const PRUNE_PASSES_PER_ALARM: usize = 1;
+
+/// What the alarm does of the planner refresh and the prune of ended
+/// ClaxBot runs ([`prune_wanted`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PruneWanted {
+    /// The planner refresh is due now.
+    optimize: bool,
+    /// The prune is due now.
+    prune: bool,
+    /// When either is next due (ms), with nothing more written: at once
+    /// (the alarm's soonest) while the last prune left more.
+    next: Option<f64>,
+}
+
+/// [`PruneWanted`] at `now` (ms): the planner refresh, and the prune with
+/// it, are due [`OPTIMIZE_MS`] after the last once a request that may
+/// write was served (`wrote`); the prune is due at every alarm besides
+/// while the last pass left more (`more`).
+fn prune_wanted(wrote: bool, last_optimize: f64, more: bool, now: f64) -> PruneWanted {
+    let optimize = wrote && now - last_optimize >= OPTIMIZE_MS;
+    let next = match (more, wrote) {
+        (true, _) => Some(now),
+        (false, true) => Some(last_optimize + OPTIMIZE_MS),
+        (false, false) => None,
+    };
+    PruneWanted {
+        optimize,
+        prune: optimize || more,
+        next,
     }
 }
 
@@ -2106,6 +2166,97 @@ impl InstanceDo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The planner refresh and the prune are due [`OPTIMIZE_MS`] after
+    /// the last once something was written, and the prune at every alarm
+    /// while its last pass left more.
+    #[test]
+    fn the_alarm_prunes_again_at_once_while_the_last_pass_left_more() {
+        let last = 1_000.0;
+        let soon = last + 1.0;
+        let late = last + OPTIMIZE_MS;
+        assert_eq!(
+            prune_wanted(false, last, false, soon),
+            PruneWanted {
+                optimize: false,
+                prune: false,
+                next: None
+            }
+        );
+        assert_eq!(
+            prune_wanted(true, last, false, soon),
+            PruneWanted {
+                optimize: false,
+                prune: false,
+                next: Some(late)
+            }
+        );
+        assert_eq!(
+            prune_wanted(true, last, false, late),
+            PruneWanted {
+                optimize: true,
+                prune: true,
+                next: Some(late)
+            }
+        );
+        for wrote in [false, true] {
+            assert_eq!(
+                prune_wanted(wrote, last, true, soon),
+                PruneWanted {
+                    optimize: false,
+                    prune: true,
+                    next: Some(soon)
+                },
+                "{wrote}"
+            );
+        }
+    }
+
+    /// A backlog over one pass is drained by alarms one after another,
+    /// each running one bounded pass, with no write between them.
+    #[test]
+    fn a_prune_backlog_drains_over_alarms_of_one_pass_each() {
+        use clax_store::bot_runs::{PRUNE_RUNS_PER_TX, PRUNE_TXS_PER_PASS};
+        let dir = tempfile::tempdir().unwrap();
+        let home = clax_core::Home::at(dir.path().join("clax"));
+        let clock = Arc::new(clax_core::working::ManualClock::at("2026-10-21T10:00:00Z"));
+        let st = clax_store::Store::open_with_clock(&home, clock).unwrap();
+        let capacity = PRUNE_RUNS_PER_TX * PRUNE_TXS_PER_PASS;
+        let runs = capacity * 2 + 5;
+        rusqlite::Connection::open(home.db_path())
+            .unwrap()
+            .execute_batch(&format!(
+                "INSERT INTO bot_runs (id, artifact_id, person, request, thread_ids_json, status,
+                        model, key_source, base_version, created_at, updated_at, ended_at)
+                 WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < {runs})
+                 SELECT printf('01JC%022d', i), 'a', 'u', 'thread', '[]', 'finished',
+                        'claude-sonnet-5-5', 'instance', 1, '2026-10-01T00:00:00.000Z',
+                        '2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z'
+                   FROM n;
+                 INSERT INTO bot_calls (run_id, step_n, seq, attempt, op, args_hash, ok,
+                        result_json, at)
+                 SELECT id, 1, 0, 1, 'threads.read', 'h', 1, '{{}}', '2026-10-01T00:00:00.000Z'
+                   FROM bot_runs;"
+            ))
+            .unwrap();
+        // The first alarm is the planner refresh's, after a write.
+        let (mut wrote, mut more, mut now) = (true, false, OPTIMIZE_MS);
+        let mut alarms = Vec::new();
+        for _ in 0..5 {
+            let wanted = prune_wanted(wrote, 0.0, more, now);
+            if !wanted.prune {
+                break;
+            }
+            wrote = false;
+            let (p, passes) = st
+                .prune_ended_runs_while(PRUNE_PASSES_PER_ALARM, None)
+                .unwrap();
+            alarms.push((p.calls, passes));
+            more = p.more;
+            now = wanted.next.unwrap_or(now) + MIN_ALARM_MS;
+        }
+        assert_eq!(alarms, [(capacity, 1), (capacity, 1), (5, 1)]);
+    }
 
     /// Records the checks started and waited for, and the wait's bound.
     #[derive(Default)]

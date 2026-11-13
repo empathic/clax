@@ -603,3 +603,28 @@ async fn a_huge_argument_never_reaches_the_host() {
     );
     assert!(host.seen.lock().unwrap().is_empty());
 }
+
+/// Every park of the conformance suite leaves the engine holding nothing:
+/// each engine thread ends once its run has returned.
+#[tokio::test]
+async fn a_parked_run_leaves_no_engine_running() {
+    let sandbox = sandbox();
+    let parks: Vec<_> = conformance::cases()
+        .into_iter()
+        .filter(|c| matches!(c.expect.error, Some((ErrorKind::Parked, _))))
+        .collect();
+    assert!(parks.len() >= 4, "{}", parks.len());
+    for case in &parks {
+        let outcome = conformance::check(&sandbox, case)
+            .await
+            .unwrap_or_else(|e| panic!("{}: {e}", case.name));
+        assert!(
+            outcome.calls.last().and_then(|c| c.code.as_deref()) == Some("waiting"),
+            "{}: {outcome:?}",
+            case.name
+        );
+    }
+    assert!(sandbox.wait_abandoned_at_most(0, THREAD_END));
+    let fine = run(&sandbox, "return 1", Limits::default()).await;
+    assert_eq!(fine.value, Some(json!(1)), "{fine:?}");
+}

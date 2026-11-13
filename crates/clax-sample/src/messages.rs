@@ -112,6 +112,58 @@ impl Role {
     }
 }
 
+/// An image a tool result shows the model: its media type (`image/png`,
+/// `image/jpeg`, `image/webp` or `image/gif`; not checked here) and its
+/// bytes, which go on the wire base64-encoded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolImage {
+    pub media_type: String,
+    pub data: Vec<u8>,
+}
+
+impl ToolImage {
+    pub fn new(media_type: impl Into<String>, data: impl Into<Vec<u8>>) -> ToolImage {
+        ToolImage {
+            media_type: media_type.into(),
+            data: data.into(),
+        }
+    }
+
+    /// `{type: "image", source: {type: "base64", media_type, data}}`.
+    fn to_json(&self) -> Value {
+        use base64::Engine;
+        let data = base64::engine::general_purpose::STANDARD.encode(&self.data);
+        json!({"type": "image", "source": {"type": "base64", "media_type": self.media_type, "data": data}})
+    }
+}
+
+/// What ends the text of a tool result whose images were left out because
+/// the caller sends the model none ([`Block::tool_result_with_images`]).
+/// It says what was done, not what the model can take: nothing here
+/// knows that, and ClaxBot leaves images out whenever its `[bot]
+/// model_takes_images` setting is off, which is the default.
+pub const IMAGES_NOT_SHOWN: &str = "The images of this result are not shown: images are not sent \
+     to the model here ([bot] model_takes_images is off).";
+
+/// The images in a `tool_result`'s content, in order, each as its media
+/// type and base64 data: the `image` blocks with a `base64` source of an
+/// array content. A string content has none.
+fn images_of(content: &Value) -> Vec<(&str, &str)> {
+    let Value::Array(parts) = content else {
+        return Vec::new();
+    };
+    parts
+        .iter()
+        .filter(|p| p["type"] == "image" && p["source"]["type"] == "base64")
+        .filter_map(|p| {
+            Some((
+                p["source"]["media_type"].as_str()?,
+                p["source"]["data"].as_str()?,
+            ))
+        })
+        .collect()
+}
+
 /// A content block. Blocks read from a response are typed only when the
 /// typed form serialises back to exactly what arrived; anything else (an
 /// unknown type, an extra field such as `citations`) is kept as
@@ -129,7 +181,8 @@ pub enum Block {
     },
     ToolResult {
         tool_use_id: String,
-        /// A string, or an array of content blocks.
+        /// A string, or an array of content blocks (text, and the images
+        /// [`Block::tool_result_with_images`] puts after it).
         content: Value,
         is_error: bool,
         cache_control: Option<CacheControl>,
@@ -160,6 +213,57 @@ impl Block {
         Block::ToolResult {
             tool_use_id: tool_use_id.into(),
             content: Value::String(content.into()),
+            is_error,
+            cache_control: None,
+        }
+    }
+
+    /// A tool result that shows the model `images` after its text.
+    ///
+    /// With no image this is [`Block::tool_result`], whatever
+    /// `model_takes_images` is: its content is the string, and the request
+    /// is byte-for-byte the one without this. With images and a model that
+    /// takes them, the content is an array: the text block (left out when
+    /// `content` is empty), then one `image` block per image, in order,
+    /// with a base64 source. Every [`ModelApi`] carries them (see
+    /// [`openai`] and [`gemini`] for how).
+    ///
+    /// With images and a model that takes none (`model_takes_images` is
+    /// false), no image is sent and the text ends with
+    /// [`IMAGES_NOT_SHOWN`], after a blank line when there is text before
+    /// it. Nothing here knows which models take images
+    /// ([`ModelInfo`] and the price catalog do not say): the caller does
+    /// (ClaxBot's `RunSettings::model_takes_images`), and a caller that
+    /// does not know passes false.
+    ///
+    /// Neither the number of images nor their size or type is checked: the
+    /// provider's limits are the caller's to keep.
+    pub fn tool_result_with_images(
+        tool_use_id: impl Into<String>,
+        content: impl Into<String>,
+        is_error: bool,
+        images: &[ToolImage],
+        model_takes_images: bool,
+    ) -> Block {
+        let mut text: String = content.into();
+        if images.is_empty() {
+            return Block::tool_result(tool_use_id, text, is_error);
+        }
+        if !model_takes_images {
+            if !text.is_empty() {
+                text.push_str("\n\n");
+            }
+            text.push_str(IMAGES_NOT_SHOWN);
+            return Block::tool_result(tool_use_id, text, is_error);
+        }
+        let mut parts = Vec::with_capacity(images.len() + 1);
+        if !text.is_empty() {
+            parts.push(json!({"type": "text", "text": text}));
+        }
+        parts.extend(images.iter().map(ToolImage::to_json));
+        Block::ToolResult {
+            tool_use_id: tool_use_id.into(),
+            content: Value::Array(parts),
             is_error,
             cache_control: None,
         }
@@ -261,6 +365,12 @@ pub struct Tool {
     pub description: String,
     /// A JSON Schema object.
     pub input_schema: Value,
+    /// `input_schema` as compact JSON text with its members in the order
+    /// the model is to read them (a kind's result fields in its
+    /// definition's order), sent in its place as it is: a `Value`'s maps
+    /// sort their keys. `None` sends `input_schema`. The two are one
+    /// JSON value.
+    pub input_schema_text: Option<String>,
     pub cache_control: Option<CacheControl>,
     /// `eager_input_streaming: true`: the input streams as the model writes
     /// it, unvalidated, so it may not parse; such a call comes back as
@@ -299,9 +409,55 @@ pub struct MessagesRequest {
     pub extra: Map<String, Value>,
 }
 
+/// What stands in a request body's [`Value`] for the schema of the tool
+/// `n` that has [`Tool::input_schema_text`], until [`spliced`] puts the
+/// text there: a string no request holds otherwise.
+pub(crate) fn schema_mark(n: usize) -> Value {
+    Value::String(format!("\u{1}input_schema_text {n}"))
+}
+
+/// The schema a request body's [`Value`] holds for tool `n` of `tools`:
+/// its [`Tool::input_schema`], or with `marked` its [`schema_mark`] when
+/// it has a text.
+pub(crate) fn schema_of(tools: &[Tool], n: usize, marked: bool) -> Value {
+    let t = &tools[n];
+    match (&t.input_schema_text, marked) {
+        (Some(_), true) => schema_mark(n),
+        _ => t.input_schema.clone(),
+    }
+}
+
+/// `body`, a request's [`Value`] built with marks ([`schema_of`]), as
+/// the text sent: each mark replaced by its tool's
+/// [`Tool::input_schema_text`]. With no tool that has a text it is
+/// `body.to_string()`, byte for byte.
+pub(crate) fn spliced(body: &Value, tools: &[Tool]) -> String {
+    let mut text = body.to_string();
+    for (n, t) in tools.iter().enumerate() {
+        if let Some(schema) = &t.input_schema_text {
+            let mark = schema_mark(n).to_string();
+            text = text.replacen(&mark, schema, 1);
+        }
+    }
+    text
+}
+
 impl MessagesRequest {
-    /// The streaming request body.
+    /// The streaming request body as it is sent: [`MessagesRequest::body`]
+    /// with each tool's [`Tool::input_schema_text`] where it has one, in
+    /// its own order.
+    #[must_use]
+    pub fn body_text(&self) -> String {
+        spliced(&self.body_marked(true), &self.tools)
+    }
+
+    /// The streaming request body, each tool's schema its
+    /// [`Tool::input_schema`] (a `Value`, whose maps sort their keys).
     pub fn body(&self) -> Value {
+        self.body_marked(false)
+    }
+
+    fn body_marked(&self, marked: bool) -> Value {
         let mut b = Map::new();
         b.insert("model".into(), json!(self.model));
         b.insert("max_tokens".into(), json!(self.max_tokens));
@@ -328,8 +484,10 @@ impl MessagesRequest {
             let tools: Vec<Value> = self
                 .tools
                 .iter()
-                .map(|t| {
-                    let mut v = json!({"name": t.name, "description": t.description, "input_schema": t.input_schema});
+                .enumerate()
+                .map(|(n, t)| {
+                    let schema = schema_of(&self.tools, n, marked);
+                    let mut v = json!({"name": t.name, "description": t.description, "input_schema": schema});
                     if let Some(cc) = &t.cache_control {
                         v["cache_control"] = cc.to_json();
                     }
@@ -600,28 +758,66 @@ pub enum Delta {
 // Errors
 // ---------------------------------------------------------------------------
 
+/// What a provider's error answer said of itself, beside the error's
+/// class: its HTTP status (0 for an error sent mid-stream), its error
+/// `type` (`""` when it named none), the provider's ID of the request
+/// (its `request-id` or `x-request-id` header), and `text`, what it said:
+/// the error's `message`, else what a body that is not JSON holds (an
+/// intermediary's page, say), as one line of at most
+/// [`DETAIL_MESSAGE_BYTES`].
+///
+/// All of it came from the base URL, which may be anyone's host: it is
+/// data to show as quoted plain text to whoever configured the provider
+/// or made the call, never markup and never an instruction to a model.
+/// [`MessagesError::detail`] gives it bounded and stripped of control
+/// characters.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Answer {
+    pub status: u16,
+    pub kind: String,
+    pub request_id: Option<String>,
+    pub text: Option<String>,
+}
+
+impl Answer {
+    /// An answer of `status` and error `kind` that said `text`.
+    #[must_use]
+    pub fn new(status: u16, kind: impl Into<String>, text: Option<String>) -> Answer {
+        Answer {
+            status,
+            kind: kind.into(),
+            request_id: None,
+            text,
+        }
+    }
+
+    /// This answer with the provider's request ID.
+    #[must_use]
+    pub fn with_request_id(mut self, id: Option<String>) -> Answer {
+        self.request_id = id;
+        self
+    }
+}
+
 /// Why a call failed. Messages never carry the key.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MessagesError {
     /// The base URL fails [`clax_core::config::base_url_ok`]; nothing was sent.
     BadBaseUrl,
     /// 401 or 403, or an `authentication_error`/`permission_error`.
-    Auth { status: u16, message: String },
+    Auth { message: String, answer: Answer },
     /// 429; `retry_after` from the header when it held seconds.
     RateLimited {
         retry_after: Option<Duration>,
         message: String,
+        answer: Answer,
     },
     /// 529, or an `overloaded_error` (also mid-stream).
-    Overloaded { message: String },
-    /// 400 `invalid_request_error`.
-    InvalidRequest { message: String },
-    /// Any other provider error; `status` is 0 for one sent mid-stream.
-    Api {
-        status: u16,
-        kind: String,
-        message: String,
-    },
+    Overloaded { message: String, answer: Answer },
+    /// An `invalid_request_error`, or a 400 that names no error type.
+    InvalidRequest { message: String, answer: Answer },
+    /// Any other provider error; its status is 0 for one sent mid-stream.
+    Api { message: String, answer: Answer },
     /// The base URL answered with a redirect (3xx, or 0 for a browser's
     /// opaque redirect), which is never followed.
     Redirected { status: u16 },
@@ -638,13 +834,96 @@ pub enum MessagesError {
     UnknownEvent { kind: String },
 }
 
+/// The most bytes of a provider's message [`ErrorDetail`] keeps.
+pub const DETAIL_MESSAGE_BYTES: usize = 400;
+/// The most bytes of a provider's error type and of its request ID that
+/// [`ErrorDetail`] keeps.
+pub const DETAIL_FIELD_BYTES: usize = 128;
+
+/// A failed call as whoever may see what the provider said is shown it
+/// ([`MessagesError::detail`]): the error's class, and of a provider's
+/// answer its HTTP status, error type, message and request ID, each
+/// bounded and stripped of control characters ([`plain_text`]).
+///
+/// The message, type and request ID are the base URL's words, and the
+/// base URL may be anyone's host: they are plain text to quote, never
+/// markup, never an instruction to a model, and are shown only to the
+/// person a call was made for and to admins. They never hold the key
+/// (the client redacts it before an error leaves it).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ErrorDetail {
+    /// `invalid_request`, `auth`, `rate_limited`, `overloaded`, `api`,
+    /// `redirected`, `bad_base_url`, `network`, `stream_cut`, `protocol`
+    /// or `unknown_event`.
+    pub class: &'static str,
+    /// The answer's HTTP status; `None` for an error with none (sent
+    /// mid-stream, or no answer at all).
+    pub status: Option<u16>,
+    /// The provider's error type (`invalid_request_error`, …).
+    pub kind: Option<String>,
+    /// What the provider said; for `network`, `stream_cut`, `protocol`
+    /// and `unknown_event`, this client's account of what went wrong.
+    pub message: Option<String>,
+    /// The provider's ID of the request.
+    pub request_id: Option<String>,
+}
+
+impl ErrorDetail {
+    /// `{class, status, type, message, request_id}`, each absent one null.
+    #[must_use]
+    pub fn to_json(&self) -> Value {
+        json!({
+            "class": self.class,
+            "status": self.status,
+            "type": self.kind,
+            "message": self.message,
+            "request_id": self.request_id,
+        })
+    }
+}
+
+/// `s` as one line of plain text of at most `max` bytes: each control
+/// character (newlines and tabs among them) and each character that
+/// reorders text (the bidirectional embeddings, overrides and isolates)
+/// a space, runs of white space one space, the ends trimmed, and cut on a
+/// character boundary, ending `…` when cut. `None` when nothing is left.
+#[must_use]
+pub fn plain_text(s: &str, max: usize) -> Option<String> {
+    let reorders = |c: char| matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
+    let mut out = String::new();
+    for c in s.chars() {
+        let c = if c.is_control() || reorders(c) {
+            ' '
+        } else {
+            c
+        };
+        if c.is_whitespace() && (out.is_empty() || out.ends_with(' ')) {
+            continue;
+        }
+        out.push(if c.is_whitespace() { ' ' } else { c });
+    }
+    let out = out.trim_end();
+    if out.is_empty() {
+        return None;
+    }
+    if out.len() <= max {
+        return Some(out.to_string());
+    }
+    let ell = '…'.len_utf8();
+    let mut end = max.saturating_sub(ell);
+    while !out.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(format!("{}…", out[..end].trim_end()))
+}
+
 impl MessagesError {
     /// What went wrong in a few words of this client's own, safe to show
     /// to whoever configured the provider: the kind and the HTTP status,
     /// never text from the answer (the base URL may be anyone's host).
     pub fn summary(&self) -> String {
-        let status = |s: &u16| {
-            if *s == 0 {
+        let status = |s: u16| {
+            if s == 0 {
                 String::new()
             } else {
                 format!(" (HTTP {s})")
@@ -652,15 +931,16 @@ impl MessagesError {
         };
         match self {
             MessagesError::BadBaseUrl => "the base URL is not one a key may be sent to".into(),
-            MessagesError::Auth { status: s, .. } => format!("the key was refused{}", status(s)),
+            MessagesError::Auth { answer, .. } => {
+                format!("the key was refused{}", status(answer.status))
+            }
             MessagesError::RateLimited { .. } => "rate limited (HTTP 429)".into(),
             MessagesError::Overloaded { .. } => "the provider is overloaded".into(),
             MessagesError::InvalidRequest { .. } => {
                 "the provider refused the request (HTTP 400)".into()
             }
-            MessagesError::Api {
-                status: s, kind, ..
-            } => {
+            MessagesError::Api { answer, .. } => {
+                let kind = &answer.kind;
                 let kind = if !kind.is_empty()
                     && kind.len() <= 40
                     && kind.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
@@ -669,10 +949,10 @@ impl MessagesError {
                 } else {
                     "provider error"
                 };
-                format!("{kind}{}", status(s))
+                format!("{kind}{}", status(answer.status))
             }
             MessagesError::Redirected { status: s } => {
-                format!("the base URL answered with a redirect{}", status(s))
+                format!("the base URL answered with a redirect{}", status(*s))
             }
             MessagesError::Network { .. } => "the provider could not be reached".into(),
             MessagesError::StreamCut { .. } => "the answer was cut off".into(),
@@ -683,6 +963,71 @@ impl MessagesError {
         }
     }
 
+    /// The error's class, as [`ErrorDetail::class`] names it.
+    #[must_use]
+    pub fn class(&self) -> &'static str {
+        match self {
+            MessagesError::BadBaseUrl => "bad_base_url",
+            MessagesError::Auth { .. } => "auth",
+            MessagesError::RateLimited { .. } => "rate_limited",
+            MessagesError::Overloaded { .. } => "overloaded",
+            MessagesError::InvalidRequest { .. } => "invalid_request",
+            MessagesError::Api { .. } => "api",
+            MessagesError::Redirected { .. } => "redirected",
+            MessagesError::Network { .. } => "network",
+            MessagesError::StreamCut { .. } => "stream_cut",
+            MessagesError::Protocol { .. } => "protocol",
+            MessagesError::UnknownEvent { .. } => "unknown_event",
+        }
+    }
+
+    /// The provider's answer, for an error the provider answered with.
+    #[must_use]
+    pub fn answer(&self) -> Option<&Answer> {
+        match self {
+            MessagesError::Auth { answer, .. }
+            | MessagesError::RateLimited { answer, .. }
+            | MessagesError::Overloaded { answer, .. }
+            | MessagesError::InvalidRequest { answer, .. }
+            | MessagesError::Api { answer, .. } => Some(answer),
+            _ => None,
+        }
+    }
+
+    /// The error as [`ErrorDetail`]: its class and what the provider
+    /// said, bounded ([`DETAIL_MESSAGE_BYTES`], [`DETAIL_FIELD_BYTES`]).
+    #[must_use]
+    pub fn detail(&self) -> ErrorDetail {
+        let field = |s: &str| plain_text(s, DETAIL_FIELD_BYTES);
+        let said = |s: &str| plain_text(s, DETAIL_MESSAGE_BYTES);
+        let mut d = ErrorDetail {
+            class: self.class(),
+            status: None,
+            kind: None,
+            message: None,
+            request_id: None,
+        };
+        match self {
+            MessagesError::Auth { answer, .. }
+            | MessagesError::RateLimited { answer, .. }
+            | MessagesError::Overloaded { answer, .. }
+            | MessagesError::InvalidRequest { answer, .. }
+            | MessagesError::Api { answer, .. } => {
+                d.status = (answer.status != 0).then_some(answer.status);
+                d.kind = field(&answer.kind);
+                d.message = answer.text.as_deref().and_then(said);
+                d.request_id = answer.request_id.as_deref().and_then(field);
+            }
+            MessagesError::Redirected { status } => d.status = (*status != 0).then_some(*status),
+            MessagesError::Network { message }
+            | MessagesError::StreamCut { message }
+            | MessagesError::Protocol { message } => d.message = said(message),
+            MessagesError::UnknownEvent { kind } => d.message = said(kind),
+            MessagesError::BadBaseUrl => {}
+        }
+        d
+    }
+
     /// Whether the same request may succeed when sent again. A retried
     /// stream starts over: its deltas arrive again from the first.
     pub fn retryable(&self) -> bool {
@@ -691,7 +1036,7 @@ impl MessagesError {
             | MessagesError::Overloaded { .. }
             | MessagesError::Network { .. }
             | MessagesError::StreamCut { .. } => true,
-            MessagesError::Api { status, kind, .. } => *status >= 500 || kind == "api_error",
+            MessagesError::Api { answer, .. } => answer.status >= 500 || answer.kind == "api_error",
             _ => false,
         }
     }
@@ -702,32 +1047,37 @@ impl MessagesError {
             return self;
         }
         let r = |m: String| m.replace(k, "[redacted]");
+        let ra = |a: Answer| Answer {
+            kind: r(a.kind),
+            request_id: a.request_id.map(r),
+            text: a.text.map(r),
+            ..a
+        };
         match self {
-            MessagesError::Auth { status, message } => MessagesError::Auth {
-                status,
+            MessagesError::Auth { message, answer } => MessagesError::Auth {
                 message: r(message),
+                answer: ra(answer),
             },
             MessagesError::RateLimited {
                 retry_after,
                 message,
+                answer,
             } => MessagesError::RateLimited {
                 retry_after,
                 message: r(message),
+                answer: ra(answer),
             },
-            MessagesError::Overloaded { message } => MessagesError::Overloaded {
+            MessagesError::Overloaded { message, answer } => MessagesError::Overloaded {
                 message: r(message),
+                answer: ra(answer),
             },
-            MessagesError::InvalidRequest { message } => MessagesError::InvalidRequest {
+            MessagesError::InvalidRequest { message, answer } => MessagesError::InvalidRequest {
                 message: r(message),
+                answer: ra(answer),
             },
-            MessagesError::Api {
-                status,
-                kind,
-                message,
-            } => MessagesError::Api {
-                status,
-                kind: r(kind),
+            MessagesError::Api { message, answer } => MessagesError::Api {
                 message: r(message),
+                answer: ra(answer),
             },
             MessagesError::Network { message } => MessagesError::Network {
                 message: r(message),
@@ -750,25 +1100,32 @@ impl std::fmt::Display for MessagesError {
             MessagesError::BadBaseUrl => {
                 f.write_str("the base URL must be https://, or http:// on a loopback host")
             }
-            MessagesError::Auth { status, message } => {
-                write!(f, "the provider refused the key (HTTP {status}): {message}")
+            MessagesError::Auth { message, answer } => {
+                write!(
+                    f,
+                    "the provider refused the key (HTTP {}): {message}",
+                    answer.status
+                )
             }
             MessagesError::RateLimited {
                 retry_after,
                 message,
+                ..
             } => match retry_after {
                 Some(d) => write!(f, "rate limited, retry after {}s: {message}", d.as_secs()),
                 None => write!(f, "rate limited: {message}"),
             },
-            MessagesError::Overloaded { message } => {
+            MessagesError::Overloaded { message, .. } => {
                 write!(f, "the provider is overloaded: {message}")
             }
-            MessagesError::InvalidRequest { message } => write!(f, "invalid request: {message}"),
-            MessagesError::Api {
-                status,
-                kind,
-                message,
-            } => write!(f, "provider error {kind} (HTTP {status}): {message}"),
+            MessagesError::InvalidRequest { message, .. } => {
+                write!(f, "invalid request: {message}")
+            }
+            MessagesError::Api { message, answer } => write!(
+                f,
+                "provider error {} (HTTP {}): {message}",
+                answer.kind, answer.status
+            ),
             MessagesError::Redirected { status: 0 } => f.write_str(
                 "the base URL answered with an opaque redirect; set the URL it leads to instead",
             ),
@@ -795,33 +1152,40 @@ impl std::fmt::Display for MessagesError {
 
 impl std::error::Error for MessagesError {}
 
-/// The error for a provider error of `kind` (`status` 0 mid-stream).
-fn classify(
-    status: u16,
-    kind: &str,
+/// The error for a provider error `answer` with `message`, by its status
+/// and type.
+pub(crate) fn classify(
+    answer: Answer,
     message: String,
     retry_after: Option<Duration>,
 ) -> MessagesError {
-    match (status, kind) {
+    match (answer.status, answer.kind.as_str()) {
         (401 | 403, _) | (_, "authentication_error" | "permission_error") => {
-            MessagesError::Auth { status, message }
+            MessagesError::Auth { message, answer }
         }
         (429, _) | (_, "rate_limit_error") => MessagesError::RateLimited {
             retry_after,
             message,
+            answer,
         },
-        (529, _) | (_, "overloaded_error") => MessagesError::Overloaded { message },
-        (_, "invalid_request_error") | (400, "") => MessagesError::InvalidRequest { message },
-        _ => MessagesError::Api {
-            status,
-            kind: kind.to_string(),
-            message,
-        },
+        (529, _) | (_, "overloaded_error") => MessagesError::Overloaded { message, answer },
+        (_, "invalid_request_error") | (400, "") => {
+            MessagesError::InvalidRequest { message, answer }
+        }
+        _ => MessagesError::Api { message, answer },
     }
 }
 
-/// The error for a non-2xx answer with `body`.
-pub fn http_error(status: u16, retry_after: Option<&str>, body: &str) -> MessagesError {
+/// The error for a non-2xx answer with `body` and the provider's
+/// `request_id` header (else the body's `request_id`): its message the error's `message`, else `the provider
+/// answered HTTP <status>`; its [`Answer::text`] the error's `message`,
+/// else what a body that is not JSON holds.
+pub fn http_error(
+    status: u16,
+    retry_after: Option<&str>,
+    request_id: Option<&str>,
+    body: &str,
+) -> MessagesError {
     if status == 0 || (300..400).contains(&status) {
         return MessagesError::Redirected { status };
     }
@@ -833,15 +1197,24 @@ pub fn http_error(status: u16, retry_after: Option<&str>, body: &str) -> Message
         &v
     };
     let kind = e["type"].as_str().unwrap_or("");
-    let message = e["message"]
-        .as_str()
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("the provider answered HTTP {status}"));
+    let said = e["message"].as_str().map(str::to_string);
+    let text = said.clone().or_else(|| {
+        v.is_null()
+            .then(|| plain_text(body, DETAIL_MESSAGE_BYTES))
+            .flatten()
+    });
+    let message = said.unwrap_or_else(|| format!("the provider answered HTTP {status}"));
     let retry_after = retry_after
         .and_then(|s| s.trim().parse::<f64>().ok())
         .filter(|s| s.is_finite() && *s >= 0.0)
         .map(Duration::from_secs_f64);
-    classify(status, kind, message, retry_after)
+    // The header, else the body's own `request_id` (the Messages API
+    // sends both).
+    let request_id = request_id
+        .map(str::to_string)
+        .or_else(|| v["request_id"].as_str().map(str::to_string));
+    let answer = Answer::new(status, kind, text).with_request_id(request_id);
+    classify(answer, message, retry_after)
 }
 
 // ---------------------------------------------------------------------------
@@ -1058,11 +1431,10 @@ impl Assembler {
             }
             "error" => {
                 let e = &v["error"];
-                let message = e["message"]
-                    .as_str()
-                    .unwrap_or("the provider reported an error")
-                    .to_string();
-                Err(classify(0, e["type"].as_str().unwrap_or(""), message, None))
+                let said = e["message"].as_str().map(str::to_string);
+                let answer = Answer::new(0, e["type"].as_str().unwrap_or(""), said.clone());
+                let message = said.unwrap_or_else(|| "the provider reported an error".into());
+                Err(classify(answer, message, None))
             }
             // `ping` and event types added later.
             _ => Ok(Vec::new()),
@@ -1335,7 +1707,7 @@ impl MessagesClient {
         url: &str,
         key: &ApiKey,
         betas: Option<String>,
-        json: Option<&Value>,
+        json: Option<&str>,
     ) -> Result<Body, MessagesError> {
         let mut headers = vec![
             ("x-api-key", key.expose().to_string()),
@@ -1354,7 +1726,7 @@ impl MessagesClient {
         method: &str,
         url: &str,
         key: &ApiKey,
-        json: Option<&Value>,
+        json: Option<&str>,
     ) -> Result<Body, MessagesError> {
         match api {
             ModelApi::Anthropic => self.send(method, url, key, None, json).await,
@@ -1376,12 +1748,12 @@ impl MessagesClient {
         method: &str,
         url: &str,
         headers: &[(&str, String)],
-        json: Option<&Value>,
+        json: Option<&str>,
     ) -> Result<Body, MessagesError> {
         let res = deadline(
             self.timeouts.headers,
             "answer",
-            self.http.send(method, url, headers, json),
+            self.http.send_text(method, url, headers, json),
         )
         .await?
         .map_err(|message| MessagesError::Network { message })?;
@@ -1397,6 +1769,7 @@ impl MessagesClient {
         Err(http_error(
             res.status,
             res.retry_after.as_deref(),
+            res.request_id.as_deref(),
             &String::from_utf8_lossy(&body),
         ))
     }
@@ -1416,17 +1789,18 @@ impl MessagesClient {
             let body = match api {
                 ModelApi::Anthropic => {
                     let url = endpoint(base_url, "/v1/messages")?;
-                    self.send("POST", &url, key, req.beta_header(), Some(&req.body()))
+                    let body = req.body_text();
+                    self.send("POST", &url, key, req.beta_header(), Some(&body))
                         .await?
                 }
                 ModelApi::OpenAi => {
                     let url = endpoint(base_url, openai::PATH)?;
-                    let body = openai::body(req, base_url);
+                    let body = spliced(&openai::body_marked(req, base_url, true), &req.tools);
                     self.send_as(api, "POST", &url, key, Some(&body)).await?
                 }
                 ModelApi::Gemini => {
                     let url = endpoint(base_url, &gemini::path(&req.model))?;
-                    let body = gemini::body(req);
+                    let body = spliced(&gemini::body_marked(req, true), &req.tools);
                     self.send_as(api, "POST", &url, key, Some(&body)).await?
                 }
             };

@@ -1,0 +1,51 @@
+{
+  "last_step": {
+    "kind": "stopped",
+    "payload": {
+      "notice": "I stopped before finishing: you have used this week's ClaxBot credits. I had not run any scripts yet. Your credits reset on Monday 26 October 2026 at 00:00 UTC.",
+      "reason": "credits_exhausted"
+    }
+  },
+  "notices_in_the_journal": [
+    {
+      "ok": true,
+      "op": "reply",
+      "seq": 1000000,
+      "step": 1
+    }
+  ],
+  "reason": "credits_exhausted",
+  "replies": [
+    {
+      "text": "I stopped before finishing: you have used this week's ClaxBot credits. I had not run any scripts yet. Your credits reset on Monday 26 October 2026 at 00:00 UTC.",
+      "thread": "<thread-1>"
+    }
+  ],
+  "roster": {
+    "shown_working_at_no_step": 0,
+    "shown_working_before": [
+      {
+        "kind": "stopped",
+        "shown": false,
+        "step": 1
+      }
+    ],
+    "stopped_showing": [
+      {
+        "calls_after_it": 0,
+        "run_status": "stopped"
+      }
+    ]
+  },
+  "status": "stopped",
+  "steps": [
+    "stopped"
+  ],
+  "writes_in_order": [
+    {
+      "key": "<run>:1:1000000",
+      "op": "threads.reply",
+      "thread": "<thread-1>"
+    }
+  ]
+}

@@ -10,7 +10,7 @@ use std::rc::Rc;
 use std::task::{Poll, Waker};
 use std::time::Duration;
 
-use clax_bot_sandbox::{CancelToken, Host, Limits, Script, ScriptOutcome};
+use clax_bot_sandbox::{CancelToken, Host, HostReply, Limits, Script, ScriptOutcome};
 use futures_util::future::{Either, select};
 use js_sys::{Array, Function, Object, Promise, Reflect};
 use wasm_bindgen::prelude::Closure;
@@ -225,7 +225,7 @@ pub(super) async fn run(
                 } => {
                     let t = js_sys::Date::now();
                     let result =
-                        match select(Box::pin(host.call(&op, args)), Box::pin(cancel.cancelled()))
+                        match select(Box::pin(host.ask(&op, args)), Box::pin(cancel.cancelled()))
                             .await
                         {
                             Either::Left((r, _)) => Some(r),
@@ -236,6 +236,16 @@ pub(super) async fn run(
                         state.interrupted(op, args_bytes, us);
                         let _ = resolve.call1(&JsValue::NULL, &JsValue::from_str(STOP_REPLY));
                         break End::Cancelled;
+                    };
+                    // No answer yet: the isolate is told the run has
+                    // ended, as on a cancel, and its driver aborts it.
+                    let result = match result {
+                        HostReply::Answer(result) => result,
+                        HostReply::Waiting => {
+                            state.waiting(op, args_bytes, us);
+                            let _ = resolve.call1(&JsValue::NULL, &JsValue::from_str(STOP_REPLY));
+                            break End::Parked;
+                        }
                     };
                     let answer = state.answer(op, args_bytes, us, &result);
                     let _ = resolve.call1(&JsValue::NULL, &JsValue::from_str(&answer));

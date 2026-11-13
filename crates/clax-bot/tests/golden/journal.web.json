@@ -1,0 +1,202 @@
+[
+  {
+    "attempt": 1,
+    "ok": true,
+    "op": "web.search",
+    "result": {
+      "cost_milli": 50,
+      "counted": true,
+      "value": {
+        "left": {
+          "credits": 1998.019,
+          "fetches": 20,
+          "searches": 9
+        },
+        "results": [
+          {
+            "snippet": "About blue headings",
+            "title": "Found",
+            "url": "https://example.org/found"
+          }
+        ]
+      },
+      "web": {
+        "query": "blue headings"
+      }
+    },
+    "seq": 0,
+    "step": 2
+  },
+  {
+    "attempt": 1,
+    "ok": true,
+    "op": "web.fetch",
+    "result": {
+      "cost_milli": 100,
+      "counted": true,
+      "format": "auto",
+      "source": {
+        "kind": "search",
+        "label": "search #1",
+        "n": 1,
+        "seq": 0,
+        "step": 2
+      },
+      "value": {
+        "contentType": "text/markdown",
+        "finalUrl": "https://example.org/found",
+        "left": {
+          "credits": 1997.919,
+          "fetches": 19,
+          "searches": 9
+        },
+        "nextOffset": null,
+        "offset": 0,
+        "status": 200,
+        "text": "# Doc title\nbody",
+        "totalChars": 16,
+        "url": "https://example.org/found"
+      },
+      "web": {
+        "source": "search #1",
+        "url": "https://example.org/found"
+      }
+    },
+    "seq": 1,
+    "step": 2
+  },
+  {
+    "attempt": 1,
+    "ok": true,
+    "op": "web.fetch",
+    "result": {
+      "cost_milli": 100,
+      "counted": true,
+      "format": "auto",
+      "source": {
+        "comment_id": "<comment>",
+        "kind": "comment",
+        "label": "comment"
+      },
+      "value": {
+        "contentType": "text/html",
+        "finalUrl": "https://example.com/a",
+        "left": {
+          "credits": 1997.819,
+          "fetches": 18,
+          "searches": 9
+        },
+        "nextOffset": null,
+        "offset": 0,
+        "status": 200,
+        "text": "# Given\nSee the other page.",
+        "totalChars": 27,
+        "url": "https://example.com/a"
+      },
+      "web": {
+        "source": "comment",
+        "url": "https://example.com/a"
+      }
+    },
+    "seq": 2,
+    "step": 2
+  },
+  {
+    "attempt": 1,
+    "ok": true,
+    "op": "web.fetch",
+    "result": {
+      "cost_milli": 100,
+      "counted": true,
+      "format": "raw",
+      "source": {
+        "kind": "page",
+        "label": "page #2",
+        "n": 2,
+        "seq": 2,
+        "step": 2
+      },
+      "value": {
+        "contentType": "text/markdown",
+        "finalUrl": "https://example.com/b",
+        "left": {
+          "credits": 1997.719,
+          "fetches": 17,
+          "searches": 9
+        },
+        "nextOffset": null,
+        "offset": 0,
+        "status": 200,
+        "text": "# Doc title\nbody",
+        "totalChars": 16,
+        "url": "https://example.com/b"
+      },
+      "web": {
+        "source": "page #2",
+        "url": "https://example.com/b"
+      }
+    },
+    "seq": 3,
+    "step": 2
+  },
+  {
+    "attempt": 1,
+    "ok": true,
+    "op": "web.fetch",
+    "result": {
+      "cost_milli": 0,
+      "format": "auto",
+      "source": {
+        "comment_id": "<comment>",
+        "kind": "comment",
+        "label": "comment"
+      },
+      "value": {
+        "contentType": "text/html",
+        "finalUrl": "https://example.com/a",
+        "left": {
+          "credits": 1997.719,
+          "fetches": 17,
+          "searches": 9
+        },
+        "nextOffset": null,
+        "offset": 8,
+        "status": 200,
+        "text": "See the other page.",
+        "totalChars": 27,
+        "url": "https://example.com/a"
+      },
+      "web": {
+        "source": "comment",
+        "url": "https://example.com/a"
+      }
+    },
+    "seq": 4,
+    "step": 2
+  },
+  {
+    "attempt": 1,
+    "ok": false,
+    "op": "web.fetch",
+    "result": {
+      "code": "url_not_in_prior_context",
+      "cost_milli": 0,
+      "message": "https://elsewhere.example/x is not in the sender's words, a search result or a page you fetched; fetch only URLs from those",
+      "web": {
+        "url": "https://elsewhere.example/x"
+      }
+    },
+    "seq": 5,
+    "step": 2
+  },
+  {
+    "attempt": 1,
+    "ok": true,
+    "op": "reply",
+    "result": {
+      "comment_id": "<comment>"
+    },
+    "seq": 1000000,
+    "step": 4
+  }
+]

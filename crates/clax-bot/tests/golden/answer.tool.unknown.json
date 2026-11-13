@@ -1,0 +1,29 @@
+[
+  {
+    "content": [
+      {
+        "id": "tu_1",
+        "input": {
+          "query": "blue"
+        },
+        "name": "search",
+        "type": "tool_use"
+      }
+    ],
+    "role": "assistant"
+  },
+  {
+    "content": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "content": "There is no tool search; use run_script, finish or give_up.",
+        "is_error": true,
+        "tool_use_id": "tu_1",
+        "type": "tool_result"
+      }
+    ],
+    "role": "user"
+  }
+]

@@ -1,0 +1,29 @@
+{
+  "content": {
+    "calls": [
+      {
+        "code": null,
+        "ok": true,
+        "op": "files.list"
+      },
+      {
+        "code": null,
+        "ok": true,
+        "op": "files.list"
+      },
+      {
+        "code": null,
+        "ok": true,
+        "op": "files.list"
+      }
+    ],
+    "error": {
+      "kind": "call_limit",
+      "message": "the script made more than its 3 host calls"
+    },
+    "logs": [],
+    "value": null
+  },
+  "content_bytes": 245,
+  "is_error": true
+}

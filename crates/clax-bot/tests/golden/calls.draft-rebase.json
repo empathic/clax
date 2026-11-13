@@ -1,0 +1,253 @@
+[
+  {
+    "calls": [
+      {
+        "code": null,
+        "ms": "<measured>",
+        "ok": true,
+        "op": "files.replace",
+        "target": "index.html"
+      },
+      {
+        "code": null,
+        "ms": "<measured>",
+        "ok": true,
+        "op": "files.write",
+        "target": "extra.css"
+      }
+    ],
+    "journal": [
+      {
+        "attempt": 1,
+        "ok": true,
+        "op": "files.replace",
+        "result": null,
+        "seq": 0,
+        "step": 2
+      },
+      {
+        "attempt": 1,
+        "ok": true,
+        "op": "files.write",
+        "result": null,
+        "seq": 1,
+        "step": 2
+      }
+    ],
+    "step": 2
+  },
+  {
+    "calls": [
+      {
+        "code": null,
+        "ms": "<measured>",
+        "ok": true,
+        "op": "draft.theirs",
+        "target": "<artifact>"
+      },
+      {
+        "code": "invalid_args",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "draft.theirs",
+        "target": null
+      },
+      {
+        "code": "invalid_args",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "draft.rebase",
+        "target": null
+      },
+      {
+        "code": "conflict",
+        "ms": "<measured>",
+        "ok": false,
+        "op": "draft.publish",
+        "target": "<artifact>"
+      },
+      {
+        "code": null,
+        "ms": "<measured>",
+        "ok": true,
+        "op": "draft.rebase",
+        "target": "<artifact>"
+      },
+      {
+        "code": null,
+        "ms": "<measured>",
+        "ok": true,
+        "op": "draft.theirs",
+        "target": "<artifact>"
+      },
+      {
+        "code": null,
+        "ms": "<measured>",
+        "ok": true,
+        "op": "draft.theirs",
+        "target": "<artifact>"
+      },
+      {
+        "code": null,
+        "ms": "<measured>",
+        "ok": true,
+        "op": "draft.theirs",
+        "target": "<artifact>"
+      },
+      {
+        "code": null,
+        "ms": "<measured>",
+        "ok": true,
+        "op": "files.read",
+        "target": "index.html"
+      },
+      {
+        "code": null,
+        "ms": "<measured>",
+        "ok": true,
+        "op": "files.list",
+        "target": null
+      },
+      {
+        "code": null,
+        "ms": "<measured>",
+        "ok": true,
+        "op": "draft.rebase",
+        "target": "<artifact>"
+      },
+      {
+        "code": null,
+        "ms": "<measured>",
+        "ok": true,
+        "op": "draft.publish",
+        "target": "<artifact>"
+      }
+    ],
+    "journal": [
+      {
+        "attempt": 1,
+        "ok": true,
+        "op": "draft.theirs",
+        "result": null,
+        "seq": 0,
+        "step": 4
+      },
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "draft.theirs",
+        "result": {
+          "code": "invalid_args",
+          "message": "clax.draft.theirs: argument 1 (path) is missing"
+        },
+        "seq": 1,
+        "step": 4
+      },
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "draft.rebase",
+        "result": {
+          "code": "invalid_args",
+          "message": "clax.draft.rebase: takes at most 0 arguments, got 1"
+        },
+        "seq": 2,
+        "step": 4
+      },
+      {
+        "attempt": 1,
+        "ok": false,
+        "op": "draft.publish",
+        "result": {
+          "code": "conflict",
+          "message": "the artifact is at version 2; someone else published"
+        },
+        "seq": 3,
+        "step": 4
+      },
+      {
+        "attempt": 1,
+        "ok": true,
+        "op": "draft.rebase",
+        "result": {
+          "changed": [
+            "extra.css",
+            "index.html"
+          ],
+          "conflicts": [
+            "index.html"
+          ],
+          "version": 2
+        },
+        "seq": 4,
+        "step": 4
+      },
+      {
+        "attempt": 1,
+        "ok": true,
+        "op": "draft.theirs",
+        "result": null,
+        "seq": 5,
+        "step": 4
+      },
+      {
+        "attempt": 1,
+        "ok": true,
+        "op": "draft.theirs",
+        "result": null,
+        "seq": 6,
+        "step": 4
+      },
+      {
+        "attempt": 1,
+        "ok": true,
+        "op": "draft.theirs",
+        "result": null,
+        "seq": 7,
+        "step": 4
+      },
+      {
+        "attempt": 1,
+        "ok": true,
+        "op": "files.read",
+        "result": null,
+        "seq": 8,
+        "step": 4
+      },
+      {
+        "attempt": 1,
+        "ok": true,
+        "op": "files.list",
+        "result": null,
+        "seq": 9,
+        "step": 4
+      },
+      {
+        "attempt": 1,
+        "ok": true,
+        "op": "draft.rebase",
+        "result": {
+          "changed": [
+            "extra.css",
+            "index.html"
+          ],
+          "conflicts": [],
+          "version": 2
+        },
+        "seq": 10,
+        "step": 4
+      },
+      {
+        "attempt": 1,
+        "ok": true,
+        "op": "draft.publish",
+        "result": {
+          "version": 3
+        },
+        "seq": 11,
+        "step": 4
+      }
+    ],
+    "step": 4
+  }
+]

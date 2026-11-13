@@ -1148,7 +1148,7 @@ async fn failing_provider(body: &'static str) -> String {
 }
 
 #[tokio::test]
-async fn provider_errors_name_no_text_of_the_answer_and_a_new_url_clears_the_key() {
+async fn provider_errors_keep_the_answers_text_to_their_detail_and_a_new_url_clears_the_key() {
     let ts = TestServer::spawn().await;
     let secret = "<html>intranet console: db=10.0.0.7 password=hunter2</html>";
     let base = failing_provider(secret).await;
@@ -1188,12 +1188,22 @@ async fn provider_errors_name_no_text_of_the_answer_and_a_new_url_clears_the_key
     )
     .await;
     assert_eq!((s2, code(&m)), (502, "provider_error"), "{m}");
-    for shown in [v.to_string(), m.to_string()] {
+    // Clax's own words hold no text of the answer; the detail quotes it,
+    // as one line of plain text, for the admin who configured the provider.
+    for shown in [v["error"].to_string(), m["error"]["message"].to_string()] {
         for leak in ["hunter2", "10.0.0.7", "intranet", "<html>"] {
             assert!(!shown.contains(leak), "{shown}");
         }
     }
     assert!(v["error"].as_str().unwrap().contains("500"), "{v}");
+    for detail in [&v["detail"], &m["error"]["detail"]] {
+        assert_eq!(
+            (&detail["class"], &detail["status"]),
+            (&json!("api"), &json!(500)),
+            "{detail}"
+        );
+        assert_eq!(detail["message"], secret, "{detail}");
+    }
 
     // A new base URL drops the key set for the old one.
     let (s, v) = call(
@@ -1217,6 +1227,224 @@ async fn provider_errors_name_no_text_of_the_answer_and_a_new_url_clears_the_key
             .iter()
             .any(|(_, b)| b["op"] == "clear")
     );
+}
+
+/// A provider on a loopback port whose `GET /v1/models` lists one model,
+/// or, while the flag it returns holds, answers 400
+/// `invalid_request_error` with a `request-id` header and a message that
+/// echoes [`KEY`]; its base URL and that flag.
+async fn refusing_provider() -> (String, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    use std::sync::atomic::Ordering;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let refusing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", l.local_addr().unwrap());
+    let r = refusing.clone();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = l.accept().await {
+            let r = r.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 16384];
+                let _ = sock.read(&mut buf).await;
+                let (status, head, body) = if r.load(Ordering::SeqCst) {
+                    let body = json!({"type": "error", "error": {"type": "invalid_request_error",
+                        "message": format!("models: the key {KEY} may not list models\nretry")}});
+                    ("400 Bad Request", "request-id: req_refused_1\r\n", body)
+                } else {
+                    let body = json!({"data": [{"type": "model", "id": "claude-sonnet-5-5",
+                        "display_name": "Claude Sonnet 5.5", "created_at": "2026-09-01T00:00:00Z"}],
+                        "has_more": false, "first_id": "claude-sonnet-5-5",
+                        "last_id": "claude-sonnet-5-5"});
+                    ("200 OK", "", body)
+                };
+                let body = body.to_string();
+                let res = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n{head}content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(res.as_bytes()).await;
+            });
+        }
+    });
+    (base, refusing)
+}
+
+#[tokio::test]
+async fn a_refused_request_is_the_keys_last_problem_with_the_providers_words_never_the_key() {
+    use std::sync::atomic::Ordering;
+    let ts = TestServer::spawn().await;
+    let (base, refusing) = refusing_provider().await;
+    let (s, v) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::PUT,
+        "/api/admin/provider",
+        json!({"base_url": base}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    configured(&ts).await;
+    let provider = || async {
+        let (s, v) = call(
+            &ts,
+            &Who::OwnerBrowser,
+            Method::GET,
+            "/api/admin/provider",
+            Value::Null,
+        )
+        .await;
+        assert_eq!(s, 200, "{v}");
+        v
+    };
+    let v = provider().await;
+    assert_eq!(
+        (&v["key"]["problem"], &v["key"]["last_problem"]),
+        (&Value::Null, &Value::Null),
+        "{v}"
+    );
+
+    // The test: Clax's words in `error`, the provider's in `detail`.
+    let (s, t) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::POST,
+        "/api/admin/provider/test",
+        json!({}),
+    )
+    .await;
+    assert_eq!((s, &t["ok"]), (200, &json!(false)), "{t}");
+    assert_eq!(
+        t["error"], "the provider refused the request (HTTP 400)",
+        "{t}"
+    );
+    let d = &t["detail"];
+    assert_eq!(
+        (&d["class"], &d["status"], &d["type"], &d["request_id"]),
+        (
+            &json!("invalid_request"),
+            &json!(400),
+            &json!("invalid_request_error"),
+            &json!("req_refused_1")
+        ),
+        "{t}"
+    );
+    assert_eq!(
+        d["message"], "models: the key [redacted] may not list models retry",
+        "{t}"
+    );
+
+    // The key's last problem, in the admin's view of the provider.
+    let v = provider().await;
+    assert_eq!(
+        v["key"]["problem"],
+        "the instance key: the last request with it failed: the provider refused the request",
+        "{v}"
+    );
+    let p = &v["key"]["last_problem"];
+    assert_eq!(
+        (&p["class"], &p["message"], &p["request_id"]),
+        (&d["class"], &d["message"], &d["request_id"]),
+        "{v}"
+    );
+    assert!(p["at"].as_str().is_some_and(|a| !a.is_empty()), "{v}");
+
+    // The models route: 502 with the same detail.
+    let (s, m) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::GET,
+        "/api/admin/provider/models",
+        Value::Null,
+    )
+    .await;
+    assert_eq!((s, code(&m)), (502, "provider_error"), "{m}");
+    assert_eq!(
+        m["error"]["message"], "the provider refused the request (HTTP 400)",
+        "{m}"
+    );
+    assert_eq!(&m["error"]["detail"], d, "{m}");
+    for shown in [&t, &v, &m] {
+        let shown = shown.to_string();
+        assert!(
+            !shown.contains(KEY) && !shown.contains("TOPSECRETKEYVALUE"),
+            "{shown}"
+        );
+    }
+    let kept = ts
+        .store
+        .secret_meta(&clax_store::secrets::SecretSlot::Instance)
+        .unwrap()
+        .unwrap()
+        .last_problem
+        .unwrap()
+        .to_string();
+    assert!(!kept.contains("TOPSECRETKEYVALUE"), "{kept}");
+
+    // Both failures are in the provider failure log, the admin's, newest
+    // first, with the redaction kept.
+    let (s, log) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::GET,
+        "/api/admin/provider/failures",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(s, 200, "{log}");
+    let requests: Vec<&str> = log["failures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["request"].as_str().unwrap())
+        .collect();
+    assert_eq!(requests, ["provider.models", "provider.test"], "{log}");
+    let f = &log["failures"][1];
+    assert_eq!(
+        (
+            &f["class"],
+            &f["status"],
+            &f["message"],
+            &f["request_id"],
+            &f["run_id"]
+        ),
+        (
+            &d["class"],
+            &d["status"],
+            &d["message"],
+            &d["request_id"],
+            &Value::Null
+        ),
+        "{log}"
+    );
+    assert_eq!(f["person"]["id"], "*owner", "{log}");
+    let shown = log.to_string();
+    assert!(
+        !shown.contains(KEY) && !shown.contains("TOPSECRETKEYVALUE"),
+        "{shown}"
+    );
+
+    // A later request that succeeds clears it.
+    refusing.store(false, Ordering::SeqCst);
+    let (s, t) = call(
+        &ts,
+        &Who::OwnerBrowser,
+        Method::POST,
+        "/api/admin/provider/test",
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        (s, &t["ok"], &t["error"], &t["detail"]),
+        (200, &json!(true), &Value::Null, &Value::Null),
+        "{t}"
+    );
+    let v = provider().await;
+    assert_eq!(
+        (&v["key"]["problem"], &v["key"]["last_problem"]),
+        (&Value::Null, &Value::Null),
+        "{v}"
+    );
+    assert!(v["key"]["last_ok_at"].is_string(), "{v}");
 }
 
 #[tokio::test]

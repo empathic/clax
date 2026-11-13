@@ -55,6 +55,12 @@ pub trait Runs: Send + Sync {
     fn started(&self, _run: &str) {}
     /// A cancel of run `run` was recorded: stop it at its next boundary.
     fn cancelled(&self, _run: &str) {}
+    /// A message to run `run`, which is not parked, was kept: drive it if
+    /// nothing will, leaving a wait its driver chose (a retry, a stall)
+    /// to run out. By default, as [`Runs::started`].
+    fn messaged(&self, run: &str) {
+        self.started(run);
+    }
 }
 
 /// Drives nothing: runs stay queued (a daemon built without a driver,
@@ -110,6 +116,13 @@ pub struct Bot {
     /// check of its AI binding. None (the default): nothing, as on the
     /// daemon.
     pub admin_web_check: Option<Arc<dyn AdminWebCheck>>,
+    /// What the joins kept on an artifact bind into a run of Clax's own
+    /// kind made there ([`crate::bot_joins`]): the daemon's hub of
+    /// registered surfaces, set with its driver unless the daemon is
+    /// hosted (which serves no host route). `None` (the default, a hosted
+    /// daemon's and the Worker's): no run is made with a join, and
+    /// nothing is read for one.
+    pub joins: Option<Arc<dyn crate::bot_joins::JoinedSurfaces>>,
 }
 
 /// The host's check of its web source for the admin's view of the web
@@ -151,6 +164,7 @@ impl Default for Bot {
             web_configured: clax_bot::web::WebShape::default(),
             web_check: Arc::default(),
             admin_web_check: None,
+            joins: None,
         }
     }
 }
@@ -170,12 +184,15 @@ impl clax_core::working::Clock for StoreClock<'_> {
 pub struct Settings {
     pub store: Arc<Store>,
     pub enabled: bool,
+    /// `[bot] model_takes_images` ([`clax_bot::RunSettings::model_takes_images`]).
+    pub model_takes_images: bool,
 }
 
 impl clax_bot::SettingsSource for Settings {
     fn settings(&self) -> clax_core::Result<clax_bot::RunSettings> {
         Ok(clax_bot::RunSettings {
             enabled: self.enabled,
+            model_takes_images: self.model_takes_images,
             ..clax_bot::RunSettings::from_store(&self.store)?
         })
     }
@@ -683,8 +700,15 @@ impl<'a> Names<'a> {
 ///
 /// `host` is the origin the key was set for and is only sent to; with
 /// `base_url` (the provider in effect) at another, `problem` says so as
-/// `<whose> was set for <host>; set it again` (`whose`: "your key", "the
-/// instance key").
+/// `<whose>: it was set for <host>; set it again` (`whose`: "your key",
+/// "the instance key"). Else, when the last request made with the key
+/// failed, `problem` says so in Clax's own words, from its class alone
+/// ([`problem_words`]): `<whose>: the last request with it failed: <words>`.
+/// `last_problem` is that failure as the store keeps it
+/// ([`clax_store::secrets::SecretMeta::last_problem`]: `{at, class, status,
+/// type, message, request_id}`, the provider's words plain text), null
+/// when none; it is shown only where the key's metadata is, to the key's
+/// own person or to admins.
 pub fn key_info(
     names: &mut Names<'_>,
     meta: Option<&clax_store::secrets::SecretMeta>,
@@ -693,12 +717,39 @@ pub fn key_info(
 ) -> clax_core::Result<Value> {
     Ok(match meta {
         None => json!({"set": false, "last4": null, "set_at": null, "set_by": null,
-                       "last_ok_at": null, "host": null, "problem": null}),
-        Some(m) => json!({"set": true, "last4": m.last4, "set_at": m.set_at,
-                          "set_by": names.person(&m.set_by)?, "last_ok_at": m.last_ok_at,
-                          "host": m.host,
-                          "problem": m.host_problem(base_url).map(|p| format!("{whose}: {p}"))}),
+                       "last_ok_at": null, "host": null, "problem": null,
+                       "last_problem": null}),
+        Some(m) => {
+            let failed = m.last_problem.as_ref().map(|p| {
+                format!(
+                    "the last request with it failed: {}",
+                    problem_words(p["class"].as_str().unwrap_or_default())
+                )
+            });
+            let problem = m.host_problem(base_url).or(failed);
+            json!({"set": true, "last4": m.last4, "set_at": m.set_at,
+                   "set_by": names.person(&m.set_by)?, "last_ok_at": m.last_ok_at,
+                   "host": m.host,
+                   "problem": problem.map(|p| format!("{whose}: {p}")),
+                   "last_problem": m.last_problem})
+        }
     })
+}
+
+/// What a failed request's class (`clax_sample`'s `ErrorDetail::class`)
+/// says happened, in Clax's own words: never the provider's.
+#[must_use]
+pub fn problem_words(class: &str) -> &'static str {
+    match class {
+        "invalid_request" => "the provider refused the request",
+        "auth" => "the provider refused the key",
+        "api" => "the provider answered with an error",
+        "rate_limited" => "the provider limited it",
+        "overloaded" => "the provider was overloaded",
+        "network" => "the provider could not be reached",
+        "bad_base_url" | "redirected" => "the base URL is not one a key may be sent to",
+        _ => "the provider's answer could not be read",
+    }
 }
 
 #[cfg(test)]

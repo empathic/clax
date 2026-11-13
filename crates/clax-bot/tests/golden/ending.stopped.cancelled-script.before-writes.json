@@ -1,0 +1,353 @@
+{
+  "audit": {
+    "kinds": [
+      "bot.run_start",
+      "bot.turn",
+      "bot.script",
+      "bot.call",
+      "bot.call",
+      "bot.run_end"
+    ],
+    "records": [
+      {
+        "actor": {
+          "on_behalf_of": "*owner",
+          "type": "bot"
+        },
+        "at": "2026-10-21T10:00:00.000Z",
+        "body": {
+          "clax_commit": "<commit>",
+          "clax_version": "<version>",
+          "key_source": "instance",
+          "model": "claude-sonnet-5-5",
+          "request": "thread",
+          "run": "<run>",
+          "thread_ids": [
+            "<thread-1>"
+          ],
+          "v": 1,
+          "via": "daemon"
+        },
+        "ids": {
+          "artifact": "<artifact>",
+          "artifact2": null,
+          "call": null,
+          "origin": null,
+          "question": null,
+          "session": null,
+          "thread": null
+        },
+        "kind": "bot.run_start"
+      },
+      {
+        "actor": {
+          "on_behalf_of": "*owner",
+          "type": "bot"
+        },
+        "at": "2026-10-21T10:00:00.000Z",
+        "body": {
+          "cache_write_tokens": 500,
+          "cached_tokens": 2000,
+          "clax_commit": "<commit>",
+          "clax_version": "<version>",
+          "credits_milli": 1931,
+          "input_tokens": 1000,
+          "key_source": "instance",
+          "model": "claude-sonnet-5-5",
+          "output_tokens": 300,
+          "run": "<run>",
+          "step": 1,
+          "stop_reason": "tool_use",
+          "v": 1,
+          "via": "daemon"
+        },
+        "ids": {
+          "artifact": "<artifact>",
+          "artifact2": null,
+          "call": null,
+          "origin": null,
+          "question": null,
+          "session": null,
+          "thread": null
+        },
+        "kind": "bot.turn"
+      },
+      {
+        "actor": {
+          "on_behalf_of": "*owner",
+          "type": "bot"
+        },
+        "at": "2026-10-21T10:00:00.000Z",
+        "body": {
+          "calls": [
+            "files.list",
+            "artifact.get"
+          ],
+          "clax_commit": "<commit>",
+          "clax_version": "<version>",
+          "code_sha256": "<sha256 of the code>",
+          "cpu_ms": "<measured>",
+          "credits_milli": "<charged from what the scripts measured>",
+          "error": "the run was cancelled",
+          "mem_peak": "<measured>",
+          "run": "<run>",
+          "step": 2,
+          "title": "Script",
+          "v": 1,
+          "via": "daemon"
+        },
+        "ids": {
+          "artifact": "<artifact>",
+          "artifact2": null,
+          "call": null,
+          "origin": null,
+          "question": null,
+          "session": null,
+          "thread": null
+        },
+        "kind": "bot.script"
+      },
+      {
+        "actor": {
+          "on_behalf_of": "*owner",
+          "type": "bot"
+        },
+        "at": "2026-10-21T10:00:00.000Z",
+        "body": {
+          "clax_commit": "<commit>",
+          "clax_version": "<version>",
+          "ok": true,
+          "op": "files.list",
+          "run": "<run>",
+          "step": 2,
+          "target": null,
+          "v": 1,
+          "via": "daemon"
+        },
+        "ids": {
+          "artifact": "<artifact>",
+          "artifact2": null,
+          "call": null,
+          "origin": null,
+          "question": null,
+          "session": null,
+          "thread": null
+        },
+        "kind": "bot.call"
+      },
+      {
+        "actor": {
+          "on_behalf_of": "*owner",
+          "type": "bot"
+        },
+        "at": "2026-10-21T10:00:00.000Z",
+        "body": {
+          "clax_commit": "<commit>",
+          "clax_version": "<version>",
+          "ok": true,
+          "op": "artifact.get",
+          "run": "<run>",
+          "step": 2,
+          "target": "<artifact>",
+          "v": 1,
+          "via": "daemon"
+        },
+        "ids": {
+          "artifact": "<artifact>",
+          "artifact2": null,
+          "call": null,
+          "origin": null,
+          "question": null,
+          "session": null,
+          "thread": null
+        },
+        "kind": "bot.call"
+      },
+      {
+        "actor": {
+          "on_behalf_of": "*owner",
+          "type": "bot"
+        },
+        "at": "2026-10-21T10:00:00.000Z",
+        "body": {
+          "clax_commit": "<commit>",
+          "clax_version": "<version>",
+          "credits_milli": "<charged from what the scripts measured>",
+          "outcome": "stopped",
+          "reason": "cancelled",
+          "run": "<run>",
+          "v": 1,
+          "via": "daemon"
+        },
+        "ids": {
+          "artifact": "<artifact>",
+          "artifact2": null,
+          "call": null,
+          "origin": null,
+          "question": null,
+          "session": null,
+          "thread": null
+        },
+        "kind": "bot.run_end"
+      }
+    ]
+  },
+  "draft": [],
+  "drafts_published": [],
+  "ending": {
+    "last_step": {
+      "kind": "stopped",
+      "payload": {
+        "base": null,
+        "calls": [
+          {
+            "code": null,
+            "ms": "<measured>",
+            "ok": true,
+            "op": "files.list",
+            "target": null
+          },
+          {
+            "code": null,
+            "ms": "<measured>",
+            "ok": true,
+            "op": "artifact.get",
+            "target": "<artifact>"
+          }
+        ],
+        "code": "await clax.files.list();\nawait clax.artifact.get();\nwhile (true) {}",
+        "notice": null,
+        "outcome": {
+          "busy_us": "<measured>",
+          "calls": [
+            {
+              "args_bytes": 2,
+              "code": null,
+              "ok": true,
+              "op": "files.list",
+              "us": "<measured>"
+            },
+            {
+              "args_bytes": 2,
+              "code": null,
+              "ok": true,
+              "op": "artifact.get",
+              "us": "<measured>"
+            }
+          ],
+          "cpu_us": "<measured>",
+          "error": {
+            "kind": "cancelled",
+            "message": "the run was cancelled"
+          },
+          "logs": [],
+          "mem_peak_bytes": "<measured>",
+          "value": null,
+          "wall_us": "<measured>"
+        },
+        "published": null,
+        "reason": "cancelled",
+        "replied": [],
+        "title": "Script"
+      }
+    },
+    "notices_in_the_journal": [],
+    "reason": "cancelled",
+    "replies": [],
+    "roster": {
+      "shown_working_at_no_step": 0,
+      "shown_working_before": [
+        {
+          "kind": "turn",
+          "shown": true,
+          "step": 1
+        },
+        {
+          "kind": "stopped",
+          "shown": true,
+          "step": 2
+        }
+      ],
+      "stopped_showing": [
+        {
+          "calls_after_it": 0,
+          "run_status": "stopped"
+        }
+      ]
+    },
+    "status": "stopped",
+    "steps": [
+      "turn",
+      "stopped"
+    ],
+    "writes_in_order": []
+  },
+  "journal": [
+    {
+      "attempt": 1,
+      "ok": true,
+      "op": "files.list",
+      "result": null,
+      "seq": 0,
+      "step": 2
+    },
+    {
+      "attempt": 1,
+      "ok": true,
+      "op": "artifact.get",
+      "result": {
+        "description": null,
+        "id": "<artifact>",
+        "title": "Quarterly Report",
+        "version": 1
+      },
+      "seq": 1,
+      "step": 2
+    }
+  ],
+  "stopped_step_attempt": 2,
+  "usage": [
+    {
+      "absorbed": false,
+      "credits_milli": 280,
+      "line": "claude-sonnet-5-5.input",
+      "qty": 1000,
+      "step": 1
+    },
+    {
+      "absorbed": false,
+      "credits_milli": 56,
+      "line": "claude-sonnet-5-5.cached_input",
+      "qty": 2000,
+      "step": 1
+    },
+    {
+      "absorbed": false,
+      "credits_milli": 175,
+      "line": "claude-sonnet-5-5.cache_write",
+      "qty": 500,
+      "step": 1
+    },
+    {
+      "absorbed": false,
+      "credits_milli": 420,
+      "line": "claude-sonnet-5-5.output",
+      "qty": 300,
+      "step": 1
+    },
+    {
+      "absorbed": false,
+      "credits_milli": 1000,
+      "line": "harness.run",
+      "qty": 1,
+      "step": 1
+    },
+    {
+      "absorbed": false,
+      "credits_milli": "<measured>",
+      "line": "script.compute",
+      "qty": "<measured>",
+      "step": 2
+    }
+  ]
+}

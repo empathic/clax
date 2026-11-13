@@ -162,6 +162,7 @@ wasm_check_test(
         "//crates/clax-sample:clax_sample_wasm",
         "//crates/clax-server:clax_server_wasm",
         "//crates/clax-store:clax_store_wasm",
+        "//crates/clax-surface:clax_surface_wasm",
         "//crates/clax-worker:clax_worker_wasm",
         "//crates/clax-worker/vfs:clax_do_vfs_wasm",
     ],

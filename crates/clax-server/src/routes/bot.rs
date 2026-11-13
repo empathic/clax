@@ -471,17 +471,19 @@ pub async fn usage(
                     e.free_milli += t.free_milli;
                 }
                 let Some(rid) = &u.run_id else { continue };
-                let Some((run, steps)) = st.run_with_steps(rid)? else {
+                // A step whose row does not read is left out, logged: one
+                // damaged row fails no page.
+                let Some((run, steps, _)) = st.run_with_readable_steps(rid)? else {
                     continue;
                 };
-                let title = st
-                    .get_artifact(&ArtifactId::parse(&run.artifact_id)?)?
-                    .filter(|_| {
-                        scope
-                            .as_ref()
-                            .is_none_or(|m| m.lists(st, &run.artifact_id))
-                    })
-                    .map(|a| a.title);
+                // A run of a host's kind has no artifact, and so no title.
+                let title = match run.artifact() {
+                    Some(aid) => st
+                        .get_artifact(&ArtifactId::parse(aid)?)?
+                        .filter(|_| scope.as_ref().is_none_or(|m| m.lists(st, aid)))
+                        .map(|a| a.title),
+                    None => None,
+                };
                 let tokens: i64 = u
                     .lines
                     .iter()
@@ -493,7 +495,7 @@ pub async fn usage(
                     .get(clax_store::credits::LINE_SCRIPT_COMPUTE)
                     .map_or(0, |t| t.qty);
                 runs.push(json!({
-                    "id": run.id, "artifact_id": run.artifact_id, "artifact_title": title,
+                    "id": run.id, "artifact_id": run.artifact(), "artifact_title": title,
                     "started_at": run.created_at, "status": run.status.as_str(),
                     "scripts": steps.iter().filter(|s| s.kind.as_str() == "script").count(),
                     "cpu_gb_s": compute as f64 / Unit::CpuGbS.base() as f64,
@@ -620,7 +622,9 @@ pub fn reads_artifact(
 }
 
 /// What `caller` may do with `run`, or 404 when they may not see it (a
-/// run is not known to exist to someone who may not). On a hosted daemon
+/// run is not known to exist to someone who may not). A run with no
+/// artifact (one of a host's kind, [`Run::artifact`]) is its person's and
+/// an admin's, and no one else's. On a hosted daemon
 /// an admin is [`RunAccess::Admin`] only at an artifact they made, else
 /// [`RunAccess::AdminReader`] where they read it ([`reads_artifact`]),
 /// else [`RunAccess::Overseer`].
@@ -637,6 +641,15 @@ pub fn run_access(
     if person_of(caller).as_deref() == Some(run.person.as_str()) {
         return Ok(RunAccess::Acting);
     }
+    let Some(aid) = run.artifact() else {
+        // A run with no artifact has no readers: its person, and an admin
+        // (who oversees it where admins act within their own reach).
+        return match role_of(st, caller)?.is_admin() {
+            true if s_hosted => Ok(RunAccess::Overseer),
+            true => Ok(RunAccess::Admin),
+            false => Err(CoreError::NotFound),
+        };
+    };
     if role_of(st, caller)?.is_admin() {
         if !s_hosted {
             return Ok(RunAccess::Admin);
@@ -645,15 +658,15 @@ pub fn run_access(
             Caller::Person { viewer } => Some(viewer.public_id.as_str()),
             _ => None,
         };
-        if st.artifact_created_by(&run.artifact_id, maker)? {
+        if st.artifact_created_by(aid, maker)? {
             return Ok(RunAccess::Admin);
         }
-        if reads_artifact(st, s_hosted, caller, &run.artifact_id, live)? {
+        if reads_artifact(st, s_hosted, caller, aid, live)? {
             return Ok(RunAccess::AdminReader);
         }
         return Ok(RunAccess::Overseer);
     }
-    if reads_artifact(st, s_hosted, caller, &run.artifact_id, live)? {
+    if reads_artifact(st, s_hosted, caller, aid, live)? {
         return Ok(RunAccess::Reader);
     }
     Err(CoreError::NotFound)
@@ -677,7 +690,14 @@ pub fn draft_url(run: &str) -> String {
     format!("/api/bot/runs/{run}/draft/")
 }
 
-/// Run `run` as the routes show it, without its steps.
+/// Run `run` as the routes show it, without its steps. A parked run, and
+/// no other, has `waiting_on: {surface, op, since, deadline}`: the call
+/// it waits on, since when, and when the call is settled if nothing
+/// answers it (`null` for no deadline); a reader of a run a host's
+/// surface is bound into is shown it without `surface` and `op`
+/// ([`super::bot_joins::run_for_reader_of_hosts`]). `artifact_id` is
+/// the run's artifact, and `null` for a run that has none (one of a
+/// host's kind, whose `request` is `other`).
 ///
 /// # Errors
 /// The store's.
@@ -695,8 +715,8 @@ pub fn run_view(st: &Store, run: &Run) -> clax_core::Result<Value> {
         && !st.draft_files(&run.id)?.is_empty())
     .then(|| json!({"url": draft_url(&run.id)}));
     let mut names = Names::new(st);
-    Ok(json!({
-        "id": run.id, "artifact_id": run.artifact_id, "thread_ids": run.thread_ids,
+    let mut v = json!({
+        "id": run.id, "artifact_id": run.artifact(), "thread_ids": run.thread_ids,
         "request": run.request.as_str(), "status": run.status.as_str(), "reason": run.reason,
         "model": run.model, "key_source": run.key_source.as_str(),
         "acting_for": names.person(&run.person)?,
@@ -705,7 +725,34 @@ pub fn run_view(st: &Store, run: &Run) -> clax_core::Result<Value> {
         "tokens": {"input": input, "cached": cached, "output": output},
         "draft": draft,
         "last_event_id": last_event_id(st, run)?,
-    }))
+    });
+    // What a parked run waits on: a member no other run has.
+    if run.status == RunStatus::Parked
+        && let Some(parking) = readable_parking(st, &run.id)?
+        && let Some(on) = parking.waiting_on
+    {
+        v["waiting_on"] = json!({
+            "surface": on["surface"], "op": on["op"],
+            "since": parking.parked_at, "deadline": on["deadline"],
+        });
+    }
+    Ok(v)
+}
+
+/// Run `id`'s parking ([`Store::run_parking`]), `None` when its row does
+/// not read (logged): the run ends `failed` for it, and a view of it
+/// fails no listing.
+fn readable_parking(
+    st: &Store,
+    id: &str,
+) -> clax_core::Result<Option<clax_store::bot_runs::Parking>> {
+    match st.run_parking(id) {
+        Err(e) if clax_store::bot_runs::is_unreadable(&e) => {
+            tracing::warn!("the parking of run {id} does not read: {e}");
+            Ok(None)
+        }
+        other => other,
+    }
 }
 
 /// What of run view `v` ([`run_view`]) an overseer
@@ -722,6 +769,9 @@ pub fn for_overseer(v: &mut Value) {
     ] {
         v[k] = Value::Null;
     }
+    if let Some(members) = v.as_object_mut() {
+        members.remove("waiting_on");
+    }
 }
 
 #[derive(Deserialize)]
@@ -736,7 +786,10 @@ const RUNS_LISTED: u32 = 50;
 /// `GET /api/bot/runs?artifact=` (see the module documentation): the
 /// runs on an artifact the caller may read, newest first. An admin lists
 /// any artifact's on a local daemon; on a hosted one only those they read,
-/// as anyone (404 for any other, as for none).
+/// as anyone (404 for any other, as for none). A run that a reader of the
+/// artifact alone sees bare in `GET /api/bot/runs/<id>`
+/// ([`super::bot_joins::hides_hosts`]) is listed as that reader sees it
+/// there.
 pub async fn list(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -751,17 +804,34 @@ pub async fn list(
         .map_err(|_| ApiError::bad_request("invalid_artifact", "not an artifact ID"))?;
     let live = s.live_ids.contains(id.as_str());
     let hosted = s.hosted.is_some();
+    let binds = super::bot_joins::hosts_bind(&s.bot, hosted);
     let v = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            let admin = !hosted && role_of(st, &caller)?.is_admin();
+            let sees_failures = sees_instance_failures(st, &caller)?;
+            let admin = !hosted && sees_failures;
             if !admin && !reads_artifact(st, hosted, &caller, id.as_str(), live)? {
                 return Err(CoreError::NotFound);
             }
             let runs = st
                 .runs_for_artifact(id.as_str(), RUNS_LISTED)?
                 .iter()
-                .map(|r| run_view(st, r))
+                .map(|r| {
+                    let mut v = run_view(st, r)?;
+                    if !sees_failures {
+                        run_without_instance_failure(&mut v, r.key_source == KeySource::Instance);
+                    }
+                    // A reader of the artifact sees a run a host's
+                    // surface is bound into as `get` shows it them; who
+                    // reads it is asked only of such a run.
+                    if super::bot_joins::hides_hosts(st, binds, &r.id)?
+                        && run_access(st, hosted, live, &caller, r)
+                            .map_or(true, RunAccess::reads_as_reader)
+                    {
+                        super::bot_joins::run_for_reader_of_hosts(&mut v);
+                    }
+                    Ok(v)
+                })
                 .collect::<clax_core::Result<Vec<_>>>()?;
             Ok(json!({"runs": runs}))
         })
@@ -782,7 +852,9 @@ pub async fn get(
     let (hosted, live_ids, bot) = (s.hosted.is_some(), s.live_ids.clone(), s.bot.clone());
     let v = s
         .store_call(move |st| {
-            let (run, steps) = st.run_with_steps(&rid)?.ok_or(CoreError::NotFound)?;
+            let (run, steps, _) = st
+                .run_with_readable_steps(&rid)?
+                .ok_or(CoreError::NotFound)?;
             let live = live_ids.contains(&run.artifact_id);
             let access = run_access(st, hosted, live, &caller, &run)?;
             let mut v = run_view(st, &run)?;
@@ -792,14 +864,27 @@ pub async fn get(
                 let mut steps = steps_view(st, &run.id, &steps)?;
                 if access.reads_as_reader() {
                     steps.iter_mut().for_each(for_reader);
+                    if super::bot_joins::hides_hosts(
+                        st,
+                        super::bot_joins::hosts_bind(&bot, hosted),
+                        &run.id,
+                    )? {
+                        steps
+                            .iter_mut()
+                            .for_each(super::bot_joins::for_reader_of_hosts);
+                        super::bot_joins::run_for_reader_of_hosts(&mut v);
+                    }
                 }
                 v["steps"] = json!(steps);
+            }
+            if !sees_instance_failures(st, &caller)? {
+                run_without_instance_failure(&mut v, run.key_source == KeySource::Instance);
             }
             let mut rec = clax_http::bot::view(st, AuditKind::ViewRun).with("run", run.id.as_str());
             // On a hosted daemon the view names its run's artifact, so only
             // admins who reach it read it.
             if hosted {
-                rec.ids.artifact = Some(run.artifact_id.clone());
+                rec.ids.artifact = run.artifact().map(str::to_string);
             }
             record_view(st, &bot, &who, &caller, &run.id, rec)?;
             Ok(v)
@@ -846,13 +931,38 @@ pub fn run_active(id: &str) -> CoreError {
     CoreError::invalid("run_active", id.to_string())
 }
 
+/// What every run is held to before it is made, of whatever kind: that
+/// ClaxBot may start a run for `person` now ([`refusal`]); else the
+/// refusal's error (403 class), recorded as `bot.refused {person, reason,
+/// artifact}` under `ctx`, with `artifact` for a run on one. Answers the
+/// key the run will run on and the model it takes.
+///
+/// # Errors
+/// As above; the store's.
+pub fn admit_run(
+    st: &Store,
+    bot: &Bot,
+    ctx: &AuditCtx,
+    person: &str,
+    artifact: Option<&str>,
+) -> clax_core::Result<(KeySource, String)> {
+    if let Some(code) = refusal(st, bot, person)? {
+        st.record_refused(ctx, person, code, artifact)?;
+        return Err(refused_error(st, person, code)?);
+    }
+    let key_source = key_source(st, bot, person)?.unwrap_or(KeySource::Instance);
+    Ok((key_source, model_of(st)?))
+}
+
 /// Starts a run of `request` on artifact `aid` for `sender`, as `ctx`:
 /// 409 `run_active` (with its ID) while a run that has not ended names
 /// one of `thread_ids`, so one thread has one active run and a second send
 /// charges nothing; refused before any model call with the refusal's code
 /// (403 class, recorded as `bot.refused {person, reason, artifact}` under
-/// `ctx`); else made queued at the artifact's current version. The caller
-/// tells the driver ([`clax_http::bot::Runs::started`]) once it returns.
+/// `ctx`); else made queued at the artifact's current version, with the
+/// surfaces bound that joins on the artifact bind now
+/// ([`super::bot_joins::joined_bindings`]). The caller tells the driver
+/// ([`clax_http::bot::Runs::started`]) once it returns.
 ///
 /// # Errors
 /// As above; `NotFound` for no such artifact; the store's.
@@ -870,28 +980,36 @@ pub fn start_run(
     if let Some(active) = st.active_run_on(&thread_ids)? {
         return Err(run_active(&active.id));
     }
-    if let Some(code) = refusal(st, bot, person)? {
-        st.record_refused(ctx, person, code, Some(aid.as_str()))?;
-        return Err(refused_error(st, person, code)?);
+    let (key_source, model) = admit_run(st, bot, ctx, person, Some(aid.as_str()))?;
+    let new = clax_store::bot_runs::NewRun {
+        artifact_id: aid.as_str().to_string(),
+        person: person.to_string(),
+        request,
+        thread_ids,
+        model,
+        key_source,
+        base_version: art.current_version,
+        agent_grant: sender.agent_grant.clone(),
+        web: WebAccess::now(st, person, crate::bot::web_configured(st, bot)?)?
+            .shape()
+            .as_str()
+            .to_string(),
+    };
+    // The surfaces whose hosts joined the artifact and are connected now
+    // are bound too (`super::bot_joins`); with none, the run is made as
+    // it always was.
+    let joined = super::bot_joins::joined_bindings(
+        st,
+        bot,
+        sender,
+        aid.as_str(),
+        &new.web,
+        &new.thread_ids,
+    )?;
+    match joined {
+        None => st.create_run_exclusive(ctx, new)?,
+        Some(bindings) => st.create_run_exclusive_bound(ctx, new, &bindings)?,
     }
-    let key_source = key_source(st, bot, person)?.unwrap_or(KeySource::Instance);
-    st.create_run_exclusive(
-        ctx,
-        clax_store::bot_runs::NewRun {
-            artifact_id: aid.as_str().to_string(),
-            person: person.to_string(),
-            request,
-            thread_ids,
-            model: model_of(st)?,
-            key_source,
-            base_version: art.current_version,
-            agent_grant: sender.agent_grant.clone(),
-            web: WebAccess::now(st, person, crate::bot::web_configured(st, bot)?)?
-                .shape()
-                .as_str()
-                .to_string(),
-        },
-    )?
     .map_err(|active| run_active(&active.id))
 }
 
@@ -1236,6 +1354,9 @@ pub async fn cancel(
             if access == RunAccess::Overseer {
                 for_overseer(&mut v);
             }
+            if !sees_instance_failures(st, &caller)? {
+                run_without_instance_failure(&mut v, run.key_source == KeySource::Instance);
+            }
             Ok(v)
         })
         .await?;
@@ -1301,7 +1422,11 @@ async fn serve_draft(
                     (c, ct)
                 }));
             }
-            let id = ArtifactId::parse(&run.artifact_id)?;
+            // A run with no artifact has no version under its draft.
+            let Some(aid) = run.artifact() else {
+                return Ok(None);
+            };
+            let id = ArtifactId::parse(aid)?;
             Ok(st
                 .read_file_async(&id, run.base_version, &file)
                 .await?
@@ -1333,7 +1458,7 @@ async fn serve_draft(
 /// The store's.
 pub fn last_event_id(st: &Store, run: &Run) -> clax_core::Result<Option<String>> {
     use clax_bot::events::DONE_SEQ;
-    let Some((run, steps)) = st.run_with_steps(&run.id)? else {
+    let Some((run, steps, _)) = st.run_with_readable_steps(&run.id)? else {
         return Ok(None);
     };
     Ok(steps
@@ -1362,7 +1487,13 @@ fn credits_by_step(st: &Store, run: &str) -> clax_core::Result<BTreeMap<i64, i64
 /// started_at, ended_at, credits_milli}` and, once committed, what its kind
 /// did: a turn's narration (`text`), model, tokens and key; a script's
 /// title, code, calls, logs, value, error and CPU time; a finish's
-/// summary; a give-up's or a stop's reason.
+/// summary; a give-up's or a stop's reason and, for one a failed model
+/// call ended, `error_detail`: what the provider answered (`{class, status,
+/// type, message, request_id}`, `clax_sample`'s `ErrorDetail::to_json`,
+/// plain text, bounded, never the key; with `key_source`, the key the call
+/// ran on), absent for a step stored without it. Readers of the artifact
+/// never see it ([`for_reader`]), nor does anyone but an admin of a call
+/// on the instance's key ([`without_instance_failure`]).
 pub fn step_view(s: &clax_store::bot_runs::Step, credits_milli: i64) -> Value {
     use clax_store::bot_runs::StepKind;
     let mut v = json!({
@@ -1437,6 +1568,7 @@ pub fn step_view(s: &clax_store::bot_runs::Step, credits_milli: i64) -> Value {
                 p["reason"].clone()
             };
             set("reason", reason);
+            set("error_detail", p["error_detail"].clone());
         }
     }
     v
@@ -1458,12 +1590,86 @@ pub fn steps_view(
         .collect())
 }
 
+/// Whether `caller` is shown what the provider said of `run`'s failed
+/// model calls on the instance's key: an admin is (the provider failure
+/// log holds the same, `GET /api/admin/provider/failures`); no one else
+/// is, the run's own person included. A failure on the person's own key
+/// is shown them, and to whoever else sees the run's steps as today.
+///
+/// # Errors
+/// The store's.
+pub fn sees_instance_failures(st: &Store, caller: &Caller) -> clax_core::Result<bool> {
+    Ok(role_of(st, caller)?.is_admin())
+}
+
+/// The stop reasons of a failed model call, which say what about the
+/// provider or the key failed.
+const PROVIDER_STOPS: [&str; 2] = ["key_rejected", "model_error"];
+
+/// Step view `step` ([`step_view`]) as one who does not see the
+/// instance's failures ([`sees_instance_failures`]) is shown it, of a run
+/// on the instance's key (`on_instance`) or whose failed call was on it
+/// (its `error_detail.key_source`): a stop for a failed model call
+/// without `error_detail`, its `reason` `model_error` (a stored
+/// `key_rejected` included: the stored code is kept), and with
+/// `instance_problem: {busy}`, whether the provider was limiting or
+/// overloaded, which Clax tells them in its own words. Whether it was
+/// such a stop.
+pub fn without_instance_failure(step: &mut Value, on_instance: bool) -> bool {
+    let stop = step["kind"] == "stopped"
+        && step["reason"]
+            .as_str()
+            .is_some_and(|r| PROVIDER_STOPS.contains(&r));
+    let instance = on_instance || step["error_detail"]["key_source"] == "instance";
+    if !stop || !instance {
+        return false;
+    }
+    let busy = matches!(
+        step["error_detail"]["class"].as_str(),
+        Some("rate_limited" | "overloaded")
+    );
+    if let Some(o) = step.as_object_mut() {
+        o.remove("error_detail");
+        o.insert("reason".into(), json!("model_error"));
+        o.insert("instance_problem".into(), json!({"busy": busy}));
+    }
+    true
+}
+
+/// Run view `run` ([`run_view`]) as [`without_instance_failure`] says,
+/// with its `steps` when it has them: its `reason` `model_error` for a
+/// stored `key_rejected`, when it ran on the instance's key or a step's
+/// failed call did.
+pub fn run_without_instance_failure(run: &mut Value, on_instance: bool) {
+    let mut hid = false;
+    if let Some(Value::Array(steps)) = run.get_mut("steps") {
+        for s in steps {
+            hid |= without_instance_failure(s, on_instance);
+        }
+    }
+    if (on_instance || hid) && run["reason"] == "key_rejected" {
+        run["reason"] = json!("model_error");
+    }
+}
+
+/// Event `data` of `event` ([`panel_event`]) as [`without_instance_failure`]
+/// says.
+fn event_without_instance_failure(mut data: Value, on_instance: bool) -> Value {
+    let hid =
+        data.get("step").is_some() && without_instance_failure(&mut data["step"], on_instance);
+    if data.get("run").is_some() {
+        run_without_instance_failure(&mut data["run"], on_instance || hid);
+    }
+    data
+}
+
 /// What of a step someone who only reads the run's artifact sees (neither
 /// the person it acts for nor an admin): its place, kind, state, times,
 /// credits, a script's title and its calls' ops and outcomes, a finish's
 /// summary or an end's reason; never what was read with the acting
-/// person's rights: narration, code, values, logs, errors, a call's target
-/// or its web query or URL (`web`). A finish's `sources` stay: they are
+/// person's rights: narration, code, values, logs, errors, what a provider
+/// answered a failed model call (`error_detail`), a call's target or its
+/// web query or URL (`web`). A finish's `sources` stay: they are
 /// part of the reply ClaxBot posts, which readers of the artifact see.
 pub fn for_reader(step: &mut Value) {
     if let Some(o) = step.as_object_mut() {
@@ -1473,6 +1679,7 @@ pub fn for_reader(step: &mut Value) {
             "value",
             "logs",
             "error",
+            "error_detail",
             "input_tokens",
             "cached_tokens",
             "output_tokens",
@@ -1538,8 +1745,8 @@ pub fn panel_event(
     Ok(Some(match ev.event {
         "step_started" => {
             let step = st
-                .run_with_steps(run_id)?
-                .and_then(|(_, steps)| steps.into_iter().find(|s| s.n == n))
+                .run_with_readable_steps(run_id)?
+                .and_then(|(_, steps, _)| steps.into_iter().find(|s| s.n == n))
                 .map_or_else(
                     || json!({"n": n, "kind": d["kind"], "status": "running", "started_at": st.now(),
                               "credits_milli": 0}),
@@ -1550,7 +1757,7 @@ pub fn panel_event(
                         v["status"] = json!("running");
                         v["ended_at"] = Value::Null;
                         if let Some(o) = v.as_object_mut() {
-                            for k in ["text", "calls", "logs", "value", "error", "summary", "sources", "reason"] {
+                            for k in ["text", "calls", "logs", "value", "error", "error_detail", "instance_problem", "summary", "sources", "reason"] {
                                 o.remove(k);
                             }
                         }
@@ -1573,7 +1780,7 @@ pub fn panel_event(
             json!({"step": n, "call": call})
         }
         "step_done" => {
-            let Some((run, steps)) = st.run_with_steps(run_id)? else {
+            let Some((run, steps, _)) = st.run_with_readable_steps(run_id)? else {
                 return Ok(None);
             };
             let credits = credits_by_step(st, run_id)?;
@@ -1628,7 +1835,7 @@ pub async fn events(
         .and_then(clax_bot::EventId::parse);
     let (hosted, live_ids, bot) = (s.hosted.is_some(), s.live_ids.clone(), s.bot.clone());
     let (r, c) = (rid.clone(), caller.clone());
-    let (access, sub) = s
+    let (access, bare, hide, sub) = s
         .store_call(move |st| {
             let run = st.run(&r)?.ok_or(CoreError::NotFound)?;
             let live = live_ids.contains(&run.artifact_id);
@@ -1636,12 +1843,27 @@ pub async fn events(
             if access == RunAccess::Overseer {
                 return Err(CoreError::NotFound);
             }
+            let bare = access.reads_as_reader()
+                && super::bot_joins::hides_hosts(
+                    st,
+                    super::bot_joins::hosts_bind(&bot, hosted),
+                    &run.id,
+                )?;
             let mut rec = clax_http::bot::view(st, AuditKind::ViewRun).with("run", run.id.as_str());
             if hosted {
-                rec.ids.artifact = Some(run.artifact_id.clone());
+                rec.ids.artifact = run.artifact().map(str::to_string);
             }
             record_view(st, &bot, &who, &c, &run.id, rec)?;
-            Ok((access, bot.events.subscribe(st, &run.id, after)?))
+            // Who is not shown the instance's failures: whether the run is
+            // on its key.
+            let hide =
+                (!sees_instance_failures(st, &c)?).then_some(run.key_source == KeySource::Instance);
+            Ok((
+                access,
+                bare,
+                hide,
+                bot.events.subscribe(st, &run.id, after)?,
+            ))
         })
         .await?;
     struct Feed {
@@ -1650,6 +1872,13 @@ pub async fn events(
         rid: String,
         caller: Caller,
         reader: bool,
+        /// A reader of a run a host's surface is bound into, who sees
+        /// its steps bare ([`super::bot_joins::for_reader_of_hosts`]).
+        bare: bool,
+        /// For one not shown the instance's failures
+        /// ([`event_without_instance_failure`]): whether the run is on the
+        /// instance's key.
+        hide: Option<bool>,
         checked: clax_rt::time::Instant,
         done: bool,
     }
@@ -1677,6 +1906,8 @@ pub async fn events(
         rid,
         caller,
         reader: access.reads_as_reader(),
+        bare,
+        hide,
         checked: clax_rt::time::Instant::now(),
         done: false,
     };
@@ -1718,8 +1949,18 @@ pub async fn events(
                     .await
                     .ok()
                     .flatten();
+            let data = match (data, f.hide) {
+                (Some(d), Some(on_instance)) => {
+                    Some(event_without_instance_failure(d, on_instance))
+                }
+                (d, _) => d,
+            };
             let data = match data {
                 Some(d) if f.reader => event_for_reader(next.event, d),
+                d => d,
+            };
+            let data = match data {
+                Some(d) if f.bare => super::bot_joins::event_for_reader_of_hosts(next.event, d),
                 d => d,
             };
             if let Some(data) = data {
@@ -1749,7 +1990,10 @@ pub async fn events(
 
 #[cfg(test)]
 mod tests {
-    use super::{event_for_reader, for_reader, panel_event, quartiles, step_view};
+    use super::{
+        event_for_reader, event_without_instance_failure, for_reader, panel_event, quartiles,
+        run_without_instance_failure, step_view, without_instance_failure,
+    };
     use serde_json::{Value, json};
 
     /// A web call as the run loop records it in a step's `calls` and on a
@@ -1824,6 +2068,115 @@ mod tests {
         assert!(v.get("sources").is_none(), "{v}");
         let v = step_view(&finish(json!({"summary": "Done."})), 0);
         assert!(v.get("sources").is_none(), "{v}");
+    }
+
+    #[test]
+    fn a_stopped_steps_error_detail_reaches_the_step_view_and_never_a_reader() {
+        let stopped = |payload: Value| clax_store::bot_runs::Step {
+            run_id: "r1".into(),
+            n: 2,
+            kind: clax_store::bot_runs::StepKind::Stopped,
+            started_at: "2026-11-03T10:00:00Z".into(),
+            attempt: 1,
+            committed_at: Some("2026-11-03T10:00:01Z".into()),
+            payload: Some(payload),
+            observed: Vec::new(),
+            failures: 0,
+        };
+        let detail = json!({"class": "invalid_request", "status": 400,
+                            "type": "invalid_request_error", "message": "max_tokens: too large",
+                            "request_id": "req_011"});
+        let mut v = step_view(
+            &stopped(
+                json!({"reason": "model_error", "error": "the provider refused the request (HTTP 400)",
+                            "error_detail": detail}),
+            ),
+            0,
+        );
+        assert_eq!(v["reason"], "model_error", "{v}");
+        assert_eq!(v["error_detail"], detail, "{v}");
+        let mut event = json!({"step": v.clone()});
+        for_reader(&mut v);
+        assert!(v.get("error_detail").is_none(), "{v}");
+        assert_eq!(v["reason"], "model_error");
+        let read = event_for_reader("step_done", std::mem::take(&mut event)).unwrap();
+        assert!(read["step"].get("error_detail").is_none(), "{read}");
+
+        // A step stored before `error_detail` was kept reads as it did.
+        let old = step_view(
+            &stopped(json!({"reason": "model_error", "error": "invalid request: bad request"})),
+            0,
+        );
+        assert_eq!(
+            old,
+            json!({"n": 2, "kind": "stopped", "status": "done",
+                   "started_at": "2026-11-03T10:00:00Z", "ended_at": "2026-11-03T10:00:01Z",
+                   "credits_milli": 0, "reason": "model_error"})
+        );
+    }
+
+    #[test]
+    fn an_instance_keys_failure_reads_in_claxs_words_to_one_not_shown_it() {
+        let stop = |reason: &str, detail: Value| {
+            let mut v = json!({"n": 2, "kind": "stopped", "status": "done", "reason": reason});
+            if !detail.is_null() {
+                v["error_detail"] = detail;
+            }
+            v
+        };
+        let said = json!({"class": "auth", "status": 401, "type": "authentication_error",
+                          "message": "zq7 revoked", "request_id": "req_zq7",
+                          "key_source": "instance"});
+        // A run on the instance's key: no detail, `model_error`, a problem.
+        let mut run = json!({"reason": "key_rejected", "steps": [
+            {"n": 1, "kind": "turn"}, stop("key_rejected", said.clone())]});
+        run_without_instance_failure(&mut run, true);
+        assert_eq!(
+            run,
+            json!({"reason": "model_error", "steps": [{"n": 1, "kind": "turn"},
+                   {"n": 2, "kind": "stopped", "status": "done", "reason": "model_error",
+                    "instance_problem": {"busy": false}}]})
+        );
+        for k in ["zq7", "401", "authentication_error", "key_rejected"] {
+            assert!(!run.to_string().contains(k), "{k}: {run}");
+        }
+        // A stop stored before its detail was kept reads the same.
+        let mut old = stop("model_error", Value::Null);
+        assert!(without_instance_failure(&mut old, true));
+        assert_eq!(old["instance_problem"], json!({"busy": false}));
+        // A limiting or overloaded provider is said to be busy.
+        let mut busy = stop(
+            "model_error",
+            json!({"class": "overloaded", "key_source": "instance"}),
+        );
+        assert!(without_instance_failure(&mut busy, true));
+        assert_eq!(busy["instance_problem"], json!({"busy": true}));
+        // A run recorded on an own key whose call ran on the instance's.
+        let mut switched = stop("key_rejected", said);
+        assert!(without_instance_failure(&mut switched, false));
+        assert!(switched.get("error_detail").is_none());
+        // An own key's failure, and any other stop, are left as they are.
+        let own = stop(
+            "key_rejected",
+            json!({"class": "auth", "key_source": "own"}),
+        );
+        let mut kept = own.clone();
+        assert!(!without_instance_failure(&mut kept, false));
+        assert_eq!(kept, own);
+        let mut capped = stop("run_cap", Value::Null);
+        assert!(!without_instance_failure(&mut capped, true));
+        assert_eq!(capped, stop("run_cap", Value::Null));
+        let mut own_run = json!({"reason": "key_rejected"});
+        run_without_instance_failure(&mut own_run, false);
+        assert_eq!(own_run["reason"], "key_rejected");
+        // An event's step and run alike.
+        let ev = event_without_instance_failure(
+            json!({"step": stop("key_rejected", json!({"class": "auth", "key_source": "instance"})),
+                   "run": {"reason": "key_rejected"}}),
+            false,
+        );
+        assert_eq!(ev["run"]["reason"], "model_error", "{ev}");
+        assert!(ev["step"].get("error_detail").is_none(), "{ev}");
     }
 
     #[test]
