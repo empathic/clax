@@ -24,8 +24,10 @@ type Held = { req: Request; route: Route; key: string; rule: string | null; rank
 
 export type StagedLoad = {
   /** Releases held requests in order until none is held and `done` answers
-   * true with the page quiet; answers the labels released, in order. */
-  drive(done: () => Promise<boolean>): Promise<string[]>;
+   * true with the page quiet; answers the labels released, in order.
+   * `first` runs once, when the page has painted and fallen quiet before
+   * the first release: what the document alone shows. */
+  drive(done: () => Promise<boolean>, opts?: { first?: () => Promise<void> }): Promise<string[]>;
   /** The labels released so far. */
   released: string[];
 };
@@ -84,9 +86,11 @@ export async function stageLoad(page: Page, order: StageRule[], opts: { hold?: (
       await finished();
     }
   };
-  const drive = async (done: () => Promise<boolean>) => {
+  const drive = async (done: () => Promise<boolean>, at: { first?: () => Promise<void> } = {}) => {
+    let first = at.first;
     for (;;) {
       await quiet();
+      if (first) { const f = first; first = undefined; await f(); }
       const next = pick();
       if (next) {
         const label = labelOf(next);
