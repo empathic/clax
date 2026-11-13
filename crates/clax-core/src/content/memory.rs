@@ -1,9 +1,7 @@
 //! [`MemContent`]: artifact content in memory, for tests and for hosts
 //! that keep nothing on disk.
 
-use super::{
-    AssetKey, ContentStore, VersionWrite, bad_blob, is_blob_name, missing, present, superseded,
-};
+use super::{AssetKey, ContentStore, VersionWrite, check_blob, missing, present, superseded};
 use crate::{ArtifactId, Result};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -188,9 +186,7 @@ impl ContentStore for MemContent {
     }
 
     async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<()> {
-        if !is_blob_name(sha256) {
-            return Err(bad_blob(sha256));
-        }
+        check_blob(sha256, bytes)?;
         self.inner()
             .blobs
             .entry(sha256.to_string())

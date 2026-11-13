@@ -1137,6 +1137,10 @@ impl clax_http::bot::Runs for DriverRuns {
     fn cancelled(&self, run: &str) {
         self.0.cancel(run);
     }
+
+    fn messaged(&self, run: &str) {
+        self.0.messaged(run);
+    }
 }
 
 /// The driver of a daemon on `state` (native): its deps over the server's

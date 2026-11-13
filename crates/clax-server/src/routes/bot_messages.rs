@@ -12,7 +12,10 @@
 //!
 //! Who may: the daemon's token ([`DaemonToken`]), for a run of the
 //! surface `<name>` that the registration named started; any other run
-//! is 404 `unknown_run`, whoever started it. The router mounts them
+//! is 404 `unknown_run`, whoever started it. A body (or, for the `GET`,
+//! a query) that is not the message is 400 `invalid_request`, and a body
+//! longer than the hub's `request_bytes` 413 `too_large`; the `POST`'s
+//! other refusals are [`send`]'s. The router mounts them
 //! where it mounts the protocol's others.
 
 use super::artifacts::path;
@@ -22,12 +25,6 @@ use axum::extract::rejection::{BytesRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use clax_bot::broker::CallBroker;
-use clax_bot::clax_surface::Definition;
-use clax_bot::clax_surface::wire::{
-    CODE_INVALID_REQUEST, CODE_KEY_CONFLICT, CODE_RUN_ENDED, CODE_TAKES_NO_MESSAGES,
-    CODE_TOO_LARGE, CODE_TOO_MANY_MESSAGES, CODE_UNKNOWN_RUN, End, MessageRequest, MessageResponse,
-    RunState,
-};
 use clax_core::CoreError;
 use clax_http::agent::DeniedToGrants;
 use clax_http::bot_surfaces::{DaemonToken, refused};
@@ -36,10 +33,18 @@ use clax_http::state::AppState;
 use clax_store::Store;
 use clax_store::bot_messages::{self, MessageBounds, NewMessage};
 use clax_store::bot_runs::Run;
+use clax_surface::Definition;
+use clax_surface::wire::{
+    CODE_INVALID_REQUEST, CODE_KEY_CONFLICT, CODE_RUN_ENDED, CODE_TAKES_NO_MESSAGES,
+    CODE_TOO_LARGE, CODE_TOO_MANY_MESSAGES, CODE_UNKNOWN_RUN, End, MessageRequest, MessageResponse,
+    RunState,
+};
 use std::sync::Arc;
 
-/// `?registration=` of the `GET`.
+/// `?registration=` of the `GET`: a query with any other member is
+/// refused, as the content routes refuse one.
 #[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Registration {
     registration: String,
 }
@@ -66,7 +71,7 @@ fn started_run(
     if started_by.as_deref() != Some(registration) {
         return Ok(None);
     }
-    let Some((run, made, _)) = st.run_with_steps_as_made(id)? else {
+    let Some((run, made)) = st.run_as_made(id)? else {
         return Ok(None);
     };
     let Some(kind) = made
@@ -107,7 +112,10 @@ fn definition_of(
 /// same message the answer the first was given; a message larger than
 /// the hub's `run_message_bytes` 413 `too_large`; one more than the
 /// hub's `run_messages` waiting 429 `too_many_messages`. A message to
-/// a run between steps wakes its driver. A message to a parked run
+/// a run between steps wakes its driver ([`clax_http::bot::Runs::messaged`]),
+/// unless the run waits out a delay its driver chose (the model stayed
+/// unreachable, the sandbox could take no script): the message is given
+/// at the turn after that wait. A message to a parked run
 /// leaves it parked on the call it waits on, and wakes nothing: the
 /// answer says `waiting`, and the message is given at the run's first
 /// turn after the call is answered, its deadline comes or the run is
@@ -188,8 +196,9 @@ pub async fn send(
         })
         .await??;
     if sent.new && !sent.waiting {
-        // A run between steps has its next turn to take.
-        s.bot.runs.started(&id);
+        // A run between steps has its next turn to take; a wait its
+        // driver chose runs out first.
+        s.bot.runs.messaged(&id);
     }
     Ok(Json(MessageResponse {
         message: sent.message.id,
@@ -220,10 +229,21 @@ pub async fn state(
             let Some((run, kind, _)) = started_run(st, &name, &id, &q.registration)? else {
                 return Ok(None);
             };
-            let steps = st.run_with_steps(&id)?.map_or(0, |(_, steps)| {
+            // A step, or the parking, whose row does not read is left
+            // out (the run ends `failed` for it): one damaged row fails
+            // no state.
+            let steps = st.run_with_readable_steps(&id)?.map_or(0, |(_, steps, _)| {
                 steps.iter().filter(|s| s.committed_at.is_some()).count()
             });
-            let waiting_on = st.run_parking(&id)?.and_then(|p| p.waiting_on).map(|on| {
+            let parking = match st.run_parking(&id) {
+                Ok(parking) => parking,
+                Err(e) if clax_store::bot_runs::is_unreadable(&e) => {
+                    tracing::warn!("the parking of run {id} does not read: {e}");
+                    None
+                }
+                Err(e) => return Err(e),
+            };
+            let waiting_on = parking.and_then(|p| p.waiting_on).map(|on| {
                 let surface = on["surface"].as_str().unwrap_or_default().to_string();
                 let mut shown = serde_json::json!({"surface": surface});
                 if surface == name {
@@ -245,11 +265,19 @@ pub async fn state(
             } else {
                 None
             };
+            // A kept end that is JSON but no end is one that does not
+            // read: the state is refused, never answered without it.
             let (end, result) = match kept {
-                Some(kept) => (serde_json::from_value::<End>(kept.end).ok(), kept.result),
+                Some(kept) => match serde_json::from_value::<End>(kept.end) {
+                    Ok(end) => (Some(end), kept.result),
+                    Err(e) => {
+                        tracing::warn!("the kept end of run {id} does not read: {e}");
+                        return Ok(Some(Err(())));
+                    }
+                },
                 None => (None, None),
             };
-            Ok(Some(RunState {
+            Ok(Some(Ok(RunState {
                 run: run.id,
                 kind,
                 status: run.status.as_str().to_string(),
@@ -263,8 +291,16 @@ pub async fn state(
                 },
                 end,
                 result,
-            }))
+            })))
         })
         .await?;
-    state.map(Json).ok_or_else(unknown_run)
+    match state {
+        Some(Ok(state)) => Ok(Json(state)),
+        Some(Err(())) => Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "the run's end as the daemon keeps it does not read",
+        )),
+        None => Err(unknown_run()),
+    }
 }

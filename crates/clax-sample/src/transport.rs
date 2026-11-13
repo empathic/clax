@@ -91,13 +91,25 @@ impl Transport {
 
     /// Sends `method url` with `headers` and, when given, `json` as the
     /// body. `Err` when no answer came (the message may name the URL).
-    #[cfg(not(target_arch = "wasm32"))]
     pub async fn send(
         &self,
         method: &str,
         url: &str,
         headers: &[(&str, String)],
         json: Option<&Value>,
+    ) -> Result<Reply, String> {
+        let text = json.map(Value::to_string);
+        self.send_text(method, url, headers, text.as_deref()).await
+    }
+
+    /// [`Transport::send`] with the body's JSON as text, sent as it is.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn send_text(
+        &self,
+        method: &str,
+        url: &str,
+        headers: &[(&str, String)],
+        json: Option<&str>,
     ) -> Result<Reply, String> {
         use futures::StreamExt;
         let method = reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
@@ -127,12 +139,12 @@ impl Transport {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub async fn send(
+    pub async fn send_text(
         &self,
         method: &str,
         url: &str,
         headers: &[(&str, String)],
-        json: Option<&Value>,
+        json: Option<&str>,
     ) -> Result<Reply, String> {
         use futures::StreamExt;
         use wasm_bindgen::{JsCast, JsValue};
@@ -151,7 +163,7 @@ impl Transport {
         }
         if let Some(v) = json {
             h.append("content-type", "application/json").map_err(js)?;
-            init.set_body(&JsValue::from_str(&v.to_string()));
+            init.set_body(&JsValue::from_str(v));
         }
         init.set_headers(&h);
         let req = web_sys::Request::new_with_str_and_init(url, &init).map_err(js)?;

@@ -13,6 +13,10 @@ use std::fmt;
 ///   that namespace or surface, at any depth;
 /// - `*` is every operation.
 ///
+/// Clax's own operations are named without a surface (`files.read`,
+/// `files.*`), and no other surface may be named `clax`, so a pattern
+/// whose first name is `clax` could match nothing, and is refused.
+///
 /// A list of patterns allows an operation one of them matches, so an
 /// empty list allows none.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,8 +87,9 @@ impl Pattern {
     ///
     /// # Errors
     /// What is wrong with `s`, when it is not `*`, a dotted name, or a
-    /// dotted name followed by `.*`. The message shows `s` cut short
-    /// and escaped.
+    /// dotted name followed by `.*`, or when its first name is `clax`
+    /// (`clax` itself included).
+    /// The message shows `s` cut short and escaped.
     pub fn parse(s: &str) -> Result<Pattern, String> {
         if s == "*" {
             return Ok(Pattern(Form::All));
@@ -97,6 +102,22 @@ impl Pattern {
             return Err(format!(
                 "`{}` is not an allow pattern: write an operation (`shell.windows`), everything below a surface or namespace (`shell.*`, `shell.settings.*`), or `*`",
                 shown(s)
+            ));
+        }
+        // The one name `clax` is no operation of Clax's own (they are
+        // named without it) and no other surface's (none takes the name).
+        if s == "clax" {
+            return Err(
+                "`clax` is not an allow pattern: Clax's own operations are named without `clax.` \
+                 (`files.read`, `files.*`)"
+                    .to_string(),
+            );
+        }
+        if let Some(rest) = s.strip_prefix("clax.") {
+            return Err(format!(
+                "`{}` is not an allow pattern: Clax's own operations are named without `clax.` (`{}`)",
+                shown(s),
+                shown(rest)
             ));
         }
         Ok(Pattern(if under {
@@ -113,6 +134,15 @@ impl Pattern {
             Form::All => true,
             Form::Under(prefix) => op.starts_with(prefix.as_str()),
             Form::Exact(name) => op == name,
+        }
+    }
+
+    /// The name the pattern is, when it is one name with no `.`: what
+    /// names an operation directly on `clax`, and nothing else.
+    pub(crate) fn single_name(&self) -> Option<&str> {
+        match &self.0 {
+            Form::Exact(name) if !name.contains('.') => Some(name),
+            _ => None,
         }
     }
 

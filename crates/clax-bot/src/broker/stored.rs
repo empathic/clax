@@ -60,8 +60,8 @@
 
 use super::{BrokerStore, Placed};
 use crate::bot_surfaces::{
-    CallFailure, CallSummary, EndSummary, Millis, NewCall, NewEnd, OpenedCall, Pending,
-    PendingCall, PendingEnd, PendingSummary, RecordedEnd,
+    Answered, CallFailure, CallSummary, EndSummary, Millis, NewCall, NewEnd, OpenedCall, Pending,
+    PendingCall, PendingEnd, PendingSummary, RecordedEnd, Resend, Retry, Tries,
 };
 use chrono::{DateTime, TimeZone, Utc};
 use clax_core::CoreError;
@@ -76,13 +76,16 @@ use clax_surface::wire::{CallKind, End};
 use serde_json::Value;
 use std::sync::Arc;
 
-/// `ms` as the store writes an instant.
+/// `ms` as the store writes an instant: no later than the latest it
+/// keeps ([`kept::latest_stamp`], the end of the year 9999), whose stamps
+/// sort as instants do.
 #[must_use]
 pub fn at(ms: Millis) -> DateTime<Utc> {
+    let latest = kept::latest_stamp();
     i64::try_from(ms.0)
         .ok()
         .and_then(|ms| Utc.timestamp_millis_opt(ms).single())
-        .unwrap_or(DateTime::<Utc>::MAX_UTC)
+        .map_or(latest, |t| t.min(latest))
 }
 
 /// A stamp of the store's as the hub counts instants; the epoch for
@@ -201,6 +204,19 @@ impl StoredPending {
         self.settings = settings;
     }
 
+    /// Where the call `id` is with its attempts, as the hub reads them
+    /// from the store: `None` for a call that is settled, or not held.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn tries(&self, id: &str) -> Result<Option<Tries>, CoreError> {
+        Ok(self
+            .store
+            .pending_call(id)?
+            .filter(|call| call.answered_at.is_none())
+            .map(|call| tries_of(&call.tries)))
+    }
+
     /// The store.
     #[must_use]
     pub fn store(&self) -> &Arc<Store> {
@@ -233,9 +249,65 @@ fn deadline(expires_at: Option<&str>) -> Millis {
     expires_at.map_or(Millis(u64::MAX), millis)
 }
 
+fn rule_of(rule: kept::RetryRule) -> Retry {
+    Retry {
+        attempts: rule.attempts,
+        backoff_ms: rule.backoff_ms,
+        backoff_max_ms: rule.backoff_max_ms,
+    }
+}
+
+fn kept_rule(rule: Retry) -> kept::RetryRule {
+    kept::RetryRule {
+        attempts: rule.attempts,
+        backoff_ms: rule.backoff_ms,
+        backoff_max_ms: rule.backoff_max_ms,
+    }
+}
+
+/// A call's attempts as the hub counts them: `not_before` is the epoch
+/// for none.
+fn tries_of(tries: &kept::CallTries) -> Tries {
+    Tries {
+        rule: tries.rule.map(rule_of),
+        failures: tries.failures,
+        not_before: tries.not_before.as_deref().map_or(Millis(0), millis),
+        resend: match tries.resend {
+            kept::Resend::None => Resend::None,
+            kept::Resend::Planned => Resend::Planned,
+            kept::Resend::Due => Resend::Due,
+        },
+        later: tries.later,
+        last: tries.last.clone().map(|f| CallFailure {
+            code: f.code,
+            message: f.message,
+            retryable: f.retryable,
+        }),
+    }
+}
+
+/// A call's attempts as the store keeps them: no `not_before` for the
+/// epoch.
+fn kept_tries(tries: &Tries) -> kept::CallTries {
+    kept::CallTries {
+        rule: tries.rule.map(kept_rule),
+        failures: tries.failures,
+        not_before: (tries.not_before > Millis(0))
+            .then(|| clax_core::time::stamp(at(tries.not_before))),
+        resend: match tries.resend {
+            Resend::None => kept::Resend::None,
+            Resend::Planned => kept::Resend::Planned,
+            Resend::Due => kept::Resend::Due,
+        },
+        later: tries.later,
+        last: tries.last.clone().map(failure_of),
+    }
+}
+
 fn summary(call: &kept::CallSummary) -> CallSummary {
     CallSummary {
         id: call.id.clone(),
+        run: call.run_id.clone(),
         definition: call.def_hash.clone(),
         op: call.op.clone(),
         kind: kind_of(call.access),
@@ -243,12 +315,14 @@ fn summary(call: &kept::CallSummary) -> CallSummary {
         args_bytes: call.args_bytes,
         sent: call.sent,
         accepted: call.accepted,
+        tries: tries_of(&call.tries),
     }
 }
 
 fn summary_of(call: &kept::PendingCall) -> CallSummary {
     CallSummary {
         id: call.id.clone(),
+        run: call.run_id.clone(),
         definition: call.def_hash.clone(),
         op: call.op.clone(),
         kind: kind_of(call.access),
@@ -256,6 +330,7 @@ fn summary_of(call: &kept::PendingCall) -> CallSummary {
         args_bytes: call.args.to_string().len(),
         sent: call.sent_at.is_some(),
         accepted: call.accepted_at.is_some(),
+        tries: tries_of(&call.tries),
     }
 }
 
@@ -394,12 +469,34 @@ impl Pending for StoredPending {
         })
     }
 
+    /// The calls named that read. Those that do not (their arguments,
+    /// as kept, are not a JSON array) are settled `internal_error` here
+    /// ([`Store::settle_unreadable_calls`]): no host is sent a call
+    /// other than the one its script made.
     fn calls_for(
         &mut self,
         registration: &str,
         ids: &[String],
     ) -> Result<Vec<PendingCall>, Self::Error> {
         let calls = self.store.calls_named(registration, ids)?;
+        if calls.len() < ids.len() {
+            let missing: Vec<String> = ids
+                .iter()
+                .filter(|id| !calls.iter().any(|c| &c.id == *id))
+                .cloned()
+                .collect();
+            for ended in
+                self.store
+                    .settle_unreadable_calls(registration, &missing, at(self.seen))?
+            {
+                tracing::warn!(
+                    "clax-bot: call {} of run {} does not read as the store keeps it: settled \
+                     internal_error, and sent to no host",
+                    ended.id,
+                    ended.run_id
+                );
+            }
+        }
         let mut joined: std::collections::BTreeMap<String, Option<Value>> =
             std::collections::BTreeMap::new();
         let mut out = Vec::with_capacity(calls.len());
@@ -408,11 +505,17 @@ impl Pending for StoredPending {
                 let of = self.joined_of(&call.run_id, registration)?;
                 joined.insert(call.run_id.clone(), of);
             }
+            let Value::Array(args) = call.args.clone() else {
+                return Err(CoreError::invalid(
+                    "storage_unread",
+                    format!("the arguments of call {} are not a JSON array", call.id),
+                ));
+            };
             out.push(PendingCall {
                 summary: summary_of(&call),
                 joined: joined.get(&call.run_id).cloned().flatten(),
                 run: call.run_id,
-                args: call.args.as_array().cloned().unwrap_or_default(),
+                args,
                 key: call.key,
             });
         }
@@ -442,13 +545,55 @@ impl Pending for StoredPending {
         id: &str,
         outcome: Result<Value, CallFailure>,
         now: Millis,
-    ) -> Result<bool, Self::Error> {
+    ) -> Result<Answered, Self::Error> {
         let now = self.saw(now);
         let outcome = outcome.map_err(failure_of);
-        Ok(matches!(
-            self.store.answer_call(id, registration, outcome, now)?,
-            AnswerOutcome::Journaled { .. }
-        ))
+        Ok(
+            match self.store.answer_call(id, registration, outcome, now)? {
+                AnswerOutcome::Journaled { .. } => Answered::Settled,
+                AnswerOutcome::AlreadyJournaled => Answered::AlreadySettled,
+                AnswerOutcome::Ignored(_) => Answered::Ignored,
+            },
+        )
+    }
+
+    fn keep_tries(
+        &mut self,
+        registration: &str,
+        id: &str,
+        tries: &Tries,
+    ) -> Result<bool, Self::Error> {
+        self.store
+            .keep_call_tries(registration, id, &kept_tries(tries))
+    }
+
+    fn resends(&mut self, run: &str, registration: &str) -> Result<u32, Self::Error> {
+        self.store.call_resends(run, registration)
+    }
+
+    fn next_resend(&mut self, after: Millis) -> Result<Option<Millis>, Self::Error> {
+        Ok(self
+            .store
+            .next_call_resend(at(after))?
+            .as_deref()
+            .map(millis))
+    }
+
+    fn set_dropped(&mut self, id: &str, when: Option<Millis>) -> Result<(), Self::Error> {
+        let when = when.map(|t| self.saw(t));
+        self.store.set_registration_dropped(id, when).map(|_| ())
+    }
+
+    fn is_dropped(&mut self, id: &str) -> Result<bool, Self::Error> {
+        self.store.registration_dropped(id)
+    }
+
+    /// When the registration was last served, written as its `serve` is
+    /// taken: a host whose client gives up on a held `serve` is served
+    /// all the same ([`Store::touch_registration`]).
+    fn served(&mut self, id: &str, now: Millis) -> Result<(), Self::Error> {
+        let now = self.saw(now);
+        self.store.touch_registration(id, now).map(|_| ())
     }
 
     fn expire_calls(
@@ -474,9 +619,18 @@ impl Pending for StoredPending {
         now: Millis,
     ) -> Result<RecordedEnd, Self::Error> {
         let now = self.saw(now);
+        let written = serde_json::to_value(&end.end)
+            .ok()
+            .filter(Value::is_object)
+            .ok_or_else(|| {
+                CoreError::invalid(
+                    "invalid_request",
+                    format!("the end of run {} is not one the protocol writes", end.run),
+                )
+            })?;
         let kept = EndFor {
             registration_id: end.registration,
-            end: serde_json::to_value(&end.end).unwrap_or(Value::Null),
+            end: written,
             result: end.result,
         };
         Ok(
@@ -488,27 +642,58 @@ impl Pending for StoredPending {
         )
     }
 
+    /// The ends named that read. Those that do not (as kept, the end is
+    /// not a JSON object, or its result not JSON) are forgotten here
+    /// ([`Store::forget_unreadable_ends`]): there is nothing to tell a
+    /// host of them. An end this build does not know is one a later Clax
+    /// wrote: it is sent as it is kept ([`End::Other`]).
     fn ends_for(
         &mut self,
         registration: &str,
         ids: &[String],
     ) -> Result<Vec<PendingEnd>, Self::Error> {
-        self.store
-            .ends_named(registration, ids)?
-            .into_iter()
+        let ends = self.store.ends_named(registration, ids)?;
+        if ends.len() < ids.len() {
+            let missing: Vec<String> = ids
+                .iter()
+                .filter(|id| !ends.iter().any(|e| &e.id == *id))
+                .cloned()
+                .collect();
+            let forgotten = self.store.forget_unreadable_ends(registration, &missing)?;
+            if forgotten > 0 {
+                tracing::warn!(
+                    "clax-bot: {forgotten} ended runs of registration {registration} do not read \
+                     as the store keeps them: forgotten, and sent to no host"
+                );
+            }
+        }
+        ends.into_iter()
             .map(|end| {
                 let undelivered = self
                     .store
                     .undelivered_messages(&end.run_id)?
                     .iter()
-                    .map(|m| u64::try_from(m.seq).unwrap_or(0))
-                    .collect();
+                    .map(|m| {
+                        u64::try_from(m.seq).map_err(|_| {
+                            CoreError::invalid(
+                                "storage_unread",
+                                format!("a message of run {} has seq {}", end.run_id, m.seq),
+                            )
+                        })
+                    })
+                    .collect::<Result<_, _>>()?;
+                let Value::Object(members) = end.end else {
+                    return Err(CoreError::invalid(
+                        "storage_unread",
+                        format!("the end of run {} is not a JSON object", end.run_id),
+                    ));
+                };
+                let read = serde_json::from_value::<End>(Value::Object(members.clone()))
+                    .unwrap_or(End::Other(members));
                 Ok(PendingEnd {
                     id: end.id,
                     run: end.run_id,
-                    end: serde_json::from_value::<End>(end.end.clone()).unwrap_or_else(|_| {
-                        End::Other(end.end.as_object().cloned().unwrap_or_default())
-                    }),
+                    end: read,
                     result: end.result,
                     undelivered,
                 })
@@ -540,6 +725,7 @@ impl BrokerStore for StoredPending {
         now: Millis,
     ) -> Result<OpenedCall, Self::Error> {
         let now = self.saw(now);
+        let rule = kept_rule(call.retry);
         let new = kept::NewCall {
             step_n: placed.place.step,
             seq: placed.place.seq,
@@ -554,10 +740,14 @@ impl BrokerStore for StoredPending {
             waits: placed.waits,
             expires_at: Some(at(call.deadline)),
         };
-        match self
-            .store
-            .open_call(placed.run, placed.driver, new, Some(limit), now)
-        {
+        match self.store.open_call_with(
+            placed.run,
+            placed.driver,
+            new,
+            Some(rule),
+            Some(limit),
+            now,
+        ) {
             Ok(Opened::New(call)) => Ok(OpenedCall::New(call.id)),
             Ok(Opened::Same(call)) => Ok(OpenedCall::Same(call.id)),
             Err(CoreError::Invalid {
@@ -582,15 +772,27 @@ impl BrokerStore for StoredPending {
             .map(|row| ContentRow { meta: None, ..row }.handle()))
     }
 
+    /// `None` too for a call, or a journal, whose row does not read: no
+    /// answer stands for it, and the serve that asks goes on.
     fn settled(&mut self, id: &str) -> Result<Option<Result<Value, CallFailure>>, Self::Error> {
-        let Some(call) = self.store.pending_call(id)? else {
-            return Ok(None);
+        let unreadable = |e: CoreError| {
+            if clax_store::bot_runs::is_unreadable(&e) {
+                tracing::warn!("clax-bot: call {id} as the store keeps it does not read: {e}");
+                Ok(None)
+            } else {
+                Err(e)
+            }
         };
-        let row = self
-            .store
-            .bot_calls(&call.run_id, call.step_n)?
-            .into_iter()
-            .find(|row| row.seq() == call.seq);
+        let call = match self.store.pending_call(id) {
+            Ok(Some(call)) => call,
+            Ok(None) => return Ok(None),
+            Err(e) => return unreadable(e),
+        };
+        let journal = match self.store.bot_calls(&call.run_id, call.step_n) {
+            Ok(journal) => journal,
+            Err(e) => return unreadable(e),
+        };
+        let row = journal.into_iter().find(|row| row.seq() == call.seq);
         Ok(row.map(|row| {
             crate::surface::recorded(&row).map_err(|e| CallFailure {
                 code: e.code,

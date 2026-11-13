@@ -3,9 +3,10 @@
 // and review tasks (../../../../changelist/docs/remote-relay.md, "Subject
 // tools" and "Review tasks"; web/src/lib/relayTools.ts;
 // plugins/changeling/scripts/task.mjs) written as one file, with the
-// structured comments and quest log its maintainers plan. Nothing reads
-// it yet. A run is bound to one subject (a pull request, a compare or a
-// branch), so no operation names one.
+// structured comments and quest log its maintainers plan. The tests of
+// clax-surface and clax-cli read it (docs/BUILD.bazel, `claxbot_surface_examples`).
+// A run is bound to one subject (a pull request, a compare or a branch), so no
+// operation names one.
 
 /**
  * You are reviewing one subject on Changeling: a pull request, a compare

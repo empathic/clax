@@ -308,6 +308,40 @@ async fn a_registration_may_have_sixteen_runs_that_have_not_ended() {
     assert_eq!(runs.len(), 16);
 }
 
+/// Starts of one registration made at once are held to its sixteen runs
+/// that have not ended together: each is counted with the run it makes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn starts_made_at_once_never_pass_the_limit_together() {
+    let Daemon { ts, .. } = daemon().await;
+    let r = ts
+        .client
+        .put(format!("{}/api/admin/provider/key", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"key": KEY}))
+        .send()
+        .await
+        .unwrap();
+    let (status, body) = json_of(r).await;
+    assert_eq!(status, 200, "{body}");
+    let registration = desk(&ts).await;
+    let start = json!({
+        "registration": registration, "kind": "tidy", "request": {"ask": "Tidy the desk."}
+    });
+    let answers = futures::future::join_all(
+        (0..48).map(|_| post(&ts, "/api/bot/surfaces/desk/runs", &start)),
+    )
+    .await;
+    let made = answers.iter().filter(|(status, _)| *status == 200).count();
+    for (status, body) in &answers {
+        assert!(
+            *status == 200 || (*status, code(body)) == (429, "too_many_runs"),
+            "{status} {body}"
+        );
+    }
+    assert_eq!(made, 16, "starts that made a run");
+    assert_eq!(ts.store.live_runs_started_by(&registration).unwrap(), 16);
+}
+
 #[tokio::test]
 async fn going_on_as_a_registration_with_something_changed_is_recorded_and_kept() {
     let Daemon { ts, .. } = daemon().await;

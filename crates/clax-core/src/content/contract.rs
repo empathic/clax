@@ -475,7 +475,8 @@ pub async fn clips_are_stored_replaced_read_and_deleted(c: &dyn ContentStore) {
 }
 
 /// A store that keeps blobs ([`ContentStore::keeps_blobs`]) stores, reads
-/// and removes each by its SHA-256, refuses a name that is not one, and
+/// and removes each by its SHA-256, refuses a name that is not one or is
+/// not the hash of the bytes given with it, and
 /// reads a name it was never given as `None`; one that keeps none refuses
 /// to store any and reads none.
 pub async fn blobs_are_kept_by_their_hash(c: &dyn ContentStore) {
@@ -492,6 +493,13 @@ pub async fn blobs_are_kept_by_their_hash(c: &dyn ContentStore) {
     // Stored again, it is unchanged.
     c.put_blob(&name, bytes).await.unwrap();
     c.put_blob(&other, b"another blob").await.unwrap();
+    assert_eq!(c.read_blob(&name).await.unwrap().unwrap(), bytes);
+    // A name that is not the hash of the bytes is refused, and nothing is
+    // stored under it.
+    let unwritten = crate::audit::sha256_hex(b"never written");
+    assert!(c.put_blob(&unwritten, bytes).await.is_err());
+    assert_eq!(c.read_blob(&unwritten).await.unwrap(), None);
+    assert!(c.put_blob(&name, b"a blub").await.is_err());
     assert_eq!(c.read_blob(&name).await.unwrap().unwrap(), bytes);
     for bad in ["", "../x", &name.to_uppercase(), &name[..63]] {
         assert!(c.put_blob(bad, bytes).await.is_err(), "{bad}");

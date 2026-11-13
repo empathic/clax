@@ -37,8 +37,10 @@
 //! `unknown_registration`, so a registration that is not there and
 //! another's content look the same. Refusals are `{"error": {"code",
 //! "message"}}`: 400 `invalid_request` and `content_mismatch`, 404
-//! `not_found`, 413 `content_too_large` and `run_content_full`, 501
-//! `not_yet` on a daemon that keeps no content.
+//! `not_found`, 413 `content_too_large` (the item) and
+//! `run_content_full` (the run's content), 429 `too_many_uploads` (a
+//! registration's uploads in flight), 507 `content_store_full` (all
+//! runs' content), and 501 `not_yet` on a daemon that keeps no content.
 
 use super::artifacts::path;
 use axum::body::Body;
@@ -46,7 +48,6 @@ use axum::extract::rejection::{PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::Response;
-use clax_bot::clax_surface::wire::{CODE_INVALID_REQUEST, CODE_NOT_YET};
 use clax_core::CoreError;
 use clax_core::media::{self, Sniffed};
 use clax_http::agent::DeniedToGrants;
@@ -56,6 +57,7 @@ use clax_http::state::AppState;
 use clax_store::bot_content::{
     CODE_CONTENT_STORE_FULL, CODE_CONTENT_TOO_LARGE, CODE_RUN_CONTENT_FULL, ContentRoom, NewContent,
 };
+use clax_surface::wire::{CODE_INVALID_REQUEST, CODE_NOT_YET};
 use serde_json::Value;
 
 /// The code of bytes that are not what the request says they are.
@@ -141,7 +143,7 @@ fn media_type(headers: &HeaderMap) -> Result<String, ApiError> {
 /// [`CODE_CONTENT_MISMATCH`] when they are not what `stated` says.
 pub fn judge(stated: &str, bytes: &[u8]) -> Result<Option<Sniffed>, ApiError> {
     let sniffed = media::sniff(bytes);
-    if clax_bot::clax_surface::IMAGE_MEDIA_TYPES.contains(&stated) {
+    if clax_surface::IMAGE_MEDIA_TYPES.contains(&stated) {
         return match sniffed {
             Ok(s) if s.media_type == stated => Ok(Some(s)),
             Ok(s) => Err(mismatch(format!(

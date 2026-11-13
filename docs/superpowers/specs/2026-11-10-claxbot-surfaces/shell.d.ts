@@ -1,9 +1,9 @@
-// A paper test of the surface file format
-// (../2026-11-10-claxbot-surfaces-design.md): ClaxShell's operations
-// table from ../../../../claxos/docs/claxbot-services.md, "What ClaxShell
-// would register", written as one file. Nothing reads it yet. Where that
-// table gives no shape (a part, a window, the bridge's list), the shape
-// here is a guess, to be corrected by ClaxShell's maintainers.
+// The surface file format (../2026-11-10-claxbot-surfaces-design.md) on
+// ClaxShell's operations table (../../../../claxos/docs/claxbot-services.md,
+// "What ClaxShell would register"). The tests of clax-surface, clax-cli and
+// clax-bot read it (docs/BUILD.bazel, `claxbot_surface_examples`): keep it a
+// file `clax bot surface check` accepts. Where that table gives no shape (a
+// part, a window, the bridge's list), the shape here is a guess.
 
 /**
  * You are working on a ClaxShell desktop. Each app is an artifact; the
@@ -58,9 +58,11 @@ interface Settings { theme: "light" | "dark"; accent: string; corners: Int }
 interface SettingsPatch { theme?: "light" | "dark"; accent?: string; corners?: Int }
 
 interface Kinds {
-  // `threads.open` and `runs.wait` are operations of Clax's own surface that
-  // come with fan-out; until `clax.d.ts` has them, `clax bot surface check`
-  // notes that they match nothing here.
+  // `threads.open` and `runs.wait` name operations of Clax's own surface that
+  // come with fan-out, which `clax.d.ts` lacks, and a run of a host's kind has
+  // no operation of Clax's (docs/contract.md, "Starting a run"): a run of
+  // `triage` today has the `shell.*` operations alone, and `check` notes that
+  // the two match nothing here.
   /**
    * The request is a comment the person drew across several apps. Decide
    * what each app it touches should be asked, and ask each with

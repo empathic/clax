@@ -151,29 +151,39 @@ fn a_delivery_of_an_unknown_kind_is_kept_whole_and_skipped() {
 #[test]
 fn an_event_is_a_delivery_with_no_id_whose_event_is_read_whole() {
     let fixture = fixture();
-    let (_, json) = entries(&fixture, "messages")
-        .find(|(ty, json)| *ty == "ServeResponse" && json["calls"][0]["call"] == "event")
-        .expect("a ServeResponse of events");
-    let response: ServeResponse = serde_json::from_value(json.clone()).unwrap();
-    for (delivery, written) in response.calls.iter().zip(json["calls"].as_array().unwrap()) {
-        let Delivery::Event(event) = delivery else {
-            panic!("{delivery:?}");
-        };
-        assert_eq!(
-            (event.run.as_str(), &event.event),
-            ("run-1", &written["event"])
-        );
-        assert_eq!(delivery.id(), None);
+    // The events of the fixture's run, in the order its serves deliver
+    // them: each read whole, with no ID.
+    let mut steps = Vec::new();
+    for (_, json) in entries(&fixture, "messages").filter(|(ty, _)| *ty == "ServeResponse") {
+        let response: ServeResponse = serde_json::from_value(json.clone()).unwrap();
+        for (delivery, written) in response.calls.iter().zip(json["calls"].as_array().unwrap()) {
+            let Delivery::Event(event) = delivery else {
+                continue;
+            };
+            assert_eq!(
+                (event.run.as_str(), &event.event),
+                ("run-1", &written["event"])
+            );
+            assert_eq!(delivery.id(), None);
+            steps.push(format!(
+                "{} {}",
+                event.event["type"].as_str().unwrap(),
+                event.event["step"]
+            ));
+        }
     }
-    let types: Vec<&str> = response
-        .calls
-        .iter()
-        .filter_map(|d| match d {
-            Delivery::Event(e) => e.event["type"].as_str(),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(types, ["step", "step", "parked", "resumed"]);
+    assert_eq!(
+        steps,
+        [
+            "step 1",
+            "parked 2",
+            "resumed 2",
+            "step 2",
+            "step 3",
+            "step 4",
+            "step 5"
+        ]
+    );
 }
 
 #[test]
@@ -321,6 +331,54 @@ fn a_setting_of_null_is_refused_and_not_read_as_left_out() {
         serde_json::from_value(json!({"max_effects_per_run": "none", "runs": {}})).unwrap();
     assert_eq!(none.max_effects_per_run, Some(wire::Bound::None));
     assert_eq!(none.runs, Some(wire::RunSettings::default()));
+}
+
+/// A registration's withheld operation says why in the word the run's
+/// reason gives, one source for both: `content` for an operation that
+/// holds content, and none for the reasons that are a run's alone.
+#[test]
+fn a_withheld_operations_reason_is_the_runs_reasons_word() {
+    use crate::Withheld;
+    assert_eq!(Withheld::Content.reason(), Some(wire::WITHHELD_CONTENT));
+    for run_only in [Withheld::Kind, Withheld::Operator, Withheld::Starter] {
+        assert_eq!(run_only.reason(), None, "{run_only:?}");
+    }
+    let op = wire::WithheldOp {
+        op: "scans.file".into(),
+        reason: Withheld::Content.reason().unwrap().into(),
+    };
+    let by_its_other_name: wire::Withheld = op.clone();
+    assert_eq!(
+        serde_json::to_value(&by_its_other_name).unwrap(),
+        json!({"op": "scans.file", "reason": "content"})
+    );
+}
+
+/// `null` is not "left out" for any optional member of a host's
+/// message whose type has no `null`: a start's `allow: null` narrows to
+/// nothing and is not read as "all the kind allows", `bind: null` is no
+/// start without a bind, and `registration: null` is no new
+/// registration. Each message is read with the member left out.
+#[test]
+fn an_optional_member_of_a_hosts_message_refuses_null() {
+    let register = json!({"clax_surface": 1, "notation": "dts", "definition": ""});
+    let start = json!({"registration": "r", "kind": "k", "request": {}});
+    let message = json!({"registration": "r", "message": {}});
+    for (ty, base, member) in [
+        ("RegisterRequest", &register, "registration"),
+        ("RegisterRequest", &register, "prompt"),
+        ("StartRunRequest", &start, "allow"),
+        ("StartRunRequest", &start, "bind"),
+        ("MessageRequest", &message, "key"),
+    ] {
+        round_as(ty, base).unwrap_or_else(|e| panic!("{ty} without `{member}`: {e}"));
+        let mut with_null = base.clone();
+        with_null[member] = Value::Null;
+        assert!(
+            round_as(ty, &with_null).is_err(),
+            "{ty} read `{member}: null` as left out"
+        );
+    }
 }
 
 /// The lines of the design's block of the protocol's examples, with

@@ -510,6 +510,67 @@ fn the_persons_words_in_a_request_are_named_by_pointer() {
     );
     let e = go.instruction_places(&def, &json!("hi")).unwrap_err();
     assert_eq!(e.kind, ValueErrorKind::ForeignType);
+    // The kind's own checks refuse it alike, and check nothing: a
+    // definition checks only its own kinds, whose types it has.
+    for e in [
+        go.check_request(&def, &json!("hi")).unwrap_err(),
+        go.check_result(&def, &json!({})).unwrap_err(),
+    ] {
+        assert_eq!(
+            (e.kind, e.message.as_str()),
+            (
+                ValueErrorKind::ForeignType,
+                "kind go is not one of the kinds of surface `demo`"
+            )
+        );
+    }
+}
+
+/// A balanced tree of `levels` levels of `Item`s, each told apart by
+/// its `tag` written after its `children`: the leaves are `b`s, and so
+/// is every other level, so that an alternative tried by itself is
+/// refused only after all that is under it.
+fn tagged_tree(levels: u32, n: &mut usize) -> Value {
+    *n += 1;
+    let at = *n;
+    let children: Vec<Value> = if levels == 0 {
+        Vec::new()
+    } else {
+        (0..2).map(|_| tagged_tree(levels - 1, n)).collect()
+    };
+    let tag = if levels.is_multiple_of(2) { "b" } else { "a" };
+    json!({"children": children, "tag": tag, "text": format!("w{at}")})
+}
+
+/// The walk that finds the person's words reads each union as the
+/// request's check read it, and does not try its alternatives again
+/// under every union around it: a request of some thousands of items
+/// in a recursive union that its check takes, well within its budget,
+/// has its places found within theirs.
+#[test]
+fn the_places_of_a_request_its_check_takes_are_found_however_deep_unions_nest() {
+    // An interface is no union, so the union is written where it is
+    // used.
+    let def = requesting(
+        "{ root: A | B }",
+        "interface A {\n  children: (A | B)[];\n  tag: \"a\";\n  text: Instruction;\n}\n\
+         interface B {\n  children: (A | B)[];\n  tag: \"b\";\n  text: Instruction;\n}\n",
+    );
+    let go = def.kind("go").unwrap();
+    let mut n = 0;
+    let request = json!({"root": tagged_tree(13, &mut n)});
+    assert_eq!(n, 16_383);
+    assert_eq!(go.check_request(&def, &request), Ok(()));
+    let places = go.instruction_places(&def, &request).unwrap();
+    assert_eq!(places.len(), n);
+    // An `a` with `b`s under it, and theirs: every item's words.
+    for at in [
+        "/root/text",
+        "/root/children/0/text",
+        "/root/children/1/children/0/text",
+    ] {
+        assert!(places.iter().any(|p| p == at), "{at}");
+    }
 }
 
 #[test]

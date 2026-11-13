@@ -2,10 +2,10 @@
 //! of a surface named `clax` (`own.d.ts`), what a model reads of them,
 //! and the round trip through the file printer.
 
-use super::{OWN_DTS, file, host, own, review, shell};
+use super::{OWN_DTS, REVIEW_DTS, SHELL_DTS, file, host, own, refused, review, shell};
 use crate::{
     Access, Author, CONTENT_DECLARATION, Definition, Limits, Member, Pattern, Reserved, Ty,
-    declaration, parse, print,
+    canonical_manifest, declaration, parse, print,
 };
 
 fn named(n: &str) -> Ty {
@@ -302,6 +302,98 @@ fn the_example_files_round_trip() {
         assert_eq!(again, def, "{name}, printed, parses to another definition");
         assert_eq!(print(&again), printed, "printing {name} is not stable");
     }
+}
+
+/// `src` with the `;` that ends a line taken off every line outside a
+/// doc comment: a file written without semicolons, as TypeScript reads
+/// one whose members each end at a line break.
+fn without_semicolons(src: &str) -> String {
+    let mut in_doc = false;
+    let mut out = String::new();
+    for line in src.split_inclusive('\n') {
+        let t = line.trim_start();
+        let starts_doc = t.starts_with("/**");
+        let doc = in_doc || starts_doc;
+        if starts_doc && !t.contains("*/") {
+            in_doc = true;
+        } else if in_doc && t.contains("*/") {
+            in_doc = false;
+        }
+        let (body, end) = match line.strip_suffix('\n') {
+            Some(body) => (body, "\n"),
+            None => (line, ""),
+        };
+        match body.strip_suffix(';') {
+            Some(bare) if !doc => {
+                out.push_str(bare);
+                out.push_str(end);
+            }
+            _ => out.push_str(line),
+        }
+    }
+    out
+}
+
+/// A member ends at a line break as it does at `;` or `,`, as
+/// TypeScript's do: the example files, as written and as printed, read
+/// without their semicolons to the same definitions, with the same
+/// canonical bytes. Two members on one line still need one between
+/// them, and a type continued on the next line is still one member's.
+#[test]
+fn members_end_at_a_line_break_as_at_a_semicolon() {
+    for (name, src, def, own) in [
+        ("clax", OWN_DTS, own(), true),
+        ("shell", SHELL_DTS, shell(), false),
+        ("review", REVIEW_DTS, review(), false),
+    ] {
+        let read = |text: &str| {
+            if own {
+                parse(text, Author::Clax, &Limits::default())
+            } else {
+                host(text)
+            }
+        };
+        for text in [src.to_string(), print(&def)] {
+            let bare = without_semicolons(&text);
+            assert_ne!(bare, text, "{name}");
+            let again = read(&bare).unwrap_or_else(|e| panic!("{name}: {e}\n{bare}"));
+            assert_eq!(again, def, "{name}");
+            assert_eq!(
+                canonical_manifest(&again),
+                canonical_manifest(&def),
+                "{name}"
+            );
+        }
+    }
+    let plain = host(&file(
+        "  /** Reads. @read */\n  get(): Promise<Named>;\n  /** A namespace. */\n  ns: {\n    /** Reads. @read */\n    x(): Promise<null>;\n  };",
+        "interface Named {\n  id: string;\n  title: string;\n}\ninterface Kinds {\n  /** K. @allow demo.get */\n  k(request: { a: string; b: string }): { summary: string };\n}",
+    ))
+    .unwrap();
+    let bare = host(&file(
+        "  /** Reads. @read */\n  get(): Promise<Named>\n  /** A namespace. */\n  ns: {\n    /** Reads. @read */\n    x(): Promise<null>\n  }",
+        "interface Named {\n  id: string\n  title: string\n}\ninterface Kinds {\n  /** K. @allow demo.get */\n  k(request: {\n    a: string\n    b: string\n  }): { summary: string }\n}",
+    ))
+    .unwrap();
+    assert_eq!(bare, plain);
+    // A union continued on the next line is the one field's type.
+    let union = host(&file(
+        "  /** Reads. @read */\n  get(): Promise<A>;",
+        "interface A {\n  s:\n    | \"x\"\n    | \"y\"\n  t: string\n}",
+    ))
+    .unwrap();
+    assert_eq!(
+        union.interface("A").unwrap().fields.len(),
+        2,
+        "{}",
+        print(&union)
+    );
+    // On one line, members are still separated.
+    refused(
+        &file("", "interface A { id: string title: string }"),
+        4,
+        "expected `;`, `,`, a line break or `}` after a member, found `title`",
+    );
 }
 
 /// Small files that between them use every form the printer writes.

@@ -4,7 +4,8 @@
 // `RequestContext` (host.rs) carries them. api.rs reads it
 // (`api::definition`): the declaration a model is shown, the names the
 // sandbox is built with and the check of every call's arguments come
-// from here, and api.rs adds who performs each operation. prompt.rs
+// from here, and the `PARTS` table of clax/session.rs says which part
+// of Clax's provider performs each operation. prompt.rs
 // reads what the system prompt takes from here: each kind's doc comment
 // (the paragraph about the request, the `{kind}` slot of
 // clax.prompt.md) and each namespace's (its rules, the `{rules.<name>}`

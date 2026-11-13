@@ -1584,7 +1584,9 @@ impl std::fmt::Debug for Bound<'_> {
 ///    ([`route`]); one no binding takes is refused
 ///    ([`no_such_operation`]), and so is one whose binding's provider
 ///    takes no call, with the provider's error
-///    ([`SurfaceProvider::unavailable`]);
+///    ([`SurfaceProvider::unavailable`]), unless the call comes with its
+///    entry: that call is answered what the entry holds ([`recorded`]),
+///    since the journal says what it did, and nothing more is done;
 /// 2. the arguments are checked against the definition of that
 ///    binding's surface ([`SurfaceProvider::definition`],
 ///    [`check_args`]); arguments that do not hold are refused, whether
@@ -1610,9 +1612,13 @@ pub async fn dispatch(
     );
     let checked = match route_by(bound, |b| b.binding, op) {
         None => Err(no_such_operation(op)),
-        Some(to) => match to.provider.unavailable() {
-            Some(away) => Err(away),
-            None => check_args(to.provider.definition(), op, raw).map(|args| (to, args)),
+        Some(to) => match (to.provider.unavailable(), replay) {
+            // The journal holds what the call did: the script is
+            // answered that, as a provider that is there answers a call
+            // it replays, and not that nothing happened.
+            (Some(_), Some(entry)) => return Answer::of(recorded(entry)),
+            (Some(away), None) => Err(away),
+            (None, _) => check_args(to.provider.definition(), op, raw).map(|args| (to, args)),
         },
     };
     match checked {
@@ -2348,7 +2354,10 @@ pub trait SurfaceProvider: MaybeSendSync {
     /// it says otherwise. A script's call routed to a binding whose
     /// provider answers an error is refused with it before its
     /// arguments are checked, journaled by the core as an outcome, and
-    /// no session sees it ([`dispatch`]).
+    /// no session sees it ([`dispatch`]); one that comes with its journal
+    /// entry (its step run again) is answered what the entry holds
+    /// instead ([`recorded`]), as such a provider's session answers a
+    /// replayed call when it is there.
     fn unavailable(&self) -> Option<HostError> {
         None
     }

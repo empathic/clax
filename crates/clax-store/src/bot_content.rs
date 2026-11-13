@@ -137,14 +137,18 @@ impl ContentRoom {
 }
 
 /// The room left for an item of `run_id` under `limits`, on `c`.
+///
+/// The run's share is read from its own rows (`bot_content_by_run`); the
+/// total of all runs sums every row, which no index or kept count serves
+/// yet, so it costs a read of the table, bounded by what the prune keeps
+/// (`limits.total_bytes` of items).
 fn room_in(c: &Connection, run_id: &str, limits: ContentLimits) -> Result<ContentRoom> {
-    let (run, all): (u64, u64) = c
-        .prepare_cached(
-            "SELECT COALESCE(SUM(CASE WHEN run_id = ?1 THEN bytes END), 0),
-                    COALESCE(SUM(bytes), 0)
-             FROM bot_content",
-        )?
-        .query_row(params![run_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    let run: u64 = c
+        .prepare_cached("SELECT COALESCE(SUM(bytes), 0) FROM bot_content WHERE run_id = ?1")?
+        .query_row(params![run_id], |r| r.get(0))?;
+    let all: u64 = c
+        .prepare_cached("SELECT COALESCE(SUM(bytes), 0) FROM bot_content")?
+        .query_row([], |r| r.get(0))?;
     Ok(ContentRoom {
         item: limits.item_bytes,
         run: limits.run_bytes.saturating_sub(run),
@@ -243,8 +247,12 @@ pub struct NewContent<'a> {
 const COLS: &str = "id, run_id, surface, registration_id, op, key, step_n, name, sha256, bytes, \
                     media_type, width, height, meta_json, shown, created_at";
 
+/// A `bot_content` row ([`COLS`]) as a [`ContentRow`].
+///
+/// # Errors
+/// A conversion failure for a `meta_json` that does not read as JSON
+/// (`crate::bot_runs::stored_json`), never an item read as having none.
 fn row_to_content(r: &Row<'_>) -> rusqlite::Result<ContentRow> {
-    let meta: Option<String> = r.get(13)?;
     Ok(ContentRow {
         id: r.get(0)?,
         run_id: r.get(1)?,
@@ -259,7 +267,7 @@ fn row_to_content(r: &Row<'_>) -> rusqlite::Result<ContentRow> {
         media_type: r.get(10)?,
         width: r.get(11)?,
         height: r.get(12)?,
-        meta: meta.and_then(|m| serde_json::from_str(&m).ok()),
+        meta: crate::bot_runs::stored_json_or_null(r, 13, "bot_content.meta_json")?,
         shown: r.get(14)?,
         created_at: r.get(15)?,
     })
@@ -273,21 +281,30 @@ fn content_in(c: &Connection, id: &str) -> Result<Option<ContentRow>> {
     )
 }
 
-/// Deletes the content of each run that ended before `before`, on `tx`:
-/// the rows deleted, and the blobs that no row names any more, which the
-/// caller removes once the transaction has committed ([`Store::release_blobs`]).
-pub(crate) fn prune_content_in(c: &Connection, before: &str) -> Result<(usize, Vec<String>)> {
-    let ended = "SELECT id FROM bot_runs WHERE ended_at IS NOT NULL AND ended_at < ?1";
-    let named: Vec<String> = c
-        .prepare(&format!(
-            "SELECT DISTINCT sha256 FROM bot_content WHERE run_id IN ({ended})"
-        ))?
-        .query_map(params![before], |r| r.get(0))?
+/// Deletes up to `limit` items of run `run`'s content, on `c` (a prune's
+/// transaction, `crate::bot_runs`): how many, and the blobs that no row
+/// names any more, which the caller removes once the transaction has
+/// committed ([`Store::release_blobs`]).
+pub(crate) fn prune_run_content_in(
+    c: &Connection,
+    run: &str,
+    limit: usize,
+) -> Result<(usize, Vec<String>)> {
+    let items: Vec<(String, String)> = c
+        .prepare_cached("SELECT id, sha256 FROM bot_content WHERE run_id = ?1 LIMIT ?2")?
+        .query_map(
+            params![run, i64::try_from(limit).unwrap_or(i64::MAX)],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?
         .collect::<rusqlite::Result<_>>()?;
-    let rows = c.execute(
-        &format!("DELETE FROM bot_content WHERE run_id IN ({ended})"),
-        params![before],
-    )?;
+    let mut delete = c.prepare_cached("DELETE FROM bot_content WHERE id = ?1")?;
+    for (id, _) in &items {
+        delete.execute(params![id])?;
+    }
+    let mut named: Vec<String> = items.into_iter().map(|(_, sha)| sha).collect();
+    let rows = named.len();
+    named.sort_unstable();
+    named.dedup();
     let mut released = Vec::new();
     for sha in named {
         let still: bool = c
@@ -474,13 +491,14 @@ impl Store {
             let mut q = c.prepare_cached(
                 "SELECT def_hash, op, args_json FROM bot_pending_calls
                  WHERE run_id = ?1 AND registration_id = ?2 AND instr(args_json, ?3) > 0
+                   AND json_valid(args_json)
                  ORDER BY created_at, id",
             )?;
             let calls = q.query_map(params![row.run_id, registration_id, row.id], |r| {
                 Ok(SentCall {
                     def_hash: r.get(0)?,
                     op: r.get(1)?,
-                    args: serde_json::from_str(&r.get::<_, String>(2)?).unwrap_or(Value::Null),
+                    args: crate::bot_runs::stored_json(r, 2, "bot_pending_calls.args_json")?,
                 })
             })?;
             Ok(calls.collect::<rusqlite::Result<_>>()?)
@@ -504,7 +522,7 @@ impl Store {
     }
 
     /// Removes the blobs `released`, which no row names, in the write
-    /// transaction that released them ([`prune_content_in`]).
+    /// transaction that released them ([`prune_run_content_in`]).
     /// Removes each blob no row of `bot_content` names: those `released`
     /// (the ones a prune's committed transaction left unnamed) and any
     /// other the content store keeps ([`clax_core::content::ContentStore::blob_names`]:

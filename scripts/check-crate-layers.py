@@ -42,9 +42,11 @@ CORE = {"clax-core", "clax-rt"}
 STORE = CORE | {"clax-store"}
 REALTIME = STORE | {"clax-realtime"}
 SAMPLE = CORE | {"clax-sample"}
-# ClaxBot's run loop and its sandbox contract, which the routes and the
-# daemon wire in.
-BOT = STORE | SAMPLE | {"clax-bot", "clax-bot-sandbox"}
+# ClaxBot's run loop, its sandbox contract and its surface definitions
+# (clax-surface, which the run loop depends on), which the routes and the
+# daemon wire in. A crate that names a type of clax-surface depends on it
+# directly, not through clax-bot.
+BOT = STORE | SAMPLE | {"clax-bot", "clax-bot-sandbox", "clax-surface"}
 HTTP = REALTIME | SAMPLE | BOT | {"clax-http"}
 MCP = CORE | {"clax-mcp"}
 HOOKS = CORE | {"clax-hooks"}
@@ -77,8 +79,8 @@ ALLOWED = {
     # what `clax serve` runs, without its listener, and no command.
     "clax-embed": SERVER | {"clax-embedded"},
     # The testkit's host of the ClaxBot surfaces protocol (fake_host)
-    # builds and reads its messages, which clax-surface defines.
-    "clax-testkit": SERVER | {"clax-fake-exe", "clax-surface"},
+    # builds and reads its messages, which clax-surface (in BOT) defines.
+    "clax-testkit": SERVER | {"clax-fake-exe"},
     # The hosted Worker: the server's routes in a Durable Object, its
     # database on the SQLite VFS over the object's storage (clax-do-vfs,
     # which depends on no workspace crate).

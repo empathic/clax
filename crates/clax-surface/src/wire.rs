@@ -27,7 +27,9 @@
 //!   not have is refused, never ignored: a host that misspells
 //!   `wait_ms` or sends a setting this daemon does not have is told so
 //!   and is not served as if it had said nothing. Every type the host
-//!   sends says `deny_unknown_fields`.
+//!   sends says `deny_unknown_fields`. `null` is not "left out": a
+//!   member that is there has a value of its type, and an optional
+//!   member whose type has no `null` refuses one.
 //! - **What a daemon sends is read leniently.** A member a host does
 //!   not know is ignored, a delivery whose `call` it does not know is
 //!   kept as [`Delivery::Other`] and skipped, and an end it does not
@@ -215,10 +217,18 @@ pub struct RegisterRequest {
     /// ID this daemon did not give a registration of this surface is
     /// refused ([`CODE_UNKNOWN_REGISTRATION`]). Left out, the
     /// registration is a new one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub registration: Option<String>,
     /// The surface's prompt file, as text.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub prompt: Option<String>,
     /// The registration's settings: each one left out is the daemon's.
     #[serde(default, skip_serializing_if = "Settings::is_empty")]
@@ -367,13 +377,15 @@ pub struct Registered {
     /// with why. A script that calls one is refused as for an
     /// operation its run does not have.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub withheld: Vec<Withheld>,
+    pub withheld: Vec<WithheldOp>,
 }
 
 /// An operation a registration's runs are not given
-/// ([`Registered::withheld`]).
+/// ([`Registered::withheld`]). Not [`crate::Withheld`], which is why a
+/// run is not given an operation; [`crate::Withheld::reason`] is the
+/// word of `reason` for one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Withheld {
+pub struct WithheldOp {
     /// The operation, by its dotted name below the surface
     /// ([`Call::op`]).
     pub op: String,
@@ -382,8 +394,14 @@ pub struct Withheld {
     pub reason: String,
 }
 
+/// [`WithheldOp`] by another name, which callers written before it had
+/// its own use.
+pub type Withheld = WithheldOp;
+
 /// Why an operation whose parameters or result name `Content` or
-/// `Image` is withheld: this daemon carries no content yet.
+/// `Image` is withheld: the daemon's store keeps no content (no blobs),
+/// so it withholds such operations ([`crate::Withheld::Content`]); a
+/// daemon whose store keeps content withholds none for it.
 pub const WITHHELD_CONTENT: &str = "content";
 
 /// A refusal: the body of every answer that is not a success.
@@ -523,8 +541,12 @@ pub enum Outcome {
     Accepted,
     /// The host cannot take the call now and asks to be sent it again
     /// no sooner than this many milliseconds from now:
-    /// `{"id": …, "retry_after_ms": …}`. Any whole number: 0 is "with
-    /// the next `serve`". The call's deadline stands.
+    /// `{"id": …, "retry_after_ms": …}`. Under a policy that sends calls
+    /// again it is sent no sooner than the policy's first wait either
+    /// (the daemon's: one second), so that a host that answers 0 is not
+    /// sent the call back at once. Any whole number; under a policy that
+    /// sends nothing again, 0 is "with the next `serve`". It is no failed
+    /// attempt: the call's deadline stands.
     RetryAfter(u64),
 }
 
@@ -659,6 +681,16 @@ pub struct ServeResponse {
     /// want of one. Left out: nothing.
     #[serde(default)]
     pub calls: Vec<Delivery>,
+    /// The IDs of the request's answers that were not taken, in their
+    /// order: for an ID the daemon does not hold for the registration,
+    /// for a call already settled with something else or past its
+    /// deadline, and any answer after one of the same request that
+    /// settled its call. An answer not listed was taken, now or before:
+    /// a result or an error sent again for a call it settled stands.
+    /// Left out: every answer was taken. A host that does not read it is
+    /// served as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ignored: Vec<String>,
 }
 
 /// One thing a `serve` delivers, told apart by its `call` member.
@@ -905,7 +937,7 @@ impl<'de> Deserialize<'de> for Delivery {
 /// |---|---|---|
 /// | `step` | `step`, `kind` (`turn`, `script`), and `messages`, the `seq` of each message the step gave the model, when it gave any | A step committed that did not end the run |
 /// | `parked` | `step`, `waiting_on`: `{surface}`, with `op` and `deadline` when the surface is the registration's own | The run parked on a call that waits |
-/// | `resumed` | `step` | The run's parked step is run again: the call it waited on was answered or its deadline came |
+/// | `resumed` | `step` | The run's parked step is run again: the call it waited on was answered, its deadline came or the run was cancelled |
 ///
 /// How the run ended is the `ended` delivery ([`Ended`]), which is
 /// kept until the host acknowledges it; no event of a run comes after
@@ -951,14 +983,22 @@ pub struct StartRunRequest {
     pub request: Value,
     /// The operations the run may have, as allow patterns. Left out:
     /// all the kind allows.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub allow: Option<Vec<String>>,
     /// Other surfaces to bind, each with its scope:
     /// `{"clax": {"artifact": "…"}}`. A daemon that does not bind
     /// refuses a start that has it ([`CODE_NOT_YET`]) and
     /// starts no run: a run made without a surface its starter named
     /// would not be the run that was asked for.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub bind: Option<Map<String, Value>>,
 }
 
@@ -984,7 +1024,11 @@ pub struct MessageRequest {
     /// Names the message once for its run: the same key and message
     /// again is answered as the first was, and nothing is sent twice;
     /// the same key with another message is [`CODE_KEY_CONFLICT`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub key: Option<String>,
 }
 

@@ -812,10 +812,21 @@ impl SurfaceProvider for OutsideProvider {
                 v
             }
             Progress::Parked { step, waiting_on } => {
-                let surface = waiting_on["surface"].as_str().unwrap_or_default();
+                // What the run waits on, as its row keeps it: a host is
+                // told nothing of one that does not read, never an empty
+                // name.
+                let (Some(surface), Some(op)) =
+                    (waiting_on["surface"].as_str(), waiting_on["op"].as_str())
+                else {
+                    tracing::warn!(
+                        "clax-bot: what run {} waits on does not read ({waiting_on}): its host is \
+                         not told it parked",
+                        run.id
+                    );
+                    return;
+                };
                 let mut on = json!({"surface": surface});
                 if surface == self.surface {
-                    let op = waiting_on["op"].as_str().unwrap_or_default();
                     let prefix = format!("{}.", self.surface);
                     on["op"] = json!(op.strip_prefix(&prefix).unwrap_or(op));
                     on["deadline"] = waiting_on["deadline"].clone();

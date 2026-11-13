@@ -108,6 +108,59 @@ fn a_hosts_kind_says_what_it_allows_and_an_empty_list_allows_nothing() {
     );
 }
 
+/// Everything after a kind's first tag is tags, so prose written after
+/// `@allow` would be patterns: a host's pattern that is one name no
+/// operation directly on `clax` has is refused, in both notations, and
+/// the `.d.ts` reader's refusals of a pattern say where prose goes. A
+/// name Clax puts on `clax` is still a pattern, and a kind of Clax's
+/// own may name its own operations by one name.
+#[test]
+fn prose_after_allow_is_not_read_as_patterns() {
+    refused(
+        &dts_kind("Triage.\n * @allow demo.x\n * Only for windows", "null"),
+        8,
+        "kind `go` allows `Only`, which names no operation: an allow pattern names the surface too (`demo.Only`), and Clax's own operations by their namespace (`threads.open`). Everything after a doc comment's first tag is tags: prose goes before them",
+    );
+    manifest_refused(
+        &manifest_kind(r#","allow":["demo.x","Only"],"request":{"type":"null"}"#),
+        "/kinds/0",
+        "kind `go` allows `Only`, which names no operation: an allow pattern names the surface too (`demo.Only`), and Clax's own operations by their namespace (`threads.open`)",
+    );
+    refused(
+        &dts_kind("Triage.\n * @allow demo.x\n * for demo.windows.", "null"),
+        7,
+        "`demo.windows.` is not an allow pattern: write an operation (`shell.windows`), everything below a surface or namespace (`shell.*`, `shell.settings.*`), or `*`. Everything after a doc comment's first tag is tags: prose goes before them",
+    );
+    // The one name `clax` names no operation either, in both notations.
+    for e in [
+        host(&dts_kind("K. @allow clax", "null"))
+            .unwrap_err()
+            .to_string(),
+        manifest(&manifest_kind(
+            r#","allow":["clax"],"request":{"type":"null"}"#,
+        ))
+        .unwrap_err()
+        .to_string(),
+    ] {
+        assert!(e.contains("`clax` is not an allow pattern"), "{e}");
+    }
+    // One name of those Clax puts on `clax`, and `*`, are patterns.
+    let reserved = Reserved::of(&[&own()]);
+    let clax_name = reserved
+        .names()
+        .find(|n| !["clax", "runs", "content"].contains(n))
+        .unwrap()
+        .to_string();
+    let d = host(&dts_kind(&format!("K. @allow * {clax_name}"), "null")).unwrap();
+    assert_eq!(
+        d.kind("go").unwrap().allow,
+        Some(vec![
+            Pattern::parse("*").unwrap(),
+            Pattern::parse(&clax_name).unwrap()
+        ])
+    );
+}
+
 #[test]
 fn clax_s_own_kind_may_say_nothing_which_narrows_nothing() {
     let dts = "declare const clax: {\n  /** D. @read */\n  x(): Promise<null>;\n};\ninterface Kinds {\n  /** Says nothing. */\n  all(request: null): {};\n  /** Allows none. @allow */\n  none(request: null): {};\n  /** Allows one. @allow x */\n  one(request: null): {};\n}\n";

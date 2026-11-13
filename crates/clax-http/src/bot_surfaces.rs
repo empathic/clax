@@ -39,14 +39,14 @@ use clax_bot::bot_surfaces::{
 };
 use clax_bot::broker::stored::StoredPending;
 use clax_bot::broker::{BrokerClock, HubBroker};
-use clax_bot::clax_surface::Reserved;
-use clax_bot::clax_surface::wire::{
-    self, Delivery, ErrorBody, RegisterRequest, Registered, ServeRequest, ServeResponse,
-};
 use clax_core::CoreError;
 use clax_core::audit::AuditCtx;
 use clax_realtime::questions::Sleeper;
 use clax_store::Store;
+use clax_surface::Reserved;
+use clax_surface::wire::{
+    self, Delivery, ErrorBody, RegisterRequest, Registered, ServeRequest, ServeResponse,
+};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -456,7 +456,7 @@ impl Surfaces {
     /// Whether a handle of `row`'s item was passed to the registration
     /// `registration`: one of the run's calls to it held, at a place its
     /// operation's declared type says is `Content` or `Image`
-    /// ([`clax_bot::clax_surface::Operation::content_in_args`], read
+    /// ([`clax_surface::Operation::content_in_args`], read
     /// under the definition the call was sent under), a handle with the
     /// item's ID and SHA-256. A copy of a handle in an argument of type
     /// `unknown`, or in the `meta` of a handle passed, is at no such
@@ -522,7 +522,11 @@ impl Surfaces {
     /// [`Hub::open_checked`]), not under it; on a daemon that keeps
     /// content, a result's references are filled in from the store
     /// ([`StoreFill`]) on the way.
-    fn begin(&self, name: &str, request: ServeRequest) -> Result<(Turn, Vec<String>), ServeError> {
+    fn begin(
+        &self,
+        name: &str,
+        request: ServeRequest,
+    ) -> Result<(Turn, Vec<String>, Vec<String>), ServeError> {
         let checking = self.broker.with(|hub, store, now| {
             hub.checkable(store, name, &request.registration, &request.answers, now)
         })?;
@@ -540,7 +544,7 @@ impl Surfaces {
             )?;
             let runs = runs_of(store.store(), &opened.settled);
             let turn = Self::turn(hub, store, opened.serve, now)?;
-            Ok((turn, runs))
+            Ok((turn, runs, opened.ignored_ids))
         })
     }
 
@@ -750,7 +754,7 @@ async fn serve_woken(
     let woken = wake.notified();
     tokio::pin!(woken);
     woken.as_mut().enable();
-    let (turn, settled) = {
+    let (turn, settled, ignored) = {
         let surfaces = surfaces.clone();
         s.store
             .call(move |_| Ok(surfaces.begin(&name, request)))
@@ -806,7 +810,7 @@ async fn serve_woken(
         }
     };
     surfaces.replan();
-    Ok(ServeResponse { calls })
+    Ok(ServeResponse { calls, ignored })
 }
 
 // ---------------------------------------------------------------------------

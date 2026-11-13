@@ -20,7 +20,9 @@
 //! sandbox was unavailable ([`Wait::Stalled`]) waits with exponential
 //! backoff (1 s doubling to 60 s), uncharged; a run waiting for the model
 //! waits what the tick said; a run whose tick had too little budget left
-//! ([`Wait::Budget`]) is due at once, in the next call. Each wait's end is
+//! ([`Wait::Budget`]) is due at once, in the next call; a run a tick left
+//! parked whose row cannot be read as the tick settles is looked at again
+//! after 1 s, doubling to 30 s while the reads fail. Each wait's end is
 //! recorded on the run (`due_at`), and a driver that starts later
 //! ([`Driver::resume`]) waits it out rather than ticking the run early.
 
@@ -40,6 +42,11 @@ const STALL_FIRST: Duration = Duration::from_secs(1);
 const STALL_MAX: Duration = Duration::from_secs(60);
 /// How long a run another driver holds waits before it is looked at again.
 const NOT_OURS_WAIT: Duration = Duration::from_secs(30);
+/// The first and the longest wait of a run a tick left parked whose row
+/// the driver could not read when it settled the tick: it is looked at
+/// again then, doubling, until a read succeeds.
+const UNREAD_FIRST: Duration = Duration::from_secs(1);
+const UNREAD_MAX: Duration = NOT_OURS_WAIT;
 
 struct Active {
     person: String,
@@ -54,6 +61,9 @@ struct State {
     deferred: Vec<String>,
     active: HashMap<String, Active>,
     stalls: HashMap<String, u32>,
+    /// Runs left parked whose row could not be read when their tick
+    /// settled, with how many times in a row ([`UNREAD_FIRST`]).
+    unread: HashMap<String, u32>,
     /// Runs cancelled while not active, cancelled when they start.
     cancelled: Vec<String>,
     /// Runs whose wait is recorded in the store (`due_at`), to clear when
@@ -151,6 +161,27 @@ impl Driver {
             } else if !st.queue.iter().any(|r| r == run_id) {
                 st.queue.push_back(run_id.to_string());
             }
+        }
+        self.wakes.notify_one();
+    }
+
+    /// Queues run `run_id`, to which a message was sent, to be ticked, as
+    /// [`Driver::wake`] does, unless it already will be: a run that waits
+    /// out a delay its last tick asked for ([`Wait::Retry`],
+    /// [`Wait::Stalled`], [`Wait::NotOurs`]) or a deadline keeps waiting,
+    /// and a run whose tick is running is not ticked again for it. The
+    /// message is given at the run's next turn, whenever that comes.
+    pub fn messaged(&self, run_id: &str) {
+        {
+            let mut st = self.lock();
+            let will = st.active.contains_key(run_id)
+                || st.delayed.iter().any(|(_, r)| r == run_id)
+                || st.queue.iter().any(|r| r == run_id);
+            if will {
+                return;
+            }
+            st.deferred.retain(|r| r != run_id);
+            st.queue.push_back(run_id.to_string());
         }
         self.wakes.notify_one();
     }
@@ -370,6 +401,7 @@ impl Driver {
                 }
                 Next::Done(_) => {
                     st.stalls.remove(id);
+                    st.unread.remove(id);
                     None
                 }
                 Next::Waiting(Wait::Stalled) => {
@@ -396,7 +428,39 @@ impl Driver {
                 Next::Waiting(Wait::Parked) => {
                     st.stalls.remove(id);
                     st.recorded.remove(id);
-                    let row = self.deps.store.run(id).ok().flatten();
+                    let row = match self.deps.store.run(id) {
+                        Ok(row) => {
+                            st.unread.remove(id);
+                            row
+                        }
+                        // Unread, nothing says when the run is due or
+                        // whether it was answered: it is looked at again
+                        // after a wait that grows, and that tick (one of
+                        // a parked run returns at once) reads the row
+                        // again. The store's record of the wait is the
+                        // park's and is left as it is.
+                        Err(e) => {
+                            let n = st.unread.entry(id.to_string()).or_insert(0);
+                            let d = UNREAD_FIRST
+                                .saturating_mul(1u32.checked_shl(*n).unwrap_or(u32::MAX))
+                                .min(UNREAD_MAX);
+                            *n += 1;
+                            tracing::warn!(
+                                "clax-bot: reading parked run {id}: {e}; looking again in {d:?}"
+                            );
+                            st.delayed.retain(|(_, r)| r != id);
+                            if !again {
+                                st.delayed.push((now + to_chrono(d), id.to_string()));
+                                return;
+                            }
+                            if !st.queue.iter().any(|r| r == id) {
+                                st.queue.push_back(id.to_string());
+                            }
+                            drop(st);
+                            self.wakes.notify_one();
+                            return;
+                        }
+                    };
                     let parked = row
                         .as_ref()
                         .is_some_and(|r| r.status == clax_store::bot_runs::RunStatus::Parked);

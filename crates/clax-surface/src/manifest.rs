@@ -1543,8 +1543,8 @@ enum Refs {
     Manifest,
     /// A tool's input, as the model APIs read JSON Schema: an interface
     /// as `#/$defs/<name>`, and the core's types written out as the
-    /// values a script holds ([`crate::check_held`]): `Instruction` a
-    /// string, `Content` and `Image` a whole handle.
+    /// values a script holds (the crate's documentation, "Values"):
+    /// `Instruction` a string, `Content` and `Image` a whole handle.
     Tool,
 }
 
@@ -1630,8 +1630,8 @@ fn object<'f>(out: &mut String, fields: impl Iterator<Item = &'f Field> + Clone,
     out.push_str(", \"additionalProperties\": false");
 }
 
-/// A whole handle to stored bytes, as a script holds one
-/// ([`crate::check_held`]), without the braces around it: an `Image`'s
+/// A whole handle to stored bytes, as a script holds one (the crate's
+/// documentation, "Values"), without the braces around it: an `Image`'s
 /// `media_type` is one of [`IMAGE_MEDIA_TYPES`].
 fn handle(out: &mut String, image: bool) {
     out.push_str(
@@ -1892,8 +1892,58 @@ impl Kind {
     /// definition has a result that is an object, which its reader
     /// checks; `None` for a kind that is not so: one whose result is not
     /// an object type, or names an interface `def` lacks.
+    ///
+    /// The schema is a [`serde_json::Value`], whose maps sort their keys
+    /// as this workspace builds it: its `properties` and `$defs` are in
+    /// the alphabet's order, not the definition's. The text with the
+    /// definition's order is [`Kind::result_schema_text`].
     #[must_use]
     pub fn result_schema(&self, def: &Definition) -> Option<serde_json::Value> {
+        let out = self.result_schema_text(def)?;
+        // The writer's text is JSON, as deep as the type: read without
+        // `serde_json`'s bound on depth, which the type's limits bound.
+        let mut de = serde_json::Deserializer::from_str(&out);
+        de.disable_recursion_limit();
+        serde::Deserialize::deserialize(&mut de).ok()
+    }
+
+    /// [`Kind::result_schema_text`] as compact JSON (no space outside
+    /// its strings), in the same order: what a request carries in place
+    /// of [`Kind::result_schema`] so that the model reads the fields in
+    /// the definition's order.
+    #[must_use]
+    pub fn result_schema_json(&self, def: &Definition) -> Option<String> {
+        let text = self.result_schema_text(def)?;
+        let mut out = String::with_capacity(text.len());
+        let (mut quoted, mut escaped) = (false, false);
+        for c in text.chars() {
+            if quoted {
+                out.push(c);
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == '"' {
+                    quoted = false;
+                }
+            } else if c == '"' {
+                quoted = true;
+                out.push(c);
+            } else if !c.is_ascii_whitespace() {
+                out.push(c);
+            }
+        }
+        Some(out)
+    }
+
+    /// [`Kind::result_schema`] as JSON text, with every object's members
+    /// in the order the schema is written: a result's fields and each
+    /// interface's in the definition's order (those it inherits first),
+    /// and `$defs` in the order the definition declares its interfaces.
+    /// That is the order a model reads the fields in, and writes them
+    /// in, when it is given the text as it is.
+    #[must_use]
+    pub fn result_schema_text(&self, def: &Definition) -> Option<String> {
         let mut out = String::from("{");
         let roots: Vec<&Ty> = match &self.result {
             Ty::Named(n) => {
@@ -1932,11 +1982,7 @@ impl Kind {
             out.push('}');
         }
         out.push('}');
-        // The writer's text is JSON, as deep as the type: read without
-        // `serde_json`'s bound on depth, which the type's limits bound.
-        let mut de = serde_json::Deserializer::from_str(&out);
-        de.disable_recursion_limit();
-        serde::Deserialize::deserialize(&mut de).ok()
+        Some(out)
     }
 }
 
@@ -1999,9 +2045,12 @@ pub(crate) fn nesting(text: &str) -> usize {
 ///
 /// # Errors
 /// That the manifest is longer than `limits.manifest_bytes`, with both
-/// numbers, or, for a definition read under a greater `depth` than
-/// `limits` has, that it nests deeper than
-/// [`Limits::manifest_nesting`].
+/// numbers; for a definition read under a greater `depth` than `limits`
+/// has, that it nests deeper than [`Limits::manifest_nesting`]; and for
+/// one read under other limits that `limits` refuses in another way
+/// (more values than [`Limits::manifest_values`], more operations than
+/// [`Limits::operations`], a longer doc comment, …), the reader's
+/// refusal. The manifest is read back under `limits` to tell.
 pub fn print_manifest_within(def: &Definition, limits: &Limits) -> Result<String, String> {
     let printed = print_manifest(def);
     if printed.len() > limits.manifest_bytes {
@@ -2019,6 +2068,13 @@ pub fn print_manifest_within(def: &Definition, limits: &Limits) -> Result<String
             limits.depth.min(Limits::MAX_DEPTH)
         ));
     }
+    // The definition was read as its author's: what is left to tell is
+    // what `limits` refuses, which is the same for every author, so it
+    // is read back as Clax's, which no name or tag refuses that a host's
+    // reading takes.
+    parse_manifest(&printed, Author::Clax, limits).map_err(|e| {
+        format!("a reader under these limits refuses the definition's manifest: {e}")
+    })?;
     Ok(printed)
 }
 

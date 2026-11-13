@@ -24,6 +24,8 @@ struct MemPages {
     /// Each commit that changed the database's schema version, in order:
     /// the version it left ([`user_version`]) and the chunks it wrote.
     steps: RefCell<Vec<(u32, usize)>>,
+    /// The chunks each commit wrote, in order.
+    written: RefCell<Vec<usize>>,
 }
 
 /// The schema version (`PRAGMA user_version`) of the database whose first
@@ -60,6 +62,7 @@ impl PageStore for MemPages {
         f.1.extend(chunks.iter().map(|(i, c)| (*i, c.clone())));
         f.1.split_off(&keep_below);
         self.commits.set(self.commits.get() + 1);
+        self.written.borrow_mut().push(chunks.len());
         let after = user_version(f.1.get(&0));
         if after != before {
             self.steps.borrow_mut().push((after, chunks.len()));
@@ -241,12 +244,15 @@ const MIGRATION_64_CHUNKS: usize = 32;
 
 /// The most chunks migration 65's transaction may write, however many
 /// runs the database holds: it makes eight empty tables, adds columns to
-/// `bot_runs` and `bot_steps` without rewriting a row and makes one index
-/// again, over the runs that have not ended. Measured at 36 chunks beside
-/// [`RUNS_MIGRATED`] ended runs (25 before `bot_content`, `bot_joins` and
-/// `bot_messages`, whose tables and indexes are a new page each). A change
-/// that makes it copy `bot_runs` (hundreds of chunks here) fails this
-/// bound.
+/// `bot_runs` and `bot_steps` without rewriting a row, makes one index
+/// again, over the runs that have not ended, and one over the runs a
+/// registration started, which holds no ended run of Clax's own. Measured
+/// at 37 chunks beside [`RUNS_MIGRATED`] ended runs (36 before
+/// `bot_runs_by_starter` and the columns of a call's attempts and of a
+/// dropped registration, which are schema text alone; 25 before
+/// `bot_content`, `bot_joins` and `bot_messages`, whose tables and indexes
+/// are a new page each). A change that makes it copy `bot_runs` (hundreds
+/// of chunks here) fails this bound.
 const MIGRATION_65_CHUNKS: usize = 48;
 
 /// Migrations 64 and 65 each commit a few chunks beside [`RUNS_MIGRATED`]
@@ -403,4 +409,175 @@ fn migrations_64_and_65_write_no_run_on_the_vfs() {
         (RUNS_MIGRATED, RUNS_MIGRATED),
         "(runs kept, runs the migrations left unwritten), each expected to be every run seeded"
     );
+}
+
+/// The ended runs [`a_prune_backlog_is_pruned_in_bounded_commits_on_the_vfs`]
+/// seeds: more than one pass takes
+/// (`PRUNE_RUNS_PER_TX * PRUNE_TXS_PER_PASS`).
+const PRUNED_RUNS: usize =
+    clax_store::bot_runs::PRUNE_RUNS_PER_TX * clax_store::bot_runs::PRUNE_TXS_PER_PASS + 52;
+
+/// The call journal rows each of [`PRUNED_RUNS`] holds, and each of as
+/// many runs still going: written a row of each in turn, so each page
+/// holds rows of both, and deleting the ended runs' rows writes every
+/// page they are on.
+const CALLS_PER_RUN: usize = 6;
+
+/// The most chunks one commit of a prune pass may write, however large
+/// the backlog: a transaction deletes [`clax_store::bot_runs::PRUNE_ROWS_PER_TX`]
+/// rows at the most, and here takes 32 runs' 192 rows, on pages that
+/// hold rows of runs still going. Measured at 90 chunks; the backlog's
+/// commits wrote 5,631 in all.
+const PRUNE_COMMIT_CHUNKS: usize = 256;
+
+/// A backlog of ended runs' journals whose deletion in one transaction,
+/// as a prune once made it, writes more than the hosted Worker lets one
+/// transaction write (`clax_do_vfs::MAX_TRANSACTION_BYTES`) and is
+/// refused, is pruned there in commits of a bounded size: the first pass
+/// says it left more, the second takes the rest, and the runs still going
+/// keep their journals.
+#[test]
+fn a_prune_backlog_is_pruned_in_bounded_commits_on_the_vfs() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("clax"));
+    let pages = Rc::new(MemPages::default());
+    drop(open_store(&pages, &home));
+    {
+        let (conn, _registered) = clax_do_vfs::open("instance.db", pages.clone())
+            .expect("the database opens")
+            .into_parts();
+        conn.execute_batch(&format!(
+            "BEGIN;
+             INSERT INTO bot_runs (id, artifact_id, person, request, thread_ids_json, status,
+                    model, key_source, base_version, created_at, updated_at, ended_at)
+             WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < {PRUNED_RUNS})
+             SELECT printf('01JC%022d', i), 'a', 'u', 'thread', '[]', 'finished',
+                    'claude-sonnet-5-5', 'instance', 1, '2020-01-01T00:00:00.000Z',
+                    '2020-01-01T00:00:00.000Z',
+                    strftime('%Y-%m-%dT%H:%M:%S.000Z', '2020-01-01T00:00:00Z', '+' || i || ' seconds')
+               FROM n
+             UNION ALL
+             SELECT printf('01JL%022d', i), 'a', 'u', 'thread', '[]', 'running',
+                    'claude-sonnet-5-5', 'instance', 1, '2020-01-01T00:00:00.000Z',
+                    '2020-01-01T00:00:00.000Z', NULL
+               FROM n;
+             COMMIT;"
+        ))
+        .unwrap();
+        for seq in 0..CALLS_PER_RUN {
+            conn.execute_batch(&format!(
+                "BEGIN;
+                 INSERT INTO bot_calls (run_id, step_n, seq, attempt, op, args_hash, ok,
+                        result_json, at)
+                 WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < {PRUNED_RUNS}),
+                      k(prefix) AS (SELECT '01JC' UNION ALL SELECT '01JL')
+                 SELECT printf('%s%022d', prefix, i), 1, {seq}, 1, 'threads.read', 'h', 1,
+                        json_object('text', printf('%.1000c', 'x')), '2020-01-01T00:00:00.000Z'
+                   FROM n, k ORDER BY i, prefix;
+                 COMMIT;"
+            ))
+            .unwrap();
+        }
+    }
+
+    // The backlog deleted in one transaction, on a copy of the pages.
+    let copy = Rc::new(MemPages {
+        files: RefCell::new(pages.files.borrow().clone()),
+        ..MemPages::default()
+    });
+    {
+        let (conn, _registered) = clax_do_vfs::open("instance.db", copy.clone())
+            .expect("the copy opens")
+            .into_parts();
+        let whole = conn.execute_batch(
+            "BEGIN;
+             DELETE FROM bot_calls WHERE run_id IN
+               (SELECT id FROM bot_runs WHERE ended_at IS NOT NULL
+                   AND ended_at < '2021-01-01T00:00:00.000Z');
+             COMMIT;",
+        );
+        assert!(
+            whole.is_err(),
+            "deleting the backlog in one transaction was expected to pass the Worker's cap; \
+             it wrote {:?} chunks",
+            copy.written.borrow()
+        );
+    }
+
+    let (store, _registered) = open_store(&pages, &home);
+    pages.written.borrow_mut().clear();
+    let first = store.prune_ended_runs().unwrap();
+    let second = store.prune_ended_runs().unwrap();
+    let written = pages.written.borrow().clone();
+    let largest = written.iter().copied().max().unwrap_or(0);
+    eprintln!(
+        "the prune wrote {} chunks in {} commits, {largest} at the most",
+        written.iter().sum::<usize>(),
+        written.len()
+    );
+    assert!(
+        largest <= PRUNE_COMMIT_CHUNKS,
+        "a commit of the prune wrote {largest} chunks, over {PRUNE_COMMIT_CHUNKS}: each \
+         deletes a bounded number of rows"
+    );
+    assert!(
+        first.more,
+        "the first pass left runs for the next: {first:?}"
+    );
+    assert_eq!(
+        (first.calls + second.calls, second.more),
+        (PRUNED_RUNS * CALLS_PER_RUN, false),
+        "every ended run's journal went in two passes"
+    );
+    let live = format!("01JL{:022}", PRUNED_RUNS - 1);
+    assert_eq!(store.bot_calls(&live, 1).unwrap().len(), CALLS_PER_RUN);
+
+    // The ends the hub forgets after their week (`Store::expire_ends`),
+    // more than one call takes and more than one transaction could
+    // write: forgotten in commits of a bounded size too.
+    let ends = clax_store::bot_pending::EXPIRE_ENDS_PER_TX * 3 + 7;
+    drop(store);
+    drop(_registered);
+    {
+        let (conn, _registered) = clax_do_vfs::open("instance.db", pages.clone())
+            .expect("the database opens")
+            .into_parts();
+        conn.execute_batch(&format!(
+                "INSERT INTO bot_run_ends (id, run_id, registration_id, end_json, result_json,
+                        created_at)
+                 WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < {ends})
+                 SELECT printf('e%08d', i), printf('01JL%022d', i), 'r', '{{\"finished\": {{}}}}',
+                        json_object('text', printf('%.4000c', 'x')),
+                        strftime('%Y-%m-%dT%H:%M:%S.000Z', '2020-01-01T00:00:00Z', '+' || i || ' seconds')
+                   FROM n"
+        ))
+        .unwrap();
+    }
+    let (store, _registered) = open_store(&pages, &home);
+    pages.written.borrow_mut().clear();
+    let cut = chrono::DateTime::parse_from_rfc3339("2021-01-01T00:00:00Z")
+        .unwrap()
+        .to_utc();
+    let mut forgotten = Vec::new();
+    loop {
+        let n = store.expire_ends(cut).unwrap();
+        if n == 0 {
+            break;
+        }
+        forgotten.push(n);
+    }
+    let written = pages.written.borrow().clone();
+    let largest = written.iter().copied().max().unwrap_or(0);
+    eprintln!(
+        "the ends' expiry wrote {} chunks in {} commits, {largest} at the most",
+        written.iter().sum::<usize>(),
+        written.len()
+    );
+    assert_eq!(forgotten.iter().sum::<usize>(), ends);
+    assert!(forgotten.len() > 1, "{forgotten:?}");
+    assert!(
+        largest <= PRUNE_COMMIT_CHUNKS,
+        "a commit of the ends' expiry wrote {largest} chunks, over {PRUNE_COMMIT_CHUNKS}"
+    );
+    assert_eq!(store.integrity_check().unwrap(), "ok");
 }

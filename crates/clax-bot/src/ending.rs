@@ -353,10 +353,17 @@ pub(crate) async fn redeliver(deps: &Deps) -> usize {
             }
         };
         for id in awaiting {
-            let ended = deps.store.run_with_steps_as_made(&id).and_then(|found| {
-                let Some((run, made, steps)) = found else {
+            // A step whose row does not read is left out: such a run
+            // ended `failed`, and its terminal step reads.
+            let ended = deps.store.run_as_made(&id).and_then(|found| {
+                let Some((run, made)) = found else {
                     return Ok(None);
                 };
+                let steps = deps
+                    .store
+                    .run_with_readable_steps(&id)?
+                    .map(|(_, steps, _)| steps)
+                    .unwrap_or_default();
                 let Some((end, result)) = stored_end(&run, steps.last()) else {
                     return Ok(None);
                 };

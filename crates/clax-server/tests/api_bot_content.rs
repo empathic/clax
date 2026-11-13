@@ -10,13 +10,13 @@
 
 use clax_bot::bot_surfaces::{CallFailure, HubLimits, Millis, Retry};
 use clax_bot::broker::{CallBroker, Sending};
-use clax_bot::clax_surface::wire::Notation;
-use clax_bot::clax_surface::wire::Outcome;
 use clax_bot::surface::{CallPlace, Claim};
 use clax_core::audit::AuditCtx;
 use clax_core::working::ManualClock;
 use clax_http::bot_surfaces as hub;
 use clax_store::bot_runs::{DriverId, StepCommit, StepKind};
+use clax_surface::wire::Notation;
+use clax_surface::wire::Outcome;
 use clax_testkit::fake_host::{Behaviour, FakeHost, HttpTransport};
 use clax_testkit::fake_messages::{FakeMessages, Turn};
 use clax_testkit::remotes::json_of;
@@ -845,7 +845,7 @@ interface Kinds {
 /// a handle is refused `effect_limit` and its host is sent one.
 #[tokio::test]
 async fn a_call_that_passes_content_counts_against_the_effect_limit() {
-    use clax_bot::clax_surface::wire::{Bound, Settings};
+    use clax_surface::wire::{Bound, Settings};
     let fake = FakeMessages::start(vec![
         Turn::script(
             "tu_1",

@@ -1472,3 +1472,72 @@ async fn a_token_cleared_between_a_runs_start_and_its_first_web_call_refuses_web
         "nothing charged"
     );
 }
+
+/// One run whose step, as the store keeps it, does not read fails no page:
+/// the person's usage, the run listing and the run's own view answer
+/// without that step, and every other run reads as before.
+#[tokio::test]
+async fn a_run_whose_step_does_not_read_fails_no_usage_page_and_no_listing() {
+    let fake = FakeMessages::start(vec![Turn::finish("First."), Turn::finish("Second.")]).await;
+    let ts = daemon(&fake).await;
+    let aid = ts.publish("Notes", &[("index.html", "<p>hi</p>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut runs = Vec::new();
+    for text in ["One?", "Two?"] {
+        let tid = ts.thread(&aid, 1, text).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let res = ts
+            .client
+            .post(format!("{}/api/bot/runs", ts.base))
+            .header("cookie", ts.owner_cookie())
+            .json(&json!({"thread_ids": [tid], "artifact_id": aid}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 201);
+        let run: Value = res.json().await.unwrap();
+        let rid = run["run"]["id"].as_str().unwrap().to_string();
+        let all = events(&ts, &rid, None).await;
+        assert_eq!(all.last().unwrap().2["run"]["status"], "finished");
+        runs.push(rid);
+    }
+    let changed = rusqlite::Connection::open(ts.home.db_path())
+        .unwrap()
+        .execute(
+            "UPDATE bot_steps SET payload_json = '{\"te' WHERE run_id = ?1 AND n = 1",
+            rusqlite::params![runs[0]],
+        )
+        .unwrap();
+    assert_eq!(changed, 1);
+    let get = |path: String| {
+        let ts = &ts;
+        async move {
+            let res = ts
+                .client
+                .get(format!("{}{path}", ts.base))
+                .header("cookie", ts.owner_cookie())
+                .send()
+                .await
+                .unwrap();
+            let status = res.status().as_u16();
+            (status, res.json::<Value>().await.unwrap())
+        }
+    };
+    let (s, usage) = get("/api/me/usage".into()).await;
+    assert_eq!(s, 200, "{usage}");
+    let (s, listed) = get(format!("/api/bot/runs?artifact={aid}")).await;
+    assert_eq!(s, 200, "{listed}");
+    let (s, one) = get(format!("/api/bot/runs/{}", runs[0])).await;
+    assert_eq!(s, 200, "{one}");
+    assert!(
+        one["steps"].as_array().unwrap().iter().all(|s| s["n"] != 1),
+        "{one}"
+    );
+    let (s, two) = get(format!("/api/bot/runs/{}", runs[1])).await;
+    assert_eq!(s, 200, "{two}");
+    assert_eq!(two["steps"][0]["n"], 1, "{two}");
+}

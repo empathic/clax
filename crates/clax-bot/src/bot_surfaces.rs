@@ -9,10 +9,11 @@
 //! It is logic and nothing more. It reads no clock (every method that
 //! depends on the time is given it, a [`Millis`]), spawns nothing,
 //! waits for nothing and does no I/O. What outlasts the process is not
-//! kept here: the calls on their way, the ended runs to tell a host
-//! of, the registration IDs that were issued and the definitions calls
-//! were made under are in whatever implements [`Pending`], which every
-//! method that touches them is lent. [`MemoryPending`] keeps them in
+//! kept here: the calls on their way and where each is with its
+//! attempts, the ended runs to tell a host of, the registration IDs
+//! that were issued and which of them were dropped, and the definitions
+//! calls were made under are in whatever implements [`Pending`], which
+//! every method that touches them is lent. [`MemoryPending`] keeps them in
 //! memory, for tests. The hub itself holds the registrations, which
 //! are leases and end with the process, and names only this module's
 //! types, `clax_surface`'s and JSON values.
@@ -122,23 +123,39 @@
 //! later, and is sent again when the host asks, but no sooner than the
 //! rule's first wait ([`Retry::backoff_ms`]), so that a host answering
 //! `retry_after_ms: 0` is not sent the call again at once; it spends no
-//! attempt and none of the sendings again. A host that is not connected is waited
+//! attempt and none of the sendings again. A call its host had accepted
+//! and asks for later is sent again then, as one that may have been lost
+//! is, until its host accepts it again; but one of an `@once` operation,
+//! which is never sent again once accepted, is settled at once,
+//! `unavailable`: its host said it cannot take it, and nothing else will.
+//! A call whose last word from its host is `retry_after_ms`, and that is
+//! not sent again before its deadline, is settled `unavailable` then:
+//! its host said it could not take it. A host that is not connected is waited
 //! for, within the deadline, by a call whose rule has more than one
 //! attempt, while the hub holds its registration; nothing is sent to it
 //! meanwhile, so a host that is away costs nothing, and one that comes
 //! and goes spends one attempt each time it comes back, with waits that
-//! grow. A registration the hub dropped ([`Hub::dropped`]) takes no
+//! grow. The answers a returning `serve` brings are taken first: a call
+//! one of them settles or accepts again is not taken for lost. A
+//! registration the hub dropped ([`Hub::dropped`]) takes no
 //! call. With [`Retry::NONE`] a
 //! call is never sent again after a failure, a host that is away takes
 //! no call, and `retry_after_ms` is waited exactly, as before rules were
 //! given.
 //!
-//! The attempts are kept in memory, with the registration, and no rule
-//! is kept with a call: a hub that starts again gives each call it finds
-//! open [`HubLimits::retry_kept`] ([`Retry::NONE`] by default: as before
-//! rules were given), from no failures, until its run makes it again
-//! with its key (its step runs again), when the run's rule takes over.
-//! A call made again with its key goes on with the attempts it had.
+//! Where a call is with its attempts ([`Tries`]: its rule, its failures,
+//! the instant before which it is not sent, whether it is to be sent
+//! again, whether its host asked for it later, its last failure) is kept
+//! with the call by the store ([`CallSummary::tries`],
+//! [`Pending::keep_tries`]), written with each change, and the count of
+//! a run's sendings again is the store's sum of its calls' failures
+//! ([`Pending::resends`]). So a hub that starts again, or meets a call
+//! after it dropped the call's registration, goes on with it as it would
+//! have: the same attempts left, the same wait, the same rule and the
+//! same last failure. A call with no rule kept (none was given) is sent
+//! again under [`HubLimits::retry_kept`] until its run makes it again
+//! with its key, when the run's rule is kept with it. A call made again
+//! with its key goes on with the attempts it had.
 //!
 //! # Registrations
 //!
@@ -345,6 +362,52 @@ pub struct NewCall {
     /// What a run a join bound the surface into is on
     /// ([`wire::Call::joined`]).
     pub joined: Option<Value>,
+    /// The rule its run gave for sending it again: kept with the call
+    /// ([`Tries::rule`]).
+    pub retry: Retry,
+}
+
+/// Whether an open call is to be sent again although its host accepted
+/// it ([`Tries::resend`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Resend {
+    /// No: it is sent as any open call is, and not once its host
+    /// accepted it.
+    #[default]
+    None,
+    /// An attempt failed, or its host may have lost it, and the next
+    /// attempt is planned and not sent yet: new to its host once its
+    /// wait is over, and an error for the attempt before takes no attempt
+    /// more.
+    Planned,
+    /// Sent with every `serve` until its host accepts it again: the
+    /// planned attempt was sent, or its host, which had accepted it,
+    /// asked for it later.
+    Due,
+}
+
+/// Where an open call is with its attempts ([`Retry`]; the module's
+/// documentation, "Sending a call again"). The store keeps it with the
+/// call ([`CallSummary::tries`], [`Pending::keep_tries`]), so that it
+/// outlasts the hub.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Tries {
+    /// The rule its run gave ([`Enqueue::retry`]); `None`: none was
+    /// given, and [`HubLimits::retry_kept`] stands for it.
+    pub rule: Option<Retry>,
+    /// The attempts that failed and were followed by another, each one
+    /// of its run's sendings again ([`Pending::resends`]).
+    pub failures: u32,
+    /// Not sent before this instant: the wait after a failed attempt, or
+    /// the one its host asked for (`retry_after_ms`).
+    pub not_before: Millis,
+    pub resend: Resend,
+    /// Its host asked for it later, and it was not sent since: new to its
+    /// host once more.
+    pub later: bool,
+    /// What its last attempt came to, while it has not been sent since:
+    /// what it is settled as when its deadline comes first.
+    pub last: Option<CallFailure>,
 }
 
 /// What the hub reads of an open call to decide what to do with it:
@@ -354,6 +417,8 @@ pub struct CallSummary {
     /// The call's ID: the store's own, the same for as long as it holds
     /// the call, and unlike every ID of an ended run it holds.
     pub id: String,
+    /// The run that made it.
+    pub run: String,
     /// The hash of the definition the call was made under.
     pub definition: String,
     pub op: String,
@@ -367,6 +432,21 @@ pub struct CallSummary {
     /// Whether its host answered `accepted` for it
     /// ([`Pending::accept_call`]).
     pub accepted: bool,
+    /// Where it is with its attempts, as the store keeps it.
+    pub tries: Tries,
+}
+
+/// What [`Pending::answer_call`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Answered {
+    /// The call is settled with the answer.
+    Settled,
+    /// The call was settled before with this same answer: it stands, and
+    /// nothing changed.
+    AlreadySettled,
+    /// Nothing changed: no such open call, its deadline is not after
+    /// now, or it was settled with something else.
+    Ignored,
 }
 
 /// An open call as it is sent: a [`CallSummary`] with the rest.
@@ -557,11 +637,17 @@ pub trait Pending {
         ids: &[String],
     ) -> Result<Vec<PendingCall>, Self::Error>;
 
-    /// Marks these calls as sent.
+    /// Marks these calls as sent. Each that is open is then no longer
+    /// one whose next attempt waits to be sent: a [`Resend::Planned`]
+    /// one is [`Resend::Due`], and neither [`Tries::later`] nor
+    /// [`Tries::last`] is kept.
     fn sent_calls(&mut self, ids: &[String]) -> Result<(), Self::Error>;
 
     /// Marks the registration's open call `id` as accepted, and so as
-    /// sent. False when it has no such open call.
+    /// sent, whether or not it was accepted before; its host has it, so
+    /// it is no longer one to send again: [`Resend::None`], and neither
+    /// [`Tries::later`] nor [`Tries::last`] is kept. False when it has no
+    /// such open call.
     fn accept_call(
         &mut self,
         registration: &str,
@@ -570,15 +656,52 @@ pub trait Pending {
     ) -> Result<bool, Self::Error>;
 
     /// Settles the registration's open call `id` with `outcome`, at
-    /// `now`. False, and nothing changes, when it has no such open
-    /// call, or the call's deadline is not after `now`.
+    /// `now`. Nothing changes when it has no such open call, or the
+    /// call's deadline is not after `now` ([`Answered::Ignored`]), or it
+    /// was settled before ([`Answered::AlreadySettled`] when with this
+    /// same outcome).
     fn answer_call(
         &mut self,
         registration: &str,
         id: &str,
         outcome: Result<Value, CallFailure>,
         now: Millis,
+    ) -> Result<Answered, Self::Error>;
+
+    /// Keeps `tries` with the registration's open call `id`. False, and
+    /// nothing changes, when it has no such open call.
+    fn keep_tries(
+        &mut self,
+        registration: &str,
+        id: &str,
+        tries: &Tries,
     ) -> Result<bool, Self::Error>;
+
+    /// How many times in all `run`'s calls to `registration` were sent
+    /// again after a failed attempt: the sum of their
+    /// [`Tries::failures`], those settled among them, for as long as the
+    /// store holds them.
+    fn resends(&mut self, run: &str, registration: &str) -> Result<u32, Self::Error>;
+
+    /// The earliest [`Tries::not_before`] of an open call that is later
+    /// than `after`.
+    fn next_resend(&mut self, after: Millis) -> Result<Option<Millis>, Self::Error>;
+
+    /// Marks the registration `id` as dropped for good at `at` (its lease
+    /// ended, or it made room for another), or as not dropped with `None`
+    /// (its host went on as it).
+    fn set_dropped(&mut self, id: &str, at: Option<Millis>) -> Result<(), Self::Error>;
+
+    /// Whether the registration `id` is marked as dropped for good.
+    fn is_dropped(&mut self, id: &str) -> Result<bool, Self::Error>;
+
+    /// Records that a `serve` of the registration `id` was taken at
+    /// `now`, whether or not it is answered: a store that keeps when a
+    /// registration was last served keeps this. One that keeps none has
+    /// nothing to do, which is what this does unless it is written.
+    fn served(&mut self, _id: &str, _now: Millis) -> Result<(), Self::Error> {
+        Ok(())
+    }
 
     /// Settles every open call whose deadline is not after `now`, each
     /// with the failure `failure` gives for it, and answers their IDs.
@@ -620,18 +743,34 @@ pub trait Pending {
         now: Millis,
     ) -> Result<bool, Self::Error>;
 
-    /// Forgets every unacknowledged end recorded before `before`, and
-    /// answers how many.
+    /// Forgets the unacknowledged ends recorded before `before`, oldest
+    /// first, and answers how many. A store may forget a bounded number
+    /// at each call (the store's forgets
+    /// `clax_store::bot_pending::EXPIRE_ENDS_PER_TX`); the rest go at the
+    /// calls after.
     fn expire_ends(&mut self, before: Millis) -> Result<usize, Self::Error>;
 }
 
 /// What `call` is settled as when its deadline comes: the failure its
-/// last attempt came to, when it has not been sent since (`last`), else
-/// [`unanswered`].
-fn settled_at_deadline(last: &BTreeMap<String, CallFailure>, call: &CallSummary) -> CallFailure {
-    last.get(&call.id)
-        .cloned()
-        .unwrap_or_else(|| unanswered(call))
+/// last attempt came to, when it has not been sent since
+/// ([`Tries::last`]), else [`unanswered`].
+fn settled_at_deadline(call: &CallSummary) -> CallFailure {
+    call.tries.last.clone().unwrap_or_else(|| unanswered(call))
+}
+
+/// What a call is settled as whose host said it cannot take it now
+/// (`retry_after_ms`) and that is not sent again: at its deadline, or at
+/// once for an accepted call of an `@once` operation, which is never sent
+/// again. Its host did not take it: nothing happened.
+fn not_taken(call: &CallSummary) -> CallFailure {
+    CallFailure::new(
+        CODE_UNAVAILABLE,
+        format!(
+            "clax.{}: its host could not take the call and was not sent it again. Nothing happened",
+            shown(&call.op)
+        ),
+    )
+    .retryable()
 }
 
 /// What a call that was not answered by its deadline is settled as
@@ -772,21 +911,21 @@ pub struct HubLimits {
     pub run_messages: usize,
     /// The bytes of one message to a run, as JSON. Default 64 KiB.
     pub run_message_bytes: usize,
-    /// How a call the store holds and the hub was given no rule for is
-    /// sent again: one opened before the hub started, whose run has not
-    /// made it again since (no rule is kept with a call). Default
-    /// [`Retry::NONE`]: such a call is not sent again after a failure,
-    /// nor when its host may have lost it, as every call was before
-    /// rules were given: a hub that starts again sends no call again
-    /// under a rule it was not given. Once its run makes it again with
-    /// its key (its step runs again), the run's rule takes over.
+    /// How a call the store holds with no rule kept ([`Tries::rule`]
+    /// `None`: none was given) is sent again, until its run makes it
+    /// again with its key (its step runs again) and the run's rule is
+    /// kept with it. Default [`Retry::NONE`]: such a call is not sent
+    /// again after a failure, nor when its host may have lost it, as
+    /// every call was before rules were given.
     pub retry_kept: Retry,
     /// How many times in all the calls of one run to one registration
     /// are sent again after a failed attempt (a host's retryable error,
     /// or a host that lost a call it had accepted): each registration a
     /// run calls has its own count, so that one host cannot spend
-    /// another's. A failure past it is the call's outcome. A host's
-    /// `retry_after_ms` is not counted. Default 64.
+    /// another's, counted from what the store keeps of the run's calls
+    /// ([`Pending::resends`]), so a restart forgets none. A failure past
+    /// it is the call's outcome. A host's `retry_after_ms` is not
+    /// counted. Default 64.
     pub resends_per_run: u32,
 }
 
@@ -1248,8 +1387,13 @@ pub struct Opened {
     pub serve: Serve,
     /// How many of the request's answers were ignored: for an ID the
     /// store does not hold for this registration, or for a call
-    /// already settled.
+    /// already settled with something else.
     pub ignored: usize,
+    /// The IDs those answers named, in their order: what the host is
+    /// told was not taken ([`wire::ServeResponse::ignored`]). An answer
+    /// not among them was taken, now or (the same answer, sent again)
+    /// before.
+    pub ignored_ids: Vec<String>,
     /// The IDs of the calls this settled: those the request answered,
     /// and those whose deadline had come. Their runs have an outcome
     /// to read.
@@ -1278,10 +1422,6 @@ pub struct Held {
     pub registrations: usize,
     /// Open `serve`s.
     pub serves: usize,
-    /// Calls whose host asked to be sent them later: for each
-    /// registration, no more than it has open calls when it is next
-    /// served.
-    pub deferred: usize,
     /// Definitions kept ready: those of the registrations, and those
     /// read back from the store to check answers by.
     pub definitions: usize,
@@ -1734,49 +1874,6 @@ pub fn check_answers_filled(
         .collect()
 }
 
-/// Where one open call is with its attempts ([`Retry`]). Kept with the
-/// registration, in memory: a hub that starts again knows none, and
-/// gives each call it finds [`HubLimits::retry_kept`] from no failures.
-#[derive(Clone, Debug)]
-struct Tries {
-    /// The run that made the call.
-    run: String,
-    rule: Retry,
-    /// Whether `rule` is the one the call's run gave
-    /// ([`Enqueue::retry`]), and not [`HubLimits::retry_kept`] for a
-    /// call the hub found in the store: a call made again with its key
-    /// replaces a rule that is not.
-    given: bool,
-    /// The attempts that failed.
-    failures: u32,
-    /// Not sent again before this instant.
-    not_before: Millis,
-    /// Due to be sent again although its host accepted it: the host
-    /// failed it in a way it may get past, or lost it.
-    again: bool,
-    /// Not delivered since it was made due again: new to its host.
-    fresh: bool,
-    /// What the last failed attempt came to, while the call has not
-    /// been sent since: what the call is settled as when its deadline
-    /// comes first.
-    last: Option<CallFailure>,
-}
-
-impl Tries {
-    fn new(run: &str, rule: Retry, given: bool) -> Tries {
-        Tries {
-            run: run.to_string(),
-            rule,
-            given,
-            failures: 0,
-            not_before: Millis(0),
-            again: false,
-            fresh: false,
-            last: None,
-        }
-    }
-}
-
 struct Reg {
     name: String,
     definition: Arc<Definition>,
@@ -1793,12 +1890,6 @@ struct Reg {
     /// When it was last known to be served: registered, a `serve`
     /// closed, or an open one lapsed.
     alive: Millis,
-    /// The calls its host asked to be sent again, each with the
-    /// instant it asked for.
-    later: BTreeMap<String, Millis>,
-    /// How each of its open calls is sent again, and how far it has
-    /// got ([`Tries`]), by call ID.
-    tries: BTreeMap<String, Tries>,
     /// Whether its host may have lost the calls it accepted: it was
     /// gone on with (its host started again) and has not served since.
     lost: bool,
@@ -1837,14 +1928,10 @@ pub struct Hub {
     /// How many calls it has settled and ends it has recorded
     /// ([`Hub::settles`]).
     settles: u64,
-    /// How many times each run's calls of each registration were sent
-    /// again ([`HubLimits::resends_per_run`]), by run and registration.
-    resent: BTreeMap<(String, String), u32>,
-    /// The registrations it dropped since it started (a lease that
-    /// ended, or room made for another) whose hosts have not gone on as
-    /// them since, each with when, among them: the newest
-    /// [`HubLimits::registrations`] ([`Hub::dropped`]).
-    dropped: BTreeMap<String, u64>,
+    /// The registrations whose lease ended where no store was at hand,
+    /// each with when: marked as dropped in the store
+    /// ([`Pending::set_dropped`]) by the next method that has one.
+    unmarked: BTreeMap<String, Millis>,
 }
 
 impl fmt::Debug for Hub {
@@ -1961,8 +2048,7 @@ impl Hub {
             registrations: BTreeMap::new(),
             definitions: BTreeMap::new(),
             settles: 0,
-            resent: BTreeMap::new(),
-            dropped: BTreeMap::new(),
+            unmarked: BTreeMap::new(),
         }
     }
 
@@ -2011,7 +2097,6 @@ impl Hub {
         Held {
             registrations: self.registrations.len(),
             serves: self.registrations.values().map(|r| r.holds.len()).sum(),
-            deferred: self.registrations.values().map(|r| r.later.len()).sum(),
             definitions: self.definitions.len(),
         }
     }
@@ -2049,40 +2134,44 @@ impl Hub {
             held
         });
         for id in ended {
-            self.forget_held(id);
+            self.unmarked.insert(id, now);
         }
     }
 
-    /// Notes that the hub no longer holds registration `id`
-    /// ([`Hub::dropped`]), keeping the newest
-    /// [`HubLimits::registrations`] such notes.
-    fn forget_held(&mut self, id: String) {
-        let at = self.take_number();
-        self.dropped.insert(id, at);
-        while self.dropped.len() > self.limits.registrations.max(1) {
-            let Some(oldest) = self
-                .dropped
-                .iter()
-                .min_by_key(|(_, at)| **at)
-                .map(|(id, _)| id.clone())
-            else {
-                break;
-            };
-            self.dropped.remove(&oldest);
-        }
-    }
-
-    /// Whether the hub dropped the registration `id` at `now` or before,
-    /// since it started (its lease ended, or it made room for another),
-    /// and its host has not gone on as it since. Its calls then wait for
-    /// a host that nothing says will come back, where a registration the
-    /// hub does not hold and did not drop (it started again since, and
-    /// its host has not registered again yet) may resume. Of the
-    /// registrations dropped, the hub remembers the newest
-    /// [`HubLimits::registrations`]: an older one reads as not dropped.
-    pub fn dropped(&mut self, id: &str, now: Millis) -> bool {
+    /// [`Hub::advance`], and then marks in `store` the registrations
+    /// whose lease ended as dropped ([`Pending::set_dropped`]).
+    fn advance_with<P: Pending>(&mut self, store: &mut P, now: Millis) -> Result<(), P::Error> {
         self.advance(now);
-        self.dropped.contains_key(id)
+        while let Some((id, at)) = self.unmarked.pop_first() {
+            if let Err(e) = store.set_dropped(&id, Some(at)) {
+                self.unmarked.insert(id, at);
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the hub dropped the registration `id` at `now` or before
+    /// (its lease ended, or it made room for another), and its host has
+    /// not gone on as it since: kept in the store, so a hub that started
+    /// again since says so too. Its calls then wait for a host that
+    /// nothing says will come back, where a registration the hub does
+    /// not hold and did not drop (the hub started again since, and its
+    /// host has not registered again yet) may resume.
+    ///
+    /// # Errors
+    /// The store's, as text.
+    pub fn dropped<P: Pending>(
+        &mut self,
+        store: &mut P,
+        id: &str,
+        now: Millis,
+    ) -> Result<bool, String> {
+        self.advance_with(store, now).map_err(|e| e.to_string())?;
+        if self.registrations.contains_key(id) {
+            return Ok(false);
+        }
+        store.is_dropped(id).map_err(|e| e.to_string())
     }
 
     /// Whether the registration is connected at the hub's instant,
@@ -2172,8 +2261,9 @@ impl Hub {
     /// done: a call's deadline ([`Pending::next_deadline`], which may
     /// be at or before `now` when [`Hub::expire`] has not settled it
     /// yet), a registration ceasing to be connected, a lease ending, a
-    /// call its host asked for later coming due (when whoever holds a
-    /// `serve` of its registration asks [`Hub::ready`] again). `None`
+    /// call waiting to be sent again coming due ([`Pending::next_resend`]:
+    /// when whoever holds a `serve` of its registration asks
+    /// [`Hub::ready`] again). `None`
     /// when nothing waits on time. Whoever keeps the hub calls
     /// [`Hub::expire`] then, and need not before.
     ///
@@ -2190,10 +2280,11 @@ impl Hub {
         store: &mut P,
         now: Millis,
     ) -> Result<Option<Millis>, String> {
-        self.advance(now);
+        self.advance_with(store, now).map_err(|e| e.to_string())?;
         let now = self.now;
         let (connected, lease) = (self.limits.connected_ms, self.limits.lease_ms);
         let deadline = store.next_deadline().map_err(|e| e.to_string())?;
+        let again = store.next_resend(now).map_err(|e| e.to_string())?;
         Ok(self
             .registrations
             .values()
@@ -2210,17 +2301,9 @@ impl Hub {
                     .unwrap_or(reg.alive);
                 let unconnected = served.after(connected).after(1);
                 let dropped = served.after(connected.saturating_add(lease)).after(1);
-                let again = reg
-                    .tries
-                    .values()
-                    .filter(|t| t.again || t.fresh)
-                    .map(|t| t.not_before);
-                reg.later
-                    .values()
-                    .copied()
-                    .chain(again)
-                    .chain([unconnected, dropped])
+                [unconnected, dropped]
             })
+            .chain(again)
             .filter(|at| *at > now)
             .chain(deadline)
             .min())
@@ -2294,9 +2377,9 @@ impl Hub {
         fresh: &str,
         now: Millis,
     ) -> Result<Registered, RegisterError> {
-        self.advance(now);
-        let now = self.now;
         let storage = |e: P::Error| RegisterError::Storage(e.to_string());
+        self.advance_with(store, now).map_err(storage)?;
+        let now = self.now;
         let name = reading.name.as_str();
         if !is_registration_id(fresh) || self.registrations.contains_key(fresh) {
             return Err(RegisterError::FreshInvalid);
@@ -2389,11 +2472,15 @@ impl Hub {
         {
             return Err(RegisterError::FreshInvalid);
         }
+        for gone in &evicted {
+            store.set_dropped(gone, Some(now)).map_err(storage)?;
+        }
+        if reading.registration.is_some() {
+            store.set_dropped(id, None).map_err(storage)?;
+        }
         for gone in evicted {
             self.registrations.remove(&gone);
-            self.forget_held(gone);
         }
-        self.dropped.remove(id);
         let made = self.take_number();
         let old = self.registrations.remove(id);
         self.registrations.insert(
@@ -2409,8 +2496,6 @@ impl Hub {
                 made,
                 holds: old.as_ref().map(|r| r.holds.clone()).unwrap_or_default(),
                 alive: now,
-                later: old.as_ref().map(|r| r.later.clone()).unwrap_or_default(),
-                tries: old.as_ref().map(|r| r.tries.clone()).unwrap_or_default(),
                 // Going on as a registration is a host that started
                 // again, and may not have the calls it accepted.
                 lost: reading.registration.is_some(),
@@ -2482,11 +2567,10 @@ impl Hub {
         store: &mut P,
         now: Millis,
     ) -> Result<Vec<String>, String> {
-        self.advance(now);
+        self.advance_with(store, now).map_err(|e| e.to_string())?;
         let now = self.now;
-        let last = self.last_failures();
         let settled = store
-            .expire_calls(now, &|call| settled_at_deadline(&last, call))
+            .expire_calls(now, &settled_at_deadline)
             .map_err(|e| e.to_string())?;
         self.settles = self.settles.saturating_add(settled.len() as u64);
         if let Some(before) = now.0.checked_sub(self.limits.ended_ms) {
@@ -2511,7 +2595,7 @@ impl Hub {
     /// - a result settles it as its value when it is the operation's
     ///   declared result in the definition the call was made under, and
     ///   as `invalid_result` when it is not, or is longer than
-    ///   [`HubLimits::result_bytes`];
+    ///   [`HubLimits::result_bytes`], or that definition no longer reads;
     /// - an error settles it as that error when its code is one the
     ///   operation declares (`@throws`) or `unavailable`, and as
     ///   `invalid_result`, with the code and the message in its
@@ -2521,13 +2605,22 @@ impl Hub {
     /// - `accepted` marks it as one its host has, which is not sent
     ///   again unless its host may have lost it;
     /// - `retry_after_ms` leaves it out of what is sent until that long
-    ///   from `now`.
+    ///   from `now`, and sends a call its host had accepted again then;
+    ///   an accepted call of an `@once` operation, which is never sent
+    ///   again, it settles `unavailable`.
     ///
-    /// The last two settle nothing, so a result or an error for the
+    /// The last two settle nothing else, so a result or an error for the
     /// same call may follow either in the same request. An answer that
     /// names an ended run of this registration acknowledges it. Every
-    /// other answer is ignored: for an ID that is neither, and any
-    /// answer for a call an earlier answer of this request settled.
+    /// other answer is ignored ([`Opened::ignored`]): for an ID that is
+    /// neither, and any answer for a call an earlier answer of this
+    /// request settled; but a result or an error for a call that was
+    /// settled before with that same answer is taken: it stands.
+    ///
+    /// A registration that was not connected, or that its host went on
+    /// as (it started again), may have lost the calls it had accepted:
+    /// once the answers are taken, those it neither settled nor accepted
+    /// again are planned to be sent again, each as its rule allows.
     ///
     /// # Errors
     /// [`ServeError`]. No `serve` is open. For
@@ -2585,7 +2678,7 @@ impl Hub {
             let Some(call) = calls.iter().find(|c| c.id == answer.id) else {
                 continue;
             };
-            // One whose definition is not kept is refused when the
+            // One whose definition does not read is settled when the
             // serve is opened.
             if let Some(definition) = self.definition(store, &call.definition).map_err(storage)? {
                 out.push(Checking {
@@ -2615,45 +2708,39 @@ impl Hub {
         now: Millis,
     ) -> Result<Opened, ServeError> {
         self.find(name, registration, now)?;
+        let storage = |e: P::Error| ServeError::Storage(e.to_string());
+        self.advance_with(store, now).map_err(storage)?;
         let now = self.now;
         if answers.len() > self.limits.answers_per_serve {
             return Err(ServeError::TooManyAnswers {
                 limit: self.limits.answers_per_serve,
             });
         }
-        let storage = |e: P::Error| ServeError::Storage(e.to_string());
-        let last = self.last_failures();
-        let mut settled = store
-            .expire_calls(now, &|call| settled_at_deadline(&last, call))
-            .map_err(storage)?;
         // A host that comes back after it was not connected, or that
-        // started again, may have lost the calls it had accepted.
+        // started again, may have lost the calls it had accepted: told
+        // before this serve holds it connected, acted on once its
+        // answers are taken.
         let lost = self
             .registrations
             .get(registration)
             .is_some_and(|reg| reg.lost || !self.is_connected(reg));
-        if lost {
-            if let Some(reg) = self.registrations.get_mut(registration) {
-                reg.lost = false;
-            }
-            self.reoffer(store, registration, now)?;
-        }
+        store.served(registration, now).map_err(storage)?;
+        let mut settled = store
+            .expire_calls(now, &settled_at_deadline)
+            .map_err(storage)?;
         self.settles = self.settles.saturating_add(settled.len() as u64);
-        let mut ignored = 0;
+        let mut ignored = Vec::new();
+        let mut accepted_here: BTreeSet<String> = BTreeSet::new();
         if !answers.is_empty() {
             // The registration's open calls as each answer finds them:
             // what an earlier answer of this request did to a call (it
-            // settled it, or its host accepted it) is what a later one
-            // for the same call is taken by.
+            // settled it, its host accepted it, or its attempts moved)
+            // is what a later one for the same call is taken by.
             let mut calls = store.pending_for(registration).map_err(storage)?.calls;
-            if let Some(reg) = self.registrations.get_mut(registration) {
-                reg.later
-                    .retain(|call, _| calls.iter().any(|c| c.id == *call));
-            }
             let mut settled_here: BTreeSet<String> = BTreeSet::new();
             for answer in answers {
                 if answer.id.len() > self.limits.id_bytes {
-                    ignored += 1;
+                    ignored.push(answer.id);
                     continue;
                 }
                 let took = match calls.iter_mut().find(|c| c.id == answer.id) {
@@ -2670,20 +2757,32 @@ impl Hub {
                             }
                             Took::Noted => {
                                 if accepts {
-                                    call.accepted = true;
+                                    accepted_here.insert(call.id.clone());
                                 }
+                                true
+                            }
+                            Took::Same => {
+                                settled_here.insert(call.id.clone());
                                 true
                             }
                             Took::Ignored => false,
                         }
                     }
-                    None => store
-                        .acknowledge_end(registration, &answer.id, now)
-                        .map_err(storage)?,
+                    None => self.settled_before(store, registration, &answer, now)?,
                 };
                 if !took {
-                    ignored += 1;
+                    ignored.push(answer.id);
                 }
+            }
+        }
+        if lost {
+            // The mark is cleared once the plan is kept: a serve whose
+            // plan could not be written leaves it, and the host's next
+            // serve plans again (a call planned already is not planned
+            // twice).
+            self.reoffer(store, registration, now, &accepted_here)?;
+            if let Some(reg) = self.registrations.get_mut(registration) {
+                reg.lost = false;
             }
         }
         let hold = self.take_number();
@@ -2702,60 +2801,124 @@ impl Hub {
                 hold,
                 until,
             },
-            ignored,
+            ignored: ignored.len(),
+            ignored_ids: ignored,
             settled,
         })
     }
 
-    /// Takes one answer for the open call `call` of registration `id`.
+    /// Takes an answer that names no open call of registration `id`: it
+    /// acknowledges an ended run of it, or, for a result or an error,
+    /// is taken when it is the answer the call was settled with before
+    /// (its host sends it again, its reply to the first lost). Whether it
+    /// was taken.
+    fn settled_before<P: Pending>(
+        &mut self,
+        store: &mut P,
+        id: &str,
+        answer: &Checked,
+        now: Millis,
+    ) -> Result<bool, ServeError> {
+        let storage = |e: P::Error| ServeError::Storage(e.to_string());
+        if store
+            .acknowledge_end(id, &answer.id, now)
+            .map_err(storage)?
+        {
+            return Ok(true);
+        }
+        // The call is not open, so the store settles nothing with this:
+        // it only tells whether the call was settled with it. A result or
+        // an error no definition judged here is compared as its host
+        // wrote it (a result that held content was settled with the
+        // content filled in, and so is not this).
+        let outcome = match &answer.outcome {
+            CheckedOutcome::Judged(outcome) => outcome.clone(),
+            CheckedOutcome::Raw(Outcome::Result(value)) => Ok(value.clone()),
+            CheckedOutcome::Raw(Outcome::Error(error)) => {
+                let failure =
+                    CallFailure::new(&error.code, cut(&error.message, self.limits.message_bytes));
+                Err(if error.retryable || error.code == CODE_UNAVAILABLE {
+                    failure.retryable()
+                } else {
+                    failure
+                })
+            }
+            CheckedOutcome::Raw(Outcome::Accepted | Outcome::RetryAfter(_)) => return Ok(false),
+        };
+        Ok(store
+            .answer_call(id, &answer.id, outcome, now)
+            .map_err(storage)?
+            == Answered::AlreadySettled)
+    }
+
+    /// Takes one answer for the open call `call` of registration `id`,
+    /// and leaves `call` as the store has it after.
     fn answer<P: Pending>(
         &mut self,
         store: &mut P,
         id: &str,
-        call: &CallSummary,
+        call: &mut CallSummary,
         outcome: CheckedOutcome,
         now: Millis,
     ) -> Result<Took, ServeError> {
         let storage = |e: P::Error| ServeError::Storage(e.to_string());
         let outcome = match outcome {
             CheckedOutcome::Raw(Outcome::Accepted) => {
-                let took = store.accept_call(id, &call.id, now).map_err(storage)?;
                 // Its host has it again: it is not sent again, and the
                 // failure before is no longer what is known of it.
-                if took
-                    && let Some(tries) = self
-                        .registrations
-                        .get_mut(id)
-                        .and_then(|reg| reg.tries.get_mut(&call.id))
-                {
-                    tries.again = false;
-                    tries.fresh = false;
-                    tries.last = None;
+                let took = store.accept_call(id, &call.id, now).map_err(storage)?;
+                if took {
+                    call.accepted = true;
+                    call.sent = true;
+                    call.tries = Tries {
+                        resend: Resend::None,
+                        later: false,
+                        last: None,
+                        ..call.tries.clone()
+                    };
                 }
                 return Ok(if took { Took::Noted } else { Took::Ignored });
             }
             // The host's own account: no attempt and none of the run's
             // sendings again, only a wait no shorter than the rule's
             // first, so that a host that asks for it again at once is
-            // not sent it again at once.
+            // not sent it again at once. An accepted call is sent again
+            // then, but one of an `@once` operation, which is never sent
+            // again once accepted: that is settled, as its host did not
+            // take it.
             CheckedOutcome::Raw(Outcome::RetryAfter(ms)) => {
-                let kept = self.limits.retry_kept;
-                let Some(reg) = self.registrations.get_mut(id) else {
+                if !self.registrations.contains_key(id) {
                     return Ok(Took::Ignored);
-                };
-                let shortest = reg
-                    .tries
-                    .get(&call.id)
-                    .map_or(kept, |tries| tries.rule)
-                    .wait_after(1);
-                reg.later
-                    .insert(call.id.clone(), now.after(ms.max(shortest)));
-                return Ok(Took::Noted);
+                }
+                if call.accepted && self.once(store, call)? {
+                    return self.settle(store, id, call, Err(not_taken(call)), now);
+                } else {
+                    let rule = call.tries.rule.unwrap_or(self.limits.retry_kept);
+                    let asked = now.after(ms.max(rule.wait_after(1)));
+                    let mut tries = call.tries.clone();
+                    tries.not_before = if tries.resend == Resend::Planned {
+                        tries.not_before.max(asked)
+                    } else {
+                        asked
+                    };
+                    tries.later = true;
+                    if call.accepted && tries.resend == Resend::None {
+                        tries.resend = Resend::Due;
+                    }
+                    tries.last = Some(not_taken(call));
+                    return self.keep(store, id, call, tries);
+                }
             }
             CheckedOutcome::Judged(outcome) => outcome,
-            CheckedOutcome::Raw(settling) => {
-                let definition = self.definition_of(store, call)?;
-                match judge(
+            CheckedOutcome::Raw(settling) => match self.definition_of(store, call)? {
+                None => Err(CallFailure::new(
+                    CODE_INVALID_RESULT,
+                    format!(
+                        "clax.{}: the definition it was called under no longer reads, so its answer cannot be checked",
+                        shown(&call.op)
+                    ),
+                )),
+                Some(definition) => match judge(
                     &self.limits,
                     &definition,
                     &call.op,
@@ -2765,142 +2928,123 @@ impl Hub {
                 ) {
                     Some(outcome) => outcome,
                     None => return Ok(Took::Ignored),
-                }
-            }
+                },
+            },
         };
         if let Err(failure) = &outcome
             && failure.retryable
+            && self.registrations.contains_key(id)
         {
-            // A failure of an attempt that has failed already: the next
-            // attempt is planned and not sent yet, and this answer takes
-            // no attempt more.
-            let planned = self
-                .registrations
-                .get(id)
-                .and_then(|reg| reg.tries.get(&call.id))
-                .is_some_and(|tries| tries.fresh);
-            if planned || self.try_again(store, id, call, failure, now)? {
-                return Ok(Took::Noted);
+            // A failure of an attempt whose next one is planned and not
+            // sent yet takes no attempt more; it is what the call is
+            // settled as if its deadline comes first, unless a failure
+            // is known of it already.
+            if call.tries.resend == Resend::Planned {
+                if call.tries.last.is_some() {
+                    return Ok(Took::Noted);
+                }
+                let tries = Tries {
+                    last: Some(failure.clone()),
+                    ..call.tries.clone()
+                };
+                return self.keep(store, id, call, tries);
+            }
+            if let Some(tries) = self.try_again(store, id, call, failure, now)? {
+                return self.keep(store, id, call, tries);
             }
         }
-        if let Some(reg) = self.registrations.get_mut(id) {
-            reg.later.remove(&call.id);
-            reg.tries.remove(&call.id);
-        }
-        let took = store
-            .answer_call(id, &call.id, outcome, now)
-            .map_err(storage)?;
-        Ok(if took { Took::Settled } else { Took::Ignored })
+        self.settle(store, id, call, outcome, now)
     }
 
-    /// The definition the call was made under.
-    fn definition_of<P: Pending>(
-        &mut self,
-        store: &mut P,
-        call: &CallSummary,
-    ) -> Result<Arc<Definition>, ServeError> {
-        self.definition(store, &call.definition)
-            .map_err(|e| ServeError::Storage(e.to_string()))?
-            .ok_or_else(|| {
-                ServeError::Storage(format!(
-                    "the definition clax.{} was called under is not kept",
-                    shown(&call.op)
-                ))
-            })
-    }
-
-    /// Whether the call's operation is tagged `@once`.
-    fn once<P: Pending>(&mut self, store: &mut P, call: &CallSummary) -> Result<bool, ServeError> {
-        let definition = self.definition_of(store, call)?;
-        Ok(definition
-            .operation(&call.op)
-            .is_some_and(|operation| operation.op.once))
-    }
-
-    /// The run that made the open call `call` of registration `id`: as
-    /// its attempts keep it, else as the store has it.
-    fn run_of<P: Pending>(
+    /// Settles the open call `call` of registration `id` with `outcome`.
+    fn settle<P: Pending>(
         &mut self,
         store: &mut P,
         id: &str,
         call: &CallSummary,
-    ) -> Result<String, ServeError> {
-        if let Some(tries) = self
-            .registrations
-            .get(id)
-            .and_then(|reg| reg.tries.get(&call.id))
-        {
-            return Ok(tries.run.clone());
-        }
-        let calls = store
-            .calls_for(id, std::slice::from_ref(&call.id))
+        outcome: Result<Value, CallFailure>,
+        now: Millis,
+    ) -> Result<Took, ServeError> {
+        Ok(
+            match store
+                .answer_call(id, &call.id, outcome, now)
+                .map_err(|e| ServeError::Storage(e.to_string()))?
+            {
+                Answered::Settled => Took::Settled,
+                Answered::AlreadySettled => Took::Same,
+                Answered::Ignored => Took::Ignored,
+            },
+        )
+    }
+
+    /// Keeps `tries` with the open call `call` of registration `id`, and
+    /// in `call`: [`Took::Noted`], or [`Took::Ignored`] when the store
+    /// holds no such open call.
+    fn keep<P: Pending>(
+        &mut self,
+        store: &mut P,
+        id: &str,
+        call: &mut CallSummary,
+        tries: Tries,
+    ) -> Result<Took, ServeError> {
+        let kept = store
+            .keep_tries(id, &call.id, &tries)
             .map_err(|e| ServeError::Storage(e.to_string()))?;
-        Ok(calls.into_iter().next().map(|c| c.run).unwrap_or_default())
+        if !kept {
+            return Ok(Took::Ignored);
+        }
+        call.tries = tries;
+        Ok(Took::Noted)
     }
 
-    /// Starts keeping the attempts of the open call `call` of
-    /// registration `id`, made by `run` under `rule`, unless they are
-    /// kept already. Attempts kept under a rule the run did not give
-    /// ([`HubLimits::retry_kept`]) go on under `rule`.
-    fn track(&mut self, id: &str, call: &str, run: &str, rule: Retry) {
-        if let Some(reg) = self.registrations.get_mut(id) {
-            let tries = reg
-                .tries
-                .entry(call.to_string())
-                .or_insert_with(|| Tries::new(run, rule, true));
-            if !tries.given {
-                tries.rule = rule;
-                tries.given = true;
-            }
-        }
+    /// The definition the call was made under; `None` when it is not
+    /// kept or no longer reads (a build whose definitions read otherwise
+    /// than the one that kept it): a property of the call, which is then
+    /// settled `invalid_result` when it is answered and never sent again.
+    fn definition_of<P: Pending>(
+        &mut self,
+        store: &mut P,
+        call: &CallSummary,
+    ) -> Result<Option<Arc<Definition>>, ServeError> {
+        self.definition(store, &call.definition)
+            .map_err(|e| ServeError::Storage(e.to_string()))
     }
 
-    /// Takes one of the sendings again of `run`'s calls of
-    /// `registration` ([`HubLimits::resends_per_run`]): false when they
-    /// have none left. Each registration's are its own, so that one
-    /// host's failures do not spend another's in a run both serve. The
-    /// count is forgotten when [`Hub::ended`] records the run's end (a
-    /// daemon keeps a run's end in its terminal commit and does not call
-    /// it), and, when the hub counts more than it can have calls open, for
-    /// each run with no call open: an ended run makes no call, so its
-    /// count goes then.
-    fn spend_resend(&mut self, run: &str, registration: &str) -> bool {
-        let most = self.limits.resends_per_run;
-        let at = (run.to_string(), registration.to_string());
-        let spent = self.resent.get(&at).copied().unwrap_or(0);
-        if spent >= most {
-            return false;
-        }
-        self.resent.insert(at.clone(), spent + 1);
-        let room = self
-            .limits
-            .registrations
-            .saturating_mul(self.limits.calls_per_registration)
-            .max(1);
-        if self.resent.len() > room {
-            let open: BTreeSet<(&str, &str)> = self
-                .registrations
-                .iter()
-                .flat_map(|(id, reg)| {
-                    reg.tries
-                        .values()
-                        .map(move |t| (t.run.as_str(), id.as_str()))
-                })
-                .collect();
-            self.resent.retain(|(r, id), _| {
-                (r, id) == (&at.0, &at.1) || open.contains(&(r.as_str(), id.as_str()))
-            });
-        }
-        true
+    /// Whether the call is never to be sent again once accepted: its
+    /// operation is tagged `@once`, or its definition no longer reads
+    /// ([`Hub::definition_of`]), so nothing says it may be.
+    fn once<P: Pending>(&mut self, store: &mut P, call: &CallSummary) -> Result<bool, ServeError> {
+        Ok(self.definition_of(store, call)?.is_none_or(|definition| {
+            definition
+                .operation(&call.op)
+                .is_none_or(|operation| operation.op.once)
+        }))
     }
 
-    /// Whether the open call `call` of registration `id`, whose attempt
-    /// came to `failure` (one that sending it again may get past), is to
-    /// be sent again: its rule has another attempt, its run has a
-    /// sending left, its operation is not `@once` with the call
-    /// accepted, and the wait before the next attempt ends before the
-    /// call's deadline. When it is, its next attempt is planned, and
+    /// Whether `run` has one of its sendings again of `registration` left
+    /// ([`HubLimits::resends_per_run`]), as the store counts them. Each
+    /// registration's are its own, so that one host's failures do not
+    /// spend another's in a run both serve.
+    fn resend_left<P: Pending>(
+        &self,
+        store: &mut P,
+        run: &str,
+        registration: &str,
+    ) -> Result<bool, ServeError> {
+        let spent = store
+            .resends(run, registration)
+            .map_err(|e| ServeError::Storage(e.to_string()))?;
+        Ok(spent < self.limits.resends_per_run)
+    }
+
+    /// Where the open call `call` of registration `id`, whose attempt
+    /// came to `failure` (one that sending it again may get past), goes
+    /// to when it is to be sent again: its rule has another attempt, its
+    /// run has a sending left, its operation is not `@once` with the
+    /// call accepted, and the wait before the next attempt ends before
+    /// the call's deadline. Its next attempt is then planned, and
     /// `failure` is what it is settled as if its deadline comes first.
+    /// `None` when it is not.
     fn try_again<P: Pending>(
         &mut self,
         store: &mut P,
@@ -2908,138 +3052,101 @@ impl Hub {
         call: &CallSummary,
         failure: &CallFailure,
         now: Millis,
-    ) -> Result<bool, ServeError> {
-        if !self.registrations.contains_key(id) || (call.accepted && self.once(store, call)?) {
-            return Ok(false);
+    ) -> Result<Option<Tries>, ServeError> {
+        if call.accepted && self.once(store, call)? {
+            return Ok(None);
         }
-        let run = self.run_of(store, id, call)?;
-        let kept = self.limits.retry_kept;
-        let Some(reg) = self.registrations.get_mut(id) else {
-            return Ok(false);
-        };
-        let tries = reg
-            .tries
-            .entry(call.id.clone())
-            .or_insert_with(|| Tries::new(&run, kept, false));
-        let failures = tries.failures.saturating_add(1);
-        let at = now.after(tries.rule.wait_after(failures));
-        if !tries.rule.another(failures) || at >= call.deadline {
-            return Ok(false);
+        let rule = call.tries.rule.unwrap_or(self.limits.retry_kept);
+        let failures = call.tries.failures.saturating_add(1);
+        let at = now.after(rule.wait_after(failures));
+        if !rule.another(failures)
+            || at >= call.deadline
+            || !self.resend_left(store, &call.run, id)?
+        {
+            return Ok(None);
         }
-        if !self.spend_resend(&run, id) {
-            return Ok(false);
-        }
-        let Some(tries) = self
-            .registrations
-            .get_mut(id)
-            .and_then(|reg| reg.tries.get_mut(&call.id))
-        else {
-            return Ok(false);
-        };
-        tries.failures = failures;
-        tries.not_before = at;
-        tries.again = true;
-        tries.fresh = true;
-        tries.last = Some(failure.clone());
-        Ok(true)
+        Ok(Some(Tries {
+            failures,
+            // A wait its host asked for stands too.
+            not_before: if call.tries.later {
+                call.tries.not_before.max(at)
+            } else {
+                at
+            },
+            resend: Resend::Planned,
+            last: Some(failure.clone()),
+            ..call.tries.clone()
+        }))
     }
 
     /// Plans the calls of registration `id` its host accepted and may
     /// have lost (it was not connected, or started again) to be sent
-    /// again, each as its rule allows, but those of `@once` operations,
-    /// which are never sent again once accepted.
+    /// again, each as its rule allows, but those `skip` names (this
+    /// `serve` accepted them again), those already to be sent again, and
+    /// those never to be sent again once accepted ([`Hub::once`]).
     fn reoffer<P: Pending>(
         &mut self,
         store: &mut P,
         id: &str,
         now: Millis,
+        skip: &BTreeSet<String>,
     ) -> Result<(), ServeError> {
         let storage = |e: P::Error| ServeError::Storage(e.to_string());
         let pending = store.pending_for(id).map_err(storage)?;
-        let accepted: Vec<CallSummary> = pending
-            .calls
-            .into_iter()
-            .filter(|c| c.accepted && c.deadline > now)
-            .collect();
+        let accepted = pending.calls.into_iter().filter(|c| {
+            c.accepted
+                && c.deadline > now
+                && c.tries.resend == Resend::None
+                && !skip.contains(&c.id)
+        });
         for call in accepted {
             if self.once(store, &call)? {
                 continue;
             }
-            let run = self.run_of(store, id, &call)?;
-            let kept = self.limits.retry_kept;
-            let Some(reg) = self.registrations.get_mut(id) else {
-                return Ok(());
+            let rule = call.tries.rule.unwrap_or(self.limits.retry_kept);
+            let failures = call.tries.failures.saturating_add(1);
+            if !rule.another(failures) {
+                continue;
+            }
+            let at = now.after(rule.wait_after(failures));
+            if at >= call.deadline || !self.resend_left(store, &call.run, id)? {
+                continue;
+            }
+            let tries = Tries {
+                failures,
+                not_before: at,
+                resend: Resend::Planned,
+                ..call.tries.clone()
             };
-            let tries = reg
-                .tries
-                .entry(call.id.clone())
-                .or_insert_with(|| Tries::new(&run, kept, false));
-            let failures = tries.failures.saturating_add(1);
-            if tries.again || !tries.rule.another(failures) {
-                continue;
-            }
-            let at = now.after(tries.rule.wait_after(failures));
-            if at >= call.deadline || !self.spend_resend(&run, id) {
-                continue;
-            }
-            if let Some(tries) = self
-                .registrations
-                .get_mut(id)
-                .and_then(|reg| reg.tries.get_mut(&call.id))
-            {
-                tries.failures = failures;
-                tries.not_before = at;
-                tries.again = true;
-                tries.fresh = true;
-            }
+            store.keep_tries(id, &call.id, &tries).map_err(storage)?;
         }
         Ok(())
     }
 
-    /// What each call whose last attempt failed, and that has not been
-    /// sent since, is settled as when its deadline comes: that failure.
-    fn last_failures(&self) -> BTreeMap<String, CallFailure> {
-        self.registrations
-            .values()
-            .flat_map(|reg| {
-                reg.tries
-                    .iter()
-                    .filter_map(|(id, t)| Some((id.clone(), t.last.clone()?)))
-            })
-            .collect()
-    }
-
     /// What a `serve` of the registration would be answered with at
     /// `now`, in the store's order: the ID and size of each open call
-    /// that is not accepted, not left for later and not past its
-    /// deadline, and of each unacknowledged end, each with whether it
-    /// is new to its host.
+    /// that is not accepted (or is to be sent again), not waiting to be
+    /// sent again and not past its deadline, and of each unacknowledged
+    /// end, each with whether it is new to its host.
     fn due(&mut self, id: &str, pending: &PendingSummary, now: Millis) -> Vec<Due> {
         let Some(reg) = self.registrations.get_mut(id) else {
             return Vec::new();
         };
-        reg.later
-            .retain(|call, _| pending.calls.iter().any(|c| c.id == *call));
-        reg.tries
-            .retain(|call, _| pending.calls.iter().any(|c| c.id == *call));
         reg.ends_sent
             .retain(|end| pending.ends.iter().any(|e| e.id == *end));
         let mut out = Vec::new();
         for call in &pending.calls {
-            let again = reg.later.get(&call.id).copied();
-            let tries = reg.tries.get(&call.id);
-            let resend = tries.is_some_and(|t| t.again);
-            if (call.accepted && !resend)
+            let tries = &call.tries;
+            if (call.accepted && tries.resend == Resend::None)
                 || call.deadline <= now
-                || again.is_some_and(|at| at > now)
-                || tries.is_some_and(|t| t.not_before > now)
+                || tries.not_before > now
             {
                 continue;
             }
             out.push(Due {
                 // A call its host asked for again, or that is sent
                 // again after a failed attempt, is new to it once more.
-                new: !call.sent || again.is_some() || tries.is_some_and(|t| t.fresh),
+                new: !call.sent || tries.later || tries.resend == Resend::Planned,
                 call: true,
                 id: call.id.clone(),
                 bytes: call.args_bytes,
@@ -3199,23 +3306,13 @@ impl Hub {
                 }));
             }
         }
+        // Sent: a planned attempt is made, and its last failure is no
+        // longer what is known of it ([`Pending::sent_calls`]).
         store.sent_calls(&call_ids).map_err(storage)?;
         if let Some(reg) = self.registrations.get_mut(&serve.registration) {
             for delivery in &deliveries {
-                match delivery {
-                    Delivery::Call(c) => {
-                        reg.later.remove(&c.id);
-                        // Sent: its last failure is no longer what is
-                        // known of it.
-                        if let Some(tries) = reg.tries.get_mut(&c.id) {
-                            tries.fresh = false;
-                            tries.last = None;
-                        }
-                    }
-                    Delivery::Ended(e) => {
-                        reg.ends_sent.insert(e.id.clone());
-                    }
-                    Delivery::Event(_) | Delivery::Other(_) => {}
+                if let Delivery::Ended(e) = delivery {
+                    reg.ends_sent.insert(e.id.clone());
                 }
             }
         }
@@ -3309,7 +3406,8 @@ impl Hub {
         call: Enqueue,
         now: Millis,
     ) -> Result<String, EnqueueError> {
-        self.advance(now);
+        self.advance_with(store, now)
+            .map_err(|e| EnqueueError::Storage(e.to_string()))?;
         let now = self.now;
         let current = &self
             .registrations
@@ -3379,7 +3477,7 @@ impl Hub {
                 limit: self.limits.args_bytes,
             });
         }
-        let (run, rule) = (call.run.clone(), call.retry);
+        let rule = call.retry;
         let new = NewCall {
             registration: registration.to_string(),
             definition: hash.clone(),
@@ -3391,21 +3489,35 @@ impl Hub {
             kind,
             deadline,
             joined: call.joined,
+            retry: rule,
         };
         let limit = self.limits.calls_per_registration;
-        match store
-            .open_call(new, limit, now)
-            .map_err(|e| EnqueueError::Storage(e.to_string()))?
-        {
+        let storage = |e: P::Error| EnqueueError::Storage(e.to_string());
+        match store.open_call(new, limit, now).map_err(storage)? {
             OpenedCall::New(id) => {
-                self.track(registration, &id, &run, rule);
                 (self.wake)(registration);
                 Ok(id)
             }
             // Made again (its step run again): the attempts go on where
-            // they were.
+            // they were, under the run's rule when none was kept.
             OpenedCall::Same(id) => {
-                self.track(registration, &id, &run, rule);
+                let kept = store
+                    .pending_for(registration)
+                    .map_err(storage)?
+                    .calls
+                    .into_iter()
+                    .find(|c| c.id == id);
+                if let Some(call) = kept
+                    && call.tries.rule.is_none()
+                {
+                    let tries = Tries {
+                        rule: Some(rule),
+                        ..call.tries
+                    };
+                    store
+                        .keep_tries(registration, &id, &tries)
+                        .map_err(storage)?;
+                }
                 Ok(id)
             }
             OpenedCall::KeyReused => Err(EnqueueError::KeyReused),
@@ -3487,7 +3599,6 @@ impl Hub {
         if !issued {
             return Err(EndedError::NoRegistration);
         }
-        self.resent.retain(|(r, _), _| r != run);
         let result_bytes = result.as_ref().map_or(0, json_bytes);
         if result_bytes > self.limits.result_bytes {
             return Err(EndedError::ResultTooLarge {
@@ -3532,6 +3643,8 @@ enum Took {
     /// It changed something, and settled nothing.
     Noted,
     Settled,
+    /// The call was settled before with this same answer: it stands.
+    Same,
 }
 
 // ---------------------------------------------------------------------------
@@ -3560,6 +3673,12 @@ struct MemoryEnd {
 pub struct MemoryPending {
     next: u64,
     registrations: BTreeMap<String, String>,
+    /// The registrations marked as dropped ([`Pending::set_dropped`]).
+    dropped: BTreeSet<String>,
+    /// The failures of every call it was given, by run and registration,
+    /// those [`MemoryPending::take_answer`] took among them: a run's
+    /// sendings again ([`Pending::resends`]).
+    failures: BTreeMap<(String, String), u32>,
     definitions: BTreeMap<String, String>,
     prompts: BTreeMap<String, String>,
     calls: BTreeMap<u64, MemoryCall>,
@@ -3632,6 +3751,16 @@ impl MemoryPending {
     #[must_use]
     pub fn held(&self) -> (usize, usize) {
         (self.calls.len(), self.ends.len())
+    }
+
+    /// Where the open call `id` is with its attempts: `None` for a call
+    /// that is settled, or not held.
+    #[must_use]
+    pub fn tries_of(&self, id: &str) -> Option<&Tries> {
+        Self::call_number(id)
+            .and_then(|n| self.calls.get(&n))
+            .filter(|c| c.outcome.is_none())
+            .map(|c| &c.call.summary.tries)
     }
 }
 
@@ -3721,6 +3850,7 @@ impl Pending for MemoryPending {
                 call: PendingCall {
                     summary: CallSummary {
                         id: format!("c{n}"),
+                        run: call.run.clone(),
                         definition: call.definition,
                         op: call.op,
                         kind: call.kind,
@@ -3728,6 +3858,10 @@ impl Pending for MemoryPending {
                         args_bytes: call.args_bytes,
                         sent: false,
                         accepted: false,
+                        tries: Tries {
+                            rule: Some(call.retry),
+                            ..Tries::default()
+                        },
                     },
                     run: call.run,
                     args: call.args,
@@ -3779,8 +3913,17 @@ impl Pending for MemoryPending {
 
     fn sent_calls(&mut self, ids: &[String]) -> Result<(), Self::Error> {
         for id in ids {
-            if let Some(call) = Self::call_number(id).and_then(|n| self.calls.get_mut(&n)) {
-                call.call.summary.sent = true;
+            if let Some(call) = Self::call_number(id)
+                .and_then(|n| self.calls.get_mut(&n))
+                .filter(|c| c.outcome.is_none())
+            {
+                let summary = &mut call.call.summary;
+                summary.sent = true;
+                if summary.tries.resend == Resend::Planned {
+                    summary.tries.resend = Resend::Due;
+                }
+                summary.tries.later = false;
+                summary.tries.last = None;
             }
         }
         Ok(())
@@ -3795,8 +3938,12 @@ impl Pending for MemoryPending {
         Ok(self
             .open_of(registration, id)
             .map(|call| {
-                call.call.summary.sent = true;
-                call.call.summary.accepted = true;
+                let summary = &mut call.call.summary;
+                summary.sent = true;
+                summary.accepted = true;
+                summary.tries.resend = Resend::None;
+                summary.tries.later = false;
+                summary.tries.last = None;
             })
             .is_some())
     }
@@ -3807,15 +3954,76 @@ impl Pending for MemoryPending {
         id: &str,
         outcome: Result<Value, CallFailure>,
         now: Millis,
-    ) -> Result<bool, Self::Error> {
+    ) -> Result<Answered, Self::Error> {
+        let settled_before = Self::call_number(id)
+            .and_then(|n| self.calls.get(&n))
+            .filter(|c| c.registration == registration)
+            .and_then(|c| c.outcome.as_ref());
+        if let Some(before) = settled_before {
+            return Ok(if *before == outcome {
+                Answered::AlreadySettled
+            } else {
+                Answered::Ignored
+            });
+        }
         Ok(self
             .open_of(registration, id)
             .filter(|call| call.call.summary.deadline > now)
-            .map(|call| {
+            .map_or(Answered::Ignored, |call| {
                 call.call.args = Vec::new();
                 call.outcome = Some(outcome);
-            })
-            .is_some())
+                Answered::Settled
+            }))
+    }
+
+    fn keep_tries(
+        &mut self,
+        registration: &str,
+        id: &str,
+        tries: &Tries,
+    ) -> Result<bool, Self::Error> {
+        let Some(call) = self.open_of(registration, id) else {
+            return Ok(false);
+        };
+        let (before, run) = (call.call.summary.tries.failures, call.call.run.clone());
+        call.call.summary.tries = tries.clone();
+        let count = self
+            .failures
+            .entry((run, registration.to_string()))
+            .or_insert(0);
+        *count = count.saturating_sub(before).saturating_add(tries.failures);
+        Ok(true)
+    }
+
+    fn resends(&mut self, run: &str, registration: &str) -> Result<u32, Self::Error> {
+        Ok(self
+            .failures
+            .get(&(run.to_string(), registration.to_string()))
+            .copied()
+            .unwrap_or(0))
+    }
+
+    fn next_resend(&mut self, after: Millis) -> Result<Option<Millis>, Self::Error> {
+        Ok(self
+            .calls
+            .values()
+            .filter(|c| c.outcome.is_none())
+            .map(|c| c.call.summary.tries.not_before)
+            .filter(|at| *at > after)
+            .min())
+    }
+
+    fn set_dropped(&mut self, id: &str, at: Option<Millis>) -> Result<(), Self::Error> {
+        if at.is_some() {
+            self.dropped.insert(id.to_string());
+        } else {
+            self.dropped.remove(id);
+        }
+        Ok(())
+    }
+
+    fn is_dropped(&mut self, id: &str) -> Result<bool, Self::Error> {
+        Ok(self.dropped.contains(id))
     }
 
     fn expire_calls(

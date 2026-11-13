@@ -197,6 +197,7 @@ fn request() -> MessagesRequest {
             name: "run_script".into(),
             description: "Run code".into(),
             input_schema: json!({"type": "object", "properties": {"title": {"type": "string"}, "code": {"type": "string"}}, "required": ["title", "code"]}),
+            input_schema_text: None,
             cache_control: None,
             eager_input_streaming: false,
         }],
@@ -1291,4 +1292,62 @@ fn a_model_that_takes_no_images_is_sent_none_and_told_so() {
         Block::tool_result_with_images("toolu_9", "", false, &images, false),
         Block::tool_result("toolu_9", IMAGES_NOT_SHOWN, false)
     );
+    // The note says that images were not sent and which setting sends
+    // them, not that the model takes none, which nothing here knows.
+    assert!(!IMAGES_NOT_SHOWN.contains("takes no images"));
+    assert!(IMAGES_NOT_SHOWN.contains("[bot] model_takes_images is off"));
+}
+
+/// A tool that carries its schema as text is sent that text, in its
+/// order, by every provider (each takes the schema as it is), where its
+/// `Value` would sort the members; the body as a `Value` is unchanged,
+/// and a request with no such tool is sent `body()`'s text byte for
+/// byte.
+#[test]
+fn a_tools_schema_text_is_sent_in_its_order_by_every_provider() {
+    let plain = request();
+    assert_eq!(plain.body_text(), plain.body().to_string());
+    for base in ["https://api.openai.com/v1", "https://api.mistral.ai/v1"] {
+        let marked = openai::body_marked(&plain, base, true);
+        assert_eq!(
+            super::spliced(&marked, &plain.tools),
+            openai::body(&plain, base).to_string()
+        );
+    }
+    assert_eq!(
+        super::spliced(&gemini::body_marked(&plain, true), &plain.tools),
+        gemini::body(&plain).to_string()
+    );
+    let text = r#"{"type":"object","properties":{"title":{"type":"string"},"code":{"type":"string"}},"required":["title","code"]}"#;
+    let mut req = request();
+    req.tools[0].input_schema_text = Some(text.into());
+    assert_eq!(
+        serde_json::from_str::<Value>(text).unwrap(),
+        req.tools[0].input_schema,
+        "one JSON value"
+    );
+    assert_eq!(req.body(), plain.body(), "the Value is the schema's");
+    let sorted = req.tools[0].input_schema.to_string();
+    assert_ne!(sorted, text);
+    let sent = [
+        req.body_text(),
+        super::spliced(
+            &openai::body_marked(&req, "https://api.openai.com/v1", true),
+            &req.tools,
+        ),
+        super::spliced(&gemini::body_marked(&req, true), &req.tools),
+    ];
+    for (body, key) in sent
+        .iter()
+        .zip(["input_schema", "parameters", "parametersJsonSchema"])
+    {
+        assert!(body.contains(&format!("\"{key}\":{text}")), "{body}");
+        assert!(!body.contains(&sorted), "{body}");
+        assert!(
+            !body.contains("input_schema_text"),
+            "no mark is left: {body}"
+        );
+        let read: Value = serde_json::from_str(body).unwrap();
+        assert!(read.to_string().contains(&sorted), "the same JSON");
+    }
 }

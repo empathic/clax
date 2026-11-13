@@ -383,4 +383,93 @@ fn a_message_to_a_parked_run_leaves_it_parked() {
     let again = env.send(json!("wake up"), Some("w")).unwrap();
     assert!(!again.new && again.waiting);
     assert_eq!(env.seqs(), [1]);
+    // Once the run is no longer parked it is answered as it was first:
+    // `waiting`, as the host was told.
+    env.st.unpark_run(&env.run, env.clock.now()).unwrap();
+    assert_ne!(
+        env.st.run(&env.run).unwrap().unwrap().status,
+        RunStatus::Parked
+    );
+    let later = env.send(json!("wake up"), Some("w")).unwrap();
+    assert!(!later.new && later.waiting);
+    assert_eq!(later.message, sent.message);
+}
+
+/// A message whose stored body does not read as JSON is refused, never
+/// read as `null`: its body is an error, it is listed undelivered, a step's
+/// commit that would deliver it is refused, and the key it was sent
+/// under is refused rather than called reused.
+#[test]
+fn a_message_whose_stored_body_does_not_read_is_refused_and_never_delivered() {
+    let env = Env::new();
+    env.send(json!("a"), Some("k1")).unwrap();
+    env.send(json!("b"), None).unwrap();
+    env.st
+        .with_write(|c| {
+            c.execute(
+                "UPDATE bot_messages SET body_json = '{\"half' WHERE run_id = ?1 AND seq = 1",
+                params![env.run],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let held = env.st.undelivered_messages(&env.run).unwrap();
+    assert_eq!(held.iter().map(|m| m.seq).collect::<Vec<_>>(), [1, 2]);
+    assert!(
+        matches!(held[0].body(), Err(CoreError::Db(_))),
+        "{:?}",
+        held[0].body()
+    );
+    assert_eq!(held[1].body().unwrap(), &json!("b"));
+    assert!(matches!(
+        env.send(json!("a"), Some("k1")),
+        Err(CoreError::Db(_))
+    ));
+    env.begin(1, StepKind::Script);
+    assert_eq!(code(env.commit(1, vec![1, 2])), "run_invalid");
+    env.commit(1, vec![2]).unwrap();
+    assert_eq!(env.seqs(), [1], "the unreadable message stays undelivered");
+}
+
+/// A run's end kept for its registration whose stored end or result does
+/// not read as JSON is refused, never told as a `null` end or no result.
+#[test]
+fn a_kept_end_that_does_not_read_is_refused() {
+    let env = Env::new();
+    env.st.cancel_run(DAEMON, &env.run).unwrap();
+    env.begin(1, StepKind::Stopped);
+    env.st
+        .commit_bot_step_on(
+            DAEMON,
+            &env.run,
+            &DriverId::named("d1"),
+            1,
+            StepCommit {
+                payload: json!({}),
+                ..StepCommit::default()
+            },
+            None,
+            &[crate::bot_pending::EndFor {
+                registration_id: env.shell.clone(),
+                end: json!({"kind": "stopped"}),
+                result: Some(json!({"ok": true})),
+            }],
+        )
+        .unwrap();
+    assert!(env.st.kept_end(&env.run, &env.shell).unwrap().is_some());
+    for (column, text) in [("end_json", "nope"), ("result_json", "{")] {
+        env.st
+            .with_write(|c| {
+                c.execute(
+                    &format!("UPDATE bot_run_ends SET {column} = ?2 WHERE run_id = ?1"),
+                    params![env.run, text],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(
+            matches!(env.st.kept_end(&env.run, &env.shell), Err(CoreError::Db(_))),
+            "{column}"
+        );
+    }
 }

@@ -471,7 +471,9 @@ pub async fn usage(
                     e.free_milli += t.free_milli;
                 }
                 let Some(rid) = &u.run_id else { continue };
-                let Some((run, steps)) = st.run_with_steps(rid)? else {
+                // A step whose row does not read is left out, logged: one
+                // damaged row fails no page.
+                let Some((run, steps, _)) = st.run_with_readable_steps(rid)? else {
                     continue;
                 };
                 // A run of a host's kind has no artifact, and so no title.
@@ -726,7 +728,7 @@ pub fn run_view(st: &Store, run: &Run) -> clax_core::Result<Value> {
     });
     // What a parked run waits on: a member no other run has.
     if run.status == RunStatus::Parked
-        && let Some(parking) = st.run_parking(&run.id)?
+        && let Some(parking) = readable_parking(st, &run.id)?
         && let Some(on) = parking.waiting_on
     {
         v["waiting_on"] = json!({
@@ -735,6 +737,22 @@ pub fn run_view(st: &Store, run: &Run) -> clax_core::Result<Value> {
         });
     }
     Ok(v)
+}
+
+/// Run `id`'s parking ([`Store::run_parking`]), `None` when its row does
+/// not read (logged): the run ends `failed` for it, and a view of it
+/// fails no listing.
+fn readable_parking(
+    st: &Store,
+    id: &str,
+) -> clax_core::Result<Option<clax_store::bot_runs::Parking>> {
+    match st.run_parking(id) {
+        Err(e) if clax_store::bot_runs::is_unreadable(&e) => {
+            tracing::warn!("the parking of run {id} does not read: {e}");
+            Ok(None)
+        }
+        other => other,
+    }
 }
 
 /// What of run view `v` ([`run_view`]) an overseer
@@ -830,7 +848,9 @@ pub async fn get(
     let (hosted, live_ids, bot) = (s.hosted.is_some(), s.live_ids.clone(), s.bot.clone());
     let v = s
         .store_call(move |st| {
-            let (run, steps) = st.run_with_steps(&rid)?.ok_or(CoreError::NotFound)?;
+            let (run, steps, _) = st
+                .run_with_readable_steps(&rid)?
+                .ok_or(CoreError::NotFound)?;
             let live = live_ids.contains(&run.artifact_id);
             let access = run_access(st, hosted, live, &caller, &run)?;
             let mut v = run_view(st, &run)?;
@@ -1428,7 +1448,7 @@ async fn serve_draft(
 /// The store's.
 pub fn last_event_id(st: &Store, run: &Run) -> clax_core::Result<Option<String>> {
     use clax_bot::events::DONE_SEQ;
-    let Some((run, steps)) = st.run_with_steps(&run.id)? else {
+    let Some((run, steps, _)) = st.run_with_readable_steps(&run.id)? else {
         return Ok(None);
     };
     Ok(steps
@@ -1633,8 +1653,8 @@ pub fn panel_event(
     Ok(Some(match ev.event {
         "step_started" => {
             let step = st
-                .run_with_steps(run_id)?
-                .and_then(|(_, steps)| steps.into_iter().find(|s| s.n == n))
+                .run_with_readable_steps(run_id)?
+                .and_then(|(_, steps, _)| steps.into_iter().find(|s| s.n == n))
                 .map_or_else(
                     || json!({"n": n, "kind": d["kind"], "status": "running", "started_at": st.now(),
                               "credits_milli": 0}),
@@ -1668,7 +1688,7 @@ pub fn panel_event(
             json!({"step": n, "call": call})
         }
         "step_done" => {
-            let Some((run, steps)) = st.run_with_steps(run_id)? else {
+            let Some((run, steps, _)) = st.run_with_readable_steps(run_id)? else {
                 return Ok(None);
             };
             let credits = credits_by_step(st, run_id)?;

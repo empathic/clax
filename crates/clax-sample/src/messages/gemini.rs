@@ -156,7 +156,18 @@ fn parts(role: Role, content: &[Block], names: &mut HashMap<String, String>) -> 
 }
 
 /// The streaming request body of `req`.
+/// The `generateContent` body of `req`, each tool's schema its
+/// [`super::Tool::input_schema`].
+#[cfg(test)]
 pub(super) fn body(req: &MessagesRequest) -> Value {
+    body_marked(req, false)
+}
+
+/// The `generateContent` body of `req`; with `marked`, a tool's schema
+/// that has a text is its mark, for [`super::spliced`]. Gemini takes the
+/// schema as JSON Schema (`parametersJsonSchema`), as it is: nothing of
+/// it is rewritten, so its members keep their order.
+pub(super) fn body_marked(req: &MessagesRequest, marked: bool) -> Value {
     let mut contents: Vec<Value> = Vec::new();
     let mut names = HashMap::new();
     for m in &req.messages {
@@ -188,9 +199,11 @@ pub(super) fn body(req: &MessagesRequest) -> Value {
         let decls: Vec<Value> = req
             .tools
             .iter()
-            .map(|t| {
+            .enumerate()
+            .map(|(n, t)| {
+                let schema = super::schema_of(&req.tools, n, marked);
                 json!({"name": t.name, "description": t.description,
-                       "parametersJsonSchema": t.input_schema})
+                       "parametersJsonSchema": schema})
             })
             .collect();
         b.insert("tools".into(), json!([{"functionDeclarations": decls}]));

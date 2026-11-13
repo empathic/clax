@@ -22,28 +22,72 @@
 //! file a blob, `blobs/<first two hex digits>/<SHA-256>`, written as
 //! `<…>.<ULID>.tmp` (a name of each write's own), synced to the disk and
 //! renamed into place, and the directory synced after; a blob there whose
-//! length is not its bytes' is written again. No artifact owns one.
+//! length is not its bytes' is written again. A temporary file a write
+//! cut short left is removed by [`ContentStore::blob_names`] once its
+//! ULID is [`STALE_BLOB_WRITE`] old. No artifact owns one.
 //!
 //! A thread ID, asset ID or asset extension is a file name, never a path: one
 //! outside `[A-Za-z0-9_-]` (or empty) names no file, so nothing outside the
 //! artifact's `assets/` and `clips/` is read, written or removed.
 
 use super::{
-    AssetKey, ContentStore, VersionWrite, bad_blob, is_blob_name, missing, present, superseded,
+    AssetKey, ContentStore, VersionWrite, check_blob, is_blob_name, missing, present, superseded,
 };
 use crate::publish::{INDEX, check_path};
+use crate::working::{Clock, SystemClock};
 use crate::{ArtifactId, Home, Result, new_ulid};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+/// How old a blob write's temporary file (`<SHA-256>.<ULID>.tmp`, by the
+/// time in its ULID) is before [`ContentStore::blob_names`] removes it as
+/// one a crash left. A write is one item's bytes and one sync, done in
+/// far less; and were a write that slow, removing its file makes its
+/// rename fail, so the write returns an error and leaves nothing.
+pub const STALE_BLOB_WRITE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
 /// Artifact content in the home's `artifacts/` directory.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct FsContent {
     home: Home,
+    /// What [`STALE_BLOB_WRITE`] is measured against.
+    clock: Arc<dyn Clock>,
+}
+
+impl std::fmt::Debug for FsContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FsContent")
+            .field("home", &self.home)
+            .finish_non_exhaustive()
+    }
 }
 
 impl FsContent {
     pub fn new(home: Home) -> FsContent {
-        FsContent { home }
+        FsContent::with_clock(home, Arc::new(SystemClock))
+    }
+
+    /// As [`FsContent::new`], with the time read from `clock`.
+    pub fn with_clock(home: Home, clock: Arc<dyn Clock>) -> FsContent {
+        FsContent { home, clock }
+    }
+}
+
+/// The ULID of a blob write's temporary file name, `<SHA-256>.<ULID>.tmp`.
+fn blob_write_ulid(name: &str) -> Option<ulid::Ulid> {
+    let rest = name.strip_suffix(".tmp")?;
+    let (sha, id) = rest.split_once('.')?;
+    if !is_blob_name(sha) {
+        return None;
+    }
+    ulid::Ulid::from_string(id).ok()
+}
+
+/// Syncs the directory `dir` (a platform that cannot open a directory
+/// keeps it as it can).
+fn sync_dir(dir: &Path) {
+    if let Ok(d) = std::fs::File::open(dir) {
+        let _ = d.sync_all();
     }
 }
 
@@ -384,17 +428,20 @@ impl ContentStore for FsContent {
         true
     }
 
-    /// Refuses (`invalid_path`) a name that is not a SHA-256.
+    /// Refuses (`invalid_path`) a name that is not a SHA-256, or not that
+    /// of `bytes`.
     async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<()> {
-        if !is_blob_name(sha256) {
-            return Err(bad_blob(sha256));
-        }
+        check_blob(sha256, bytes)?;
         let path = blob_path(&self.home, sha256);
+        let dir = path.parent().unwrap_or(&path);
         let whole = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         if std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() == whole) {
+            // Placed whole by a write that checked its hash, which may not
+            // yet have synced the rename: sync it here, so that `Ok` means
+            // durable for this caller too.
+            sync_dir(dir);
             return Ok(());
         }
-        let dir = path.parent().unwrap_or(&path);
         std::fs::create_dir_all(dir)?;
         let mut tmp = path.clone().into_os_string();
         tmp.push(format!(".{}.tmp", new_ulid()));
@@ -409,11 +456,8 @@ impl ContentStore for FsContent {
             let _ = std::fs::remove_file(&tmp);
             return Err(e.into());
         }
-        // The rename, made durable with the directory that holds it (a
-        // platform that cannot open a directory keeps it as it can).
-        if let Ok(d) = std::fs::File::open(dir) {
-            let _ = d.sync_all();
-        }
+        // The rename, made durable with the directory that holds it.
+        sync_dir(dir);
         Ok(())
     }
 
@@ -431,8 +475,11 @@ impl ContentStore for FsContent {
         remove_file_if_present(&blob_path(&self.home, sha256))
     }
 
-    /// Each file under `blobs/<two digits>/` whose name is a blob's: a
-    /// write's temporary file is none.
+    /// Each file under `blobs/<two digits>/` whose name is a blob's that
+    /// starts with those two digits (where [`ContentStore::read_blob`]
+    /// and [`ContentStore::delete_blob`] look for it). A write's temporary
+    /// file is none: one whose ULID is [`STALE_BLOB_WRITE`] old or older,
+    /// by the store's clock, is removed.
     async fn blob_names(&self) -> Result<Vec<String>> {
         let root = self.home.root().join("blobs");
         let mut names = Vec::new();
@@ -441,18 +488,31 @@ impl ContentStore for FsContent {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(names),
             Err(e) => return Err(e.into()),
         };
+        let now = std::time::SystemTime::from(self.clock.now());
         for dir in dirs {
             let dir = dir?;
             if !dir.file_type()?.is_dir() {
                 continue;
             }
+            let prefix = dir.file_name();
             for file in std::fs::read_dir(dir.path())? {
                 let file = file?;
-                if let Some(name) = file.file_name().to_str()
-                    && is_blob_name(name)
-                    && file.file_type()?.is_file()
+                let Some(name) = file.file_name().to_str().map(str::to_string) else {
+                    continue;
+                };
+                if !file.file_type()?.is_file() {
+                    continue;
+                }
+                if is_blob_name(&name) {
+                    if prefix.to_str() == Some(&name[..2]) {
+                        names.push(name);
+                    }
+                } else if let Some(id) = blob_write_ulid(&name)
+                    && now
+                        .duration_since(id.datetime())
+                        .is_ok_and(|age| age >= STALE_BLOB_WRITE)
                 {
-                    names.push(name.to_string());
+                    remove_file_if_present(&file.path())?;
                 }
             }
         }
@@ -510,6 +570,45 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, std::slice::from_ref(&name));
+        assert_eq!(wait(c.read_blob(&name)).unwrap().unwrap(), bytes);
+    }
+
+    /// A write's temporary file is removed by the sweep's listing once its
+    /// ULID is an hour old by the store's clock, and not before; a blob's
+    /// name under a directory that is not its first two digits is not
+    /// listed (nothing reads or removes it there).
+    #[test]
+    fn a_blob_write_a_crash_cut_short_is_removed_once_it_is_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let clock = Arc::new(crate::working::ManualClock::at("2026-11-12T10:00:00Z"));
+        let c = FsContent::with_clock(home.clone(), clock.clone());
+        let bytes = b"a blob";
+        let name = crate::audit::sha256_hex(bytes);
+        wait(c.put_blob(&name, bytes)).unwrap();
+        let path = blob_path(&home, &name);
+        let blob_dir = path.parent().unwrap().to_path_buf();
+        // What a crash between the file's creation and its rename leaves,
+        // written at the clock's time.
+        let started = std::time::SystemTime::from(clock.now());
+        let id = ulid::Ulid::from_datetime(started);
+        let tmp = blob_dir.join(format!("{name}.{id}.tmp"));
+        std::fs::write(&tmp, &bytes[..3]).unwrap();
+        // A file of another shape is not the store's to remove.
+        let other = blob_dir.join("notes.tmp");
+        std::fs::write(&other, b"?").unwrap();
+        // A blob's name in the wrong directory.
+        let stray = home.root().join("blobs").join("zz");
+        std::fs::create_dir_all(&stray).unwrap();
+        std::fs::write(stray.join(&name), bytes).unwrap();
+        assert_eq!(wait(c.blob_names()).unwrap(), std::slice::from_ref(&name));
+        clock.advance(59 * 60);
+        assert_eq!(wait(c.blob_names()).unwrap(), std::slice::from_ref(&name));
+        assert!(tmp.exists(), "a write younger than the bound is left");
+        clock.advance(60);
+        assert_eq!(wait(c.blob_names()).unwrap(), std::slice::from_ref(&name));
+        assert!(!tmp.exists(), "a stale write is removed");
+        assert!(other.exists());
         assert_eq!(wait(c.read_blob(&name)).unwrap().unwrap(), bytes);
     }
 

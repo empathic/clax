@@ -3142,3 +3142,48 @@ fn no_source_of_the_run_loop_names_the_fixtures_surface() {
     assert!(read > 100, "{read} sources were read");
     assert!(names("a desk.", "desk") && !names("desktop", "desk") && !names("_desk", "desk"));
 }
+
+/// A `serve` is recorded as when its registration was last served as it
+/// is taken, not only as it is answered: a host whose client gives up on
+/// a held `serve` before its answer (it is abandoned) is serving, and is
+/// not forgotten as one that never served.
+#[tokio::test]
+async fn a_serve_its_client_gives_up_on_still_says_when_its_registration_was_served() {
+    let env = Env::new().await;
+    let mut store = StoredPending::new(env.store.clone());
+    let mut hub = Hub::new(
+        HubLimits::default(),
+        Reserved::of(&[clax_bot::api::definition()]),
+        Box::new(|_| {}),
+    );
+    let at = |env: &Env| Millis(u64::try_from(env.clock_now().timestamp_millis()).unwrap());
+    let fresh = format!("{:032x}", 7);
+    let registered = hub
+        .register(
+            &mut store,
+            "desk",
+            &registering(&desk_dts(), None, None, Settings::default()),
+            &fresh,
+            at(&env),
+        )
+        .expect("desk registers");
+    let id = registered.registration;
+    let served = |env: &Env| {
+        env.store
+            .registration(&id)
+            .unwrap()
+            .expect("the registration's row")
+            .last_served_at
+    };
+    assert_eq!(served(&env), None, "never served");
+    env.clock.advance(60);
+    let opened = hub
+        .open(&mut store, "desk", &id, 12_000, Vec::new(), at(&env))
+        .expect("the serve is taken");
+    hub.abandon(opened.serve, at(&env));
+    assert_eq!(
+        served(&env),
+        Some(clax_core::time::stamp(env.clock_now())),
+        "served when the serve was taken"
+    );
+}

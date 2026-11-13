@@ -10,7 +10,9 @@
 //! so it parses none and does not check that a hash is its text's: it
 //! holds the text under the hash it is given, and refuses only a hash
 //! that is not 64 lowercase hex characters. A run pins the definitions it
-//! was made with by hash, so a definition is never changed or removed.
+//! was made with by hash, so a definition is never changed, and it is
+//! kept while a registration, a pending call or a run names it
+//! (`prune_surfaces_in`).
 //!
 //! A **prompt file** is kept the same way (`bot_surface_prompts`): its
 //! text once for each SHA-256 of its bytes, which the store checks
@@ -40,6 +42,7 @@ use clax_core::{CoreError, Result};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashSet;
 
 /// A surface's definition as the store keeps it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -48,7 +51,10 @@ pub struct SurfaceDef {
     pub hash: String,
     /// The canonical manifest, as it was first stored under `hash`.
     pub manifest: String,
-    pub created_at: String,
+    /// When it was last kept: first stored, or given again later
+    /// ([`Store::put_surface_def`]). A definition nothing names is kept
+    /// [`BOT_DEF_KEEP`] from then. The column is `created_at`.
+    pub kept_at: String,
 }
 
 /// One registration of a surface.
@@ -144,8 +150,24 @@ pub const BOT_REGISTRATION_KEEP: std::time::Duration =
 /// registration, call or run being written.
 pub const BOT_DEF_KEEP: std::time::Duration = std::time::Duration::from_secs(3600);
 
+/// The most rows of each kind (registrations, definitions, prompt files)
+/// one prune pass removes ([`Store::prune_ended_runs`]).
+pub const PRUNE_SURFACE_ROWS: usize = 128;
+
+/// What [`prune_surfaces_in`] removed.
+#[derive(Debug, Default)]
+pub(crate) struct SurfacesPruned {
+    pub registrations: usize,
+    pub defs: usize,
+    pub prompts: usize,
+    /// Rows of some kind were left that nothing needs: more than
+    /// [`PRUNE_SURFACE_ROWS`] were due.
+    pub more: bool,
+}
+
 /// Removes, on `tx`, the registrations, definitions and prompt files
-/// nothing needs:
+/// nothing needs, [`PRUNE_SURFACE_ROWS`] of each kind at the most, the
+/// oldest first:
 ///
 /// - a registration last served (or, never served, made) before
 ///   `registrations_before`, that started no run the store still has,
@@ -153,49 +175,143 @@ pub const BOT_DEF_KEEP: std::time::Duration = std::time::Duration::from_secs(360
 ///   that started a run is kept for as long as the run is, so the run's
 ///   `started_by` still says what surface it was; one that set joins,
 ///   for as long as they are kept (`crate::bot_joins`);
-/// - a definition stored before `defs_before` that no registration, no
-///   pending call and no run's bindings name (a host's run's, or a run of
-///   Clax's own that a join bound it into: any run whose bindings are of
-///   version 2);
+/// - a definition last kept before `defs_before` ([`SurfaceDef::kept_at`])
+///   that no registration, no pending call and no run's bindings name (a
+///   host's run's, or a run of Clax's own that a join bound it into: any
+///   run whose bindings are of version 2);
 /// - a prompt file last kept before `defs_before` that no registration
-///   and no run's bindings name.
+///   and no such run's bindings name.
 ///
-/// How many of each, in that order.
+/// What the runs' bindings name is read once, in one pass over those
+/// runs and only when a definition or a prompt file is a candidate: each
+/// binding's `hash` and `prompt`, and for a run whose bindings do not
+/// read as JSON (a damaged row), any candidate whose hash its text holds
+/// is kept. A definition or prompt file a run names is passed over, so
+/// it never fills the bound and holds back one nothing names.
 pub(crate) fn prune_surfaces_in(
     tx: &Connection,
     registrations_before: &str,
     defs_before: &str,
-) -> Result<(usize, usize, usize)> {
-    let registrations = tx.execute(
-        "DELETE FROM bot_registrations
-          WHERE COALESCE(last_served_at, created_at) < ?1
-            AND id NOT IN (SELECT started_by FROM bot_runs WHERE started_by IS NOT NULL)
-            AND id NOT IN (SELECT registration_id FROM bot_pending_calls)
-            AND id NOT IN (SELECT registration_id FROM bot_run_ends)
-            AND id NOT IN (SELECT registration_id FROM bot_joins)",
-        params![registrations_before],
+) -> Result<SurfacesPruned> {
+    let limit = i64::try_from(PRUNE_SURFACE_ROWS).unwrap_or(i64::MAX);
+    let mut pruned = SurfacesPruned::default();
+    let registrations: Vec<String> = tx
+        .prepare(
+            "SELECT id FROM bot_registrations
+              WHERE COALESCE(last_served_at, created_at) < ?1
+                AND id NOT IN (SELECT started_by FROM bot_runs WHERE started_by IS NOT NULL)
+                AND id NOT IN (SELECT registration_id FROM bot_pending_calls)
+                AND id NOT IN (SELECT registration_id FROM bot_run_ends)
+                AND id NOT IN (SELECT registration_id FROM bot_joins)
+              ORDER BY COALESCE(last_served_at, created_at), rowid LIMIT ?2 + 1",
+        )?
+        .query_map(params![registrations_before, limit], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    pruned.more |= registrations.len() > PRUNE_SURFACE_ROWS;
+    for id in registrations.iter().take(PRUNE_SURFACE_ROWS) {
+        pruned.registrations +=
+            tx.execute("DELETE FROM bot_registrations WHERE id = ?1", params![id])?;
+    }
+    let defs: Vec<String> = tx
+        .prepare(
+            "SELECT hash FROM bot_surface_defs
+              WHERE created_at < ?1
+                AND hash NOT IN (SELECT def_hash FROM bot_registrations)
+                AND hash NOT IN (SELECT def_hash FROM bot_pending_calls)
+              ORDER BY created_at, hash",
+        )?
+        .query_map(params![defs_before], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let prompts: Vec<String> = tx
+        .prepare(
+            "SELECT hash FROM bot_surface_prompts
+              WHERE kept_at < ?1
+                AND hash NOT IN
+                    (SELECT prompt_hash FROM bot_registrations WHERE prompt_hash IS NOT NULL)
+              ORDER BY kept_at, hash",
+        )?
+        .query_map(params![defs_before], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    if defs.is_empty() && prompts.is_empty() {
+        return Ok(pruned);
+    }
+    let named = RunsName::read(tx)?;
+    let mut prune = |candidates: Vec<String>, member: &HashSet<String>, delete: &str| {
+        let unnamed: Vec<String> = candidates
+            .into_iter()
+            .filter(|h| !member.contains(h) && !named.unread.iter().any(|t| t.contains(h.as_str())))
+            .collect();
+        pruned.more |= unnamed.len() > PRUNE_SURFACE_ROWS;
+        let mut n = 0;
+        for hash in unnamed.iter().take(PRUNE_SURFACE_ROWS) {
+            n += tx.execute(delete, params![hash])?;
+        }
+        Ok::<_, CoreError>(n)
+    };
+    let defs = prune(
+        defs,
+        &named.defs,
+        "DELETE FROM bot_surface_defs WHERE hash = ?1",
     )?;
-    let defs = tx.execute(
-        "DELETE FROM bot_surface_defs
-          WHERE created_at < ?1
-            AND hash NOT IN (SELECT def_hash FROM bot_registrations)
-            AND hash NOT IN (SELECT def_hash FROM bot_pending_calls)
-            AND NOT EXISTS (SELECT 1 FROM bot_runs
-                             WHERE (started_by IS NOT NULL OR bindings_json LIKE '{\"v\":2,%')
-                               AND instr(bindings_json, bot_surface_defs.hash) > 0)",
-        params![defs_before],
+    let prompts = prune(
+        prompts,
+        &named.prompts,
+        "DELETE FROM bot_surface_prompts WHERE hash = ?1",
     )?;
-    let prompts = tx.execute(
-        "DELETE FROM bot_surface_prompts
-          WHERE kept_at < ?1
-            AND NOT EXISTS (SELECT 1 FROM bot_registrations
-                             WHERE prompt_hash = bot_surface_prompts.hash)
-            AND NOT EXISTS (SELECT 1 FROM bot_runs
-                             WHERE started_by IS NOT NULL
-                               AND instr(bindings_json, bot_surface_prompts.hash) > 0)",
-        params![defs_before],
-    )?;
-    Ok((registrations, defs, prompts))
+    pruned.defs = defs;
+    pruned.prompts = prompts;
+    Ok(pruned)
+}
+
+/// What the bindings of the runs a surface's rows are kept for name: a
+/// host's runs (`started_by`) and the runs of Clax's own whose bindings
+/// are of version 2.
+struct RunsName {
+    /// Each binding's `hash`.
+    defs: HashSet<String>,
+    /// Each binding's `prompt`.
+    prompts: HashSet<String>,
+    /// The text of each such run's bindings that does not read as JSON.
+    unread: Vec<String>,
+}
+
+impl RunsName {
+    fn read(c: &Connection) -> Result<RunsName> {
+        const RUNS: &str = "(started_by IS NOT NULL OR bindings_json LIKE '{\"v\":2,%')";
+        let mut named = RunsName {
+            defs: HashSet::new(),
+            prompts: HashSet::new(),
+            unread: Vec::new(),
+        };
+        let mut q = c.prepare(&format!(
+            "SELECT DISTINCT
+                    CASE WHEN json_type(b.value, '$.hash') = 'text'
+                         THEN json_extract(b.value, '$.hash') END,
+                    CASE WHEN json_type(b.value, '$.prompt') = 'text'
+                         THEN json_extract(b.value, '$.prompt') END
+               FROM bot_runs r, json_each(r.bindings_json, '$.bindings') b
+              WHERE {RUNS} AND json_valid(r.bindings_json) AND b.type = 'object'"
+        ))?;
+        let rows = q.query_map([], |r| {
+            Ok((
+                r.get::<_, Option<String>>(0)?,
+                r.get::<_, Option<String>>(1)?,
+            ))
+        })?;
+        for row in rows {
+            let (def, prompt) = row?;
+            named.defs.extend(def);
+            named.prompts.extend(prompt);
+        }
+        named.unread = c
+            .prepare(&format!(
+                "SELECT bindings_json FROM bot_runs
+                  WHERE {RUNS} AND bindings_json IS NOT NULL AND NOT json_valid(bindings_json)"
+            ))?
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(named)
+    }
 }
 
 /// Keeps `text` under `hash` on `c`, last kept at `at`: the text as it
@@ -255,7 +371,12 @@ impl Store {
     /// SHA-256 of its bytes in lowercase hex, which the caller computed
     /// (`clax_surface::canonical_manifest`, then SHA-256). Returns whether
     /// it was stored now; `false` when `hash` already held a definition,
-    /// which is kept as it was first stored whatever `manifest` is.
+    /// which is kept as it was first stored whatever `manifest` is, and
+    /// then counts as last kept at `now` when that is later
+    /// ([`SurfaceDef::kept_at`]), as a prompt file given again does
+    /// ([`Store::put_surface_prompt`]): whoever is about to write a
+    /// registration or a call that names a definition gives it first, so
+    /// a prune between the two leaves it.
     ///
     /// # Errors
     /// `surface_hash_invalid` for a hash that is not 64 lowercase hex
@@ -269,12 +390,20 @@ impl Store {
                 ),
             ));
         }
+        let at = stamp(now);
         self.with_tx(|tx| {
-            Ok(tx.execute(
+            let new = tx.execute(
                 "INSERT OR IGNORE INTO bot_surface_defs (hash, manifest, created_at)
                  VALUES (?1, ?2, ?3)",
-                params![hash, manifest, stamp(now)],
-            )? > 0)
+                params![hash, manifest, at],
+            )? > 0;
+            if !new {
+                tx.execute(
+                    "UPDATE bot_surface_defs SET created_at = ?2 WHERE hash = ?1 AND created_at < ?2",
+                    params![hash, at],
+                )?;
+            }
+            Ok(new)
         })
     }
 
@@ -291,7 +420,7 @@ impl Store {
                 Ok(SurfaceDef {
                     hash: r.get(0)?,
                     manifest: r.get(1)?,
-                    created_at: r.get(2)?,
+                    kept_at: r.get(2)?,
                 })
             })
             .optional()?)
@@ -348,8 +477,10 @@ impl Store {
     ///
     /// # Errors
     /// `surface_def_unknown` when no definition is kept under
-    /// `new.def_hash`; `registration_invalid` for an empty name or person;
-    /// `NotFound` when `new.replaces` names no registration; the store's.
+    /// `new.def_hash`; `registration_invalid` for an empty name or person,
+    /// and when `new.replaces` names a registration of another surface's
+    /// name (whose joins are that surface's); `NotFound` when
+    /// `new.replaces` names no registration; the store's.
     pub fn register_surface(
         &self,
         ctx: &AuditCtx,
@@ -364,9 +495,13 @@ impl Store {
 
     /// [`Store::register_surface`] under `id`, an ID its caller drew:
     /// the registration, or `None`, changing and recording nothing, when
-    /// `id` was issued before (to a registration live or replaced; a
-    /// registration's ID and name are kept for good, so
-    /// [`Store::registration`] says what surface an ID was issued for).
+    /// the store holds a registration under `id`, live or replaced. A
+    /// registration's ID and name are kept for as long as its row is:
+    /// while anything names it, and [`BOT_REGISTRATION_KEEP`] after it
+    /// last served otherwise (`prune_surfaces_in`). Once it is pruned,
+    /// [`Store::registration`] says nothing of the ID and it may be
+    /// issued again, under any name, so a caller draws a fresh ID (a
+    /// ULID) for each registration it makes.
     ///
     /// # Errors
     /// As [`Store::register_surface`]; `registration_invalid` for an
@@ -406,7 +541,17 @@ impl Store {
                 ));
             }
             if let Some(old) = &new.replaces {
-                registration_in(tx, old)?.ok_or(CoreError::NotFound)?;
+                let replaced = registration_in(tx, old)?.ok_or(CoreError::NotFound)?;
+                if replaced.name != new.name {
+                    return Err(CoreError::invalid(
+                        "registration_invalid",
+                        format!(
+                            "registration {old} is of the surface {:?}, which a registration \
+                             of {:?} cannot replace",
+                            replaced.name, new.name
+                        ),
+                    ));
+                }
                 tx.execute(
                     "UPDATE bot_registrations SET replaced_at = ?2
                       WHERE id = ?1 AND replaced_at IS NULL",
@@ -654,22 +799,132 @@ mod tests {
         let kept = SurfaceDef {
             hash: HASH.into(),
             manifest: r#"{"name":"shell"}"#.into(),
-            created_at: "2026-11-11T09:00:00.000Z".into(),
+            kept_at: "2026-11-11T09:00:00.000Z".into(),
         };
         assert_eq!(st.surface_def(HASH).unwrap(), Some(kept.clone()));
-        // The same hash again stores nothing, whatever the text and time.
+        // The same hash again stores nothing, whatever the text, and
+        // counts as kept at the later of the two times.
         assert!(
             !st.put_surface_def(HASH, r#"{"name":"shell"}"#, at("2026-11-12T09:00:00Z"))
                 .unwrap()
         );
         assert!(!st.put_surface_def(HASH, "other text", t0).unwrap());
-        assert_eq!(st.surface_def(HASH).unwrap(), Some(kept));
+        let again = SurfaceDef {
+            kept_at: "2026-11-12T09:00:00.000Z".into(),
+            ..kept
+        };
+        assert_eq!(st.surface_def(HASH).unwrap(), Some(again));
         // Text the store does not parse is kept as given.
         assert!(st.put_surface_def(OTHER, "not a manifest", t0).unwrap());
         assert_eq!(
             st.surface_def(OTHER).unwrap().unwrap().manifest,
             "not a manifest"
         );
+    }
+
+    /// A definition given again counts as kept from then: a prune that
+    /// lands between the hub's keeping a definition no registration
+    /// names any more and the registration's naming it again leaves it,
+    /// so the registration goes on with it.
+    #[test]
+    fn a_definition_given_again_outlives_a_prune_before_the_registration_names_it() {
+        use clax_core::working::{Clock, ManualClock};
+        use std::sync::Arc;
+        let clock = Arc::new(ManualClock::at("2026-11-11T09:00:00Z"));
+        let (_d, st) = crate::test_util::store_with_clock(clock.clone());
+        st.put_surface_def(HASH, "{}", clock.now()).unwrap();
+        st.put_surface_def(OTHER, "{}", clock.now()).unwrap();
+        let reg = st
+            .register_surface(DAEMON, new("shell", "*owner"), clock.now())
+            .unwrap();
+        // Two hours on, the registration goes on with the other
+        // definition; five minutes after, back to the first.
+        clock.advance(2 * 3600);
+        assert!(
+            st.change_registration(DAEMON, &reg.id, OTHER, None, &json!({}), clock.now())
+                .unwrap()
+        );
+        clock.advance(300);
+        assert!(!st.put_surface_def(HASH, "{}", clock.now()).unwrap());
+        st.prune_ended_runs().unwrap();
+        assert!(
+            st.surface_def(HASH).unwrap().is_some(),
+            "the definition just given again is kept"
+        );
+        assert!(
+            st.change_registration(DAEMON, &reg.id, HASH, None, &json!({}), clock.now())
+                .unwrap()
+        );
+    }
+
+    /// A prune pass removes [`PRUNE_SURFACE_ROWS`] definitions nothing
+    /// names at the most, the oldest first, and says it left more. The
+    /// definitions runs' bindings name are passed over, older or not, so
+    /// they never hold back one nothing names; a run whose bindings do
+    /// not read keeps any definition whose hash its text holds.
+    #[test]
+    fn a_prune_removes_a_bounded_number_of_definitions_and_passes_over_those_runs_name() {
+        use clax_core::working::{Clock, ManualClock};
+        use std::sync::Arc;
+        let clock = Arc::new(ManualClock::at("2026-11-11T09:00:00Z"));
+        let (_d, st) = crate::test_util::store_with_clock(clock.clone());
+        let hash = |i: usize| format!("{i:064x}");
+        // Named by runs, and stored first.
+        let named = PRUNE_SURFACE_ROWS + 5;
+        for i in 0..named + 1 {
+            st.put_surface_def(&hash(i), "{}", clock.now()).unwrap();
+        }
+        clock.advance(1);
+        let unnamed = PRUNE_SURFACE_ROWS + 3;
+        for i in 0..unnamed {
+            st.put_surface_def(&hash(1000 + i), "{}", clock.now())
+                .unwrap();
+        }
+        let bindings: Vec<String> = (0..named)
+            .map(|i| {
+                format!(
+                    r#"{{"surface":"s{i}","hash":"{}","scope":null,"operations":[]}}"#,
+                    hash(i)
+                )
+            })
+            .collect();
+        st.with_write(|c| {
+            for (id, text) in [
+                (
+                    "01JC0",
+                    format!(r#"{{"v":2,"bindings":[{}]}}"#, bindings.join(",")),
+                ),
+                (
+                    "01JC1",
+                    format!(r#"{{"v":2,"bindings":[{{"hash":"{}""#, hash(named)),
+                ),
+            ] {
+                c.execute(
+                    "INSERT INTO bot_runs (id, artifact_id, person, request, thread_ids_json,
+                            status, model, key_source, base_version, created_at, updated_at,
+                            bindings_json, kind)
+                     VALUES (?1, 'a', 'u', 'other', '[]', 'finished', 'm', 'instance', 1,
+                             '2026-11-11T09:00:00.000Z', '2026-11-11T09:00:00.000Z', ?2, 'x.y')",
+                    params![id, text],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        clock.advance(BOT_DEF_KEEP.as_secs() as i64 + 1);
+        let p = st.prune_ended_runs().unwrap();
+        assert_eq!((p.surface_defs, p.more), (PRUNE_SURFACE_ROWS, true));
+        let p = st.prune_ended_runs().unwrap();
+        assert_eq!(
+            (p.surface_defs, p.more),
+            (unnamed - PRUNE_SURFACE_ROWS, false)
+        );
+        for i in 0..unnamed {
+            assert_eq!(st.surface_def(&hash(1000 + i)).unwrap(), None);
+        }
+        for i in 0..named + 1 {
+            assert!(st.surface_def(&hash(i)).unwrap().is_some(), "{i}");
+        }
     }
 
     #[test]

@@ -65,6 +65,7 @@ fn lead(reason: &str) -> &'static str {
         "key_rejected" => "I stopped: the model provider refused the key.",
         "model_error" => "I stopped: the model provider answered with an error.",
         "internal_error" => "I stopped: I could not save my work.",
+        crate::run::HISTORY_UNREADABLE => "I stopped: this Clax could not read what I had done.",
         policy::POLICY_ERROR => "I stopped: this Clax could not work out what this run may do.",
         policy::MODEL_TIMEOUT => "I stopped: the model took longer to answer than this run allows.",
         r if r.starts_with("policy_history_") => {

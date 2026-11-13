@@ -65,6 +65,36 @@ fn fields_keep_their_order_their_docs_and_which_are_required() {
     );
 }
 
+/// The text of the schema keeps the definition's order, which a
+/// `serde_json::Value` (sorted maps, as this workspace builds it) does
+/// not: the inherited field first, then the interface's own as written,
+/// and `$defs` in the order the interfaces are declared. The text reads
+/// as the schema.
+#[test]
+fn the_schemas_text_keeps_the_definitions_order_of_fields_and_defs() {
+    let d = kind_of(
+        "Verdict",
+        "interface Zone {\n  z: string;\n}\ninterface Area {\n  a: string;\n}\ninterface Base {\n  title: string;\n}\ninterface Verdict extends Base {\n  confidence?: Int;\n  status: Area;\n  where: Zone;\n}",
+    );
+    let k = d.kind("k").unwrap();
+    let text = k.result_schema_text(&d).expect("an object");
+    assert_eq!(
+        text,
+        concat!(
+            r##"{"type": "object", "properties": {"title": {"type": "string"}, "##,
+            r##""confidence": {"type": "integer"}, "status": {"$ref": "#/$defs/Area"}, "##,
+            r##""where": {"$ref": "#/$defs/Zone"}}, "required": ["title", "status", "where"], "##,
+            r##""additionalProperties": false, "$defs": {"Zone": {"type": "object", "##,
+            r##""properties": {"z": {"type": "string"}}, "required": ["z"], "##,
+            r##""additionalProperties": false}, "Area": {"type": "object", "##,
+            r##""properties": {"a": {"type": "string"}}, "required": ["a"], "##,
+            r##""additionalProperties": false}}}"##,
+        )
+    );
+    let read: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(Some(read), k.result_schema(&d));
+}
+
 #[test]
 fn an_interface_the_result_reaches_is_under_defs_and_only_those() {
     let d = kind_of(

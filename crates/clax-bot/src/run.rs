@@ -628,11 +628,12 @@ fn stop_reason_str(r: Option<&StopReason>) -> String {
 /// tells the model ([`policy::bytes_text`]). `finish` takes the run's
 /// kind's result ([`Finish::tool`]).
 fn tools(max_result_bytes: u64, finish: &Finish<'_>) -> Vec<Tool> {
-    let (finish_description, finish_schema) = finish.tool();
+    let (finish_description, finish_schema, finish_text) = finish.tool();
     let tool = |name: &str, description: &str, schema: Value| Tool {
         name: name.into(),
         description: description.into(),
         input_schema: schema,
+        input_schema_text: None,
         cache_control: None,
         eager_input_streaming: true,
     };
@@ -650,7 +651,10 @@ fn tools(max_result_bytes: u64, finish: &Finish<'_>) -> Vec<Tool> {
                 "code": {"type": "string", "description": "The body of an async function."}},
                 "required": ["title", "code"], "additionalProperties": false}),
         ),
-        tool("finish", &finish_description, finish_schema),
+        Tool {
+            input_schema_text: finish_text,
+            ..tool("finish", &finish_description, finish_schema)
+        },
         tool(
             "give_up",
             "Ends the run without finishing, saying why.",
@@ -675,6 +679,17 @@ fn with_breakpoint(mut messages: Vec<Message>) -> Vec<Message> {
     }
     messages
 }
+
+/// The input tokens a turn's estimate of its cost, made before the model
+/// is called, counts for each image the request shows the model
+/// ([`crate::images::in_body`]), in place of its base64 data, which a
+/// provider does not bill as text. It stands for what one image is
+/// billed at most, set high so that the estimate leaves room for it
+/// whatever the image's size and the provider; no provider's own figure
+/// is kept here. It only bounds the turn's `max_tokens` and whether the
+/// turn is taken: what the turn is charged is what the provider reports
+/// it used once the call is made.
+pub const IMAGE_INPUT_TOKENS: u64 = 3_000;
 
 /// Why a run whose model's context window is full gives up.
 const WINDOW_FULL: &str = "The conversation outgrew the model's context window.";
@@ -1098,7 +1113,14 @@ pub async fn tick(
     // has nothing to do, and claims nothing. At the deadline the call's
     // failure is journaled, which makes the run due, and the tick goes
     // on to claim it and run its step again.
-    if let Some(parked) = store.run(run_id)?.filter(|r| r.status == RunStatus::Parked) {
+    let found = store.run(run_id)?;
+    // Found `running`, the run was claimed since it last parked (a claim
+    // takes a queued run to running, and only a park or a stop takes it
+    // anywhere else): a tick of it resumes nothing.
+    let found_running = found
+        .as_ref()
+        .is_some_and(|r| r.status == RunStatus::Running);
+    if let Some(parked) = found.filter(|r| r.status == RunStatus::Parked) {
         let now = deps.clock.now();
         let late = parked
             .due_at
@@ -1126,9 +1148,25 @@ pub async fn tick(
             TickOutcome::wait(Wait::NotOurs, None, None)
         });
     }
-    let (run, made, steps) = store
-        .run_with_steps_as_made(run_id)?
-        .ok_or(CoreError::NotFound)?;
+    // A row of the run's own that does not read (a step's payload or
+    // observations, its parking, a journal entry, an item of its
+    // content) ends the run `failed` ([`HISTORY_UNREADABLE`]): the tick
+    // goes on with the steps that read, takes no step but its last, and
+    // fails nothing else.
+    let mut unreadable: Option<String> = None;
+    let (run, made, steps) = match store.run_with_steps_as_made(run_id) {
+        Ok(found) => found.ok_or(CoreError::NotFound)?,
+        Err(e) if clax_store::bot_runs::is_unreadable(&e) => {
+            let (run, made) = store.run_as_made(run_id)?.ok_or(CoreError::NotFound)?;
+            let steps = store
+                .run_with_readable_steps(run_id)?
+                .map(|(_, steps, _)| steps)
+                .unwrap_or_default();
+            unreadable = Some(e.to_string());
+            (run, made, steps)
+        }
+        Err(e) => return Err(e),
+    };
     let n = store.next_step_n(run_id)?;
     let (steps, open) = committed_and_open(steps);
     // The run as the run loop knows it and the provider of each of its
@@ -1162,12 +1200,24 @@ pub async fn tick(
     };
     let overflows = Overflows::of(&steps);
     // The time the run spent parked is no part of its minutes.
-    let parking = store.run_parking(run_id)?;
+    let parking = match store.run_parking(run_id) {
+        Ok(parking) => parking,
+        Err(e) if clax_store::bot_runs::is_unreadable(&e) => {
+            unreadable.get_or_insert(e.to_string());
+            None
+        }
+        Err(e) => return Err(e),
+    };
     let parked = parking
         .as_ref()
         .map_or(0, |p| u64::try_from(p.parked_ms).unwrap_or(0));
-    let t = Tick {
+    let resuming = !found_running
+        && open.as_ref().is_some_and(|s| s.kind == StepKind::Script)
+        && parking.is_some_and(|p| p.parks > 0);
+    let mut t = Tick {
+        unreadable,
         parked: Duration::from_millis(parked),
+        resuming,
         deps,
         store,
         settings,
@@ -1185,19 +1235,24 @@ pub async fn tick(
         opts,
         started,
     };
-    // A script step that parked before is run again: it resumes.
-    if t.open.as_ref().is_some_and(|s| s.kind == StepKind::Script)
-        && parking.is_some_and(|p| p.parks > 0)
-    {
-        t.surfaces
-            .kind_provider()
-            .progress(&t.surfaces.info, &Progress::Resumed { step: n });
-    }
-    match t.step().await {
+    let stepped = match t.step().await {
+        Err(e) if clax_store::bot_runs::is_unreadable(&e) && t.unreadable.is_none() => {
+            t.unreadable = Some(e.to_string());
+            t.step().await
+        }
+        other => other,
+    };
+    match stepped {
         Err(e) if fenced(&e) => Ok(TickOutcome::wait(Wait::NotOurs, Some(n), None)),
         other => other,
     }
 }
+
+/// The reason of a run that ended `failed` because a row of its own, as
+/// the store keeps it, does not read: a step, its parking, an entry of
+/// its journal or an item of its content. The run takes no step but
+/// that one, which says in its `error` what did not read.
+pub(crate) const HISTORY_UNREADABLE: &str = "history_unreadable";
 
 /// Ends the wait of a parked run whose call's deadline has come: the
 /// store journals, for each pending call of the run that is due (and of
@@ -1234,8 +1289,20 @@ fn capped(limit: String) -> End {
 }
 
 pub(crate) struct Tick<'a> {
+    /// What of the run's own rows did not read, when one did not
+    /// ([`HISTORY_UNREADABLE`]): the tick then takes no step but the
+    /// run's last.
+    pub unreadable: Option<String>,
     /// How long the run has been parked in all, before this tick.
     pub parked: Duration,
+    /// Whether this is the first tick since the run's open script step,
+    /// which parked before, was unparked (by its answer, its deadline or
+    /// a cancel): the tick tells the kind's provider
+    /// [`Progress::Resumed`] once it runs the step again, or stops the run
+    /// for its cancel ([`Tick::resumed`]). Later ticks of the step (one
+    /// whose sandbox was unavailable, a commit retried, a crash replayed)
+    /// find the run claimed since, and resume nothing.
+    pub resuming: bool,
     pub deps: &'a Deps,
     pub store: &'a Store,
     pub settings: RunSettings,
@@ -1598,10 +1665,20 @@ impl Tick<'_> {
         // included: a stopping run takes no step but its `stopped` one
         // (`Store::begin_step` refuses any other).
         if self.run.status == RunStatus::Stopping {
+            self.resumed();
             return self.stop_plain(End::stopped(CANCELLED)).await;
         }
-        // A run this build cannot read as it was made takes no step
-        // but its last: it ends `failed`, for what could not be read.
+        // A run this build cannot read as it was made, or whose own
+        // rows do not read, takes no step but its last: it ends
+        // `failed`, for what could not be read.
+        if let Some(why) = &self.unreadable {
+            tracing::warn!(
+                "clax-bot: run {} does not read as the store keeps it: it ends {HISTORY_UNREADABLE}: \
+                 {why}",
+                self.run.id
+            );
+            return self.fail(HISTORY_UNREADABLE, Some(why)).await;
+        }
         if let Some((code, why)) = self.surfaces.unreadable() {
             return self.fail(code, Some(why)).await;
         }
@@ -1631,6 +1708,7 @@ impl Tick<'_> {
         }
         self.working().await;
         if kind == "script" {
+            self.resumed();
             let (tool_use_id, title, code) = (
                 next["tool_use_id"].as_str().unwrap_or(""),
                 next["title"].as_str().unwrap_or(""),
@@ -1648,6 +1726,16 @@ impl Tick<'_> {
             return self.stop_plain(self.refused(Refusal::NotConfigured)).await;
         };
         self.turn(key).await
+    }
+
+    /// Tells the kind's provider that the parked step is run again, when
+    /// this tick is the first since it was unparked ([`Tick::resuming`]).
+    fn resumed(&self) {
+        if self.resuming {
+            self.surfaces
+                .kind_provider()
+                .progress(&self.surfaces.info, &Progress::Resumed { step: self.n });
+        }
     }
 
     /// Runs the script the last turn asked for, over the run's surfaces
@@ -1707,8 +1795,11 @@ impl Tick<'_> {
     /// The `max_tokens` the person's credits pay for after the turn's
     /// expected input (the week's and the run's credits, whichever is
     /// less), at most the settings'; or the stop when that is under
-    /// [`RunSettings::min_turn_tokens`]. The input is priced as the
-    /// provider bills it: the previous turn's cached prefix at the
+    /// [`RunSettings::min_turn_tokens`]. The input is the request's text
+    /// at four bytes a token, and [`IMAGE_INPUT_TOKENS`] for each of its
+    /// `images` (whose base64 data, `image_bytes` of `request_bytes`, is
+    /// not counted as text). It is priced as the provider bills it: the
+    /// previous turn's cached prefix at the
     /// cached-input rate, and the rest at the cache-write rate on the
     /// Messages API (whose request carries the cache breakpoint,
     /// [`with_breakpoint`]) or at the input rate on the others. Each token
@@ -1725,6 +1816,7 @@ impl Tick<'_> {
         &self,
         ks: KeySource,
         request_bytes: usize,
+        (images, image_bytes): (u64, usize),
         cached_prefix: bool,
     ) -> Result<std::result::Result<u32, End>> {
         let max = self.settings.max_tokens;
@@ -1774,7 +1866,11 @@ impl Tick<'_> {
                 r.unit.base(),
             )
         };
-        let tokens = (request_bytes / 4) as u64;
+        // The text at four bytes a token; each image at
+        // [`IMAGE_INPUT_TOKENS`], not its base64 data as text. A request
+        // with no image is `request_bytes / 4`.
+        let tokens = (request_bytes.saturating_sub(image_bytes) / 4) as u64
+            + images.saturating_mul(IMAGE_INPUT_TOKENS);
         let input = match self.hist.last_usage.filter(|_| cached_prefix) {
             Some(u) => {
                 let prefix = u.cache_read_input_tokens + u.cache_creation_input_tokens;
@@ -1998,8 +2094,11 @@ impl Tick<'_> {
             betas: Vec::new(),
             extra: serde_json::Map::new(),
         };
-        let request_bytes = req.body().to_string().len();
-        req.max_tokens = match self.affordable(ks, request_bytes, shown.is_none())? {
+        let body = req.body();
+        let request_bytes = body.to_string().len();
+        let images = crate::images::in_body(&body);
+        drop(body);
+        req.max_tokens = match self.affordable(ks, request_bytes, images, shown.is_none())? {
             Ok(n) => n,
             Err(stop) => return self.stop_plain(stop).await,
         };
@@ -2341,7 +2440,9 @@ impl Tick<'_> {
     /// as a text block ([`prompt::message_of`]), and their `seq`s, for
     /// the turn's commit to mark delivered: none when the turn
     /// `continues` the model's own answer, and none read for a run
-    /// whose kind takes no messages (every `clax` run's).
+    /// whose kind takes no messages (every `clax` run's). A message whose
+    /// stored body does not read (`Message::body`) is left out and stays
+    /// undelivered.
     fn inbox(&self, continues: bool) -> Result<(Vec<Block>, Vec<i64>)> {
         let info = &self.surfaces.info;
         let surface = self.surfaces.kind_provider().definition();
@@ -2357,9 +2458,21 @@ impl Tick<'_> {
             .store
             .undelivered_messages(&self.run.id)?
             .into_iter()
-            .map(|m| {
-                let text = prompt::message_of(info, surface, m.seq, &m.body);
-                (Block::text(text), m.seq)
+            .filter_map(|m| match m.body() {
+                Ok(body) => {
+                    let text = prompt::message_of(info, surface, m.seq, body);
+                    Some((Block::text(text), m.seq))
+                }
+                // A message whose stored body does not read is not given:
+                // it stays undelivered, listed so, and the run goes on.
+                Err(e) => {
+                    tracing::warn!(
+                        "clax-bot: run {}'s message {} is not given: {e}",
+                        self.run.id,
+                        m.seq
+                    );
+                    None
+                }
             })
             .unzip())
     }

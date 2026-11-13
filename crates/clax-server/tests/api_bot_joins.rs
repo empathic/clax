@@ -6,13 +6,13 @@
 //! its calls. With the host away, or for another person's run, the run
 //! is made as a run with no join is.
 
-use clax_bot::clax_surface::wire::Notation;
-use clax_bot::clax_surface::wire::Outcome;
 use clax_core::audit::AuditCtx;
 use clax_core::working::ManualClock;
 use clax_server::routes::bot::Sender;
 use clax_store::bot_joins::Join;
 use clax_store::bot_runs::{Bindings, StoredBinding};
+use clax_surface::wire::Notation;
+use clax_surface::wire::Outcome;
 use clax_testkit::fake_host::{Behaviour, FakeHost, HttpTransport, Served, When};
 use clax_testkit::fake_messages::{FakeMessages, Turn};
 use clax_testkit::remotes::json_of;
@@ -641,6 +641,17 @@ async fn a_join_is_refused_for_another_persons_artifact_and_what_is_not_one() {
         ),
         (
             json!({"registration": reg, "clax": [{"artifact": mine, "allow": ["desk..x"]}]}),
+            400,
+            "invalid_request",
+        ),
+        (
+            json!({"registration": reg, "clax": [{"artifact": mine, "allow": ["clax"]}]}),
+            400,
+            "invalid_request",
+        ),
+        // `null` is not "left out".
+        (
+            json!({"registration": reg, "clax": [{"artifact": mine, "allow": null}]}),
             400,
             "invalid_request",
         ),

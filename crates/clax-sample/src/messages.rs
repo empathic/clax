@@ -138,9 +138,12 @@ impl ToolImage {
 }
 
 /// What ends the text of a tool result whose images were left out because
-/// the model takes none ([`Block::tool_result_with_images`]).
-pub const IMAGES_NOT_SHOWN: &str =
-    "The images of this result are not shown: this model takes no images.";
+/// the caller sends the model none ([`Block::tool_result_with_images`]).
+/// It says what was done, not what the model can take: nothing here
+/// knows that, and ClaxBot leaves images out whenever its `[bot]
+/// model_takes_images` setting is off, which is the default.
+pub const IMAGES_NOT_SHOWN: &str = "The images of this result are not shown: images are not sent \
+     to the model here ([bot] model_takes_images is off).";
 
 /// The images in a `tool_result`'s content, in order, each as its media
 /// type and base64 data: the `image` blocks with a `base64` source of an
@@ -362,6 +365,12 @@ pub struct Tool {
     pub description: String,
     /// A JSON Schema object.
     pub input_schema: Value,
+    /// `input_schema` as compact JSON text with its members in the order
+    /// the model is to read them (a kind's result fields in its
+    /// definition's order), sent in its place as it is: a `Value`'s maps
+    /// sort their keys. `None` sends `input_schema`. The two are one
+    /// JSON value.
+    pub input_schema_text: Option<String>,
     pub cache_control: Option<CacheControl>,
     /// `eager_input_streaming: true`: the input streams as the model writes
     /// it, unvalidated, so it may not parse; such a call comes back as
@@ -400,9 +409,55 @@ pub struct MessagesRequest {
     pub extra: Map<String, Value>,
 }
 
+/// What stands in a request body's [`Value`] for the schema of the tool
+/// `n` that has [`Tool::input_schema_text`], until [`spliced`] puts the
+/// text there: a string no request holds otherwise.
+pub(crate) fn schema_mark(n: usize) -> Value {
+    Value::String(format!("\u{1}input_schema_text {n}"))
+}
+
+/// The schema a request body's [`Value`] holds for tool `n` of `tools`:
+/// its [`Tool::input_schema`], or with `marked` its [`schema_mark`] when
+/// it has a text.
+pub(crate) fn schema_of(tools: &[Tool], n: usize, marked: bool) -> Value {
+    let t = &tools[n];
+    match (&t.input_schema_text, marked) {
+        (Some(_), true) => schema_mark(n),
+        _ => t.input_schema.clone(),
+    }
+}
+
+/// `body`, a request's [`Value`] built with marks ([`schema_of`]), as
+/// the text sent: each mark replaced by its tool's
+/// [`Tool::input_schema_text`]. With no tool that has a text it is
+/// `body.to_string()`, byte for byte.
+pub(crate) fn spliced(body: &Value, tools: &[Tool]) -> String {
+    let mut text = body.to_string();
+    for (n, t) in tools.iter().enumerate() {
+        if let Some(schema) = &t.input_schema_text {
+            let mark = schema_mark(n).to_string();
+            text = text.replacen(&mark, schema, 1);
+        }
+    }
+    text
+}
+
 impl MessagesRequest {
-    /// The streaming request body.
+    /// The streaming request body as it is sent: [`MessagesRequest::body`]
+    /// with each tool's [`Tool::input_schema_text`] where it has one, in
+    /// its own order.
+    #[must_use]
+    pub fn body_text(&self) -> String {
+        spliced(&self.body_marked(true), &self.tools)
+    }
+
+    /// The streaming request body, each tool's schema its
+    /// [`Tool::input_schema`] (a `Value`, whose maps sort their keys).
     pub fn body(&self) -> Value {
+        self.body_marked(false)
+    }
+
+    fn body_marked(&self, marked: bool) -> Value {
         let mut b = Map::new();
         b.insert("model".into(), json!(self.model));
         b.insert("max_tokens".into(), json!(self.max_tokens));
@@ -429,8 +484,10 @@ impl MessagesRequest {
             let tools: Vec<Value> = self
                 .tools
                 .iter()
-                .map(|t| {
-                    let mut v = json!({"name": t.name, "description": t.description, "input_schema": t.input_schema});
+                .enumerate()
+                .map(|(n, t)| {
+                    let schema = schema_of(&self.tools, n, marked);
+                    let mut v = json!({"name": t.name, "description": t.description, "input_schema": schema});
                     if let Some(cc) = &t.cache_control {
                         v["cache_control"] = cc.to_json();
                     }
@@ -1436,7 +1493,7 @@ impl MessagesClient {
         url: &str,
         key: &ApiKey,
         betas: Option<String>,
-        json: Option<&Value>,
+        json: Option<&str>,
     ) -> Result<Body, MessagesError> {
         let mut headers = vec![
             ("x-api-key", key.expose().to_string()),
@@ -1455,7 +1512,7 @@ impl MessagesClient {
         method: &str,
         url: &str,
         key: &ApiKey,
-        json: Option<&Value>,
+        json: Option<&str>,
     ) -> Result<Body, MessagesError> {
         match api {
             ModelApi::Anthropic => self.send(method, url, key, None, json).await,
@@ -1477,12 +1534,12 @@ impl MessagesClient {
         method: &str,
         url: &str,
         headers: &[(&str, String)],
-        json: Option<&Value>,
+        json: Option<&str>,
     ) -> Result<Body, MessagesError> {
         let res = deadline(
             self.timeouts.headers,
             "answer",
-            self.http.send(method, url, headers, json),
+            self.http.send_text(method, url, headers, json),
         )
         .await?
         .map_err(|message| MessagesError::Network { message })?;
@@ -1517,17 +1574,18 @@ impl MessagesClient {
             let body = match api {
                 ModelApi::Anthropic => {
                     let url = endpoint(base_url, "/v1/messages")?;
-                    self.send("POST", &url, key, req.beta_header(), Some(&req.body()))
+                    let body = req.body_text();
+                    self.send("POST", &url, key, req.beta_header(), Some(&body))
                         .await?
                 }
                 ModelApi::OpenAi => {
                     let url = endpoint(base_url, openai::PATH)?;
-                    let body = openai::body(req, base_url);
+                    let body = spliced(&openai::body_marked(req, base_url, true), &req.tools);
                     self.send_as(api, "POST", &url, key, Some(&body)).await?
                 }
                 ModelApi::Gemini => {
                     let url = endpoint(base_url, &gemini::path(&req.model))?;
-                    let body = gemini::body(req);
+                    let body = spliced(&gemini::body_marked(req, true), &req.tools);
                     self.send_as(api, "POST", &url, key, Some(&body)).await?
                 }
             };

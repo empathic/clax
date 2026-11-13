@@ -62,7 +62,11 @@
 //! | Sent, a write or an effect | `unknown_outcome` |
 //!
 //! Whether a call is sent again before its deadline, and how often, is the
-//! run loop's; the store keeps one row for a place and no count of sends.
+//! hub's (`clax_bot::bot_surfaces`); the store keeps one row for a place,
+//! and with it where the call is with its attempts ([`CallTries`]), which
+//! the hub writes ([`Store::keep_call_tries`]) and the store reads only to
+//! count a run's sendings again ([`Store::call_resends`]) and to say when
+//! one is next due ([`Store::next_call_resend`]).
 //!
 //! # A run's end
 //!
@@ -70,7 +74,7 @@
 //! be told, written in the terminal step's transaction
 //! ([`Store::commit_bot_step_on`]) or after it
 //! ([`Store::record_end`]), listed until acknowledged
-//! ([`Store::ends_for`], [`Store::ack_end`]) and removed
+//! ([`Store::pending_summary`], [`Store::ends_named`], [`Store::ack_end`]) and removed
 //! [`BOT_END_KEEP`] after it was written ([`Store::prune_ended_runs`]).
 //!
 //! Every function here takes the time as `now`; none reads the store's
@@ -78,7 +82,8 @@
 
 use super::Store;
 use super::bot_runs::{
-    CallEntry, DriverId, check_claim, insert_call, journal_at, open_step_in, run_in, unpark_in,
+    CallEntry, DriverId, check_claim, insert_call, journal_at, journal_holds, open_step_in, run_in,
+    unpark_in,
 };
 use super::bot_surfaces::registration_in;
 use chrono::{DateTime, Utc};
@@ -160,6 +165,74 @@ fn failure_json(failure: &CallFailure) -> Value {
     v
 }
 
+/// The rule a call's run gave for sending it again: the attempts it may
+/// have in all, and the waits between them, which double up to a
+/// longest (`clax_bot::bot_surfaces::Retry`, which this mirrors).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct RetryRule {
+    pub attempts: u32,
+    pub backoff_ms: u64,
+    pub backoff_max_ms: u64,
+}
+
+/// Whether a call is to be sent again although its host accepted it
+/// ([`CallTries::resend`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Resend {
+    /// No: sent as any open call is, and not once its host accepted it.
+    #[default]
+    None,
+    /// An attempt failed, or its host may have lost it, and the next
+    /// attempt is planned and not sent yet.
+    Planned,
+    /// Sent with every `serve` until its host accepts it again: the
+    /// planned attempt was sent, or its host asked for it later.
+    Due,
+}
+
+impl Resend {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Resend::None => "none",
+            Resend::Planned => "planned",
+            Resend::Due => "due",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Resend> {
+        [Resend::None, Resend::Planned, Resend::Due]
+            .into_iter()
+            .find(|r| r.as_str() == s)
+    }
+}
+
+/// Where a pending call is with its attempts, kept with the call by
+/// whoever sends it again (the hub of the host protocol,
+/// `clax_bot::bot_surfaces`), so that it outlasts the process and a
+/// call goes on after a restart as it would have. The store reads none
+/// of it but `failures`, which it sums for a run's count
+/// ([`Store::call_resends`]), and `not_before`
+/// ([`Store::next_call_resend`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct CallTries {
+    /// The rule its run gave; `None`: none was given.
+    pub rule: Option<RetryRule>,
+    /// The attempts that failed and were followed by another, each one
+    /// of the run's sendings again.
+    pub failures: u32,
+    /// The call is not sent before this instant.
+    pub not_before: Option<String>,
+    pub resend: Resend,
+    /// Its host asked for it later, and it has not been sent since.
+    pub later: bool,
+    /// What its last attempt came to, while it has not been sent since:
+    /// what its deadline settles it as.
+    pub last: Option<CallFailure>,
+}
+
 /// A call sent to a registration, as `bot_pending_calls` keeps it.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct PendingCall {
@@ -198,6 +271,8 @@ pub struct PendingCall {
     /// When the call stopped waiting: answered, expired, or found
     /// settled another way.
     pub answered_at: Option<String>,
+    /// Where it is with its attempts.
+    pub tries: CallTries,
 }
 
 /// What is read of a waiting call to decide what to do with it:
@@ -205,6 +280,7 @@ pub struct PendingCall {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct CallSummary {
     pub id: String,
+    pub run_id: String,
     pub def_hash: String,
     pub op: String,
     pub access: CallAccess,
@@ -214,6 +290,87 @@ pub struct CallSummary {
     /// Whether it was handed to its host, or accepted by it.
     pub sent: bool,
     pub accepted: bool,
+    /// Where it is with its attempts.
+    pub tries: CallTries,
+}
+
+/// The latest instant a pending call's stamps hold: the last
+/// millisecond of the year 9999. A later one would be written with a
+/// sign (`+10000-…`), which sorts before every stamp of the years 0 to
+/// 9999, so a deadline past it is kept as this one, which no clock
+/// reaches.
+#[must_use]
+pub fn latest_stamp() -> DateTime<Utc> {
+    use chrono::TimeZone;
+    Utc.with_ymd_and_hms(9999, 12, 31, 23, 59, 59)
+        .single()
+        .expect("a valid instant")
+        + chrono::Duration::milliseconds(999)
+}
+
+/// `at`, no later than [`latest_stamp`].
+fn bounded(at: DateTime<Utc>) -> DateTime<Utc> {
+    at.min(latest_stamp())
+}
+
+/// Whether the columns of a `bot_pending_calls` row that [`Place`]
+/// reads read: what journaling its place needs.
+const PLACE_READS: &str = "COALESCE(typeof(id) = 'text' AND typeof(run_id) = 'text' \
+     AND typeof(step_n) = 'integer' AND typeof(seq) = 'integer' AND typeof(attempt) = 'integer' \
+     AND typeof(op) = 'text' AND typeof(args_hash) = 'text' \
+     AND typeof(waits) = 'integer' AND waits IN (0, 1), 0)";
+
+/// Whether a `bot_pending_calls` row reads: every column a call is read
+/// by ([`row_to_pending`], [`Store::pending_summary`]) holds a value this
+/// build reads. Its arguments are a JSON array, its access and resend
+/// state ones this build knows, its counts whole numbers in range, its
+/// rule of attempts given whole or not at all, and its last failure,
+/// when it has one, whole. Written so that no value is an error of the
+/// query, and no row's is NULL.
+const CALL_READS: &str = "COALESCE(CASE WHEN json_valid(args_json) THEN json_type(args_json) = 'array' \
+     ELSE 0 END \
+     AND (typeof(id) = 'text' AND typeof(run_id) = 'text' \
+     AND typeof(step_n) = 'integer' AND typeof(seq) = 'integer' AND typeof(attempt) = 'integer' \
+     AND typeof(op) = 'text' AND typeof(args_hash) = 'text' \
+     AND typeof(waits) = 'integer' AND waits IN (0, 1)) \
+     AND typeof(registration_id) = 'text' AND typeof(def_hash) = 'text' \
+     AND typeof(key) = 'text' AND typeof(created_at) = 'text' \
+     AND typeof(expires_at) IN ('null', 'text') AND typeof(sent_at) IN ('null', 'text') \
+     AND typeof(accepted_at) IN ('null', 'text') AND typeof(answered_at) IN ('null', 'text') \
+     AND typeof(not_before) IN ('null', 'text') \
+     AND access IN ('read', 'write', 'effect') AND resend IN ('none', 'planned', 'due') \
+     AND typeof(later) = 'integer' AND later IN (0, 1) \
+     AND typeof(failures) = 'integer' AND failures BETWEEN 0 AND 4294967295 \
+     AND ((retry_attempts IS NULL AND retry_backoff_ms IS NULL \
+           AND retry_backoff_max_ms IS NULL) \
+          OR (typeof(retry_attempts) = 'integer' AND typeof(retry_backoff_ms) = 'integer' \
+              AND typeof(retry_backoff_max_ms) = 'integer' \
+              AND retry_attempts BETWEEN 0 AND 4294967295 AND retry_backoff_ms >= 0 \
+              AND retry_backoff_max_ms >= 0)) \
+     AND (last_code IS NULL \
+          OR (typeof(last_code) = 'text' AND typeof(last_message) = 'text' \
+              AND typeof(last_retryable) = 'integer' AND last_retryable IN (0, 1))), 0)";
+
+/// Whether a `bot_run_ends` row reads: its end is a JSON object and its
+/// result, when it has one, JSON.
+const END_READS: &str = "(CASE WHEN json_valid(end_json) THEN json_type(end_json) = 'object' \
+     ELSE 0 END AND (result_json IS NULL OR json_valid(result_json)))";
+
+/// The most unacknowledged ends one [`Store::expire_ends`] forgets: as
+/// many as a transaction of the prune deletes rows
+/// ([`crate::bot_runs::PRUNE_ROWS_PER_TX`]).
+pub const EXPIRE_ENDS_PER_TX: usize = crate::bot_runs::PRUNE_ROWS_PER_TX;
+
+/// What a pending call whose row does not read is journaled as by
+/// [`Store::expire_calls`]: no host is sent it.
+fn unreadable_failure() -> CallFailure {
+    CallFailure {
+        code: "internal_error".into(),
+        message: "the call as the store keeps it does not read (a value of its row is not one \
+                  this build reads): it is sent to no host"
+            .into(),
+        retryable: false,
+    }
 }
 
 /// What is read of an unacknowledged end to decide what to do with it.
@@ -296,7 +453,7 @@ impl Opened {
 }
 
 /// A failure a provider answered a call with, as the journal keeps it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct CallFailure {
     pub code: String,
     pub message: String,
@@ -345,6 +502,11 @@ pub enum AnswerOutcome {
         /// again: the one time its driver needs waking for it.
         unparked: bool,
     },
+    /// The same answer was journaled at the call's place before: the
+    /// value, or the failure, the journal row holds is this one. Nothing
+    /// changed. A host whose reply to its first answer was lost is told
+    /// by this that its answer stands.
+    AlreadyJournaled,
     /// Nothing was journaled and no run was made due.
     Ignored(Ignored),
 }
@@ -390,13 +552,98 @@ pub struct RunEnd {
     pub delivered_at: Option<String>,
 }
 
+/// The columns of a call's attempts ([`CallTries`]), as [`tries_at`]
+/// reads them.
+const TRIES_COLS: &str = "retry_attempts, retry_backoff_ms, retry_backoff_max_ms, failures,
+    not_before, resend, later, last_code, last_message, last_retryable";
+
 const PENDING_COLS: &str = "id, run_id, step_n, seq, attempt, registration_id, op, args_json,
     args_hash, key, access, created_at, expires_at, accepted_at, answered_at, waits, sent_at,
-    def_hash";
+    def_hash, retry_attempts, retry_backoff_ms, retry_backoff_max_ms, failures, not_before,
+    resend, later, last_code, last_message, last_retryable";
+
+/// A column whose stored value this build does not read: refused, never
+/// read as a default.
+fn unread(column: usize, what: String) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(column, rusqlite::types::Type::Text, what.into())
+}
+
+fn access_at(r: &Row<'_>, column: usize) -> rusqlite::Result<CallAccess> {
+    let access: String = r.get(column)?;
+    CallAccess::parse(&access).ok_or_else(|| {
+        unread(
+            column,
+            format!("bot_pending_calls.access is {access:?}, which this build does not know"),
+        )
+    })
+}
+
+/// [`TRIES_COLS`] of a row, from column `at`.
+fn tries_at(r: &Row<'_>, at: usize) -> rusqlite::Result<CallTries> {
+    let count = |column: usize| -> rusqlite::Result<Option<u64>> {
+        let n: Option<i64> = r.get(column)?;
+        n.map(|n| {
+            u64::try_from(n)
+                .map_err(|_| unread(column, format!("bot_pending_calls holds {n} as a count")))
+        })
+        .transpose()
+    };
+    let small = |column: usize, n: u64| {
+        u32::try_from(n)
+            .map_err(|_| unread(column, format!("bot_pending_calls holds {n} as a count")))
+    };
+    let rule = match (count(at)?, count(at + 1)?, count(at + 2)?) {
+        (Some(attempts), Some(backoff_ms), Some(backoff_max_ms)) => Some(RetryRule {
+            attempts: small(at, attempts)?,
+            backoff_ms,
+            backoff_max_ms,
+        }),
+        (None, None, None) => None,
+        _ => {
+            return Err(unread(
+                at,
+                "bot_pending_calls holds a part of a call's retry rule".into(),
+            ));
+        }
+    };
+    let resend: String = r.get(at + 5)?;
+    let last_code: Option<String> = r.get(at + 7)?;
+    let last = match last_code {
+        Some(code) => Some(CallFailure {
+            code,
+            message: r.get(at + 8)?,
+            retryable: r.get(at + 9)?,
+        }),
+        None => None,
+    };
+    let failures: i64 = r.get(at + 3)?;
+    let failures = u64::try_from(failures).map_err(|_| {
+        unread(
+            at + 3,
+            format!("bot_pending_calls holds {failures} failures"),
+        )
+    })?;
+    Ok(CallTries {
+        rule,
+        failures: small(at + 3, failures)?,
+        not_before: r.get(at + 4)?,
+        resend: Resend::parse(&resend).ok_or_else(|| {
+            unread(
+                at + 5,
+                format!("bot_pending_calls.resend is {resend:?}, which this build does not know"),
+            )
+        })?,
+        later: r.get(at + 6)?,
+        last,
+    })
+}
 
 fn row_to_pending(r: &Row<'_>) -> rusqlite::Result<PendingCall> {
     let args: String = r.get(7)?;
-    let access: String = r.get(10)?;
+    let args: Value = serde_json::from_str(&args)
+        .ok()
+        .filter(Value::is_array)
+        .ok_or_else(|| unread(7, "bot_pending_calls.args_json is not a JSON array".into()))?;
     Ok(PendingCall {
         id: r.get(0)?,
         run_id: r.get(1)?,
@@ -405,17 +652,10 @@ fn row_to_pending(r: &Row<'_>) -> rusqlite::Result<PendingCall> {
         attempt: r.get(4)?,
         registration_id: r.get(5)?,
         op: r.get(6)?,
-        args: serde_json::from_str(&args).unwrap_or(Value::Null),
+        args,
         args_hash: r.get(8)?,
         key: r.get(9)?,
-        access: CallAccess::parse(&access).ok_or_else(|| {
-            rusqlite::Error::FromSqlConversionFailure(
-                10,
-                rusqlite::types::Type::Text,
-                format!("bot_pending_calls.access is {access:?}, which this build does not know")
-                    .into(),
-            )
-        })?,
+        access: access_at(r, 10)?,
         created_at: r.get(11)?,
         expires_at: r.get(12)?,
         accepted_at: r.get(13)?,
@@ -423,6 +663,52 @@ fn row_to_pending(r: &Row<'_>) -> rusqlite::Result<PendingCall> {
         waits: r.get(15)?,
         sent_at: r.get(16)?,
         def_hash: r.get(17)?,
+        tries: tries_at(r, 18)?,
+    })
+}
+
+/// The columns [`Place`] reads.
+const PLACE_COLS: &str = "id, run_id, step_n, seq, attempt, op, args_hash, waits";
+
+/// What journaling a pending call's place needs of its row
+/// ([`settle`]): its place, and what the journal row of it holds but
+/// the answer. A row whose arguments do not read has these.
+struct Place {
+    id: String,
+    run_id: String,
+    step_n: i64,
+    seq: i64,
+    attempt: i64,
+    op: String,
+    args_hash: String,
+    waits: bool,
+}
+
+impl Place {
+    fn of(call: &PendingCall) -> Place {
+        Place {
+            id: call.id.clone(),
+            run_id: call.run_id.clone(),
+            step_n: call.step_n,
+            seq: call.seq,
+            attempt: call.attempt,
+            op: call.op.clone(),
+            args_hash: call.args_hash.clone(),
+            waits: call.waits,
+        }
+    }
+}
+
+fn row_to_place(r: &Row<'_>) -> rusqlite::Result<Place> {
+    Ok(Place {
+        id: r.get(0)?,
+        run_id: r.get(1)?,
+        step_n: r.get(2)?,
+        seq: r.get(3)?,
+        attempt: r.get(4)?,
+        op: r.get(5)?,
+        args_hash: r.get(6)?,
+        waits: r.get(7)?,
     })
 }
 
@@ -448,13 +734,23 @@ const END_COLS: &str =
 
 fn row_to_end(r: &Row<'_>) -> rusqlite::Result<RunEnd> {
     let end: String = r.get(3)?;
+    let end: Value = serde_json::from_str(&end)
+        .ok()
+        .filter(Value::is_object)
+        .ok_or_else(|| unread(3, "bot_run_ends.end_json is not a JSON object".into()))?;
     let result: Option<String> = r.get(4)?;
+    let result = result
+        .map(|v| {
+            serde_json::from_str(&v)
+                .map_err(|e| unread(4, format!("bot_run_ends.result_json is not JSON: {e}")))
+        })
+        .transpose()?;
     Ok(RunEnd {
         id: r.get(0)?,
         run_id: r.get(1)?,
         registration_id: r.get(2)?,
-        end: serde_json::from_str(&end).unwrap_or(Value::Null),
-        result: result.and_then(|v| serde_json::from_str(&v).ok()),
+        end,
+        result,
         created_at: r.get(5)?,
         delivered_at: r.get(6)?,
     })
@@ -468,6 +764,19 @@ fn waiting(
     registration: &str,
     at: &str,
 ) -> Result<std::result::Result<PendingCall, Ignored>> {
+    // A row that does not read takes no answer: it stops waiting, settled
+    // `internal_error`, when the calls are next expired.
+    let reads: Option<bool> = c
+        .prepare_cached(&format!(
+            "SELECT {CALL_READS} FROM bot_pending_calls WHERE id = ?1"
+        ))?
+        .query_row(params![id], |r| r.get(0))
+        .optional()?;
+    match reads {
+        None => return Ok(Err(Ignored::Unknown)),
+        Some(false) => return Ok(Err(Ignored::Answered)),
+        Some(true) => {}
+    }
     let Some(call) = pending_in(c, id)? else {
         return Ok(Err(Ignored::Unknown));
     };
@@ -500,7 +809,7 @@ enum Settle {
 /// run may park on ([`PendingCall::waits`]), unless the place has a row,
 /// its step is no longer the run's open step or its run has ended. The
 /// call stops waiting in every case.
-fn settle(c: &Connection, call: &PendingCall, ok: bool, result: Value, at: &str) -> Result<Settle> {
+fn settle(c: &Connection, call: &Place, ok: bool, result: Value, at: &str) -> Result<Settle> {
     c.execute(
         "UPDATE bot_pending_calls SET answered_at = ?2 WHERE id = ?1",
         params![call.id, at],
@@ -510,7 +819,7 @@ fn settle(c: &Connection, call: &PendingCall, ok: bool, result: Value, at: &str)
         _ => None,
     };
     if open.is_none_or(|s| s.n != call.step_n)
-        || journal_at(c, &call.run_id, call.step_n, call.seq)?.is_some()
+        || journal_holds(c, &call.run_id, call.step_n, call.seq)?
     {
         return Ok(Settle::Answered);
     }
@@ -568,7 +877,27 @@ impl Store {
         limit: Option<usize>,
         now: DateTime<Utc>,
     ) -> Result<Opened> {
+        self.open_call_with(run_id, driver, call, None, limit, now)
+    }
+
+    /// [`Store::open_call`], keeping with a new call the rule its run
+    /// gave for sending it again ([`CallTries::rule`]). A deadline later
+    /// than [`latest_stamp`] is kept as that. A call the place has
+    /// already keeps the rule it has.
+    ///
+    /// # Errors
+    /// As [`Store::open_call`].
+    pub fn open_call_with(
+        &self,
+        run_id: &str,
+        driver: &DriverId,
+        call: NewCall,
+        rule: Option<RetryRule>,
+        limit: Option<usize>,
+        now: DateTime<Utc>,
+    ) -> Result<Opened> {
         let at = stamp(now);
+        let big = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
         self.with_tx(|tx| {
             let run = run_in(tx, run_id)?.ok_or(CoreError::NotFound)?;
             check_claim(&run, driver.as_str())?;
@@ -646,11 +975,18 @@ impl Store {
                 }
             }
             let id = clax_core::new_ulid();
+            if !call.args.is_array() {
+                return Err(CoreError::invalid(
+                    "invalid_args",
+                    "a pending call's arguments are a JSON array",
+                ));
+            }
             tx.execute(
                 "INSERT INTO bot_pending_calls (id, run_id, step_n, seq, attempt, registration_id,
                     op, args_json, args_hash, key, access, created_at, expires_at, waits,
-                    def_hash)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                    def_hash, retry_attempts, retry_backoff_ms, retry_backoff_max_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                         ?16, ?17, ?18)",
                 params![
                     id,
                     run_id,
@@ -664,9 +1000,12 @@ impl Store {
                     call.key,
                     call.access.as_str(),
                     at,
-                    call.expires_at.map(stamp),
+                    call.expires_at.map(|e| stamp(bounded(e))),
                     call.waits,
-                    call.def_hash
+                    call.def_hash,
+                    rule.map(|r| r.attempts),
+                    rule.map(|r| big(r.backoff_ms)),
+                    rule.map(|r| big(r.backoff_max_ms)),
                 ],
             )?;
             Ok(Opened::New(
@@ -697,33 +1036,17 @@ impl Store {
         self.with_read(|c| pending_at(c, run_id, step_n, seq))
     }
 
-    /// The call run `run_id` opened for `registration` under `key`,
-    /// waiting or not, or `None`.
-    ///
-    /// # Errors
-    /// The store's.
-    pub fn pending_call_by_key(
-        &self,
-        registration: &str,
-        run_id: &str,
-        key: &str,
-    ) -> Result<Option<PendingCall>> {
-        self.with_read(|c| {
-            Ok(c.prepare_cached(&format!(
-                "SELECT {PENDING_COLS} FROM bot_pending_calls
-                  WHERE run_id = ?2 AND registration_id = ?1 AND key = ?3
-                  ORDER BY created_at, id LIMIT 1"
-            ))?
-            .query_row(params![registration, run_id, key], row_to_pending)
-            .optional()?)
-        })
-    }
-
     /// Records, at `now`, that each of the pending calls `ids` was handed
     /// to its host: one sent and never answered is journaled at its
     /// deadline as one that may have happened ([`unanswered`]). A call
     /// sent before keeps its first time; one that is not waiting, or
-    /// unknown, is left. How many it marked.
+    /// unknown, is left. How many it marked as sent for the first time.
+    ///
+    /// Each call that is waiting is also no longer one whose next
+    /// attempt waits to be sent: a planned attempt is sent
+    /// ([`Resend::Planned`] becomes [`Resend::Due`]), its host's ask for
+    /// later is answered, and its last failure is no longer what is
+    /// known of it ([`CallTries`]).
     ///
     /// # Errors
     /// The store's.
@@ -737,6 +1060,14 @@ impl Store {
                       WHERE id = ?1 AND sent_at IS NULL AND answered_at IS NULL",
                     params![id, at],
                 )?;
+                tx.execute(
+                    "UPDATE bot_pending_calls
+                        SET resend = CASE resend WHEN 'planned' THEN 'due' ELSE resend END,
+                            later = 0, last_code = NULL, last_message = NULL,
+                            last_retryable = NULL
+                      WHERE id = ?1 AND answered_at IS NULL",
+                    params![id],
+                )?;
             }
             Ok(marked)
         })
@@ -745,7 +1076,9 @@ impl Store {
     /// Records that `registration` has pending call `id`, at `now`, and
     /// so that it was sent ([`Store::mark_sent`]). A call that is not
     /// waiting on `registration` at `now` is left as it is, and the
-    /// outcome says why.
+    /// outcome says why. A call that is accepted, now or before, is no
+    /// longer one to be sent again: its host has it ([`Resend::None`],
+    /// and neither an ask for later nor a last failure is kept).
     ///
     /// # Errors
     /// The store's.
@@ -761,16 +1094,19 @@ impl Store {
                 Ok(call) => call,
                 Err(why) => return Ok(AcceptOutcome::Ignored(why)),
             };
-            if call.accepted_at.is_some() {
-                return Ok(AcceptOutcome::AlreadyAccepted);
-            }
             tx.execute(
                 "UPDATE bot_pending_calls
-                    SET accepted_at = ?2, sent_at = COALESCE(sent_at, ?2)
+                    SET accepted_at = COALESCE(accepted_at, ?2), sent_at = COALESCE(sent_at, ?2),
+                        resend = 'none', later = 0, last_code = NULL, last_message = NULL,
+                        last_retryable = NULL
                   WHERE id = ?1",
                 params![id, at],
             )?;
-            Ok(AcceptOutcome::Accepted)
+            Ok(if call.accepted_at.is_some() {
+                AcceptOutcome::AlreadyAccepted
+            } else {
+                AcceptOutcome::Accepted
+            })
         })
     }
 
@@ -811,9 +1147,34 @@ impl Store {
         self.with_tx(|tx| {
             let call = match waiting(tx, id, registration, &at)? {
                 Ok(call) => call,
+                Err(Ignored::Answered) => {
+                    // The same answer, journaled before: it stands.
+                    let place = tx
+                        .prepare_cached(&format!(
+                            "SELECT {PLACE_COLS} FROM bot_pending_calls
+                              WHERE id = ?1 AND {PLACE_READS}"
+                        ))?
+                        .query_row(params![id], row_to_place)
+                        .optional()?;
+                    let same = match place {
+                        // A row whose result does not read is no answer
+                        // that stands.
+                        Some(p) => match journal_at(tx, &p.run_id, p.step_n, p.seq) {
+                            Ok(row) => row.is_some_and(|row| row.ok == ok && row.result == result),
+                            Err(e) if crate::bot_runs::is_unreadable(&e) => false,
+                            Err(e) => return Err(e),
+                        },
+                        None => false,
+                    };
+                    return Ok(if same {
+                        AnswerOutcome::AlreadyJournaled
+                    } else {
+                        AnswerOutcome::Ignored(Ignored::Answered)
+                    });
+                }
                 Err(why) => return Ok(AnswerOutcome::Ignored(why)),
             };
-            Ok(match settle(tx, &call, ok, result, &at)? {
+            Ok(match settle(tx, &Place::of(&call), ok, result, &at)? {
                 Settle::Journaled(entry, unparked) => AnswerOutcome::Journaled {
                     run_id: call.run_id,
                     entry,
@@ -831,8 +1192,13 @@ impl Store {
     /// its run made due at once, unparked when it was parked, as an
     /// answer would ([`Store::answer_call`]). A call whose place is in
     /// the journal, whose step committed or whose run ended stops waiting
-    /// and journals nothing. Returns the calls it ended, oldest first;
-    /// run again at the same time it finds none.
+    /// and journals nothing. Every waiting call whose row does not read
+    /// (a value of it is not one this build reads), whatever its
+    /// deadline, is journaled `internal_error`, and `failure` is not
+    /// asked; one whose place does not read either stops waiting,
+    /// unjournaled. Each is logged. Returns the calls it ended, those
+    /// that do not read first and each group oldest first; run again at
+    /// the same time it finds none.
     ///
     /// # Errors
     /// The store's.
@@ -867,26 +1233,99 @@ impl Store {
         failure: &dyn Fn(&PendingCall) -> CallFailure,
     ) -> Result<Vec<ExpiredCall>> {
         let at = stamp(now);
+        // The pending calls a pass ends: every waiting one whose row does
+        // not read, whatever its deadline, journaled `internal_error` by
+        // its place alone; and of those that read, those past their
+        // deadline and those of a registration that is no longer live.
+        // Scoped to one run, the pass reads that run's rows alone (its
+        // place's unique index).
+        let scope = if run_id.is_some() {
+            "AND run_id = ?2"
+        } else {
+            ""
+        };
+        let due = format!(
+            "FROM bot_pending_calls p
+              WHERE answered_at IS NULL {scope}
+                AND ((expires_at IS NOT NULL AND expires_at <= ?1)
+                     OR NOT EXISTS (SELECT 1 FROM bot_registrations g
+                                     WHERE g.id = p.registration_id
+                                       AND g.replaced_at IS NULL))
+                AND {CALL_READS}
+              ORDER BY created_at, id"
+        );
         self.with_tx(|tx| {
-            let due: Vec<PendingCall> = {
+            // A row whose place does not read either cannot be journaled:
+            // it stops waiting, so that nothing reads it again.
+            let lost = {
+                let sql = format!(
+                    "UPDATE bot_pending_calls SET answered_at = ?1
+                      WHERE answered_at IS NULL {scope} AND NOT {PLACE_READS}"
+                );
+                match run_id {
+                    Some(run) => tx.execute(&sql, params![at, run])?,
+                    None => tx.execute(&sql, params![at])?,
+                }
+            };
+            if lost > 0 {
+                tracing::warn!(
+                    "clax-store: {lost} pending calls whose place does not read stop waiting, \
+                     unjournaled"
+                );
+            }
+            let unread: Vec<Place> = {
                 let mut q = tx.prepare_cached(&format!(
-                    "SELECT {PENDING_COLS} FROM bot_pending_calls p
-                      WHERE answered_at IS NULL
-                        AND (?2 IS NULL OR run_id = ?2)
-                        AND ((expires_at IS NOT NULL AND expires_at <= ?1)
-                             OR NOT EXISTS (SELECT 1 FROM bot_registrations g
-                                             WHERE g.id = p.registration_id
-                                               AND g.replaced_at IS NULL))
-                      ORDER BY created_at, id"
+                    "SELECT {PLACE_COLS} FROM bot_pending_calls
+                      WHERE answered_at IS NULL {} AND NOT {CALL_READS}
+                      ORDER BY rowid",
+                    if run_id.is_some() {
+                        "AND run_id = ?1"
+                    } else {
+                        ""
+                    }
                 ))?;
-                let rows = q.query_map(params![at, run_id], row_to_pending)?;
+                let rows = match run_id {
+                    Some(run) => q.query_map(params![run], row_to_place)?,
+                    None => q.query_map([], row_to_place)?,
+                };
                 rows.collect::<rusqlite::Result<_>>()?
             };
-            let mut ended = Vec::with_capacity(due.len());
+            let mut ended = Vec::new();
+            for place in unread {
+                tracing::warn!(
+                    "clax-store: pending call {} of run {} does not read as the store keeps it: \
+                     settled internal_error",
+                    place.id,
+                    place.run_id
+                );
+                let failed = unreadable_failure();
+                let row = failure_json(&failed);
+                let (code, unparked) = match settle(tx, &place, false, row, &at)? {
+                    Settle::Journaled(_, unparked) => (Some(failed.code), unparked),
+                    Settle::Answered => (None, false),
+                };
+                ended.push(ExpiredCall {
+                    id: place.id,
+                    run_id: place.run_id,
+                    step_n: place.step_n,
+                    seq: place.seq,
+                    code,
+                    unparked,
+                });
+            }
+            let due: Vec<PendingCall> = {
+                let mut q = tx.prepare_cached(&format!("SELECT {PENDING_COLS} {due}"))?;
+                let rows = match run_id {
+                    Some(run) => q.query_map(params![at, run], row_to_pending)?,
+                    None => q.query_map(params![at], row_to_pending)?,
+                };
+                rows.collect::<rusqlite::Result<_>>()?
+            };
+            ended.reserve(due.len());
             for call in due {
                 let failed = failure(&call);
                 let row = failure_json(&failed);
-                let (code, unparked) = match settle(tx, &call, false, row, &at)? {
+                let (code, unparked) = match settle(tx, &Place::of(&call), false, row, &at)? {
                     Settle::Journaled(_, unparked) => (Some(failed.code), unparked),
                     Settle::Answered => (None, false),
                 };
@@ -900,49 +1339,6 @@ impl Store {
                 });
             }
             Ok(ended)
-        })
-    }
-
-    /// The calls to hand `registration` at `now`, oldest first: each one
-    /// sent to it that is still waiting, accepted or not, whose deadline
-    /// has not passed and whose run has not ended. None for a
-    /// registration that is unknown or no longer live.
-    ///
-    /// # Errors
-    /// The store's.
-    pub fn calls_for(&self, registration: &str, now: DateTime<Utc>) -> Result<Vec<PendingCall>> {
-        let at = stamp(now);
-        self.with_read(|c| {
-            if registration_in(c, registration)?.is_none_or(|r| !r.is_live()) {
-                return Ok(Vec::new());
-            }
-            let mut q = c.prepare_cached(&format!(
-                "SELECT {PENDING_COLS} FROM bot_pending_calls p
-                  WHERE registration_id = ?1 AND answered_at IS NULL
-                    AND (expires_at IS NULL OR expires_at > ?2)
-                    AND EXISTS (SELECT 1 FROM bot_runs r
-                                 WHERE r.id = p.run_id AND r.status IN {})
-                  ORDER BY created_at, id",
-                super::bot_runs::LIVE
-            ))?;
-            let rows = q.query_map(params![registration, at], row_to_pending)?;
-            Ok(rows.collect::<rusqlite::Result<_>>()?)
-        })
-    }
-
-    /// How many calls are waiting on `registration`, whatever their
-    /// deadlines.
-    ///
-    /// # Errors
-    /// The store's.
-    pub fn count_calls(&self, registration: &str) -> Result<usize> {
-        self.with_read(|c| {
-            Ok(c.query_row(
-                "SELECT count(*) FROM bot_pending_calls
-                  WHERE registration_id = ?1 AND answered_at IS NULL",
-                params![registration],
-                |r| r.get(0),
-            )?)
         })
     }
 
@@ -981,31 +1377,36 @@ impl Store {
 
     /// What waits for `registration`, without the calls' arguments or
     /// the ends' results: every call waiting on it, whatever its
-    /// deadline, and every end it has not acknowledged.
+    /// deadline, with where it is with its attempts, and every end it has
+    /// not acknowledged.
+    ///
+    /// A call whose row does not read is left out: [`Store::expire_calls`]
+    /// settles it, never read as a default.
     ///
     /// # Errors
     /// The store's.
     pub fn pending_summary(&self, registration: &str) -> Result<PendingSummary> {
         self.with_read(|c| {
-            let mut q = c.prepare_cached(
+            let mut q = c.prepare_cached(&format!(
                 "SELECT id, def_hash, op, access, expires_at, length(CAST(args_json AS BLOB)),
-                        sent_at IS NOT NULL, accepted_at IS NOT NULL
+                        sent_at IS NOT NULL, accepted_at IS NOT NULL, run_id, {TRIES_COLS}
                    FROM bot_pending_calls
-                  WHERE registration_id = ?1 AND answered_at IS NULL
-                  ORDER BY created_at, id",
-            )?;
+                  WHERE registration_id = ?1 AND answered_at IS NULL AND {CALL_READS}
+                  ORDER BY created_at, id"
+            ))?;
             let calls = q
                 .query_map(params![registration], |r| {
-                    let access: String = r.get(3)?;
                     Ok(CallSummary {
                         id: r.get(0)?,
                         def_hash: r.get(1)?,
                         op: r.get(2)?,
-                        access: CallAccess::parse(&access).unwrap_or(CallAccess::Effect),
+                        access: access_at(r, 3)?,
                         expires_at: r.get(4)?,
                         args_bytes: r.get(5)?,
                         sent: r.get(6)?,
                         accepted: r.get(7)?,
+                        run_id: r.get(8)?,
+                        tries: tries_at(r, 9)?,
                     })
                 })?
                 .collect::<rusqlite::Result<_>>()?;
@@ -1027,7 +1428,9 @@ impl Store {
     }
 
     /// Those of the calls waiting on `registration` that `ids` names,
-    /// whole, oldest first.
+    /// whole, oldest first, but those whose row does not read (their
+    /// arguments are not a JSON array), which no host is sent
+    /// ([`Store::settle_unreadable_calls`]).
     ///
     /// # Errors
     /// The store's.
@@ -1037,11 +1440,178 @@ impl Store {
             let mut q = c.prepare_cached(&format!(
                 "SELECT {PENDING_COLS} FROM bot_pending_calls
                   WHERE registration_id = ?1 AND answered_at IS NULL
-                    AND id IN (SELECT value FROM json_each(?2))
+                    AND id IN (SELECT value FROM json_each(?2)) AND {CALL_READS}
                   ORDER BY created_at, id"
             ))?;
             let rows = q.query_map(params![registration, ids], row_to_pending)?;
             Ok(rows.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// Settles, at `now`, those of the calls waiting on `registration`
+    /// that `ids` names whose row does not read (their arguments are not
+    /// a JSON array): each is journaled `internal_error` at its place and
+    /// its run made due, as [`Store::expire_calls`] does at a deadline,
+    /// so that no host is sent a call other than the one its script
+    /// made. The calls it ended.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn settle_unreadable_calls(
+        &self,
+        registration: &str,
+        ids: &[String],
+        now: DateTime<Utc>,
+    ) -> Result<Vec<ExpiredCall>> {
+        let at = stamp(now);
+        let ids = serde_json::to_string(ids).expect("serialisable IDs");
+        self.with_tx(|tx| {
+            let unread: Vec<Place> = {
+                let mut q = tx.prepare_cached(&format!(
+                    "SELECT {PLACE_COLS} FROM bot_pending_calls
+                      WHERE registration_id = ?1 AND answered_at IS NULL
+                        AND id IN (SELECT value FROM json_each(?2)) AND NOT {CALL_READS}
+                      ORDER BY created_at, id"
+                ))?;
+                let rows = q.query_map(params![registration, ids], row_to_place)?;
+                rows.collect::<rusqlite::Result<_>>()?
+            };
+            let mut ended = Vec::with_capacity(unread.len());
+            for place in unread {
+                let failed = unreadable_failure();
+                let (code, unparked) = match settle(tx, &place, false, failure_json(&failed), &at)?
+                {
+                    Settle::Journaled(_, unparked) => (Some(failed.code), unparked),
+                    Settle::Answered => (None, false),
+                };
+                ended.push(ExpiredCall {
+                    id: place.id,
+                    run_id: place.run_id,
+                    step_n: place.step_n,
+                    seq: place.seq,
+                    code,
+                    unparked,
+                });
+            }
+            Ok(ended)
+        })
+    }
+
+    /// Keeps `tries` with the call `id` waiting on `registration`: where
+    /// it is with its attempts ([`CallTries`]). False, and nothing
+    /// changes, when no such call is waiting. A `not_before` later than
+    /// [`latest_stamp`] is kept as that.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn keep_call_tries(&self, registration: &str, id: &str, tries: &CallTries) -> Result<bool> {
+        let big = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
+        let not_before = tries
+            .not_before
+            .as_deref()
+            .map(|t| match DateTime::parse_from_rfc3339(t) {
+                Ok(t) => Ok(stamp(bounded(t.with_timezone(&Utc)))),
+                Err(e) => Err(CoreError::invalid(
+                    "invalid_request",
+                    format!("`not_before` is no time stamp: {e}"),
+                )),
+            })
+            .transpose()?;
+        self.with_tx(|tx| {
+            Ok(tx.execute(
+                "UPDATE bot_pending_calls
+                    SET retry_attempts = ?3, retry_backoff_ms = ?4, retry_backoff_max_ms = ?5,
+                        failures = ?6, not_before = ?7, resend = ?8, later = ?9,
+                        last_code = ?10, last_message = ?11, last_retryable = ?12
+                  WHERE id = ?1 AND registration_id = ?2 AND answered_at IS NULL",
+                params![
+                    id,
+                    registration,
+                    tries.rule.map(|r| r.attempts),
+                    tries.rule.map(|r| big(r.backoff_ms)),
+                    tries.rule.map(|r| big(r.backoff_max_ms)),
+                    tries.failures,
+                    not_before,
+                    tries.resend.as_str(),
+                    tries.later,
+                    tries.last.as_ref().map(|f| f.code.as_str()),
+                    tries.last.as_ref().map(|f| f.message.as_str()),
+                    tries.last.as_ref().map(|f| f.retryable),
+                ],
+            )? > 0)
+        })
+    }
+
+    /// How many times in all `run_id`'s calls to `registration` were
+    /// sent again after a failed attempt: the sum of their
+    /// [`CallTries::failures`], settled calls among them, for as long as
+    /// the store holds the run's calls.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn call_resends(&self, run_id: &str, registration: &str) -> Result<u32> {
+        self.with_read(|c| {
+            let n: i64 = c.query_row(
+                "SELECT COALESCE(sum(failures), 0) FROM bot_pending_calls
+                  WHERE run_id = ?1 AND registration_id = ?2 AND typeof(failures) = 'integer'",
+                params![run_id, registration],
+                |r| r.get(0),
+            )?;
+            Ok(u32::try_from(n.max(0)).unwrap_or(u32::MAX))
+        })
+    }
+
+    /// The earliest [`CallTries::not_before`] of a waiting call that is
+    /// later than `after`: when a call that waits to be sent again may be
+    /// sent.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn next_call_resend(&self, after: DateTime<Utc>) -> Result<Option<String>> {
+        let after = stamp(after);
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT min(not_before) FROM bot_pending_calls
+                  WHERE answered_at IS NULL AND not_before > ?1 AND typeof(not_before) = 'text'",
+                params![after],
+                |r| r.get(0),
+            )?)
+        })
+    }
+
+    /// Marks registration `id` as dropped for good at `now` (its lease
+    /// ended, or it made room for another), or, with `None`, as not
+    /// dropped (its host went on as it). False for an ID never issued.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn set_registration_dropped(&self, id: &str, now: Option<DateTime<Utc>>) -> Result<bool> {
+        let at = now.map(stamp);
+        self.with_tx(|tx| {
+            Ok(tx.execute(
+                "UPDATE bot_registrations
+                    SET dropped_at = CASE WHEN ?2 IS NULL THEN NULL
+                                          ELSE COALESCE(dropped_at, ?2) END
+                  WHERE id = ?1",
+                params![id, at],
+            )? > 0)
+        })
+    }
+
+    /// Whether registration `id` is marked as dropped for good
+    /// ([`Store::set_registration_dropped`]).
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn registration_dropped(&self, id: &str) -> Result<bool> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT dropped_at IS NOT NULL FROM bot_registrations WHERE id = ?1",
+                params![id],
+                |r| r.get::<_, bool>(0),
+            )
+            .optional()?
+            .unwrap_or(false))
         })
     }
 
@@ -1053,7 +1623,8 @@ impl Store {
     pub fn next_call_deadline(&self) -> Result<Option<String>> {
         self.with_read(|c| {
             Ok(c.query_row(
-                "SELECT min(expires_at) FROM bot_pending_calls WHERE answered_at IS NULL",
+                "SELECT min(expires_at) FROM bot_pending_calls
+                  WHERE answered_at IS NULL AND typeof(expires_at) = 'text'",
                 [],
                 |r| r.get(0),
             )?)
@@ -1061,7 +1632,9 @@ impl Store {
     }
 
     /// Those of `registration`'s unacknowledged ends that `ids` names,
-    /// whole, oldest first.
+    /// whole, oldest first, but those whose row does not read (its end
+    /// is not a JSON object, or its result not JSON), which no host is
+    /// sent ([`Store::forget_unreadable_ends`]).
     ///
     /// # Errors
     /// The store's.
@@ -1071,7 +1644,7 @@ impl Store {
             let mut q = c.prepare_cached(&format!(
                 "SELECT {END_COLS} FROM bot_run_ends
                   WHERE registration_id = ?1 AND delivered_at IS NULL
-                    AND id IN (SELECT value FROM json_each(?2))
+                    AND id IN (SELECT value FROM json_each(?2)) AND {END_READS}
                   ORDER BY created_at, run_id"
             ))?;
             let rows = q.query_map(params![registration, ids], row_to_end)?;
@@ -1079,7 +1652,30 @@ impl Store {
         })
     }
 
-    /// Forgets every unacknowledged end kept before `before`; how many.
+    /// Forgets those of `registration`'s unacknowledged ends that `ids`
+    /// names whose row does not read: there is nothing to tell its host
+    /// of them. How many.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn forget_unreadable_ends(&self, registration: &str, ids: &[String]) -> Result<usize> {
+        let ids = serde_json::to_string(ids).expect("serialisable IDs");
+        self.with_tx(|tx| {
+            Ok(tx.execute(
+                &format!(
+                    "DELETE FROM bot_run_ends
+                      WHERE registration_id = ?1 AND delivered_at IS NULL
+                        AND id IN (SELECT value FROM json_each(?2)) AND NOT {END_READS}"
+                ),
+                params![registration, ids],
+            )?)
+        })
+    }
+
+    /// Forgets the unacknowledged ends kept before `before`, oldest
+    /// first, [`EXPIRE_ENDS_PER_TX`] at the most, so that no transaction
+    /// grows with what is due (the hosted Worker refuses one over 16
+    /// MiB): what is left is due at the next call. How many it forgot.
     ///
     /// # Errors
     /// The store's.
@@ -1087,41 +1683,11 @@ impl Store {
         let before = stamp(before);
         self.with_tx(|tx| {
             Ok(tx.execute(
-                "DELETE FROM bot_run_ends WHERE delivered_at IS NULL AND created_at < ?1",
-                params![before],
-            )?)
-        })
-    }
-
-    /// The ends `registration` has not acknowledged and that are still
-    /// delivered at `now` (kept for under [`BOT_END_KEEP`]), oldest first.
-    ///
-    /// # Errors
-    /// The store's.
-    pub fn ends_for(&self, registration: &str, now: DateTime<Utc>) -> Result<Vec<RunEnd>> {
-        let from = stamp(now - chrono::Duration::from_std(BOT_END_KEEP).unwrap_or_default());
-        self.with_read(|c| {
-            let mut q = c.prepare_cached(&format!(
-                "SELECT {END_COLS} FROM bot_run_ends
-                  WHERE registration_id = ?1 AND delivered_at IS NULL AND created_at >= ?2
-                  ORDER BY created_at, run_id"
-            ))?;
-            let rows = q.query_map(params![registration, from], row_to_end)?;
-            Ok(rows.collect::<rusqlite::Result<_>>()?)
-        })
-    }
-
-    /// How many ends `registration` has not acknowledged.
-    ///
-    /// # Errors
-    /// The store's.
-    pub fn count_ends(&self, registration: &str) -> Result<usize> {
-        self.with_read(|c| {
-            Ok(c.query_row(
-                "SELECT count(*) FROM bot_run_ends
-                  WHERE registration_id = ?1 AND delivered_at IS NULL",
-                params![registration],
-                |r| r.get(0),
+                "DELETE FROM bot_run_ends WHERE rowid IN
+                   (SELECT rowid FROM bot_run_ends
+                     WHERE delivered_at IS NULL AND created_at < ?1
+                     ORDER BY created_at, rowid LIMIT ?2)",
+                params![before, EXPIRE_ENDS_PER_TX],
             )?)
         })
     }
@@ -1207,6 +1773,61 @@ mod tests {
     use std::sync::Arc;
 
     const HASH: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+
+    /// The tests' reads of what waits for a registration, each made of
+    /// the store's one read path ([`Store::pending_summary`], then
+    /// [`Store::calls_named`] or [`Store::ends_named`]): what the hub
+    /// reads.
+    trait Reads {
+        fn calls_for(&self, registration: &str, now: DateTime<Utc>) -> Result<Vec<PendingCall>>;
+        fn count_calls(&self, registration: &str) -> Result<usize>;
+        fn ends_for(&self, registration: &str, now: DateTime<Utc>) -> Result<Vec<RunEnd>>;
+        fn count_ends(&self, registration: &str) -> Result<usize>;
+        fn pending_call_by_key(
+            &self,
+            registration: &str,
+            run_id: &str,
+            key: &str,
+        ) -> Result<Option<PendingCall>>;
+    }
+
+    impl Reads for Store {
+        fn calls_for(&self, registration: &str, _now: DateTime<Utc>) -> Result<Vec<PendingCall>> {
+            let ids: Vec<String> = self
+                .pending_summary(registration)?
+                .calls
+                .into_iter()
+                .map(|c| c.id)
+                .collect();
+            self.calls_named(registration, &ids)
+        }
+        fn count_calls(&self, registration: &str) -> Result<usize> {
+            Ok(self.pending_summary(registration)?.calls.len())
+        }
+        fn ends_for(&self, registration: &str, _now: DateTime<Utc>) -> Result<Vec<RunEnd>> {
+            let ids: Vec<String> = self
+                .pending_summary(registration)?
+                .ends
+                .into_iter()
+                .map(|e| e.id)
+                .collect();
+            self.ends_named(registration, &ids)
+        }
+        fn count_ends(&self, registration: &str) -> Result<usize> {
+            Ok(self.pending_summary(registration)?.ends.len())
+        }
+        fn pending_call_by_key(
+            &self,
+            registration: &str,
+            run_id: &str,
+            key: &str,
+        ) -> Result<Option<PendingCall>> {
+            Ok(self
+                .calls_for(registration, Utc::now())?
+                .into_iter()
+                .find(|c| c.run_id == run_id && c.key == key))
+        }
+    }
 
     fn d(name: &str) -> DriverId {
         DriverId::named(name)
@@ -1467,6 +2088,7 @@ mod tests {
                 sent_at: None,
                 accepted_at: None,
                 answered_at: None,
+                tries: CallTries::default(),
             }
         );
         let found = Some(opened.clone());
@@ -1867,7 +2489,9 @@ mod tests {
         );
         assert!(env.journal(&run).is_empty());
         assert_eq!(env.st.run(&run.id).unwrap().unwrap(), parked);
-        assert!(env.handed(&env.shell).is_empty());
+        // It waits until its deadline is journaled, which the hub does
+        // before it hands a registration its calls.
+        assert_eq!(env.handed(&env.shell), std::slice::from_ref(&call.id));
 
         assert_eq!(
             env.expire(),
@@ -2468,7 +3092,6 @@ mod tests {
 
         env.clock.advance(20);
         env.st.replace_registration(&env.shell, env.now()).unwrap();
-        assert!(env.handed(&env.shell).is_empty());
         let ended = env.expire();
         assert_eq!(
             ended
@@ -2609,12 +3232,12 @@ mod tests {
             .unwrap();
         assert_eq!(env.handed(&env.shell), std::slice::from_ref(&second.id));
         assert_eq!(env.st.count_calls(&env.shell).unwrap(), 1);
-        // Not past its deadline, though it still counts as waiting until
-        // the deadline is journaled.
+        // Past its deadline it still waits until the deadline is
+        // journaled, which the hub does before it hands calls out.
         env.clock.advance(24 * 3600);
-        assert!(env.handed(&env.shell).is_empty());
         assert_eq!(env.st.count_calls(&env.shell).unwrap(), 1);
         env.expire();
+        assert!(env.handed(&env.shell).is_empty());
         assert_eq!(env.st.count_calls(&env.shell).unwrap(), 0);
     }
 
@@ -3011,6 +3634,51 @@ mod tests {
         assert_eq!(env.st.count_ends(&env.shell).unwrap(), 0);
     }
 
+    /// The ends due are forgotten [`EXPIRE_ENDS_PER_TX`] at a time,
+    /// oldest first: one call's transaction does not grow with them.
+    #[test]
+    fn ends_are_forgotten_a_bounded_number_at_a_time_oldest_first() {
+        let env = Env::new();
+        let run = env.run();
+        let due = EXPIRE_ENDS_PER_TX + 3;
+        env.st
+            .with_tx(|tx| {
+                for n in 0..due {
+                    tx.execute(
+                        "INSERT INTO bot_run_ends (id, run_id, registration_id, end_json,
+                            created_at)
+                         VALUES (?1, ?2, ?3, '{\"finished\": {}}', ?4)",
+                        params![
+                            format!("e{n:05}"),
+                            format!("{}-{n}", run.id),
+                            env.shell,
+                            format!("2026-11-10T00:00:{:02}.{:03}Z", n / 1000, n % 1000)
+                        ],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(env.st.expire_ends(env.now()).unwrap(), EXPIRE_ENDS_PER_TX);
+        let left: Vec<String> = env
+            .st
+            .pending_summary(&env.shell)
+            .unwrap()
+            .ends
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(
+            left,
+            (EXPIRE_ENDS_PER_TX..due)
+                .map(|n| format!("e{n:05}"))
+                .collect::<Vec<_>>(),
+            "the oldest went first"
+        );
+        assert_eq!(env.st.expire_ends(env.now()).unwrap(), 3);
+        assert_eq!(env.st.expire_ends(env.now()).unwrap(), 0);
+    }
+
     #[test]
     fn a_registration_takes_calls_up_to_its_limit_and_they_are_read_by_summary_and_by_id() {
         let env = Env::new();
@@ -3049,6 +3717,8 @@ mod tests {
         assert!(summary.ends.is_empty());
         let call = |c: &PendingCall, sent: bool, accepted: bool| CallSummary {
             id: c.id.clone(),
+            run_id: c.run_id.clone(),
+            tries: CallTries::default(),
             def_hash: HASH.into(),
             op: "shell.ask".into(),
             access: CallAccess::Read,
@@ -3155,8 +3825,8 @@ mod tests {
         );
         assert_eq!(env.st.ends_for(&env.shell, env.now()).unwrap().len(), 1);
         env.clock.advance(1);
-        // Past the week an end is no longer delivered, pruned or not.
-        assert!(env.st.ends_for(&env.shell, env.now()).unwrap().is_empty());
+        // Past the week an end is no longer delivered: the hub forgets
+        // it (`expire_ends`), and pruning removes it.
         let pruned = env.st.prune_ended_runs().unwrap();
         assert_eq!(
             (pruned.pending_calls, pruned.run_ends),
@@ -3165,5 +3835,526 @@ mod tests {
         );
         assert_eq!(env.st.count_ends(&env.shell).unwrap(), 0);
         assert!(env.st.pending_call(&waiting.id).unwrap().is_some());
+    }
+
+    /// A pruned run's pending call takes where it was with its attempts
+    /// with it: no sending again is planned for it, and its run counts
+    /// none. The call of a run that has not ended keeps its own, however
+    /// many prune passes go by.
+    #[test]
+    fn a_pruned_runs_calls_take_their_attempts_with_them() {
+        let env = Env::new();
+        let rule = RetryRule {
+            attempts: 3,
+            backoff_ms: 1_000,
+            backoff_max_ms: 8_000,
+        };
+        let planned = |not_before: &str| CallTries {
+            rule: Some(rule),
+            failures: 1,
+            not_before: Some(not_before.into()),
+            resend: Resend::Planned,
+            later: false,
+            last: None,
+        };
+        let opened = |run: &Run, not_before: &str| {
+            let call = env
+                .st
+                .open_call_with(
+                    &run.id,
+                    &d("d1"),
+                    env.ask(run, 0),
+                    Some(rule),
+                    None,
+                    env.now(),
+                )
+                .unwrap()
+                .into_call();
+            let tries = planned(not_before);
+            assert!(
+                env.st
+                    .keep_call_tries(&env.shell, &call.id, &tries)
+                    .unwrap()
+            );
+            call
+        };
+        let ended = env.run();
+        let gone = opened(&ended, "2026-11-20T00:00:00.000Z");
+        let live = env.run();
+        let kept = opened(&live, "2026-11-21T00:00:00.000Z");
+        assert_eq!(
+            env.st.next_call_resend(env.now()).unwrap().as_deref(),
+            Some("2026-11-20T00:00:00.000Z")
+        );
+        env.st
+            .commit_bot_step(DAEMON, &ended.id, &d("d1"), 1, StepCommit::default())
+            .unwrap();
+        env.st
+            .begin_step(&ended.id, &d("d1"), 2, StepKind::Finish)
+            .unwrap();
+        env.st
+            .commit_bot_step(DAEMON, &ended.id, &d("d1"), 2, StepCommit::default())
+            .unwrap();
+        // Its run's end settles the call: it is sent again no more, and
+        // its row, attempts and all, waits for the prune.
+        assert_eq!(
+            env.st.next_call_resend(env.now()).unwrap().as_deref(),
+            Some("2026-11-21T00:00:00.000Z")
+        );
+        assert!(env.st.pending_call(&gone.id).unwrap().is_some());
+        assert_eq!(env.st.call_resends(&ended.id, &env.shell).unwrap(), 1);
+
+        env.clock.advance(24 * 3600 + 1);
+        let pruned = env.st.prune_ended_runs().unwrap();
+        assert_eq!(pruned.pending_calls, 1);
+        assert_eq!(env.st.pending_call(&gone.id).unwrap(), None);
+        assert_eq!(env.st.call_resends(&ended.id, &env.shell).unwrap(), 0);
+        assert_eq!(
+            env.st.next_call_resend(env.now()).unwrap().as_deref(),
+            Some("2026-11-21T00:00:00.000Z"),
+            "only the live run's call is planned to be sent again"
+        );
+        for _ in 0..3 {
+            env.st.prune_ended_runs().unwrap();
+        }
+        let left = env.st.pending_call(&kept.id).unwrap().expect("not pruned");
+        assert_eq!(left.tries, planned("2026-11-21T00:00:00.000Z"));
+    }
+
+    /// Where a call is with its attempts is kept with it: its run's rule
+    /// from when it was opened, and what the hub writes after; handing
+    /// it to its host makes a planned attempt one that was sent, and
+    /// accepting it makes it one not to send again. A run's sendings
+    /// again are the sum of its calls' failures, settled ones among
+    /// them.
+    #[test]
+    fn a_calls_attempts_are_kept_with_it_and_counted_for_its_run() {
+        let env = Env::new();
+        let run = env.run();
+        let rule = RetryRule {
+            attempts: 3,
+            backoff_ms: 1_000,
+            backoff_max_ms: 8_000,
+        };
+        let opened = |seq: i64| {
+            env.st
+                .open_call_with(
+                    &run.id,
+                    &d("d1"),
+                    env.ask(&run, seq),
+                    Some(rule),
+                    None,
+                    env.now(),
+                )
+                .unwrap()
+                .into_call()
+        };
+        let (a, b) = (opened(0), opened(1));
+        let tries = |id: &str| {
+            env.st
+                .pending_summary(&env.shell)
+                .unwrap()
+                .calls
+                .into_iter()
+                .find(|c| c.id == id)
+                .map(|c| c.tries)
+        };
+        assert_eq!(
+            tries(&a.id),
+            Some(CallTries {
+                rule: Some(rule),
+                ..CallTries::default()
+            })
+        );
+        assert_eq!(a.tries, tries(&a.id).unwrap(), "read whole as summary");
+        let failed = CallFailure {
+            code: "invalid".into(),
+            message: "busy".into(),
+            retryable: true,
+        };
+        let planned = CallTries {
+            rule: Some(rule),
+            failures: 1,
+            not_before: Some("2026-11-11T10:00:01.000Z".into()),
+            resend: Resend::Planned,
+            later: true,
+            last: Some(failed.clone()),
+        };
+        assert!(env.st.keep_call_tries(&env.shell, &a.id, &planned).unwrap());
+        assert!(
+            !env.st.keep_call_tries(&env.other, &a.id, &planned).unwrap(),
+            "another registration's call"
+        );
+        assert_eq!(tries(&a.id).as_ref(), Some(&planned));
+        assert_eq!(env.st.pending_call(&a.id).unwrap().unwrap().tries, planned);
+        assert_eq!(
+            env.st.next_call_resend(env.now()).unwrap().as_deref(),
+            Some("2026-11-11T10:00:01.000Z")
+        );
+        assert_eq!(
+            env.st
+                .next_call_resend(env.now() + chrono::Duration::seconds(1))
+                .unwrap(),
+            None
+        );
+        // Sent: the planned attempt is made.
+        env.st
+            .mark_sent(std::slice::from_ref(&a.id), env.now())
+            .unwrap();
+        assert_eq!(
+            tries(&a.id),
+            Some(CallTries {
+                resend: Resend::Due,
+                later: false,
+                last: None,
+                ..planned.clone()
+            })
+        );
+        // Accepted: its host has it.
+        env.st.accept_call(&a.id, &env.shell, env.now()).unwrap();
+        assert_eq!(
+            tries(&a.id),
+            Some(CallTries {
+                resend: Resend::None,
+                later: false,
+                last: None,
+                ..planned.clone()
+            })
+        );
+        // The run's count, across its calls, settled ones among them.
+        env.st
+            .keep_call_tries(
+                &env.shell,
+                &b.id,
+                &CallTries {
+                    failures: 2,
+                    ..planned.clone()
+                },
+            )
+            .unwrap();
+        assert_eq!(env.st.call_resends(&run.id, &env.shell).unwrap(), 3);
+        env.st
+            .answer_call(&b.id, &env.shell, Ok(json!("b")), env.now())
+            .unwrap();
+        assert_eq!(env.st.call_resends(&run.id, &env.shell).unwrap(), 3);
+        assert_eq!(env.st.call_resends(&run.id, &env.other).unwrap(), 0);
+        assert_eq!(env.st.call_resends("nope", &env.shell).unwrap(), 0);
+    }
+
+    /// The same answer sent again for a call it settled is told apart
+    /// from one that came too late or says otherwise: it stands.
+    #[test]
+    fn the_same_answer_sent_again_is_told_it_was_journaled() {
+        let env = Env::new();
+        let run = env.run();
+        let call = env.open(&run);
+        let journaled = env
+            .st
+            .answer_call(&call.id, &env.shell, Ok(json!("a")), env.now())
+            .unwrap();
+        assert!(matches!(journaled, AnswerOutcome::Journaled { .. }));
+        assert_eq!(
+            env.st
+                .answer_call(&call.id, &env.shell, Ok(json!("a")), env.now())
+                .unwrap(),
+            AnswerOutcome::AlreadyJournaled
+        );
+        assert_eq!(
+            env.st
+                .answer_call(&call.id, &env.shell, Ok(json!("b")), env.now())
+                .unwrap(),
+            AnswerOutcome::Ignored(Ignored::Answered)
+        );
+        assert_eq!(
+            env.st
+                .answer_call(&call.id, &env.other, Ok(json!("a")), env.now())
+                .unwrap(),
+            AnswerOutcome::Ignored(Ignored::NotYours)
+        );
+        // A call its deadline settled was not settled by the answer.
+        let late = env.run();
+        let expiring = env.open_as(
+            &late,
+            "d1",
+            NewCall {
+                expires_at: Some(env.now() + chrono::Duration::seconds(1)),
+                ..env.ask(&late, 0)
+            },
+        );
+        env.clock.advance(1);
+        env.expire();
+        assert_eq!(
+            env.st
+                .answer_call(&expiring.id, &env.shell, Ok(json!("a")), env.now())
+                .unwrap(),
+            AnswerOutcome::Ignored(Ignored::Answered)
+        );
+    }
+
+    /// A call whose stored arguments do not read is sent to no host and
+    /// read as nothing else: it is refused when read by itself, left out
+    /// of the calls handed out, and journaled `internal_error`, at once
+    /// when it is named, or at its deadline. An end that does not read is
+    /// left out and forgotten.
+    #[test]
+    fn a_call_or_an_end_that_does_not_read_is_refused_and_settled_never_defaulted() {
+        let env = Env::new();
+        let run = env.run();
+        let call = env.open(&run);
+        let damage = |sql: &str| {
+            env.st.with_tx(|tx| Ok(tx.execute(sql, [])?)).unwrap();
+        };
+        damage("UPDATE bot_pending_calls SET args_json = '{not json'");
+        assert!(env.st.pending_call(&call.id).is_err(), "refused, not null");
+        let ids = [call.id.clone()];
+        assert!(env.st.calls_named(&env.shell, &ids).unwrap().is_empty());
+        let ended = env
+            .st
+            .settle_unreadable_calls(&env.shell, &ids, env.now())
+            .unwrap();
+        assert_eq!(
+            ended
+                .iter()
+                .map(|e| (e.id.as_str(), e.code.as_deref(), e.unparked))
+                .collect::<Vec<_>>(),
+            [(call.id.as_str(), Some("internal_error"), false)]
+        );
+        assert_eq!(env.journal(&run)[0].5["code"], "internal_error");
+        // At its deadline, too.
+        let late = env.run();
+        let opened = env.open(&late);
+        damage(&format!(
+            "UPDATE bot_pending_calls SET args_json = '{{\"a\": 1}}' WHERE id = '{}'",
+            opened.id
+        ));
+        env.clock.advance(24 * 3600);
+        let ended = env.expire();
+        assert_eq!(
+            ended
+                .iter()
+                .map(|e| (e.id.as_str(), e.code.as_deref()))
+                .collect::<Vec<_>>(),
+            [(opened.id.as_str(), Some("internal_error"))]
+        );
+        // An end whose end is not an object.
+        damage(&format!(
+            "INSERT INTO bot_run_ends (id, run_id, registration_id, end_json, created_at)
+             VALUES ('e1', '{}', '{}', 'null', '2026-11-11T10:00:00.000Z')",
+            run.id, env.shell
+        ));
+        assert_eq!(env.st.count_ends(&env.shell).unwrap(), 1);
+        let named = ["e1".to_string()];
+        assert!(env.st.ends_named(&env.shell, &named).unwrap().is_empty());
+        assert_eq!(
+            env.st.forget_unreadable_ends(&env.shell, &named).unwrap(),
+            1
+        );
+        assert_eq!(env.st.count_ends(&env.shell).unwrap(), 0);
+    }
+
+    /// A call whose row holds, in any column a call is read by, a value
+    /// this build does not read fails that call alone: it is left out of
+    /// what waits for its registration, takes no answer, and the next
+    /// pass over the calls, before or after its deadline, journals it
+    /// `internal_error` so that its run is told; no other registration's
+    /// calls and no pass fail. One whose place does not read either
+    /// stops waiting, unjournaled.
+    #[test]
+    fn a_call_whose_row_does_not_read_in_any_column_fails_that_call_alone() {
+        let damages = [
+            "args_json = '{not json'",
+            "args_json = '{\"a\": 1}'",
+            "access = 'later'",
+            "resend = 'soon'",
+            "failures = -1",
+            "failures = 4294967296",
+            "failures = 'many'",
+            "later = 2",
+            "retry_attempts = 3, retry_backoff_ms = NULL, retry_backoff_max_ms = NULL",
+            "retry_attempts = 4294967296, retry_backoff_ms = 1, retry_backoff_max_ms = 1",
+            "retry_attempts = 3, retry_backoff_ms = -1, retry_backoff_max_ms = 1",
+            "last_code = 'busy', last_message = NULL, last_retryable = 1",
+            "last_code = 'busy', last_message = 'x', last_retryable = 'yes'",
+            "expires_at = x'01'",
+            "sent_at = x'01'",
+            "accepted_at = x'00'",
+            "not_before = x'01'",
+            "def_hash = x'01'",
+            "key = x'01'",
+            "registration_id = x'01'",
+            "created_at = x'01'",
+        ];
+        for damage in damages {
+            let env = Env::new();
+            let run = env.run();
+            let call = env.open(&run);
+            let fine = env.run();
+            let other = env.open_as(
+                &fine,
+                "d1",
+                NewCall {
+                    registration_id: env.other.clone(),
+                    ..env.ask(&fine, 0)
+                },
+            );
+            env.st
+                .with_tx(|tx| {
+                    tx.execute_batch("PRAGMA ignore_check_constraints = ON")?;
+                    tx.execute(
+                        &format!("UPDATE bot_pending_calls SET {damage} WHERE id = ?1"),
+                        params![call.id],
+                    )?;
+                    tx.execute_batch("PRAGMA ignore_check_constraints = OFF")?;
+                    Ok(())
+                })
+                .unwrap();
+            assert!(
+                env.st.pending_summary(&env.shell).unwrap().calls.is_empty(),
+                "{damage}: left out"
+            );
+            assert_eq!(
+                env.st
+                    .pending_summary(&env.other)
+                    .unwrap()
+                    .calls
+                    .iter()
+                    .map(|c| c.id.as_str())
+                    .collect::<Vec<_>>(),
+                [other.id.as_str()],
+                "{damage}: another registration's calls are read"
+            );
+            assert_eq!(
+                env.st
+                    .answer_call(&call.id, &env.shell, Ok(json!("a")), env.now())
+                    .unwrap(),
+                AnswerOutcome::Ignored(Ignored::Answered),
+                "{damage}: takes no answer"
+            );
+            assert_eq!(
+                env.st.accept_call(&call.id, &env.shell, env.now()).unwrap(),
+                AcceptOutcome::Ignored(Ignored::Answered),
+                "{damage}"
+            );
+            // Before its deadline, the pass settles it.
+            let ended = env.expire();
+            assert_eq!(
+                ended
+                    .iter()
+                    .map(|e| (e.id.as_str(), e.code.as_deref()))
+                    .collect::<Vec<_>>(),
+                [(call.id.as_str(), Some("internal_error"))],
+                "{damage}"
+            );
+            assert_eq!(env.journal(&run)[0].5["code"], "internal_error", "{damage}");
+            // After every deadline, the pass completes, and the other
+            // registration's call is settled at its own.
+            env.clock.advance(24 * 3600);
+            let ended = env.expire();
+            assert_eq!(
+                ended.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+                [other.id.as_str()],
+                "{damage}"
+            );
+            assert!(env.st.next_call_deadline().unwrap().is_none(), "{damage}");
+        }
+        // A row whose place does not read stops waiting, unjournaled.
+        let env = Env::new();
+        let run = env.run();
+        let call = env.open(&run);
+        env.st
+            .with_tx(|tx| {
+                tx.execute(
+                    "UPDATE bot_pending_calls SET step_n = 'one' WHERE id = ?1",
+                    params![call.id],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(env.st.pending_summary(&env.shell).unwrap().calls.is_empty());
+        assert!(env.expire().is_empty());
+        assert!(env.journal(&run).is_empty());
+        let waiting: i64 = env
+            .st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT count(*) FROM bot_pending_calls WHERE answered_at IS NULL",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(waiting, 0, "it stops waiting");
+    }
+
+    /// A deadline after the year 9999 is kept as the last instant of it,
+    /// which sorts after every other: such a call is not past its
+    /// deadline.
+    #[test]
+    fn a_deadline_past_the_year_9999_is_kept_as_its_last_instant() {
+        let env = Env::new();
+        let run = env.run();
+        let far = DateTime::<Utc>::MAX_UTC;
+        let call = env.open_as(
+            &run,
+            "d1",
+            NewCall {
+                expires_at: Some(far),
+                ..env.ask(&run, 0)
+            },
+        );
+        assert_eq!(call.expires_at.as_deref(), Some("9999-12-31T23:59:59.999Z"));
+        assert!(env.expire().is_empty(), "not expired");
+        assert_eq!(env.handed(&env.shell), std::slice::from_ref(&call.id));
+        assert_eq!(
+            env.st.next_call_deadline().unwrap().as_deref(),
+            Some("9999-12-31T23:59:59.999Z")
+        );
+    }
+
+    /// A pass over one run's calls reads that run's rows by its place's
+    /// index, not every open call.
+    #[test]
+    fn a_pass_over_one_runs_calls_reads_only_that_runs_rows() {
+        let env = Env::new();
+        let plan: Vec<String> = env
+            .st
+            .with_read(|c| {
+                let mut q = c.prepare(&format!(
+                    "EXPLAIN QUERY PLAN SELECT {PENDING_COLS} FROM bot_pending_calls p
+                      WHERE answered_at IS NULL AND run_id = ?2
+                        AND ((expires_at IS NOT NULL AND expires_at <= ?1)
+                             OR NOT EXISTS (SELECT 1 FROM bot_registrations g
+                                             WHERE g.id = p.registration_id
+                                               AND g.replaced_at IS NULL))
+                        AND {CALL_READS}
+                      ORDER BY created_at, id"
+                ))?;
+                let rows = q.query_map(params!["now", "run"], |r| r.get(3))?;
+                Ok(rows.collect::<rusqlite::Result<_>>()?)
+            })
+            .unwrap();
+        assert!(
+            plan.iter()
+                .any(|step| step.contains("sqlite_autoindex_bot_pending_calls")),
+            "{plan:?}"
+        );
+    }
+
+    /// A registration dropped for good is kept as dropped until its host
+    /// goes on as it.
+    #[test]
+    fn a_registration_is_kept_as_dropped_until_it_is_gone_on_with() {
+        let env = Env::new();
+        assert!(!env.st.registration_dropped(&env.shell).unwrap());
+        assert!(
+            env.st
+                .set_registration_dropped(&env.shell, Some(env.now()))
+                .unwrap()
+        );
+        assert!(env.st.registration_dropped(&env.shell).unwrap());
+        assert!(!env.st.registration_dropped(&env.other).unwrap());
+        env.st.set_registration_dropped(&env.shell, None).unwrap();
+        assert!(!env.st.registration_dropped(&env.shell).unwrap());
+        assert!(!env.st.set_registration_dropped("nope", None).unwrap());
     }
 }

@@ -18,8 +18,12 @@
 //! [`Operation::check_args`]).
 
 use crate::allow::identifier;
-use crate::check::{self, shown};
-use crate::model::{Definition, Kind, Operation, Ty};
+#[cfg(test)]
+use crate::check;
+use crate::check::shown;
+#[cfg(test)]
+use crate::model::Ty;
+use crate::model::{Definition, Kind, Operation};
 use crate::plan::{self, Among, Lit, Node, NodeId, Object, has_bit, next_bit, set_bit};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -52,17 +56,14 @@ pub enum ValueErrorKind {
     Wrong,
     /// Checking the value would take more work than
     /// [`crate::Limits::value_nodes`] allows: for a call's arguments,
-    /// checking them all; for a type handed to [`check_held`] or
-    /// [`check_sent`], preparing the type too. It was not checked
-    /// whole.
+    /// checking them all. It was not checked whole.
     TooLarge,
     /// The value nests deeper than [`crate::Limits::value_depth`]. It
     /// was not checked whole.
     TooDeep,
-    /// The type handed in ([`check_held`], [`check_sent`]) is not one
-    /// the definition could have: it names an interface the definition
-    /// lacks, or it nests deeper, lists more or takes more steps to
-    /// prepare than the definition's limits allow. Nothing was checked.
+    /// The kind is not one of the definition's: it is another
+    /// definition's, whose types this one does not have. Nothing was
+    /// checked.
     ForeignType,
 }
 
@@ -103,64 +104,19 @@ enum Side {
     Sent,
 }
 
-/// Checks a value a script holds against `ty`, whose interface names
-/// are `def`'s: every `Content` and `Image` in it is a whole handle, as
-/// Clax makes one from its store. The named checks that take this form
-/// are [`Operation::check_args`] (a script passes the handles it holds;
-/// nothing is filled in on the way to a provider),
-/// [`Operation::check_result`] (after Clax has filled in a provider's
-/// answer) and [`Kind::check_result`] (the script's own value). Use one
-/// of those where there is one: this is for a type that belongs to
-/// neither an operation nor a kind.
-///
-/// The definition's own types are ready to check against. `ty` is not:
-/// each call prepares it, in steps counted as a definition's are
-/// ([`crate::Limits::plan_steps`], one for each type written in `ty`
-/// and those of telling its unions' alternatives apart), and nothing is
-/// kept for the next call. Those steps are charged to this check's
-/// [`crate::Limits::value_nodes`], a unit each, so one call does no
-/// more work than that budget whatever `ty` is.
-///
-/// - `string` and `Instruction` are strings; `number` is any number and
-///   `Int` one written without a fraction or exponent; `unknown` is any
-///   value; a literal is that value alone;
-/// - an object type or an interface is an object with every required
-///   field (an interface's include those it inherits) and no field the
-///   type does not list; an optional field may be left out or `null`;
-/// - `Record<string, T>` is an object of any keys whose values are `T`s;
-/// - a union is a value of one of its alternatives. Alternatives that
-///   are objects are told apart first by their required fields of
-///   literal type (`kind: "pull"`), so a value that says which it means
-///   is refused for what is wrong with that one;
-/// - `Content` is a whole handle: `id`, `media_type`, `sha256` and
-///   `bytes`, and optionally `name`, `width`, `height` (whole numbers,
-///   zero or more) and `meta` (an object), and nothing else. `Image` is
-///   a handle whose `media_type` is one of [`IMAGE_MEDIA_TYPES`]; its
-///   `width` and `height` are its displayed size in pixels.
-///
-/// # Errors
-/// What is wrong, after the place it is wrong at (`value.items[2].id
-/// must be a string`), as [`ValueErrorKind::Wrong`]; that the value is
-/// larger or nests deeper than `def`'s limits let a check go
-/// ([`ValueErrorKind::TooLarge`], [`ValueErrorKind::TooDeep`]); or that
-/// `ty` is not a type of `def` ([`ValueErrorKind::ForeignType`]).
-pub fn check_held(def: &Definition, ty: &Ty, v: &Value) -> Result<(), ValueError> {
+/// Checks a value a script holds against `ty`, a type built for a test
+/// that is not one of `def`'s own: each call prepares it, in steps
+/// counted as a definition's are and charged to the check's budget.
+/// Every `Content` and `Image` in the value is a whole handle.
+#[cfg(test)]
+pub(crate) fn check_held(def: &Definition, ty: &Ty, v: &Value) -> Result<(), ValueError> {
     free(def, ty, v, Side::Held, "value")
 }
 
-/// Checks a value as a provider or a starter sent it, before Clax fills
-/// in its `Content`. It is [`check_held`] but for `Content` and `Image`,
-/// which here are a reference to an upload: `{"id": string}`, optionally
-/// with `meta` (an object), and nothing else. What the bytes are is
-/// Clax's finding, never the sender's claim, so whether an `Image` is
-/// one is checked once the handle is whole. The named checks that take
-/// this form are [`Operation::check_answer`], [`Kind::check_request`]
-/// and [`Kind::check_message`]; this is for a type that belongs to
-/// neither an operation nor a kind.
-///
-/// # Errors
-/// As [`check_held`].
-pub fn check_sent(def: &Definition, ty: &Ty, v: &Value) -> Result<(), ValueError> {
+/// [`check_held`] of a value as a provider or a starter sent it, before
+/// Clax fills in its `Content`: each is a reference to an upload.
+#[cfg(test)]
+pub(crate) fn check_sent(def: &Definition, ty: &Ty, v: &Value) -> Result<(), ValueError> {
     free(def, ty, v, Side::Sent, "value")
 }
 
@@ -168,6 +124,7 @@ pub fn check_sent(def: &Definition, ty: &Ty, v: &Value) -> Result<(), ValueError
 /// type is put in the form a check walks each time, in steps that are
 /// counted ([`crate::Limits::plan_steps`] bounds them) and charged to
 /// the check's budget, a unit a step.
+#[cfg(test)]
 fn free(def: &Definition, ty: &Ty, v: &Value, side: Side, what: &str) -> Result<(), ValueError> {
     if let Some(m) = check::foreign(def, ty) {
         let what = if what == "value" { "the value" } else { what };
@@ -203,8 +160,8 @@ impl Operation<'_> {
     /// Checks the arguments of a call, as the script passed them, and
     /// returns them, one value for each parameter, `null` for an
     /// optional one left out. A `Content` among them is a whole handle
-    /// ([`check_held`]): the script passes what it holds, and nothing is
-    /// filled in between it and the provider.
+    /// (the crate's documentation, "Values"): the script passes what it
+    /// holds, and nothing is filled in between it and the provider.
     ///
     /// A refusal that names an unknown field of an argument quotes the
     /// name whole, as Rust's `{:?}` writes a string: the arguments are
@@ -279,7 +236,8 @@ impl Operation<'_> {
     }
 
     /// Checks what a provider answered a call with, before Clax fills in
-    /// its `Content`: each is a reference to an upload ([`check_sent`]).
+    /// its `Content`: each is a reference to an upload (the crate's
+    /// documentation, "Values").
     ///
     /// # Errors
     /// What is wrong with it, naming the operation: `clax.shell.windows:
@@ -292,8 +250,8 @@ impl Operation<'_> {
     }
 
     /// Checks a call's result as the script is about to receive it, after
-    /// Clax has filled in its `Content`: each is a whole handle
-    /// ([`check_held`]).
+    /// Clax has filled in its `Content`: each is a whole handle (the
+    /// crate's documentation, "Values").
     ///
     /// # Errors
     /// What is wrong with it, naming the operation: `clax.files.list: the
@@ -317,8 +275,8 @@ enum Part {
 impl Kind {
     /// Checks the request a run of this kind is started with, as its
     /// starter sent it, before Clax fills in its `Content`: each is a
-    /// reference to an upload ([`check_sent`]). `def` is the definition
-    /// the kind is one of.
+    /// reference to an upload (the crate's documentation, "Values").
+    /// `def` is the definition the kind is one of.
     ///
     /// # Errors
     /// What is wrong with it, naming the kind: `kind triage: the
@@ -329,7 +287,8 @@ impl Kind {
 
     /// Checks a message sent to a run of this kind after it started, as
     /// its sender sent it, before Clax fills in its `Content`
-    /// ([`check_sent`]). `def` is the definition the kind is one of.
+    /// (a reference to an upload: the crate's documentation, "Values").
+    /// `def` is the definition the kind is one of.
     ///
     /// # Errors
     /// What is wrong with it, naming the kind; or that the kind takes no
@@ -340,8 +299,8 @@ impl Kind {
 
     /// Checks the value a run of this kind finishes with. It is the
     /// script's own value, so a `Content` in it is a whole handle the
-    /// script holds ([`check_held`]); nothing is filled in. `def` is the
-    /// definition the kind is one of.
+    /// script holds (the crate's documentation, "Values"); nothing is
+    /// filled in. `def` is the definition the kind is one of.
     ///
     /// # Errors
     /// What is wrong with it, naming the kind: `kind triage: the
@@ -352,17 +311,17 @@ impl Kind {
 
     fn check(&self, def: &Definition, part: Part, v: &Value) -> Result<(), ValueError> {
         let name = shown(&self.name);
-        let (side, what, ty) = match part {
-            Part::Request => (Side::Sent, "request", Some(&self.request)),
-            Part::Message => (Side::Sent, "message", self.message.as_ref()),
-            Part::Result => (Side::Held, "result", Some(&self.result)),
+        let (side, what, takes) = match part {
+            Part::Request => (Side::Sent, "request", true),
+            Part::Message => (Side::Sent, "message", self.message.is_some()),
+            Part::Result => (Side::Held, "result", true),
         };
         let what = format!("kind {name}: the {what}");
-        let Some(ty) = ty else {
+        if !takes {
             return Err(ValueError::wrong(format!(
                 "kind {name} takes no messages after it starts"
             )));
-        };
+        }
         // The kind's place in `def`, where its types have nodes already.
         let at = def
             .kinds
@@ -381,9 +340,13 @@ impl Kind {
             Some(root) => Checker::new(def, &[], side)
                 .check(root, v)
                 .map_err(|miss| miss.of(&what)),
-            // A kind of some other definition: its types are checked as
-            // any type from outside is.
-            None => free(def, ty, v, side, &what[..]),
+            None => Err(ValueError {
+                kind: ValueErrorKind::ForeignType,
+                message: format!(
+                    "kind {name} is not one of the kinds of surface `{}`",
+                    shown(def.name())
+                ),
+            }),
         }
     }
 }
@@ -710,6 +673,9 @@ struct Checker<'a, 'v> {
     /// The values are their reader's own (a call's arguments): a refusal
     /// quotes an unknown field's name whole, not cut short.
     own: bool,
+    /// When kept, the alternative each union was read through for an
+    /// array or an object ([`Choices`]).
+    choices: Option<BTreeMap<(NodeId, usize), NodeId>>,
 }
 
 impl<'a, 'v> Checker<'a, 'v> {
@@ -728,6 +694,15 @@ impl<'a, 'v> Checker<'a, 'v> {
             },
             worded: 0,
             own: false,
+            choices: None,
+        }
+    }
+
+    /// Keeps, when choices are kept, that the union `union` read `v`
+    /// through its alternative `alt`.
+    fn chose(&mut self, union: NodeId, v: &'v Value, alt: NodeId) {
+        if let Some(choices) = &mut self.choices {
+            choices.insert((union, std::ptr::from_ref(v) as usize), alt);
         }
     }
 
@@ -867,6 +842,15 @@ impl<'a, 'v> Checker<'a, 'v> {
             }
         );
         self.bits.truncate(frame.bits);
+        // A union tried alternative by alternative fits by the one it
+        // tried last.
+        if fits
+            && let At::Trial {
+                union, alts, next, ..
+            } = &frame.at
+        {
+            self.chose(*union, frame.value, alts[*next - 1]);
+        }
         match frame.at {
             At::Array { .. } | At::Record { .. } | At::Object { .. } => self.depth -= 1,
             At::Trial { .. } => {
@@ -1263,8 +1247,11 @@ impl<'a, 'v> Checker<'a, 'v> {
             return Ok(Entered::Open);
         }
         // The value says which alternative it means: what is wrong with
-        // that one is what is wrong.
+        // that one is what is wrong. Kept as the union's reading whether
+        // or not it fits: one that does not is on no path a value that
+        // passed is read along.
         self.bits.truncate(start);
+        self.chose(id, v, alts[first]);
         if remember.is_none() {
             return self.enter(alts[first], v);
         }
@@ -1334,8 +1321,8 @@ impl<'a, 'v> Checker<'a, 'v> {
 }
 
 /// Whether `v` is a value of the definition's type at `node`, as a
-/// script holds it (`held`, [`check_held`]) or as a starter or a
-/// provider sends it ([`check_sent`]), spending from
+/// script holds it (`held`: whole handles) or as a starter or a
+/// provider sends it (references to uploads), spending from
 /// `left`, which it lowers by the units it spent: a union's reading of
 /// a value is the first of its alternatives that this says it fits, in
 /// the order the check tries them.
@@ -1361,6 +1348,50 @@ pub(crate) fn fits(
         Err(miss) if miss.kind == ValueErrorKind::Wrong => Ok(false),
         Err(miss) => Err(miss.of(what)),
     }
+}
+
+/// The alternative a check read each union through, for every array
+/// and object it read through a union of several of them: the first
+/// that fits, in the order the check tries them, which is the union's
+/// reading of the value wherever it meets it. A value is named by where
+/// it is in memory, so these are of the value checked, behind `'v`.
+pub(crate) struct Choices<'v> {
+    chosen: BTreeMap<(NodeId, usize), NodeId>,
+    values: PhantomData<&'v Value>,
+}
+
+impl<'v> Choices<'v> {
+    /// The alternative of `union` that `v` was read as, when the check
+    /// read it so.
+    pub(crate) fn of(&self, union: NodeId, v: &'v Value) -> Option<NodeId> {
+        self.chosen
+            .get(&(union, std::ptr::from_ref(v) as usize))
+            .copied()
+    }
+}
+
+/// Checks `v` against the definition's type at `root`, as a script
+/// holds it (`held`) or as it was sent, and answers which alternative
+/// each union read it through ([`Choices`]): the check of a kind's
+/// request or message, done once for a reading of it that follows it.
+///
+/// # Errors
+/// What is wrong with `v`, after `what`, as the check says it.
+pub(crate) fn check_choosing<'v>(
+    def: &Definition,
+    root: NodeId,
+    v: &'v Value,
+    held: bool,
+    what: &str,
+) -> Result<Choices<'v>, ValueError> {
+    let side = if held { Side::Held } else { Side::Sent };
+    let mut checker = Checker::new(def, &[], side);
+    checker.choices = Some(BTreeMap::new());
+    checker.check(root, v).map_err(|miss| miss.of(what))?;
+    Ok(Choices {
+        chosen: checker.choices.take().unwrap_or_default(),
+        values: PhantomData,
+    })
 }
 
 /// What one check did, for the tests that count it.

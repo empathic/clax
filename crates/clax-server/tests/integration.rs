@@ -231,7 +231,7 @@ mod shell_entries;
 #[test]
 fn every_test_file_is_a_module() {
     let tests = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
-    let roots = ["integration"];
+    let roots = ["integration", "daemon_sources"];
     let declared: Vec<String> = roots
         .iter()
         .map(|r| std::fs::read_to_string(tests.join(format!("{r}.rs"))).unwrap())

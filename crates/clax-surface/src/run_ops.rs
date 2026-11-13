@@ -7,7 +7,7 @@ use crate::allow::Pattern;
 use crate::check::shown;
 use crate::model::{Definition, Kind};
 use crate::plan::{Node, NodeId};
-use crate::value::{ValueError, ValueErrorKind, fits};
+use crate::value::{Choices, ValueError, ValueErrorKind, check_choosing, fits};
 use serde_json::Value;
 use std::fmt;
 
@@ -141,9 +141,23 @@ pub enum Withheld {
     /// The starter's allow patterns name it not.
     Starter,
     /// Its parameters or its result hold a `Content` or an `Image`,
-    /// written there or in an interface reached from there, and Clax
-    /// stores no content yet.
+    /// written there or in an interface reached from there, and the
+    /// daemon's store keeps no content ([`RunScope::content`]).
     Content,
+}
+
+impl Withheld {
+    /// The word a registration's answer gives for an operation withheld
+    /// for this reason ([`crate::wire::WithheldOp::reason`]): `None` for
+    /// a reason that is a run's alone, since a registration withholds
+    /// an operation from every run only for [`Withheld::Content`].
+    #[must_use]
+    pub fn reason(self) -> Option<&'static str> {
+        match self {
+            Withheld::Content => Some(crate::wire::WITHHELD_CONTENT),
+            Withheld::Kind | Withheld::Operator | Withheld::Starter => None,
+        }
+    }
 }
 
 impl fmt::Display for Withheld {
@@ -316,11 +330,11 @@ impl Kind {
     /// it) is not one: the person's words are those that cannot be
     /// read as anything else. Under `unknown` nothing is a place.
     ///
-    /// It does no more work than the check of the value
-    /// ([`crate::Limits::value_nodes`]), and once more again: a unit
-    /// for each value it looks at, and what checking a value against
-    /// a union's alternatives costs, where the value is an array or an
-    /// object under a union that holds an `Instruction`.
+    /// It does the work of the check of the value
+    /// ([`crate::Limits::value_nodes`]), which keeps which alternative
+    /// of each union it read an array or an object through, and then a
+    /// unit for each value it looks at, within a budget of the same
+    /// size: a union is not tried again, however deep unions nest.
     ///
     /// # Errors
     /// What [`Kind::check_request`] refuses `v` for; that the kind is
@@ -415,19 +429,24 @@ fn places(
         });
     };
     let root = if message {
-        kind.check_message(def, v)?;
         def.index.plan.kinds[n].1
     } else {
-        kind.check_request(def, v)?;
         Some(def.index.plan.kinds[n].0)
     };
     let Some(root) = root else {
+        // A kind that takes no messages: its check says so.
+        kind.check_message(def, v)?;
         return Ok(Vec::new());
     };
     let what = format!(
         "kind {name}: the {}",
         if message { "message" } else { "request" }
     );
+    // The kind's check, as `Kind::check_request` and
+    // `Kind::check_message` make it, keeping which alternative of each
+    // union it read the value through, so that the walk reads it so too
+    // without trying them again.
+    let choices = check_choosing(def, root, v, false, &what)?;
     let mut left = def.limits.value_nodes;
     let mut out = Vec::new();
     places_in(
@@ -439,6 +458,7 @@ fn places(
             want,
             held: false,
             what: &what,
+            choices: Some(&choices),
         },
         &mut left,
         &mut out,
@@ -458,6 +478,10 @@ struct Walk<'a> {
     /// handles), not one a sender sent.
     held: bool,
     what: &'a str,
+    /// Which alternative of each union the check of `v` read it
+    /// through, when the walk follows such a check: without, each
+    /// union's alternatives are tried again.
+    choices: Option<&'a Choices<'a>>,
 }
 
 /// The places under `w.v`, a value that passed its check, of the values
@@ -477,6 +501,7 @@ fn places_in(
         want,
         held,
         what,
+        choices,
     } = w;
     let nodes = &def.index.plan.nodes;
     let reaches = &def.index.reaches;
@@ -527,6 +552,8 @@ fn places_in(
                     let mut chosen = None;
                     if let [only] = alts {
                         chosen = Some(*only);
+                    } else if let Some(alt) = choices.and_then(|c| c.of(id, v)) {
+                        chosen = Some(alt);
                     } else {
                         for &alt in alts {
                             if fits(def, alt, v, held, left, what)? {
@@ -615,12 +642,14 @@ impl crate::model::Operation<'_> {
     /// reading it would take more work than the definition's budget
     /// ([`ValueErrorKind::TooLarge`]).
     pub fn content_in_answer(&self, v: &Value) -> Result<Vec<ContentPlace>, ValueError> {
-        self.check_answer(v)?;
         let root = self.def.index.plan.ops[self.at].1;
+        let what = format!("clax.{}: the answer", self.name);
+        // The answer's check, as `check_answer` makes it, keeping the
+        // alternatives it read the value through for the walk.
+        let choices = check_choosing(self.def, root, v, false, &what)?;
         if self.def.index.reaches[root as usize] & CONTENT == 0 {
             return Ok(Vec::new());
         }
-        let what = format!("clax.{}: the answer", self.name);
         let mut left = self.def.limits.value_nodes;
         let mut out = Vec::new();
         places_in(
@@ -632,6 +661,7 @@ impl crate::model::Operation<'_> {
                 want: CONTENT,
                 held: false,
                 what: &what,
+                choices: Some(&choices),
             },
             &mut left,
             &mut out,
@@ -669,6 +699,7 @@ impl crate::model::Operation<'_> {
                     want: CONTENT,
                     held: true,
                     what: &what,
+                    choices: None,
                 },
                 &mut left,
                 &mut out,

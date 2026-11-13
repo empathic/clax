@@ -33,10 +33,20 @@ fn request(definition: &str, registration: Option<String>) -> RegisterRequest {
 struct Told {
     memory: MemoryPending,
     opened: Vec<(String, i64, i64, i64, String, String, bool)>,
+    /// When set, settling deadlines fails the first [`STUCK`] times,
+    /// and each try is counted.
+    stuck: Option<Arc<std::sync::atomic::AtomicUsize>>,
+}
+
+/// How many times settling deadlines fails in a [`Told`] that is stuck.
+const STUCK: usize = 100;
+
+fn never(e: std::convert::Infallible) -> String {
+    match e {}
 }
 
 impl Pending for Told {
-    type Error = std::convert::Infallible;
+    type Error = String;
     fn issue_registration(
         &mut self,
         id: &str,
@@ -44,22 +54,24 @@ impl Pending for Told {
         hash: &str,
         now: Millis,
     ) -> Result<bool, Self::Error> {
-        self.memory.issue_registration(id, name, hash, now)
+        self.memory
+            .issue_registration(id, name, hash, now)
+            .map_err(never)
     }
     fn registration_name(&mut self, id: &str) -> Result<Option<String>, Self::Error> {
-        self.memory.registration_name(id)
+        self.memory.registration_name(id).map_err(never)
     }
     fn keep_definition(&mut self, hash: &str, text: &str, now: Millis) -> Result<(), Self::Error> {
-        self.memory.keep_definition(hash, text, now)
+        self.memory.keep_definition(hash, text, now).map_err(never)
     }
     fn definition_text(&mut self, hash: &str) -> Result<Option<String>, Self::Error> {
-        self.memory.definition_text(hash)
+        self.memory.definition_text(hash).map_err(never)
     }
     fn keep_prompt(&mut self, hash: &str, text: &str, now: Millis) -> Result<(), Self::Error> {
-        self.memory.keep_prompt(hash, text, now)
+        self.memory.keep_prompt(hash, text, now).map_err(never)
     }
     fn prompt_text(&mut self, hash: &str) -> Result<Option<String>, Self::Error> {
-        self.memory.prompt_text(hash)
+        self.memory.prompt_text(hash).map_err(never)
     }
     fn open_call(
         &mut self,
@@ -70,20 +82,20 @@ impl Pending for Told {
         panic!("a broker opens a call with its place");
     }
     fn pending_for(&mut self, registration: &str) -> Result<PendingSummary, Self::Error> {
-        self.memory.pending_for(registration)
+        self.memory.pending_for(registration).map_err(never)
     }
     fn calls_for(
         &mut self,
         registration: &str,
         ids: &[String],
     ) -> Result<Vec<PendingCall>, Self::Error> {
-        self.memory.calls_for(registration, ids)
+        self.memory.calls_for(registration, ids).map_err(never)
     }
     fn sent_calls(&mut self, ids: &[String]) -> Result<(), Self::Error> {
-        self.memory.sent_calls(ids)
+        self.memory.sent_calls(ids).map_err(never)
     }
     fn accept_call(&mut self, reg: &str, id: &str, now: Millis) -> Result<bool, Self::Error> {
-        self.memory.accept_call(reg, id, now)
+        self.memory.accept_call(reg, id, now).map_err(never)
     }
     fn answer_call(
         &mut self,
@@ -91,18 +103,40 @@ impl Pending for Told {
         id: &str,
         outcome: Result<Value, CallFailure>,
         now: Millis,
-    ) -> Result<bool, Self::Error> {
-        self.memory.answer_call(reg, id, outcome, now)
+    ) -> Result<Answered, Self::Error> {
+        self.memory
+            .answer_call(reg, id, outcome, now)
+            .map_err(never)
     }
     fn expire_calls(
         &mut self,
         now: Millis,
         failure: &dyn Fn(&CallSummary) -> CallFailure,
     ) -> Result<Vec<String>, Self::Error> {
-        self.memory.expire_calls(now, failure)
+        if let Some(tries) = &self.stuck
+            && tries.fetch_add(1, Ordering::SeqCst) < STUCK
+        {
+            return Err("the store is locked".into());
+        }
+        self.memory.expire_calls(now, failure).map_err(never)
+    }
+    fn keep_tries(&mut self, reg: &str, id: &str, tries: &Tries) -> Result<bool, Self::Error> {
+        self.memory.keep_tries(reg, id, tries).map_err(never)
+    }
+    fn resends(&mut self, run: &str, reg: &str) -> Result<u32, Self::Error> {
+        self.memory.resends(run, reg).map_err(never)
+    }
+    fn next_resend(&mut self, after: Millis) -> Result<Option<Millis>, Self::Error> {
+        self.memory.next_resend(after).map_err(never)
+    }
+    fn set_dropped(&mut self, id: &str, at: Option<Millis>) -> Result<(), Self::Error> {
+        self.memory.set_dropped(id, at).map_err(never)
+    }
+    fn is_dropped(&mut self, id: &str) -> Result<bool, Self::Error> {
+        self.memory.is_dropped(id).map_err(never)
     }
     fn next_deadline(&mut self) -> Result<Option<Millis>, Self::Error> {
-        self.memory.next_deadline()
+        self.memory.next_deadline().map_err(never)
     }
     fn record_end(
         &mut self,
@@ -110,16 +144,16 @@ impl Pending for Told {
         limit: usize,
         now: Millis,
     ) -> Result<RecordedEnd, Self::Error> {
-        self.memory.record_end(end, limit, now)
+        self.memory.record_end(end, limit, now).map_err(never)
     }
     fn ends_for(&mut self, reg: &str, ids: &[String]) -> Result<Vec<PendingEnd>, Self::Error> {
-        self.memory.ends_for(reg, ids)
+        self.memory.ends_for(reg, ids).map_err(never)
     }
     fn acknowledge_end(&mut self, reg: &str, id: &str, now: Millis) -> Result<bool, Self::Error> {
-        self.memory.acknowledge_end(reg, id, now)
+        self.memory.acknowledge_end(reg, id, now).map_err(never)
     }
     fn expire_ends(&mut self, before: Millis) -> Result<usize, Self::Error> {
-        self.memory.expire_ends(before)
+        self.memory.expire_ends(before).map_err(never)
     }
 }
 
@@ -141,10 +175,10 @@ impl BrokerStore for Told {
             at.waits,
         ));
         assert_eq!(at.place.key, call.key);
-        self.memory.open_call(call, limit, now)
+        self.memory.open_call(call, limit, now).map_err(never)
     }
     fn settled(&mut self, id: &str) -> Result<Option<Result<Value, CallFailure>>, Self::Error> {
-        self.memory.settled(id)
+        self.memory.settled(id).map_err(never)
     }
 }
 
@@ -345,6 +379,26 @@ async fn a_call_past_its_deadline_is_settled_with_what_is_known_of_it() {
     );
     w.broker
         .with(|_, store, _| assert!(store.opened[3].6, "the call that waits is marked"));
+}
+
+/// While the deadlines that have come cannot be settled (the store is
+/// locked), a wait for a call's outcome tries again after a back-off by
+/// the broker's clock, not at once: it asks a few times over the wait,
+/// and answers that nothing settled the call when the wait is over.
+#[tokio::test]
+async fn a_wait_whose_deadlines_cannot_be_settled_backs_off_by_the_clock() {
+    let w = World::new();
+    let id = w.send_at(0, "fake.count", json!([]), Some(5_000)).unwrap();
+    let tries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    w.broker
+        .with(|_, store, _| store.stuck = Some(tries.clone()));
+    assert_eq!(w.broker.outcome(&id, Millis(10_000)).await, Outcome::NotYet);
+    let asked = tries.load(Ordering::SeqCst);
+    assert!(
+        (1..=6).contains(&asked),
+        "asked {asked} times from the deadline to the end of the wait"
+    );
+    assert_eq!(w.clock.now(), Millis(10_000));
 }
 
 /// A registration that is not connected, or not held, takes no call:

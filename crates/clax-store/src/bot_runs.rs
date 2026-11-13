@@ -898,6 +898,10 @@ pub struct ClaxRequest {
     pub thread_ids: Vec<String>,
 }
 
+/// The refusal of [`Store::create_run_of_within`] for a registration
+/// with as many runs that have not ended as it may have.
+pub const CODE_TOO_MANY_RUNS: &str = "too_many_runs";
+
 /// A run of a kind of a surface other than Clax's, to make
 /// ([`Store::create_run_of`]): it has no artifact, no base version, no
 /// threads and no web grant of its own.
@@ -1022,6 +1026,44 @@ fn known<T>(
     })
 }
 
+/// Column `i` of a row, `column` (`table.column`), stored JSON read as a
+/// `T`. Text that does not read as one is a conversion failure naming the
+/// column, never a default: a damaged row is refused, not read as some
+/// other value.
+pub(crate) fn stored_json<T: serde::de::DeserializeOwned>(
+    r: &Row<'_>,
+    i: usize,
+    column: &str,
+) -> rusqlite::Result<T> {
+    let text: String = r.get(i)?;
+    parse_stored(i, column, &text)
+}
+
+/// [`stored_json`] for a column that may be `NULL`, which is `None`.
+pub(crate) fn stored_json_or_null<T: serde::de::DeserializeOwned>(
+    r: &Row<'_>,
+    i: usize,
+    column: &str,
+) -> rusqlite::Result<Option<T>> {
+    r.get::<_, Option<String>>(i)?
+        .map(|text| parse_stored(i, column, &text))
+        .transpose()
+}
+
+fn parse_stored<T: serde::de::DeserializeOwned>(
+    i: usize,
+    column: &str,
+    text: &str,
+) -> rusqlite::Result<T> {
+    serde_json::from_str(text).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(
+            i,
+            rusqlite::types::Type::Text,
+            format!("{column} does not read: {e}").into(),
+        )
+    })
+}
+
 /// A `bot_runs` row ([`RUN_COLS`]) as a [`Run`].
 ///
 /// # Errors
@@ -1111,9 +1153,13 @@ fn file_on(rec: &mut AuditRecord, subject: &AuditIds) {
     }
 }
 
+/// A `bot_steps` row ([`STEP_COLS`]) as a [`Step`].
+///
+/// # Errors
+/// A conversion failure for a payload or observations that do not read
+/// as JSON ([`stored_json`]).
 fn row_to_step(r: &Row<'_>) -> rusqlite::Result<Step> {
     let kind: String = r.get(2)?;
-    let payload: Option<String> = r.get(5)?;
     Ok(Step {
         run_id: r.get(0)?,
         n: r.get(1)?,
@@ -1121,11 +1167,8 @@ fn row_to_step(r: &Row<'_>) -> rusqlite::Result<Step> {
         started_at: r.get(3)?,
         attempt: r.get(6)?,
         committed_at: r.get(4)?,
-        payload: payload.and_then(|p| serde_json::from_str(&p).ok()),
-        observed: r
-            .get::<_, Option<String>>(7)?
-            .and_then(|o| serde_json::from_str(&o).ok())
-            .unwrap_or_default(),
+        payload: stored_json_or_null(r, 5, "bot_steps.payload_json")?,
+        observed: stored_json_or_null(r, 7, "bot_steps.observed_json")?.unwrap_or_default(),
         failures: r.get(8)?,
     })
 }
@@ -1154,12 +1197,67 @@ fn active_on_in(c: &Connection, threads: &[String]) -> Result<Option<Run>> {
     Ok(q.query_row(params![ids], row_to_run).optional()?)
 }
 
+/// Whether `e` is a stored value this build does not read: a row a
+/// later build wrote, or a damaged one ([`stored_json`] and the other
+/// strict readers' conversion failures). Such an error is the row's, and
+/// fails what that row is part of alone: its call, its run, or its place
+/// in a listing, never a listing or another run.
+#[must_use]
+pub fn is_unreadable(e: &CoreError) -> bool {
+    matches!(e, CoreError::Db(e) if unreadable_db(e))
+}
+
+/// [`is_unreadable`] of a database error.
+pub(crate) fn unreadable_db(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::FromSqlConversionFailure(..)
+            | rusqlite::Error::InvalidColumnType(..)
+            | rusqlite::Error::IntegralValueOutOfRange(..)
+    )
+}
+
+/// The open step of run `id` on `c`. One whose payload or observations
+/// do not read ([`row_to_step`]) is read without them (no payload, no
+/// observations), so that the step a run whose history does not read
+/// ends with can still be begun and committed: what is written over it
+/// is the run's terminal step.
 pub(crate) fn open_step_in(c: &Connection, id: &str) -> Result<Option<Step>> {
-    Ok(c.prepare_cached(&format!(
-        "SELECT {STEP_COLS} FROM bot_steps WHERE run_id = ?1 AND committed_at IS NULL"
-    ))?
-    .query_row(params![id], row_to_step)
-    .optional()?)
+    let strict = c
+        .prepare_cached(&format!(
+            "SELECT {STEP_COLS} FROM bot_steps WHERE run_id = ?1 AND committed_at IS NULL"
+        ))?
+        .query_row(params![id], row_to_step)
+        .optional();
+    match strict {
+        Ok(step) => Ok(step),
+        Err(e) if unreadable_db(&e) => {
+            tracing::warn!(
+                "clax-store: the open step of run {id} does not read ({e}): read without its \
+                 payload and observations"
+            );
+            Ok(c.prepare_cached(
+                "SELECT run_id, n, kind, started_at, attempt, failures FROM bot_steps
+                  WHERE run_id = ?1 AND committed_at IS NULL",
+            )?
+            .query_row(params![id], |r| {
+                let kind: String = r.get(2)?;
+                Ok(Step {
+                    run_id: r.get(0)?,
+                    n: r.get(1)?,
+                    kind: StepKind::parse(&kind).unwrap_or(StepKind::Stopped),
+                    started_at: r.get(3)?,
+                    attempt: r.get(4)?,
+                    committed_at: None,
+                    payload: None,
+                    observed: Vec::new(),
+                    failures: r.get(5)?,
+                })
+            })
+            .optional()?)
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 fn runs_where(
@@ -1570,6 +1668,110 @@ impl Store {
         })
     }
 
+    /// [`Store::create_run_of`], held to `max_live` runs that have not
+    /// ended (queued, running, stopping or parked) of `new.started_by`:
+    /// they are counted in the transaction that makes the run, so starts
+    /// of one registration made at once never pass the bound together.
+    ///
+    /// # Errors
+    /// [`CODE_TOO_MANY_RUNS`] (an `Invalid`) when the registration has
+    /// `max_live` such runs, and nothing is written; else those of
+    /// [`Store::create_run_of`].
+    pub fn create_run_of_within(
+        &self,
+        ctx: &AuditCtx,
+        new: NewRunOf,
+        max_live: usize,
+    ) -> Result<Run> {
+        let surface = match new.kind.split_once('.') {
+            Some((surface, kind)) if !surface.is_empty() && !kind.is_empty() => surface,
+            _ => {
+                return Err(invalid(format!(
+                    "a run's kind is `<surface>.<kind>`, not {:?}",
+                    new.kind
+                )));
+            }
+        };
+        if surface == CLAX_SURFACE {
+            return Err(invalid(format!(
+                "{} is a kind of Clax's own surface, whose runs are made on an artifact",
+                new.kind
+            )));
+        }
+        if new.bindings.version() != BINDINGS_VERSION_2 {
+            return Err(invalid(format!(
+                "a run of {} is made with bindings of version {BINDINGS_VERSION_2}",
+                new.kind
+            )));
+        }
+        if new.bindings.of(surface).is_none() {
+            return Err(invalid(format!(
+                "a run of {} has a binding of surface {surface}",
+                new.kind
+            )));
+        }
+        if new.person.is_empty() {
+            return Err(invalid("a run acts for a person"));
+        }
+        self.with_tx(|tx| {
+            crate::bot_surfaces::registration_in(tx, &new.started_by)?
+                .ok_or(CoreError::NotFound)?;
+            let live: i64 = tx
+                .prepare_cached(&format!(
+                    "SELECT COUNT(*) FROM bot_runs WHERE started_by = ?1 AND status IN {LIVE}"
+                ))?
+                .query_row(params![new.started_by], |r| r.get(0))?;
+            let live = usize::try_from(live).unwrap_or(0);
+            if live >= max_live {
+                return Err(CoreError::invalid(
+                    CODE_TOO_MANY_RUNS,
+                    format!(
+                        "the registration has {live} runs that have not ended, which is the \
+                         limit: start another when one has ended"
+                    ),
+                ));
+            }
+            if let Some(parent) = &new.parent_run {
+                run_in(tx, parent)?.ok_or(CoreError::NotFound)?;
+            }
+            check_model_priced(tx, &self.bot_overrides(), &new.model, new.key_source)?;
+            let id = clax_core::new_ulid();
+            let now = self.now();
+            tx.execute(
+                "INSERT INTO bot_runs (id, person, request, status, model, key_source,
+                    created_at, updated_at, agent_grant, kind, bindings_json, request_json,
+                    started_by, parent_run)
+                 VALUES (?1, ?2, 'other', 'queued', ?3, ?4, ?5, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    id,
+                    new.person,
+                    new.model,
+                    new.key_source.as_str(),
+                    now,
+                    new.agent_grant,
+                    new.kind,
+                    new.bindings.to_json(),
+                    new.request.to_string(),
+                    new.started_by,
+                    new.parent_run
+                ],
+            )?;
+            let mut rec = AuditRecord::new(AuditKind::BotRunStart, now)
+                .with("run", id.as_str())
+                .with("request", RequestKind::Other.as_str())
+                .with("kind", new.kind.as_str())
+                .with("thread_ids", Vec::<String>::new())
+                .with("model", new.model.as_str())
+                .with("key_source", new.key_source.as_str())
+                .with("started_by", new.started_by.as_str());
+            if let Some(parent) = &new.parent_run {
+                rec = rec.with("parent_run", parent.as_str());
+            }
+            self.record_audit(tx, ctx, rec)?;
+            Ok(run_in(tx, &id)?.expect("the run was just made"))
+        })
+    }
+
     fn create_run_in(
         &self,
         tx: &rusqlite::Transaction<'_>,
@@ -1648,6 +1850,37 @@ impl Store {
                 .query_map(params![id], row_to_step)?
                 .collect::<rusqlite::Result<_>>()?;
             Ok(Some((run, steps)))
+        })
+    }
+
+    /// [`Store::run_with_steps`] for a view of the run: a step whose
+    /// payload or observations do not read ([`row_to_step`]) is left out,
+    /// logged, and counted in the third member, so that one damaged row
+    /// fails no listing, no usage page and no view of the run.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn run_with_readable_steps(&self, id: &str) -> Result<Option<(Run, Vec<Step>, usize)>> {
+        self.with_read(|c| {
+            let Some(run) = run_in(c, id)? else {
+                return Ok(None);
+            };
+            let mut q = c.prepare_cached(&format!(
+                "SELECT {STEP_COLS} FROM bot_steps WHERE run_id = ?1 ORDER BY n"
+            ))?;
+            let mut steps = Vec::new();
+            let mut left_out = 0;
+            for step in q.query_map(params![id], row_to_step)? {
+                match step {
+                    Ok(step) => steps.push(step),
+                    Err(e) if unreadable_db(&e) => {
+                        tracing::warn!("clax-store: a step of run {id} does not read: {e}");
+                        left_out += 1;
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            Ok(Some((run, steps, left_out)))
         })
     }
 
@@ -1972,7 +2205,7 @@ impl Store {
                     place.step_n
                 )));
             }
-            if journal_at(tx, id, place.step_n, place.seq)?.is_some() {
+            if journal_holds(tx, id, place.step_n, place.seq)? {
                 return Ok(Park::Answered(run));
             }
             tx.execute(
@@ -2025,9 +2258,7 @@ impl Store {
                 Ok(Parking {
                     parked_at: r.get(0)?,
                     parked_ms: r.get(1)?,
-                    waiting_on: r
-                        .get::<_, Option<String>>(2)?
-                        .and_then(|w| serde_json::from_str(&w).ok()),
+                    waiting_on: stored_json_or_null(r, 2, "bot_runs.waiting_on")?,
                     parks: r.get(3)?,
                 })
             })
@@ -2728,11 +2959,13 @@ impl Store {
     /// Removes what ended runs no longer need, by the store's clock: the
     /// call journal (`bot_calls`), the page store (`bot_web_pages`), the
     /// content (`bot_content`, and each blob no row names any more:
-    /// [`crate::bot_content`]) and
-    /// the pending calls (`bot_pending_calls`) of each run that ended over
+    /// [`crate::bot_content`]), the messages given
+    /// ([`crate::bot_messages`]) and the pending calls
+    /// (`bot_pending_calls`) of each run that ended over
     /// [`BOT_JOURNAL_KEEP`] ago, the draft overlay (`bot_draft_files`) of
-    /// each that ended over [`BOT_DRAFT_KEEP`] ago, and each run's end
-    /// kept for a registration (`bot_run_ends`) over
+    /// each that ended over [`BOT_DRAFT_KEEP`] ago, the messages never
+    /// given of each that ended, and each run's end kept for a
+    /// registration (`bot_run_ends`), over
     /// [`crate::bot_pending::BOT_END_KEEP`] ago, acknowledged or not; and
     /// the surfaces' registrations, definitions and prompt files that
     /// nothing needs ([`crate::bot_surfaces::BOT_REGISTRATION_KEEP`],
@@ -2743,73 +2976,273 @@ impl Store {
     /// runs, their steps, usage and audit events stay. How many rows of
     /// each it removed.
     ///
+    /// **Bounded.** A pass is at most [`PRUNE_TXS_PER_PASS`]
+    /// transactions, each deleting the rows of [`PRUNE_RUNS_PER_TX`]
+    /// runs and [`PRUNE_ROWS_PER_TX`] rows at the most, so no one
+    /// transaction grows with what is due (the hosted Worker refuses a
+    /// transaction over 16 MiB), and one more for the surfaces'
+    /// rows ([`crate::bot_surfaces::PRUNE_SURFACE_ROWS`] of each kind at
+    /// the most). The runs are taken oldest end first, found from the
+    /// rows they still hold (each table's index on `run_id`), not from
+    /// every run that ever ended. What a pass leaves is due at the next,
+    /// which takes it up where this one stopped: [`Pruned::more`] says
+    /// whether it left any. Each transaction commits on its own, so a
+    /// pass that fails keeps what its earlier transactions removed.
+    ///
     /// # Errors
-    /// The store's.
+    /// The store's, after logging it: a pass that fails is never silent.
     pub fn prune_ended_runs(&self) -> Result<Pruned> {
+        let pruned = self.prune_pass();
+        if let Err(e) = &pruned {
+            tracing::warn!(error = %e, "ClaxBot prune pass failed");
+        }
+        pruned
+    }
+
+    /// [`Store::prune_ended_runs`] again while the pass before left more
+    /// ([`Pruned::more`]): `passes` at the most (one at the least), and no
+    /// pass after the first begun at or after `until` by the store's
+    /// clock. What a caller that wakes now and then runs, so that a
+    /// backlog drains a bounded number of passes at each wake-up, and the
+    /// caller wakes again soon while the last says more. The sum of what
+    /// the passes removed (its `more` the last pass's), and how many
+    /// passes ran.
+    ///
+    /// # Errors
+    /// The store's, after logging it; the passes before it keep what
+    /// they removed.
+    pub fn prune_ended_runs_while(
+        &self,
+        passes: usize,
+        until: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<(Pruned, usize)> {
+        let mut total = Pruned::default();
+        let mut ran = 0;
+        loop {
+            let pass = self.prune_ended_runs()?;
+            ran += 1;
+            total.add(&pass);
+            total.registrations += pass.registrations;
+            total.surface_defs += pass.surface_defs;
+            total.surface_prompts += pass.surface_prompts;
+            total.blobs += pass.blobs;
+            total.more = pass.more;
+            if !pass.more || ran >= passes || until.is_some_and(|u| self.now_utc() >= u) {
+                return Ok((total, ran));
+            }
+        }
+    }
+
+    fn prune_pass(&self) -> Result<Pruned> {
         let now = self.now_utc();
         let before = |keep: std::time::Duration| {
             clax_core::time::stamp(
                 now - chrono::Duration::from_std(keep).unwrap_or(chrono::Duration::MAX),
             )
         };
-        let (journal, draft) = (before(BOT_JOURNAL_KEEP), before(BOT_DRAFT_KEEP));
-        let ends = before(crate::bot_pending::BOT_END_KEEP);
-        let (mut pruned, released) = self.with_tx(|tx| {
-            let calls = tx.execute(
-                "DELETE FROM bot_calls WHERE run_id IN
-                   (SELECT id FROM bot_runs WHERE ended_at IS NOT NULL AND ended_at < ?1)",
-                params![journal],
-            )?;
-            let pages = tx.execute(
-                "DELETE FROM bot_web_pages WHERE run_id IN
-                   (SELECT id FROM bot_runs WHERE ended_at IS NOT NULL AND ended_at < ?1)",
-                params![journal],
-            )?;
-            let draft_files = tx.execute(
-                "DELETE FROM bot_draft_files WHERE run_id IN
-                   (SELECT id FROM bot_runs WHERE ended_at IS NOT NULL AND ended_at < ?1)",
-                params![draft],
-            )?;
-            let pending_calls = tx.execute(
-                "DELETE FROM bot_pending_calls WHERE run_id IN
-                   (SELECT id FROM bot_runs WHERE ended_at IS NOT NULL AND ended_at < ?1)",
-                params![journal],
-            )?;
-            let run_ends = tx.execute(
-                "DELETE FROM bot_run_ends WHERE created_at < ?1",
-                params![ends],
-            )?;
-            // A run's content goes with its journal, and each blob no
-            // row names any more with it (`crate::bot_content`), once
-            // the rows' deletion has committed.
-            let (contents, released) = crate::bot_content::prune_content_in(tx, &journal)?;
-            let messages = crate::bot_messages::prune_in(tx, &journal, &ends)?;
-            let (registrations, surface_defs, surface_prompts) =
-                crate::bot_surfaces::prune_surfaces_in(
-                    tx,
-                    &before(crate::bot_surfaces::BOT_REGISTRATION_KEEP),
-                    &before(crate::bot_surfaces::BOT_DEF_KEEP),
-                )?;
-            Ok((
-                Pruned {
-                    calls,
-                    pages,
-                    draft_files,
-                    pending_calls,
-                    run_ends,
-                    messages,
-                    registrations,
-                    surface_defs,
-                    surface_prompts,
-                    contents,
-                    blobs: 0,
-                },
-                released,
-            ))
+        let cuts = PruneCuts {
+            journal: before(BOT_JOURNAL_KEEP),
+            draft: before(BOT_DRAFT_KEEP),
+            ends: before(crate::bot_pending::BOT_END_KEEP),
+        };
+        let mut pruned = Pruned::default();
+        let mut released = Vec::new();
+        let capacity = PRUNE_RUNS_PER_TX * PRUNE_TXS_PER_PASS;
+        let mut due = self.with_read(|c| due_runs_in(c, &cuts, capacity + 1))?;
+        if due.len() > capacity {
+            due.truncate(capacity);
+            pruned.more = true;
+        }
+        let (mut next, mut ends_left) = (0, true);
+        for _ in 0..PRUNE_TXS_PER_PASS {
+            if next >= due.len() && !ends_left {
+                break;
+            }
+            let (taken, ends_more, batch, freed) = self.with_tx(|tx| {
+                let mut batch = Pruned::default();
+                let mut freed = Vec::new();
+                let mut budget = PRUNE_ROWS_PER_TX;
+                let mut taken = 0;
+                for run in due[next..].iter().take(PRUNE_RUNS_PER_TX) {
+                    if !prune_run_in(tx, run, &cuts, &mut budget, &mut batch, &mut freed)? {
+                        break;
+                    }
+                    taken += 1;
+                }
+                let mut ends_more = ends_left;
+                if ends_left && budget > 0 {
+                    batch.run_ends = delete_some(
+                        tx,
+                        "DELETE FROM bot_run_ends WHERE rowid IN
+                           (SELECT rowid FROM bot_run_ends WHERE created_at < ?1 LIMIT ?2)",
+                        &cuts.ends,
+                        budget,
+                    )?;
+                    ends_more = batch.run_ends == budget;
+                }
+                Ok((taken, ends_more, batch, freed))
+            })?;
+            next += taken;
+            ends_left = ends_more;
+            pruned.add(&batch);
+            released.extend(freed);
+        }
+        pruned.more |= next < due.len() || ends_left;
+        let surfaces = self.with_tx(|tx| {
+            crate::bot_surfaces::prune_surfaces_in(
+                tx,
+                &before(crate::bot_surfaces::BOT_REGISTRATION_KEEP),
+                &before(crate::bot_surfaces::BOT_DEF_KEEP),
+            )
         })?;
+        pruned.registrations = surfaces.registrations;
+        pruned.surface_defs = surfaces.defs;
+        pruned.surface_prompts = surfaces.prompts;
+        pruned.more |= surfaces.more;
         pruned.blobs = self.release_blobs(released)?;
         Ok(pruned)
     }
+}
+
+/// The most runs one transaction of a prune pass takes
+/// ([`Store::prune_ended_runs`]).
+pub const PRUNE_RUNS_PER_TX: usize = 32;
+
+/// The most rows one transaction of a prune pass deletes, of all the
+/// runs' tables together ([`Store::prune_ended_runs`]): a deleted row
+/// writes its table's page and one page of each index at the most, five
+/// for the most indexed table, so a transaction writes a few thousand
+/// pages at the most whatever is due.
+pub const PRUNE_ROWS_PER_TX: usize = 512;
+
+/// The most transactions of runs' rows one prune pass makes
+/// ([`Store::prune_ended_runs`]).
+pub const PRUNE_TXS_PER_PASS: usize = 64;
+
+/// The times before which a prune removes each kind of an ended run's
+/// rows ([`Store::prune_ended_runs`]), as stamps.
+struct PruneCuts {
+    journal: String,
+    draft: String,
+    ends: String,
+}
+
+/// A run with rows due for pruning, and when it ended.
+struct DueRun {
+    id: String,
+    ended_at: String,
+}
+
+/// Up to `limit` ended runs that hold a row due under `cuts`, the oldest
+/// end first, on `c`. They are found from the rows the runs' tables hold
+/// (each through its index on `run_id`), each looked up by its ID, so the
+/// read is of what is held, not of every run that ever ended.
+fn due_runs_in(c: &Connection, cuts: &PruneCuts, limit: usize) -> Result<Vec<DueRun>> {
+    let mut q = c.prepare(
+        "WITH held(run_id, cut) AS (
+             SELECT run_id, ?1 FROM bot_calls
+             UNION SELECT run_id, ?1 FROM bot_web_pages
+             UNION SELECT run_id, ?1 FROM bot_pending_calls
+             UNION SELECT run_id, ?1 FROM bot_content
+             UNION SELECT run_id, ?1 FROM bot_messages WHERE delivered_at IS NOT NULL
+             UNION SELECT run_id, ?3 FROM bot_messages WHERE delivered_at IS NULL
+             UNION SELECT run_id, ?2 FROM bot_draft_files)
+         SELECT r.id, r.ended_at FROM held CROSS JOIN bot_runs r
+          WHERE r.id = held.run_id AND r.ended_at IS NOT NULL AND r.ended_at < held.cut
+          GROUP BY r.id ORDER BY r.ended_at, r.id LIMIT ?4",
+    )?;
+    let rows = q.query_map(
+        params![
+            cuts.journal,
+            cuts.draft,
+            cuts.ends,
+            i64::try_from(limit).unwrap_or(i64::MAX)
+        ],
+        |r| {
+            Ok(DueRun {
+                id: r.get(0)?,
+                ended_at: r.get(1)?,
+            })
+        },
+    )?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Runs `delete`, whose `?1` is `arg` and `?2` the most rows it may
+/// delete, on `c`, and answers how many it deleted.
+fn delete_some(c: &Connection, delete: &str, arg: &str, limit: usize) -> Result<usize> {
+    Ok(c.prepare_cached(delete)?
+        .execute(params![arg, i64::try_from(limit).unwrap_or(i64::MAX)])?)
+}
+
+/// Deletes, on `c`, the rows of `run` due under `cuts`, `budget` rows at
+/// the most, counting each kind in `pruned` and the blobs of content
+/// rows no row names any more in `released`. Whether it deleted every
+/// row of the run that is due: `false` when `budget` ran out first, which
+/// leaves the rest for a later transaction.
+fn prune_run_in(
+    c: &Connection,
+    run: &DueRun,
+    cuts: &PruneCuts,
+    budget: &mut usize,
+    pruned: &mut Pruned,
+    released: &mut Vec<String>,
+) -> Result<bool> {
+    /// Counts `n` rows deleted in `count` and from `budget`: whether any
+    /// of the budget is left.
+    fn take(count: &mut usize, n: usize, budget: &mut usize) -> bool {
+        *count += n;
+        *budget = budget.saturating_sub(n);
+        *budget > 0
+    }
+    let journal = run.ended_at < cuts.journal;
+    if journal {
+        for (delete, count) in [
+            (
+                "DELETE FROM bot_calls WHERE rowid IN
+                   (SELECT rowid FROM bot_calls WHERE run_id = ?1 LIMIT ?2)",
+                &mut pruned.calls,
+            ),
+            (
+                "DELETE FROM bot_web_pages WHERE run_id = ?1 AND url IN
+                   (SELECT url FROM bot_web_pages WHERE run_id = ?1 LIMIT ?2)",
+                &mut pruned.pages,
+            ),
+            (
+                "DELETE FROM bot_pending_calls WHERE rowid IN
+                   (SELECT rowid FROM bot_pending_calls WHERE run_id = ?1 LIMIT ?2)",
+                &mut pruned.pending_calls,
+            ),
+        ] {
+            let n = delete_some(c, delete, &run.id, *budget)?;
+            if !take(count, n, budget) {
+                return Ok(false);
+            }
+        }
+        let (n, freed) = crate::bot_content::prune_run_content_in(c, &run.id, *budget)?;
+        released.extend(freed);
+        if !take(&mut pruned.contents, n, budget) {
+            return Ok(false);
+        }
+        let all = run.ended_at < cuts.ends;
+        let n = crate::bot_messages::prune_run_in(c, &run.id, all, *budget)?;
+        if !take(&mut pruned.messages, n, budget) {
+            return Ok(false);
+        }
+    }
+    if run.ended_at < cuts.draft {
+        let n = delete_some(
+            c,
+            "DELETE FROM bot_draft_files WHERE rowid IN
+               (SELECT rowid FROM bot_draft_files WHERE run_id = ?1 LIMIT ?2)",
+            &run.id,
+            *budget,
+        )?;
+        if !take(&mut pruned.draft_files, n, budget) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// How long an ended run's call journal is kept: the journal answers a
@@ -2848,6 +3281,22 @@ pub struct Pruned {
     pub contents: usize,
     /// Blobs of content that no item names any more.
     pub blobs: usize,
+    /// The pass stopped at its bounds with rows still due: the next pass
+    /// goes on where it stopped ([`Store::prune_ended_runs`]).
+    pub more: bool,
+}
+
+impl Pruned {
+    /// Adds `other`'s counts of the runs' rows to these.
+    fn add(&mut self, other: &Pruned) {
+        self.calls += other.calls;
+        self.pages += other.pages;
+        self.draft_files += other.draft_files;
+        self.pending_calls += other.pending_calls;
+        self.run_ends += other.run_ends;
+        self.messages += other.messages;
+        self.contents += other.contents;
+    }
 }
 
 /// A store transaction a journaled write runs on ([`Store::with_bot_journal`]);
@@ -2963,8 +3412,13 @@ pub type Guard<'a> = &'a (dyn Fn(&Tx<'_>) -> Result<()> + Send + Sync);
 
 pub(crate) const CALL_COLS: &str = "run_id, step_n, seq, attempt, op, args_hash, ok, result_json";
 
+/// A `bot_calls` row ([`CALL_COLS`]) as a [`CallEntry`].
+///
+/// # Errors
+/// A conversion failure for a result that does not read as JSON
+/// ([`stored_json`]): the journal never answers a call made again with
+/// anything but what it recorded.
 pub(crate) fn row_to_call(r: &Row<'_>) -> rusqlite::Result<CallEntry> {
-    let result: String = r.get(7)?;
     Ok(CallEntry {
         run_id: r.get(0)?,
         step_n: r.get(1)?,
@@ -2973,7 +3427,7 @@ pub(crate) fn row_to_call(r: &Row<'_>) -> rusqlite::Result<CallEntry> {
         op: r.get(4)?,
         args_hash: r.get(5)?,
         ok: r.get(6)?,
-        result: serde_json::from_str(&result).unwrap_or(Value::Null),
+        result: stored_json(r, 7, "bot_calls.result_json")?,
     })
 }
 
@@ -2983,6 +3437,15 @@ pub(crate) fn call_in(c: &Connection, e: &CallEntry) -> Result<Option<CallEntry>
     ))?
     .query_row(params![e.run_id, e.step_n, e.seq], row_to_call)
     .optional()?)
+}
+
+/// Whether the journal holds a row at call `seq` of step `step_n` of
+/// run `run_id`, whether or not its result reads.
+pub(crate) fn journal_holds(c: &Connection, run_id: &str, step_n: i64, seq: i64) -> Result<bool> {
+    Ok(c.prepare_cached(
+        "SELECT EXISTS (SELECT 1 FROM bot_calls WHERE run_id = ?1 AND step_n = ?2 AND seq = ?3)",
+    )?
+    .query_row(params![run_id, step_n, seq], |r| r.get(0))?)
 }
 
 /// The journal's entry at call `seq` of step `step_n` of run `run_id`,
@@ -3892,6 +4355,113 @@ mod tests {
         );
     }
 
+    /// Writes `runs` finished runs, numbered from `from`, each holding
+    /// `calls` rows of call journal, the `i`th ended `i` seconds after
+    /// 2026-10-01T00:00:00Z.
+    fn seed_ended_runs(st: &Store, from: usize, runs: usize, calls: usize) {
+        st.with_write(|c| {
+            c.execute(
+                "INSERT INTO bot_runs (id, artifact_id, person, request, thread_ids_json, status,
+                        model, key_source, base_version, created_at, updated_at, ended_at)
+                 WITH RECURSIVE n(i) AS (SELECT ?1 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < ?1 + ?2)
+                 SELECT printf('01JC%022d', i), 'a', 'u', 'thread', '[]', 'finished',
+                        'claude-sonnet-5-5', 'instance', 1, '2026-10-01T00:00:00.000Z',
+                        '2026-10-01T00:00:00.000Z',
+                        strftime('%Y-%m-%dT%H:%M:%S.000Z', '2026-10-01T00:00:00Z', '+' || i || ' seconds')
+                   FROM n",
+                params![from as i64, runs as i64],
+            )?;
+            c.execute(
+                "INSERT INTO bot_calls (run_id, step_n, seq, attempt, op, args_hash, ok,
+                        result_json, at)
+                 WITH RECURSIVE n(i) AS (SELECT ?1 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < ?1 + ?2),
+                      s(j) AS (SELECT 0 UNION ALL SELECT j + 1 FROM s WHERE j + 1 < ?3)
+                 SELECT printf('01JC%022d', i), 1, j, 1, 'threads.read', 'h', 1, '{}',
+                        '2026-10-01T00:00:00.000Z'
+                   FROM n, s",
+                params![from as i64, runs as i64, calls as i64],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    /// A pass prunes [`PRUNE_TXS_PER_PASS`] transactions of
+    /// [`PRUNE_RUNS_PER_TX`] runs at the most, the oldest end first, and
+    /// says it left more; the next pass takes up the rest.
+    #[test]
+    fn a_prune_pass_is_bounded_and_the_next_takes_up_where_it_stopped() {
+        let clock = Arc::new(ManualClock::at("2026-10-21T10:00:00Z"));
+        let (_d, st) = store_with_clock(clock.clone());
+        let capacity = PRUNE_RUNS_PER_TX * PRUNE_TXS_PER_PASS;
+        seed_ended_runs(&st, 0, capacity + 10, 1);
+        let p = st.prune_ended_runs().unwrap();
+        assert_eq!((p.calls, p.more), (capacity, true));
+        let held = |i: usize| st.bot_calls(&format!("01JC{i:022}"), 1).unwrap().len();
+        assert_eq!(
+            (held(0), held(capacity - 1)),
+            (0, 0),
+            "the oldest went first"
+        );
+        assert_eq!((held(capacity), held(capacity + 9)), (1, 1));
+        let p = st.prune_ended_runs().unwrap();
+        assert_eq!((p.calls, p.more), (10, false));
+        assert_eq!(held(capacity + 9), 0);
+        assert_eq!(st.prune_ended_runs().unwrap(), Pruned::default());
+    }
+
+    /// Passes run one after another while each leaves more, as many as
+    /// the caller allows, and none after the first once the store's clock
+    /// reaches the caller's bound.
+    #[test]
+    fn passes_go_on_while_one_leaves_more_within_their_count_and_their_time() {
+        let clock = Arc::new(ManualClock::at("2026-10-21T10:00:00Z"));
+        let (_d, st) = store_with_clock(clock.clone());
+        let capacity = PRUNE_RUNS_PER_TX * PRUNE_TXS_PER_PASS;
+        seed_ended_runs(&st, 0, capacity * 2 + 10, 1);
+        // The clock's bound reached: one pass, which says more.
+        let (p, ran) = st.prune_ended_runs_while(8, Some(clock.now())).unwrap();
+        assert_eq!((p.calls, p.more, ran), (capacity, true, 1));
+        // Its count reached: one pass more, still more.
+        let (p, ran) = st.prune_ended_runs_while(1, None).unwrap();
+        assert_eq!((p.calls, p.more, ran), (capacity, true, 1));
+        // Room for more: it goes on until a pass leaves nothing.
+        let (p, ran) = st
+            .prune_ended_runs_while(8, Some(clock.now() + chrono::Duration::hours(1)))
+            .unwrap();
+        assert_eq!((p.calls, p.more, ran), (10, false, 1));
+        seed_ended_runs(&st, capacity * 3, capacity + 1, 1);
+        let (p, ran) = st.prune_ended_runs_while(8, None).unwrap();
+        assert_eq!((p.calls, p.more, ran), (capacity + 1, false, 2));
+    }
+
+    /// A run that holds more rows than one transaction deletes is pruned
+    /// across transactions of one pass, each of [`PRUNE_ROWS_PER_TX`] rows
+    /// at the most, and a run whose rows are not due is left as it is.
+    #[test]
+    fn a_run_with_more_rows_than_a_transaction_takes_is_pruned_across_several() {
+        let clock = Arc::new(ManualClock::at("2026-10-21T10:00:00Z"));
+        let (_d, st) = store_with_clock(clock.clone());
+        let rows = PRUNE_ROWS_PER_TX * 2 + 7;
+        seed_ended_runs(&st, 0, 1, rows);
+        let going = new_run(&st);
+        let d = DriverId::named("d1");
+        st.claim_run(&going.id, &d, 60).unwrap().unwrap();
+        st.begin_step(&going.id, &d, 1, StepKind::Turn).unwrap();
+        let entry = st
+            .call_entry(&going.id, &d, 1, 1, 0, "threads.read", "h")
+            .unwrap();
+        st.record_bot_call(&entry).unwrap();
+        let p = st.prune_ended_runs().unwrap();
+        assert_eq!((p.calls, p.more), (rows, false));
+        assert!(
+            st.bot_calls(&format!("01JC{:022}", 0), 1)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(st.bot_calls(&going.id, 1).unwrap().len(), 1);
+    }
+
     #[test]
     fn a_driver_whose_lease_lapsed_cannot_commit_over_the_one_that_took_over() {
         let clock = Arc::new(ManualClock::at("2026-10-21T10:00:00Z"));
@@ -4371,6 +4941,50 @@ mod tests {
         let journal = st.bot_calls(&run.id, 1).unwrap();
         assert_eq!(journal.iter().map(|c| c.seq).collect::<Vec<_>>(), [0, 2]);
         assert_eq!(journal[0].result, json!({"comment_id": "c1"}));
+    }
+
+    /// A journal entry, a step's payload or its observations whose stored
+    /// text does not read as JSON is refused when read, never read as
+    /// `null` or none: the journal never answers a call made again with
+    /// anything but what it recorded.
+    #[test]
+    fn a_journal_entry_or_a_step_whose_stored_json_does_not_read_is_refused() {
+        let (_d, st) = store();
+        let run = new_run(&st);
+        let d = DriverId::named("d1");
+        st.claim_run(&run.id, &d, 60).unwrap();
+        st.begin_step(&run.id, &d, 1, StepKind::Script).unwrap();
+        st.record_bot_call(&CallEntry {
+            run_id: run.id.clone(),
+            step_n: 1,
+            seq: 0,
+            attempt: 1,
+            op: "threads.read".into(),
+            args_hash: "h".into(),
+            ok: true,
+            result: json!({"threads": []}),
+        })
+        .unwrap();
+        assert_eq!(st.bot_calls(&run.id, 1).unwrap().len(), 1);
+        let damage = |sql: &str| {
+            st.with_write(|c| {
+                c.execute(sql, params![run.id])?;
+                Ok(())
+            })
+            .unwrap();
+        };
+        damage("UPDATE bot_calls SET result_json = '{\"thr' WHERE run_id = ?1");
+        assert!(matches!(st.bot_calls(&run.id, 1), Err(CoreError::Db(_))));
+        for sql in [
+            "UPDATE bot_steps SET observed_json = 'nope' WHERE run_id = ?1",
+            "UPDATE bot_steps SET observed_json = NULL, payload_json = '[' WHERE run_id = ?1",
+        ] {
+            damage(sql);
+            assert!(
+                matches!(st.run_with_steps(&run.id), Err(CoreError::Db(_))),
+                "{sql}"
+            );
+        }
     }
 
     #[test]

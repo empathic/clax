@@ -515,8 +515,10 @@ impl EventHub {
         after: Option<EventId>,
     ) -> Result<Subscription> {
         let mut runs = self.runs.lock().unwrap_or_else(|e| e.into_inner());
-        let (r, steps) = store
-            .run_with_steps(run)?
+        // A step whose row does not read is left out of the replay,
+        // logged: the run ends `failed` for it.
+        let (r, steps, _) = store
+            .run_with_readable_steps(run)?
             .ok_or(clax_core::CoreError::NotFound)?;
         let mut replay = Vec::new();
         for s in steps.iter().filter(|s| s.committed_at.is_some()) {

@@ -98,9 +98,7 @@ pub struct Limits {
     /// keeps a bounded number of bytes (about a hundred and a name, and
     /// `list` bits where a set of a union's alternatives is kept), so
     /// this bounds the memory a definition holds beyond its own text;
-    /// a definition that needs more is refused. A type handed to
-    /// [`crate::check_held`] or [`crate::check_sent`] is under the same
-    /// limit. Default 100,000.
+    /// a definition that needs more is refused. Default 100,000.
     pub plan_steps: usize,
 }
 

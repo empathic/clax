@@ -35,8 +35,9 @@
 //! settled it, if anything has.
 
 use crate::bot_surfaces::{
-    CallFailure, CallSummary, Enqueue, Hub, MemoryPending, Millis, NewCall, NewEnd, OpenedCall,
-    Pending, PendingCall, PendingEnd, PendingSummary, RecordedEnd, Retry, withheld,
+    Answered, CallFailure, CallSummary, Enqueue, EnqueueError, Hub, MemoryPending, Millis, NewCall,
+    NewEnd, OpenedCall, Pending, PendingCall, PendingEnd, PendingSummary, RecordedEnd, Retry,
+    Tries, withheld,
 };
 use crate::host::args_hash;
 use crate::surface::{CallPlace, Claim};
@@ -176,12 +177,13 @@ pub trait CallBroker: MaybeSendSync {
     /// it, or was a moment ago.
     fn connected(&self, id: &str) -> bool;
 
-    /// Whether the broker dropped the registration for good since it
-    /// started (its lease ended, or it made room for another), and its
-    /// host has not gone on as it since: a call of it waits for a host
-    /// nothing says will come back ([`crate::bot_surfaces::Hub::dropped`]).
-    /// False for one it holds, and for one it does not hold and did not
-    /// drop, which may resume (the broker started again since).
+    /// Whether the broker dropped the registration for good (its lease
+    /// ended, or it made room for another), and its host has not gone on
+    /// as it since, as its store keeps it, so also before the broker last
+    /// started: a call of it waits for a host nothing says will come back
+    /// ([`crate::bot_surfaces::Hub::dropped`]). False for one it holds,
+    /// and for one it does not hold and did not drop, which may resume
+    /// (the broker started again while it was held).
     fn dropped(&self, id: &str) -> bool;
 
     /// Sends `call` for its registration, under `claim`, the claim of
@@ -371,6 +373,25 @@ impl BrokerStore for MemoryPending {
     }
 }
 
+/// Has `hub` make `call` for `registration` over `store`, opened at the
+/// place `at` describes ([`BrokerStore::open_placed`]), as
+/// [`CallBroker::send`] does: for whoever keeps a hub and its store apart
+/// from a [`HubBroker`] (a test that plays a hub over the store the runs
+/// are in).
+///
+/// # Errors
+/// As [`Hub::enqueue`].
+pub fn enqueue_placed<S: BrokerStore>(
+    hub: &mut Hub,
+    store: &mut S,
+    at: &Placed<'_>,
+    registration: &str,
+    call: Enqueue,
+    now: Millis,
+) -> Result<String, EnqueueError> {
+    hub.enqueue(&mut Placing { store, at }, registration, call, now)
+}
+
 /// A [`BrokerStore`] as the hub sees it while one call is opened: every
 /// method is the store's, but [`Pending::open_call`], which is
 /// [`BrokerStore::open_placed`] with the call's place.
@@ -449,8 +470,31 @@ impl<S: BrokerStore> Pending for Placing<'_, S> {
         id: &str,
         outcome: Result<Value, CallFailure>,
         now: Millis,
-    ) -> Result<bool, Self::Error> {
+    ) -> Result<Answered, Self::Error> {
         self.store.answer_call(registration, id, outcome, now)
+    }
+    fn keep_tries(
+        &mut self,
+        registration: &str,
+        id: &str,
+        tries: &Tries,
+    ) -> Result<bool, Self::Error> {
+        self.store.keep_tries(registration, id, tries)
+    }
+    fn resends(&mut self, run: &str, registration: &str) -> Result<u32, Self::Error> {
+        self.store.resends(run, registration)
+    }
+    fn next_resend(&mut self, after: Millis) -> Result<Option<Millis>, Self::Error> {
+        self.store.next_resend(after)
+    }
+    fn set_dropped(&mut self, id: &str, at: Option<Millis>) -> Result<(), Self::Error> {
+        self.store.set_dropped(id, at)
+    }
+    fn is_dropped(&mut self, id: &str) -> Result<bool, Self::Error> {
+        self.store.is_dropped(id)
+    }
+    fn served(&mut self, id: &str, now: Millis) -> Result<(), Self::Error> {
+        self.store.served(id, now)
     }
     fn expire_calls(
         &mut self,
@@ -489,6 +533,12 @@ impl<S: BrokerStore> Pending for Placing<'_, S> {
         self.store.expire_ends(before)
     }
 }
+
+/// How long, in milliseconds of the broker's clock, a wait for a call's
+/// outcome waits before it settles deadlines again when settling them
+/// failed ([`CallBroker::outcome`]): the store may be locked, full or
+/// holding a row it cannot read, and asking again at once would spin.
+pub const EXPIRE_AGAIN_MS: u64 = 1_000;
 
 /// A [`CallBroker`] over a [`Hub`] and the store that keeps its calls,
 /// behind one lock, by a clock. The lock is never held across a wait.
@@ -624,7 +674,17 @@ impl<S: BrokerStore + Send + 'static> CallBroker for HubBroker<S> {
 
     fn dropped(&self, id: &str) -> bool {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        inner.0.dropped(id, self.clock.now())
+        let (hub, store) = &mut *inner;
+        match hub.dropped(store, id, self.clock.now()) {
+            Ok(dropped) => dropped,
+            Err(e) => {
+                // Not known to be dropped: its calls wait for their host
+                // until their deadlines, as those of a registration that
+                // may resume do.
+                tracing::warn!("clax-bot: whether registration {id} was dropped: {e}");
+                false
+            }
+        }
     }
 
     fn send(&self, claim: &Claim<'_>, call: &Sending<'_>) -> Result<String, CallFailure> {
@@ -672,8 +732,10 @@ impl<S: BrokerStore + Send + 'static> CallBroker for HubBroker<S> {
                 // and nothing has settled it yet (a daemon's timer
                 // does; a broker without one has only this).
                 let due = matches!(store.next_deadline(), Ok(Some(deadline)) if deadline <= now);
+                let mut unsettled = false;
                 if due && let Err(e) = hub.expire(store, now) {
                     tracing::warn!("clax-bot: settling the calls whose deadline has come: {e}");
+                    unsettled = true;
                 }
                 match store.settled(call) {
                     Ok(Some(outcome)) => return Outcome::Settled(outcome),
@@ -686,12 +748,18 @@ impl<S: BrokerStore + Send + 'static> CallBroker for HubBroker<S> {
                     return Outcome::NotYet;
                 }
                 // A deadline that comes before the instant asked for
-                // settles its call: looked at then.
-                store
-                    .next_deadline()
-                    .ok()
-                    .flatten()
-                    .map_or(until, |d| d.min(until))
+                // settles its call: looked at then. One that has come and
+                // could not be settled is tried again after a back-off by
+                // the clock, not at once.
+                if unsettled {
+                    now.after(EXPIRE_AGAIN_MS).min(until)
+                } else {
+                    store
+                        .next_deadline()
+                        .ok()
+                        .flatten()
+                        .map_or(until, |d| d.min(until))
+                }
             };
             tokio::select! {
                 () = &mut changed => {}

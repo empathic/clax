@@ -242,7 +242,10 @@ pub fn print(def: &Definition) -> String {
 ///
 /// # Errors
 /// That the print is longer than `limits.file_bytes`, with both
-/// numbers.
+/// numbers; and for a definition read under other limits that `limits`
+/// refuses in another way (more operations than [`Limits::operations`],
+/// a longer doc comment, types nested deeper, …), the reader's refusal.
+/// The print is read back under `limits` to tell.
 pub fn print_within(def: &Definition, limits: &Limits) -> Result<String, String> {
     let printed = print(def);
     if printed.len() > limits.file_bytes {
@@ -252,6 +255,10 @@ pub fn print_within(def: &Definition, limits: &Limits) -> Result<String, String>
             limits.file_bytes
         ));
     }
+    // As `print_manifest_within` reads it back: as Clax's, so that only
+    // what `limits` refuses is refused.
+    crate::parse(&printed, crate::Author::Clax, limits)
+        .map_err(|e| format!("a reader under these limits refuses the definition's print: {e}"))?;
     Ok(printed)
 }
 

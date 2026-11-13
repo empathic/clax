@@ -12,7 +12,7 @@
 use crate::allow::{callable, identifier, property};
 use crate::limits::Limits;
 use crate::model::{
-    Access, CLAX, Definition, Index, Interface, Kind, Member, Namespace, Op, Ty, op_at,
+    Access, CLAX, Definition, Field, Index, Interface, Kind, Member, Namespace, Op, Ty, op_at,
 };
 use crate::plan;
 use std::collections::{BTreeMap, BTreeSet};
@@ -159,6 +159,79 @@ impl From<Decl> for Site {
     }
 }
 
+/// One step of reading a type in the order [`Site::inner`] numbers the
+/// fields of the object types written inline in it ([`visit_inline`]).
+pub(crate) enum Visit<'a> {
+    /// A type, inside the inline field of this number, if any.
+    Type(&'a Ty, Option<usize>),
+    /// Field `k` of an object type written inline, whose fields are
+    /// `siblings`, numbered `n`: before the types inside it.
+    Field {
+        n: usize,
+        field: &'a Field,
+        siblings: &'a [Field],
+        k: usize,
+    },
+    /// Alternative `k` of the union `alts` and all inside it have been
+    /// read; the union is inside the inline field of this number, if
+    /// any.
+    Alternative {
+        alts: &'a [Ty],
+        k: usize,
+        inside: Option<usize>,
+    },
+}
+
+/// Reads `t` in the order its text is written, and so the order the
+/// readers keep the lines or pointers of its inline fields in: a type,
+/// then what is inside it; an object type's fields in order, each
+/// numbered before its own type is read; a union's alternatives in
+/// order. It is the one numbering of [`Site::inner`]. It recurses as
+/// deep as `t` nests, which [`shape`] has bounded.
+pub(crate) fn visit_inline<'a, E>(
+    t: &'a Ty,
+    f: &mut dyn FnMut(Visit<'a>) -> Result<(), E>,
+) -> Result<(), E> {
+    fn go<'a, E>(
+        t: &'a Ty,
+        inside: Option<usize>,
+        next: &mut usize,
+        f: &mut dyn FnMut(Visit<'a>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        f(Visit::Type(t, inside))?;
+        match t {
+            Ty::Array(x) | Ty::Record(x) => go(x, inside, next, f),
+            Ty::Union(ts) => {
+                for (k, x) in ts.iter().enumerate() {
+                    go(x, inside, next, f)?;
+                    f(Visit::Alternative {
+                        alts: ts,
+                        k,
+                        inside,
+                    })?;
+                }
+                Ok(())
+            }
+            Ty::Object(fields) => {
+                for (k, field) in fields.iter().enumerate() {
+                    let n = *next;
+                    *next += 1;
+                    f(Visit::Field {
+                        n,
+                        field,
+                        siblings: fields,
+                        k,
+                    })?;
+                    go(&field.ty, Some(n), next, f)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+    go(t, None, &mut 0, f)
+}
+
 /// The notation a definition was read from. A rule a definition breaks
 /// is the same rule whichever it was, and is said in the words its
 /// author wrote it in: a tag of a `.d.ts` file, a member of a manifest.
@@ -255,6 +328,21 @@ impl Notation {
             Notation::Manifest => format!(
                 "kind `{kind}` has no `allow`: a host's kind lists the operations its runs may have, so write `\"allow\": [\"{surface}.*\"]` for every operation of the surface, `[\"{surface}.<operation>\", …]` for some, or `[]` for none"
             ),
+        }
+    }
+
+    /// That a host's kind `kind`, of the surface `surface`, allows
+    /// `pattern`, one name that no operation has: a host's operation is
+    /// named with its surface, and one of Clax's with its namespace.
+    fn names_nothing(self, kind: &str, surface: &str, pattern: &str) -> String {
+        let why = format!(
+            "kind `{kind}` allows `{pattern}`, which names no operation: an allow pattern names the surface too (`{surface}.{pattern}`), and Clax's own operations by their namespace (`threads.open`)"
+        );
+        match self {
+            Notation::Dts => format!(
+                "{why}. Everything after a doc comment's first tag is tags: prose goes before them"
+            ),
+            Notation::Manifest => why,
         }
     }
 
@@ -394,8 +482,7 @@ fn problem<T>(site: impl Into<Site>, message: String) -> Result<T, Problem> {
 }
 
 /// The names a file may not give an interface, beside
-/// [`RESERVED_WORDS`]: the format's own types, and TypeScript's that it
-/// leaves out.
+/// [`RESERVED_WORDS`] and [`TS_TYPES_LEFT_OUT`]: the format's own types.
 const TYPE_WORDS: &[&str] = &[
     "string",
     "number",
@@ -409,12 +496,12 @@ const TYPE_WORDS: &[&str] = &[
     "Kinds",
     "Promise",
     "Array",
-    "any",
-    "never",
-    "object",
-    "symbol",
-    "bigint",
 ];
+
+/// TypeScript's types that the format leaves out, which no interface may
+/// be named either: the type reader refuses each as a type
+/// (`crate::dts`).
+const TS_TYPES_LEFT_OUT: &[&str] = &["any", "never", "object", "symbol", "bigint"];
 
 /// The words TypeScript keeps for itself: ECMAScript's reserved words,
 /// `undefined`, and the type operators. None can name a surface (which
@@ -692,6 +779,9 @@ fn name_problem(name: &str, of: NameOf<'_>, limits: &Limits) -> Option<String> {
         ),
         NameOf::Parameter(_) if reserved => Some(reserved_word(name, "a parameter")),
         NameOf::Interface if reserved => Some(reserved_word(name, "an interface")),
+        NameOf::Interface if TS_TYPES_LEFT_OUT.contains(&name) => Some(format!(
+            "an interface may not be named `{shown_name}`: that is one of TypeScript's types, which the format leaves out"
+        )),
         NameOf::Interface if TYPE_WORDS.contains(&name) => Some(format!(
             "an interface may not be named `{shown_name}`: that is one of the format's own type names"
         )),
@@ -746,7 +836,7 @@ pub(crate) fn build(
     interface_comments(&interfaces, &limits, notation)?;
     interface_fields(&interfaces, &limits)?;
     inherited(&interfaces, &limits, &mut index, notation)?;
-    kind_rules(&kinds, &limits, notation)?;
+    kind_rules(&root.name, &kinds, author, &limits, notation)?;
     types(&root, &interfaces, &kinds, &limits, &index, notation)?;
     results_are_objects(&kinds, notation)?;
     if let Author::Host { .. } = author {
@@ -1571,80 +1661,63 @@ fn ty(
     index: &Index,
     notation: Notation,
 ) -> Result<(), Problem> {
-    fn walk(
-        t: &Ty,
-        site: Site,
-        next: &mut usize,
-        what: &str,
-        limits: &Limits,
-        index: &Index,
-        notation: Notation,
-    ) -> Result<(), Problem> {
-        match t {
-            Ty::Named(n) if !index.interface_by_name.contains_key(n) => {
-                problem(site, notation.unknown_type(what, &shown(n)))
-            }
-            Ty::StrLit(s) => match s.chars().find(|&c| unshowable(c)) {
-                Some(c) => problem(
-                    site,
-                    format!(
-                        "{what} has a string literal that holds the character U+{:04X}: a literal holds no control character, no line end, and no character that shows nothing or changes the direction of text",
-                        c as u32
-                    ),
-                ),
-                None => Ok(()),
-            },
-            Ty::Array(x) | Ty::Record(x) => walk(x, site, next, what, limits, index, notation),
-            Ty::Union(ts) => {
-                let mut seen = BTreeSet::new();
-                for x in ts.iter() {
-                    walk(x, site, next, what, limits, index, notation)?;
-                    if !seen.insert(x) {
-                        return problem(
-                            site,
-                            format!(
-                                "{what} has a union that lists {} twice: a union lists each alternative once",
-                                alternative(x)
-                            ),
-                        );
-                    }
-                }
-                Ok(())
-            }
-            Ty::Object(fields) => {
-                let mut names = BTreeSet::new();
-                for f in fields {
-                    let site = Site {
-                        decl: site.decl,
-                        inner: Some(*next),
-                    };
-                    *next += 1;
-                    if let Some(m) = name_problem(&f.name, NameOf::InlineField(what), limits) {
-                        return problem(site, m);
-                    }
-                    if !names.insert(f.name.as_str()) {
-                        return problem(
-                            site,
-                            format!(
-                                "{what} has an object type that lists the field `{}` twice",
-                                shown(&f.name)
-                            ),
-                        );
-                    }
-                    if f.doc.is_some() {
-                        return problem(site, notation.documented_field(what, &shown(&f.name)));
-                    }
-                    walk(&f.ty, site, next, what, limits, index, notation)?;
-                }
-                Ok(())
-            }
-            _ => Ok(()),
-        }
-    }
     if let Some(m) = shape(t, limits) {
         return problem(decl, format!("{what} has {m}"));
     }
-    walk(t, decl.into(), &mut 0, what, limits, index, notation)
+    let at = |inner| Site { decl, inner };
+    visit_inline(t, &mut |step| match step {
+        Visit::Type(Ty::Named(n), inside) if !index.interface_by_name.contains_key(n) => {
+            problem(at(inside), notation.unknown_type(what, &shown(n)))
+        }
+        Visit::Type(Ty::StrLit(s), inside) => match s.chars().find(|&c| unshowable(c)) {
+            Some(c) => problem(
+                at(inside),
+                format!(
+                    "{what} has a string literal that holds the character U+{:04X}: a literal holds no control character, no line end, and no character that shows nothing or changes the direction of text",
+                    c as u32
+                ),
+            ),
+            None => Ok(()),
+        },
+        Visit::Type(..) => Ok(()),
+        Visit::Alternative { alts, k, inside } => {
+            let x = &alts[k];
+            if alts[..k].contains(x) {
+                return problem(
+                    at(inside),
+                    format!(
+                        "{what} has a union that lists {} twice: a union lists each alternative once",
+                        alternative(x)
+                    ),
+                );
+            }
+            Ok(())
+        }
+        Visit::Field {
+            n,
+            field: f,
+            siblings,
+            k,
+        } => {
+            let site = at(Some(n));
+            if let Some(m) = name_problem(&f.name, NameOf::InlineField(what), limits) {
+                return problem(site, m);
+            }
+            if siblings[..k].iter().any(|g| g.name == f.name) {
+                return problem(
+                    site,
+                    format!(
+                        "{what} has an object type that lists the field `{}` twice",
+                        shown(&f.name)
+                    ),
+                );
+            }
+            if f.doc.is_some() {
+                return problem(site, notation.documented_field(what, &shown(&f.name)));
+            }
+            Ok(())
+        }
+    })
 }
 
 /// Every type of the definition is well formed and names interfaces the
@@ -1697,7 +1770,18 @@ fn types(
 
 /// The rules a kind keeps by itself, and how many kinds there are.
 /// Their types are checked with every other type, in [`types`].
-fn kind_rules(kinds: &[Kind], limits: &Limits, notation: Notation) -> Result<(), Problem> {
+///
+/// A host's kind allows no pattern that is one name with no `.` but
+/// one [`Reserved`] holds: such a name is an operation directly on
+/// `clax` or nothing, and a word of prose written after `@allow` reads
+/// as one.
+fn kind_rules(
+    surface: &str,
+    kinds: &[Kind],
+    author: Author<'_>,
+    limits: &Limits,
+    notation: Notation,
+) -> Result<(), Problem> {
     if kinds.len() > limits.kinds {
         return problem(
             Decl::Kind(limits.kinds),
@@ -1747,21 +1831,17 @@ fn kind_rules(kinds: &[Kind], limits: &Limits, notation: Notation) -> Result<(),
                     ),
                 );
             }
+            if let (Author::Host { reserved }, Some(one)) = (author, pattern.single_name())
+                && !reserved.holds(one)
+            {
+                return problem(
+                    site,
+                    notation.names_nothing(&name, &shown(surface), &shown(one)),
+                );
+            }
         }
     }
     Ok(())
-}
-
-/// How many fields of object types written inline `t` holds, at any
-/// depth: what [`Site::inner`] counts.
-fn inline_fields(t: &Ty) -> usize {
-    let mut n = 0;
-    t.each(&mut |x| {
-        if let Ty::Object(fields) = x {
-            n += fields.len();
-        }
-    });
-    n
 }
 
 /// A host's kind's request names no required field whose type admits
@@ -1792,23 +1872,39 @@ fn request_fields(
                 ),
             )
         };
-        // The place of the next field written inline, as `Site::inner`
-        // counts them.
-        let mut next = 0;
+        // The number `Site::inner` gives each of the request's own
+        // fields written inline: those of an object type it is, or that
+        // is one of its alternatives.
+        let mut own: Vec<(&Field, usize)> = Vec::new();
+        let _ = visit_inline(&k.request, &mut |step| {
+            if let Visit::Field {
+                n, field, siblings, ..
+            } = step
+                && alts
+                    .iter()
+                    .any(|a| matches!(a, Ty::Object(fs) if std::ptr::eq(fs.as_slice(), siblings)))
+            {
+                own.push((field, n));
+            }
+            Ok::<(), ()>(())
+        });
         for alt in alts {
             match alt {
                 Ty::Object(fields) => {
                     for f in fields {
                         if !f.optional && f.ty.admits_null() {
+                            let inner = own
+                                .iter()
+                                .find(|(g, _)| std::ptr::eq(*g, f))
+                                .map(|&(_, at)| at);
                             return refuse(
                                 Site {
                                     decl: Decl::Request(n),
-                                    inner: Some(next),
+                                    inner,
                                 },
                                 &f.name,
                             );
                         }
-                        next += 1 + inline_fields(&f.ty);
                     }
                 }
                 Ty::Named(name) => {
@@ -1822,7 +1918,7 @@ fn request_fields(
                         }
                     }
                 }
-                other => next += inline_fields(other),
+                _ => {}
             }
         }
     }
@@ -1938,6 +2034,7 @@ fn instructions(def: &Definition, notation: Notation) -> Result<(), Problem> {
 /// lists more than `def`'s limits allow, or names an interface `def`
 /// lacks. It does not recurse, so a type built anywhere is safe to ask
 /// about.
+#[cfg(test)]
 pub(crate) fn foreign(def: &Definition, t: &Ty) -> Option<String> {
     if let Some(m) = shape(t, &def.limits) {
         return Some(format!("its type is beyond the surface's limits: {m}"));

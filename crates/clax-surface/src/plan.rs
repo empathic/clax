@@ -5,9 +5,9 @@
 //! each form a value can take, which of its alternatives the value can
 //! be, and which fields tell its object alternatives apart.
 //!
-//! The nodes of a definition are part of it ([`Plan`]). A type that is
-//! not one of the definition's own is built beside them, for one check
-//! ([`beside`]).
+//! The nodes of a definition are part of it ([`Plan`]). The crate's
+//! tests build a type that is not one of the definition's own beside
+//! them, for one check (`beside`).
 //!
 //! Building either is counted in steps, and stops when it has taken
 //! more than it was allowed ([`crate::Limits::plan_steps`]). A step
@@ -725,6 +725,7 @@ pub(crate) fn build(
 /// and how many steps building them took, counted and stopped as
 /// [`build`]'s are. `t` nests no deeper than the definition's limits
 /// allow.
+#[cfg(test)]
 pub(crate) fn beside(
     fixed: &[Node],
     by_name: &BTreeMap<String, usize>,

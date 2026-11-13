@@ -108,6 +108,29 @@ async fn a_stalled_run_waits_and_a_cancel_wakes_it_to_stop() {
     );
 }
 
+/// A message to a stalled run leaves its wait to run out; a wake ends it.
+#[tokio::test]
+async fn a_message_leaves_a_stalled_runs_wait_and_a_wake_ends_it() {
+    let env = Env::new().await;
+    env.api.push(env.script_turn("tu_1", "Edit", "return 1;"));
+    let run = env.run();
+    let driver = Driver::new(
+        DriverId::mint(),
+        Arc::new(env.deps_with(Arc::new(Unavailable))),
+        env.hub.clone(),
+    );
+    driver.wake(&run);
+    let report = driver.run_until_idle(Duration::from_secs(600)).await;
+    assert!(report.next_wake.is_some(), "the stalled run waits");
+    driver.messaged(&run);
+    let report = driver.run_until_idle(Duration::from_secs(600)).await;
+    assert!(report.ticks.is_empty(), "{report:?}");
+    assert!(report.next_wake.is_some(), "it still waits");
+    driver.wake(&run);
+    let report = driver.run_until_idle(Duration::from_secs(600)).await;
+    assert_eq!(report.ticks.len(), 1, "{report:?}");
+}
+
 #[tokio::test]
 async fn a_run_woken_while_another_streams_starts_at_once() {
     let env = Arc::new(Env::new().await);

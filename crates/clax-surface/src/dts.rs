@@ -547,14 +547,23 @@ impl Parser<'_> {
         }
         Ok(Some(doc))
     }
-    /// The end of a member: `;` or `,`, or nothing before `}`.
+    /// The end of a member: `;` or `,`, or nothing before `}` or before
+    /// a line break, as TypeScript ends a member of a type: the next
+    /// token starts on a later line than the member's last.
     fn end_member(&mut self) -> Result<(), Mistake> {
-        if self.eat(';') || self.eat(',') || self.is('}') {
+        let after_a_break = match (self.toks.get(self.at), self.at.checked_sub(1)) {
+            (Some(next), Some(last)) => next.1 > self.toks[last].1,
+            _ => false,
+        };
+        if self.eat(';') || self.eat(',') || self.is('}') || after_a_break {
             Ok(())
         } else {
             err(
                 self.line(),
-                format!("expected `;` or `}}`, found {}", self.found()),
+                format!(
+                    "expected `;`, `,`, a line break or `}}` after a member, found {}",
+                    self.found()
+                ),
             )
         }
     }
@@ -971,7 +980,9 @@ impl Parser<'_> {
                 for (w, line) in &t.words {
                     list.push(Pattern::parse(w).map_err(|message| Mistake {
                         line: *line,
-                        message,
+                        message: format!(
+                            "{message}. Everything after a doc comment's first tag is tags: prose goes before them"
+                        ),
                     })?);
                 }
             }
@@ -1149,8 +1160,8 @@ impl Parser<'_> {
                         self.want('>')?;
                         return Ok((Ty::Record(Box::new(v)), height + 1));
                     }
-                    "any" | "never" | "void" | "undefined" | "object" | "Array" | "Promise"
-                    | "Kinds" => {
+                    "any" | "never" | "void" | "undefined" | "object" | "symbol" | "bigint"
+                    | "Array" | "Promise" | "Kinds" | "keyof" | "typeof" | "readonly" => {
                         return err(
                             line,
                             format!("`{name}` is not a type of the format: {TYPES}"),

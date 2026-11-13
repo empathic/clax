@@ -401,13 +401,29 @@ impl Tick<'_> {
         title: &str,
         code: &str,
     ) -> Result<TickOutcome> {
+        let journal: BTreeMap<i64, CallEntry> = self
+            .store
+            .bot_calls(&self.run.id, self.n)?
+            .into_iter()
+            .map(|c| (c.seq(), c))
+            .collect();
         // The operations the script's `clax` has: the run's surfaces'
-        // ([`crate::registry::RunSurfaces::operations`]). A list no
-        // sandbox can build is the run's surfaces' fault and none of
-        // the model's, which could write no script that fares better:
-        // the run ends `failed`, before the step is begun.
-        let ops = self.surfaces.operations();
-        if let Err(why) = clax_bot_sandbox::validate_ops(ops) {
+        // ([`crate::registry::RunSurfaces::operations`]), and every
+        // operation the step's journal holds a call of. A binding whose
+        // provider is away lists only the operations its row keeps, so
+        // without the journal's a step run again could lack a name it
+        // called before (one its binding refused) and throw where the
+        // journal answers the call. A list no sandbox can build is the
+        // run's surfaces' fault and none of the model's, which could
+        // write no script that fares better: the run ends `failed`,
+        // before the step is begun.
+        let mut ops = self.surfaces.operations().to_vec();
+        for entry in journal.values() {
+            if !ops.iter().any(|op| op == entry.op()) {
+                ops.push(entry.op().to_string());
+            }
+        }
+        if let Err(why) = clax_bot_sandbox::validate_ops(&ops) {
             return self.ops_invalid(&why).await;
         }
         let s = self.begin(StepKind::Script)?;
@@ -418,12 +434,6 @@ impl Tick<'_> {
                 code: code.into(),
             },
         );
-        let journal: BTreeMap<i64, CallEntry> = self
-            .store
-            .bot_calls(&self.run.id, self.n)?
-            .into_iter()
-            .map(|c| (c.seq(), c))
-            .collect();
         // The surface that declared the run's kind comes first, the
         // run's other bindings after it in the order they were bound:
         // the order the sessions are opened, finished and joined in.

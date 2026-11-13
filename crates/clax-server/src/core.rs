@@ -16,8 +16,19 @@ use tokio::sync::watch;
 const SESSION_IDLE: Duration = Duration::from_secs(Store::SESSION_IDLE_SECS);
 /// How often the core deletes drafts older than
 /// [`clax_store::drafts::DRAFT_MAX_AGE`] and prunes ended ClaxBot runs
-/// ([`Store::prune_ended_runs`]), and once at start.
+/// ([`Store::prune_ended_runs`]), and once at start; the prune comes
+/// again after [`PRUNE_AGAIN`] instead while it leaves more.
 const DRAFT_SWEEP_INTERVAL: Duration = Duration::from_secs(3600);
+/// The most prune passes one wake-up of the core's pruner runs, one after
+/// another while each leaves more ([`Store::prune_ended_runs_while`]).
+const PRUNE_PASSES_PER_WAKE: usize = 16;
+/// How long, by the store's clock, one wake-up of the pruner begins
+/// passes for.
+const PRUNE_WAKE_BUDGET: Duration = Duration::from_secs(30);
+/// How soon the pruner wakes again after a wake-up that left more: a
+/// backlog drains at [`PRUNE_PASSES_PER_WAKE`] passes a wake-up, not one
+/// pass an hour.
+const PRUNE_AGAIN: Duration = Duration::from_secs(10);
 /// How long shutdown waits for the journal appender to close its segment.
 /// The appender stops as shutdown begins, beside the connection drain, and
 /// catches up for at most 0.5 s; a wedged one is left on its own thread,
@@ -566,9 +577,52 @@ pub(crate) async fn stop_store(store: Arc<Store>, within: Duration) -> bool {
     }
 }
 
+/// One wake-up of the core's pruner: prune passes one after another
+/// while each leaves more, [`PRUNE_PASSES_PER_WAKE`] at the most and none
+/// begun [`PRUNE_WAKE_BUDGET`] after the first by the store's clock,
+/// logged. How long until the next wake-up: [`PRUNE_AGAIN`] while the
+/// last pass left more, else [`DRAFT_SWEEP_INTERVAL`].
+fn prune_wake(st: &Store) -> Duration {
+    prune_wake_within(st, PRUNE_PASSES_PER_WAKE, PRUNE_WAKE_BUDGET)
+}
+
+/// [`prune_wake`] with `passes` and `budget` for its bounds.
+fn prune_wake_within(st: &Store, passes: usize, budget: Duration) -> Duration {
+    let until = st.now_utc() + chrono::Duration::from_std(budget).unwrap_or(chrono::Duration::MAX);
+    match st.prune_ended_runs_while(passes, Some(until)) {
+        Ok((p, passes)) => {
+            if p != clax_store::bot_runs::Pruned::default() {
+                tracing::info!(
+                    passes,
+                    calls = p.calls,
+                    pages = p.pages,
+                    draft_files = p.draft_files,
+                    pending_calls = p.pending_calls,
+                    run_ends = p.run_ends,
+                    messages = p.messages,
+                    contents = p.contents,
+                    registrations = p.registrations,
+                    more = p.more,
+                    "pruned ended ClaxBot runs"
+                );
+            }
+            if p.more {
+                PRUNE_AGAIN
+            } else {
+                DRAFT_SWEEP_INTERVAL
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "ClaxBot run prune failed");
+            DRAFT_SWEEP_INTERVAL
+        }
+    }
+}
+
 /// The background tasks a core runs: the session reaper, the grant
 /// sweeper, the planner statistics refresh, the drafts sweeper, the
-/// working sweeper and the price catalog's refresh.
+/// pruner of ended ClaxBot runs, the working sweeper and the price
+/// catalog's refresh.
 fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::task::JoinHandle<()>> {
     let fctx = state.feedback_ctx();
     let reap_state = state.clone();
@@ -658,16 +712,20 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
                 Ok(n) => tracing::info!(count = n, "removed old drafts"),
                 Err(e) => tracing::warn!(error = %e, "draft sweep failed"),
             }
-            match drafts_store.call(|st| st.prune_ended_runs()).await {
-                Ok(p) if p == clax_store::bot_runs::Pruned::default() => {}
-                Ok(p) => tracing::info!(
-                    calls = p.calls,
-                    pages = p.pages,
-                    draft_files = p.draft_files,
-                    "pruned ended ClaxBot runs"
-                ),
-                Err(e) => tracing::warn!(error = %e, "ClaxBot run prune failed"),
-            }
+        }
+    });
+
+    // Ended ClaxBot runs' rows past their keep: at start, then every
+    // DRAFT_SWEEP_INTERVAL, or every PRUNE_AGAIN while a wake-up leaves
+    // more.
+    let prune_store = state.store.clone();
+    let pruner = tokio::spawn(async move {
+        loop {
+            let next = prune_store
+                .call(|st| Ok(prune_wake(st)))
+                .await
+                .unwrap_or(DRAFT_SWEEP_INTERVAL);
+            tokio::time::sleep(next).await;
         }
     });
 
@@ -689,6 +747,7 @@ fn background_tasks(state: &AppState, reap_interval: Duration) -> Vec<tokio::tas
         grant_sweeper,
         optimizer,
         drafts_sweeper,
+        pruner,
         sweeper,
         catalog,
     ]
@@ -768,6 +827,51 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ov, want);
+    }
+
+    /// The pruner goes on while a pass leaves more, within its bounds,
+    /// and wakes again soon when it stops with more left.
+    #[test]
+    fn the_pruner_drains_a_backlog_by_wake_ups_and_wakes_again_soon_while_it_has_more() {
+        use clax_store::bot_runs::{PRUNE_RUNS_PER_TX, PRUNE_TXS_PER_PASS};
+        let dir = tempfile::tempdir().unwrap();
+        let home = clax_core::Home::at(dir.path().join("clax"));
+        let clock =
+            std::sync::Arc::new(clax_core::working::ManualClock::at("2026-10-21T10:00:00Z"));
+        let st = clax_store::Store::open_with_clock(&home, clock).unwrap();
+        let runs = PRUNE_RUNS_PER_TX * PRUNE_TXS_PER_PASS * 2 + 5;
+        rusqlite::Connection::open(home.db_path())
+            .unwrap()
+            .execute_batch(&format!(
+                "INSERT INTO bot_runs (id, artifact_id, person, request, thread_ids_json, status,
+                        model, key_source, base_version, created_at, updated_at, ended_at)
+                 WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i + 1 < {runs})
+                 SELECT printf('01JC%022d', i), 'a', 'u', 'thread', '[]', 'finished',
+                        'claude-sonnet-5-5', 'instance', 1, '2026-10-01T00:00:00.000Z',
+                        '2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z'
+                   FROM n;
+                 INSERT INTO bot_calls (run_id, step_n, seq, attempt, op, args_hash, ok,
+                        result_json, at)
+                 SELECT id, 1, 0, 1, 'threads.read', 'h', 1, '{{}}', '2026-10-01T00:00:00.000Z'
+                   FROM bot_runs;"
+            ))
+            .unwrap();
+        let held = || -> usize {
+            rusqlite::Connection::open(home.db_path())
+                .unwrap()
+                .query_row("SELECT count(*) FROM bot_calls", [], |r| r.get(0))
+                .unwrap()
+        };
+        // One pass a wake-up: it left more, and wakes again soon.
+        assert_eq!(
+            super::prune_wake_within(&st, 1, super::PRUNE_WAKE_BUDGET),
+            super::PRUNE_AGAIN
+        );
+        assert_eq!(held(), runs - PRUNE_RUNS_PER_TX * PRUNE_TXS_PER_PASS);
+        // A wake-up with room goes on until nothing is left, and sleeps
+        // until the next interval.
+        assert_eq!(super::prune_wake(&st), super::DRAFT_SWEEP_INTERVAL);
+        assert_eq!(held(), 0);
     }
 
     #[cfg(unix)]

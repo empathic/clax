@@ -23,4 +23,5 @@ mod resume;
 mod rules;
 mod runs;
 mod seam;
+mod unreadable;
 mod web;

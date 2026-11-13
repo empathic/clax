@@ -193,7 +193,16 @@ fn tool_message(id: &str, content: &Value, is_error: bool) -> Value {
 }
 
 /// The streaming request body of `req` for the host at `base_url`.
+/// The Chat Completions body of `req`, each tool's schema its
+/// [`super::Tool::input_schema`].
+#[cfg(test)]
 pub(super) fn body(req: &MessagesRequest, base_url: &str) -> Value {
+    body_marked(req, base_url, false)
+}
+
+/// The Chat Completions body of `req`; with `marked`, a tool's schema
+/// that has a text is its mark, for [`super::spliced`].
+pub(super) fn body_marked(req: &MessagesRequest, base_url: &str, marked: bool) -> Value {
     let mut messages = Vec::new();
     if !req.system.is_empty() {
         let system: Vec<&str> = req.system.iter().map(|s| s.text.as_str()).collect();
@@ -215,9 +224,11 @@ pub(super) fn body(req: &MessagesRequest, base_url: &str) -> Value {
         let tools: Vec<Value> = req
             .tools
             .iter()
-            .map(|t| {
+            .enumerate()
+            .map(|(n, t)| {
+                let schema = super::schema_of(&req.tools, n, marked);
                 json!({"type": "function", "function": {
-                    "name": t.name, "description": t.description, "parameters": t.input_schema,
+                    "name": t.name, "description": t.description, "parameters": schema,
                 }})
             })
             .collect();

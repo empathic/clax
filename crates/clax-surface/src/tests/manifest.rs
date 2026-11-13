@@ -2039,6 +2039,42 @@ fn every_definition_has_a_manifest_however_deep_its_types_nest() {
     );
 }
 
+/// The writers' checks say what a reader under the limits says: a
+/// definition read under the default limits has no manifest and no
+/// print within limits that take fewer operations, or fewer values,
+/// than it has, though its text is short and shallow enough.
+#[test]
+fn a_print_within_limits_is_one_a_reader_under_them_takes() {
+    let d = super::shell();
+    let fewer_ops = Limits {
+        operations: 1,
+        ..Limits::default()
+    };
+    let fewer_values = Limits {
+        manifest_values: 16,
+        ..Limits::default()
+    };
+    for limits in [&fewer_ops, &fewer_values] {
+        let printed = print_manifest(&d);
+        assert!(printed.len() <= limits.manifest_bytes);
+        let refused = manifest_within(&printed, limits).unwrap_err().to_string();
+        assert_eq!(
+            print_manifest_within(&d, limits),
+            Err(format!(
+                "a reader under these limits refuses the definition's manifest: {refused}"
+            ))
+        );
+    }
+    let refused = host_within(&print(&d), &fewer_ops).unwrap_err().to_string();
+    assert_eq!(
+        print_within(&d, &fewer_ops),
+        Err(format!(
+            "a reader under these limits refuses the definition's print: {refused}"
+        ))
+    );
+    assert_eq!(print_within(&d, &fewer_values), Ok(print(&d)));
+}
+
 /// With `depth` at its hard maximum, the deepest manifest there is fits
 /// the stack the crate's documentation names for that.
 #[test]

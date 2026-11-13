@@ -55,6 +55,12 @@ pub trait Runs: Send + Sync {
     fn started(&self, _run: &str) {}
     /// A cancel of run `run` was recorded: stop it at its next boundary.
     fn cancelled(&self, _run: &str) {}
+    /// A message to run `run`, which is not parked, was kept: drive it if
+    /// nothing will, leaving a wait its driver chose (a retry, a stall)
+    /// to run out. By default, as [`Runs::started`].
+    fn messaged(&self, run: &str) {
+        self.started(run);
+    }
 }
 
 /// Drives nothing: runs stay queued (a daemon built without a driver,

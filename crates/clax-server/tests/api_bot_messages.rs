@@ -6,9 +6,9 @@
 //! The surface is [`INBOX`], a test's own: its kind `chat` takes
 //! messages, `once` takes none.
 
-use clax_bot::clax_surface::wire::{End, Notation, Outcome, RunState};
 use clax_core::audit::AuditCtx;
 use clax_core::working::ManualClock;
+use clax_surface::wire::{End, Notation, Outcome, RunState};
 use clax_testkit::fake_host::{Behaviour, FakeHost, HttpTransport, When};
 use clax_testkit::fake_messages::{FakeMessages, Turn};
 use clax_testkit::remotes::json_of;
@@ -333,6 +333,19 @@ async fn messages_reach_the_runs_next_turn_and_its_host_follows_the_run() {
             .unwrap(),
         first
     );
+    // A message first answered `waiting` is answered so again, though
+    // it was given since: the first answer, whole.
+    assert_eq!(
+        d.host
+            .send_message(
+                &run,
+                json!({"say": "Skip the drafts.", "note": "n"}),
+                Some("k2")
+            )
+            .await
+            .unwrap(),
+        second
+    );
 }
 
 /// A kind with one parameter takes no message, a message not of the
@@ -406,6 +419,51 @@ async fn a_message_is_refused_unless_the_runs_kind_takes_it_and_its_starter_send
     other.serve_once().await;
     assert!(!d.host.events().is_empty());
     assert!(other.events().is_empty(), "{:?}", other.events());
+}
+
+/// A message to a run that waits out a delay its driver chose (here:
+/// another driver holds it) is kept and leaves the wait as it is: the
+/// run is not ticked for it, and is ticked once the wait has run out.
+#[tokio::test]
+async fn a_message_leaves_a_wait_its_driver_chose_to_run_out() {
+    let mut d = daemon(vec![Turn::finish("Cleared.")]).await;
+    let run = d
+        .host
+        .start_run("chat", json!({"ask": "Clear the inbox."}), None)
+        .await
+        .expect("the run starts");
+    let other = clax_store::bot_runs::DriverId::mint();
+    assert!(d.ts.store.claim_run(&run, &other, 60).unwrap().is_some());
+    let report = d.driver.run_until_idle(BUDGET).await;
+    assert_eq!(report.ticks.len(), 1, "{report:?}");
+    let waits = report.next_wake.expect("the run waits for its holder");
+    assert!(waits > Duration::ZERO, "{waits:?}");
+
+    let sent = d
+        .host
+        .send_message(
+            &run,
+            json!({"say": "Start with the oldest.", "note": "n"}),
+            None,
+        )
+        .await
+        .expect("sent");
+    assert!(!sent.waiting);
+    let report = d.driver.run_until_idle(BUDGET).await;
+    assert!(
+        report.ticks.is_empty(),
+        "ticked for the message: {report:?}"
+    );
+    assert_eq!(d.state(&run).await.messages_waiting, 1);
+    assert!(d.fake.requests().is_empty());
+
+    // Once the wait has run out (and the holder's claim has lapsed), the
+    // run takes its turn, and is given the message.
+    d.clock
+        .advance_millis(i64::try_from(waits.as_millis()).unwrap() + 60_000);
+    d.tick().await;
+    assert_eq!(d.state(&run).await.status, "finished");
+    assert_eq!(d.sent(0).matches("Message 1 to this run").count(), 1);
 }
 
 impl Daemon {
@@ -530,4 +588,53 @@ async fn a_message_a_cancelled_run_never_took_is_named_in_its_end() {
     // No event of the run comes after its end.
     let events = d.events(&run);
     assert_ne!(events.last().unwrap()["kind"], "stopped", "{events:?}");
+}
+
+/// The run-state query is read strictly, as the content routes read
+/// theirs, and an ended run's kept end that is JSON but no end is
+/// refused, never answered as a state without its end.
+#[tokio::test]
+async fn the_run_state_refuses_an_unknown_query_member_and_an_end_that_does_not_read() {
+    let mut d = daemon(vec![Turn::finish("Cleared.")]).await;
+    let run = d
+        .host
+        .start_run("chat", json!({"ask": "Clear the inbox."}), None)
+        .await
+        .expect("the run starts");
+    d.tick().await;
+    assert_eq!(d.state(&run).await.status, "finished");
+    let registration = d.host.registration().unwrap().to_string();
+    let get = |query: String| {
+        let (ts, run) = (&d.ts, &run);
+        async move {
+            json_of(
+                ts.client
+                    .get(format!(
+                        "{}/api/bot/surfaces/inbox/runs/{run}?{query}",
+                        ts.base
+                    ))
+                    .bearer_auth(&ts.token)
+                    .send()
+                    .await
+                    .unwrap(),
+            )
+            .await
+        }
+    };
+    let (s, v) = get(format!("registration={registration}&registraton=x")).await;
+    assert_eq!((s, code(&v)), (400, "invalid_request"), "{v}");
+    let (s, v) = get(format!("registration={registration}")).await;
+    assert_eq!(s, 200, "{v}");
+    for kept in ["null", r#"{"finished": 1}"#] {
+        let changed = rusqlite::Connection::open(d.ts.home.db_path())
+            .unwrap()
+            .execute(
+                "UPDATE bot_run_ends SET end_json = ?2 WHERE run_id = ?1",
+                rusqlite::params![run, kept],
+            )
+            .unwrap();
+        assert_eq!(changed, 1, "{kept}");
+        let (s, v) = get(format!("registration={registration}")).await;
+        assert_eq!((s, code(&v)), (500, "internal"), "{kept}: {v}");
+    }
 }

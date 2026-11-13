@@ -8,9 +8,9 @@
 //!   image's media type), in the order the value is written out, each
 //!   once. [`RunLimits::images_per_step`] of them at most, each of
 //!   [`RunLimits::image_bytes`] at most and [`RunLimits::image_side`]
-//!   pixels a side at most (as its header says), and none for a model
-//!   that takes none ([`crate::RunSettings::model_takes_images`]): each
-//!   one left out is listed with why ([`choose`]).
+//!   pixels a side at most (as its header says), and none while the run
+//!   sends the model none ([`crate::RunSettings::model_takes_images`]):
+//!   each one left out is listed with why ([`choose`]).
 //! - **What the tool result says.** Its JSON gains `images`, one entry
 //!   for each such handle, `{"id", "shown": true}` or `{"id", "shown":
 //!   false, "why"}`. A value that holds no image handle gains nothing, so
@@ -43,6 +43,11 @@ use serde_json::{Value, json};
 /// them.
 pub const IMAGES_SHOWN_ONCE: &str =
     "The images of this result were shown once, with it, and are not shown again.";
+
+/// Why an image is not shown when the run sends the model none
+/// ([`crate::RunSettings::model_takes_images`] is false): what was done,
+/// not a claim about the model, which nothing here knows.
+const NOT_SENT: &str = "images are not sent to the model here ([bot] model_takes_images is off)";
 
 /// The most values [`found`] looks at in one script's value: one past the
 /// sandbox's result limit could hold no more.
@@ -123,7 +128,7 @@ pub fn choose(found: Vec<ContentRow>, takes_images: bool, limits: &RunLimits) ->
     let mut chosen = Chosen::default();
     for row in found {
         let why = if !takes_images {
-            Some("this model takes no images".to_string())
+            Some(NOT_SENT.to_string())
         } else if chosen.shown.len() >= limits.images_per_step {
             Some(format!(
                 "{} images at the most are shown after a step",
@@ -202,19 +207,10 @@ pub fn show(
             continue;
         };
         let latest = !committed[at + 1..].iter().any(|s| answered(s));
-        let mut images = Vec::new();
-        if latest && takes_images {
-            for k in kept {
-                let row = store.bot_content_of(run, k["id"].as_str().unwrap_or_default())?;
-                let Some(row) = row.filter(|r| k["sha256"] == r.sha256) else {
-                    continue;
-                };
-                if let Some(bytes) = store.bot_content_bytes(&row)? {
-                    images.push(ToolImage::new(row.media_type.clone(), bytes));
-                    sent.push(row.id);
-                }
-            }
-        }
+        // The images, read once and only when a tool result is found to
+        // put them in: messages a policy gave may have left the step's
+        // out, and then no image is sent, so none is said sent.
+        let mut images: Option<Vec<ToolImage>> = None;
         for m in messages.iter_mut().filter(|m| m.role == Role::User) {
             for b in &mut m.content {
                 // A stored tool result is read back as JSON (`Block::Raw`).
@@ -227,7 +223,18 @@ pub fn show(
                 };
                 let is_error = v["is_error"] == true;
                 let replaced = if latest {
-                    Block::tool_result_with_images(id, text, is_error, &images, true)
+                    let images = match &mut images {
+                        Some(images) => images,
+                        None => {
+                            let read = if takes_images {
+                                read_kept(store, run, kept, &mut sent)?
+                            } else {
+                                Vec::new()
+                            };
+                            images.insert(read)
+                        }
+                    };
+                    Block::tool_result_with_images(id, text, is_error, images, true)
                 } else {
                     Block::tool_result(id, format!("{text}\n\n{IMAGES_SHOWN_ONCE}"), is_error)
                 };
@@ -243,6 +250,59 @@ pub fn show(
         }
     }
     Ok((messages, sent))
+}
+
+/// The images a request body holds: how many `image` blocks with a
+/// base64 source it has, wherever they are (a message's content or a
+/// tool result's), and the length of their base64 data, which the
+/// body's JSON text carries as it is. A turn's estimate of its cost
+/// prices these apart from the text ([`crate::run::IMAGE_INPUT_TOKENS`]).
+#[must_use]
+pub fn in_body(body: &Value) -> (u64, usize) {
+    let (mut count, mut bytes) = (0u64, 0usize);
+    let mut todo = vec![body];
+    while let Some(v) = todo.pop() {
+        match v {
+            Value::Array(items) => todo.extend(items.iter()),
+            Value::Object(o) => {
+                if o.get("type").and_then(Value::as_str) == Some("image")
+                    && let Some(source) = o.get("source")
+                    && source["type"] == "base64"
+                    && let Some(data) = source["data"].as_str()
+                {
+                    count += 1;
+                    bytes += data.len();
+                    continue;
+                }
+                todo.extend(o.values());
+            }
+            _ => {}
+        }
+    }
+    (count, bytes)
+}
+
+/// The bytes of the images a step kept (`kept`, its payload's `images`)
+/// that the run still holds with the same hash, in order, with each one's
+/// ID pushed onto `sent`.
+fn read_kept(
+    store: &Store,
+    run: &str,
+    kept: &[Value],
+    sent: &mut Vec<String>,
+) -> Result<Vec<ToolImage>> {
+    let mut images = Vec::new();
+    for k in kept {
+        let row = store.bot_content_of(run, k["id"].as_str().unwrap_or_default())?;
+        let Some(row) = row.filter(|r| k["sha256"] == r.sha256) else {
+            continue;
+        };
+        if let Some(bytes) = store.bot_content_bytes(&row)? {
+            images.push(ToolImage::new(row.media_type.clone(), bytes));
+            sent.push(row.id);
+        }
+    }
+    Ok(images)
 }
 
 /// What a script step's tool result and payload gain for the images its
@@ -331,7 +391,7 @@ mod tests {
         assert!(
             none.told
                 .iter()
-                .all(|t| t["shown"] == false && t["why"] == "this model takes no images")
+                .all(|t| t["shown"] == false && t["why"] == NOT_SENT)
         );
         assert_eq!(none.kept(), json!([]));
     }
@@ -477,5 +537,45 @@ mod tests {
         let steps = [turn(1, "tool_use"), step(2, StepKind::Script, payload)];
         let (_, ids) = show(&store, "r", &steps, false, messages).unwrap();
         assert!(ids.is_empty());
+    }
+
+    /// The images of a request body are counted wherever they are, with
+    /// the length of their base64 data; a body with none has none.
+    #[test]
+    fn a_bodys_images_are_counted_with_their_base64_length() {
+        let images = [
+            ToolImage::new("image/png", vec![0; 3]),
+            ToolImage::new("image/jpeg", vec![0; 4]),
+        ];
+        let body = json!({
+            "messages": [
+                Message::user(vec![Block::text("hi")]).to_json(),
+                Message::user(vec![Block::tool_result_with_images("tu_1", "the result", false, &images, true)]).to_json(),
+            ],
+        });
+        // 3 bytes are 4 base64 digits, 4 bytes are 8.
+        assert_eq!(in_body(&body), (2, 12));
+        let without = json!({"messages": [Message::user(vec![Block::tool_result("tu_1", "t", false)]).to_json()]});
+        assert_eq!(in_body(&without), (0, 0));
+    }
+
+    /// Messages a policy gave that left out the step's tool result, or
+    /// rewrote it into something other than a tool result with text, are
+    /// sent no image, so no image is said sent (and so none is marked
+    /// shown when the turn commits).
+    #[test]
+    fn an_image_whose_tool_result_the_messages_left_out_is_not_said_sent() {
+        let (_dir, store, payload) = kept_image();
+        let steps = [turn(1, "tool_use"), step(2, StepKind::Script, payload)];
+        for messages in [
+            vec![Message::user(vec![Block::text("the policy's summary")])],
+            vec![Message::user(vec![Block::tool_result(
+                "tu_other", "t", false,
+            )])],
+        ] {
+            let (out, ids) = show(&store, "r", &steps, true, messages.clone()).unwrap();
+            assert!(ids.is_empty(), "{ids:?}");
+            assert_eq!(out, messages);
+        }
     }
 }

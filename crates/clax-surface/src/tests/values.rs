@@ -552,17 +552,22 @@ fn a_kinds_request_message_and_result_are_checked() {
         message(chat.check_result(&d, &json!({"shot": {"id": "c2"}}))),
         Err("kind chat: the result.shot.media_type is missing".to_string())
     );
-    // A kind checked against a definition it is not one of is checked
-    // as any type from outside is: here its types are not that
-    // definition's.
+    // A kind checked against a definition it is not one of is not
+    // checked: a definition has its own kinds' types alone.
     let other = types("interface T { v: null }");
-    assert_eq!(chat.check_request(&other, &json!({"ask": "x"})), Ok(()));
-    let e = triage.check_request(&other, &request).unwrap_err();
-    assert_eq!(e.kind, ValueErrorKind::ForeignType);
-    assert_eq!(
-        e.message,
-        "kind triage: the request cannot be checked: its type names `Triage`, which the surface does not declare"
-    );
+    for (kind, name) in [(chat, "chat"), (triage, "triage")] {
+        let e = kind
+            .check_request(&other, &json!({"ask": "x"}))
+            .unwrap_err();
+        assert_eq!(e.kind, ValueErrorKind::ForeignType);
+        assert_eq!(
+            e.message,
+            format!(
+                "kind {name} is not one of the kinds of surface `{}`",
+                other.name()
+            )
+        );
+    }
     // A copy of a kind is the kind.
     let copy = chat.clone();
     assert_eq!(copy.check_result(&d, &json!({"shot": whole})), Ok(()));
@@ -813,6 +818,29 @@ fn allow_patterns_name_operations() {
     for s in ["*", "shell.*", "shell.settings.*", "files.read"] {
         assert_eq!(p(s).to_string(), s);
     }
+    // Clax's own operations are named without `clax.`, and no other
+    // surface takes the name: a pattern under it could match nothing,
+    // and says what to write.
+    for (bad, write) in [
+        ("clax.files.read", "files.read"),
+        ("clax.*", "*"),
+        ("clax.files.*", "files.*"),
+    ] {
+        assert_eq!(
+            Pattern::parse(bad),
+            Err(format!(
+                "`{bad}` is not an allow pattern: Clax's own operations are named without `clax.` (`{write}`)"
+            ))
+        );
+    }
+    assert_eq!(
+        Pattern::parse("clax"),
+        Err(
+            "`clax` is not an allow pattern: Clax's own operations are named without `clax.` \
+             (`files.read`, `files.*`)"
+                .to_string()
+        )
+    );
     // A list allows what one of its patterns names, and an empty one nothing.
     let list = [p("shell.parts"), p("threads.*")];
     let allows = |list: &[Pattern], op: &str| list.iter().any(|p| p.matches(op));

@@ -245,6 +245,38 @@ async fn messages_are_given_to_the_next_turn_once_in_the_order_they_arrived() {
     assert!(d.env.store.undelivered_messages(&run).unwrap().is_empty());
 }
 
+/// A message whose stored body does not read is not given to the model,
+/// as `null` or otherwise: the turn is given the others, the run goes on
+/// to its end, and the message stays undelivered, listed so.
+#[tokio::test]
+async fn a_message_whose_stored_body_does_not_read_is_not_given_and_stays_undelivered() {
+    let d = Inbox::new().await;
+    d.env.api.push(finish_turn("Cleared."));
+    let run = d.run();
+    d.send(&run, json!({"say": "Start with the oldest."}));
+    d.send(&run, json!({"say": "Skip the drafts."}));
+    let db = clax_core::Home::at(d.env._dir.path().join("ax")).db_path();
+    let c = rusqlite::Connection::open(&db).unwrap();
+    c.busy_timeout(std::time::Duration::from_secs(10)).unwrap();
+    let changed = c
+        .execute(
+            "UPDATE bot_messages SET body_json = '{\"say\": \"Sta' WHERE run_id = ?1 AND seq = 1",
+            rusqlite::params![run],
+        )
+        .unwrap();
+    assert_eq!(changed, 1);
+    drop(c);
+    let out = d.env.drive(&d.deps(), &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    let first = d.sent_texts(0);
+    assert_eq!(count(&first, "Message 1 to this run"), 0, "{first:#?}");
+    assert_eq!(count(&first, "null"), 0, "{first:#?}");
+    assert_eq!(count(&first, "Message 2 to this run"), 1, "{first:#?}");
+    assert_eq!(d.delivered_steps(&run), [None, Some(1)]);
+    let held = d.env.store.undelivered_messages(&run).unwrap();
+    assert_eq!(held.iter().map(|m| m.seq).collect::<Vec<_>>(), [1]);
+}
+
 /// A message sent while the run is between steps is given at the turn
 /// after its script, not before.
 #[tokio::test]

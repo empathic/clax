@@ -533,9 +533,11 @@ fn what_is_said_of_a_hostile_manifest_is_bounded() {
     }
 }
 
-/// An allow pattern written without its surface's name allows nothing,
-/// and cannot be refused: a kind may allow another surface's
-/// operations. `check` shows what each kind allows and notes it.
+/// An allow pattern written without its surface's name allows nothing
+/// of its own surface: a kind may allow another surface's operations,
+/// so a pattern of several names cannot be refused (a single name that
+/// no operation of Clax's own surface has is). `check` shows what each
+/// kind allows and notes it.
 #[test]
 fn check_notes_an_allow_pattern_that_matches_nothing_it_knows() {
     let dir = tempfile::tempdir().unwrap();
@@ -544,11 +546,10 @@ fn check_notes_an_allow_pattern_that_matches_nothing_it_knows() {
         r#"{"clax_surface": 1, "name": "shell", "operations": [
   {"name": "windows", "description": "D.", "access": "read", "result": {}},
   {"name": "settings.set", "description": "D.", "access": "write", "result": {}}],
- "kinds": [{"name": "slip", "description": "K.", "allow": ["windows", "settings.*", "files.read", "shell.windows"], "request": {}, "result": {"type": "object", "properties": {}, "additionalProperties": false}}]}"#,
+ "kinds": [{"name": "slip", "description": "K.", "allow": ["settings.*", "files.read", "shell.windows"], "request": {}, "result": {"type": "object", "properties": {}, "additionalProperties": false}}]}"#,
     )
     .unwrap();
-    let notes = "note: shell.json: kind `slip` allows `windows`, which matches no operation of `shell` or of Clax's own surface; it will match only another surface's (an allow pattern names the surface too: `shell.windows`)\n\
-                 note: shell.json: kind `slip` allows `settings.*`, which matches no operation of `shell` or of Clax's own surface; it will match only another surface's (an allow pattern names the surface too: `shell.settings.*`)\n";
+    let notes = "note: shell.json: kind `slip` allows `settings.*`, which matches no operation of `shell` or of Clax's own surface; it will match only another surface's (an allow pattern names the surface too: `shell.settings.*`)\n";
     for args in [
         vec!["check", "shell.json"],
         vec!["check", "--ops", "shell.json"],
@@ -571,7 +572,7 @@ fn check_notes_an_allow_pattern_that_matches_nothing_it_knows() {
          shell.settings.set  write   -      -     -\n\
          \n\
          KIND  ALLOWS\n\
-         slip  windows settings.* files.read shell.windows\n"
+         slip  settings.* files.read shell.windows\n"
     );
     let out = clax()
         .current_dir(dir.path())
@@ -580,10 +581,33 @@ fn check_notes_an_allow_pattern_that_matches_nothing_it_knows() {
         .unwrap();
     assert!(out.status.success() && out.stderr.is_empty());
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["notes"].as_array().unwrap().len(), 2);
+    assert_eq!(v["notes"].as_array().unwrap().len(), 1);
     assert_eq!(
         v["kinds"],
-        serde_json::json!([{"name": "slip", "allow": ["windows", "settings.*", "files.read", "shell.windows"]}])
+        serde_json::json!([{"name": "slip", "allow": ["settings.*", "files.read", "shell.windows"]}])
+    );
+    // One name with no `.` that no operation of Clax's own surface has
+    // names nothing anywhere: it is refused, not noted.
+    std::fs::write(
+        dir.path().join("bare.json"),
+        r#"{"clax_surface": 1, "name": "shell", "operations": [
+  {"name": "windows", "description": "D.", "access": "read", "result": {}}],
+ "kinds": [{"name": "slip", "description": "K.", "allow": ["windows"], "request": {}, "result": {"type": "object", "properties": {}, "additionalProperties": false}}]}"#,
+    )
+    .unwrap();
+    let out = clax()
+        .current_dir(dir.path())
+        .args(["bot", "surface", "check", "bare.json"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let said = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        said.contains(
+            "kind `slip` allows `windows`, which names no operation: an allow pattern names \
+             the surface too (`shell.windows`)"
+        ),
+        "{said}"
     );
     // A file with nothing to note says nothing on stderr.
     let dir = files();

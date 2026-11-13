@@ -16,7 +16,11 @@
 # key is applied once across the three, each run's end is delivered, and
 # an end that was acknowledged is not sent again.
 #
-# Every process it starts is stopped by its PID; the scratch directory
+# Every process it starts is stopped by its PID, whichever way it ends: a
+# step that fails, an exception no step caught, Ctrl-C, or SIGTERM or
+# SIGHUP to it. The shell starts no process of its own that outlives it:
+# the builds run in the foreground, and `exec` makes the shell's process
+# the Python that starts and stops the rest. The scratch directory
 # (target/smoke-bot-surfaces.*, the daemon's home and every log) is
 # removed when the run passes and kept, with the home removed, when it
 # fails. Prints one PASS line per step; any failure exits non-zero.
@@ -61,7 +65,7 @@ mkdir -p target
 SCRATCH="$(mktemp -d "$REPO/target/smoke-bot-surfaces.XXXXXX")"
 
 exec python3 - "$BIN" "$HOST" "$SCRATCH" "$REPO" <<'PY'
-import json, os, shutil, signal, subprocess, sys, time, urllib.error, urllib.request
+import json, os, shutil, signal, subprocess, sys, time, traceback, urllib.error, urllib.request
 
 BIN, HOST, SCRATCH, REPO = sys.argv[1:5]
 HOME = os.path.join(SCRATCH, "home")
@@ -95,10 +99,15 @@ def stop(name, p, timeout=20):
 
 
 def stop_all():
-    for name, p in reversed(started):
-        stop(name, p)
-        print(f"smoke: stopped {name} (pid {p.pid})", flush=True)
-    started.clear()
+    """Stops every process started, the last first; one that will not
+    stop is named, and the rest are stopped all the same."""
+    while started:
+        name, p = started.pop()
+        try:
+            stop(name, p)
+            print(f"smoke: stopped {name} (pid {p.pid})", flush=True)
+        except BaseException as e:
+            print(f"smoke: FAIL: could not stop {name} (pid {p.pid}): {e!r}", file=sys.stderr, flush=True)
 
 
 def fail(msg):
@@ -140,29 +149,6 @@ def lines(path):
         return []
 
 
-fixture = json.load(open(os.path.join(REPO, "docs/claxbot-surfaces/contract.json"), encoding="utf-8"))
-write(DTS, fixture["files"]["desk.d.ts"])
-
-# The scripted model: a script and a finish for each run.
-turns = os.path.join(SCRATCH, "turns.json")
-write(turns, json.dumps([
-    {"script": {"id": "tu_1", "title": "Tidy the desk", "code": CODE}},
-    {"finish": "Tidied."},
-    {"script": {"id": "tu_2", "title": "Tidy the desk", "code": CODE}},
-    {"finish": "Tidied again."},
-]))
-model = subprocess.Popen(
-    [sys.executable, os.path.join(REPO, "scripts/fake-messages.py"), turns, SCRATCH],
-    stdout=subprocess.PIPE, stderr=open(os.path.join(SCRATCH, "model.err"), "w"), text=True)
-started.append(("the scripted model", model))
-model_port = model.stdout.readline().strip()
-if not model_port.isdigit():
-    fail(f"the scripted model printed no port ({model_port!r})")
-
-os.makedirs(HOME)
-write(os.path.join(HOME, "config.toml"),
-      f'[sample]\napi_key_env = "CLAX_SMOKE_UNSET_KEY"\n'
-      f'[bot]\nbase_url = "http://127.0.0.1:{model_port}"\napi_key_env = "{KEY_ENV}"\n')
 daemons = [0]
 
 
@@ -301,89 +287,136 @@ def start_run(base, registration):
     return v["run"]
 
 
-# 1. A daemon, and a host that answers the question three rounds after it
-#    accepts it.
-daemon, info = start_daemon(0)
-port = info["port"]
-base = f"http://127.0.0.1:{port}"
-ok(f"clax serve on 127.0.0.1:{port} (pid {daemon.pid}), the scripted model on {model_port} (pid {model.pid})")
-first = Host("host-1", base, {"lamps": LAMPS, "ask": {"accept": {"result": "yes"}, "rounds": 3}})
-reg = first.registered()["registration"]
-if open(REG_FILE).read().strip() != reg:
-    fail("host-1 did not write its registration's ID to its file")
-ok(f"host-1 (pid {first.p.pid}) registered desk as {reg} and kept the ID in its file")
+def main():
+    """The smoke's steps: each failure calls fail(), which stops every
+    process started and exits."""
+    fixture = json.load(open(os.path.join(REPO, "docs/claxbot-surfaces/contract.json"), encoding="utf-8"))
+    write(DTS, fixture["files"]["desk.d.ts"])
 
-run1 = start_run(base, reg)
-v = status_is(base, run1, "parked", 60)
-if v["waiting_on"]["op"] != "desk.ask":
-    fail(f"run {run1} parked on {v['waiting_on']}, not desk.ask")
-ok(f"run {run1} parked on desk.ask while host-1 holds the question it accepted")
-status_is(base, run1, "finished", 90)
-first.sees(f"run {run1}'s end", ended_of(run1), 30)
-done1 = first.stop()
-# A run's calls have keys; its end and its progress events have none.
-keys1 = {d["key"] for d in done1["deliveries"] if d.get("run") == run1 and d.get("call") not in ("ended", "event")}
-if len(keys1) != 2 or done1["applied"] != {k: 1 for k in keys1}:
-    fail(f"host-1 applied {done1['applied']}, not each of run {run1}'s two keys once")
-ok(f"run {run1} finished; host-1 applied lamps and ask once each and was sent the run's end")
+    # The scripted model: a script and a finish for each run.
+    turns = os.path.join(SCRATCH, "turns.json")
+    write(turns, json.dumps([
+        {"script": {"id": "tu_1", "title": "Tidy the desk", "code": CODE}},
+        {"finish": "Tidied."},
+        {"script": {"id": "tu_2", "title": "Tidy the desk", "code": CODE}},
+        {"finish": "Tidied again."},
+    ]))
+    model = subprocess.Popen(
+        [sys.executable, os.path.join(REPO, "scripts/fake-messages.py"), turns, SCRATCH],
+        stdout=subprocess.PIPE, stderr=open(os.path.join(SCRATCH, "model.err"), "w"), text=True)
+    started.append(("the scripted model", model))
+    model_port = model.stdout.readline().strip()
+    if not model_port.isdigit():
+        fail(f"the scripted model printed no port ({model_port!r})")
 
-# 2. A second host process goes on as the registration and holds the next
-#    run's question unanswered until the run parks.
-second = Host("host-2", base, {"lamps": LAMPS, "ask": "never"})
-if second.registered()["registration"] != reg:
-    fail(f"host-2 did not go on as {reg}: {second.out()}")
-run2 = start_run(base, reg)
-ask = second.sees(f"run {run2}'s question", call_of("ask", run2))
-status_is(base, run2, "parked", 60)
-done2 = second.stop()
-if any(ended_of(run1)(d) for d in done2["deliveries"]):
-    fail(f"host-2 was sent run {run1}'s end, which host-1 acknowledged")
-lamps2 = [d["key"] for d in done2["deliveries"] if call_of("lamps", run2)(d)]
-if done2["applied"] != {lamps2[0]: 1}:
-    fail(f"host-2 applied {done2['applied']}, not run {run2}'s lamps once")
-ok(f"host-2 went on as {reg}, was not sent run {run1}'s acknowledged end, and run {run2} parked on its question {ask['id']}")
+    os.makedirs(HOME)
+    write(os.path.join(HOME, "config.toml"),
+          f'[sample]\napi_key_env = "CLAX_SMOKE_UNSET_KEY"\n'
+          f'[bot]\nbase_url = "http://127.0.0.1:{model_port}"\napi_key_env = "{KEY_ENV}"\n')
 
-# 3. The daemon restarts. A third host process, started while it is away,
-#    waits for it, goes on as the registration and is sent the question.
-stop("daemon 1", daemon)
-started.remove(("daemon 1", daemon))
-ok(f"daemon 1 (pid {daemon.pid}) stopped by SIGTERM to its PID")
-third = Host("host-3", base, {"lamps": LAMPS, "ask": {"result": "yes"}}, retry_for=60)
-daemon, info = start_daemon(port)
-if info["port"] != port:
-    fail(f"daemon 2 listens on {info['port']}, not {port}")
-ok(f"daemon 2 on the same home and port (pid {daemon.pid}), with a new token")
-if third.registered()["registration"] != reg:
-    fail(f"host-3 did not go on as {reg}: {third.out()}")
-again = third.sees(f"run {run2}'s question", call_of("ask", run2))
-if again["id"] != ask["id"] or again["key"] != ask["key"]:
-    fail(f"host-3 was sent {again}, not the question host-2 held ({ask})")
-ok(f"host-3 (pid {third.p.pid}) waited for the daemon, went on as {reg}, and was sent the question that waited")
-status_is(base, run2, "finished", 90)
-third.sees(f"run {run2}'s end", ended_of(run2), 30)
-done3 = third.stop()
-if any(call_of("lamps", run2)(d) or ended_of(run1)(d) for d in done3["deliveries"]):
-    fail(f"host-3 was sent what was settled before: {done3['deliveries']}")
-if done3["applied"] != {ask["key"]: 1}:
-    fail(f"host-3 applied {done3['applied']}, not run {run2}'s question once")
-ok(f"run {run2} finished after the restart; host-3 applied the question once and was sent the run's end")
+    # 1. A daemon, and a host that answers the question three rounds after it
+    #    accepts it.
+    daemon, info = start_daemon(0)
+    port = info["port"]
+    base = f"http://127.0.0.1:{port}"
+    ok(f"clax serve on 127.0.0.1:{port} (pid {daemon.pid}), the scripted model on {model_port} (pid {model.pid})")
+    first = Host("host-1", base, {"lamps": LAMPS, "ask": {"accept": {"result": "yes"}, "rounds": 3}})
+    reg = first.registered()["registration"]
+    if open(REG_FILE).read().strip() != reg:
+        fail("host-1 did not write its registration's ID to its file")
+    ok(f"host-1 (pid {first.p.pid}) registered desk as {reg} and kept the ID in its file")
 
-# 4. Across the three: each key applied once; the model's turns all used.
-applied = {}
-for done in (done1, done2, done3):
-    for k, n in done["applied"].items():
-        applied[k] = applied.get(k, 0) + n
-if len(applied) != 4 or set(applied.values()) != {1}:
-    fail(f"keys applied across the hosts: {applied}")
-asked = lines(os.path.join(SCRATCH, "requests.jsonl"))
-if [r["turn"] for r in asked] != [0, 1, 2, 3]:
-    fail(f"the scripted model answered {asked}, not its four turns once each")
-ok(f"each of the four keys was applied once across the three hosts: {sorted(applied)}")
+    run1 = start_run(base, reg)
+    v = status_is(base, run1, "parked", 60)
+    if v["waiting_on"]["op"] != "desk.ask":
+        fail(f"run {run1} parked on {v['waiting_on']}, not desk.ask")
+    ok(f"run {run1} parked on desk.ask while host-1 holds the question it accepted")
+    status_is(base, run1, "finished", 90)
+    first.sees(f"run {run1}'s end", ended_of(run1), 30)
+    done1 = first.stop()
+    # A run's calls have keys; its end and its progress events have none.
+    keys1 = {d["key"] for d in done1["deliveries"] if d.get("run") == run1 and d.get("call") not in ("ended", "event")}
+    if len(keys1) != 2 or done1["applied"] != {k: 1 for k in keys1}:
+        fail(f"host-1 applied {done1['applied']}, not each of run {run1}'s two keys once")
+    ok(f"run {run1} finished; host-1 applied lamps and ask once each and was sent the run's end")
 
-stop("daemon 2", daemon)
-started.remove(("daemon 2", daemon))
-print(f"smoke: stopped daemon 2 (pid {daemon.pid})", flush=True)
-stop_all()
-shutil.rmtree(SCRATCH)
-print("smoke: all steps passed; every process stopped and the scratch directory removed")
+    # 2. A second host process goes on as the registration and holds the next
+    #    run's question unanswered until the run parks.
+    second = Host("host-2", base, {"lamps": LAMPS, "ask": "never"})
+    if second.registered()["registration"] != reg:
+        fail(f"host-2 did not go on as {reg}: {second.out()}")
+    run2 = start_run(base, reg)
+    ask = second.sees(f"run {run2}'s question", call_of("ask", run2))
+    status_is(base, run2, "parked", 60)
+    done2 = second.stop()
+    if any(ended_of(run1)(d) for d in done2["deliveries"]):
+        fail(f"host-2 was sent run {run1}'s end, which host-1 acknowledged")
+    lamps2 = [d["key"] for d in done2["deliveries"] if call_of("lamps", run2)(d)]
+    if done2["applied"] != {lamps2[0]: 1}:
+        fail(f"host-2 applied {done2['applied']}, not run {run2}'s lamps once")
+    ok(f"host-2 went on as {reg}, was not sent run {run1}'s acknowledged end, and run {run2} parked on its question {ask['id']}")
+
+    # 3. The daemon restarts. A third host process, started while it is away,
+    #    waits for it, goes on as the registration and is sent the question.
+    stop("daemon 1", daemon)
+    started.remove(("daemon 1", daemon))
+    ok(f"daemon 1 (pid {daemon.pid}) stopped by SIGTERM to its PID")
+    third = Host("host-3", base, {"lamps": LAMPS, "ask": {"result": "yes"}}, retry_for=60)
+    daemon, info = start_daemon(port)
+    if info["port"] != port:
+        fail(f"daemon 2 listens on {info['port']}, not {port}")
+    ok(f"daemon 2 on the same home and port (pid {daemon.pid}), with a new token")
+    if third.registered()["registration"] != reg:
+        fail(f"host-3 did not go on as {reg}: {third.out()}")
+    again = third.sees(f"run {run2}'s question", call_of("ask", run2))
+    if again["id"] != ask["id"] or again["key"] != ask["key"]:
+        fail(f"host-3 was sent {again}, not the question host-2 held ({ask})")
+    ok(f"host-3 (pid {third.p.pid}) waited for the daemon, went on as {reg}, and was sent the question that waited")
+    status_is(base, run2, "finished", 90)
+    third.sees(f"run {run2}'s end", ended_of(run2), 30)
+    done3 = third.stop()
+    if any(call_of("lamps", run2)(d) or ended_of(run1)(d) for d in done3["deliveries"]):
+        fail(f"host-3 was sent what was settled before: {done3['deliveries']}")
+    if done3["applied"] != {ask["key"]: 1}:
+        fail(f"host-3 applied {done3['applied']}, not run {run2}'s question once")
+    ok(f"run {run2} finished after the restart; host-3 applied the question once and was sent the run's end")
+
+    # 4. Across the three: each key applied once; the model's turns all used.
+    applied = {}
+    for done in (done1, done2, done3):
+        for k, n in done["applied"].items():
+            applied[k] = applied.get(k, 0) + n
+    if len(applied) != 4 or set(applied.values()) != {1}:
+        fail(f"keys applied across the hosts: {applied}")
+    asked = lines(os.path.join(SCRATCH, "requests.jsonl"))
+    if [r["turn"] for r in asked] != [0, 1, 2, 3]:
+        fail(f"the scripted model answered {asked}, not its four turns once each")
+    ok(f"each of the four keys was applied once across the three hosts: {sorted(applied)}")
+
+    stop("daemon 2", daemon)
+    started.remove(("daemon 2", daemon))
+    print(f"smoke: stopped daemon 2 (pid {daemon.pid})", flush=True)
+    stop_all()
+    shutil.rmtree(SCRATCH)
+    print("smoke: all steps passed; every process stopped and the scratch directory removed")
+
+
+def on_signal(signum, _frame):
+    fail(f"stopped by signal {signum}")
+
+
+# Every way out stops every process started, by its PID: a step that
+# fails calls fail(); an exception no step caught, Ctrl-C (SIGINT) and
+# SIGTERM or SIGHUP to this process are each made a failure here.
+signal.signal(signal.SIGTERM, on_signal)
+signal.signal(signal.SIGHUP, on_signal)
+try:
+    main()
+except SystemExit:
+    raise
+except BaseException:
+    traceback.print_exc()
+    fail("an exception (above) stopped the smoke")
+finally:
+    stop_all()
 PY

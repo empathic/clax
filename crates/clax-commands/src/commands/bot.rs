@@ -720,7 +720,7 @@ mod tests {
 
     #[test]
     fn a_pattern_that_names_no_operation_known_is_noted() {
-        let source = "declare const shell: {\n  /** D. @read */\n  windows(): Promise<null>;\n  settings: {\n    /** D. @write */\n    set(): Promise<null>;\n  };\n};\ninterface Kinds {\n  /** K. @allow windows settings.* shell.windows shell.settings.* files.read * */\n  slip(request: null): {};\n  /** K. @allow */\n  none(request: null): {};\n}\n";
+        let source = "declare const shell: {\n  /** D. @read */\n  windows(): Promise<null>;\n  settings: {\n    /** D. @write */\n    set(): Promise<null>;\n  };\n};\ninterface Kinds {\n  /** K. @allow settings.* shell.windows shell.settings.* files.read * */\n  slip(request: null): {};\n  /** K. @allow */\n  none(request: null): {};\n}\n";
         let reserved = Reserved::of(&[]);
         let author = Author::Host {
             reserved: &reserved,
@@ -729,7 +729,6 @@ mod tests {
         assert_eq!(
             notes(&def, None),
             [
-                "kind `slip` allows `windows`, which matches no operation of `shell`; it will match only another surface's (an allow pattern names the surface too: `shell.windows`)",
                 "kind `slip` allows `settings.*`, which matches no operation of `shell`; it will match only another surface's (an allow pattern names the surface too: `shell.settings.*`)",
                 "kind `slip` allows `files.read`, which matches no operation of `shell`; it will match only another surface's",
             ]
@@ -743,15 +742,15 @@ mod tests {
         )
         .unwrap();
         let beside = notes(&def, Some(&clax));
-        assert_eq!(beside.len(), 2);
+        assert_eq!(beside.len(), 1);
         assert_eq!(
             beside[0],
-            "kind `slip` allows `windows`, which matches no operation of `shell` or of Clax's own surface; it will match only another surface's (an allow pattern names the surface too: `shell.windows`)"
+            "kind `slip` allows `settings.*`, which matches no operation of `shell` or of Clax's own surface; it will match only another surface's (an allow pattern names the surface too: `shell.settings.*`)"
         );
         assert_eq!(
             kinds_table(&def),
             "KIND  ALLOWS\n\
-             slip  windows settings.* shell.windows shell.settings.* files.read *\n\
+             slip  settings.* shell.windows shell.settings.* files.read *\n\
              none  (no operation)\n"
         );
         assert!(notes(&demo(), None).is_empty());

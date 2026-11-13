@@ -11,6 +11,33 @@ use clax_surface::wire::Call;
 
 const FIXTURE: &str = include_str!("../../../../docs/claxbot-surfaces/contract.json");
 
+thread_local! {
+    /// Whether the test's hub keeps its calls in the store the runs are
+    /// in ([`MemoryHub::in_the_store`]), not in memory: [`both`] runs
+    /// each test once each way.
+    static IN_THE_STORE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The test `$name` (an `async fn` of no arguments whose hub is made by
+/// [`desk_with`]) over each store: `$name::in_memory` and
+/// `$name::in_the_store`, each on a thread of its own.
+macro_rules! both {
+    ($name:ident) => {
+        mod $name {
+            #[tokio::test]
+            async fn in_memory() {
+                super::IN_THE_STORE.set(false);
+                super::$name().await;
+            }
+            #[tokio::test]
+            async fn in_the_store() {
+                super::IN_THE_STORE.set(true);
+                super::$name().await;
+            }
+        }
+    };
+}
+
 /// Three attempts, one second and then two apart.
 const RULE: Retry = Retry {
     attempts: 3,
@@ -32,7 +59,12 @@ async fn desk_with(
     limits: HubLimits,
     host: impl FnOnce(FakeHost<MemoryHub>) -> FakeHost<MemoryHub>,
 ) -> (MemoryHub, FakeHost<MemoryHub>) {
-    let hub = MemoryHub::with_limits(HostClock::at(0), limits).retrying(RULE);
+    let hub = if IN_THE_STORE.get() {
+        MemoryHub::in_the_store(HostClock::at(0), limits)
+    } else {
+        MemoryHub::with_limits(HostClock::at(0), limits)
+    }
+    .retrying(RULE);
     let mut host = host(
         FakeHost::new(hub.clone(), "desk", Notation::Dts, &desk_dts())
             .with_clock(hub.clock().clone()),
@@ -106,9 +138,9 @@ fn sent<'a>(host: &'a FakeHost<MemoryHub>, op: &str, id: &str) -> Vec<&'a Call> 
 // What repeating an operation means, when no answer comes
 // ---------------------------------------------------------------------------
 
+both!(a_read_its_host_lost_is_sent_again);
 /// `@read`: harmless to send again. A host that accepted a read and
 /// started again is sent it again, with its ID and key.
-#[tokio::test]
 async fn a_read_its_host_lost_is_sent_again() {
     let accept = || Behaviour::Accept {
         when: When::Rounds(1),
@@ -140,10 +172,10 @@ async fn a_read_its_host_lost_is_sent_again() {
     assert_eq!(keys, ["r", "r"]);
 }
 
+both!(a_write_or_an_effect_its_host_lost_is_sent_again_with_its_key);
 /// `@write` and `@effect`: applied once under a key, so sent again with
 /// it. A host that started again after accepting a write is sent it
 /// again, and applies its key once.
-#[tokio::test]
 async fn a_write_or_an_effect_its_host_lost_is_sent_again_with_its_key() {
     let later = || Behaviour::Accept {
         when: When::Rounds(1),
@@ -193,10 +225,10 @@ async fn a_write_or_an_effect_its_host_lost_is_sent_again_with_its_key() {
     }
 }
 
+both!(an_effect_tagged_once_is_never_sent_again_once_accepted);
 /// `@effect @once`: the host cannot tell a repeat, so a call it accepted
 /// is never sent again, also after it started again: at its deadline
 /// the script is thrown `unknown_outcome`.
-#[tokio::test]
 async fn an_effect_tagged_once_is_never_sent_again_once_accepted() {
     let (hub, mut host) = desk(|h| {
         h.on(
@@ -226,11 +258,11 @@ async fn an_effect_tagged_once_is_never_sent_again_once_accepted() {
     );
 }
 
+both!(an_accepted_once_call_failed_retryably_is_not_sent_again_in_one_serve_or_two);
 /// `@effect @once`, accepted, and then failed by its host with an error
 /// that says it may be tried again: the call is accepted, so it is never
 /// sent again, and the error is its outcome at once, whether the two
 /// answers come in one `serve` or in two.
-#[tokio::test]
 async fn an_accepted_once_call_failed_retryably_is_not_sent_again_in_one_serve_or_two() {
     for together in [true, false] {
         let (hub, mut host) = desk(|h| h.on("ask", Behaviour::Never)).await;
@@ -264,10 +296,10 @@ async fn an_accepted_once_call_failed_retryably_is_not_sent_again_in_one_serve_o
     }
 }
 
+both!(two_errors_for_one_attempt_spend_one_attempt);
 /// Two retryable errors for one attempt, in one `serve`: the second
 /// finds the next attempt planned and takes no attempt more, so the call
 /// is sent again after the first wait, not the second.
-#[tokio::test]
 async fn two_errors_for_one_attempt_spend_one_attempt() {
     let (hub, mut host) = desk(|h| h.on("settings.set", Behaviour::Never)).await;
     let id = call(&hub, &host, "settings.set", json!([{}]), "w");
@@ -291,9 +323,9 @@ async fn two_errors_for_one_attempt_spend_one_attempt() {
 // What the script sees when the policy is spent
 // ---------------------------------------------------------------------------
 
+both!(a_call_no_host_took_is_unavailable_and_nothing_happened);
 /// `unavailable`: no host took the call. A host that is not connected
 /// is waited for until the call's deadline, and sent nothing meanwhile.
-#[tokio::test]
 async fn a_call_no_host_took_is_unavailable_and_nothing_happened() {
     let (hub, mut host) = desk(|h| h.on("notify", Behaviour::result(Value::Null))).await;
     host.serve_once().await;
@@ -325,8 +357,8 @@ async fn a_call_no_host_took_is_unavailable_and_nothing_happened() {
     assert_eq!(refused.unwrap_err().code, "unavailable");
 }
 
+both!(a_read_accepted_and_not_answered_expires);
 /// `expired`: a read was accepted and not answered in time.
-#[tokio::test]
 async fn a_read_accepted_and_not_answered_expires() {
     let accept = Behaviour::Accept {
         when: When::Rounds(1_000),
@@ -341,9 +373,9 @@ async fn a_read_accepted_and_not_answered_expires() {
     assert_eq!((thrown.code.as_str(), thrown.retryable), ("expired", false));
 }
 
+both!(a_write_accepted_and_not_answered_has_an_unknown_outcome);
 /// `unknown_outcome`: a write or an effect was accepted and not
 /// answered. It may have taken effect.
-#[tokio::test]
 async fn a_write_accepted_and_not_answered_has_an_unknown_outcome() {
     let accept = Behaviour::Accept {
         when: When::Rounds(1_000),
@@ -365,10 +397,10 @@ async fn a_write_accepted_and_not_answered_has_an_unknown_outcome() {
 // A host's account, and the bounds of sending again
 // ---------------------------------------------------------------------------
 
+both!(a_retryable_error_is_sent_again_after_its_wait_and_then_succeeds);
 /// A host's error that says it may be tried again: the call is sent
 /// again after the rule's wait, under its ID and key, and the result
 /// that follows is the script's. Nothing is sent again before the wait.
-#[tokio::test]
 async fn a_retryable_error_is_sent_again_after_its_wait_and_then_succeeds() {
     let flaky = Behaviour::fails(1, "invalid", Behaviour::result(Value::Null));
     let (hub, mut host) = desk(|h| h.on("settings.set", flaky)).await;
@@ -391,9 +423,9 @@ async fn a_retryable_error_is_sent_again_after_its_wait_and_then_succeeds() {
     );
 }
 
+both!(attempts_spent_throw_the_hosts_error);
 /// The attempts spent: the script is thrown the host's last error, which
 /// says retrying may help. The waits between attempts grow.
-#[tokio::test]
 async fn attempts_spent_throw_the_hosts_error() {
     let always = Behaviour::fails(100, "invalid", Behaviour::Never);
     let (hub, mut host) = desk(|h| h.on("settings.set", always)).await;
@@ -414,11 +446,11 @@ async fn attempts_spent_throw_the_hosts_error() {
     assert_eq!(host.failures(), 3);
 }
 
+both!(the_deadline_reached_in_a_wait_throws_the_last_error);
 /// A wait that would end at or after the deadline is not waited: the
 /// script is thrown the host's error at once. One that ends before it,
 /// whose host is then away, is thrown that error at the deadline: the
 /// call was not sent again, and the error is what is known of it.
-#[tokio::test]
 async fn the_deadline_reached_in_a_wait_throws_the_last_error() {
     let fails = Behaviour::fails(100, "invalid", Behaviour::Never);
     let (hub, mut host) = desk(|h| h.on("settings.set", fails)).await;
@@ -448,9 +480,9 @@ async fn the_deadline_reached_in_a_wait_throws_the_last_error() {
     assert_eq!(sent(&host, "settings.set", &long).len(), 1);
 }
 
+both!(a_final_error_is_not_sent_again);
 /// An error that does not say it may be tried again is final: thrown at
 /// once, not retryable, and the call is sent once.
-#[tokio::test]
 async fn a_final_error_is_not_sent_again() {
     let (hub, mut host) = desk(|h| h.on("settings.set", Behaviour::error("invalid", "No."))).await;
     let id = call(&hub, &host, "settings.set", json!([{}]), "w");
@@ -465,10 +497,10 @@ async fn a_final_error_is_not_sent_again() {
     assert_eq!(sent(&host, "settings.set", &id).len(), 1);
 }
 
+both!(a_once_call_accepted_then_its_host_gone_has_an_unknown_outcome);
 /// `@once`, accepted, and then its host is gone for good: never sent
 /// again, and the script is thrown `unknown_outcome` at the deadline
 /// whatever the host's other calls do.
-#[tokio::test]
 async fn a_once_call_accepted_then_its_host_gone_has_an_unknown_outcome() {
     let (hub, mut host) = desk(|h| {
         h.on(
@@ -490,11 +522,11 @@ async fn a_once_call_accepted_then_its_host_gone_has_an_unknown_outcome() {
     assert_eq!(sent(&host, "ask", &ask).len(), 1);
 }
 
+both!(a_hub_that_starts_again_sends_a_call_in_its_wait_when_its_host_is_back);
 /// The hub starts again (a daemon's restart) while a call waits out its
 /// wait after a retryable error: the call is in the store, and is sent
 /// to its host when it goes on as its registration, under its ID and
 /// key.
-#[tokio::test]
 async fn a_hub_that_starts_again_sends_a_call_in_its_wait_when_its_host_is_back() {
     let flaky = Behaviour::fails(1, "invalid", Behaviour::result(Value::Null));
     let (hub, mut host) = desk(|h| h.on("settings.set", flaky)).await;
@@ -514,11 +546,11 @@ async fn a_hub_that_starts_again_sends_a_call_in_its_wait_when_its_host_is_back(
     assert_eq!(host.applied("w"), 1);
 }
 
+both!(a_host_that_comes_and_goes_is_sent_its_call_as_often_as_the_rule_allows);
 /// A host that comes and goes: each time it comes back it may have lost
 /// the write it accepted, which is sent again as the rule allows and no
 /// more: its attempts are the call's, its waits grow, and nothing is
 /// sent while it is away.
-#[tokio::test]
 async fn a_host_that_comes_and_goes_is_sent_its_call_as_often_as_the_rule_allows() {
     let accept = Behaviour::Accept {
         when: When::Rounds(1_000),
@@ -552,10 +584,10 @@ async fn a_host_that_comes_and_goes_is_sent_its_call_as_often_as_the_rule_allows
     assert!(hub.is_open(&id), "accepted: its deadline stands");
 }
 
+both!(a_runs_calls_are_sent_again_no_more_than_its_bound);
 /// A run's calls are sent again no more than the hub's bound for a run,
 /// across its calls: past it, a host's retryable error is the call's
 /// outcome at once.
-#[tokio::test]
 async fn a_runs_calls_are_sent_again_no_more_than_its_bound() {
     let limits = HubLimits {
         resends_per_run: 2,
@@ -588,13 +620,13 @@ async fn a_runs_calls_are_sent_again_no_more_than_its_bound() {
     assert!(hub.is_open(&c));
 }
 
+both!(retry_after_spends_nothing_and_waits_at_least_the_rules_first_wait);
 /// `retry_after_ms` is the host's account and no failure: it spends no
 /// attempt and none of the run's sendings again. Seventy answers of it
 /// leave the call open, sent again each time after the rule's first
 /// wait (`retry_after_ms: 0` is not sent again at once), and a run whose
 /// bound of sendings again is one still has it for the host's retryable
 /// error after them.
-#[tokio::test]
 async fn retry_after_spends_nothing_and_waits_at_least_the_rules_first_wait() {
     let limits = HubLimits {
         resends_per_run: 1,
@@ -748,14 +780,13 @@ async fn an_old_host_is_served_as_before_rules_were_given() {
     );
 }
 
-/// The hub starts again: a call it finds in the store is under no rule
-/// it was given ([`HubLimits::retry_kept`], [`Retry::NONE`]), so a write
-/// its host had accepted is not sent again when the host goes on as its
-/// registration. Once its run makes it again with its key, the run's
-/// rule takes over: the next time the host may have lost it (it was
-/// away), it is sent again after the rule's wait.
-#[tokio::test]
-async fn a_call_made_again_after_a_restart_goes_on_under_its_runs_rule() {
+both!(a_call_goes_on_after_a_restart_under_the_rule_kept_with_it);
+/// The hub starts again: a call it finds in the store goes on under the
+/// rule its run gave, kept with it, from where it was: a write its host
+/// had accepted is sent again after the rule's wait when the host goes
+/// on as its registration, and a call made again with its key is the
+/// same call, with the same attempts.
+async fn a_call_goes_on_after_a_restart_under_the_rule_kept_with_it() {
     let accept = Behaviour::Accept {
         when: When::Rounds(100_000),
         then: Outcome::Result(Value::Null),
@@ -776,25 +807,324 @@ async fn a_call_made_again_after_a_restart_goes_on_under_its_runs_rule() {
     let id = made();
     host.serve_once().await;
     host.serve_once().await;
+    let before = hub.tries(&id).expect("open");
+    assert_eq!(before.rule, Some(RULE), "kept with the call");
     hub.restart(HubLimits::default());
     host.restart();
     host.register().await.expect("goes on as the registration");
-    for _ in 0..3 {
-        host.serve_once().await;
-        hub.clock().advance(2_000);
-    }
-    assert_eq!(sent(&host, "settings.set", &id).len(), 1, "no rule given");
-    assert_eq!(made(), id, "made again with its key");
-    hub.clock().advance(HubLimits::default().connected_ms + 1);
     assert_eq!(delivered(&host.serve_once().await), 0, "its wait first");
     hub.clock().advance(1_000);
     assert_eq!(delivered(&host.serve_once().await), 1, "the run's rule");
+    let after = hub.tries(&id).expect("open");
+    assert_eq!(after.failures, before.failures + 1, "one attempt spent");
+    assert_eq!(made(), id, "made again with its key");
+    assert_eq!(hub.tries(&id).map(|t| t.failures), Some(after.failures));
 }
 
+both!(a_restart_between_a_hosts_visits_spends_no_attempt_and_gives_none_back);
+/// The rule's attempts are the call's whatever happens to the hub: a
+/// host that comes and goes while the hub starts again between its
+/// visits is sent its accepted write as often as the rule allows, and no
+/// more, as when the hub kept running.
+async fn a_restart_between_a_hosts_visits_spends_no_attempt_and_gives_none_back() {
+    let accept = Behaviour::Accept {
+        when: When::Rounds(1_000),
+        then: Outcome::Result(Value::Null),
+    };
+    let (hub, mut host) = desk(|h| h.on("settings.set", accept)).await;
+    let id = call_of(
+        &hub,
+        host.registration().unwrap(),
+        "run-1",
+        "settings.set",
+        json!([{}]),
+        "w",
+        600_000,
+    );
+    host.serve_once().await;
+    host.serve_once().await;
+    let away = HubLimits::default().connected_ms + 1;
+    let mut seen = vec![sent(&host, "settings.set", &id).len()];
+    for _ in 0..6 {
+        hub.clock().advance(away);
+        hub.restart(HubLimits::default());
+        assert!(matches!(host.serve_once().await, Served::Refused(404, _)));
+        host.register().await.expect("goes on as the registration");
+        for _ in 0..3 {
+            host.serve_once().await;
+            hub.clock().advance(1_000);
+        }
+        seen.push(sent(&host, "settings.set", &id).len());
+    }
+    assert_eq!(seen, [1, 2, 3, 3, 3, 3, 3], "two more attempts, then none");
+    assert!(hub.is_open(&id), "accepted: its deadline stands");
+}
+
+both!(an_accepted_call_is_sent_again_after_its_registrations_lease_ended);
+/// A host whose lease ended (away for more than five minutes and
+/// fifteen seconds) and that comes back as its registration is sent the
+/// write it had accepted, as its rule allows: the hub dropped the
+/// registration, and kept the call's attempts with the call.
+async fn an_accepted_call_is_sent_again_after_its_registrations_lease_ended() {
+    let accept = Behaviour::Accept {
+        when: When::Rounds(1_000),
+        then: Outcome::Result(Value::Null),
+    };
+    let (hub, mut host) = desk(|h| h.on("settings.set", accept)).await;
+    let registration = host.registration().unwrap().to_string();
+    let id = call_of(
+        &hub,
+        &registration,
+        "run-1",
+        "settings.set",
+        json!([{}]),
+        "w",
+        24 * 60 * 60 * 1000,
+    );
+    host.serve_once().await;
+    host.serve_once().await;
+    let limits = HubLimits::default();
+    hub.clock()
+        .advance(limits.connected_ms + limits.lease_ms + 1);
+    assert!(hub.dropped(&registration), "its lease ended");
+    // The host starts again, and goes on as its registration.
+    host.restart();
+    host.register().await.expect("goes on as the registration");
+    assert!(!hub.dropped(&registration));
+    assert_eq!(delivered(&host.serve_once().await), 0, "its wait first");
+    hub.clock().advance(1_000);
+    assert_eq!(delivered(&host.serve_once().await), 1, "sent again");
+    assert_eq!(sent(&host, "settings.set", &id).len(), 2);
+}
+
+both!(a_host_that_starts_again_at_once_and_goes_on_is_sent_what_it_had_accepted);
+/// A host that starts again and registers as its registration within
+/// fifteen seconds (the hub still takes it for connected) has said that
+/// it started again: it is sent the call it had accepted, as its rule
+/// allows.
+async fn a_host_that_starts_again_at_once_and_goes_on_is_sent_what_it_had_accepted() {
+    let accept = Behaviour::Accept {
+        when: When::Rounds(1_000),
+        then: Outcome::Result(Value::Null),
+    };
+    let (hub, mut host) = desk(|h| h.on("settings.set", accept)).await;
+    let id = call(&hub, &host, "settings.set", json!([{}]), "w");
+    host.serve_once().await;
+    host.serve_once().await;
+    hub.clock().advance(2_000);
+    host.restart();
+    host.register().await.expect("goes on as the registration");
+    assert_eq!(delivered(&host.serve_once().await), 0, "its wait first");
+    hub.clock().advance(1_000);
+    assert_eq!(delivered(&host.serve_once().await), 1, "sent again");
+    assert_eq!(sent(&host, "settings.set", &id).len(), 2);
+}
+
+both!(a_host_that_comes_back_with_its_answer_spends_no_attempt);
+/// A host that comes back after it was away with the answer to the call
+/// it had accepted, in the first `serve`, spends nothing of its run's
+/// sendings again: the answer is taken before the call is taken for
+/// lost. With one sending again for the run, a call that fails after it
+/// is still sent again. The same for a host that says `accepted` again.
+async fn a_host_that_comes_back_with_its_answer_spends_no_attempt() {
+    for then in [Outcome::Result(Value::Null), Outcome::Accepted] {
+        let limits = HubLimits {
+            resends_per_run: 1,
+            ..HubLimits::default()
+        };
+        let (hub, mut host) = desk_with(limits, |h| h.on("settings.set", Behaviour::Never)).await;
+        let registration = host.registration().unwrap().to_string();
+        let id = call_of(
+            &hub,
+            &registration,
+            "run-1",
+            "settings.set",
+            json!([{}]),
+            "w",
+            600_000,
+        );
+        assert_eq!(delivered(&host.serve_once().await), 1);
+        host.answer(&id, Outcome::Accepted);
+        host.serve_once().await;
+        hub.clock().advance(HubLimits::default().connected_ms + 1);
+        host.answer(&id, then.clone());
+        host.serve_once().await;
+        hub.clock().advance(4_000);
+        let at = format!("{then:?}");
+        assert_eq!(
+            delivered(&host.serve_once().await),
+            0,
+            "{at}: not sent again"
+        );
+        // The run's one sending again is left for its next call.
+        let next = call_of(
+            &hub,
+            &registration,
+            "run-1",
+            "settings.set",
+            json!([{}]),
+            "w2",
+            600_000,
+        );
+        assert_eq!(delivered(&host.serve_once().await), 1, "{at}");
+        host.answer(
+            &next,
+            Outcome::Error(CallError::new("invalid", "busy").retryable()),
+        );
+        host.serve_once().await;
+        assert!(hub.is_open(&next), "{at}: to be sent again");
+        hub.clock().advance(1_000);
+        assert_eq!(delivered(&host.serve_once().await), 1, "{at}: sent again");
+    }
+}
+
+both!(an_error_for_a_call_taken_for_lost_is_kept_as_its_last_failure);
+/// A host that comes back after it was away and fails the call it had
+/// accepted, with an error that may be tried again, in a later `serve`
+/// than the one that came back: the error is the call's last failure,
+/// so a deadline that comes before the call is sent again throws it.
+async fn an_error_for_a_call_taken_for_lost_is_kept_as_its_last_failure() {
+    let (hub, mut host) = desk(|h| h.on("settings.set", Behaviour::Never)).await;
+    let id = call_of(
+        &hub,
+        host.registration().unwrap(),
+        "run-1",
+        "settings.set",
+        json!([{}]),
+        "w",
+        HubLimits::default().connected_ms + 1_500,
+    );
+    assert_eq!(delivered(&host.serve_once().await), 1);
+    host.answer(&id, Outcome::Accepted);
+    host.serve_once().await;
+    hub.clock().advance(HubLimits::default().connected_ms + 1);
+    // Back: taken for lost, and planned a second from now.
+    assert_eq!(delivered(&host.serve_once().await), 0);
+    host.answer(
+        &id,
+        Outcome::Error(CallError::new("invalid", "busy").retryable()),
+    );
+    host.serve_once().await;
+    host.drop_rounds(100);
+    hub.clock().advance(5_000);
+    let thrown = failure(&hub, &id);
+    assert_eq!((thrown.code.as_str(), thrown.retryable), ("invalid", true));
+}
+
+both!(retry_after_for_an_accepted_call_sends_it_again_but_an_accepted_once_one_settles);
+/// `retry_after_ms` for a call its host had accepted, in the `serve` that
+/// accepts it or a later one, and before or after the hub starts again:
+/// a read, a write and an effect are sent again then, under their ID and
+/// key, until their host accepts them again; an `@once` call, which is
+/// never sent again once accepted, is settled at once, `unavailable`:
+/// its host did not take it.
+async fn retry_after_for_an_accepted_call_sends_it_again_but_an_accepted_once_one_settles() {
+    let ops = [
+        ("lamps", json!([])),
+        ("settings.set", json!([{}])),
+        ("notify", json!(["Hi."])),
+        ("ask", json!(["Tidy?"])),
+    ];
+    for (op, args) in ops {
+        for together in [true, false] {
+            for restart in [false, true] {
+                let (hub, mut host) = desk(|h| h.on(op, Behaviour::Never)).await;
+                let id = call_of(
+                    &hub,
+                    host.registration().unwrap(),
+                    "run-1",
+                    op,
+                    args.clone(),
+                    "k",
+                    600_000,
+                );
+                let at = format!("{op} together: {together} restart: {restart}");
+                assert_eq!(delivered(&host.serve_once().await), 1, "{at}");
+                host.answer(&id, Outcome::Accepted);
+                if !together {
+                    host.serve_once().await;
+                }
+                if restart {
+                    hub.restart(HubLimits::default());
+                    host.restart();
+                    host.register().await.expect("goes on as the registration");
+                    if op != "ask" {
+                        // Sent again: taken for lost after the rule's
+                        // wait, or not accepted (its acceptance was lost
+                        // with the host).
+                        host.serve_until(|h| sent(h, op, &id).len() >= 2, 1)
+                            .await
+                            .ok();
+                        hub.clock().advance(1_000);
+                        host.serve_until(|h| sent(h, op, &id).len() >= 2, 1)
+                            .await
+                            .unwrap_or_else(|_| panic!("{at}: sent again"));
+                    }
+                    host.answer(&id, Outcome::Accepted);
+                    host.serve_once().await;
+                }
+                let before = sent(&host, op, &id).len();
+                host.answer(&id, Outcome::RetryAfter(5_000));
+                host.serve_once().await;
+                if op == "ask" {
+                    let thrown = failure(&hub, &id);
+                    assert_eq!(
+                        (thrown.code.as_str(), thrown.retryable),
+                        ("unavailable", true),
+                        "{at}"
+                    );
+                    hub.clock().advance(10_000);
+                    host.serve_once().await;
+                    assert_eq!(sent(&host, op, &id).len(), before, "{at}: never sent again");
+                    continue;
+                }
+                hub.clock().advance(4_999);
+                assert_eq!(delivered(&host.serve_once().await), 0, "{at}: not yet");
+                hub.clock().advance(1);
+                assert_eq!(delivered(&host.serve_once().await), 1, "{at}: sent again");
+                assert_eq!(
+                    delivered(&host.serve_once().await),
+                    1,
+                    "{at}: until accepted"
+                );
+                host.answer(&id, Outcome::Accepted);
+                host.serve_once().await;
+                assert_eq!(
+                    delivered(&host.serve_once().await),
+                    0,
+                    "{at}: accepted again"
+                );
+                let calls = sent(&host, op, &id);
+                assert_eq!(calls.len(), before + 2, "{at}");
+                assert!(calls.iter().all(|c| c.key == "k"), "{at}");
+                assert!(hub.is_open(&id), "{at}: open");
+            }
+        }
+    }
+}
+
+both!(a_call_asked_for_after_its_deadline_is_unavailable);
+/// A call whose host's last word is `retry_after_ms`, and that is not
+/// sent again before its deadline, is thrown `unavailable` then: its host
+/// said it could not take it. Nothing happened.
+async fn a_call_asked_for_after_its_deadline_is_unavailable() {
+    let (hub, mut host) = desk(|h| h.on("settings.set", Behaviour::Never)).await;
+    let id = call(&hub, &host, "settings.set", json!([{}]), "w");
+    assert_eq!(delivered(&host.serve_once().await), 1);
+    host.answer(&id, Outcome::RetryAfter(60_000));
+    host.serve_once().await;
+    hub.clock().advance(30_000);
+    let thrown = failure(&hub, &id);
+    assert_eq!(
+        (thrown.code.as_str(), thrown.retryable),
+        ("unavailable", true)
+    );
+}
+
+both!(a_runs_bound_of_sendings_again_is_its_own_for_each_registration);
 /// The bound of sendings again is a run's for each registration it
 /// calls: one host's failures spend none of another's in a run both
 /// serve.
-#[tokio::test]
 async fn a_runs_bound_of_sendings_again_is_its_own_for_each_registration() {
     let limits = HubLimits {
         resends_per_run: 1,

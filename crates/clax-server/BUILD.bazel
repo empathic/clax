@@ -27,17 +27,6 @@ cargo_package(
     ],
     test_data = [
         "//:marketplaces",
-        # The daemon's sources, which tests/api_bot_surfaces.rs scans for
-        # the name of a host's surface.
-        "//crates/clax-bot-js:rust_sources",
-        "//crates/clax-cli:rust_sources",
-        "//crates/clax-commands:rust_sources",
-        "//crates/clax-hooks:rust_sources",
-        "//crates/clax-http:rust_sources",
-        "//crates/clax-mcp:rust_sources",
-        "//crates/clax-realtime:rust_sources",
-        "//crates/clax-server:rust_sources",
-        "//crates/clax-worker:rust_sources",
         "//crates/clax-testkit:fixtures",
         "//docs:contract",
         "//plugins:embedded",
@@ -50,6 +39,19 @@ cargo_package(
         "//web:dist",
         "@nodejs//:node_bin",
     ],
+    # The daemon's sources, which tests/daemon_sources.rs alone scans for
+    # the name of a host's surface: no other test is rerun for an edit of
+    # crates clax-server does not depend on.
+    test_data_of = {"daemon_sources": [
+        "//crates/clax-bot-js:rust_sources",
+        "//crates/clax-cli:rust_sources",
+        "//crates/clax-commands:rust_sources",
+        "//crates/clax-hooks:rust_sources",
+        "//crates/clax-http:rust_sources",
+        "//crates/clax-mcp:rust_sources",
+        "//crates/clax-realtime:rust_sources",
+        "//crates/clax-worker:rust_sources",
+    ]},
     test_env = {"CLAX_TEST_NODE": "$(rootpath @nodejs//:node_bin)"},
     tests_use_clax = [
         "clax_server_lib_test",

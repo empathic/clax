@@ -132,7 +132,9 @@ const JOIN_COLS: &str = "surface, joined, artifact_id, registration_id, ops_json
 
 /// Points every join that registration `from` set at registration `to`
 /// instead, on `tx`: what a registration that takes another's place
-/// does, so the joins outlast the one that is replaced. How many.
+/// does, so the joins outlast the one that is replaced. `to` is of
+/// `from`'s surface name, which [`Store::issue_registration`] checks
+/// before it calls this, so each join stays its surface's. How many.
 ///
 /// # Errors
 /// The store's.
@@ -489,6 +491,46 @@ mod tests {
         st.delete_artifact(DAEMON, &a).unwrap();
         assert!(st.joins_on(a.as_str(), JOINED_CLAX).unwrap().is_empty());
         assert_eq!(artifacts_of(&st.joins_of("shell").unwrap()), [b.as_str()]);
+    }
+
+    /// A registration replaces only one of its own surface's name: one of
+    /// another name is refused before anything is written, so the joins
+    /// the one it named set stay that surface's, served by it.
+    #[test]
+    fn a_registration_of_another_name_cannot_replace_one_and_take_its_joins() {
+        let (_d, st) = store();
+        let shell = register(&st, "shell", None);
+        let page = artifact(&st, None);
+        st.replace_joins(
+            "shell",
+            &shell,
+            None,
+            &[join(page.as_str(), None)],
+            st.now_utc(),
+        )
+        .unwrap();
+        let mail = NewRegistration {
+            name: "mail".into(),
+            def_hash: HASH.into(),
+            prompt: None,
+            settings: json!({}),
+            registered_by: crate::roles::OWNER.into(),
+            replaces: Some(shell.clone()),
+        };
+        assert!(matches!(
+            st.issue_registration(DAEMON, "mail-1", mail, st.now_utc()),
+            Err(CoreError::Invalid {
+                code: "registration_invalid",
+                ..
+            })
+        ));
+        assert_eq!(st.registration("mail-1").unwrap(), None);
+        assert!(st.registration(&shell).unwrap().unwrap().is_live());
+        let on = st.joins_on(page.as_str(), JOINED_CLAX).unwrap();
+        assert_eq!(
+            (on[0].surface.as_str(), on[0].registration_id.as_str()),
+            ("shell", shell.as_str())
+        );
     }
 
     /// Joins are kept until they are replaced: a registration that takes

@@ -370,7 +370,8 @@ CRATES = {
             "//crates/clax-realtime:clax_realtime",
             "//crates/clax-rt:clax_rt",
             "//crates/clax-sample:clax_sample",
-            "//crates/clax-store:clax_store"
+            "//crates/clax-store:clax_store",
+            "//crates/clax-surface:clax_surface"
         ],
         "dev_deps": [],
         "edition": "2024",
@@ -407,7 +408,8 @@ CRATES = {
             "//crates/clax-realtime:clax_realtime",
             "//crates/clax-rt:clax_rt",
             "//crates/clax-sample:clax_sample",
-            "//crates/clax-store:clax_store"
+            "//crates/clax-store:clax_store",
+            "//crates/clax-surface:clax_surface"
         ],
         "wasm_proc_macro_deps": [
             "@crates_wasm//:async-trait-0.1.92"
@@ -571,7 +573,8 @@ CRATES = {
             "//crates/clax-realtime:clax_realtime",
             "//crates/clax-rt:clax_rt",
             "//crates/clax-sample:clax_sample",
-            "//crates/clax-store:clax_store"
+            "//crates/clax-store:clax_store",
+            "//crates/clax-surface:clax_surface"
         ],
         "dev_deps": [
             "//crates/clax-content-git:clax_content_git",
@@ -590,6 +593,7 @@ CRATES = {
         "lib_root": "src/lib.rs",
         "name": "clax-server",
         "tests": {
+            "daemon_sources": "tests/daemon_sources.rs",
             "integration": "tests/integration.rs"
         },
         "version": "0.7.1",
@@ -626,7 +630,8 @@ CRATES = {
             "//crates/clax-realtime:clax_realtime",
             "//crates/clax-rt:clax_rt",
             "//crates/clax-sample:clax_sample",
-            "//crates/clax-store:clax_store"
+            "//crates/clax-store:clax_store",
+            "//crates/clax-surface:clax_surface"
         ],
         "wasm_proc_macro_deps": [
             "@crates_wasm//:async-trait-0.1.92"

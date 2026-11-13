@@ -50,8 +50,22 @@ pub struct JoinsRequest {
 #[serde(deny_unknown_fields)]
 pub struct ClaxScope {
     pub artifact: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Left out, the join's default; `null` is refused, as it is in
+    /// every other message of the protocol: it is not "left out".
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub allow: Option<Vec<String>>,
+}
+
+/// A member that is present: its value read as `T`, so that a `null`
+/// where `T` takes none is refused.
+fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+) -> std::result::Result<Option<T>, D::Error> {
+    T::deserialize(d).map(Some)
 }
 
 /// The scopes `joins` hold, as [`JoinsRequest::clax`] writes them.
@@ -312,7 +326,6 @@ mod route {
     use axum::extract::{Path, State};
     use axum::http::StatusCode;
     use clax_bot::bot_surfaces::{ServeError, allow_patterns};
-    use clax_bot::clax_surface::wire::CODE_INVALID_REQUEST;
     use clax_core::CoreError;
     use clax_http::agent::DeniedToGrants;
     use clax_http::bot_surfaces::{DaemonToken, refusal, refused};
@@ -321,9 +334,12 @@ mod route {
     use clax_store::bot_joins::{
         CODE_JOIN_ARTIFACT_REFUSED, CODE_JOIN_ARTIFACT_UNKNOWN, JOINED_CLAX, NewJoin,
     };
+    use clax_surface::wire::CODE_INVALID_REQUEST;
 
     /// `PUT /api/bot/surfaces/<name>/joins` (see the module
-    /// documentation): the registration is one the hub holds of the
+    /// documentation): a body that is not a [`JoinsRequest`] is 400
+    /// `invalid_request`, and one longer than the hub's `request_bytes`
+    /// 413 `too_large`; the registration is one the hub holds of the
     /// surface `name` (else 404 `unknown_registration`); there are
     /// [`MAX_JOINS`] artifacts at the most, each named once, each `allow`
     /// a list of allow patterns (else 400 `invalid_request`); each

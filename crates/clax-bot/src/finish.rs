@@ -96,11 +96,16 @@ impl<'a> Finish<'a> {
         }
     }
 
-    /// The tool's description and input schema.
-    pub(crate) fn tool(&self) -> (String, Value) {
+    /// The tool's description and input schema, and for a kind of a
+    /// host's surface the schema's text in the definition's order
+    /// ([`Kind::result_schema_json`](clax_surface::Kind::result_schema_json)),
+    /// which the request carries in its place so that the model reads
+    /// the result's fields in that order. A kind of Clax's own is sent
+    /// its schema as a `Value` writes it, as before.
+    pub(crate) fn tool(&self) -> (String, Value, Option<String>) {
         let (def, kind) = match self.rule {
             Rule::Clax(d, k) | Rule::Typed(d, k) => (d, k),
-            Rule::Undeclared(_) => return (ENDS.to_string(), json!({"type": "object"})),
+            Rule::Undeclared(_) => return (ENDS.to_string(), json!({"type": "object"}), None),
         };
         let doc = match &kind.result {
             Ty::Named(n) => def.interface(n).and_then(|i| i.doc.as_deref()),
@@ -113,9 +118,13 @@ impl<'a> Finish<'a> {
         // Every kind of a definition has a schema (its reader refuses a
         // result that is not an object): none is a kind made otherwise,
         // and nothing passes its check.
+        let text = match self.rule {
+            Rule::Typed(..) => kind.result_schema_json(def),
+            _ => None,
+        };
         match kind.result_schema(def) {
-            Some(schema) => (description, schema),
-            None => (ENDS.to_string(), json!({"type": "object"})),
+            Some(schema) => (description, schema, text),
+            None => (ENDS.to_string(), json!({"type": "object"}), None),
         }
     }
 

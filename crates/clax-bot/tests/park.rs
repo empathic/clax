@@ -437,6 +437,63 @@ async fn a_crash_while_resuming_is_replayed_again() {
     }
 }
 
+/// A sandbox that can never take a script.
+struct Busy;
+
+#[async_trait]
+impl Sandbox for Busy {
+    async fn run(&self, _: &Script, _: &dyn Host, _: &Limits, _: &CancelToken) -> ScriptOutcome {
+        ScriptOutcome::failed(ErrorKind::Unavailable, "busy")
+    }
+}
+
+/// The host is told `resumed` once for each time the parked step was
+/// unparked, however many ticks run it again: here the first tick after
+/// the answer finds the sandbox busy, the next crashes before its
+/// commit, and the third finishes the run.
+#[tokio::test]
+async fn a_step_run_again_over_several_ticks_is_said_resumed_once() {
+    let d = desk().await;
+    d.env.api.push(script_turn("tu_1", "Move", MOVE));
+    d.env.api.push(finish_turn("done"));
+    let run = d.run();
+    assert_eq!(d.drive(&d.deps(), &run).await, Next::Waiting(Wait::Parked));
+    d.answer("yes");
+    let mut busy = d.deps();
+    busy.sandbox = Arc::new(Busy);
+    assert_eq!(d.drive(&busy, &run).await, Next::Waiting(Wait::Stalled));
+    d.pass(61);
+    let mut dying = d.deps();
+    crash_once(
+        &mut dying,
+        CrashPoint::BeforeCommit {
+            step: 2,
+            kind: StepKind::Script,
+        },
+    );
+    assert_eq!(d.drive(&dying, &run).await, Next::Waiting(Wait::Crashed));
+    d.pass(61);
+    assert_eq!(
+        d.drive(&d.deps(), &run).await,
+        Next::Done(RunStatus::Finished)
+    );
+    d.host.round();
+    let types: Vec<String> = d
+        .host
+        .state
+        .lock()
+        .unwrap()
+        .events
+        .iter()
+        .map(|e| e.event["type"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(
+        types.iter().filter(|t| *t == "resumed").count(),
+        1,
+        "{types:?}"
+    );
+}
+
 /// A sandbox no script may reach.
 struct Never;
 
@@ -853,6 +910,64 @@ async fn a_cancel_that_lands_while_the_parking_tick_settles_stops_the_run() {
     assert_eq!(report.next_wake, None);
 }
 
+/// A run whose row the driver cannot read when it settles the tick that
+/// parked it (the store fails that read) is looked at again after a
+/// wait, by the driver's clock, rather than left with nothing armed;
+/// once the row reads again the run waits for its call's deadline.
+#[tokio::test]
+async fn a_parked_run_whose_row_cannot_be_read_as_its_tick_settles_is_looked_at_again() {
+    let d = Arc::new(desk().await);
+    d.env.api.push(script_turn("tu_1", "Move", MOVE));
+    let run = d.run();
+    let db = clax_core::Home::at(d.env._dir.path().join("ax")).db_path();
+    let sql = Arc::new(std::sync::Mutex::new(
+        rusqlite::Connection::open(&db).unwrap(),
+    ));
+    sql.lock()
+        .unwrap()
+        .busy_timeout(Duration::from_secs(10))
+        .unwrap();
+    let away = sql.clone();
+    let driver = driver_with(&d, &run, 0, move |_, _| {
+        away.lock()
+            .unwrap()
+            .execute_batch("ALTER TABLE bot_runs RENAME TO bot_runs_away")
+            .unwrap();
+    });
+    driver.wake(&run);
+    let report = idle(&driver).await;
+    sql.lock()
+        .unwrap()
+        .execute_batch("ALTER TABLE bot_runs_away RENAME TO bot_runs")
+        .unwrap();
+    assert_eq!(
+        report.ticks.last().map(|(id, out)| (id.as_str(), out.next)),
+        Some((run.as_str(), Next::Waiting(Wait::Parked)))
+    );
+    assert_eq!(report.next_wake, Some(Duration::from_secs(1)), "{report:?}");
+    assert_eq!(d.env.run_row(&run).status, RunStatus::Parked);
+    // A message sent meanwhile leaves the wait as it is: the run is not
+    // ticked for it before the wait is over.
+    driver.messaged(&run);
+    let report = idle(&driver).await;
+    assert!(report.ticks.is_empty(), "{report:?}");
+    assert_eq!(report.next_wake, Some(Duration::from_secs(1)), "{report:?}");
+    // Looked at again once its wait is over: the row reads, and the run
+    // waits for its call's deadline, which is further off.
+    d.pass(1);
+    let report = idle(&driver).await;
+    assert_eq!(
+        report
+            .ticks
+            .iter()
+            .map(|(id, out)| (id.as_str(), out.next))
+            .collect::<Vec<_>>(),
+        [(run.as_str(), Next::Waiting(Wait::Parked))]
+    );
+    let next = report.next_wake.expect("the deadline is armed");
+    assert!(next > Duration::from_secs(1), "{next:?}");
+}
+
 /// A tick that only looks at a parked run (it was woken with nothing
 /// journaled) and is overtaken by the answer: the run is ticked again
 /// and ends, wherever between the driver's picking of the run and its
@@ -986,6 +1101,101 @@ async fn a_waited_call_whose_host_is_gone_is_answered_by_what_is_known_of_it() {
         "{journal:?}"
     );
     assert_eq!(d.sent(), ["ask"]);
+}
+
+/// A script that reads, then asks and says what became of the question.
+const READ_THEN_ASK: &str = r#"const lamps = await clax.desk.lamps();
+let answer;
+try { answer = await clax.desk.ask("Move the left lamp?"); } catch (e) { answer = e.code; }
+return [lamps.length, answer];"#;
+
+/// The registration of a run bound by none of its definition's hashes
+/// ends while the run is parked, and the call's deadline passes: the step
+/// run again with no provider for its surface is answered each call the
+/// journal holds from the journal (the read it made before, and the
+/// deadline's failure of the call it waited on), not told that nothing
+/// happened. (The run then cannot finish: its kind is its surface's.)
+#[tokio::test]
+async fn a_step_run_again_while_its_provider_is_away_is_answered_from_the_journal() {
+    let d = desk().await;
+    d.env.api.push(script_turn("tu_1", "Move", READ_THEN_ASK));
+    let run = d.run();
+    assert_eq!(d.drive(&d.deps(), &run).await, Next::Waiting(Wait::Parked));
+    d.host.online.store(false, Ordering::SeqCst);
+    d.pass(2 * DAY);
+    // Another host's serve is what the hub drops the lapsed lease at.
+    let other = d.world.host(
+        "desk",
+        &crate::outside::registering(&desk_dts(), None, None, wire::Settings::default()),
+        crate::outside::desk_host(),
+    );
+    other.round();
+    let (row, made) = d.env.run_as_made(&run);
+    let bound = d.deps().providers.bind(&row, &made).unwrap();
+    assert!(
+        bound.kind_provider().unavailable().is_some(),
+        "the registration is gone"
+    );
+    d.drive(&d.deps(), &run).await;
+    let journal = d.journal(&run, 2);
+    assert_eq!(journal[0]["op"], "desk.lamps", "{journal:?}");
+    assert_eq!(journal[0]["ok"], true, "{journal:?}");
+    let asked = journal[1]["result"]["code"].clone();
+    assert_eq!(d.value(&run, 1), json!([2, asked]), "{journal:?}");
+    assert_eq!(d.sent(), ["lamps", "ask"]);
+}
+
+/// A script that calls an operation its binding lacks (refused, and
+/// journaled so), then reads and asks.
+const NOTIFY_READ_THEN_ASK: &str = r#"let told;
+try { await clax.desk.notify("hi"); told = "told"; } catch (e) { told = e.code; }
+const lamps = await clax.desk.lamps();
+let answer;
+try { answer = await clax.desk.ask("Move the left lamp?"); } catch (e) { answer = e.code; }
+return [told, lamps.length, answer];"#;
+
+/// The step run again while its surface's provider is away still has
+/// every operation it called before: a binding with no provider lists
+/// only the operations its row keeps, and the one the binding refused
+/// the first time (`desk.notify`, of the definition and not the run's)
+/// is answered its refusal from the journal, where it would otherwise
+/// be no function of `clax` at all.
+#[tokio::test]
+async fn a_step_run_again_while_its_provider_is_away_keeps_the_operations_it_called() {
+    let d = desk().await;
+    d.env
+        .api
+        .push(script_turn("tu_1", "Move", NOTIFY_READ_THEN_ASK));
+    let run = d.run_bound(
+        None,
+        Some(&d.host.registration),
+        &["desk.lamps", "desk.ask"],
+    );
+    assert_eq!(d.drive(&d.deps(), &run).await, Next::Waiting(Wait::Parked));
+    d.host.online.store(false, Ordering::SeqCst);
+    d.pass(2 * DAY);
+    let other = d.world.host(
+        "desk",
+        &crate::outside::registering(&desk_dts(), None, None, wire::Settings::default()),
+        crate::outside::desk_host(),
+    );
+    other.round();
+    let (row, made) = d.env.run_as_made(&run);
+    let bound = d.deps().providers.bind(&row, &made).unwrap();
+    assert!(bound.kind_provider().unavailable().is_some());
+    assert!(
+        !bound.operations().iter().any(|op| op == "desk.notify"),
+        "{:?}",
+        bound.operations()
+    );
+    d.drive(&d.deps(), &run).await;
+    let journal = d.journal(&run, 2);
+    assert_eq!(journal[0]["op"], "desk.notify", "{journal:?}");
+    assert_eq!(journal[0]["ok"], false, "{journal:?}");
+    let refused = journal[0]["result"]["code"].clone();
+    let asked = journal[2]["result"]["code"].clone();
+    assert_eq!(d.value(&run, 1), json!([refused, 2, asked]), "{journal:?}");
+    assert_eq!(d.sent(), ["lamps", "ask"]);
 }
 
 /// The host is away while its run is parked, but within its

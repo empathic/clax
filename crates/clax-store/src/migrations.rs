@@ -2210,7 +2210,9 @@ pub const MIGRATIONS: &[&str] = &[
     // - `bot_registrations`: a definition, an optional prompt file
     //   (`prompt_hash`, its text in `bot_surface_prompts`) and settings,
     //   given by a person under a name. Many of one name may be live; one
-    //   is live until `replaced_at`.
+    //   is live until `replaced_at`. `dropped_at` is when the hub dropped
+    //   it for good (its lease ended, or it made room for another), NULL
+    //   again once its host goes on as it.
     // - `bot_pending_calls`: a call sent to a registration and not yet
     //   journaled, one for each place `(run_id, step_n, seq)` of a run's
     //   journal (`crate::bot_pending`). `expires_at` may be NULL: a call
@@ -2218,7 +2220,13 @@ pub const MIGRATIONS: &[&str] = &[
     //   under, whatever its registration's is later. `waits` marks a call
     //   its run may park on, and
     //   `bot_pending_calls_waiting` holds a run to one such call waiting
-    //   at a time.
+    //   at a time. The `retry_*` columns are the rule its run gave for
+    //   sending it again (NULL: none given), and `failures`, `not_before`,
+    //   `resend`, `later` and `last_*` how far it has got
+    //   (`crate::bot_pending::CallTries`), so that a hub that starts again
+    //   goes on with a call as it would have.
+    // - `bot_runs_by_starter` lists a registration's runs by
+    //   `started_by`; partial, it holds no row for a run of Clax's own.
     // - `bot_run_ends`: how a run ended, for each registration to be told
     //   of it, until it acknowledges (`delivered_at`); one unacknowledged
     //   end of a run for a registration at a time
@@ -2248,7 +2256,9 @@ pub const MIGRATIONS: &[&str] = &[
     //   order (`seq`, one for each place of a run), sent by a
     //   registration, `key` once for each run when the sender gave one;
     //   `delivered_at` and `delivered_step` (the step it was delivered
-    //   before) stay NULL until it is delivered.
+    //   before) stay NULL until it is delivered; `waiting` is whether its
+    //   run was parked when it arrived, what it was first answered and is
+    //   answered again when sent again under its key.
     // - `bot_runs.started_by` (a registration's ID) and `parent_run` (the
     //   run that started it) are written by `Store::create_run_of`; `parked_at`,
     //   `parked_ms` and `waiting_on` are a parked run's
@@ -2286,7 +2296,8 @@ pub const MIGRATIONS: &[&str] = &[
         registered_by TEXT NOT NULL,
         created_at TEXT NOT NULL,
         last_served_at TEXT,
-        replaced_at TEXT
+        replaced_at TEXT,
+        dropped_at TEXT
     );
     CREATE INDEX bot_registrations_by_name ON bot_registrations(name, created_at, id);
     CREATE INDEX bot_registrations_by_person
@@ -2310,6 +2321,16 @@ pub const MIGRATIONS: &[&str] = &[
         sent_at TEXT,
         accepted_at TEXT,
         answered_at TEXT,
+        retry_attempts INTEGER CHECK (retry_attempts >= 0),
+        retry_backoff_ms INTEGER CHECK (retry_backoff_ms >= 0),
+        retry_backoff_max_ms INTEGER CHECK (retry_backoff_max_ms >= 0),
+        failures INTEGER NOT NULL DEFAULT 0 CHECK (failures >= 0),
+        not_before TEXT,
+        resend TEXT NOT NULL DEFAULT 'none' CHECK (resend IN ('none', 'planned', 'due')),
+        later INTEGER NOT NULL DEFAULT 0 CHECK (later IN (0, 1)),
+        last_code TEXT,
+        last_message TEXT,
+        last_retryable INTEGER CHECK (last_retryable IN (0, 1)),
         UNIQUE (run_id, step_n, seq)
     );
     CREATE INDEX bot_pending_calls_open ON bot_pending_calls(registration_id, created_at, id)
@@ -2376,6 +2397,7 @@ pub const MIGRATIONS: &[&str] = &[
         created_at TEXT NOT NULL,
         delivered_at TEXT,
         delivered_step INTEGER,
+        waiting INTEGER NOT NULL DEFAULT 0 CHECK (waiting IN (0, 1)),
         UNIQUE (run_id, seq)
     );
     CREATE INDEX bot_messages_undelivered ON bot_messages(run_id, seq)
@@ -2383,6 +2405,8 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE UNIQUE INDEX bot_messages_by_key ON bot_messages(run_id, key)
         WHERE key IS NOT NULL;
     ALTER TABLE bot_runs ADD COLUMN started_by TEXT;
+    CREATE INDEX bot_runs_by_starter ON bot_runs(started_by, created_at, id)
+        WHERE started_by IS NOT NULL;
     ALTER TABLE bot_runs ADD COLUMN parent_run TEXT;
     ALTER TABLE bot_runs ADD COLUMN parked_at TEXT;
     ALTER TABLE bot_runs ADD COLUMN parked_ms INTEGER NOT NULL DEFAULT 0;
@@ -8263,9 +8287,10 @@ mod tests {
     }
 
     /// `indexes` ([`run_indexes`]) as migration 65 leaves them:
-    /// `bot_runs_live` over the parked runs too, the others as they were.
+    /// `bot_runs_live` over the parked runs too, `bot_runs_by_starter`
+    /// added, the others as they were.
     fn with_parked_live(indexes: Vec<(String, String)>) -> Vec<(String, String)> {
-        indexes
+        let mut out: Vec<(String, String)> = indexes
             .into_iter()
             .map(|(name, sql)| {
                 if name == "bot_runs_live" {
@@ -8276,7 +8301,15 @@ mod tests {
                     (name, sql)
                 }
             })
-            .collect()
+            .collect();
+        out.push((
+            "bot_runs_by_starter".into(),
+            "CREATE INDEX bot_runs_by_starter ON bot_runs(started_by, created_at, id)
+        WHERE started_by IS NOT NULL"
+                .into(),
+        ));
+        out.sort();
+        out
     }
 
     /// What making `run` now would keep as its bindings.
@@ -8825,6 +8858,26 @@ mod tests {
             plan.iter().any(|step| step.contains("bot_runs_live")),
             "the plan of the live listing: {plan:?}"
         );
+        // A registration's runs, the newest first, and whether any run
+        // names a registration as its starter, read the starter's index.
+        for query in [
+            "SELECT id FROM bot_runs WHERE started_by = 'r' ORDER BY created_at DESC, id DESC",
+            "SELECT 1 FROM bot_registrations WHERE id NOT IN
+               (SELECT started_by FROM bot_runs WHERE started_by IS NOT NULL)",
+        ] {
+            let plan: Vec<String> = c
+                .prepare(&format!("EXPLAIN QUERY PLAN {query}"))
+                .unwrap()
+                .query_map([], |r| r.get(3))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            assert!(
+                plan.iter().any(|step| step.contains("bot_runs_by_starter"))
+                    && !plan.iter().any(|step| step.contains("TEMP B-TREE")),
+                "the plan of {query}: {plan:?}"
+            );
+        }
 
         // Migrated again, nothing changes.
         drop(st);
@@ -8953,6 +9006,7 @@ mod tests {
                 "created_at TEXT 1 - 0",
                 "delivered_at TEXT 0 - 0",
                 "delivered_step INTEGER 0 - 0",
+                "waiting INTEGER 1 0 0",
             ]
         );
         assert!(

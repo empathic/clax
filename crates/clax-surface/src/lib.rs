@@ -17,10 +17,9 @@
 //! - an [`Operation`]'s `check_args`, `check_answer` and `check_result`,
 //!   and a [`Kind`]'s `check_request`, `check_message` and
 //!   `check_result`, check JSON values against its types, each knowing
-//!   which side of Clax's filling in of `Content` it runs on;
-//!   [`check_held`] and [`check_sent`] check a value against a type that
-//!   belongs to neither. Each answers with a [`ValueError`], which says
-//!   whether the value is wrong, too large or too deep;
+//!   which side of Clax's filling in of `Content` it runs on ("Values"
+//!   below). Each answers with a [`ValueError`], which says whether the
+//!   value is wrong, too large or too deep;
 //! - [`Pattern`] says which operations an allow list names, and
 //!   [`Kind::allows`] which a kind lets its runs have;
 //!   [`Definition::run_operations`] says which a run of a kind is given,
@@ -175,6 +174,10 @@
 //! }
 //! ```
 //!
+//! - **Members** of the surface, a namespace, an interface, an object
+//!   type and `interface Kinds` end in `;` or `,`, or at a line break or
+//!   the `}` after them, as TypeScript's do: a file written without
+//!   semicolons is the same definition.
 //! - **Operations** are methods that return `Promise<T>`, with positional
 //!   parameters, the optional ones (`name?: T`) last. Each has a doc
 //!   comment: prose that says what it does, then its tags.
@@ -411,7 +414,13 @@
 //!   its own (a hash map) sends another definition on each start; one
 //!   whose map sorts its keys (`serde_json::Value`, as this workspace
 //!   builds it) sends its fields in the alphabet's order, which is then
-//!   their order, and is not the order of its `.d.ts` file.
+//!   their order, and is not the order of its `.d.ts` file. For the same
+//!   reason a kind's result schema keeps the definition's order in its
+//!   text ([`Kind::result_schema_text`], compact as
+//!   [`Kind::result_schema_json`]) and not as a `Value`
+//!   ([`Kind::result_schema`]): the text is what the `finish` tool of a
+//!   run of a host's kind is sent with, by every provider, so the model
+//!   reads the result's fields in the definition's order.
 //! - **The text** is JSON in UTF-8, [`Limits::manifest_bytes`] long at
 //!   the most, of [`Limits::manifest_values`] values at the most, with
 //!   each key of an object once, and no more than
@@ -506,6 +515,40 @@
 //! `unknown`. A tool list is also large: one of more than some hundred
 //! tools is past [`Limits::operations`] or [`Limits::manifest_bytes`],
 //! and is several surfaces.
+//!
+//! # Values
+//!
+//! The checks of a value ([`Operation::check_args`],
+//! [`Operation::check_answer`], [`Operation::check_result`],
+//! [`Kind::check_request`], [`Kind::check_message`],
+//! [`Kind::check_result`]) read it against the definition's types so:
+//!
+//! - `string` and `Instruction` are strings; `number` is any number and
+//!   `Int` one written without a fraction or exponent; `unknown` is any
+//!   value; a literal is that value alone;
+//! - an object type or an interface is an object with every required
+//!   field (an interface's include those it inherits) and no field the
+//!   type does not list; an optional field may be left out or `null`;
+//! - `Record<string, T>` is an object of any keys whose values are `T`s;
+//! - a union is a value of one of its alternatives. Alternatives that
+//!   are objects are told apart first by their required fields of
+//!   literal type (`kind: "pull"`), so a value that says which it means
+//!   is refused for what is wrong with that one;
+//! - `Content` is a whole handle: `id`, `media_type`, `sha256` and
+//!   `bytes`, and optionally `name`, `width`, `height` (whole numbers,
+//!   zero or more) and `meta` (an object), and nothing else. `Image` is
+//!   a handle whose `media_type` is one of [`IMAGE_MEDIA_TYPES`]; its
+//!   `width` and `height` are its displayed size in pixels.
+//!
+//! That is a value as a script holds it, whose `Content`s are whole
+//! handles, as Clax makes them from its store: a call's arguments, a
+//! call's result once Clax has filled it in, and a kind's result. A
+//! value a provider or a starter sent (an answer, a kind's request or
+//! message) is checked before Clax fills it in, and each of its
+//! `Content`s and `Image`s is a reference to an upload: `{"id":
+//! string}`, optionally with `meta` (an object), and nothing else. What
+//! the bytes are is Clax's finding, never the sender's claim, so whether
+//! an `Image` is one is checked once the handle is whole.
 //!
 //! # The checks
 //!
@@ -665,4 +708,6 @@ pub use model::{
 };
 pub use print::{CONTENT_DECLARATION, declaration, print, print_within};
 pub use run_ops::{ContentPlace, ContentUse, RunOperations, RunScope, Withheld};
-pub use value::{IMAGE_MEDIA_TYPES, ValueError, ValueErrorKind, check_held, check_sent};
+pub use value::{IMAGE_MEDIA_TYPES, ValueError, ValueErrorKind};
+#[cfg(test)]
+pub(crate) use value::{check_held, check_sent};

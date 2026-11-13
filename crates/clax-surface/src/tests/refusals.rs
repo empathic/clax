@@ -318,6 +318,25 @@ fn typescript_outside_the_format_is_refused() {
         3,
         "`any` is not a type of the format: the format's types are string, number, Int,",
     );
+    // TypeScript's other types the format leaves out, and its type
+    // operators, are refused as types where they are written, and not
+    // read as an interface the file should declare.
+    for (ty, word) in [
+        ("symbol", "symbol"),
+        ("bigint", "bigint"),
+        ("keyof A", "keyof"),
+        ("typeof x", "typeof"),
+        ("readonly string[]", "readonly"),
+    ] {
+        refused(
+            &file(
+                &format!("  /** Reads. @read */\n  get(x: {ty}): Promise<null>;"),
+                "interface A { a: string }",
+            ),
+            3,
+            &format!("`{word}` is not a type of the format: the format's types are string,"),
+        );
+    }
     refused(
         &file("  /** Reads. @read */\n  get?(): Promise<null>;", ""),
         3,
@@ -1054,12 +1073,15 @@ fn typescripts_reserved_words_name_only_what_typescript_lets_them() {
     // The names of types are no interface's either, and are any
     // surface's, parameter's or member's.
     for word in ["symbol", "bigint", "string", "any", "object", "never"] {
+        let why = if ["string"].contains(&word) {
+            "that is one of the format's own type names"
+        } else {
+            "that is one of TypeScript's types, which the format leaves out"
+        };
         refused(
             &file("", &format!("interface {word} {{}}")),
             4,
-            &format!(
-                "an interface may not be named `{word}`: that is one of the format's own type names"
-            ),
+            &format!("an interface may not be named `{word}`: {why}"),
         );
         assert!(
             host(&format!("declare const {word}: {{}};")).is_ok(),
@@ -1612,4 +1634,52 @@ fn a_limit_that_is_hit_is_named_with_its_value() {
         ),
         "the surface has more operations than the limit, 1"
     );
+}
+
+/// A refusal of a field written inline is on that field's line, at
+/// every place a field can be: inside a union's alternatives, an
+/// array's element, a `Record`'s value and parentheses, and after
+/// fields with object types of their own. The `.d.ts` reader keeps the
+/// fields' lines in the order the check numbers them, and so does the
+/// rule of a host's request.
+#[test]
+fn a_refusal_inside_an_inline_type_is_on_its_fields_line() {
+    let param = |types: [&str; 5]| {
+        let [a, c, d, f, g] = types;
+        file(
+            &format!(
+                "  /** D. @read */\n  get(x: {{\n    a: {a};\n    b: ({{\n      c: {c};\n    }} | Record<string, {{\n      d: {d};\n    }}>)[];\n    e: (({{\n      f: {f};\n    }}))[];\n    g: {g};\n  }}): Promise<null>;"
+            ),
+            "",
+        )
+    };
+    for (at, line) in [(0, 4), (1, 6), (2, 8), (3, 11), (4, 13)] {
+        let mut types = ["string"; 5];
+        types[at] = "Nope";
+        refused(
+            &param(types),
+            line,
+            "uses the type `Nope`, which the file does not declare",
+        );
+    }
+    // The request's own fields, after an alternative whose field holds
+    // fields of its own.
+    for (request, line) in [
+        ("{\n  a: { z: string };\n  b: string | null;\n}", 8),
+        (
+            "{\n  a: { z: { y: string } };\n} | {\n  c: string | null;\n}",
+            9,
+        ),
+    ] {
+        refused(
+            &file(
+                "",
+                &format!(
+                    "interface Kinds {{\n  /** K. @allow */\n  k(request: {request}): {{}};\n}}"
+                ),
+            ),
+            line,
+            "of the request of kind `k` is required and its type admits `null`",
+        );
+    }
 }

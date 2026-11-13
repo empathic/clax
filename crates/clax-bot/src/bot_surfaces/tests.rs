@@ -188,7 +188,7 @@ impl Replay {
         at: Millis,
         held: u64,
         step: &Value,
-    ) -> Result<Vec<Delivery>, ServeError> {
+    ) -> Result<wire::ServeResponse, ServeError> {
         let opened = self.hub.open(
             &mut self.store,
             surface,
@@ -204,8 +204,11 @@ impl Replay {
                 assert_eq!(ready, Ready::Wait, "{step}");
             }
         }
-        self.hub
-            .close(&mut self.store, opened.serve, at.after(held))
+        let ignored = opened.ignored_ids;
+        let calls = self
+            .hub
+            .close(&mut self.store, opened.serve, at.after(held))?;
+        Ok(wire::ServeResponse { calls, ignored })
     }
 
     fn step(&mut self, step: &Value) {
@@ -228,7 +231,7 @@ impl Replay {
                         let asked: ServeRequest = serde_json::from_value(asked).unwrap();
                         let held = step["held_ms"].as_u64().unwrap_or(0);
                         self.serve(surface, asked, at, held, step)
-                            .map(|calls| json!({ "calls": calls }))
+                            .map(|response| serde_json::to_value(response).unwrap())
                             .map_err(|e| e.body())
                     }
                     other => panic!("the script has a request the test does not know: {other}"),
@@ -384,8 +387,20 @@ fn desk(limits: HubLimits) -> (Hub, MemoryPending, Arc<Mutex<Vec<String>>>) {
 fn a_registration_whose_lease_ended_is_dropped_until_its_host_goes_on_as_it() {
     let (mut hub, mut store, _) = desk(HubLimits::default());
     let r1 = rid(1);
-    assert!(!hub.dropped(&r1, Millis(315_000)), "within its lease");
-    assert!(hub.dropped(&r1, Millis(315_001)), "its lease ended");
+    assert!(
+        !hub.dropped(&mut store, &r1, Millis(315_000)).unwrap(),
+        "within its lease"
+    );
+    assert!(
+        hub.dropped(&mut store, &r1, Millis(315_001)).unwrap(),
+        "its lease ended"
+    );
+    // The store keeps it: a hub that started again since says so too.
+    let (mut started, _) = self::hub(HubLimits::default());
+    assert!(
+        started.dropped(&mut store, &r1, Millis(315_002)).unwrap(),
+        "dropped, after a restart"
+    );
     hub.register(
         &mut store,
         "desk",
@@ -394,9 +409,16 @@ fn a_registration_whose_lease_ended_is_dropped_until_its_host_goes_on_as_it() {
         Millis(316_000),
     )
     .unwrap();
-    assert!(!hub.dropped(&r1, Millis(316_000)), "gone on as");
+    assert!(
+        !hub.dropped(&mut store, &r1, Millis(316_000)).unwrap(),
+        "gone on as"
+    );
+    // One the hub held when it started again may resume.
     let (mut started, _) = self::hub(HubLimits::default());
-    assert!(!started.dropped(&r1, Millis(316_000)), "may resume");
+    assert!(
+        !started.dropped(&mut store, &r1, Millis(316_000)).unwrap(),
+        "may resume"
+    );
 }
 
 #[test]
@@ -653,7 +675,10 @@ fn the_next_wake_is_never_a_past_instant_of_what_only_a_serve_can_take() {
     );
     // Due and not served: it waits for a serve, and the clock's next
     // instants are the registration's.
-    assert_eq!(hub.held().deferred, 1);
+    assert!(
+        store.tries_of(&id).is_some_and(|t| t.later),
+        "asked for later"
+    );
     assert_eq!(
         hub.next_wake(&mut store, Millis(1_003)),
         Ok(Some(Millis(15_004)))
@@ -834,7 +859,10 @@ fn a_held_serve_is_ready_when_something_is_new_to_its_host() {
     let opened = hub
         .open(&mut store, "desk", &r1, 12_000, vec![later], Millis(12_019))
         .unwrap();
-    assert_eq!(hub.held().deferred, 1);
+    assert!(
+        store.tries_of(&id).is_some_and(|t| t.later),
+        "asked for later"
+    );
     assert_eq!(
         hub.next_wake(&mut store, Millis(12_019)),
         Ok(Some(Millis(13_019)))
@@ -849,7 +877,7 @@ fn a_held_serve_is_ready_when_something_is_new_to_its_host() {
     );
     let sent = hub.close(&mut store, opened.serve, Millis(13_019)).unwrap();
     assert_eq!(ids(&sent), [id.as_str(), end.as_str()]);
-    assert_eq!(hub.held().deferred, 0);
+    assert!(store.tries_of(&id).is_some_and(|t| !t.later), "sent since");
 }
 
 #[test]
@@ -1411,6 +1439,70 @@ fn served(
     (ignored, ids(&sent).join(","))
 }
 
+/// A result or an error sent again for the call it settled (its host's
+/// reply to the first was lost) is taken: it stands, and the host is not
+/// told it was ignored. Any other answer for a settled call is, by its
+/// ID, and settles nothing again.
+#[test]
+fn the_same_answer_sent_again_is_taken_and_any_other_is_told_ignored() {
+    let (mut hub, mut store, _) = desk(HubLimits::default());
+    let r1 = rid(1);
+    let ask = hub
+        .enqueue(
+            &mut store,
+            &r1,
+            call("desk.ask", json!(["Tidy?", null]), "k1", Some(100)),
+            Millis(1),
+        )
+        .unwrap();
+    hub.serve(&mut store, "desk", &r1, Vec::new(), Millis(2))
+        .unwrap();
+    let first = hub
+        .open(
+            &mut store,
+            "desk",
+            &r1,
+            0,
+            vec![result(&ask, json!("yes"))],
+            Millis(3),
+        )
+        .unwrap();
+    assert_eq!(
+        (first.settled.as_slice(), first.ignored_ids.as_slice()),
+        (std::slice::from_ref(&ask), &[][..])
+    );
+    hub.close(&mut store, first.serve, Millis(3)).unwrap();
+    // Sent again: it stands.
+    let again = hub
+        .open(
+            &mut store,
+            "desk",
+            &r1,
+            0,
+            vec![result(&ask, json!("yes"))],
+            Millis(4),
+        )
+        .unwrap();
+    assert_eq!((again.settled.len(), again.ignored), (0, 0));
+    hub.close(&mut store, again.serve, Millis(4)).unwrap();
+    // Another answer, or one for an ID it does not hold: ignored.
+    let other = hub
+        .open(
+            &mut store,
+            "desk",
+            &r1,
+            0,
+            vec![result(&ask, json!("no")), result("nope", json!(1))],
+            Millis(5),
+        )
+        .unwrap();
+    assert_eq!(other.ignored_ids, [ask.clone(), "nope".to_string()]);
+    assert_eq!(other.ignored, 2);
+    assert!(other.settled.is_empty());
+    hub.close(&mut store, other.serve, Millis(5)).unwrap();
+    assert_eq!(store.take_answer(&ask), Some(Ok(json!("yes"))));
+}
+
 #[test]
 fn an_answer_settles_its_own_registrations_open_call_once() {
     let (mut hub, mut store, _) = desk(HubLimits::default());
@@ -1557,7 +1649,7 @@ fn accepted_and_retry_after_do_not_keep_a_result_in_the_same_serve_from_settling
         .unwrap();
     assert_eq!((opened.ignored, &opened.settled), (3, &vec![b.clone()]));
     assert_eq!(store.take_answer(&b).unwrap().unwrap_err().code, "declined");
-    assert_eq!(hub.held().deferred, 0);
+    assert!(store.tries_of(&b).is_none(), "settled");
     // A result in a later serve settles a call that was accepted.
     let c = ask(&mut hub, &mut store, 5);
     assert_eq!(
@@ -1958,7 +2050,6 @@ fn an_answer_is_checked_by_the_definition_its_call_was_made_under() {
         Held {
             registrations: 1,
             serves: 1,
-            deferred: 0,
             definitions: 2
         }
     );
@@ -2127,7 +2218,22 @@ impl Pending for Broken {
         _: &str,
         _: Result<Value, CallFailure>,
         _: Millis,
-    ) -> Result<bool, Self::Error> {
+    ) -> Result<Answered, Self::Error> {
+        Err(DISK_FULL)
+    }
+    fn keep_tries(&mut self, _: &str, _: &str, _: &Tries) -> Result<bool, Self::Error> {
+        Err(DISK_FULL)
+    }
+    fn resends(&mut self, _: &str, _: &str) -> Result<u32, Self::Error> {
+        Err(DISK_FULL)
+    }
+    fn next_resend(&mut self, _: Millis) -> Result<Option<Millis>, Self::Error> {
+        Err(DISK_FULL)
+    }
+    fn set_dropped(&mut self, _: &str, _: Option<Millis>) -> Result<(), Self::Error> {
+        Err(DISK_FULL)
+    }
+    fn is_dropped(&mut self, _: &str) -> Result<bool, Self::Error> {
         Err(DISK_FULL)
     }
     fn expire_calls(
@@ -2203,7 +2309,9 @@ fn a_store_that_fails_is_an_error_of_each_method_and_leaves_no_serve_open() {
         Err(RegisterError::Storage(DISK_FULL.into()))
     );
     assert_eq!(hub.held().registrations, 1);
-    // An answer whose call's definition cannot be read is not taken.
+    // An answer whose call's definition no longer reads settles the call
+    // `invalid_result`, and the serve, with the rest of its answers, is
+    // taken.
     let id = hub
         .enqueue(
             &mut good,
@@ -2269,8 +2377,23 @@ fn a_store_that_fails_is_an_error_of_each_method_and_leaves_no_serve_open() {
             b: &str,
             c: Result<Value, CallFailure>,
             d: Millis,
-        ) -> Result<bool, Self::Error> {
+        ) -> Result<Answered, Self::Error> {
             self.0.answer_call(a, b, c, d)
+        }
+        fn keep_tries(&mut self, a: &str, b: &str, c: &Tries) -> Result<bool, Self::Error> {
+            self.0.keep_tries(a, b, c)
+        }
+        fn resends(&mut self, a: &str, b: &str) -> Result<u32, Self::Error> {
+            self.0.resends(a, b)
+        }
+        fn next_resend(&mut self, a: Millis) -> Result<Option<Millis>, Self::Error> {
+            self.0.next_resend(a)
+        }
+        fn set_dropped(&mut self, a: &str, b: Option<Millis>) -> Result<(), Self::Error> {
+            self.0.set_dropped(a, b)
+        }
+        fn is_dropped(&mut self, a: &str) -> Result<bool, Self::Error> {
+            self.0.is_dropped(a)
         }
         fn expire_calls(
             &mut self,
@@ -2301,18 +2424,186 @@ fn a_store_that_fails_is_an_error_of_each_method_and_leaves_no_serve_open() {
         }
     }
     let mut lossy = NoDefinitions(good);
-    let refused = fresh
-        .serve(&mut lossy, "desk", &r1, vec![result(&id, json!([]))], now)
-        .unwrap_err();
+    let opened = fresh
+        .open(
+            &mut lossy,
+            "desk",
+            &r1,
+            0,
+            vec![result(&id, json!([]))],
+            now,
+        )
+        .expect("the serve is taken");
+    assert_eq!(opened.settled, std::slice::from_ref(&id));
+    let thrown = match lossy.0.outcome_of(&id) {
+        Some(Err(failure)) => failure.clone(),
+        other => panic!("not a failure: {other:?}"),
+    };
+    assert_eq!(thrown.code, CODE_INVALID_RESULT);
     assert!(
-        matches!(&refused, ServeError::Storage(m) if m.contains("not kept")),
-        "{refused:?}"
-    );
-    assert!(
-        lossy.0.is_open(&id),
-        "the answer was not taken, and can be sent again"
+        thrown.message.contains("no longer reads"),
+        "{}",
+        thrown.message
     );
     assert!(woken.lock().unwrap().len() == 1);
+}
+
+/// A store whose `pending_for` fails while `failing` is set; the rest
+/// is `MemoryPending`'s.
+struct FailsToList {
+    store: MemoryPending,
+    failing: bool,
+}
+
+impl Pending for FailsToList {
+    type Error = &'static str;
+    fn issue_registration(
+        &mut self,
+        a: &str,
+        b: &str,
+        c: &str,
+        d: Millis,
+    ) -> Result<bool, Self::Error> {
+        self.store
+            .issue_registration(a, b, c, d)
+            .map_err(|e| match e {})
+    }
+    fn registration_name(&mut self, a: &str) -> Result<Option<String>, Self::Error> {
+        self.store.registration_name(a).map_err(|e| match e {})
+    }
+    fn keep_definition(&mut self, a: &str, b: &str, c: Millis) -> Result<(), Self::Error> {
+        self.store.keep_definition(a, b, c).map_err(|e| match e {})
+    }
+    fn definition_text(&mut self, a: &str) -> Result<Option<String>, Self::Error> {
+        self.store.definition_text(a).map_err(|e| match e {})
+    }
+    fn keep_prompt(&mut self, a: &str, b: &str, c: Millis) -> Result<(), Self::Error> {
+        self.store.keep_prompt(a, b, c).map_err(|e| match e {})
+    }
+    fn prompt_text(&mut self, a: &str) -> Result<Option<String>, Self::Error> {
+        self.store.prompt_text(a).map_err(|e| match e {})
+    }
+    fn open_call(&mut self, a: NewCall, b: usize, c: Millis) -> Result<OpenedCall, Self::Error> {
+        self.store.open_call(a, b, c).map_err(|e| match e {})
+    }
+    fn pending_for(&mut self, a: &str) -> Result<PendingSummary, Self::Error> {
+        if self.failing {
+            return Err(DISK_FULL);
+        }
+        self.store.pending_for(a).map_err(|e| match e {})
+    }
+    fn calls_for(&mut self, a: &str, b: &[String]) -> Result<Vec<PendingCall>, Self::Error> {
+        self.store.calls_for(a, b).map_err(|e| match e {})
+    }
+    fn sent_calls(&mut self, a: &[String]) -> Result<(), Self::Error> {
+        self.store.sent_calls(a).map_err(|e| match e {})
+    }
+    fn accept_call(&mut self, a: &str, b: &str, c: Millis) -> Result<bool, Self::Error> {
+        self.store.accept_call(a, b, c).map_err(|e| match e {})
+    }
+    fn answer_call(
+        &mut self,
+        a: &str,
+        b: &str,
+        c: Result<Value, CallFailure>,
+        d: Millis,
+    ) -> Result<Answered, Self::Error> {
+        self.store.answer_call(a, b, c, d).map_err(|e| match e {})
+    }
+    fn keep_tries(&mut self, a: &str, b: &str, c: &Tries) -> Result<bool, Self::Error> {
+        self.store.keep_tries(a, b, c).map_err(|e| match e {})
+    }
+    fn resends(&mut self, a: &str, b: &str) -> Result<u32, Self::Error> {
+        self.store.resends(a, b).map_err(|e| match e {})
+    }
+    fn next_resend(&mut self, a: Millis) -> Result<Option<Millis>, Self::Error> {
+        self.store.next_resend(a).map_err(|e| match e {})
+    }
+    fn set_dropped(&mut self, a: &str, b: Option<Millis>) -> Result<(), Self::Error> {
+        self.store.set_dropped(a, b).map_err(|e| match e {})
+    }
+    fn is_dropped(&mut self, a: &str) -> Result<bool, Self::Error> {
+        self.store.is_dropped(a).map_err(|e| match e {})
+    }
+    fn expire_calls(
+        &mut self,
+        a: Millis,
+        b: &dyn Fn(&CallSummary) -> CallFailure,
+    ) -> Result<Vec<String>, Self::Error> {
+        self.store.expire_calls(a, b).map_err(|e| match e {})
+    }
+    fn next_deadline(&mut self) -> Result<Option<Millis>, Self::Error> {
+        self.store.next_deadline().map_err(|e| match e {})
+    }
+    fn record_end(&mut self, a: NewEnd, b: usize, c: Millis) -> Result<RecordedEnd, Self::Error> {
+        self.store.record_end(a, b, c).map_err(|e| match e {})
+    }
+    fn ends_for(&mut self, a: &str, b: &[String]) -> Result<Vec<PendingEnd>, Self::Error> {
+        self.store.ends_for(a, b).map_err(|e| match e {})
+    }
+    fn acknowledge_end(&mut self, a: &str, b: &str, c: Millis) -> Result<bool, Self::Error> {
+        self.store.acknowledge_end(a, b, c).map_err(|e| match e {})
+    }
+    fn expire_ends(&mut self, a: Millis) -> Result<usize, Self::Error> {
+        self.store.expire_ends(a).map_err(|e| match e {})
+    }
+}
+
+/// A host that started again and goes on as its registration may have
+/// lost the calls it had accepted: when its first serve fails on the
+/// store before they are planned to be sent again, its next serve, a
+/// connected one, plans them still.
+#[test]
+fn a_serve_that_failed_before_planning_a_restarted_hosts_calls_leaves_them_to_the_next() {
+    let (mut hub, store, _) = desk(HubLimits::default());
+    let mut store = FailsToList {
+        store,
+        failing: false,
+    };
+    let r1 = rid(1);
+    let ask = hub
+        .enqueue(
+            &mut store,
+            &r1,
+            Enqueue {
+                retry: Retry::DAEMON,
+                ..call("desk.notify", json!(["hi"]), "k", Some(600_000))
+            },
+            Millis(1),
+        )
+        .unwrap();
+    let accepted = Answer {
+        id: ask.clone(),
+        outcome: Outcome::Accepted,
+    };
+    hub.open(&mut store, "desk", &r1, 0, vec![accepted], Millis(2))
+        .unwrap();
+    assert_eq!(store.store.tries_of(&ask).unwrap().resend, Resend::None);
+    // The daemon started again; its host goes on as its registration.
+    let (mut hub, _) = self::hub(HubLimits::default());
+    hub.register(
+        &mut store,
+        "desk",
+        &again(1, &desk_dts()),
+        &rid(2),
+        Millis(3),
+    )
+    .unwrap();
+    store.failing = true;
+    assert_eq!(
+        hub.open(&mut store, "desk", &r1, 0, Vec::new(), Millis(4)),
+        Err(ServeError::Storage(DISK_FULL.into()))
+    );
+    store.failing = false;
+    // Served again at once, connected: the accepted call is planned.
+    assert!(hub.connected(&r1, Millis(5)));
+    hub.open(&mut store, "desk", &r1, 0, Vec::new(), Millis(5))
+        .unwrap();
+    assert_eq!(
+        store.store.tries_of(&ask).unwrap().resend,
+        Resend::Planned,
+        "the call the host may have lost is sent again"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2419,16 +2710,6 @@ struct Model {
 }
 
 impl Model {
-    /// Forgets what the hosts of registrations the hub has dropped
-    /// asked for later, as the hub has.
-    fn forget_dropped(&mut self, hub: &Hub) {
-        for known in self.calls.values_mut() {
-            if hub.registration(&known.registration).is_none() {
-                known.later = None;
-            }
-        }
-    }
-
     /// What the answers of a serve of `serving` at `now` do, in their
     /// order.
     fn take_answers(&mut self, serving: &str, answers: &[Answer], now: u64) {
@@ -2449,8 +2730,18 @@ impl Model {
                 Outcome::Accepted => {
                     known.sent = true;
                     known.accepted = true;
+                    known.later = None;
                 }
-                Outcome::RetryAfter(ms) => known.later = Some(now + ms),
+                // An accepted `@once` call, never sent again, is settled:
+                // its host did not take it.
+                Outcome::RetryAfter(_) if known.accepted && OPS[known.op].0 == "ask" => {
+                    known.answered = Some(Err(CODE_UNAVAILABLE.to_string()));
+                }
+                // Any other is sent again then, an accepted one too.
+                Outcome::RetryAfter(ms) => {
+                    known.accepted = false;
+                    known.later = Some(now + ms);
+                }
                 Outcome::Result(v) => {
                     self.answered += 1;
                     known.answered =
@@ -2534,7 +2825,9 @@ impl Model {
                 assert_eq!(&got.map_err(|f| f.code), want, "{id}");
             }
             None if known.deadline <= now => {
-                let want = match (known.sent, OPS[known.op].1) {
+                // Its host's last word was that it could not take it:
+                // nothing happened.
+                let want = match (known.sent && known.later.is_none(), OPS[known.op].1) {
                     (false, _) => CODE_UNAVAILABLE,
                     (true, CallKind::Read) => CODE_EXPIRED,
                     (true, _) => CODE_UNKNOWN_OUTCOME,
@@ -2607,7 +2900,6 @@ fn generated(seed: u64, steps: usize) -> (u64, u64) {
             _ => rng.below(700_000),
         };
         hub.expire(&mut store, Millis(now)).unwrap();
-        model.forget_dropped(&hub);
         // What each method is given: now, or an instant before it,
         // which is read as now.
         let at = Millis(if rng.below(8) == 0 {
@@ -2710,7 +3002,6 @@ fn generated(seed: u64, steps: usize) -> (u64, u64) {
                                 made,
                             },
                         );
-                        model.forget_dropped(&hub);
                     }
                 }
             }
@@ -2983,7 +3274,6 @@ fn generated(seed: u64, steps: usize) -> (u64, u64) {
             assert!(of_name <= limits.registrations_per_name);
         }
         assert!(held.serves <= held.registrations * limits.serves_per_registration);
-        assert!(held.deferred <= held.registrations * limits.calls_per_registration);
         assert!(held.definitions <= held.registrations + limits.definitions);
         let looked_at = if step % 64 == 0 { &all } else { &live };
         for id in looked_at {
@@ -3035,6 +3325,169 @@ fn no_sequence_of_serves_calls_answers_and_clock_breaks_what_holds() {
     );
 }
 
+/// A store [`retrying`] plays the hub over, with what it reads of it:
+/// the one in memory, and the one the runs are in.
+trait Played: crate::broker::BrokerStore<Error: std::fmt::Debug> + Sized {
+    /// Has `hub` make `call` for `registration`, as a run's driver does.
+    fn make(
+        &mut self,
+        cx: &mut PlayCx,
+        hub: &mut Hub,
+        registration: &str,
+        call: Enqueue,
+        now: Millis,
+    ) -> Result<String, EnqueueError>;
+    /// Where the open call `id` is with its attempts; `None` once settled.
+    fn tries_now(&mut self, id: &str) -> Option<Tries>;
+    /// The sendings again the run's calls of `registration` spent.
+    fn spent(&mut self, run: &str, registration: &str) -> u32;
+    /// Whether the call is held and not settled.
+    fn open_now(&mut self, id: &str) -> bool;
+    /// The store as a hub that starts again finds it.
+    fn restarted(self) -> Self;
+}
+
+/// What [`Played::make`] keeps of the runs over the store the runs are
+/// in: their database, the driver that holds them, and each call's
+/// place in its run's open step, by key.
+struct PlayCx {
+    _dir: Option<tempfile::TempDir>,
+    db: Option<std::path::PathBuf>,
+    driver: clax_store::bot_runs::DriverId,
+    places: BTreeMap<String, crate::surface::CallPlace>,
+    runs: BTreeMap<String, i64>,
+}
+
+impl PlayCx {
+    fn in_memory() -> PlayCx {
+        PlayCx {
+            _dir: None,
+            db: None,
+            driver: clax_store::bot_runs::DriverId::mint(),
+            places: BTreeMap::new(),
+            runs: BTreeMap::new(),
+        }
+    }
+}
+
+impl Played for MemoryPending {
+    fn make(
+        &mut self,
+        _cx: &mut PlayCx,
+        hub: &mut Hub,
+        registration: &str,
+        call: Enqueue,
+        now: Millis,
+    ) -> Result<String, EnqueueError> {
+        hub.enqueue(self, registration, call, now)
+    }
+    fn tries_now(&mut self, id: &str) -> Option<Tries> {
+        self.tries_of(id).cloned()
+    }
+    fn spent(&mut self, run: &str, registration: &str) -> u32 {
+        let Ok(n) = self.resends(run, registration);
+        n
+    }
+    fn open_now(&mut self, id: &str) -> bool {
+        self.is_open(id)
+    }
+    fn restarted(self) -> Self {
+        self
+    }
+}
+
+/// The store the runs are in, on a fresh home: its runs `run-1` and
+/// `run-2` are made, claimed and their first step begun as a call of
+/// theirs is first made.
+fn in_the_store() -> (crate::broker::stored::StoredPending, PlayCx) {
+    let dir = tempfile::tempdir().unwrap();
+    let home = clax_core::Home::at(dir.path().join("ax"));
+    let store = Arc::new(clax_store::Store::open(&home).unwrap());
+    let cx = PlayCx {
+        db: Some(home.db_path()),
+        _dir: Some(dir),
+        ..PlayCx::in_memory()
+    };
+    (crate::broker::stored::StoredPending::new(store), cx)
+}
+
+impl Played for crate::broker::stored::StoredPending {
+    fn make(
+        &mut self,
+        cx: &mut PlayCx,
+        hub: &mut Hub,
+        registration: &str,
+        call: Enqueue,
+        now: Millis,
+    ) -> Result<String, EnqueueError> {
+        if !cx.runs.contains_key(&call.run) {
+            let db = cx.db.as_ref().expect("a store on a home");
+            rusqlite::Connection::open(db)
+                .unwrap()
+                .execute(
+                    "INSERT INTO bot_runs (id, artifact_id, person, request, thread_ids_json,
+                        status, model, key_source, base_version, created_at, updated_at)
+                     VALUES (?1, 'a', 'u', 'thread', '[]', 'queued', 'claude-sonnet-5-5',
+                        'instance', 1, '2026-10-01T00:00:00.000Z', '2026-10-01T00:00:00.000Z')",
+                    rusqlite::params![call.run],
+                )
+                .unwrap();
+            let st = self.store().clone();
+            st.claim_run(&call.run, &cx.driver, 3_600)
+                .unwrap()
+                .expect("the run is claimed");
+            st.begin_step(
+                &call.run,
+                &cx.driver,
+                1,
+                clax_store::bot_runs::StepKind::Script,
+            )
+            .unwrap();
+            cx.runs.insert(call.run.clone(), 0);
+        }
+        let place = match cx.places.get(&call.key) {
+            Some(place) => place.clone(),
+            None => {
+                let seq = cx.runs.get_mut(&call.run).expect("the run is made");
+                let place = crate::surface::CallPlace {
+                    step: 1,
+                    attempt: 1,
+                    seq: *seq,
+                    key: call.key.clone(),
+                };
+                *seq += 1;
+                cx.places.insert(call.key.clone(), place.clone());
+                place
+            }
+        };
+        let raw = Value::Array(call.args.clone());
+        let at = crate::broker::Placed {
+            driver: &cx.driver,
+            run: &call.run.clone(),
+            place: &place,
+            raw: &raw,
+            args_hash: crate::host::args_hash(&raw),
+            waits: false,
+        };
+        crate::broker::enqueue_placed(hub, self, &at, registration, call, now)
+    }
+    fn tries_now(&mut self, id: &str) -> Option<Tries> {
+        self.tries(id).unwrap()
+    }
+    fn spent(&mut self, run: &str, registration: &str) -> u32 {
+        self.resends(run, registration).unwrap()
+    }
+    fn open_now(&mut self, id: &str) -> bool {
+        self.store()
+            .pending_call(id)
+            .unwrap()
+            .is_some_and(|c| c.answered_at.is_none())
+    }
+    fn restarted(self) -> Self {
+        crate::broker::stored::StoredPending::new(self.store().clone())
+    }
+}
+
 /// What [`retrying`] knows of a call the hub took.
 #[derive(Debug)]
 struct Tracked {
@@ -3048,6 +3501,14 @@ struct Tracked {
     sent: u32,
     /// Whether its host answered a retryable error for it.
     failed: bool,
+    /// Whether its host answered a retryable error for it since it was
+    /// last delivered.
+    failed_since: bool,
+    /// How often it was delivered after its host failed it retryably:
+    /// the sendings again its host saw.
+    again: u32,
+    /// The rule it was first made with.
+    retry: Retry,
 }
 
 /// How often [`retrying`] saw what it is there to see.
@@ -3060,6 +3521,8 @@ struct Seen {
     accepted_then_failed: u64,
     /// Calls settled.
     settled: u64,
+    /// Times the hub started again.
+    restarts: u64,
 }
 
 /// Everything hosts, runs and the clock can do to calls that are sent
@@ -3071,8 +3534,11 @@ struct Seen {
 /// again"): a call of `@once` `ask` its host accepted is never sent
 /// again; a call is never sent once settled or at or after its deadline;
 /// every sending of a call carries its ID, key, run and arguments; every
-/// call is settled exactly once.
-fn retrying(seed: u64, steps: usize) -> Seen {
+/// call is settled exactly once; and no call ever has more attempts left,
+/// nor its run more sendings again, than it had before: not after a
+/// restart of the hub, which happens at random points, nor after
+/// anything else.
+fn retrying<S: Played>(seed: u64, steps: usize, store: S, mut cx: PlayCx) -> Seen {
     let limits = HubLimits {
         registrations: 4,
         calls_per_registration: 6,
@@ -3080,7 +3546,7 @@ fn retrying(seed: u64, steps: usize) -> Seen {
         ..HubLimits::default()
     };
     let (mut hub, _) = hub(limits.clone());
-    let mut store = MemoryPending::new();
+    let mut store = store;
     let mut rng = Rng(seed | 1);
     let dts = desk_dts();
     let mut seen = Seen::default();
@@ -3092,6 +3558,10 @@ fn retrying(seed: u64, steps: usize) -> Seen {
     let mut settled: BTreeSet<String> = BTreeSet::new();
     let mut once_accepted: BTreeSet<String> = BTreeSet::new();
     let ask = OPS.iter().position(|op| op.0 == "ask").unwrap();
+    // The most failures each call and each run's calls of a registration
+    // were seen with: what is spent is never given back.
+    let mut spent: BTreeMap<String, u32> = BTreeMap::new();
+    let mut run_spent: BTreeMap<(String, String), u32> = BTreeMap::new();
 
     let settle = |ids: Vec<String>, settled: &mut BTreeSet<String>, seen: &mut Seen| {
         for id in ids {
@@ -3135,9 +3605,19 @@ fn retrying(seed: u64, steps: usize) -> Seen {
                     registrations.push(registered.registration);
                 }
             }
-            // The hub starts again over its store.
+            // The hub starts again over its store: each open call goes on
+            // with the attempts it had, and its run with its sendings.
             4 => {
+                let before: Vec<(String, Option<Tries>)> = calls
+                    .keys()
+                    .map(|id| (id.clone(), store.tries_now(id)))
+                    .collect();
                 hub = self::hub(limits.clone()).0;
+                store = store.restarted();
+                seen.restarts += 1;
+                for (id, tries) in before {
+                    assert_eq!(store.tries_now(&id), tries, "{id} after a restart");
+                }
             }
             // A run makes a call, or makes one again with its key.
             5..=34 => {
@@ -3171,8 +3651,9 @@ fn retrying(seed: u64, steps: usize) -> Seen {
                 } else {
                     Retry::DAEMON
                 };
-                let made = hub.enqueue(
-                    &mut store,
+                let made = store.make(
+                    &mut cx,
+                    &mut hub,
                     &registration,
                     Enqueue {
                         run: run.clone(),
@@ -3195,6 +3676,9 @@ fn retrying(seed: u64, steps: usize) -> Seen {
                         deadline,
                         sent: 0,
                         failed: false,
+                        failed_since: false,
+                        again: 0,
+                        retry,
                     });
                     assert_eq!(known.key, key, "{id} is one call");
                 }
@@ -3289,6 +3773,7 @@ fn retrying(seed: u64, steps: usize) -> Seen {
                         && let Some(known) = calls.get_mut(&answer.id)
                     {
                         known.failed = true;
+                        known.failed_since = true;
                     }
                 }
                 once_accepted.extend(accepted_here);
@@ -3320,9 +3805,60 @@ fn retrying(seed: u64, steps: usize) -> Seen {
                     if known.failed {
                         seen.again += 1;
                     }
+                    if std::mem::take(&mut known.failed_since) {
+                        known.again += 1;
+                    }
                     known.sent += 1;
+                    // What its host saw: a call is delivered after a
+                    // failure no more often than its rule has attempts
+                    // after the first.
+                    assert!(
+                        known.again < known.retry.attempts.max(1),
+                        "{} delivered {} times after a failure, under {:?}",
+                        c.id,
+                        known.again,
+                        known.retry
+                    );
+                }
+                // ... and a run's calls of a registration no more often in
+                // all than the run's bound.
+                let mut again: BTreeMap<(&str, &str), u32> = BTreeMap::new();
+                for known in calls.values() {
+                    *again
+                        .entry((known.run.as_str(), known.registration.as_str()))
+                        .or_insert(0) += known.again;
+                }
+                for (at, n) in again {
+                    assert!(
+                        n <= limits.resends_per_run,
+                        "{at:?}: delivered {n} times after failures, over the run's bound"
+                    );
                 }
             }
+        }
+
+        // Nothing spent is given back.
+        let mut runs: BTreeSet<(String, String)> = BTreeSet::new();
+        for (id, known) in calls.iter().filter(|(id, _)| !settled.contains(*id)) {
+            let Some(tries) = store.tries_now(id) else {
+                continue;
+            };
+            let most = spent.entry(id.clone()).or_insert(0);
+            assert!(tries.failures >= *most, "{id}: attempts given back");
+            *most = tries.failures;
+            let rule = tries.rule.unwrap_or(limits.retry_kept);
+            assert!(tries.failures < rule.attempts.max(1), "{id}: past its rule");
+            runs.insert((known.run.clone(), known.registration.clone()));
+        }
+        for at in runs {
+            let resends = store.spent(&at.0, &at.1);
+            assert!(
+                resends <= limits.resends_per_run,
+                "{at:?}: past the run's bound"
+            );
+            let most = run_spent.entry(at.clone()).or_insert(0);
+            assert!(resends >= *most, "{at:?}: its run's sendings given back");
+            *most = resends;
         }
     }
 
@@ -3332,8 +3868,12 @@ fn retrying(seed: u64, steps: usize) -> Seen {
     settle(expired, &mut settled, &mut seen);
     for id in calls.keys() {
         assert!(settled.contains(id), "{id} was never settled");
-        assert!(!store.is_open(id), "{id} is open past its deadline");
+        assert!(!store.open_now(id), "{id} is open past its deadline");
     }
+    assert!(
+        calls.values().any(|known| known.sent > 1),
+        "no call was delivered twice"
+    );
     seen
 }
 
@@ -3341,14 +3881,111 @@ fn retrying(seed: u64, steps: usize) -> Seen {
 fn no_sequence_of_calls_sent_again_breaks_what_sending_again_promises() {
     let mut seen = Seen::default();
     for seed in 1..=16u64 {
-        let one = retrying(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15), 2_000);
+        let one = retrying(
+            seed.wrapping_mul(0x9E37_79B9_7F4A_7C15),
+            2_000,
+            MemoryPending::new(),
+            PlayCx::in_memory(),
+        );
         seen.again += one.again;
         seen.accepted_then_failed += one.accepted_then_failed;
         seen.settled += one.settled;
+        seen.restarts += one.restarts;
     }
     assert!(
-        seen.again > 200 && seen.accepted_then_failed > 50 && seen.settled > 1_000,
+        seen.again > 200
+            && seen.accepted_then_failed > 50
+            && seen.settled > 1_000
+            && seen.restarts > 100,
         "{seen:?}"
+    );
+}
+
+/// The same sequences over the store the runs are in
+/// (`StoredPending`), which keeps a call's attempts in its columns and
+/// a restart reads them back from there: fewer of them, each a
+/// transaction of a store on disk.
+#[test]
+fn no_sequence_of_calls_sent_again_breaks_what_sending_again_promises_in_the_store() {
+    let mut seen = Seen::default();
+    for seed in 1..=3u64 {
+        let (store, cx) = in_the_store();
+        let one = retrying(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15), 1_200, store, cx);
+        seen.again += one.again;
+        seen.accepted_then_failed += one.accepted_then_failed;
+        seen.settled += one.settled;
+        seen.restarts += one.restarts;
+    }
+    assert!(
+        seen.again > 20
+            && seen.accepted_then_failed > 5
+            && seen.settled > 100
+            && seen.restarts > 10,
+        "{seen:?}"
+    );
+}
+
+/// Over the store the runs are in, a call whose row does not read fails
+/// that call alone: every serve of its registration and of another is
+/// taken, the call is settled `internal_error` (its run is told), and
+/// the other registration's call is sent as it was made.
+#[test]
+fn a_call_whose_row_does_not_read_fails_no_serve_of_any_registration() {
+    let (mut store, mut cx) = in_the_store();
+    let (mut hub, _) = hub(HubLimits::default());
+    let (r1, r2) = (rid(1), rid(2));
+    for r in [&r1, &r2] {
+        hub.register(&mut store, "desk", &request(&desk_dts()), r, Millis(0))
+            .unwrap();
+    }
+    let make = |hub: &mut Hub,
+                store: &mut crate::broker::stored::StoredPending,
+                cx: &mut PlayCx,
+                registration: &str,
+                run: &str| {
+        store
+            .make(
+                cx,
+                hub,
+                registration,
+                Enqueue {
+                    run: run.into(),
+                    ..call("desk.lamps", json!([]), &format!("{run}:1:0"), Some(60_000))
+                },
+                Millis(1),
+            )
+            .unwrap()
+    };
+    let bad = make(&mut hub, &mut store, &mut cx, &r1, "run-1");
+    let good = make(&mut hub, &mut store, &mut cx, &r2, "run-2");
+    for damage in ["access = 'later'", "resend = 'soon'", "failures = 'many'"] {
+        let c = rusqlite::Connection::open(cx.db.as_ref().unwrap()).unwrap();
+        c.execute_batch("PRAGMA ignore_check_constraints = ON")
+            .unwrap();
+        c.execute(
+            &format!("UPDATE bot_pending_calls SET {damage} WHERE id = ?1"),
+            rusqlite::params![bad],
+        )
+        .unwrap();
+    }
+    for (r, answers) in [(&r1, vec![result(&bad, json!([]))]), (&r2, Vec::new())] {
+        hub.open(&mut store, "desk", r, 0, answers, Millis(2))
+            .unwrap_or_else(|e| panic!("{r} serves: {e:?}"));
+    }
+    // Its run is told: the journal holds the failure at its place.
+    let journal = store.store().bot_calls("run-1", 1).unwrap();
+    assert_eq!(
+        (journal.len(), journal[0].ok(), &journal[0].result()["code"]),
+        (1, false, &json!("internal_error"))
+    );
+    let sent = hub
+        .serve(&mut store, "desk", &r2, Vec::new(), Millis(3))
+        .unwrap();
+    assert_eq!(ids(&sent), [good.as_str()]);
+    // Past every deadline, the pass completes.
+    assert_eq!(
+        hub.expire(&mut store, Millis(70_000)).unwrap(),
+        std::slice::from_ref(&good)
     );
 }
 
