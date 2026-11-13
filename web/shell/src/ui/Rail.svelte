@@ -21,21 +21,24 @@
   type Props = { tl: Timeline; side: "left" | "right"; working: boolean; height: number; onOpen(): void };
   let p: Props = $props();
 
-  /** The strip's width, one comment's width, where the band starts, where
-   * the steps start, a line's step, and the extra step at a day's break. */
-  const W = 56, UNIT = 4.5, TOP = 16, FIRST = 14, STEP = 18, BREAK = 20;
+  /** The plot's width (the strip's 56 px less its 1 px border toward the
+   * page), one comment's width, where the band starts, where the steps
+   * start, a line's step, and the extra step at a day's break. */
+  const W = 55, UNIT = 4.5, TOP = 16, FIRST = 14, STEP = 18, BREAK = 20;
   const SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const pending = $derived(p.tl.pending.length);
   const waiting = $derived(p.tl.waiting.length);
   const needs = (n: number) => (n === 1 ? "needs you" : "need you");
   const label = $derived(`Threads: ${pending} pending${waiting ? `, ${waiting} ${needs(waiting)}` : ""}. Show threads`);
   const right = $derived(p.side === "right");
-  const x0 = $derived(right ? W : 0);
+  // The edge: the spine's 1 px stroke centred half a pixel in, so all of it is inside the plot.
+  const x0 = $derived(right ? W - 0.5 : 0.5);
   const dir = $derived(right ? 1 : -1);
   // The tally: past the cap the waiting marks keep their share, and one shows whenever a thread waits.
   const marks = $derived(Math.min(pending, MAX_UNITS));
   const orange = $derived(!waiting ? 0 : pending <= MAX_UNITS ? waiting : Math.max(1, Math.round((waiting / pending) * marks)));
-  const mark = (i: number) => `M${right ? W - (i + 1) * UNIT + 0.75 : i * UNIT + 0.75},3 h${UNIT - 1.5} v10 h${1.5 - UNIT} Z`;
+  // A mark is one comment's width of the band's, measured from the same edge, less a gap.
+  const mark = (i: number) => `M${(right ? x0 - (i + 1) * UNIT : x0 + i * UNIT) + 0.75},3 h${UNIT - 1.5} v10 h${1.5 - UNIT} Z`;
   const tally = $derived({
     agents: Array.from({ length: marks - orange }, (_, i) => mark(i)).join(" "),
     waits: Array.from({ length: orange }, (_, i) => mark(marks - orange + i)).join(" "),

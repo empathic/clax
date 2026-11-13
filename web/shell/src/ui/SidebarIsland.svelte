@@ -60,7 +60,7 @@
   {:else if rail && Rail}
     <Rail {ctl} {s} />
   {:else if rail}
-    <aside class="rail" aria-busy="true"></aside>
+    <aside class="rail" aria-label="Comment threads" aria-busy="true"></aside>
   {/if}
   <PhoneTabs panel={s.panel} open={ctl.openCount(s)} onPage={() => { if (s.panel) ctl.togglePanel(); }} onThreads={() => { if (!s.panel) ctl.togglePanel(); }} />
 {/if}

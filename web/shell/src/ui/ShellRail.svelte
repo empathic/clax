@@ -15,7 +15,24 @@
   let { ctl, s }: { ctl: ArtifactController; s: ViewState & { data: Loaded } } = $props();
   const tl = $derived(timeline({ threads: s.threads, versions: s.data.versions, working: s.working, claimed: botView.claimed, me: s.me }));
   let height = $state(0);
+  let box: HTMLElement | undefined;
+  // Showing the threads puts the drawer in the strip's place, taking the
+  // strip's button away: when it held focus, focus goes on to the drawer's
+  // Hide threads, which closes it again (as Hide threads hands it to the top
+  // bar's Threads, DrawerChrome.svelte), once the drawer is in the island.
+  const open = () => {
+    const island = box?.parentElement;
+    const held = !!box?.contains(document.activeElement);
+    ctl.togglePanel();
+    if (!held || !island) return;
+    const go = () => { const b = island.querySelector<HTMLElement>('.drawer button[aria-label="Hide threads"]'); b?.focus(); return !!b; };
+    if (go()) return;
+    // It stops looking once the drawer is there, or the strip is back without it.
+    const mo = new MutationObserver(() => { if (go() || island.querySelector("button.rail")) mo.disconnect(); });
+    mo.observe(island, { childList: true, subtree: true });
+  };
   const plot = (el: HTMLElement) => {
+    box = el;
     const at = el.querySelector<HTMLElement>(".rail-plot");
     if (!at) return;
     const on = () => { height = at.clientHeight; };
@@ -28,5 +45,5 @@
 </script>
 
 <aside class="rail" aria-label="Comment threads" {@attach plot}>
-  <Rail {tl} side={drawer.prefs.layout === "left" ? "left" : "right"} working={s.working.length > 0} {height} onOpen={() => ctl.togglePanel()} />
+  <Rail {tl} side={drawer.prefs.layout === "left" ? "left" : "right"} working={s.working.length > 0} {height} onOpen={open} />
 </aside>

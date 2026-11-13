@@ -36,6 +36,8 @@ function rail(t: Timeline, more: Partial<{ side: "left" | "right"; working: bool
 // How many marks a tally path draws, and where its first starts.
 const count = (p: Element | null) => (p?.getAttribute("d") ?? "").match(/M/g)?.length ?? 0;
 const firstX = (p: Element | null) => Number(/^M([\d.]+)/.exec(p?.getAttribute("d") ?? "")?.[1]);
+// Every x a path's absolute commands name (M and L give x,y; H gives x; V names none).
+const xsOf = (p: Element | null) => Array.from((p?.getAttribute("d") ?? "").matchAll(/([MLH])(-?[\d.]+)/g), r => Number(r[2]));
 
 describe("railShows", () => {
   const s = { panel: false, threads: [{}], deleted: false };
@@ -97,6 +99,9 @@ describe("Rail", () => {
     expect(marks(tl(9, 3))).toEqual([4, 2]);
     expect(marks(tl(20, 1))).toEqual([5, 1]);
     expect(marks(tl(0, 0))).toEqual([0, 0]);
+    // Every pending thread waiting, below and past the cap.
+    expect(marks(tl(3, 3))).toEqual([0, 3]);
+    expect(marks(tl(20, 20))).toEqual([0, 6]);
     // Docked right the outer edge is the right one: the waiting marks lie inward of the agents', as the band's waiting area does.
     const r = rail(tl(3, 1));
     expect(firstX(r.svg.querySelector("path.rail-mark.waits"))).toBeLessThan(firstX(r.svg.querySelector("path.rail-mark:not(.waits)")));
@@ -148,7 +153,23 @@ describe("Rail", () => {
     expect(firstX(agents)).toBeLessThan(5);
     expect(firstX(agents)).toBeLessThan(firstX(waits));
     expect(m.root.querySelector(".rail-labels")!.classList.contains("start")).toBe(true);
+    // The band grows from the left edge, its spine's whole stroke inside the plot.
+    expect(svg.querySelector(".rail-spine")!.getAttribute("d")).toMatch(/^M0\.5,16 V/);
+    const xs = xsOf(svg.querySelector(".rail-band-a")).concat(xsOf(svg.querySelector(".rail-band-w")));
+    expect(Math.min(...xs)).toBe(0.5);
+    expect(Math.max(...xs)).toBe(0.5 + 3 * 4.5);
     m.unmount();
+  });
+
+  it("draws within the plot, the strip's width less its border, its spine's whole stroke inside on either side", () => {
+    for (const side of ["right", "left"] as const) {
+      const { m, svg } = rail(tl(6, 2, versions(2)), { side });
+      expect(svg.getAttribute("width")).toBe("55");
+      const spine = Number(/^M([\d.]+),/.exec(svg.querySelector(".rail-spine")!.getAttribute("d")!)![1]);
+      expect(spine).toBe(side === "right" ? 54.5 : 0.5);
+      for (const p of svg.querySelectorAll("path")) for (const x of xsOf(p)) { expect(x).toBeGreaterThanOrEqual(0); expect(x).toBeLessThanOrEqual(55); }
+      m.unmount();
+    }
   });
 });
 
@@ -162,10 +183,41 @@ describe("the sidebar island with the panel closed", () => {
   };
   function island(threads: Thread[] = [thread]) {
     vi.stubGlobal("matchMedia", (q: string) => ({ matches: q === "(min-width: 701px)", media: q, addEventListener() {}, removeEventListener() {} }));
-    const state = writable({ error: null, origin: "", data: { versions: [], artifact: {} }, panel: false, deleted: false, threads, working: [], me: null });
-    const ctl = { state, togglePanel: vi.fn(), setNotice: vi.fn(), openCount: () => threads.length };
+    const state = writable({ error: null, origin: "", data: { versions: [], artifact: { owner_harness: "claude" } }, panel: false, deleted: false, threads, working: [], me: null,
+      resolved: {}, selected: null, file: "index.html", commenting: false, agents: [], attention: null, decided: null, selection: { ids: [], anchor: null }, batchNote: "", batchBusy: false, sendTo: null });
+    const ctl = { id: "7q3k9mzx2b4t", state, setNotice: vi.fn(), openCount: () => threads.length, holds: () => true, shown: () => 1,
+      togglePanel: vi.fn(() => state.update(x => ({ ...x, panel: !x.panel }))) };
     return { m: mount(SidebarIsland, { ctl: ctl as never }), ctl };
   }
+  const strip = (m: { root: HTMLElement }) => vi.waitFor(() => { flush(); const b = m.root.querySelector<HTMLButtonElement>("button.rail"); expect(b).not.toBeNull(); return b!; });
+
+  it("hands focus to the drawer's Hide threads when the strip held it", async () => {
+    const { m } = island();
+    const button = await strip(m);
+    button.focus();
+    flush(() => button.click());
+    await vi.waitFor(() => { flush(); expect(document.activeElement?.getAttribute("aria-label")).toBe("Hide threads"); });
+    expect(m.root.querySelector(".drawer")!.contains(document.activeElement)).toBe(true);
+    m.unmount();
+  });
+
+  it("leaves focus where it was when the strip did not hold it", async () => {
+    const { m } = island();
+    const button = await strip(m);
+    (document.activeElement as HTMLElement | null)?.blur();
+    flush(() => button.click());
+    await vi.waitFor(() => { flush(); expect(m.root.querySelector(".drawer button[aria-label='Hide threads']")).not.toBeNull(); });
+    await vi.dynamicImportSettled();
+    flush();
+    expect(document.activeElement).toBe(document.body);
+    m.unmount();
+  });
+
+  it("names its empty box as the drawer's is named", () => {
+    const { m } = island();
+    expect(m.root.querySelector('aside.rail[aria-busy="true"]')!.getAttribute("aria-label")).toBe("Comment threads");
+    m.unmount();
+  });
 
   it("holds the strip's box until its chunk loads, then shows the strip, which opens the threads", async () => {
     const { m, ctl } = island();
