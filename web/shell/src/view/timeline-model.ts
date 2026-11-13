@@ -216,17 +216,27 @@ export function timeline(i: TimelineInput): Timeline {
 
   const newest = new Map<string, number>();
   merged.forEach((line, k) => { for (const id of line.ids) newest.set(id, k); });
-  const stateAt = (id: string, at: string): ThreadState | null => {
-    let s: ThreadState | null = null;
-    for (const st of steps.get(id) ?? []) { if (st.at > at) break; s = st.s; }
-    return s;
-  };
+  // The counts after each line, in one sweep: every thread's steps in time
+  // order, applied up to each line's time. A step takes effect once every
+  // step before it in its thread has (its time is the latest so far), and
+  // the lines' times only grow.
+  const changes: { at: string; id: string; s: ThreadState }[] = [];
+  for (const [id, list] of steps) {
+    let at = "";
+    for (const st of list) { if (st.at > at) at = st.at; changes.push({ at, id, s: st.s }); }
+  }
+  const sweep = byAt(changes);
+  const now = new Map<string, ThreadState>();
+  let pending = 0, waiting = 0, next = 0;
   const lines: Line[] = merged.map((line, k) => {
-    let pending = 0, waiting = 0;
-    for (const t of i.threads) {
-      const s = stateAt(t.id, line.at);
-      if (s && isPending(s)) pending++;
-      if (s && isWaiting(s)) waiting++;
+    for (; next < sweep.length && sweep[next].at <= line.at; next++) {
+      const { id, s } = sweep[next];
+      const was = now.get(id);
+      if (was && isPending(was)) pending--;
+      if (was && isWaiting(was)) waiting--;
+      if (isPending(s)) pending++;
+      if (isWaiting(s)) waiting++;
+      now.set(id, s);
     }
     return { ...line, here: line.ids.filter(id => newest.get(id) === k), pending, waiting };
   });

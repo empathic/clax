@@ -13,7 +13,14 @@
   import Rail from "./Rail.svelte";
 
   let { ctl, s }: { ctl: ArtifactController; s: ViewState & { data: Loaded } } = $props();
-  const tl = $derived(timeline({ threads: s.threads, versions: s.data.versions, working: s.working, claimed: botView.claimed, me: s.me }));
+  // Each input on its own, so the timeline is computed again only when one
+  // of them is a new value, not on every change of the controller's state.
+  const threads = $derived(s.threads);
+  const versions = $derived(s.data.versions);
+  const working = $derived(s.working);
+  const claimed = $derived(botView.claimed);
+  const me = $derived(s.me);
+  const tl = $derived(timeline({ threads, versions, working, claimed, me }));
   let height = $state(0);
   let box: HTMLElement | undefined;
   // Showing the threads puts the drawer in the strip's place, taking the

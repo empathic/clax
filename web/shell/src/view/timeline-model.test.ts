@@ -208,6 +208,25 @@ describe("timeline", () => {
     expect(shape(tl)).toEqual([V1, ["sent", ["a", "b"], ["a", "b"], 2, 0]]);
   });
 
+  it("counts pending and waiting threads after each line over interleaved threads", () => {
+    const tl = run([
+      thread("a", { comments: [C("a.1", "viewer", AT(1)), C("a.2", "agent", AT(6))], sent_to_agent: true, sends: [send("b1", AT(3), 2)] }),
+      thread("b", { comments: [C("b.1", "viewer", AT(2))], sent_to_agent: true, sends: [send("b1", AT(3), 2)], addressed_in: [2] }),
+      thread("c", { comments: [C("c.1", "viewer", AT(4), "Alex"), C("c.2", "viewer", AT(8), "Alex")], status: "resolved", resolved_by: "viewer:p_me", resolved_at: AT(7) }),
+      thread("d", { comments: [C("d.1", "viewer", AT(9))] }),
+    ], [v1, version(2, AT(5), ["b"])]);
+    expect(shape(tl)).toEqual([
+      V1,
+      ["sent", ["a", "b"], [], 2, 0],
+      ["made", ["c"], [], 3, 1],
+      ["version", ["b"], ["b"], 2, 1],
+      ["answered", ["a"], ["a"], 2, 2],
+      ["resolved", ["c"], [], 1, 1],
+      ["followed-up", ["c"], ["c"], 1, 1],
+      ["made", ["d"], ["d"], 2, 2],
+    ]);
+  });
+
   it("reads one walk for the present and the history: the newest line's counts match the present, but for stalled threads", () => {
     const fs = (id: string, state: FeedbackState["state"]): FeedbackState => ({ thread_id: id, state, tier: null, since: AT(2), resends: 0, exhausted: false });
     const cases: { threads: Thread[]; versions: Version[]; claimed: string[] }[] = [

@@ -3,6 +3,7 @@
 <script lang="ts" module>
   /** The timeline's rows open into their cards, by thread ID, for the page's life. */
   let expanded: string[] = $state([]);
+  const NONE: never[] = [];
 </script>
 
 <script lang="ts">
@@ -43,7 +44,14 @@
   };
   let p: Props = $props();
   const view = $derived(p.view);
-  const tl = $derived(timeline({ threads: p.threads, versions: p.versions, working: p.working ?? [], claimed: p.claimed ?? [], me: p.me }));
+  // Each input on its own, so the timeline is computed again only when one
+  // of them is a new value, not on every change of the state they come from.
+  const threads = $derived(p.threads);
+  const versions = $derived(p.versions);
+  const working = $derived(p.working ?? NONE);
+  const claimed = $derived(p.claimed ?? NONE);
+  const me = $derived(p.me);
+  const tl = $derived(timeline({ threads, versions, working, claimed, me }));
   const detached = $derived(new Set(p.detached.map(t => t.id)));
   const VIEWS = ["timeline", "threads"] as const;
   const LABELS = { timeline: "Timeline", threads: "Threads" };
