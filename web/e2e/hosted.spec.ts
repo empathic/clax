@@ -199,6 +199,8 @@ test("setup, an invite joined in a second browser, a sign-in link for a third, a
     // The guest sees nothing but shared pages.
     await guest.goto(`${origin}/signin`);
     await expect(guest.getByText("You are a guest named Mia.", { exact: false })).toBeVisible();
+    // The sign-in page shows its own header, not the gallery's hidden frame.
+    await expect(guest.locator("header.gbar")).toBeVisible();
 
     // Sam signs the phone out, from the end of Settings' navigation.
     await phone.goto(`${origin}/settings/account`);
