@@ -149,7 +149,8 @@
       const d = ds.find((x, i) => i > 0 && x.lines.some(l => l.here.includes(sel)));
       if (d && !unfolded.includes(d.date)) unfolded = [...unfolded, d.date];
       if (auto && auto !== sel && p.expanded.includes(auto) && !keeps(auto)) p.onExpand(auto, false);
-      auto = null;
+      // The same thread selected again (after the selection was cleared) keeps its record.
+      if (auto !== sel) auto = null;
       if (!p.expanded.includes(sel)) { p.onExpand(sel, true); auto = sel; }
       void tick().then(() => [...(list?.querySelectorAll<HTMLElement>(".tl-row") ?? [])].find(r => r.dataset.row === sel)?.scrollIntoView?.({ block: "nearest" }));
     });

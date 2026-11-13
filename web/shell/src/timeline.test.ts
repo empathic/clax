@@ -247,6 +247,18 @@ describe("Sidebar views", () => {
     view.unmount();
   });
 
+  it("still closes a row the selection opened when it is selected again after a clear, then the selection moves on", async () => {
+    const { view, root, row, props, a, b } = setup();
+    await loaded(root);
+    view.update({ ...props, selected: a.id });
+    view.update({ ...props, selected: null });
+    view.update({ ...props, selected: a.id });
+    expect(row(a)!.getAttribute("aria-expanded")).toBe("true");
+    view.update({ ...props, selected: b.id });
+    expect(row(a)!.getAttribute("aria-expanded")).toBe("false");
+    view.unmount();
+  });
+
   it("keeps a row the viewer opened or toggled by hand when the selection moves on", async () => {
     const { view, root, row, props, a, b } = setup();
     await loaded(root);
