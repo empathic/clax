@@ -447,6 +447,14 @@ describe("Sidebar views", () => {
     view.unmount();
   });
 
+  it("with comments off and every thread resolved, still says above the timeline why its cards have no reply box", async () => {
+    const { a, b } = today();
+    const { view, root } = setup({ noReply: "Comments are off here.", threads: [resolvedBy(a, at(13, 11)), resolvedBy(b, at(13, 11, 5))] });
+    await loaded(root);
+    expect(root.querySelector('[role="tabpanel"] > .no-reply')?.textContent).toBe("Comments are off here.");
+    view.unmount();
+  });
+
   it("ticks with Shift over the open cards in the timeline's order, newest line first", async () => {
     const onToggle = vi.fn();
     const c = thread("c", at(13, 11), "Say how many seats");

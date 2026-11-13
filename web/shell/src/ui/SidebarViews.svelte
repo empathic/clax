@@ -38,8 +38,8 @@
     /** A thread's card under its row, given the Shift-range order there and the row's close. */
     card: Snippet<[Thread, { order: string[]; close(): void }]>;
     /** The thread list's sections, the empty Open list's hint, and why the
-     * cards have no reply box when the sections say it above their cards
-     * (said above the timeline then; "" when they do not). */
+     * cards have no reply box, said above the timeline whenever there is a
+     * thread ("" when comments are on or there is none). */
     sections: Snippet; empty: Snippet; note?: string;
   };
   let p: Props = $props();
