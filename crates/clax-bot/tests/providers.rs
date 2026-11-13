@@ -488,6 +488,7 @@ async fn two_bindings_endings_write_at_places_of_their_own() {
     let mut run = fake_run(&env.run());
     // A second binding, of another surface, given to the same fake.
     run.bindings.push(Binding {
+        limits: clax_bot::surface::SurfaceLimits::default(),
         surface: "other".into(),
         ..FakeSurfaceProvider::binding()
     });

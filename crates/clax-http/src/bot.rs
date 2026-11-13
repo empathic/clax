@@ -110,6 +110,13 @@ pub struct Bot {
     /// check of its AI binding. None (the default): nothing, as on the
     /// daemon.
     pub admin_web_check: Option<Arc<dyn AdminWebCheck>>,
+    /// What the joins kept on an artifact bind into a run of Clax's own
+    /// kind made there ([`crate::bot_joins`]): the daemon's hub of
+    /// registered surfaces, set with its driver unless the daemon is
+    /// hosted (which serves no host route). `None` (the default, a hosted
+    /// daemon's and the Worker's): no run is made with a join, and
+    /// nothing is read for one.
+    pub joins: Option<Arc<dyn crate::bot_joins::JoinedSurfaces>>,
 }
 
 /// The host's check of its web source for the admin's view of the web
@@ -151,6 +158,7 @@ impl Default for Bot {
             web_configured: clax_bot::web::WebShape::default(),
             web_check: Arc::default(),
             admin_web_check: None,
+            joins: None,
         }
     }
 }
@@ -170,12 +178,15 @@ impl clax_core::working::Clock for StoreClock<'_> {
 pub struct Settings {
     pub store: Arc<Store>,
     pub enabled: bool,
+    /// `[bot] model_takes_images` ([`clax_bot::RunSettings::model_takes_images`]).
+    pub model_takes_images: bool,
 }
 
 impl clax_bot::SettingsSource for Settings {
     fn settings(&self) -> clax_core::Result<clax_bot::RunSettings> {
         Ok(clax_bot::RunSettings {
             enabled: self.enabled,
+            model_takes_images: self.model_takes_images,
             ..clax_bot::RunSettings::from_store(&self.store)?
         })
     }

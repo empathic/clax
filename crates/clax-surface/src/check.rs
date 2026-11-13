@@ -32,9 +32,9 @@ const PROMPT_PREFIXES: &[&str] = &["core", "rules"];
 /// beside the run loop's own fields and `clax`'s, so a surface named as
 /// one of them could not add a field to any step. They are the run
 /// loop's fields of a step's payload (`calls`, `code`, `error`,
-/// `outcome`, `reason`, `result`, `summary`, `title`, `tool_use_id`)
-/// and of what a model is told of a script (`calls`, `error`, `logs`,
-/// `replay`, `value`), and the fields Clax's own surface adds (`base`,
+/// `images`, `outcome`, `reason`, `result`, `summary`, `title`,
+/// `tool_use_id`) and of what a model is told of a script (`calls`,
+/// `error`, `images`, `logs`, `replay`, `value`), and the fields Clax's own surface adds (`base`,
 /// `changed`, `created`, `notice`, `posted`, `published`, `replied`,
 /// `sources`). The run loop holds this list equal to its own
 /// (`clax-bot`, `surface.rs`).
@@ -45,6 +45,7 @@ pub const STEP_FIELDS: &[&str] = &[
     "code",
     "created",
     "error",
+    "images",
     "logs",
     "notice",
     "outcome",
@@ -210,6 +211,18 @@ impl Notation {
                 "operation `{full}` has the access \"spend\", which only Clax's own surface may use: a host's operation is \"read\", \"write\" or \"effect\""
             ),
         }
+    }
+
+    /// A host's operation that declares a code only Clax's core gives
+    /// ([`crate::wire::CORE_CODES`]).
+    fn core_code(self, full: &str, code: &str) -> String {
+        let declares = match self {
+            Notation::Dts => format!("is tagged @throws {code}"),
+            Notation::Manifest => format!("names `{code}` in its `throws`"),
+        };
+        format!(
+            "operation `{full}` {declares}, a code only Clax gives a script: a host's operation declares codes of its own, and `unavailable` needs no declaring"
+        )
     }
 
     /// A read that runs once.
@@ -1079,18 +1092,21 @@ fn operation(
     if op.once && op.access == Access::Read {
         return problem(site, notation.once_read(&full));
     }
-    error_codes(op, &full, n, limits)?;
+    error_codes(op, &full, n, author, limits, notation)?;
     parameters(op, &full, n, limits, notation)
 }
 
-/// An operation's error codes: how many, the form of each, each once.
-/// It looks at none when there are more than the limit, and returns how
-/// many it looked at.
+/// An operation's error codes: how many, the form of each, each once,
+/// and, for a host's operation, none of the codes only Clax's core gives
+/// ([`crate::wire::CORE_CODES`]). It looks at none when there are more
+/// than the limit, and returns how many it looked at.
 pub(crate) fn error_codes(
     op: &Op,
     full: &str,
     n: usize,
+    author: Author<'_>,
     limits: &Limits,
+    notation: Notation,
 ) -> Result<usize, Problem> {
     if op.throws.len() > limits.list {
         return problem(
@@ -1116,6 +1132,10 @@ pub(crate) fn error_codes(
         }
         if let Some(m) = too_long(code, limits) {
             return problem(site, m);
+        }
+        if matches!(author, Author::Host { .. }) && crate::wire::CORE_CODES.contains(&code.as_str())
+        {
+            return problem(site, notation.core_code(full, code));
         }
         if !codes.insert(code.as_str()) {
             return problem(

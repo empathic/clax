@@ -54,6 +54,61 @@ fn given(def: &Definition, kind: &str, scope: &RunScope<'_>, expected: Expected<
 
 use Withheld::{Content, Kind, Operator, Starter};
 
+/// A run the shell joins is given every operation the operator's and
+/// the join's patterns name, in declaration order, with no kind's
+/// `@allow` to narrow them, and the screenshot withheld for content.
+#[test]
+fn a_run_the_shell_joins_is_given_what_the_operator_and_the_join_name() {
+    let shell = shell();
+    let all = shell.joined_operations(&RunScope::default());
+    assert_eq!(
+        all.granted,
+        [
+            "shell.parts",
+            "shell.windows",
+            "shell.workspaces",
+            "shell.bridge",
+            "shell.settings.get",
+            "shell.settings.set",
+            "shell.window.open",
+            "shell.notify",
+            "shell.ask",
+        ]
+    );
+    assert_eq!(all.withheld, [("shell.screenshot", Content)]);
+    assert!(all.elsewhere.is_empty());
+    assert_eq!(all.request_content, ContentUse::None);
+    let operator = patterns(&["shell.settings.*", "shell.windows", "shell.screenshot"]);
+    let join = patterns(&["shell.settings.get", "shell.windows", "shell.screenshot"]);
+    let narrowed = shell.joined_operations(&RunScope {
+        operator: Some(&operator),
+        starter: Some(&join),
+        content: false,
+    });
+    assert_eq!(narrowed.granted, ["shell.windows", "shell.settings.get"]);
+    assert_eq!(
+        narrowed.withheld,
+        [
+            ("shell.parts", Operator),
+            ("shell.workspaces", Operator),
+            ("shell.bridge", Operator),
+            ("shell.screenshot", Content),
+            ("shell.settings.set", Starter),
+            ("shell.window.open", Operator),
+            ("shell.notify", Operator),
+            ("shell.ask", Operator),
+        ]
+    );
+    // A join that names nothing the operator allows binds nothing.
+    let none = patterns(&["shell.notify"]);
+    let empty = shell.joined_operations(&RunScope {
+        operator: Some(&operator),
+        starter: Some(&none),
+        content: false,
+    });
+    assert!(empty.granted.is_empty());
+}
+
 #[test]
 fn a_run_of_shells_triage_is_given_what_every_list_names() {
     let shell = shell();
@@ -455,6 +510,42 @@ fn the_persons_words_in_a_request_are_named_by_pointer() {
     );
     let e = go.instruction_places(&def, &json!("hi")).unwrap_err();
     assert_eq!(e.kind, ValueErrorKind::ForeignType);
+}
+
+#[test]
+fn the_persons_words_in_a_message_are_named_by_the_kinds_message_type() {
+    let def = host(&format!(
+        "declare const demo: {{}};\n{TURN}interface Kinds {{\n/** K. @allow */\n\
+         go(request: {{ ask: Instruction }}, message?: {{ say: Instruction; note: string; turn?: Turn }}): {{}};\n\
+         /** One. @allow */\nonce(request: {{ ask: Instruction }}): {{}};\n}}"
+    ))
+    .unwrap();
+    let go = def.kind("go").unwrap();
+    assert_eq!(
+        go.message_instruction_places(
+            &def,
+            &json!({"say": "s", "note": "s", "turn": {"words": "w", "at": "t"}})
+        )
+        .unwrap(),
+        ["/say", "/turn/words"]
+    );
+    // Read by the message's type, not the request's.
+    let e = go
+        .message_instruction_places(&def, &json!({"ask": "a"}))
+        .unwrap_err();
+    assert_eq!(e.kind, ValueErrorKind::Wrong);
+    assert!(
+        e.message.starts_with("kind go: the message"),
+        "{}",
+        e.message
+    );
+    // A kind with one parameter takes none.
+    let e = def
+        .kind("once")
+        .unwrap()
+        .message_instruction_places(&def, &json!({"say": "s"}))
+        .unwrap_err();
+    assert_eq!(e.message, "kind once takes no messages after it starts");
 }
 
 #[test]

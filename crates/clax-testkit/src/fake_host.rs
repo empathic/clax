@@ -21,9 +21,14 @@
 //! 3. Each delivery is recorded. A call seen for the first time gets its
 //!    operation's behaviour; an `ended` notice is acknowledged. Their
 //!    answers go with the next round.
+//! 4. A call whose behaviour uploads ([`Behaviour::Upload`]) has its
+//!    bytes uploaded for its run, and the answer that names them goes
+//!    with the next round.
 
 mod memory;
 mod replay;
+#[cfg(test)]
+mod retries;
 #[cfg(test)]
 mod tests;
 
@@ -31,8 +36,9 @@ pub use memory::{MemoryHub, registration_id};
 pub use replay::{Names, ScriptWorld, replay};
 
 use clax_surface::wire::{
-    Answer, CODE_UNKNOWN_REGISTRATION, CallError, Delivery, Notation, Outcome, RegisterRequest,
-    Registered, ServeRequest, Settings, StartRunRequest, StartRunResponse, VERSION,
+    Answer, CODE_UNKNOWN_REGISTRATION, CallError, Delivery, MessageRequest, MessageResponse,
+    Notation, Outcome, RegisterRequest, Registered, RunState, ServeRequest, Settings,
+    StartRunRequest, StartRunResponse, VERSION,
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -51,6 +57,57 @@ pub trait HostTransport: Send + Sync {
     async fn serve(&self, name: &str, body: &ServeRequest) -> (u16, Value);
     /// `POST /api/bot/surfaces/<name>/runs`.
     async fn start_run(&self, name: &str, body: &StartRunRequest) -> (u16, Value);
+
+    /// `PUT /api/bot/surfaces/<name>/content?<query>`, the body `bytes`
+    /// typed `media_type`. A transport without the route answers status
+    /// 0, as one that got no answer.
+    async fn put_content(
+        &self,
+        name: &str,
+        query: &[(&str, String)],
+        media_type: &str,
+        bytes: Vec<u8>,
+    ) -> (u16, Value) {
+        let _ = (name, query, media_type, bytes);
+        (0, no_route())
+    }
+
+    /// `GET /api/bot/surfaces/<name>/content/<id>?<query>`: the status
+    /// and the body's bytes. Status 0 without the route.
+    async fn get_content(&self, name: &str, id: &str, query: &[(&str, String)]) -> (u16, Vec<u8>) {
+        let _ = (name, id, query);
+        (0, Vec::new())
+    }
+
+    /// `POST /api/bot/surfaces/<name>/runs/<run>/messages`. A transport
+    /// without runs that take messages answers 501 `not_yet`.
+    async fn send_message(&self, _name: &str, _run: &str, _body: &MessageRequest) -> (u16, Value) {
+        (501, not_yet())
+    }
+    /// `GET /api/bot/surfaces/<name>/runs/<run>?registration=<registration>`.
+    /// A transport without run states answers 501 `not_yet`.
+    async fn run_state(&self, _name: &str, _run: &str, _registration: &str) -> (u16, Value) {
+        (501, not_yet())
+    }
+
+    /// `PUT /api/bot/surfaces/<name>/joins`, with its JSON body. A
+    /// transport that has no such route answers status 0, `transport`.
+    async fn put_joins(&self, _name: &str, _body: &Value) -> (u16, Value) {
+        (
+            0,
+            json!({"error": {"code": "transport", "message": "this transport has no joins"}}),
+        )
+    }
+}
+
+/// What a transport without the content routes answers.
+fn no_route() -> Value {
+    json!({"error": {"code": "transport", "message": "this transport has no content routes"}})
+}
+
+/// What a transport without the inbox's routes answers.
+fn not_yet() -> Value {
+    json!({"error": {"code": "not_yet", "message": "this transport does not have the route"}})
 }
 
 /// [`HostTransport`] over a daemon's HTTP API, with its bearer token.
@@ -122,6 +179,69 @@ impl HostTransport for HttpTransport {
         let path = format!("/api/bot/surfaces/{name}/runs");
         self.send(reqwest::Method::POST, &path, to_json(body)).await
     }
+    async fn put_content(
+        &self,
+        name: &str,
+        query: &[(&str, String)],
+        media_type: &str,
+        bytes: Vec<u8>,
+    ) -> (u16, Value) {
+        let sent = self
+            .client
+            .put(format!("{}/api/bot/surfaces/{name}/content", self.base))
+            .query(query)
+            .bearer_auth(&self.token)
+            .header("content-type", media_type)
+            .body(bytes)
+            .send()
+            .await;
+        match sent {
+            Ok(res) => {
+                let status = res.status().as_u16();
+                let text = res.text().await.unwrap_or_default();
+                let body = serde_json::from_str(&text).unwrap_or(Value::String(text));
+                (status, body)
+            }
+            Err(e) => (
+                0,
+                json!({"error": {"code": "transport", "message": e.to_string()}}),
+            ),
+        }
+    }
+    async fn get_content(&self, name: &str, id: &str, query: &[(&str, String)]) -> (u16, Vec<u8>) {
+        let sent = self
+            .client
+            .get(format!(
+                "{}/api/bot/surfaces/{name}/content/{id}",
+                self.base
+            ))
+            .query(query)
+            .bearer_auth(&self.token)
+            .send()
+            .await;
+        match sent {
+            Ok(res) => {
+                let status = res.status().as_u16();
+                (
+                    status,
+                    res.bytes().await.map(|b| b.to_vec()).unwrap_or_default(),
+                )
+            }
+            Err(_) => (0, Vec::new()),
+        }
+    }
+    async fn send_message(&self, name: &str, run: &str, body: &MessageRequest) -> (u16, Value) {
+        let path = format!("/api/bot/surfaces/{name}/runs/{run}/messages");
+        self.send(reqwest::Method::POST, &path, to_json(body)).await
+    }
+    async fn run_state(&self, name: &str, run: &str, registration: &str) -> (u16, Value) {
+        let path = format!("/api/bot/surfaces/{name}/runs/{run}?registration={registration}");
+        self.send(reqwest::Method::GET, &path, Value::Null).await
+    }
+    async fn put_joins(&self, name: &str, body: &Value) -> (u16, Value) {
+        let path = format!("/api/bot/surfaces/{name}/joins");
+        self.send(reqwest::Method::PUT, &path, body.clone()).await
+    }
 }
 
 fn to_json(v: &impl serde::Serialize) -> Value {
@@ -180,9 +300,32 @@ pub enum Behaviour {
     /// Answers `outcome` with the next round and again with the one
     /// after: a second answer for a call that is settled.
     Twice(Outcome),
+    /// Uploads `bytes`, typed `media_type`, for the call's run, then
+    /// answers `result` with each string [`CONTENT`] in it replaced by
+    /// the reference to the upload (`{"id": …}`). An upload the daemon
+    /// refuses is answered as the error `upload_refused`, which no
+    /// operation declares, and kept ([`FakeHost::uploads`]).
+    Upload {
+        media_type: String,
+        bytes: Vec<u8>,
+        result: Value,
+    },
+    /// Fails each of the first `times` deliveries of the call with
+    /// `error` (one that says it may be tried again, or a final one),
+    /// and answers the delivery after as `then` says. A failed attempt
+    /// applies nothing under the call's key.
+    Fails {
+        times: u32,
+        error: CallError,
+        then: Box<Behaviour>,
+    },
     /// Never answers.
     Never,
 }
+
+/// What stands, in an [`Behaviour::Upload`]'s result, for the reference
+/// to the upload.
+pub const CONTENT: &str = "$content";
 
 impl Behaviour {
     /// Answers `value` at once.
@@ -192,10 +335,27 @@ impl Behaviour {
 
     /// Fails at once with `code`.
     pub fn error(code: &str, message: &str) -> Behaviour {
-        Behaviour::Now(Outcome::Error(CallError {
-            code: code.to_string(),
-            message: message.to_string(),
-        }))
+        Behaviour::Now(Outcome::Error(CallError::new(code, message)))
+    }
+
+    /// Fails the first `times` deliveries with `code`, saying the call
+    /// may be tried again, and then answers as `then` says.
+    pub fn fails(times: u32, code: &str, then: Behaviour) -> Behaviour {
+        Behaviour::Fails {
+            times,
+            error: CallError::new(code, "try again").retryable(),
+            then: Box::new(then),
+        }
+    }
+
+    /// Uploads `bytes` as `media_type` and answers the reference to them,
+    /// as an operation whose result is `Content` or `Image` does.
+    pub fn upload(media_type: &str, bytes: Vec<u8>) -> Behaviour {
+        Behaviour::Upload {
+            media_type: media_type.to_string(),
+            bytes,
+            result: json!(CONTENT),
+        }
     }
 
     /// Fails at once with a code the operation does not declare
@@ -242,6 +402,8 @@ fn unregistered() -> Value {
 #[derive(Debug)]
 struct Progress {
     key: String,
+    /// The call's run.
+    run: String,
     behaviour: Behaviour,
     /// The round that delivered the call to this behaviour, and the
     /// clock then.
@@ -272,6 +434,27 @@ pub struct FakeHost<T> {
     applied: BTreeMap<String, u32>,
     acknowledged: BTreeSet<String>,
     deliveries: Vec<Delivery>,
+    /// The calls whose behaviour uploads, by ID, for the round to do.
+    uploading: Vec<String>,
+    /// Each upload's status and answer, in order.
+    uploads: Vec<(u16, Value)>,
+    failures: u32,
+}
+
+/// `v` with each string [`CONTENT`] in it replaced by `with`.
+fn put_content_in(v: &Value, with: &Value) -> Value {
+    match v {
+        Value::String(s) if s == CONTENT => with.clone(),
+        Value::Array(items) => {
+            Value::Array(items.iter().map(|i| put_content_in(i, with)).collect())
+        }
+        Value::Object(o) => Value::Object(
+            o.iter()
+                .map(|(k, i)| (k.clone(), put_content_in(i, with)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
 }
 
 /// What one round of [`FakeHost::serve_once`] came to.
@@ -315,6 +498,9 @@ impl<T: HostTransport> FakeHost<T> {
             applied: BTreeMap::new(),
             acknowledged: BTreeSet::new(),
             deliveries: Vec::new(),
+            uploading: Vec::new(),
+            uploads: Vec::new(),
+            failures: 0,
         }
     }
 
@@ -421,7 +607,79 @@ impl<T: HostTransport> FakeHost<T> {
         for delivery in &deliveries {
             self.see(delivery);
         }
+        self.upload_due().await;
         Served::Delivered(deliveries)
+    }
+
+    /// Uploads for each call whose behaviour does, and queues its answer.
+    async fn upload_due(&mut self) {
+        for id in std::mem::take(&mut self.uploading) {
+            let (run, behaviour) = {
+                let p = &self.progress[&id];
+                (p.run.clone(), p.behaviour.clone())
+            };
+            let Behaviour::Upload {
+                media_type,
+                bytes,
+                result,
+            } = behaviour
+            else {
+                continue;
+            };
+            let (status, body) = self.upload(&run, &media_type, bytes, &[]).await;
+            let outcome = if status == 200 {
+                Outcome::Result(put_content_in(&result, &json!({"id": body["id"]})))
+            } else {
+                Outcome::Error(CallError::new(
+                    "upload_refused",
+                    format!("the upload was refused: {status} {body}"),
+                ))
+            };
+            self.settle(&id, outcome);
+        }
+    }
+
+    /// Uploads `bytes`, typed `media_type`, for `run`, as this
+    /// registration, with `stated` added to the query (`sha256`, `bytes`,
+    /// `width`, `height`, `name`): the daemon's status and answer, which
+    /// is kept ([`FakeHost::uploads`]).
+    pub async fn upload(
+        &mut self,
+        run: &str,
+        media_type: &str,
+        bytes: Vec<u8>,
+        stated: &[(&str, String)],
+    ) -> (u16, Value) {
+        let Some(registration) = self.registration().map(str::to_string) else {
+            return (0, unregistered());
+        };
+        let mut query = vec![("registration", registration), ("run", run.to_string())];
+        query.extend(stated.iter().cloned());
+        let answer = self
+            .transport
+            .put_content(&self.surface, &query, media_type, bytes)
+            .await;
+        self.uploads.push(answer.clone());
+        answer
+    }
+
+    /// Reads the content `id` that a call of `run` passed this host:
+    /// the daemon's status and the bytes.
+    pub async fn download(&self, run: &str, id: &str) -> (u16, Vec<u8>) {
+        let Some(registration) = self.registration() else {
+            return (0, Vec::new());
+        };
+        let query = [
+            ("registration", registration.to_string()),
+            ("run", run.to_string()),
+        ];
+        self.transport.get_content(&self.surface, id, &query).await
+    }
+
+    /// Every upload's status and answer, in order.
+    #[must_use]
+    pub fn uploads(&self) -> &[(u16, Value)] {
+        &self.uploads
     }
 
     /// Serves round after round until `done` holds of the host, for
@@ -452,6 +710,25 @@ impl<T: HostTransport> FakeHost<T> {
     /// after.
     pub fn drop_rounds(&mut self, n: u32) {
         self.skip += n;
+    }
+
+    /// The host starts again: it forgets the calls it was working on
+    /// and the answers it had not sent, and keeps what it applied under
+    /// each key (its promise of a key outlasts it). It goes on as its
+    /// registration when it next registers.
+    pub fn restart(&mut self) {
+        self.progress.clear();
+        self.outbox.clear();
+        if let Some(id) = self.registration() {
+            self.request.registration = Some(id.to_string());
+        }
+        self.registered = None;
+    }
+
+    /// How many deliveries the host failed ([`Behaviour::Fails`]).
+    #[must_use]
+    pub fn failures(&self) -> u32 {
+        self.failures
     }
 
     /// Sends `outcome` for the delivery `id` with the next round,
@@ -488,6 +765,94 @@ impl<T: HostTransport> FakeHost<T> {
         match serde_json::from_value::<StartRunResponse>(body.clone()) {
             Ok(started) if status == 200 => Ok(started.run),
             _ => Err((status, body)),
+        }
+    }
+
+    /// Sends `message` to `run`, a run this registration started,
+    /// named once by `key` when there is one.
+    ///
+    /// # Errors
+    /// The daemon's status and body when it refused.
+    pub async fn send_message(
+        &self,
+        run: &str,
+        message: Value,
+        key: Option<&str>,
+    ) -> Result<MessageResponse, (u16, Value)> {
+        let Some(registration) = self.registration().map(str::to_string) else {
+            return Err((0, unregistered()));
+        };
+        let body = MessageRequest {
+            registration,
+            message,
+            key: key.map(str::to_string),
+        };
+        let (status, body) = self.transport.send_message(&self.surface, run, &body).await;
+        match serde_json::from_value::<MessageResponse>(body.clone()) {
+            Ok(sent) if status == 200 => Ok(sent),
+            _ => Err((status, body)),
+        }
+    }
+
+    /// Where `run`, a run this registration started, is now.
+    ///
+    /// # Errors
+    /// The daemon's status and body when it refused.
+    pub async fn run_state(&self, run: &str) -> Result<RunState, (u16, Value)> {
+        let Some(registration) = self.registration() else {
+            return Err((0, unregistered()));
+        };
+        let (status, body) = self
+            .transport
+            .run_state(&self.surface, run, registration)
+            .await;
+        match serde_json::from_value::<RunState>(body.clone()) {
+            Ok(state) if status == 200 => Ok(state),
+            _ => Err((status, body)),
+        }
+    }
+
+    /// The events the host was delivered, in order: each run's and
+    /// `event` as sent.
+    #[must_use]
+    pub fn events(&self) -> Vec<&clax_surface::wire::Event> {
+        self.deliveries
+            .iter()
+            .filter_map(|d| match d {
+                Delivery::Event(e) => Some(e),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Joins the runs of Clax's own surface on `artifacts`, as this
+    /// registration: `PUT …/joins` with `{registration, clax: [{artifact,
+    /// allow?}]}`, each artifact with `allow` when it is given. The
+    /// daemon's answer, the joins the surface has now.
+    ///
+    /// # Errors
+    /// The daemon's status and body when it refused.
+    pub async fn join(
+        &mut self,
+        artifacts: &[&str],
+        allow: Option<Vec<String>>,
+    ) -> Result<Value, (u16, Value)> {
+        let Some(registration) = self.registration().map(str::to_string) else {
+            return Err((0, unregistered()));
+        };
+        let clax: Vec<Value> = artifacts
+            .iter()
+            .map(|artifact| match &allow {
+                Some(allow) => json!({"artifact": artifact, "allow": allow}),
+                None => json!({"artifact": artifact}),
+            })
+            .collect();
+        let body = json!({"registration": registration, "clax": clax});
+        let (status, answer) = self.transport.put_joins(&self.surface, &body).await;
+        if status == 200 {
+            Ok(answer)
+        } else {
+            Err((status, answer))
         }
     }
 
@@ -586,13 +951,26 @@ impl<T: HostTransport> FakeHost<T> {
             Delivery::Call(call) => {
                 if self.progress.contains_key(&call.id) {
                     // Delivered again: a call the host asked for later
-                    // gets what follows; any other waits for its turn.
+                    // gets what follows, one it failed is tried again,
+                    // one it accepted and has not answered is accepted
+                    // again; any other waits for its turn.
                     let progress = self.progress.get_mut(&call.id).expect("held");
-                    if let Behaviour::RetryAfter { then, .. } = &progress.behaviour {
-                        progress.behaviour = (**then).clone();
-                        progress.round = self.rounds;
-                        progress.at_ms = self.clock.now();
-                        self.start(&call.id);
+                    match &progress.behaviour {
+                        Behaviour::RetryAfter { then, .. } => {
+                            progress.behaviour = (**then).clone();
+                            progress.round = self.rounds;
+                            progress.at_ms = self.clock.now();
+                            self.start(&call.id);
+                        }
+                        Behaviour::Fails { .. } => {
+                            progress.round = self.rounds;
+                            progress.at_ms = self.clock.now();
+                            self.start(&call.id);
+                        }
+                        Behaviour::Accept { .. } if !progress.done => {
+                            self.answer(&call.id, Outcome::Accepted);
+                        }
+                        _ => {}
                     }
                     return;
                 }
@@ -608,6 +986,7 @@ impl<T: HostTransport> FakeHost<T> {
                     call.id.clone(),
                     Progress {
                         key: call.key.clone(),
+                        run: call.run.clone(),
                         behaviour,
                         round: self.rounds,
                         at_ms: self.clock.now(),
@@ -621,7 +1000,7 @@ impl<T: HostTransport> FakeHost<T> {
                     self.answer(&ended.id, Outcome::Result(Value::Null));
                 }
             }
-            Delivery::Other(_) => {}
+            Delivery::Event(_) | Delivery::Other(_) => {}
         }
     }
 
@@ -642,8 +1021,22 @@ impl<T: HostTransport> FakeHost<T> {
                 progress.done = false;
             }
             Behaviour::Accept { .. } => self.answer(id, Outcome::Accepted),
+            Behaviour::Fails { times: 0, then, .. } => {
+                self.progress.get_mut(id).expect("held").behaviour = *then;
+                self.start(id);
+            }
+            Behaviour::Fails { times, error, then } => {
+                self.progress.get_mut(id).expect("held").behaviour = Behaviour::Fails {
+                    times: times - 1,
+                    error: error.clone(),
+                    then,
+                };
+                self.failures += 1;
+                self.answer(id, Outcome::Error(error));
+            }
             Behaviour::RetryAfter { ms, .. } => self.answer(id, Outcome::RetryAfter(ms)),
             Behaviour::Late { .. } => {}
+            Behaviour::Upload { .. } => self.uploading.push(id.to_string()),
             Behaviour::Never => self.progress.get_mut(id).expect("held").done = true,
         }
     }

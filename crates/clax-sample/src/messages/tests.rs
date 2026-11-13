@@ -1199,3 +1199,96 @@ fn an_errors_summary_carries_no_text_from_the_answer() {
 
 /// The client against providers that speak another API.
 mod wire;
+
+// ---------------------------------------------------------------------------
+// A tool result's images
+// ---------------------------------------------------------------------------
+
+/// A request whose last turn answers `toolu_9` with `result`.
+fn answering(result: Block) -> MessagesRequest {
+    let mut req = request();
+    req.messages.push(Message {
+        role: Role::Assistant,
+        content: vec![Block::ToolUse {
+            id: "toolu_9".into(),
+            name: "run_script".into(),
+            input: json!({}),
+        }],
+    });
+    req.messages.push(Message::user(vec![result]));
+    req
+}
+
+#[test]
+fn a_tool_result_with_no_image_is_the_request_it_was_byte_for_byte() {
+    let plain = answering(Block::tool_result("toolu_9", "teal", true));
+    let bytes = serde_json::to_vec(&plain.body()).unwrap();
+    for takes in [false, true] {
+        let block = Block::tool_result_with_images("toolu_9", "teal", true, &[], takes);
+        assert_eq!(block, Block::tool_result("toolu_9", "teal", true));
+        let req = answering(block);
+        assert_eq!(serde_json::to_vec(&req.body()).unwrap(), bytes);
+        for base in ["https://api.openai.com/v1", "https://api.mistral.ai/v1"] {
+            assert_eq!(
+                serde_json::to_vec(&openai::body(&req, base)).unwrap(),
+                serde_json::to_vec(&openai::body(&plain, base)).unwrap()
+            );
+        }
+        assert_eq!(
+            serde_json::to_vec(&gemini::body(&req)).unwrap(),
+            serde_json::to_vec(&gemini::body(&plain)).unwrap()
+        );
+    }
+    // The block as it has always been sent.
+    assert_eq!(
+        Block::tool_result_with_images("toolu_9", "teal", true, &[], true)
+            .to_json()
+            .to_string(),
+        r#"{"content":"teal","is_error":true,"tool_use_id":"toolu_9","type":"tool_result"}"#
+    );
+}
+
+#[test]
+fn a_tool_results_images_follow_its_text_as_base64_blocks() {
+    let images = [
+        ToolImage::new("image/png", vec![0x89, b'P', b'N', b'G']),
+        ToolImage::new("image/jpeg", vec![0xff, 0xd8, 0xff]),
+    ];
+    let block = Block::tool_result_with_images("toolu_9", "{\"shot\":1}", false, &images, true);
+    assert_eq!(
+        answering(block).body()["messages"][2],
+        json!({"role": "user", "content": [{
+            "type": "tool_result", "tool_use_id": "toolu_9",
+            "content": [
+                {"type": "text", "text": "{\"shot\":1}"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw=="}},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "/9j/"}},
+            ],
+        }]})
+    );
+    // No empty text block: images alone are the content.
+    let alone = Block::tool_result_with_images("toolu_9", "", true, &images[..1], true);
+    assert_eq!(
+        alone.to_json(),
+        json!({"type": "tool_result", "tool_use_id": "toolu_9", "is_error": true, "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw=="}},
+        ]})
+    );
+}
+
+#[test]
+fn a_model_that_takes_no_images_is_sent_none_and_told_so() {
+    let images = [ToolImage::new("image/png", vec![1, 2, 3])];
+    assert_eq!(
+        Block::tool_result_with_images("toolu_9", "{\"shot\":1}", false, &images, false),
+        Block::tool_result(
+            "toolu_9",
+            format!("{{\"shot\":1}}\n\n{IMAGES_NOT_SHOWN}"),
+            false
+        )
+    );
+    assert_eq!(
+        Block::tool_result_with_images("toolu_9", "", false, &images, false),
+        Block::tool_result("toolu_9", IMAGES_NOT_SHOWN, false)
+    );
+}

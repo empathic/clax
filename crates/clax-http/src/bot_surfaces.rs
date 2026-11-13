@@ -33,9 +33,9 @@ use axum::extract::FromRequestParts;
 use axum::http::StatusCode;
 use axum::http::request::Parts;
 use clax_bot::bot_surfaces::{
-    CODE_TOO_MANY_CHANGES, CODE_TOO_MANY_RUNS, Hub, HubLimits, Millis, Ready, RegisterError,
-    Registration, Serve, ServeError, Snapshot, check_answers, is_registration_id,
-    read_registration,
+    CODE_TOO_MANY_CHANGES, CODE_TOO_MANY_RUNS, FillContent, Hub, HubLimits, Millis, Ready,
+    RegisterError, Registration, Serve, ServeError, Snapshot, check_answers_filled,
+    is_registration_id, read_registration,
 };
 use clax_bot::broker::stored::StoredPending;
 use clax_bot::broker::{BrokerClock, HubBroker};
@@ -207,6 +207,82 @@ pub struct Surfaces {
     sleeper: SharedSleeper,
     /// How many passes the timer has made ([`Surfaces::passes`]).
     passes: tokio::sync::watch::Sender<u64>,
+    /// The uploads in flight, by registration ([`Surfaces::begin_upload`]).
+    uploads: Arc<Mutex<HashMap<String, usize>>>,
+}
+
+/// One upload of a registration's in flight ([`Surfaces::begin_upload`]):
+/// it is counted until this is dropped.
+#[derive(Debug)]
+pub struct Upload {
+    uploads: Arc<Mutex<HashMap<String, usize>>>,
+    registration: String,
+}
+
+impl Drop for Upload {
+    fn drop(&mut self) {
+        let mut uploads = self.uploads.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = uploads.get_mut(&self.registration) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                uploads.remove(&self.registration);
+            }
+        }
+    }
+}
+
+/// The most bytes of JSON of the `meta` a provider gives a handle in an
+/// answer.
+pub const META_BYTES: usize = 4 * 1024;
+
+/// What fills a result's references in on the daemon: the item of
+/// `clax_store::bot_content` each names, when the call's run holds it
+/// and the call's registration uploaded it; with the reference's `meta`.
+/// The first answer that names an item records the call's operation,
+/// key and step on its row.
+struct StoreFill<'a> {
+    store: &'a Store,
+}
+
+impl FillContent for StoreFill<'_> {
+    fn fill(&self, call: &str, reference: &Value) -> Result<Value, String> {
+        let st = self.store;
+        let failed = |e: CoreError| {
+            tracing::warn!("content was not read for the call {call}: {e}");
+            "could not be read from the store".to_string()
+        };
+        let pending = st
+            .pending_call(call)
+            .map_err(failed)?
+            .ok_or_else(|| "answers a call the daemon does not hold".to_string())?;
+        let id = reference["id"].as_str().unwrap_or_default();
+        let absent = || format!("names no content {id:?} that its host uploaded for the run");
+        let row = st
+            .bot_content_of(&pending.run_id, id)
+            .map_err(failed)?
+            .filter(|row| row.registration_id.as_deref() == Some(&pending.registration_id))
+            .ok_or_else(absent)?;
+        let meta = reference.get("meta").filter(|m| !m.is_null());
+        if let Some(meta) = meta
+            && meta.to_string().len() > META_BYTES
+        {
+            return Err(format!(
+                "has a `meta` over {META_BYTES} bytes of JSON, which is the most a handle's has"
+            ));
+        }
+        st.note_bot_content(id, &pending.op, &pending.key, pending.step_n, meta)
+            .map_err(failed)?;
+        let mut handle = row.handle();
+        match meta {
+            Some(meta) => handle["meta"] = meta.clone(),
+            None => {
+                if let Some(h) = handle.as_object_mut() {
+                    h.remove("meta");
+                }
+            }
+        }
+        Ok(handle)
+    }
 }
 
 /// The runs that made the calls `ids`, each once, in order.
@@ -256,7 +332,29 @@ impl Surfaces {
             hooked,
             sleeper,
             passes: tokio::sync::watch::channel(0).0,
+            uploads: Arc::default(),
         }
+    }
+
+    /// Counts one more upload of the registration `registration` in
+    /// flight, while the [`Upload`] answered is held: `None`, and nothing
+    /// counted, when it has [`HubLimits::uploads_per_registration`] in
+    /// flight already.
+    #[must_use]
+    pub fn begin_upload(&self, registration: &str) -> Option<Upload> {
+        let mut uploads = self.uploads.lock().unwrap_or_else(|e| e.into_inner());
+        let n = uploads.entry(registration.to_string()).or_insert(0);
+        if *n >= self.limits.uploads_per_registration {
+            if *n == 0 {
+                uploads.remove(registration);
+            }
+            return None;
+        }
+        *n += 1;
+        Some(Upload {
+            uploads: self.uploads.clone(),
+            registration: registration.to_string(),
+        })
     }
 
     /// The broker: what the run loop's side sends a run's calls through
@@ -355,6 +453,53 @@ impl Surfaces {
             .with(|hub, _, now| hub.find(name, registration, now))
     }
 
+    /// Whether a handle of `row`'s item was passed to the registration
+    /// `registration`: one of the run's calls to it held, at a place its
+    /// operation's declared type says is `Content` or `Image`
+    /// ([`clax_bot::clax_surface::Operation::content_in_args`], read
+    /// under the definition the call was sent under), a handle with the
+    /// item's ID and SHA-256. A copy of a handle in an argument of type
+    /// `unknown`, or in the `meta` of a handle passed, is at no such
+    /// place, and passes nothing. Read from the calls the store keeps as
+    /// they were sent ([`Store::bot_calls_naming`]); a call whose
+    /// definition or operation is no longer known passes nothing. Call it
+    /// on a store thread.
+    ///
+    /// # Errors
+    /// The store's, as text.
+    pub fn passed(
+        &self,
+        row: &clax_store::bot_content::ContentRow,
+        registration: &str,
+    ) -> Result<bool, String> {
+        let calls = self
+            .store
+            .bot_calls_naming(row, registration)
+            .map_err(|e| e.to_string())?;
+        for call in calls {
+            let definition = self
+                .broker
+                .with(|hub, store, _| hub.kept_definition(store, &call.def_hash))?;
+            let Some(operation) = definition.as_ref().and_then(|d| d.operation(&call.op)) else {
+                continue;
+            };
+            let args = call.args.as_array().map_or(&[][..], Vec::as_slice);
+            let Ok(places) = operation.content_in_args(args) else {
+                continue;
+            };
+            let passed = places.iter().any(|place| {
+                call.args.pointer(&place.at).is_some_and(|h| {
+                    h["id"].as_str() == Some(row.id.as_str())
+                        && h["sha256"].as_str() == Some(row.sha256.as_str())
+                })
+            });
+            if passed {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// What `read` makes of the registration `id` (its name, definition,
     /// hash, prompt file, settings and withheld operations:
     /// [`Registration`]), when the hub holds it.
@@ -373,13 +518,17 @@ impl Surfaces {
     /// Opens a `serve` and, unless it is to wait, closes it: what became
     /// of it, and the runs whose calls its answers settled. The results
     /// and errors its answers bring are judged between two uses of the
-    /// broker ([`Hub::checkable`], [`check_answers`],
-    /// [`Hub::open_checked`]), not under it.
+    /// broker ([`Hub::checkable`], [`check_answers_filled`],
+    /// [`Hub::open_checked`]), not under it; on a daemon that keeps
+    /// content, a result's references are filled in from the store
+    /// ([`StoreFill`]) on the way.
     fn begin(&self, name: &str, request: ServeRequest) -> Result<(Turn, Vec<String>), ServeError> {
         let checking = self.broker.with(|hub, store, now| {
             hub.checkable(store, name, &request.registration, &request.answers, now)
         })?;
-        let answers = check_answers(&self.limits, request.answers, &checking);
+        let fill = StoreFill { store: &self.store };
+        let fill: Option<&dyn FillContent> = self.limits.content.then_some(&fill);
+        let answers = check_answers_filled(&self.limits, request.answers, &checking, fill);
         self.broker.with(|hub, store, now| {
             let opened = hub.open_checked(
                 store,
@@ -792,6 +941,11 @@ const CODES: &[&str] = &[
     CODE_TOO_MANY_RUNS,
     wire::CODE_TOO_MANY_ANSWERS,
     wire::CODE_NOT_YET,
+    wire::CODE_UNKNOWN_RUN,
+    wire::CODE_TAKES_NO_MESSAGES,
+    wire::CODE_RUN_ENDED,
+    wire::CODE_KEY_CONFLICT,
+    wire::CODE_TOO_MANY_MESSAGES,
     wire::CODE_TOO_LARGE,
     wire::CODE_INTERNAL_ERROR,
     wire::CODE_STORAGE_FAILED,

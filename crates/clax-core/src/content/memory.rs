@@ -1,7 +1,9 @@
 //! [`MemContent`]: artifact content in memory, for tests and for hosts
 //! that keep nothing on disk.
 
-use super::{AssetKey, ContentStore, VersionWrite, missing, present, superseded};
+use super::{
+    AssetKey, ContentStore, VersionWrite, bad_blob, is_blob_name, missing, present, superseded,
+};
 use crate::{ArtifactId, Result};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -15,6 +17,7 @@ struct Inner {
     /// The step mark of each version written with one.
     steps: HashMap<(String, u32), String>,
     assets: HashMap<AssetKey, Arc<Vec<u8>>>,
+    blobs: HashMap<String, Arc<Vec<u8>>>,
 }
 
 /// Artifact content in memory. A carried or copied file shares its bytes
@@ -43,6 +46,13 @@ impl MemContent {
     /// The number of assets held.
     pub fn asset_count(&self) -> usize {
         self.inner().assets.len()
+    }
+
+    /// The names of the blobs held, sorted.
+    pub fn blobs(&self) -> Vec<String> {
+        let mut v: Vec<_> = self.inner().blobs.keys().cloned().collect();
+        v.sort();
+        v
     }
 }
 
@@ -171,6 +181,34 @@ impl ContentStore for MemContent {
     async fn delete_asset(&self, key: &AssetKey) -> Result<()> {
         self.inner().assets.remove(key);
         Ok(())
+    }
+
+    fn keeps_blobs(&self) -> bool {
+        true
+    }
+
+    async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<()> {
+        if !is_blob_name(sha256) {
+            return Err(bad_blob(sha256));
+        }
+        self.inner()
+            .blobs
+            .entry(sha256.to_string())
+            .or_insert_with(|| Arc::new(bytes.to_vec()));
+        Ok(())
+    }
+
+    async fn read_blob(&self, sha256: &str) -> Result<Option<Vec<u8>>> {
+        Ok(self.inner().blobs.get(sha256).map(|b| b.as_ref().clone()))
+    }
+
+    async fn delete_blob(&self, sha256: &str) -> Result<()> {
+        self.inner().blobs.remove(sha256);
+        Ok(())
+    }
+
+    async fn blob_names(&self) -> Result<Vec<String>> {
+        Ok(self.blobs())
     }
 }
 

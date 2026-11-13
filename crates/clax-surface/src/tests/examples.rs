@@ -4,7 +4,8 @@
 
 use super::{OWN_DTS, file, host, own, review, shell};
 use crate::{
-    Access, Author, Definition, Limits, Member, Pattern, Reserved, Ty, declaration, parse, print,
+    Access, Author, CONTENT_DECLARATION, Definition, Limits, Member, Pattern, Reserved, Ty,
+    declaration, parse, print,
 };
 
 fn named(n: &str) -> Ty {
@@ -554,7 +555,11 @@ fn every_surface_is_a_member_of_the_one_clax_object() {
         types.starts_with("declare namespace shell {\n  interface Part {\n"),
         "{types}"
     );
-    assert!(types.ends_with("  }\n}\n\n"), "{types}");
+    // The core's types come after them: the shell names an `Image`.
+    assert!(
+        types.ends_with(&format!("  }}\n}}\n{CONTENT_DECLARATION}\n")),
+        "{types}"
+    );
     assert!(types.contains(
         "  interface Part {\n    /** `bar`, `dock`, `launcher`, … */\n    name: string;\n    artifact: string;\n    title: string;\n    /** A ClaxBot run is editing it now. */\n    working: boolean;\n  }\n"
     ));
@@ -607,7 +612,9 @@ fn two_surfaces_types_of_one_name_do_not_meet() {
     assert_eq!(d.matches("declare namespace ").count(), 1);
     let (clax_types, rest) = d.split_at(d.find("declare namespace review {\n").unwrap());
     assert!(!clax_types.contains("  interface "), "{clax_types}");
-    assert!(rest.contains("\n}\n\ndeclare const clax: {\n"));
+    assert!(rest.contains(&format!(
+        "\n}}\n{CONTENT_DECLARATION}\ndeclare const clax: {{\n"
+    )));
     // Two hosts with a type of one name, too.
     let other = host("declare const notes: {\n  /** Lists. @read */\n  list(page?: Page): Promise<Page>;\n};\ninterface Page { n: Int }").unwrap();
     let d = declaration(&[&review, &other], &|_| true).unwrap();
@@ -676,9 +683,15 @@ fn the_cores_types_are_read_by_their_names() {
         "/** One shot. */\ninterface Shot {\n  /** The picture. */\n  image: Image;\n  text?: Content;\n}",
     ))
     .unwrap();
+    // The core's two types are declared after the surface's own.
     assert_eq!(
         declaration(&[&d], &|_| true).unwrap(),
-        "declare namespace demo {\n  /** One shot. */\n  interface Shot {\n    /** The picture. */\n    image: Image;\n    text?: Content;\n  }\n}\n\n\
-         declare const clax: {\n  demo: {\n    /** Shows it. */\n    shot(of?: Content): Promise<Image>;\n    /** Asks. (writes) (may take long) */\n    ask(): Promise<Instruction | null>;\n    /** Lists. */\n    all(): Promise<demo.Shot[]>;\n  };\n};\n"
+        format!(
+            "declare namespace demo {{\n  /** One shot. */\n  interface Shot {{\n    /** The picture. */\n    image: Image;\n    text?: Content;\n  }}\n}}\n{CONTENT_DECLARATION}\n\
+             declare const clax: {{\n  demo: {{\n    /** Shows it. */\n    shot(of?: Content): Promise<Image>;\n    /** Asks. (writes) (may take long) */\n    ask(): Promise<Instruction | null>;\n    /** Lists. */\n    all(): Promise<demo.Shot[]>;\n  }};\n}};\n"
+        )
     );
+    // A run that has none of the operations that name them reads neither.
+    let none = declaration(&[&d], &|op| op == "demo.ask").unwrap();
+    assert!(!none.contains("interface Content"), "{none}");
 }

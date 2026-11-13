@@ -13,7 +13,7 @@ use crate::routes::{
     snapshot, stream, surface, tags, threads, token, toolpath, viewers, watches, working,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use crate::routes::{bot_surfaces, events, mcp, net};
+use crate::routes::{bot_content, bot_joins, bot_messages, bot_surfaces, events, mcp, net};
 use crate::shell;
 use crate::shell::get_page;
 use axum::{
@@ -905,8 +905,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     // starts runs of its kinds and long-polls for their calls. The native
     // daemon's alone, and not a hosted one's: a Durable Object holds no
     // request open, and a hosted daemon has no token a host holds. Each
-    // body is bounded by the hub's limit, and a `serve` by the longest it
-    // is held on top of the deadline every request has.
+    // body is bounded by the hub's limit (an upload's by the room left for
+    // its item, which its route reads it against: `bot_content::upload`),
+    // and a `serve` by the longest it is held on top of the deadline every
+    // request has.
     #[cfg(not(target_arch = "wasm32"))]
     let r = if state.hosted.is_none() {
         let limits = state.bot_surfaces.limits();
@@ -920,6 +922,23 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
             .route(
                 "/api/bot/surfaces/{name}/runs",
                 post(bot_surfaces::start.layer(body)),
+            )
+            .route("/api/bot/surfaces/{name}/content", put(bot_content::upload))
+            .route(
+                "/api/bot/surfaces/{name}/content/{id}",
+                get(bot_content::download),
+            )
+            .route(
+                "/api/bot/surfaces/{name}/runs/{id}",
+                get(bot_messages::state),
+            )
+            .route(
+                "/api/bot/surfaces/{name}/runs/{id}/messages",
+                post(bot_messages::send.layer(body)),
+            )
+            .route(
+                "/api/bot/surfaces/{name}/joins",
+                put(bot_joins::put.layer(body)),
             );
         let held = Router::new().route(
             "/api/bot/surfaces/{name}/serve",

@@ -481,6 +481,77 @@ pub trait ContentStore: Send + Sync {
         let _ = (id, thread);
         None
     }
+
+    /// Whether this store keeps blobs by their SHA-256
+    /// ([`ContentStore::put_blob`]): `false`, the default, for one that
+    /// does not, whose blob methods refuse. A ClaxBot run's content
+    /// (`clax_store::bot_content`) is kept only where this is true.
+    fn keeps_blobs(&self) -> bool {
+        false
+    }
+
+    /// Stores `bytes` as the blob `sha256` (64 lowercase hex digits, the
+    /// SHA-256 of `bytes`, which the caller computed), visible only once
+    /// they are all written. A blob is immutable: storing one that is
+    /// there already changes nothing. The default refuses, for a store
+    /// that keeps no blobs ([`ContentStore::keeps_blobs`]).
+    ///
+    /// What a caller may assume of a store that keeps blobs:
+    ///
+    /// - once it returns `Ok`, [`ContentStore::read_blob`] answers all of
+    ///   `bytes`, and a store kept on a disk has made them durable first
+    ///   (so a crash after `Ok` loses none of them);
+    /// - calls may be made at once, of one name or of many, from any
+    ///   number of threads or processes: they need not be serialized, and
+    ///   each leaves the whole blob or fails;
+    /// - a blob already there whose length is not that of `bytes` (what a
+    ///   crash during an earlier write can leave) is written again; one of
+    ///   the right length is taken as whole, and its bytes are not read.
+    async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<()> {
+        let _ = bytes;
+        Err(no_blobs(sha256))
+    }
+
+    /// The bytes of the blob `sha256`, or `None` when it is not there (or
+    /// `sha256` is not 64 lowercase hex digits). The default has none.
+    async fn read_blob(&self, sha256: &str) -> Result<Option<Vec<u8>>> {
+        let _ = sha256;
+        Ok(None)
+    }
+
+    /// Removes the blob `sha256`. Succeeds when it is not there.
+    async fn delete_blob(&self, sha256: &str) -> Result<()> {
+        let _ = sha256;
+        Ok(())
+    }
+
+    /// The names of the blobs it keeps, in no order: what a caller that
+    /// removes the blobs nothing names sweeps (a blob left behind by a
+    /// crash between a commit and its deletion among them). The default
+    /// has none.
+    async fn blob_names(&self) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+}
+
+/// Whether `s` names a blob: 64 lowercase hexadecimal digits.
+#[must_use]
+pub fn is_blob_name(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn no_blobs(sha256: &str) -> crate::CoreError {
+    crate::CoreError::Io(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!("this content store keeps no blobs, so blob {sha256} is not stored"),
+    ))
+}
+
+pub(crate) fn bad_blob(sha256: &str) -> crate::CoreError {
+    crate::CoreError::invalid(
+        "invalid_path",
+        format!("a blob is named by 64 lowercase hex digits, not {sha256:?}"),
+    )
 }
 
 /// The asset key the default clip methods keep thread `thread`'s clip

@@ -8,8 +8,16 @@
 //! The system blocks become `systemInstruction`; turns become `contents`
 //! (`user` and `model`, consecutive turns of one role merged); a
 //! `tool_use` becomes a `functionCall` part and its `tool_result` a
-//! `functionResponse` part naming the same function. Cache breakpoints,
-//! betas and [`MessagesRequest::extra`] are not sent. Thinking asks for
+//! `functionResponse` part naming the same function. The images of a
+//! turn's tool results (the base64 `image` blocks of their content) follow
+//! the turn's other parts, in the same `user` content: for each result
+//! with images a `text` part `Images of the result of <function>, call
+//! <ID>:` (`Images of result <n> of this turn (<function>):` for a call
+//! whose ID was made here, by its place among the turn's results) and
+//! then one `inlineData` part (`mimeType`, `data`) per image, in order.
+//! They are not put inside the `functionResponse` itself. A turn whose results have no image is
+//! sent as it was before results could have any. Cache breakpoints, betas
+//! and [`MessagesRequest::extra`] are not sent. Thinking asks for
 //! thought summaries (`includeThoughts`); `effort` is sent as
 //! `thinkingLevel` (`low`, `medium`, else `high`).
 //!
@@ -31,7 +39,7 @@
 //! the stream's end, after it, ends the message.
 
 use super::{Block, MessagesError, MessagesRequest, ModelInfo, Role, ToolChoice};
-use super::{classify, protocol};
+use super::{classify, images_of, protocol};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 
@@ -79,6 +87,9 @@ fn signed(mut part: Value, v: &Value) -> Value {
 /// so far to its function's name, which a `functionResponse` names again.
 fn parts(role: Role, content: &[Block], names: &mut HashMap<String, String>) -> Vec<Value> {
     let mut out = Vec::new();
+    let mut images = Vec::new();
+    // The tool results of the turn so far.
+    let mut results = 0usize;
     for b in content {
         let v = b.to_json();
         match v["type"].as_str() {
@@ -114,18 +125,33 @@ fn parts(role: Role, content: &[Block], names: &mut HashMap<String, String>) -> 
                 } else {
                     json!({"result": text})
                 };
-                let mut r = json!({
-                    "name": names.get(id).map_or("", String::as_str),
-                    "response": response,
-                });
+                let name = names.get(id).map_or("", String::as_str);
+                let mut r = json!({"name": name, "response": response});
                 if !id.starts_with(MADE_ID) {
                     r["id"] = json!(id);
                 }
                 out.push(json!({"functionResponse": r}));
+                results += 1;
+                let shown = images_of(&v["content"]);
+                if !shown.is_empty() {
+                    // Named by the call's ID, which tells two calls of one
+                    // function apart; a call whose ID was made here (and is
+                    // not sent) by its place among the turn's results.
+                    let label = if id.starts_with(MADE_ID) {
+                        format!("Images of result {results} of this turn ({name}):")
+                    } else {
+                        format!("Images of the result of {name}, call {id}:")
+                    };
+                    images.push(json!({"text": label}));
+                }
+                for (media_type, data) in shown {
+                    images.push(json!({"inlineData": {"mimeType": media_type, "data": data}}));
+                }
             }
             _ => {}
         }
     }
+    out.extend(images);
     out
 }
 

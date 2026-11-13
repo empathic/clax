@@ -67,7 +67,13 @@ pub struct Registration {
     /// has one ([`Store::surface_prompt`]).
     pub prompt_hash: Option<String>,
     /// Its settings, as the registrant gave them: the store reads none.
+    /// `Null` when the row's are no JSON ([`Registration::settings_unread`]).
     pub settings: Value,
+    /// Why the settings its row keeps do not read as JSON, when they do
+    /// not (a damaged row): the registration is read all the same, and
+    /// whoever serves it refuses to, never reading `settings` as none.
+    #[serde(skip)]
+    pub settings_unread: Option<String>,
     /// The person key of who registered it.
     pub registered_by: String,
     pub created_at: String,
@@ -108,12 +114,17 @@ const REG_COLS: &str = "id, name, def_hash,
 
 fn row_to_registration(r: &Row<'_>) -> rusqlite::Result<Registration> {
     let settings: String = r.get(4)?;
+    let (settings, settings_unread) = match serde_json::from_str(&settings) {
+        Ok(settings) => (settings, None),
+        Err(e) => (Value::Null, Some(e.to_string())),
+    };
     Ok(Registration {
         id: r.get(0)?,
         name: r.get(1)?,
         def_hash: r.get(2)?,
         prompt: r.get(3)?,
-        settings: serde_json::from_str(&settings).unwrap_or(Value::Null),
+        settings,
+        settings_unread,
         registered_by: r.get(5)?,
         created_at: r.get(6)?,
         last_served_at: r.get(7)?,
@@ -138,11 +149,14 @@ pub const BOT_DEF_KEEP: std::time::Duration = std::time::Duration::from_secs(360
 ///
 /// - a registration last served (or, never served, made) before
 ///   `registrations_before`, that started no run the store still has,
-///   and has no pending call and no run's end kept for it. One that
-///   started a run is kept for as long as the run is, so the run's
-///   `started_by` still says what surface it was;
+///   and has no pending call, no run's end and no join kept for it. One
+///   that started a run is kept for as long as the run is, so the run's
+///   `started_by` still says what surface it was; one that set joins,
+///   for as long as they are kept (`crate::bot_joins`);
 /// - a definition stored before `defs_before` that no registration, no
-///   pending call and no run's bindings name;
+///   pending call and no run's bindings name (a host's run's, or a run of
+///   Clax's own that a join bound it into: any run whose bindings are of
+///   version 2);
 /// - a prompt file last kept before `defs_before` that no registration
 ///   and no run's bindings name.
 ///
@@ -157,7 +171,8 @@ pub(crate) fn prune_surfaces_in(
           WHERE COALESCE(last_served_at, created_at) < ?1
             AND id NOT IN (SELECT started_by FROM bot_runs WHERE started_by IS NOT NULL)
             AND id NOT IN (SELECT registration_id FROM bot_pending_calls)
-            AND id NOT IN (SELECT registration_id FROM bot_run_ends)",
+            AND id NOT IN (SELECT registration_id FROM bot_run_ends)
+            AND id NOT IN (SELECT registration_id FROM bot_joins)",
         params![registrations_before],
     )?;
     let defs = tx.execute(
@@ -166,7 +181,7 @@ pub(crate) fn prune_surfaces_in(
             AND hash NOT IN (SELECT def_hash FROM bot_registrations)
             AND hash NOT IN (SELECT def_hash FROM bot_pending_calls)
             AND NOT EXISTS (SELECT 1 FROM bot_runs
-                             WHERE started_by IS NOT NULL
+                             WHERE (started_by IS NOT NULL OR bindings_json LIKE '{\"v\":2,%')
                                AND instr(bindings_json, bot_surface_defs.hash) > 0)",
         params![defs_before],
     )?;
@@ -224,9 +239,12 @@ fn registrations_where(
     arg: &str,
     all: bool,
 ) -> Result<Vec<Registration>> {
+    // Oldest first: rows made at one instant in the order they were
+    // made (`rowid`, which only grows past every row there is), not in
+    // the order of their random IDs.
     let mut q = c.prepare_cached(&format!(
         "SELECT {REG_COLS} FROM bot_registrations
-          WHERE {filter} AND (?2 OR replaced_at IS NULL) ORDER BY created_at, id"
+          WHERE {filter} AND (?2 OR replaced_at IS NULL) ORDER BY created_at, rowid"
     ))?;
     let rows = q.query_map(params![arg, all], row_to_registration)?;
     Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -325,6 +343,8 @@ impl Store {
     /// SHA-256 ([`Store::surface_prompt`]) in the same transaction. When
     /// `new.replaces` names a live registration, that one is replaced at
     /// `now` in the same transaction; one already replaced stays as it is.
+    /// Either way the joins the one it names set are the new one's from
+    /// then on (`crate::bot_joins`).
     ///
     /// # Errors
     /// `surface_def_unknown` when no definition is kept under
@@ -411,6 +431,9 @@ impl Store {
                     at
                 ],
             )?;
+            if let Some(old) = &new.replaces {
+                crate::bot_joins::repoint_joins_in(tx, old, id)?;
+            }
             let mut rec = AuditRecord::new(AuditKind::BotSurfaceRegistered, at.clone())
                 .with("registration", id)
                 .with("name", new.name.as_str())
@@ -593,6 +616,35 @@ mod tests {
         }
     }
 
+    /// Registrations made at one instant are listed oldest first, in the
+    /// order they were made, whatever their IDs: by name and by person.
+    #[test]
+    fn registrations_made_at_one_instant_are_listed_in_the_order_made() {
+        let (_d, st) = store();
+        let t0 = at("2026-11-11T09:00:00Z");
+        st.put_surface_def(HASH, "{}", t0).unwrap();
+        let ids = ["c", "a", "d", "b"];
+        for id in ids {
+            st.issue_registration(DAEMON, id, new("desk", "*owner"), t0)
+                .unwrap()
+                .unwrap();
+        }
+        let named: Vec<String> = st
+            .registrations_named("desk", true)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(named, ids);
+        let by: Vec<String> = st
+            .registrations_by("*owner", false)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(by, ids);
+    }
+
     #[test]
     fn a_definition_is_kept_once_under_its_hash_and_read_back() {
         let (_d, st) = store();
@@ -753,6 +805,7 @@ mod tests {
                 prompt: Some("You are the shell.".into()),
                 prompt_hash: Some(sha256_hex(b"You are the shell.")),
                 settings: json!({"allow": ["*"], "call_timeout_s": 30}),
+                settings_unread: None,
                 registered_by: "*owner".into(),
                 created_at: "2026-11-11T09:00:00.000Z".into(),
                 last_served_at: None,

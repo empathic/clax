@@ -732,6 +732,7 @@ fn worker_bot(
             Arc::new(AdminWebView(worker::send::SendWrapper::new(w)))
                 as Arc<dyn clax_http::bot::AdminWebCheck>
         }),
+        joins: None,
     });
     (bot, web)
 }

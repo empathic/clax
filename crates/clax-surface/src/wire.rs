@@ -16,6 +16,9 @@
 //! | [`ServeResponse`] | The daemon | Its answer |
 //! | [`StartRunRequest`] | The host | `POST /api/bot/surfaces/<name>/runs` |
 //! | [`StartRunResponse`] | The daemon | Its answer |
+//! | [`MessageRequest`] | The host | `POST /api/bot/surfaces/<name>/runs/<id>/messages` |
+//! | [`MessageResponse`] | The daemon | Its answer |
+//! | [`RunState`] | The daemon | `GET /api/bot/surfaces/<name>/runs/<id>?registration=<id>` |
 //! | [`ErrorResponse`] | The daemon | Any refusal |
 //!
 //! # Members a reader does not know
@@ -80,6 +83,20 @@ pub const CODE_TOO_MANY_ANSWERS: &str = "too_many_answers";
 /// does not do yet: a start that names surfaces to bind
 /// ([`StartRunRequest::bind`]). Nothing was done.
 pub const CODE_NOT_YET: &str = "not_yet";
+/// The surface has no run of this ID that the registration started:
+/// none is sent a message, and none is shown, for another
+/// registration.
+pub const CODE_UNKNOWN_RUN: &str = "unknown_run";
+/// The run's kind takes no messages after it starts: its kind has one
+/// parameter, or is one of Clax's own.
+pub const CODE_TAKES_NO_MESSAGES: &str = "takes_no_messages";
+/// The run has ended, and takes no message.
+pub const CODE_RUN_ENDED: &str = "run_ended";
+/// The run holds a message under this key with another body.
+pub const CODE_KEY_CONFLICT: &str = "key_conflict";
+/// The run holds as many messages it has not been given yet as it may:
+/// a later one is taken once it has taken some.
+pub const CODE_TOO_MANY_MESSAGES: &str = "too_many_messages";
 
 /// The request's body is longer than the daemon takes.
 pub const CODE_TOO_LARGE: &str = "too_large";
@@ -92,8 +109,10 @@ pub const CODE_STORAGE_FAILED: &str = "storage_failed";
 
 /// The HTTP status a daemon answers a refusal with, by its code: 400
 /// for a request that is wrong as it stands, 404 for a registration
-/// the daemon does not hold, 413 for a body that is too long, 429 for
-/// a limit that waiting lifts, 501 for [`CODE_NOT_YET`], and 500 for
+/// the daemon does not hold or a run it did not start, 409 for a run
+/// that has ended and a key given to another message, 413 for a body
+/// that is too long, 429 for a limit that waiting lifts, 501 for
+/// [`CODE_NOT_YET`], and 500 for
 /// [`CODE_INTERNAL_ERROR`], [`CODE_STORAGE_FAILED`] and any code that
 /// is not one of this module's.
 #[must_use]
@@ -106,10 +125,12 @@ pub fn status(code: &str) -> u16 {
         | CODE_INVALID_SETTINGS
         | CODE_PROMPT_TOO_LARGE
         | CODE_INVALID_PROMPT
-        | CODE_TOO_MANY_ANSWERS => 400,
-        CODE_UNKNOWN_REGISTRATION => 404,
+        | CODE_TOO_MANY_ANSWERS
+        | CODE_TAKES_NO_MESSAGES => 400,
+        CODE_UNKNOWN_REGISTRATION | CODE_UNKNOWN_RUN => 404,
+        CODE_RUN_ENDED | CODE_KEY_CONFLICT => 409,
         CODE_TOO_LARGE => 413,
-        CODE_TOO_MANY_REGISTRATIONS => 429,
+        CODE_TOO_MANY_REGISTRATIONS | CODE_TOO_MANY_MESSAGES => 429,
         CODE_NOT_YET => 501,
         _ => 500,
     }
@@ -127,6 +148,43 @@ pub const CODE_UNKNOWN_OUTCOME: &str = "unknown_outcome";
 /// What a script is thrown when its host answered a call with a value
 /// that is not the operation's result.
 pub const CODE_INVALID_RESULT: &str = "invalid_result";
+
+/// The codes only Clax's core throws a script, whatever surface its call
+/// was for: no host may declare one in an operation's `@throws` (a
+/// host's definition that does is refused) or answer a call with one
+/// (its answer is settled as [`CODE_INVALID_RESULT`]). They are the
+/// daemon's refusals of a call before its host is sent it (`unknown_op`,
+/// `invalid_args`, `key_reused`, `effect_limit`, `call_limit`), its words
+/// for a call its host did not answer ([`CODE_EXPIRED`],
+/// [`CODE_UNKNOWN_OUTCOME`]) or answered wrongly
+/// ([`CODE_INVALID_RESULT`], `provider_error`), what a script is thrown
+/// for a step it could not go on with (`replay_diverged`,
+/// `run_not_claimed`, `step_mismatch`, `script_finished`, `cancelled`,
+/// `waiting`, `park_limit`, `parked_runs_limit`), and
+/// [`CODE_INTERNAL_ERROR`]. A run's count of its effects reads several of
+/// them as "nothing was done", which a host could otherwise claim of a
+/// call it performed. [`CODE_UNAVAILABLE`] is not one: a host may say
+/// with it that nothing happened.
+pub const CORE_CODES: [&str; 18] = [
+    "call_limit",
+    "cancelled",
+    "effect_limit",
+    CODE_EXPIRED,
+    CODE_INTERNAL_ERROR,
+    "invalid_args",
+    CODE_INVALID_RESULT,
+    "key_reused",
+    "park_limit",
+    "parked_runs_limit",
+    "provider_error",
+    "replay_diverged",
+    "run_not_claimed",
+    "script_finished",
+    "step_mismatch",
+    "unknown_op",
+    CODE_UNKNOWN_OUTCOME,
+    "waiting",
+];
 
 /// Which notation a definition's text is in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,31 +227,59 @@ pub struct RegisterRequest {
 
 /// A registration's settings, by the names the daemon's configuration
 /// gives them (`[bot.surfaces.<name>]`). Each is within the instance's
-/// own: a registration narrows and never widens.
+/// own: a registration narrows and never widens. A setting is left out
+/// or given: `null` is no value of any of them, and is refused as a
+/// value of the wrong type is (no limit is spelled `"none"`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
     /// The operations offered at all, as allow patterns
     /// ([`crate::Pattern`]). Left out: all of them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub allow: Option<Vec<String>>,
     /// What someone who only reads a run's artifact may see of this
-    /// surface in the run. Left out: nothing.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// surface in the run. Left out: nothing. A daemon that does not
+    /// support it yet refuses a registration that gives it
+    /// ([`CODE_INVALID_SETTINGS`]); this one does not.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub reader_view: Option<ReaderView>,
     /// How many effects of this surface one run may have.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub max_effects_per_run: Option<Bound>,
     /// How long, in seconds, a call may go unanswered.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub call_timeout_s: Option<Bound>,
     /// How long, in seconds, a call of an operation that waits may go
     /// unanswered. The configuration's `wait_limit` is the same figure
     /// written for a person (`"24h"`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub wait_limit_s: Option<Bound>,
     /// Limits for runs of this surface's kinds.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub runs: Option<RunSettings>,
 }
 
@@ -209,9 +295,17 @@ impl Settings {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunSettings {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub max_steps: Option<Bound>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub max_run_minutes: Option<Bound>,
 }
 
@@ -442,6 +536,35 @@ pub struct CallError {
     /// [`CODE_UNAVAILABLE`] for "nothing happened".
     pub code: String,
     pub message: String,
+    /// Whether the same call may succeed if it is sent again:
+    /// `{"code": …, "message": …, "retryable": true}`. `true` lets the
+    /// daemon send it again under its key, as the run's policy allows,
+    /// before its script is thrown the error. Left out (`false`), the
+    /// error is final: the script is thrown it at once. An error of
+    /// [`CODE_UNAVAILABLE`] may be tried again whatever this says.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retryable: bool,
+}
+
+impl CallError {
+    /// A final error: one sending the call again would not change.
+    #[must_use]
+    pub fn new(code: impl Into<String>, message: impl Into<String>) -> CallError {
+        CallError {
+            code: code.into(),
+            message: message.into(),
+            retryable: false,
+        }
+    }
+
+    /// The same error, saying that the call may succeed if sent again.
+    #[must_use]
+    pub fn retryable(self) -> CallError {
+        CallError {
+            retryable: true,
+            ..self
+        }
+    }
 }
 
 /// An [`Answer`] as it is written.
@@ -546,6 +669,9 @@ pub enum Delivery {
     Call(Call),
     /// A run of the registration's has ended: `call` is `"ended"`.
     Ended(Ended),
+    /// How a run the registration started is going: `call` is
+    /// `"event"`. It has no ID and needs no answer.
+    Event(Event),
     /// A delivery of a kind these types do not know, whole. A host
     /// skips it.
     Other(Map<String, Value>),
@@ -558,6 +684,7 @@ impl Delivery {
         match self {
             Delivery::Call(c) => Some(&c.id),
             Delivery::Ended(e) => Some(&e.id),
+            Delivery::Event(_) => None,
             Delivery::Other(m) => m.get("id").and_then(Value::as_str),
         }
     }
@@ -611,9 +738,21 @@ pub struct Call {
     /// call without one waits for as long as it likes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_in_ms: Option<u64>,
+    /// For a call of a run of another surface's kind that a join bound
+    /// this surface into (`PUT /api/bot/surfaces/<name>/joins`): what
+    /// the run is on, each surface's scope as [`StartRunRequest::bind`]
+    /// names it, with the threads the run was started for: `{"clax":
+    /// {"artifact": "<ID>", "thread_ids": ["<ID>", …]}}`. So the host
+    /// knows which of the artifacts it joined the call concerns. Left
+    /// out for a call of a run the registration started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub joined: Option<Value>,
 }
 
-/// A run the registration started has ended.
+/// A run has ended: one the registration started, or one of another
+/// surface's kind that a join bound the surface into. Of a run it was
+/// joined into a host is told how it ended and nothing a person wrote:
+/// no `result`, and a `gave_up`'s `reason` is empty.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Ended {
     /// The delivery's ID. It is delivered until an answer names it.
@@ -623,6 +762,11 @@ pub struct Ended {
     /// The kind's result, for a run that finished.
     #[serde(default, deserialize_with = "present")]
     pub result: Option<Value>,
+    /// The `seq` of each message the run took ([`MessageResponse`]) and
+    /// never gave its model: its last step was not a turn. Left out
+    /// when there is none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub undelivered: Vec<u64>,
 }
 
 /// How a run ended: an object with one member, which names the end.
@@ -630,7 +774,8 @@ pub struct Ended {
 pub enum End {
     /// The model called `finish`.
     Finished {},
-    /// The model gave up, or the run loop did for it.
+    /// The model gave up, or the run loop did for it: `reason` is its
+    /// words, empty for a run the surface was joined into ([`Ended`]).
     GaveUp { code: String, reason: String },
     /// The run was stopped: `cancelled`, `run_cap`, `credits_exhausted`
     /// and the rest.
@@ -695,6 +840,8 @@ struct EndedRepr<'a> {
     end: &'a End,
     #[serde(skip_serializing_if = "Option::is_none")]
     result: &'a Option<Value>,
+    #[serde(skip_serializing_if = "<[u64]>::is_empty")]
+    undelivered: &'a [u64],
 }
 
 /// The `call` of an [`Ended`].
@@ -708,6 +855,7 @@ impl Serialize for Ended {
             run: &self.run,
             end: &self.end,
             result: &self.result,
+            undelivered: &self.undelivered,
         }
         .serialize(s)
     }
@@ -718,6 +866,7 @@ impl Serialize for Delivery {
         match self {
             Delivery::Call(c) => c.serialize(s),
             Delivery::Ended(e) => e.serialize(s),
+            Delivery::Event(e) => e.serialize(s),
             Delivery::Other(m) => m.serialize(s),
         }
     }
@@ -738,8 +887,53 @@ impl<'de> Deserialize<'de> for Delivery {
             CALL_ENDED => serde_json::from_value(Value::Object(map))
                 .map(Delivery::Ended)
                 .map_err(D::Error::custom),
+            CALL_EVENT => serde_json::from_value(Value::Object(map))
+                .map(Delivery::Event)
+                .map_err(D::Error::custom),
             _ => Ok(Delivery::Other(map)),
         }
+    }
+}
+
+/// How a run the registration started is going, as a `serve` delivers
+/// it: `{"call": "event", "run": …, "event": {"type": …, …}}`. Events
+/// are not kept: one a host is away for is not sent later, and
+/// [`RunState`] says where the run is now. `event` is read leniently,
+/// a `type` a host does not know skipped. This daemon sends:
+///
+/// | `type` | With | When |
+/// |---|---|---|
+/// | `step` | `step`, `kind` (`turn`, `script`), and `messages`, the `seq` of each message the step gave the model, when it gave any | A step committed that did not end the run |
+/// | `parked` | `step`, `waiting_on`: `{surface}`, with `op` and `deadline` when the surface is the registration's own | The run parked on a call that waits |
+/// | `resumed` | `step` | The run's parked step is run again: the call it waited on was answered or its deadline came |
+///
+/// How the run ended is the `ended` delivery ([`Ended`]), which is
+/// kept until the host acknowledges it; no event of a run comes after
+/// its `ended`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct Event {
+    pub run: String,
+    pub event: Value,
+}
+
+/// The `call` of an [`Event`].
+const CALL_EVENT: &str = "event";
+
+#[derive(Serialize)]
+struct EventRepr<'a> {
+    call: &'static str,
+    run: &'a str,
+    event: &'a Value,
+}
+
+impl Serialize for Event {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        EventRepr {
+            call: CALL_EVENT,
+            run: &self.run,
+            event: &self.event,
+        }
+        .serialize(s)
     }
 }
 
@@ -773,4 +967,72 @@ pub struct StartRunRequest {
 pub struct StartRunResponse {
     /// The run's ID.
     pub run: String,
+}
+
+/// A message to a run the registration started, of the type its kind
+/// takes as its second parameter: the body of
+/// `POST /api/bot/surfaces/<name>/runs/<id>/messages`. It is given to
+/// the run's model between steps, in the order messages arrived; a
+/// string in it typed `Instruction` is the person's words, as in a
+/// request.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessageRequest {
+    /// The registration that started the run.
+    pub registration: String,
+    pub message: Value,
+    /// Names the message once for its run: the same key and message
+    /// again is answered as the first was, and nothing is sent twice;
+    /// the same key with another message is [`CODE_KEY_CONFLICT`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+}
+
+/// The daemon's answer to a [`MessageRequest`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageResponse {
+    /// The message's ID.
+    pub message: String,
+    /// Its place among the run's messages, from 1, in the order they
+    /// arrived.
+    pub seq: u64,
+    /// The run is parked, waiting on a call (a question to its person):
+    /// the message is given to its model at the first turn after the
+    /// call is answered or its deadline comes, and does not end the
+    /// wait. A message cannot interrupt a run that waits.
+    #[serde(default)]
+    pub waiting: bool,
+}
+
+/// Where a run the registration started is now: the answer to
+/// `GET /api/bot/surfaces/<name>/runs/<id>?registration=<id>`, which
+/// a host that was away reads in place of the events it missed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RunState {
+    pub run: String,
+    /// The kind, by its name in the definition.
+    pub kind: String,
+    /// `queued`, `running`, `parked`, `stopping`, `finished`,
+    /// `gave_up`, `stopped` or `failed`.
+    pub status: String,
+    /// The steps committed.
+    pub steps: u64,
+    /// What a parked run waits on, as an event's `waiting_on`; present
+    /// exactly while the run waits, and a message sent meanwhile is
+    /// given after the wait ends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_on: Option<Value>,
+    /// The messages it has not been given yet.
+    pub messages_waiting: u64,
+    /// For a run that has ended, the `seq` of each message it took and
+    /// never gave its model, as its [`Ended`] names them. Left out when
+    /// there is none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub undelivered: Vec<u64>,
+    /// How it ended, once it has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<End>,
+    /// The kind's result, for a run that finished with one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
 }

@@ -18,11 +18,19 @@
 //!
 //! Deleting an artifact removes its whole directory.
 //!
+//! Blobs ([`ContentStore::put_blob`]) are under the home's `blobs/`, one
+//! file a blob, `blobs/<first two hex digits>/<SHA-256>`, written as
+//! `<…>.<ULID>.tmp` (a name of each write's own), synced to the disk and
+//! renamed into place, and the directory synced after; a blob there whose
+//! length is not its bytes' is written again. No artifact owns one.
+//!
 //! A thread ID, asset ID or asset extension is a file name, never a path: one
 //! outside `[A-Za-z0-9_-]` (or empty) names no file, so nothing outside the
 //! artifact's `assets/` and `clips/` is read, written or removed.
 
-use super::{AssetKey, ContentStore, VersionWrite, missing, present, superseded};
+use super::{
+    AssetKey, ContentStore, VersionWrite, bad_blob, is_blob_name, missing, present, superseded,
+};
 use crate::publish::{INDEX, check_path};
 use crate::{ArtifactId, Home, Result, new_ulid};
 use std::path::{Path, PathBuf};
@@ -49,6 +57,11 @@ pub fn file_path(home: &Home, id: &ArtifactId, n: u32, path: &str) -> PathBuf {
 pub fn asset_path(home: &Home, key: &AssetKey) -> PathBuf {
     home.assets_dir(&key.artifact)
         .join(format!("{}.{}", key.id, key.ext))
+}
+
+/// Where the blob `sha256` (a name [`is_blob_name`] takes) keeps its bytes.
+pub fn blob_path(home: &Home, sha256: &str) -> PathBuf {
+    home.root().join("blobs").join(&sha256[..2]).join(sha256)
 }
 
 /// Whether `s` can stand in a file name as a thread ID, asset ID or asset
@@ -366,6 +379,85 @@ impl ContentStore for FsContent {
         }
         Some(self.home.clip_path(id, thread)).filter(|p| p.is_file())
     }
+
+    fn keeps_blobs(&self) -> bool {
+        true
+    }
+
+    /// Refuses (`invalid_path`) a name that is not a SHA-256.
+    async fn put_blob(&self, sha256: &str, bytes: &[u8]) -> Result<()> {
+        if !is_blob_name(sha256) {
+            return Err(bad_blob(sha256));
+        }
+        let path = blob_path(&self.home, sha256);
+        let whole = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        if std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() == whole) {
+            return Ok(());
+        }
+        let dir = path.parent().unwrap_or(&path);
+        std::fs::create_dir_all(dir)?;
+        let mut tmp = path.clone().into_os_string();
+        tmp.push(format!(".{}.tmp", new_ulid()));
+        let tmp = PathBuf::from(tmp);
+        let written = std::fs::File::create(&tmp)
+            .and_then(|mut f| {
+                std::io::Write::write_all(&mut f, bytes)?;
+                f.sync_all()
+            })
+            .and_then(|()| std::fs::rename(&tmp, &path));
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.into());
+        }
+        // The rename, made durable with the directory that holds it (a
+        // platform that cannot open a directory keeps it as it can).
+        if let Ok(d) = std::fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
+        Ok(())
+    }
+
+    async fn read_blob(&self, sha256: &str) -> Result<Option<Vec<u8>>> {
+        if !is_blob_name(sha256) {
+            return Ok(None);
+        }
+        read_if_present(&blob_path(&self.home, sha256))
+    }
+
+    async fn delete_blob(&self, sha256: &str) -> Result<()> {
+        if !is_blob_name(sha256) {
+            return Ok(());
+        }
+        remove_file_if_present(&blob_path(&self.home, sha256))
+    }
+
+    /// Each file under `blobs/<two digits>/` whose name is a blob's: a
+    /// write's temporary file is none.
+    async fn blob_names(&self) -> Result<Vec<String>> {
+        let root = self.home.root().join("blobs");
+        let mut names = Vec::new();
+        let dirs = match std::fs::read_dir(&root) {
+            Ok(dirs) => dirs,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(names),
+            Err(e) => return Err(e.into()),
+        };
+        for dir in dirs {
+            let dir = dir?;
+            if !dir.file_type()?.is_dir() {
+                continue;
+            }
+            for file in std::fs::read_dir(dir.path())? {
+                let file = file?;
+                if let Some(name) = file.file_name().to_str()
+                    && is_blob_name(name)
+                    && file.file_type()?.is_file()
+                {
+                    names.push(name.to_string());
+                }
+            }
+        }
+        Ok(names)
+    }
 }
 
 fn remove_file_if_present(p: &Path) -> Result<()> {
@@ -391,6 +483,34 @@ mod tests {
     fn the_contract_holds() {
         let (_d, _h, c) = content();
         wait(crate::content::contract::run(&c));
+    }
+
+    #[test]
+    fn a_blob_left_short_is_written_again_and_no_temporary_file_stays() {
+        let (_d, home, c) = content();
+        let bytes = b"the whole of a blob";
+        let name = crate::audit::sha256_hex(bytes);
+        let path = blob_path(&home, &name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // What a crash can leave of a rename whose bytes never reached the
+        // disk: the name, with fewer bytes.
+        std::fs::write(&path, &bytes[..4]).unwrap();
+        wait(c.put_blob(&name, bytes)).unwrap();
+        assert_eq!(wait(c.read_blob(&name)).unwrap().unwrap(), bytes);
+        // Writes of one name at once each finish whole, each through a
+        // temporary file of its own.
+        std::fs::remove_file(&path).unwrap();
+        std::thread::scope(|s| {
+            for _ in 0..4 {
+                s.spawn(|| wait(c.put_blob(&name, bytes)).unwrap());
+            }
+        });
+        let names: Vec<String> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, std::slice::from_ref(&name));
+        assert_eq!(wait(c.read_blob(&name)).unwrap().unwrap(), bytes);
     }
 
     #[test]

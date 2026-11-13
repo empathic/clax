@@ -117,6 +117,11 @@ mod l10 {
         ("bot_surfaces::register", NoArtifact),
         ("bot_surfaces::start", NoArtifact),
         ("bot_surfaces::serve", NoArtifact),
+        ("bot_content::upload", NoArtifact),
+        ("bot_content::download", NoArtifact),
+        ("bot_messages::send", NoArtifact),
+        ("bot_messages::state", NoArtifact),
+        ("bot_joins::put", NoArtifact),
         ("bot::me_get", Bot),
         ("bot::me_put", Bot),
         ("bot::key_put", Bot),
@@ -381,6 +386,9 @@ mod l10 {
             "audit_trail" => include_str!("audit_trail.rs"),
             "bot" => include_str!("bot.rs"),
             "bot_surfaces" => include_str!("bot_surfaces.rs"),
+            "bot_content" => include_str!("bot_content.rs"),
+            "bot_messages" => include_str!("bot_messages.rs"),
+            "bot_joins" => include_str!("bot_joins.rs"),
             "artifacts" => include_str!("artifacts.rs"),
             "assets" => include_str!("assets.rs"),
             "connect" => include_str!("connect.rs"),
@@ -595,6 +603,18 @@ mod l10 {
         (
             "bot_surfaces::serve",
             "a host's long-poll: each answer it brings is journaled as its run's call",
+        ),
+        (
+            "bot_content::upload",
+            "a host's bytes for its run, kept with the run's journal: the answer that names them is journaled as the run's call",
+        ),
+        (
+            "bot_messages::send",
+            "a host's message to its run, kept in the run's inbox and in the payload of the turn that is given it",
+        ),
+        (
+            "bot_joins::put",
+            "a host's joins: no audit kind records them yet (crates/clax-core/src/audit/mod.rs)",
         ),
         ("working::renew", "a heartbeat (§6.11)"),
         (

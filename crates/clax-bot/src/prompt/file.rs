@@ -67,7 +67,7 @@
 //! | system | `{surfaces}` | For each other binding of the run, an empty line, `# <name>`, an empty line and its rules, ending a line ([`surfaces`]); nothing when there is none | One: the section's last line, alone on it |
 //! | system | `{rules}` | The rules of the surface itself that the run has and the file places nowhere else, each after an empty line ([`rules`]): the surface's own (its `declare const`'s doc comment), then, in declaration order, those of each of its namespaces (one inside another too) that the run has an operation of, but for a namespace the file places by name. Nothing when there is none | At most one |
 //! | system | `{rules.<namespace>}` | The rules of a namespace directly on the surface (its doc comment in the surface file) in a run that has one of its operations; nothing in a run that has none | Any |
-//! | system | `{core.code_mode}`, `{core.data}`, `{core.images}`, `{core.finish}` | The core's standard paragraphs ([`super::standard`]); `{core.images}` is nothing in a run that can be shown no image | Any |
+//! | system | `{core.code_mode}`, `{core.data}`, `{core.messages}`, `{core.images}`, `{core.finish}` | The core's standard paragraphs ([`super::standard`]); `{core.messages}` is nothing in a run whose kind takes no messages, `{core.images}` in a run that can be shown no image | Any |
 //! | system | `{<surface>.<name>}` | What the surface's own code gives it | Any |
 //! | request | `{opener}` | The opener section of the run's kind | Any |
 //! | request | `{instructions}` | Which of the request's strings are the words of the person the run acts for, in the core's words ([`super::standard::instructions`]): the JSON Pointer of each, in a fenced block before the request, or that there is none | At most one, on a line before `{request}`'s |
@@ -1092,7 +1092,7 @@ mod tests {
         assert_eq!(
             refused(&with_system("{core.safety}")),
             "line 2: unknown slot `{core.safety}`: the core's paragraphs are `{core.code_mode}`, \
-             `{core.data}`, `{core.images}`, `{core.finish}`"
+             `{core.data}`, `{core.messages}`, `{core.images}`, `{core.finish}`"
         );
         assert_eq!(
             refused(&with_system("{rules.db}")),

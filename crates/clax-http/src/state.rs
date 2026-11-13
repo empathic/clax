@@ -468,10 +468,15 @@ impl AppState {
             settings,
             bot: Arc::default(),
             #[cfg(not(target_arch = "wasm32"))]
+            // A daemon whose store keeps blobs keeps runs' content, and
+            // withholds no operation for holding one.
             bot_surfaces: Arc::new(crate::bot_surfaces::Surfaces::new(
                 p.store.clone(),
                 p.question_sleeper.clone(),
-                clax_bot::bot_surfaces::HubLimits::default(),
+                clax_bot::bot_surfaces::HubLimits {
+                    content: p.store.keeps_bot_content(),
+                    ..clax_bot::bot_surfaces::HubLimits::default()
+                },
             )),
             feedback: InstanceFeedback::Own,
             home: p.home,

@@ -3,7 +3,9 @@
 //! the runs' side of the contract fixture's script.
 
 use super::{HostClock, HostTransport, Names, ScriptWorld};
-use clax_bot::bot_surfaces::{CallFailure, Enqueue, Hub, HubLimits, MemoryPending, Millis, Ready};
+use clax_bot::bot_surfaces::{
+    CallFailure, Enqueue, Hub, HubLimits, MemoryPending, Millis, Ready, Retry,
+};
 use clax_surface::Reserved;
 use clax_surface::wire::{
     self, End, ErrorBody, ErrorResponse, RegisterRequest, ServeRequest, StartRunRequest,
@@ -23,11 +25,13 @@ struct Inner {
 /// answered as the hub answers it when its wait is over, and the clock
 /// is moved to then. Registration IDs are drawn in order
 /// ([`registration_id`]). Its `runs` starts no run: it keeps the request and
-/// answers `run-<n>`. Clones share the hub.
+/// answers `run-<n>`. Clones share the hub. Its runs' calls are sent
+/// again as [`MemoryHub::retrying`] says: by default, never.
 #[derive(Clone)]
 pub struct MemoryHub {
     inner: Arc<Mutex<Inner>>,
     clock: HostClock,
+    retry: Retry,
 }
 
 /// The `n`th registration ID this hub draws: `n` in 32 hex digits, so
@@ -44,11 +48,27 @@ fn refusal(body: ErrorBody) -> (u16, Value) {
 }
 
 impl MemoryHub {
-    /// A hub with the default limits, at `clock`'s time.
+    /// A hub with the default limits, as a daemon that keeps content has
+    /// them (no operation withheld; a result that holds content is
+    /// `invalid_result`, since nothing here fills it in), at `clock`'s
+    /// time.
     #[must_use]
     pub fn new(clock: HostClock) -> MemoryHub {
-        let hub = Hub::new(HubLimits::default(), Reserved::of(&[]), Box::new(|_| {}));
+        MemoryHub::with_limits(
+            clock,
+            HubLimits {
+                content: true,
+                ..HubLimits::default()
+            },
+        )
+    }
+
+    /// A hub with `limits`, at `clock`'s time.
+    #[must_use]
+    pub fn with_limits(clock: HostClock, limits: HubLimits) -> MemoryHub {
+        let hub = Hub::new(limits, Reserved::of(&[]), Box::new(|_| {}));
         MemoryHub {
+            retry: Retry::NONE,
             inner: Arc::new(Mutex::new(Inner {
                 hub,
                 store: MemoryPending::new(),
@@ -62,6 +82,21 @@ impl MemoryHub {
     #[must_use]
     pub fn clock(&self) -> &HostClock {
         &self.clock
+    }
+
+    /// This hub, whose runs' calls are sent again as `retry` says.
+    #[must_use]
+    pub fn retrying(mut self, retry: Retry) -> MemoryHub {
+        self.retry = retry;
+        self
+    }
+
+    /// The hub starts again as a daemon does: a new one, with `limits`,
+    /// over the same store, holding no registration and nothing of
+    /// what it held in memory. Clones share the new hub.
+    pub fn restart(&self, limits: HubLimits) {
+        let inner = &mut *self.inner.lock().unwrap();
+        inner.hub = Hub::new(limits, Reserved::of(&[]), Box::new(|_| {}));
     }
 
     fn now(&self) -> Millis {
@@ -91,6 +126,8 @@ impl MemoryHub {
             args,
             key: key.to_string(),
             deadline: deadline_ms.map(Millis),
+            retry: self.retry,
+            joined: None,
         };
         inner
             .hub

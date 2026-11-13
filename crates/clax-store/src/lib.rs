@@ -103,6 +103,9 @@ pub mod audit_query;
 pub mod backfill;
 pub mod backup;
 pub mod batches;
+pub mod bot_content;
+pub mod bot_joins;
+pub mod bot_messages;
 pub mod bot_pending;
 pub mod bot_runs;
 pub mod bot_settings;
@@ -273,6 +276,9 @@ pub struct Store {
     /// Fails a journaled write after the write and before its journal row
     /// ([`Store::set_journal_fault`]), for crash tests.
     journal_fault: RwLock<Option<bot_runs::JournalFault>>,
+    /// Fails a journal row the core writes ([`Store::set_record_fault`]),
+    /// for tests of a store that cannot write.
+    record_fault: RwLock<Option<bot_runs::JournalFault>>,
     /// The hidden artifacts (drafts), for event routing.
     hidden: drafts::HiddenIds,
     /// The jobs the write transaction under way changed, recorded by the
@@ -456,6 +462,7 @@ impl Store {
             #[cfg(test)]
             test_points: Mutex::new(Vec::new()),
             journal_fault: RwLock::new(None),
+            record_fault: RwLock::new(None),
             clock,
             hidden,
             jobs,

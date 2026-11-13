@@ -254,6 +254,7 @@ impl Tick<'_> {
             events: events.clone(),
             draft: Vec::new(),
             reason: end.reason().map(str::to_string),
+            delivered: Vec::new(),
         };
         let c = match self.commit_ending(s.attempt, kind, commit(), observed, &ends) {
             // A `failed` step absorbs the model calls its attempts

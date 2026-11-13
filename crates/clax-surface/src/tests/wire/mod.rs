@@ -7,8 +7,9 @@
 
 use super::own;
 use crate::wire::{
-    self, Answer, CallKind, Delivery, ErrorResponse, Notation, Outcome, RegisterRequest,
-    Registered, ServeRequest, ServeResponse, StartRunRequest, StartRunResponse,
+    self, Answer, CallKind, Delivery, ErrorResponse, MessageRequest, MessageResponse, Notation,
+    Outcome, RegisterRequest, Registered, RunState, ServeRequest, ServeResponse, StartRunRequest,
+    StartRunResponse,
 };
 use crate::{
     Access, Author, Definition, Limits, Reserved, canonical_manifest, parse, parse_manifest,
@@ -65,6 +66,9 @@ fn round_as(ty: &str, json: &Value) -> Result<Value, String> {
         "ServeResponse" => round::<ServeResponse>(json),
         "StartRunRequest" => round::<StartRunRequest>(json),
         "StartRunResponse" => round::<StartRunResponse>(json),
+        "MessageRequest" => round::<MessageRequest>(json),
+        "MessageResponse" => round::<MessageResponse>(json),
+        "RunState" => round::<RunState>(json),
         other => panic!("the fixture names a type the test does not know: {other}"),
     }
 }
@@ -96,8 +100,11 @@ fn every_message_of_the_fixture_is_written_as_it_is_read() {
         types.into_iter().collect::<Vec<_>>(),
         [
             "ErrorResponse",
+            "MessageRequest",
+            "MessageResponse",
             "RegisterRequest",
             "Registered",
+            "RunState",
             "ServeRequest",
             "ServeResponse",
             "StartRunRequest",
@@ -139,6 +146,34 @@ fn a_delivery_of_an_unknown_kind_is_kept_whole_and_skipped() {
         serde_json::to_value(&response.calls[0]).unwrap(),
         json["calls"][0]
     );
+}
+
+#[test]
+fn an_event_is_a_delivery_with_no_id_whose_event_is_read_whole() {
+    let fixture = fixture();
+    let (_, json) = entries(&fixture, "messages")
+        .find(|(ty, json)| *ty == "ServeResponse" && json["calls"][0]["call"] == "event")
+        .expect("a ServeResponse of events");
+    let response: ServeResponse = serde_json::from_value(json.clone()).unwrap();
+    for (delivery, written) in response.calls.iter().zip(json["calls"].as_array().unwrap()) {
+        let Delivery::Event(event) = delivery else {
+            panic!("{delivery:?}");
+        };
+        assert_eq!(
+            (event.run.as_str(), &event.event),
+            ("run-1", &written["event"])
+        );
+        assert_eq!(delivery.id(), None);
+    }
+    let types: Vec<&str> = response
+        .calls
+        .iter()
+        .filter_map(|d| match d {
+            Delivery::Event(e) => e.event["type"].as_str(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(types, ["step", "step", "parked", "resumed"]);
 }
 
 #[test]
@@ -251,6 +286,41 @@ fn a_result_of_null_is_a_result_and_a_missing_one_is_none() {
     };
     assert_eq!(read.result, Some(Value::Null));
     assert_eq!(serde_json::to_value(&read).unwrap(), ended);
+}
+
+/// A setting is left out or given: `null` is no setting's value, a
+/// limit's (no limit is `"none"`) or any other's, and the registration
+/// is no message, as for a value of the wrong type.
+#[test]
+fn a_setting_of_null_is_refused_and_not_read_as_left_out() {
+    for settings in [
+        json!({"max_effects_per_run": null}),
+        json!({"call_timeout_s": null}),
+        json!({"wait_limit_s": null}),
+        json!({"runs": null}),
+        json!({"runs": {"max_steps": null}}),
+        json!({"runs": {"max_run_minutes": null}}),
+        json!({"allow": null}),
+        json!({"reader_view": null}),
+    ] {
+        let request = json!({"clax_surface": 1, "notation": "dts", "definition": "",
+                             "settings": settings});
+        assert!(
+            serde_json::from_value::<RegisterRequest>(request).is_err(),
+            "{settings} was read"
+        );
+    }
+    let limit = serde_json::from_value::<wire::Settings>(json!({"max_effects_per_run": null}))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        limit.contains("a limit is a whole number, zero or more, or \"none\""),
+        "{limit}"
+    );
+    let none: wire::Settings =
+        serde_json::from_value(json!({"max_effects_per_run": "none", "runs": {}})).unwrap();
+    assert_eq!(none.max_effects_per_run, Some(wire::Bound::None));
+    assert_eq!(none.runs, Some(wire::RunSettings::default()));
 }
 
 /// The lines of the design's block of the protocol's examples, with

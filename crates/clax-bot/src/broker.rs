@@ -36,7 +36,7 @@
 
 use crate::bot_surfaces::{
     CallFailure, CallSummary, Enqueue, Hub, MemoryPending, Millis, NewCall, NewEnd, OpenedCall,
-    Pending, PendingCall, PendingEnd, PendingSummary, RecordedEnd, withheld,
+    Pending, PendingCall, PendingEnd, PendingSummary, RecordedEnd, Retry, withheld,
 };
 use crate::host::args_hash;
 use crate::surface::{CallPlace, Claim};
@@ -78,6 +78,15 @@ pub struct Sending<'a> {
     /// broker's own limit from now
     /// ([`crate::bot_surfaces::HubLimits::call_ms`]).
     pub deadline: Option<Millis>,
+    /// How the call is sent again when an attempt fails
+    /// ([`crate::bot_surfaces::Enqueue::retry`]).
+    pub retry: Retry,
+    /// For a run of another surface's kind that a join bound the
+    /// surface into, what the run is on (its binding's scope,
+    /// [`crate::joins::joined_scope`]): its host is sent it with the
+    /// call ([`clax_surface::wire::Call::joined`]). `None` for a run the
+    /// registration started.
+    pub joined: Option<&'a Value>,
 }
 
 /// Which call of which attempt is being opened, for a store that keeps
@@ -125,8 +134,12 @@ pub struct Served {
     /// The operations of that definition no run is given, by the names
     /// a script calls them by after `clax.` (`shell.screenshot`).
     pub withheld: Vec<String>,
-    /// The registration's settings, as registered; the defaults for a
-    /// registration that is not held.
+    /// The registration's settings, as registered: the hub's for a
+    /// registration it holds, else those its store keeps of it
+    /// ([`crate::bot_surfaces::Pending::registration_settings`]), else
+    /// the defaults. A run reads its own, kept in its binding, and these
+    /// only for a binding that keeps none
+    /// ([`crate::outside::OutsideProvider`]).
     pub settings: Settings,
     /// Whether the broker holds the registration now. One that is not
     /// held (its lease ended, or the process started since) takes no
@@ -163,6 +176,14 @@ pub trait CallBroker: MaybeSendSync {
     /// it, or was a moment ago.
     fn connected(&self, id: &str) -> bool;
 
+    /// Whether the broker dropped the registration for good since it
+    /// started (its lease ended, or it made room for another), and its
+    /// host has not gone on as it since: a call of it waits for a host
+    /// nothing says will come back ([`crate::bot_surfaces::Hub::dropped`]).
+    /// False for one it holds, and for one it does not hold and did not
+    /// drop, which may resume (the broker started again since).
+    fn dropped(&self, id: &str) -> bool;
+
     /// Sends `call` for its registration, under `claim`, the claim of
     /// the driver that holds the call's run: opens the call in the
     /// broker's store (the row a store keeps of a call that is on its
@@ -198,6 +219,20 @@ pub trait CallBroker: MaybeSendSync {
     /// broker was not told of when it was written.
     fn wake(&self, registration: &str);
 
+    /// The whole handle of the item of content `id` that `run` holds, as
+    /// the script was given it (without `meta`, which is the provider's
+    /// words of one answer): what a handle a script passes to a host is
+    /// checked against. `None` for an item the run does not hold, and
+    /// for every item when the broker's store keeps no content (the
+    /// default).
+    ///
+    /// # Errors
+    /// Why the broker's store could not be read, in words.
+    fn content(&self, run: &str, id: &str) -> Result<Option<Value>, String> {
+        let _ = (run, id);
+        Ok(None)
+    }
+
     /// Records that `run` ended as `end` says, for the registration to
     /// be told with each `serve` until it acknowledges. `result` is the
     /// kind's result, for a run that finished. Recording the same end
@@ -212,6 +247,13 @@ pub trait CallBroker: MaybeSendSync {
         end: End,
         result: Option<Value>,
     ) -> Result<String, String>;
+
+    /// Tells the registration how `run`, a run it started, is going
+    /// (`event`, as [`clax_surface::wire::Event`] documents it), with
+    /// its next `serve`. Lossy: nothing keeps an event the registration
+    /// is not there for. A broker that delivers no events does
+    /// nothing, which is what this does unless it is written.
+    fn progress(&self, _registration: &str, _run: &str, _event: Value) {}
 }
 
 /// The clock of a [`HubBroker`]: the same milliseconds its store keeps
@@ -300,6 +342,17 @@ pub trait BrokerStore: Pending {
     /// # Errors
     /// The store's.
     fn settled(&mut self, id: &str) -> Result<Option<Result<Value, CallFailure>>, Self::Error>;
+
+    /// The whole handle of the item of content `id` that the run `run`
+    /// holds ([`CallBroker::content`]): `None` for one it does not, and
+    /// for every item in a store that keeps no content (the default).
+    ///
+    /// # Errors
+    /// The store's.
+    fn content_handle(&mut self, run: &str, id: &str) -> Result<Option<Value>, Self::Error> {
+        let _ = (run, id);
+        Ok(None)
+    }
 }
 
 impl BrokerStore for MemoryPending {
@@ -340,6 +393,9 @@ impl<S: BrokerStore> Pending for Placing<'_, S> {
     }
     fn registration_name(&mut self, id: &str) -> Result<Option<String>, Self::Error> {
         self.store.registration_name(id)
+    }
+    fn registration_settings(&mut self, id: &str) -> Result<Option<Value>, Self::Error> {
+        self.store.registration_settings(id)
     }
     fn keep_definition(
         &mut self,
@@ -508,11 +564,34 @@ impl<S: BrokerStore + Send + 'static> CallBroker for HubBroker<S> {
             .map(|r| (r.name.to_string(), r.hash.to_string(), r.settings.clone()));
         let (name, own, settings) = match held.clone() {
             Some((name, own, settings)) => (name, Some(own), settings),
-            None => (
-                store.registration_name(id).ok()??,
-                None,
-                Settings::default(),
-            ),
+            None => {
+                let name = store.registration_name(id).ok()??;
+                // The settings its row keeps, or none: a registration's
+                // row holds what the hub checked when it was registered.
+                // Settings that cannot be read (a setting a later build
+                // keeps) are not the defaults, which would widen what
+                // they narrow: the registration is not served.
+                let settings = match store.registration_settings(id) {
+                    Ok(None | Some(Value::Null)) => Settings::default(),
+                    Ok(Some(kept)) => match serde_json::from_value(kept) {
+                        Ok(settings) => settings,
+                        Err(e) => {
+                            tracing::warn!(
+                                "clax-bot: the settings registration {id} keeps are not settings \
+                                 this build reads ({e}); it is not served"
+                            );
+                            return None;
+                        }
+                    },
+                    Err(e) => {
+                        tracing::warn!(
+                            "clax-bot: the settings of registration {id} could not be read: {e}"
+                        );
+                        return None;
+                    }
+                };
+                (name, None, settings)
+            }
         };
         let hash = hash.map(str::to_string).or(own)?;
         let definition = hub.kept_definition(store, &hash).ok()??;
@@ -521,7 +600,7 @@ impl<S: BrokerStore + Send + 'static> CallBroker for HubBroker<S> {
         }
         let prefix = format!("{name}.");
         Some(Served {
-            withheld: withheld(&definition)
+            withheld: withheld(&definition, hub.limits().content)
                 .into_iter()
                 .map(|w| format!("{prefix}{}", w.op))
                 .collect(),
@@ -543,6 +622,11 @@ impl<S: BrokerStore + Send + 'static> CallBroker for HubBroker<S> {
         inner.0.connected(id, self.clock.now())
     }
 
+    fn dropped(&self, id: &str) -> bool {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.0.dropped(id, self.clock.now())
+    }
+
     fn send(&self, claim: &Claim<'_>, call: &Sending<'_>) -> Result<String, CallFailure> {
         let at = Placed {
             driver: claim.driver(),
@@ -560,6 +644,8 @@ impl<S: BrokerStore + Send + 'static> CallBroker for HubBroker<S> {
             args: call.args.to_vec(),
             key: call.place.key.clone(),
             deadline: call.deadline,
+            retry: call.retry,
+            joined: call.joined.cloned(),
         };
         hub.enqueue_under(
             &mut Placing { store, at: &at },
@@ -624,6 +710,11 @@ impl<S: BrokerStore + Send + 'static> CallBroker for HubBroker<S> {
         inner.0.notify(registration);
     }
 
+    fn content(&self, run: &str, id: &str) -> Result<Option<Value>, String> {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.1.content_handle(run, id).map_err(|e| e.to_string())
+    }
+
     fn ended(
         &self,
         registration: &str,
@@ -635,6 +726,10 @@ impl<S: BrokerStore + Send + 'static> CallBroker for HubBroker<S> {
             hub.ended(store, registration, run, end, result, now)
                 .map_err(|e| e.to_string())
         })
+    }
+
+    fn progress(&self, registration: &str, run: &str, event: Value) {
+        self.with(|hub, _, now| hub.event(registration, run, event, now));
     }
 }
 

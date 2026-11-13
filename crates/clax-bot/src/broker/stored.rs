@@ -48,9 +48,12 @@
 //!   text under it in the same transaction. A run is not sent its
 //!   registration's prompt file: it is sent the one its binding names
 //!   by hash ([`Pending::prompt_text`]), which is the one its
-//!   registration had when the run was started. The settings are read
-//!   from the hub, which holds the ones a host last registered with
-//!   for as long as it holds the registration.
+//!   registration had when the run was started. A run keeps the
+//!   settings it was started with in its binding, likewise; for a
+//!   binding that keeps none (one written before they were kept), the
+//!   settings are the hub's, which holds the ones a host last
+//!   registered with for as long as it holds the registration, and the
+//!   row's ([`Pending::registration_settings`]) while it does not.
 //! - **Limits.** `key_reused` and `registration_full` are the store's
 //!   errors and the hub's [`OpenedCall::KeyReused`] and
 //!   [`OpenedCall::Full`].
@@ -64,6 +67,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use clax_core::CoreError;
 use clax_core::audit::AuditCtx;
 use clax_store::Store;
+use clax_store::bot_content::ContentRow;
 use clax_store::bot_pending::{
     self as kept, AcceptOutcome, AnswerOutcome, CallAccess, EndFor, KeptEnd, Opened,
 };
@@ -118,6 +122,35 @@ impl std::fmt::Debug for StoredPending {
 }
 
 impl StoredPending {
+    /// What run `run` is on, as the host of `registration` is told it
+    /// with each call ([`clax_surface::wire::Call::joined`]): the scope of
+    /// the run's binding that `registration` serves, when a join bound
+    /// that surface into a run of another surface's kind; `None` for a
+    /// run of the surface's own kind, one whose bindings do not read, and
+    /// one the store no longer has. Read from the run's bindings, which
+    /// keep it for as long as the run is, so a call the store holds over
+    /// a restart is sent it too.
+    fn joined_of(&self, run: &str, registration: &str) -> Result<Option<Value>, CoreError> {
+        let Some((_, made)) = self.store.run_as_made(run)? else {
+            return Ok(None);
+        };
+        let Ok(bindings) = made.bindings() else {
+            return Ok(None);
+        };
+        let Some(binding) = bindings
+            .all()
+            .iter()
+            .find(|b| b.registration() == Some(registration))
+        else {
+            return Ok(None);
+        };
+        let declares = made
+            .kind
+            .split_once('.')
+            .is_some_and(|(surface, _)| surface == binding.surface());
+        Ok((!declares && !binding.scope().is_null()).then(|| binding.scope().clone()))
+    }
+
     /// Over `store`, issuing registrations as the daemon itself
     /// ([`AuditCtx::DAEMON`], for the owner): what the run loop's side
     /// needs, which issues none. Whoever registers a surface for a
@@ -272,6 +305,22 @@ impl Pending for StoredPending {
         Ok(self.store.registration(id)?.map(|r| r.name))
     }
 
+    /// The settings registration `id`'s row keeps; an error for a row
+    /// whose settings do not read ([`clax_store::bot_surfaces::Registration::settings_unread`]),
+    /// so the registration is not served.
+    fn registration_settings(&mut self, id: &str) -> Result<Option<Value>, Self::Error> {
+        match self.store.registration(id)? {
+            Some(r) => match r.settings_unread {
+                Some(why) => Err(CoreError::Invalid {
+                    code: "registration_settings_unread",
+                    message: format!("the settings registration {id} keeps do not read: {why}"),
+                }),
+                None => Ok(Some(r.settings)),
+            },
+            None => Ok(None),
+        }
+    }
+
     fn change_registration(
         &mut self,
         id: &str,
@@ -350,17 +399,24 @@ impl Pending for StoredPending {
         registration: &str,
         ids: &[String],
     ) -> Result<Vec<PendingCall>, Self::Error> {
-        Ok(self
-            .store
-            .calls_named(registration, ids)?
-            .into_iter()
-            .map(|call| PendingCall {
+        let calls = self.store.calls_named(registration, ids)?;
+        let mut joined: std::collections::BTreeMap<String, Option<Value>> =
+            std::collections::BTreeMap::new();
+        let mut out = Vec::with_capacity(calls.len());
+        for call in calls {
+            if !joined.contains_key(&call.run_id) {
+                let of = self.joined_of(&call.run_id, registration)?;
+                joined.insert(call.run_id.clone(), of);
+            }
+            out.push(PendingCall {
                 summary: summary_of(&call),
+                joined: joined.get(&call.run_id).cloned().flatten(),
                 run: call.run_id,
                 args: call.args.as_array().cloned().unwrap_or_default(),
                 key: call.key,
-            })
-            .collect())
+            });
+        }
+        Ok(out)
     }
 
     fn sent_calls(&mut self, ids: &[String]) -> Result<(), Self::Error> {
@@ -437,19 +493,27 @@ impl Pending for StoredPending {
         registration: &str,
         ids: &[String],
     ) -> Result<Vec<PendingEnd>, Self::Error> {
-        Ok(self
-            .store
+        self.store
             .ends_named(registration, ids)?
             .into_iter()
-            .map(|end| PendingEnd {
-                id: end.id,
-                run: end.run_id,
-                end: serde_json::from_value::<End>(end.end.clone()).unwrap_or_else(|_| {
-                    End::Other(end.end.as_object().cloned().unwrap_or_default())
-                }),
-                result: end.result,
+            .map(|end| {
+                let undelivered = self
+                    .store
+                    .undelivered_messages(&end.run_id)?
+                    .iter()
+                    .map(|m| u64::try_from(m.seq).unwrap_or(0))
+                    .collect();
+                Ok(PendingEnd {
+                    id: end.id,
+                    run: end.run_id,
+                    end: serde_json::from_value::<End>(end.end.clone()).unwrap_or_else(|_| {
+                        End::Other(end.end.as_object().cloned().unwrap_or_default())
+                    }),
+                    result: end.result,
+                    undelivered,
+                })
             })
-            .collect())
+            .collect()
     }
 
     fn acknowledge_end(
@@ -509,6 +573,13 @@ impl BrokerStore for StoredPending {
 
     fn commits_ends(&self) -> bool {
         true
+    }
+
+    fn content_handle(&mut self, run: &str, id: &str) -> Result<Option<Value>, Self::Error> {
+        Ok(self
+            .store
+            .bot_content_of(run, id)?
+            .map(|row| ContentRow { meta: None, ..row }.handle()))
     }
 
     fn settled(&mut self, id: &str) -> Result<Option<Result<Value, CallFailure>>, Self::Error> {

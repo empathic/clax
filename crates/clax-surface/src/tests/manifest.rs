@@ -1532,6 +1532,22 @@ fn the_definitions_rules_hold_for_a_manifest() {
         ),
         (
             document(
+                &operation(&format!(r#"{full},"throws":["busy","effect_limit"]"#)),
+                "",
+            ),
+            "/operations/0/throws/1",
+            "operation `demo.x` names `effect_limit` in its `throws`, a code only Clax gives a script",
+        ),
+        (
+            document(
+                &operation(&format!(r#"{full},"throws":["invalid_args"]"#)),
+                "",
+            ),
+            "/operations/0/throws/0",
+            "operation `demo.x` names `invalid_args` in its `throws`, a code only Clax gives a script",
+        ),
+        (
+            document(
                 &operation(&format!(
                     r#"{full},"params":[{{"name":"a","optional":true,"schema":{{}}}},{{"name":"b","schema":{{}}}}]"#
                 )),

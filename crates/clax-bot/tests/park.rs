@@ -565,6 +565,66 @@ return await clax.desk.ask("Which lamp?");"#,
     );
 }
 
+/// A script that asks, then tells its person twice.
+const ASK_THEN_TELL: &str = r#"const answer = await clax.desk.ask("Move the left lamp?");
+const told = [];
+for (const n of [1, 2]) {
+  try { await clax.desk.notify("note " + n); told.push("told"); } catch (e) { told.push(e.code); }
+}
+return [answer, told];"#;
+
+/// An effect the run parked on counts once against its limit: the step
+/// run again when it is answered replays it from the journal and does
+/// not count it again, so of the two effects after it under a limit of
+/// two the first is made and the second refused. The run keeps its
+/// limit though its host comes back with no settings.
+#[tokio::test]
+async fn an_effect_the_run_waited_on_counts_once_against_its_limit() {
+    let limit = clax_surface::wire::Settings {
+        max_effects_per_run: Some(wire::Bound::At(2)),
+        ..Default::default()
+    };
+    let d = Desk::with(Kept::InTheStore, limit.clone(), crate::outside::desk_host()).await;
+    d.env.api.push(script_turn("tu_1", "Ask", ASK_THEN_TELL));
+    d.env.api.push(finish_turn("done"));
+    let run = d.run_with_settings(&limit);
+    assert_eq!(d.drive(&d.deps(), &run).await, Next::Waiting(Wait::Parked));
+    d.pass(60);
+    d.answer("yes");
+    assert_eq!(
+        d.drive(&d.deps(), &run).await,
+        Next::Done(RunStatus::Finished)
+    );
+    let value = d.steps(&run)[1].payload.as_ref().unwrap()["outcome"]["value"].clone();
+    assert_eq!(value, json!(["yes", ["told", "effect_limit"]]));
+    assert_eq!(d.sent(), ["ask", "notify"]);
+}
+
+/// A host's cap on minutes counts no parked time either: a run whose
+/// host gave it one minute, parked for a day, finishes when it is
+/// answered.
+#[tokio::test]
+async fn parked_time_does_not_count_against_a_hosts_minutes() {
+    let one = clax_surface::wire::Settings {
+        runs: Some(wire::RunSettings {
+            max_steps: None,
+            max_run_minutes: Some(wire::Bound::At(1)),
+        }),
+        ..Default::default()
+    };
+    let d = Desk::with(Kept::InTheStore, one.clone(), crate::outside::desk_host()).await;
+    d.env.api.push(script_turn("tu_1", "Move", MOVE));
+    d.env.api.push(finish_turn("done"));
+    let run = d.run_with_settings(&one);
+    assert_eq!(d.drive(&d.deps(), &run).await, Next::Waiting(Wait::Parked));
+    d.pass(DAY - 120);
+    d.answer("yes");
+    assert_eq!(
+        d.drive(&d.deps(), &run).await,
+        Next::Done(RunStatus::Finished)
+    );
+}
+
 /// The time a run is parked is no part of its minutes: parked for
 /// longer than its whole cap, it goes on when it is answered.
 #[tokio::test]
@@ -901,6 +961,8 @@ const ASK: &str =
 /// is taken on: the waiting call cannot be sent again, and its host was
 /// sent it an hour ago. The script is not told that nothing happened:
 /// an effect that was sent and never answered may have taken effect.
+/// A registration dropped for good is not waited for, under a policy
+/// that sends calls again as under one that does not.
 #[tokio::test]
 async fn a_waited_call_whose_host_is_gone_is_answered_by_what_is_known_of_it() {
     let d = desk().await;
@@ -923,6 +985,25 @@ async fn a_waited_call_whose_host_is_gone_is_answered_by_what_is_known_of_it() {
         journal[0]["result"]["code"], "unknown_outcome",
         "{journal:?}"
     );
+    assert_eq!(d.sent(), ["ask"]);
+}
+
+/// The host is away while its run is parked, but within its
+/// registration's lease, and the run is taken on: under a policy that
+/// sends calls again, the call still waits for its host, and the run
+/// parks on it again; nothing is sent meanwhile.
+#[tokio::test]
+async fn a_waited_call_whose_host_is_away_within_its_lease_is_waited_for() {
+    let d = desk().await;
+    d.env.api.push(script_turn("tu_1", "Ask", ASK));
+    d.env.api.push(finish_turn("done"));
+    let run = d.run_bound(Some(&d.host.hash), Some(&d.host.registration), &TIDYS);
+    assert_eq!(d.drive(&d.deps(), &run).await, Next::Waiting(Wait::Parked));
+    d.host.online.store(false, Ordering::SeqCst);
+    d.pass(60);
+    d.env.store.unpark_run(&run, d.env.clock_now()).unwrap();
+    assert_eq!(d.drive(&d.deps(), &run).await, Next::Waiting(Wait::Parked));
+    assert_eq!(d.journal(&run, 2), Vec::<Value>::new());
     assert_eq!(d.sent(), ["ask"]);
 }
 

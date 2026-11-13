@@ -207,6 +207,8 @@ impl World {
                 place: &place,
                 waits,
                 deadline: deadline.map(Millis),
+                retry: Retry::NONE,
+                joined: None,
             },
         )
     }
@@ -446,6 +448,8 @@ async fn a_call_is_made_under_the_definition_its_run_was_bound_with() {
                 place: &place,
                 waits: false,
                 deadline: None,
+                retry: Retry::NONE,
+                joined: None,
             },
         )
         .unwrap_err();
@@ -527,6 +531,8 @@ async fn an_answer_reaches_whoever_waits_for_it_without_the_clock_moving() {
                 place: &place,
                 waits: false,
                 deadline: None,
+                retry: Retry::NONE,
+                joined: None,
             },
         )
         .unwrap();

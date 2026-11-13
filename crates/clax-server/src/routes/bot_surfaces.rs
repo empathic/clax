@@ -10,7 +10,8 @@
 //! - `POST /api/bot/surfaces/<name>/runs` (a `StartRunRequest`) → `{run}`:
 //!   starts a run of one of the surface's kinds, as the token's person.
 //! - `GET /api/bot/surfaces` → `{surfaces}`: the registrations the daemon
-//!   holds now, for an operator and `clax doctor`.
+//!   holds now, with their joins, for an operator and `clax doctor`.
+//! - `PUT /api/bot/surfaces/<name>/joins`: [`super::bot_joins`].
 //!
 //! Who may: the daemon's token and nothing else
 //! ([`clax_http::bot_surfaces::DaemonToken`]). The router mounts them on a
@@ -30,11 +31,11 @@ use axum::extract::rejection::{BytesRejection, PathRejection};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use clax_bot::bot_surfaces::{CODE_TOO_MANY_RUNS, allow_patterns};
+use clax_bot::clax_surface::RunScope;
 use clax_bot::clax_surface::wire::{
     CODE_INTERNAL_ERROR, CODE_INVALID_REQUEST, CODE_NOT_YET, CODE_TOO_LARGE, RegisterRequest,
     Registered, ServeRequest, ServeResponse, StartRunRequest, StartRunResponse,
 };
-use clax_bot::clax_surface::{ContentUse, RunScope};
 use clax_core::CoreError;
 use clax_http::agent::DeniedToGrants;
 use clax_http::audit::DeferredAudit;
@@ -45,7 +46,7 @@ use clax_store::bot_runs::{Bindings, NewRunOf, StoredBinding};
 use serde_json::{Value, json};
 
 /// The message in `body`, read as JSON within `limit` bytes.
-fn message<T: serde::de::DeserializeOwned>(
+pub(crate) fn message<T: serde::de::DeserializeOwned>(
     body: Result<Bytes, BytesRejection>,
     limit: usize,
 ) -> Result<T, ApiError> {
@@ -123,6 +124,9 @@ struct Plan {
     prompt: Option<(String, String)>,
     /// The operations the run has, in the definition's order.
     granted: Vec<String>,
+    /// What the run's binding keeps of the registration's settings, of
+    /// the same copy of it ([`clax_bot::outside::kept_with_run`]).
+    settings: Value,
 }
 
 /// `POST /api/bot/surfaces/<name>/runs` (see the module documentation):
@@ -131,10 +135,11 @@ struct Plan {
 /// run has the operations the kind's `@allow`, the registration's `allow`
 /// setting and the request's `allow` all name, fixed in its bindings
 /// (version 2: the surface, its definition's hash, the registration, the
-/// hash of its prompt file when it has one, no scope). The definition
-/// and the prompt file are the registration's as one copy of it has
-/// them, so the run keeps both as it was started with them, whatever its
-/// host registers later, and the prompt file is one that was checked
+/// hash of its prompt file when it has one, its settings but `allow`, no
+/// scope). The definition, the prompt file and the settings are the
+/// registration's as one copy of it has them, so the run keeps all three
+/// as it was started with them, whatever its host registers later and
+/// over a restart, and the prompt file is one that was checked
 /// against that definition; the prompt file's text is kept under its hash
 /// again before the run is written, so nothing drops it in between. It
 /// has no artifact and no binding of Clax's own surface. A
@@ -188,8 +193,8 @@ pub async fn start(
                     .map_err(|e| invalid(e.message))?;
                 if !held.is_empty() {
                     return Err(invalid(format!(
-                        "kind {}: the request holds content at {}, and content is not \
-                         available yet",
+                        "kind {}: the request holds content at {}: content reaches a run \
+                         in the answers to its calls alone",
                         kind.name,
                         held.join(", ")
                     )));
@@ -207,25 +212,31 @@ pub async fn start(
                     .map(|list| allow_patterns(list, &limits.definition))
                     .transpose()
                     .map_err(invalid)?;
+                // What the hub withholds for content is the registration's
+                // `withheld`: none, on a daemon that keeps content.
                 let scope = RunScope {
                     operator: operator.as_deref(),
                     starter: starter.as_deref(),
-                    content: false,
+                    content: true,
                 };
                 let ops = def
                     .run_operations(&b.kind, &scope)
                     .ok_or_else(|| refused(CODE_INTERNAL_ERROR, "the kind is gone"))?;
-                if ops.request_content == ContentUse::Required {
-                    return Err(invalid(format!(
-                        "kind {}: every request of it holds content, and content is not \
-                         available yet",
-                        kind.name
-                    )));
-                }
+                let prefix = format!("{}.", reg.name);
+                let held_back = |op: &str| {
+                    let op = op.strip_prefix(&prefix).unwrap_or(op);
+                    reg.withheld.iter().any(|w| w.op == op)
+                };
                 Ok(Plan {
                     hash: reg.hash.clone(),
                     prompt: reg.prompt_hash.clone().zip(reg.prompt.clone()),
-                    granted: ops.granted.iter().map(|op| (*op).to_string()).collect(),
+                    granted: ops
+                        .granted
+                        .iter()
+                        .filter(|op| !held_back(op))
+                        .map(|op| (*op).to_string())
+                        .collect(),
+                    settings: clax_bot::outside::kept_with_run(&reg.settings),
                 })
             });
             let plan = match planned {
@@ -233,14 +244,17 @@ pub async fn start(
                 Some(Err(e)) => return Ok(Err(e)),
                 Some(Ok(plan)) => plan,
             };
-            let bindings = Bindings::bound(vec![StoredBinding::bound(
-                name.as_str(),
-                Some(plan.hash),
-                Some(b.registration.clone()),
-                plan.prompt.as_ref().map(|(hash, _)| hash.clone()),
-                Value::Null,
-                plan.granted,
-            )])
+            let bindings = Bindings::bound(vec![
+                StoredBinding::bound(
+                    name.as_str(),
+                    Some(plan.hash),
+                    Some(b.registration.clone()),
+                    plan.prompt.as_ref().map(|(hash, _)| hash.clone()),
+                    Value::Null,
+                    plan.granted,
+                )
+                .with_settings(plan.settings),
+            ])
             .map_err(|e| CoreError::invalid("run_invalid", format!("{e:?}")))?;
             let live = st.live_runs_started_by(&b.registration)?;
             if live >= limits.runs_per_registration {
@@ -279,7 +293,9 @@ pub async fn start(
 }
 
 /// `GET /api/bot/surfaces` → `{surfaces: [{name, registration, hash,
-/// connected, withheld, registered_at, last_served_at}]}`: the
+/// connected, withheld, registered_at, last_served_at, joins}]}` (`joins`
+/// as `PUT …/joins` answers them, less the registration:
+/// [`super::bot_joins::joins_listed`]): the
 /// registrations the token's person made that the daemon holds now, the
 /// oldest first. A registration is held from its registration until its
 /// host has not served it for the hub's lease, and none outlasts the
@@ -292,6 +308,8 @@ pub async fn list(
 ) -> Result<Json<Value>, ApiError> {
     let surfaces = s.bot_surfaces.clone();
     let person = token.person();
-    let listed = s.store_call(move |_| surfaces.list(person)).await?;
+    let listed = s
+        .store_call(move |st| super::bot_joins::joins_listed(st, surfaces.list(person)?))
+        .await?;
     Ok(Json(json!({ "surfaces": listed })))
 }

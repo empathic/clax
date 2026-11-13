@@ -188,7 +188,11 @@
 //!   `@effect` and `@spend`, and optionally `@waits`, `@once` and
 //!   `@throws`, which takes one error code (`not_found`: lowercase
 //!   letters, digits and `_`) and is written again for each further
-//!   code: `@throws invalid_path @throws not_found`. A kind takes
+//!   code: `@throws invalid_path @throws not_found`. A host's operation
+//!   declares none of the codes only Clax gives a script
+//!   ([`wire::CORE_CODES`]: `invalid_args`, `unknown_op`,
+//!   `effect_limit`, `expired` and the rest), in either notation;
+//!   `unavailable` it may declare, and needs not. A kind takes
 //!   `@allow` with its [`Pattern`]s, and may write it again for more;
 //!   `@allow` alone allows no operation. Nothing else takes a tag, and
 //!   no other tag exists.
@@ -659,6 +663,6 @@ pub use model::{
     Access, Alts, CLAX, Definition, Field, Interface, Kind, Member, Namespace, Op, Operation,
     Param, Ty,
 };
-pub use print::{declaration, print, print_within};
-pub use run_ops::{ContentUse, RunOperations, RunScope, Withheld};
+pub use print::{CONTENT_DECLARATION, declaration, print, print_within};
+pub use run_ops::{ContentPlace, ContentUse, RunOperations, RunScope, Withheld};
 pub use value::{IMAGE_MEDIA_TYPES, ValueError, ValueErrorKind, check_held, check_sent};

@@ -103,6 +103,35 @@ async fn a_setting_out_of_its_bounds_is_refused_and_nothing_is_kept() {
         (json!({"call_timeout_s": 0}), "`call_timeout_s` is 0"),
         (json!({"wait_limit_s": u64::MAX}), "`wait_limit_s`"),
         (json!({"runs": {"max_steps": 0}}), "`runs.max_steps` is 0"),
+        (
+            json!({"runs": {"max_steps": 1_000_001}}),
+            "`runs.max_steps` is 1000001",
+        ),
+        (
+            json!({"runs": {"max_run_minutes": 0}}),
+            "`runs.max_run_minutes` is 0",
+        ),
+        (
+            json!({"runs": {"max_run_minutes": 525_601}}),
+            "`runs.max_run_minutes` is 525601",
+        ),
+        (
+            json!({"max_effects_per_run": 1_000_001}),
+            "`max_effects_per_run` is 1000001",
+        ),
+        (
+            json!({"call_timeout_s": 31_536_001}),
+            "`call_timeout_s` is 31536001",
+        ),
+        // Nothing implements a reader view yet, whichever it is.
+        (
+            json!({"reader_view": "names"}),
+            "`reader_view` (\"names\") is not supported yet",
+        ),
+        (
+            json!({"reader_view": "none"}),
+            "`reader_view` (\"none\") is not supported yet",
+        ),
     ] {
         let mut asked = registering(&desk_dts());
         asked["settings"] = settings;
@@ -111,20 +140,81 @@ async fn a_setting_out_of_its_bounds_is_refused_and_nothing_is_kept() {
         let message = body["error"]["message"].as_str().unwrap();
         assert!(message.contains(needle) && message.len() < 600, "{message}");
     }
+    // A limit that is not a whole number of zero or more, or not
+    // `"none"`, is no setting at all: the body is not the message
+    // (`invalid_request`, as for a setting the daemon does not have).
+    for settings in [
+        json!({"max_effects_per_run": -1}),
+        json!({"max_effects_per_run": 1.5}),
+        json!({"max_effects_per_run": "5"}),
+        json!({"runs": {"max_steps": true}}),
+        json!({"runs": {"max_run_minutes": "forever"}}),
+        json!({"call_timeout_s": 1e30}),
+        json!({"max_effects_per_run": null}),
+        json!({"runs": {"max_steps": null}}),
+    ] {
+        let mut asked = registering(&desk_dts());
+        asked["settings"] = settings.clone();
+        let (status, body) = put(&ts, "/api/bot/surfaces/desk", &asked).await;
+        assert_eq!(
+            (status, code(&body)),
+            (400, "invalid_request"),
+            "{settings}: {body}"
+        );
+        let message = body["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("a limit is a whole number, zero or more, or \"none\""),
+            "{settings}: {message}"
+        );
+    }
+    // `null` is no setting's value: not a limit, not `runs`.
+    for settings in [json!({"runs": null}), json!({"allow": null})] {
+        let mut asked = registering(&desk_dts());
+        asked["settings"] = settings.clone();
+        let (status, body) = put(&ts, "/api/bot/surfaces/desk", &asked).await;
+        assert_eq!(
+            (status, code(&body)),
+            (400, "invalid_request"),
+            "{settings}: {body}"
+        );
+    }
+    let mut asked = registering(&desk_dts());
+    asked["settings"] = json!({"max_effects": 5});
+    let (status, body) = put(&ts, "/api/bot/surfaces/desk", &asked).await;
+    assert_eq!((status, code(&body)), (400, "invalid_request"), "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown field `max_effects`"),
+        "{body}"
+    );
     assert!(
         ts.store
             .registrations_named("desk", true)
             .unwrap()
             .is_empty()
     );
+    // At their bounds, a registration is taken: no effects at all, one
+    // step, a year of minutes.
+    let mut asked = registering(&desk_dts());
+    asked["settings"] = json!({"max_effects_per_run": 0,
+        "runs": {"max_steps": 1, "max_run_minutes": 525_600}});
+    let (status, body) = put(&ts, "/api/bot/surfaces/desk", &asked).await;
+    assert_eq!(status, 200, "{body}");
     // Within them, the settings are kept as they were sent.
     let mut asked = registering(&desk_dts());
     asked["settings"] =
         json!({"allow": ["desk.lamps"], "call_timeout_s": 30, "wait_limit_s": "none"});
     let (status, body) = put(&ts, "/api/bot/surfaces/desk", &asked).await;
     assert_eq!(status, 200, "{body}");
+    // The listing is oldest first, in the order the registrations were
+    // made, though both were made at one instant; the row read is the
+    // one the answer names.
     let rows = ts.store.registrations_named("desk", true).unwrap();
-    assert_eq!(rows[0].settings, asked["settings"]);
+    let last = rows.last().unwrap();
+    assert_eq!(Some(last.id.as_str()), body["registration"].as_str());
+    assert_eq!(last.settings, asked["settings"]);
 }
 
 #[tokio::test]

@@ -26,6 +26,7 @@ fn desk() -> Definition {
 /// A binding of `surface` that has the operations `ops`.
 fn binding(surface: &Definition, ops: &[&str]) -> Binding {
     Binding {
+        limits: crate::surface::SurfaceLimits::default(),
         surface: surface.name().to_string(),
         hash: None,
         scope: Value::Null,
@@ -542,7 +543,7 @@ fn a_run_is_sent_the_prompt_file_its_surface_registered() {
                --- request ---\nHere:\n{instructions}\n\n{fence}\n{request}\n{fence}\n";
     let bound = [(&run.bindings[0], &desk)];
     let system = system_of(&run, &desk, &bound, Some(own)).unwrap();
-    let declaration = declaration_of(&[&desk], &|op| ops.contains(&op)).unwrap();
+    let declaration = declaration_of(&[&desk], &|op| ops.contains(&op), &[]).unwrap();
     assert_eq!(
         system,
         format!(
@@ -668,4 +669,40 @@ fn a_hosts_run_is_told_how_a_call_fails_and_how_a_long_one_is_awaited() {
         ))
     );
     assert!(!crate::api::definition().operations().any(|o| o.op.waits));
+}
+
+/// A host's run whose surface bounds its effects is told, in its
+/// declaration's head, which of its operations are those effects, the
+/// limit, and what a call past it is thrown; a run with no such limit,
+/// or with none of the surface's effects, is told nothing of it.
+#[test]
+fn a_hosts_run_is_told_the_limit_on_its_effects_only_when_it_has_one() {
+    let desk = desk();
+    let ops = granted(&desk, "tidy");
+    let render = |ops: &[&str], max_effects: Option<u64>| {
+        let mut bound = binding(&desk, ops);
+        bound.limits.max_effects = max_effects;
+        let run = run_of("desk.tidy", vec![bound], json!({"ask": "Lamps off."}));
+        sent(&run, &desk, &[&desk]).0
+    };
+    let unlimited = render(&ops, None);
+    assert!(!unlimited.contains("effect_limit"), "{unlimited}");
+    let limited = render(&ops, Some(3));
+    let note = "// This run may make 3 calls in all of clax.desk.notify, clax.desk.ask; one more \
+                fails\n// with effect_limit (not retryable), and nothing happens.\n";
+    assert_eq!(limited.matches(note).count(), 1, "{limited}");
+    // The note stands in the head, before the declaration it is about.
+    assert!(
+        limited.find(note) < limited.find("declare const clax"),
+        "{limited}"
+    );
+    assert_eq!(limited.replacen(note, "", 1), unlimited);
+    // One effect, and the singular.
+    let one = render(&["desk.lamps", "desk.notify"], Some(1));
+    assert!(
+        one.contains("// This run may make 1 call in all of clax.desk.notify; one more fails\n"),
+        "{one}"
+    );
+    // No effect the run has: nothing to tell.
+    assert!(!render(&["desk.lamps"], Some(3)).contains("effect_limit"));
 }

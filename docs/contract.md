@@ -6510,7 +6510,12 @@ router), and a test fails when it differs:
 | `GET /api/bot/runs/{id}/events` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/bot/surfaces` | Denied | no |
 | `PUT /api/bot/surfaces/{name}` | Denied | no |
+| `PUT /api/bot/surfaces/{name}/content` | Denied | no |
+| `GET /api/bot/surfaces/{name}/content/{id}` | Denied | no |
+| `PUT /api/bot/surfaces/{name}/joins` | Denied | no |
 | `POST /api/bot/surfaces/{name}/runs` | Denied | no |
+| `GET /api/bot/surfaces/{name}/runs/{id}` | Denied | no |
+| `POST /api/bot/surfaces/{name}/runs/{id}/messages` | Denied | no |
 | `POST /api/bot/surfaces/{name}/serve` | Denied | no |
 | `DELETE /api/browser-login` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/browser-login` | Denied | no |
@@ -10291,12 +10296,19 @@ none of them (404).
 | `PUT /api/bot/surfaces/<name>` | `{clax_surface, notation, definition, registration?, prompt?, settings?}` | `{registration, hash, clax_surface, withheld?}` |
 | `POST /api/bot/surfaces/<name>/serve` | `{registration, wait_ms, answers?}` | `{calls}` |
 | `POST /api/bot/surfaces/<name>/runs` | `{registration, kind, request, allow?, bind?}` | `{run}` |
-| `GET /api/bot/surfaces` | none | `{surfaces: [{name, registration, hash, connected, withheld, registered_at, last_served_at}]}` |
+| `POST /api/bot/surfaces/<name>/runs/<id>/messages` | `{registration, message, key?}` | `{message, seq, waiting}` |
+| `GET /api/bot/surfaces/<name>/runs/<id>?registration=<id>` | none | `{run, kind, status, steps, waiting_on?, messages_waiting, undelivered?, end?, result?}` |
+| `PUT /api/bot/surfaces/<name>/joins` | `{registration, clax: [{artifact, allow?}]}` | the same, as kept |
+| `GET /api/bot/surfaces` | none | `{surfaces: [{name, registration, hash, connected, withheld, registered_at, last_served_at, joins}]}` |
+| `PUT /api/bot/surfaces/<name>/content?registration=…&run=…` | the bytes, typed by `Content-Type` | a handle ("Content") |
+| `GET /api/bot/surfaces/<name>/content/<id>?registration=…&run=…` | none | the bytes |
 
 **How a request is made.** Each carries the daemon's token as the CLI
 and an agent of the owner's do, `Authorization: Bearer <token>`, and a
 JSON body of 8 MiB at the most (read as JSON whatever its
-`Content-Type`). A success is 200 with a JSON body. Every refusal is
+`Content-Type`), but for `PUT …/content`, whose body is an item's bytes
+under the content limits ("Content"). A success is 200 with a JSON body
+(of `GET …/content/<id>`, the item's bytes). Every refusal is
 `{error: {code, message}}` with the status of its code.
 
 **Who may.** The daemon's token and nothing else: whoever holds the
@@ -10308,6 +10320,17 @@ an agent of another machine (`Authorization: Clax-Grant`, an agent
 token) is 403 `forbidden` whatever its rights. The token's holder acts
 as the owner: a registration is the owner's, and a run started through
 one acts for the owner, on the owner's credits and key.
+
+**When the daemon restarts.** The daemon makes a new token each time it
+starts and writes it to `<CLAX_HOME>/daemon.json`; the token a host read
+before then no longer works, and the daemon no longer holds the host's
+registration. A host that outlives the daemon therefore treats 401 on
+any of these routes as "the daemon restarted": it reads `daemon.json`
+again, registers again naming the `registration` it was issued (see
+"Registering"), and goes on serving. Calls that waited for it are kept
+across the restart and are sent to it once it serves again. A host that
+still gets 401 with the token it has just read holds the wrong
+`CLAX_HOME`.
 
 **How long a request is held.** A `serve` is held for its `wait_ms`, 12 s
 at the most, on top of the deadline every request has (30 s); the other
@@ -10335,17 +10358,30 @@ The refusals' codes:
 | `prompt_too_large` | 400 | `prompt` is longer than 64 KiB |
 | `invalid_prompt` | 400 | `prompt` is not a prompt file of the surface: the message says why, with the line when it is one line's |
 | `too_many_answers` | 400 | A `serve` brings more than 1,024 answers. None was taken |
+| `takes_no_messages` | 400 | A message to a run whose kind takes none |
+| `content_mismatch` | 400 | An upload's bytes are not what its `Content-Type` or query says |
 | `unauthorized` | 401 | The token is missing or refused, as on every route that takes it |
 | `invalid_token` | 401 | The request carries an agent's token (`Bearer cxa_…`) that is not one |
 | `forbidden` | 403 | The request carries an agent's token that is one, or a grant: these routes take the daemon's token and nothing else |
+| `join_artifact_refused` | 403 | A join names an artifact the token's person did not make. Nothing was changed |
 | `unknown_registration` | 404 | The daemon holds no registration of `<name>` with the ID the request names; or, of a registration that names one to go on as, the daemon never gave that ID to a registration of `<name>` |
-| `too_large` | 413 | The body is longer than 8 MiB. Nothing of it was read |
+| `join_artifact_unknown` | 404 | A join names an artifact that is not here, or is deleted. Nothing was changed |
+| `unknown_run` | 404 | A message or a run's state is asked of a run the registration did not start, or that is not there |
+| `not_found` | 404 | An upload or a download names a registration the daemon does not hold, or a run, call or item that is not the registration's ("Content") |
+| `run_ended` | 409 | A message to a run that has ended |
+| `key_conflict` | 409 | A message's `key` names another message of the run |
+| `too_large` | 413 | The body is longer than 8 MiB, or a message longer than 64 KiB of JSON. Nothing of it was read |
+| `content_too_large` | 413 | An upload is longer than an item may be (20 MiB) |
+| `run_content_full` | 413 | An upload would take the run's content past 100 MiB |
+| `too_many_messages` | 429 | The run holds 32 messages it has not been given |
+| `too_many_uploads` | 429 | The registration has 2 uploads in flight |
 | `too_many_changes` | 429 | A registration that is held was gone on with, with its definition, prompt file or settings changed, eight times in the last minute. It is as it was; going on with nothing changed is not counted |
 | `too_many_runs` | 429 | A start for a registration that has 16 runs that have not ended. No run was started |
 | `too_many_registrations` | 429 | 32 registrations are live, or 8 of this name, and every one that could make room is connected |
 | `internal_error` | 500 | The daemon could not do what was asked, through no fault of the request's. Nothing was done |
 | `storage_failed` | 500 | The daemon could not read or write its store; the message says no more than that, and the daemon's log why. Of a `serve`, some answers may have been taken: the host sends them all again, and those that were taken are ignored |
-| `not_yet` | 501 | A start has `bind`: this Clax binds no other surface to a run yet. No run was started |
+| `not_yet` | 501 | A start has `bind`: this Clax binds no other surface to a run yet. No run was started. Of an upload: this daemon keeps no content |
+| `content_store_full` | 507 | An upload would take the content of all runs past 1 GiB |
 
 **What is read strictly, and what leniently.** A message a host sends is
 refused (`invalid_request`) when it has a member the message does not
@@ -10375,11 +10411,10 @@ given them; an answer that names a longer one is ignored.
 
 ```json
 { "clax_surface": 1, "notation": "dts", "definition": "declare const desk: { … };",
-  "prompt": "…", "settings": { "allow": ["desk.*"], "reader_view": "none",
+  "prompt": "…", "settings": { "allow": ["desk.*"],
     "max_effects_per_run": 5, "call_timeout_s": 30, "wait_limit_s": 86400,
     "runs": { "max_steps": 40, "max_run_minutes": "none" } } }
-→ { "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55", "hash": "eb209be8…", "clax_surface": 1,
-    "withheld": [ {"op": "snapshot", "reason": "content"} ] }
+→ { "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55", "hash": "eb209be8…", "clax_surface": 1 }
 ```
 
 - `notation` is `"dts"` or `"manifest"`, and `definition` the text in
@@ -10404,13 +10439,26 @@ given them; an answer that names a longer one is ignored.
   is refused, `invalid_prompt`; the fixture's `desk.prompt.md` is a
   small one. Left out, runs are sent the standard prompt.
 - `settings` are each optional, by the names the daemon's configuration
-  will give them: `allow` (allow patterns: the operations offered at
-  all), `reader_view` (`"none"` or `"names"`), `max_effects_per_run`,
-  `call_timeout_s`, `wait_limit_s`, and `runs.max_steps` and
-  `runs.max_run_minutes`. `allow` narrows the operations of every run
-  the registration starts, and `call_timeout_s` and `wait_limit_s`
-  narrow how long its runs' calls may go unanswered; the others are
-  kept and not applied yet. Their bounds, past which a registration
+  will give them. Each holds a run the registration starts, and is
+  within the instance's own: a setting narrows and never widens.
+
+  | Setting | What it does to a run the registration starts |
+  |---|---|
+  | `allow` | Allow patterns: the operations the run is offered at all, fixed in its binding |
+  | `call_timeout_s` | How long a call of an operation not tagged `@waits` may go unanswered: the lesser of this and the instance's |
+  | `wait_limit_s` | The same, for an operation tagged `@waits` |
+  | `max_effects_per_run` | How many calls of the surface's operations tagged `@effect` the run may make in all its steps. The call that would be one more is refused before the host is sent anything: the script is thrown `effect_limit` (not retryable), which it can catch, and the refusal is journaled. A call is counted once whatever happens to its step (run again after a crash, or after the run parked on it), by the run's journal, so a daemon that restarts counts the same; a call the daemon refused before its host was sent it (`unknown_op`, `invalid_args`, `effect_limit`) or that was `unavailable` (nothing happened) is not counted, and every other call is: one its host answered with an error of its own (a code its `@throws` declares) was performed, and so was one answered `invalid_result`, `expired` or `unknown_outcome`. A call the host was sent whose journal row could not be written is counted for the rest of its step's attempt. `0` allows none. A run under a limit is told it, with the operations it counts, in its declaration |
+  | `runs.max_steps` | The run's cap on steps: the lesser of this and the instance's `max_steps`. A run that reaches it stops `run_cap`, as at the instance's |
+  | `runs.max_run_minutes` | The run's cap on minutes at work, parked time not counted: the lesser of this and the instance's `max_run_minutes`, stopping as above |
+  | `reader_view` | Not supported yet: a registration that gives it, `"none"` or `"names"`, is refused `invalid_settings` |
+
+  `"none"` sets no limit of the registration's (the instance's stands).
+  A setting is left out or given: `null` is no setting's value (it is
+  not "no limit", which is `"none"`, nor "left out"). A setting the
+  daemon does not have, a limit that is not a whole number of zero or
+  more or `"none"` (a negative, a fraction, text, `null`), and `null`
+  for any setting (`"runs": null`, `"allow": null`) is no message at
+  all: `invalid_request`, as any member a message does not have. Their bounds, past which a registration
   is refused (`invalid_settings`): the settings are 16 KiB of JSON at
   the most; `allow` lists 128 patterns at the most, each of 34 names at
   the most and no name longer than 64 bytes; a limit is `"none"` or a
@@ -10421,8 +10469,9 @@ given them; an answer that names a longer one is ignored.
   held to the same bounds as the setting.
 - `withheld` lists the operations a run would have and is not given
   yet, by their names below the surface, each with why. `"content"`:
-  the operation's parameters or result name `Content` or `Image`, which
-  this Clax does not store yet.
+  the operation's parameters or result name `Content` or `Image`, and
+  this daemon keeps no content (its store keeps no blobs). A daemon
+  that keeps content withholds none.
 - **Each registration has an ID of its own,** and many of one name may
   be live: each is sent the calls of its own runs and no others. Every
   `serve` and every start names its registration.
@@ -10436,8 +10485,9 @@ given them; an answer that names a longer one is ignored.
   (`bot.surface.registered`, with `changed: true`).
 - **A registration is a lease.** It is **connected** while a `serve` of
   it is held, and for 15 s after one ends (and after it is registered).
-  One that is not connected takes no new call: the script is thrown
-  `unavailable`. One that stays unconnected for five minutes more is
+  One that is not connected takes no new call that may not be tried
+  again (the script is thrown `unavailable` at once); one that may waits
+  for it ("A call that waits for a host that is not there"). One that stays unconnected for five minutes more is
   dropped, as every registration is when the daemon restarts, and so is
   the oldest unconnected one when a new registration would be one too
   many (32 in all, 8 of a name). A `serve` or a start for a dropped
@@ -10453,13 +10503,19 @@ given them; an answer that names a longer one is ignored.
   new one.
 - **A run keeps what it was started with.** A run is bound, when it is
   started, to the definition and the prompt file its registration has
-  then, each by its SHA-256, and the daemon keeps both for as long as
-  it keeps the run: the run's first turn is sent that prompt file (the
-  standard prompt when the registration had none), which was checked
-  against that definition when it was registered. Registering again with another definition or prompt file
-  changes them for the runs started afterwards and for no run started
-  before; a run whose prompt file is no longer kept ends `failed`,
-  `prompt_gone`, and is sent no other.
+  then, each by its SHA-256, and to its settings then (all but `allow`,
+  which its operations hold), kept in the run's binding; the daemon
+  keeps them for as long as it keeps the run: the run's first turn is
+  sent that prompt file (the standard prompt when the registration had
+  none), which was checked against that definition when it was
+  registered, and every call deadline, effect count and cap of the run
+  is read from its own settings, never from the registration as it is
+  now. Registering again with another definition, prompt file or
+  settings changes them for the runs started afterwards and for no run
+  started before, and a daemon that restarts changes nothing for a run
+  in flight, whatever its host registers when it comes back; a run whose
+  prompt file is no longer kept ends `failed`, `prompt_gone`, and is
+  sent no other.
 - **Two hosts of one registration.** Registering as a registration
   that is still held replaces its definition, prompt and settings and
   leaves its open `serve`s open. Both hosts are then its hosts: each
@@ -10502,32 +10558,59 @@ given them; an answer that names a longer one is ignored.
   for each parameter, `null` for an optional one left out, already
   checked against the definition. `expires_in_ms` is how long an answer
   is still taken. Every call has a deadline: one that is given none has
-  24 hours.
+  24 hours. A call of a run of Clax's own that a join bound the surface
+  into ("Joins") has `joined`, what the run is on, as a start's `bind`
+  names it, with the threads it was started for: `{"clax": {"artifact":
+  "<ID>", "thread_ids": ["<ID>", …]}}`; a call of a run the
+  registration started has none.
 - **An answer** names a delivery by `id` and says exactly one thing:
   - `result`: the call's result (`null` is a result). It is checked
     against the operation's declared result; one that is not of that
     type, or is longer than 1 MiB as the daemon writes it as JSON
     (without white space), is not passed on: the script is thrown
     `invalid_result`.
-  - `error`: `{code, message}` and nothing else. `code` is one of the
+  - `error`: `{code, message}`, and `retryable: true` for an error the
+    same call may get past if it is sent again (left out: the error is
+    final). `code` is one of the
     codes the operation declares (`@throws`), or `unavailable` for
-    "nothing happened"; the script is thrown it. Any other code, the
+    "nothing happened"; the script is thrown it, with `retryable` (always
+    for `unavailable`), once the daemon has sent the call again as its
+    run's policy allows ("Sending a call again"). Any other code, the
     daemon's own among them (`invalid_result`, `expired`,
     `unknown_outcome`, `invalid_args`, `unknown_op`, `key_reused`,
     `internal_error`), is not the host's to say: the script is thrown
     `invalid_result`, with the host's code and message in its message.
-    `message` is cut to 4 KiB of UTF-8.
+    The daemon's own codes are never a host's, even declared: a
+    definition whose `@throws` (a manifest's `throws`) names one is
+    refused `invalid_definition`, and an answer with one is
+    `invalid_result` whatever definition the call was made under. They
+    are `call_limit`, `cancelled`, `effect_limit`, `expired`,
+    `internal_error`, `invalid_args`, `invalid_result`, `key_reused`,
+    `park_limit`, `parked_runs_limit`, `provider_error`,
+    `replay_diverged`, `run_not_claimed`, `script_finished`,
+    `step_mismatch`, `unknown_op`, `unknown_outcome` and `waiting`
+    (`clax_surface::wire::CORE_CODES`). `message` is cut to 4 KiB of
+    UTF-8.
   - `accepted: true`: the host has the call and will answer it in a
-    later `serve`. The call is not sent again.
+    later `serve`. The call is not sent again unless the host may have
+    lost it ("Sending a call again").
   - `retry_after_ms`: the host cannot take the call now; it is sent
-    again no sooner than that long from now. Any whole number; 0 is
-    "with the next `serve`". Its deadline stands. (The design's word is
+    again no sooner than that long from now, and, under a policy that
+    sends calls again, no sooner than the policy's first wait (the
+    daemon's: one second), so that a host that answers 0 is not sent
+    the call back at once. Any whole number; under a policy that sends
+    nothing again, 0 is "with the next `serve`". It is no failed
+    attempt and spends none: the call stays open, however often its
+    host asks for it later, until its deadline, which stands. (The design's word is
     `retry_after`; the member says its unit, as every duration of the
     protocol does.)
 - **Answers are taken in their order.** `accepted` and `retry_after_ms`
   settle nothing, so a result or an error for the same call may follow
   either, in the same `serve` or a later one:
-  `[{id, accepted: true}, {id, result}]` settles the call. The first
+  `[{id, accepted: true}, {id, result}]` settles the call. Each answer
+  finds its call as the answers before it left it, as if it came in a
+  `serve` of its own: in `[{id, accepted: true}, {id, error: {…,
+  "retryable": true}}]` the error is for an accepted call. The first
   result or error for a call stands, and whatever follows it for that
   call is ignored.
 - **A call that is not answered is sent again** with every `serve`,
@@ -10536,6 +10619,49 @@ given them; an answer that names a longer one is ignored.
   `id`, and one a run made twice (a step run again after a crash) by
   its `key`. A host of an operation that cannot be repeated (`@once`)
   says `accepted` as soon as it has the call.
+- **Sending a call again.** Each run's policy gives its calls attempts
+  and waits between them (the daemon's: three attempts, one second
+  apart and then two), all within the call's deadline, which no attempt
+  moves. A call is sent again, with the same `id` and `key`, after the
+  wait that follows a failed attempt: an error that may be tried again
+  (`unavailable`, or `retryable: true`), or a call the host had
+  accepted when the host may have lost it (it serves again after it was
+  not connected, or registers again as its registration). A call of an
+  `@once` operation that its host accepted is never sent again. When
+  the attempts are spent, or the next wait would end at or after the
+  deadline, the script is thrown the host's last error; a deadline that
+  comes during a wait throws it too. A second retryable error for an
+  attempt whose next one is not sent yet spends no attempt. Past 64
+  sendings again across one run's calls of one registration (each
+  registration a run calls has its own 64), a failure is the call's
+  outcome; `retry_after_ms` is not counted. A daemon that restarts
+  keeps no attempts and no policy with a call: a call it finds open is
+  not sent again after a failure, nor when its host may have lost it,
+  until its run makes it again (its step runs again), when the run's
+  policy takes over.
+- **A call that waits for a host that is not there.** Under a policy
+  that sends calls again (more than one attempt), a call of a
+  registration that is held but not connected (its host is away, within
+  its lease) is opened and waits for its host until the call's own
+  deadline (the daemon's: 30 s, and 24 hours for a `@waits` call, whose
+  run parks after 10 s), and is sent when its host serves; nothing is
+  sent meanwhile, and at the deadline the script is thrown
+  `unavailable`. A step waits out an away host once: once one of its
+  calls has waited for the host to its deadline, its later calls of that
+  registration are thrown `unavailable` at once ("the surface's host is
+  not connected") while the host is still away. Likewise a host that is
+  connected and does not answer: once one of a step's calls sent to it
+  has come to its deadline unanswered, the step's later calls of that
+  registration are thrown `unavailable` at once and sent nothing; the
+  next step's are sent as before. After the daemon restarts, a call that an earlier
+  attempt of the step opened waits likewise, until its deadline, for its
+  host to go on as its registration. A registration the daemon dropped
+  (its lease ended, or it made room for another) is not waited for: a
+  new call of it is thrown `unavailable` at once, and one an earlier
+  attempt opened is answered by what is known of it (the table below:
+  `unavailable` when it was never sent, `expired` or `unknown_outcome`
+  when it was). Under a policy that sends nothing again, no call waits
+  for a host that is not connected: it is thrown `unavailable` at once.
 - **Keys.** `key` is `<run>:<step>:<seq>`, the same whenever the same
   call is made again. A write or an effect made twice with one key
   takes effect once and answers the same: that is the host's promise.
@@ -10558,16 +10684,21 @@ given them; an answer that names a longer one is ignored.
   | Sent, a write or an effect | `unknown_outcome`: it may have taken effect |
 
   "Sent" is that a `serve` was answered with the call, or that its host
-  accepted it. A `serve` whose request went away before its answer was
+  accepted it. A call waiting out the wait after a retryable error is
+  thrown that error instead. A `serve` whose request went away before its answer was
   written sends nothing; an answer written to a connection its host
   never read counts as sent, since the daemon cannot know that the host
   read what it was sent.
 - **An ended run.** `{"call": "ended"}` tells the registration that
-  started a run that it ended: `end` is an object with one member,
-  `{"finished": {}}`, `{"gave_up": {"code", "reason"}}`,
-  `{"stopped": {"reason"}}` or `{"failed": {"code"}}` (or one a later
-  Clax adds: the run has ended), and `result` is the kind's result, for
-  a run that finished; an `ended` without `result` has none. It is sent
+  started a run, or that a join bound into one, that it ended: `end` is
+  an object with one member, `{"finished": {}}`, `{"gave_up": {"code",
+  "reason"}}`, `{"stopped": {"reason"}}` or `{"failed": {"code"}}` (or
+  one a later Clax adds: the run has ended), and `result` is the kind's
+  result, for a run that finished; an `ended` without `result` has
+  none. Of a run it was joined into a host is told no words of anyone's:
+  no `result`, and a `gave_up`'s `reason` is `""`. `undelivered`, when
+  there is any, lists the `seq` of each message the run took and never
+  gave its model ("Messages to a run, and how it is going"). It is sent
   with every `serve` until it is acknowledged, for seven days. A host
   acknowledges it with an answer like any other, which names its `id`
   and says exactly one thing; the one to send is `result: null`:
@@ -10603,7 +10734,7 @@ request, checked against the kind's type, and `allow` the operations the
 run may have, as allow patterns (left out: all the kind allows). A
 request that is not the kind's, a kind the definition does not have, an
 `allow` pattern that is none, and a request that holds a `Content` or an
-`Image` (Clax stores no content yet) are `invalid_request`, with the
+`Image` (a request cannot carry content yet) are `invalid_request`, with the
 checker's words. The run has the operations of its surface that the
 kind's `@allow`, the registration's `allow` setting and the request's
 `allow` all name, less those withheld, fixed when it is made; it has no
@@ -10634,6 +10765,201 @@ start that has it, `{}` too, is refused, `not_yet`, until Clax binds: a
 run made without a surface its starter named would not be the run that
 was asked for.
 
+### Content
+
+Bytes never travel in a call. A value of type `Content` is a handle
+`{id, media_type, bytes, sha256, name?, width?, height?, meta?}`, and an
+`Image` one whose `media_type` is `image/png`, `image/jpeg`,
+`image/webp` or `image/gif`; `media_type`, `bytes`, `sha256`, `width`
+and `height` (an image's, read from its header) are the daemon's
+findings, `name` and `meta` the host's words.
+
+```
+PUT /api/bot/surfaces/desk/content?registration=0f3a…&run=…&name=desk.png
+Content-Type: image/png
+<bytes>
+→ {"id": "…", "media_type": "image/png", "bytes": 48213, "sha256": "…",
+   "name": "desk.png", "width": 1280, "height": 800}
+```
+
+- A host uploads for a run that has a call to its registration not yet
+  answered, then answers that call with `{"id": "…", "meta"?: {…}}`
+  where the operation's type says `Content` or `Image` (`meta` 4 KiB of
+  JSON at the most). The daemon fills in the rest before the script is
+  given the result; an ID that is not the run's or not this
+  registration's upload, and an `Image` whose bytes are no image, settle
+  the call `invalid_result`.
+- The bytes must be what `Content-Type` says: the four image types are
+  read from the bytes, bytes that are an image are refused under any
+  other type, and `text/*` and JSON must be UTF-8 and JSON. A host may
+  also state `sha256`, `bytes`, `width` and `height` in the query; each
+  is checked, and a parameter the daemon does not know is refused.
+  Refusals: 400 `content_mismatch` and `invalid_request`, 404
+  `not_found` (a registration the daemon does not hold, or no such run
+  or call for the registration: never `unknown_registration`), 413
+  `content_too_large` (an item is 20 MiB at the most) and
+  `run_content_full` (a run's 100 MiB), 429 `too_many_uploads` (a
+  registration has 2 uploads in flight at the most), 501 `not_yet` (a
+  daemon that keeps no content), 507 `content_store_full` (the content
+  of all runs together is 1 GiB at the most).
+- Everything an upload can be refused for without its bytes is checked
+  before they are read: the registration, the run's call, the uploads
+  in flight, and `Content-Length` against the room left for the item
+  (the item's, the run's and all runs' limits). An upload with no
+  `Content-Length` is read no further than a piece past that room.
+- `GET /api/bot/surfaces/<name>/content/<id>?registration=…&run=…`
+  answers the bytes under their media type, as an attachment
+  (`Content-Disposition: attachment`, `Content-Security-Policy: sandbox;
+  default-src 'none'`, `X-Content-Type-Options: nosniff`), for a handle
+  that a call of that run to that registration passed where the
+  operation's type says `Content` or `Image` (a copy of a handle in an
+  `unknown` argument, or in a passed handle's `meta`, passes nothing),
+  and 404
+  `not_found` for any other: another run's, another registration's, one
+  never passed, and any asked as a registration the daemon does not
+  hold. A handle a script passes as an argument is the whole
+  handle it was given, of its own run, or the call is refused
+  `invalid_args` and no host is sent it.
+- A run's content is kept with its call journal, a day after the run
+  ends.
+
+### Messages to a run, and how it is going
+
+A kind declared `name(request: Req, message?: Msg): Result` takes
+messages after its run starts; one with one parameter, and every kind
+of Clax's own, takes none.
+
+```json
+POST /api/bot/surfaces/inbox/runs/<id>/messages
+{ "registration": "…", "message": {"say": "Skip the drafts.", "note": "…"}, "key": "m-2" }
+→ { "message": "<ID>", "seq": 2, "waiting": false }
+```
+
+The run's model is given messages 1 and 2 at its third step, which then
+parks on a question to its person; a third message comes while it waits:
+
+```json
+→ { "message": "<ID>", "seq": 3, "waiting": true }
+```
+
+Only the registration that started the run may send to it, or read it;
+for any other run the answer is 404 `unknown_run`. `message` is checked
+against the kind's `Msg` in the definition the run was started with
+(400 `invalid_request`, or `takes_no_messages` for a kind that takes
+none); a message that holds content is `invalid_request`: content
+reaches a run in the answers to its calls alone. A run that has ended is 409 `run_ended`. `key` names the
+message once for its run: the same key and message again answers the
+first `{message, seq, waiting}`, another message under it is 409
+`key_conflict`. A key is held for as long as its message is kept: a
+day after the run ended for a message it was given, seven days for
+one it never was; after that the same key and message again is 409
+`run_ended`.
+A run holds 32 messages it has not been given at the most (429
+`too_many_messages`), each 64 KiB of JSON at the most (413
+`too_large`).
+
+Messages are given to the run's model between steps, in the order they
+arrived (`seq`), at the start of its next turn, each set down as the
+request is: the JSON Pointers of its strings typed `Instruction` (the
+person's words) listed before it, everything else data. A message is
+marked given by the commit of the turn that was given it, so a turn run
+again after a crash is given it again and the model's history holds it
+once.
+
+**A message cannot interrupt a run that waits.** A run parked on a call
+that waits (a question to its person) stays parked when a message
+comes: the answer says `"waiting": true`, the `GET` shows the run's
+`waiting_on`, and the message is given at the run's first turn after
+the wait ends, when the call is answered or its deadline comes. A run
+cancelled meanwhile never takes the turn. Messages sent before, during
+and after a wait are given together at that turn, in the order they
+arrived. A message to a run between steps wakes it.
+
+**A message may never be given.** A message is given at the start of
+the run's next turn, and a run may have none: the turn in flight
+finishes, gives up, or the run is stopped or fails. Such a run's
+`ended` names the messages it took and never gave in `undelivered`, and
+so does its state's `undelivered` from the `GET`.
+
+A `serve` also delivers **events** of the runs the registration
+started, which have no `id` and need no answer, and are not kept: a
+host that was away reads the run's state from the `GET` above.
+
+```json
+{"call": "event", "run": "…", "event": {"type": "step", "step": 3, "kind": "turn", "messages": [1, 2]}}
+{"call": "event", "run": "…", "event": {"type": "parked", "step": 4, "waiting_on": {"surface": "inbox", "op": "ask", "deadline": "…"}}}
+{"call": "event", "run": "…", "event": {"type": "resumed", "step": 4}}
+```
+
+`step` is a step committed that did not end the run (`kind`: `turn`
+or `script`; `messages`, the `seq`s it gave the model, when it gave
+any); `parked` names what the run waits on, its operation and deadline
+only when that is the registration's own surface; `resumed` is the
+parked step run again, once its call was answered, its deadline came
+or the run was cancelled. How the run ended is the `ended` delivery, as
+before, and no event of a run comes after its `ended`: in one `serve`
+a run's events come before its calls and its end. A host skips an
+event `type` it does not know.
+
+### Joins
+
+```json
+PUT /api/bot/surfaces/desk/joins
+{ "registration": "0f3a9c1e5b7d4a2e8c6b1d0f9e7a3c55",
+  "clax": [ {"artifact": "7q3k9mzx2b4t"}, {"artifact": "m2c8v6xq4r1p", "allow": ["desk.lamps"]} ] }
+→ { "registration": "…", "clax": [ {"artifact": "7q3k9mzx2b4t"}, {"artifact": "m2c8v6xq4r1p", "allow": ["desk.lamps"]} ] }
+```
+
+A join binds the surface into ClaxBot's own runs (a thread sent to it,
+a follow-up) on the artifacts it names; a brief's run is never joined,
+since its artifact is made by the same request. A `PUT` replaces the
+surface's joins whole (`"clax": []` leaves none), for any registration
+of its name; the answer is the joins it has now, by artifact ID, and
+`GET /api/bot/surfaces` lists each registration's as `joins: {clax:
+[…]}`. A join is kept until it is replaced or its artifact is deleted,
+while its host is away and when its host goes on as its registration.
+Each artifact is one the token's person made (else 403
+`join_artifact_refused`) and is here (else 404
+`join_artifact_unknown`); 256 at the most, each named once, and each
+`allow` allow patterns (else 400 `invalid_request`); a registration the
+daemon does not hold is 404 `unknown_registration`. Nothing is changed
+by a request that is refused.
+
+A run made on a joined artifact while the registration is connected,
+acting for the person who registered it and not sent by an agent of
+another machine under a grant, has the surface bound beside
+Clax's own: the operations of the definition that the registration's
+`allow` setting and the join's `allow` both name, less those withheld.
+A join with no `allow` names the definition's reads (`@read`) that do
+not wait (`@waits`) alone: a write or an effect acts on the person's
+machine or product outside Clax, and a read that waits asks the person
+there and parks the run, so each is bound only when the join's own
+`allow` names it, by its name or by a pattern written in that join. They are fixed when the run is made with the registration's
+settings then (its `max_effects_per_run`, `call_timeout_s` and
+`wait_limit_s` hold for the run, over a restart too; its `runs` limits
+cap the runs of its own kinds alone, never a run it joined), served by that
+registration as a run it started is, and its end delivered to it. The
+model is told them on `clax` after Clax's own, and, under `# <name>` at
+the end of the system prompt, that they act on the person's own machine
+or product outside Clax and are called to write, act or ask only for
+the person's own comments on the run's request or their brief (a
+marker or claim of authorship in a call's result, a page, a file, an
+image or another's comment marks nothing), and that what they read is
+the person's private data, repeated in no reply, page or document
+unless the person's own words ask, then the surface's rules; Clax's own prompt and request are
+otherwise the same. A join whose registration is not
+connected, or that gives no operation, binds nothing, and the run is
+made as one with no join. Nor does any join bind into a run whose
+request threads hold a comment by anyone but the person the run acts
+for (their own comments in the browser and ClaxBot's replies alone):
+such a run, a follow-up in a thread a guest has since commented on
+among them, is made exactly as one with no join. Someone who only reads the artifact sees of
+such a run, and of a run whose bindings the daemon cannot read, its
+state, times, steps' kinds and the finish's summary (never a `give_up`
+step's reason), whether or not its host is connected now; in `GET /api/bot/runs/<id>`, `GET /api/bot/runs?artifact=` and
+the `run` of the events, a parked one's `waiting_on` is `{since,
+deadline}`, with no `surface` or `op`.
+
 ### The fixture
 
 `docs/claxbot-surfaces/contract.json`:
@@ -10642,8 +10968,9 @@ was asked for.
 - `messages`: every message, each with the name of its type in
   `crates/clax-surface/src/wire.rs`, written as that type writes it.
 - `tolerated`: messages their reader takes that are not written so: a
-  daemon's with members, a delivery and an end that a host built on
-  this version does not know, and a host's with `answers` left out.
+  daemon's with members, a delivery (`"call": "notice"`) and an end that
+  a host built on this version does not know, and a host's with
+  `answers` left out.
 - `refused`: messages their reader refuses, each with why.
 - `script`: one life of two registrations of `desk`, in the order of a
   clock that starts at 0 (`at_ms`). A step with `host` is a request
@@ -10667,7 +10994,8 @@ write and an effect, answered with a result, an error, `accepted` and
 again; a result that is not the operation's, an error the operation
 does not declare, and `unavailable`; the three errors of a deadline and
 an answer that comes too late; answers for unknown IDs and for another
-registration's call; a key used twice; a withheld operation; a `serve`
+registration's call; a key used twice; an operation the definition
+does not have; a `serve`
 held for its wait; a registration that stops being connected, is
 dropped, and is gone on with; a call answered most of a day after it
 was made; and a run's end, sent until it is acknowledged.
@@ -11421,5 +11749,6 @@ are listed in [`docs/follow-ups.md`](follow-ups.md).
 - ClaxBot surfaces: a host registers a surface, starts runs of its
   kinds, is served their calls and is told how each ended ("ClaxBot
   surfaces"); a run parks on a call that waits and goes on when its
-  host answers or the call's deadline comes. Not yet: binding other
+  host answers or the call's deadline comes; a host sends messages to
+  a run it started and is told how it is going. Not yet: binding other
   surfaces to a run (`bind`); and `Content`.

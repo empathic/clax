@@ -27,12 +27,12 @@
 use crate::common::*;
 use crate::generic::set_row;
 use crate::resume::crash_once;
-use clax_bot::bot_surfaces::{CallFailure, Hub, HubLimits, MemoryPending, Millis};
+use clax_bot::bot_surfaces::{CallFailure, Hub, HubLimits, MemoryPending, Millis, Retry};
 use clax_bot::broker::stored::StoredPending;
 use clax_bot::broker::{
     BrokerStore, CallBroker, HubBroker, Outcome, Sending, Served as Registration, SkipClock,
 };
-use clax_bot::outside::{OutsideProvider, Registrations, narrowed};
+use clax_bot::outside::{OutsideProvider, Registrations, kept_with_run, narrowed};
 use clax_bot::provider_conformance::{Maybe, OpCall, ProviderFixture, Waiting, check_provider};
 use clax_bot::registry::{CODE_UNAVAILABLE, Providers};
 use clax_bot::run::{CrashPoint, Deps};
@@ -41,7 +41,7 @@ use clax_bot::surface::{
     dispatch,
 };
 use clax_bot::{DefaultPolicy, Delivery, Next, RunPolicy, Wait};
-use clax_store::bot_runs::{Bindings, DriverId, RunStatus, StepKind, StoredBinding};
+use clax_store::bot_runs::{Bindings, CallEntry, DriverId, RunStatus, StepKind, StoredBinding};
 use clax_surface::Reserved;
 use clax_surface::wire::{self, Answer, CallError, Notation, RegisterRequest, Settings};
 use serde_json::{Value, json};
@@ -81,6 +81,7 @@ pub enum Kept {
 type Registers = Box<dyn Fn(&str, &RegisterRequest, &str) -> wire::Registered + Send + Sync>;
 type Serves = Box<dyn Fn(&str, &str, Vec<Answer>) -> Vec<wire::Delivery> + Send + Sync>;
 type Waits = Box<dyn Fn(&str) -> (usize, usize) + Send + Sync>;
+type Snapshots = Box<dyn Fn(&str) -> Option<clax_bot::bot_surfaces::Snapshot> + Send + Sync>;
 
 /// The hub's side of a broker, whatever store it is over: what a host
 /// and a test reach it by.
@@ -90,19 +91,28 @@ pub(crate) struct HubSide {
     /// How many calls wait for a registration, and how many ends it has
     /// not acknowledged.
     waiting: Waits,
+    /// The registration as the hub holds it now, when it does: what a
+    /// join binds into a run from.
+    snapshot: Snapshots,
 }
 
 fn sides<S: BrokerStore + Send + 'static>(
     store: S,
     clock: Arc<SkipClock>,
+    limits: HubLimits,
 ) -> (Arc<dyn CallBroker>, Arc<HubSide>) {
     let hub = Hub::new(
-        HubLimits::default(),
+        limits,
         Reserved::of(&[clax_bot::api::definition()]),
         Box::new(|_| {}),
     );
     let broker = Arc::new(HubBroker::new(hub, store, clock));
-    let (a, b, c) = (broker.clone(), broker.clone(), broker.clone());
+    let (a, b, c, e) = (
+        broker.clone(),
+        broker.clone(),
+        broker.clone(),
+        broker.clone(),
+    );
     let side = HubSide {
         register: Box::new(move |name, request, fresh| {
             a.with(|hub, store, now| hub.register(store, name, request, fresh, now))
@@ -120,6 +130,7 @@ fn sides<S: BrokerStore + Send + 'static>(
                 (pending.calls.len(), pending.ends.len())
             })
         }),
+        snapshot: Box::new(move |registration| e.with(|hub, _, _| hub.snapshot(registration))),
     };
     (broker, Arc::new(side))
 }
@@ -132,7 +143,14 @@ pub struct HostState {
     pub applied: BTreeMap<String, u32>,
     /// Each ended run it was told of, once.
     pub ended: Vec<wire::Ended>,
+    /// Each event it was delivered, in order.
+    pub events: Vec<wire::Event>,
+    /// The run of each event and each end it was delivered, in the
+    /// order it was delivered them, with `"event"` or `"ended"`.
+    pub told: Vec<(String, &'static str)>,
     seen: BTreeSet<String>,
+    /// The calls it last answered with an error that may be tried again.
+    failed: BTreeSet<String>,
     answers: Vec<Answer>,
     behave: Behave,
 }
@@ -157,10 +175,7 @@ pub(crate) fn result(value: Value) -> Option<wire::Outcome> {
 }
 
 fn error(code: &str, message: &str) -> Option<wire::Outcome> {
-    Some(wire::Outcome::Error(CallError {
-        code: code.into(),
-        message: message.into(),
-    }))
+    Some(wire::Outcome::Error(CallError::new(code, message)))
 }
 
 /// A request to register `definition`, a `.d.ts` file.
@@ -201,7 +216,10 @@ impl Host {
                 calls: Vec::new(),
                 applied: BTreeMap::new(),
                 ended: Vec::new(),
+                events: Vec::new(),
+                told: Vec::new(),
                 seen: BTreeSet::new(),
+                failed: BTreeSet::new(),
                 answers: Vec::new(),
                 behave,
             }),
@@ -218,11 +236,20 @@ impl Host {
         for delivery in deliveries {
             match delivery {
                 wire::Delivery::Call(call) => {
-                    if !st.seen.insert(call.id.clone()) {
+                    // A call it failed, saying it may be tried again, is
+                    // performed again when it comes again.
+                    if !st.seen.insert(call.id.clone()) && !st.failed.remove(&call.id) {
                         continue;
                     }
-                    *st.applied.entry(call.key.clone()).or_default() += 1;
-                    if let Some(outcome) = (st.behave)(&call) {
+                    let outcome = (st.behave)(&call);
+                    if let Some(wire::Outcome::Error(e)) = &outcome
+                        && (e.retryable || e.code == CODE_UNAVAILABLE)
+                    {
+                        st.failed.insert(call.id.clone());
+                    } else {
+                        *st.applied.entry(call.key.clone()).or_default() += 1;
+                    }
+                    if let Some(outcome) = outcome {
                         st.answers.push(Answer {
                             id: call.id.clone(),
                             outcome,
@@ -236,8 +263,13 @@ impl Host {
                         outcome: wire::Outcome::Result(Value::Null),
                     });
                     if st.seen.insert(ended.id.clone()) {
+                        st.told.push((ended.run.clone(), "ended"));
                         st.ended.push(ended);
                     }
+                }
+                wire::Delivery::Event(event) => {
+                    st.told.push((event.run.clone(), "event"));
+                    st.events.push(event);
                 }
                 wire::Delivery::Other(_) => {}
             }
@@ -307,6 +339,9 @@ pub struct Served {
     hosts: Mutex<Vec<Arc<Host>>>,
     /// While set, no prompt file can be read: the broker's store fails.
     prompts_unread: AtomicBool,
+    /// Every how many milliseconds its hosts serve while a call waits;
+    /// 0: only when a call is sent.
+    pub(crate) poll_ms: std::sync::atomic::AtomicU64,
 }
 
 #[async_trait::async_trait]
@@ -326,6 +361,9 @@ impl CallBroker for Served {
     fn connected(&self, id: &str) -> bool {
         self.inner.connected(id)
     }
+    fn dropped(&self, id: &str) -> bool {
+        self.inner.dropped(id)
+    }
     fn send(&self, claim: &Claim<'_>, call: &Sending<'_>) -> Result<String, CallFailure> {
         let id = self.inner.send(claim, call)?;
         for host in self.hosts.lock().unwrap().iter() {
@@ -334,7 +372,22 @@ impl CallBroker for Served {
         Ok(id)
     }
     async fn outcome(&self, call: &str, until: Millis) -> Outcome {
-        self.inner.outcome(call, until).await
+        let poll = self.poll_ms.load(Ordering::SeqCst);
+        if poll == 0 {
+            return self.inner.outcome(call, until).await;
+        }
+        // Its hosts serve every `poll` milliseconds while the call waits,
+        // as hosts that long-poll do.
+        loop {
+            let step = self.inner.now().after(poll).min(until);
+            match self.inner.outcome(call, step).await {
+                Outcome::NotYet if step < until => {}
+                done => return done,
+            }
+            for host in self.hosts.lock().unwrap().iter() {
+                host.round();
+            }
+        }
     }
     fn commits_ends(&self) -> bool {
         self.inner.commits_ends()
@@ -351,6 +404,9 @@ impl CallBroker for Served {
     ) -> Result<String, String> {
         self.inner.ended(registration, run, end, result)
     }
+    fn progress(&self, registration: &str, run: &str, event: Value) {
+        self.inner.progress(registration, run, event);
+    }
 }
 
 /// A hub at a clock of its own that starts where the home's does, and
@@ -363,17 +419,23 @@ pub(crate) struct World {
 }
 
 impl World {
-    fn new(env: &Env, kept: Kept) -> World {
+    pub(crate) fn new(env: &Env, kept: Kept) -> World {
+        World::with_limits(env, kept, HubLimits::default())
+    }
+
+    /// [`World::new`], its hub under `limits`.
+    pub(crate) fn with_limits(env: &Env, kept: Kept, limits: HubLimits) -> World {
         let started = u64::try_from(env.clock_now().timestamp_millis()).unwrap();
         let clock = Arc::new(SkipClock::at(started));
         let (inner, side) = match kept {
-            Kept::InMemory => sides(MemoryPending::new(), clock.clone()),
-            Kept::InTheStore => sides(StoredPending::new(env.store.clone()), clock.clone()),
+            Kept::InMemory => sides(MemoryPending::new(), clock.clone(), limits),
+            Kept::InTheStore => sides(StoredPending::new(env.store.clone()), clock.clone(), limits),
         };
         let broker = Arc::new(Served {
             inner,
             hosts: Mutex::new(Vec::new()),
             prompts_unread: AtomicBool::new(false),
+            poll_ms: std::sync::atomic::AtomicU64::new(0),
         });
         World {
             side,
@@ -383,7 +445,7 @@ impl World {
         }
     }
 
-    fn host(&self, name: &str, request: &RegisterRequest, behave: Behave) -> Arc<Host> {
+    pub(crate) fn host(&self, name: &str, request: &RegisterRequest, behave: Behave) -> Arc<Host> {
         let n = self.broker.hosts.lock().unwrap().len() as u64 + 1;
         let host = Host::register(&self.side, name, request, n, behave);
         self.broker.hosts.lock().unwrap().push(host.clone());
@@ -511,6 +573,78 @@ impl Desk {
              request_json = ?3",
             &bindings.to_json(),
             &json!({"ask": "Turn the lamps down."}).to_string(),
+        );
+        run
+    }
+
+    /// A run of `desk.tidy` served by the host's registration, bound by
+    /// its definition's hash and started under `settings`, kept in its binding as the daemon's
+    /// start route keeps a registration's ([`kept_with_run`]).
+    pub(crate) fn run_with_settings(&self, settings: &Settings) -> String {
+        self.run_kept(&self.host.registration, settings)
+    }
+
+    /// [`Desk::run_with_settings`], served by `registration`.
+    pub(crate) fn run_kept(&self, registration: &str, settings: &Settings) -> String {
+        let binding = StoredBinding::bound(
+            "desk",
+            Some(self.host.hash.clone()),
+            Some(registration.to_string()),
+            None,
+            Value::Null,
+            TIDYS.iter().map(|op| (*op).to_string()).collect(),
+        )
+        .with_settings(kept_with_run(settings));
+        let bindings = Bindings::bound(vec![binding]).expect("bindings of version 2");
+        let run = self.env.run();
+        set_row(
+            &self.env,
+            &run,
+            "kind = 'desk.tidy', artifact_id = NULL, base_version = NULL, bindings_json = ?2, \
+             request_json = ?3",
+            &bindings.to_json(),
+            &json!({"ask": "Turn the lamps down."}).to_string(),
+        );
+        run
+    }
+
+    /// A thread run of Clax's own on the home's artifact that a join of
+    /// the desk's registration, as the hub holds it now, with the join's
+    /// allow patterns `allow`, was bound into
+    /// ([`clax_bot::joins::joined_binding`]): the bindings a daemon's
+    /// start route makes it with.
+    pub(crate) fn run_joined(&self, allow: Option<&[String]>) -> String {
+        self.run_joined_by(&[(&self.host, allow)])
+    }
+
+    /// [`Desk::run_joined`], joined by each of `hosts`, a host of this
+    /// world, with its join's allow patterns.
+    pub(crate) fn run_joined_by(&self, hosts: &[(&Arc<Host>, Option<&[String]>)]) -> String {
+        let run = self.env.run();
+        let row = self.env.run_row(&run);
+        let joined: Vec<StoredBinding> = hosts
+            .iter()
+            .map(|(host, allow)| {
+                let held =
+                    (self.world.side.snapshot)(&host.registration).expect("the hub holds it");
+                clax_bot::joins::joined_binding(
+                    &host.registration,
+                    &held,
+                    *allow,
+                    &clax_surface::Limits::default(),
+                    &clax_bot::joins::joined_scope(&row.artifact_id, &row.thread_ids),
+                )
+                .expect("the join binds an operation")
+            })
+            .collect();
+        let bindings = clax_bot::joins::bindings_with(&row.artifact_id, &row.web, joined)
+            .expect("bindings of version 2");
+        set_row(
+            &self.env,
+            &run,
+            "bindings_json = ?2, kind = ?3",
+            &bindings.to_json(),
+            "clax.thread",
         );
         run
     }
@@ -683,9 +817,12 @@ fn thrown(call: &str) -> String {
     )
 }
 
-/// A host that is not connected takes no call: the script is thrown
-/// `unavailable`, which is journaled, and a host that answers a value
-/// of another type than the operation declares is `invalid_result`.
+/// A host that answers a value of another type than the operation
+/// declares is `invalid_result`. A host that is not connected is
+/// waited for, under a policy that sends calls again, until the call's
+/// deadline: no host took the call, and the script is thrown
+/// `unavailable`, which is journaled. Under one that does not, it takes
+/// no call: the script is thrown `unavailable` at once.
 async fn a_host_that_is_away_is_unavailable_and_a_wrong_answer_is_an_invalid_result(kept: Kept) {
     let wrong: Behave = Box::new(|_| result(json!("no lamps here")));
     let d = Desk::with(kept, Settings::default(), wrong).await;
@@ -709,7 +846,32 @@ async fn a_host_that_is_away_is_unavailable_and_a_wrong_answer_is_an_invalid_res
         .push(script_turn("tu_1", "Lamps", &thrown("clax.desk.lamps()")));
     d.env.api.push(finish_turn("done"));
     let run = d.run();
+    let before = d.world.elapsed();
     let out = d.env.drive(&d.deps(), &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    assert_eq!(
+        d.value(&run, 1),
+        json!([
+            CODE_UNAVAILABLE,
+            "clax.desk.lamps: no host took the call before its deadline. Nothing happened",
+            true
+        ])
+    );
+    assert_eq!(d.journal(&run, 2)[0]["result"]["code"], "unavailable");
+    assert_eq!(d.world.elapsed() - before, 30_000, "waited to the deadline");
+    assert_eq!(d.host.state.lock().unwrap().calls.len(), 1, "never sent");
+
+    // Under a policy that sends no call again, it is refused at once.
+    d.env
+        .api
+        .push(script_turn("tu_1", "Lamps", &thrown("clax.desk.lamps()")));
+    d.env.api.push(finish_turn("done"));
+    let run = d.run();
+    let once = d.deps_under(Arc::new(Times(Delivery {
+        retry: Retry::NONE,
+        ..Delivery::DAEMON
+    })));
+    let out = d.env.drive(&once, &run, &DriverId::mint()).await;
     assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
     assert_eq!(
         d.value(&run, 1),
@@ -732,9 +894,208 @@ async fn a_host_that_is_away_is_unavailable_and_a_wrong_answer_is_an_invalid_res
         1,
         "nothing was opened for the host"
     );
-    // The run's end is recorded all the same, for when its host is
+    // The runs' ends are recorded all the same, for when its host is
     // back.
-    assert_eq!(d.host.waiting(), (0, 2));
+    assert_eq!(d.host.waiting(), (0, 3));
+}
+
+/// A script that catches `unavailable` and calls a host that is away
+/// again holds its step for one call's deadline, not one for each: once
+/// a call of the step has waited out its host, the step's later calls
+/// of that registration are thrown `unavailable` at once while it is
+/// still away. Nothing is sent to it.
+async fn a_step_waits_out_a_host_that_is_away_once(kept: Kept) {
+    let d = Desk::with(kept, Settings::default(), Box::new(|_| result(json!([])))).await;
+    // Away: no `serve` for longer than a registration stays connected,
+    // and within its lease.
+    d.host.online.store(false, Ordering::SeqCst);
+    d.world.clock.advance(HubLimits::default().connected_ms + 1);
+    d.env.api.push(script_turn(
+        "tu_1",
+        "Lamps",
+        r#"const seen = [];
+for (let i = 0; i < 3; i++) {
+  try { await clax.desk.lamps(); seen.push("answered"); } catch (e) { seen.push([e.code, e.message]); }
+}
+return seen;"#,
+    ));
+    d.env.api.push(finish_turn("done"));
+    let run = d.run();
+    let before = d.world.elapsed();
+    let out = d.env.drive(&d.deps(), &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    let away = json!([
+        CODE_UNAVAILABLE,
+        "the surface's host is not connected. Nothing happened"
+    ]);
+    assert_eq!(
+        d.value(&run, 1),
+        json!([
+            [
+                CODE_UNAVAILABLE,
+                "clax.desk.lamps: no host took the call before its deadline. Nothing happened"
+            ],
+            away,
+            away
+        ])
+    );
+    assert_eq!(
+        d.world.elapsed() - before,
+        30_000,
+        "one call's deadline in all"
+    );
+    assert!(d.host.state.lock().unwrap().calls.is_empty(), "never sent");
+}
+
+/// A registration whose row keeps settings that are no JSON is not
+/// served once the hub no longer holds it: its settings are never read
+/// as the defaults, which would widen what they narrow.
+#[tokio::test]
+async fn a_registration_whose_kept_settings_do_not_read_is_not_served() {
+    let d = Desk::with(
+        Kept::InTheStore,
+        Settings::default(),
+        Box::new(|_| result(json!([]))),
+    )
+    .await;
+    let db = clax_core::Home::at(d.env._dir.path().join("ax")).db_path();
+    let c = rusqlite::Connection::open(&db).unwrap();
+    c.busy_timeout(Duration::from_secs(10)).unwrap();
+    let changed = c
+        .execute(
+            "UPDATE bot_registrations SET settings_json = '{\"call_timeout_s\": ' WHERE id = ?1",
+            rusqlite::params![d.host.registration],
+        )
+        .unwrap();
+    assert_eq!(changed, 1);
+    let row = d
+        .env
+        .store
+        .registration(&d.host.registration)
+        .unwrap()
+        .unwrap();
+    assert!(row.settings_unread.is_some(), "{row:?}");
+    let restarted = World::new(&d.env, Kept::InTheStore);
+    assert!(
+        restarted
+            .broker
+            .registration(&d.host.registration, Some(&d.host.hash))
+            .is_none()
+    );
+}
+
+/// A call that cannot be sent, at a place whose kept call the run's store
+/// cannot read, is not answered as one never opened (`Nothing
+/// happened`, which would leave an effect an earlier attempt sent out of
+/// the run's count): it is thrown `unavailable` for the store, and nothing
+/// is journaled, so the step run again reads it again.
+#[tokio::test]
+async fn a_call_whose_kept_row_cannot_be_read_is_refused_and_journaled_by_no_one() {
+    let d = Desk::with(
+        Kept::InMemory,
+        Settings::default(),
+        Box::new(|_| result(Value::Null)),
+    )
+    .await;
+    d.host.online.store(false, Ordering::SeqCst);
+    d.world.clock.advance(HubLimits::default().connected_ms + 1);
+    d.env.api.push(script_turn(
+        "tu_1",
+        "Notify",
+        &thrown("clax.desk.notify(\"hi\")"),
+    ));
+    d.env.api.push(finish_turn("done"));
+    let run = d.run();
+    // The row an earlier attempt opened at the call's place, which this
+    // build cannot read (a `created_at` that is no text).
+    let db = clax_core::Home::at(d.env._dir.path().join("ax")).db_path();
+    let c = rusqlite::Connection::open(&db).unwrap();
+    c.busy_timeout(Duration::from_secs(10)).unwrap();
+    c.execute(
+        "INSERT INTO bot_pending_calls (id, run_id, step_n, seq, attempt, registration_id, \
+         def_hash, op, args_json, args_hash, key, access, created_at) \
+         VALUES ('p1', ?1, 2, 0, 1, ?2, ?3, 'desk.notify', '[\"hi\"]', 'h', 'k', 'effect', X'00')",
+        rusqlite::params![run, d.host.registration, d.host.hash],
+    )
+    .unwrap();
+    let once = d.deps_under(Arc::new(Times(Delivery {
+        retry: Retry::NONE,
+        ..Delivery::DAEMON
+    })));
+    let out = d.env.drive(&once, &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    let value = d.value(&run, 1);
+    assert_eq!(value[0], CODE_UNAVAILABLE, "{value}");
+    assert!(
+        value[1].as_str().unwrap().starts_with(
+            "clax.desk.notify: what the run's store keeps of the call could not be read"
+        ),
+        "{value}"
+    );
+    assert!(d.journal(&run, 2).is_empty(), "journaled by no one");
+}
+
+/// A host that is connected and takes a call without answering it holds
+/// a step for that one call's deadline: the step's later calls of the
+/// registration are thrown `unavailable` at once and sent nothing, and
+/// the next step's call is sent and answered as before.
+async fn a_step_waits_out_a_host_that_does_not_answer_once(kept: Kept) {
+    let mut held = false;
+    let behave: Behave = Box::new(move |_| {
+        if held {
+            result(json!([]))
+        } else {
+            held = true;
+            None
+        }
+    });
+    let d = Desk::with(kept, Settings::default(), behave).await;
+    d.env.api.push(script_turn(
+        "tu_1",
+        "Lamps",
+        r#"const seen = [];
+for (let i = 0; i < 3; i++) {
+  try { await clax.desk.lamps(); seen.push("answered"); } catch (e) { seen.push([e.code, e.message]); }
+}
+return seen;"#,
+    ));
+    d.env.api.push(script_turn(
+        "tu_2",
+        "Lamps again",
+        &thrown("clax.desk.lamps()"),
+    ));
+    d.env.api.push(finish_turn("done"));
+    let run = d.run();
+    let before = d.world.elapsed();
+    let out = d.env.drive(&d.deps(), &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    let unanswered = json!([
+        CODE_UNAVAILABLE,
+        "the surface's host left a call of this step unanswered to its deadline. Nothing happened"
+    ]);
+    assert_eq!(
+        d.value(&run, 1),
+        json!([
+            [
+                "expired",
+                "clax.desk.lamps: its host was sent the call and did not answer before its deadline"
+            ],
+            unanswered,
+            unanswered
+        ])
+    );
+    assert_eq!(d.journal(&run, 2)[1]["result"]["code"], CODE_UNAVAILABLE);
+    assert_eq!(
+        d.world.elapsed() - before,
+        30_000,
+        "one call's deadline in all"
+    );
+    assert_eq!(d.value(&run, 3), json!(["answered", []]));
+    assert_eq!(
+        d.host.state.lock().unwrap().calls.len(),
+        2,
+        "one sent a step"
+    );
 }
 
 /// A call of an operation that waits is sent with the long deadline
@@ -810,6 +1171,7 @@ async fn a_calls_deadline_is_the_policys_within_the_registrations_settings(kept:
         call_timeout: Some(Duration::from_secs(20)),
         park_after: None,
         wait_limit: Some(Duration::from_secs(60)),
+        retry: Retry::NONE,
     };
     assert_eq!(
         narrowed(policy, &settings),
@@ -827,6 +1189,7 @@ async fn a_calls_deadline_is_the_policys_within_the_registrations_settings(kept:
         call_timeout: None,
         park_after: None,
         wait_limit: None,
+        retry: Retry::NONE,
     };
     assert_eq!(
         narrowed(none, &settings).call_timeout,
@@ -838,15 +1201,18 @@ async fn a_calls_deadline_is_the_policys_within_the_registrations_settings(kept:
         Delivery::DAEMON
     );
 
-    d.env.api.push(script_turn(
-        "tu_1",
-        "Both",
-        r#"const seen = [];
-for (const f of [() => clax.desk.lamps(), () => clax.desk.ask("Well?")]) {
-  try { seen.push(await f()); } catch (e) { seen.push(e.code); }
-}
-return seen;"#,
-    ));
+    // One call a step: a step's later calls of a host that left one
+    // unanswered to its deadline are not sent.
+    for (id, call) in [
+        ("tu_1", "clax.desk.lamps()"),
+        ("tu_2", "clax.desk.ask(\"Well?\")"),
+    ] {
+        d.env.api.push(script_turn(
+            id,
+            "One",
+            &format!("try {{ return await {call}; }} catch (e) {{ return e.code; }}"),
+        ));
+    }
     d.env.api.push(finish_turn("done"));
     let run = d.run();
     let deps = d.deps_under(Arc::new(Times(policy)));
@@ -854,18 +1220,892 @@ return seen;"#,
     assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
     // Each was sent and never answered: a read expires, and an effect's
     // outcome is unknown. Neither parked.
-    assert_eq!(d.value(&run, 1), json!(["expired", "unknown_outcome"]));
+    assert_eq!(
+        [d.value(&run, 1), d.value(&run, 3)],
+        [json!("expired"), json!("unknown_outcome")]
+    );
     let st = d.host.state.lock().unwrap();
     let limits: Vec<Option<u64>> = st.calls.iter().map(|c| c.expires_in_ms).collect();
     assert_eq!(limits, [Some(7_000), Some(60_000)]);
     drop(st);
     assert_eq!(d.world.elapsed(), 67_000);
-    let codes: Vec<Value> = d
-        .journal(&run, 2)
-        .iter()
+    let codes: Vec<Value> = [2, 4]
+        .into_iter()
+        .flat_map(|n| d.journal(&run, n))
         .map(|row| row["result"]["code"].clone())
         .collect();
     assert_eq!(codes, ["expired", "unknown_outcome"]);
+}
+
+/// The deadline `host` was sent `run`'s calls with, in order.
+fn deadlines_of(host: &Host, run: &str) -> Vec<Option<u64>> {
+    host.state
+        .lock()
+        .unwrap()
+        .calls
+        .iter()
+        .filter(|c| c.run == run)
+        .map(|c| c.expires_in_ms)
+        .collect()
+}
+
+/// A run keeps the settings it was started with, in its binding: its
+/// host registering again with tighter settings changes nothing for a
+/// run already started and is what the next run is started with; and a
+/// daemon that restarted (a new hub over the same store, which holds no
+/// registration until its host goes on as it, here with no settings at
+/// all) gives a run in flight its own deadline. A binding that keeps no
+/// settings (written before they were kept) has its registration's:
+/// the hub's while it holds it, its row's while it does not.
+async fn a_run_keeps_the_settings_it_was_started_with(kept: Kept) {
+    let at = |s: u64| Settings {
+        call_timeout_s: Some(wire::Bound::At(s)),
+        ..Settings::default()
+    };
+    let silent: Behave = Box::new(|_| None);
+    let d = Desk::with(kept, at(20), silent).await;
+    let policy: Arc<dyn RunPolicy> = Arc::new(Times(Delivery {
+        call_timeout: Some(Duration::from_secs(60)),
+        park_after: None,
+        wait_limit: Some(Duration::from_secs(60)),
+        retry: Retry::NONE,
+    }));
+    let early = d.run_with_settings(&at(20));
+    let unkept = d.run();
+    // The host goes on as its registration, with a tighter timeout.
+    let request = registering(&desk_dts(), Some(d.host.registration.clone()), None, at(5));
+    (d.world.side.register)("desk", &request, &format!("{:032x}", 50));
+    let late = d.run_with_settings(&at(5));
+    let after_a_restart = d.run_with_settings(&at(5));
+    for run in [&early, &late, &unkept] {
+        // The host has served since the last call expired: it is
+        // connected.
+        d.host.round();
+        d.env
+            .api
+            .push(script_turn("tu_1", "Lamps", &thrown("clax.desk.lamps()")));
+        d.env.api.push(finish_turn("done"));
+        let out = d
+            .env
+            .drive(&d.deps_under(policy.clone()), run, &DriverId::mint())
+            .await;
+        assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+        assert_eq!(d.value(run, 1)[0], "expired");
+    }
+    assert_eq!(
+        deadlines_of(&d.host, &early),
+        [Some(20_000)],
+        "started under 20 s"
+    );
+    assert_eq!(
+        deadlines_of(&d.host, &late),
+        [Some(5_000)],
+        "started under 5 s"
+    );
+    assert_eq!(
+        deadlines_of(&d.host, &unkept),
+        [Some(5_000)],
+        "a binding that keeps none has the registration's as the hub holds them"
+    );
+    if kept == Kept::InMemory {
+        return;
+    }
+    // The daemon restarts: the new hub holds nothing, and a binding that
+    // keeps no settings has those the registration's row keeps. (This
+    // hub's store keeps no request's settings: a daemon's route gives
+    // them, `StoredPending::act_with`. The row is given them here.)
+    d.env
+        .store
+        .change_registration(
+            &clax_core::audit::AuditCtx::DAEMON,
+            &d.host.registration,
+            &d.host.hash,
+            None,
+            &json!({"call_timeout_s": 5}),
+            d.env.clock_now(),
+        )
+        .unwrap();
+    let restarted = World::new(&d.env, kept);
+    let unkept_binding = BindingAsStored {
+        surface: "desk".into(),
+        hash: Some(d.host.hash.clone()),
+        registration: Some(d.host.registration.clone()),
+        prompt: None,
+        settings: None,
+        scope: Value::Null,
+        granted: Vec::new(),
+        operations: None,
+    };
+    let provider = OutsideProvider::new(
+        restarted.broker.clone(),
+        policy.clone(),
+        &unkept_binding,
+        "desk.tidy",
+    )
+    .unwrap();
+    assert_eq!(provider.settings(), &at(5), "the row's settings");
+    // Its host goes on as the registration with no settings, and the run
+    // started under 5 s is sent its call with its own deadline.
+    let back = registering(
+        &desk_dts(),
+        Some(d.host.registration.clone()),
+        None,
+        Settings::default(),
+    );
+    let host = Host::register(&restarted.side, "desk", &back, 60, Box::new(|_| None));
+    assert_eq!(host.registration, d.host.registration);
+    restarted.broker.hosts.lock().unwrap().push(host.clone());
+    let mut deps = d.env.deps();
+    deps.policy = policy.clone();
+    deps.providers
+        .set_resolver(restarted.resolver(policy.clone()));
+    d.env
+        .api
+        .push(script_turn("tu_1", "Lamps", &thrown("clax.desk.lamps()")));
+    d.env.api.push(finish_turn("done"));
+    let out = d
+        .env
+        .drive(&deps, &after_a_restart, &DriverId::mint())
+        .await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    assert_eq!(d.value(&after_a_restart, 1)[0], "expired");
+    assert_eq!(deadlines_of(&host, &after_a_restart), [Some(5_000)]);
+}
+
+/// A script that makes five calls, three of them effects, and returns
+/// what became of each.
+const EFFECTS: &str = r#"const seen = [];
+for (const f of [
+  () => clax.desk.notify("a"),
+  () => clax.desk.settings.set({theme: "dark"}),
+  () => clax.desk.notify("b"),
+  () => clax.desk.notify("c"),
+  () => clax.desk.lamps(),
+]) {
+  try { await f(); seen.push("done"); } catch (e) { seen.push(e.code); }
+}
+return seen;"#;
+
+/// A run started under `max_effects_per_run` makes that many calls of
+/// its surface's effects and no more: the one past the limit is thrown
+/// `effect_limit`, which the script can catch, journaled, and its host
+/// is sent nothing of it; a read or a write does not count. The step
+/// run again after a crash is answered from the journal and counts
+/// nothing twice, and a later step is refused for what the journal
+/// holds, also over a new hub (a daemon that restarted) that holds no
+/// registration and whose host has not come back.
+async fn a_runs_effects_past_its_limit_are_refused_before_its_host_is_sent_them(kept: Kept) {
+    let limit = Settings {
+        max_effects_per_run: Some(wire::Bound::At(2)),
+        ..Settings::default()
+    };
+    let d = Desk::with(kept, limit.clone(), desk_host()).await;
+    d.env.api.push(script_turn("tu_1", "Effects", EFFECTS));
+    d.env.api.push(script_turn(
+        "tu_2",
+        "Again",
+        &thrown("clax.desk.notify(\"d\")"),
+    ));
+    d.env.api.push(finish_turn("done"));
+    let run = d.run_with_settings(&limit);
+    let mut dying = d.deps();
+    crash_once(
+        &mut dying,
+        CrashPoint::BeforeCommit {
+            step: 2,
+            kind: StepKind::Script,
+        },
+    );
+    let out = d.env.drive(&dying, &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Waiting(Wait::Crashed));
+    let sent = || -> Vec<String> {
+        let st = d.host.state.lock().unwrap();
+        st.calls.iter().map(|c| c.op.clone()).collect()
+    };
+    assert_eq!(sent(), ["notify", "settings.set", "notify", "lamps"]);
+    let refusal = json!({"seq": 3, "op": "desk.notify", "ok": false, "result": {
+        "code": "effect_limit",
+        "message": "clax.desk.notify: this run has made the 2 calls of desk's effects it may \
+                    make, and nothing was done"}});
+    assert_eq!(d.journal(&run, 2)[3], refusal);
+    d.env.clock.advance(61);
+    // The step run again is answered from the journal: the same, and
+    // nothing more is sent. Then a later step's effect is refused for
+    // what the journal holds, over a hub that holds nothing.
+    let deps = if kept == Kept::InTheStore {
+        let restarted = World::new(&d.env, kept);
+        let mut deps = d.env.deps();
+        deps.providers
+            .set_resolver(restarted.resolver(Arc::new(DefaultPolicy)));
+        deps
+    } else {
+        d.deps()
+    };
+    let out = d.env.drive(&deps, &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    assert_eq!(
+        d.value(&run, 1),
+        json!(["done", "done", "done", "effect_limit", "done"])
+    );
+    assert_eq!(sent(), ["notify", "settings.set", "notify", "lamps"]);
+    for seq in 0..5 {
+        assert!(d.host.applied(&format!("{run}:2:{seq}")) <= 1);
+    }
+    assert_eq!(d.journal(&run, 2)[3], refusal);
+    assert_eq!(
+        d.value(&run, 3),
+        json!([
+            "effect_limit",
+            "clax.desk.notify: this run has made the 2 calls of desk's effects it may make, \
+             and nothing was done",
+            false
+        ])
+    );
+    assert_eq!(sent().len(), 4, "the host was sent nothing more");
+    // A run under no limit, or `"none"`, makes them all.
+    let none = Settings {
+        max_effects_per_run: Some(wire::Bound::None),
+        ..Settings::default()
+    };
+    d.env.api.push(script_turn("tu_1", "Effects", EFFECTS));
+    d.env.api.push(finish_turn("done"));
+    d.host.round();
+    let free = d.run_with_settings(&none);
+    let out = d.env.drive(&d.deps(), &free, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    assert_eq!(
+        d.value(&free, 1),
+        json!(["done", "done", "done", "done", "done"])
+    );
+    // And under 0, none.
+    let zero = Settings {
+        max_effects_per_run: Some(wire::Bound::At(0)),
+        ..Settings::default()
+    };
+    d.env.api.push(script_turn("tu_1", "Effects", EFFECTS));
+    d.env.api.push(finish_turn("done"));
+    d.host.round();
+    let none_at_all = d.run_with_settings(&zero);
+    let out = d
+        .env
+        .drive(&d.deps(), &none_at_all, &DriverId::mint())
+        .await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    assert_eq!(
+        d.value(&none_at_all, 1),
+        json!([
+            "effect_limit",
+            "done",
+            "effect_limit",
+            "effect_limit",
+            "done"
+        ])
+    );
+}
+
+/// A run whose binding keeps settings this build does not read (here a
+/// setting a later build would keep) is not run with the defaults,
+/// which would shed its limit: it ends `failed`, `bindings_invalid`, and
+/// its host is sent nothing. A registration whose row keeps such
+/// settings is not served from the row (a daemon that restarted holds no
+/// registration): the defaults would widen what its settings narrow.
+async fn kept_settings_this_build_does_not_read_end_the_run_and_serve_nothing(kept: Kept) {
+    let d = Desk::new(kept).await;
+    d.env.api.push(script_turn("tu_1", "Notes", THREE_NOTES));
+    d.env.api.push(finish_turn("done"));
+    let binding = StoredBinding::bound(
+        "desk",
+        Some(d.host.hash.clone()),
+        Some(d.host.registration.clone()),
+        None,
+        Value::Null,
+        TIDYS.iter().map(|op| (*op).to_string()).collect(),
+    )
+    .with_settings(json!({"max_effects_per_run": 1, "max_spend_per_run": 3}));
+    let bindings = Bindings::bound(vec![binding]).expect("bindings of version 2");
+    let run = d.env.run();
+    set_row(
+        &d.env,
+        &run,
+        "kind = 'desk.tidy', artifact_id = NULL, base_version = NULL, bindings_json = ?2, \
+         request_json = ?3",
+        &bindings.to_json(),
+        &json!({"ask": "Turn the lamps down."}).to_string(),
+    );
+    let out = d.env.drive(&d.deps(), &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Failed));
+    assert_eq!(
+        d.env.run_row(&run).reason.as_deref(),
+        Some("bindings_invalid")
+    );
+    assert!(d.host.state.lock().unwrap().calls.is_empty());
+    if kept == Kept::InMemory {
+        return;
+    }
+    d.env
+        .store
+        .change_registration(
+            &clax_core::audit::AuditCtx::DAEMON,
+            &d.host.registration,
+            &d.host.hash,
+            None,
+            &json!({"call_timeout_s": 5, "max_spend_per_run": 3}),
+            d.env.clock_now(),
+        )
+        .unwrap();
+    let restarted = World::new(&d.env, kept);
+    assert!(
+        restarted
+            .broker
+            .registration(&d.host.registration, Some(&d.host.hash))
+            .is_none()
+    );
+    // Settings the row keeps that this build reads serve as before.
+    d.env
+        .store
+        .change_registration(
+            &clax_core::audit::AuditCtx::DAEMON,
+            &d.host.registration,
+            &d.host.hash,
+            None,
+            &json!({"call_timeout_s": 5}),
+            d.env.clock_now(),
+        )
+        .unwrap();
+    assert!(
+        restarted
+            .broker
+            .registration(&d.host.registration, Some(&d.host.hash))
+            .is_some()
+    );
+}
+
+/// A host's own error, a code its operation declares, is an effect it
+/// performed: under a limit of 1, the call it refused `busy` counts,
+/// and the next is refused `effect_limit` and not sent.
+async fn a_hosts_own_error_of_an_effect_counts_against_the_limit(kept: Kept) {
+    let limit = Settings {
+        max_effects_per_run: Some(wire::Bound::At(1)),
+        ..Settings::default()
+    };
+    let env = Env::new().await;
+    let world = World::new(&env, kept);
+    let definition = desk_dts().replace(
+        "/** Shows the person a note. @effect */",
+        "/** Shows the person a note. @effect @throws busy */",
+    );
+    assert!(definition.contains("@throws busy"));
+    let request = registering(&definition, None, None, limit.clone());
+    let host = world.host(
+        "desk",
+        &request,
+        Box::new(|call| match call.op.as_str() {
+            "notify" => error("busy", "the person is busy"),
+            _ => result(Value::Null),
+        }),
+    );
+    let d = Desk { env, world, host };
+    d.env.api.push(script_turn("tu_1", "Notes", THREE_NOTES));
+    d.env.api.push(finish_turn("done"));
+    let run = d.run_with_settings(&limit);
+    let out = d.env.drive(&d.deps(), &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    assert_eq!(
+        d.value(&run, 1),
+        json!(["busy", "effect_limit", "effect_limit"])
+    );
+    assert_eq!(d.host.state.lock().unwrap().calls.len(), 1);
+}
+
+/// A script that calls `notify` three times and returns what became
+/// of each.
+const THREE_NOTES: &str = r#"const seen = [];
+for (const text of ["a", "b", "c"]) {
+  try { await clax.desk.notify(text); seen.push("done"); } catch (e) { seen.push(e.code); }
+}
+return seen;"#;
+
+/// An effect its host was sent and performed, whose journal row could
+/// not be written, is counted in the attempt that sent it: under a
+/// limit of 1, the next is refused `effect_limit` and its host is sent
+/// nothing more, though the journal holds no row of the first.
+async fn an_effect_whose_row_could_not_be_written_is_counted_in_its_attempt(kept: Kept) {
+    let limit = Settings {
+        max_effects_per_run: Some(wire::Bound::At(1)),
+        ..Settings::default()
+    };
+    let d = Desk::with(kept, limit.clone(), desk_host()).await;
+    d.env.api.push(script_turn("tu_1", "Notes", THREE_NOTES));
+    d.env.api.push(finish_turn("done"));
+    let run = d.run_with_settings(&limit);
+    d.env.store.set_record_fault(Some(Arc::new(|e: &CallEntry| {
+        e.op() == "desk.notify" && e.seq() == 0
+    })));
+    let out = d.env.drive(&d.deps(), &run, &DriverId::mint()).await;
+    d.env.store.set_record_fault(None);
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    assert_eq!(
+        d.value(&run, 1),
+        json!(["done", "effect_limit", "effect_limit"])
+    );
+    let sent: Vec<String> = d
+        .host
+        .state
+        .lock()
+        .unwrap()
+        .calls
+        .iter()
+        .map(|c| c.op.clone())
+        .collect();
+    assert_eq!(sent, ["notify"], "the host was sent one effect");
+}
+
+/// A script that makes two effects and returns what became of each.
+const TWO_EFFECTS: &str = r#"const seen = [];
+for (const text of ["a", "b"]) {
+  try { await clax.desk.notify(text); seen.push("done"); } catch (e) { seen.push(e.code); }
+}
+return seen;"#;
+
+/// A thread run of Clax's own that the desk joined keeps the settings
+/// its registration had when the run was made, in the join's binding:
+/// under `max_effects_per_run: 1` its second effect is refused
+/// `effect_limit`, and so is a later step's, also over a new hub (a
+/// daemon that restarted) that holds no registration and whose host has
+/// not come back.
+async fn a_joined_run_keeps_its_registrations_effect_limit(kept: Kept) {
+    let limit = Settings {
+        max_effects_per_run: Some(wire::Bound::At(1)),
+        ..Settings::default()
+    };
+    let d = Desk::with(kept, limit.clone(), desk_host()).await;
+    let effects = ["desk.notify".to_string()];
+    let run = d.run_joined(Some(&effects));
+    let (_, made) = d.env.run_as_made(&run);
+    let bindings = made.bindings().unwrap();
+    assert_eq!(
+        bindings.of("desk").unwrap().settings(),
+        Some(&kept_with_run(&limit))
+    );
+    d.env.api.push(script_turn("tu_1", "Effects", TWO_EFFECTS));
+    d.env.api.push(script_turn(
+        "tu_2",
+        "Again",
+        &thrown("clax.desk.notify(\"c\")"),
+    ));
+    d.env.api.push(finish_turn("done"));
+    let mut dying = d.deps();
+    crash_once(
+        &mut dying,
+        CrashPoint::BeforeCommit {
+            step: 2,
+            kind: StepKind::Script,
+        },
+    );
+    let out = d.env.drive(&dying, &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Waiting(Wait::Crashed));
+    d.env.clock.advance(61);
+    let deps = if kept == Kept::InTheStore {
+        let restarted = World::new(&d.env, kept);
+        let mut deps = d.env.deps();
+        deps.providers
+            .set_resolver(restarted.resolver(Arc::new(DefaultPolicy)));
+        deps
+    } else {
+        d.deps()
+    };
+    let out = d.env.drive(&deps, &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    assert_eq!(d.value(&run, 1), json!(["done", "effect_limit"]));
+    assert_eq!(d.value(&run, 3)[0], "effect_limit");
+    let sent: Vec<String> = {
+        let st = d.host.state.lock().unwrap();
+        st.calls.iter().map(|c| c.op.clone()).collect()
+    };
+    assert_eq!(sent, ["notify"], "the host was sent one effect");
+}
+
+/// A call of a run of Clax's own the desk joined, which its host first
+/// fails saying it may be tried again, is sent again by the policy's
+/// rule under the binding's kept settings: each sending carries what
+/// the run is on (`joined`) and the deadline of the kept
+/// `call_timeout_s`, which no sending moves; the effect counts once
+/// against the kept `max_effects_per_run`, so the next is refused.
+async fn a_joined_runs_call_is_sent_again_under_its_kept_settings(kept: Kept) {
+    let settings = Settings {
+        call_timeout_s: Some(wire::Bound::At(7)),
+        max_effects_per_run: Some(wire::Bound::At(1)),
+        ..Settings::default()
+    };
+    let mut first = true;
+    let flaky: Behave = Box::new(move |call| match call.op.as_str() {
+        "notify" if std::mem::take(&mut first) => Some(wire::Outcome::Error(CallError::new(
+            CODE_UNAVAILABLE,
+            "the desk is busy",
+        ))),
+        _ => result(Value::Null),
+    });
+    let d = Desk::with(kept, settings, flaky).await;
+    d.world.broker.poll_ms.store(500, Ordering::SeqCst);
+    let effects = ["desk.notify".to_string()];
+    let run = d.run_joined(Some(&effects));
+    let row = d.env.run_row(&run);
+    d.env.api.push(script_turn("tu_1", "Effects", TWO_EFFECTS));
+    d.env.api.push(finish_turn("done"));
+    let out = d
+        .env
+        .drive(&d.deps_under(retrying(3)), &run, &DriverId::mint())
+        .await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    assert_eq!(d.value(&run, 1), json!(["done", "effect_limit"]));
+    let st = d.host.state.lock().unwrap();
+    let sent: Vec<&wire::Call> = st.calls.iter().filter(|c| c.run == run).collect();
+    assert_eq!(sent.len(), 2, "sent again once: {sent:?}");
+    assert_eq!((&sent[0].id, &sent[0].key), (&sent[1].id, &sent[1].key));
+    let on = json!({"clax": {"artifact": row.artifact_id, "thread_ids": row.thread_ids}});
+    for call in &sent {
+        assert_eq!(call.joined.as_ref(), Some(&on), "{call:?}");
+        assert!(
+            call.expires_in_ms.is_some_and(|ms| ms <= 7_000),
+            "within the kept deadline: {call:?}"
+        );
+    }
+    assert_eq!(sent[0].expires_in_ms, Some(7_000));
+    assert_eq!(st.applied.get(&sent[0].key), Some(&1));
+}
+
+/// Two hosts joined into one run of Clax's own each have the run's
+/// bound of sendings again ([`HubLimits::resends_per_run`], here one)
+/// to themselves: the desk's second failure is final once it spent its
+/// one, and the shelf's first failure is still sent again.
+async fn two_hosts_joined_into_one_run_each_have_their_own_sendings_again(kept: Kept) {
+    let env = Env::new().await;
+    let limits = HubLimits {
+        resends_per_run: 1,
+        ..HubLimits::default()
+    };
+    let world = World::with_limits(&env, kept, limits);
+    let busy = || {
+        Some(wire::Outcome::Error(CallError::new(
+            CODE_UNAVAILABLE,
+            "busy",
+        )))
+    };
+    let desk: Behave = Box::new(move |call| match call.op.as_str() {
+        "notify" => busy(),
+        _ => result(Value::Null),
+    });
+    let mut shelf_first = true;
+    let shelf_behave: Behave = Box::new(move |call| match call.op.as_str() {
+        "notify" if std::mem::take(&mut shelf_first) => busy(),
+        _ => result(Value::Null),
+    });
+    let host = world.host(
+        "desk",
+        &registering(&desk_dts(), None, None, Settings::default()),
+        desk,
+    );
+    let shelf_dts = desk_dts().replace("desk", "shelf");
+    let shelf = world.host(
+        "shelf",
+        &registering(&shelf_dts, None, None, Settings::default()),
+        shelf_behave,
+    );
+    let d = Desk { env, world, host };
+    d.world.broker.poll_ms.store(500, Ordering::SeqCst);
+    let desk_effects = ["desk.notify".to_string()];
+    let shelf_effects = ["shelf.notify".to_string()];
+    let run = d.run_joined_by(&[
+        (&d.host, Some(&desk_effects)),
+        (&shelf, Some(&shelf_effects)),
+    ]);
+    d.env.api.push(script_turn(
+        "tu_1",
+        "Both",
+        r#"const seen = [];
+for (const f of [() => clax.desk.notify("a"), () => clax.shelf.notify("b")]) {
+  try { await f(); seen.push("done"); } catch (e) { seen.push(e.code); }
+}
+return seen;"#,
+    ));
+    d.env.api.push(finish_turn("done"));
+    let out = d
+        .env
+        .drive(&d.deps_under(retrying(3)), &run, &DriverId::mint())
+        .await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    assert_eq!(d.value(&run, 1), json!(["unavailable", "done"]));
+    let sent = |h: &Host| {
+        h.state
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .filter(|c| c.run == run)
+            .count()
+    };
+    assert_eq!(
+        sent(&d.host),
+        2,
+        "the desk: sent again once, its bound spent"
+    );
+    assert_eq!(
+        sent(&shelf),
+        2,
+        "the shelf: sent again with a bound of its own"
+    );
+}
+
+/// A call of a joined run its host was not there to take, held in the
+/// run's store when the daemon starts again, is sent to the host when
+/// it goes on as its registration, with what the run is on
+/// (`wire::Call::joined`, read from the run's bindings).
+#[tokio::test]
+async fn a_joined_runs_call_kept_over_a_restart_is_sent_with_what_the_run_is_on() {
+    let d = Desk::with(Kept::InTheStore, Settings::default(), desk_host()).await;
+    let asks = ["desk.ask".to_string()];
+    let run = d.run_joined(Some(&asks));
+    let row = d.env.run_row(&run);
+    d.host.online.store(false, Ordering::SeqCst);
+    d.env.api.push(script_turn(
+        "tu_1",
+        "Ask",
+        r#"return await clax.desk.ask("Which lamp?");"#,
+    ));
+    let out = d
+        .env
+        .drive(&d.deps_under(retrying(3)), &run, &DriverId::mint())
+        .await;
+    assert_eq!(out.last().unwrap().next, Next::Waiting(Wait::Parked));
+    assert!(
+        d.host.state.lock().unwrap().calls.is_empty(),
+        "never served"
+    );
+    // The daemon starts again; the host goes on as its registration.
+    let restarted = World::new(&d.env, Kept::InTheStore);
+    restarted.clock.set(d.world.broker.now().0);
+    let back = registering(
+        &desk_dts(),
+        Some(d.host.registration.clone()),
+        None,
+        Settings::default(),
+    );
+    let host = Host::register(&restarted.side, "desk", &back, 70, Box::new(|_| None));
+    host.round();
+    let st = host.state.lock().unwrap();
+    let call = st
+        .calls
+        .iter()
+        .find(|c| c.run == run)
+        .expect("the call the store holds is sent");
+    assert_eq!(call.op, "ask");
+    assert_eq!(
+        call.joined,
+        Some(json!({"clax": {"artifact": row.artifact_id, "thread_ids": row.thread_ids}}))
+    );
+}
+
+/// A run that gives up with words of its own.
+fn gives_up(reason: &str) -> Reply {
+    stream(
+        &[B::Tool(
+            "tu_g",
+            "give_up",
+            json!({"reason": reason}).to_string(),
+        )],
+        "tool_use",
+        USAGE,
+    )
+}
+
+/// A host is told of a run of Clax's own it was joined into what the
+/// run is on, with each call (`joined`: the artifact and the threads),
+/// and how it ended with no words of anyone's: a give-up's reason is
+/// empty, where the host's own run that gives up is told its reason.
+async fn a_joining_host_is_told_what_the_run_is_on_and_no_ones_words(kept: Kept) {
+    let d = Desk::new(kept).await;
+    d.env.api.push(script_turn(
+        "tu_1",
+        "Lamps",
+        "return (await clax.desk.lamps()).length;",
+    ));
+    d.env
+        .api
+        .push(gives_up("Rae asked me to read her the lamps."));
+    let joined = d.run_joined(None);
+    let out = d.env.drive(&d.deps(), &joined, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::GaveUp));
+    let row = d.env.run_row(&joined);
+    d.env.api.push(gives_up("The desk is locked."));
+    d.host.round();
+    let own = d.run();
+    let out = d.env.drive(&d.deps(), &own, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::GaveUp));
+    d.host.round();
+    let st = d.host.state.lock().unwrap();
+    let call = st.calls.iter().find(|c| c.run == joined).expect("the call");
+    assert_eq!(
+        call.joined,
+        Some(json!({"clax": {"artifact": row.artifact_id, "thread_ids": row.thread_ids}}))
+    );
+    let told = |run: &str| {
+        st.ended
+            .iter()
+            .find(|e| e.run == run)
+            .map(|e| (e.end.clone(), e.result.clone()))
+            .expect("the end")
+    };
+    let (end, result) = told(&joined);
+    assert!(
+        matches!(&end, wire::End::GaveUp { reason, .. } if reason.is_empty()),
+        "{end:?}"
+    );
+    assert_eq!(result, None);
+    let (end, _) = told(&own);
+    assert!(
+        matches!(&end, wire::End::GaveUp { reason, .. } if reason == "The desk is locked."),
+        "{end:?}"
+    );
+}
+
+/// How `run` ended, as its row, its last step's payload and its host
+/// say it: what a run stopped by a host's cap and one stopped by the
+/// instance's are compared by.
+fn ending_of(d: &Desk, run: &str) -> (RunStatus, Option<String>, Value, Vec<wire::End>, usize) {
+    d.host.round();
+    let row = d.env.run_row(run);
+    let steps = d.env.store.run_with_steps(run).unwrap().unwrap().1;
+    let last = steps.last().unwrap().payload.clone().unwrap_or(Value::Null);
+    let told = d
+        .host
+        .state
+        .lock()
+        .unwrap()
+        .ended
+        .iter()
+        .filter(|e| e.run == run)
+        .map(|e| e.end.clone())
+        .collect();
+    (row.status, row.reason, last, told, steps.len())
+}
+
+/// A host's `runs.max_steps` and `runs.max_run_minutes` cap its runs
+/// within the instance's: the tighter of the two holds, so a host lowers
+/// the instance's caps and never raises them, and a run stopped by its
+/// host's cap ends as one stopped by the instance's does, with the same
+/// reason, step and word to its host. `"none"` sets no cap of the
+/// host's.
+async fn a_hosts_run_caps_are_held_within_the_instances(kept: Kept) {
+    let runs = |steps: Option<wire::Bound>, minutes: Option<wire::Bound>| Settings {
+        runs: Some(wire::RunSettings {
+            max_steps: steps,
+            max_run_minutes: minutes,
+        }),
+        ..Settings::default()
+    };
+    let d = Desk::new(kept).await;
+    let one_script = || {
+        d.env.api.push(script_turn(
+            "tu_1",
+            "Lamps",
+            "return await clax.desk.lamps();",
+        ));
+        // No turn after it: each run is stopped before one.
+        d.host.round();
+    };
+    let d = &d;
+    let drive = |run: String| async move {
+        let out = d.env.drive(&d.deps(), &run, &DriverId::mint()).await;
+        (run, out.last().unwrap().next)
+    };
+    // The host's 2 steps, under the instance's 40: stopped after the
+    // script, before the turn that would finish.
+    one_script();
+    let (by_host, next) = drive(d.run_with_settings(&runs(Some(wire::Bound::At(2)), None))).await;
+    assert_eq!(next, Next::Done(RunStatus::Stopped));
+    let host_stop = ending_of(d, &by_host);
+    assert_eq!(host_stop.1.as_deref(), Some("run_cap"));
+    assert_eq!(host_stop.2, json!({"reason": "run_cap"}));
+    assert_eq!(host_stop.4, 3, "a turn, a script and the stop");
+    assert_eq!(
+        host_stop.3,
+        [wire::End::Stopped {
+            reason: "run_cap".into()
+        }]
+    );
+    // The instance's 2 steps, with no cap of the host's, and with the
+    // host's 100 or "none": the same ending.
+    d.env.set(|s| s.max_steps = 2);
+    for settings in [
+        Settings::default(),
+        runs(Some(wire::Bound::At(100)), None),
+        runs(Some(wire::Bound::None), Some(wire::Bound::None)),
+    ] {
+        one_script();
+        let (by_instance, next) = drive(d.run_with_settings(&settings)).await;
+        assert_eq!(next, Next::Done(RunStatus::Stopped));
+        assert_eq!(ending_of(d, &by_instance), host_stop, "{settings:?}");
+    }
+    d.env.set(|s| s.max_steps = 40);
+    // The host's one minute, under the instance's 30: a run that has been
+    // at work for two stops before its next step.
+    d.env.api.push(script_turn(
+        "tu_1",
+        "Lamps",
+        "return await clax.desk.lamps();",
+    ));
+    let run = d.run_with_settings(&runs(None, Some(wire::Bound::At(1))));
+    let (deps, driver) = (d.deps(), DriverId::mint());
+    d.env.tick(&deps, &run, &driver).await;
+    d.world.pass(&d.env, 120);
+    d.host.round();
+    let out = d.env.drive(&deps, &run, &driver).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Stopped));
+    let minutes = ending_of(d, &run);
+    assert_eq!(minutes.1.as_deref(), Some("run_cap"));
+    assert_eq!(minutes.2, json!({"reason": "run_cap"}));
+    assert_eq!(minutes.4, 2, "a turn and the stop");
+}
+
+/// A host's `runs.max_steps` and `runs.max_run_minutes` cap the runs of
+/// its own kinds and not a run of Clax's own that it joined: only the
+/// surface that declared a run's kind gives it run-wide caps. The joined
+/// run goes past both and finishes; the host's own run under the same
+/// settings is stopped `run_cap`.
+async fn a_hosts_run_caps_do_not_cap_a_run_it_joined(kept: Kept) {
+    let caps = Settings {
+        runs: Some(wire::RunSettings {
+            max_steps: Some(wire::Bound::At(2)),
+            max_run_minutes: Some(wire::Bound::At(1)),
+        }),
+        ..Settings::default()
+    };
+    let d = Desk::with(kept, caps.clone(), desk_host()).await;
+    let lamps = || {
+        d.env.api.push(script_turn(
+            "tu_1",
+            "Lamps",
+            "return (await clax.desk.lamps()).length;",
+        ));
+    };
+    // Joined: a turn, its script, two minutes at work, and a finish.
+    lamps();
+    d.env.api.push(finish_turn("Two lamps."));
+    let joined = d.run_joined(Some(&["desk.lamps".to_string()]));
+    let (deps, driver) = (d.deps(), DriverId::mint());
+    d.env.tick(&deps, &joined, &driver).await;
+    d.world.pass(&d.env, 120);
+    d.host.round();
+    let out = d.env.drive(&deps, &joined, &driver).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    assert_eq!(d.value(&joined, 1), json!(2));
+    // The host's own kind, under the same settings: stopped by its cap.
+    lamps();
+    d.host.round();
+    let own = d.run_with_settings(&caps);
+    let out = d.env.drive(&d.deps(), &own, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Stopped));
+    assert_eq!(d.env.run_row(&own).reason.as_deref(), Some("run_cap"));
 }
 
 /// A binding that names a registration that was never issued is still
@@ -1035,6 +2275,7 @@ async fn the_outside_provider_passes_the_provider_conformance_suite(kept: Kept) 
         hash: Some(host.hash.clone()),
         registration: Some(host.registration.clone()),
         prompt: None,
+        settings: None,
         scope: Value::Null,
         granted: Vec::new(),
         operations: None,
@@ -1050,6 +2291,7 @@ async fn the_outside_provider_passes_the_provider_conformance_suite(kept: Kept) 
     );
     assert!(provider.unavailable().is_none());
     let binding = Binding {
+        limits: clax_bot::surface::SurfaceLimits::default(),
         surface: "fake".into(),
         hash: stored.hash.clone(),
         scope: Value::Null,
@@ -1417,19 +2659,375 @@ async fn a_run_is_sent_the_prompt_file_and_definition_it_was_started_with(kept: 
     assert_eq!(d.env.api.requests().len(), requests, "no turn was sent");
 }
 
+/// A policy whose calls have `attempts` in all, a second apart and then
+/// two.
+pub(crate) fn retrying(attempts: u32) -> Arc<Times> {
+    Arc::new(Times(Delivery {
+        retry: Retry {
+            attempts,
+            backoff_ms: 1_000,
+            backoff_max_ms: 2_000,
+        },
+        ..Delivery::DAEMON
+    }))
+}
+
+/// An effect its host first fails, saying it may be tried again, is sent
+/// again under its key by the policy's rule and then performed: one
+/// call, counted once against `max_effects_per_run` (the next effect is
+/// refused), applied once by its host. The step run again after a crash
+/// is answered from what is kept, and sends nothing more.
+async fn a_call_its_host_failed_is_sent_again_and_its_effect_counted_once(kept: Kept) {
+    let limit = Settings {
+        max_effects_per_run: Some(wire::Bound::At(1)),
+        ..Settings::default()
+    };
+    let mut first = true;
+    let flaky: Behave = Box::new(move |call| match call.op.as_str() {
+        "notify" if std::mem::take(&mut first) => Some(wire::Outcome::Error(CallError::new(
+            CODE_UNAVAILABLE,
+            "the desk is busy",
+        ))),
+        _ => result(Value::Null),
+    });
+    let d = Desk::with(kept, limit.clone(), flaky).await;
+    d.world.broker.poll_ms.store(500, Ordering::SeqCst);
+    d.env.api.push(script_turn(
+        "tu_1",
+        "Twice",
+        r#"const seen = [];
+for (const text of ["a", "b"]) {
+  try { await clax.desk.notify(text); seen.push("done"); } catch (e) { seen.push(e.code); }
+}
+return seen;"#,
+    ));
+    d.env.api.push(finish_turn("done"));
+    let run = d.run_with_settings(&limit);
+    let mut dying = d.deps_under(retrying(3));
+    crash_once(
+        &mut dying,
+        CrashPoint::BeforeCommit {
+            step: 2,
+            kind: StepKind::Script,
+        },
+    );
+    let out = d.env.drive(&dying, &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Waiting(Wait::Crashed));
+    let key = format!("{run}:2:0");
+    let sent = || -> Vec<(String, String)> {
+        let st = d.host.state.lock().unwrap();
+        st.calls
+            .iter()
+            .map(|c| (c.id.clone(), c.key.clone()))
+            .collect()
+    };
+    let seen = sent();
+    assert_eq!(seen.len(), 2, "sent again once: {seen:?}");
+    assert_eq!(seen[0], seen[1], "the same ID and key");
+    assert_eq!(seen[0].1, key);
+    d.env.clock.advance(61);
+    let out = d
+        .env
+        .drive(&d.deps_under(retrying(3)), &run, &DriverId::mint())
+        .await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    assert_eq!(d.value(&run, 1), json!(["done", "effect_limit"]));
+    assert_eq!(d.host.applied(&key), 1);
+    assert_eq!(sent().len(), 2, "nothing more is sent");
+    let journal = d.journal(&run, 2);
+    assert_eq!(journal.len(), 2, "{journal:?}");
+    assert_eq!(journal[0]["ok"], true);
+    assert_eq!(journal[1]["result"]["code"], "effect_limit");
+}
+
+/// An effect its host first fails, saying it may be tried again, and
+/// then performs, whose journal row cannot be written, is counted once
+/// in its attempt (`Claim::counting`), beside the journal's count in
+/// SQL of the effect after it: under a limit of 2 the first two are
+/// performed, each by its host once, and the third is refused
+/// `effect_limit` without being sent.
+async fn a_call_sent_again_whose_row_could_not_be_written_is_counted_once(kept: Kept) {
+    let limit = Settings {
+        max_effects_per_run: Some(wire::Bound::At(2)),
+        ..Settings::default()
+    };
+    let mut first = true;
+    let flaky: Behave = Box::new(move |call| match call.op.as_str() {
+        "notify" if std::mem::take(&mut first) => Some(wire::Outcome::Error(CallError::new(
+            CODE_UNAVAILABLE,
+            "the desk is busy",
+        ))),
+        _ => result(Value::Null),
+    });
+    let d = Desk::with(kept, limit.clone(), flaky).await;
+    d.world.broker.poll_ms.store(500, Ordering::SeqCst);
+    d.env.api.push(script_turn("tu_1", "Notes", THREE_NOTES));
+    d.env.api.push(finish_turn("done"));
+    let run = d.run_with_settings(&limit);
+    d.env.store.set_record_fault(Some(Arc::new(|e: &CallEntry| {
+        e.op() == "desk.notify" && e.seq() == 0
+    })));
+    let out = d
+        .env
+        .drive(&d.deps_under(retrying(3)), &run, &DriverId::mint())
+        .await;
+    d.env.store.set_record_fault(None);
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    assert_eq!(d.value(&run, 1), json!(["done", "done", "effect_limit"]));
+    let st = d.host.state.lock().unwrap();
+    let keys: Vec<&str> = st
+        .calls
+        .iter()
+        .filter(|c| c.op == "notify")
+        .map(|c| c.key.as_str())
+        .collect();
+    let (a, b) = (format!("{run}:2:0"), format!("{run}:2:1"));
+    assert_eq!(
+        keys,
+        [a.as_str(), a.as_str(), b.as_str()],
+        "sent again once"
+    );
+    assert_eq!(st.applied.get(&a), Some(&1));
+    assert_eq!(st.applied.get(&b), Some(&1));
+}
+
+/// A host that answers a code only Clax's core gives (`effect_limit`
+/// here), saying it may be tried again, has its call settled
+/// `invalid_result` at once: no rule sends it again, and the host was
+/// sent it once.
+async fn a_cores_code_from_a_host_is_an_invalid_result_never_sent_again(kept: Kept) {
+    let lying: Behave = Box::new(|call| match call.op.as_str() {
+        "notify" => Some(wire::Outcome::Error(
+            CallError::new("effect_limit", "the host's own limit").retryable(),
+        )),
+        _ => result(Value::Null),
+    });
+    let d = Desk::with(kept, Settings::default(), lying).await;
+    d.world.broker.poll_ms.store(500, Ordering::SeqCst);
+    d.env.api.push(script_turn(
+        "tu_1",
+        "Note",
+        r#"try { await clax.desk.notify("a"); return "done"; } catch (e) { return [e.code, e.retryable === true]; }"#,
+    ));
+    d.env.api.push(finish_turn("done"));
+    let run = d.run();
+    let out = d
+        .env
+        .drive(&d.deps_under(retrying(3)), &run, &DriverId::mint())
+        .await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    assert_eq!(d.value(&run, 1), json!(["invalid_result", false]));
+    let st = d.host.state.lock().unwrap();
+    assert_eq!(
+        st.calls.iter().filter(|c| c.op == "notify").count(),
+        1,
+        "never sent again"
+    );
+}
+
+/// One attempt of step 1 of `run`, as the run loop makes it under
+/// `policy`: its call of `desk.ask`, and what that was answered.
+async fn ask_once(d: &Desk, run: &str, driver: &DriverId, policy: Arc<dyn RunPolicy>) -> Asked {
+    let deps = d.deps_under(policy);
+    let (row, made) = d.env.run_as_made(run);
+    let bound = deps.providers.bind(&row, &made).unwrap();
+    let info = &bound.info;
+    let provider = bound.kind_provider();
+    let binding = &info.bindings[0];
+    let cancel = clax_bot_sandbox::CancelToken::new();
+    let raw = json!(["Move the left lamp?"]);
+    let step = d
+        .env
+        .store
+        .begin_step(run, driver, 1, StepKind::Script)
+        .unwrap();
+    let claim = Claim::new(&d.env.store, driver, run);
+    let cx = StepCx::new(info, binding, 1, step.attempt, &[], claim, &cancel);
+    let session = provider.begin(cx).await.unwrap();
+    let journal = d.env.store.bot_calls(run, 1).unwrap();
+    let place = cx.place(0).unwrap();
+    let held = [Bound {
+        binding,
+        provider,
+        session: &*session,
+    }];
+    let entry = journal.iter().find(|c| c.seq() == 0);
+    let answer = dispatch(&held, &claim, &place, "desk.ask", &raw, entry).await;
+    Asked {
+        waiting: answer.is_waiting(),
+        result: answer.result().clone(),
+    }
+}
+
+/// What [`ask_once`] was answered.
+struct Asked {
+    waiting: bool,
+    result: Result<Value, clax_bot_sandbox::HostError>,
+}
+
+/// A step given up in the middle of its call's attempts (its run parked
+/// on the call while it waited out the wait after a retryable error)
+/// and run again makes the call again with its key: the same call, with
+/// the attempts it had. Under a rule of two attempts, the second failure
+/// is the script's, retryable, and the host was sent the call twice
+/// under one ID and key.
+async fn a_step_run_again_in_the_middle_of_its_attempts_goes_on_with_them(kept: Kept) {
+    let busy: Behave = Box::new(|call| match call.op.as_str() {
+        "ask" => Some(wire::Outcome::Error(
+            CallError::new("declined", "not now").retryable(),
+        )),
+        _ => result(Value::Null),
+    });
+    let d = Desk::with(kept, Settings::default(), busy).await;
+    let run = d.run();
+    let driver = DriverId::mint();
+    d.env.store.claim_run(&run, &driver, 60).unwrap().unwrap();
+    // The host fails it when it is sent it, and serves no more while
+    // the step waits: the step is given up when the policy lets a
+    // script sit no longer.
+    let first = ask_once(&d, &run, &driver, retrying(2)).await;
+    assert!(first.waiting, "{:?}", first.result);
+    assert_eq!(d.host.state.lock().unwrap().calls.len(), 1);
+    // Run again, with its host serving while the call waits.
+    d.world.broker.poll_ms.store(500, Ordering::SeqCst);
+    let again = ask_once(&d, &run, &driver, retrying(2)).await;
+    let thrown = again
+        .result
+        .expect_err("the second failure is the script's");
+    assert_eq!((thrown.code.as_str(), thrown.retryable), ("declined", true));
+    let st = d.host.state.lock().unwrap();
+    assert_eq!(st.calls.len(), 2, "sent again once: two attempts in all");
+    assert_eq!(st.calls[0].id, st.calls[1].id);
+    assert_eq!(st.calls[0].key, format!("{run}:1:0"));
+    assert_eq!(st.calls[1].key, st.calls[0].key);
+}
+
+/// The daemon starts again (a new hub over the run's store, which holds
+/// the call) while a call waits out the wait after a retryable error.
+/// A step run again before its host is back waits for the call the
+/// store holds, as one it sent, and parks on it, where a policy that
+/// sends nothing again answers what is known of it. Once its host goes
+/// on as its registration, the step run again is sent its answer: the
+/// call is the one the store holds, under its ID and key.
+#[tokio::test]
+async fn a_call_in_its_attempts_outlasts_a_restart_of_the_daemon() {
+    let busy: Behave = Box::new(|call| match call.op.as_str() {
+        "ask" => Some(wire::Outcome::Error(
+            CallError::new("declined", "not now").retryable(),
+        )),
+        _ => result(Value::Null),
+    });
+    let d = Desk::with(Kept::InTheStore, Settings::default(), busy).await;
+    // Bound by the hash of its definition, as a run a host starts is:
+    // the definition is kept across the restart.
+    let run = d.run_bound(Some(&d.host.hash), Some(&d.host.registration), &TIDYS);
+    let driver = DriverId::mint();
+    d.env.store.claim_run(&run, &driver, 60).unwrap().unwrap();
+    let first = ask_once(&d, &run, &driver, retrying(3)).await;
+    assert!(first.waiting, "{:?}", first.result);
+    // The daemon starts again: its hub holds no registration.
+    let restarted = World::new(&d.env, Kept::InTheStore);
+    restarted.clock.set(d.world.broker.now().0);
+    let gone = |w: &World, policy: Arc<dyn RunPolicy>| {
+        let mut deps = d.env.deps();
+        deps.policy = policy.clone();
+        deps.providers.set_resolver(w.resolver(policy));
+        deps
+    };
+    let waited = {
+        let deps = gone(&restarted, retrying(3));
+        let (row, made) = d.env.run_as_made(&run);
+        let bound = deps.providers.bind(&row, &made).unwrap();
+        let provider = bound.kind_provider();
+        let info = &bound.info;
+        let binding = &info.bindings[0];
+        let cancel = clax_bot_sandbox::CancelToken::new();
+        let step = d
+            .env
+            .store
+            .begin_step(&run, &driver, 1, StepKind::Script)
+            .unwrap();
+        let claim = Claim::new(&d.env.store, &driver, &run);
+        let cx = StepCx::new(info, binding, 1, step.attempt, &[], claim, &cancel);
+        let session = provider.begin(cx).await.unwrap();
+        let place = cx.place(0).unwrap();
+        let held = [Bound {
+            binding,
+            provider,
+            session: &*session,
+        }];
+        let raw = json!(["Move the left lamp?"]);
+        dispatch(&held, &claim, &place, "desk.ask", &raw, None).await
+    };
+    assert!(waited.is_waiting(), "{:?}", waited.result());
+    assert_eq!(d.journal(&run, 1), Vec::<Value>::new());
+    // Its host is back, as the registration it was, and answers.
+    let back = registering(
+        &desk_dts(),
+        Some(d.host.registration.clone()),
+        None,
+        Settings::default(),
+    );
+    let host = Host::register(
+        &restarted.side,
+        "desk",
+        &back,
+        70,
+        Box::new(|_| result(json!("yes"))),
+    );
+    restarted.broker.hosts.lock().unwrap().push(host.clone());
+    restarted.broker.poll_ms.store(500, Ordering::SeqCst);
+    host.round();
+    let journal = d.journal(&run, 1);
+    assert_eq!(
+        journal,
+        [json!({"seq": 0, "op": "desk.ask", "ok": true, "result": "yes"})]
+    );
+    let first_id = d.host.state.lock().unwrap().calls[0].id.clone();
+    let st = host.state.lock().unwrap();
+    assert_eq!(st.calls.len(), 1);
+    assert_eq!(st.calls[0].id, first_id, "the call the store holds");
+    assert_eq!(st.calls[0].key, format!("{run}:1:0"));
+}
+
 over_both_stores! {
     /// A run calls its host's operations and is told of at its end.
     answered => a_hosts_surface_answers_a_runs_calls_and_is_told_its_end;
     /// A crashed step run again sends nothing.
     replayed => a_hosts_calls_are_not_sent_again_when_a_crashed_step_is_run_again;
     away_and_wrong => a_host_that_is_away_is_unavailable_and_a_wrong_answer_is_an_invalid_result;
+    /// An away host is waited out once in a step.
+    away_once => a_step_waits_out_a_host_that_is_away_once;
+    /// A connected host that does not answer is waited out once in a step.
+    unanswered_once => a_step_waits_out_a_host_that_does_not_answer_once;
     waiting => a_call_that_waits_is_held_by_its_host_and_journaled_by_no_one;
     deadlines => a_calls_deadline_is_the_policys_within_the_registrations_settings;
+    kept_settings => a_run_keeps_the_settings_it_was_started_with;
+    effect_limit => a_runs_effects_past_its_limit_are_refused_before_its_host_is_sent_them;
+    unjournaled_effect => an_effect_whose_row_could_not_be_written_is_counted_in_its_attempt;
+    unread_settings => kept_settings_this_build_does_not_read_end_the_run_and_serve_nothing;
+    own_error_counts => a_hosts_own_error_of_an_effect_counts_against_the_limit;
+    run_caps => a_hosts_run_caps_are_held_within_the_instances;
+    joined_effect_limit => a_joined_run_keeps_its_registrations_effect_limit;
+    joined_run_caps => a_hosts_run_caps_do_not_cap_a_run_it_joined;
+    joined_told => a_joining_host_is_told_what_the_run_is_on_and_no_ones_words;
+    /// A joined run's call sent again under the binding's kept settings.
+    joined_sent_again => a_joined_runs_call_is_sent_again_under_its_kept_settings;
+    /// Two joined hosts: a bound of sendings again each.
+    joined_resends_apart => two_hosts_joined_into_one_run_each_have_their_own_sendings_again;
     gone => a_registration_that_is_gone_takes_no_call_and_its_runs_request_stands;
     by_hash => a_run_bound_by_hash_keeps_its_definition_when_its_host_registers_another;
     conformance => the_outside_provider_passes_the_provider_conformance_suite;
     answered_later => a_call_that_waited_is_answered_when_its_step_is_run_again;
     prompt => a_run_is_sent_the_prompt_file_and_definition_it_was_started_with;
+    /// A host's retryable error: sent again, and one effect.
+    sent_again => a_call_its_host_failed_is_sent_again_and_its_effect_counted_once;
+    /// A call sent again whose row could not be written: one effect.
+    sent_again_unjournaled => a_call_sent_again_whose_row_could_not_be_written_is_counted_once;
+    /// A host's answer of a core's code is not tried again.
+    core_code_not_again => a_cores_code_from_a_host_is_an_invalid_result_never_sent_again;
+    /// A step given up mid-attempts goes on with them.
+    in_its_attempts => a_step_run_again_in_the_middle_of_its_attempts_goes_on_with_them;
 }
 
 // ---------------------------------------------------------------------------

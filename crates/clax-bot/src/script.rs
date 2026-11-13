@@ -34,8 +34,9 @@ use crate::registry::CODE_OPS_INVALID;
 use crate::run::Observed;
 use crate::run::{CANCELLED, Next, Tick, TickOutcome, Wait, compute_qty, step_usage, watched};
 use crate::surface::{
-    Answer, Binding, Bound, CallNote, CallPlace, Claim, End, FieldClash, Fields, RunInfo, StepCx,
-    StepEnd, StepJoin, StepSession, SurfaceProvider, dispatch, no_place, route,
+    Answer, Binding, Bound, CallNote, CallPlace, Claim, End, FieldClash, Fields, Progress, RunInfo,
+    StepCx, StepEnd, StepJoin, StepSession, SurfaceProvider, Unjournaled, dispatch, no_place,
+    route,
 };
 use clax_bot_sandbox::{ErrorKind, Host, HostError, HostReply, Script, ScriptError, ScriptOutcome};
 use clax_core::audit::AuditRecord;
@@ -308,6 +309,7 @@ fn tool_result_content(
     o: &ScriptOutcome,
     calls: &Calls,
     told: &Fields,
+    images: Option<&[Value]>,
     max: usize,
 ) -> (String, bool) {
     let made: Vec<Value> = o
@@ -320,6 +322,11 @@ fn tool_result_content(
     v["calls"] = json!(made);
     if let Some(e) = &o.error {
         v["error"] = json!({"kind": e.kind, "message": e.message});
+    }
+    // Which of the value's images the model is shown ([`crate::images`]):
+    // only for a value that holds one.
+    if let Some(images) = images {
+        v["images"] = json!(images);
     }
     if let Some((at, why)) = &calls.diverged {
         let done: Vec<&str> = calls
@@ -411,7 +418,10 @@ impl Tick<'_> {
         let kind = info.kind_surface();
         let mut surfaces: Vec<Surface<'_>> = surfaces.to_vec();
         surfaces.sort_by_key(|surface| surface.binding.surface != kind);
-        let claim = Claim::new(self.store, self.driver, &self.run.id);
+        // The attempt's calls the journal could not be given, which the
+        // limit on effects counts beside it.
+        let unjournaled = Unjournaled::default();
+        let claim = Claim::new(self.store, self.driver, &self.run.id).counting(&unjournaled);
         let mut sessions: Vec<Box<dyn StepSession + '_>> = Vec::with_capacity(surfaces.len());
         for surface in &surfaces {
             let cx = StepCx::new(
@@ -644,8 +654,23 @@ impl Tick<'_> {
                 .await;
         }
         events.extend(self.unreported_calls(&reported));
-        let (content, is_error) =
-            tool_result_content(&outcome, &calls, join.told(), self.limits.tool_result_bytes);
+        let images = crate::images::of_step(
+            self.store,
+            &self.run.id,
+            outcome.value.as_ref(),
+            self.settings.model_takes_images,
+            &self.limits,
+        )?;
+        let (content, is_error) = tool_result_content(
+            &outcome,
+            &calls,
+            join.told(),
+            images.as_ref().map(|i| &i.told[..]),
+            self.limits.tool_result_bytes,
+        );
+        if let Some(images) = images.as_ref().filter(|i| !i.shown.is_empty()) {
+            core.insert("images".into(), images.kept());
+        }
         core.insert("tool_use_id".into(), json!(tool_use_id));
         core.insert("outcome".into(), json!(outcome));
         core.insert(
@@ -742,11 +767,20 @@ impl Tick<'_> {
             waited.deadline,
             now,
         ) {
-            Ok(Park::Parked(_)) => Ok(TickOutcome::wait(
-                Wait::Parked,
-                Some(self.n),
-                Some(StepKind::Script),
-            )),
+            Ok(Park::Parked(_)) => {
+                self.surfaces.kind_provider().progress(
+                    &self.surfaces.info,
+                    &Progress::Parked {
+                        step: self.n,
+                        waiting_on: &waiting_on,
+                    },
+                );
+                Ok(TickOutcome::wait(
+                    Wait::Parked,
+                    Some(self.n),
+                    Some(StepKind::Script),
+                ))
+            }
             Ok(Park::Answered(_)) => Ok(again),
             Err(CoreError::Invalid {
                 code: "run_invalid",
@@ -842,17 +876,17 @@ mod tests {
     #[test]
     fn a_result_is_cut_to_its_bound_with_the_sessions_fields_in_it() {
         let (outcome, calls, told) = logged(40);
-        let (whole, is_error) = tool_result_content(&outcome, &calls, &told, usize::MAX);
+        let (whole, is_error) = tool_result_content(&outcome, &calls, &told, None, usize::MAX);
         assert!(!is_error);
         assert!(whole.contains(r#""published":{"version":2}"#), "{whole}");
         assert!(whole.contains(r#""line 39""#));
         // At its own length it is left whole.
         assert_eq!(
-            tool_result_content(&outcome, &calls, &told, whole.len()).0,
+            tool_result_content(&outcome, &calls, &told, None, whole.len()).0,
             whole
         );
         // One byte under: the logs are cut, and the result fits.
-        let (cut, _) = tool_result_content(&outcome, &calls, &told, whole.len() - 1);
+        let (cut, _) = tool_result_content(&outcome, &calls, &told, None, whole.len() - 1);
         assert!(cut.len() < whole.len(), "{} bytes", cut.len());
         assert!(cut.contains(clax_bot_sandbox::LOGS_TRUNCATED));
         assert!(cut.contains(r#""published":{"version":2}"#), "{cut}");
@@ -861,7 +895,7 @@ mod tests {
         let field = r#""published":{"version":2},"#.len();
         for under in 1..=field {
             let max = whole.len() - under;
-            let (text, _) = tool_result_content(&outcome, &calls, &told, max);
+            let (text, _) = tool_result_content(&outcome, &calls, &told, None, max);
             assert!(
                 text.len() <= max,
                 "{} bytes for a bound of {max}",

@@ -314,9 +314,21 @@ impl ModelMembers<'_> {
     }
 }
 
+/// How the model is told what `Content` and `Image` are, after the
+/// surfaces' interfaces, when an operation the run has names one
+/// ([`declaration`]).
+pub const CONTENT_DECLARATION: &str = "\
+/** What Clax keeps of some bytes, named by a handle: an operation answers or takes one where its type says `Content`. Pass a handle on as it was given. Return an `Image` from a script, anywhere in its value, to see it. */
+interface Content { id: string; media_type: string; bytes: number; sha256: string; name?: string; width?: number; height?: number; meta?: Record<string, unknown> }
+/** A `Content` of an image: its `media_type` is image/png, image/jpeg, image/webp or image/gif. */
+type Image = Content;
+";
+
 /// What a run's model reads of its surfaces: the interfaces its
 /// operations reach, then one `declare const clax: { … };` that holds
-/// the operations themselves. `has` says whether the run has an
+/// the operations themselves. When an operation the run has names
+/// `Content` or `Image`, [`CONTENT_DECLARATION`] comes after the
+/// interfaces. `has` says whether the run has an
 /// operation, by its dotted name ([`crate::Operation::name`]).
 ///
 /// - The surface named `clax` gives its members directly, and its
@@ -374,6 +386,14 @@ pub fn declaration(surfaces: &[&Definition], has: &dyn Fn(&str) -> bool) -> Resu
             mine.for_each(|i| interface(&mut out, "  ", i, style));
             out.push_str("}\n");
         }
+    }
+    // The core's types, after the surfaces' own, for a run that has an
+    // operation that names one.
+    if surfaces
+        .iter()
+        .any(|def| def.operations().any(|o| has(o.name) && o.holds_content()))
+    {
+        out.push_str(CONTENT_DECLARATION);
     }
     if !out.is_empty() {
         out.push('\n');

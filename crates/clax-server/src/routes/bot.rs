@@ -691,7 +691,9 @@ pub fn draft_url(run: &str) -> String {
 /// Run `run` as the routes show it, without its steps. A parked run, and
 /// no other, has `waiting_on: {surface, op, since, deadline}`: the call
 /// it waits on, since when, and when the call is settled if nothing
-/// answers it (`null` for no deadline). `artifact_id` is
+/// answers it (`null` for no deadline); a reader of a run a host's
+/// surface is bound into is shown it without `surface` and `op`
+/// ([`super::bot_joins::run_for_reader_of_hosts`]). `artifact_id` is
 /// the run's artifact, and `null` for a run that has none (one of a
 /// host's kind, whose `request` is `other`).
 ///
@@ -766,7 +768,10 @@ const RUNS_LISTED: u32 = 50;
 /// `GET /api/bot/runs?artifact=` (see the module documentation): the
 /// runs on an artifact the caller may read, newest first. An admin lists
 /// any artifact's on a local daemon; on a hosted one only those they read,
-/// as anyone (404 for any other, as for none).
+/// as anyone (404 for any other, as for none). A run that a reader of the
+/// artifact alone sees bare in `GET /api/bot/runs/<id>`
+/// ([`super::bot_joins::hides_hosts`]) is listed as that reader sees it
+/// there.
 pub async fn list(
     State(s): State<AppState>,
     d: DeniedToGrants,
@@ -781,6 +786,7 @@ pub async fn list(
         .map_err(|_| ApiError::bad_request("invalid_artifact", "not an artifact ID"))?;
     let live = s.live_ids.contains(id.as_str());
     let hosted = s.hosted.is_some();
+    let binds = super::bot_joins::hosts_bind(&s.bot, hosted);
     let v = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
@@ -791,7 +797,19 @@ pub async fn list(
             let runs = st
                 .runs_for_artifact(id.as_str(), RUNS_LISTED)?
                 .iter()
-                .map(|r| run_view(st, r))
+                .map(|r| {
+                    let mut v = run_view(st, r)?;
+                    // A reader of the artifact sees a run a host's
+                    // surface is bound into as `get` shows it them; who
+                    // reads it is asked only of such a run.
+                    if super::bot_joins::hides_hosts(st, binds, &r.id)?
+                        && run_access(st, hosted, live, &caller, r)
+                            .map_or(true, RunAccess::reads_as_reader)
+                    {
+                        super::bot_joins::run_for_reader_of_hosts(&mut v);
+                    }
+                    Ok(v)
+                })
                 .collect::<clax_core::Result<Vec<_>>>()?;
             Ok(json!({"runs": runs}))
         })
@@ -822,6 +840,16 @@ pub async fn get(
                 let mut steps = steps_view(st, &run.id, &steps)?;
                 if access.reads_as_reader() {
                     steps.iter_mut().for_each(for_reader);
+                    if super::bot_joins::hides_hosts(
+                        st,
+                        super::bot_joins::hosts_bind(&bot, hosted),
+                        &run.id,
+                    )? {
+                        steps
+                            .iter_mut()
+                            .for_each(super::bot_joins::for_reader_of_hosts);
+                        super::bot_joins::run_for_reader_of_hosts(&mut v);
+                    }
                 }
                 v["steps"] = json!(steps);
             }
@@ -904,8 +932,10 @@ pub fn admit_run(
 /// one of `thread_ids`, so one thread has one active run and a second send
 /// charges nothing; refused before any model call with the refusal's code
 /// (403 class, recorded as `bot.refused {person, reason, artifact}` under
-/// `ctx`); else made queued at the artifact's current version. The caller
-/// tells the driver ([`clax_http::bot::Runs::started`]) once it returns.
+/// `ctx`); else made queued at the artifact's current version, with the
+/// surfaces bound that joins on the artifact bind now
+/// ([`super::bot_joins::joined_bindings`]). The caller tells the driver
+/// ([`clax_http::bot::Runs::started`]) once it returns.
 ///
 /// # Errors
 /// As above; `NotFound` for no such artifact; the store's.
@@ -924,23 +954,35 @@ pub fn start_run(
         return Err(run_active(&active.id));
     }
     let (key_source, model) = admit_run(st, bot, ctx, person, Some(aid.as_str()))?;
-    st.create_run_exclusive(
-        ctx,
-        clax_store::bot_runs::NewRun {
-            artifact_id: aid.as_str().to_string(),
-            person: person.to_string(),
-            request,
-            thread_ids,
-            model,
-            key_source,
-            base_version: art.current_version,
-            agent_grant: sender.agent_grant.clone(),
-            web: WebAccess::now(st, person, crate::bot::web_configured(st, bot)?)?
-                .shape()
-                .as_str()
-                .to_string(),
-        },
-    )?
+    let new = clax_store::bot_runs::NewRun {
+        artifact_id: aid.as_str().to_string(),
+        person: person.to_string(),
+        request,
+        thread_ids,
+        model,
+        key_source,
+        base_version: art.current_version,
+        agent_grant: sender.agent_grant.clone(),
+        web: WebAccess::now(st, person, crate::bot::web_configured(st, bot)?)?
+            .shape()
+            .as_str()
+            .to_string(),
+    };
+    // The surfaces whose hosts joined the artifact and are connected now
+    // are bound too (`super::bot_joins`); with none, the run is made as
+    // it always was.
+    let joined = super::bot_joins::joined_bindings(
+        st,
+        bot,
+        sender,
+        aid.as_str(),
+        &new.web,
+        &new.thread_ids,
+    )?;
+    match joined {
+        None => st.create_run_exclusive(ctx, new)?,
+        Some(bindings) => st.create_run_exclusive_bound(ctx, new, &bindings)?,
+    }
     .map_err(|active| run_active(&active.id))
 }
 
@@ -1681,7 +1723,7 @@ pub async fn events(
         .and_then(clax_bot::EventId::parse);
     let (hosted, live_ids, bot) = (s.hosted.is_some(), s.live_ids.clone(), s.bot.clone());
     let (r, c) = (rid.clone(), caller.clone());
-    let (access, sub) = s
+    let (access, bare, sub) = s
         .store_call(move |st| {
             let run = st.run(&r)?.ok_or(CoreError::NotFound)?;
             let live = live_ids.contains(&run.artifact_id);
@@ -1689,12 +1731,18 @@ pub async fn events(
             if access == RunAccess::Overseer {
                 return Err(CoreError::NotFound);
             }
+            let bare = access.reads_as_reader()
+                && super::bot_joins::hides_hosts(
+                    st,
+                    super::bot_joins::hosts_bind(&bot, hosted),
+                    &run.id,
+                )?;
             let mut rec = clax_http::bot::view(st, AuditKind::ViewRun).with("run", run.id.as_str());
             if hosted {
                 rec.ids.artifact = run.artifact().map(str::to_string);
             }
             record_view(st, &bot, &who, &c, &run.id, rec)?;
-            Ok((access, bot.events.subscribe(st, &run.id, after)?))
+            Ok((access, bare, bot.events.subscribe(st, &run.id, after)?))
         })
         .await?;
     struct Feed {
@@ -1703,6 +1751,9 @@ pub async fn events(
         rid: String,
         caller: Caller,
         reader: bool,
+        /// A reader of a run a host's surface is bound into, who sees
+        /// its steps bare ([`super::bot_joins::for_reader_of_hosts`]).
+        bare: bool,
         checked: clax_rt::time::Instant,
         done: bool,
     }
@@ -1730,6 +1781,7 @@ pub async fn events(
         rid,
         caller,
         reader: access.reads_as_reader(),
+        bare,
         checked: clax_rt::time::Instant::now(),
         done: false,
     };
@@ -1773,6 +1825,10 @@ pub async fn events(
                     .flatten();
             let data = match data {
                 Some(d) if f.reader => event_for_reader(next.event, d),
+                d => d,
+            };
+            let data = match data {
+                Some(d) if f.bare => super::bot_joins::event_for_reader_of_hosts(next.event, d),
                 d => d,
             };
             if let Some(data) = data {

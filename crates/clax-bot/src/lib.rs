@@ -70,6 +70,8 @@ pub mod history;
 mod history_fixtures;
 pub mod host;
 pub mod host_conformance;
+pub mod images;
+pub mod joins;
 pub mod outside;
 pub mod policy;
 pub mod prompt;

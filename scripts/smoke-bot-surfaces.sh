@@ -72,9 +72,10 @@ KEY_ENV = "CLAX_SMOKE_BOT_KEY"
 # What a run of `desk.tidy` does: reads the lamps, then asks.
 CODE = 'const lamps = await clax.desk.lamps();\nconst answer = await clax.desk.ask("Tidy the desk?");\nreturn [lamps.length, answer];'
 LAMPS = {"result": [{"id": "l1", "on": True}, {"id": "l2", "on": False}]}
-# How long a held `serve` waits: a question accepted and answered two
-# rounds later is answered after twenty seconds, when its run has parked
-# (after ten).
+# How long a held `serve` waits. A run's progress events end a held
+# `serve` early (its `parked` event ends one when it parks, after ten
+# seconds), so a question accepted and answered three rounds later is
+# answered a whole wait after its run has parked.
 WAIT_MS = 10_000
 
 started = []  # (name, Popen), each stopped by its PID
@@ -300,13 +301,13 @@ def start_run(base, registration):
     return v["run"]
 
 
-# 1. A daemon, and a host that answers the question two rounds after it
+# 1. A daemon, and a host that answers the question three rounds after it
 #    accepts it.
 daemon, info = start_daemon(0)
 port = info["port"]
 base = f"http://127.0.0.1:{port}"
 ok(f"clax serve on 127.0.0.1:{port} (pid {daemon.pid}), the scripted model on {model_port} (pid {model.pid})")
-first = Host("host-1", base, {"lamps": LAMPS, "ask": {"accept": {"result": "yes"}, "rounds": 2}})
+first = Host("host-1", base, {"lamps": LAMPS, "ask": {"accept": {"result": "yes"}, "rounds": 3}})
 reg = first.registered()["registration"]
 if open(REG_FILE).read().strip() != reg:
     fail("host-1 did not write its registration's ID to its file")
@@ -320,7 +321,8 @@ ok(f"run {run1} parked on desk.ask while host-1 holds the question it accepted")
 status_is(base, run1, "finished", 90)
 first.sees(f"run {run1}'s end", ended_of(run1), 30)
 done1 = first.stop()
-keys1 = {d["key"] for d in done1["deliveries"] if d.get("run") == run1 and d.get("call") != "ended"}
+# A run's calls have keys; its end and its progress events have none.
+keys1 = {d["key"] for d in done1["deliveries"] if d.get("run") == run1 and d.get("call") not in ("ended", "event")}
 if len(keys1) != 2 or done1["applied"] != {k: 1 for k in keys1}:
     fail(f"host-1 applied {done1['applied']}, not each of run {run1}'s two keys once")
 ok(f"run {run1} finished; host-1 applied lamps and ask once each and was sent the run's end")

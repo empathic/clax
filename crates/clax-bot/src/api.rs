@@ -202,20 +202,55 @@ const CLAX_HEAD_NOTE: &str = " files.* and draft.* change only the run's draft,\
 /// script has.
 #[must_use]
 pub fn dts(shape: WebShape) -> String {
+    dts_with(shape, &[], &|_| false).expect("one surface puts each of its names on `clax` once")
+}
+
+/// [`dts`] of a run of Clax's own kind that a join bound other surfaces
+/// into (`crate::joins`): the operations of `shape`, then those of
+/// `others` that `has_other` names, each surface's under its name on
+/// `clax` ([`clax_surface::declaration`]), and, when the run has one of
+/// theirs, the core's words on how a call to a host's surface fails
+/// ([`crate::prompt::standard::HOST_NOTE`]) after Clax's own. With no
+/// operation of `others` it is [`dts`] of `shape`, byte for byte.
+///
+/// # Errors
+/// Two of the surfaces put one name on `clax`.
+pub(crate) fn dts_with(
+    shape: WebShape,
+    others: &[&Definition],
+    has_other: &dyn Fn(&str) -> bool,
+) -> Result<String, String> {
     let clax = definition();
-    let has = |name: &str| declared(name, shape);
-    let waits = clax.operations().any(|o| has(o.name) && o.op.waits);
-    let mut out = crate::prompt::standard::declaration_head(CLAX_HEAD_NOTE, waits);
+    let has = |name: &str| {
+        if clax.operation(name).is_some() {
+            declared(name, shape)
+        } else {
+            has_other(name)
+        }
+    };
+    let mut surfaces = vec![clax];
+    surfaces.extend(others.iter().copied());
+    let waits = surfaces
+        .iter()
+        .flat_map(|surface| surface.operations())
+        .any(|o| has(o.name) && o.op.waits);
+    let hosts = others
+        .iter()
+        .flat_map(|surface| surface.operations())
+        .any(|o| has(o.name));
+    let note = if hosts {
+        format!("{CLAX_HEAD_NOTE}{}", crate::prompt::standard::HOST_NOTE)
+    } else {
+        CLAX_HEAD_NOTE.to_string()
+    };
+    let mut out = crate::prompt::standard::declaration_head(&note, waits);
     if shape.any() {
         out.push_str(WEB_HEAD_NOTE);
     }
     out.push('\n');
-    out.push_str(
-        &clax_surface::declaration(&[clax], &has)
-            .expect("one surface puts each of its names on `clax` once"),
-    );
+    out.push_str(&clax_surface::declaration(&surfaces, &has)?);
     out.push_str(crate::prompt::standard::CONSOLE);
-    out
+    Ok(out)
 }
 
 #[cfg(test)]

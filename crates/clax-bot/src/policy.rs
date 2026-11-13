@@ -129,9 +129,10 @@
 //! claim and the driver, before any run is in hand: what
 //! [`RunPolicy::run_settings`] answers for them is not read.
 
+use crate::bot_surfaces::Retry;
 use crate::history::{Transcript, check_shortened};
 use crate::run::RunSettings;
-use crate::surface::RunInfo;
+use crate::surface::{RunInfo, SurfaceLimits};
 use clax_bot_sandbox::{Limits, MaybeSendSync};
 use clax_core::Result;
 use clax_sample::messages::{Block, Message, MessagesError, Role};
@@ -228,7 +229,29 @@ pub struct RunLimits {
     /// run that would be one more has its waiting call refused
     /// (`parked_runs_limit`). `None` sets no bound.
     pub max_parked_runs: Option<u32>,
+    /// How many images a script step shows the model, the first of its
+    /// value's `Image` handles in order ([`crate::images`]); one more is
+    /// left out and the tool result says why.
+    pub images_per_step: usize,
+    /// The most bytes of an image shown to the model; a larger one is
+    /// left out and the tool result says why.
+    pub image_bytes: u64,
+    /// The most pixels of either side of an image shown to the model, as
+    /// its header says them; a wider or taller one is left out and the
+    /// tool result says why. Its upload is not refused.
+    pub image_side: u32,
 }
+
+/// How many images a script step shows the model, under
+/// [`RunLimits::unbounded`].
+pub const DEFAULT_IMAGES_PER_STEP: usize = 4;
+/// The most bytes of an image shown to the model, under
+/// [`RunLimits::unbounded`]: 5 MiB, the Messages API's own limit.
+pub const DEFAULT_IMAGE_BYTES: u64 = 5 << 20;
+/// The most pixels of a side of an image shown to the model, under
+/// [`RunLimits::unbounded`]: 8000, the Messages API's own limit, past which
+/// it refuses the request.
+pub const DEFAULT_IMAGE_SIDE: u32 = 8000;
 
 /// How many times one step may park, under [`RunLimits::of`].
 pub const DEFAULT_PARKS_PER_STEP: u32 = 8;
@@ -274,6 +297,9 @@ impl RunLimits {
             max_invalid_results: None,
             max_parks_per_step: None,
             max_parked_runs: None,
+            images_per_step: DEFAULT_IMAGES_PER_STEP,
+            image_bytes: DEFAULT_IMAGE_BYTES,
+            image_side: DEFAULT_IMAGE_SIDE,
         }
     }
 
@@ -284,7 +310,26 @@ impl RunLimits {
             .map(|c| i64::try_from(c.saturating_mul(1000)).unwrap_or(i64::MAX))
     }
 
-    /// The run's time cap.
+    /// These limits, each cap no looser than `surface`'s, a surface the
+    /// run is bound to ([`crate::surface::SurfaceProvider::limits`]):
+    /// the lesser of the two where both set one, the one that is set
+    /// where only one does. A surface lowers the caps and never raises
+    /// them: a host's `runs.max_steps` and `runs.max_run_minutes` are
+    /// within the instance's.
+    #[must_use]
+    pub fn within(self, surface: &SurfaceLimits) -> RunLimits {
+        let least = |policy: Option<u32>, own: Option<u32>| match (policy, own) {
+            (Some(p), Some(o)) => Some(p.min(o)),
+            (p, o) => p.or(o),
+        };
+        RunLimits {
+            max_steps: least(self.max_steps, surface.max_steps),
+            max_run_minutes: least(self.max_run_minutes, surface.max_run_minutes),
+            ..self
+        }
+    }
+
+    /// The run's time cap, [`RunLimits::max_run_minutes`], as a duration.
     #[must_use]
     pub fn max_run_time(&self) -> Option<Duration> {
         self.max_run_minutes
@@ -575,15 +620,24 @@ pub struct Delivery {
     /// unanswered: its deadline, from when it is sent. `None` as for
     /// `call_timeout`.
     pub wait_limit: Option<Duration>,
+    /// How a call is sent again when an attempt fails in a way that
+    /// sending it again may get past (a host's retryable error, a host
+    /// that lost a call it had accepted), and whether a call is held for
+    /// a host that is away: attempts and backoff, all within the call's
+    /// deadline, which no attempt moves. A registration's settings do
+    /// not change it.
+    pub retry: Retry,
 }
 
 impl Delivery {
     /// The daemon's defaults: 30 seconds for a call, 10 seconds before
-    /// a run parks, 24 hours for a call that waits.
+    /// a run parks, 24 hours for a call that waits, and three attempts
+    /// one second apart and then two ([`Retry::DAEMON`]).
     pub const DAEMON: Delivery = Delivery {
         call_timeout: Some(Duration::from_secs(30)),
         park_after: Some(Duration::from_secs(10)),
         wait_limit: Some(Duration::from_secs(24 * 60 * 60)),
+        retry: Retry::DAEMON,
     };
 
     /// How long a call may go unanswered: `wait_limit` for one of an

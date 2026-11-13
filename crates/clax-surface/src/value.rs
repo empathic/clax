@@ -1333,7 +1333,8 @@ impl<'a, 'v> Checker<'a, 'v> {
 }
 
 /// Whether `v` is a value of the definition's type at `node`, as a
-/// starter or a provider sends it ([`check_sent`]), spending from
+/// script holds it (`held`, [`check_held`]) or as a starter or a
+/// provider sends it ([`check_sent`]), spending from
 /// `left`, which it lowers by the units it spent: a union's reading of
 /// a value is the first of its alternatives that this says it fits, in
 /// the order the check tries them.
@@ -1341,14 +1342,16 @@ impl<'a, 'v> Checker<'a, 'v> {
 /// # Errors
 /// That `left` ran out ([`ValueErrorKind::TooLarge`]), or that the
 /// value nests too deep ([`ValueErrorKind::TooDeep`]), after `what`.
-pub(crate) fn fits_sent(
+pub(crate) fn fits(
     def: &Definition,
     node: NodeId,
     v: &Value,
+    held: bool,
     left: &mut usize,
     what: &str,
 ) -> Result<bool, ValueError> {
-    let mut checker = Checker::new(def, &[], Side::Sent);
+    let side = if held { Side::Held } else { Side::Sent };
+    let mut checker = Checker::new(def, &[], side);
     checker.left = *left;
     let r = checker.check(node, v);
     *left = checker.left;

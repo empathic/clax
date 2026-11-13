@@ -231,8 +231,9 @@ impl Providers {
     /// code a run ends `failed` with ([`Providers::bind_or_unreadable`]):
     /// [`CODE_BINDINGS_UNSUPPORTED`] for bindings of a version a later
     /// build wrote, [`CODE_BINDINGS_INVALID`] for text that is not
-    /// bindings, [`CODE_REQUEST_INVALID`] for a request that is not
-    /// JSON.
+    /// bindings or a binding whose kept settings this build does not read
+    /// (a setting a later build keeps), [`CODE_REQUEST_INVALID`] for a
+    /// request that is not JSON.
     pub fn bind(&self, row: &Run, made: &RunAsMade) -> Result<RunSurfaces> {
         let stored = made.bindings().map_err(|e| {
             let code = match e {
@@ -252,6 +253,18 @@ impl Providers {
         let mut operations = Vec::new();
         for binding in stored.all() {
             let kept = BindingAsStored::of(binding);
+            // Settings this build does not read are no settings to run
+            // under: the run's limits would be lost with them.
+            if let Err(e) = crate::outside::kept_settings(&kept) {
+                return Err(CoreError::invalid(
+                    CODE_BINDINGS_INVALID,
+                    format!(
+                        "the bindings of run {}: the settings its binding of {} keeps are not \
+                         settings this build reads: {e}",
+                        row.id, kept.surface
+                    ),
+                ));
+            }
             let provider = match self.get(&kept.surface) {
                 Some(registered) => registered
                     .for_run(row, &kept)

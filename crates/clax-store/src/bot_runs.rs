@@ -48,7 +48,9 @@
 //! `bot_runs.kind`, `request_json` ([`ClaxRequest`]) and `bindings_json`
 //! ([`Bindings`]), written when the run is made from the same values as
 //! its `request`, `thread_ids`, `artifact_id` and `web`, and never
-//! changed. [`RunAsMade`] is the three as they are kept, which the run
+//! changed. A run made before migration 64 holds NULL in all three and is
+//! read as made with those values. [`RunAsMade`] is the three as they are
+//! kept, which the run
 //! loop reads with the run's row and steps
 //! ([`Store::run_with_steps_as_made`]); [`Run`] is read from the
 //! earlier columns, of which `request`, `thread_ids`, `artifact_id`,
@@ -407,6 +409,7 @@ pub const BINDINGS_VERSION_2: u32 = 2;
 /// {"v":2,"bindings":[{"surface":"shell","hash":"9f86…0a08",
 ///   "registration":"0123456789abcdef0123456789abcdef",
 ///   "prompt":"6030…c752",
+///   "settings":{"call_timeout_s":30,"runs":{"max_steps":20}},
 ///   "scope":null,"operations":["shell.windows","shell.ask"]}]}
 /// ```
 ///
@@ -418,7 +421,10 @@ pub const BINDINGS_VERSION_2: u32 = 2;
 /// (Clax's own surface, bound into such a run) leaves the member out.
 /// `prompt` is the SHA-256 of the prompt file the run was started with
 /// ([`StoredBinding::prompt`]); a binding started with none, which is
-/// sent the standard prompt, leaves the member out.
+/// sent the standard prompt, leaves the member out. `settings` is the
+/// registration's settings in force when the run was started, an object
+/// the surface's provider reads ([`StoredBinding::settings`]); a binding
+/// written before settings were kept with the run leaves the member out.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Bindings {
     v: u32,
@@ -434,6 +440,8 @@ pub struct StoredBinding {
     registration: Option<String>,
     /// Version 2's `prompt`; `None` in version 1.
     prompt: Option<String>,
+    /// Version 2's `settings`; `None` in version 1.
+    settings: Option<Value>,
     scope: Value,
     /// Version 1's `granted`; empty in version 2.
     granted: Vec<String>,
@@ -444,8 +452,8 @@ pub struct StoredBinding {
 /// A stored binding is written with its version's members, in a fixed
 /// order: `surface`, `hash`, `scope`, `granted` for version 1 (the bytes
 /// a `clax` run has always had), and `surface`, `hash`, `registration`
-/// when it has one, `prompt` when it has one, `scope`, `operations` for
-/// version 2.
+/// when it has one, `prompt` when it has one, `settings` when it has
+/// them, `scope`, `operations` for version 2.
 impl Serialize for StoredBinding {
     fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
@@ -463,6 +471,9 @@ impl Serialize for StoredBinding {
                 }
                 if let Some(prompt) = &self.prompt {
                     m.serialize_entry("prompt", prompt)?;
+                }
+                if let Some(settings) = &self.settings {
+                    m.serialize_entry("settings", settings)?;
                 }
                 m.serialize_entry("scope", &self.scope)?;
                 m.serialize_entry("operations", operations)?;
@@ -494,9 +505,21 @@ impl StoredBinding {
             hash,
             registration,
             prompt,
+            settings: None,
             scope,
             granted: Vec::new(),
             operations: Some(operations),
+        }
+    }
+
+    /// This binding of version 2, started with `settings`: its
+    /// registration's settings in force when the run was started, as an
+    /// object the surface's provider reads ([`StoredBinding::settings`]).
+    #[must_use]
+    pub fn with_settings(self, settings: Value) -> StoredBinding {
+        StoredBinding {
+            settings: Some(settings),
+            ..self
         }
     }
 
@@ -533,6 +556,20 @@ impl StoredBinding {
     #[must_use]
     pub fn prompt(&self) -> Option<&str> {
         self.prompt.as_deref()
+    }
+
+    /// The settings the run was started with: its registration's, in
+    /// force then, kept so that nothing its host registers later and no
+    /// restart changes them for the run. The store does not read them:
+    /// they are the surface's provider's (for a host's surface, the
+    /// registration's settings as the host protocol names them, less
+    /// `allow`, which the binding's operations already hold). `None` for
+    /// a binding of version 1 and for one of version 2 written before
+    /// settings were kept with the run, whose provider says what stands
+    /// in their place.
+    #[must_use]
+    pub fn settings(&self) -> Option<&Value> {
+        self.settings.as_ref()
     }
 
     /// The provider's own value for what the run is bound to: for `clax`,
@@ -632,6 +669,7 @@ impl Bindings {
                 hash: None,
                 registration: None,
                 prompt: None,
+                settings: None,
                 scope: serde_json::json!({ "artifact": artifact_id }),
                 granted,
                 operations: None,
@@ -686,6 +724,7 @@ impl Bindings {
     ///   `hash`, `scope` and its version's list of operations (`granted`
     ///   in version 1, `operations` in version 2; a `hash` of `null` is
     ///   present);
+    /// - in version 2, `settings` that are neither an object nor `null`;
     /// - a `surface` that is not text or is empty, a `hash` that is
     ///   neither text nor `null`, in version 2 a `registration` or a
     ///   `prompt` that is neither text nor `null`, a list of operations that is not a
@@ -780,6 +819,7 @@ impl Bindings {
                     hash,
                     registration: None,
                     prompt: None,
+                    settings: None,
                     scope,
                     granted: ops,
                     operations: None,
@@ -793,11 +833,22 @@ impl Bindings {
                     None => None,
                     Some(value) => text_or_null("prompt", value)?,
                 };
+                let settings = match fields.get("settings") {
+                    None | Some(Value::Null) => None,
+                    Some(value @ Value::Object(_)) => Some(value.clone()),
+                    Some(other) => {
+                        return Err(bad(format!(
+                            "the binding of surface {surface} has `settings` that are neither \
+                             an object nor null: {other}"
+                        )));
+                    }
+                };
                 StoredBinding {
                     surface,
                     hash,
                     registration,
                     prompt,
+                    settings,
                     scope,
                     granted: Vec::new(),
                     operations: Some(ops),
@@ -931,6 +982,9 @@ pub struct StepCommit {
     pub draft: Vec<DraftChange>,
     /// Why a terminal step ended the run.
     pub reason: Option<String>,
+    /// The `seq` of each message of the run's inbox the step gave its
+    /// model, marked delivered by the commit ([`crate::bot_messages`]).
+    pub delivered: Vec<i64>,
 }
 
 /// What a step's commit wrote.
@@ -998,6 +1052,37 @@ fn row_to_run(r: &Row<'_>) -> rusqlite::Result<Run> {
         due_at: r.get(17)?,
         web: s(18)?,
     })
+}
+
+/// What `run` was made as, from its row's `kind`, `bindings_json` and
+/// `request_json`. A run made before migration 64 holds NULL in each
+/// (the migration adds the columns without writing a row), and is read as
+/// made with what [`Store::create_run`] writes for a run of its columns
+/// ([`NewRun::kind`], [`NewRun::bindings`], [`NewRun::clax_request`]).
+fn as_made(
+    run: &Run,
+    kind: Option<String>,
+    bindings_json: Option<String>,
+    request_json: Option<String>,
+) -> RunAsMade {
+    let before_64 = || NewRun {
+        artifact_id: run.artifact_id.clone(),
+        person: run.person.clone(),
+        request: run.request,
+        thread_ids: run.thread_ids.clone(),
+        model: run.model.clone(),
+        key_source: run.key_source,
+        base_version: run.base_version,
+        agent_grant: run.agent_grant.clone(),
+        web: run.web.clone(),
+    };
+    RunAsMade {
+        kind: kind.unwrap_or_else(|| before_64().kind()),
+        bindings_json: bindings_json.unwrap_or_else(|| before_64().bindings().to_json()),
+        request_json: request_json.unwrap_or_else(|| {
+            serde_json::to_string(&before_64().clax_request()).expect("serialisable IDs")
+        }),
+    }
 }
 
 /// Files `rec` on `subject` ([`Store::commit_bot_step_on`]).
@@ -1217,7 +1302,7 @@ impl Store {
     /// with `require_explicit_price`, one without its token cost lines,
     /// which an admin sets with [`Store::set_model_rates`]); the store's.
     pub fn create_run(&self, ctx: &AuditCtx, new: NewRun) -> Result<Run> {
-        self.with_tx(|tx| self.create_run_in(tx, ctx, new))
+        self.with_tx(|tx| self.create_run_in(tx, ctx, new, None))
     }
 
     /// [`Store::create_run`] unless a run that has not ended (queued,
@@ -1236,7 +1321,41 @@ impl Store {
             if let Some(active) = active_on_in(tx, &new.thread_ids)? {
                 return Ok(Err(active));
             }
-            Ok(Ok(self.create_run_in(tx, ctx, new)?))
+            Ok(Ok(self.create_run_in(tx, ctx, new, None)?))
+        })
+    }
+
+    /// [`Store::create_run_exclusive`], the run made with `bindings` in
+    /// place of [`NewRun::bindings`]: a run of Clax's own kind that other
+    /// surfaces were bound into when it was made (`crate::bot_joins`).
+    /// The bindings are of version 2 ([`Bindings::bound`]) and hold
+    /// `clax`'s on the run's artifact, `{"artifact": "<ID>"}`; its other
+    /// columns are a `clax` run's, as [`Store::create_run`] writes them.
+    ///
+    /// # Errors
+    /// `run_invalid` for bindings of another version or without that
+    /// `clax` binding; [`Store::create_run`]'s.
+    pub fn create_run_exclusive_bound(
+        &self,
+        ctx: &AuditCtx,
+        new: NewRun,
+        bindings: &Bindings,
+    ) -> Result<std::result::Result<Run, Run>> {
+        let scoped = bindings
+            .of(CLAX_SURFACE)
+            .is_some_and(|b| b.scope()["artifact"].as_str() == Some(new.artifact_id.as_str()));
+        if bindings.version() != BINDINGS_VERSION_2 || !scoped {
+            return Err(invalid(format!(
+                "a run of {} with other surfaces is made with bindings of version \
+                 {BINDINGS_VERSION_2} holding {CLAX_SURFACE}'s on its artifact",
+                new.kind()
+            )));
+        }
+        self.with_tx(|tx| {
+            if let Some(active) = active_on_in(tx, &new.thread_ids)? {
+                return Ok(Err(active));
+            }
+            Ok(Ok(self.create_run_in(tx, ctx, new, Some(bindings))?))
         })
     }
 
@@ -1456,6 +1575,7 @@ impl Store {
         tx: &rusqlite::Transaction<'_>,
         ctx: &AuditCtx,
         new: NewRun,
+        bindings: Option<&Bindings>,
     ) -> Result<Run> {
         {
             let exists: Option<i64> = tx
@@ -1488,7 +1608,7 @@ impl Store {
                     new.agent_grant,
                     new.web,
                     new.kind(),
-                    new.bindings().to_json(),
+                    bindings.map_or_else(|| new.bindings().to_json(), Bindings::to_json),
                     serde_json::to_string(&new.clax_request()).expect("serialisable IDs")
                 ],
             )?;
@@ -1531,6 +1651,26 @@ impl Store {
         })
     }
 
+    /// Run `id` with what it was made as ([`RunAsMade`]), without its
+    /// steps.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn run_as_made(&self, id: &str) -> Result<Option<(Run, RunAsMade)>> {
+        self.with_read(|c| {
+            Ok(c.prepare_cached(&format!(
+                "SELECT {RUN_COLS}, kind, bindings_json, request_json FROM bot_runs
+                  WHERE id = ?1"
+            ))?
+            .query_row(params![id], |r| {
+                let run = row_to_run(r)?;
+                let made = as_made(&run, r.get(19)?, r.get(20)?, r.get(21)?);
+                Ok((run, made))
+            })
+            .optional()?)
+        })
+    }
+
     /// [`Store::run_with_steps`], with what the run was made as
     /// ([`RunAsMade`]), read from the run's row in the same statement
     /// as the rest of it.
@@ -1545,12 +1685,9 @@ impl Store {
                       WHERE id = ?1"
                 ))?
                 .query_row(params![id], |r| {
-                    let made = RunAsMade {
-                        kind: r.get(19)?,
-                        bindings_json: r.get(20)?,
-                        request_json: r.get(21)?,
-                    };
-                    Ok((row_to_run(r)?, made))
+                    let run = row_to_run(r)?;
+                    let made = as_made(&run, r.get(19)?, r.get(20)?, r.get(21)?);
+                    Ok((run, made))
                 })
                 .optional()?;
             let Some((run, made)) = found else {
@@ -2129,6 +2266,7 @@ impl Store {
                 "UPDATE bot_steps SET committed_at = ?3, payload_json = ?4 WHERE run_id = ?1 AND n = ?2",
                 params![id, n, now, commit.payload.to_string()],
             )?;
+            crate::bot_messages::deliver_in(tx, id, n, &commit.delivered, &now)?;
             // A call of the step still pending was not reached by the
             // attempt that commits: it stops waiting, unjournaled.
             tx.execute(
@@ -2315,6 +2453,68 @@ impl Store {
         })
     }
 
+    /// How many journal entries run `id` has, of any step, whose
+    /// operation is one of `ops` and which are not a failure whose code
+    /// is one of `not_done`: a success, or a failure under any other
+    /// code (one with no code, or whose result is not JSON, included).
+    /// What a count of a run's calls of some operations that were
+    /// performed is. 0 for no `ops`.
+    ///
+    /// Counted in the store: no entry is read into the caller, and of an
+    /// entry's result only a failure's `code` is looked at, so a
+    /// success's result, however long, is not parsed. The rows looked at
+    /// are those of the run, found by the primary key's `run_id` prefix
+    /// (no index has `op`): at worst every journal row of the run, that
+    /// is its steps times the calls and notices one step journals.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn bot_calls_counted(&self, id: &str, ops: &[&str], not_done: &[&str]) -> Result<u64> {
+        if ops.is_empty() {
+            return Ok(0);
+        }
+        let mark = |i: usize| format!("?{}", i + 2);
+        let op_marks: Vec<String> = (0..ops.len()).map(mark).collect();
+        let code_marks: Vec<String> = (ops.len()..ops.len() + not_done.len()).map(mark).collect();
+        // A failure is left out when its result is JSON whose `code` is
+        // one of `not_done`; a success's result is never looked at.
+        let not_done_sql = if not_done.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " AND NOT (ok = 0 AND json_valid(result_json) \
+                 AND COALESCE(json_extract(result_json, '$.code') IN ({}), 0))",
+                code_marks.join(", ")
+            )
+        };
+        self.with_read(|c| {
+            let mut q = c.prepare(&format!(
+                "SELECT COUNT(*) FROM bot_calls WHERE run_id = ?1 AND op IN ({}){not_done_sql}",
+                op_marks.join(", ")
+            ))?;
+            let args: Vec<&dyn rusqlite::ToSql> = std::iter::once(&id as &dyn rusqlite::ToSql)
+                .chain(ops.iter().map(|op| op as &dyn rusqlite::ToSql))
+                .chain(not_done.iter().map(|code| code as &dyn rusqlite::ToSql))
+                .collect();
+            let n: i64 = q.query_row(args.as_slice(), |r| r.get(0))?;
+            Ok(u64::try_from(n).unwrap_or(0))
+        })
+    }
+
+    /// Whether the journal holds an entry for call `seq` of step `n` of
+    /// run `id`, by the primary key alone.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn has_bot_call(&self, id: &str, n: i64, seq: i64) -> Result<bool> {
+        self.with_read(|c| {
+            let mut q = c.prepare_cached(
+                "SELECT EXISTS (SELECT 1 FROM bot_calls WHERE run_id = ?1 AND step_n = ?2 AND seq = ?3)",
+            )?;
+            Ok(q.query_row(params![id, n, seq], |r| r.get::<_, bool>(0))?)
+        })
+    }
+
     /// The journal entry of call `seq` (`op` on arguments hashing to
     /// `args_hash`) of attempt `attempt` of step `step_n` of run `run_id`:
     /// made only for the driver holding the run, so no one else can
@@ -2354,6 +2554,17 @@ impl Store {
     /// # Errors
     /// The store's.
     pub fn record_bot_call(&self, entry: &CallEntry) -> Result<CallEntry> {
+        let fault = self
+            .record_fault
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if fault.is_some_and(|f| f(entry)) {
+            return Err(CoreError::invalid(
+                "record_fault",
+                "a failure to write the journal row was injected",
+            ));
+        }
         self.with_tx(|tx| {
             if let Some(prev) = call_in(tx, entry)? {
                 return Ok(prev);
@@ -2485,6 +2696,15 @@ impl Store {
             .unwrap_or_else(|e| e.into_inner()) = fault;
     }
 
+    /// Makes every [`Store::record_bot_call`] whose entry `fault` accepts
+    /// fail and write nothing, as a store that cannot write would; `None`
+    /// clears it. For tests of what the run loop does when a call's row
+    /// cannot be written.
+    #[doc(hidden)]
+    pub fn set_record_fault(&self, fault: Option<JournalFault>) {
+        *self.record_fault.write().unwrap_or_else(|e| e.into_inner()) = fault;
+    }
+
     /// Run `id`'s draft overlay, by path: each path it wrote or deleted.
     ///
     /// # Errors
@@ -2506,7 +2726,9 @@ impl Store {
     }
 
     /// Removes what ended runs no longer need, by the store's clock: the
-    /// call journal (`bot_calls`), the page store (`bot_web_pages`) and
+    /// call journal (`bot_calls`), the page store (`bot_web_pages`), the
+    /// content (`bot_content`, and each blob no row names any more:
+    /// [`crate::bot_content`]) and
     /// the pending calls (`bot_pending_calls`) of each run that ended over
     /// [`BOT_JOURNAL_KEEP`] ago, the draft overlay (`bot_draft_files`) of
     /// each that ended over [`BOT_DRAFT_KEEP`] ago, and each run's end
@@ -2532,7 +2754,7 @@ impl Store {
         };
         let (journal, draft) = (before(BOT_JOURNAL_KEEP), before(BOT_DRAFT_KEEP));
         let ends = before(crate::bot_pending::BOT_END_KEEP);
-        self.with_tx(|tx| {
+        let (mut pruned, released) = self.with_tx(|tx| {
             let calls = tx.execute(
                 "DELETE FROM bot_calls WHERE run_id IN
                    (SELECT id FROM bot_runs WHERE ended_at IS NOT NULL AND ended_at < ?1)",
@@ -2557,23 +2779,36 @@ impl Store {
                 "DELETE FROM bot_run_ends WHERE created_at < ?1",
                 params![ends],
             )?;
+            // A run's content goes with its journal, and each blob no
+            // row names any more with it (`crate::bot_content`), once
+            // the rows' deletion has committed.
+            let (contents, released) = crate::bot_content::prune_content_in(tx, &journal)?;
+            let messages = crate::bot_messages::prune_in(tx, &journal, &ends)?;
             let (registrations, surface_defs, surface_prompts) =
                 crate::bot_surfaces::prune_surfaces_in(
                     tx,
                     &before(crate::bot_surfaces::BOT_REGISTRATION_KEEP),
                     &before(crate::bot_surfaces::BOT_DEF_KEEP),
                 )?;
-            Ok(Pruned {
-                calls,
-                pages,
-                draft_files,
-                pending_calls,
-                run_ends,
-                registrations,
-                surface_defs,
-                surface_prompts,
-            })
-        })
+            Ok((
+                Pruned {
+                    calls,
+                    pages,
+                    draft_files,
+                    pending_calls,
+                    run_ends,
+                    messages,
+                    registrations,
+                    surface_defs,
+                    surface_prompts,
+                    contents,
+                    blobs: 0,
+                },
+                released,
+            ))
+        })?;
+        pruned.blobs = self.release_blobs(released)?;
+        Ok(pruned)
     }
 }
 
@@ -2601,12 +2836,18 @@ pub struct Pruned {
     pub pending_calls: usize,
     /// Run ends kept for a registration.
     pub run_ends: usize,
+    /// Messages of runs' inboxes ([`crate::bot_messages`]).
+    pub messages: usize,
     /// Surfaces' registrations that nothing needs.
     pub registrations: usize,
     /// Surfaces' definitions that nothing names.
     pub surface_defs: usize,
     /// Surfaces' prompt files that nothing names.
     pub surface_prompts: usize,
+    /// Items of runs' content (`bot_content`).
+    pub contents: usize,
+    /// Blobs of content that no item names any more.
+    pub blobs: usize,
 }
 
 /// A store transaction a journaled write runs on ([`Store::with_bot_journal`]);
@@ -3060,6 +3301,7 @@ mod tests {
                 hash: None,
                 registration: None,
                 prompt: None,
+                settings: None,
                 scope: json!({"artifact": aid}),
                 granted: granted.iter().map(|o| o.to_string()).collect(),
                 operations: None,
@@ -3855,6 +4097,7 @@ mod tests {
                     path: "a.css".into(),
                 }],
                 reason: None,
+                delivered: vec![],
             },
         );
         assert!(bad.is_err());
@@ -3889,6 +4132,7 @@ mod tests {
                         },
                     ],
                     reason: None,
+                    delivered: vec![],
                 },
             )
             .unwrap();
@@ -4127,6 +4371,96 @@ mod tests {
         let journal = st.bot_calls(&run.id, 1).unwrap();
         assert_eq!(journal.iter().map(|c| c.seq).collect::<Vec<_>>(), [0, 2]);
         assert_eq!(journal[0].result, json!({"comment_id": "c1"}));
+    }
+
+    #[test]
+    fn a_runs_performed_calls_of_some_operations_are_counted_across_its_steps() {
+        let (_d, st) = store();
+        let run = new_run(&st);
+        let other = new_run(&st);
+        let call =
+            |run: &str, step_n: i64, seq: i64, op: &str, ok: bool, result: Value| CallEntry {
+                run_id: run.to_string(),
+                step_n,
+                seq,
+                attempt: 1,
+                op: op.into(),
+                args_hash: "h".into(),
+                ok,
+                result,
+            };
+        let big = Value::String("x".repeat(64 * 1024));
+        for entry in [
+            call(&run.id, 3, 0, "desk.notify", true, big.clone()),
+            call(&run.id, 1, 1, "desk.ask", true, Value::Null),
+            call(&run.id, 1, 0, "desk.lamps", true, Value::Null),
+            call(&run.id, 1, 2, "desk.notify", false, json!({"code": "busy"})),
+            call(
+                &run.id,
+                1,
+                3,
+                "desk.notify",
+                false,
+                json!({"code": "effect_limit"}),
+            ),
+            call(
+                &run.id,
+                1,
+                4,
+                "desk.notify",
+                false,
+                json!({"code": "unavailable"}),
+            ),
+            call(
+                &run.id,
+                1,
+                5,
+                "desk.notify",
+                false,
+                json!({"message": "no code"}),
+            ),
+            call(&run.id, 2, 0, "desk.notify", false, json!({"code": 7})),
+            call(
+                &run.id,
+                2,
+                1,
+                "desk.notify",
+                true,
+                json!({"code": "effect_limit"}),
+            ),
+            call(&other.id, 1, 0, "desk.notify", true, Value::Null),
+        ] {
+            st.record_bot_call(&entry).unwrap();
+        }
+        let not_done = ["effect_limit", "unavailable"];
+        let counted = |ops: &[&str]| st.bot_calls_counted(&run.id, ops, &not_done).unwrap();
+        // Of `notify`: the success with a long result, `busy`, the
+        // failure with no code, the code that is no string, and a
+        // success whatever its value holds; not `effect_limit` or
+        // `unavailable`, and not another run's.
+        assert_eq!(counted(&["desk.notify"]), 5);
+        assert_eq!(counted(&["desk.notify", "desk.ask"]), 6);
+        assert_eq!(counted(&["desk.lamps"]), 1);
+        assert_eq!(counted(&[]), 0);
+        assert_eq!(
+            st.bot_calls_counted(&run.id, &["desk.notify"], &[])
+                .unwrap(),
+            7
+        );
+        // A result that is not JSON counts, as a failure under no code.
+        st.with_write(|c| {
+            c.execute(
+                "UPDATE bot_calls SET result_json = 'not json' WHERE run_id = ?1 AND step_n = 1 \
+                 AND seq = 3",
+                params![run.id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(counted(&["desk.notify"]), 6);
+        assert!(st.has_bot_call(&run.id, 1, 3).unwrap());
+        assert!(!st.has_bot_call(&run.id, 1, 6).unwrap());
+        assert!(!st.has_bot_call(&run.id, 4, 0).unwrap());
     }
 
     #[test]
@@ -4865,6 +5199,40 @@ mod tests {
         assert_ne!(null_prompt, text);
         assert_eq!(Bindings::parse(&null_prompt).unwrap(), made);
 
+        // Settings kept with the run are written after the prompt file,
+        // read back as they were, and a binding written without them
+        // (or with `null`) reads as one that has none.
+        let settings = json!({"call_timeout_s": 7, "runs": {"max_steps": 3}});
+        let pinned = Bindings::bound(vec![
+            StoredBinding::bound(
+                "shell",
+                Some(DEF_HASH.into()),
+                Some(SHELL.into()),
+                Some(PROMPT_HASH.into()),
+                Value::Null,
+                vec!["shell.ask".into()],
+            )
+            .with_settings(settings.clone()),
+        ])
+        .unwrap();
+        let pinned_text = pinned.to_json();
+        assert_eq!(
+            pinned_text,
+            format!(
+                r#"{{"v":2,"bindings":[{{"surface":"shell","hash":"{DEF_HASH}","registration":"{SHELL}","prompt":"{PROMPT_HASH}","settings":{{"call_timeout_s":7,"runs":{{"max_steps":3}}}},"scope":null,"operations":["shell.ask"]}}]}}"#
+            )
+        );
+        let read_pinned = Bindings::parse(&pinned_text).unwrap();
+        assert_eq!(read_pinned, pinned);
+        assert_eq!(read_pinned.of("shell").unwrap().settings(), Some(&settings));
+        assert_eq!(read_prompted.of("shell").unwrap().settings(), None);
+        let null_settings = text.replace(
+            r#""scope":null,"operations":["shell.windows""#,
+            r#""settings":null,"scope":null,"operations":["shell.windows""#,
+        );
+        assert_ne!(null_settings, text);
+        assert_eq!(Bindings::parse(&null_settings).unwrap(), made);
+
         // A binding of version 1 says no operations, no registration and
         // no prompt file, whatever its text holds.
         let v1 = Bindings::clax("7q3k9mzx2b4t", "fetch");
@@ -4872,9 +5240,10 @@ mod tests {
         let clax = v1.of("clax").unwrap();
         assert_eq!((clax.operations(), clax.registration()), (None, None));
         assert_eq!(clax.prompt(), None);
+        assert_eq!(clax.settings(), None);
         let v1_spelled = v1.to_json().replace(
             r#""hash":null,"#,
-            &format!(r#""hash":null,"prompt":"{PROMPT_HASH}","#),
+            &format!(r#""hash":null,"prompt":"{PROMPT_HASH}","settings":{{"max_steps":1}},"#),
         );
         assert_ne!(v1_spelled, v1.to_json());
         assert_eq!(Bindings::parse(&v1_spelled).unwrap(), v1);
@@ -4904,6 +5273,18 @@ mod tests {
             (
                 one(r#"{"surface":"shell","hash":null,"prompt":7,"scope":null,"operations":[]}"#),
                 "has a `prompt` that is neither text nor null: 7",
+            ),
+            (
+                one(
+                    r#"{"surface":"shell","hash":null,"settings":[1],"scope":null,"operations":[]}"#,
+                ),
+                "has `settings` that are neither an object nor null: [1]",
+            ),
+            (
+                one(
+                    r#"{"surface":"shell","hash":null,"settings":"none","scope":null,"operations":[]}"#,
+                ),
+                "has `settings` that are neither an object nor null: \"none\"",
             ),
             (
                 r#"{"v":2,"bindings":[]}"#.to_string(),
@@ -5424,6 +5805,68 @@ mod tests {
             st.active_run_on(&["t1".to_string()]).unwrap().unwrap().id,
             run.id
         );
+    }
+
+    /// Migration 64 relaxes `bot_runs` for every connection, not only the
+    /// one that ran it: a second connection on the same file, which read
+    /// the schema at 63 and prepared its statements then, takes the
+    /// relaxed writes once the migration has run (the schema cookie moved,
+    /// so it reads the schema again) and still refuses what no build
+    /// allows.
+    #[test]
+    fn a_second_connection_takes_the_writes_migration_64_relaxes() {
+        use crate::migrations::{NUMBERING, Numbering, WEB_MIGRATION};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.db");
+        let mut migrating = rusqlite::Connection::open(&path).unwrap();
+        let at_63 = Numbering {
+            migrations: &NUMBERING.migrations[..WEB_MIGRATION as usize],
+            main_marks: NUMBERING.main_marks,
+        };
+        crate::migrate_with(&mut migrating, &at_63).unwrap();
+        migrating
+            .execute_batch(
+                "INSERT INTO artifacts (id, title, created_at, updated_at, current_version,
+                        contract_version)
+                    VALUES ('7q3k9mzx2b4t', 'Budget', 'x', 'x', 1, '0');
+                 INSERT INTO versions (artifact_id, n, created_at, files_json)
+                    VALUES ('7q3k9mzx2b4t', 1, 'x', '{}');
+                 INSERT INTO bot_runs (id, artifact_id, person, request, thread_ids_json, status,
+                        model, key_source, base_version, credits_milli, created_at, updated_at,
+                        web)
+                    VALUES ('01JC0000000000000000000001', '7q3k9mzx2b4t', '*owner', 'thread',
+                        '[]', 'queued', 'm', 'own', 1, 0, 'x', 'x', '');",
+            )
+            .unwrap();
+        // The other connection reads the schema at 63, and prepares its
+        // writes on it.
+        let other = rusqlite::Connection::open(&path).unwrap();
+        let mut unbind = other
+            .prepare("UPDATE bot_runs SET artifact_id = NULL, base_version = NULL WHERE id = ?1")
+            .unwrap();
+        let mut park = other
+            .prepare("UPDATE bot_runs SET status = ?2 WHERE id = ?1")
+            .unwrap();
+        let run = "01JC0000000000000000000001";
+        assert!(
+            park.execute(rusqlite::params![run, "parked"]).is_err(),
+            "at 63 no run parks"
+        );
+        crate::migrate_with(&mut migrating, &NUMBERING).unwrap();
+        assert_eq!(unbind.execute([run]).unwrap(), 1);
+        assert_eq!(park.execute(rusqlite::params![run, "parked"]).unwrap(), 1);
+        assert!(
+            park.execute(rusqlite::params![run, "napping"]).is_err(),
+            "a status no build knows"
+        );
+        let (artifact, status): (Option<String>, String) = other
+            .query_row(
+                "SELECT artifact_id, status FROM bot_runs WHERE id = ?1",
+                [run],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((artifact, status.as_str()), (None, "parked"));
     }
 
     #[test]

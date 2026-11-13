@@ -11,6 +11,7 @@ mod finish;
 mod generic;
 mod golden;
 mod limits;
+mod messages;
 mod money;
 mod outside;
 mod park;

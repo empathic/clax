@@ -68,7 +68,7 @@
 //! | 1 | Core | Tells each binding's provider the run is working ([`SurfaceProvider::working`], `Tick::working` in `ending.rs`). Begins the step (`Store::begin_step_on`): its number and attempt. Loads the step's journal (`Store::bot_calls`), by place |
 //! | 2 | Core | Opens one session for each binding, the surface that declared the run's kind first and the others in the order they were bound (the order they are finished and joined in too, row 7): [`SurfaceProvider::begin`] with a [`StepCx`] (the run, the binding, the step and attempt, the committed steps so far, the driver's claim, the cancel token). An error fails the tick; the step stays open and is begun again |
 //! | 3 | Core | For each call the script makes, at place `seq` from 0, one call at a time: when an earlier call diverged, answers `replay_diverged`; when the journal holds another call at the place (another operation, or other arguments), the same, and notes the divergence. Neither is journaled, and no session sees the call. A call past a step's last place for a script's calls ([`CallPlace::in_script`]) is refused [`no_place`], unjournaled. Both refusals are the core's and are told like any call's answer: in the step's `calls`, as a `call` event and as a `bot.call` record, with no target, and counted on the requests line |
-//! | 4 | Core | [`dispatch`], in this order. **Routes** the operation to its binding ([`route`]): an operation no binding takes is answered `unknown_op` (`clax.<op> is not an operation`). **Checks the arguments** against the definition of that binding's surface ([`SurfaceProvider::definition`], [`check_args`]): `unknown_op` in the same words for a name the definition does not have, `invalid_args` for arguments that do not hold. **Then asks whether the binding has the operation** ([`Binding::has`]): one outside its set is answered by [`SurfaceProvider::undeclared`], or [`not_declared`], and no session sees it |
+//! | 4 | Core | [`dispatch`], in this order. **Routes** the operation to its binding ([`route`]): an operation no binding takes is answered `unknown_op` (`clax.<op> is not an operation`). **Checks the arguments** against the definition of that binding's surface ([`SurfaceProvider::definition`], [`check_args`]): `unknown_op` in the same words for a name the definition does not have, `invalid_args` for arguments that do not hold. **Then asks whether the binding has the operation** ([`Binding::has`]): one outside its set is answered by [`SurfaceProvider::undeclared`], or [`not_declared`], and no session sees it. **Then counts effects**: a call of an operation tagged `@effect` that comes with no entry, when the binding's surface bounds the run's effects ([`SurfaceLimits::max_effects`]) and the journal holds as many performed calls of them as the bound, is refused [`CODE_EFFECT_LIMIT`], journaled, and no session sees it |
 //! | 5 | Provider | Any other call goes to the binding's session: [`StepSession::call`] with its [`CallPlace`], its checked and raw arguments, and the journal entry of the place when there is one |
 //! | 6 | Core | Journals the answer as it says ([`Answer::journal`]), unless the place was in the journal (then nothing is written, whatever the answer says). The core's own refusals of row 4 are journaled as an outcome. Tells the run's events and the step's `calls` what [`CallNote`] says of the call |
 //! | 7 | Core | When the script has ended: [`StepSession::finish`] on each session, with [`StepEnd::Commit`], or [`StepEnd::Cancelled`] when the script was cancelled. The parts are joined ([`StepJoin`]): their `tool_result` fields join what the model is told of the script, their `payload` fields the step's payload ([`merge_fields`]), their `draft` rows the step's commit (`StepCommit::draft`), in the commit's transaction. Fields that clash ([`FieldClash`]) abandon the attempt, which is counted against the step as a commit that failed; in a cancelled script's step the clash is counted, that binding's fields are left out, and the stop is taken all the same |
@@ -450,6 +450,29 @@ pub struct Binding {
     /// host's surface `shell`. A call to any other is refused before a
     /// session sees it ([`dispatch`]).
     pub operations: Vec<String>,
+    /// What the surface bounds the run by, as its provider says
+    /// ([`SurfaceProvider::limits`]): fixed when the tick binds the run.
+    pub limits: SurfaceLimits,
+}
+
+/// What a surface bounds a run by, beside the run's policy
+/// ([`SurfaceProvider::limits`]): each `None` sets no bound of the
+/// surface's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SurfaceLimits {
+    /// How many calls of the surface's operations tagged `@effect` the
+    /// run may make, over all its steps. The call that would be one more
+    /// is refused [`CODE_EFFECT_LIMIT`] before its provider sees it
+    /// ([`perform`]). A host's `max_effects_per_run`.
+    pub max_effects: Option<u64>,
+    /// Committed steps after which the run stops, when that is fewer than
+    /// its policy's ([`crate::policy::RunLimits::within`]). A host's
+    /// `runs.max_steps`.
+    pub max_steps: Option<u32>,
+    /// Minutes at work (parked time not counted) after which the run
+    /// stops, when that is fewer than its policy's. A host's
+    /// `runs.max_run_minutes`.
+    pub max_run_minutes: Option<u32>,
 }
 
 /// One binding of a run as its row keeps it, for whoever chooses the
@@ -471,6 +494,10 @@ pub struct BindingAsStored {
     /// lowercase hex ([`StoredBinding::prompt`]); `None` for a binding
     /// started with none, whose run is sent the standard prompt.
     pub prompt: Option<String>,
+    /// The settings the run was started with, as the binding keeps them
+    /// ([`StoredBinding::settings`]): the provider's to read. `None` for
+    /// a binding that keeps none.
+    pub settings: Option<Value>,
     /// The provider's own value for what the run is bound to.
     pub scope: Value,
     /// The operations the run was given beyond those every run of the
@@ -494,6 +521,7 @@ impl BindingAsStored {
             hash: stored.hash().map(str::to_string),
             registration: stored.registration().map(str::to_string),
             prompt: stored.prompt().map(str::to_string),
+            settings: stored.settings().cloned(),
             scope: stored.scope().clone(),
             granted: stored.granted().to_vec(),
             operations: stored.operations().map(<[String]>::to_vec),
@@ -522,6 +550,7 @@ impl Binding {
     ) -> Binding {
         let granted = stored.granted();
         Binding {
+            limits: SurfaceLimits::default(),
             surface: stored.surface().to_string(),
             hash: stored.hash().map(str::to_string),
             scope: stored.scope().clone(),
@@ -534,7 +563,8 @@ impl Binding {
         }
     }
 
-    /// The binding `stored` is, served by `provider`. A binding of
+    /// The binding `stored` is, served by `provider`, with the limits the
+    /// provider says ([`SurfaceProvider::limits`]). A binding of
     /// version 2 holds the run's operations of the surface, fixed when
     /// the run was made, and they are the binding's as the row lists
     /// them: nothing is worked out again from the running build. A
@@ -543,14 +573,19 @@ impl Binding {
     /// ([`Binding::from_stored`]).
     #[must_use]
     pub fn as_stored(stored: &StoredBinding, provider: &dyn SurfaceProvider) -> Binding {
-        match stored.operations() {
+        let bound = match stored.operations() {
             None => Binding::from_stored(stored, provider.definition(), |op| provider.standing(op)),
             Some(listed) => Binding {
+                limits: SurfaceLimits::default(),
                 surface: stored.surface().to_string(),
                 hash: stored.hash().map(str::to_string),
                 scope: stored.scope().clone(),
                 operations: listed.to_vec(),
             },
+        };
+        Binding {
+            limits: provider.limits(),
+            ..bound
         }
     }
 
@@ -681,11 +716,53 @@ impl CallPlace {
 /// it a provider makes the journal entry of a place, to write in the
 /// transaction of its own write. It is good only while the driver holds
 /// the run.
+///
+/// A claim made for an attempt of a script step ([`Claim::counting`])
+/// also keeps the attempt's [`Unjournaled`] calls, so that a run's count
+/// of its effects holds within the attempt.
 #[derive(Clone, Copy)]
 pub struct Claim<'a> {
     store: &'a Store,
     driver: &'a DriverId,
     run_id: &'a str,
+    unjournaled: Option<&'a Unjournaled>,
+}
+
+/// The calls of one attempt that were performed, or may have been, and
+/// that the journal does not hold: a call whose answer said it was
+/// performed and whose row could not be written ([`Claim::record`]), and
+/// a call whose session answered it [`Answer::unwritten`] (an outside
+/// provider whose broker sent the call and could not read its outcome
+/// answers so). The journal is the run's count of its effects
+/// ([`SurfaceLimits::max_effects`]); these are counted beside it until
+/// their place has a row, so that the attempt makes no effect past the
+/// limit for a row it could not write. The next attempt counts from the
+/// journal alone, and sends such a call again under its key, which its
+/// host performs once.
+#[derive(Debug, Default)]
+pub struct Unjournaled(std::sync::Mutex<Vec<(i64, i64, String)>>);
+
+impl Unjournaled {
+    fn add(&self, place: &CallPlace, op: &str) {
+        let mut held = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if !held
+            .iter()
+            .any(|(step, seq, _)| *step == place.step && *seq == place.seq)
+        {
+            held.push((place.step, place.seq, op.to_string()));
+        }
+    }
+
+    /// The places held of calls of `ops`, by step and place.
+    fn of(&self, ops: &[&str]) -> Vec<(i64, i64)> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(_, _, op)| ops.contains(&op.as_str()))
+            .map(|(step, seq, _)| (*step, *seq))
+            .collect()
+    }
 }
 
 impl std::fmt::Debug for Claim<'_> {
@@ -705,6 +782,26 @@ impl<'a> Claim<'a> {
             store,
             driver,
             run_id,
+            unjournaled: None,
+        }
+    }
+
+    /// This claim, keeping `unjournaled` for one attempt of a script
+    /// step: the calls it makes that the journal could not be given are
+    /// counted against the run's effects until their rows exist.
+    #[must_use]
+    pub fn counting(self, unjournaled: &'a Unjournaled) -> Claim<'a> {
+        Claim {
+            unjournaled: Some(unjournaled),
+            ..self
+        }
+    }
+
+    /// Keeps the call to `op` at `place` among the attempt's
+    /// [`Unjournaled`] ones, when the claim keeps them.
+    fn unjournaled(&self, place: &CallPlace, op: &str) {
+        if let Some(held) = self.unjournaled {
+            held.add(place, op);
         }
     }
 
@@ -724,13 +821,14 @@ impl<'a> Claim<'a> {
     /// The pending call the run's store keeps for `place`, waiting or
     /// not, when it keeps one: a call that was opened there for a
     /// surface outside the process (`Store::open_call`), by this
-    /// attempt or an earlier one. `None` also when it cannot be read.
-    #[must_use]
-    pub fn pending_call(&self, place: &CallPlace) -> Option<PendingCall> {
+    /// attempt or an earlier one.
+    ///
+    /// # Errors
+    /// The store's: what the store keeps of the call is not known, so a
+    /// caller may not answer as though the call was never opened.
+    pub fn pending_call(&self, place: &CallPlace) -> clax_core::Result<Option<PendingCall>> {
         self.store
             .pending_call_at(self.run_id, place.step, place.seq)
-            .ok()
-            .flatten()
     }
 
     /// The journal entry of the call to `op` on `args` (the JSON array the
@@ -761,7 +859,9 @@ impl<'a> Claim<'a> {
     /// [`Journal::Waiting`]. For a call
     /// whose place the journal does not hold; an entry already there is kept as it is. An entry that
     /// cannot be made or written is logged: the script has its answer,
-    /// and the step executed again makes the call again.
+    /// and the step executed again makes the call again. The call is
+    /// kept among the attempt's [`Unjournaled`] ones when its answer says
+    /// it was performed ([`performed`]), so that the attempt counts it.
     pub fn record(&self, place: &CallPlace, op: &str, args: &Value, answer: &Answer) {
         debug_assert!(
             answer.journal() == Journal::Written || answer.note().cost_milli().unwrap_or(0) <= 0,
@@ -773,6 +873,9 @@ impl<'a> Claim<'a> {
             Journal::Outcome => false,
         };
         let Ok(entry) = self.entry(place, op, args) else {
+            if performed(answer.result()) {
+                self.unjournaled(place, op);
+            }
             return;
         };
         let entry = entry.answered(
@@ -789,6 +892,9 @@ impl<'a> Claim<'a> {
                 place.seq,
                 self.run_id
             );
+            if performed(answer.result()) {
+                self.unjournaled(place, op);
+            }
         }
     }
 }
@@ -1323,6 +1429,107 @@ pub fn no_place(seq: i64) -> HostError {
 /// ([`no_place`]).
 pub const CODE_NO_PLACE: &str = "call_limit";
 
+/// The host error code of a call of an operation tagged `@effect` that
+/// the run may not make: it has made as many of its surface's as
+/// [`SurfaceLimits::max_effects`] allows ([`perform`]). Not retryable:
+/// the run's count only grows.
+pub const CODE_EFFECT_LIMIT: &str = "effect_limit";
+
+/// The journal's codes of a call no provider performed: the core's own
+/// refusals ([`no_such_operation`], [`not_declared`], `invalid_args`,
+/// [`CODE_EFFECT_LIMIT`]) and `unavailable`, which says nothing
+/// happened. A journaled call of an effect with any other outcome
+/// counts against its surface's limit.
+const NOT_PERFORMED: [&str; 4] = [
+    CODE_UNKNOWN_OP,
+    CODE_BAD_ARGS,
+    CODE_EFFECT_LIMIT,
+    crate::registry::CODE_UNAVAILABLE,
+];
+
+/// Whether a call answered `result` was performed: a success, or a
+/// failure whose code is not one of [`NOT_PERFORMED`].
+fn performed(result: &Result<Value, HostError>) -> bool {
+    match result {
+        Ok(_) => true,
+        Err(e) => !NOT_PERFORMED.contains(&e.code.as_str()),
+    }
+}
+
+/// How many calls of `effects` (operations tagged `@effect` of one
+/// surface) run `claim` is on has made: each journaled place of one, in
+/// any step and by any attempt, that was performed (a success, or a
+/// failure whose code is not one of [`NOT_PERFORMED`]), and each of the
+/// attempt's [`Unjournaled`] calls of one whose place still has no row.
+/// A place counts once however often its step is run again, since the
+/// journal keeps one entry for it, and the count is read from the
+/// store, so a daemon that restarted counts the same.
+///
+/// The store counts (`Store::bot_calls_counted`): one integer is read,
+/// and no entry's result is parsed but a failure's code.
+fn effects_made(claim: &Claim<'_>, effects: &[&str]) -> clax_core::Result<u64> {
+    let journaled = claim
+        .store
+        .bot_calls_counted(claim.run_id, effects, &NOT_PERFORMED)?;
+    let mut unjournaled = 0;
+    for (step, seq) in claim.unjournaled.map(|u| u.of(effects)).unwrap_or_default() {
+        if !claim.store.has_bot_call(claim.run_id, step, seq)? {
+            unjournaled += 1;
+        }
+    }
+    Ok(journaled.saturating_add(unjournaled))
+}
+
+/// The refusal of a call of `op` that would be the run's effect past
+/// `max` of `surface`'s ([`CODE_EFFECT_LIMIT`]).
+fn effect_limit(op: &str, surface: &str, max: u64) -> HostError {
+    HostError::new(
+        CODE_EFFECT_LIMIT,
+        format!(
+            "clax.{op}: this run has made the {max} calls of {surface}'s effects it may make, \
+             and nothing was done"
+        ),
+    )
+}
+
+/// Why a call of `op`, which the binding has and which comes with no
+/// entry, may not be performed for its surface's limit on effects
+/// ([`SurfaceLimits::max_effects`]): `Some` with the answer when it is
+/// an effect and the run has made as many as it may, or when the count
+/// cannot be read (a failure that nothing journals: the step run again
+/// counts again). `None` for a call that may go on.
+fn over_effect_limit(
+    provider: &dyn SurfaceProvider,
+    binding: &Binding,
+    claim: &Claim<'_>,
+    op: &str,
+) -> Option<Answer> {
+    let max = binding.limits.max_effects?;
+    let definition = provider.definition();
+    let is_effect = definition
+        .operation(op)
+        .is_some_and(|o| o.op.access == clax_surface::Access::Effect);
+    if !is_effect {
+        return None;
+    }
+    let effects: Vec<&str> = definition
+        .operations()
+        .filter(|o| o.op.access == clax_surface::Access::Effect)
+        .map(|o| o.name)
+        .collect();
+    match effects_made(claim, &effects) {
+        Ok(made) if made < max => None,
+        Ok(_) => Some(Answer::refused(effect_limit(op, &binding.surface, max))),
+        Err(e) => Some(Answer::unwritten(
+            HostError::new(
+                crate::registry::CODE_UNAVAILABLE,
+                format!("clax.{op}: the run's count of its effects could not be read: {e}"),
+            )
+            .retryable(),
+        )),
+    }
+}
+
 /// Checks the arguments of a call to `op` (`raw`, the JSON array the
 /// sandbox passes) against `definition`, the definition of the surface
 /// the call was routed to, and returns them, one value for each
@@ -1438,6 +1645,13 @@ pub async fn dispatch(
 ///   refusal whatever constructor made it, and one that is no failure
 ///   is replaced by [`not_declared`]: the hook is given no place and no
 ///   claim, so it can have journaled nothing and performed nothing;
+/// - a call of an operation tagged `@effect`, with no entry, when the
+///   binding's surface bounds the run's effects
+///   ([`SurfaceLimits::max_effects`]) and the run has made as many as
+///   it may, is refused [`CODE_EFFECT_LIMIT`] and `session` does not
+///   see it: its host is sent nothing. The refusal is journaled, so the
+///   step run again is answered it from the journal. A call that comes
+///   with its entry is never counted again;
 /// - any other is `session`'s to answer ([`StepSession::call`]);
 /// - an answer that the call waits ([`Answer::waiting`]) is the
 ///   provider's mistake unless the definition of its surface tags the
@@ -1451,7 +1665,10 @@ pub async fn dispatch(
 ///   from what the run shows of the call and the mistake is logged,
 ///   once for the process;
 /// - the answer of a call that is not replayed is journaled as it says
-///   ([`Claim::record`]).
+///   ([`Claim::record`]); one the session answered unwritten, or whose
+///   row could not be written though it was performed, is kept among
+///   the attempt's [`Unjournaled`] calls, which the limit on effects
+///   counts.
 pub async fn perform(
     provider: &dyn SurfaceProvider,
     session: &dyn StepSession,
@@ -1459,7 +1676,15 @@ pub async fn perform(
     claim: &Claim<'_>,
     call: Call<'_>,
 ) -> Answer {
-    let answer = if binding.has(call.op) {
+    let over = if binding.has(call.op) && call.replay.is_none() {
+        over_effect_limit(provider, binding, claim, call.op)
+    } else {
+        None
+    };
+    let sent = over.is_none() && binding.has(call.op);
+    let answer = if let Some(refused) = over {
+        refused
+    } else if sent {
         may_wait(session.call(call).await, provider, &call)
     } else {
         provider
@@ -1474,6 +1699,12 @@ pub async fn perform(
     );
     let answer = without_a_charge_the_core_would_journal(answer, call.op);
     if call.replay.is_none() {
+        // A call its session answered unwritten may have reached its
+        // host (an outside provider's that could not read the outcome):
+        // the attempt counts it, never fewer.
+        if sent && answer.journal() == Journal::Unwritten {
+            claim.unjournaled(call.place, call.op);
+        }
         claim.record(call.place, call.op, call.raw, &answer);
     }
     answer
@@ -1538,11 +1769,14 @@ fn without_a_charge_the_core_would_journal(mut answer: Answer, op: &str) -> Answ
 /// a stop, with `title`, `code`, `outcome` and `calls` when a cancelled
 /// script stopped the run; `summary` of a finish of a kind of `clax`,
 /// `result` of a finish of any other kind (`crate::finish`); `code`
-/// and `reason` of a give-up; `reason` and `error` of a failure.
-pub const PAYLOAD_KEYS: [&str; 9] = [
+/// and `reason` of a give-up; `reason` and `error` of a failure. And
+/// `images`, a script step's images shown to the model
+/// (`crate::images`).
+pub const PAYLOAD_KEYS: [&str; 10] = [
     "calls",
     "code",
     "error",
+    "images",
     "outcome",
     "reason",
     "result",
@@ -1553,8 +1787,8 @@ pub const PAYLOAD_KEYS: [&str; 9] = [
 
 /// The names the core gives fields of what a model is told of a script
 /// (`tool_result_content`, `script.rs`): `value`, `logs`,
-/// `calls`, `error`, `replay`.
-pub const TOOL_RESULT_KEYS: [&str; 5] = ["calls", "error", "logs", "replay", "value"];
+/// `calls`, `error`, `replay`, `images`.
+pub const TOOL_RESULT_KEYS: [&str; 6] = ["calls", "error", "images", "logs", "replay", "value"];
 
 /// The names `clax`'s provider puts at the top of a step's payload
 /// ([`merge_fields`]): a script step's session's (`changed`, `replied`,
@@ -1817,6 +2051,7 @@ impl StepJoin {
             events,
             draft: self.rows,
             reason: None,
+            delivered: Vec::new(),
         }
     }
 }
@@ -1955,6 +2190,27 @@ pub trait StepSession: MaybeSendSync {
 // ---------------------------------------------------------------------------
 // A run's end
 // ---------------------------------------------------------------------------
+
+/// How a run is going ([`SurfaceProvider::progress`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Progress<'a> {
+    /// Step `step`, of `kind`, committed and the run goes on; it gave
+    /// the model the messages of the run's inbox whose `seq`s
+    /// `delivered` names. The step that ends a run is not told: its
+    /// end is ([`SurfaceProvider::end_for`]).
+    Step {
+        step: i64,
+        kind: StepKind,
+        delivered: &'a [i64],
+    },
+    /// The run parked at step `step` on what `waiting_on` says
+    /// (`Store::park_run`'s `waiting_on`: `surface`, `op`, `key`,
+    /// `since`, `deadline`).
+    Parked { step: i64, waiting_on: &'a Value },
+    /// The run's parked step `step` is run again: the call it waited
+    /// on was answered or its deadline came, or the run was cancelled.
+    Resumed { step: i64 },
+}
 
 /// How a run ends.
 #[derive(Clone, Debug, PartialEq)]
@@ -2097,6 +2353,14 @@ pub trait SurfaceProvider: MaybeSendSync {
         None
     }
 
+    /// What the surface bounds a run by, beside the run's policy
+    /// ([`SurfaceLimits`]): none, unless the provider says otherwise.
+    /// For a host's surface, the settings the run was started with.
+    /// Asked once a tick, when the run is bound ([`Binding::as_stored`]).
+    fn limits(&self) -> SurfaceLimits {
+        SurfaceLimits::default()
+    }
+
     /// The provider a tick of the run whose row is `row` holds in this
     /// one's place for the run's binding `binding`, as the row keeps
     /// it: for a provider that wants the row as the tick read it (for
@@ -2168,6 +2432,16 @@ pub trait SurfaceProvider: MaybeSendSync {
     /// the roster record on the run's threads); a run whose ticks stop
     /// coming is no longer renewed. Nothing is answered.
     async fn working(&self, _run: &RunInfo) {}
+
+    /// How `run` is going, told to the provider of the surface that
+    /// declared its kind, and to no other: a step committed, the run
+    /// parked or its parked step run again. Called after the fact,
+    /// outside any step's transaction, and possibly more than once for
+    /// one fact (a step run again after a crash resumes again); a
+    /// provider that shows a run's progress to whoever started it
+    /// passes it on, and nothing is answered. Nothing, unless the
+    /// provider says otherwise.
+    fn progress(&self, _run: &RunInfo, _progress: &Progress<'_>) {}
 
     /// Opens the session of the attempt `cx` describes, for a step that
     /// runs a script. A provider loads here what the step works on, as
@@ -2500,6 +2774,7 @@ impl FakeSurfaceProvider {
     #[must_use]
     pub fn binding() -> Binding {
         Binding {
+            limits: SurfaceLimits::default(),
             surface: Self::SURFACE.to_string(),
             hash: None,
             scope: Value::Null,
@@ -2880,6 +3155,54 @@ mod tests {
     use super::*;
     use clax_store::bot_runs::Bindings;
 
+    /// Every code the core throws a script for a call of any surface,
+    /// whatever crate names it, is one no host may declare or answer
+    /// (`clax_surface::wire::CORE_CODES`): the codes the effect count
+    /// reads as "nothing was done" first. `unavailable` is a host's to
+    /// say.
+    #[test]
+    fn the_cores_codes_are_the_ones_no_host_may_give() {
+        let core = clax_surface::wire::CORE_CODES;
+        for code in NOT_PERFORMED {
+            assert_eq!(
+                core.contains(&code),
+                code != crate::registry::CODE_UNAVAILABLE,
+                "{code}"
+            );
+        }
+        for code in [
+            CODE_UNKNOWN_OP,
+            CODE_BAD_ARGS,
+            CODE_EFFECT_LIMIT,
+            CODE_NO_PLACE,
+            CODE_PROVIDER_ERROR,
+            crate::api::CODE_REPLAY_DIVERGED,
+            crate::bot_surfaces::CODE_INVALID_ARGS,
+            crate::bot_surfaces::CODE_UNKNOWN_OP,
+            crate::bot_surfaces::CODE_KEY_REUSED,
+            crate::script::CODE_PARK_LIMIT,
+            crate::script::CODE_PARKED_RUNS_LIMIT,
+            crate::run::CANCELLED,
+            clax_bot_sandbox::CODE_INVALID_ARGS,
+            clax_bot_sandbox::CODE_SCRIPT_FINISHED,
+            clax_bot_sandbox::CODE_CANCELLED,
+            clax_bot_sandbox::CODE_WAITING,
+            clax_surface::wire::CODE_EXPIRED,
+            clax_surface::wire::CODE_UNKNOWN_OUTCOME,
+            clax_surface::wire::CODE_INVALID_RESULT,
+            clax_surface::wire::CODE_INTERNAL_ERROR,
+            "run_not_claimed",
+            "step_mismatch",
+        ] {
+            assert!(core.contains(&code), "{code}");
+        }
+        assert!(!core.contains(&crate::registry::CODE_UNAVAILABLE));
+        let mut sorted = core.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted, core, "in order, each once");
+    }
+
     #[test]
     fn a_stored_binding_gives_the_standing_operations_and_the_granted_ones() {
         let standing = |op: &str| !op.starts_with("web.");
@@ -2910,6 +3233,7 @@ mod tests {
     #[test]
     fn a_call_is_routed_to_the_surface_it_names_and_else_to_clax() {
         let clax = Binding {
+            limits: SurfaceLimits::default(),
             surface: "clax".into(),
             hash: None,
             scope: Value::Null,
@@ -3503,6 +3827,7 @@ mod tests {
         let driver = DriverId::mint();
         let cancel = CancelToken::new();
         let binding = |surface: &str| Binding {
+            limits: SurfaceLimits::default(),
             surface: surface.into(),
             hash: None,
             scope: Value::Null,

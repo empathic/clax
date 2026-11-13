@@ -112,6 +112,55 @@ impl Role {
     }
 }
 
+/// An image a tool result shows the model: its media type (`image/png`,
+/// `image/jpeg`, `image/webp` or `image/gif`; not checked here) and its
+/// bytes, which go on the wire base64-encoded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolImage {
+    pub media_type: String,
+    pub data: Vec<u8>,
+}
+
+impl ToolImage {
+    pub fn new(media_type: impl Into<String>, data: impl Into<Vec<u8>>) -> ToolImage {
+        ToolImage {
+            media_type: media_type.into(),
+            data: data.into(),
+        }
+    }
+
+    /// `{type: "image", source: {type: "base64", media_type, data}}`.
+    fn to_json(&self) -> Value {
+        use base64::Engine;
+        let data = base64::engine::general_purpose::STANDARD.encode(&self.data);
+        json!({"type": "image", "source": {"type": "base64", "media_type": self.media_type, "data": data}})
+    }
+}
+
+/// What ends the text of a tool result whose images were left out because
+/// the model takes none ([`Block::tool_result_with_images`]).
+pub const IMAGES_NOT_SHOWN: &str =
+    "The images of this result are not shown: this model takes no images.";
+
+/// The images in a `tool_result`'s content, in order, each as its media
+/// type and base64 data: the `image` blocks with a `base64` source of an
+/// array content. A string content has none.
+fn images_of(content: &Value) -> Vec<(&str, &str)> {
+    let Value::Array(parts) = content else {
+        return Vec::new();
+    };
+    parts
+        .iter()
+        .filter(|p| p["type"] == "image" && p["source"]["type"] == "base64")
+        .filter_map(|p| {
+            Some((
+                p["source"]["media_type"].as_str()?,
+                p["source"]["data"].as_str()?,
+            ))
+        })
+        .collect()
+}
+
 /// A content block. Blocks read from a response are typed only when the
 /// typed form serialises back to exactly what arrived; anything else (an
 /// unknown type, an extra field such as `citations`) is kept as
@@ -129,7 +178,8 @@ pub enum Block {
     },
     ToolResult {
         tool_use_id: String,
-        /// A string, or an array of content blocks.
+        /// A string, or an array of content blocks (text, and the images
+        /// [`Block::tool_result_with_images`] puts after it).
         content: Value,
         is_error: bool,
         cache_control: Option<CacheControl>,
@@ -160,6 +210,57 @@ impl Block {
         Block::ToolResult {
             tool_use_id: tool_use_id.into(),
             content: Value::String(content.into()),
+            is_error,
+            cache_control: None,
+        }
+    }
+
+    /// A tool result that shows the model `images` after its text.
+    ///
+    /// With no image this is [`Block::tool_result`], whatever
+    /// `model_takes_images` is: its content is the string, and the request
+    /// is byte-for-byte the one without this. With images and a model that
+    /// takes them, the content is an array: the text block (left out when
+    /// `content` is empty), then one `image` block per image, in order,
+    /// with a base64 source. Every [`ModelApi`] carries them (see
+    /// [`openai`] and [`gemini`] for how).
+    ///
+    /// With images and a model that takes none (`model_takes_images` is
+    /// false), no image is sent and the text ends with
+    /// [`IMAGES_NOT_SHOWN`], after a blank line when there is text before
+    /// it. Nothing here knows which models take images
+    /// ([`ModelInfo`] and the price catalog do not say): the caller does
+    /// (ClaxBot's `RunSettings::model_takes_images`), and a caller that
+    /// does not know passes false.
+    ///
+    /// Neither the number of images nor their size or type is checked: the
+    /// provider's limits are the caller's to keep.
+    pub fn tool_result_with_images(
+        tool_use_id: impl Into<String>,
+        content: impl Into<String>,
+        is_error: bool,
+        images: &[ToolImage],
+        model_takes_images: bool,
+    ) -> Block {
+        let mut text: String = content.into();
+        if images.is_empty() {
+            return Block::tool_result(tool_use_id, text, is_error);
+        }
+        if !model_takes_images {
+            if !text.is_empty() {
+                text.push_str("\n\n");
+            }
+            text.push_str(IMAGES_NOT_SHOWN);
+            return Block::tool_result(tool_use_id, text, is_error);
+        }
+        let mut parts = Vec::with_capacity(images.len() + 1);
+        if !text.is_empty() {
+            parts.push(json!({"type": "text", "text": text}));
+        }
+        parts.extend(images.iter().map(ToolImage::to_json));
+        Block::ToolResult {
+            tool_use_id: tool_use_id.into(),
+            content: Value::Array(parts),
             is_error,
             cache_control: None,
         }

@@ -3,7 +3,7 @@ declare const fake: {
   count(): Promise<Int>;
   /** The value kept under a name, null when there is none. @read */
   get(name: string): Promise<string | null>;
-  /** Keeps a value under a name. @write @throws key_reused */
+  /** Keeps a value under a name. @write */
   set(name: string, value: string): Promise<Written>;
   /** Always fails. @read @throws broken */
   fail(): Promise<null>;

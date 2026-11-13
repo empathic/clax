@@ -11,7 +11,8 @@ use crate::dts::read_doc;
 use crate::model::Index;
 use crate::value::measured;
 use crate::{
-    Access, Definition, Interface, Limits, Op, Ty, ValueErrorKind, declaration, print, print_within,
+    Access, Author, Definition, Interface, Limits, Op, Reserved, Ty, ValueErrorKind, declaration,
+    print, print_within,
 };
 use serde_json::{Value, json};
 
@@ -1069,12 +1070,24 @@ fn error_codes_are_looked_at_once_each_and_not_at_all_past_their_limit() {
         list: 16_000,
         ..Limits::default()
     };
+    let reserved = Reserved::of(&[]);
+    let as_host = Author::Host {
+        reserved: &reserved,
+    };
     assert_eq!(
-        error_codes(&op(16_000), "demo.x", 0, &many).map_err(|_| ()),
+        error_codes(&op(16_000), "demo.x", 0, as_host, &many, Notation::Dts).map_err(|_| ()),
         Ok(16_000)
     );
     // More than the limit: refused by their number, with none compared.
-    let e = error_codes(&op(16_000), "demo.x", 0, &Limits::default()).unwrap_err();
+    let e = error_codes(
+        &op(16_000),
+        "demo.x",
+        0,
+        as_host,
+        &Limits::default(),
+        Notation::Dts,
+    )
+    .unwrap_err();
     assert_eq!(e.site, Decl::Code(0, 128).into());
     assert_eq!(
         e.message,

@@ -5,10 +5,11 @@
 //! runs started of a host's kind, and the contract fixture's script
 //! replayed through a daemon.
 
-use clax_bot::bot_surfaces::{CallFailure, Millis};
+use clax_bot::bot_surfaces::{CallFailure, Millis, Retry};
 use clax_bot::broker::{CallBroker, Sending};
 use clax_bot::clax_surface::wire::{
-    Delivery, End, Notation, Outcome, RegisterRequest, ServeRequest, Settings, StartRunRequest,
+    Bound, Delivery, End, Notation, Outcome, RegisterRequest, RunSettings, ServeRequest, Settings,
+    StartRunRequest,
 };
 use clax_bot::surface::{CallPlace, Claim};
 use clax_core::audit::AuditCtx;
@@ -191,6 +192,8 @@ impl Daemon {
             place: &place,
             waits: false,
             deadline,
+            retry: Retry::NONE,
+            joined: None,
         };
         self.ts
             .state
@@ -271,6 +274,31 @@ fn routes() -> Vec<(Method, &'static str, Value)> {
             Method::POST,
             "/api/bot/surfaces/desk/runs",
             json!({"registration": "0".repeat(32), "kind": "tidy", "request": {"ask": "x"}}),
+        ),
+        (
+            Method::PUT,
+            "/api/bot/surfaces/desk/content?registration=00000000000000000000000000000000&run=r1",
+            Value::Null,
+        ),
+        (
+            Method::GET,
+            "/api/bot/surfaces/desk/content/c1?registration=00000000000000000000000000000000&run=r1",
+            Value::Null,
+        ),
+        (
+            Method::GET,
+            "/api/bot/surfaces/desk/runs/r1?registration=00000000000000000000000000000000",
+            Value::Null,
+        ),
+        (
+            Method::POST,
+            "/api/bot/surfaces/desk/runs/r1/messages",
+            json!({"registration": "0".repeat(32), "message": {"say": "x"}}),
+        ),
+        (
+            Method::PUT,
+            "/api/bot/surfaces/desk/joins",
+            json!({"registration": "0".repeat(32), "clax": []}),
         ),
     ]
 }
@@ -399,10 +427,8 @@ async fn a_surface_registers_in_either_notation_and_is_listed() {
     for r in [&a, &b] {
         let id = r["registration"].as_str().unwrap();
         assert!(clax_bot::bot_surfaces::is_registration_id(id), "{id}");
-        assert_eq!(
-            r["withheld"],
-            json!([{"op": "snapshot", "reason": "content"}])
-        );
+        // A daemon that keeps content withholds no operation.
+        assert_eq!(r.get("withheld"), None);
     }
     // The store keeps who registered it, the prompt and the settings.
     let row = ts
@@ -429,9 +455,9 @@ async fn a_surface_registers_in_either_notation_and_is_listed() {
     assert_eq!(
         listed[0],
         json!({"name": "desk", "registration": a["registration"], "hash": a["hash"],
-            "connected": true, "withheld": [{"op": "snapshot", "reason": "content"}],
+            "connected": true, "withheld": [],
             "registered_at": "2026-11-11T00:00:00.000Z",
-            "last_served_at": "2026-11-11T00:00:00.001Z"})
+            "last_served_at": "2026-11-11T00:00:00.001Z", "joins": {"clax": []}})
     );
     assert_eq!(listed[1]["registration"], b["registration"]);
     assert_eq!(listed[1]["last_served_at"], Value::Null);
@@ -875,13 +901,14 @@ async fn a_run_of_a_hosts_kind_is_made_with_its_operations_and_no_artifact() {
         serde_json::from_str::<Value>(&made.request_json).unwrap(),
         json!({"ask": "Tidy the desk."})
     );
-    // Everything the kind allows but what is withheld for content, and
-    // no binding of Clax's own surface.
+    // Everything the kind allows (an operation that names content too,
+    // on a daemon that keeps it), and no binding of Clax's own surface.
     assert_eq!(
         serde_json::from_str::<Value>(&made.bindings_json).unwrap(),
         json!({"v": 2, "bindings": [{"surface": "desk", "hash": hash, "registration": reg,
-            "scope": null,
-            "operations": ["desk.lamps", "desk.settings.set", "desk.notify", "desk.ask"]}]})
+            "settings": {}, "scope": null,
+            "operations": ["desk.lamps", "desk.snapshot", "desk.settings.set", "desk.notify",
+                           "desk.ask"]}]})
     );
     let started: Vec<String> = ts
         .store
@@ -905,7 +932,10 @@ async fn a_run_of_a_hosts_kind_is_made_with_its_operations_and_no_artifact() {
         .unwrap();
     let (_, made, _) = ts.store.run_with_steps_as_made(&narrow).unwrap().unwrap();
     let bindings: Value = serde_json::from_str(&made.bindings_json).unwrap();
-    assert_eq!(bindings["bindings"][0]["operations"], json!(["desk.lamps"]));
+    assert_eq!(
+        bindings["bindings"][0]["operations"],
+        json!(["desk.lamps", "desk.snapshot"])
+    );
 
     // And so does the registration's `allow`.
     let mut limited = FakeHost::new(
@@ -932,6 +962,8 @@ async fn a_run_of_a_hosts_kind_is_made_with_its_operations_and_no_artifact() {
         bindings["bindings"][0]["operations"],
         json!(["desk.settings.set"])
     );
+    // `allow` is in the operations, and not kept again with the settings.
+    assert_eq!(bindings["bindings"][0]["settings"], json!({}));
 
     // Its person reads it with the token, and stops it.
     let (s, v) = get(ts, &format!("/api/bot/runs/{id}")).await;
@@ -956,6 +988,73 @@ async fn a_run_of_a_hosts_kind_is_made_with_its_operations_and_no_artifact() {
         .collect();
     assert_eq!(cancels.len(), 1);
     assert_eq!(cancels[0].ids.artifact, None);
+}
+
+/// A run keeps, in its binding, the settings its registration had when
+/// it was started, all but `allow`: a host that goes on as the
+/// registration with others changes them for the runs it starts
+/// afterwards alone.
+#[tokio::test]
+async fn a_run_keeps_its_registrations_settings_as_they_were_when_it_started() {
+    let d = daemon().await;
+    d.configured().await;
+    let ts = &d.ts;
+    let settings_of = |run: &str| -> Value {
+        let (_, made, _) = ts.store.run_with_steps_as_made(run).unwrap().unwrap();
+        serde_json::from_str::<Value>(&made.bindings_json).unwrap()["bindings"][0]["settings"]
+            .clone()
+    };
+    let loose = Settings {
+        allow: Some(vec!["desk.*".into()]),
+        max_effects_per_run: Some(Bound::At(3)),
+        call_timeout_s: Some(Bound::At(20)),
+        runs: Some(RunSettings {
+            max_steps: Some(Bound::At(10)),
+            max_run_minutes: Some(Bound::None),
+        }),
+        ..Settings::default()
+    };
+    let mut host = FakeHost::new(
+        HttpTransport::of(ts),
+        "desk",
+        Notation::Dts,
+        &file("desk.d.ts"),
+    )
+    .with_registration(None, loose);
+    host.register().await.unwrap();
+    let reg = host.registration().unwrap().to_string();
+    let early = host
+        .start_run("tidy", json!({"ask": "Tidy."}), None)
+        .await
+        .unwrap();
+    let tight = Settings {
+        call_timeout_s: Some(Bound::At(5)),
+        wait_limit_s: Some(Bound::At(60)),
+        ..Settings::default()
+    };
+    let mut again = FakeHost::new(
+        HttpTransport::of(ts),
+        "desk",
+        Notation::Dts,
+        &file("desk.d.ts"),
+    )
+    .with_registration(None, tight)
+    .resume(&reg);
+    again.register().await.unwrap();
+    assert_eq!(again.registration(), Some(reg.as_str()));
+    let late = again
+        .start_run("tidy", json!({"ask": "Tidy again."}), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        settings_of(&early),
+        json!({"max_effects_per_run": 3, "call_timeout_s": 20,
+               "runs": {"max_steps": 10, "max_run_minutes": "none"}})
+    );
+    assert_eq!(
+        settings_of(&late),
+        json!({"call_timeout_s": 5, "wait_limit_s": 60})
+    );
 }
 
 #[tokio::test]
@@ -1461,9 +1560,16 @@ async fn parked_at(at: &str) -> Parked {
         tokio::spawn(async move { driver.run_until_idle(BUDGET).await })
     };
     // The read, answered at once; then the question, which the host
-    // accepts and does not answer.
-    assert!(matches!(host.serve_once().await, Served::Delivered(c) if c.len() == 1));
-    assert!(matches!(host.serve_once().await, Served::Delivered(c) if c.len() == 1));
+    // accepts and does not answer. Each serve also brings the run's
+    // events (its first turn's commit), so the host serves until it has
+    // the question.
+    host.serve_until(|h| !h.calls_of("ask").is_empty(), 8)
+        .await
+        .expect("the question comes");
+    assert_eq!(
+        (host.calls_of("lamps").len(), host.calls_of("ask").len()),
+        (1, 1)
+    );
     let mut host = host.wait_ms(0);
     assert!(matches!(host.serve_once().await, Served::Delivered(c) if c.is_empty()));
     let ask = host.calls_of("ask")[0].id.clone();
@@ -1473,6 +1579,14 @@ async fn parked_at(at: &str) -> Parked {
     d.advance(10_000);
     d.sleeper.fire(PARK_AFTER);
     ticking.await.unwrap();
+    // The host is told the run parked.
+    let Served::Delivered(told) = host.serve_once().await else {
+        panic!("not served")
+    };
+    assert!(
+        matches!(&told[..], [Delivery::Event(e)] if e.event["type"] == "parked"),
+        "{told:?}"
+    );
     Parked {
         d,
         driver,
@@ -1698,7 +1812,13 @@ async fn a_run_parked_when_the_daemon_restarts_goes_on_when_its_host_comes_back(
     let Served::Delivered(told) = host.serve_once().await else {
         panic!("not served")
     };
-    assert_eq!(told.len(), 1);
+    // The end, after the run's events (the step resumed, and each step
+    // committed after).
+    let ends: Vec<&Delivery> = told
+        .iter()
+        .filter(|d| !matches!(d, Delivery::Event(_)))
+        .collect();
+    assert_eq!(ends.len(), 1, "{told:?}");
     let ended = host.ended()[0].clone();
     assert_eq!(
         (ended.run.as_str(), &ended.end),

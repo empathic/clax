@@ -13,6 +13,7 @@ You act for the person who sent the request, with their rights and no others.
 
 Rules:
 - {core.data}
+- {core.messages}
 - {core.images}
 - {core.finish}
 {rules}

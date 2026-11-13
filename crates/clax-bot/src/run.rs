@@ -49,7 +49,7 @@ use crate::policy::{
 };
 use crate::prompt;
 use crate::registry::{Providers, RunSurfaces};
-use crate::surface::{End, SurfaceProvider};
+use crate::surface::{End, Progress, SurfaceProvider};
 use crate::web::WebSource;
 use clax_bot_sandbox::{CancelToken, Limits, MaybeSendSync, Sandbox};
 use clax_core::audit::{Actor, AuditCtx, AuditRecord, Via};
@@ -95,6 +95,13 @@ pub struct RunSettings {
     /// Messages API's whatever it is.
     pub api: ModelApi,
     pub base_url: String,
+    /// The model takes images in a tool result: what
+    /// `Block::tool_result_with_images` is told. Nothing in a model's
+    /// metadata says so (`ModelInfo`, the price catalog), so it is a
+    /// setting, off by default: a model is shown no image unless this says
+    /// it takes them. The daemon's `[bot] model_takes_images` sets it for
+    /// every model of the instance; nothing stored sets it.
+    pub model_takes_images: bool,
     pub max_tokens: u32,
     pub max_steps: u32,
     /// Credits (not milli-credits) one run may spend.
@@ -135,6 +142,7 @@ impl Default for RunSettings {
             enabled: true,
             api: ModelApi::Anthropic,
             base_url: "https://api.anthropic.com".into(),
+            model_takes_images: false,
             max_tokens: 32_000,
             max_steps: 40,
             max_run_credits: 200,
@@ -1133,8 +1141,19 @@ pub async fn tick(
         .policy
         .run_settings(&surfaces.info, instance.clone())
         .and_then(|settings| Ok((deps.policy.limits(&surfaces.info, &settings)?, settings)));
+    // Each binding's surface may lower the policy's caps, never raise
+    // them (a host's `runs.max_steps` and `runs.max_run_minutes`): a run
+    // that reaches one stops as at the policy's.
     let (settings, limits, policy_error) = match asked {
-        Ok((limits, settings)) => (settings, limits, None),
+        Ok((limits, settings)) => (
+            settings,
+            surfaces
+                .info
+                .bindings
+                .iter()
+                .fold(limits, |limits, binding| limits.within(&binding.limits)),
+            None,
+        ),
         Err(e) => (
             instance.clone(),
             RunLimits::of(&instance),
@@ -1143,8 +1162,9 @@ pub async fn tick(
     };
     let overflows = Overflows::of(&steps);
     // The time the run spent parked is no part of its minutes.
-    let parked = store
-        .run_parking(run_id)?
+    let parking = store.run_parking(run_id)?;
+    let parked = parking
+        .as_ref()
         .map_or(0, |p| u64::try_from(p.parked_ms).unwrap_or(0));
     let t = Tick {
         parked: Duration::from_millis(parked),
@@ -1165,6 +1185,14 @@ pub async fn tick(
         opts,
         started,
     };
+    // A script step that parked before is run again: it resumes.
+    if t.open.as_ref().is_some_and(|s| s.kind == StepKind::Script)
+        && parking.is_some_and(|p| p.parks > 0)
+    {
+        t.surfaces
+            .kind_provider()
+            .progress(&t.surfaces.info, &Progress::Resumed { step: n });
+    }
     match t.step().await {
         Err(e) if fenced(&e) => Ok(TickOutcome::wait(Wait::NotOurs, Some(n), None)),
         other => other,
@@ -1356,6 +1384,7 @@ impl Tick<'_> {
             )?);
         }
         let summary = step_summary(kind, &commit.payload);
+        let delivered = commit.delivered.clone();
         let c = match self.store.commit_bot_step_on(
             &self.ctx,
             &self.run.id,
@@ -1387,6 +1416,19 @@ impl Tick<'_> {
                 summary,
             },
         );
+        // The step that ends the run is told by the run's `ended`, which
+        // its commit kept: an event of it could reach the host after
+        // that.
+        if !c.run.status.is_terminal() {
+            self.surfaces.kind_provider().progress(
+                &self.surfaces.info,
+                &Progress::Step {
+                    step: self.n,
+                    kind,
+                    delivered: &delivered,
+                },
+            );
+        }
         if c.run.status.is_terminal() {
             self.emit(
                 attempt,
@@ -1869,7 +1911,14 @@ impl Tick<'_> {
             (core.system.unwrap_or_default(), Vec::new())
         };
         let mut messages = core.messages;
-        push(&mut messages, Role::User, user.clone());
+        // The messages sent to the run that it was not given yet end
+        // the turn's user message, after the request on a first turn;
+        // a turn that continues the model's own answer takes none.
+        let continues =
+            user.is_empty() && messages.last().is_some_and(|m| m.role == Role::Assistant);
+        let (inbox, delivered) = self.inbox(continues)?;
+        let sent: Vec<Block> = user.iter().cloned().chain(inbox).collect();
+        push(&mut messages, Role::User, sent.clone());
         // What the policy shows of them, and its record when that is not
         // the core's projection.
         let ask = HistoryAsk::new(HistoryFor::NextTurn, self.overflows.level);
@@ -1918,6 +1967,16 @@ impl Tick<'_> {
             self.limits.max_invalid_results,
             &self.hist.next,
         );
+        // The images of a script step no answered turn came after, read
+        // from the store now ([`crate::images::show`]), and the items they
+        // are: marked shown once this turn commits the model's answer.
+        let (messages, showing) = crate::images::show(
+            self.store,
+            &self.run.id,
+            &self.steps,
+            self.settings.model_takes_images,
+            messages,
+        )?;
         let mut req = MessagesRequest {
             model: self.run.model.clone(),
             max_tokens: self.settings.max_tokens,
@@ -2153,7 +2212,7 @@ impl Tick<'_> {
                     // policy shows less; else it stops as any refusal.
                     if self.deps.policy.is_overflow(&e)
                         && let Some(mut next) =
-                            self.overflowed(OverflowPath::Refused, sent_bytes, &user, &[])
+                            self.overflowed(OverflowPath::Refused, sent_bytes, &sent, &[])
                     {
                         next["overflow"]["error"] = json!(e.to_string());
                         break Answer::TooLong(next);
@@ -2173,6 +2232,7 @@ impl Tick<'_> {
         };
         // What the step keeps of the answer: a refused request has no
         // blocks and used nothing.
+        let answered = matches!(answer, Answer::Message(_));
         let (assistant, stop, model, u, next) = match answer {
             Answer::Message(msg) => {
                 if let Some(slot) = slot {
@@ -2181,7 +2241,7 @@ impl Tick<'_> {
                 let mut next = next_after(&msg, self.hist.nudged, &finish);
                 if msg.stop_reason == Some(StopReason::ModelContextWindowExceeded)
                     && let Some(shorter) =
-                        self.overflowed(OverflowPath::StopReason, sent_bytes, &user, &msg.content)
+                        self.overflowed(OverflowPath::StopReason, sent_bytes, &sent, &msg.content)
                 {
                     next = shorter;
                 }
@@ -2221,7 +2281,9 @@ impl Tick<'_> {
         }
         if first {
             payload["system"] = json!(system);
-            payload["user"] = Value::Array(user.iter().map(Block::to_json).collect());
+        }
+        if first || !delivered.is_empty() {
+            payload["user"] = Value::Array(sent.iter().map(Block::to_json).collect());
         }
         if let Some(shown) = shown {
             payload["shown"] = shown;
@@ -2254,6 +2316,7 @@ impl Tick<'_> {
                 payload,
                 usage,
                 events: vec![event],
+                delivered,
                 ..StepCommit::default()
             },
             Observed {
@@ -2261,7 +2324,44 @@ impl Tick<'_> {
                 ..Observed::default()
             },
         )?;
+        if answered
+            && c.is_ok()
+            && let Err(e) = self.store.mark_bot_content_shown(&self.run.id, &showing)
+        {
+            tracing::warn!(
+                "clax-bot: run {}'s images were not marked shown: {e}",
+                self.run.id
+            );
+        }
         Ok(self.outcome(StepKind::Turn, c))
+    }
+
+    /// The messages of the run's inbox it was not given yet
+    /// (`Store::undelivered_messages`), in the order they arrived, each
+    /// as a text block ([`prompt::message_of`]), and their `seq`s, for
+    /// the turn's commit to mark delivered: none when the turn
+    /// `continues` the model's own answer, and none read for a run
+    /// whose kind takes no messages (every `clax` run's).
+    fn inbox(&self, continues: bool) -> Result<(Vec<Block>, Vec<i64>)> {
+        let info = &self.surfaces.info;
+        let surface = self.surfaces.kind_provider().definition();
+        let takes = info
+            .kind
+            .split_once('.')
+            .and_then(|(_, kind)| surface.kind(kind))
+            .is_some_and(|kind| kind.message.is_some());
+        if continues || !takes {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        Ok(self
+            .store
+            .undelivered_messages(&self.run.id)?
+            .into_iter()
+            .map(|m| {
+                let text = prompt::message_of(info, surface, m.seq, &m.body);
+                (Block::text(text), m.seq)
+            })
+            .unzip())
     }
 }
 

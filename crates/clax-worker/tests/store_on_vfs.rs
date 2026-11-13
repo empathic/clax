@@ -226,30 +226,33 @@ fn the_store_repairs_a_database_an_older_build_migrated_on_the_vfs() {
     assert_eq!(store.integrity_check().unwrap(), "ok");
 }
 
-/// The runs [`migration_64_rebuilds_bot_runs_within_its_cost_a_run_on_the_vfs`]
-/// migrates.
+/// The runs [`migrations_64_and_65_write_no_run_on_the_vfs`] migrates.
 const RUNS_MIGRATED: u64 = 4_000;
 
-/// The most chunks migration 64's transaction may write for each thousand
-/// runs it copies: 200, which is 819 bytes a run. Measured at 176 (703
-/// chunks, 720 bytes a run) for [`RUNS_MIGRATED`] runs of one to three
-/// threads. The VFS refuses a transaction over 4,096 chunks
-/// (`clax_do_vfs::MAX_TRANSACTION_BYTES`), so at this bound a database of
-/// 20,000 runs still migrates; a change that makes a run's row or its
-/// indexes wider shows here before it lowers that number unseen.
-const CHUNKS_PER_THOUSAND_RUNS: usize = 200;
+/// The most chunks migration 64's transaction may write, however many
+/// runs the database holds: it adds three columns to `bot_runs` and edits
+/// the table's text in `sqlite_schema`, rewriting no row. A copy of
+/// `bot_runs`, as the migration once made, wrote 703 chunks for
+/// [`RUNS_MIGRATED`] runs (about 720 bytes a run), and on the hosted
+/// Worker, whose VFS refuses a transaction over 4,096 chunks
+/// (`clax_do_vfs::MAX_TRANSACTION_BYTES`), failed from about 25,000 runs.
+/// A change that makes it copy or rewrite the runs again fails this bound.
+const MIGRATION_64_CHUNKS: usize = 32;
 
 /// The most chunks migration 65's transaction may write, however many
-/// runs the database holds: it makes five empty tables, adds columns to
+/// runs the database holds: it makes eight empty tables, adds columns to
 /// `bot_runs` and `bot_steps` without rewriting a row and makes one index
-/// again, over the runs that have not ended. Measured at 25 chunks beside
-/// [`RUNS_MIGRATED`] ended runs. A change that makes it copy `bot_runs`
-/// (hundreds of chunks here) fails this bound.
-const MIGRATION_65_CHUNKS: usize = 32;
+/// again, over the runs that have not ended. Measured at 36 chunks beside
+/// [`RUNS_MIGRATED`] ended runs (25 before `bot_content`, `bot_joins` and
+/// `bot_messages`, whose tables and indexes are a new page each). A change
+/// that makes it copy `bot_runs` (hundreds of chunks here) fails this
+/// bound.
+const MIGRATION_65_CHUNKS: usize = 48;
 
-/// Migration 64 copies every run in one transaction, which on the VFS is
-/// one commit of at most 16 MiB: its cost a run is held under
-/// [`CHUNKS_PER_THOUSAND_RUNS`], and the runs come through it.
+/// Migrations 64 and 65 each commit a few chunks beside [`RUNS_MIGRATED`]
+/// runs, however many there are: neither copies nor rewrites a run, and on
+/// the VFS each is one commit of at most 16 MiB. The runs come through
+/// both, each read as made with what making it now would write.
 ///
 /// The database starts at 63 as the SQL of migrations 1 to 63 leaves it,
 /// without their Rust steps (the install's ID, the seeded cost lines),
@@ -257,10 +260,11 @@ const MIGRATION_65_CHUNKS: usize = 32;
 /// takes the schema version from 63 to 64 ([`MemPages::steps`]), so a
 /// later migration's commit, however large, is not counted as this one's.
 ///
-/// The commit that takes the version from 64 to 65 on the same database
-/// is held under [`MIGRATION_65_CHUNKS`]: it copies no run.
+/// Migration 64's commit is held under [`MIGRATION_64_CHUNKS`], and the
+/// commit that takes the version from 64 to 65 under
+/// [`MIGRATION_65_CHUNKS`].
 #[test]
-fn migration_64_rebuilds_bot_runs_within_its_cost_a_run_on_the_vfs() {
+fn migrations_64_and_65_write_no_run_on_the_vfs() {
     let dir = tempfile::tempdir().unwrap();
     let home = Home::at(dir.path().join("clax"));
     let pages = Rc::new(MemPages::default());
@@ -322,15 +326,12 @@ fn migration_64_rebuilds_bot_runs_within_its_cost_a_run_on_the_vfs() {
             before + 1
         );
     };
+    eprintln!("migration 64 wrote {chunks} chunks beside {RUNS_MIGRATED} runs");
     assert!(
-        chunks * 1_000 <= CHUNKS_PER_THOUSAND_RUNS * RUNS_MIGRATED as usize,
-        "migration 64 wrote {chunks} chunks for {RUNS_MIGRATED} runs, over \
-         {CHUNKS_PER_THOUSAND_RUNS} a thousand"
-    );
-    assert!(
-        chunks * 1_000 >= 100 * RUNS_MIGRATED as usize,
-        "migration 64 wrote {chunks} chunks for {RUNS_MIGRATED} runs, under 100 a thousand: \
-         fewer than the runs' own rows fill, so the commit did not copy them"
+        chunks <= MIGRATION_64_CHUNKS,
+        "migration 64 wrote {chunks} chunks beside {RUNS_MIGRATED} runs, over \
+         {MIGRATION_64_CHUNKS}: it adds columns, relaxes constraints in the schema's text and \
+         rewrites no run"
     );
     let surfaces: Vec<usize> = steps
         .iter()
@@ -358,6 +359,24 @@ fn migration_64_rebuilds_bot_runs_within_its_cost_a_run_on_the_vfs() {
     let run = store.run(&last).unwrap().expect("the last run");
     assert_eq!(run.thread_ids.len(), ((RUNS_MIGRATED - 1) % 3 + 1) as usize);
     assert_eq!(run.web, "search,fetch");
+    let (_, made, _) = store
+        .run_with_steps_as_made(&last)
+        .unwrap()
+        .expect("the last run");
+    assert_eq!(made.kind, "clax.thread");
+    assert!(made.bindings().unwrap().of("clax").is_some());
+    assert!(
+        made.bindings_json
+            .ends_with(r#""granted":["web.search","web.fetch"]}]}"#),
+        "{}",
+        made.bindings_json
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&made.request_json).unwrap()["thread_ids"]
+            .as_array()
+            .map(Vec::len),
+        Some(run.thread_ids.len())
+    );
     drop(store);
     drop(registered);
 
@@ -367,10 +386,8 @@ fn migration_64_rebuilds_bot_runs_within_its_cost_a_run_on_the_vfs() {
     let (version, runs, bound): (u32, u64, u64) = conn
         .query_row(
             "SELECT (SELECT user_version FROM pragma_user_version), count(*),
-                    count(*) FILTER (WHERE kind = 'clax.thread'
-                        AND json_extract(bindings_json, '$.bindings[0].granted[1]') = 'web.fetch'
-                        AND json_array_length(request_json, '$.thread_ids')
-                            = json_array_length(thread_ids_json))
+                    count(*) FILTER (WHERE kind IS NULL AND bindings_json IS NULL
+                        AND request_json IS NULL)
                FROM bot_runs",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
@@ -384,7 +401,6 @@ fn migration_64_rebuilds_bot_runs_within_its_cost_a_run_on_the_vfs() {
     assert_eq!(
         (runs, bound),
         (RUNS_MIGRATED, RUNS_MIGRATED),
-        "(runs kept, runs with kind clax.thread, web.fetch granted and as many request \
-         threads as thread_ids_json), each expected to be every run seeded"
+        "(runs kept, runs the migrations left unwritten), each expected to be every run seeded"
     );
 }

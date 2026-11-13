@@ -169,6 +169,37 @@ fn throws_takes_one_code_and_is_written_again_for_each() {
     );
 }
 
+/// A host's operation declares no code only Clax's core gives a
+/// script, on the line of its `@throws`; `unavailable` it may declare,
+/// and Clax's own surface may declare any of them.
+#[test]
+fn a_hosts_operation_declares_none_of_the_cores_codes() {
+    for code in crate::wire::CORE_CODES {
+        refused(
+            &file(
+                &format!(
+                    "  /**\n   * Notes.\n   * @effect @throws busy\n   * @throws {code}\n   */\n  note(): Promise<null>;"
+                ),
+                "",
+            ),
+            5,
+            &format!(
+                "operation `demo.note` is tagged @throws {code}, a code only Clax gives a script"
+            ),
+        );
+        let own = format!(
+            "declare const demo: {{\n  /** Notes. @effect @throws {code} */\n  note(): Promise<null>;\n}};"
+        );
+        parse(&own, Author::Clax, &Limits::default())
+            .unwrap_or_else(|e| panic!("Clax's own surface declares {code}: {e}"));
+    }
+    host(&file(
+        "  /** Notes. @effect @throws busy @throws unavailable */\n  note(): Promise<null>;",
+        "",
+    ))
+    .expect("a host may declare `unavailable`");
+}
+
 #[test]
 fn tags_follow_prose_and_backticks_keep_a_word_as_prose() {
     // `@` alone is a word that starts with `@`: a tag, and no tag of the format.

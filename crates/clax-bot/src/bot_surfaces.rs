@@ -23,13 +23,15 @@
 //! |---|---|---|
 //! | 1 | Run | [`Hub::enqueue`]: the registration that serves the run, the operation, its checked arguments, its key and its deadline. The call is opened in the store ([`Pending::open_call`]) with the hash of the definition it is made under, and the registration's wake hook is called |
 //! | 2 | Host | [`Hub::open`] with the answers its `serve` brought; then, when [`Hub::ready`] says so (at once, on the hook, or when the request's wait is over), [`Hub::close`], which answers what the request is answered with |
-//! | 3 | Host | A later [`Hub::open`] brings the call's answer. A result is checked against the operation's declared result in the call's own definition ([`clax_surface::Operation::check_answer`]) and settles the call as its value, or as `invalid_result`; an error settles it as that error; `accepted` and `retry_after_ms` settle nothing |
+//! | 3 | Host | A later [`Hub::open`] brings the call's answer. A result is checked against the operation's declared result in the call's own definition ([`clax_surface::Operation::check_answer`]) and settles the call as its value, or as `invalid_result`; an error settles it as that error, unless the call is to be sent again ("Sending a call again"); `accepted` and `retry_after_ms` settle nothing |
 //! | 4 | Run | Reads the settled call from the store. [`Opened::settled`] and [`Hub::expire`] name the calls that were settled, for whoever wakes their runs |
 //!
 //! Every call has a deadline: the one [`Hub::enqueue`] is given, or
 //! [`HubLimits::call_ms`] from then. A call that is not settled when
-//! its deadline comes is settled with [`unanswered`], the error the
-//! design names ("Deadlines, retries and what a call may promise"):
+//! its deadline comes is settled with the failure its last attempt came
+//! to when it has not been sent since ("Sending a call again"), and
+//! otherwise with [`unanswered`], the error the design names
+//! ("Deadlines, retries and what a call may promise"):
 //!
 //! | The call was | The script is thrown |
 //! |---|---|
@@ -61,7 +63,9 @@
 //! - **A call that is not settled is sent again** with every `serve` of
 //!   its registration until it is settled or its host has answered
 //!   `accepted` for it; one its host answered `retry_after_ms` for is
-//!   left out until that long has passed.
+//!   left out until that long has passed, and one waiting out the wait
+//!   after a failed attempt until that wait is over ("Sending a call
+//!   again").
 //! - **An answer is checked by the definition its call was made
 //!   under,** whatever its registration has registered since.
 //! - **No call is lost.** Every call [`Hub::enqueue`] opened is
@@ -87,6 +91,54 @@
 //! `@once` operation, which cannot tell a repeat, says `accepted` as
 //! soon as it has the call, and until it has, tells a call it was sent
 //! twice by its ID.
+//!
+//! # Sending a call again
+//!
+//! Each call comes with its rule ([`Enqueue::retry`], [`Retry`]: the
+//! attempts it may have in all, and the waits between them, which
+//! double up to a longest). An attempt fails, and the call is sent
+//! again under its ID and key once the wait after it is over, when:
+//!
+//! | The attempt | Sent again | Unless |
+//! |---|---|---|
+//! | Its host answered an error that may be tried again (`unavailable`, or a declared code with `retryable: true`) | After the wait, with every `serve` until it is settled or accepted | The call is accepted and its operation is `@once` |
+//! | Its host accepted it and may have lost it: it serves again after it was not connected, or goes on as its registration (it started again) | After the wait, with every `serve` until it is accepted again or settled | Its operation is `@once`: never sent again once accepted |
+//!
+//! and in either case no more often than the rule's attempts, no more
+//! than [`HubLimits::resends_per_run`] times across a run's calls of one
+//! registration, and
+//! only when the wait ends before the call's deadline, which no attempt
+//! moves. A host's retryable error that is not sent again is the call's
+//! outcome at once (still `retryable`); one that is followed by a wait
+//! the deadline comes in is its outcome at the deadline. A failure that
+//! does not say it may be tried again settles the call at once. The
+//! answers of one `serve` are taken in their order, each finding the
+//! call as the answers before it left it, as if each came in a `serve`
+//! of its own: an `accepted` before a retryable error has the call
+//! accepted when the error is taken, and an error for an attempt whose
+//! next one is planned and not sent yet takes no attempt more.
+//! `retry_after_ms` is the host's own account, and no failure: the call
+//! stays open until its deadline, as long as its host asks for it
+//! later, and is sent again when the host asks, but no sooner than the
+//! rule's first wait ([`Retry::backoff_ms`]), so that a host answering
+//! `retry_after_ms: 0` is not sent the call again at once; it spends no
+//! attempt and none of the sendings again. A host that is not connected is waited
+//! for, within the deadline, by a call whose rule has more than one
+//! attempt, while the hub holds its registration; nothing is sent to it
+//! meanwhile, so a host that is away costs nothing, and one that comes
+//! and goes spends one attempt each time it comes back, with waits that
+//! grow. A registration the hub dropped ([`Hub::dropped`]) takes no
+//! call. With [`Retry::NONE`] a
+//! call is never sent again after a failure, a host that is away takes
+//! no call, and `retry_after_ms` is waited exactly, as before rules were
+//! given.
+//!
+//! The attempts are kept in memory, with the registration, and no rule
+//! is kept with a call: a hub that starts again gives each call it finds
+//! open [`HubLimits::retry_kept`] ([`Retry::NONE`] by default: as before
+//! rules were given), from no failures, until its run makes it again
+//! with its key (its step runs again), when the run's rule takes over.
+//! A call made again with its key goes on with the attempts it had.
 //!
 //! # Registrations
 //!
@@ -206,6 +258,64 @@ impl CallFailure {
     }
 }
 
+/// How often a call is sent again, and how long apart, when an attempt
+/// fails in a way that sending it again may get past ([`Enqueue::retry`];
+/// the module's documentation, "Sending a call again"). Every attempt
+/// is within the call's deadline, which no retry moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Retry {
+    /// The attempts a call may have in all: the first and every one
+    /// after a failure. 1 (or 0) sends no call again after a failure,
+    /// and holds no call for a host that is not connected.
+    pub attempts: u32,
+    /// The wait, in milliseconds, before the second attempt. Each later
+    /// wait is twice the one before.
+    pub backoff_ms: u64,
+    /// The longest wait between two attempts, in milliseconds.
+    pub backoff_max_ms: u64,
+}
+
+impl Retry {
+    /// No call is sent again after a failure.
+    pub const NONE: Retry = Retry {
+        attempts: 1,
+        backoff_ms: 0,
+        backoff_max_ms: 0,
+    };
+
+    /// The daemon's: three attempts, one second apart and then two.
+    pub const DAEMON: Retry = Retry {
+        attempts: 3,
+        backoff_ms: 1_000,
+        backoff_max_ms: 8_000,
+    };
+
+    /// Whether a call that has failed `failures` attempts may have one
+    /// more.
+    #[must_use]
+    pub fn another(&self, failures: u32) -> bool {
+        failures < self.attempts
+    }
+
+    /// The wait after the `failures`th failed attempt (1 for the first):
+    /// [`Retry::backoff_ms`] doubled for each failure before it, no
+    /// longer than [`Retry::backoff_max_ms`].
+    #[must_use]
+    pub fn wait_after(&self, failures: u32) -> u64 {
+        let doublings = failures.saturating_sub(1).min(63);
+        self.backoff_ms
+            .saturating_mul(1u64 << doublings)
+            .min(self.backoff_max_ms.max(self.backoff_ms))
+    }
+
+    /// Whether a host that is not connected is waited for: a call that
+    /// may be tried again is opened for it, and sent when it serves.
+    #[must_use]
+    pub fn waits_for_host(&self) -> bool {
+        self.attempts > 1
+    }
+}
+
 // ---------------------------------------------------------------------------
 // What is kept outside the hub
 // ---------------------------------------------------------------------------
@@ -232,6 +342,9 @@ pub struct NewCall {
     pub kind: CallKind,
     /// When the call is settled if nothing has settled it.
     pub deadline: Millis,
+    /// What a run a join bound the surface into is on
+    /// ([`wire::Call::joined`]).
+    pub joined: Option<Value>,
 }
 
 /// What the hub reads of an open call to decide what to do with it:
@@ -263,6 +376,9 @@ pub struct PendingCall {
     pub run: String,
     pub args: Vec<Value>,
     pub key: String,
+    /// What a run a join bound the surface into is on
+    /// ([`wire::Call::joined`]).
+    pub joined: Option<Value>,
 }
 
 /// What the hub reads of an unacknowledged end to decide what to do
@@ -336,6 +452,10 @@ pub struct PendingEnd {
     pub run: String,
     pub end: End,
     pub result: Option<Value>,
+    /// The `seq`s of the messages the run took and never gave its model
+    /// ([`wire::Ended::undelivered`]), as the store that keeps the run's
+    /// inbox has them; none in memory, which keeps no inbox.
+    pub undelivered: Vec<u64>,
 }
 
 /// Where what outlasts the process is kept: the store, for a daemon.
@@ -366,6 +486,15 @@ pub trait Pending {
 
     /// The surface the registration ID was issued for.
     fn registration_name(&mut self, id: &str) -> Result<Option<String>, Self::Error>;
+
+    /// The settings the registration `id` was last registered with, as
+    /// a store that keeps them has them (its registrant's JSON): what a
+    /// run whose binding keeps no settings of its own is given while the
+    /// hub does not hold the registration. `None` for a store that keeps
+    /// none, which is what this answers unless it is written.
+    fn registration_settings(&mut self, _id: &str) -> Result<Option<Value>, Self::Error> {
+        Ok(None)
+    }
 
     /// Records, at `now`, that the registration `id` was gone on with,
     /// under the definition `hash` ([`Pending::keep_definition`] has
@@ -496,6 +625,15 @@ pub trait Pending {
     fn expire_ends(&mut self, before: Millis) -> Result<usize, Self::Error>;
 }
 
+/// What `call` is settled as when its deadline comes: the failure its
+/// last attempt came to, when it has not been sent since (`last`), else
+/// [`unanswered`].
+fn settled_at_deadline(last: &BTreeMap<String, CallFailure>, call: &CallSummary) -> CallFailure {
+    last.get(&call.id)
+        .cloned()
+        .unwrap_or_else(|| unanswered(call))
+}
+
 /// What a call that was not answered by its deadline is settled as
 /// (the module's documentation has the table).
 #[must_use]
@@ -605,6 +743,63 @@ pub struct HubLimits {
     /// How long an ended run is delivered, in milliseconds. Default
     /// seven days.
     pub ended_ms: u64,
+    /// Whether the daemon keeps content (its store keeps blobs:
+    /// `clax_store::bot_content`). While it does not (`false`, the
+    /// default), an operation whose parameters or result hold a
+    /// `Content` or an `Image` is withheld ([`withheld`]); while it
+    /// does, none is, and a result's references are filled in from the
+    /// store before it settles its call ([`check_answers_filled`]).
+    pub content: bool,
+    /// The most bytes of one item of content a host uploads. Default
+    /// 20 MiB ([`clax_store::bot_content::CONTENT_ITEM_BYTES`]).
+    pub content_item_bytes: u64,
+    /// The most bytes of all of one run's content together. Default
+    /// 100 MiB ([`clax_store::bot_content::CONTENT_RUN_BYTES`]).
+    pub content_run_bytes: u64,
+    /// The most bytes of the content of all runs together: an upload
+    /// that would pass it is refused
+    /// ([`clax_store::bot_content::CODE_CONTENT_STORE_FULL`]). Default 1
+    /// GiB ([`clax_store::bot_content::CONTENT_TOTAL_BYTES`]).
+    pub content_total_bytes: u64,
+    /// The uploads of one registration in flight at once; one more is
+    /// refused before its body is read. Default 2.
+    pub uploads_per_registration: usize,
+    /// The events ([`Hub::event`]) kept for one registration until a
+    /// `serve` takes them; one more drops the oldest. Default 256.
+    pub events_per_registration: usize,
+    /// The messages a run may hold that it has not been given yet
+    /// (`POST …/runs/<id>/messages`). Default 32.
+    pub run_messages: usize,
+    /// The bytes of one message to a run, as JSON. Default 64 KiB.
+    pub run_message_bytes: usize,
+    /// How a call the store holds and the hub was given no rule for is
+    /// sent again: one opened before the hub started, whose run has not
+    /// made it again since (no rule is kept with a call). Default
+    /// [`Retry::NONE`]: such a call is not sent again after a failure,
+    /// nor when its host may have lost it, as every call was before
+    /// rules were given: a hub that starts again sends no call again
+    /// under a rule it was not given. Once its run makes it again with
+    /// its key (its step runs again), the run's rule takes over.
+    pub retry_kept: Retry,
+    /// How many times in all the calls of one run to one registration
+    /// are sent again after a failed attempt (a host's retryable error,
+    /// or a host that lost a call it had accepted): each registration a
+    /// run calls has its own count, so that one host cannot spend
+    /// another's. A failure past it is the call's outcome. A host's
+    /// `retry_after_ms` is not counted. Default 64.
+    pub resends_per_run: u32,
+}
+
+impl HubLimits {
+    /// The limits on content, as the store holds an upload to them.
+    #[must_use]
+    pub fn content_limits(&self) -> clax_store::bot_content::ContentLimits {
+        clax_store::bot_content::ContentLimits {
+            item_bytes: self.content_item_bytes,
+            run_bytes: self.content_run_bytes,
+            total_bytes: self.content_total_bytes,
+        }
+    }
 }
 
 impl Default for HubLimits {
@@ -635,6 +830,16 @@ impl Default for HubLimits {
             lease_ms: 300_000,
             call_ms: 24 * 60 * 60 * 1000,
             ended_ms: 7 * 24 * 60 * 60 * 1000,
+            content: false,
+            content_item_bytes: clax_store::bot_content::CONTENT_ITEM_BYTES,
+            content_run_bytes: clax_store::bot_content::CONTENT_RUN_BYTES,
+            content_total_bytes: clax_store::bot_content::CONTENT_TOTAL_BYTES,
+            uploads_per_registration: 2,
+            events_per_registration: 256,
+            run_messages: 32,
+            run_message_bytes: 64 * 1024,
+            retry_kept: Retry::NONE,
+            resends_per_run: 64,
         }
     }
 }
@@ -836,6 +1041,14 @@ pub struct Enqueue {
     /// When the call is settled if nothing has settled it. `None` is
     /// [`HubLimits::call_ms`] from now.
     pub deadline: Option<Millis>,
+    /// How the call is sent again when an attempt fails. A call made
+    /// again with its key keeps the rule and the attempts of the call
+    /// the hub holds.
+    pub retry: Retry,
+    /// What a run a join bound the surface into is on
+    /// ([`wire::Call::joined`]); `None` for a run the registration
+    /// started.
+    pub joined: Option<Value>,
 }
 
 /// Why a call was not opened. Nothing was sent to any host.
@@ -1197,8 +1410,17 @@ pub fn allow_patterns(list: &[String], limits: &Limits) -> Result<Vec<Pattern>, 
 /// [`allow_patterns`] takes it, and each limit `"none"` or a number in
 /// its range: 1 at the least for a time or a count of steps (0 would
 /// let nothing happen; `max_effects_per_run` may be 0), and no more
-/// than a year or a million.
+/// than a year or a million. `reader_view` is refused whatever it is:
+/// nothing implements it yet, and a registration that relies on it is
+/// told so rather than served as if it held.
 fn check_settings(limits: &HubLimits, settings: &Settings) -> Result<(), String> {
+    if let Some(view) = settings.reader_view {
+        let view = serde_json::to_value(view).unwrap_or(Value::Null);
+        return Err(format!(
+            "`reader_view` ({view}) is not supported yet: nothing shows a run's readers any \
+             part of a host's surface. Leave it out"
+        ));
+    }
     if let Some(allow) = &settings.allow {
         allow_patterns(allow, &limits.definition)?;
     }
@@ -1282,7 +1504,7 @@ pub fn read_registration(
         name: name.to_string(),
         registration: request.registration.clone(),
         hash: sha256_hex(canonical.as_bytes()),
-        withheld: withheld(&definition),
+        withheld: withheld(&definition, limits.content),
         definition: Arc::new(definition),
         canonical,
         prompt_hash: request.prompt.as_deref().map(|p| sha256_hex(p.as_bytes())),
@@ -1326,17 +1548,46 @@ impl From<Answer> for Checked {
     }
 }
 
+/// What fills a result's references to uploads in from the store, so
+/// that the script is given whole handles
+/// (`docs/superpowers/specs/2026-11-10-claxbot-surfaces-design.md`,
+/// "Content"): the daemon's, over `clax_store::bot_content`.
+pub trait FillContent {
+    /// The whole handle for `reference` (`{"id": …, "meta"?: …}`, as its
+    /// host sent it in the answer to the call `call`): the item's row,
+    /// which must be one the call's run holds and the call's registration
+    /// uploaded, with the reference's `meta`.
+    ///
+    /// # Errors
+    /// Why it cannot be filled in, as the rest of a sentence after the
+    /// place in the answer (`names no content of this run`): the call
+    /// settles `invalid_result`.
+    fn fill(&self, call: &str, reference: &Value) -> Result<Value, String>;
+}
+
 /// What a call of `op`, made under `definition`, is settled as by the
 /// result or the error its host answered (`settling`): the result when
 /// it is the operation's declared result and no longer than
 /// [`HubLimits::result_bytes`]; the error when the operation declares
-/// its code, or it is `unavailable`; `invalid_result` for any other.
-/// `None` for an answer that settles nothing.
+/// its code, or it is `unavailable`; `invalid_result` for any other,
+/// and for a code only Clax's core gives ([`wire::CORE_CODES`]) even
+/// when the definition declares it (one a check of this build would
+/// refuse, kept from before it). `None` for an answer that settles
+/// nothing.
+///
+/// A result whose type holds a `Content` or an `Image` has each
+/// reference in it filled in by `fill` for the call `id`, and is then
+/// checked as the script is to receive it
+/// ([`clax_surface::Operation::check_result`]): an `Image` whose bytes
+/// are no image fails it. With no `fill` such a result is
+/// `invalid_result`: nothing here keeps content.
 fn judge(
     limits: &HubLimits,
     definition: &Definition,
     op: &str,
+    id: &str,
     settling: Outcome,
+    fill: Option<&dyn FillContent>,
 ) -> Option<Result<Value, CallFailure>> {
     let shown_op = shown(op);
     let Some(operation) = definition.operation(op) else {
@@ -1354,10 +1605,13 @@ fn judge(
                     "clax.{shown_op}: the answer is too large: the limit is {limit} bytes of JSON"
                 ))
             } else {
-                operation.check_answer(&value).map_err(|e| e.message)
+                operation
+                    .content_in_answer(&value)
+                    .map_err(|e| e.message)
+                    .and_then(|places| filled(&operation, value, &places, id, fill))
             };
             match checked {
-                Ok(()) => Ok(value),
+                Ok(value) => Ok(value),
                 Err(message) => Err(CallFailure::new(CODE_INVALID_RESULT, message)),
             }
         }
@@ -1365,8 +1619,21 @@ fn judge(
             let message = cut(&error.message, limits.message_bytes);
             if error.code == CODE_UNAVAILABLE {
                 Err(CallFailure::new(error.code, message).retryable())
+            } else if wire::CORE_CODES.contains(&error.code.as_str()) {
+                Err(CallFailure::new(
+                    CODE_INVALID_RESULT,
+                    format!(
+                        "clax.{shown_op}: its host answered with the error `{}`, which only Clax gives a script: {message}",
+                        shown(&error.code)
+                    ),
+                ))
             } else if operation.op.throws.contains(&error.code) {
-                Err(CallFailure::new(error.code, message))
+                let failure = CallFailure::new(error.code, message);
+                Err(if error.retryable {
+                    failure.retryable()
+                } else {
+                    failure
+                })
             } else {
                 Err(CallFailure::new(
                     CODE_INVALID_RESULT,
@@ -1380,16 +1647,67 @@ fn judge(
     })
 }
 
+/// `value`, an answer of `operation` to the call `id` that passed its
+/// check, with the references at `places` filled in by `fill` and the
+/// whole checked as the script is to receive it.
+fn filled(
+    operation: &clax_surface::Operation<'_>,
+    mut value: Value,
+    places: &[clax_surface::ContentPlace],
+    id: &str,
+    fill: Option<&dyn FillContent>,
+) -> Result<Value, String> {
+    if places.is_empty() {
+        return Ok(value);
+    }
+    let name = shown(operation.name);
+    let Some(fill) = fill else {
+        return Err(format!(
+            "clax.{name}: the answer holds content, and this daemon keeps none"
+        ));
+    };
+    for place in places {
+        let at = |rest: &str| {
+            if place.at.is_empty() {
+                format!("clax.{name}: the answer {rest}")
+            } else {
+                format!("clax.{name}: the answer at {} {rest}", shown(&place.at))
+            }
+        };
+        let Some(slot) = value.pointer_mut(&place.at) else {
+            return Err(at("is not there"));
+        };
+        *slot = fill.fill(id, slot).map_err(|why| at(&why))?;
+    }
+    operation.check_result(&value).map_err(|e| e.message)?;
+    Ok(value)
+}
+
 /// Judges the results and errors of `answers` that `checking` names
 /// ([`Hub::checkable`]), with no hub: each against its own call's
 /// definition, as [`Hub::open`] would. The work of one is bounded by
 /// the definition's limits and [`HubLimits::result_bytes`], and is the
-/// work that is not to be done under a lock every host shares.
+/// work that is not to be done under a lock every host shares. A
+/// result that holds content is `invalid_result` (nothing fills it in:
+/// [`check_answers_filled`]).
 #[must_use]
 pub fn check_answers(
     limits: &HubLimits,
     answers: Vec<Answer>,
     checking: &[Checking],
+) -> Vec<Checked> {
+    check_answers_filled(limits, answers, checking, None)
+}
+
+/// [`check_answers`], with each result's references to uploads filled
+/// in by `fill` before the result is checked as the script is to
+/// receive it.
+#[must_use]
+pub fn check_answers_filled(
+    limits: &HubLimits,
+    answers: Vec<Answer>,
+    checking: &[Checking],
+    fill: Option<&dyn FillContent>,
 ) -> Vec<Checked> {
     answers
         .into_iter()
@@ -1399,13 +1717,64 @@ pub fn check_answers(
                 return Checked::from(answer);
             };
             let id = answer.id;
-            let outcome = match judge(limits, &of.definition, &of.op, answer.outcome.clone()) {
+            let judged = judge(
+                limits,
+                &of.definition,
+                &of.op,
+                &id,
+                answer.outcome.clone(),
+                fill,
+            );
+            let outcome = match judged {
                 Some(judged) => CheckedOutcome::Judged(judged),
                 None => CheckedOutcome::Raw(answer.outcome),
             };
             Checked { id, outcome }
         })
         .collect()
+}
+
+/// Where one open call is with its attempts ([`Retry`]). Kept with the
+/// registration, in memory: a hub that starts again knows none, and
+/// gives each call it finds [`HubLimits::retry_kept`] from no failures.
+#[derive(Clone, Debug)]
+struct Tries {
+    /// The run that made the call.
+    run: String,
+    rule: Retry,
+    /// Whether `rule` is the one the call's run gave
+    /// ([`Enqueue::retry`]), and not [`HubLimits::retry_kept`] for a
+    /// call the hub found in the store: a call made again with its key
+    /// replaces a rule that is not.
+    given: bool,
+    /// The attempts that failed.
+    failures: u32,
+    /// Not sent again before this instant.
+    not_before: Millis,
+    /// Due to be sent again although its host accepted it: the host
+    /// failed it in a way it may get past, or lost it.
+    again: bool,
+    /// Not delivered since it was made due again: new to its host.
+    fresh: bool,
+    /// What the last failed attempt came to, while the call has not
+    /// been sent since: what the call is settled as when its deadline
+    /// comes first.
+    last: Option<CallFailure>,
+}
+
+impl Tries {
+    fn new(run: &str, rule: Retry, given: bool) -> Tries {
+        Tries {
+            run: run.to_string(),
+            rule,
+            given,
+            failures: 0,
+            not_before: Millis(0),
+            again: false,
+            fresh: false,
+            last: None,
+        }
+    }
 }
 
 struct Reg {
@@ -1427,17 +1796,26 @@ struct Reg {
     /// The calls its host asked to be sent again, each with the
     /// instant it asked for.
     later: BTreeMap<String, Millis>,
+    /// How each of its open calls is sent again, and how far it has
+    /// got ([`Tries`]), by call ID.
+    tries: BTreeMap<String, Tries>,
+    /// Whether its host may have lost the calls it accepted: it was
+    /// gone on with (its host started again) and has not served since.
+    lost: bool,
     /// The ends a `serve` was answered with.
     ends_sent: BTreeSet<String>,
     /// When it was gone on with, with something changed, of late
     /// ([`HubLimits::changes`]).
     changes: Vec<Millis>,
+    /// The events no `serve` has taken yet, the oldest first
+    /// ([`Hub::event`]).
+    events: std::collections::VecDeque<wire::Event>,
 }
 
 /// Called with a registration's ID when there is something new to send
 /// it: whoever holds a `serve` of that registration asks
 /// [`Hub::ready`] again. It is called from inside [`Hub::enqueue`] and
-/// [`Hub::ended`], under whatever lock the hub is kept under, so it
+/// [`Hub::ended`] and [`Hub::event`], under whatever lock the hub is kept under, so it
 /// does not call the hub back; and a `serve` begins to listen for it
 /// before it first asks [`Hub::ready`], or a call that arrives between
 /// the two is not seen until the wait is over.
@@ -1459,6 +1837,14 @@ pub struct Hub {
     /// How many calls it has settled and ends it has recorded
     /// ([`Hub::settles`]).
     settles: u64,
+    /// How many times each run's calls of each registration were sent
+    /// again ([`HubLimits::resends_per_run`]), by run and registration.
+    resent: BTreeMap<(String, String), u32>,
+    /// The registrations it dropped since it started (a lease that
+    /// ended, or room made for another) whose hosts have not gone on as
+    /// them since, each with when, among them: the newest
+    /// [`HubLimits::registrations`] ([`Hub::dropped`]).
+    dropped: BTreeMap<String, u64>,
 }
 
 impl fmt::Debug for Hub {
@@ -1521,23 +1907,32 @@ fn cut(s: &str, limit: usize) -> &str {
 
 /// The operations of `definition` that a run would have but for their
 /// parameters or result holding a `Content` or an `Image`, in the
-/// definition's order: what a daemon that stores no content withholds.
+/// definition's order: what a daemon that stores no content withholds,
+/// and none for one that does (`content`, [`HubLimits::content`]).
 /// The rule is `clax_surface`'s ([`Definition::run_operations`], asked
-/// for each kind with nothing else narrowing it), so an operation no
-/// kind allows, which no run has in any case, is not listed.
+/// for each kind with nothing else narrowing it, and
+/// [`Definition::joined_operations`], for a run of Clax's own a join
+/// binds the surface into, which no kind's `@allow` narrows), so an
+/// operation no kind allows is listed too: a joined run may have it.
 #[must_use]
-pub fn withheld(definition: &Definition) -> Vec<Withheld> {
+pub fn withheld(definition: &Definition, content: bool) -> Vec<Withheld> {
+    if content {
+        return Vec::new();
+    }
     let prefix = format!("{}.", definition.name());
     let mut held: BTreeSet<&str> = BTreeSet::new();
-    for kind in definition.kinds() {
-        if let Some(run) = definition.run_operations(&kind.name, &RunScope::default()) {
-            held.extend(
-                run.withheld
-                    .into_iter()
-                    .filter(|(_, why)| *why == clax_surface::Withheld::Content)
-                    .map(|(op, _)| op),
-            );
-        }
+    let runs = definition
+        .kinds()
+        .iter()
+        .filter_map(|kind| definition.run_operations(&kind.name, &RunScope::default()))
+        .chain([definition.joined_operations(&RunScope::default())]);
+    for run in runs {
+        held.extend(
+            run.withheld
+                .into_iter()
+                .filter(|(_, why)| *why == clax_surface::Withheld::Content)
+                .map(|(op, _)| op),
+        );
     }
     definition
         .operations()
@@ -1566,6 +1961,8 @@ impl Hub {
             registrations: BTreeMap::new(),
             definitions: BTreeMap::new(),
             settles: 0,
+            resent: BTreeMap::new(),
+            dropped: BTreeMap::new(),
         }
     }
 
@@ -1638,13 +2035,54 @@ impl Hub {
             .limits
             .connected_ms
             .saturating_add(self.limits.lease_ms);
-        self.registrations.retain(|_, reg| {
+        let mut ended = Vec::new();
+        self.registrations.retain(|id, reg| {
             let lapsed = reg.holds.values().filter(|until| **until < now).max();
             if let Some(until) = lapsed {
                 reg.alive = reg.alive.max(*until);
             }
-            reg.holds.values().any(|until| *until >= now) || now.since(reg.alive) <= kept
+            let held =
+                reg.holds.values().any(|until| *until >= now) || now.since(reg.alive) <= kept;
+            if !held {
+                ended.push(id.clone());
+            }
+            held
         });
+        for id in ended {
+            self.forget_held(id);
+        }
+    }
+
+    /// Notes that the hub no longer holds registration `id`
+    /// ([`Hub::dropped`]), keeping the newest
+    /// [`HubLimits::registrations`] such notes.
+    fn forget_held(&mut self, id: String) {
+        let at = self.take_number();
+        self.dropped.insert(id, at);
+        while self.dropped.len() > self.limits.registrations.max(1) {
+            let Some(oldest) = self
+                .dropped
+                .iter()
+                .min_by_key(|(_, at)| **at)
+                .map(|(id, _)| id.clone())
+            else {
+                break;
+            };
+            self.dropped.remove(&oldest);
+        }
+    }
+
+    /// Whether the hub dropped the registration `id` at `now` or before,
+    /// since it started (its lease ended, or it made room for another),
+    /// and its host has not gone on as it since. Its calls then wait for
+    /// a host that nothing says will come back, where a registration the
+    /// hub does not hold and did not drop (it started again since, and
+    /// its host has not registered again yet) may resume. Of the
+    /// registrations dropped, the hub remembers the newest
+    /// [`HubLimits::registrations`]: an older one reads as not dropped.
+    pub fn dropped(&mut self, id: &str, now: Millis) -> bool {
+        self.advance(now);
+        self.dropped.contains_key(id)
     }
 
     /// Whether the registration is connected at the hub's instant,
@@ -1772,7 +2210,16 @@ impl Hub {
                     .unwrap_or(reg.alive);
                 let unconnected = served.after(connected).after(1);
                 let dropped = served.after(connected.saturating_add(lease)).after(1);
-                reg.later.values().copied().chain([unconnected, dropped])
+                let again = reg
+                    .tries
+                    .values()
+                    .filter(|t| t.again || t.fresh)
+                    .map(|t| t.not_before);
+                reg.later
+                    .values()
+                    .copied()
+                    .chain(again)
+                    .chain([unconnected, dropped])
             })
             .filter(|at| *at > now)
             .chain(deadline)
@@ -1942,9 +2389,11 @@ impl Hub {
         {
             return Err(RegisterError::FreshInvalid);
         }
-        for gone in &evicted {
-            self.registrations.remove(gone);
+        for gone in evicted {
+            self.registrations.remove(&gone);
+            self.forget_held(gone);
         }
+        self.dropped.remove(id);
         let made = self.take_number();
         let old = self.registrations.remove(id);
         self.registrations.insert(
@@ -1961,8 +2410,16 @@ impl Hub {
                 holds: old.as_ref().map(|r| r.holds.clone()).unwrap_or_default(),
                 alive: now,
                 later: old.as_ref().map(|r| r.later.clone()).unwrap_or_default(),
-                ends_sent: old.map(|r| r.ends_sent).unwrap_or_default(),
+                tries: old.as_ref().map(|r| r.tries.clone()).unwrap_or_default(),
+                // Going on as a registration is a host that started
+                // again, and may not have the calls it accepted.
+                lost: reading.registration.is_some(),
+                ends_sent: old
+                    .as_ref()
+                    .map(|r| r.ends_sent.clone())
+                    .unwrap_or_default(),
                 changes,
+                events: old.map(|r| r.events).unwrap_or_default(),
             },
         );
         self.remember(&hash, reading.definition);
@@ -2027,8 +2484,9 @@ impl Hub {
     ) -> Result<Vec<String>, String> {
         self.advance(now);
         let now = self.now;
+        let last = self.last_failures();
         let settled = store
-            .expire_calls(now, &unanswered)
+            .expire_calls(now, &|call| settled_at_deadline(&last, call))
             .map_err(|e| e.to_string())?;
         self.settles = self.settles.saturating_add(settled.len() as u64);
         if let Some(before) = now.0.checked_sub(self.limits.ended_ms) {
@@ -2057,9 +2515,11 @@ impl Hub {
     /// - an error settles it as that error when its code is one the
     ///   operation declares (`@throws`) or `unavailable`, and as
     ///   `invalid_result`, with the code and the message in its
-    ///   message, for any other;
+    ///   message, for any other; an error that may be tried again sends
+    ///   the call again instead, as its rule allows (the module's
+    ///   documentation, "Sending a call again");
     /// - `accepted` marks it as one its host has, which is not sent
-    ///   again;
+    ///   again unless its host may have lost it;
     /// - `retry_after_ms` leaves it out of what is sent until that long
     ///   from `now`.
     ///
@@ -2162,32 +2622,58 @@ impl Hub {
             });
         }
         let storage = |e: P::Error| ServeError::Storage(e.to_string());
-        let mut settled = store.expire_calls(now, &unanswered).map_err(storage)?;
+        let last = self.last_failures();
+        let mut settled = store
+            .expire_calls(now, &|call| settled_at_deadline(&last, call))
+            .map_err(storage)?;
+        // A host that comes back after it was not connected, or that
+        // started again, may have lost the calls it had accepted.
+        let lost = self
+            .registrations
+            .get(registration)
+            .is_some_and(|reg| reg.lost || !self.is_connected(reg));
+        if lost {
+            if let Some(reg) = self.registrations.get_mut(registration) {
+                reg.lost = false;
+            }
+            self.reoffer(store, registration, now)?;
+        }
         self.settles = self.settles.saturating_add(settled.len() as u64);
         let mut ignored = 0;
         if !answers.is_empty() {
-            let calls = store.pending_for(registration).map_err(storage)?.calls;
+            // The registration's open calls as each answer finds them:
+            // what an earlier answer of this request did to a call (it
+            // settled it, or its host accepted it) is what a later one
+            // for the same call is taken by.
+            let mut calls = store.pending_for(registration).map_err(storage)?.calls;
             if let Some(reg) = self.registrations.get_mut(registration) {
                 reg.later
                     .retain(|call, _| calls.iter().any(|c| c.id == *call));
             }
-            let mut settled_here: BTreeSet<&str> = BTreeSet::new();
+            let mut settled_here: BTreeSet<String> = BTreeSet::new();
             for answer in answers {
                 if answer.id.len() > self.limits.id_bytes {
                     ignored += 1;
                     continue;
                 }
-                let took = match calls.iter().find(|c| c.id == answer.id) {
-                    Some(call) if settled_here.contains(call.id.as_str()) => false,
+                let took = match calls.iter_mut().find(|c| c.id == answer.id) {
+                    Some(call) if settled_here.contains(&call.id) => false,
                     Some(call) => {
+                        let accepts =
+                            matches!(answer.outcome, CheckedOutcome::Raw(Outcome::Accepted));
                         match self.answer(store, registration, call, answer.outcome, now)? {
                             Took::Settled => {
-                                settled_here.insert(&call.id);
+                                settled_here.insert(call.id.clone());
                                 settled.push(call.id.clone());
                                 self.settles = self.settles.saturating_add(1);
                                 true
                             }
-                            Took::Noted => true,
+                            Took::Noted => {
+                                if accepts {
+                                    call.accepted = true;
+                                }
+                                true
+                            }
                             Took::Ignored => false,
                         }
                     }
@@ -2234,39 +2720,293 @@ impl Hub {
         let outcome = match outcome {
             CheckedOutcome::Raw(Outcome::Accepted) => {
                 let took = store.accept_call(id, &call.id, now).map_err(storage)?;
+                // Its host has it again: it is not sent again, and the
+                // failure before is no longer what is known of it.
+                if took
+                    && let Some(tries) = self
+                        .registrations
+                        .get_mut(id)
+                        .and_then(|reg| reg.tries.get_mut(&call.id))
+                {
+                    tries.again = false;
+                    tries.fresh = false;
+                    tries.last = None;
+                }
                 return Ok(if took { Took::Noted } else { Took::Ignored });
             }
+            // The host's own account: no attempt and none of the run's
+            // sendings again, only a wait no shorter than the rule's
+            // first, so that a host that asks for it again at once is
+            // not sent it again at once.
             CheckedOutcome::Raw(Outcome::RetryAfter(ms)) => {
+                let kept = self.limits.retry_kept;
                 let Some(reg) = self.registrations.get_mut(id) else {
                     return Ok(Took::Ignored);
                 };
-                reg.later.insert(call.id.clone(), now.after(ms));
+                let shortest = reg
+                    .tries
+                    .get(&call.id)
+                    .map_or(kept, |tries| tries.rule)
+                    .wait_after(1);
+                reg.later
+                    .insert(call.id.clone(), now.after(ms.max(shortest)));
                 return Ok(Took::Noted);
             }
             CheckedOutcome::Judged(outcome) => outcome,
             CheckedOutcome::Raw(settling) => {
-                let definition = self
-                    .definition(store, &call.definition)
-                    .map_err(storage)?
-                    .ok_or_else(|| {
-                        ServeError::Storage(format!(
-                            "the definition clax.{} was called under is not kept",
-                            shown(&call.op)
-                        ))
-                    })?;
-                match judge(&self.limits, &definition, &call.op, settling) {
+                let definition = self.definition_of(store, call)?;
+                match judge(
+                    &self.limits,
+                    &definition,
+                    &call.op,
+                    &call.id,
+                    settling,
+                    None,
+                ) {
                     Some(outcome) => outcome,
                     None => return Ok(Took::Ignored),
                 }
             }
         };
+        if let Err(failure) = &outcome
+            && failure.retryable
+        {
+            // A failure of an attempt that has failed already: the next
+            // attempt is planned and not sent yet, and this answer takes
+            // no attempt more.
+            let planned = self
+                .registrations
+                .get(id)
+                .and_then(|reg| reg.tries.get(&call.id))
+                .is_some_and(|tries| tries.fresh);
+            if planned || self.try_again(store, id, call, failure, now)? {
+                return Ok(Took::Noted);
+            }
+        }
         if let Some(reg) = self.registrations.get_mut(id) {
             reg.later.remove(&call.id);
+            reg.tries.remove(&call.id);
         }
         let took = store
             .answer_call(id, &call.id, outcome, now)
             .map_err(storage)?;
         Ok(if took { Took::Settled } else { Took::Ignored })
+    }
+
+    /// The definition the call was made under.
+    fn definition_of<P: Pending>(
+        &mut self,
+        store: &mut P,
+        call: &CallSummary,
+    ) -> Result<Arc<Definition>, ServeError> {
+        self.definition(store, &call.definition)
+            .map_err(|e| ServeError::Storage(e.to_string()))?
+            .ok_or_else(|| {
+                ServeError::Storage(format!(
+                    "the definition clax.{} was called under is not kept",
+                    shown(&call.op)
+                ))
+            })
+    }
+
+    /// Whether the call's operation is tagged `@once`.
+    fn once<P: Pending>(&mut self, store: &mut P, call: &CallSummary) -> Result<bool, ServeError> {
+        let definition = self.definition_of(store, call)?;
+        Ok(definition
+            .operation(&call.op)
+            .is_some_and(|operation| operation.op.once))
+    }
+
+    /// The run that made the open call `call` of registration `id`: as
+    /// its attempts keep it, else as the store has it.
+    fn run_of<P: Pending>(
+        &mut self,
+        store: &mut P,
+        id: &str,
+        call: &CallSummary,
+    ) -> Result<String, ServeError> {
+        if let Some(tries) = self
+            .registrations
+            .get(id)
+            .and_then(|reg| reg.tries.get(&call.id))
+        {
+            return Ok(tries.run.clone());
+        }
+        let calls = store
+            .calls_for(id, std::slice::from_ref(&call.id))
+            .map_err(|e| ServeError::Storage(e.to_string()))?;
+        Ok(calls.into_iter().next().map(|c| c.run).unwrap_or_default())
+    }
+
+    /// Starts keeping the attempts of the open call `call` of
+    /// registration `id`, made by `run` under `rule`, unless they are
+    /// kept already. Attempts kept under a rule the run did not give
+    /// ([`HubLimits::retry_kept`]) go on under `rule`.
+    fn track(&mut self, id: &str, call: &str, run: &str, rule: Retry) {
+        if let Some(reg) = self.registrations.get_mut(id) {
+            let tries = reg
+                .tries
+                .entry(call.to_string())
+                .or_insert_with(|| Tries::new(run, rule, true));
+            if !tries.given {
+                tries.rule = rule;
+                tries.given = true;
+            }
+        }
+    }
+
+    /// Takes one of the sendings again of `run`'s calls of
+    /// `registration` ([`HubLimits::resends_per_run`]): false when they
+    /// have none left. Each registration's are its own, so that one
+    /// host's failures do not spend another's in a run both serve. The
+    /// count is forgotten when [`Hub::ended`] records the run's end (a
+    /// daemon keeps a run's end in its terminal commit and does not call
+    /// it), and, when the hub counts more than it can have calls open, for
+    /// each run with no call open: an ended run makes no call, so its
+    /// count goes then.
+    fn spend_resend(&mut self, run: &str, registration: &str) -> bool {
+        let most = self.limits.resends_per_run;
+        let at = (run.to_string(), registration.to_string());
+        let spent = self.resent.get(&at).copied().unwrap_or(0);
+        if spent >= most {
+            return false;
+        }
+        self.resent.insert(at.clone(), spent + 1);
+        let room = self
+            .limits
+            .registrations
+            .saturating_mul(self.limits.calls_per_registration)
+            .max(1);
+        if self.resent.len() > room {
+            let open: BTreeSet<(&str, &str)> = self
+                .registrations
+                .iter()
+                .flat_map(|(id, reg)| {
+                    reg.tries
+                        .values()
+                        .map(move |t| (t.run.as_str(), id.as_str()))
+                })
+                .collect();
+            self.resent.retain(|(r, id), _| {
+                (r, id) == (&at.0, &at.1) || open.contains(&(r.as_str(), id.as_str()))
+            });
+        }
+        true
+    }
+
+    /// Whether the open call `call` of registration `id`, whose attempt
+    /// came to `failure` (one that sending it again may get past), is to
+    /// be sent again: its rule has another attempt, its run has a
+    /// sending left, its operation is not `@once` with the call
+    /// accepted, and the wait before the next attempt ends before the
+    /// call's deadline. When it is, its next attempt is planned, and
+    /// `failure` is what it is settled as if its deadline comes first.
+    fn try_again<P: Pending>(
+        &mut self,
+        store: &mut P,
+        id: &str,
+        call: &CallSummary,
+        failure: &CallFailure,
+        now: Millis,
+    ) -> Result<bool, ServeError> {
+        if !self.registrations.contains_key(id) || (call.accepted && self.once(store, call)?) {
+            return Ok(false);
+        }
+        let run = self.run_of(store, id, call)?;
+        let kept = self.limits.retry_kept;
+        let Some(reg) = self.registrations.get_mut(id) else {
+            return Ok(false);
+        };
+        let tries = reg
+            .tries
+            .entry(call.id.clone())
+            .or_insert_with(|| Tries::new(&run, kept, false));
+        let failures = tries.failures.saturating_add(1);
+        let at = now.after(tries.rule.wait_after(failures));
+        if !tries.rule.another(failures) || at >= call.deadline {
+            return Ok(false);
+        }
+        if !self.spend_resend(&run, id) {
+            return Ok(false);
+        }
+        let Some(tries) = self
+            .registrations
+            .get_mut(id)
+            .and_then(|reg| reg.tries.get_mut(&call.id))
+        else {
+            return Ok(false);
+        };
+        tries.failures = failures;
+        tries.not_before = at;
+        tries.again = true;
+        tries.fresh = true;
+        tries.last = Some(failure.clone());
+        Ok(true)
+    }
+
+    /// Plans the calls of registration `id` its host accepted and may
+    /// have lost (it was not connected, or started again) to be sent
+    /// again, each as its rule allows, but those of `@once` operations,
+    /// which are never sent again once accepted.
+    fn reoffer<P: Pending>(
+        &mut self,
+        store: &mut P,
+        id: &str,
+        now: Millis,
+    ) -> Result<(), ServeError> {
+        let storage = |e: P::Error| ServeError::Storage(e.to_string());
+        let pending = store.pending_for(id).map_err(storage)?;
+        let accepted: Vec<CallSummary> = pending
+            .calls
+            .into_iter()
+            .filter(|c| c.accepted && c.deadline > now)
+            .collect();
+        for call in accepted {
+            if self.once(store, &call)? {
+                continue;
+            }
+            let run = self.run_of(store, id, &call)?;
+            let kept = self.limits.retry_kept;
+            let Some(reg) = self.registrations.get_mut(id) else {
+                return Ok(());
+            };
+            let tries = reg
+                .tries
+                .entry(call.id.clone())
+                .or_insert_with(|| Tries::new(&run, kept, false));
+            let failures = tries.failures.saturating_add(1);
+            if tries.again || !tries.rule.another(failures) {
+                continue;
+            }
+            let at = now.after(tries.rule.wait_after(failures));
+            if at >= call.deadline || !self.spend_resend(&run, id) {
+                continue;
+            }
+            if let Some(tries) = self
+                .registrations
+                .get_mut(id)
+                .and_then(|reg| reg.tries.get_mut(&call.id))
+            {
+                tries.failures = failures;
+                tries.not_before = at;
+                tries.again = true;
+                tries.fresh = true;
+            }
+        }
+        Ok(())
+    }
+
+    /// What each call whose last attempt failed, and that has not been
+    /// sent since, is settled as when its deadline comes: that failure.
+    fn last_failures(&self) -> BTreeMap<String, CallFailure> {
+        self.registrations
+            .values()
+            .flat_map(|reg| {
+                reg.tries
+                    .iter()
+                    .filter_map(|(id, t)| Some((id.clone(), t.last.clone()?)))
+            })
+            .collect()
     }
 
     /// What a `serve` of the registration would be answered with at
@@ -2280,18 +3020,26 @@ impl Hub {
         };
         reg.later
             .retain(|call, _| pending.calls.iter().any(|c| c.id == *call));
+        reg.tries
+            .retain(|call, _| pending.calls.iter().any(|c| c.id == *call));
         reg.ends_sent
             .retain(|end| pending.ends.iter().any(|e| e.id == *end));
         let mut out = Vec::new();
         for call in &pending.calls {
             let again = reg.later.get(&call.id).copied();
-            if call.accepted || call.deadline <= now || again.is_some_and(|at| at > now) {
+            let tries = reg.tries.get(&call.id);
+            let resend = tries.is_some_and(|t| t.again);
+            if (call.accepted && !resend)
+                || call.deadline <= now
+                || again.is_some_and(|at| at > now)
+                || tries.is_some_and(|t| t.not_before > now)
+            {
                 continue;
             }
             out.push(Due {
-                // A call its host asked for again is new to it once
-                // more.
-                new: !call.sent || again.is_some(),
+                // A call its host asked for again, or that is sent
+                // again after a failed attempt, is new to it once more.
+                new: !call.sent || again.is_some() || tries.is_some_and(|t| t.fresh),
                 call: true,
                 id: call.id.clone(),
                 bytes: call.args_bytes,
@@ -2332,11 +3080,17 @@ impl Hub {
             .pending_for(&serve.registration)
             .map_err(|e| ServeError::Storage(e.to_string()))?;
         let due = self.due(&serve.registration, &pending, now);
-        Ok(if now >= serve.until || due.iter().any(|d| d.new) {
-            Ready::Deliver
-        } else {
-            Ready::Wait
-        })
+        let events = self
+            .registrations
+            .get(&serve.registration)
+            .is_some_and(|reg| !reg.events.is_empty());
+        Ok(
+            if now >= serve.until || events || due.iter().any(|d| d.new) {
+                Ready::Deliver
+            } else {
+                Ready::Wait
+            },
+        )
     }
 
     /// Closes a `serve` at `now` and answers what its request is
@@ -2345,7 +3099,9 @@ impl Hub {
     /// unacknowledged ended runs, those new to the host first and each
     /// group oldest first, [`HubLimits::deliveries_per_serve`] at the
     /// most and no more than [`HubLimits::deliveries_bytes`] together
-    /// (but one at the least). Each call is marked as sent: the
+    /// (but one at the least); then every event kept for it
+    /// ([`Hub::event`]), oldest first, which those limits do not count
+    /// and which go once. Each call is marked as sent: the
     /// caller is about to write them to its host, and calls
     /// [`Hub::abandon`] instead when it will not. A `serve` is answered
     /// so whether or not its wait is over; one that has ended
@@ -2405,7 +3161,13 @@ impl Hub {
             .into_iter()
             .map(|e| (e.id.clone(), e))
             .collect();
+        // A run's events come before its calls and its end: each was
+        // told before what follows it, and none of a run comes after
+        // its `ended`.
         let mut deliveries = Vec::with_capacity(due.len());
+        if let Some(reg) = self.registrations.get_mut(&serve.registration) {
+            deliveries.extend(reg.events.drain(..).map(Delivery::Event));
+        }
         for d in &due {
             if d.call {
                 // One that was settled since it was listed is not sent.
@@ -2425,6 +3187,7 @@ impl Hub {
                     run: call.run,
                     args: call.args,
                     key: call.key,
+                    joined: call.joined,
                 }));
             } else if let Some(end) = ends.remove(&d.id) {
                 deliveries.push(Delivery::Ended(wire::Ended {
@@ -2432,6 +3195,7 @@ impl Hub {
                     run: end.run,
                     end: end.end,
                     result: end.result,
+                    undelivered: end.undelivered,
                 }));
             }
         }
@@ -2441,11 +3205,17 @@ impl Hub {
                 match delivery {
                     Delivery::Call(c) => {
                         reg.later.remove(&c.id);
+                        // Sent: its last failure is no longer what is
+                        // known of it.
+                        if let Some(tries) = reg.tries.get_mut(&c.id) {
+                            tries.fresh = false;
+                            tries.last = None;
+                        }
                     }
                     Delivery::Ended(e) => {
                         reg.ends_sent.insert(e.id.clone());
                     }
-                    Delivery::Other(_) => {}
+                    Delivery::Event(_) | Delivery::Other(_) => {}
                 }
             }
         }
@@ -2559,7 +3329,7 @@ impl Hub {
                             shown(&call.op)
                         ))
                     })?;
-                let withheld = withheld(&definition);
+                let withheld = withheld(&definition, self.limits.content);
                 Some((definition, hash.to_string(), withheld))
             }
             _ => None,
@@ -2594,7 +3364,9 @@ impl Hub {
         {
             return Err(EnqueueError::IdTooLong { limit: ids });
         }
-        if !self.is_connected(reg) {
+        // A call that may be tried again waits for a host that is away,
+        // within its deadline; one that may not is refused at once.
+        if !self.is_connected(reg) && !call.retry.waits_for_host() {
             return Err(EnqueueError::NotConnected);
         }
         let deadline = call.deadline.unwrap_or(now.after(self.limits.call_ms));
@@ -2607,6 +3379,7 @@ impl Hub {
                 limit: self.limits.args_bytes,
             });
         }
+        let (run, rule) = (call.run.clone(), call.retry);
         let new = NewCall {
             registration: registration.to_string(),
             definition: hash.clone(),
@@ -2617,6 +3390,7 @@ impl Hub {
             key: call.key,
             kind,
             deadline,
+            joined: call.joined,
         };
         let limit = self.limits.calls_per_registration;
         match store
@@ -2624,10 +3398,16 @@ impl Hub {
             .map_err(|e| EnqueueError::Storage(e.to_string()))?
         {
             OpenedCall::New(id) => {
+                self.track(registration, &id, &run, rule);
                 (self.wake)(registration);
                 Ok(id)
             }
-            OpenedCall::Same(id) => Ok(id),
+            // Made again (its step run again): the attempts go on where
+            // they were.
+            OpenedCall::Same(id) => {
+                self.track(registration, &id, &run, rule);
+                Ok(id)
+            }
             OpenedCall::KeyReused => Err(EnqueueError::KeyReused),
             OpenedCall::Full => Err(EnqueueError::QueueFull { limit }),
         }
@@ -2641,6 +3421,35 @@ impl Hub {
         if self.registrations.contains_key(registration) {
             (self.wake)(registration);
         }
+    }
+
+    /// Keeps `event`, of how the run `run` the registration started is
+    /// going, for the registration's next `serve`, and wakes it.
+    /// Events are not kept anywhere else: one for a registration the
+    /// hub does not hold is dropped (false), and so is the oldest of a
+    /// registration that holds [`HubLimits::events_per_registration`]
+    /// already. A host that was away reads where the run is from the
+    /// run itself (`GET …/runs/<id>`). Whoever calls this decides what
+    /// the registration may see of the run; the hub reads none of
+    /// `event`.
+    pub fn event(&mut self, registration: &str, run: &str, event: Value, now: Millis) -> bool {
+        self.advance(now);
+        let most = self.limits.events_per_registration;
+        let Some(reg) = self.registrations.get_mut(registration) else {
+            return false;
+        };
+        if most == 0 {
+            return false;
+        }
+        while reg.events.len() >= most {
+            reg.events.pop_front();
+        }
+        reg.events.push_back(wire::Event {
+            run: run.to_string(),
+            event,
+        });
+        (self.wake)(registration);
+        true
     }
 
     /// Records that `run` ended with `end`, for the registration that
@@ -2678,6 +3487,7 @@ impl Hub {
         if !issued {
             return Err(EndedError::NoRegistration);
         }
+        self.resent.retain(|(r, _), _| r != run);
         let result_bytes = result.as_ref().map_or(0, json_bytes);
         if result_bytes > self.limits.result_bytes {
             return Err(EndedError::ResultTooLarge {
@@ -2922,6 +3732,7 @@ impl Pending for MemoryPending {
                     run: call.run,
                     args: call.args,
                     key: call.key,
+                    joined: call.joined,
                 },
                 outcome: None,
             },
@@ -3059,6 +3870,7 @@ impl Pending for MemoryPending {
                     run: end.run,
                     end: end.end,
                     result: end.result,
+                    undelivered: Vec::new(),
                 },
                 result_bytes: end.result_bytes,
                 recorded: now,

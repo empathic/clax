@@ -1182,6 +1182,12 @@ pub fn driver_with_web(
         Arc::new(clax_http::bot::Settings {
             store: state.store.clone(),
             enabled: bot.enabled,
+            model_takes_images: state
+                .settings
+                .running
+                .as_ref()
+                .and_then(|cfg| cfg.bot().ok())
+                .is_some_and(|b| b.model_takes_images),
         }),
         bot.keys(),
         Arc::new(StoreClock(state.store.clone())),
@@ -1228,6 +1234,14 @@ pub fn driver_with_web(
         },
         web_check: bot.web_check.clone(),
         admin_web_check: bot.admin_web_check.clone(),
+        // The runs it drives bind the surfaces whose hosts joined their
+        // artifact and are connected (`crate::routes::bot_joins`). A
+        // hosted daemon has no host route, so it keeps no join and reads
+        // none.
+        joins: state.hosted.is_none().then(|| {
+            let hub: Arc<dyn clax_http::bot_joins::JoinedSurfaces> = state.bot_surfaces.clone();
+            hub
+        }),
     });
     driver
 }

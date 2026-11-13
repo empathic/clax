@@ -7,7 +7,7 @@ use crate::allow::Pattern;
 use crate::check::shown;
 use crate::model::{Definition, Kind};
 use crate::plan::{Node, NodeId};
-use crate::value::{ValueError, ValueErrorKind, fits_sent};
+use crate::value::{ValueError, ValueErrorKind, fits};
 use serde_json::Value;
 use std::fmt;
 
@@ -214,6 +214,54 @@ impl Definition {
     pub fn run_operations(&self, kind: &str, scope: &RunScope<'_>) -> Option<RunOperations<'_>> {
         let n = self.kinds.iter().position(|k| k.name == kind)?;
         let k = &self.kinds[n];
+        let (granted, withheld) = self.operations_for(Some(k), scope);
+        let elsewhere = k
+            .allow
+            .iter()
+            .flatten()
+            .filter(|p| !p.names_any(&[self]))
+            .collect();
+        let request = self.index.reaches[self.index.plan.kinds[n].0 as usize];
+        let request_content = if request & CONTENT_REQUIRED != 0 {
+            ContentUse::Required
+        } else if request & CONTENT != 0 {
+            ContentUse::Optional
+        } else {
+            ContentUse::None
+        };
+        Some(RunOperations {
+            granted,
+            withheld,
+            elsewhere,
+            request_content,
+        })
+    }
+
+    /// The operations a run of another surface's kind that this surface
+    /// joins may call (the design's "A run": a surface bound into a run it
+    /// did not declare the kind of, by a standing join): as
+    /// [`Definition::run_operations`] gives a kind's, with no kind's
+    /// `@allow` to narrow them. `scope.starter` is the join's own allow
+    /// patterns. Nothing is wanted elsewhere, and there is no request.
+    #[must_use]
+    pub fn joined_operations(&self, scope: &RunScope<'_>) -> RunOperations<'_> {
+        let (granted, withheld) = self.operations_for(None, scope);
+        RunOperations {
+            granted,
+            withheld,
+            elsewhere: Vec::new(),
+            request_content: ContentUse::None,
+        }
+    }
+
+    /// Each operation, in declaration order, granted or withheld with the
+    /// first reason that holds, for a run of `kind` (`None`: a run this
+    /// surface joins, which no kind's `@allow` narrows).
+    fn operations_for(
+        &self,
+        kind: Option<&Kind>,
+        scope: &RunScope<'_>,
+    ) -> (Vec<&str>, Vec<(&str, Withheld)>) {
         let names = |list: Option<&[Pattern]>, op: &str| {
             list.is_none_or(|patterns| patterns.iter().any(|p| p.matches(op)))
         };
@@ -227,7 +275,7 @@ impl Definition {
         };
         let (mut granted, mut withheld) = (Vec::new(), Vec::new());
         for o in self.operations() {
-            let reason = if !k.allows(o.name) {
+            let reason = if kind.is_some_and(|k| !k.allows(o.name)) {
                 Some(Withheld::Kind)
             } else if !names(scope.operator, o.name) {
                 Some(Withheld::Operator)
@@ -243,26 +291,7 @@ impl Definition {
                 None => granted.push(o.name),
             }
         }
-        let elsewhere = k
-            .allow
-            .iter()
-            .flatten()
-            .filter(|p| !p.names_any(&[self]))
-            .collect();
-        let request = reaches[self.index.plan.kinds[n].0 as usize];
-        let request_content = if request & CONTENT_REQUIRED != 0 {
-            ContentUse::Required
-        } else if request & CONTENT != 0 {
-            ContentUse::Optional
-        } else {
-            ContentUse::None
-        };
-        Some(RunOperations {
-            granted,
-            withheld,
-            elsewhere,
-            request_content,
-        })
+        (granted, withheld)
     }
 }
 
@@ -303,7 +332,24 @@ impl Kind {
         def: &Definition,
         v: &Value,
     ) -> Result<Vec<String>, ValueError> {
-        places(def, self, v, INSTRUCTION)
+        places(def, self, v, INSTRUCTION, false)
+    }
+
+    /// [`Kind::instruction_places`] of a message sent to a run of this
+    /// kind after it started: the places in `v` whose declared type, in
+    /// the kind's message type, is `Instruction`, found and ordered as
+    /// they are in a request. The message is checked first
+    /// ([`Kind::check_message`]).
+    ///
+    /// # Errors
+    /// What [`Kind::check_message`] refuses `v` for (a kind that takes
+    /// no messages among it), and as [`Kind::instruction_places`].
+    pub fn message_instruction_places(
+        &self,
+        def: &Definition,
+        v: &Value,
+    ) -> Result<Vec<String>, ValueError> {
+        places(def, self, v, INSTRUCTION, true)
     }
 
     /// The places in a request of this kind that hold a `Content` or an
@@ -315,7 +361,20 @@ impl Kind {
     /// # Errors
     /// As [`Kind::instruction_places`].
     pub fn content_places(&self, def: &Definition, v: &Value) -> Result<Vec<String>, ValueError> {
-        places(def, self, v, CONTENT)
+        places(def, self, v, CONTENT, false)
+    }
+
+    /// [`Kind::content_places`] of a message sent to a run of this kind
+    /// after it started ([`Kind::message_instruction_places`]).
+    ///
+    /// # Errors
+    /// As [`Kind::message_instruction_places`].
+    pub fn message_content_places(
+        &self,
+        def: &Definition,
+        v: &Value,
+    ) -> Result<Vec<String>, ValueError> {
+        places(def, self, v, CONTENT, true)
     }
 }
 
@@ -331,9 +390,15 @@ fn pointer_step(out: &mut String, token: &str) {
     }
 }
 
-/// The places in `v`, a request of `kind`, of the values whose type
-/// holds `want` itself.
-fn places(def: &Definition, kind: &Kind, v: &Value, want: u8) -> Result<Vec<String>, ValueError> {
+/// The places in `v`, a request of `kind` (a message of it, with
+/// `message`), of the values whose type holds `want` itself.
+fn places(
+    def: &Definition,
+    kind: &Kind,
+    v: &Value,
+    want: u8,
+    message: bool,
+) -> Result<Vec<String>, ValueError> {
     let name = shown(&kind.name);
     let Some(n) = def
         .kinds
@@ -349,11 +414,72 @@ fn places(def: &Definition, kind: &Kind, v: &Value, want: u8) -> Result<Vec<Stri
             ),
         });
     };
-    kind.check_request(def, v)?;
-    let what = format!("kind {name}: the request");
+    let root = if message {
+        kind.check_message(def, v)?;
+        def.index.plan.kinds[n].1
+    } else {
+        kind.check_request(def, v)?;
+        Some(def.index.plan.kinds[n].0)
+    };
+    let Some(root) = root else {
+        return Ok(Vec::new());
+    };
+    let what = format!(
+        "kind {name}: the {}",
+        if message { "message" } else { "request" }
+    );
+    let mut left = def.limits.value_nodes;
+    let mut out = Vec::new();
+    places_in(
+        def,
+        Walk {
+            root,
+            v,
+            at: String::new(),
+            want,
+            held: false,
+            what: &what,
+        },
+        &mut left,
+        &mut out,
+    )?;
+    Ok(out.into_iter().map(|(at, _)| at).collect())
+}
+
+/// One value [`places_in`] reads: its type, where it is, what is sought
+/// and on which side of Clax filling in its `Content` it is.
+struct Walk<'a> {
+    root: NodeId,
+    v: &'a Value,
+    /// The value's place, as a JSON Pointer.
+    at: String,
+    want: u8,
+    /// Whether the value is one a script holds (its `Content` whole
+    /// handles), not one a sender sent.
+    held: bool,
+    what: &'a str,
+}
+
+/// The places under `w.v`, a value that passed its check, of the values
+/// whose type holds `w.want` itself, each with whether that type is
+/// `Image`, added to `out` in the order the value is written out;
+/// spending from `left`.
+fn places_in(
+    def: &Definition,
+    w: Walk<'_>,
+    left: &mut usize,
+    out: &mut Vec<(String, bool)>,
+) -> Result<(), ValueError> {
+    let Walk {
+        root,
+        v,
+        at,
+        want,
+        held,
+        what,
+    } = w;
     let nodes = &def.index.plan.nodes;
     let reaches = &def.index.reaches;
-    let mut left = def.limits.value_nodes;
     let too_large = || ValueError {
         kind: ValueErrorKind::TooLarge,
         message: format!(
@@ -361,16 +487,14 @@ fn places(def: &Definition, kind: &Kind, v: &Value, want: u8) -> Result<Vec<Stri
             def.limits.value_nodes
         ),
     };
-    let mut out = Vec::new();
-    let mut todo: Vec<(NodeId, &Value, String)> =
-        vec![(def.index.plan.kinds[n].0, v, String::new())];
+    let mut todo: Vec<(NodeId, &Value, String)> = vec![(root, v, at)];
     'values: while let Some((mut id, v, at)) = todo.pop() {
         // The node the value is read as: through names and unions.
         loop {
             if reaches[id as usize] & want == 0 {
                 continue 'values;
             }
-            left = left.checked_sub(1).ok_or_else(too_large)?;
+            *left = left.checked_sub(1).ok_or_else(too_large)?;
             match &nodes[id as usize] {
                 Node::Named(i) => id = *i,
                 Node::Union(u) => {
@@ -405,7 +529,7 @@ fn places(def: &Definition, kind: &Kind, v: &Value, want: u8) -> Result<Vec<Stri
                         chosen = Some(*only);
                     } else {
                         for &alt in alts {
-                            if fits_sent(def, alt, v, &mut left, &what)? {
+                            if fits(def, alt, v, held, left, what)? {
                                 chosen = Some(alt);
                                 break;
                             }
@@ -425,8 +549,9 @@ fn places(def: &Definition, kind: &Kind, v: &Value, want: u8) -> Result<Vec<Stri
             p
         };
         match &nodes[id as usize] {
-            Node::Instruction if want == INSTRUCTION && v.is_string() => out.push(at),
-            Node::Content | Node::Image if want == CONTENT && v.is_object() => out.push(at),
+            Node::Instruction if want == INSTRUCTION && v.is_string() => out.push((at, false)),
+            Node::Content if want == CONTENT && v.is_object() => out.push((at, false)),
+            Node::Image if want == CONTENT && v.is_object() => out.push((at, true)),
             Node::Array(x) => {
                 let items = v.as_array().map_or(&[][..], Vec::as_slice);
                 for (i, item) in items.iter().enumerate().rev() {
@@ -451,5 +576,107 @@ fn places(def: &Definition, kind: &Kind, v: &Value, want: u8) -> Result<Vec<Stri
             _ => {}
         }
     }
-    Ok(out)
+    Ok(())
+}
+
+/// The places in a value of an operation that hold a `Content` or an
+/// `Image` ([`crate::Operation::content_in_answer`],
+/// [`crate::Operation::content_in_args`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContentPlace {
+    /// A JSON Pointer to the handle or the reference.
+    pub at: String,
+    /// The type there is `Image`, not `Content`.
+    pub image: bool,
+}
+
+impl crate::model::Operation<'_> {
+    /// Whether the operation's parameters or result hold a `Content` or an
+    /// `Image`, written there or in an interface reached from there.
+    #[must_use]
+    pub fn holds_content(&self) -> bool {
+        let (params, result) = &self.def.index.plan.ops[self.at];
+        params
+            .iter()
+            .chain([result])
+            .any(|&node| self.def.index.reaches[node as usize] & CONTENT != 0)
+    }
+
+    /// The places in `v`, an answer of this operation as its provider
+    /// sent it, that hold a reference to an upload (`{"id", "meta"?}`):
+    /// what Clax fills in from its store before the script is given the
+    /// result. Each is a JSON Pointer into `v` (`""` for the answer
+    /// itself), read as [`Kind::instruction_places`] reads a request,
+    /// in the order the value is written out, with whether its type is
+    /// `Image`.
+    ///
+    /// # Errors
+    /// What [`crate::Operation::check_answer`] refuses `v` for, or that
+    /// reading it would take more work than the definition's budget
+    /// ([`ValueErrorKind::TooLarge`]).
+    pub fn content_in_answer(&self, v: &Value) -> Result<Vec<ContentPlace>, ValueError> {
+        self.check_answer(v)?;
+        let root = self.def.index.plan.ops[self.at].1;
+        if self.def.index.reaches[root as usize] & CONTENT == 0 {
+            return Ok(Vec::new());
+        }
+        let what = format!("clax.{}: the answer", self.name);
+        let mut left = self.def.limits.value_nodes;
+        let mut out = Vec::new();
+        places_in(
+            self.def,
+            Walk {
+                root,
+                v,
+                at: String::new(),
+                want: CONTENT,
+                held: false,
+                what: &what,
+            },
+            &mut left,
+            &mut out,
+        )?;
+        Ok(out
+            .into_iter()
+            .map(|(at, image)| ContentPlace { at, image })
+            .collect())
+    }
+
+    /// The places in `args`, a call's arguments as
+    /// [`crate::Operation::check_args`] answered them (one for each
+    /// parameter), that hold a whole handle a script passed: each a JSON
+    /// Pointer into the arguments as an array (`/0`, `/1/shot`), in
+    /// order, with whether its type is `Image`.
+    ///
+    /// # Errors
+    /// That reading them would take more work than the definition's
+    /// budget ([`ValueErrorKind::TooLarge`]).
+    pub fn content_in_args(&self, args: &[Value]) -> Result<Vec<ContentPlace>, ValueError> {
+        let roots = &self.def.index.plan.ops[self.at].0;
+        let what = format!("clax.{}: the arguments", self.name);
+        let mut left = self.def.limits.value_nodes;
+        let mut out = Vec::new();
+        for (i, (&root, v)) in roots.iter().zip(args).enumerate() {
+            if v.is_null() || self.def.index.reaches[root as usize] & CONTENT == 0 {
+                continue;
+            }
+            places_in(
+                self.def,
+                Walk {
+                    root,
+                    v,
+                    at: format!("/{i}"),
+                    want: CONTENT,
+                    held: true,
+                    what: &what,
+                },
+                &mut left,
+                &mut out,
+            )?;
+        }
+        Ok(out
+            .into_iter()
+            .map(|(at, image)| ContentPlace { at, image })
+            .collect())
+    }
 }
