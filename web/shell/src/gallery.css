@@ -68,11 +68,11 @@
 .gskel .sk-need .sk-t { font-size: 17px; }
 .gskel .sk-empty { place-items: center; gap: 10px; padding: 80px 0 40px; }
 .gskel .sk-mk { width: 160px; height: 96px; border-radius: 48px; }
-.gskel .sk-empty .sk-l { width: min(380px, 80%); height: 22px; }
-.gskel .sk-empty .sk-l + .sk-l { width: min(300px, 70%); height: 18px; }
+.gskel .sk-empty .sk-l { width: min(380px, 80%); height: 21px; }
+.gskel .sk-empty .sk-l + .sk-l { width: min(360px, 70%); height: 25px; }
 .gskel .sk-nt { width: min(320px, 100%); height: 92px; border-radius: var(--radius); }
 .gskel .sk-h { width: min(240px, 60%); height: 28px; margin: 0 0 4px; }
-.gskel .sk-ls { gap: 14px; max-width: 640px; }
+.gskel .sk-ls { gap: 14px; max-width: 880px; margin: 0 auto; }
 .gskel .sk-ls .sk-l { height: 14px; }
 .gskel .sk-ls .sk-l:nth-child(3) { width: 84%; }
 .gskel .sk-ls .sk-l:nth-child(4) { width: 92%; }
