@@ -219,7 +219,7 @@
   }, () => null));
   const startQ = (q: typeof import("../q") | null) => { if (!q || destroyed) return; void lazy().then(m => { if (destroyed) return; Q = q; q.start(m.pageStream()); }); };
 
-  /** What the header's answers start: the legal ask, ClaxBot's meter, the question module. */
+  /** What the header's answers start: the legal ask, ClaxBot's answer for the page's other asks (`seedBot`), the question module. */
   function headerIn(h: Header) {
     if (h.hosted?.legal) { const terms = h.hosted.legal; void import("../hosted/legal").then(m => m.ask(terms)); }
     if (h.bot) void lazy().then(m => { m.seedBot(h.bot as never); }, () => {});
