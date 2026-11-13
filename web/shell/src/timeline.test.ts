@@ -316,6 +316,25 @@ describe("Sidebar views", () => {
     view.unmount();
   });
 
+  it("moves focus to a folded day's summary when closing a card takes away the row that held it", async () => {
+    const c = thread("c", at(12, 9, 10), "Mention cancelling");
+    const { view, root, row, card, props } = setup({ threads: [c], versions: [version(1, at(12, 9)), version(2, at(13, 10))] });
+    await loaded(root);
+    const fold = root.querySelector<HTMLButtonElement>('button.tl-fold[aria-expanded="false"]')!;
+    flush(() => row(c)!.click());
+    expect(card(c)).not.toBeNull();
+    // Resolved (here, at a time of that day): no longer pending, the row
+    // stays in the folded day while it is open.
+    view.update({ ...props, threads: [resolvedBy(c, at(12, 9, 30))] });
+    expect(root.querySelector('button.tl-fold[aria-expanded="false"]')).toBe(fold);
+    expect(row(c)).not.toBeNull();
+    row(c)!.focus();
+    flush(() => row(c)!.click());
+    expect(row(c)).toBeNull();
+    expect(document.activeElement).toBe(fold);
+    view.unmount();
+  });
+
   it("keeps an open row in a folded day: a thread reopened whose newest line is now an earlier day's version", async () => {
     const c = thread("c", at(12, 9, 10), "Mention cancelling", { sent_to_agent: true, addressed_in: [2], status: "resolved", resolved_at: at(13, 9), resolved_by: "viewer:p_me" });
     const versions = [version(1, at(12, 9)), version(2, at(12, 10), [c.id]), version(3, at(13, 10))];

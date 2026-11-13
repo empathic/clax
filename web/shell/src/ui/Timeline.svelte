@@ -87,19 +87,36 @@
     io.observe(el);
     return () => { inView.delete(id); io.disconnect(); };
   };
-  const focusin = (e: FocusEvent) => { held = e.target instanceof HTMLElement && e.target.closest(".tl-thread") ? e.target : null; };
+  let heldRow: string | undefined;
+  const focusin = (e: FocusEvent) => {
+    const box = e.target instanceof HTMLElement ? e.target.closest(".tl-thread") : null;
+    held = box ? (e.target as HTMLElement) : null;
+    heldRow = box?.querySelector<HTMLElement>(".tl-row")?.dataset.row;
+  };
   const focusout = (e: FocusEvent) => {
     const t = e.target;
     if (e.relatedTarget) held = null;
     else queueMicrotask(() => { if (held === t && document.activeElement !== t) held = null; });
   };
+  // Where each row was (its line, and its day), as last laid out. A row that
+  // held focus and is gone (a card closed in a folded day whose row was
+  // shown only while open) hands focus to its day's summary.
   let under = new Map<string, string>();
+  let dayOf = new Map<string, string>();
   $effect(() => {
     const now = new Map<string, string>();
+    const days = new Map<string, string>();
     let line = "";
-    for (const x of entries) if (x.kind === "row") now.set(x.id, line); else line = x.key;
+    for (const x of entries) if (x.kind === "row") { now.set(x.id, line); days.set(x.id, x.d.date); } else line = x.key;
     const was = under;
+    const wasDay = dayOf;
     under = now;
+    dayOf = days;
+    const lost = held && !held.isConnected ? heldRow : undefined;
+    if (lost && !now.has(lost) && (!document.activeElement || document.activeElement === document.body)) {
+      held = null;
+      [...(list?.querySelectorAll<HTMLElement>("button.tl-fold") ?? [])].find(b => b.dataset.day === wasDay.get(lost))?.focus();
+    }
     const moved = (id: string) => was.has(id) && now.has(id) && was.get(id) !== now.get(id);
     const box = (id: string) => [...(list?.querySelectorAll<HTMLElement>(".tl-row") ?? [])].find(r => r.dataset.row === id)?.parentElement;
     const el = held;
@@ -216,9 +233,9 @@
       </div>
     {:else if whole(e.i, d)}
       <!-- Days are headed at the level of the thread list's sections (h2). -->
-      <h2 class="tl-day">{#if e.i}<button type="button" class="tl-fold" aria-expanded="true" onclick={() => (unfolded = unfolded.filter(x => x !== d.date))}>{d.label}</button>{:else}{d.label}{/if}</h2>
+      <h2 class="tl-day">{#if e.i}<button type="button" class="tl-fold" data-day={d.date} aria-expanded="true" onclick={() => (unfolded = unfolded.filter(x => x !== d.date))}>{d.label}</button>{:else}{d.label}{/if}</h2>
     {:else}
-      <h2 class="tl-day"><button type="button" class="tl-fold" data-band={`day:${d.date}`} aria-expanded="false" onclick={() => (unfolded = [...unfolded, d.date])}>{daySummary(d)}</button></h2>
+      <h2 class="tl-day"><button type="button" class="tl-fold" data-band={`day:${d.date}`} data-day={d.date} aria-expanded="false" onclick={() => (unfolded = [...unfolded, d.date])}>{daySummary(d)}</button></h2>
     {/if}
   {/each}
   {#if !p.threads.length}{@render p.empty?.()}{/if}
