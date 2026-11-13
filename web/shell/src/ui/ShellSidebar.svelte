@@ -1,3 +1,8 @@
+<script lang="ts" module>
+  // The strip the sidebar leaves when it is closed (ShellRail.svelte) comes in this chunk (`loadSidebar`, sidebar-chunk.ts).
+  export { default as ShellRail } from "./ShellRail.svelte";
+</script>
+
 <script lang="ts">
   // The artifact view's thread sidebar: the controller's state and intents
   // wired to the sidebar. It loads with the sidebar's chunk, after the first

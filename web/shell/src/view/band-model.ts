@@ -49,6 +49,12 @@ function area(pts: Pt[]): string {
   return `${d} V${r2(pts[0].y)} Z`;
 }
 
+/** The spine and the ticks as path data, one path each ("" for none), so a
+ * drawing adds and removes no element as the band changes. */
+export function strokes(b: Band): { spine: string; ticks: string } {
+  return { spine: b.spine ? `M${b.spine.x},${b.spine.y1} V${b.spine.y2}` : "", ticks: b.ticks.map(k => `M${k.x1},${k.y} H${k.x2}`).join(" ") };
+}
+
 export function band(rows: BandRow[], o: BandOpts): Band {
   const anchor = o.dir > 0 ? "end" : "start";
   if (!rows.length) return { agent: "", waiting: "", spine: null, ticks: [], versions: [], counts: [], gaps: [], anchor };

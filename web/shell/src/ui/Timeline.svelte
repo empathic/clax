@@ -22,7 +22,7 @@
   import { relativeTime } from "../format";
   import { after } from "../clock";
   import { type Day, type Line, type Timeline, dayKey, daySummary, days, isPending, isWaiting, lineText, rowStatus } from "../view/timeline-model";
-  import { type BandRow, band } from "../view/band-model";
+  import { type BandRow, band, strokes } from "../view/band-model";
   import { selectable } from "../view/batch-model";
   import { SEEN_AFTER_MS } from "../view/sidebar-model";
   import { plainText } from "../view/md-load.svelte";
@@ -111,9 +111,7 @@
     const present = rows.length ? [{ y: rows[0].y / 2, pending: p.tl.pending.length, waiting: p.tl.waiting.length }] : [];
     return band([...present, ...rows], { top: 0, x0: p.side === "right" ? W : 0, dir: p.side === "right" ? 1 : -1, unit: 4.5 });
   });
-  // The spine and the ticks as one path each: no element is added or removed inside the SVG.
-  const spine = $derived(drawn.spine ? `M${drawn.spine.x},${drawn.spine.y1} V${drawn.spine.y2}` : "");
-  const ticks = $derived(drawn.ticks.map(k => `M${k.x1},${k.y} H${k.x2}`).join(" "));
+  const lines = $derived(strokes(drawn));
 </script>
 
 {#snippet row(id: string)}
@@ -132,7 +130,7 @@
 
 <div class={["timeline", p.side]} bind:this={list}>
   <svg class="tl-band" width={W} height={height} aria-hidden="true">
-    <path class="tl-band-a" d={drawn.agent} /><path class="tl-band-w" d={drawn.waiting} /><path class="tl-spine" d={spine} /><path class="tl-tick" d={ticks} />
+    <path class="tl-band-a" d={drawn.agent} /><path class="tl-band-w" d={drawn.waiting} /><path class="tl-spine" d={lines.spine} /><path class="tl-tick" d={lines.ticks} />
   </svg>
   {#each ds as d, i (d.date)}
     {#if whole(i, d)}

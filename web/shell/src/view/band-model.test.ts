@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type BandRow, MAX_UNITS, band } from "./band-model";
+import { type BandRow, MAX_UNITS, band, strokes } from "./band-model";
 
 const rows: BandRow[] = [{ y: 20, pending: 3, waiting: 2, v: 6 }, { y: 40, pending: 5, waiting: 1, gap: "Thu" }, { y: 60, pending: 1, waiting: 1 }];
 const right = { top: 0, x0: 56, dir: 1 as const, unit: 4.5 };
@@ -73,5 +73,12 @@ describe("band", () => {
 
   it("draws nothing with no rows", () => {
     expect(band([], right)).toEqual({ agent: "", waiting: "", spine: null, ticks: [], versions: [], counts: [], gaps: [], anchor: "end" });
+  });
+});
+
+describe("strokes", () => {
+  it("gives the spine and every tick as one path each, and none with no rows", () => {
+    expect(strokes(band([...rows, { y: 80, pending: 0, waiting: 0, v: 7 }], right))).toEqual({ spine: "M56,0 V92", ticks: "M56,20 H28.5 M56,80 H51" });
+    expect(strokes(band([], right))).toEqual({ spine: "", ticks: "" });
   });
 });
