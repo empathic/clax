@@ -590,6 +590,20 @@ test("the bundled Terms of Service and Privacy Policy: notices, pages, links and
     await prompt.getByRole("button", { name: "Continue" }).click();
     expect((await agreed).status()).toBe(204);
     await expect(prompt).toHaveCount(0);
+    // Without the block (a page whose block left the route to the shell),
+    // the shell asks the route itself, and asks the same.
+    await owner.unroute(`${origin}/`);
+    await owner.route(`${origin}/`, async r => {
+      const res = await r.fetch();
+      await r.fulfill({ response: res, body: (await res.text()).replace(/<script[^>]*\bid="clax-boot"[^>]*>[\s\S]*?<\/script>/, "") });
+    });
+    await owner.goto(`${origin}/`);
+    expect(await owner.evaluate(() => !!document.getElementById("clax-boot"))).toBe(false);
+    await expect(prompt.getByRole("dialog")).toBeVisible();
+    const again = owner.waitForResponse(r => r.url().endsWith("/api/hosted/legal/agree"));
+    await prompt.getByRole("button", { name: "Continue" }).click();
+    expect((await again).status()).toBe(204);
+    await expect(prompt).toHaveCount(0);
   } finally {
     await d.stop();
   }

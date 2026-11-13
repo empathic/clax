@@ -26,8 +26,10 @@ export type StagedLoad = {
   /** Releases held requests in order until none is held and `done` answers
    * true with the page quiet; answers the labels released, in order.
    * `first` runs once, when the page has painted and fallen quiet before
-   * the first release: what the document alone shows. */
-  drive(done: () => Promise<boolean>, opts?: { first?: () => Promise<void> }): Promise<string[]>;
+   * the first release: what the document alone shows. `each` runs every
+   * time the page has fallen quiet, the first time included, with the
+   * label released last (null before the first). */
+  drive(done: () => Promise<boolean>, opts?: { first?: () => Promise<void>; each?: (stage: string | null) => Promise<void> }): Promise<string[]>;
   /** The labels released so far. */
   released: string[];
 };
@@ -86,10 +88,11 @@ export async function stageLoad(page: Page, order: StageRule[], opts: { hold?: (
       await finished();
     }
   };
-  const drive = async (done: () => Promise<boolean>, at: { first?: () => Promise<void> } = {}) => {
+  const drive = async (done: () => Promise<boolean>, at: { first?: () => Promise<void>; each?: (stage: string | null) => Promise<void> } = {}) => {
     let first = at.first;
     for (;;) {
       await quiet();
+      await at.each?.(released.at(-1) ?? null);
       if (first) { const f = first; first = undefined; await f(); }
       const next = pick();
       if (next) {

@@ -130,3 +130,72 @@ export function formatTexts(selector: string, history: TextValue[]): string {
 export async function markStage(page: Page, label: string): Promise<void> {
   await quietEval(page, `(() => { (window.claxStages ??= []).push({ label: ${JSON.stringify(label)}, t: performance.now() }); })()`);
 }
+
+/** A landmark of a gallery page: its name, what marks it in the skeleton
+ * (null: the same node in both) and in the content. The geometry checks
+ * read rectangles, not nodes, so a skeleton replaced by its content is
+ * held to the content's place. */
+export type Landmark = { name: string; skeleton: string | null; content: string; margin?: boolean; keys?: (keyof Place)[] };
+
+/** The header's landmarks: the same at every stage of a load, the frame's included. */
+export const HEADER_MARKS: Landmark[] = [
+  { name: "header bar", skeleton: null, content: "#app > .gbar" },
+  { name: "mark", skeleton: null, content: "#app > .gbar .home .mark" },
+  { name: "title", skeleton: null, content: "#app > .gbar h1" },
+  { name: "search box", skeleton: null, content: "#app > .gbar .search" },
+  { name: "theme switch", skeleton: null, content: "#app > .gbar .theme-switch" },
+  { name: "links slot", skeleton: null, content: "#app > .gbar .glinks" },
+  { name: "main", skeleton: null, content: "#app > main.gal" },
+];
+
+/** A card's place, as a skeleton card predicts it: where it starts and how wide (its height is its content's). */
+const CARD: (keyof Place)[] = ["x", "y", "w"];
+
+/** The content's landmarks the skeleton predicts: its first row of cards in
+ * each group (`<group> card <n>`), the groups' headings, the summary and the tag bar. */
+export const CONTENT_MARKS: Landmark[] = [
+  ...[0, 1, 2, 3].flatMap(n => [
+    { name: `needs card ${n}`, skeleton: `main.gal .gskel .sk-need .cards > .sk-c:nth-child(${n + 1})`, content: `main.gal > .grp.needs .cards > .card-wrap:nth-child(${n + 1})`, keys: CARD },
+    { name: `rest card ${n}`, skeleton: `main.gal .gskel .sk-rest .cards > .sk-c:nth-child(${n + 1})`, content: `main.gal > .grp.rest .cards > .card-wrap:nth-child(${n + 1})`, keys: CARD },
+  ]),
+  { name: "needs heading", skeleton: "main.gal .gskel .sk-need h2", content: "main.gal > .grp.needs h2" },
+  { name: "rest heading", skeleton: "main.gal .gskel .sk-rest h2", content: "main.gal > .grp.rest h2" },
+  { name: "summary", skeleton: "main.gal .gskel .sk-sum", content: "main.gal > .inbox-sum:not([hidden])", margin: true },
+  { name: "tag bar", skeleton: "main.gal .gskel .sk-tb", content: "main.gal > .tagbar", margin: true },
+];
+
+/** A landmark's place: its rectangle with its bottom margin (a skeleton's
+ * placeholder holds the margin as padding), to a 64th of a pixel. */
+export type Place = { x: number; y: number; w: number; h: number };
+
+/** Where each landmark is now in `page`, as the skeleton or the content shows it (null: not shown). */
+export async function landmarks(page: Page, marks: Landmark[]): Promise<Record<string, Place | null>> {
+  return quietEval(page, `(() => {
+    const at = (sel, margin) => {
+      const e = document.querySelector(sel);
+      if (!e) return null;
+      const r = e.getBoundingClientRect();
+      if (!r.width || !r.height) return null;
+      const cs = getComputedStyle(e);
+      const pad = margin && !e.closest(".gskel") ? parseFloat(cs.marginBottom) || 0 : 0;
+      const q = v => Math.round(v * 64) / 64;
+      return { x: q(r.x + scrollX), y: q(r.y + scrollY), w: q(r.width), h: q(r.height + pad) };
+    };
+    const out = {};
+    for (const m of ${JSON.stringify(marks)}) out[m.name] = (document.querySelector("main.gal .gskel") && m.skeleton ? at(m.skeleton, false) : null) ?? at(m.content, !!m.margin);
+    return out;
+  })()`);
+}
+
+/** Where `marks` differ between two sets of places (`keys` of each, all by
+ * default), each as "<name>: <a> -> <b>"; marks absent from either are skipped. */
+export function placesDiffer(marks: Landmark[], a: Record<string, Place | null>, b: Record<string, Place | null>): string[] {
+  const out: string[] = [];
+  for (const m of marks) {
+    const p = a[m.name], q = b[m.name];
+    if (!p || !q) continue;
+    const keys = m.keys ?? (["x", "y", "w", "h"] as const);
+    if (keys.some(k => p[k] !== q[k])) out.push(`${m.name}: ${JSON.stringify(p)} -> ${JSON.stringify(q)}`);
+  }
+  return out;
+}
