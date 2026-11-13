@@ -577,6 +577,11 @@ test("the bundled Terms of Service and Privacy Policy: notices, pages, links and
       const body = await res.json();
       await r.fulfill({ response: res, json: { ...body, legal: { ...body.legal, agreed: false } } });
     });
+    // The gallery's page carries the route's answer in its bootstrap block.
+    await owner.route(`${origin}/`, async r => {
+      const res = await r.fetch();
+      await r.fulfill({ response: res, body: (await res.text()).replace(/"agreed":true/g, '"agreed":false') });
+    });
     await owner.goto(`${origin}/`);
     const prompt = owner.getByTestId("legal-prompt");
     await expect(prompt.getByRole("dialog")).toBeVisible();

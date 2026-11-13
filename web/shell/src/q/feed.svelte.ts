@@ -7,7 +7,7 @@
 // time the topic goes live or resyncs, so no change falls between a fetch
 // and the subscription, and a fetch that failed is made again when the
 // stream is back. A refused topic stops it.
-import { ApiError, type AnswerBody, type InboxFilter, type InboxItem, type QuestionView } from "../api";
+import { ApiError, type AnswerBody, type InboxFilter, type InboxItem, type InboxSummary, type QuestionView } from "../api";
 import { after } from "../clock";
 import type { EventStream, StreamEvent } from "../stream";
 import { type Closing, type Forbidden, answerQuestion, declineQuestion, inboxSummary, listInbox, listInboxGroups, listQuestions, markInbox, markInboxMany, pullQuestion, releaseQuestion } from "./api";
@@ -82,6 +82,14 @@ export class QuestionFeed {
   /** The question `id` as last heard, open or recently closed. */
   get(id: string): QuestionView | undefined {
     return this.open.find(q => q.id === id) ?? this.recent.find(q => q.id === id);
+  }
+
+  /** Takes the open list the page already holds (`GET
+   * /api/questions?status=open`'s, from the gallery's first load), before
+   * the topic goes live; the topic's first fetch replaces it. */
+  seed(open: QuestionView[]): void {
+    if (this.unwatch || this.open.length) return;
+    this.open = [...open].sort(byCreated);
   }
 
   /** Follows the topic (once), fetching when it goes live. */
@@ -217,6 +225,16 @@ export class InboxFeed {
   /** Subscribed, and the topic has not gone live yet: what a view shows
    * would be fetched again when it does (`{refetch}`). */
   declare waiting: boolean;
+
+  /** Takes the summary the page already holds (`GET /api/inbox/summary`'s,
+   * from the gallery's first load), as `summary` would, before the topic
+   * goes live; the topic's first fetch replaces it. */
+  seed(r: InboxSummary): void {
+    if (this.unwatch) return;
+    this.s.owner = true;
+    this.unread = r.unread ?? 0;
+    this.latest = r.latest ?? [];
+  }
 
   /** Follows the topic (once), fetching the summary when it goes live. */
   start(stream: Stream): void {

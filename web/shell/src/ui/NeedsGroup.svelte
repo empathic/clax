@@ -2,21 +2,19 @@
 
 <script lang="ts">
   // The gallery's "needs your eyes" group (spec §8): its red-orange swatch,
-  // its count, the rule for what lands in it, and its wider cards. It loads
-  // with the gallery's lazy module, since it shows only once this viewer's
-  // attention is known. Props are read off `p`. Leading the gallery, it
-  // leads with the New artifact tile.
+  // its count, the rule for what lands in it, and its wider cards. Props
+  // are read off `p`. Leading the gallery, it leads with `lead` (the New
+  // artifact tile).
   import type { Snippet } from "svelte";
   import type { Artifact } from "../api";
-  import NewTile from "./NewTile.svelte";
 
-  const p: { list: Artifact[]; card: Snippet<[Artifact]> } = $props();
+  const p: { list: Artifact[]; card: Snippet<[Artifact]>; lead?: Snippet } = $props();
 </script>
 
 <section class="grp needs">
   <h2><span class="sw" aria-hidden="true"></span>Needs your eyes<small>{p.list.length}</small></h2>
   <p class="rule">A thread you're in was addressed and you haven't looked, or there's a version or reply you haven't seen.</p>
-  <div class="cards"><NewTile />{#each p.list as a (a.id)}{@render p.card(a)}{/each}</div>
+  <div class="cards">{@render p.lead?.()}{#each p.list as a (a.id)}{@render p.card(a)}{/each}</div>
 </section>
 
 <style>

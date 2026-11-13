@@ -1,0 +1,52 @@
+/* The gallery entry's own styles (shell/index.html carries them beside
+   theme.css; the artifact view has none of them): the header that never
+   moves, the skeleton, and the gallery's phone layout. */
+/* The header's slots never move what is already in it (view/gallery-frame.ts):
+   the theme switch ends it and the search box (the gallery's list) sits
+   before it, both fixed; the links fill a slot right-aligned against them,
+   each decided at the header's first render; the one that arrives later (the
+   ClaxBot meter, its own chunk) sits just before the slot, taking no room in
+   the row, so its arrival moves nothing. */
+.gbar > .glinks { position: relative; margin-left: auto; display: flex; align-items: center; gap: 4px; flex: none; min-width: 0; }
+.gbar .glinks > .bot-slot { position: absolute; right: 100%; top: 0; bottom: 0; display: flex; align-items: center; padding-right: 4px; }
+.gbar > .search { margin-left: 0; flex: none; }
+.gbar .inbox-link, .gbar .queues-link, .gbar .settings-link { display: inline-flex; align-items: center; gap: 6px; flex: none; min-height: 32px; padding: 0 8px; border-radius: var(--radius-sm); font: 600 14px var(--font); color: var(--fg); text-decoration: none; white-space: nowrap; }
+.gbar .settings-link { min-width: 32px; justify-content: center; }
+.gbar .inbox-link:hover, .gbar .inbox-link[aria-current="page"], .gbar .queues-link:hover, .gbar .queues-link[aria-current="page"], .gbar .settings-link:hover, .gbar .settings-link[aria-current="page"] { background: var(--hover); }
+.gbar .inbox-link svg, .gbar .queues-link svg, .gbar .settings-link svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; color: var(--muted); }
+.gbar .settings-link svg { width: 18px; height: 18px; }
+.gbar .settings-link:hover svg, .gbar .settings-link[aria-current="page"] svg { color: var(--fg); }
+.gbar .inbox-link .count { min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--you); color: var(--on-you); font: 600 11.5px/20px var(--font); text-align: center; font-variant-numeric: tabular-nums; }
+/* The feedback menu's place, held from the header's first render; its count
+   is a badge over the button, which keeps its width. */
+.gbar .fb-slot { display: inline-flex; flex: none; min-width: 32px; min-height: 32px; }
+.gbar .fb-btn > .fb-count { position: absolute; top: 0; right: -4px; min-width: 16px; padding: 0 4px; font-size: 10.5px; line-height: 16px; }
+@media (max-width: 860px) { .gbar .glinks .word { display: none; } }
+@media (pointer: coarse) { .gbar .inbox-link, .gbar .queues-link, .gbar .settings-link { min-height: 44px; } .gbar .queues-link, .gbar .settings-link, .gbar .fb-slot { min-width: 44px; } .gbar .fb-slot { min-height: 44px; } }
+/* Where a page's content is on its way (view/gallery-frame.ts): cards on
+   the gallery, lines on a page beside it (`data-page`, set before the page
+   paints), pulsing gently. The sign-in pages show none of the frame. */
+.gskel .sk-h, .gskel .sk-c, .gskel .sk-l { background: var(--hover); border-radius: var(--radius-sm); }
+.gskel .sk-h { width: min(240px, 60%); height: 28px; margin: 0 0 18px; }
+.gskel .sk-c { height: 100px; border-radius: var(--radius); }
+.gskel .sk-ls { display: grid; gap: 14px; max-width: 640px; }
+.gskel .sk-l { height: 14px; }
+.gskel .sk-l:nth-child(2) { width: 84%; }
+.gskel .sk-l:nth-child(3) { width: 92%; }
+.gskel .sk-l:nth-child(4) { width: 58%; }
+html[data-page="page"] .gskel .cards, html:not([data-page="page"]) .gskel .sk-ls, html[data-page="page"] .gbar > .search { display: none; }
+html[data-page="auth"] #app > .gbar, html[data-page="auth"] #app > .gal, html[data-page="auth"] #app > .glegal { display: none; }
+@media (prefers-reduced-motion: no-preference) { .gskel { animation: gskel 1.2s ease-in-out infinite alternate; } }
+@keyframes gskel { to { opacity: .45; } }
+@media (max-width: 700px) {
+  /* The gallery's search box takes a row of its own under the bar. */
+  .gbar:has(> .search) { flex-wrap: wrap; height: auto; padding-top: 10px; padding-bottom: 10px; row-gap: 10px; }
+  .gbar > .search { order: 1; flex: 1 0 100%; width: auto; max-width: none; }
+}
+/* A page beside the gallery while it loads: laid out (what it focuses takes
+   focus) but with no height, before the skeleton, until it shows its first data. */
+.gal > .gpage.pending { height: 0; overflow: hidden; }
+/* Coming back to the gallery, `main` is held tall enough (the inline
+   clax-page script's --gback, the place kept in the history entry) to be
+   scrolled there at once, until the content is in (ui/Gallery.svelte). */
+html[data-page="gallery"] .gal { min-height: calc(100vh + var(--gback, 0px)); }

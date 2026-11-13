@@ -28,7 +28,8 @@
   import { type Ctx, type Screen, groupsFor, idOf, screenFor } from "./screens";
   import Search from "./Search.svelte";
 
-  let { stream }: { stream?: EventStream } = $props();
+  /** `onready`: called once the page shows its first data (what this browser may open, and the screen asked for). */
+  let { stream, onready }: { stream?: EventStream; onready?: () => void | Promise<void> } = $props();
   type Body = Component<{ stream?: EventStream; part?: string; tab?: string }>;
   const people = (part: string) => ({ load: () => import("../people/People.svelte"), part });
   const admin = (tab: string) => ({ load: () => import("../bot/AdminPage.svelte"), tab });
@@ -67,6 +68,10 @@
     if (id) void BODY[id].load().then(m => { if (!gone && loaded === id) Shown = m.default as Body; }, () => {});
   });
   $effect(() => { if (ctx && !screen) document.title = "Settings · Clax"; });
+  let told = false;
+  // Shown, the setting the address names is sought again: it was laid out
+  // with no room to scroll it into view until then.
+  $effect(() => { if (!told && ctx && (!screen || Shown)) { told = true; void Promise.resolve(onready?.()).then(() => { if (!gone && location.hash) seek(); }); } });
   // A screen shown instead of the one asked for is the address's from then on.
   $effect(() => { if (screen && asked && screen.id !== asked) { history.replaceState(history.state, "", `/settings/${screen.id}${location.search}${location.hash}`); path = location.pathname; } });
 

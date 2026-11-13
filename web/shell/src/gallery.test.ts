@@ -71,12 +71,12 @@ function stubApi(tokenStatus: number = 200, attention: "ok" | "fail" | "none" = 
 // each test unmounts its gallery before the next resets the module registry.
 let unmountGallery: (() => void) | null = null;
 
-async function mountGallery() {
+async function mountGallery(props: Record<string, unknown> = {}) {
   const { default: Gallery } = await import("./ui/Gallery.svelte");
   // From the same module registry as the gallery (each test resets it), so
   // both use one Svelte runtime.
   const { mount } = await import("./test/svelte");
-  const { root, unmount } = mount(Gallery, {});
+  const { root, unmount } = mount(Gallery, props);
   unmountGallery = unmount;
   await waitFor(() => root.querySelector("a.card, .empty, .empty-gallery"), "gallery to render");
   return root;
@@ -100,7 +100,7 @@ describe("the card's version badge", () => {
 });
 
 describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
-  beforeEach(() => { vi.resetModules(); });
+  beforeEach(freshModules);
   afterEach(() => { unmountGallery?.(); unmountGallery = null; vi.unstubAllGlobals(); document.body.replaceChildren(); edits = {}; });
 
   it("renders cards led by the title, with the version as a badge on the meta line, the link, and no description", async () => {
@@ -119,12 +119,11 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(v.nextElementSibling?.className).toBe("sr");
     expect(v.nextElementSibling?.textContent).toBe("Version 3, ");
     expect(cards[0].querySelector("p")).toBeNull();
-    // One star: the Pin button's once the token is known, not the title's too.
-    await waitFor(() => root.querySelector('.card-tools button[title="Unpin"]'), "the Unpin button");
+    // One star: the owner's Pin button's, not the title's too.
+    expect(root.querySelector('.card-tools button[title="Unpin"]')).not.toBeNull();
     expect(root.querySelectorAll(".card-wrap")[0].textContent!.match(/★/g)).toHaveLength(1);
     expect(cards[0].querySelector(".pin")).toBeNull();
     expect(cards[1].querySelector(".by")?.textContent).toContain("command line");
-    await waitFor(() => root.querySelector(".gbar .sub")?.textContent?.includes("seen as Ada"), "the viewer's name in the bar");
     expect(root.querySelector(".gbar .sub")?.textContent).toBe("local artifacts · seen as Ada");
   });
 
@@ -189,8 +188,8 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
     }));
     const root = await mountGallery();
     const cards = root.querySelectorAll("a.card");
-    // The chip loads after the first paint, with the other markers.
-    expect((await waitFor(() => cards[0].querySelector(".chip.live"), "the Live chip")).textContent).toBe("Live");
+    // At the cards' first render, with the other markers.
+    expect(cards[0].querySelector(".chip.live")?.textContent).toBe("Live");
     expect(cards[0].querySelector(".by")?.textContent).toContain("localhost:5173/settings");
     expect(cards[0].querySelector(".by")?.textContent).not.toContain("command line");
     expect(cards[1].querySelector(".chip.live")).toBeNull();
@@ -205,8 +204,7 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
     }));
     const root = await mountGallery();
     const cards = root.querySelectorAll("a.card");
-    // The chips and rosters load after the first paint.
-    await waitFor(() => cards[0].querySelector(".chip.ag"), "the working chip");
+    // The chips and rosters are there at the cards' first render, from the list.
     expect(Array.from(cards[0].querySelectorAll(".chip.ag")).map(c => c.textContent)).toEqual(["claude working"]);
     expect(cards[1].querySelector(".chip.ag")).toBeNull();
     expect(cards[1].querySelector(".mks")).toBeNull();
@@ -333,8 +331,7 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
   it("without attention shows every card in one group and no needs group", async () => {
     stubApi(200, "fail");
     const root = await mountGallery();
-    // The grouping loads with the rosters, after the first paint.
-    await waitFor(() => root.querySelector(".ft .ros"), "the grouping to load");
+    expect(root.querySelector(".ft .ros")).not.toBeNull();
     expect(root.querySelector(".grp.needs")).toBeNull();
     expect(root.querySelectorAll(".card-wrap").length).toBe(2);
     expect(root.querySelector(".grp.rest h2")?.textContent).toContain("Artifacts");
@@ -391,8 +388,8 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
   it("pin button sends PATCH with pinned true and refetches that card", async () => {
     const calls = stubApi();
     const root = await mountGallery();
-    // The live refreshes load with the rosters, after the first paint.
-    await waitFor(() => root.querySelector(".ft .ros"), "the live module to load");
+    // The live refreshes load with the haiku, once the cards are on screen.
+    await waitFor(() => root.querySelector(".gfoot"), "the live module to load");
     const pin = await waitFor(() => root.querySelectorAll(".card-wrap")[1]?.querySelector('button[title="Pin"]') as HTMLButtonElement | null, "pin button");
     const wrap = root.querySelectorAll(".card-wrap")[1];
     expect(wrap.querySelector("a button")).toBeNull();
@@ -422,6 +419,56 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(Array.from(root.querySelectorAll("a.card")).find(c => c.textContent!.includes("Pinned one"))?.querySelector(".v")?.textContent).toBe("v3");
   });
 
+  it("renders its content once, grouped, with the summary above it, and never an ungrouped list first", async () => {
+    const { item, view } = await import("./q/fixtures");
+    const qs = [view({ id: "Q1", created_at: "2026-10-07T09:01:00.000Z" })];
+    FakeWorker.all = [];
+    vi.stubGlobal("SharedWorker", FakeWorker);
+    stubApi(200, "ok", { summary: { unread: 2, questions: qs, latest: [item("reply")] }, questions: qs });
+    // Each change to the page: whether it shows cards, the needs group, the summary and the skeleton.
+    const seen: string[] = [];
+    const host = document.createElement("div");
+    document.body.append(host);
+    const look = () => {
+      const q = (sel: string) => (host.querySelector(sel) ? 1 : 0);
+      const now = `cards ${q("a.card")} needs ${q(".grp.needs")} summary ${q(".inbox-sum:not([hidden]) .qcard")} skeleton ${q(".gskel")} sub ${host.querySelector(".gbar .sub")?.textContent ?? ""}`;
+      if (seen.at(-1) !== now) seen.push(now);
+    };
+    new MutationObserver(look).observe(host, { childList: true, subtree: true, characterData: true });
+    const { default: Gallery } = await import("./ui/Gallery.svelte");
+    const { mount } = await import("./test/svelte");
+    const m = mount(Gallery, {}, host);
+    unmountGallery = m.unmount;
+    await waitFor(() => host.querySelector("a.card"), "the cards");
+    look();
+    expect(seen.filter(x => x.startsWith("cards 1"))).toEqual(["cards 1 needs 1 summary 1 skeleton 0 sub local artifacts · seen as Ada"]);
+    expect(seen.some(x => /^cards 0 .* skeleton 0/.test(x))).toBe(false);
+    // The subtitle is written once, in its final form.
+    expect([...new Set(seen.map(x => x.replace(/.* sub /, "")).filter(Boolean))]).toEqual(["local artifacts · seen as Ada"]);
+  });
+
+  it("renders the daemon's first-load data at mount, asking nothing it holds", async () => {
+    const calls = stubApi(403);
+    const boot: import("./view/gallery-boot").GalleryBoot = {
+      v: 1, kind: "gallery",
+      status: { viewer: 200, hosted: 404, feedback: 200, bot: 404, summary: 403, artifacts: 200, attention: 200, questions: 403 },
+      viewer: { viewer: { public_id: "v1", display_name: "Ada" }, may_create: false }, hosted: null, feedback: { enabled: false }, bot: null, inbox: false,
+      summary: null, artifacts: { artifacts: ARTIFACTS }, attention: ATTENTION, questions: null,
+    };
+    const { default: Gallery } = await import("./ui/Gallery.svelte");
+    const { mount } = await import("./test/svelte");
+    const m = mount(Gallery, { boot });
+    unmountGallery = m.unmount;
+    // At mount, before any request answers: the header and the grouped cards.
+    expect(m.root.querySelector(".gbar .sub")!.textContent).toBe("local artifacts · seen as Ada");
+    expect(m.root.querySelector(".grp.needs a.card h3")!.textContent).toBe("Other");
+    expect(m.root.querySelector(".grp.rest a.card h3")!.textContent).toContain("Pinned one");
+    expect(m.root.querySelector(".gskel")).toBeNull();
+    await waitFor(() => m.root.querySelector(".gfoot"), "the live module");
+    const asked = calls.map(c => c.url).filter(u => !u.includes("haiku"));
+    expect(asked.filter(u => ["/api/viewers/me", "/api/hosted/me", "/api/me/bot", "/_app/feedback/config", "/api/artifacts", "/api/viewers/me/attention"].includes(u))).toEqual([]);
+  });
+
   it("delete calls DELETE only after confirm", async () => {
     const calls = stubApi();
     const confirmSpy = vi.fn(() => false);
@@ -439,7 +486,7 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
 });
 
 describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
-  beforeEach(() => { vi.resetModules(); FakeWorker.all = []; vi.stubGlobal("SharedWorker", FakeWorker); });
+  beforeEach(async () => { await freshModules(); FakeWorker.all = []; vi.stubGlobal("SharedWorker", FakeWorker); });
   afterEach(() => { unmountGallery?.(); unmountGallery = null; vi.unstubAllGlobals(); document.body.replaceChildren(); history.replaceState(null, "", "/"); });
   const COLLAB = [{ type: "clax-artifacts", actions: ["read"], locations: ["*"] }];
   /** The routes as a browser sees them: the owner's (the token is served), a connected person's, or a LAN viewer's. */
@@ -479,8 +526,9 @@ describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
       const root = await mountAt("/");
       const link = await waitFor(() => root.querySelector<HTMLAnchorElement>(".gbar a.settings-link"), `Settings for the ${who}`);
       expect(link.getAttribute("href")).toBe("/settings");
-      // The gear is the header's last control.
-      expect(root.querySelector(".gbar")!.lastElementChild).toBe(link);
+      // The gear ends the header's links, before the search box and the theme switch, which never move.
+      expect(root.querySelector(".gbar .glinks")!.lastElementChild).toBe(link);
+      expect([...root.querySelector(".gbar")!.children].slice(-2).map(e => e.className)).toEqual(["search", "icon theme-switch"]);
       expect(link.hasAttribute("aria-current")).toBe(false);
       unmountGallery!(); unmountGallery = null; await freshModules();
     }
@@ -488,9 +536,24 @@ describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const root = await mountAt("/");
     await waitFor(() => root.querySelector("a.card"), "the cards");
     await waitFor(() => calls.some(c => c.url === "/api/viewers/me") && calls.some(c => c.url === "/api/token"), "the viewer and token requests");
-    // The header's links come from the lazy module: once it has loaded, the viewer is known too.
-    await vi.dynamicImportSettled();
+    // The header's links render with its subtitle, once its answers are in.
+    await waitFor(() => root.querySelector(".gbar .sub")?.textContent?.includes("seen as Sam"), "the header");
     expect(root.querySelector(".settings-link")).toBeNull();
+  });
+
+  it("takes Settings away when a screen finds a person revoked, once the daemon says so", async () => {
+    const calls = stubAs("person");
+    const root = await mountAt("/");
+    await waitFor(() => root.querySelector(".gbar a.settings-link"), "the gear");
+    const plain = globalThis.fetch as (u: string, i?: RequestInit) => Promise<Response>;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/api/viewers/me") { calls.push({ url, method: "GET" }); return new Response(JSON.stringify({ viewer: { public_id: "v1", display_name: "Sam", person: true, person_revoked_at: "2026-10-12T10:00:00Z" } })); }
+      return plain(url, init);
+    }));
+    const before = calls.length;
+    dispatchEvent(new Event("clax:people-gone"));
+    await waitFor(() => !root.querySelector(".gbar a.settings-link"), "the gear to go");
+    expect(calls.slice(before).map(c => c.url).filter(u => u === "/api/viewers/me" || u === "/api/hosted/me").sort()).toEqual(["/api/hosted/me", "/api/viewers/me"]);
   });
 
   it("gives a connected person's browser its inbox at /inbox, Inbox in the header, and the inbox and questions topics", async () => {
@@ -525,14 +588,14 @@ describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const calls = stubAs("owner");
     const root = await mountAt("/tags/x");
     await waitFor(() => calls.some(c => c.url === "/api/artifacts") && root.querySelector("a.card"), "the gallery");
-    expect(root.querySelector(".ppl")).toBeNull();
+    expect(root.querySelector(".stg, .qview, .tagsp")).toBeNull();
   });
 });
 
 describe("Gallery tags", { timeout: MOUNT_TIMEOUT_MS }, () => {
   const Q4 = { id: "t_aaaaaaaaaa", name: "Q4", colour: "blue" };
   const DESIGN = { id: "t_bbbbbbbbbb", name: "design", colour: "purple" };
-  beforeEach(() => { vi.resetModules(); tagsOn = { "7q3k9mzx2b4t": [DESIGN, Q4], aaaaaaaaaaaa: [Q4] }; });
+  beforeEach(async () => { await freshModules(); tagsOn = { "7q3k9mzx2b4t": [DESIGN, Q4], aaaaaaaaaaaa: [Q4] }; });
   afterEach(() => { unmountGallery?.(); unmountGallery = null; vi.unstubAllGlobals(); document.body.replaceChildren(); tagsOn = {}; history.replaceState(null, "", "/"); });
   const titles = (root: Element) => [...root.querySelectorAll("a.card h3")].map(h => h.textContent);
   const bar = (root: Element) => [...root.querySelectorAll<HTMLButtonElement>(".tagbar button.tag")];
@@ -545,7 +608,7 @@ describe("Gallery tags", { timeout: MOUNT_TIMEOUT_MS }, () => {
     // The bar lists the tags in use, the filter's pressed; a filter shows one list.
     expect(bar(root).map(b => [b.textContent, b.getAttribute("aria-pressed"), b.dataset.c])).toEqual([["design", "true", "purple"], ["Q4", "false", "blue"]]);
     expect(bar(root)[1].getAttribute("aria-label")).toBe("Filter by tag Q4");
-    expect(root.querySelector(".grp h2")).toBeNull();
+    expect(root.querySelector(".grp:not(.inbox-sum) h2")).toBeNull();
     const manage = await waitFor(() => root.querySelector<HTMLAnchorElement>(".tagbar a.tb-m")?.textContent === "Manage tags" && root.querySelector<HTMLAnchorElement>(".tagbar a.tb-m"), "Manage tags");
     expect(manage.getAttribute("href")).toBe("/tags");
     // Clear shows everything, and takes the filter out of the address.
@@ -634,7 +697,7 @@ describe("Gallery tags", { timeout: MOUNT_TIMEOUT_MS }, () => {
 });
 
 describe("getToken", () => {
-  beforeEach(() => { vi.resetModules(); });
+  beforeEach(freshModules);
   afterEach(() => { vi.unstubAllGlobals(); });
 
   it("retries after a transient failure", async () => {

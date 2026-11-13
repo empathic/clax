@@ -2,7 +2,8 @@
 
 <script lang="ts">
   // ClaxBot in the gallery's header (spec 2026-10-21-claxbot §11.4, §11.5),
-  // loaded with the gallery's lazy module: the week's meter when ClaxBot is
+  // loaded with the gallery's lazy module, first in the header's links
+  // (`GalleryLinks`), where it moves nothing as it arrives: the week's meter when ClaxBot is
   // on for this person ("ClaxBot · 310 of 2,000 credits", linking to
   // Settings' Your ClaxBot; the numbers alone at phone width), marked "your
   // key" when their runs use their own model key (credits then pay only for
@@ -49,12 +50,7 @@
     .bot-meter.warn { color: var(--tag-yellow-fg); }
     .bot-meter.out { color: var(--danger); }
     .bot-meter:hover, .bot-meter[aria-current="page"] { background: var(--hover); }
-    .gbar .sub + .bot-meter { margin-left: auto; }
     @media (pointer: coarse) { .bot-meter { min-height: 44px; } }
     @media (max-width: 860px) { .bot-meter .word { display: none; } }
-    /* At phone width beside the meter, the header's other links show their icons alone. */
-    @media (max-width: 520px) {
-      .gbar:has(.bot-meter) .inbox-link .word, .gbar:has(.bot-meter) .queues-link .word { display: none; }
-    }
   }
 </style>
