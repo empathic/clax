@@ -485,6 +485,84 @@ describe("Gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
   });
 });
 
+describe("the gallery's pending states", { timeout: MOUNT_TIMEOUT_MS }, () => {
+  beforeEach(async () => { await freshModules(); FakeWorker.all = []; vi.stubGlobal("SharedWorker", FakeWorker); });
+  afterEach(async () => {
+    unmountGallery?.(); unmountGallery = null; vi.unstubAllGlobals(); document.body.replaceChildren(); history.replaceState(null, "", "/");
+    for (const m of ["./ui/gallery-working.ts", "./ui/TagsPage.svelte", "./q/index.ts", "./q/InboxPage.svelte"]) vi.doUnmock(m);
+    await freshModules();
+  });
+  /** Mounts the gallery at `path`, recording every state `main` passes through. */
+  async function mountAt(path: string) {
+    history.replaceState(null, "", path);
+    const { default: Gallery } = await import("./ui/Gallery.svelte");
+    const { mount } = await import("./test/svelte");
+    const { root, unmount } = mount(Gallery, {});
+    unmountGallery = unmount;
+    const main = root.querySelector("main.gal")!;
+    const states: string[] = [];
+    const look = () => {
+      const s = `busy ${main.getAttribute("aria-busy") ?? "-"} skeleton ${main.querySelector(".gskel") ? 1 : 0} status ${main.querySelectorAll("[role=status]").length} cards ${main.querySelectorAll("a.card").length} banner ${main.querySelector(":scope > .bbanner") ? 1 : 0} summary ${main.querySelector(".inbox-sum") ? 1 : 0}`;
+      if (states.at(-1) !== s) states.push(s);
+    };
+    look();
+    new MutationObserver(look).observe(root, { subtree: true, childList: true, attributes: true });
+    return { root, main, states };
+  }
+  const failing = (what: string) => () => { throw new Error(`${what} did not load`); };
+
+  it("is busy, with one polite status, until the content is in, then neither", async () => {
+    stubApi(403);
+    const { main, states } = await mountAt("/");
+    await waitFor(() => main.querySelector("a.card"), "the cards");
+    expect(states[0]).toBe("busy true skeleton 1 status 1 cards 0 banner 0 summary 0");
+    expect(states.at(-1)).toBe("busy - skeleton 0 status 0 cards 2 banner 0 summary 0");
+  });
+
+  for (const [path, chunk, mod] of [
+    ["/tags", "the lazy module", "./ui/gallery-working.ts"],
+    ["/tags", "the Tags page", "./ui/TagsPage.svelte"],
+    ["/inbox", "the question module", "./q/index.ts"],
+    ["/inbox", "the inbox page", "./q/InboxPage.svelte"],
+  ] as const) {
+    it(`ends the skeleton at ${path} with a message and a way to reload when ${chunk} does not load`, async () => {
+      vi.doMock(mod, failing(chunk));
+      stubApi(200, "ok", { summary: { unread: 0, questions: [], latest: [] }, questions: [] });
+      const { main, states } = await mountAt(path);
+      const alert = await waitFor(() => main.querySelector<HTMLElement>("[role=alert]"), "the message");
+      expect(alert.textContent).toContain("This page could not load.");
+      expect(alert.querySelector("button")!.textContent).toBe("Reload to try again");
+      expect(main.querySelector(".gskel")).toBeNull();
+      expect(main.hasAttribute("aria-busy")).toBe(false);
+      expect(states.at(-1)).toMatch(/^busy - skeleton 0/);
+    });
+  }
+
+  it("shows ClaxBot's usage banner from the content's first render, above the cards", async () => {
+    stubApi(403);
+    const plain = globalThis.fetch as (u: string, i?: RequestInit) => Promise<Response>;
+    const { meBot, week } = await import("./bot/fixtures");
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => (url === "/api/me/bot" ? new Response(JSON.stringify(meBot({ week: week({ spent_milli: 1_700_000 }) }))) : plain(url, init))));
+    const { main, states } = await mountAt("/");
+    await waitFor(() => main.querySelector("a.card"), "the cards");
+    // Never cards without the banner above them.
+    expect(states.filter(s => !/cards 0/.test(s))).toEqual(["busy - skeleton 0 status 1 cards 2 banner 1 summary 0"]);
+    expect(main.firstElementChild!.className).toContain("bbanner");
+    expect(document.querySelector(".gbar .bot-meter.warn")).not.toBeNull();
+  });
+
+  it("brings Inbox into the header, and not the summary over the cards, when the owner's browser is known only after them", async () => {
+    stubApi(500, "ok", { summary: { unread: 2, questions: [], latest: [] }, questions: [] });
+    const real = globalThis.fetch as (url: string, init?: RequestInit) => Promise<Response>;
+    // The owner check's own token request (uncached) answers that this is the owner's browser.
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => (url === "/api/token" && init?.cache === "no-store" ? new Response(JSON.stringify({ token: "t" })) : real(url, init))));
+    const { root, main, states } = await mountAt("/");
+    await waitFor(() => root.querySelector(".gbar .inbox-link"), "Inbox in the header");
+    expect(states.some(s => /summary 1/.test(s))).toBe(false);
+    expect(main.querySelectorAll("a.card")).toHaveLength(2);
+  });
+});
+
 describe("Gallery and People", { timeout: MOUNT_TIMEOUT_MS }, () => {
   beforeEach(async () => { await freshModules(); FakeWorker.all = []; vi.stubGlobal("SharedWorker", FakeWorker); });
   afterEach(() => { unmountGallery?.(); unmountGallery = null; vi.unstubAllGlobals(); document.body.replaceChildren(); history.replaceState(null, "", "/"); });

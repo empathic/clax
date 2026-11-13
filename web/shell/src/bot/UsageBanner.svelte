@@ -7,7 +7,7 @@
   // and local agents keep working), with how to ask an admin for a lift.
   // An unenforced person sees the numbers, never the pause.
   import type { MeBot } from "./api";
-  import { banner } from "./model";
+  import { banner } from "./meter";
 
   let { me }: { me: MeBot | null } = $props();
   const b = $derived(banner(me));

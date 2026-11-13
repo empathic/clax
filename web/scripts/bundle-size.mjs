@@ -140,7 +140,9 @@ const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), 
   if (!lazy) throw new Error("dist has no gallery-working chunk");
   const loaded = new Set([...closure("index.html"), ...closure(lazy)].map(k => manifest[k].file));
   for (const [key, srcs] of [["people", ["src/settings/Settings.svelte", "src/people/People.svelte"]], ["queues", ["src/queues/Queues.svelte"]]]) {
-    const pages = srcs.map(src => Object.keys(manifest).find(m => m.endsWith(src)));
+    // A page another chunk also imports from is keyed by its chunk, under its name.
+    const named = src => Object.keys(manifest).find(m => manifest[m].isDynamicEntry && manifest[m].name === src.replace(/^.*\/|\.\w+$/g, ""));
+    const pages = srcs.map(src => Object.keys(manifest).find(m => m.endsWith(src)) ?? named(src));
     if (pages.some(p => !p)) throw new Error(`dist has no ${srcs.join(" or ")} chunk`);
     sizes[key] = [...new Set(pages.flatMap(page => [...closure(page)].map(k => manifest[k].file)))].filter(f => !loaded.has(f)).reduce((n, f) => n + gz(f), 0);
   }

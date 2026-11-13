@@ -36,7 +36,7 @@ export type BotMe = { enabled?: boolean; role?: "owner" | "admin" | "member" } &
  *   when that is 200, else null (`hosted` on a local daemon: 404, null).
  *   A status of 200 or a refusal is the answer: the shell need not ask.
  * - No `status[f]` (the route failed (5xx, 408, 429) or was slow, or the
- *   field was left out, as on back/forward): `f` is null and the shell asks
+ *   field was left out): `f` is null and the shell asks
  *   the route itself.
  * - `artifacts`, `attention` and `questions` are there on `/` alone
  *   (absent elsewhere); `summary` (Inbox's count) on every page.
@@ -62,11 +62,6 @@ export type GalleryBoot = {
   questions?: { questions: QuestionView[]; open: number } | null;
 };
 
-/** The fields that depend on who this browser is, which a page from the
- * browser's cache may hold for someone else's cookie: all but `artifacts`,
- * which the gallery's stream refreshes. */
-const VIEWER_FIELDS = ["viewer", "hosted", "feedback", "bot", "attention", "summary", "questions"] as const;
-
 /** How this document was reached (`back_forward` for history), from
  * Navigation Timing, as `readBoot` (`boot.ts`) reads it. */
 function navigationType(): string {
@@ -86,10 +81,14 @@ export function answered(b: GalleryBoot, f: GalleryField): boolean {
 /** The gallery's bootstrap block in `doc`, or null when there is none, it
  * does not parse, or it is not a version 1 gallery block. A page reached
  * through history may come from the browser's cache without asking the
- * daemon, so what depends on the viewer may be stale: those fields are
- * left out (null, with no status) and `inbox` is null, and the shell asks
- * their routes itself, as `readBoot` does with the artifact page's viewer. */
+ * daemon, for a cookie that is no longer this browser's (a hosted sign-out,
+ * another person signing in): every field of the block but the page's own
+ * kind depends on who asked (the list too, by the viewer's read rights),
+ * so such a load reads none of it, and the shell asks every route itself,
+ * as `readBoot` does with the artifact page's viewer. The skeleton keeps
+ * its shape from what this browser last saw (`gallery-shape.ts`). */
 export function readGalleryBoot(doc: Document = document, navType: string = navigationType()): GalleryBoot | null {
+  if (navType === "back_forward") return null;
   const text = doc.getElementById("clax-boot")?.textContent;
   if (!text) return null;
   let b: GalleryBoot;
@@ -98,13 +97,5 @@ export function readGalleryBoot(doc: Document = document, navType: string = navi
   } catch {
     return null;
   }
-  if (!(b && b.v === 1 && b.kind === "gallery" && b.status && typeof b.status === "object")) return null;
-  if (navType !== "back_forward") return b;
-  const status = { ...b.status };
-  const out: GalleryBoot = { ...b, status, inbox: null };
-  for (const f of VIEWER_FIELDS) {
-    delete status[f];
-    if (f in out) (out as Record<string, unknown>)[f] = null;
-  }
-  return out;
+  return b && b.v === 1 && b.kind === "gallery" && b.status && typeof b.status === "object" ? b : null;
 }

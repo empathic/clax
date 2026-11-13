@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FRAME_HTML, HEADER_HTML, SKELETON_HTML, replaceFrame } from "./gallery-frame";
+import { FRAME_HTML, HEADER_HTML, LOADING, NEEDS_HEADING, NEEDS_RULE, REST_AFTER_NEEDS, REST_HEADING, REST_NOTE, SKELETON_CARDS, SKELETON_HTML, replaceFrame } from "./gallery-frame";
 import { MOUNT_TIMEOUT_MS } from "../test/timeouts";
 
 /** The elements under `root` as tag, class and the attributes that place
@@ -23,6 +23,22 @@ describe("index.html", () => {
     // The page's kind is marked after the block, which it reads, and before the body.
     expect(html.indexOf('<script id="clax-page">')).toBeGreaterThan(html.indexOf("<!--clax:boot-->"));
     expect(html.indexOf('<script id="clax-page">')).toBeLessThan(html.indexOf("<body>"));
+    // The skeleton is shaped after both, before the body.
+    expect(html.indexOf('<script id="clax-shape">')).toBeGreaterThan(html.indexOf('<script id="clax-page">'));
+    expect(html.indexOf('<script id="clax-shape">')).toBeLessThan(html.indexOf("<body>"));
+  });
+
+  it("holds every part the content may have in the skeleton, in the content's own boxes, and one polite status", () => {
+    const sk = parse(SKELETON_HTML);
+    for (const part of [".sk-ban", ".sk-sum", ".sk-tb", ".sk-empty", "section.grp.needs.sk-need > h2", "section.grp.needs.sk-need > p.rule", "section.grp.rest.sk-rest > h2", ".sk-ls"]) expect(sk.querySelector(part), part).not.toBeNull();
+    expect(sk.querySelectorAll(".sk-need .cards > .sk-c")).toHaveLength(SKELETON_CARDS);
+    expect(sk.querySelectorAll(".sk-rest .cards > .sk-c")).toHaveLength(SKELETON_CARDS);
+    expect([...sk.querySelectorAll("[role=status]")].map(e => e.textContent)).toEqual([LOADING]);
+    expect(sk.querySelector(".sk")!.getAttribute("aria-hidden")).toBe("true");
+    expect(sk.querySelector(".sk-need h2")!.textContent).toBe(NEEDS_HEADING);
+    expect(sk.querySelector(".sk-need .rule")!.textContent).toBe(NEEDS_RULE);
+    expect(sk.querySelector(".sk-rest h2")!.textContent).toBe(`${REST_HEADING}${REST_AFTER_NEEDS}${REST_NOTE}`);
+    expect(parse(FRAME_HTML).querySelector("main.gal")!.getAttribute("aria-busy")).toBe("true");
   });
 });
 
@@ -42,6 +58,7 @@ describe("the mounted gallery", { timeout: MOUNT_TIMEOUT_MS }, () => {
       expect(shape(root.querySelector(".gbar")!)).toEqual(shape(frame.querySelector(".gbar")!));
       expect(root.querySelector(".gbar .sub")!.textContent).toBe("");
       expect(root.querySelector("main.gal > .gskel")!.outerHTML).toBe(SKELETON_HTML);
+      expect(root.querySelector("main.gal")!.getAttribute("aria-busy")).toBe("true");
       unmount();
     });
   }

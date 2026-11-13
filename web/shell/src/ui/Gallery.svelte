@@ -23,7 +23,14 @@
   // mount, and the rest are asked all at once. The live refreshes
   // (`CardSync`), the working lists and the question module's feeds start
   // after that render, through the lazy module (`gallery-working`), and a
-  // refresh that finds nothing new changes nothing on screen.
+  // refresh that finds nothing new changes nothing on screen. The skeleton
+  // takes the shape of the content before the first paint (the inline
+  // `clax-shape` script, view/gallery-frame.ts): once the content is on
+  // screen, its shape is kept for the next load (view/gallery-shape.ts).
+  // While the skeleton shows, `main` is busy and says so politely; a chunk
+  // that does not load ends it with a message and a way to reload. ClaxBot's
+  // usage banner, from the header's answers, leads the content from its
+  // first render.
   //
   // At `/inbox` the page is the inbox, at `/settings` and
   // `/settings/<screen>` Settings (its own chunk, through the lazy module,
@@ -50,6 +57,8 @@
   // and the empty gallery. Signing out of a hosted Clax is in Settings.
   import { type Component, onDestroy, onMount, tick } from "svelte";
   import { ApiError, type Artifact, type AttentionSummary, type TagRef, deleteArtifact, getToken, listArtifacts, patchArtifact, tokenUnsure } from "../api";
+  import type { MeBot } from "../bot/api";
+  import { banner } from "../bot/meter";
   import { REQUEST_STUCK, connTrouble } from "../conn-notice";
   import { readConfig } from "../feedback/boot";
   import { configOnce } from "../feedback/config";
@@ -59,7 +68,8 @@
   import { afterPaint } from "../view/after-paint";
   import { groups, markers } from "../view/attention-model";
   import type { GalleryBoot } from "../view/gallery-boot";
-  import { SKELETON_HTML } from "../view/gallery-frame";
+  import { REST_AFTER_NEEDS, REST_HEADING, REST_NOTE, SKELETON_HTML } from "../view/gallery-frame";
+  import { keepShape, measureShape } from "../view/gallery-shape";
   import { filterArtifacts, orderArtifacts } from "../view/gallery-model";
   import { type Answer, type Content, type Header, type Io, type TokenAnswer, contentFromBlock, gatherContent, gatherHeader, header as decide, headerFromBlock, topOf } from "../view/gallery-start";
   import { barTags, canonical, carriesAll, holds, refsForUrl, same, tagsFromUrl, tagsInUse, toggle, withTags } from "../view/tags-model";
@@ -118,7 +128,7 @@
   // This viewer's attention, by artifact ({} without a viewer, or on failure).
   let att = $state<Record<string, AttentionSummary>>({});
   // svelte-ignore state_referenced_locally
-  if (first && hdr && !hdr.inbox) { artifacts = first.artifacts; error = first.error; att = first.attention; ready = true; }
+  if (first && hdr && !hdr.inbox && !banner(hdr.bot as unknown as MeBot)) { artifacts = first.artifacts; error = first.error; att = first.attention; ready = true; }
   let query = $state("");
   // The lazy module, its working lists' feed and the live refreshes, once the content is on screen.
   let lm = $state<Lazy | null>(null);
@@ -127,13 +137,27 @@
   let Q = $state<typeof import("../q") | null>(null);
   let Page = $state<typeof import("../q/InboxPage.svelte").default | null>(null);
   let Summary = $state<typeof import("../q/GallerySummary.svelte").default | null>(null);
-  let Bot = $state<Component | null>(null);
+  // A chunk the page needs did not load: the skeleton gives way to a message.
+  let failed = $state(false);
+  // ClaxBot's usage banner (from 80 % of the week's credits), from the header's answer.
+  // Its own chunk, loaded only for a banner to show, which the content's
+  // first render waits for: it is never inserted above content on screen.
+  const ban = $derived(hdr?.bot ? banner(hdr.bot as unknown as MeBot) : null);
+  let Banner = $state<Component<{ me: MeBot }> | null>(null);
+  // The banner's chunk is in, or none is needed: a page beside the gallery may show.
+  let bannerIn = $state(false);
+  let bannerLoad: Promise<void> | null = null;
+  const loadBanner = (h: Header) => (bannerLoad ??= banner(h.bot as unknown as MeBot) ? import("../bot/UsageBanner.svelte").then(m => { Banner = m.default; }, () => {}) : Promise.resolve());
   const unread = $derived(Q ? Q.inboxFeed().unread : hdr?.summary?.unread ?? 0);
   // A page beside the gallery mounts into `pageHost`, shown in the
   // skeleton's place once it has its first data. Until then it is laid out
   // (so what it focuses takes focus) with no height, before the skeleton.
   let pageHost: HTMLElement | undefined = $state();
   let pageShown = $state(false);
+  // The page is shown once it has its first data and the header (and with it the banner) is in.
+  const revealed = $derived(pageShown && !!hdr && bannerIn);
+  // The skeleton shows (`main` busy): until the content, the page or a failure ends it.
+  const pending = $derived(!failed && (listing ? !ready : inbox ? hasInbox !== false && !revealed : !revealed));
   /** Shows the page; resolves once it is on screen. */
   const shownPage = () => { pageShown = true; return tick(); };
   let unPage: (() => void) | undefined;
@@ -198,20 +222,24 @@
   /** What the header's answers start: the legal ask, ClaxBot's meter, the question module. */
   function headerIn(h: Header) {
     if (h.hosted?.legal) { const terms = h.hosted.legal; void import("../hosted/legal").then(m => m.ask(terms)); }
-    if (h.bot?.enabled) void lazy().then(m => { m.seedBot(h.bot as never); return m.bot(); }).then(m => { if (!destroyed) Bot = m.default as Component; }, () => {});
+    if (h.bot) void lazy().then(m => { m.seedBot(h.bot as never); }, () => {});
     if (inbox) {
-      if (h.inbox) void Promise.all([loadQ(h), lazy().then(m => m.inboxPage())]).then(([q, pg]) => { if (q && !destroyed) { Page = pg.default; startQ(q); } }, () => {});
+      if (h.inbox) void Promise.all([loadQ(h), lazy().then(m => m.inboxPage())]).then(([q, pg]) => { if (destroyed) return; if (!q) { failed = true; return; } Page = pg.default; startQ(q); }, () => { failed = true; });
     } else if (!listing && h.inbox) void loadQ(h).then(startQ);
     if (h.inbox === null) {
-      // The token route failed: whether this browser is the owner's is asked until it answers.
+      // The token route failed: whether this browser is the owner's is asked
+      // until it answers. Said later, it brings Inbox and its count into the
+      // header's links (which move nothing), and at /inbox the page; on the
+      // gallery's list, not the unread summary, which would push the cards
+      // down under the person's eyes.
       void lazy().then(m => m.inboxBrowser(Promise.resolve(h.me?.viewer), life.signal)).then(o => {
         if (destroyed) return;
         lateInbox = o;
         if (!o) return;
         const now = { ...h, inbox: true };
         if (inbox) headerIn(now);
-        else void Promise.all([loadQ(now), listing ? lazy().then(m => m.summary()) : null]).then(([q, s]) => { if (!destroyed && s) Summary = s.default; startQ(q); });
-      }, () => {});
+        else void loadQ(now).then(startQ);
+      }, () => { if (inbox && !destroyed) failed = true; });
     }
   }
 
@@ -237,11 +265,21 @@
     });
   };
 
+  /** Keeps the page's shape for the next load's skeleton (view/gallery-shape.ts). */
+  const keepNow = () => {
+    if (failed || (listing ? !ready || error || query.trim() || sel.length : !revealed)) return;
+    keepShape(top, measureShape(document, listing && artifacts ? { need: g?.needs.length ?? 0, rest: g?.rest.length ?? 0, tile: hdr?.me?.may_create === true, empty: artifacts.length === 0 } : undefined));
+  };
+  // Measured once its first render is painted, laid out as the person sees it.
+  let cancelKeep: (() => void) | undefined;
+  $effect(() => { if ((listing ? ready : revealed) && !cancelKeep) cancelKeep = afterPaint(keepNow); });
+
   onMount(() => {
     addEventListener("clax:people-gone", recheck);
     const headerP = hdr ? Promise.resolve(hdr) : gatherHeader(boot, io, tokenP);
-    void headerP.then(h => { if (destroyed) return; hdr = h; headerIn(h); });
-    if (sub) void lazy().then(m => { if (!destroyed && pageHost) unPage = m.page(sub, pageHost, shownPage); }, () => { pageShown = true; });
+    // The links' remembered width held their slot until now (the inline clax-shape script).
+    void headerP.then(h => { if (destroyed) return; hdr = h; void loadBanner(h).then(() => { bannerIn = true; }); document.documentElement.style.removeProperty("--sk-links"); headerIn(h); });
+    if (sub) void lazy().then(m => { if (!destroyed && pageHost) unPage = m.page(sub, pageHost, shownPage, () => { failed = true; }); }, () => { failed = true; });
     if (!listing) { void lazy().then(m => { if (!destroyed) lm = m; }, () => {}); return; }
     addEventListener("pagehide", keep); addEventListener("click", keep, true);
     if (back) scrollTo(0, back);
@@ -250,6 +288,7 @@
     const contentP = first ? Promise.resolve(first) : gatherContent(boot, io, headerP);
     void Promise.all([contentP, headerP]).then(async ([c, h]) => {
       let S: typeof Summary = null;
+      await loadBanner(h);
       if (h.inbox) {
         const [q, s] = await Promise.all([loadQ(h, c.questions), lazy().then(m => m.summary()).catch(() => null)]);
         if (destroyed) return;
@@ -262,7 +301,7 @@
       if (artifacts) cancelLive = afterPaint(live);
     });
   });
-  onDestroy(() => { destroyed = true; cancelLive?.(); removeEventListener("pagehide", keep); removeEventListener("click", keep, true); removeEventListener("clax:people-gone", recheck); unPage?.(); life.dispose(); sync?.stop(); Q?.stop(); });
+  onDestroy(() => { destroyed = true; cancelLive?.(); cancelKeep?.(); removeEventListener("pagehide", keep); removeEventListener("click", keep, true); removeEventListener("clax:people-gone", recheck); unPage?.(); life.dispose(); sync?.stop(); Q?.stop(); });
   // The footer is the page's own (view/gallery-frame.ts `FOOTER_HTML`,
   // kept in place under the gallery so it never moves): a hosted Clax's
   // Terms of Service and Privacy Policy go before its link to the source.
@@ -280,20 +319,24 @@
 
 <header class="gbar">
   <a href="/" class="home" aria-label="Gallery"><Mark /></a><h1>Clax</h1><span class="sub hide-sm">{hdr ? `${hdr.site ? location.host : "local artifacts"}${me ? ` · seen as ${me}` : ""}` : ""}</span>
-  <GalleryLinks current={inbox ? "inbox" : sub} inbox={!!hasInbox} {unread} queues={!!hdr?.queues} feedback={!!hdr && readConfig(hdr.feedback) !== null} member={!!hdr?.member} {Bot} Menu={feedbackMenu.current} />
+  <GalleryLinks current={inbox ? "inbox" : sub} inbox={!!hasInbox} {unread} queues={!!hdr?.queues} feedback={!!hdr && readConfig(hdr.feedback) !== null} member={!!hdr?.member} bot={hdr?.bot as MeBot | null | undefined} Menu={feedbackMenu.current} />
   {#if listing}<input type="search" class="search" placeholder="Search artifacts" aria-label="Search artifacts" value={query} oninput={e => { query = e.currentTarget.value; }} />{/if}
   <ThemeSwitch />
 </header>
-<main class="gal">
+{#snippet usage()}{#if ban && Banner && hdr?.bot}<Banner me={hdr.bot as unknown as MeBot} />{/if}{/snippet}
+{#snippet trouble()}<p class="empty" role="alert">This page could not load. <button type="button" class="ghost" onclick={() => location.reload()}>Reload to try again</button></p>{/snippet}
+<main class="gal" aria-busy={pending ? "true" : undefined}>
+  {#if !listing && revealed}{@render usage()}{/if}
   {#if inbox}
-    {#if hasInbox && Page}<div class={pageShown ? "gpage" : "gpage pending"}><Page stream={lm?.pageStream()} onready={shownPage} /></div>{/if}
-    {#if hasInbox === false}<p class="empty">This browser has no inbox: open the owner's at http://localhost:{location.port}/inbox on the computer Clax runs on.</p>{:else if !pageShown}{@html SKELETON_HTML}{/if}
+    {#if hasInbox && Page}<div class={revealed ? "gpage" : "gpage pending"}><Page stream={lm?.pageStream()} onready={shownPage} /></div>{/if}
+    {#if hasInbox === false}<p class="empty">This browser has no inbox: open the owner's at http://localhost:{location.port}/inbox on the computer Clax runs on.</p>{:else if failed}{@render trouble()}{:else if !revealed}{@html SKELETON_HTML}{/if}
   {:else if sub}
-    <div class={pageShown ? "gpage" : "gpage pending"} bind:this={pageHost}></div>
-    {#if !pageShown}{@html SKELETON_HTML}{/if}
+    <div class={revealed ? "gpage" : "gpage pending"} bind:this={pageHost}></div>
+    {#if failed}{@render trouble()}{:else if !revealed}{@html SKELETON_HTML}{/if}
   {:else if !ready}
     {@html SKELETON_HTML}
   {:else}
+  {@render usage()}
   {#if Summary}<Summary />{/if}
   {#if error}<p class="empty">Could not load artifacts: {error}</p>{/if}
   {#snippet tile()}<NewTile me={hdr?.me?.viewer ?? null} may={hdr?.me?.may_create === true} bot={!!hdr?.bot?.enabled} />{/snippet}
@@ -323,7 +366,7 @@
   {#if g?.needs.length}<NeedsGroup list={g.needs} {card} lead={tile} />{/if}
   {#if shown && shown.length > 0}
     <section class="grp rest">
-      {#if !flat}<h2><span class="sw" aria-hidden="true"></span>{g?.needs.length ? "Everything else" : "Artifacts"}<small>pinned first, then most recent</small></h2>{/if}
+      {#if !flat}<h2><span class="sw" aria-hidden="true"></span>{g?.needs.length ? REST_AFTER_NEEDS : REST_HEADING}<small>{REST_NOTE}</small></h2>{/if}
       <div class="cards">{#if !g?.needs.length}{@render tile()}{/if}{#each g?.rest ?? shown as a (a.id)}{@render card(a)}{/each}</div>
     </section>
   {/if}

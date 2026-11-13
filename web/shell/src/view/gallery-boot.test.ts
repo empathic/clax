@@ -43,31 +43,11 @@ describe("readGalleryBoot", () => {
     expect(answered(b, "viewer")).toBe(false);
   });
 
-  it("leaves out what depends on the viewer of a page reached through history, which may come from the cache", () => {
+  it("reads nothing of a page reached through history, which may come from the cache for someone else's cookie", () => {
     block(JSON.stringify(boot()));
-    const b = readGalleryBoot(document, "back_forward")!;
-    expect(b.viewer).toBeNull();
-    expect(b.hosted).toBeNull();
-    expect(b.feedback).toBeNull();
-    expect(b.attention).toBeNull();
-    expect(b.inbox).toBeNull();
-    for (const f of ["viewer", "hosted", "feedback", "bot", "attention", "summary", "questions"] as const) expect(answered(b, f), f).toBe(false);
-    expect(b.artifacts).toEqual(boot().artifacts);
-    expect(answered(b, "artifacts")).toBe(true);
+    expect(readGalleryBoot(document, "back_forward")).toBeNull();
     // The block itself is left as it was.
     expect(readGalleryBoot(document, "navigate")).toEqual(boot());
-  });
-
-  it("keeps a page's absent list fields absent through history", () => {
-    const header: Partial<GalleryBoot> = { ...boot(), status: { viewer: 200, hosted: 404, feedback: 200, bot: 404, summary: 200 } };
-    delete header.artifacts;
-    delete header.attention;
-    delete header.questions;
-    block(JSON.stringify(header));
-    const b = readGalleryBoot(document, "back_forward")!;
-    expect("attention" in b).toBe(false);
-    expect("artifacts" in b).toBe(false);
-    expect("questions" in b).toBe(false);
   });
 
   it("refuses a block that does not parse, is not version 1, or is the artifact page's", () => {

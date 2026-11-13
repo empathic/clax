@@ -2,9 +2,8 @@
   // The gallery header's links, in the slot before the search box and the
   // theme switch (theme.css `.glinks`), each decided at the header's first
   // render (`view/gallery-start.ts` `header`), so none arrives later to
-  // move another: ClaxBot's meter (`Bot`, a chunk of its own that fills in
-  // when it loads, laid out before the slot without taking room in it, so
-  // its arrival moves nothing), **Inbox**
+  // move another: ClaxBot's meter (`BotMeter`, from `bot`, the header's
+  // `GET /api/me/bot` answer, when ClaxBot is on for this person), **Inbox**
   // with its unread count for a browser with an inbox (spec
   // 2026-10-06-agent-questions-and-inbox §9.4), **Queues** for the owner and
   // the instance's admins, the feedback menu's place for a person who may
@@ -13,8 +12,10 @@
   // Settings key (Cmd+K, or Ctrl+K) opens Settings' search over the page
   // (`settings/palette.ts`, loaded then). Props are read off `p`.
   import type { Component } from "svelte";
+  import type { MeBot } from "../bot/api";
+  import BotMeter from "./BotMeter.svelte";
 
-  const p: { current?: string; inbox: boolean; unread: number; queues: boolean; feedback: boolean; member: boolean; Bot?: Component | null; Menu?: Component | null } = $props();
+  const p: { current?: string; inbox: boolean; unread: number; queues: boolean; feedback: boolean; member: boolean; bot?: MeBot | null; Menu?: Component | null } = $props();
   const key = (e: KeyboardEvent) => {
     if (!p.member || !((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k")) return;
     e.preventDefault();
@@ -25,7 +26,7 @@
 <svelte:window onkeydown={key} />
 
 <span class="glinks">
-  {#if p.Bot}<span class="bot-slot"><p.Bot /></span>{/if}
+  {#if p.bot?.enabled}<BotMeter me={p.bot} />{/if}
   {#if p.inbox}
     <a class="inbox-link" href="/inbox" aria-current={p.current === "inbox" ? "page" : undefined} aria-label={p.unread ? `Inbox, ${p.unread} unread` : "Inbox"}>
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 9.5l1.6-6h7.8l1.6 6v3.5h-11z" /><path d="M2.5 9.5h3.2l.8 1.5h3l.8-1.5h3.2" /></svg>
