@@ -172,6 +172,52 @@ describe("Sidebar views", () => {
     view.unmount();
   });
 
+  it("closes the row a selection opened when the selection moves on", async () => {
+    const { view, root, row, props, a, b } = setup();
+    await loaded(root);
+    view.update({ ...props, selected: a.id });
+    expect(row(a)!.getAttribute("aria-expanded")).toBe("true");
+    view.update({ ...props, selected: b.id });
+    expect(row(b)!.getAttribute("aria-expanded")).toBe("true");
+    expect(row(a)!.getAttribute("aria-expanded")).toBe("false");
+    view.unmount();
+  });
+
+  it("keeps a row the viewer opened or toggled by hand when the selection moves on", async () => {
+    const { view, root, row, props, a, b } = setup();
+    await loaded(root);
+    flush(() => row(a)!.click());
+    view.update({ ...props, selected: a.id });
+    view.update({ ...props, selected: b.id });
+    expect(row(a)!.getAttribute("aria-expanded")).toBe("true");
+    // Opened by the selection, then closed and opened again by hand.
+    view.update({ ...props, selected: null });
+    flush(() => row(b)!.click());
+    view.update({ ...props, selected: b.id });
+    flush(() => row(b)!.click());
+    flush(() => row(b)!.click());
+    view.update({ ...props, selected: a.id });
+    expect(row(b)!.getAttribute("aria-expanded")).toBe("true");
+    view.unmount();
+  });
+
+  it("keeps a row the selection opened while its card holds focus or a reply draft", async () => {
+    const c = thread("c", at(13, 11), "Say how many seats");
+    const { view, root, row, card, props, a, b } = setup();
+    const all = { ...props, threads: [a, b, c] };
+    view.update(all);
+    await loaded(root);
+    view.update({ ...all, selected: a.id });
+    card(a)!.querySelector<HTMLInputElement>('input[aria-label="Reply"]')!.focus();
+    view.update({ ...all, selected: b.id });
+    expect(row(a)!.getAttribute("aria-expanded")).toBe("true");
+    const input = card(b)!.querySelector<HTMLInputElement>('input[aria-label="Reply"]')!;
+    flush(() => { input.value = "half a thought"; input.dispatchEvent(new Event("input", { bubbles: true })); });
+    view.update({ ...all, selected: c.id });
+    expect(row(b)!.getAttribute("aria-expanded")).toBe("true");
+    view.unmount();
+  });
+
   it("opens another page's thread unfolded under its row, and folding the card closes the row", async () => {
     const { view, root, row, card, a, b } = setup({ file: "about.html" });
     await loaded(root);

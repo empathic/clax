@@ -10,11 +10,12 @@
   // artifact's lines newest first under day headings, each thread listed
   // once, as a row under its newest line. A row opens into the thread's
   // card (`card`, the sidebar's own); the selected thread's row opens, and
-  // scrolls into view, whenever the selection changes. The newest day is
-  // whole; each earlier one is folded to its summary, with the rows of its
-  // threads still pending, and of those open into their cards, beneath it,
-  // until it is unfolded or a thread in it is selected. A collapsed row reports its thread looked at as a card
-  // does. The band on the list's outer edge shows how many threads are
+  // scrolls into view, whenever the selection changes, and the row the
+  // previous selection opened closes again unless the viewer took it in hand.
+  // The newest day is whole; each earlier one is folded to its summary, with
+  // the rows of its threads still pending, and of those open into their
+  // cards, beneath it, until it is unfolded or a thread in it is selected.
+  // A collapsed row reports its thread looked at as a card does. The band on the list's outer edge shows how many threads are
   // pending at each line, and how many of them wait on a person
   // (band-model.ts): from the top to the first line, the counts now.
   import { type Snippet, tick, untrack } from "svelte";
@@ -101,13 +102,24 @@
   const today = $derived(dayKey(p.now));
   const when = (d: Day, l: Line) => (d.date === today ? relativeTime(l.at, p.now) : new Date(l.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
 
+  // The row the last selection opened, until the viewer opens or closes it
+  // by hand. When the selection moves to another thread it closes again,
+  // unless its card holds focus or a reply draft.
+  let auto: string | null = null;
+  const toggle = (id: string, open: boolean) => { if (auto === id) auto = null; p.onExpand(id, open); };
+  const keeps = (id: string) => {
+    const box = [...(list?.querySelectorAll<HTMLElement>(".tl-row") ?? [])].find(r => r.dataset.row === id)?.parentElement;
+    return !!box && (box.contains(document.activeElement) || !!box.querySelector<HTMLInputElement>('input[aria-label="Reply"]')?.value.trim());
+  };
   $effect(() => {
     const sel = p.selected;
     if (!sel) return;
     untrack(() => {
       const d = ds.find((x, i) => i > 0 && x.lines.some(l => l.here.includes(sel)));
       if (d && !unfolded.includes(d.date)) unfolded = [...unfolded, d.date];
-      if (!p.expanded.includes(sel)) p.onExpand(sel, true);
+      if (auto && auto !== sel && p.expanded.includes(auto) && !keeps(auto)) p.onExpand(auto, false);
+      auto = null;
+      if (!p.expanded.includes(sel)) { p.onExpand(sel, true); auto = sel; }
       void tick().then(() => [...(list?.querySelectorAll<HTMLElement>(".tl-row") ?? [])].find(r => r.dataset.row === sel)?.scrollIntoView?.({ block: "nearest" }));
     });
   });
@@ -166,9 +178,9 @@
     {@const open = p.expanded.includes(id)}
     <div class={["tl-thread", end && "tl-end"]}>
       {@render p.above?.(t, p.now)}
-      <button type="button" class="tl-row" data-row={id} aria-expanded={open} onclick={() => p.onExpand(id, !open)} {@attach !open && seen(untrack(() => id))}
+      <button type="button" class="tl-row" data-row={id} aria-expanded={open} onclick={() => toggle(id, !open)} {@attach !open && seen(untrack(() => id))}
         ><span class="tl-n">{p.detached.has(id) ? "detached" : (p.numbers.get(id) ?? "")}</span><span class="tl-q">{plainText(t.comments[0]?.body ?? "")}</span><span class={["tl-st", st.act && "act"]}>{st.text}</span></button>
-      {#if open}{@render p.card(t, { order, close: () => p.onExpand(id, false) })}{/if}
+      {#if open}{@render p.card(t, { order, close: () => toggle(id, false) })}{/if}
     </div>
   {/if}
 {/snippet}
