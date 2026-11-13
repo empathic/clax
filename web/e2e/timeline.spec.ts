@@ -9,8 +9,9 @@
 // stored (`trustContext`, fixtures.ts), so each test here stores the
 // Timeline itself, once per tab, before the first load: a reload keeps
 // whatever the test chose since.
+import { createServer } from "node:net";
 import type { Locator, Page } from "@playwright/test";
-import { test, expect, type Daemon, api, openArtifact, postThread, publishAs, publishNext, reach, registerSession } from "./fixtures";
+import { NO_KEY_CONFIG, test, expect, type Daemon, api, openArtifact, postThread, publish, publishAs, publishNext, reach, registerSession, startDaemon, streamLive } from "./fixtures";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -41,6 +42,14 @@ async function fresh(title: string, n: number) {
 const box = async (l: Locator) => (await l.boundingBox())!;
 const row = (page: Page, id: string) => page.locator(`.tl-row[data-row="${id}"]`);
 const tab = (page: Page, name: "Timeline" | "Threads") => page.getByRole("tab", { name });
+/** The text of the line thread `id`'s row is listed under: the nearest
+ * line before it in the timeline's one list, past the other rows of that
+ * line; null when a day heading comes first. */
+const lineOf = (page: Page, id: string) => row(page, id).evaluate(r => {
+  let e = r.closest(".tl-thread")?.previousElementSibling ?? null;
+  while (e?.classList.contains("tl-thread")) e = e.previousElementSibling;
+  return e?.classList.contains("tl-line") ? e.querySelector(".tl-text")?.textContent ?? null : null;
+});
 
 {
   test(`the sidebar opens on the Timeline, each thread a collapsed row under its line`, async ({ page }) => {
@@ -50,8 +59,7 @@ const tab = (page: Page, name: "Timeline" | "Threads") => page.getByRole("tab", 
     await expect(tab(page, "Timeline")).toHaveAttribute("aria-selected", "true");
     await expect(tab(page, "Threads")).toHaveAttribute("aria-selected", "false");
     await expect(page.locator(".timeline .tl-line").filter({ hasText: "v1 · published by claude" })).toHaveCount(1);
-    const line = page.locator(".timeline .tl-line").filter({ has: row(page, ids[0]) });
-    await expect(line.locator(".tl-text")).toContainText("sent to no one");
+    await expect.poll(() => lineOf(page, ids[0])).toMatch(/sent to no one$/);
     await expect(row(page, ids[0])).toHaveAttribute("aria-expanded", "false");
     await expect(row(page, ids[0]).locator(".tl-st")).toHaveText("Send");
     // The rows stand for the cards, which open on demand; the list's
@@ -90,8 +98,8 @@ const tab = (page: Page, name: "Timeline" | "Threads") => page.getByRole("tab", 
     await expect(row(page, tid).locator(".tl-st")).toHaveText("sent");
     await publishNext(d.base, d.token, sid, aid, 1, { note: "Two columns", addresses: [tid] });
     await openArtifact(page, d.base, aid, 2);
-    const v2 = page.locator(".timeline .tl-line").filter({ hasText: "v2 · Two columns" });
-    await expect(v2.locator(`.tl-row[data-row="${tid}"] .tl-st`)).toHaveText("✓ v2");
+    await expect(row(page, tid).locator(".tl-st")).toHaveText("✓ v2");
+    await expect.poll(() => lineOf(page, tid)).toBe("v2 · Two columns");
     // Listed once, under its newest line.
     await expect(page.locator(`.timeline .tl-row[data-row="${tid}"]`)).toHaveCount(1);
     await expect(page.locator(".sb-tabs .tl-needs")).toHaveCount(0);
@@ -107,6 +115,35 @@ const tab = (page: Page, name: "Timeline" | "Threads") => page.getByRole("tab", 
       .find((t: { id: string }) => t.id === tid)?.comments.length).toBe(2);
     // A person's reply after the version puts the thread back with its agent.
     await expect(row(page, tid).locator(".tl-st")).toHaveText("sent");
+  });
+
+  test(`an open card whose thread moves to a newer line stays open, keeping its draft and focus`, async ({ page }) => {
+    await prefer(page, TIMELINE);
+    const { sid, aid, ids: [tid] } = await fresh(`Moves`, 1);
+    await openArtifact(page, d.base, aid, 1);
+    await streamLive(page);
+    await row(page, tid).click();
+    const card = page.locator(`.tl-thread .thread-card[data-thread="${tid}"]`);
+    const sent = page.waitForResponse(r => r.url().endsWith(`/threads/${tid}/send`));
+    await card.getByRole("button", { name: /^Send to / }).click();
+    expect((await sent).ok()).toBe(true);
+    await expect(row(page, tid).locator(".tl-st")).toHaveText("sent");
+    const reply = card.getByRole("textbox", { name: "Reply" });
+    await reach(page, reply);
+    await reply.click();
+    await page.keyboard.type("Half a thought");
+    // Marks the card's element, so a remount would show as a card without it.
+    await card.evaluate(e => { e.dataset.e2eKept = "1"; });
+    await expect.poll(() => lineOf(page, tid)).toBe("Viewer commented");
+    // The agent answers from outside the page: a newer line, "claude replied".
+    await api(d.base, d.token, `/api/artifacts/${aid}/threads/${tid}/comments`, { method: "POST", session: sid, body: JSON.stringify({ body: "Which half?", author_kind: "agent" }) });
+    await expect.poll(() => lineOf(page, tid)).toMatch(/^claude(-\d+)? replied$/);
+    await expect(row(page, tid).locator(".tl-st")).toHaveText("Reply");
+    await expect(card).toContainText("Which half?");
+    await expect(card).toHaveAttribute("data-e2e-kept", "1");
+    await expect(row(page, tid)).toHaveAttribute("aria-expanded", "true");
+    await expect(reply).toHaveValue("Half a thought");
+    await expect(reply).toBeFocused();
   });
 
   test(`the Threads tab shows the thread list, and a reload keeps it`, async ({ page }) => {
@@ -194,3 +231,55 @@ const tab = (page: Page, name: "Timeline" | "Threads") => page.getByRole("tab", 
     expect((await box(page.locator(".stage"))).width).toBe(page.viewportSize()!.width);
   });
 }
+
+/** A port no one listens on now, for a hosted daemon whose public origin names it. */
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const s = createServer();
+    s.once("error", reject);
+    s.listen(0, "127.0.0.1", () => {
+      const a = s.address();
+      s.close(() => (typeof a === "object" && a ? resolve(a.port) : reject(new Error("no port"))));
+    });
+  });
+}
+
+// The Comments switch lives on a hosted Clax (crates/clax-server/src/hosted.rs).
+test(`with Comments off, the Timeline says why its cards have no reply box`, async ({ browser }) => {
+  const SECRET = "e2e setup secret";
+  const port = await freePort();
+  const origin = `http://localhost:${port}`;
+  const config = `${NO_KEY_CONFIG}[hosted]\npublic_origin = "${origin}"\nsetup_secret_env = "CLAX_E2E_SETUP_SECRET"\n`;
+  const hd = await startDaemon({ config, port, env: { CLAX_E2E_SETUP_SECRET: SECRET } });
+  test.skip(hd.port !== port, `the daemon took port ${hd.port}, not ${port}`);
+  try {
+    const owner = await (await browser.newContext()).newPage();
+    await owner.goto(`${origin}/setup?secret=${encodeURIComponent(SECRET)}`);
+    await owner.getByLabel("Your name").fill("Ada");
+    await owner.getByRole("button", { name: "Create the first person" }).click();
+    await owner.waitForURL(`${origin}/`);
+    const { artifact } = await publish(hd.base, hd.token, "Quiet", { "index.html": `<title>Quiet</title>${PAGE}` });
+    const aid = artifact.id;
+    const made = await owner.evaluate(async id => {
+      const f = new FormData();
+      f.set("anchor", JSON.stringify({ kind: "element", selector: "body > main > h2", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }));
+      f.set("body", "Before the switch"); f.set("version", "1");
+      return (await fetch(`/api/artifacts/${id}/threads`, { method: "POST", body: f })).status;
+    }, aid);
+    expect(made).toBe(201);
+    const off = await owner.evaluate(async id => (await fetch(`/api/hosted/artifacts/${id}/comments`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ on: false }) })).status, aid);
+    expect(off).toBe(200);
+    await prefer(owner, TIMELINE);
+    await owner.goto(`${origin}/a/${aid}`);
+    await expect(tab(owner, "Timeline")).toHaveAttribute("aria-selected", "true");
+    const note = owner.locator('[role="tabpanel"] > .no-reply');
+    await expect(note).toHaveText("Comments are off for this page.");
+    await expect(owner.locator('[role="tabpanel"] > .no-reply + .timeline')).toHaveCount(1);
+    const [t] = (await api(hd.base, hd.token, `/api/artifacts/${aid}/threads`)).threads as { id: string }[];
+    await row(owner, t.id).click();
+    await expect(owner.locator(`.tl-thread .thread-card[data-thread="${t.id}"]`)).toBeVisible();
+    await expect(owner.getByRole("textbox", { name: "Reply" })).toHaveCount(0);
+  } finally {
+    await hd.stop();
+  }
+});
