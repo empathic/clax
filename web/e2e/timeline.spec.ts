@@ -108,9 +108,14 @@ const lineOf = (page: Page, id: string) => row(page, id).evaluate(r => {
     const reply = card.getByRole("textbox", { name: "Reply" });
     await reach(page, reply);
     await reply.click();
+    // Marks the card's element: the reply writes a newer line, and the card
+    // moves with its row rather than being made anew.
+    await card.evaluate(e => { e.dataset.e2eKept = "1"; });
     await page.keyboard.type("Not quite: the second column is too narrow");
     await page.keyboard.press("Enter");
+    await expect.poll(() => lineOf(page, tid)).toBe("You replied");
     await expect(card).toContainText("Not quite: the second column is too narrow");
+    await expect(card).toHaveAttribute("data-e2e-kept", "1");
     await expect.poll(async () => (await api(d.base, d.token, `/api/artifacts/${aid}/threads`)).threads
       .find((t: { id: string }) => t.id === tid)?.comments.length).toBe(2);
     // A person's reply after the version puts the thread back with its agent.
@@ -120,8 +125,13 @@ const lineOf = (page: Page, id: string) => row(page, id).evaluate(r => {
   test(`an open card whose thread moves to a newer line stays open, keeping its draft and focus`, async ({ page }) => {
     await prefer(page, TIMELINE);
     const { sid, aid, ids: [tid] } = await fresh(`Moves`, 1);
-    await openArtifact(page, d.base, aid, 1);
+    // A version and a newer thread above it, so the row and its card have
+    // to move up past them when the thread gains the newest line.
+    await publishNext(d.base, d.token, sid, aid, 1, { note: "Spacer" });
+    const other = (await postThread(d.base, aid, "A later comment")).id;
+    await openArtifact(page, d.base, aid, 2);
     await streamLive(page);
+    await expect(row(page, other)).toBeVisible();
     await row(page, tid).click();
     const card = page.locator(`.tl-thread .thread-card[data-thread="${tid}"]`);
     const sent = page.waitForResponse(r => r.url().endsWith(`/threads/${tid}/send`));
@@ -144,6 +154,31 @@ const lineOf = (page: Page, id: string) => row(page, id).evaluate(r => {
     await expect(row(page, tid)).toHaveAttribute("aria-expanded", "true");
     await expect(reply).toHaveValue("Half a thought");
     await expect(reply).toBeFocused();
+  });
+
+  test(`a row's button that holds focus keeps it when its thread moves to a newer line`, async ({ page }) => {
+    await prefer(page, TIMELINE);
+    const { sid, aid, ids: [tid] } = await fresh(`Moves button`, 1);
+    // A version and a newer thread above it, so the row's own element has
+    // to move up past them when its thread gains the newest line.
+    await publishNext(d.base, d.token, sid, aid, 1, { note: "Spacer" });
+    const other = (await postThread(d.base, aid, "A later comment")).id;
+    await openArtifact(page, d.base, aid, 2);
+    await streamLive(page);
+    await expect(row(page, other)).toBeVisible();
+    await row(page, tid).click();
+    const card = page.locator(`.tl-thread .thread-card[data-thread="${tid}"]`);
+    const sent = page.waitForResponse(r => r.url().endsWith(`/threads/${tid}/send`));
+    await card.getByRole("button", { name: /^Send to / }).click();
+    expect((await sent).ok()).toBe(true);
+    await expect(row(page, tid).locator(".tl-st")).toHaveText("sent");
+    await row(page, tid).focus();
+    await expect(row(page, tid)).toBeFocused();
+    await row(page, tid).evaluate(e => { e.dataset.e2eKept = "1"; });
+    await api(d.base, d.token, `/api/artifacts/${aid}/threads/${tid}/comments`, { method: "POST", session: sid, body: JSON.stringify({ body: "Which part?", author_kind: "agent" }) });
+    await expect.poll(() => lineOf(page, tid)).toMatch(/^claude(-\d+)? replied$/);
+    await expect(row(page, tid)).toHaveAttribute("data-e2e-kept", "1");
+    await expect(row(page, tid)).toBeFocused();
   });
 
   test(`the Threads tab shows the thread list, and a reload keeps it`, async ({ page }) => {
