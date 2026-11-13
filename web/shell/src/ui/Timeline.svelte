@@ -105,13 +105,13 @@
   let dayOf = new Map<string, string>();
   $effect(() => {
     const now = new Map<string, string>();
-    const days = new Map<string, string>();
+    const nowDay = new Map<string, string>();
     let line = "";
-    for (const x of entries) if (x.kind === "row") { now.set(x.id, line); days.set(x.id, x.d.date); } else line = x.key;
+    for (const x of entries) if (x.kind === "row") { now.set(x.id, line); nowDay.set(x.id, x.d.date); } else line = x.key;
     const was = under;
     const wasDay = dayOf;
     under = now;
-    dayOf = days;
+    dayOf = nowDay;
     const lost = held && !held.isConnected ? heldRow : undefined;
     if (lost && !now.has(lost) && (!document.activeElement || document.activeElement === document.body)) {
       held = null;
