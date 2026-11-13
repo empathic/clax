@@ -24,7 +24,8 @@ mkdir -p "$store"
 tmp="$(mktemp -d "$store/.new.XXXXXX")"
 trap 'chmod -R u+w "$tmp" 2>/dev/null; rm -rf "$tmp"' EXIT
 cp "$src" "$tmp/$name"
-sum="$(shasum -a 256 "$tmp/$name")"
+if command -v sha256sum >/dev/null 2>&1; then sum="$(sha256sum "$tmp/$name")"
+else sum="$(shasum -a 256 "$tmp/$name")"; fi
 sum="${sum%% *}"
 dir="$store/$sum"
 if [ ! -x "$dir/$name" ]; then

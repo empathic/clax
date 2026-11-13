@@ -165,7 +165,7 @@ for name in sorted(set(sys.stdin.buffer.read().split(b"\0")) - {b""}):
     else:
         print("gone", name.decode(errors="replace"))
 '
-    } | shasum -a 256 | cut -d' ' -f1
+    } | if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi | cut -d' ' -f1
 }
 
 # _run_keyed <name> <pathspec...> -- <command...>: a check outside Bazel
