@@ -283,7 +283,8 @@ export type Day = { label: string; date: string; lines: Line[] };   // lines new
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const two = (n: number) => String(n).padStart(2, "0");
-const dayKey = (d: Date) => `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
+/** `d`'s local day, as `Day.date`. */
+export const dayKey = (d: Date): string =>`${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
 
 /** The lines grouped by local day, newest day first: "Today", "Yesterday",
  * else weekday and date ("Tuesday 10 Nov", with the year when it is not

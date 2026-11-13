@@ -21,7 +21,7 @@
   import type { Thread } from "../threads";
   import { relativeTime } from "../format";
   import { after } from "../clock";
-  import { type Day, type Line, type Timeline, daySummary, days, isPending, isWaiting, lineText, rowStatus } from "../view/timeline-model";
+  import { type Day, type Line, type Timeline, dayKey, daySummary, days, isPending, isWaiting, lineText, rowStatus } from "../view/timeline-model";
   import { type BandRow, band } from "../view/band-model";
   import { selectable } from "../view/batch-model";
   import { SEEN_AFTER_MS } from "../view/sidebar-model";
@@ -53,7 +53,9 @@
   // The rows shown, in order; the open, selectable ones are a Shift range's order.
   const shown = $derived(ds.flatMap((d, i) => (whole(i, d) ? d.lines.flatMap(l => l.here) : pendingIn(d))));
   const order = $derived(shown.filter(id => { const t = byId.get(id); return !!t && p.expanded.includes(id) && selectable(t, false); }));
-  const when = (d: Day, l: Line) => (d.label === "Today" ? relativeTime(l.at, p.now) : new Date(l.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
+  // A line's time: relative today, the clock time on an earlier day.
+  const today = $derived(dayKey(p.now));
+  const when = (d: Day, l: Line) => (d.date === today ? relativeTime(l.at, p.now) : new Date(l.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
 
   let list: HTMLElement | undefined = $state();
   $effect(() => {
@@ -67,14 +69,15 @@
     });
   });
 
-  // A collapsed row is looked at once it has been half visible for SEEN_AFTER_MS.
-  const seen = (t: Thread) => (el: HTMLElement) => {
-    const onSeen = p.onSeen;
-    if (!onSeen || typeof IntersectionObserver !== "function") return;
+  // A collapsed row is looked at once it has been half visible for
+  // SEEN_AFTER_MS. The thread is read by ID when that time is up, so an
+  // update of the thread neither restarts the wait nor reports it stale.
+  const seen = (id: string) => (el: HTMLElement) => {
+    if (!untrack(() => p.onSeen) || typeof IntersectionObserver !== "function") return;
     let cancel = () => {};
     const io = new IntersectionObserver(([e]) => {
       cancel();
-      if (e.intersectionRatio >= 0.5) cancel = after(SEEN_AFTER_MS, () => onSeen(t));
+      if (e.intersectionRatio >= 0.5) cancel = after(SEEN_AFTER_MS, () => untrack(() => { const t = byId.get(id); if (t) p.onSeen?.(t); }));
     }, { threshold: [0, 0.5] });
     io.observe(el);
     return () => { cancel(); io.disconnect(); };
@@ -120,7 +123,7 @@
     {@const open = p.expanded.includes(id)}
     <div class="tl-thread">
       {@render p.above?.(t, p.now)}
-      <button type="button" class="tl-row" data-row={id} aria-expanded={open} onclick={() => p.onExpand(id, !open)} {@attach !open && seen(t)}
+      <button type="button" class="tl-row" data-row={id} aria-expanded={open} onclick={() => p.onExpand(id, !open)} {@attach !open && seen(id)}
         ><span class="tl-n">{p.detached.has(id) ? "detached" : (p.numbers.get(id) ?? "")}</span><span class="tl-q">{plainText(t.comments[0]?.body ?? "")}</span><span class={["tl-st", st.act && "act"]}>{st.text}</span></button>
       {#if open}{@render p.card(t, { order, close: () => p.onExpand(id, false) })}{/if}
     </div>

@@ -39,6 +39,9 @@
   import { sidebarView } from "./sidebar-view.svelte";
   import LiveWriters from "./LiveWriters.svelte";
   import Sidebar from "./Sidebar.svelte";
+  // Sidebar.svelte imports its views when it mounts (the extension's panel
+  // has none); imported here too, they come with this chunk, not a fetch later.
+  import "./SidebarViews.svelte";
 
   let { ctl, s }: { ctl: ArtifactController; s: ViewState & { data: Loaded } } = $props();
   // Who writes where now (the live layers), named as the view knows them.

@@ -184,6 +184,28 @@ describe("Sidebar views", () => {
     }
   });
 
+  it("keeps a collapsed row's half-visible timer when its thread is updated, and reports the thread as it is then", async () => {
+    const seen = new Map<Element, (e: { intersectionRatio: number }[]) => void>();
+    vi.stubGlobal("IntersectionObserver", class { constructor(private cb: (e: { intersectionRatio: number }[]) => void) {} observe(el: Element) { seen.set(el, this.cb); } disconnect() {} });
+    try {
+      const { view, root, row, calls, props, a, b } = setup();
+      await loaded(root);
+      vi.useFakeTimers();
+      seen.get(row(a)!)!([{ intersectionRatio: 1 }]);
+      vi.advanceTimersByTime(SEEN_AFTER_MS - 1);
+      // The same thread as a new object, as each refetch gives it; its lines are unchanged.
+      const later = { ...a, comments: [...a.comments] };
+      view.update({ ...props, threads: [later, b] });
+      vi.advanceTimersByTime(1);
+      expect(calls.seen).toHaveBeenCalledTimes(1);
+      expect(calls.seen).toHaveBeenCalledWith(later);
+      view.unmount();
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("read-only, opens a card with no reply box", async () => {
     const { view, root, row, card, a } = setup({ readOnly: true });
     await loaded(root);
