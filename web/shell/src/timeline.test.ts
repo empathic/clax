@@ -206,6 +206,35 @@ describe("Sidebar views", () => {
     view.unmount();
   });
 
+  it("keeps an open row in a folded day: a thread reopened whose newest line is now an earlier day's version", async () => {
+    const c = thread("c", at(12, 9, 10), "Mention cancelling", { sent_to_agent: true, addressed_in: [2], status: "resolved", resolved_at: at(13, 9), resolved_by: "viewer:p_me" });
+    const versions = [version(1, at(12, 9)), version(2, at(12, 10), [c.id]), version(3, at(13, 10))];
+    const { view, root, row, card, props } = setup({ threads: [c], versions });
+    await loaded(root);
+    flush(() => row(c)!.click());
+    expect(card(c)).not.toBeNull();
+    view.update({ ...props, threads: [{ ...c, status: "open", resolved_at: null, resolved_by: null }] });
+    expect(root.querySelector("button.tl-fold")!.getAttribute("aria-expanded")).toBe("false");
+    expect(row(c)!.getAttribute("aria-expanded")).toBe("true");
+    expect(row(c)!.querySelector(".tl-st")!.textContent).toBe("✓ v2");
+    expect(card(c)).not.toBeNull();
+    view.unmount();
+  });
+
+  it("keeps an open row when a new day's first event folds the day it is in", async () => {
+    const d = thread("d", at(12, 9, 10), "Mention cancelling", { sent_to_agent: true, addressed_in: [2] });
+    const versions = [version(1, at(12, 9)), version(2, at(12, 10), [d.id])];
+    const { view, root, row, card, props } = setup({ threads: [d], versions });
+    await loaded(root);
+    expect(root.querySelector("button.tl-fold")).toBeNull();
+    flush(() => row(d)!.click());
+    view.update({ ...props, threads: [d, thread("e", at(13, 11), "New today")] });
+    expect(root.querySelector("button.tl-fold")!.getAttribute("aria-expanded")).toBe("false");
+    expect(row(d)!.getAttribute("aria-expanded")).toBe("true");
+    expect(card(d)).not.toBeNull();
+    view.unmount();
+  });
+
   it("unfolds the day of a thread that is selected", async () => {
     const e = resolvedBy(thread("e", at(11, 9, 20), "Old typo"), at(11, 9, 40));
     const { view, root, row, props } = setup({ threads: [e], versions: [version(1, at(11, 9)), version(2, at(13, 10))] });

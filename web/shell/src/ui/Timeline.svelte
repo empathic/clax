@@ -12,8 +12,8 @@
   // card (`card`, the sidebar's own); the selected thread's row opens, and
   // scrolls into view, whenever the selection changes. The newest day is
   // whole; each earlier one is folded to its summary, with the rows of its
-  // threads still pending beneath it, until it is unfolded or a thread in it
-  // is selected. A collapsed row reports its thread looked at as a card
+  // threads still pending, and of those open into their cards, beneath it,
+  // until it is unfolded or a thread in it is selected. A collapsed row reports its thread looked at as a card
   // does. The band on the list's outer edge shows how many threads are
   // pending at each line, and how many of them wait on a person
   // (band-model.ts): from the top to the first line, the counts now.
@@ -48,7 +48,8 @@
   const ds = $derived(days(p.tl.lines, p.now));
   const byId = $derived(new Map(p.threads.map(t => [t.id, t])));
   const whole = (i: number, d: Day) => i === 0 || unfolded.includes(d.date);
-  const pendingIn = (d: Day) => d.lines.flatMap(l => l.here).filter(id => isPending(p.tl.stateOf.get(id) ?? { kind: "resolved" }));
+  // A folded day's rows: those pending, and those open into their cards.
+  const keptIn = (d: Day) => d.lines.flatMap(l => l.here).filter(id => p.expanded.includes(id) || isPending(p.tl.stateOf.get(id) ?? { kind: "resolved" }));
   const waits = (l: Line) => l.here.some(id => isWaiting(p.tl.stateOf.get(id) ?? { kind: "resolved" }));
   let list: HTMLElement | undefined = $state();
   // What is shown, in order, as one flat list: day headings, line heads and
@@ -64,7 +65,7 @@
         { key: `line:${l.key}`, kind: "line", d, i, l, end: !l.here.length },
         ...l.here.map((id, k): Item => ({ key: `row:${id}`, kind: "row", d, i, id, end: k === l.here.length - 1 })),
       ])
-      : pendingIn(d).map((id): Item => ({ key: `row:${id}`, kind: "row", d, i, id, end: false }))),
+      : keptIn(d).map((id): Item => ({ key: `row:${id}`, kind: "row", d, i, id, end: false }))),
   ]));
   // The rows shown, in order; the open, selectable ones are a Shift range's order.
   const shown = $derived(entries.flatMap(x => (x.kind === "row" ? [x.id] : [])));
