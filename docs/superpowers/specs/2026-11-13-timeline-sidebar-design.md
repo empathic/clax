@@ -103,6 +103,7 @@ One function, no DOM, no clock of its own:
 ```ts
 timeline(input: {
   threads: Thread[]; versions: Version[]; working: Working[];
+  claimed: readonly string[];         // threads ClaxBot took (`botView.claimed`)
   names: (by: string) => string;      // as Sidebar's `names`
   agentNames: Map<string, string>;    // as `agentNames(...)`
   me?: Viewer | null;
@@ -120,6 +121,7 @@ type ThreadState =
   | { kind: "unsent" }                 // pending, waits on a person
   | { kind: "with-agent"; working: boolean }
   | { kind: "answered"; agent: string }// pending, waits on a person
+  | { kind: "stalled"; why: string }   // pending, waits on a person
   | { kind: "addressed"; v: number }   // not pending, thread still open
   | { kind: "resolved" };
 type Line = {
@@ -137,9 +139,8 @@ type Line = {
 ### A thread's history
 
 Each thread is read as a sequence of facts in time order (ties keep this
-order): made (its first comment), sent (each entry of `sends`; when
-`sent_to_agent` is true and `sends` is empty, one send at `created_at` by
-the first comment's author), a person's later comment, an agent's comment,
+order): made (its first comment), sent (each entry of `sends`), a person's
+later comment, an agent's comment,
 addressed (one per number in `addressed_in`, at that version's
 `created_at`; a number with no known version is skipped), resolved
 (`resolved_at`, when `status` is `"resolved"`).
@@ -148,6 +149,14 @@ A state machine walks them:
 
 - made: pending, waits on a person (unsent).
 - sent: with the agent.
+- **A send that left no record.** The daemon writes a `sends` entry only
+  for a batch (`crates/clax-store/src/batches.rs`); a single Send, an
+  `@agent` mention and a send to ClaxBot set `sent_to_agent` and record no
+  time. For a thread with `sent_to_agent` true and no `sends`, or one in
+  `claimed`, the thread is with the agent from the moment it was made, and
+  no sent line is written for it: its made line stands alone and says
+  nothing about sending. The time it spent unsent is not shown. This is a
+  known inaccuracy of this build (see "Open decisions").
 - addressed: not pending.
 - resolved: not pending.
 - a person's later comment: pending again; with the agent if the thread
@@ -159,8 +168,18 @@ A state machine walks them:
   the agent answered without a version (a question, a refusal): pending,
   waits on a person, from the first such comment in that stretch.
 
-`working` only refines the present: a thread that is with the agent and
-listed in a working record's `thread_ids` has `working: true`.
+Two things refine only the present state, never the history:
+
+- `working`: a thread that is with the agent and listed in a working
+  record's `thread_ids` has `working: true`.
+- `feedback_state`: a thread that is with the agent whose
+  `feedback_state.state` is `withheld`, `declined`, `no_access` or
+  `agent_ended` waits on a person (`{ kind: "stalled"; why }`, counted in
+  `waiting`). These are the states in which the card already asks a person
+  to act (an approval, ClaxBot's offer in `ShellSidebar.svelte`).
+
+`unsent` here and `unsent()` in `view/batch-model.ts` must agree on which
+threads are unsent: the model calls it, or both call one predicate.
 
 ### Lines
 
@@ -171,8 +190,8 @@ listed in a working record's `thread_ids` has `working: true`.
   is the very next line in the merged timeline that concerns that thread
   and no other line lies between the two: the sent line then stands for
   both.
-- **sent**: one per batch (`batch_id`); a synthesized send is its own
-  batch. `ids` are the batch's threads present in `threads`.
+- **sent**: one per batch (`batch_id`). `ids` are the batch's threads
+  present in `threads`. `who` is the batch's `sent_by`, a display name.
 - **answered**: an agent's comment that is not a version's answer (first of
   its stretch only).
 - **followed-up**: a person's comment after the first.
@@ -205,7 +224,11 @@ Text, never markup, in the style of `historyOf`:
 - followed-up: "You replied" / "Mia replied".
 - resolved: "You resolved 2 comments" / "claude resolved a comment".
 
-The viewer's own name reads "You" (compare `resolvedByLabel`).
+The viewer reads "You". A comment is the viewer's when its
+`author_public_id` is `me.public_id`; a resolve as `resolvedByLabel`
+decides. A send carries only a display name, so it reads "You" only when
+the viewer has a display name and it equals `sent_by`; otherwise the name
+as given.
 
 ## The band (`web/shell/src/view/band-model.ts`, new, pure)
 
@@ -280,14 +303,18 @@ in the list), `onSelect`, `onSeen`, the side the band is on, and the
   one (`sidebarSections(...).numbers`), the first comment's text in one
   line (`plainText`, ellipsis), and its state at the right:
   `✓ v6` (addressed), `Send` (unsent), `Reply` (answered), `working` or
-  `sent` (with the agent), `resolved`, and `detached` in place of the
+  `sent` (with the agent), the card's own waiting words shortened for
+  `stalled` (in `--you-ink`), `resolved`, and `detached` in place of the
   number for a thread `sidebarSections` puts in Detached. `Send` and
   `Reply` are in `--you-ink`; they are labels on the row's one button, not
   separate controls.
 - A row is a button (`aria-expanded`). Activating it expands the thread's
-  **card** beneath it, rendered by `card`. Any number may be expanded; the
-  set is module state keyed by thread ID, like `unfolded` in
-  `Sidebar.svelte`. The `above` snippet (approval card, ClaxBot's offer)
+  **card** beneath it, rendered by `card`. Any number may be expanded. The
+  set lives in `Sidebar.svelte`'s module state beside `unfolded`, keyed by
+  thread ID, and is passed down with its setter, because `Sidebar.svelte`
+  needs it for the Shift-range order. A thread of another page, which the
+  list shows folded (`fold`), is rendered unfolded in the timeline: the
+  row is its fold, and folding the card collapses the row. The `above` snippet (approval card, ClaxBot's offer)
   renders above the row whether or not it is expanded.
 - The selected thread (`selected`) is always expanded, and when the
   selection changes its row scrolls into view (`block: "nearest"`). This is
@@ -313,9 +340,10 @@ in the list), `onSelect`, `onSeen`, the side the band is on, and the
   from `band-model.ts`). Unit 4.5 px, ticks, no labels. The list leaves
   30 px of padding on that edge for it. A folded day is one row whose
   counts are those after its last line.
-- Batch ticking keeps working: expanded cards have their box as today, and
-  the Shift-range order is the order of expanded cards in the timeline.
-  (`order` in `Sidebar.svelte` is computed from what is shown.)
+- Batch ticking keeps working: expanded cards have their box as today. In
+  the Timeline view the Shift-range `order` is the expanded, selectable
+  threads in the timeline's order, newest line first. (In the Threads view
+  it stays what it is: the sections' threads.)
 
 ### What the Timeline view does not show
 
@@ -329,8 +357,9 @@ under its newest line. Their group headings are one tab away.
 exports it beside the default).
 
 **When it shows**: wider than 700 px, the drawer docked left or right,
-`s.panel` false, the view ready, the artifact not deleted, and at least one
-thread exists. Docked at the bottom, floating, or on a phone, a closed
+`s.panel` false, the view ready, the artifact not deleted, not in
+inspecting mode (where the sidebar's chunk is never prefetched,
+`artifact-main.ts`), and at least one thread exists. Docked at the bottom, floating, or on a phone, a closed
 panel shows nothing, as today. **(call)** With no threads there is nothing
 to draw and the page keeps its full width, as today.
 
@@ -340,6 +369,12 @@ chunk has loaded, `SidebarIsland.svelte` renders an empty
 `<aside class="rail" aria-busy="true">` of the same box under the same
 condition, so the frame does not move when the chunk arrives. The box's
 rules live with the island's (eager CSS), the drawing's with the chunk.
+Docked left, the island is after the stage in the document while the panel
+is closed (`DrawerChrome.svelte` moves it only while mounted), so the
+strip is placed with `order: -1` and Tab reaches it after the page;
+accepted. Where the threads arrive after the view is ready (a load without
+boot data), the strip appears when the first thread is known: one late
+move of the frame on that path, accepted and recorded.
 
 **Content**, top to bottom:
 
@@ -399,8 +434,9 @@ green in the timeline or the strip. Line text 14 px, times and counts
   docked right leaves the strip, clicking it reopens; docked left the
   strip is on the left; no strip with no threads.
 - **Existing e2e specs keep testing the thread list.** `web/e2e/fixtures.ts`
-  seeds `clax.sidebar` = `{"view":"threads"}` in its init script for the
-  daemon's origin, so the ~40 specs that find cards on open are untouched
+  seeds `clax.sidebar` = `{"view":"threads"}` in an init script of
+  `trustContext` (every context gets it, with or without a proof), only
+  when the key is absent, so a test's own choice survives a reload. So the ~40 specs that find cards on open are untouched
   and still cover the Threads view; `timeline.spec.ts` sets the Timeline
   itself. **(call)** A spec that fails only because the strip now takes
   56 px when the panel is closed is updated to the new geometry, not
@@ -413,9 +449,15 @@ green in the timeline or the strip. Line text 14 px, times and counts
   tests, qualifier before editing a file and for what is deferred,
   conventional commit subjects, unsigned commits, nothing pushed.
 - The sidebar's code stays out of the artifact entry: everything new but
-  the strip's empty box loads with the sidebar's chunk. `web/perf`'s bundle
-  budgets gate; if the chunk's budget must rise, raise it to the measured
-  size and record it `status:needs-decision`.
+  the strip's empty box loads lazily. `web/perf/bundle-budget.json` gates
+  entries, not chunks: `artifact` (the island's condition and empty box
+  grow it) and `extPanel` (the extension imports `Sidebar.svelte`
+  statically, so whatever `Sidebar.svelte` imports statically grows it).
+  `extPanel` must not grow beyond a few bytes of markup: `Sidebar.svelte`
+  loads `Timeline.svelte`, the tab row and both models through
+  `{#await import()}`, as it already loads `AddressedGroup`. If `artifact`
+  must rise, raise it to the measured size and record it
+  `status:needs-decision`.
 - Svelte 5 runes, `css="injected"` components with `:global` rules, as
   the files beside them.
 - Phone width and both themes must hold: the tab row fits 320 px.
@@ -434,7 +476,10 @@ green in the timeline or the strip. Line text 14 px, times and counts
 3. **The strip when there are no threads**, and whether the strip can be
    dismissed entirely while docked at a side.
 4. **The extension's side panel**: same two views later, or never.
-5. **True-time spacing** of the band (rejected for now: event order is
+5. **A send's time.** A single Send records no time, so the timeline cannot
+   show when a comment was sent or how long it sat unsent. A `sent_at` on
+   the thread view would fix it; it is a daemon change, left out here.
+6. **True-time spacing** of the band (rejected for now: event order is
    compact and the mock that used clock time read worse).
 
 Each is recorded with qualifier on this file.
@@ -445,7 +490,7 @@ The interactive mock the owner approved is published on the owner's Clax
 as artifact `b705cnmgar17` (`play.html`), and its source is copied to
 `docs/superpowers/specs/2026-11-13-timeline-sidebar-vignette.html` for
 reference. It is a sketch: its data is simulated, it calls pending "open",
-it has a "Not quite…" button, and it draws discs nowhere. Where it and
+and it has a "Not quite…" button. Where it and
 this document differ, this document holds. What to take from it: the look
 of a line and a row, the band's geometry (`area`, `band`), the strip's
 layout, and the rule that a thread sits under its newest line.
