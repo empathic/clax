@@ -156,8 +156,13 @@ function oversized(base, path, chunked, mib = 97, extra = {}) {
   });
 }
 
+/** A browser of `name`'s. Its artifact sidebar opens on the thread list,
+ * whose cards these checks find, rather than on the timeline. */
 async function newPage(browser, name) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  await ctx.addInitScript(() => {
+    try { if (localStorage.getItem("clax.sidebar") === null) localStorage.setItem("clax.sidebar", '{"view":"threads"}'); } catch { /* storage refused */ }
+  });
   const p = await ctx.newPage();
   p.on("pageerror", (e) => console.log(`     [${name} error] ${e.message}`));
   return p;

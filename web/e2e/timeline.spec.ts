@@ -61,6 +61,21 @@ const tab = (page: Page, name: "Timeline" | "Threads") => page.getByRole("tab", 
     await expect(page.locator(".sb-tabs .tl-needs")).toHaveText("1 needs you");
   });
 
+  test(`a whole-artifact comment posted above the Timeline closes its composer, and its thread is a row`, async ({ page }) => {
+    await prefer(page, TIMELINE);
+    const { aid } = await fresh(`Posts`, 0);
+    await openArtifact(page, d.base, aid, 1);
+    await page.locator(".new-comment-open").click();
+    const composer = page.locator(".new-comment .composer");
+    await expect(composer.locator("textarea")).toBeFocused();
+    await page.keyboard.type("Make the colours warmer.");
+    await composer.getByRole("button", { name: "Post comment" }).click();
+    await expect(composer).toHaveCount(0);
+    const [t] = (await api(d.base, d.token, `/api/artifacts/${aid}/threads`)).threads as { id: string }[];
+    await expect(row(page, t.id).locator(".tl-st")).toHaveText("Send");
+    await expect(row(page, t.id).locator(".tl-q")).toHaveText("Make the colours warmer.");
+  });
+
   test(`a thread sent and addressed by v2 is under the v2 line, and its card takes a reply`, async ({ page }) => {
     await prefer(page, TIMELINE);
     const { sid, aid, ids: [tid] } = await fresh(`Addressed`, 1);

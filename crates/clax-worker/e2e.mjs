@@ -184,6 +184,13 @@ async function main() {
     const owner = { viewport: { width: 1280, height: 800 }, extraHTTPHeaders: { authorization: `Bearer ${TOKEN}` } };
     const a = await browser.newContext(owner);
     const b = await browser.newContext(owner);
+    // Their artifact sidebar opens on the thread list, whose cards these
+    // checks find, rather than on the timeline.
+    for (const c of [a, b]) {
+      await c.addInitScript(() => {
+        try { if (localStorage.getItem("clax.sidebar") === null) localStorage.setItem("clax.sidebar", '{"view":"threads"}'); } catch { /* storage refused */ }
+      });
+    }
     const pa = await a.newPage();
     const pb = await b.newPage();
     // The second browser's stream hub runs in its tab, not a shared worker,
