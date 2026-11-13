@@ -295,6 +295,17 @@ describe("Sidebar views", () => {
     view.unmount();
   });
 
+  it("with comments off, says above the timeline why its cards have no reply box", async () => {
+    const { view, root, row, a } = setup({ noReply: "Comments are off here." });
+    await loaded(root);
+    const note = root.querySelector('[role="tabpanel"] > .no-reply');
+    expect(note?.textContent).toBe("Comments are off here.");
+    expect(note!.nextElementSibling!.classList.contains("timeline")).toBe(true);
+    flush(() => row(a)!.click());
+    expect(root.querySelector('input[aria-label="Reply"]')).toBeNull();
+    view.unmount();
+  });
+
   it("ticks with Shift over the open cards in the timeline's order, newest line first", async () => {
     const onToggle = vi.fn();
     const c = thread("c", at(13, 11), "Say how many seats");

@@ -36,8 +36,10 @@
     onSeen?(t: Thread): void; onSelect(t: Thread): void;
     /** A thread's card under its row, given the Shift-range order there and the row's close. */
     card: Snippet<[Thread, { order: string[]; close(): void }]>;
-    /** The thread list's sections, and the empty Open list's hint. */
-    sections: Snippet; empty: Snippet;
+    /** The thread list's sections, the empty Open list's hint, and why the
+     * cards have no reply box when the sections say it above their cards
+     * (said above the timeline then; "" when they do not). */
+    sections: Snippet; empty: Snippet; note?: string;
   };
   let p: Props = $props();
   const view = $derived(p.view);
@@ -79,6 +81,7 @@
 </div>
 <div role="tabpanel" class="sb-panel" id="sb-panel" aria-labelledby={`sb-tab-${view.now}`}>
   {#if view.now === "timeline"}
+    {#if p.note}<p class="muted small no-reply">{p.note}</p>{/if}
     <Timeline {tl} threads={p.threads} now={p.now} selected={p.selected} numbers={p.numbers} {detached} side={phone ? "right" : view.side ?? "right"}
       {expanded} onExpand={expand} card={p.card} above={p.above} onSeen={p.onSeen} empty={p.empty} />
   {:else}

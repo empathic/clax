@@ -308,7 +308,7 @@
   {#if p.view}
     {#await import("./SidebarViews.svelte") then { default: SidebarViews }}
       <SidebarViews view={p.view!} threads={p.threads} versions={p.versions} working={p.working} claimed={p.claimed} me={p.me} now={clock.now} selected={p.selected}
-        numbers={p.numbers ?? s.numbers} detached={s.detached} above={p.above} onSeen={p.onSeen} onSelect={p.onSelect} {card} {sections} {empty} />
+        numbers={p.numbers ?? s.numbers} detached={s.detached} above={p.above} onSeen={p.onSeen} onSelect={p.onSelect} {card} {sections} {empty} note={p.noReply && (open.length || group.length) ? p.noReply : ""} />
     {/await}
   {:else}{@render sections()}{/if}
 </aside>
