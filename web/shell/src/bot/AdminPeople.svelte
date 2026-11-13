@@ -14,6 +14,7 @@
   import { credits, meter, tokens } from "./model";
   import Meter from "./Meter.svelte";
   import Switch from "./Switch.svelte";
+  import { holdReveal } from "../settings/first-data";
 
   let { role }: { role: Role } = $props();
   let people = $state<AdminPerson[] | null>(null);
@@ -59,7 +60,9 @@
     if (!reason.trim()) { err = "Say why: the audit log records it."; return; }
     void act(p.person, async () => { await setLift(p.person, Math.round(n * 1000), reason.trim()); editing = null; });
   }
-  onMount(() => { void load(); });
+  // Shown in Settings, the screen waits for the first list.
+  const release = holdReveal();
+  onMount(() => { void load().finally(release); });
 </script>
 
 {#if err}<p class="err" role="alert">{err}</p>{/if}

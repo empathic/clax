@@ -21,6 +21,7 @@
   import Meter from "./Meter.svelte";
   import ModelError from "./ModelError.svelte";
   import Switch from "./Switch.svelte";
+  import { holdReveal } from "../settings/first-data";
 
   let { now }: { now?: () => Date } = $props();
   let me = $state<MeBot | null>(null);
@@ -28,6 +29,9 @@
   let usage = $state<MeUsage | null>(null);
   let err = $state<string | null>(null);
   let busy = $state(false);
+  // Shown in Settings, the screen waits for the person's ClaxBot and their week's use.
+  const bot = holdReveal();
+  const used = holdReveal();
   const WHY: Record<string, string> = { admin_off: "Off on this instance", not_configured: "Not configured" };
   const web = $derived(me?.web ?? null);
   const instanceWhy = $derived(web?.why_off && web.why_off !== "person_off" ? WHY[web.why_off] ?? null : null);
@@ -51,8 +55,8 @@
   }
   onMount(() => {
     document.title = "Your ClaxBot · Settings · Clax";
-    void refresh().then(take, e => { err = refusal(e); });
-    void meUsage().then(u => { usage = u; }, () => {});
+    void refresh().then(take, e => { err = refusal(e); }).finally(bot);
+    void meUsage().then(u => { usage = u; }, () => {}).finally(used);
   });
 </script>
 

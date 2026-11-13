@@ -17,6 +17,13 @@
   // back and forward. An address ending `#<ID>` scrolls to that heading
   // and focuses it once the screen has drawn it.
   //
+  // Loaded in the gallery's page, Settings reports ready (`onready`) once it
+  // shows its first data: what this browser may open, and the screen asked
+  // for with its own first data (each part of a screen that fetches holds
+  // the reveal until its first answer: `first-data.ts`), or a line saying
+  // the screen's chunk could not load. The gallery says it is loading until
+  // then, so the "Loading…" lines here speak only once it has.
+  //
   // On a hosted Clax, Sign out ends the navigation and the overview, for
   // every member on every screen: it forgets the person's reporter, ends
   // the session and lands on `/signin`; a refusal shows beside it.
@@ -24,6 +31,7 @@
   import { refusal } from "../people/refusal";
   import type { EventStream } from "../stream";
   import { context } from "./context";
+  import { Reveal, provideReveal } from "./first-data";
   import { GO, openPalette } from "./palette";
   import { type Ctx, type Screen, groupsFor, idOf, screenFor } from "./screens";
   import Search from "./Search.svelte";
@@ -51,6 +59,8 @@
   let visit = $state(0);
   let query = $state("");
   let Shown = $state<Body | null>(null);
+  // The screen's chunk did not load.
+  let broken = $state(false);
   let root: HTMLElement | undefined = $state();
   const asked = $derived(idOf(path));
   const screen = $derived<Screen | null>(ctx && asked ? screenFor(asked, ctx) : null);
@@ -64,14 +74,16 @@
   $effect(() => {
     const id = screen?.id ?? "";
     if (id === loaded) return;
-    loaded = id; Shown = null;
-    if (id) void BODY[id].load().then(m => { if (!gone && loaded === id) Shown = m.default as Body; }, () => {});
+    loaded = id; Shown = null; broken = false;
+    if (id) void BODY[id].load().then(m => { if (!gone && loaded === id) Shown = m.default as Body; }, () => { if (!gone && loaded === id) broken = true; });
   });
   $effect(() => { if (ctx && !screen) document.title = "Settings · Clax"; });
-  let told = false;
+  let told = $state(false);
   // Shown, the setting the address names is sought again: it was laid out
   // with no room to scroll it into view until then.
-  $effect(() => { if (!told && ctx && (!screen || Shown)) { told = true; void Promise.resolve(onready?.()).then(() => { if (!gone && location.hash) seek(); }); } });
+  const reveal = new Reveal(() => { void Promise.resolve(onready?.()).then(() => { if (!gone && location.hash) seek(); }); });
+  provideReveal(reveal);
+  $effect(() => { if (!told && ctx && (!screen || Shown || broken)) { told = true; reveal.arm(); } });
   // A screen shown instead of the one asked for is the address's from then on.
   $effect(() => { if (screen && asked && screen.id !== asked) { history.replaceState(history.state, "", `/settings/${screen.id}${location.search}${location.hash}`); path = location.pathname; } });
 
@@ -147,7 +159,7 @@
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 <div class="stg" class:on-screen={!!screen} bind:this={root} onclick={clicked}>
   {#if !ctx}
-    <p class="stg-note" role="status">Loading…</p>
+    <p class="stg-note">Loading…</p>
   {:else if screen}
     <nav class="stg-nav" aria-label="Settings">
       <a class="stg-home" href="/settings">Settings</a>
@@ -166,7 +178,7 @@
     <div class="stg-body">
       <div class="stg-back"><a href="/settings">‹ All settings</a><button type="button" class="ghost" aria-label="Search settings" onclick={openPalette}><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" /><path d="M10.5 10.5 14 14" /></svg></button></div>
       {#key `${screen.id} ${visit}`}
-        {#if Shown}<Shown {stream} part={BODY[screen.id].part} tab={BODY[screen.id].tab} />{:else}<p class="stg-note" role="status">Loading…</p>{/if}
+        {#if Shown}<Shown {stream} part={BODY[screen.id].part} tab={BODY[screen.id].tab} />{:else if broken}<p class="stg-note" role="alert">This screen could not load. <button type="button" class="ghost" onclick={() => location.reload()}>Reload to try again</button></p>{:else}<p class="stg-note" role={told ? "status" : undefined}>Loading…</p>{/if}
       {/key}
     </div>
   {:else}

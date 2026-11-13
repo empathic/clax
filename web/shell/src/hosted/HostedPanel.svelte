@@ -16,6 +16,7 @@
   import { onMount } from "svelte";
   import { listArtifacts } from "../api";
   import * as api from "./api";
+  import { holdReveal } from "../settings/first-data";
   import { forgetThenSignOut } from "./signout";
   import { refusal } from "../people/refusal";
 
@@ -62,7 +63,9 @@
   const devices = $derived(tokens.filter(t => t.kind === "device"));
   const agentTokens = $derived(tokens.filter(t => t.kind !== "device"));
   const unshared = $derived(pages.filter(p => !shared.some(s => s.artifact_id === p.id)));
-  onMount(() => { void load(); });
+  // In Settings, the screen is shown once the panel's lists are in.
+  const release = holdReveal();
+  onMount(() => { void load().finally(release); });
 </script>
 
 {#if has("me")}
