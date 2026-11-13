@@ -556,8 +556,9 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
     let api_fast = api_fast.layer(axum::middleware::from_fn(clax_http::http_cache::api_etag));
     let api_fast =
         with_timeout(api_fast, state.request_timeout).layer(clax_http::http_cache::compression());
-    // The instance the feedback integration mints through, its whole
-    // router built at the first mint.
+    // The instance the feedback integration mints through and the gallery
+    // pages ask their first-load data of, its whole router built at the
+    // first use.
     let feedback_instance = crate::integrations::instance::Instance::new(state.clone());
     let api_slow = Router::new()
         .route(
@@ -585,7 +586,7 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         )
         .route(
             "/_app/feedback/config",
-            get(feedback_integration::config).layer(axum::Extension(feedback_instance)),
+            get(feedback_integration::config).layer(axum::Extension(feedback_instance.clone())),
         )
         .route("/api/bot/runs", get(bot::list).post(bot::create))
         .route("/api/bot/runs/{id}", get(bot::get))
@@ -825,6 +826,9 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
         // `/a/<id>[/v/<n>]/<file>`: the shell reads the version and page from the path.
         .route("/a/{aid}/{*rest}", get(shell::artifact_page))
         .route("/_clax/{*path}", get(shell::static_file))
+        // The gallery pages ask their routes for their first-load data
+        // through the instance's own router (`shell::gallery`).
+        .layer(axum::Extension(feedback_instance))
         .layer(clax_http::http_cache::compression());
     let r = Router::new()
         .route("/healthz", get(health::healthz).layer(cors))

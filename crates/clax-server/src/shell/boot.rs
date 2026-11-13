@@ -14,7 +14,9 @@ use serde_json::{Value, json};
 /// The permissions the content frame delegates, as `FRAME_ALLOW` in
 /// `web/shell/src/view/frame-host.ts`.
 pub const FRAME_ALLOW: &str = "clipboard-write; fullscreen; storage-access";
-const BOOT_MARK: &str = "<!--clax:boot-->";
+/// Where a shell entry (`artifact.html`, `index.html`) takes its bootstrap
+/// block ([`boot_script`]); removed when there is none.
+pub const BOOT_MARK: &str = "<!--clax:boot-->";
 const FRAME_MARK: &str = "<!--clax:frame-->";
 const TITLE_MARK: &str = "<h1>Clax</h1>";
 
@@ -466,14 +468,14 @@ pub fn inject(template: &str, i: Option<&Injected>) -> String {
             1,
         )
         .replacen(FRAME_MARK, i.frame.as_deref().unwrap_or(""), 1)
-        .replacen(
-            BOOT_MARK,
-            &format!(
-                "<script type=\"application/json\" id=\"clax-boot\">{}</script>",
-                i.boot
-            ),
-            1,
-        )
+        .replacen(BOOT_MARK, &boot_script(&i.boot), 1)
+}
+
+/// The bootstrap block of a shell entry: `json` (already escaped by
+/// [`script_json`]) in the `clax-boot` element the shell reads
+/// (`web/shell/src/view/boot.ts`, `web/shell/src/view/gallery-boot.ts`).
+pub fn boot_script(json: &str) -> String {
+    format!("<script type=\"application/json\" id=\"clax-boot\">{json}</script>")
 }
 
 #[cfg(test)]

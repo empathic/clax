@@ -401,7 +401,11 @@ async fn the_inbox_page_is_the_gallery() {
     let a = ts.get("/").await;
     let b = ts.get("/inbox").await;
     assert_eq!(a.status(), b.status());
-    assert_eq!(a.text().await.unwrap(), b.text().await.unwrap());
+    // The same entry; each page's first-load data is its own.
+    assert_eq!(
+        clax_testkit::without_boot(&a.text().await.unwrap()),
+        clax_testkit::without_boot(&b.text().await.unwrap())
+    );
 }
 
 #[tokio::test]
