@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 import { host, hostChannel, initHost, ofType, type HostMessage } from "./app-host";
 import { test, expect, api, contentFrame } from "./fixtures";
-import { activationLapsed } from "./time";
+import { activationLapsed, quietEval } from "./time";
 
 const repo = fileURLToPath(new URL("../..", import.meta.url));
 const source = join(repo, "apps/clax_app/home");
@@ -108,6 +108,18 @@ test.describe("in app mode, through the shell", () => {
     const ctx = contexts.find(c => c.origin === origin && c.auxData?.isDefault)!;
     expect(ctx).toBeTruthy();
     const held = async () => ((await cdp.send("Runtime.evaluate", { contextId: ctx.id, expression: `'held' in document.querySelector('[data-id="app-groceries"]').dataset`, returnByValue: true, userGesture: false })).result.value) as boolean;
+    // An earlier tap on the page, off every tile, puts focus in the frame, as
+    // the person's taps on the home screen have on a phone. The shell takes a
+    // call only with focus in the frame (shell/src/caps/gesture.ts), and the
+    // long press below brings none: Chromium moves focus at a touch's tap,
+    // which here follows the release (and on a phone a long press makes no
+    // tap at all), while the app calls `menu` at the release itself, so that
+    // focus could reach the shell before the call or after it.
+    const [ex, ey] = [x, y + 300];
+    await host(page, `attestPointer({ pointer: 1, phase: "down", x: ${ex}, y: ${ey} })`);
+    await page.touchscreen.tap(ex, ey);
+    await host(page, `attestPointer({ pointer: 1, phase: "up", x: ${ex}, y: ${ey} })`);
+    await expect.poll(() => quietEval<boolean>(page, `document.activeElement === document.querySelector("iframe.frame")`)).toBe(true);
     // No tap in the last 5 s, as on a phone left on the home screen a while.
     await activationLapsed(page);
     // The finger goes down, as the app attests it, and stays down until the tile arms.
@@ -161,6 +173,19 @@ async function serve(page: Page, fake?: Record<string, unknown>) {
 
 const calls = (page: Page) => page.evaluate(() => (window as unknown as { fakeHome: { calls: unknown[] } }).fakeHome.calls);
 
+/** Stops `page`'s fake clock (installed before it loaded, and running on
+ * in real time until now) once the page has drawn: from here time moves
+ * only as the test moves it (`page.clock.runFor`). On a running clock a
+ * timer of the page (the hold, a reorder, the hover that groups) can fall
+ * due between two steps of a gesture on a slow run: a drag that takes more
+ * than REORDER_MS on its way to an app has the neighbours make room, and
+ * the app it was to be held over moves away from under the pointer. The
+ * jump forward, far past any test's timeout, fires only what was already
+ * due on the drawn page. */
+async function stopClock(page: Page) {
+  await page.clock.pauseAt(await page.evaluate(() => Date.now()) + 60 * 60_000);
+}
+
 test.describe("over a fake host", () => {
   test.use({ hasTouch: true, isMobile: true, viewport: { width: 412, height: 915 } });
 
@@ -209,6 +234,7 @@ test.describe("over a fake host", () => {
     await page.clock.install();
     await serve(page, { makes: [] });
     await expect(page.locator(".h-tile[data-id]")).toHaveCount(8);
+    await stopClock(page);
     const box = async (sel: string) => (await page.locator(sel).boundingBox())!;
     const from = await box('[data-id="app-run"]');
     const to = await box('[data-id="app-budget"]');
@@ -252,6 +278,7 @@ test.describe("over a fake host", () => {
     await page.clock.install();
     await serve(page, { makes: [] });
     await expect(page.locator(".h-tile[data-id]")).toHaveCount(8);
+    await stopClock(page);
     const box = async (sel: string) => (await page.locator(sel).boundingBox())!;
     const from = await box('[data-id="app-mood"]');
     const to = await box('[data-id="app-habits"]');
@@ -289,6 +316,7 @@ test.describe("over a fake host", () => {
     const layout = { v: 1, starred: ["app-run"], order: ["app-habits", "app-recipes", "app-budget", "g:g1", "app-plants", "app-mood"], groups: { g1: { name: "Lists", apps: ["app-groceries", "app-notes"] } }, seen: ids };
     await serve(page, { makes: [], docs: { "layout/main": layout } });
     await expect(page.locator(".h-group")).toHaveCount(1);
+    await stopClock(page);
     await page.evaluate(() => {
       const w = window as unknown as { flew: boolean };
       w.flew = false;
@@ -314,6 +342,7 @@ test.describe("over a fake host", () => {
     const layout = { v: 1, starred: [], order: ["app-run", "g:g1", ...ids.filter(id => !["app-run", "app-groceries", "app-notes"].includes(id))], groups: { g1: { name: "Lists", apps: ["app-groceries", "app-notes"] } }, seen: ids };
     await serve(page, { makes: [], docs: { "layout/main": layout } });
     await expect(page.locator(".h-group .h-folder-face > .h-face")).toHaveCount(2);
+    await stopClock(page);
     const before = (await page.locator('[data-id="app-mood"]').boundingBox())!;
     await page.locator(".h-group").tap();
     await page.clock.runFor(1000);
