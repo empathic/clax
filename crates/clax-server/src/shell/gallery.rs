@@ -51,12 +51,17 @@
 //!
 //! - `status.<field>` is the HTTP status the route answered; the field is
 //!   its body when that is `200` with a JSON body, else `null` (`hosted` on
-//!   a local daemon: `404`, `null`). A route that did not answer within the
-//!   API's timeout ([`clax_http::state::AppState::request_timeout`]),
-//!   whose answer could not be read, or that answered a failure that may
-//!   not last (`5xx`, `408`, `429`: not [`settled`]) has no status and a
-//!   `null` field: the shell asks it itself. A failed field never fails the
-//!   page.
+//!   a local daemon: `404`, `null`). A route that did not answer, body
+//!   and all, within the page's budget
+//!   ([`clax_http::state::AppState::gallery_boot_budget`], counted once
+//!   from when the routes are asked, for all of them together, and never
+//!   past the API's timeout,
+//!   [`clax_http::state::AppState::request_timeout`]), whose answer could
+//!   not be read, or that answered a failure that may not last (`5xx`,
+//!   `408`, `429`: not [`settled`]) has no status and a `null` field, and
+//!   sets no cookie: the shell asks it itself. A failed field never fails
+//!   the page, and the page is sent when the budget ends with whatever
+//!   answered.
 //! - `inbox` is whether this browser has an inbox, as `inboxBrowser`
 //!   (`web/shell/src/owner.ts`) decides it: `true` when `viewer` names a
 //!   connected person who is not revoked, or `GET /api/token` answers `200`
@@ -272,19 +277,29 @@ pub fn settled(status: StatusCode) -> bool {
         && status != StatusCode::TOO_MANY_REQUESTS
 }
 
-/// `path`'s answer to the page load, from `router` within `limit`; no
-/// status when it does not answer in time, its body cannot be read, or its
-/// status is not [`settled`].
+/// Why a route's field is left to the shell with no answer at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Miss {
+    /// It did not answer, body and all, by the assembly's deadline.
+    Late,
+    /// Its answer could not be read: a body over [`BODY_LIMIT`], or not
+    /// the JSON it named.
+    Unreadable,
+}
+
+/// `path`'s answer to the page load, from `router` by `deadline`: [`Miss`]
+/// when there is none to read, and no status when its status is not
+/// [`settled`].
 async fn ask(
     router: axum::Router,
     path: &str,
     headers: &HeaderMap,
     extensions: &Extensions,
-    limit: Duration,
-) -> Answer {
+    deadline: clax_rt::time::Instant,
+) -> Result<Answer, Miss> {
     use tower::ServiceExt as _;
     let req = sub_request(path, headers, extensions);
-    let answered = clax_rt::time::timeout(limit, async move {
+    let answered = clax_rt::time::timeout_at(deadline, async move {
         let Ok(res) = router.oneshot(req).await;
         let status = res.status();
         let cookies: Vec<HeaderValue> = res
@@ -314,23 +329,41 @@ async fn ask(
     })
     .await;
     match answered {
-        Ok(Some(a)) => a,
-        Ok(None) => {
-            tracing::warn!(
-                path,
-                "gallery page served without a field: unreadable answer"
-            );
-            Answer::default()
-        }
-        Err(_) => {
-            tracing::warn!(
-                path,
-                ?limit,
-                "gallery page served without a field: timed out"
-            );
-            Answer::default()
-        }
+        Ok(Some(a)) => Ok(a),
+        Ok(None) => Err(Miss::Unreadable),
+        Err(_) => Err(Miss::Late),
     }
+}
+
+/// Each of `paths`' answers to the page load from `router`, asked at once
+/// and all by one deadline, `budget` from now: the assembly as a whole
+/// takes no longer than `budget`, however many routes it asks, and a route
+/// still answering then is [`Miss::Late`] (its answer, cookies included,
+/// is dropped).
+pub async fn ask_all(
+    router: &axum::Router,
+    paths: &[&str],
+    headers: &HeaderMap,
+    extensions: &Extensions,
+    budget: Duration,
+) -> Vec<Result<Answer, Miss>> {
+    let deadline = clax_rt::time::Instant::now() + budget;
+    let asks = paths
+        .iter()
+        .map(|p| ask(router.clone(), p, headers, extensions, deadline));
+    futures::future::join_all(asks).await
+}
+
+/// The names of the fields (and `token`, for the token route) `answers`
+/// misses for `why`, comma-separated; empty when none.
+fn missed(names: &[&str], answers: &[Result<Answer, Miss>], why: Miss) -> String {
+    names
+        .iter()
+        .zip(answers)
+        .filter(|(_, a)| matches!(a, Err(m) if *m == why))
+        .map(|(n, _)| *n)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// The block's `inbox` (see the module docs): whether this browser has an
@@ -351,7 +384,11 @@ pub fn inbox(viewer: &Answer, token: Option<u16>) -> Value {
 
 /// The block for the page load at `path` (see the module docs), already
 /// escaped for its element, and the cookies its routes set; `None` when
-/// the load gets none ([`answers_as_shell`]). The routes are asked at once.
+/// the load gets none ([`answers_as_shell`]). The routes are asked at once
+/// ([`ask_all`]), within the page's budget
+/// ([`AppState::gallery_boot_budget`], no longer than
+/// [`AppState::request_timeout`]); a field whose route has not answered by
+/// then is left to the shell, and one warning names every such field.
 pub async fn assemble(
     s: &AppState,
     instance: &Instance,
@@ -364,14 +401,31 @@ pub async fn assemble(
         return None;
     }
     let router = instance.router();
-    let limit = s.request_timeout;
+    let budget = s.gallery_boot_budget.min(s.request_timeout);
     let fields = fields_for(path);
-    let asks = fields
+    let paths: Vec<&str> = fields
         .iter()
         .map(|f| f.path())
         .chain(std::iter::once(TOKEN_PATH))
-        .map(|p| ask(router.clone(), p, headers, extensions, limit));
-    let mut answers = futures::future::join_all(asks).await;
+        .collect();
+    let answers = ask_all(&router, &paths, headers, extensions, budget).await;
+    let names: Vec<&str> = fields
+        .iter()
+        .map(|f| f.name())
+        .chain(std::iter::once("token"))
+        .collect();
+    let late = missed(&names, &answers, Miss::Late);
+    let unreadable = missed(&names, &answers, Miss::Unreadable);
+    if !late.is_empty() || !unreadable.is_empty() {
+        tracing::warn!(
+            path,
+            ?budget,
+            late = %late,
+            unreadable = %unreadable,
+            "gallery page served with fields left to the shell"
+        );
+    }
+    let mut answers: Vec<Answer> = answers.into_iter().map(Result::unwrap_or_default).collect();
     let token = answers.pop().expect("the token route was asked");
     let viewer = fields
         .iter()
@@ -523,6 +577,121 @@ mod tests {
             &uri,
             &none
         ));
+    }
+
+    /// A router whose `/fast` answers at once, `/at/{ms}` after `ms`
+    /// milliseconds, `/never` never, `/trickle/{ms}` sends its headers at
+    /// once and its body after `ms`, and `/cookie/{ms}` sets a cookie after
+    /// `ms`.
+    fn timed() -> axum::Router {
+        use axum::routing::get;
+        let ms = |p: axum::extract::Path<u64>| Duration::from_millis(p.0);
+        axum::Router::new()
+            .route("/fast", get(|| async { axum::Json(json!({"ok": true})) }))
+            .route(
+                "/at/{ms}",
+                get(move |p: axum::extract::Path<u64>| async move {
+                    clax_rt::time::sleep(ms(p)).await;
+                    axum::Json(json!({"ok": true}))
+                }),
+            )
+            .route("/never", get(std::future::pending::<axum::Json<Value>>))
+            .route(
+                "/trickle/{ms}",
+                get(move |p: axum::extract::Path<u64>| async move {
+                    let wait = ms(p);
+                    let body = futures::stream::once(async move {
+                        clax_rt::time::sleep(wait).await;
+                        Ok::<_, std::convert::Infallible>(axum::body::Bytes::from_static(b"{}"))
+                    });
+                    (
+                        [(header::CONTENT_TYPE, "application/json")],
+                        Body::from_stream(body),
+                    )
+                }),
+            )
+            .route(
+                "/cookie/{ms}",
+                get(move |p: axum::extract::Path<u64>| async move {
+                    clax_rt::time::sleep(ms(p)).await;
+                    ([(header::SET_COOKIE, "c=1")], axum::Json(json!({})))
+                }),
+            )
+    }
+
+    async fn asked(paths: &[&str], budget: Duration) -> Vec<Result<Answer, Miss>> {
+        ask_all(
+            &timed(),
+            paths,
+            &HeaderMap::new(),
+            &Extensions::new(),
+            budget,
+        )
+        .await
+    }
+
+    fn kinds(answers: &[Result<Answer, Miss>]) -> Vec<Result<Option<u16>, Miss>> {
+        answers
+            .iter()
+            .map(|a| a.as_ref().map(|a| a.status).map_err(|m| *m))
+            .collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_route_slower_than_the_budget_is_late_and_the_others_answer() {
+        let budget = Duration::from_millis(300);
+        let start = clax_rt::time::Instant::now();
+        let answers = asked(&["/fast", "/at/299", "/at/301", "/never", "/fast"], budget).await;
+        assert_eq!(
+            start.elapsed(),
+            budget,
+            "the page waits out the budget, no more"
+        );
+        assert_eq!(
+            kinds(&answers),
+            [
+                Ok(Some(200)),
+                Ok(Some(200)),
+                Err(Miss::Late),
+                Err(Miss::Late),
+                Ok(Some(200))
+            ]
+        );
+        assert_eq!(answers[0].as_ref().unwrap().body, json!({"ok": true}));
+        let names = ["a", "b", "c", "d", "e"];
+        assert_eq!(missed(&names, &answers, Miss::Late), "c,d");
+        assert_eq!(missed(&names, &answers, Miss::Unreadable), "");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_budget_is_the_whole_assemblys_not_each_routes() {
+        let budget = Duration::from_millis(300);
+        // Nine routes that never answer take one budget together, not nine.
+        let start = clax_rt::time::Instant::now();
+        let answers = asked(&["/never"; 9], budget).await;
+        assert_eq!(start.elapsed(), budget);
+        assert!(answers.iter().all(|a| matches!(a, Err(Miss::Late))));
+        // Every route just inside the budget answers: they run at once.
+        let start = clax_rt::time::Instant::now();
+        let answers = asked(&["/at/290"; 9], budget).await;
+        assert_eq!(start.elapsed(), Duration::from_millis(290));
+        assert!(
+            answers
+                .iter()
+                .all(|a| a.as_ref().is_ok_and(|a| a.status == Some(200)))
+        );
+        // Headers in time with the body after the deadline is late too: the
+        // deadline covers the whole answer, not each step of it.
+        let answers = asked(&["/trickle/200", "/trickle/400"], budget).await;
+        assert_eq!(kinds(&answers), [Ok(Some(200)), Err(Miss::Late)]);
+        assert_eq!(answers[0].as_ref().unwrap().body, json!({}));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_late_routes_cookies_are_not_collected() {
+        let answers = asked(&["/cookie/10", "/cookie/500"], Duration::from_millis(300)).await;
+        assert_eq!(answers[0].as_ref().unwrap().cookies, ["c=1"]);
+        assert_eq!(answers[1].as_ref().err(), Some(&Miss::Late));
     }
 
     #[test]

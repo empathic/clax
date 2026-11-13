@@ -435,6 +435,66 @@ async fn a_slow_route_leaves_its_field_to_the_shell() {
     assert_eq!(b["inbox"], Value::Null, "not known");
 }
 
+#[tokio::test]
+async fn a_route_slower_than_the_pages_budget_leaves_only_its_field_to_the_shell() {
+    let dist = dist();
+    let web = web(&dist);
+    // The API's own timeout is longer than the slow routes' delay: only the
+    // page's budget leaves their fields out.
+    let ts = TestServer::spawn_with(move |s| {
+        s.web = web;
+        s.request_timeout = std::time::Duration::from_secs(120);
+        s.gallery_boot_budget = std::time::Duration::from_millis(200);
+    })
+    .await;
+    let cookie = format!("clax_viewer={}", ts.local_browser());
+    // The gallery's list and the token route hold their answers; the
+    // test daemon's delay headers go with the page's own headers.
+    let res = ts
+        .client
+        .get(format!("{}/", ts.base))
+        .header(COOKIE, &cookie)
+        .header("x-clax-test-delay-ms", "60000")
+        .header("x-clax-test-delay-path", "/api/artifacts")
+        .header("x-clax-test-delay-path", "/api/token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let b = block(&res.text().await.unwrap()).unwrap();
+    assert_eq!(b["artifacts"], Value::Null, "{b}");
+    assert!(b["status"].get("artifacts").is_none(), "{b}");
+    assert_eq!(
+        b["inbox"],
+        Value::Null,
+        "the token route did not answer, and the viewer is no person: {b}"
+    );
+    // Whether the other routes answered within 200 ms depends on the
+    // machine's load (the unit tests in `shell::gallery` pin that on paused
+    // time); each one that did is its route's answer.
+    let mut fields = vec![
+        ("viewer", "/api/viewers/me"),
+        ("hosted", "/api/hosted/me"),
+        ("feedback", "/_app/feedback/config"),
+        ("bot", "/api/me/bot"),
+        ("summary", "/api/inbox/summary"),
+    ];
+    fields.extend(&LIST_FIELDS[1..]);
+    for (name, path) in fields {
+        if b["status"].get(name).is_none() {
+            assert_eq!(b[name], Value::Null, "{name}: {b}");
+            continue;
+        }
+        let (status, body) = fetched(&ts, path, &cookie).await;
+        assert_eq!(b["status"][name], json!(status), "{name}: {b}");
+        assert_eq!(
+            b[name],
+            if status == 200 { body } else { Value::Null },
+            "{name}"
+        );
+    }
+}
+
 /// A hosted daemon on a stopped clock serving `dist`.
 async fn hosted(dist: &tempfile::TempDir) -> TestServer {
     let clock = Arc::new(ManualClock::at("2026-10-12T10:00:00Z"));

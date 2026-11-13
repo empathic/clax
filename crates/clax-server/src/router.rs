@@ -1022,7 +1022,10 @@ fn routes(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -
 }
 
 /// Sleeps for the milliseconds in the `x-clax-test-delay-ms` request
-/// header, if any, before handling the request. It sits inside each route
+/// header, if any, before handling the request; with
+/// `x-clax-test-delay-path` too, only a request whose path is one of that
+/// header's values (a request that carries its headers into others, as a
+/// gallery page load does, can slow one of them). It sits inside each route
 /// group's timeout layer, so tests can make a real route slow. Debug
 /// builds add it only when [`AppState::test_daemon`] is set: the testkit's
 /// daemon, never one `serve` starts.
@@ -1031,12 +1034,14 @@ async fn test_delay(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    let ms = req
-        .headers()
+    let h = req.headers();
+    let ms = h
         .get("x-clax-test-delay-ms")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<u64>().ok());
-    if let Some(ms) = ms {
+    let mut paths = h.get_all("x-clax-test-delay-path").iter().peekable();
+    let here = paths.peek().is_none() || paths.any(|p| p.as_bytes() == req.uri().path().as_bytes());
+    if let Some(ms) = ms.filter(|_| here) {
         clax_rt::time::sleep(Duration::from_millis(ms)).await;
     }
     next.run(req).await
