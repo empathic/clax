@@ -104,9 +104,7 @@ One function, no DOM, no clock of its own:
 timeline(input: {
   threads: Thread[]; versions: Version[]; working: Working[];
   claimed: readonly string[];         // threads ClaxBot took (`botView.claimed`)
-  names: (by: string) => string;      // as Sidebar's `names`
-  agentNames: Map<string, string>;    // as `agentNames(...)`
-  me?: Viewer | null;
+  me?: Viewer | null;                 // names come from `resolvedByLabel` and `agentName`
 }): Timeline
 ```
 
