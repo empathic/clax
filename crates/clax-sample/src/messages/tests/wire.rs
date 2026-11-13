@@ -544,7 +544,12 @@ async fn openai_errors_are_classified_with_the_key_redacted() {
     assert_eq!(
         err,
         MessagesError::InvalidRequest {
-            message: "bad key [redacted]".into()
+            message: "bad key [redacted]".into(),
+            answer: Answer::new(
+                400,
+                "invalid_request_error",
+                Some("bad key [redacted]".into())
+            ),
         }
     );
     let err = client

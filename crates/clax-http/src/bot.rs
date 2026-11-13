@@ -700,8 +700,15 @@ impl<'a> Names<'a> {
 ///
 /// `host` is the origin the key was set for and is only sent to; with
 /// `base_url` (the provider in effect) at another, `problem` says so as
-/// `<whose> was set for <host>; set it again` (`whose`: "your key", "the
-/// instance key").
+/// `<whose>: it was set for <host>; set it again` (`whose`: "your key",
+/// "the instance key"). Else, when the last request made with the key
+/// failed, `problem` says so in Clax's own words, from its class alone
+/// ([`problem_words`]): `<whose>: the last request with it failed: <words>`.
+/// `last_problem` is that failure as the store keeps it
+/// ([`clax_store::secrets::SecretMeta::last_problem`]: `{at, class, status,
+/// type, message, request_id}`, the provider's words plain text), null
+/// when none; it is shown only where the key's metadata is, to the key's
+/// own person or to admins.
 pub fn key_info(
     names: &mut Names<'_>,
     meta: Option<&clax_store::secrets::SecretMeta>,
@@ -710,12 +717,39 @@ pub fn key_info(
 ) -> clax_core::Result<Value> {
     Ok(match meta {
         None => json!({"set": false, "last4": null, "set_at": null, "set_by": null,
-                       "last_ok_at": null, "host": null, "problem": null}),
-        Some(m) => json!({"set": true, "last4": m.last4, "set_at": m.set_at,
-                          "set_by": names.person(&m.set_by)?, "last_ok_at": m.last_ok_at,
-                          "host": m.host,
-                          "problem": m.host_problem(base_url).map(|p| format!("{whose}: {p}"))}),
+                       "last_ok_at": null, "host": null, "problem": null,
+                       "last_problem": null}),
+        Some(m) => {
+            let failed = m.last_problem.as_ref().map(|p| {
+                format!(
+                    "the last request with it failed: {}",
+                    problem_words(p["class"].as_str().unwrap_or_default())
+                )
+            });
+            let problem = m.host_problem(base_url).or(failed);
+            json!({"set": true, "last4": m.last4, "set_at": m.set_at,
+                   "set_by": names.person(&m.set_by)?, "last_ok_at": m.last_ok_at,
+                   "host": m.host,
+                   "problem": problem.map(|p| format!("{whose}: {p}")),
+                   "last_problem": m.last_problem})
+        }
     })
+}
+
+/// What a failed request's class (`clax_sample`'s `ErrorDetail::class`)
+/// says happened, in Clax's own words: never the provider's.
+#[must_use]
+pub fn problem_words(class: &str) -> &'static str {
+    match class {
+        "invalid_request" => "the provider refused the request",
+        "auth" => "the provider refused the key",
+        "api" => "the provider answered with an error",
+        "rate_limited" => "the provider limited it",
+        "overloaded" => "the provider was overloaded",
+        "network" => "the provider could not be reached",
+        "bad_base_url" | "redirected" => "the base URL is not one a key may be sent to",
+        _ => "the provider's answer could not be read",
+    }
 }
 
 #[cfg(test)]

@@ -45,6 +45,7 @@ pub const STEP_FIELDS: &[&str] = &[
     "code",
     "created",
     "error",
+    "error_detail",
     "images",
     "logs",
     "notice",

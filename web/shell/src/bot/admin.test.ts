@@ -9,7 +9,7 @@ import AdminProvider from "./AdminProvider.svelte";
 import AdminUsage from "./AdminUsage.svelte";
 import AdminWeb from "./AdminWeb.svelte";
 import type { ModelPricing } from "./api";
-import { adminPerson, defaultPriced, listing, meBot, modelPricing, pricing, provider, unitPricing, usage, webSettings, WEB_LINES } from "./fixtures";
+import { adminPerson, defaultPriced, errorDetail, listing, meBot, modelPricing, pricing, provider, providerFailure, unitPricing, usage, webSettings, WEB_LINES } from "./fixtures";
 import { forget } from "./me";
 
 const click = (el: Element) => flush(() => { dispatchTrusted(el, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })); });
@@ -169,6 +169,112 @@ describe("Admin › Provider", () => {
     // The key is gone from the page once sent; the models are listed again.
     expect(m.root.querySelector('.bkey input[type="password"]')).toBeNull();
     expect(calls.filter(c => c.url === "/api/admin/provider/models")).toHaveLength(2);
+  });
+
+  it("shows how the test call and the key's last request failed, and why the models could not be listed", async () => {
+    const auth = errorDetail({ class: "auth", status: 401, type: "authentication_error", message: "invalid x-api-key", request_id: "req_011Auth" });
+    stubFetch({
+      "GET /api/admin/provider": provider({ key: { ...provider().key, problem: "The last request with this key failed: the provider refused it.", last_problem: { ...auth, at: "2026-10-21T11:55:00Z" } } }),
+      "GET /api/admin/provider/models": [502, { error: { code: "provider_error", message: "the provider refused the key", detail: auth } }],
+      "POST /api/admin/provider/test": { ok: false, latency_ms: 180, error: "the provider refused the request", detail: errorDetail() },
+    });
+    const m = mount(AdminProvider, { now: () => new Date("2026-10-21T12:00:00Z") });
+    await settle();
+    const key = m.root.querySelector(".field .pv-problem")!;
+    expect(key.querySelector(".merr-lead")!.textContent).toBe("The last request with this key failed 5 min ago: the model provider refused the key.");
+    expect(key.querySelector(".merr-said")!.textContent).toBe("The provider said: “invalid x-api-key”");
+    expect(key.querySelector(".merr-meta")!.textContent).toBe("HTTP 401 · authentication_error · request req_011Auth");
+    expect(key.querySelector(".merr-next")).toBeNull();
+    const models = m.root.querySelector('[aria-labelledby="pv-m"] .pv-problem')!;
+    expect(models.querySelector(".merr-lead")!.textContent).toBe("The model provider refused the key.");
+    click(button(m.root, "Test connection"));
+    await settle();
+    expect(m.root.querySelector('[role="status"] .err')!.textContent).toBe("The call failed: the provider refused the request");
+    const t = m.root.querySelector(".pv-test")!;
+    expect(t.querySelector(".merr-lead")!.textContent).toBe("The model provider refused the request as invalid.");
+    expect(t.querySelector(".merr-said")!.textContent).toContain("Your credit balance is too low");
+    expect(t.querySelector(".merr-meta")!.textContent).toBe("HTTP 400 · invalid_request_error · request req_011CXyz");
+  });
+
+  it("lists the instance key's failed requests newest first, narrows them to a person, and pages on", async () => {
+    const MODELS = { models: [{ id: "claude-sonnet-5-5", display_name: "Claude Sonnet 5.5" }], fetched_at: "x" };
+    const sam = providerFailure({ message: "<img src=x onerror=alert(1)><b>bold</b>" });
+    const test = providerFailure({ id: "f2", at: "2026-10-20T09:00:00Z", person: { id: "*owner", name: null }, run_id: null, request: "provider.test", model: null, class: "auth", status: 401, type: "authentication_error", message: "invalid x-api-key", request_id: "req_011Auth", since_key_change: false });
+    const older = providerFailure({ id: "f3", at: "2026-10-19T09:00:00Z", run_id: "r0", class: "overloaded", status: 529, type: "overloaded_error", message: "Overloaded", request_id: null });
+    const calls = stubFetch({
+      "GET /api/admin/provider": provider(), "GET /api/admin/provider/models": MODELS,
+      "GET /api/admin/provider/failures": { failures: [sam, test], next: "c2" },
+      "GET /api/admin/provider/failures?before=c2": { failures: [older], next: null },
+      "GET /api/admin/provider/failures?person=p_sam": { failures: [sam], next: "c9" },
+      "GET /api/admin/provider/failures?person=p_sam&before=c9": { failures: [older], next: null },
+      "POST /api/admin/provider/test": { ok: true, latency_ms: 90 },
+    });
+    const m = mount(AdminProvider, { now: () => new Date("2026-10-21T12:00:00Z") });
+    await settle();
+    const card = m.root.querySelector('section[aria-labelledby="pv-f"]')!;
+    expect(card.querySelector("h3")!.textContent).toBe("Failures");
+    expect(card.textContent).toContain("Clax keeps the last 100 per person and 1,000 in all, for 30 days.");
+    let rows = [...card.querySelectorAll(".pv-fails > li")];
+    expect(rows).toHaveLength(2);
+    const [a, b] = rows;
+    const time = a.querySelector("time")!;
+    expect(time.textContent).toBe("5 min ago");
+    expect(time.getAttribute("title")).toContain("2026");
+    expect(a.querySelector(".pv-fperson")!.textContent).toBe("Sam");
+    expect(a.querySelector<HTMLAnchorElement>(".pv-fhead a")!.getAttribute("href")).toBe("/settings/audit?q=r1");
+    expect(a.querySelector(".pv-fhead a")!.textContent).toBe("run r1");
+    expect(a.querySelector(".pv-fhead")!.textContent).toContain("claude-sonnet-5-5");
+    expect(a.querySelector(".merr-lead")!.textContent).toBe("The model provider refused the request as invalid.");
+    expect(a.querySelector(".merr-meta")!.textContent).toBe("HTTP 400 · invalid_request_error · request req_011CXyz");
+    // The provider's words are text, never markup.
+    const said = a.querySelector("blockquote.merr-said")!;
+    expect(said.textContent).toBe("The provider said: “<img src=x onerror=alert(1)><b>bold</b>”");
+    expect(said.children).toHaveLength(0);
+    expect(card.querySelector("img, b")).toBeNull();
+    expect(a.querySelector(".pv-fold")).toBeNull();
+    // An admin action, by a person with no name, before the key was last set.
+    expect(b.querySelector(".pv-fperson")!.textContent).toBe("*owner");
+    expect(b.querySelector(".pv-fhead")!.textContent).toContain("Test connection");
+    expect(b.querySelector(".pv-fold")!.textContent).toBe("before the key was last set");
+    expect(b.querySelector(".merr-lead")!.textContent).toBe("The model provider refused the key.");
+    expect(b.querySelector(".merr-next")).toBeNull();
+
+    click(button(card, "Show more"));
+    await settle();
+    expect([...card.querySelectorAll(".pv-fails > li")]).toHaveLength(3);
+    expect(card.querySelector(".pv-fails > li:last-child .merr-lead")!.textContent).toBe("The model provider is overloaded.");
+    expect(button(card, "Show more")).toBeUndefined();
+
+    click(a.querySelector(".pv-fperson")!);
+    await settle();
+    expect(calls.at(-1)!.url).toBe("/api/admin/provider/failures?person=p_sam");
+    rows = [...card.querySelectorAll(".pv-fails > li")];
+    expect(rows).toHaveLength(1);
+    expect(card.querySelector(".pv-fwho")!.textContent).toContain("Showing only Sam's.");
+    click(button(card, "Show more"));
+    await settle();
+    expect(calls.at(-1)!.url).toBe("/api/admin/provider/failures?person=p_sam&before=c9");
+    expect([...card.querySelectorAll(".pv-fails > li")]).toHaveLength(2);
+    click(button(card, "Show everyone"));
+    await settle();
+    expect(calls.at(-1)!.url).toBe("/api/admin/provider/failures");
+    expect([...card.querySelectorAll(".pv-fails > li")]).toHaveLength(2);
+    expect(card.querySelector(".pv-fwho")).toBeNull();
+
+    // Test connection lists them again.
+    const before = calls.filter(c => c.url.startsWith("/api/admin/provider/failures")).length;
+    click(button(m.root, "Test connection"));
+    await settle();
+    expect(calls.filter(c => c.url.startsWith("/api/admin/provider/failures")).length).toBe(before + 1);
+  });
+
+  it("says when the instance key has no failed requests", async () => {
+    stubFetch({ "GET /api/admin/provider": provider(), "GET /api/admin/provider/models": { models: [], fetched_at: "x" }, "GET /api/admin/provider/failures": { failures: [], next: null } });
+    const m = mount(AdminProvider, {});
+    await settle();
+    const card = m.root.querySelector('section[aria-labelledby="pv-f"]')!;
+    expect(card.querySelector(".pv-fails")).toBeNull();
+    expect(card.textContent).toContain("No failed requests with the instance key.");
   });
 
   it("takes a custom model ID the provider does not list", async () => {

@@ -151,6 +151,7 @@ mod l10 {
         ("admin::set_web_token", Bot),
         ("admin::clear_web_token", Bot),
         ("admin::models", Bot),
+        ("admin::failures", Bot),
         ("admin::pricing", Bot),
         ("admin::set_pricing", Bot),
         ("admin::price_from_tokenulator", Bot),
@@ -655,7 +656,7 @@ mod l10 {
         ),
         (
             "admin::test",
-            "a read of the provider's model list, recorded as the view view.admin {page: provider.test}",
+            "a read of the provider's model list, recorded as the view view.admin {page: provider.test}; a failure is kept in the provider failure log, which is not content",
         ),
         (
             "admin::refresh_catalog",

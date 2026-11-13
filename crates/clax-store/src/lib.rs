@@ -145,6 +145,7 @@ pub mod people;
 #[cfg(test)]
 mod plans;
 pub mod price_catalog;
+pub mod provider_failures;
 pub mod pushes;
 pub mod questions;
 pub mod queues;

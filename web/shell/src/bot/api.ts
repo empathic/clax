@@ -22,7 +22,17 @@ export type Source = "default" | "db" | "file" | `env:${string}`;
 /** A stored key's metadata (§8.1). `host` is the origin it was set for and
  * is only ever sent to; `problem`, when the provider in effect is another,
  * says so ("your key: it was set for <host>; set it again"). */
-export type KeyInfo = { set: boolean; last4: string | null; set_at: string | null; set_by?: { id: string; name: string | null } | null; last_ok_at: string | null; host?: string | null; problem?: string | null };
+export type KeyInfo = { set: boolean; last4: string | null; set_at: string | null; set_by?: { id: string; name: string | null } | null; last_ok_at: string | null; host?: string | null; problem?: string | null; last_problem?: KeyProblem | null };
+/** How a model call failed (the run's own person and admins only): its
+ * `class` (`invalid_request`, `auth`, `rate_limited`, `overloaded`, `api`,
+ * `redirected`, `bad_base_url`, `network`, `stream_cut`, `protocol`,
+ * `unknown_event`; any other reads as `api`), the HTTP status (null with
+ * none: mid-stream, or no answer), the provider's own error `type`, what it
+ * said (`message`: bounded, without control characters or the key, and
+ * untrusted: rendered as text only) and its request ID. */
+export type ErrorDetail = { class: string; status: number | null; type: string | null; message: string | null; request_id: string | null };
+/** A key's last failed request (`at`, RFC 3339), until a later one goes through or the key is set again. */
+export type KeyProblem = ErrorDetail & { at: string };
 /** One week of credits (§7.4): `start` and `end` are RFC 3339 (Monday 00:00 UTC to the next). */
 export type Week = { start: string; end: string; weekly_milli: number; lift_milli: number; spent_milli: number; warn: boolean; exhausted: boolean };
 /** Whose model key a run, a turn or a person's runs use: `instance` or `own`, never null. */
@@ -92,7 +102,7 @@ export type BotCall = {
   /** A web call's query (search) or URL (fetch), and for a fetch the source that allowed it: `comment`, `search #<seq>` or `page #<seq>`. */
   web?: { query?: string; url?: string; source?: string };
 };
-export type StepKind = "turn" | "script" | "finish" | "give_up" | "stopped";
+export type StepKind = "turn" | "script" | "finish" | "give_up" | "stopped" | "failed";
 /** One step of a run (§4.2). A `turn` carries the model's narration
  * (`text`) and tokens; a `script` its title, code, calls, logs, return
  * value and error; `finish`, `give_up` and `stopped` their summary or reason. */
@@ -102,6 +112,15 @@ export type BotStep = {
   text?: string; model?: string; input_tokens?: number; cached_tokens?: number; output_tokens?: number; key_source?: "instance" | "own";
   title?: string; code?: string; calls?: BotCall[]; logs?: string[]; value?: unknown; error?: string | null; cpu_ms?: number;
   summary?: string; reason?: string;
+  /** A `stopped` or `failed` step's failed model call, for admins, and for
+   * the run's own person on their own key (never a reader's, nor an older
+   * run's). */
+  error_detail?: ErrorDetail | null;
+  /** In its place, for anyone but an admin, a model call on the instance's
+   * key that failed (the step's `reason` then reads `model_error`): nothing
+   * the provider said, only whether it was busy (rate limiting or
+   * overloaded), so the step says so in Clax's own words. */
+  instance_problem?: { busy: boolean } | null;
   /** A finish step's Sources: the pages the run fetched, built from its journal. */
   sources?: { title: string; url: string }[];
   /** Live only, from a turn's `turn_delta`s: the reasoning summary as it
@@ -310,10 +329,13 @@ async function call<T>(path: string, method = "GET", body?: unknown): Promise<T>
   if (body !== undefined) init.body = JSON.stringify(body);
   const res = await fetch(path, init);
   if (res.ok) return (res.status === 204 ? {} : await res.json()) as T;
-  let b: { error?: { code?: string; message?: string; run?: { id?: string } } } = {};
+  let b: { error?: { code?: string; message?: string; run?: { id?: string }; detail?: ErrorDetail } } = {};
   try { b = await res.json(); } catch { /* not json */ }
   if (res.status === 409 && b.error?.code === "run_active" && b.error.run?.id) throw new RunActive(b.error.run.id);
-  throw new Refused(res.status, b.error?.message ?? (res.statusText || `HTTP ${res.status}`), b.error?.code ?? null);
+  const message = b.error?.message ?? (res.statusText || `HTTP ${res.status}`);
+  const d = b.error?.detail;
+  if (d && typeof d === "object" && typeof d.class === "string") throw new ModelRefused(res.status, message, b.error?.code ?? null, d);
+  throw new Refused(res.status, message, b.error?.code ?? null);
 }
 const e = encodeURIComponent;
 const query = (q: Record<string, string | number | undefined>) => {
@@ -331,6 +353,11 @@ export const useOwnKey = (use_own: boolean) => call<MeBot>("/api/me/bot", "PUT",
 /** Lets ClaxBot's runs for this person search and read the web, or not. */
 export const setWebChoice = (web: boolean) => call<MeBot>("/api/me/bot", "PUT", { web });
 export const meUsage = (week?: string) => call<MeUsage>(`/api/me/usage${query({ week })}`);
+
+/** A refusal from a failed model call (502 `provider_error`), with how it failed. */
+export class ModelRefused extends Refused {
+  constructor(status: number, message: string, code: string | null, public detail: ErrorDetail) { super(status, message, code); this.name = "ModelRefused"; }
+}
 
 /** A send refused because run `run` already works on one of its threads (409 `run_active`). */
 export class RunActive extends Error {
@@ -367,7 +394,25 @@ export const provider = () => call<Provider>("/api/admin/provider");
 export const setProvider = (patch: ProviderPatch) => call<Provider>("/api/admin/provider", "PUT", patch);
 export const setInstanceKey = (key: string) => call<Provider>("/api/admin/provider/key", "PUT", { key });
 export const clearInstanceKey = () => call<Provider>("/api/admin/provider/key", "DELETE");
-export const testProvider = () => call<{ ok: boolean; latency_ms: number; error?: string | null }>("/api/admin/provider/test", "POST", {});
+/** `POST /api/admin/provider/test`: whether one call went through, and when it did not, why (`detail` once the provider answered, or the client saw how it failed). */
+export type ProviderTest = { ok: boolean; latency_ms: number; error?: string | null; detail?: ErrorDetail | null };
+export const testProvider = () => call<ProviderTest>("/api/admin/provider/test", "POST", {});
+/** One failed request with the instance key, as `GET
+ * /api/admin/provider/failures` lists it (admins only): when (`at`, RFC
+ * 3339), whose (`person`), the run (`run_id`) and its request kind
+ * (`thread`, `brief`, `other`) or the admin action (`provider.test`,
+ * `provider.models`, with no run), the model, API and host called, and how
+ * it failed (`ErrorDetail`'s fields; `message` is the provider's words,
+ * untrusted: rendered as text only). `since_key_change` is false when it
+ * happened before the instance key was last set. */
+export type ProviderFailure = ErrorDetail & {
+  id: string; at: string; person: { id: string; name: string | null } | null; run_id: string | null; request: string;
+  model: string | null; api: string; host: string | null; key_source: "instance"; since_key_change: boolean;
+};
+/** The failure log's filters, all optional: a person key, a run ID, a model, an `ErrorDetail` class, an HTTP status, a time range (RFC 3339), the `next` cursor of a previous page (`before`), and the page's size (1 to 200, 50 by default). */
+export type FailureQuery = { person?: string; run?: string; model?: string; class?: string; status?: number; since?: string; until?: string; before?: string; limit?: number };
+/** `GET /api/admin/provider/failures`: the instance key's failed requests, newest first, and the cursor of the next page (null on the last). The log keeps at most 100 per person and 1,000 in all, for 30 days. */
+export const providerFailures = (q: FailureQuery = {}) => call<{ failures: ProviderFailure[]; next: string | null }>(`/api/admin/provider/failures${query(q)}`);
 /** The web providers search can use. */
 export type WebProvider = "ceramic" | "exa" | "linkup";
 /** Which URLs a fetch may take: those from the sender's words, searches and pages read; any public one; the allowlist's hosts. */

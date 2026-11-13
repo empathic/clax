@@ -580,10 +580,8 @@ pub const MODEL_TIMEOUT: &str = "model_timeout";
 #[must_use]
 pub fn prompt_too_long(e: &MessagesError) -> bool {
     let message = match e {
-        MessagesError::InvalidRequest { message } => message,
-        MessagesError::Api {
-            status, message, ..
-        } if (400..500).contains(status) => message,
+        MessagesError::InvalidRequest { message, .. } => message,
+        MessagesError::Api { message, answer } if (400..500).contains(&answer.status) => message,
         _ => return false,
     };
     let m = message.to_ascii_lowercase();
@@ -735,7 +733,7 @@ impl RunPolicy for DefaultPolicy {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clax_sample::messages::{Block, Role};
+    use clax_sample::messages::{Answer, Block, Role};
 
     #[test]
     fn a_size_is_said_in_kib_only_when_it_is_a_whole_number_of_them() {
@@ -890,14 +888,16 @@ mod tests {
     }
 
     fn invalid(m: &str) -> MessagesError {
-        MessagesError::InvalidRequest { message: m.into() }
+        MessagesError::InvalidRequest {
+            message: m.into(),
+            answer: Answer::new(400, "invalid_request_error", Some(m.into())),
+        }
     }
 
     fn api(status: u16, m: &str) -> MessagesError {
         MessagesError::Api {
-            status,
-            kind: "some_error".into(),
             message: m.into(),
+            answer: Answer::new(status, "some_error", Some(m.into())),
         }
     }
 
@@ -943,10 +943,12 @@ mod tests {
         for e in [
             MessagesError::Overloaded {
                 message: said.into(),
+                answer: Answer::default(),
             },
             MessagesError::RateLimited {
                 retry_after: None,
                 message: said.into(),
+                answer: Answer::default(),
             },
             MessagesError::Network {
                 message: said.into(),
@@ -955,8 +957,8 @@ mod tests {
                 message: said.into(),
             },
             MessagesError::Auth {
-                status: 401,
                 message: said.into(),
+                answer: Answer::new(401, "", None),
             },
         ] {
             assert!(!prompt_too_long(&e), "{e:?}");

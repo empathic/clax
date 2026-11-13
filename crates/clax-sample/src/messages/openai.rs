@@ -34,8 +34,8 @@
 //! the usage, and OpenRouter's `cost` the billed cost ([`billed_micro_usd`]);
 //! `data: [DONE]` ends the message, which must have carried its usage.
 
+use super::{Answer, classify, images_of, protocol};
 use super::{Block, MessagesError, MessagesRequest, ModelInfo, Role, ToolChoice};
-use super::{classify, images_of, protocol};
 use serde_json::{Map, Value, json};
 
 /// The path of a call under the base URL.
@@ -431,17 +431,13 @@ impl Translator {
             } else {
                 &v
             };
-            let message = e["message"]
-                .as_str()
-                .unwrap_or("the provider reported an error")
-                .to_string();
+            let said = e["message"].as_str().map(str::to_string);
+            let message = said
+                .clone()
+                .unwrap_or_else(|| "the provider reported an error".into());
             let status = e["code"].as_u64().and_then(|c| u16::try_from(c).ok());
-            return Err(classify(
-                status.unwrap_or(0),
-                e["type"].as_str().unwrap_or(""),
-                message,
-                None,
-            ));
+            let answer = Answer::new(status.unwrap_or(0), e["type"].as_str().unwrap_or(""), said);
+            return Err(classify(answer, message, None));
         }
         if !self.started {
             self.started = true;

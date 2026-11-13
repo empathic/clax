@@ -1772,16 +1772,19 @@ fn without_a_charge_the_core_would_journal(mut answer: Answer, op: &str) -> Answ
 /// provider's fields are merged into it. A script step: `tool_use_id`,
 /// `title`, `code`, `outcome`, `result`, `calls` (`script.rs`,
 /// `Tick::script`). A terminal step (`run.rs`): `reason` and `error` of
-/// a stop, with `title`, `code`, `outcome` and `calls` when a cancelled
-/// script stopped the run; `summary` of a finish of a kind of `clax`,
+/// a stop, and `error_detail` of a stop for a failed model call (what
+/// the provider said: `clax_sample::messages::ErrorDetail`), with
+/// `title`, `code`, `outcome` and `calls` when a cancelled script
+/// stopped the run; `summary` of a finish of a kind of `clax`,
 /// `result` of a finish of any other kind (`crate::finish`); `code`
 /// and `reason` of a give-up; `reason` and `error` of a failure. And
 /// `images`, a script step's images shown to the model
 /// (`crate::images`).
-pub const PAYLOAD_KEYS: [&str; 10] = [
+pub const PAYLOAD_KEYS: [&str; 11] = [
     "calls",
     "code",
     "error",
+    "error_detail",
     "images",
     "outcome",
     "reason",

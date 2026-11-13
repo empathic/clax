@@ -2416,6 +2416,48 @@ pub const MIGRATIONS: &[&str] = &[
     DROP INDEX bot_runs_live;
     CREATE INDEX bot_runs_live ON bot_runs(created_at, id)
         WHERE status IN ('queued', 'running', 'stopping', 'parked');",
+    // 66: a key's last problem (`crate::secrets::SecretMeta::last_problem`):
+    // `sealed_secrets.last_problem_json` holds what the last failed request
+    // made with the key was answered (`{at, class, status, type, message,
+    // request_id}`), NULL when none failed since the key was set or since a
+    // request with it last succeeded. One `ADD COLUMN`, which changes the
+    // schema's text alone (every row reads NULL), so its transaction writes
+    // the same few pages on the hosted Worker's VFS at any number of rows
+    // (see migration 64).
+    //
+    // And the provider failure log (`crate::provider_failures`):
+    // `bot_provider_failures` holds each failed request made with the
+    // instance's key, for admins: when, the person it was for, the run (or
+    // the admin action), the model, API and base URL's host, and what the
+    // provider answered (class, status, type, message, request ID; plain
+    // text, bounded, never the key). Kept by count, per person and in all,
+    // and by age. Indexed to list all newest first, one person's newest
+    // first, and one run's. A new, empty table: a few pages at any number of
+    // rows elsewhere.
+    //
+    // `sealed_secrets.last_problem_json` is the migration's mark
+    // (`MARKS_AFTER_APP`).
+    "ALTER TABLE sealed_secrets ADD COLUMN last_problem_json TEXT;
+    CREATE TABLE bot_provider_failures (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at TEXT NOT NULL,
+        person TEXT NOT NULL,
+        run_id TEXT,
+        request TEXT NOT NULL,
+        model TEXT,
+        api TEXT NOT NULL,
+        host TEXT,
+        key_source TEXT NOT NULL,
+        class TEXT NOT NULL,
+        status INTEGER,
+        provider_type TEXT,
+        message TEXT,
+        request_id TEXT
+    );
+    CREATE INDEX bot_provider_failures_by_time ON bot_provider_failures(at, id);
+    CREATE INDEX bot_provider_failures_by_person ON bot_provider_failures(person, at, id);
+    CREATE INDEX bot_provider_failures_by_run ON bot_provider_failures(run_id, at, id)
+        WHERE run_id IS NOT NULL;",
 ];
 
 /// The ClaxBot migration, as a schema version (spec
@@ -2491,8 +2533,13 @@ pub const RUN_BINDINGS_MIGRATION: u32 = WEB_MIGRATION + 1;
 /// ends kept for delivery (`bot_surface_defs`, `bot_surface_prompts`,
 /// `bot_registrations`, `bot_pending_calls`, `bot_run_ends`, a parked run's columns of
 /// `bot_runs`), a run's content, joins and inbox (`bot_content`,
-/// `bot_joins`, `bot_messages`), as a schema version, and this build's last.
+/// `bot_joins`, `bot_messages`), as a schema version.
 pub const SURFACES_MIGRATION: u32 = RUN_BINDINGS_MIGRATION + 1;
+
+/// The migration that keeps a key's last problem
+/// (`sealed_secrets.last_problem_json`) and the provider failure log
+/// (`bot_provider_failures`), as a schema version, and this build's last.
+pub const KEY_PROBLEM_MIGRATION: u32 = SURFACES_MIGRATION + 1;
 
 /// The audit journal's migration, as a schema version (the
 /// `user_version` it leaves).
@@ -2652,11 +2699,11 @@ const APP_MIGRATION_MARKS: [Mark<'static>; 8] = [
 
 /// What each migration after the app's leaves in the schema, in order:
 /// ClaxBot's ([`CLAXBOT_MIGRATION`]), then [`LEGACY_PATHS_MIGRATION`] to
-/// [`SURFACES_MIGRATION`]. They follow the app's in every
+/// [`KEY_PROBLEM_MIGRATION`]. They follow the app's in every
 /// numbering, so a later numbering that takes a main migration below the
 /// app's moves them with the app's, and adoption tells how many of them a
 /// database holds by these marks, as it does the app's.
-const MARKS_AFTER_APP: [Mark<'static>; 16] = [
+const MARKS_AFTER_APP: [Mark<'static>; 17] = [
     Mark::Table("person_roles"),
     Mark::Column("artifacts", "legacy_paths"),
     Mark::Table("app_data_moved"),
@@ -2673,6 +2720,7 @@ const MARKS_AFTER_APP: [Mark<'static>; 16] = [
     Mark::Table("bot_person_prefs"),
     Mark::Column("bot_runs", "bindings_json"),
     Mark::Table("bot_surface_defs"),
+    Mark::Column("sealed_secrets", "last_problem_json"),
 ];
 
 /// Brings a database written by an earlier `flutter-app` build, which
@@ -5730,7 +5778,9 @@ mod tests {
         assert!(MIGRATIONS[first + 22].contains("ALTER TABLE bot_runs ADD COLUMN bindings_json"));
         assert_eq!(super::SURFACES_MIGRATION, super::RUN_BINDINGS_MIGRATION + 1);
         assert!(MIGRATIONS[first + 23].contains("CREATE TABLE bot_surface_defs ("));
-        assert_eq!(MIGRATIONS.len() as u32, super::SURFACES_MIGRATION);
+        assert_eq!(super::KEY_PROBLEM_MIGRATION, super::SURFACES_MIGRATION + 1);
+        assert!(MIGRATIONS[first + 24].contains("ADD COLUMN last_problem_json"));
+        assert_eq!(MIGRATIONS.len() as u32, super::KEY_PROBLEM_MIGRATION);
     }
 
     #[test]
@@ -5882,7 +5932,8 @@ mod tests {
         assert_eq!(super::WEB_MIGRATION, 63);
         assert_eq!(super::RUN_BINDINGS_MIGRATION, 64);
         assert_eq!(super::SURFACES_MIGRATION, 65);
-        assert_eq!(user_version(&c), super::SURFACES_MIGRATION);
+        assert_eq!(super::KEY_PROBLEM_MIGRATION, 66);
+        assert_eq!(user_version(&c), super::KEY_PROBLEM_MIGRATION);
         assert!(super::JOBS_TABLES.contains(&"job_step_marks"));
         for table in super::JOBS_TABLES {
             assert_eq!(table_count(&c, table), 1, "{table}");
@@ -6662,7 +6713,7 @@ mod tests {
 
         drop(Store::open(&home).unwrap());
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::SURFACES_MIGRATION);
+        assert_eq!(user_version(&c), super::KEY_PROBLEM_MIGRATION);
         assert_eq!(user_version(&c), MIGRATIONS.len() as u32);
         for table in [
             "legal_agreements",
@@ -7158,14 +7209,15 @@ mod tests {
         // declarations' to 56, the quickstart's to 57, the capability
         // approvals' to 58, the queues' to 59, the browser login's to 60,
         // the feedback loop's to 61, the price catalog's to 62, the web lines' to 63,
-        // the run bindings' to 64 and the surfaces' to 65.
+        // the run bindings' to 64, the surfaces' to 65 and the key problem's
+        // to 66.
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         installed_at_43(&home);
         drop(Store::open(&home).unwrap());
         let (cols, before) = {
             let c = Connection::open(home.db_path()).unwrap();
-            assert_eq!(user_version(&c), super::SURFACES_MIGRATION);
+            assert_eq!(user_version(&c), super::KEY_PROBLEM_MIGRATION);
             (columns_of(&c), every_row(&c))
         };
 
@@ -7173,8 +7225,8 @@ mod tests {
         let c = Connection::open(home.db_path()).unwrap();
         assert_eq!(
             user_version(&c),
-            super::SURFACES_MIGRATION + 1,
-            "ClaxBot's 50 and the migrations 51 to 65 after it are one later now"
+            super::KEY_PROBLEM_MIGRATION + 1,
+            "ClaxBot's 50 and the migrations 51 to 66 after it are one later now"
         );
         assert_eq!(shape_of(&c), fresh, "the later build's schema");
         assert_eq!(rows_in(&c, &cols), before, "every row kept");
@@ -7193,7 +7245,7 @@ mod tests {
             "ok"
         );
         let copied = Connection::open(&copy).unwrap();
-        assert_eq!(user_version(&copied), super::SURFACES_MIGRATION);
+        assert_eq!(user_version(&copied), super::KEY_PROBLEM_MIGRATION);
         assert_eq!(
             every_row(&copied),
             before,
@@ -7207,7 +7259,7 @@ mod tests {
         crate::migrate_with(&mut c, &later).unwrap();
         assert_eq!(
             (user_version(&c), schema_of(&c), every_row(&c)),
-            (super::SURFACES_MIGRATION + 1, schema, rows)
+            (super::KEY_PROBLEM_MIGRATION + 1, schema, rows)
         );
     }
 
@@ -7481,7 +7533,7 @@ mod tests {
     fn every_installed_home_opens_at_the_last_migration_keeping_every_table_and_row() {
         let fresh = fresh_shape();
         let last = MIGRATIONS.len() as u32;
-        assert_eq!(last, super::SURFACES_MIGRATION);
+        assert_eq!(last, super::KEY_PROBLEM_MIGRATION);
         for (name, fixtures) in installed_homes() {
             let dir = tempfile::tempdir().unwrap();
             let home = Home::at(dir.path().join("ax"));
@@ -8102,7 +8154,7 @@ mod tests {
 
         let st = opened_after_the_runs(&home);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::SURFACES_MIGRATION);
+        assert_eq!(user_version(&c), super::KEY_PROBLEM_MIGRATION);
         assert_eq!(shape_of(&c), fresh_shape(), "a fresh database's schema");
         assert_eq!(
             run_indexes(&c),
@@ -8378,7 +8430,7 @@ mod tests {
         );
         drop(opened_after_the_runs(&home));
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::SURFACES_MIGRATION);
+        assert_eq!(user_version(&c), super::KEY_PROBLEM_MIGRATION);
         let before = every_row(&c);
         let set = |sql: &str| {
             c.execute(
@@ -8468,7 +8520,7 @@ mod tests {
             .query_row([], |r| r.get::<_, i64>(0))
             .unwrap();
         crate::migrate_with(&mut c, &super::NUMBERING).unwrap();
-        assert_eq!(user_version(&c), super::SURFACES_MIGRATION);
+        assert_eq!(user_version(&c), super::KEY_PROBLEM_MIGRATION);
         let finished: i64 = c
             .prepare_cached("SELECT count(*) FROM bot_runs WHERE status = 'finished'")
             .unwrap()
@@ -8790,7 +8842,7 @@ mod tests {
 
         let st = opened_after_the_runs(&home);
         let c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::SURFACES_MIGRATION);
+        assert_eq!(user_version(&c), super::KEY_PROBLEM_MIGRATION);
         assert_eq!(shape_of(&c), fresh_shape(), "a fresh database's schema");
         assert_eq!(
             rows_in(&c, &cols),
@@ -9050,7 +9102,7 @@ mod tests {
         drop(at_64_with_runs(&home));
         drop(opened_after_the_runs(&home));
         let mut c = Connection::open(home.db_path()).unwrap();
-        assert_eq!(user_version(&c), super::SURFACES_MIGRATION);
+        assert_eq!(user_version(&c), super::KEY_PROBLEM_MIGRATION);
         let (schema, rows) = (schema_of(&c), every_row(&c));
         let before = super::Numbering {
             migrations: &MIGRATIONS[..super::RUN_BINDINGS_MIGRATION as usize],
@@ -9061,7 +9113,7 @@ mod tests {
             matches!(
                 refused,
                 Err(clax_core::CoreError::SchemaNewer { found, known })
-                    if found == super::SURFACES_MIGRATION
+                    if found == super::KEY_PROBLEM_MIGRATION
                         && known == super::RUN_BINDINGS_MIGRATION
             ),
             "{refused:?}"

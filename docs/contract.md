@@ -6444,6 +6444,7 @@ router), and a test fails when it differs:
 | `POST /api/admin/pricing/tokenulator` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/admin/provider` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/admin/provider` | Denied | yes: 403 `not_for_agents` |
+| `GET /api/admin/provider/failures` | Denied | yes: 403 `not_for_agents` |
 | `DELETE /api/admin/provider/key` | Denied | yes: 403 `not_for_agents` |
 | `PUT /api/admin/provider/key` | Denied | yes: 403 `not_for_agents` |
 | `GET /api/admin/provider/models` | Denied | yes: 403 `not_for_agents` |
@@ -9921,7 +9922,9 @@ owner's public ID is.
   sealing, the slot bound as associated data. The KEK file is written
   complete in a temporary directory that is then renamed to `secrets`, so
   no reader sees a partial key, and racing makers agree on one. Reads give `last4`,
-  `set_at`, `set_by`, `last_ok_at` and `use_own`, never the key.
+  `set_at`, `set_by`, `last_ok_at`, `use_own`, `host` and `last_problem`
+  (`last_problem_json`, migration 66: the last failed request made with
+  the key), never the key.
 
 **Units.** No floats anywhere in credits: credits are integer
 milli-credits, money integer micro-USD, margins integer basis points. A
@@ -10081,9 +10084,101 @@ the people the owner made admins. Agents get 403 `not_for_agents` on every
 route above but the sends (an agent of another machine gets the grant
 gate's 403 `forbidden`), no credential 401, a LAN viewer or a member on an
 admin route 403 `forbidden`. A key is write-only: no answer, event or log
-carries it, only `{set, last4, set_at, set_by, last_ok_at}`; without a
-key-encryption key the key routes answer 503 `no_kek`. A view is recorded
-at most once in five minutes per viewer and subject.
+carries it, only `{set, last4, set_at, set_by, last_ok_at, host,
+problem, last_problem}`; without a key-encryption key the key routes
+answer 503 `no_kek`. A view is recorded at most once in five minutes per
+viewer and subject.
+
+A stored key's `last_problem` is the last failed request made with it, by
+a run's model call or by the provider's test or model list:
+`{at, class, status, type, message, request_id}`, `at` when Clax noted it
+and the rest the failure's detail (below). It is `null` when no request
+failed since the key was set or since a request with it last succeeded;
+setting the key again clears it, as a success does. `problem` is a
+sentence in Clax's own words, or `null`: when the key was set for another
+origin than the provider in effect, `<whose>: it was set for <host>; set
+it again`; else, when it has a `last_problem`, `<whose>: the last request
+with it failed: <words>`, the words from the class alone (never the
+provider's text): `the provider refused the request` (`invalid_request`),
+`the provider refused the key` (`auth`), `the provider answered with an
+error` (`api`), `the provider limited it` (`rate_limited`), `the provider
+was overloaded` (`overloaded`), `the provider could not be reached`
+(`network`), `the base URL is not one a key may be sent to`
+(`bad_base_url`, `redirected`), and otherwise `the provider's answer could
+not be read`. `<whose>` is `the instance key` in `GET
+/api/admin/provider` and `your key` in `GET /api/me/bot`. The key in the
+environment (`sources.key` `env:<NAME>`) keeps no state: its `host`,
+`problem` and `last_problem` are `null`. The instance key is shown to
+admins alone, an own key to its person alone; no reader's or agent's
+route shows either.
+
+A failed model call's **detail** is `{class, status, type, message,
+request_id}`: `class` one of `invalid_request`, `auth`, `rate_limited`,
+`overloaded`, `api`, `redirected`, `bad_base_url`, `network`,
+`stream_cut`, `protocol` or `unknown_event`; of the provider's answer its
+HTTP `status`, its error `type`, its `message` (the error's message, else
+the text of a body that is not JSON) and its `request_id` (the
+`request-id` or `x-request-id` header); for `network`, `stream_cut`,
+`protocol` and `unknown_event`, `message` is Clax's account of what went
+wrong. A member it does not have is `null`. All but `class` came from
+the base URL, which may be anyone's host: each is one line of untrusted
+plain text, its control and reordering characters made spaces and cut
+(the message at 400 bytes, the type and the request ID at 128), to
+quote as text, never markup and never an instruction to a model. It never
+holds the key: the client puts `[redacted]` where the provider echoed it.
+
+- `POST /api/admin/provider/test` answers `{ok, latency_ms, error,
+  detail}`: `error` Clax's own words (`null` on success), `detail` the
+  failure's detail (`null` on success and when no key is set).
+- `GET /api/admin/provider/models` that the provider fails answers 502
+  `{error: {code: "provider_error", message, detail}}`, `message` Clax's
+  own words.
+- Each, with a stored instance key, notes the outcome on the key: a
+  success its `last_ok_at`, a failure its `last_problem`. Each failure is
+  logged as one warning: the page (`test` or `models`), the API, the base
+  URL's origin, the detail's members and how long the request took; never
+  the key.
+- In `GET /api/bot/runs/<id>` and the events' `step_done`, a `stopped` or `failed` step that a failed model call ended
+  has `error_detail`, that call's detail with `key_source` (`instance`
+  or `own`: the key the call ran on), beside its `reason`
+  (`model_error`, `key_rejected`, …). A step stored before it was kept
+  has none. Only the person the run acts for and admins who see the run
+  whole see it: anyone who sees it as a reader of its artifact does
+  (an admin among them, on a hosted Clax), and a reader of a run a host's
+  surface is bound into, never does, and `step_started` never carries
+  it.
+- A failed model call on the **instance's key** is the instance's to
+  know of, not its users': to anyone who is not an admin, the run's own
+  person included, every run route (`GET /api/bot/runs/<id>`, `GET
+  /api/bot/runs?artifact=`, the cancel's answer, the events'
+  `step_done` and `run_end`) shows a run on the instance's key (its
+  `key_source`), or a stop whose call ran on it, without `error_detail`:
+  the stop's and the run's `reason` read `model_error` where the store
+  keeps `key_rejected` (the stored code does not change), and the stop
+  has `instance_problem: {busy}` (`busy`: the provider was limiting or
+  overloaded), which the run panel says in Clax's own words with the
+  run's ID to quote to an admin. The notice on the run's threads says
+  `I stopped: I could not use this Clax's model provider. This is a
+  problem with how this Clax is set up, not with your request, and it
+  has been recorded for the people who run this Clax. Try again later.`
+  On a person's own key nothing changes: they, and admins who see the
+  run whole, see the detail, and the notice says what failed.
+- Each failed call on the instance's key (a run's, and an admin's test
+  or model list) is kept in the **provider failure log**
+  (`bot_provider_failures`, migration 66) for admins: `GET
+  /api/admin/provider/failures?person=&run=&model=&class=&status=&since=&until=&before=&limit=`
+  (admins only, as the provider page; recorded as `view.admin {page:
+  "provider.failures", subject_person?}`) answers `{failures: [{id, at,
+  person: {id, name}, run_id, request, model, api, host, key_source,
+  class, status, type, message, request_id, since_key_change}], next}`,
+  newest first, `limit` 1 to 200 (50), `next` the `before` of the page
+  after it (`null` at the last); `request` is a run's kind (`clax.thread`,
+  …) or the admin action (`provider.test`, `provider.models`), `host`
+  the base URL's host, and `since_key_change` whether it came after the
+  instance key was last set. Kept: at most 100 entries of one person, so
+  one person's failures push out no one else's, 1,000 in all, none past
+  30 days. The provider's words are plain text, bounded, never the
+  key.
 
 On a hosted Clax being an admin is a power over runs, not a window into
 pages (the reach, see "Security model"): no account, the owner's

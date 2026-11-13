@@ -737,7 +737,23 @@ async fn the_tool_description_says_the_size_the_sandbox_holds_a_value_to() {
 const BIG: &str = r#"return "x".repeat(3000);"#;
 
 const WINDOW_FULL: &str = "The conversation outgrew the model's context window.";
-const MODEL_ERROR: &str = "I stopped: the model provider answered with an error.";
+/// What a run on the instance's key says of a failed model call
+/// (`clax_bot`'s `INSTANCE_PROVIDER_LEAD`).
+const MODEL_ERROR: &str = "I stopped: I could not use this Clax's model provider. This is a \
+     problem with how this Clax is set up, not with your request, and it has been recorded for \
+     the people who run this Clax. Try again later.";
+
+/// The provider failure log's entries of `run`, newest first.
+fn failures_of(env: &Env, run: &str) -> Vec<clax_store::provider_failures::ProviderFailure> {
+    env.store
+        .provider_failures(&clax_store::provider_failures::FailureQuery {
+            run_id: Some(run.into()),
+            limit: 50,
+            ..Default::default()
+        })
+        .unwrap()
+        .failures
+}
 
 #[tokio::test]
 async fn a_refused_request_stops_the_run_as_any_model_error_by_default() {
@@ -750,11 +766,144 @@ async fn a_refused_request_stops_the_run_as_any_model_error_by_default() {
         payload(&env, &run, 1),
         json!({
             "error": format!("invalid request: {TOO_LONG}"),
+            "error_detail": {"class": "invalid_request", "status": 400,
+                             "type": "invalid_request_error", "message": TOO_LONG,
+                             "request_id": null, "key_source": "instance"},
             "notice": format!("{MODEL_ERROR} I had not run any scripts yet."),
             "reason": "model_error",
         })
     );
     assert_eq!(steps(&env, &run).len(), 1);
+    // On the instance's key, the provider failure log keeps it for admins.
+    let logged = failures_of(&env, &run);
+    assert_eq!(logged.len(), 1, "{logged:?}");
+    assert_eq!(logged[0].class, "invalid_request");
+    assert_eq!(logged[0].status, Some(400));
+    assert_eq!(logged[0].message.as_deref(), Some(TOO_LONG));
+    assert_eq!(logged[0].key_source, "instance");
+    assert_eq!(logged[0].request, "clax.thread");
+}
+
+/// The lines a subscriber was given, each its level, target and fields.
+#[derive(Clone, Default)]
+struct Lines(Arc<Mutex<Vec<String>>>);
+
+struct Fields(String);
+
+impl tracing::field::Visit for Fields {
+    fn record_debug(&mut self, f: &tracing::field::Field, v: &dyn std::fmt::Debug) {
+        self.0.push_str(&format!(" {}={v:?}", f.name()));
+    }
+}
+
+impl tracing::Subscriber for Lines {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, e: &tracing::Event<'_>) {
+        let mut f = Fields(String::new());
+        e.record(&mut f);
+        let m = e.metadata();
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("{} {}:{}", m.level(), m.target(), f.0));
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// A refused call keeps what the provider said with the stop (bounded,
+/// without the key), and the run's start, its stop and its end are
+/// logged under `RUNS_LOG` with the provider's words and request ID.
+#[tokio::test(flavor = "current_thread")]
+async fn a_refused_call_keeps_and_logs_what_the_provider_said() {
+    let env = Env::new().await;
+    let said = format!(
+        "Your credit balance is too low.\nkey {INSTANCE_KEY} {}",
+        "x".repeat(600)
+    );
+    let refusal = Reply::Status(
+        400,
+        json!({"type": "error", "request_id": "req_011CX",
+               "error": {"type": "invalid_request_error", "message": said}})
+        .to_string(),
+    );
+    let lines = Lines::default();
+    let out = {
+        let _log = tracing::subscriber::set_default(lines.clone());
+        // A first run meets each of the run loop's log lines once, so
+        // that each is registered; asking every registered line's
+        // interest again then counts this subscriber in, whatever
+        // another test's thread, with no subscriber, registered first.
+        env.api.push(too_long());
+        let warm = env.run();
+        env.drive(&env.deps(), &warm, &DriverId::mint()).await;
+        tracing::callsite::rebuild_interest_cache();
+        lines.0.lock().unwrap().clear();
+        env.api.push(refusal);
+        let run = env.run();
+        (
+            run.clone(),
+            env.drive(&env.deps(), &run, &DriverId::mint()).await,
+        )
+    };
+    let (run, out) = out;
+    assert_eq!(kinds(&out), [StepKind::Stopped]);
+    assert_eq!(env.run_row(&run).reason.as_deref(), Some("model_error"));
+    let d = &payload(&env, &run, 1)["error_detail"];
+    assert_eq!(d["class"], "invalid_request");
+    assert_eq!(d["status"], 400);
+    assert_eq!(d["type"], "invalid_request_error");
+    assert_eq!(d["request_id"], "req_011CX");
+    let m = d["message"].as_str().unwrap();
+    assert!(
+        m.starts_with("Your credit balance is too low. key [redacted] xxx"),
+        "{m}"
+    );
+    assert!(m.len() <= clax_sample::messages::DETAIL_MESSAGE_BYTES && m.ends_with('…'));
+    let all = lines.0.lock().unwrap().clone();
+    for l in &all {
+        assert!(!l.contains(INSTANCE_KEY), "{l}");
+    }
+    let of = |level: &str, said: &str| {
+        all.iter()
+            .find(|l| {
+                l.starts_with(&format!("{level} {}:", clax_bot::run::RUNS_LOG)) && l.contains(said)
+            })
+            .unwrap_or_else(|| panic!("no {level} line {said:?} in {all:#?}"))
+            .clone()
+    };
+    of("INFO", "run started");
+    let stop = of("WARN", "run stopped: the model call failed");
+    for field in [
+        format!("run={run}"),
+        "step=1".into(),
+        "reason=\"model_error\"".into(),
+        "class=\"invalid_request\"".into(),
+        "status=\"400\"".into(),
+        "provider_type=\"invalid_request_error\"".into(),
+        "request_id=\"req_011CX\"".into(),
+        "message=\"Your credit balance is too low. key [redacted]".into(),
+        "elapsed_ms=".into(),
+        "host=http://127.0.0.1".into(),
+    ] {
+        assert!(stop.contains(&field), "{field} not in {stop}");
+    }
+    let end = of("INFO", "run ended");
+    for field in [
+        "status=\"stopped\"",
+        "reason=\"model_error\"",
+        "steps=1",
+        "credits_milli=",
+    ] {
+        assert!(end.contains(field), "{field} not in {end}");
+    }
 }
 
 /// A policy that answers the same messages ends the run on both paths as
@@ -1054,10 +1203,15 @@ async fn the_turn_after_an_overflow_is_held_to_the_shorter_history() {
         payload(&env, &run, 4),
         json!({
             "error": format!("invalid request: {TOO_LONG}"),
+            "error_detail": {"class": "invalid_request", "status": 400,
+                             "type": "invalid_request_error", "message": TOO_LONG,
+                             "request_id": null, "key_source": "instance"},
             "notice": format!("{MODEL_ERROR} I ran 1 script."),
             "reason": "model_error",
         })
     );
+    // The overflow's refusal is noted as any refusal is.
+    assert_eq!(failures_of(&env, &run).len(), 1);
     assert_eq!(
         policy.asks(),
         [

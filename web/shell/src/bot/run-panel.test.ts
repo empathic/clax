@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dispatchTrusted } from "../../../bridge/test/trusted";
 import { settle } from "../people/fixtures";
 import { flush, mount } from "../test/svelte";
-import { meBot, run, week } from "./fixtures";
+import { errorDetail, instanceProblemRun, meBot, run, stoppedRun, week } from "./fixtures";
 import { forget } from "./me";
 import { RunFeed } from "./run-feed.svelte";
 import RunPanel from "./RunPanel.svelte";
@@ -412,5 +412,96 @@ describe("a Send to ClaxBot", () => {
     // Unavailable, it is listed but never the choice.
     botView.list("7q3k9mzx2b4t", false, "no_flag", meBot());
     expect(botView.chosen).toBe(false);
+  });
+});
+
+describe("a run stopped by a failed model call", () => {
+  const open = async (r: ReturnType<typeof run>, role: "member" | "admin" = "member") => {
+    daemon({ "GET /api/bot/runs/r1": json(r) });
+    botView.me = meBot({ role });
+    const m = mount(RunPanel, { aid: "7q3k9mzx2b4t", runs: [] });
+    botView.open("r1");
+    flush();
+    await settle();
+    return { m, panel: document.querySelector<HTMLElement>("#bot-run-panel")! };
+  };
+
+  it("says why in words, what the provider said, quoted, its status, type and request, and where an admin looks", async () => {
+    const { m, panel } = await open(stoppedRun(errorDetail(), "model_error", { key_source: "instance" }), "admin");
+    expect(panel.querySelector(".st")!.textContent).toBe("Stopped: ClaxBot could not use this Clax's model provider");
+    const row = panel.querySelector("li.stopped")!;
+    expect(row.querySelector(".who")!.textContent).toBe("Stopped");
+    expect(row.querySelector(".merr-lead")!.textContent).toBe("The model provider refused the request as invalid.");
+    expect(row.querySelector("blockquote.merr-said")!.textContent).toBe("The provider said: “Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.”");
+    expect(row.querySelector(".merr-meta")!.textContent).toBe("HTTP 400 · invalid_request_error · request req_011CXyz");
+    const next = row.querySelector<HTMLAnchorElement>(".merr-next a")!;
+    expect(next.textContent).toBe("Check the key and the model under Settings → Model provider.");
+    expect(next.getAttribute("href")).toBe("/settings/provider");
+    expect(panel.textContent).not.toContain("model_error");
+    m.unmount();
+  });
+
+  it("sends the run's own person, admin or not, to check their own key under Settings → Your ClaxBot", async () => {
+    for (const role of ["member", "admin"] as const) {
+      const { m, panel } = await open(stoppedRun(), role);
+      const row = panel.querySelector("li.stopped")!;
+      expect(panel.querySelector(".st")!.textContent).toBe("Stopped: the model provider answered with an error");
+      expect(row.querySelector(".merr-said")!.textContent).toContain("Your credit balance is too low");
+      const next = row.querySelector<HTMLAnchorElement>(".merr-next a")!;
+      expect([next.textContent, next.getAttribute("href")]).toEqual(["Check your key under Settings → Your ClaxBot.", "/settings/claxbot#me-k"]);
+      m.unmount();
+      document.body.replaceChildren();
+    }
+  });
+
+  it("tells anyone but an admin about a failure on the instance's key in Clax's words, never the provider's", async () => {
+    // A planted detail beside `instance_problem`: the Clax message wins and none of it shows.
+    const r = instanceProblemRun();
+    r.steps[0].error_detail = errorDetail();
+    const { m, panel } = await open(r);
+    expect(panel.querySelector(".st")!.textContent).toBe("Stopped: ClaxBot could not use this Clax's model provider");
+    const row = panel.querySelector("li.stopped")!;
+    expect([...row.querySelectorAll(".merr p")].map(p => p.textContent)).toEqual([
+      "ClaxBot could not use this Clax's model provider.",
+      "This is a problem with how this Clax is set up, not with your request. It has been recorded for the people who run this Clax; try again later.",
+      "If you ask an admin about it, quote run r1.",
+    ]);
+    for (const planted of ["credit balance", "req_011CXyz", "HTTP 400", "invalid_request_error", "The provider said", "Settings → Model provider", "model_error"]) expect(panel.textContent, planted).not.toContain(planted);
+    expect(row.querySelector("a, blockquote")).toBeNull();
+    m.unmount();
+  });
+
+  it("says a busy provider on the instance's key in Clax's words", async () => {
+    const { m, panel } = await open(instanceProblemRun(true));
+    const row = panel.querySelector("li.stopped")!;
+    expect([...row.querySelectorAll(".merr p")].map(p => p.textContent)).toEqual(["This Clax's model provider is busy.", "Try again in a little while.", "If you ask an admin about it, quote run r1."]);
+    m.unmount();
+  });
+
+  it("shows a reader, who gets no detail, the words in the header and the row bare", async () => {
+    const { m, panel } = await open(stoppedRun(null));
+    expect(panel.querySelector(".st")!.textContent).toBe("Stopped: the model provider answered with an error");
+    const row = panel.querySelector("li.stopped")!;
+    expect(row.textContent!.trim()).toBe("Stopped");
+    expect(panel.textContent).not.toContain("model_error");
+    expect(panel.textContent).not.toContain("credit balance");
+    m.unmount();
+  });
+
+  it("shows the provider's message as text, never as markup", async () => {
+    const { m, panel } = await open(stoppedRun(errorDetail({ message: "<img src=x onerror=alert(1)><b>bold</b>" })));
+    const said = panel.querySelector("blockquote.merr-said")!;
+    expect(said.textContent).toBe("The provider said: “<img src=x onerror=alert(1)><b>bold</b>”");
+    expect(said.children).toHaveLength(0);
+    expect(panel.querySelector("li.stopped img, li.stopped b")).toBeNull();
+    m.unmount();
+  });
+
+  it("never shows a stop code it has no words for, nor an old run's step without detail", async () => {
+    const { m, panel } = await open(stoppedRun(null, "some_new_code"));
+    expect(panel.querySelector(".st")!.textContent).toBe("Stopped");
+    expect(panel.querySelector("li.stopped")!.textContent!.trim()).toBe("Stopped");
+    expect(panel.textContent).not.toContain("some_new_code");
+    m.unmount();
   });
 });

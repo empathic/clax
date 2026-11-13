@@ -758,28 +758,66 @@ pub enum Delta {
 // Errors
 // ---------------------------------------------------------------------------
 
+/// What a provider's error answer said of itself, beside the error's
+/// class: its HTTP status (0 for an error sent mid-stream), its error
+/// `type` (`""` when it named none), the provider's ID of the request
+/// (its `request-id` or `x-request-id` header), and `text`, what it said:
+/// the error's `message`, else what a body that is not JSON holds (an
+/// intermediary's page, say), as one line of at most
+/// [`DETAIL_MESSAGE_BYTES`].
+///
+/// All of it came from the base URL, which may be anyone's host: it is
+/// data to show as quoted plain text to whoever configured the provider
+/// or made the call, never markup and never an instruction to a model.
+/// [`MessagesError::detail`] gives it bounded and stripped of control
+/// characters.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Answer {
+    pub status: u16,
+    pub kind: String,
+    pub request_id: Option<String>,
+    pub text: Option<String>,
+}
+
+impl Answer {
+    /// An answer of `status` and error `kind` that said `text`.
+    #[must_use]
+    pub fn new(status: u16, kind: impl Into<String>, text: Option<String>) -> Answer {
+        Answer {
+            status,
+            kind: kind.into(),
+            request_id: None,
+            text,
+        }
+    }
+
+    /// This answer with the provider's request ID.
+    #[must_use]
+    pub fn with_request_id(mut self, id: Option<String>) -> Answer {
+        self.request_id = id;
+        self
+    }
+}
+
 /// Why a call failed. Messages never carry the key.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MessagesError {
     /// The base URL fails [`clax_core::config::base_url_ok`]; nothing was sent.
     BadBaseUrl,
     /// 401 or 403, or an `authentication_error`/`permission_error`.
-    Auth { status: u16, message: String },
+    Auth { message: String, answer: Answer },
     /// 429; `retry_after` from the header when it held seconds.
     RateLimited {
         retry_after: Option<Duration>,
         message: String,
+        answer: Answer,
     },
     /// 529, or an `overloaded_error` (also mid-stream).
-    Overloaded { message: String },
-    /// 400 `invalid_request_error`.
-    InvalidRequest { message: String },
-    /// Any other provider error; `status` is 0 for one sent mid-stream.
-    Api {
-        status: u16,
-        kind: String,
-        message: String,
-    },
+    Overloaded { message: String, answer: Answer },
+    /// An `invalid_request_error`, or a 400 that names no error type.
+    InvalidRequest { message: String, answer: Answer },
+    /// Any other provider error; its status is 0 for one sent mid-stream.
+    Api { message: String, answer: Answer },
     /// The base URL answered with a redirect (3xx, or 0 for a browser's
     /// opaque redirect), which is never followed.
     Redirected { status: u16 },
@@ -796,13 +834,96 @@ pub enum MessagesError {
     UnknownEvent { kind: String },
 }
 
+/// The most bytes of a provider's message [`ErrorDetail`] keeps.
+pub const DETAIL_MESSAGE_BYTES: usize = 400;
+/// The most bytes of a provider's error type and of its request ID that
+/// [`ErrorDetail`] keeps.
+pub const DETAIL_FIELD_BYTES: usize = 128;
+
+/// A failed call as whoever may see what the provider said is shown it
+/// ([`MessagesError::detail`]): the error's class, and of a provider's
+/// answer its HTTP status, error type, message and request ID, each
+/// bounded and stripped of control characters ([`plain_text`]).
+///
+/// The message, type and request ID are the base URL's words, and the
+/// base URL may be anyone's host: they are plain text to quote, never
+/// markup, never an instruction to a model, and are shown only to the
+/// person a call was made for and to admins. They never hold the key
+/// (the client redacts it before an error leaves it).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ErrorDetail {
+    /// `invalid_request`, `auth`, `rate_limited`, `overloaded`, `api`,
+    /// `redirected`, `bad_base_url`, `network`, `stream_cut`, `protocol`
+    /// or `unknown_event`.
+    pub class: &'static str,
+    /// The answer's HTTP status; `None` for an error with none (sent
+    /// mid-stream, or no answer at all).
+    pub status: Option<u16>,
+    /// The provider's error type (`invalid_request_error`, …).
+    pub kind: Option<String>,
+    /// What the provider said; for `network`, `stream_cut`, `protocol`
+    /// and `unknown_event`, this client's account of what went wrong.
+    pub message: Option<String>,
+    /// The provider's ID of the request.
+    pub request_id: Option<String>,
+}
+
+impl ErrorDetail {
+    /// `{class, status, type, message, request_id}`, each absent one null.
+    #[must_use]
+    pub fn to_json(&self) -> Value {
+        json!({
+            "class": self.class,
+            "status": self.status,
+            "type": self.kind,
+            "message": self.message,
+            "request_id": self.request_id,
+        })
+    }
+}
+
+/// `s` as one line of plain text of at most `max` bytes: each control
+/// character (newlines and tabs among them) and each character that
+/// reorders text (the bidirectional embeddings, overrides and isolates)
+/// a space, runs of white space one space, the ends trimmed, and cut on a
+/// character boundary, ending `…` when cut. `None` when nothing is left.
+#[must_use]
+pub fn plain_text(s: &str, max: usize) -> Option<String> {
+    let reorders = |c: char| matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
+    let mut out = String::new();
+    for c in s.chars() {
+        let c = if c.is_control() || reorders(c) {
+            ' '
+        } else {
+            c
+        };
+        if c.is_whitespace() && (out.is_empty() || out.ends_with(' ')) {
+            continue;
+        }
+        out.push(if c.is_whitespace() { ' ' } else { c });
+    }
+    let out = out.trim_end();
+    if out.is_empty() {
+        return None;
+    }
+    if out.len() <= max {
+        return Some(out.to_string());
+    }
+    let ell = '…'.len_utf8();
+    let mut end = max.saturating_sub(ell);
+    while !out.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(format!("{}…", out[..end].trim_end()))
+}
+
 impl MessagesError {
     /// What went wrong in a few words of this client's own, safe to show
     /// to whoever configured the provider: the kind and the HTTP status,
     /// never text from the answer (the base URL may be anyone's host).
     pub fn summary(&self) -> String {
-        let status = |s: &u16| {
-            if *s == 0 {
+        let status = |s: u16| {
+            if s == 0 {
                 String::new()
             } else {
                 format!(" (HTTP {s})")
@@ -810,15 +931,16 @@ impl MessagesError {
         };
         match self {
             MessagesError::BadBaseUrl => "the base URL is not one a key may be sent to".into(),
-            MessagesError::Auth { status: s, .. } => format!("the key was refused{}", status(s)),
+            MessagesError::Auth { answer, .. } => {
+                format!("the key was refused{}", status(answer.status))
+            }
             MessagesError::RateLimited { .. } => "rate limited (HTTP 429)".into(),
             MessagesError::Overloaded { .. } => "the provider is overloaded".into(),
             MessagesError::InvalidRequest { .. } => {
                 "the provider refused the request (HTTP 400)".into()
             }
-            MessagesError::Api {
-                status: s, kind, ..
-            } => {
+            MessagesError::Api { answer, .. } => {
+                let kind = &answer.kind;
                 let kind = if !kind.is_empty()
                     && kind.len() <= 40
                     && kind.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
@@ -827,10 +949,10 @@ impl MessagesError {
                 } else {
                     "provider error"
                 };
-                format!("{kind}{}", status(s))
+                format!("{kind}{}", status(answer.status))
             }
             MessagesError::Redirected { status: s } => {
-                format!("the base URL answered with a redirect{}", status(s))
+                format!("the base URL answered with a redirect{}", status(*s))
             }
             MessagesError::Network { .. } => "the provider could not be reached".into(),
             MessagesError::StreamCut { .. } => "the answer was cut off".into(),
@@ -841,6 +963,71 @@ impl MessagesError {
         }
     }
 
+    /// The error's class, as [`ErrorDetail::class`] names it.
+    #[must_use]
+    pub fn class(&self) -> &'static str {
+        match self {
+            MessagesError::BadBaseUrl => "bad_base_url",
+            MessagesError::Auth { .. } => "auth",
+            MessagesError::RateLimited { .. } => "rate_limited",
+            MessagesError::Overloaded { .. } => "overloaded",
+            MessagesError::InvalidRequest { .. } => "invalid_request",
+            MessagesError::Api { .. } => "api",
+            MessagesError::Redirected { .. } => "redirected",
+            MessagesError::Network { .. } => "network",
+            MessagesError::StreamCut { .. } => "stream_cut",
+            MessagesError::Protocol { .. } => "protocol",
+            MessagesError::UnknownEvent { .. } => "unknown_event",
+        }
+    }
+
+    /// The provider's answer, for an error the provider answered with.
+    #[must_use]
+    pub fn answer(&self) -> Option<&Answer> {
+        match self {
+            MessagesError::Auth { answer, .. }
+            | MessagesError::RateLimited { answer, .. }
+            | MessagesError::Overloaded { answer, .. }
+            | MessagesError::InvalidRequest { answer, .. }
+            | MessagesError::Api { answer, .. } => Some(answer),
+            _ => None,
+        }
+    }
+
+    /// The error as [`ErrorDetail`]: its class and what the provider
+    /// said, bounded ([`DETAIL_MESSAGE_BYTES`], [`DETAIL_FIELD_BYTES`]).
+    #[must_use]
+    pub fn detail(&self) -> ErrorDetail {
+        let field = |s: &str| plain_text(s, DETAIL_FIELD_BYTES);
+        let said = |s: &str| plain_text(s, DETAIL_MESSAGE_BYTES);
+        let mut d = ErrorDetail {
+            class: self.class(),
+            status: None,
+            kind: None,
+            message: None,
+            request_id: None,
+        };
+        match self {
+            MessagesError::Auth { answer, .. }
+            | MessagesError::RateLimited { answer, .. }
+            | MessagesError::Overloaded { answer, .. }
+            | MessagesError::InvalidRequest { answer, .. }
+            | MessagesError::Api { answer, .. } => {
+                d.status = (answer.status != 0).then_some(answer.status);
+                d.kind = field(&answer.kind);
+                d.message = answer.text.as_deref().and_then(said);
+                d.request_id = answer.request_id.as_deref().and_then(field);
+            }
+            MessagesError::Redirected { status } => d.status = (*status != 0).then_some(*status),
+            MessagesError::Network { message }
+            | MessagesError::StreamCut { message }
+            | MessagesError::Protocol { message } => d.message = said(message),
+            MessagesError::UnknownEvent { kind } => d.message = said(kind),
+            MessagesError::BadBaseUrl => {}
+        }
+        d
+    }
+
     /// Whether the same request may succeed when sent again. A retried
     /// stream starts over: its deltas arrive again from the first.
     pub fn retryable(&self) -> bool {
@@ -849,7 +1036,7 @@ impl MessagesError {
             | MessagesError::Overloaded { .. }
             | MessagesError::Network { .. }
             | MessagesError::StreamCut { .. } => true,
-            MessagesError::Api { status, kind, .. } => *status >= 500 || kind == "api_error",
+            MessagesError::Api { answer, .. } => answer.status >= 500 || answer.kind == "api_error",
             _ => false,
         }
     }
@@ -860,32 +1047,37 @@ impl MessagesError {
             return self;
         }
         let r = |m: String| m.replace(k, "[redacted]");
+        let ra = |a: Answer| Answer {
+            kind: r(a.kind),
+            request_id: a.request_id.map(r),
+            text: a.text.map(r),
+            ..a
+        };
         match self {
-            MessagesError::Auth { status, message } => MessagesError::Auth {
-                status,
+            MessagesError::Auth { message, answer } => MessagesError::Auth {
                 message: r(message),
+                answer: ra(answer),
             },
             MessagesError::RateLimited {
                 retry_after,
                 message,
+                answer,
             } => MessagesError::RateLimited {
                 retry_after,
                 message: r(message),
+                answer: ra(answer),
             },
-            MessagesError::Overloaded { message } => MessagesError::Overloaded {
+            MessagesError::Overloaded { message, answer } => MessagesError::Overloaded {
                 message: r(message),
+                answer: ra(answer),
             },
-            MessagesError::InvalidRequest { message } => MessagesError::InvalidRequest {
+            MessagesError::InvalidRequest { message, answer } => MessagesError::InvalidRequest {
                 message: r(message),
+                answer: ra(answer),
             },
-            MessagesError::Api {
-                status,
-                kind,
-                message,
-            } => MessagesError::Api {
-                status,
-                kind: r(kind),
+            MessagesError::Api { message, answer } => MessagesError::Api {
                 message: r(message),
+                answer: ra(answer),
             },
             MessagesError::Network { message } => MessagesError::Network {
                 message: r(message),
@@ -908,25 +1100,32 @@ impl std::fmt::Display for MessagesError {
             MessagesError::BadBaseUrl => {
                 f.write_str("the base URL must be https://, or http:// on a loopback host")
             }
-            MessagesError::Auth { status, message } => {
-                write!(f, "the provider refused the key (HTTP {status}): {message}")
+            MessagesError::Auth { message, answer } => {
+                write!(
+                    f,
+                    "the provider refused the key (HTTP {}): {message}",
+                    answer.status
+                )
             }
             MessagesError::RateLimited {
                 retry_after,
                 message,
+                ..
             } => match retry_after {
                 Some(d) => write!(f, "rate limited, retry after {}s: {message}", d.as_secs()),
                 None => write!(f, "rate limited: {message}"),
             },
-            MessagesError::Overloaded { message } => {
+            MessagesError::Overloaded { message, .. } => {
                 write!(f, "the provider is overloaded: {message}")
             }
-            MessagesError::InvalidRequest { message } => write!(f, "invalid request: {message}"),
-            MessagesError::Api {
-                status,
-                kind,
-                message,
-            } => write!(f, "provider error {kind} (HTTP {status}): {message}"),
+            MessagesError::InvalidRequest { message, .. } => {
+                write!(f, "invalid request: {message}")
+            }
+            MessagesError::Api { message, answer } => write!(
+                f,
+                "provider error {} (HTTP {}): {message}",
+                answer.kind, answer.status
+            ),
             MessagesError::Redirected { status: 0 } => f.write_str(
                 "the base URL answered with an opaque redirect; set the URL it leads to instead",
             ),
@@ -953,33 +1152,40 @@ impl std::fmt::Display for MessagesError {
 
 impl std::error::Error for MessagesError {}
 
-/// The error for a provider error of `kind` (`status` 0 mid-stream).
-fn classify(
-    status: u16,
-    kind: &str,
+/// The error for a provider error `answer` with `message`, by its status
+/// and type.
+pub(crate) fn classify(
+    answer: Answer,
     message: String,
     retry_after: Option<Duration>,
 ) -> MessagesError {
-    match (status, kind) {
+    match (answer.status, answer.kind.as_str()) {
         (401 | 403, _) | (_, "authentication_error" | "permission_error") => {
-            MessagesError::Auth { status, message }
+            MessagesError::Auth { message, answer }
         }
         (429, _) | (_, "rate_limit_error") => MessagesError::RateLimited {
             retry_after,
             message,
+            answer,
         },
-        (529, _) | (_, "overloaded_error") => MessagesError::Overloaded { message },
-        (_, "invalid_request_error") | (400, "") => MessagesError::InvalidRequest { message },
-        _ => MessagesError::Api {
-            status,
-            kind: kind.to_string(),
-            message,
-        },
+        (529, _) | (_, "overloaded_error") => MessagesError::Overloaded { message, answer },
+        (_, "invalid_request_error") | (400, "") => {
+            MessagesError::InvalidRequest { message, answer }
+        }
+        _ => MessagesError::Api { message, answer },
     }
 }
 
-/// The error for a non-2xx answer with `body`.
-pub fn http_error(status: u16, retry_after: Option<&str>, body: &str) -> MessagesError {
+/// The error for a non-2xx answer with `body` and the provider's
+/// `request_id` header (else the body's `request_id`): its message the error's `message`, else `the provider
+/// answered HTTP <status>`; its [`Answer::text`] the error's `message`,
+/// else what a body that is not JSON holds.
+pub fn http_error(
+    status: u16,
+    retry_after: Option<&str>,
+    request_id: Option<&str>,
+    body: &str,
+) -> MessagesError {
     if status == 0 || (300..400).contains(&status) {
         return MessagesError::Redirected { status };
     }
@@ -991,15 +1197,24 @@ pub fn http_error(status: u16, retry_after: Option<&str>, body: &str) -> Message
         &v
     };
     let kind = e["type"].as_str().unwrap_or("");
-    let message = e["message"]
-        .as_str()
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("the provider answered HTTP {status}"));
+    let said = e["message"].as_str().map(str::to_string);
+    let text = said.clone().or_else(|| {
+        v.is_null()
+            .then(|| plain_text(body, DETAIL_MESSAGE_BYTES))
+            .flatten()
+    });
+    let message = said.unwrap_or_else(|| format!("the provider answered HTTP {status}"));
     let retry_after = retry_after
         .and_then(|s| s.trim().parse::<f64>().ok())
         .filter(|s| s.is_finite() && *s >= 0.0)
         .map(Duration::from_secs_f64);
-    classify(status, kind, message, retry_after)
+    // The header, else the body's own `request_id` (the Messages API
+    // sends both).
+    let request_id = request_id
+        .map(str::to_string)
+        .or_else(|| v["request_id"].as_str().map(str::to_string));
+    let answer = Answer::new(status, kind, text).with_request_id(request_id);
+    classify(answer, message, retry_after)
 }
 
 // ---------------------------------------------------------------------------
@@ -1216,11 +1431,10 @@ impl Assembler {
             }
             "error" => {
                 let e = &v["error"];
-                let message = e["message"]
-                    .as_str()
-                    .unwrap_or("the provider reported an error")
-                    .to_string();
-                Err(classify(0, e["type"].as_str().unwrap_or(""), message, None))
+                let said = e["message"].as_str().map(str::to_string);
+                let answer = Answer::new(0, e["type"].as_str().unwrap_or(""), said.clone());
+                let message = said.unwrap_or_else(|| "the provider reported an error".into());
+                Err(classify(answer, message, None))
             }
             // `ping` and event types added later.
             _ => Ok(Vec::new()),
@@ -1555,6 +1769,7 @@ impl MessagesClient {
         Err(http_error(
             res.status,
             res.retry_after.as_deref(),
+            res.request_id.as_deref(),
             &String::from_utf8_lossy(&body),
         ))
     }

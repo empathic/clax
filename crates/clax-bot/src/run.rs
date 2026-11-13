@@ -72,6 +72,7 @@ use clax_store::credits::{
     RateSource, TOKEN_UNITS, Unit, parse_token_line, row_credits_milli, token_line, week_end,
     week_start,
 };
+use clax_store::provider_failures::NewFailure;
 use clax_store::secrets::{Kek, SecretSlot};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -472,6 +473,14 @@ pub fn refusal(
     Ok(None)
 }
 
+/// A failed call's `detail` (`ErrorDetail::to_json`) as its stop keeps
+/// it: with `key_source`, the key the call ran on, by which the run
+/// routes decide who is shown it.
+fn keyed(mut detail: Value, ks: KeySource) -> Value {
+    detail["key_source"] = json!(ks.as_str());
+    detail
+}
+
 /// A key a turn runs on, where it came from, and its slot when stored.
 pub type ChosenKey = (ApiKey, KeySource, Option<SecretSlot>);
 
@@ -690,6 +699,13 @@ fn with_breakpoint(mut messages: Vec<Message>) -> Vec<Message> {
 /// turn is taken: what the turn is charged is what the provider reports
 /// it used once the call is made.
 pub const IMAGE_INPUT_TOKENS: u64 = 3_000;
+
+/// The `tracing` target of the lines a run's life is logged in: one at
+/// `info` when it starts and when it ends, one at `warn` when it stops
+/// because its model call failed. A host's log keeps this target's
+/// `info` lines where it keeps only warnings of others (the Worker's
+/// console, `clax-worker`'s `log`).
+pub const RUNS_LOG: &str = "clax_bot::runs";
 
 /// Why a run whose model's context window is full gives up.
 const WINDOW_FULL: &str = "The conversation outgrew the model's context window.";
@@ -1360,8 +1376,72 @@ impl Tick<'_> {
         let s = self
             .store
             .begin_step_on(&self.run.id, self.driver, self.n, kind, turn_key)?;
+        if self.n == 1 && s.attempt == 1 {
+            tracing::info!(
+                target: RUNS_LOG,
+                run = %self.run.id,
+                kind = %self.surfaces.info.kind,
+                model = %self.run.model,
+                api = self.settings.api.as_str(),
+                "run started"
+            );
+        }
         self.emit(s.attempt, Event::StepStarted { kind });
         Ok(s)
+    }
+
+    /// Notes that the run stops for `reason` because its model call on a
+    /// `ks` key failed as `detail` says (`ErrorDetail::to_json`), `took`
+    /// after the call was sent (zero when not known: a refused overflow,
+    /// noted when the run ends on it). Logged at `warn`: the run, the
+    /// step, the run's kind, model and API, the base URL's host (never the
+    /// key), and the provider's status, type, message (bounded, as
+    /// `detail` holds it) and request ID. A call on the instance's key is
+    /// also kept in the provider failure log for admins
+    /// ([`Store::log_provider_failure`]), since the run's person is shown
+    /// none of it.
+    fn note_failed_call(&self, reason: &str, detail: &Value, took: Duration, ks: KeySource) {
+        let none = || "-".to_string();
+        let text = |k: &str| detail[k].as_str().map(str::to_string);
+        let origin = clax_core::config::key_host(&self.settings.base_url);
+        tracing::warn!(
+            target: RUNS_LOG,
+            run = %self.run.id,
+            step = self.n,
+            kind = %self.surfaces.info.kind,
+            model = %self.run.model,
+            api = self.settings.api.as_str(),
+            host = %origin.as_deref().unwrap_or("-"),
+            reason,
+            class = detail["class"].as_str().unwrap_or("api"),
+            status = detail["status"].as_u64().map_or_else(none, |s| s.to_string()),
+            provider_type = text("type").unwrap_or_else(none),
+            message = ?detail["message"].as_str().unwrap_or(""),
+            request_id = text("request_id").unwrap_or_else(none),
+            elapsed_ms = u64::try_from(took.as_millis()).unwrap_or(u64::MAX),
+            "run stopped: the model call failed"
+        );
+        if ks != KeySource::Instance {
+            return;
+        }
+        let kind = self.surfaces.info.kind.to_string();
+        let logged = self.store.log_provider_failure(&NewFailure {
+            person: &self.run.person,
+            run_id: Some(&self.run.id),
+            request: &kind,
+            model: Some(&self.run.model),
+            api: self.settings.api.as_str(),
+            host: origin.as_deref(),
+            key_source: ks.as_str(),
+            detail,
+        });
+        if let Err(e) = logged {
+            tracing::warn!(
+                target: RUNS_LOG,
+                run = %self.run.id,
+                "the provider failure log did not take the failure: {e}"
+            );
+        }
     }
 
     /// How long the run has been at work: since it was made, less the
@@ -1497,6 +1577,17 @@ impl Tick<'_> {
             );
         }
         if c.run.status.is_terminal() {
+            tracing::info!(
+                target: RUNS_LOG,
+                run = %self.run.id,
+                kind = %self.surfaces.info.kind,
+                model = %self.run.model,
+                status = c.run.status.as_str(),
+                reason = c.run.reason.as_deref().unwrap_or("-"),
+                steps = self.n,
+                credits_milli = c.run.credits_milli,
+                "run ended"
+            );
             self.emit(
                 attempt,
                 Event::RunEnd {
@@ -1780,16 +1871,38 @@ impl Tick<'_> {
             .await
     }
 
+    /// The key the turn that overflowed ran on: the last committed turn's
+    /// `key_source`, else `ks`.
+    fn overflowed_on(&self, ks: KeySource) -> KeySource {
+        self.steps
+            .iter()
+            .rev()
+            .find(|s| s.kind == StepKind::Turn)
+            .and_then(|s| s.payload.as_ref())
+            .and_then(|p| p["key_source"].as_str())
+            .and_then(KeySource::parse)
+            .unwrap_or(ks)
+    }
+
     /// Ends a run whose history after an overflow is not the shorter one
     /// the overflow's ask answered (`overflow` is the last turn's
-    /// `next.overflow`): as the overflow would have ended it had the
-    /// policy shown no less.
-    async fn overflow_ending(&self, overflow: &Value) -> Result<TickOutcome> {
+    /// `next.overflow`, and `ks` the key that turn ran on): as the
+    /// overflow would have ended it had the policy shown no less. A
+    /// refused overflow's stop keeps what the provider said
+    /// (`next.overflow.error_detail`, absent from a turn committed before
+    /// it was kept) and is noted as a refusal is ([`Tick::note_failed_call`]).
+    async fn overflow_ending(&self, overflow: &Value, ks: KeySource) -> Result<TickOutcome> {
         if overflow["path"] != OverflowPath::Refused.as_str() {
             return self.give_up("context_window", WINDOW_FULL).await;
         }
-        self.end(Ending::stopped(End::stopped("model_error")).with_error(overflow["error"].clone()))
-            .await
+        let mut ending =
+            Ending::stopped(End::stopped("model_error")).with_error(overflow["error"].clone());
+        if overflow["error_detail"].is_object() {
+            let detail = keyed(overflow["error_detail"].clone(), ks);
+            self.note_failed_call("model_error", &detail, Duration::ZERO, ks);
+            ending = ending.with_error_detail(detail);
+        }
+        self.end(ending).await
     }
 
     /// The `max_tokens` the person's credits pay for after the turn's
@@ -2043,14 +2156,14 @@ impl Tick<'_> {
                 if let Some(overflow) = after_overflow
                     && overflow["shown_sha256"] != record["sha256"]
                 {
-                    return self.overflow_ending(overflow).await;
+                    return self.overflow_ending(overflow, self.overflowed_on(ks)).await;
                 }
                 messages = m;
                 Some(record)
             }
             _ => {
                 if let Some(overflow) = after_overflow {
-                    return self.overflow_ending(overflow).await;
+                    return self.overflow_ending(overflow, self.overflowed_on(ks)).await;
                 }
                 None
             }
@@ -2314,6 +2427,9 @@ impl Tick<'_> {
                             self.overflowed(OverflowPath::Refused, sent_bytes, &sent, &[])
                     {
                         next["overflow"]["error"] = json!(e.to_string());
+                        // What the provider said, should the run end on it
+                        // ([`Tick::overflow_ending`]): never shown the model.
+                        next["overflow"]["error_detail"] = e.detail().to_json();
                         break Answer::TooLong(next);
                     }
                     let reason = match e {
@@ -2323,8 +2439,17 @@ impl Tick<'_> {
                         }
                         _ => "model_error",
                     };
+                    let detail = keyed(e.detail().to_json(), ks);
+                    self.note_failed_call(reason, &detail, called.elapsed(), ks);
+                    if let Some(slot) = &slot {
+                        let _ = self.store.note_secret_problem(slot, &detail);
+                    }
                     return self
-                        .end(Ending::stopped(End::stopped(reason)).with_error(json!(e.to_string())))
+                        .end(
+                            Ending::stopped(End::stopped(reason))
+                                .with_error(json!(e.to_string()))
+                                .with_error_detail(detail),
+                        )
                         .await;
                 }
             }

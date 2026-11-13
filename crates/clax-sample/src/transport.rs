@@ -27,6 +27,9 @@ pub(crate) type Body = Pin<Box<dyn Stream<Item = Result<Vec<u8>, String>>>>;
 pub(crate) struct Reply {
     pub status: u16,
     pub retry_after: Option<String>,
+    /// The provider's ID of the request: its `request-id` header, else
+    /// `x-request-id`, as it came.
+    pub request_id: Option<String>,
     pub body: Body,
 }
 
@@ -128,9 +131,16 @@ impl Transport {
             .get("retry-after")
             .and_then(|h| h.to_str().ok())
             .map(str::to_string);
+        let request_id = ["request-id", "x-request-id"].iter().find_map(|k| {
+            res.headers()
+                .get(*k)
+                .and_then(|h| h.to_str().ok())
+                .map(str::to_string)
+        });
         Ok(Reply {
             status: res.status().as_u16(),
             retry_after,
+            request_id,
             body: Box::pin(
                 res.bytes_stream()
                     .map(|c| c.map(|b| b.to_vec()).map_err(|e| e.to_string())),
@@ -183,6 +193,9 @@ impl Transport {
             .dyn_into()
             .map_err(js)?;
         let retry_after = res.headers().get("retry-after").ok().flatten();
+        let request_id = ["request-id", "x-request-id"]
+            .iter()
+            .find_map(|k| res.headers().get(k).ok().flatten());
         let body: Body = match res.body() {
             Some(raw) => Box::pin(
                 wasm_streams::ReadableStream::from_raw(raw.unchecked_into())
@@ -198,6 +211,7 @@ impl Transport {
         Ok(Reply {
             status: res.status(),
             retry_after,
+            request_id,
             body,
         })
     }

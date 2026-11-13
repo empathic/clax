@@ -11,7 +11,7 @@
 //! |---|---|---|---|
 //! | Finished | The summary (the kind's result, `{summary}`), with the pages the run read listed after it ([`sources_markdown`]), **when no thread was replied on since a script last changed the draft or published** ([`Tally::replied`]) **and the summary is not empty**. When it is not posted and the run read pages, the list alone | The summary on thread `i` at notice place `i` ([`StepCx::notice`]); a list that stands alone at `1 + i` | `posted`: whether the rule held, whatever came of the posts. `sources`: each page read, `{title, url}` |
 //! | Gave up | `I gave up: <reason> <what I did>` | `i` | `notice`: the text |
-//! | Stopped | The notice of [`notice`], by the stop's reason; **none for `cancelled` and `request_gone`** | `i` | `notice`: the text, or `null` for a stop that has none |
+//! | Stopped | The notice of [`notice`], by the stop's reason (a failed model call on the instance's key: [`INSTANCE_PROVIDER_LEAD`], never the provider's words); **none for `cancelled` and `request_gone`** | `i` | `notice`: the text, or `null` for a stop that has none |
 //! | Failed | `<lead> <what I did>` | `i` | `notice` |
 //!
 //! Each post is a reply planned by the host ([`BotHost::plan_reply`])
@@ -101,12 +101,27 @@ fn what_i_did(tally: &Tally) -> String {
     s
 }
 
+/// What a notice opens with for a run on the instance's key that stopped
+/// because its model call failed (`key_rejected`, `model_error`): Clax's
+/// own words, never the provider's nor what about the key failed, which
+/// the provider failure log keeps for admins.
+pub const INSTANCE_PROVIDER_LEAD: &str = "I stopped: I could not use this Clax's model \
+     provider. This is a problem with how this Clax is set up, not with your request, and it \
+     has been recorded for the people who run this Clax. Try again later.";
+
 /// The notice a run that ends as `end` says leaves on its threads,
 /// after what `tally` says it did; `None` for a run that finished (it
 /// posts its summary) and for a stop that tells its threads nothing: a
 /// cancel, and a request that is gone. `now` is when the notice is
 /// made, for a stop that does not say when the person's credits reset.
-pub(super) fn notice(end: &End, tally: &Tally, now: DateTime<Utc>) -> Option<String> {
+/// `instance`: the run ran on the instance's key, so a failed model
+/// call's stop says [`INSTANCE_PROVIDER_LEAD`].
+pub(super) fn notice(
+    end: &End,
+    tally: &Tally,
+    now: DateTime<Utc>,
+    instance: bool,
+) -> Option<String> {
     let did = what_i_did(tally);
     Some(match end {
         End::Finished => return None,
@@ -129,6 +144,9 @@ pub(super) fn notice(end: &End, tally: &Tally, now: DateTime<Utc>) -> Option<Str
                     "I stopped before finishing: you have used this week's ClaxBot credits. {did} \
                      Your credits reset {reset}."
                 )
+            }
+            ("key_rejected" | "model_error", _) if instance => {
+                format!("{INSTANCE_PROVIDER_LEAD} {did}")
             }
             (reason, _) => format!("{} {did}", lead(reason)),
         },
@@ -182,7 +200,8 @@ impl ClaxProvider {
         let tally = Tally::of(cx.history);
         let mut fields = Fields::new();
         if *end != End::Finished {
-            let notice = notice(end, &tally, self.clock.now());
+            let instance = run.key_source == clax_store::credits::KeySource::Instance;
+            let notice = notice(end, &tally, self.clock.now(), instance);
             if let Some(text) = &notice {
                 self.post(&cx, &run, 0, text).await;
             }
@@ -286,10 +305,10 @@ mod tests {
     #[test]
     fn a_stop_has_the_notice_of_its_reason_and_two_reasons_have_none() {
         let none = Tally::default();
-        let stopped = |reason: &str| notice(&End::stopped(reason), &none, at());
+        let stopped = |reason: &str| notice(&End::stopped(reason), &none, at(), false);
         assert_eq!(stopped("cancelled"), None);
         assert_eq!(stopped("request_gone"), None);
-        assert_eq!(notice(&End::Finished, &none, at()), None);
+        assert_eq!(notice(&End::Finished, &none, at(), false), None);
         let did = "I had not run any scripts yet.";
         for (reason, opens) in [
             ("no_flag", "I stopped: ClaxBot is not turned on for you."),
@@ -332,7 +351,7 @@ mod tests {
         ] {
             let failed = End::Failed { code: code.into() };
             assert_eq!(
-                notice(&failed, &none, at()),
+                notice(&failed, &none, at(), false),
                 Some(format!("{opens} {did}")),
                 "{code}"
             );
@@ -342,8 +361,24 @@ mod tests {
             reason: "The page is gone.".into(),
         };
         assert_eq!(
-            notice(&gave_up, &none, at()),
+            notice(&gave_up, &none, at(), false),
             Some(format!("I gave up: The page is gone. {did}"))
+        );
+    }
+
+    #[test]
+    fn a_failed_model_call_on_the_instances_key_is_told_in_claxs_words_alone() {
+        let none = Tally::default();
+        let did = "I had not run any scripts yet.";
+        for reason in ["key_rejected", "model_error"] {
+            let told = notice(&End::stopped(reason), &none, at(), true).unwrap();
+            assert_eq!(told, format!("{INSTANCE_PROVIDER_LEAD} {did}"), "{reason}");
+            assert!(!told.contains("key"), "{told}");
+        }
+        // Other stops read as they do on any key.
+        assert_eq!(
+            notice(&End::stopped("model_timeout"), &none, at(), true),
+            notice(&End::stopped("model_timeout"), &none, at(), false)
         );
     }
 
@@ -356,7 +391,7 @@ mod tests {
             credits_reset: None,
         };
         assert_eq!(
-            notice(&capped, &none, at()).unwrap(),
+            notice(&capped, &none, at(), false).unwrap(),
             "I stopped before finishing: this run reached its limit of 40 steps. I had not run \
              any scripts yet."
         );
@@ -369,14 +404,14 @@ mod tests {
             .unwrap()
             .to_utc();
         assert_eq!(
-            notice(&spent(Some(told)), &none, at()).unwrap(),
+            notice(&spent(Some(told)), &none, at(), false).unwrap(),
             "I stopped before finishing: you have used this week's ClaxBot credits. I had not \
              run any scripts yet. Your credits reset on Monday 7 December 2026 at 00:00 UTC."
         );
         // Not told when, the surface works it out from its own clock:
         // the Monday after 11 November 2026, a Wednesday.
         assert_eq!(
-            notice(&spent(None), &none, at()).unwrap(),
+            notice(&spent(None), &none, at(), false).unwrap(),
             "I stopped before finishing: you have used this week's ClaxBot credits. I had not \
              run any scripts yet. Your credits reset on Monday 16 November 2026 at 00:00 UTC."
         );

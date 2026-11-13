@@ -129,6 +129,16 @@ impl Ending {
         self.core.insert("error".into(), error);
         self
     }
+
+    /// This ending, its step's `error_detail` what a failed model call's
+    /// provider said (`clax_sample::messages::ErrorDetail::to_json`):
+    /// shown to admins and, when the run ran on their own key, to the
+    /// run's person; never to a reader of its artifact, a host, or the
+    /// model.
+    pub(crate) fn with_error_detail(mut self, detail: Value) -> Ending {
+        self.core.insert("error_detail".into(), detail);
+        self
+    }
 }
 
 /// The kind's result for the binding `surface` is of: `result` for the

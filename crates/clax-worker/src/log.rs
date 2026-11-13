@@ -1,6 +1,7 @@
-//! The Worker's log: `tracing`'s events at `WARN` and above, one line each
-//! on the console, which Cloudflare keeps as the Worker's log (`wrangler
-//! tail`, the dashboard's Logs). Without a subscriber every `tracing` event
+//! The Worker's log: `tracing`'s events at `WARN` and above, and the
+//! `INFO` lines of a ClaxBot run's life ([`clax_bot::run::RUNS_LOG`]: its
+//! start and its end), one line each on the console, which Cloudflare
+//! keeps as the Worker's log (`wrangler tail`, the dashboard's Logs). Without a subscriber every `tracing` event
 //! is dropped, among them the reason behind an `internal` answer
 //! (`clax_http::error`'s `io`). Spans are not kept: an event's line is its
 //! level, its target, its message and its fields.
@@ -25,8 +26,10 @@ fn emit(level: Level, line: &str) {
     #[cfg(target_arch = "wasm32")]
     if level == Level::ERROR {
         worker::console_error!("{line}");
-    } else {
+    } else if level == Level::WARN {
         worker::console_warn!("{line}");
+    } else {
+        worker::console_log!("{line}");
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -35,17 +38,18 @@ fn emit(level: Level, line: &str) {
     }
 }
 
-/// A subscriber that hands each event at `WARN` and above, as one line, to
-/// its sink.
+/// A subscriber that hands each event at `WARN` and above, and each at
+/// `INFO` of [`clax_bot::run::RUNS_LOG`], as one line, to its sink.
 struct Console<F>(F);
 
 impl<F: Fn(Level, &str) + Send + Sync + 'static> Subscriber for Console<F> {
     fn enabled(&self, m: &Metadata<'_>) -> bool {
         *m.level() <= Level::WARN
+            || (*m.level() == Level::INFO && m.target() == clax_bot::run::RUNS_LOG)
     }
 
     fn max_level_hint(&self) -> Option<LevelFilter> {
-        Some(LevelFilter::WARN)
+        Some(LevelFilter::INFO)
     }
 
     fn new_span(&self, _: &Attributes<'_>) -> Id {
@@ -102,7 +106,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     #[test]
-    fn warnings_and_errors_become_one_line_each_and_the_rest_is_dropped() {
+    fn warnings_errors_and_a_runs_life_become_one_line_each_and_the_rest_is_dropped() {
         let lines = Arc::new(Mutex::new(Vec::new()));
         let sink = lines.clone();
         let console = Console(move |level: Level, line: &str| {
@@ -114,6 +118,8 @@ mod tests {
             tracing::warn!(artifact = "p7j7pykg6zvg", "read interrupted");
             tracing::info!("not kept");
             tracing::debug!("nor this");
+            tracing::info!(target: clax_bot::run::RUNS_LOG, run = "r1", "run ended");
+            tracing::debug!(target: clax_bot::run::RUNS_LOG, "not this either");
         });
         let target = module_path!();
         assert_eq!(
@@ -126,6 +132,10 @@ mod tests {
                 (
                     Level::WARN,
                     format!("WARN {target}: read interrupted artifact=p7j7pykg6zvg")
+                ),
+                (
+                    Level::INFO,
+                    "INFO clax_bot::runs: run ended run=r1".to_string()
                 ),
             ]
         );

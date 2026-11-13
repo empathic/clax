@@ -808,7 +808,8 @@ pub async fn list(
     let v = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            let admin = !hosted && role_of(st, &caller)?.is_admin();
+            let sees_failures = sees_instance_failures(st, &caller)?;
+            let admin = !hosted && sees_failures;
             if !admin && !reads_artifact(st, hosted, &caller, id.as_str(), live)? {
                 return Err(CoreError::NotFound);
             }
@@ -817,6 +818,9 @@ pub async fn list(
                 .iter()
                 .map(|r| {
                     let mut v = run_view(st, r)?;
+                    if !sees_failures {
+                        run_without_instance_failure(&mut v, r.key_source == KeySource::Instance);
+                    }
                     // A reader of the artifact sees a run a host's
                     // surface is bound into as `get` shows it them; who
                     // reads it is asked only of such a run.
@@ -872,6 +876,9 @@ pub async fn get(
                     }
                 }
                 v["steps"] = json!(steps);
+            }
+            if !sees_instance_failures(st, &caller)? {
+                run_without_instance_failure(&mut v, run.key_source == KeySource::Instance);
             }
             let mut rec = clax_http::bot::view(st, AuditKind::ViewRun).with("run", run.id.as_str());
             // On a hosted daemon the view names its run's artifact, so only
@@ -1347,6 +1354,9 @@ pub async fn cancel(
             if access == RunAccess::Overseer {
                 for_overseer(&mut v);
             }
+            if !sees_instance_failures(st, &caller)? {
+                run_without_instance_failure(&mut v, run.key_source == KeySource::Instance);
+            }
             Ok(v)
         })
         .await?;
@@ -1477,7 +1487,13 @@ fn credits_by_step(st: &Store, run: &str) -> clax_core::Result<BTreeMap<i64, i64
 /// started_at, ended_at, credits_milli}` and, once committed, what its kind
 /// did: a turn's narration (`text`), model, tokens and key; a script's
 /// title, code, calls, logs, value, error and CPU time; a finish's
-/// summary; a give-up's or a stop's reason.
+/// summary; a give-up's or a stop's reason and, for one a failed model
+/// call ended, `error_detail`: what the provider answered (`{class, status,
+/// type, message, request_id}`, `clax_sample`'s `ErrorDetail::to_json`,
+/// plain text, bounded, never the key; with `key_source`, the key the call
+/// ran on), absent for a step stored without it. Readers of the artifact
+/// never see it ([`for_reader`]), nor does anyone but an admin of a call
+/// on the instance's key ([`without_instance_failure`]).
 pub fn step_view(s: &clax_store::bot_runs::Step, credits_milli: i64) -> Value {
     use clax_store::bot_runs::StepKind;
     let mut v = json!({
@@ -1552,6 +1568,7 @@ pub fn step_view(s: &clax_store::bot_runs::Step, credits_milli: i64) -> Value {
                 p["reason"].clone()
             };
             set("reason", reason);
+            set("error_detail", p["error_detail"].clone());
         }
     }
     v
@@ -1573,12 +1590,86 @@ pub fn steps_view(
         .collect())
 }
 
+/// Whether `caller` is shown what the provider said of `run`'s failed
+/// model calls on the instance's key: an admin is (the provider failure
+/// log holds the same, `GET /api/admin/provider/failures`); no one else
+/// is, the run's own person included. A failure on the person's own key
+/// is shown them, and to whoever else sees the run's steps as today.
+///
+/// # Errors
+/// The store's.
+pub fn sees_instance_failures(st: &Store, caller: &Caller) -> clax_core::Result<bool> {
+    Ok(role_of(st, caller)?.is_admin())
+}
+
+/// The stop reasons of a failed model call, which say what about the
+/// provider or the key failed.
+const PROVIDER_STOPS: [&str; 2] = ["key_rejected", "model_error"];
+
+/// Step view `step` ([`step_view`]) as one who does not see the
+/// instance's failures ([`sees_instance_failures`]) is shown it, of a run
+/// on the instance's key (`on_instance`) or whose failed call was on it
+/// (its `error_detail.key_source`): a stop for a failed model call
+/// without `error_detail`, its `reason` `model_error` (a stored
+/// `key_rejected` included: the stored code is kept), and with
+/// `instance_problem: {busy}`, whether the provider was limiting or
+/// overloaded, which Clax tells them in its own words. Whether it was
+/// such a stop.
+pub fn without_instance_failure(step: &mut Value, on_instance: bool) -> bool {
+    let stop = step["kind"] == "stopped"
+        && step["reason"]
+            .as_str()
+            .is_some_and(|r| PROVIDER_STOPS.contains(&r));
+    let instance = on_instance || step["error_detail"]["key_source"] == "instance";
+    if !stop || !instance {
+        return false;
+    }
+    let busy = matches!(
+        step["error_detail"]["class"].as_str(),
+        Some("rate_limited" | "overloaded")
+    );
+    if let Some(o) = step.as_object_mut() {
+        o.remove("error_detail");
+        o.insert("reason".into(), json!("model_error"));
+        o.insert("instance_problem".into(), json!({"busy": busy}));
+    }
+    true
+}
+
+/// Run view `run` ([`run_view`]) as [`without_instance_failure`] says,
+/// with its `steps` when it has them: its `reason` `model_error` for a
+/// stored `key_rejected`, when it ran on the instance's key or a step's
+/// failed call did.
+pub fn run_without_instance_failure(run: &mut Value, on_instance: bool) {
+    let mut hid = false;
+    if let Some(Value::Array(steps)) = run.get_mut("steps") {
+        for s in steps {
+            hid |= without_instance_failure(s, on_instance);
+        }
+    }
+    if (on_instance || hid) && run["reason"] == "key_rejected" {
+        run["reason"] = json!("model_error");
+    }
+}
+
+/// Event `data` of `event` ([`panel_event`]) as [`without_instance_failure`]
+/// says.
+fn event_without_instance_failure(mut data: Value, on_instance: bool) -> Value {
+    let hid =
+        data.get("step").is_some() && without_instance_failure(&mut data["step"], on_instance);
+    if data.get("run").is_some() {
+        run_without_instance_failure(&mut data["run"], on_instance || hid);
+    }
+    data
+}
+
 /// What of a step someone who only reads the run's artifact sees (neither
 /// the person it acts for nor an admin): its place, kind, state, times,
 /// credits, a script's title and its calls' ops and outcomes, a finish's
 /// summary or an end's reason; never what was read with the acting
-/// person's rights: narration, code, values, logs, errors, a call's target
-/// or its web query or URL (`web`). A finish's `sources` stay: they are
+/// person's rights: narration, code, values, logs, errors, what a provider
+/// answered a failed model call (`error_detail`), a call's target or its
+/// web query or URL (`web`). A finish's `sources` stay: they are
 /// part of the reply ClaxBot posts, which readers of the artifact see.
 pub fn for_reader(step: &mut Value) {
     if let Some(o) = step.as_object_mut() {
@@ -1588,6 +1679,7 @@ pub fn for_reader(step: &mut Value) {
             "value",
             "logs",
             "error",
+            "error_detail",
             "input_tokens",
             "cached_tokens",
             "output_tokens",
@@ -1665,7 +1757,7 @@ pub fn panel_event(
                         v["status"] = json!("running");
                         v["ended_at"] = Value::Null;
                         if let Some(o) = v.as_object_mut() {
-                            for k in ["text", "calls", "logs", "value", "error", "summary", "sources", "reason"] {
+                            for k in ["text", "calls", "logs", "value", "error", "error_detail", "instance_problem", "summary", "sources", "reason"] {
                                 o.remove(k);
                             }
                         }
@@ -1743,7 +1835,7 @@ pub async fn events(
         .and_then(clax_bot::EventId::parse);
     let (hosted, live_ids, bot) = (s.hosted.is_some(), s.live_ids.clone(), s.bot.clone());
     let (r, c) = (rid.clone(), caller.clone());
-    let (access, bare, sub) = s
+    let (access, bare, hide, sub) = s
         .store_call(move |st| {
             let run = st.run(&r)?.ok_or(CoreError::NotFound)?;
             let live = live_ids.contains(&run.artifact_id);
@@ -1762,7 +1854,16 @@ pub async fn events(
                 rec.ids.artifact = run.artifact().map(str::to_string);
             }
             record_view(st, &bot, &who, &c, &run.id, rec)?;
-            Ok((access, bare, bot.events.subscribe(st, &run.id, after)?))
+            // Who is not shown the instance's failures: whether the run is
+            // on its key.
+            let hide =
+                (!sees_instance_failures(st, &c)?).then_some(run.key_source == KeySource::Instance);
+            Ok((
+                access,
+                bare,
+                hide,
+                bot.events.subscribe(st, &run.id, after)?,
+            ))
         })
         .await?;
     struct Feed {
@@ -1774,6 +1875,10 @@ pub async fn events(
         /// A reader of a run a host's surface is bound into, who sees
         /// its steps bare ([`super::bot_joins::for_reader_of_hosts`]).
         bare: bool,
+        /// For one not shown the instance's failures
+        /// ([`event_without_instance_failure`]): whether the run is on the
+        /// instance's key.
+        hide: Option<bool>,
         checked: clax_rt::time::Instant,
         done: bool,
     }
@@ -1802,6 +1907,7 @@ pub async fn events(
         caller,
         reader: access.reads_as_reader(),
         bare,
+        hide,
         checked: clax_rt::time::Instant::now(),
         done: false,
     };
@@ -1843,6 +1949,12 @@ pub async fn events(
                     .await
                     .ok()
                     .flatten();
+            let data = match (data, f.hide) {
+                (Some(d), Some(on_instance)) => {
+                    Some(event_without_instance_failure(d, on_instance))
+                }
+                (d, _) => d,
+            };
             let data = match data {
                 Some(d) if f.reader => event_for_reader(next.event, d),
                 d => d,
@@ -1878,7 +1990,10 @@ pub async fn events(
 
 #[cfg(test)]
 mod tests {
-    use super::{event_for_reader, for_reader, panel_event, quartiles, step_view};
+    use super::{
+        event_for_reader, event_without_instance_failure, for_reader, panel_event, quartiles,
+        run_without_instance_failure, step_view, without_instance_failure,
+    };
     use serde_json::{Value, json};
 
     /// A web call as the run loop records it in a step's `calls` and on a
@@ -1953,6 +2068,115 @@ mod tests {
         assert!(v.get("sources").is_none(), "{v}");
         let v = step_view(&finish(json!({"summary": "Done."})), 0);
         assert!(v.get("sources").is_none(), "{v}");
+    }
+
+    #[test]
+    fn a_stopped_steps_error_detail_reaches_the_step_view_and_never_a_reader() {
+        let stopped = |payload: Value| clax_store::bot_runs::Step {
+            run_id: "r1".into(),
+            n: 2,
+            kind: clax_store::bot_runs::StepKind::Stopped,
+            started_at: "2026-11-03T10:00:00Z".into(),
+            attempt: 1,
+            committed_at: Some("2026-11-03T10:00:01Z".into()),
+            payload: Some(payload),
+            observed: Vec::new(),
+            failures: 0,
+        };
+        let detail = json!({"class": "invalid_request", "status": 400,
+                            "type": "invalid_request_error", "message": "max_tokens: too large",
+                            "request_id": "req_011"});
+        let mut v = step_view(
+            &stopped(
+                json!({"reason": "model_error", "error": "the provider refused the request (HTTP 400)",
+                            "error_detail": detail}),
+            ),
+            0,
+        );
+        assert_eq!(v["reason"], "model_error", "{v}");
+        assert_eq!(v["error_detail"], detail, "{v}");
+        let mut event = json!({"step": v.clone()});
+        for_reader(&mut v);
+        assert!(v.get("error_detail").is_none(), "{v}");
+        assert_eq!(v["reason"], "model_error");
+        let read = event_for_reader("step_done", std::mem::take(&mut event)).unwrap();
+        assert!(read["step"].get("error_detail").is_none(), "{read}");
+
+        // A step stored before `error_detail` was kept reads as it did.
+        let old = step_view(
+            &stopped(json!({"reason": "model_error", "error": "invalid request: bad request"})),
+            0,
+        );
+        assert_eq!(
+            old,
+            json!({"n": 2, "kind": "stopped", "status": "done",
+                   "started_at": "2026-11-03T10:00:00Z", "ended_at": "2026-11-03T10:00:01Z",
+                   "credits_milli": 0, "reason": "model_error"})
+        );
+    }
+
+    #[test]
+    fn an_instance_keys_failure_reads_in_claxs_words_to_one_not_shown_it() {
+        let stop = |reason: &str, detail: Value| {
+            let mut v = json!({"n": 2, "kind": "stopped", "status": "done", "reason": reason});
+            if !detail.is_null() {
+                v["error_detail"] = detail;
+            }
+            v
+        };
+        let said = json!({"class": "auth", "status": 401, "type": "authentication_error",
+                          "message": "zq7 revoked", "request_id": "req_zq7",
+                          "key_source": "instance"});
+        // A run on the instance's key: no detail, `model_error`, a problem.
+        let mut run = json!({"reason": "key_rejected", "steps": [
+            {"n": 1, "kind": "turn"}, stop("key_rejected", said.clone())]});
+        run_without_instance_failure(&mut run, true);
+        assert_eq!(
+            run,
+            json!({"reason": "model_error", "steps": [{"n": 1, "kind": "turn"},
+                   {"n": 2, "kind": "stopped", "status": "done", "reason": "model_error",
+                    "instance_problem": {"busy": false}}]})
+        );
+        for k in ["zq7", "401", "authentication_error", "key_rejected"] {
+            assert!(!run.to_string().contains(k), "{k}: {run}");
+        }
+        // A stop stored before its detail was kept reads the same.
+        let mut old = stop("model_error", Value::Null);
+        assert!(without_instance_failure(&mut old, true));
+        assert_eq!(old["instance_problem"], json!({"busy": false}));
+        // A limiting or overloaded provider is said to be busy.
+        let mut busy = stop(
+            "model_error",
+            json!({"class": "overloaded", "key_source": "instance"}),
+        );
+        assert!(without_instance_failure(&mut busy, true));
+        assert_eq!(busy["instance_problem"], json!({"busy": true}));
+        // A run recorded on an own key whose call ran on the instance's.
+        let mut switched = stop("key_rejected", said);
+        assert!(without_instance_failure(&mut switched, false));
+        assert!(switched.get("error_detail").is_none());
+        // An own key's failure, and any other stop, are left as they are.
+        let own = stop(
+            "key_rejected",
+            json!({"class": "auth", "key_source": "own"}),
+        );
+        let mut kept = own.clone();
+        assert!(!without_instance_failure(&mut kept, false));
+        assert_eq!(kept, own);
+        let mut capped = stop("run_cap", Value::Null);
+        assert!(!without_instance_failure(&mut capped, true));
+        assert_eq!(capped, stop("run_cap", Value::Null));
+        let mut own_run = json!({"reason": "key_rejected"});
+        run_without_instance_failure(&mut own_run, false);
+        assert_eq!(own_run["reason"], "key_rejected");
+        // An event's step and run alike.
+        let ev = event_without_instance_failure(
+            json!({"step": stop("key_rejected", json!({"class": "auth", "key_source": "instance"})),
+                   "run": {"reason": "key_rejected"}}),
+            false,
+        );
+        assert_eq!(ev["run"]["reason"], "model_error", "{ev}");
+        assert!(ev["step"].get("error_detail").is_none(), "{ev}");
     }
 
     #[test]

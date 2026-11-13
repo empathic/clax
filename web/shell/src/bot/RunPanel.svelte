@@ -7,7 +7,13 @@
   // went and how long it took, and its output), collapsed except the live
   // one and any that failed; the credits the run has spent and the week's
   // meter; Stop while it runs; a link to its events in the audit log; and,
-  // once it stopped with an unpublished draft, Open the draft. Other runs of
+  // once it stopped with an unpublished draft, Open the draft. A step that
+  // stopped on a failed model call says how it failed: the provider's
+  // answer to admins, and to the run's own person on their own key, sent
+  // to check it under Settings → Your ClaxBot; on the instance's key, anyone but an admin gets
+  // Clax's own message instead (`instance_problem`: nothing the provider
+  // said, and the run's ID to quote to an admin), and the header says
+  // ClaxBot could not use this Clax's model provider. Other runs of
   // the artifact are a choice away. Its head names the threads the run
   // answers (each one's first line, which shows it in the view), and a
   // polite live line says each step as it finishes. Escape or Close closes
@@ -19,6 +25,8 @@
   import { RunFeed } from "./run-feed.svelte";
   import { botView } from "./send.svelte";
   import Meter from "./Meter.svelte";
+  import ModelError from "./ModelError.svelte";
+  import { isAdmin, myRole } from "./me";
 
   type Hear = (ev: RunEvent, r: BotRun) => void;
   let { aid, runs, quotes = () => [], onThread, onStep, mine = () => true, feedFor = (id: string, h: Hear) => new RunFeed(id, undefined, h) }: {
@@ -73,6 +81,10 @@
     return () => clearInterval(t);
   });
   const week = $derived(botView.me?.enabled ? meter(botView.me.week) : null);
+  // Whether the viewer is an admin, who is sent to Settings › Model provider when a
+  // model call on the instance's key failed.
+  let admin = $state(false);
+  $effect(() => { const me = botView.me; let gone = false; void myRole(me).then(r => { if (!gone) admin = isAdmin(r); }, () => {}); return () => { gone = true; }; });
   const choices = $derived([...new Set([...(botView.run ? [botView.run] : []), ...botView.started, ...runs.map(r => r.id)])]);
   const label = (id: string) => { const r = runs.find(x => x.id === id); return r ? `${new Date(r.started_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })} · ${runStatus(r)}` : "This run"; };
   const what = $derived(!run ? "" : run.request === "brief" ? "Building from the brief" : run.thread_ids.length === 1 ? "Answering one thread" : `Answering ${run.thread_ids.length} threads`);
@@ -144,7 +156,8 @@
           {:else if s.kind === "give_up"}
             <p class="who">Gave up</p>{#if s.reason}<p class="say">{s.reason}</p>{/if}
           {:else}
-            <p class="who">Stopped</p>{#if s.reason}<p class="say">{s.reason}</p>{/if}
+            <!-- The header says why in words; a stop code is never shown as it is. -->
+            <p class="who">Stopped</p>{#if s.instance_problem}<ModelError problem={s.instance_problem} run={run?.id ?? ""} />{:else if s.error_detail}<ModelError detail={s.error_detail} {admin} keySource={run?.key_source} />{/if}
           {/if}
         </li>
       {:else}
@@ -211,6 +224,8 @@
     .runp .calls .ce { flex-basis: 100%; color: var(--danger); }
     .runp details .err { margin: 0 10px 8px; }
     .runp .err { margin: 0; color: var(--danger); font-size: 12.5px; }
+    .runp .merr { font-size: 13px; }
+    .runp .merr-next a { font-weight: 600; }
     .runp .draft { margin: 0; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--accent-tint); }
     .runp .draft a, .runp footer a { color: var(--accent-ink); font-weight: 600; text-decoration: underline; }
     .runp footer { margin-top: auto; padding-top: 8px; border-top: 1px solid var(--border); display: grid; gap: 6px; }

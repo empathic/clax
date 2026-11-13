@@ -3026,6 +3026,7 @@ impl Store {
             total.surface_defs += pass.surface_defs;
             total.surface_prompts += pass.surface_prompts;
             total.blobs += pass.blobs;
+            total.provider_failures += pass.provider_failures;
             total.more = pass.more;
             if !pass.more || ran >= passes || until.is_some_and(|u| self.now_utc() >= u) {
                 return Ok((total, ran));
@@ -3099,6 +3100,16 @@ impl Store {
         pruned.surface_defs = surfaces.defs;
         pruned.surface_prompts = surfaces.prompts;
         pruned.more |= surfaces.more;
+        // The provider failure log's entries past their age, as many as one
+        // transaction of runs' rows may delete.
+        pruned.provider_failures = self.with_tx(|tx| {
+            crate::provider_failures::prune_aged_in(
+                tx,
+                &crate::provider_failures::aged_cut(now),
+                PRUNE_ROWS_PER_TX,
+            )
+        })?;
+        pruned.more |= pruned.provider_failures == PRUNE_ROWS_PER_TX;
         pruned.blobs = self.release_blobs(released)?;
         Ok(pruned)
     }
@@ -3281,6 +3292,9 @@ pub struct Pruned {
     pub contents: usize,
     /// Blobs of content that no item names any more.
     pub blobs: usize,
+    /// Entries of the provider failure log past their age
+    /// ([`crate::provider_failures::FAILURE_KEEP`]).
+    pub provider_failures: usize,
     /// The pass stopped at its bounds with rows still due: the next pass
     /// goes on where it stopped ([`Store::prune_ended_runs`]).
     pub more: bool,
