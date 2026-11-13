@@ -201,9 +201,10 @@
         {#if x.sub}<p class="tl-sub">{x.sub}</p>{/if}
       </div>
     {:else if whole(e.i, d)}
-      <h3 class="tl-day">{#if e.i}<button type="button" class="tl-fold" aria-expanded="true" onclick={() => (unfolded = unfolded.filter(x => x !== d.date))}>{d.label}</button>{:else}{d.label}{/if}</h3>
+      <!-- Days are headed at the level of the thread list's sections (h2). -->
+      <h2 class="tl-day">{#if e.i}<button type="button" class="tl-fold" aria-expanded="true" onclick={() => (unfolded = unfolded.filter(x => x !== d.date))}>{d.label}</button>{:else}{d.label}{/if}</h2>
     {:else}
-      <h3 class="tl-day"><button type="button" class="tl-fold" data-band={`day:${d.date}`} aria-expanded="false" onclick={() => (unfolded = [...unfolded, d.date])}>{daySummary(d)}</button></h3>
+      <h2 class="tl-day"><button type="button" class="tl-fold" data-band={`day:${d.date}`} aria-expanded="false" onclick={() => (unfolded = [...unfolded, d.date])}>{daySummary(d)}</button></h2>
     {/if}
   {/each}
   {#if !p.threads.length}{@render p.empty?.()}{/if}

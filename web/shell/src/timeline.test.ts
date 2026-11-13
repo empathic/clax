@@ -101,6 +101,15 @@ describe("Sidebar views", () => {
     view.unmount();
   });
 
+  it("heads each day at the level of the thread list's sections, so the outline skips none", async () => {
+    const { view, root, props } = setup();
+    view.update({ ...props, versions: [version(1, at(12, 9)), ...props.versions.slice(1)] });
+    await loaded(root);
+    const days = Array.from(root.querySelectorAll(".tl-day"));
+    expect(days.map(d => [d.tagName, d.textContent])).toEqual([["H2", "Today"], ["H2", "Yesterday · 1 version"]]);
+    view.unmount();
+  });
+
   it("opens a row into the thread's card, and folds it again", async () => {
     const { view, root, row, card, b } = setup();
     await loaded(root);
