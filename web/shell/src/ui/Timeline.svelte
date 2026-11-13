@@ -75,9 +75,18 @@
   // keeps it when it moves: moving an element can take focus from it to
   // nowhere, and it is given back. `held` is what focus is in inside a
   // row; it is let go once focus has gone elsewhere (to another element,
-  // or to nowhere for longer than the move). A moved card holding focus is
-  // scrolled into view.
+  // or to nowhere for longer than the move). A moved row is scrolled into
+  // view when it held focus, or when it was open and in view before the
+  // move (`inView`, kept by an observer on each open row), so a card being
+  // read stays in sight and the list is never pulled to one that was not.
   let held: HTMLElement | null = null;
+  const inView = new Set<string>();
+  const watch = (id: string) => (el: HTMLElement) => {
+    if (typeof IntersectionObserver !== "function") return;
+    const io = new IntersectionObserver(([e]) => { if (e.isIntersecting) inView.add(id); else inView.delete(id); });
+    io.observe(el);
+    return () => { inView.delete(id); io.disconnect(); };
+  };
   const focusin = (e: FocusEvent) => { held = e.target instanceof HTMLElement && e.target.closest(".tl-thread") ? e.target : null; };
   const focusout = (e: FocusEvent) => {
     const t = e.target;
@@ -91,13 +100,17 @@
     for (const x of entries) if (x.kind === "row") now.set(x.id, line); else line = x.key;
     const was = under;
     under = now;
+    const moved = (id: string) => was.has(id) && now.has(id) && was.get(id) !== now.get(id);
+    const box = (id: string) => [...(list?.querySelectorAll<HTMLElement>(".tl-row") ?? [])].find(r => r.dataset.row === id)?.parentElement;
     const el = held;
-    if (!el?.isConnected) return;
-    const a = document.activeElement;
-    if (a !== el && (!a || a === document.body)) el.focus({ preventScroll: true });
-    const card = el.closest<HTMLElement>(".thread-card");
-    const id = card?.dataset.thread;
-    if (document.activeElement === el && id && was.has(id) && was.get(id) !== now.get(id)) card.scrollIntoView?.({ block: "nearest" });
+    let focused: string | undefined;
+    if (el?.isConnected) {
+      const a = document.activeElement;
+      if (a !== el && (!a || a === document.body)) el.focus({ preventScroll: true });
+      if (document.activeElement === el) focused = el.closest<HTMLElement>(".tl-thread")?.querySelector<HTMLElement>(".tl-row")?.dataset.row;
+    }
+    for (const id of untrack(() => p.expanded)) if (id !== focused && inView.has(id) && moved(id)) box(id)?.scrollIntoView?.({ block: "nearest" });
+    if (focused && moved(focused)) box(focused)?.scrollIntoView?.({ block: "nearest" });
   });
   // A line's time: relative today, the clock time on an earlier day.
   const today = $derived(dayKey(p.now));
@@ -177,7 +190,7 @@
   {#if t}
     {@const st = rowStatus(p.tl.stateOf.get(id) ?? { kind: "resolved" })}
     {@const open = p.expanded.includes(id)}
-    <div class={["tl-thread", end && "tl-end"]}>
+    <div class={["tl-thread", end && "tl-end"]} {@attach open && watch(untrack(() => id))}>
       {@render p.above?.(t, p.now)}
       <button type="button" class="tl-row" data-row={id} aria-expanded={open} onclick={() => toggle(id, !open)} {@attach !open && seen(untrack(() => id))}
         ><span class="tl-n">{p.detached.has(id) ? "detached" : (p.numbers.get(id) ?? "")}</span><span class="tl-q">{plainText(t.comments[0]?.body ?? "")}</span><span class={["tl-st", st.act && "act"]}>{st.text}</span></button>

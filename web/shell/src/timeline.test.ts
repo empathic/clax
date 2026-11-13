@@ -142,8 +142,8 @@ describe("Sidebar views", () => {
       Element.prototype.scrollIntoView = own;
     }
     expect(texts(root)[0]).toBe("Mia replied");
-    // It moved to another line: it is scrolled into view.
-    expect(scrolled).toEqual([before]);
+    // It moved to another line: its row and card are scrolled into view.
+    expect(scrolled).toEqual([before.closest(".tl-thread")]);
     expect(card(a)).toBe(before);
     expect(card(a)!.querySelector('input[aria-label="Reply"]')).toBe(input);
     expect(input.value).toBe("half a thought");
@@ -172,6 +172,38 @@ describe("Sidebar views", () => {
     expect(row(a)).toBe(button);
     expect(document.activeElement).toBe(button);
     view.unmount();
+  });
+
+  it("scrolls a moved open row into view when it was in view, and leaves one that was not", async () => {
+    const watched = new Map<Element, (e: { isIntersecting: boolean; intersectionRatio: number }[]) => void>();
+    vi.stubGlobal("IntersectionObserver", class { constructor(private cb: (e: { isIntersecting: boolean; intersectionRatio: number }[]) => void) {} observe(el: Element) { watched.set(el, this.cb); } disconnect() {} });
+    const scrolled: Element[] = [];
+    const own = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this); };
+    try {
+      const { view, root, row, props, a, b } = setup();
+      await loaded(root);
+      flush(() => row(a)!.click());
+      flush(() => row(b)!.click());
+      const box = (t: Thread) => row(t)!.parentElement!;
+      // a is on screen, read with the mouse; b is not. Nothing holds focus.
+      watched.get(box(a))!([{ isIntersecting: true, intersectionRatio: 1 }]);
+      watched.get(box(b))!([{ isIntersecting: false, intersectionRatio: 0 }]);
+      (document.activeElement as HTMLElement | null)?.blur();
+      scrolled.length = 0;
+      const a2 = { ...a, comments: [...a.comments, comment(`${a.id}.2`, "viewer", at(13, 11), "Agreed")] };
+      view.update({ ...props, threads: [a2, b] });
+      expect(texts(root)[0]).toBe("Mia replied");
+      expect(scrolled).toEqual([box(a)]);
+      scrolled.length = 0;
+      view.update({ ...props, threads: [a2, { ...b, comments: [...b.comments, comment(`${b.id}.3`, "viewer", at(13, 11, 30), "Thanks", "Alex")] }] });
+      expect(texts(root)[0]).toBe("You replied");
+      expect(scrolled).toEqual([]);
+      view.unmount();
+    } finally {
+      Element.prototype.scrollIntoView = own;
+      vi.unstubAllGlobals();
+    }
   });
 
   it("keeps the card open, with its reply box, when the viewer's own reply on an addressed row writes a newer line", async () => {
