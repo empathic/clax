@@ -202,10 +202,17 @@ export async function signInTo(context: BrowserContext, base: string): Promise<v
 
 /** Counts `context` among the worker's browsers: it is a browser of the
  * owner's on every daemon the worker runs, now and later, as every browser
- * of this machine was before a browser had to log in. */
+ * of this machine was before a browser had to log in. Its sidebar opens on
+ * the thread list unless the context chose a view itself. */
 export async function trustContext(context: BrowserContext): Promise<void> {
   liveContexts.add(context);
   context.once("close", () => liveContexts.delete(context));
+  // The artifact view's sidebar opens on the thread list, where the specs
+  // find their cards: only where no choice is stored, so a spec that picks
+  // the timeline keeps it through a reload.
+  await context.addInitScript(() => {
+    try { if (localStorage.getItem("clax.sidebar") === null) localStorage.setItem("clax.sidebar", '{"view":"threads"}'); } catch { /* storage refused */ }
+  }).catch((e: unknown) => { if (!String(e).includes("closed")) throw e; });
   for (const d of liveDaemons) await signIn(context, d);
 }
 
