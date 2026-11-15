@@ -331,6 +331,9 @@ pub async fn assemble(
                 a.id.as_str(),
             )?;
             artifact["may_resolve"] = json!(may_resolve);
+            // Whether its site sets its own content policy, as `GET
+            // /api/artifacts/<id>` says.
+            artifact["content_policy"] = json!(crate::routes::own_policy::of(st, &lookup)?);
             // Whether the caller may edit it, as `GET /api/artifacts/<id>`
             // says.
             artifact["may_edit"] = json!(crate::routes::artifacts::browser_edits(

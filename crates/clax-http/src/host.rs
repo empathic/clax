@@ -133,8 +133,10 @@ fn site_request(sites: &SiteHosts, secure: bool, host: &str) -> Option<SiteReque
 /// service worker's script (`Service-Worker: script`) is answered, before
 /// any route, with Clax's own script, which unregisters itself
 /// ([`crate::content_policy::SERVICE_WORKER_KILL_SWITCH`]): no page
-/// registers a worker of its own on a site host. Other hosts are
-/// untouched.
+/// registers a worker of its own on a site host, unless its artifact sets
+/// its own content policy (`artifacts.content_policy` is `own`, the one
+/// store read made for such a request alone), whose worker's script is
+/// served from its files like any other. Other hosts are untouched.
 pub async fn site_layer(State(s): State<AppState>, mut req: Request<Body>, next: Next) -> Response {
     let host = req
         .headers()
@@ -152,7 +154,14 @@ pub async fn site_layer(State(s): State<AppState>, mut req: Request<Body>, next:
     if s.embed.as_ref().and_then(|e| e.site_hosts()).is_some() {
         site.origin = crate::site_access::site_origin(&s, &site.artifact, &host);
     }
-    let mut res = if crate::content_policy::wants_service_worker(req.headers()) {
+    let kill = crate::content_policy::wants_service_worker(req.headers()) && {
+        let aid = site.artifact.clone();
+        // A read that fails keeps the site locked.
+        !s.store_call(move |st| st.content_policy_own(&aid))
+            .await
+            .unwrap_or(false)
+    };
+    let mut res = if kill {
         use axum::response::IntoResponse;
         (
             axum::http::StatusCode::OK,

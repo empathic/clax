@@ -1033,6 +1033,8 @@ pub async fn get(
             // Whether the caller may resolve its threads, so also send them
             // while its Comments switch is off (the shell's Send).
             artifact["may_resolve"] = json!(may_resolve);
+            // Whether its site sets its own content policy.
+            artifact["content_policy"] = json!(super::own_policy::of(st, &id)?);
             // Whether the caller may edit it (the shell's Edit control).
             artifact["may_edit"] = json!(browser_edits(
                 st,
@@ -1174,16 +1176,18 @@ pub struct PatchBody {
     capabilities: Option<Value>,
     /// `private` or `world` ([`super::world`]).
     site_access: Option<String>,
-    /// The approval question an agent's earlier `site_access: "world"`
-    /// returned.
+    /// `locked` or `own` ([`super::own_policy`]).
+    content_policy: Option<String>,
+    /// The approval question an agent's earlier `site_access: "world"` or
+    /// `content_policy: "own"` returned.
     question_id: Option<String>,
 }
 
 impl PatchBody {
-    /// It changes the site's access alone, which the owner's or the page's
-    /// maker's browser may do without the token.
-    fn site_access_only(&self) -> bool {
-        self.site_access.is_some()
+    /// It changes the site's access or its content policy alone, which the
+    /// owner's or the page's maker's browser may do without the token.
+    fn site_only(&self) -> bool {
+        (self.site_access.is_some() || self.content_policy.is_some())
             && self.title.is_none()
             && self.description.is_none()
             && self.icon.is_none()
@@ -1219,16 +1223,20 @@ pub async fn presence(
     Ok(Json(json!({"people": people, "viewing": viewing})))
 }
 
-/// Pins or edits an artifact's metadata, or opens its site to the world or
-/// closes it (`site_access`, [`super::world`]: a browser of the owner's or
-/// of the page's maker may change it alone without the token). A person's
-/// agent edits from a session, never as a page (spec §6.7); the answer is
-/// filtered for an agent channel's reader, and carries `site_access`. An
-/// agent's opening to the world that waits on its person answers 202
-/// `{status: "approval_pending", question_id, inbox_url}` and changes
-/// nothing. The owner's opening to the world made with the token alone
-/// while an agent session is live waits for a click in their browser: 202
-/// `confirmation_pending` ([`clax_http::confirm`]), and changes nothing.
+/// Pins or edits an artifact's metadata, opens its site to the world or
+/// closes it (`site_access`, [`super::world`]), or lets its site set its
+/// own content policy or locks it again (`content_policy`,
+/// [`super::own_policy`]): a browser of the owner's or of the page's maker
+/// may change either alone without the token, one of them per request, and
+/// never a page (403 `not_for_pages`). A person's agent edits from a
+/// session, never as a page (spec §6.7); the answer is filtered for an
+/// agent channel's reader, and carries `site_access` and `content_policy`.
+/// An agent's opening to the world or `own` that waits on its person
+/// answers 202 `{status: "approval_pending", question_id, inbox_url}` and
+/// changes nothing. The owner's opening to the world or `own` made with the
+/// token alone while an agent session is live waits for a click in their
+/// browser: 202 `confirmation_pending` ([`clax_http::confirm`]), and
+/// changes nothing.
 pub async fn patch(
     State(s): State<AppState>,
     a: Agent<clax_http::agent::ArtifactsPatch>,
@@ -1241,7 +1249,7 @@ pub async fn patch(
 ) -> Result<Response, ApiError> {
     let id = parse_id(&path(aid)?)?;
     let mut b = body(req)?;
-    if !b.site_access_only() {
+    if !b.site_only() {
         a.require_credential()?;
     }
     person_agent_session(&a.caller)?;
@@ -1251,11 +1259,22 @@ pub async fn patch(
         .take()
         .map(|v| super::world::parse(&v))
         .transpose()?;
-    let qid = b.question_id.take();
-    if world.is_none() && qid.is_some() {
+    let own = b
+        .content_policy
+        .take()
+        .map(|v| super::own_policy::parse(&v))
+        .transpose()?;
+    if world.is_some() && own.is_some() {
         return Err(ApiError::bad_request(
             "invalid_args",
-            "question_id goes with site_access",
+            "site_access and content_policy are changed one at a time",
+        ));
+    }
+    let qid = b.question_id.take();
+    if world.is_none() && own.is_none() && qid.is_some() {
+        return Err(ApiError::bad_request(
+            "invalid_args",
+            "question_id goes with site_access or content_policy",
         ));
     }
     // Who sets the text fields (spec §8.2): a person's agent's person, else
@@ -1267,6 +1286,12 @@ pub async fn patch(
         _ => clax_core::visibility::Author::Owner,
     };
     let via_page = page_marker(&a.caller, &headers)?;
+    if via_page && (world.is_some() || own.is_some()) {
+        return Err(ApiError::forbidden(
+            "not_for_pages",
+            "who may open a page's site, and its content policy, are set in Clax, never by the page",
+        ));
+    }
     if let Some(c) = &b.capabilities {
         clax_core::capabilities::validate(c)?;
     }
@@ -1289,14 +1314,34 @@ pub async fn patch(
             clax_http::confirm::require_confirmation(&s, &a.caller, &confirming, decision).await?;
         }
     }
+    if own == Some(true) {
+        let i2 = id.clone();
+        let already = s.store_call(move |st| st.content_policy_own(&i2)).await?;
+        if !already {
+            let decision = clax_http::confirm::Decision::Widen {
+                artifact_id: id.as_str().to_string(),
+                to: "own".into(),
+                remote_id: None,
+                body: None,
+            };
+            clax_http::confirm::require_confirmation(&s, &a.caller, &confirming, decision).await?;
+        }
+    }
     if let Some(caps) = b.capabilities.clone() {
         manifest_owned(&s, &id, caps).await?;
     }
     admin_change(&s, &a.caller, &id, b.pinned, b.capabilities.clone()).await?;
-    if let Some(world) = world
-        && let super::world::Change::Pending(body) =
-            super::world::change(&s, &a.caller, deferred, &id, world, qid).await?
-    {
+    let change = match (world, own) {
+        (Some(world), _) => {
+            Some(super::world::change(&s, &a.caller, deferred, &id, world, qid).await?)
+        }
+        (None, Some(own)) => Some(
+            super::own_policy::change(&s, &a.caller, deferred, audit.clone(), &id, own, qid)
+                .await?,
+        ),
+        (None, None) => None,
+    };
+    if let Some(super::world::Change::Pending(body)) = change {
         // Waiting on the person: nothing of the patch is applied.
         return Ok((StatusCode::ACCEPTED, Json(body)).into_response());
     }
@@ -1328,6 +1373,7 @@ pub async fn patch(
             let vis = vf.build(st)?;
             vis.filter_artifact(st, &a, &[], &mut view)?;
             view["site_access"] = json!(site_access_of(st, &id)?);
+            view["content_policy"] = json!(super::own_policy::of(st, &id)?);
             Ok(view)
         })
         .await?;

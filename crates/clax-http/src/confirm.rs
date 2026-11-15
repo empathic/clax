@@ -12,7 +12,8 @@
 //! 1. answering a question an agent asked;
 //! 2. pushing an artifact to a remote;
 //! 3. connecting a remote, and answering an agent's connection request;
-//! 4. widening who may open a page (its site to the world, its public
+//! 4. widening who may open a page (its site to the world, its site
+//!    setting its own content policy, its public
 //!    copy's link access, a share of it with a person, its comments
 //!    turned on);
 //! 5. approving a machine's connection, setting a person's rights, and
@@ -118,7 +119,8 @@ pub enum Decision {
     /// extension then acts as the owner's browser, so pairing it while an
     /// agent is live is itself confirmed.
     ExtensionMint { extension_id: String },
-    /// Widening who may open `artifact_id`: `to` is `world` (its site), or,
+    /// Widening who may open `artifact_id`, or what its site may do: `to`
+    /// is `world` (its site), `own` (its site sets its own content policy), or,
     /// on remote `remote_id` with the change `body` as sent, the public
     /// copy's link access (`link`, `public`), a share with a person
     /// (`person`), or its comments turned on (`comments`).
@@ -417,6 +419,10 @@ pub fn words(st: &Store, d: &Value) -> clax_core::Result<String> {
                 "change who may open the public copy {} on {}",
                 s("artifact_id"),
                 remote(rid)?
+            ),
+            None if d["to"] == "own" => format!(
+                "let {} set its own content policy, loading code from and sending what it reads to any site",
+                title(&s("artifact_id"))?
             ),
             None => format!("open {}'s site to the world", title(&s("artifact_id"))?),
         },

@@ -411,7 +411,8 @@ pub async fn list(
 /// draft's bytes for a path it writes (its HTML marked and tinted), or the
 /// base version's for one it does not, as stored (never wrapped: a draft
 /// page does not greet the shell). Served like content (the content
-/// policy for its origin), never cached (`no-store`), and with
+/// policy for its origin, its artifact's own when the artifact sets its
+/// own: a draft follows its app), never cached (`no-store`), and with
 /// `Referrer-Policy: no-referrer`, so the page's requests do not carry its
 /// token in `Referer` (a page's own `<meta name="referrer">` still
 /// overrides it). 404 for an
@@ -433,6 +434,8 @@ pub(crate) async fn serve(
         .drafts
         .file(id.as_str(), agent, token, &rel)
         .ok_or_else(ApiError::not_found)?;
+    let i2 = id.clone();
+    let own = s.store_call(move |st| st.content_policy_own(&i2)).await?;
     let (body, content_type) = match served {
         Served::Draft {
             bytes,
@@ -462,7 +465,7 @@ pub(crate) async fn serve(
         .into_response();
     res.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,
-        super::content::content_policy(s, req),
+        super::content::content_policy(s, req, own),
     );
     res.extensions_mut()
         .insert(clax_http::content_policy::ContentPolicySet);

@@ -20,6 +20,9 @@
 //!   extension, and is 403 `not_approved` when they did not. An approval
 //!   is spent once used (409 `approval_used`). An agent without a session
 //!   is 400 `no_session`. Closing never asks.
+//!
+//! Letting the site set its own content policy (`content_policy`,
+//! [`super::own_policy`]) waits on the same gate ([`Gate`]).
 
 use clax_core::questions::{QOption, Question};
 use clax_core::{ArtifactId, CoreError};
@@ -104,13 +107,8 @@ pub async fn change(
                 "an agent opens a site to the world with publish_public's site_access, which asks the person first",
             ));
         };
-        match qid {
-            None => return ask(s, audit, id, &sid).await.map(Change::Pending),
-            Some(q) => {
-                if let Some(pending) = approved(s, id, &sid, q).await? {
-                    return Ok(Change::Pending(pending));
-                }
-            }
+        if let Some(pending) = GATE.wait(s, audit, id, &sid, qid).await? {
+            return Ok(Change::Pending(pending));
         }
     }
     let i2 = id.clone();
@@ -124,143 +122,193 @@ pub async fn change(
     Ok(Change::Done)
 }
 
+/// Opening a site to the world, as [`Gate`] asks it.
+static GATE: Gate = Gate {
+    kind: OPEN_TO_WORLD,
+    header: "Open site",
+    question: "Open \"{title}\" to the world? Anyone with its site's address can then load it and use its data as a visitor, as its rules allow, without signing in.",
+    yes: (OPEN, "Anyone may load its site; close it again at any time"),
+    no: (KEEP_PRIVATE, "Only those it is shared with"),
+    what: "opening this site to the world",
+    declined: "they chose to keep it private",
+};
+
+/// A widening of an artifact's site that an agent makes only once its
+/// person approves it: the question this daemon asks them, kept as a
+/// `push_approvals` row of `remote_id` `kind` and spent once used.
+pub struct Gate {
+    /// The approval's `remote_id` (`clax_store::site_sessions`).
+    pub kind: &'static str,
+    /// The question's header.
+    pub header: &'static str,
+    /// The question, `{title}` naming the artifact's title.
+    pub question: &'static str,
+    /// The approving option and its description.
+    pub yes: (&'static str, &'static str),
+    /// The declining option and its description.
+    pub no: (&'static str, &'static str),
+    /// What is approved, in `not_approved`'s message.
+    pub what: &'static str,
+    /// Why, when the person chose [`Gate::no`].
+    pub declined: &'static str,
+}
+
+impl Gate {
+    /// Whether session `sid` may go ahead on `aid` now: `None` once its
+    /// person approved question `qid` (now spent); else the 202 body,
+    /// asking them first when `qid` is `None`.
+    ///
+    /// # Errors
+    /// 404 `unknown_question`, 400 `invalid_args` (another artifact's),
+    /// 409 `approval_used`, 403 `not_approved`, and the store's.
+    pub async fn wait(
+        &'static self,
+        s: &AppState,
+        audit: DeferredAudit,
+        aid: &ArtifactId,
+        sid: &str,
+        qid: Option<String>,
+    ) -> Result<Option<Value>, ApiError> {
+        match qid {
+            None => self.ask(s, audit, aid, sid).await.map(Some),
+            Some(q) => self.approved(s, aid, sid, q).await,
+        }
+    }
+
+    /// Asks session `sid`'s person whether to go ahead on `aid` (one
+    /// question per session and artifact while it waits): the 202 body.
+    async fn ask(
+        &'static self,
+        s: &AppState,
+        audit: DeferredAudit,
+        aid: &ArtifactId,
+        sid: &str,
+    ) -> Result<Value, ApiError> {
+        let (id, sid, st8) = (aid.clone(), sid.to_string(), s.clone());
+        let qid = s
+            .store_call(move |db| {
+                if let Some(q) = db.open_push_approval(&sid, id.as_str(), self.kind)? {
+                    return Ok(q);
+                }
+                let a = db.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
+                let opt = |(label, description): (&str, &str)| QOption {
+                    label: label.to_string(),
+                    description: Some(description.to_string()),
+                    preview: None,
+                    recommended: false,
+                };
+                let questions = vec![Question {
+                    question: self.question.replace("{title}", &a.title),
+                    header: self.header.to_string(),
+                    options: vec![opt(self.yes), opt(self.no)],
+                    multi_select: false,
+                    other: false,
+                }];
+                let ctx = audit.for_session(db, &sid)?;
+                let (row, _) = db.create_question(
+                    &ctx,
+                    NewQuestion {
+                        session_id: sid.clone(),
+                        artifact_id: Some(id.as_str().to_string()),
+                        source: Source::Ask,
+                        tool_use_id: None,
+                        questions,
+                        released: false,
+                        thread_id: None,
+                        in_terminal: false,
+                    },
+                )?;
+                db.create_push_approval(&row.id, id.as_str(), self.kind, &sid, a.current_version)?;
+                let v = clax_http::views::question::view(db, &row)?;
+                clax_http::views::question::announce(&st8, db, &row, v);
+                Ok(row.id)
+            })
+            .await?;
+        Ok(pending(s, &qid))
+    }
+
+    /// Whether question `qid` approves session `sid`'s change of `aid`:
+    /// `None` when it does (and is now spent), the 202 body while it waits.
+    async fn approved(
+        &self,
+        s: &AppState,
+        aid: &ArtifactId,
+        sid: &str,
+        qid: String,
+    ) -> Result<Option<Value>, ApiError> {
+        use axum::http::StatusCode;
+        let (q2, sid2) = (qid.clone(), sid.to_string());
+        let (pa, q) = s
+            .store_call(move |st| {
+                Ok((
+                    st.push_approval(&q2)?,
+                    st.question(&q2)?.filter(|q| q.session_id == sid2),
+                ))
+            })
+            .await?;
+        let (Some(pa), Some(q)) = (pa.filter(|p| p.remote_id == self.kind), q) else {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                "unknown_question",
+                "no approval of this session's has this question ID: ask without question_id",
+            ));
+        };
+        if pa.artifact_id != aid.as_str() {
+            return Err(ApiError::bad_request(
+                "invalid_args",
+                "this approval is for another artifact",
+            ));
+        }
+        let used = || {
+            ApiError::new(
+                StatusCode::CONFLICT,
+                "approval_used",
+                "this approval was used: ask again without question_id",
+            )
+        };
+        if pa.used_at.is_some() {
+            return Err(used());
+        }
+        if q.status == Status::Open {
+            return Ok(Some(pending(s, &qid)));
+        }
+        let q3 = qid.clone();
+        if !s.store_call(move |st| st.use_push_approval(&q3)).await? {
+            return Err(used());
+        }
+        let refuse = |why: &str| {
+            Err(ApiError::forbidden(
+                "not_approved",
+                format!("the person did not approve {}: {why}", self.what),
+            ))
+        };
+        if q.status != Status::Answered {
+            return refuse("they skipped the question");
+        }
+        // Only the person's own answer counts: Clax's browser or the
+        // extension, never the daemon token an agent holds too.
+        if !matches!(q.answered_via.as_deref(), Some("shell" | "extension")) {
+            return refuse("answer it in Clax in the browser");
+        }
+        let choice = q
+            .answers
+            .as_ref()
+            .and_then(|a| a.first())
+            .and_then(|a| a.selected.first())
+            .cloned()
+            .unwrap_or_default();
+        if choice == self.yes.0 {
+            Ok(None)
+        } else {
+            refuse(self.declined)
+        }
+    }
+}
+
 fn pending(s: &AppState, qid: &str) -> Value {
     json!({
         "status": "approval_pending",
         "question_id": qid,
         "inbox_url": format!("{}/inbox?q={qid}", s.browser_base),
     })
-}
-
-/// Asks session `sid`'s person whether to open `aid`'s site to the world
-/// (one question per session and artifact while it waits): the 202 body.
-async fn ask(
-    s: &AppState,
-    audit: DeferredAudit,
-    aid: &ArtifactId,
-    sid: &str,
-) -> Result<Value, ApiError> {
-    let (id, sid, st8) = (aid.clone(), sid.to_string(), s.clone());
-    let qid = s
-        .store_call(move |db| {
-            if let Some(q) = db.open_push_approval(&sid, id.as_str(), OPEN_TO_WORLD)? {
-                return Ok(q);
-            }
-            let a = db.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            let opt = |label: &str, description: &str| QOption {
-                label: label.to_string(),
-                description: Some(description.to_string()),
-                preview: None,
-                recommended: false,
-            };
-            let questions = vec![Question {
-                question: format!(
-                    "Open \"{}\" to the world? Anyone with its site's address can then load it and use its data as a visitor, as its rules allow, without signing in.",
-                    a.title
-                ),
-                header: "Open site".to_string(),
-                options: vec![
-                    opt(OPEN, "Anyone may load its site; close it again at any time"),
-                    opt(KEEP_PRIVATE, "Only those it is shared with"),
-                ],
-                multi_select: false,
-                other: false,
-            }];
-            let ctx = audit.for_session(db, &sid)?;
-            let (row, _) = db.create_question(
-                &ctx,
-                NewQuestion {
-                    session_id: sid.clone(),
-                    artifact_id: Some(id.as_str().to_string()),
-                    source: Source::Ask,
-                    tool_use_id: None,
-                    questions,
-                    released: false,
-                    thread_id: None,
-                    in_terminal: false,
-                },
-            )?;
-            db.create_push_approval(&row.id, id.as_str(), OPEN_TO_WORLD, &sid, a.current_version)?;
-            let v = clax_http::views::question::view(db, &row)?;
-            clax_http::views::question::announce(&st8, db, &row, v);
-            Ok(row.id)
-        })
-        .await?;
-    Ok(pending(s, &qid))
-}
-
-/// Whether question `qid` approves session `sid`'s opening of `aid`:
-/// `None` when it does (and is now spent), the 202 body while it waits.
-async fn approved(
-    s: &AppState,
-    aid: &ArtifactId,
-    sid: &str,
-    qid: String,
-) -> Result<Option<Value>, ApiError> {
-    use axum::http::StatusCode;
-    let (q2, sid2) = (qid.clone(), sid.to_string());
-    let (pa, q) = s
-        .store_call(move |st| {
-            Ok((
-                st.push_approval(&q2)?,
-                st.question(&q2)?.filter(|q| q.session_id == sid2),
-            ))
-        })
-        .await?;
-    let (Some(pa), Some(q)) = (pa.filter(|p| p.remote_id == OPEN_TO_WORLD), q) else {
-        return Err(ApiError::new(
-            StatusCode::NOT_FOUND,
-            "unknown_question",
-            "no approval of this session's has this question ID: ask without question_id",
-        ));
-    };
-    if pa.artifact_id != aid.as_str() {
-        return Err(ApiError::bad_request(
-            "invalid_args",
-            "this approval is for another artifact",
-        ));
-    }
-    let used = || {
-        ApiError::new(
-            StatusCode::CONFLICT,
-            "approval_used",
-            "this approval was used: ask again without question_id",
-        )
-    };
-    if pa.used_at.is_some() {
-        return Err(used());
-    }
-    if q.status == Status::Open {
-        return Ok(Some(pending(s, &qid)));
-    }
-    let q3 = qid.clone();
-    if !s.store_call(move |st| st.use_push_approval(&q3)).await? {
-        return Err(used());
-    }
-    let refuse = |why: &str| {
-        Err(ApiError::forbidden(
-            "not_approved",
-            format!("the person did not approve opening this site to the world: {why}"),
-        ))
-    };
-    if q.status != Status::Answered {
-        return refuse("they skipped the question");
-    }
-    // Only the person's own answer counts: Clax's browser or the extension,
-    // never the daemon token an agent holds too.
-    if !matches!(q.answered_via.as_deref(), Some("shell" | "extension")) {
-        return refuse("answer it in Clax in the browser");
-    }
-    let choice = q
-        .answers
-        .as_ref()
-        .and_then(|a| a.first())
-        .and_then(|a| a.selected.first())
-        .cloned()
-        .unwrap_or_default();
-    if choice == OPEN {
-        Ok(None)
-    } else {
-        refuse("they chose to keep it private")
-    }
 }

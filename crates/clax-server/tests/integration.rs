@@ -60,6 +60,8 @@ mod api_client_imports;
 mod api_confirmations;
 #[cfg(any(not(clax_split), clax_split = "api_content"))]
 mod api_content;
+#[cfg(any(not(clax_split), clax_split = "api_content_policy"))]
+mod api_content_policy;
 #[cfg(any(not(clax_split), clax_split = "api_db_read"))]
 mod api_db_read;
 #[cfg(any(not(clax_split), clax_split = "api_discovery"))]

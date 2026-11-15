@@ -34,14 +34,27 @@ fn framing(s: &AppState, req: &HeaderMap) -> String {
 }
 
 /// The `Content-Security-Policy` of a content response on an artifact's
-/// site host: [`framing`], and the lockdown that keeps the page to its own
-/// site (`clax_http::content_policy::lockdown`).
+/// site host: [`framing`], and unless the artifact sets its own content
+/// policy (`own`, [`super::own_policy`]) the lockdown that keeps the page to
+/// its own site (`clax_http::content_policy::lockdown`).
 ///
 /// The policy is a separate one: a page's own `<meta>` policy still applies
-/// in full beside it, and cannot set `frame-ancestors` itself.
-pub(crate) fn content_policy(s: &AppState, req: &HeaderMap) -> HeaderValue {
-    HeaderValue::from_str(&clax_http::content_policy::lockdown(&framing(s, req)))
+/// in full beside it, and cannot set `frame-ancestors` itself; on an `own`
+/// site it is the only content policy besides the framing.
+pub(crate) fn content_policy(s: &AppState, req: &HeaderMap, own: bool) -> HeaderValue {
+    HeaderValue::from_str(&policy_of(&framing(s, req), own))
         .unwrap_or_else(|_| HeaderValue::from_static("frame-ancestors 'self'; default-src 'none'"))
+}
+
+/// A content response's policy after `frame` (its `frame-ancestors`): the
+/// framing alone when the artifact sets its own content policy (`own`),
+/// else the lockdown after it.
+fn policy_of(frame: &str, own: bool) -> String {
+    if own {
+        frame.to_string()
+    } else {
+        clax_http::content_policy::lockdown(frame)
+    }
 }
 
 /// The host and port in the daemon's browser base URL.
@@ -77,22 +90,25 @@ fn snapshot_policy(scheme: &str, req: &HeaderMap, fallback: &str) -> HeaderValue
     .unwrap_or_else(|_| HeaderValue::from_static("script-src 'none'"))
 }
 
-/// Sets the content policy on `res` ([`content_policy`]); for a live page's
-/// content (`live`: the daemon's host, the policy's fallback) only its
-/// framing part, with [`snapshot_policy`] beside it, both applying, so a
-/// snapshot still loads styles, images and fonts from its site. Marked
-/// [`ContentPolicySet`], so the site layer adds no lockdown of its own.
+/// Sets the content policy on `res` ([`content_policy`], `own` when the
+/// artifact sets its own); for a live page's content (`live`: the daemon's
+/// host, the policy's fallback) only its framing part, with
+/// [`snapshot_policy`] beside it, both applying, so a snapshot still loads
+/// styles, images and fonts from its site, whatever `own` says: a snapshot
+/// is Clax's rendering of another site. Marked [`ContentPolicySet`], so
+/// the site layer adds no lockdown of its own.
 fn framed_by_shell(
     s: &AppState,
     mut res: Response,
     req: &HeaderMap,
     live: Option<&str>,
+    own: bool,
 ) -> Response {
     res.extensions_mut().insert(ContentPolicySet);
     let policy = match live {
         Some(_) => HeaderValue::from_str(&framing(s, req))
             .unwrap_or_else(|_| HeaderValue::from_static("frame-ancestors 'self'")),
-        None => content_policy(s, req),
+        None => content_policy(s, req, own),
     };
     res.headers_mut()
         .insert(header::CONTENT_SECURITY_POLICY, policy);
@@ -133,14 +149,14 @@ enum Served {
 /// content type is `text/html`, through the wrap cache, which also remembers
 /// a file that is not UTF-8 (served raw); a page the cache holds is not
 /// read again. `NotFound` when the artifact, the version, or the file is
-/// gone.
+/// gone. Beside it, whether the artifact sets its own content policy.
 async fn lookup(
     s: &AppState,
     id: ArtifactId,
     n: u32,
     file: String,
     always_wrap: bool,
-) -> Result<Served, ApiError> {
+) -> Result<(Served, bool), ApiError> {
     let cache = s.wrap_cache.clone();
     let bridge = bridge_version(&*s.web);
     // A page wrapped concurrently with a debug rebuild may keep the old
@@ -156,9 +172,13 @@ async fn lookup(
         // A deleted artifact's versions stay behind its row, and its files
         // until its content is removed: neither is served once it is gone.
         st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
+        let own = st.content_policy_own(&id)?;
         let meta = st.file_meta(&id, n, &file)?.ok_or(CoreError::NotFound)?;
         if !always_wrap && !is_html(&meta.content_type) {
-            return Ok(Served::Raw(read_bytes(&st, &id, n, &file).await?, meta));
+            return Ok((
+                Served::Raw(read_bytes(&st, &id, n, &file).await?, meta),
+                own,
+            ));
         }
         // Read ahead of the cache, which wraps synchronously; a page it
         // holds is not read. One evicted between the check and the wrap is
@@ -191,13 +211,16 @@ async fn lookup(
                 })
             });
             return match wrapped {
-                Ok(Some(html)) => Ok(Served::Page(html)),
-                Ok(None) => Ok(Served::Raw(
-                    match unwrapped.or(bytes) {
-                        Some(bytes) => bytes,
-                        None => read_bytes(&st, &id, n, &file).await?,
-                    },
-                    meta,
+                Ok(Some(html)) => Ok((Served::Page(html), own)),
+                Ok(None) => Ok((
+                    Served::Raw(
+                        match unwrapped.or(bytes) {
+                            Some(bytes) => bytes,
+                            None => read_bytes(&st, &id, n, &file).await?,
+                        },
+                        meta,
+                    ),
+                    own,
                 )),
                 Err(e) if e.to_string() == EVICTED => continue,
                 Err(e) => Err(CoreError::Io(e)),
@@ -244,9 +267,16 @@ pub(crate) async fn serve_version(
     let own = own_host(s);
     let live = s.live_ids.contains(id.as_str()).then_some(own.as_str());
     let index = rel == INDEX;
-    let (bytes, meta) = match lookup(s, id, n, rel, index).await? {
+    let (served, own) = lookup(s, id, n, rel, index).await?;
+    let (bytes, meta) = match served {
         Served::Page(html) => {
-            return Ok(framed_by_shell(s, http_cache::html(req, &html), req, live));
+            return Ok(framed_by_shell(
+                s,
+                http_cache::html(req, &html),
+                req,
+                live,
+                own,
+            ));
         }
         Served::Raw(..) if index => {
             return Err(ApiError::from(CoreError::Io(std::io::Error::new(
@@ -272,7 +302,7 @@ pub(crate) async fn serve_version(
             )
                 .into_response()
         });
-        return Ok(framed_by_shell(s, res, req, live));
+        return Ok(framed_by_shell(s, res, req, live, own));
     }
     let res = (
         StatusCode::OK,
@@ -284,7 +314,7 @@ pub(crate) async fn serve_version(
         body,
     )
         .into_response();
-    Ok(framed_by_shell(s, res, req, live))
+    Ok(framed_by_shell(s, res, req, live, own))
 }
 
 /// `GET /api/artifacts/<id>/versions/<n>/files/<path>`: a file's stored bytes,
@@ -347,6 +377,19 @@ pub async fn raw_file(
 #[warn(clippy::disallowed_methods)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_own_sites_content_policy_is_its_framing_alone() {
+        let frame = "frame-ancestors 'self' http://localhost:7480 http://127.0.0.1:7480";
+        assert_eq!(policy_of(frame, true), frame);
+        assert_eq!(
+            policy_of(frame, false),
+            clax_http::content_policy::lockdown(frame)
+        );
+        let locked = policy_of(frame, false);
+        assert!(locked.starts_with(frame), "{locked}");
+        assert!(locked.contains("connect-src 'self';"), "{locked}");
+    }
 
     #[test]
     fn the_snapshot_policy_names_a_plain_host_and_never_a_crafted_one() {
