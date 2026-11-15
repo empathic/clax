@@ -36,12 +36,15 @@ export type Share = { id: string; access: ShareAccess; github_login: string | nu
 export type ShareCandidate = { person: string; name: string | null; github_login: string | null };
 /** Whether an artifact's site is open to anyone, without signing in, or only to those it is shared with. */
 export type SiteAccess = "private" | "world";
+/** Whether an artifact's site is held to its own files (`locked`, every artifact's at first) or sets its own
+ * content policy (`own`): its pages then load code from, and send what they read to, any site. */
+export type ContentPolicy = "locked" | "own";
 /** `GET /api/hosted/artifacts/<id>/sharing`: everything for whoever may share it, else `can_share: false` alone;
- * `site_access` and its site's address, `site_url`, where the daemon says them. `comments` is its Comments
- * switch: off, nobody comments there, whatever their access. */
+ * `site_access`, `content_policy` and its site's address, `site_url`, where the daemon says them. `comments`
+ * is its Comments switch: off, nobody comments there, whatever their access. */
 export type Sharing =
   | { artifact_id: string; can_share: false }
-  | { artifact_id: string; can_share: true; comments: boolean; general: GeneralAccess; public_gallery?: boolean; link_access: LinkAccess | null; url: string; people: Share[]; suggestions: ShareCandidate[]; site_access?: SiteAccess; site_url?: string };
+  | { artifact_id: string; can_share: true; comments: boolean; general: GeneralAccess; public_gallery?: boolean; link_access: LinkAccess | null; url: string; people: Share[]; suggestions: ShareCandidate[]; site_access?: SiteAccess; content_policy?: ContentPolicy; site_url?: string };
 /** An artifact in the public gallery. */
 export type PublicArtifact = { artifact_id: string; title: string; url: string };
 
@@ -81,6 +84,9 @@ export const sharing = (aid: string) => call<Sharing>(`/api/hosted/artifacts/${e
 /** Opens `aid`'s site to the world, or makes it private again. */
 export const setSiteAccess = (aid: string, access: SiteAccess) =>
   call<unknown>(`/api/artifacts/${e(aid)}`, "PATCH", { site_access: access });
+/** Lets `aid`'s site set its own content policy (`own`), or locks it to its own files again (`locked`). */
+export const setContentPolicy = (aid: string, policy: ContentPolicy) =>
+  call<unknown>(`/api/artifacts/${e(aid)}`, "PATCH", { content_policy: policy });
 /** Shares `aid` with a GitHub login or a person (by public ID), or changes their access. */
 export const share = (aid: string, to: { github_login: string } | { person: string }, access: ShareAccess) =>
   call<{ share: Share }>(`/api/hosted/artifacts/${e(aid)}/shares`, "PUT", { ...to, access });
