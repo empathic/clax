@@ -181,6 +181,26 @@ const lineOf = (page: Page, id: string) => row(page, id).evaluate(r => {
     await expect(row(page, tid)).toBeFocused();
   });
 
+  test(`a reply half typed in a card is there again after a switch to the other tab and back`, async ({ page }) => {
+    await prefer(page, TIMELINE);
+    const { aid, ids: [tid] } = await fresh(`Draft tabs`, 1);
+    await openArtifact(page, d.base, aid, 1);
+    await row(page, tid).click();
+    const reply = page.locator(`.thread-card[data-thread="${tid}"]`).getByRole("textbox", { name: "Reply" });
+    await reach(page, reply);
+    await reply.click();
+    await page.keyboard.type("Half a thought");
+    await tab(page, "Threads").click();
+    await expect(page.locator(".timeline")).toHaveCount(0);
+    await expect(reply).toHaveValue("Half a thought");
+    // Typed on in the list, and back in the timeline under its row.
+    await reply.click();
+    await page.keyboard.type(", and more");
+    await tab(page, "Timeline").click();
+    await expect(row(page, tid)).toHaveAttribute("aria-expanded", "true");
+    await expect(reply).toHaveValue("Half a thought, and more");
+  });
+
   test(`the Threads tab shows the thread list, and a reload keeps it`, async ({ page }) => {
     await prefer(page, TIMELINE);
     const { aid, ids } = await fresh(`Tabs`, 2);

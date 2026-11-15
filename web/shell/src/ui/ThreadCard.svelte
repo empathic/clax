@@ -60,10 +60,12 @@
     writers?: Snippet<[string]>;
     /** Hears the reply box's text as it is typed, and "" once it is sent. */
     onReplyText?(t: Thread, text: string): void;
+    /** The reply box's text when the card mounts (a draft its caller kept); empty by default. Told to no one. */
+    draft?: string;
     /** `onResolve` resolves an open thread and reopens a resolved one. */
     onSelect(t: Thread): void; onSend(t: Thread): void; onResolve(t: Thread): void; onReply(t: Thread, body: string): void; onHover?(t: Thread | null): void;
   };
-  let { t, n, now, me, selected, file, history, outdated, agent, when, marker = null, versions = [], onSeen, checked = false, onToggle, send: sendButton, fold, badge, meta, tools, clip, readOnly: ro = false, noReply = false, noSend = false, writers, onReplyText, onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
+  let { t, n, now, me, selected, file, history, outdated, agent, when, marker = null, versions = [], onSeen, checked = false, onToggle, send: sendButton, fold, badge, meta, tools, clip, readOnly: ro = false, noReply = false, noSend = false, writers, onReplyText, draft = "", onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
   // A thread whose link ended is history here: read-only.
   const readOnly = $derived(ro || !!t.linked?.unlinked);
   const tag = $derived(linkTag(t));
@@ -89,7 +91,9 @@
   };
   // A thread about the whole artifact (anchor kind `artifact`) has no spot to name.
   const anchorLabel = (a: Thread["anchor"]) => (a.kind === "artifact" ? "The whole artifact" : pickLabel(a));
-  let reply = $state("");
+  // Read once: the box is the viewer's from then on.
+  // svelte-ignore state_referenced_locally
+  let reply = $state(draft);
   // Send, Resolve and Reply are consequential: on a tainted keyboard trail
   // they take only a pointer's click (`guardedAction`), and `hint` says so
   // until the trail clears.

@@ -1,3 +1,4 @@
+import { createRawSnippet } from "svelte";
 import { describe, expect, it, vi } from "vitest";
 import type { Version } from "./api";
 import Sidebar from "./ui/Sidebar.svelte";
@@ -52,6 +53,100 @@ function setup(more: Record<string, unknown> = {}) {
 }
 const loaded = (root: HTMLElement) => vi.waitFor(() => expect(root.querySelector('[role="tablist"]')).not.toBeNull());
 const texts = (root: HTMLElement) => Array.from(root.querySelectorAll(".tl-line .tl-text"), e => e.textContent);
+
+describe("Reply drafts across the views", () => {
+  const reply = (root: HTMLElement, t: Thread) => root.querySelector<HTMLInputElement>(`.thread-card[data-thread="${t.id}"] input[aria-label="Reply"]`);
+  const type = (input: HTMLInputElement, text: string) => flush(() => { input.value = text; input.dispatchEvent(new Event("input", { bubbles: true })); });
+  const show = (s: ReturnType<typeof setup>, now: "timeline" | "threads", more: Record<string, unknown> = {}) => s.view.update({ ...s.props, ...more, view: { now, onChange: s.calls.change } });
+
+  it("keeps a draft typed in the Timeline through a switch to the Threads view and back", async () => {
+    const s = setup();
+    await loaded(s.root);
+    flush(() => s.row(s.a)!.click());
+    type(reply(s.root, s.a)!, "half a thought");
+    show(s, "threads");
+    await vi.waitFor(() => expect(s.root.querySelector(".section-open")).not.toBeNull());
+    expect(reply(s.root, s.a)!.value).toBe("half a thought");
+    show(s, "timeline");
+    await vi.waitFor(() => expect(s.root.querySelector(".timeline")).not.toBeNull());
+    expect(s.row(s.a)!.getAttribute("aria-expanded")).toBe("true");
+    expect(reply(s.root, s.a)!.value).toBe("half a thought");
+    s.view.unmount();
+  });
+
+  it("keeps a draft typed in the Threads view for the thread's card in the Timeline", async () => {
+    const s = setup({ view: { now: "threads", onChange: vi.fn() } });
+    await loaded(s.root);
+    type(reply(s.root, s.b)!, "Not quite");
+    show(s, "timeline");
+    await vi.waitFor(() => expect(s.root.querySelector(".timeline")).not.toBeNull());
+    flush(() => s.row(s.b)!.click());
+    expect(reply(s.root, s.b)!.value).toBe("Not quite");
+    // Another thread's card has no draft.
+    flush(() => s.row(s.a)!.click());
+    expect(reply(s.root, s.a)!.value).toBe("");
+    s.view.unmount();
+  });
+
+  it("drops a draft once it is posted", async () => {
+    const onReply = vi.fn();
+    const s = setup({ view: { now: "threads", onChange: vi.fn() }, onReply });
+    await loaded(s.root);
+    const input = reply(s.root, s.a)!;
+    type(input, "Shorter still");
+    flush(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+    expect(onReply).toHaveBeenCalledExactlyOnceWith(s.a, "Shorter still");
+    show(s, "timeline", { onReply });
+    await vi.waitFor(() => expect(s.root.querySelector(".timeline")).not.toBeNull());
+    flush(() => s.row(s.a)!.click());
+    expect(reply(s.root, s.a)!.value).toBe("");
+    s.view.unmount();
+  });
+
+  it("drops a draft once its box is emptied", async () => {
+    const s = setup({ view: { now: "threads", onChange: vi.fn() } });
+    await loaded(s.root);
+    const input = reply(s.root, s.a)!;
+    type(input, "Shorter");
+    type(input, "");
+    show(s, "timeline");
+    await vi.waitFor(() => expect(s.root.querySelector(".timeline")).not.toBeNull());
+    flush(() => s.row(s.a)!.click());
+    expect(reply(s.root, s.a)!.value).toBe("");
+    s.view.unmount();
+  });
+
+  it("tells the live layers of real typing only: a card given back its draft announces nothing", async () => {
+    const onText = vi.fn();
+    const writers = createRawSnippet(() => ({ render: () => "<span></span>" }));
+    const s = setup({ view: { now: "threads", onChange: vi.fn() }, live: { writers, onText } });
+    await loaded(s.root);
+    type(reply(s.root, s.a)!, "half a thought");
+    expect(onText).toHaveBeenLastCalledWith(s.a.id, "half a thought");
+    // Its card goes with the view: others stop seeing the draft, as when any card goes.
+    show(s, "timeline", { live: { writers, onText } });
+    await vi.waitFor(() => expect(s.root.querySelector(".timeline")).not.toBeNull());
+    expect(onText).toHaveBeenLastCalledWith(s.a.id, "");
+    onText.mockClear();
+    flush(() => s.row(s.a)!.click());
+    expect(reply(s.root, s.a)!.value).toBe("half a thought");
+    expect(onText).not.toHaveBeenCalled();
+    // Typing again is told, as before.
+    type(reply(s.root, s.a)!, "half a thought, and more");
+    expect(onText).toHaveBeenLastCalledWith(s.a.id, "half a thought, and more");
+    s.view.unmount();
+  });
+
+  it("keeps no draft without a view (the extension's side panel)", () => {
+    const first = setup({ view: undefined });
+    type(reply(first.root, first.a)!, "half a thought");
+    first.view.unmount();
+    // The same thread in a new sidebar.
+    const again = mount(Sidebar, { ...first.props, view: undefined });
+    expect(reply(again.root, first.a)!.value).toBe("");
+    again.unmount();
+  });
+});
 
 describe("Sidebar views", () => {
   it("without a view, is the thread list alone, with no tabs", () => {

@@ -3,6 +3,9 @@
 <script lang="ts" module>
   /** The threads of other pages open in place, by ID (IDs are unique across artifacts). */
   let unfolded: string[] = $state([]);
+  /** With the views, the reply drafts left unsent in cards that went, by
+   * thread ID, for the page's life; given back to the thread's next card. */
+  const drafts = new Map<string, string>();
 </script>
 
 <script lang="ts">
@@ -206,6 +209,21 @@
   const foldOf = (t: Thread) => far(t)
     ? { open: unfolded.includes(t.id), onToggle: (o: boolean) => { unfolded = o ? [...unfolded, t.id] : unfolded.filter(x => x !== t.id); } }
     : undefined;
+  // With the views (`view`), a reply's draft outlives its card: a switch
+  // of view, a move to another group, a closed sidebar. A card reports its
+  // text as typed, "" once posted (`onReply` drops the draft first), and
+  // "" when it goes, its box already out of the document: a draft is
+  // dropped on "" only while the thread's box is here and empty, as the
+  // viewer emptied it. Who else sees it typed is the live layers' alone.
+  const replyBox = (id: string) => [...(aside?.querySelectorAll<HTMLElement>(".thread-card") ?? [])].find(c => c.dataset.thread === id)?.querySelector<HTMLInputElement>('input[aria-label="Reply"]');
+  const replyText = (t: Thread, text: string) => {
+    if (p.view) {
+      if (text.trim()) drafts.set(t.id, text);
+      else if (replyBox(t.id)?.value.trim() === "") drafts.delete(t.id);
+    }
+    p.live?.onText(t.id, text);
+  };
+  const replied = (t: Thread, body: string) => { drafts.delete(t.id); p.onReply(t, body); };
   // The question module (loaded apart, owner only) fills the slot: it hears
   // where the slot is now, each time the sidebar mounts.
   $effect(() => {
@@ -226,8 +244,8 @@
       marker={t.status === "open" ? threadMarker(p.working ?? [], t.id, agentsByHandle) : null} outdated={isOutdated(t, p.resolved[t.id], p.shown)} agent={p.agent} when={relativeTime(t.created_at, clock.now)}
       versions={p.versions} onSeen={p.onSeen} fold={row ? far(t) ? { open: true, onToggle: o => { if (!o) row.close(); } } : undefined : foldOf(t)} clip={p.clip} tools={far(t) ? go : undefined}
       checked={ticked.has(t.id)} onToggle={p.onToggle && !p.readOnly && !p.noSend && selectable(t, false) ? (x, shift) => p.onToggle?.(x, shift, row?.order ?? order) : undefined} readOnly={p.readOnly} noReply={!!p.noReply} noSend={p.noSend}
-      writers={p.live?.writers} onReplyText={p.live ? (x, text) => p.live!.onText(x.id, text) : undefined}
-      onSelect={p.onSelect} onSend={p.onSend} onResolve={resolve} onReply={p.onReply} onHover={p.onHover}>
+      writers={p.live?.writers} onReplyText={p.live || p.view ? replyText : undefined} draft={p.view ? drafts.get(t.id) : undefined}
+      onSelect={p.onSelect} onSend={p.onSend} onResolve={resolve} onReply={p.view ? replied : p.onReply} onHover={p.onHover}>
       {#snippet send(guard: (e: Event, act: () => void) => void)}
         <SendButton label={`Send to ${target}`} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null} {me} {own} aid={asks} threads={[t.id]}
           onSend={e => guard(e, () => p.onSend(t))} onChoose={h => p.onChoose?.(h)} />
