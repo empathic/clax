@@ -145,6 +145,7 @@ const PublishPublicArgs = Type.Object({
   question_id: opt(str("The approval question an earlier call returned, to keep waiting on it.")),
   timeout_s: opt(Type.Integer({ minimum: 0, description: "Seconds to wait for the person's answer (default 600, 50 under Codex)." })),
   site_access: opt(str("Instead of publishing on a public Clax: `world` opens this artifact's own site (`site_url`) to anyone, without signing in, once the person approves; `private` closes it again at once. Takes no `remote` or `mode`.")),
+  content_policy: opt(str("Instead of publishing on a public Clax: `own` lets this artifact's own site set its own content policy (load code from and connect to any site, register a service worker) once the person approves; `locked` holds its pages to their own site again at once. Takes no `remote`, `mode` or `site_access`.")),
 }, strict);
 
 const ForkArgs = Type.Object({
@@ -1643,20 +1644,33 @@ class Tools {
       if (!["world", "private"].includes(a.site_access)) throw invalid("site_access is world or private");
       if (a.remote !== undefined || a.mode !== undefined) throw invalid("site_access opens this artifact's own site: it takes no remote or mode");
     }
+    if (a.content_policy !== undefined) {
+      if (!["own", "locked"].includes(a.content_policy)) throw invalid("content_policy is own or locked");
+      if (a.remote !== undefined || a.mode !== undefined || a.site_access !== undefined) {
+        throw invalid("content_policy sets this artifact's own site's policy: it takes no remote, mode or site_access");
+      }
+    }
     const c = this.clientFor(ctx);
     const { id } = await this.resolveRef(c, a.url_or_id);
     const wait = Math.min(Math.max(a.timeout_s ?? DEFAULT_ASK_WAIT_S, MIN_WAIT_S), MAX_ASK_WAIT_S);
     const now = this.opts.now ?? (() => Date.now());
     const started = now();
-    if (a.site_access !== undefined) {
-      // PATCH /api/artifacts/<id> {site_access}: the daemon asks the person
-      // before opening to the world, as for a push.
-      const req: Record<string, unknown> = { site_access: a.site_access, question_id: a.question_id ?? null };
+    const site: ["site_access" | "content_policy", string] | undefined =
+      a.site_access !== undefined ? ["site_access", a.site_access]
+      : a.content_policy !== undefined ? ["content_policy", a.content_policy]
+      : undefined;
+    if (site !== undefined) {
+      // PATCH /api/artifacts/<id> {site_access} or {content_policy}: the
+      // daemon asks the person before opening to the world or letting the
+      // site set its own content policy, as for a push.
+      const [field, value] = site;
+      const req: Record<string, unknown> = { [field]: value, question_id: a.question_id ?? null };
       for (;;) {
         const res = await this.call(() => c.patch(id, req));
         if (res.status !== "approval_pending") {
-          const access = res.artifact?.site_access ?? null;
-          return { status: access === "world" ? "open" : "private", site_access: access, site_url: res.site_url ?? null };
+          const now = res.artifact?.[field] ?? null;
+          const status = field === "site_access" ? (now === "world" ? "open" : "private") : now;
+          return { status, [field]: now, site_url: res.site_url ?? null };
         }
         const qid = String(res.question_id ?? "");
         const pending = {
@@ -1664,7 +1678,7 @@ class Tools {
           question_id: qid,
           url: res.inbox_url ?? null,
           call_again: true,
-          note: "The person has not answered yet: call publish_public again with this site_access and question_id to keep waiting.",
+          note: `The person has not answered yet: call publish_public again with this ${field} and question_id to keep waiting.`,
         };
         const waitS = Math.max(0, wait - Math.floor((now() - started) / 1000));
         if (waitS === 0) return pending;
