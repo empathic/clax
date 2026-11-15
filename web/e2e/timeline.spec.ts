@@ -333,6 +333,12 @@ const lineOf = (page: Page, id: string) => row(page, id).evaluate(r => {
       await expect(row(page, tid)).toBeVisible();
       const fits = () => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth);
       expect(await fits()).toBe(true);
+      if (layout === "bottom") {
+        // As wide as the drawer is, the list keeps a reading width, its band beside its lines, at the drawer's left.
+        const list = await box(page.locator(".timeline"));
+        expect(list.width).toBeLessThanOrEqual(720);
+        expect(list.x).toBe((await box(page.locator(".sb-tabs"))).x);
+      }
       await page.getByRole("button", { name: "Hide threads" }).click();
       await expect(page.locator("div.drawer")).toHaveCount(0);
       await expect(page.locator("aside.rail")).toHaveCount(0);

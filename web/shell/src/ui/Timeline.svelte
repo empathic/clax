@@ -246,6 +246,9 @@
   :global {
     .timeline { position: relative; padding-right: 30px; }
     .timeline.left { padding-right: 0; padding-left: 30px; }
+    /* Docked at the bottom the drawer is the window's width: the list keeps a
+       reading width, at the drawer's left, so the band stays beside its lines. */
+    @media (min-width: 701px) { [data-drawer="bottom"] .timeline { max-width: 720px; } }
     .timeline > .tl-band { position: absolute; top: 0; right: -14px; overflow: visible; pointer-events: none; }
     .timeline.left > .tl-band { right: auto; left: -14px; }
     .tl-band-a { fill: var(--band); } .tl-band-w { fill: var(--you); }
