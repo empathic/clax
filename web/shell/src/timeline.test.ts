@@ -203,7 +203,7 @@ describe("Sidebar views", () => {
     await loaded(root);
     expect(row(gone)!.querySelector(".tl-n")!.textContent).toBe("");
     expect(row(gone)!.querySelector(".tl-q > .tl-det")!.textContent).toBe("detached");
-    expect(row(gone)!.querySelector(".tl-q")!.textContent).toBe("detached Shorter headline");
+    expect(row(gone)!.querySelector(".tl-q")!.textContent).toBe("detached · Shorter headline");
     expect(row(gone)!.querySelector(".tl-st")!.textContent).toBe("Send");
     expect(row(b)!.querySelector(".tl-det")).toBeNull();
     view.unmount();

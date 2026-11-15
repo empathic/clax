@@ -211,7 +211,7 @@
     <div class={["tl-thread", end && "tl-end"]} {@attach open && watch(untrack(() => id))}>
       {@render p.above?.(t, p.now)}
       <button type="button" class="tl-row" data-row={id} aria-expanded={open} onclick={() => toggle(id, !open)} {@attach !open && seen(untrack(() => id))}
-        ><span class="tl-n">{p.detached.has(id) ? "" : (p.numbers.get(id) ?? "")}</span><span class="tl-q">{#if p.detached.has(id)}<span class="tl-det">detached</span>{" "}{/if}{plainText(t.comments[0]?.body ?? "")}</span><span class={["tl-st", st.act && "act"]}>{st.text}</span></button>
+        ><span class="tl-n">{p.detached.has(id) ? "" : (p.numbers.get(id) ?? "")}</span><span class="tl-q">{#if p.detached.has(id)}<span class="tl-det">detached</span>{" · "}{/if}{plainText(t.comments[0]?.body ?? "")}</span><span class={["tl-st", st.act && "act"]}>{st.text}</span></button>
       {#if open}{@render p.card(t, { order, close: () => toggle(id, false) })}{/if}
     </div>
   {/if}

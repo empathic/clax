@@ -101,6 +101,8 @@
   :global {
     .sb-tabs { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0 16px; border-bottom: 1px solid var(--border); }
     .sb-tabs [role="tablist"] { display: flex; gap: 16px; }
+    /* Docked at the bottom the timeline keeps a reading width (`Timeline.svelte`); its tab row keeps the same, so the count at its right stays above the list. */
+    @media (min-width: 701px) { [data-drawer="bottom"] .sb-tabs:has(#sb-tab-timeline[aria-selected="true"]) { max-width: 720px; } }
     .sb-tab, .tl-needs { min-height: 32px; padding: 6px 0; background: none; border: 0; border-radius: 0; }
     .sb-tab { margin-bottom: -1px; border-bottom: 2px solid transparent; font: 600 14px/1.2 var(--font); color: var(--muted); }
     .sb-tab:not(:disabled):hover { background: none; border-color: transparent; color: var(--fg); }
