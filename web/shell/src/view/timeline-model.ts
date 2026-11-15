@@ -263,7 +263,9 @@ export function lineText(l: Line, stateOf: Map<string, ThreadState>): { text: st
   switch (l.kind) {
     case "version": return { text: `v${l.v} · ${l.note || `published by ${l.who}`}` };
     case "made": {
-      const nobody = l.here.some(id => stateOf.get(id)?.kind === "unsent") ? ", sent to no one" : "";
+      // Its comments' state now: all unsent, some, or none.
+      const unsent = l.ids.filter(id => stateOf.get(id)?.kind === "unsent").length;
+      const nobody = !unsent ? "" : unsent === l.ids.length ? ", sent to no one" : `, ${unsent} not sent`;
       return { text: (l.ids.length > 1 ? `${who} made ${l.ids.length} comments` : `${who} commented`) + nobody };
     }
     case "sent": {

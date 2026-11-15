@@ -270,15 +270,27 @@ describe("lineText", () => {
     expect(lineText(L({ kind: "version", v: 6, note: "Tighter header", who: "claude", agent: true }), none)).toEqual({ text: "v6 · Tighter header" });
     expect(lineText(L({ kind: "version", v: 6, note: null, who: "claude", agent: true }), none)).toEqual({ text: "v6 · published by claude" });
   });
-  it("words a made line, and says it was sent to no one while a thread listed under it is unsent", () => {
+  it("words a made line, and says how many of its comments are unsent now", () => {
     expect(lineText(L({ mine: true, who: "Alex" }), none).text).toBe("You commented");
     expect(lineText(L({}), none).text).toBe("Mia commented");
     expect(lineText(L({ mine: true, who: "Alex", ids: ["a", "b", "c"] }), none).text).toBe("You made 3 comments");
     const nobody = new Map<string, ThreadState>([["a", { kind: "unsent" }]]);
     expect(lineText(L({ here: ["a"] }), nobody).text).toBe("Mia commented, sent to no one");
-    // Not listed under it, or no longer unsent: no clause.
-    expect(lineText(L({ here: [] }), nobody).text).toBe("Mia commented");
+    // Its thread now listed under a newer line, still unsent: the clause is the thread's state now.
+    expect(lineText(L({ here: [] }), nobody).text).toBe("Mia commented, sent to no one");
     expect(lineText(L({ here: ["a"] }), new Map([["a", { kind: "with-agent", working: false }]])).text).toBe("Mia commented");
+  });
+  it("says of a made line's comments: all unsent, some unsent, or none", () => {
+    const ids = ["a", "b", "c", "d", "e", "f", "g"];
+    const states = (left: string[]) => new Map<string, ThreadState>(ids.map(id => [id, left.includes(id) ? { kind: "unsent" } : { kind: "with-agent", working: false }]));
+    const line = L({ mine: true, who: "Alex", ids, here: ["g"] });
+    expect(lineText(line, states(ids)).text).toBe("You made 7 comments, sent to no one");
+    // Five sent later in a batch, one resolved: two unsent.
+    const some = states(["f", "g"]);
+    some.set("e", { kind: "resolved" });
+    expect(lineText(line, some).text).toBe("You made 7 comments, 2 not sent");
+    expect(lineText(line, states(["g"])).text).toBe("You made 7 comments, 1 not sent");
+    expect(lineText(line, states([])).text).toBe("You made 7 comments");
   });
   it("words a send by its batch's size, with its note on a second row", () => {
     expect(lineText(L({ kind: "sent", mine: true, who: "Alex", size: 4, note: "Before the demo", ids: ["a", "b"] }), none)).toEqual({ text: "You sent 4 comments", sub: "Before the demo" });

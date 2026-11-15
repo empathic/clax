@@ -415,7 +415,7 @@ describe("Sidebar views", () => {
     expect(row(c)).not.toBeNull();
     expect(row(d)).toBeNull();
     flush(() => fold.click());
-    expect(texts(root)).toEqual(["v2 · published by claude", "You resolved a comment", "Mia made 2 comments, sent to no one", "v1 · published by claude"]);
+    expect(texts(root)).toEqual(["v2 · published by claude", "You resolved a comment", "Mia made 2 comments, 1 not sent", "v1 · published by claude"]);
     expect(row(d)).not.toBeNull();
     // Its heading folds it again.
     flush(() => root.querySelector<HTMLButtonElement>('button.tl-fold[aria-expanded="true"]')!.click());

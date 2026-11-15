@@ -223,7 +223,7 @@ Text, never markup, in the style of `historyOf`:
 - version: `v6` and its note; without a note, `v6` and "published by
   claude".
 - made: "You commented" / "Mia commented"; several: "You made 3 comments".
-  With a thread that is still unsent listed under it: ", sent to no one".
+  Its comments unsent now: all, ", sent to no one"; some, ", 2 not sent".
 - sent: "You sent 4 comments to claude" (the count is the batch's `size`);
   with a note, the note follows on the line's second row.
 - answered: "claude replied".
