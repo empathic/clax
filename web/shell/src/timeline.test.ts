@@ -196,6 +196,19 @@ describe("Sidebar views", () => {
     view.unmount();
   });
 
+  it("says a detached row is detached before its text, leaving its number column empty like a row with no pin", async () => {
+    const { view, root, row, props, a, b } = setup({ file: "index.html", holds: (f: string) => f === "index.html", threads: [] });
+    const gone = { ...a, anchor: { ...anchor, file: "gone.html" } };
+    view.update({ ...props, threads: [gone, b] });
+    await loaded(root);
+    expect(row(gone)!.querySelector(".tl-n")!.textContent).toBe("");
+    expect(row(gone)!.querySelector(".tl-q > .tl-det")!.textContent).toBe("detached");
+    expect(row(gone)!.querySelector(".tl-q")!.textContent).toBe("detached Shorter headline");
+    expect(row(gone)!.querySelector(".tl-st")!.textContent).toBe("Send");
+    expect(row(b)!.querySelector(".tl-det")).toBeNull();
+    view.unmount();
+  });
+
   it("heads each day at the level of the thread list's sections, so the outline skips none", async () => {
     const { view, root, props } = setup();
     view.update({ ...props, versions: [version(1, at(12, 9)), ...props.versions.slice(1)] });

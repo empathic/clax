@@ -316,8 +316,8 @@ in the list), `onSelect`, `onSeen`, the side the band is on, and the
   line (`plainText`, ellipsis), and its state at the right:
   `✓ v6` (addressed), `Send` (unsent), `Reply` (answered), `working` or
   `sent` (with the agent), the card's own waiting words shortened for
-  `stalled` (in `--you-ink`), `resolved`, and `detached` in place of the
-  number for a thread `sidebarSections` puts in Detached. `Send` and
+  `stalled` (in `--you-ink`), `resolved`; for a thread `sidebarSections`
+  puts in Detached, a muted `detached` before its text, no number. `Send` and
   `Reply` are in `--you-ink`; they are labels on the row's one button, not
   separate controls.
 - A row is a button (`aria-expanded`). Activating it expands the thread's

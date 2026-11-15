@@ -211,7 +211,7 @@
     <div class={["tl-thread", end && "tl-end"]} {@attach open && watch(untrack(() => id))}>
       {@render p.above?.(t, p.now)}
       <button type="button" class="tl-row" data-row={id} aria-expanded={open} onclick={() => toggle(id, !open)} {@attach !open && seen(untrack(() => id))}
-        ><span class="tl-n">{p.detached.has(id) ? "detached" : (p.numbers.get(id) ?? "")}</span><span class="tl-q">{plainText(t.comments[0]?.body ?? "")}</span><span class={["tl-st", st.act && "act"]}>{st.text}</span></button>
+        ><span class="tl-n">{p.detached.has(id) ? "" : (p.numbers.get(id) ?? "")}</span><span class="tl-q">{#if p.detached.has(id)}<span class="tl-det">detached</span>{" "}{/if}{plainText(t.comments[0]?.body ?? "")}</span><span class={["tl-st", st.act && "act"]}>{st.text}</span></button>
       {#if open}{@render p.card(t, { order, close: () => toggle(id, false) })}{/if}
     </div>
   {/if}
@@ -263,13 +263,15 @@
     .tl-time { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
     .tl-sub { margin: 2px 0 0; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
     .tl-thread { margin-top: 4px; }
-    .tl-row { display: grid; grid-template-columns: minmax(18px, auto) minmax(0, 1fr) auto; gap: 8px; align-items: baseline; width: 100%; min-height: 28px; padding: 4px 0;
+    /* The number column is one width for every row, so every quote starts at the same x. */
+    .tl-row { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; width: 100%; min-height: 28px; padding: 4px 0;
       background: none; border: 0; border-radius: 0; text-align: left; font: 400 13px/1.45 var(--font); color: var(--muted); }
     .tl-row:not(:disabled):hover { background: none; }
     .tl-row:hover .tl-q, .tl-row[aria-expanded="true"] .tl-q { color: var(--fg); }
     .tl-n, .tl-st { font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
     .tl-q { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .tl-st.act { color: var(--you-ink); }
+    .tl-det { color: var(--muted); }
     .tl-thread > .thread-card { margin: 4px 0 8px; }
     @media (max-width: 700px) { .tl-row, .tl-fold { min-height: 40px; } }
   }
