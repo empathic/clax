@@ -321,10 +321,24 @@ export function days(lines: Line[], now: Date): Day[] {
   return out;
 }
 
-/** A folded day's summary: "Thursday · 3 versions · 7 addressed", then its
- * comments and resolves; a part that would be 0 is left out. */
-export function daySummary(d: Day): string {
-  const name = d.label === "Today" || d.label === "Yesterday" ? d.label : d.label.split(" ")[0];
+/** A folded day's name at `now`: "Today", "Yesterday", the weekday within
+ * the last six days, else the short date in the viewer's locale ("Nov 6",
+ * with the year when it is not `now`'s), since a weekday names two days a
+ * week apart alike. */
+function dayName(date: string, now: Date): string {
+  const [y, m, n] = date.split("-").map(Number);
+  const d = new Date(y, m - 1, n);
+  const ago = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() - d.getTime()) / 86_400_000);
+  if (ago <= 0) return "Today";
+  if (ago === 1) return "Yesterday";
+  if (ago <= 6) return WEEKDAYS[d.getDay()];
+  return d.toLocaleDateString([], { month: "short", day: "numeric", ...(y === now.getFullYear() ? {} : { year: "numeric" }) });
+}
+
+/** A folded day's summary at `now`: "Thursday · 3 versions · 7 addressed",
+ * then its comments and resolves; a part that would be 0 is left out. */
+export function daySummary(d: Day, now: Date): string {
+  const name = dayName(d.date, now);
   const of = (k: LineKind) => d.lines.filter(l => l.kind === k);
   const versions = of("version");
   const addressed = new Set(versions.flatMap(l => l.ids)).size;

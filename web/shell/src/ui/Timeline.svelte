@@ -236,7 +236,7 @@
       <!-- Days are headed at the level of the thread list's sections (h2). -->
       <h2 class="tl-day">{#if e.i}<button type="button" class="tl-fold" data-day={d.date} aria-expanded="true" onclick={() => (unfolded = unfolded.filter(x => x !== d.date))}>{d.label}</button>{:else}{d.label}{/if}</h2>
     {:else}
-      <h2 class="tl-day"><button type="button" class="tl-fold" data-band={`day:${d.date}`} data-day={d.date} aria-expanded="false" onclick={() => (unfolded = [...unfolded, d.date])}>{daySummary(d)}</button></h2>
+      <h2 class="tl-day"><button type="button" class="tl-fold" data-band={`day:${d.date}`} data-day={d.date} aria-expanded="false" onclick={() => (unfolded = [...unfolded, d.date])}>{daySummary(d, p.now)}</button></h2>
     {/if}
   {/each}
   {#if !p.threads.length}{@render p.empty?.()}{/if}

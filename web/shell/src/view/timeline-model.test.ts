@@ -333,12 +333,23 @@ describe("days", () => {
     expect(days([L({ at: new Date(2025, 11, 31, 12).toISOString() })], now)[0].label).toBe("Wednesday 31 Dec 2025");
     expect(days([], now)).toEqual([]);
   });
-  it("sums a folded day up by its weekday, versions, addressed threads, comments and resolves", () => {
-    const d: Day = { label: "Thursday 12 Nov", date: "2026-11-12", lines: [
+  it("sums a folded day up by its name, versions, addressed threads, comments and resolves", () => {
+    const d: Day = { label: "Tuesday 10 Nov", date: "2026-11-10", lines: [
       L({ kind: "version", v: 4, ids: ["a", "b"] }), L({ kind: "version", v: 3, ids: ["a", "c"] }), L({ kind: "version", v: 2, ids: [] }),
       L({ kind: "made", ids: ["d"] }), L({ kind: "resolved", ids: ["a", "b"] }),
     ] };
-    expect(daySummary(d)).toBe("Thursday · 3 versions · 3 addressed · 1 comment · 2 resolved");
-    expect(daySummary({ ...d, label: "Yesterday", lines: [L({ kind: "version", v: 2, ids: ["a"] })] })).toBe("Yesterday · 1 version · 1 addressed");
+    expect(daySummary(d, now)).toBe("Tuesday · 3 versions · 3 addressed · 1 comment · 2 resolved");
+    expect(daySummary({ ...d, label: "Yesterday", date: "2026-11-12", lines: [L({ kind: "version", v: 2, ids: ["a"] })] }, now)).toBe("Yesterday · 1 version · 1 addressed");
+  });
+  it("names a folded day by its weekday within the last six days, and by its short date before", () => {
+    const one = [L({ kind: "version", v: 2, ids: [] })];
+    const day = (date: string): Day => ({ label: "", date, lines: one });
+    const short = (y: number, m: number, d: number, year = false) => new Date(y, m, d).toLocaleDateString([], { month: "short", day: "numeric", ...(year ? { year: "numeric" } : {}) });
+    expect(daySummary(day("2026-11-07"), now)).toBe("Saturday · 1 version");
+    // A week ago is a Friday again: its date says which.
+    expect(daySummary(day("2026-11-06"), now)).toBe(`${short(2026, 10, 6)} · 1 version`);
+    expect(daySummary(day("2026-10-30"), now)).toBe(`${short(2026, 9, 30)} · 1 version`);
+    expect(daySummary(day("2025-12-31"), now)).toBe(`${short(2025, 11, 31, true)} · 1 version`);
+    expect(short(2026, 10, 6)).toMatch(/Nov 6|6 Nov/);
   });
 });
