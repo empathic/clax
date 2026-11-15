@@ -85,8 +85,12 @@ sign-in: `agent_publish`. In words, on the approval page: "Agents on
 this machine may publish pages to your account. Only you can open them
 until you share them."
 
-It is kept by the public Clax, with the token (its grant), listed with
-the machine on the person's People page, and turned off there. The local
+It is kept by the public Clax, on the token's grant, listed with the
+machine on the person's People page, and turned on and off there. It has
+three values: `unasked` (the person was never asked), `on`, and `off`
+(the person chose "Connect without this", denied a request for it, or
+turned it off on People). `off` is the person's answer and stays until
+they turn it on, on People: no agent's call asks again (§6.1). The local
 daemon keeps a copy of the last value it was told, for the tool's first
 check only; the public Clax's answer decides.
 
@@ -115,15 +119,25 @@ person signs in and approves this machine:
 - `GET /.well-known/clax` lists `agent_publish` in `capabilities`, so a
   local daemon knows the public Clax offers it.
 
-A machine already connected runs the same sign-in again, asking for the
-permission. Today that is refused (`remote_exists`,
-`crates/clax-server/src/routes/remotes.rs`) and a sign-in completes only
-on a `pending` row (`crates/clax-store/src/remotes.rs`), so a connected
-remote gains a second, waiting sign-in beside its live token: the old
-token keeps working while the person decides. On approval the daemon
-swaps its token for the new one and revokes the old one; the remote's
-row, its links, linked threads, mirrors and per-page approvals are kept.
-A sign-in denied or expired leaves the remote as it was.
+A machine already connected asks for the permission on the token it
+has; it gets no new token. It sends the same `POST
+/api/hosted/device/code` with `wants`, this time with its agent token as
+the bearer. The public Clax ties that request to the token's grant
+(`device_codes.grant_id` exists already, `crates/clax-store/src/device.rs`),
+and the approval page says "Allow <machine>, already connected, to
+publish pages to your account" in place of the connect words. Only the
+grant's own person may decide it. Approving sets the grant's permission
+to `on`; denying sets it to `off`; the machine's poll answers the value
+and issues nothing. The local remote's row, token, links, linked
+threads, mirrors and per-page approvals are untouched throughout, and
+the local daemon keeps only the request's device code while it waits. A
+request that expires leaves the value as it was.
+
+The approval link is the sign-in's `verification_uri_complete`
+(`crates/clax-server/src/hosted.rs`), which carries the user code: the
+person clicks and approves, and types nothing. The user code is shown
+beside it only so the person can see the page is the one their agent
+asked for.
 
 A public Clax that refuses `wants` as an unknown field does not offer the
 permission (its `capabilities` say so first); §6.1 says what the tool
@@ -169,10 +183,9 @@ the owner's browser.
   running as the person's OS user can read.
 - The local daemon skips its push question for an agent's push when the
   remote's token has the permission and the push does not widen access.
-- The owner's own push with the bare daemon token ("Browser
-  confirmations", decision 1) does not wait for a confirmation either
-  when the remote's token has the permission: what an agent may do
-  unasked, the owner's CLI may.
+- A push made with the bare daemon token and no session (`clax push`,
+  "Browser confirmations" decision 1) is unchanged: it waits for its
+  confirmation as today.
 
 An agent that holds the local daemon token can already push as the
 owner's CLI (the open concern on
@@ -200,15 +213,14 @@ What it does:
 2. If not, starts the sign-in (§5.2) and returns at once when it cannot
    wait, or waits up to `timeout_s`:
    `{status: "approval_needed", approve_url, user_code, tell_person,
-   call_again: true}`. `approve_url` is the public Clax's approval page.
-   `tell_person` is one sentence for the agent to show, naming clax.dev
-   and what approving allows. The same call made again waits on the same
-   sign-in.
+   call_again: true}`. `approve_url` is the public Clax's approval page
+   with the code in it (§5.2): one click, nothing to type. `tell_person`
+   is one sentence for the agent to show, naming clax.dev and what
+   approving allows. The same call made again waits on the same sign-in.
 3. Once approved, publishes: a local artifact and version as `publish`
    makes them, pushed to the default instance with new versions
-   following, in the one call. A push that fails leaves the local
-   version in place and says so; the same call made again pushes it and
-   publishes nothing twice.
+   following, in the one call. The local copy is the daemon's own
+   business: no result names it.
 4. Answers `{status: "published", url, artifact_id, version, if_version,
    visibility: "private", who_can_open: "only you"}`. `url` is the
    page's address on the public Clax. `artifact_id` is the public copy's.
@@ -218,18 +230,21 @@ The states the tool can find, and what it answers **(call)**:
 | The default instance is | The tool |
 |---|---|
 | not connected | starts the sign-in, asking for the permission (step 2) |
-| connected, permission off (never asked, "Connect without this", or turned off on People) | starts the sign-in again, asking for it, at most once per session |
-| asked in this session and denied | `{status: "declined"}` and a sentence for the agent; no new sign-in in that session |
+| connected, permission `unasked` | asks for it on the token it has (§5.2, step 2) |
+| connected, permission `off` | `{status: "turned_off", settings_url, tell_person}`: the person's People page on the public Clax, where they turn it on. It starts no request, in this session or any other |
 | too old to offer the permission | `{status: "not_supported"}` and a sentence; it never falls back to the localhost question |
 
 **Versions.** `version` and `if_version` are the public copy's numbers,
 and `read` of such a page gives the public head. The tool keeps the
 local numbers to itself.
 
-**A failed push.** The result is `{status: "not_published", artifact_id,
-call_again: true}` with the local artifact's ID; the same call with that
-`url_or_id` pushes the version already made when its content is the
-same, and publishes nothing twice.
+**A failed push.** The tool answers an error, `remote_unreachable` (or
+the public Clax's own refusal), and the agent makes the same call again.
+There is no half-published state for it to carry: a new page whose push
+failed leaves no local artifact behind, and a new version whose push
+failed stays as the local head, which the next call pushes when its
+content is the same and replaces when it is not. Nothing is published
+twice, and no result carries a local ID.
 
 **The public copy moved** (someone else published a version there):
 `remote_moved` with a sentence, until step 3 (§6.4), which brings the
@@ -304,12 +319,12 @@ superseded by this document.
   (`crates/clax-worker`); every public-side change here applies to both.
 - New columns take the next free migration numbers on main, with their
   marks, as `AGENTS.md` and `crates/clax-store/src/migrations.rs`
-  require: the permission on the public side's agent tokens, what a
-  device code asked for, the local remote's last known permission and
-  its waiting second sign-in (§5.2), and the link's mark (§6.3).
+  require: the permission on the public side's grants, what a device
+  code asked for, the local remote's last known permission and its
+  waiting request's device code (§5.2), and the link's mark (§6.3).
 - `docs/contract.md` and `docs/usage.md` change with the code: the
   device sign-in, the agent's sign-in path (§5.3), the push routes, the
-  MCP tool table, "Browser confirmations" decisions 1 and 2, and
+  MCP tool table, "Browser confirmations" decision 2, and
   `not_on_remote`.
 - The plugins that list tools (`plugins/clax`, `plugins/pi`, and the
   others under `plugins/`) carry the new tool and the skill's text.
@@ -341,3 +356,8 @@ Each step is useful alone and can be its own pull request.
    versions? Covered, an agent's update reaches the people it was shared
    with unasked, as a page set to follow new versions does today. Not
    covered, each update of a shared page asks again.
+2. A page that declares capabilities is refused by `publish_private`
+   (§6.1), because that approval lives in the local shell. For a person
+   who uses only clax.dev that is a dead end. Either it stays refused
+   until that approval has a home on the public Clax (this document's
+   choice), or that move joins this work as a fourth step.
