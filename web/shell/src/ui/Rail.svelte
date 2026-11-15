@@ -72,7 +72,8 @@
 
 <button type="button" class={["rail", p.side]} data-shell-control="threads" aria-label={label} onclick={() => p.onOpen()}>
   <span class="rail-n">{pending}</span><span class="rail-cap">pending</span>
-  {#if waiting}<span class="rail-n you">{waiting}</span><span class="rail-cap">{needs(waiting)}</span>{/if}
+  <!-- "needs you" is two lines: on one it does not fit the strip with air on both sides. -->
+  {#if waiting}<span class="rail-n you">{waiting}</span><span class="rail-cap two">{#each needs(waiting).split(" ") as w, i (i)}{#if i}{" "}{/if}<span>{w}</span>{/each}</span>{/if}
   <span class="rail-plot" aria-hidden="true">
     <svg width={W} height={p.height}>
       <path class="rail-mark" d={tally.agents} /><path class="rail-mark waits" d={tally.waits} />
@@ -96,6 +97,7 @@
     .rail-n { font: 600 22px/1 var(--font); font-variant-numeric: tabular-nums; }
     .rail-n.you { margin-top: 4px; font-size: 15px; color: var(--you-ink); }
     .rail-cap { margin: 2px 0 6px; color: var(--muted); }
+    .rail-cap.two > span { display: block; }
     .rail-plot { position: relative; flex: 1; min-height: 0; overflow: hidden; }
     .rail-plot > svg { position: absolute; left: 0; top: 0; overflow: visible; }
     .rail-mark, .rail-band-a { fill: var(--band); } .rail-mark.waits, .rail-band-w { fill: var(--you); }

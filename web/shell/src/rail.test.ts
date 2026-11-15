@@ -81,6 +81,8 @@ describe("Rail", () => {
     const one = rail(tl(3, 1));
     expect(one.button.getAttribute("aria-label")).toBe("Threads: 3 pending, 1 needs you. Show threads");
     expect(Array.from(one.m.root.querySelectorAll(".rail-cap"), e => e.textContent)).toEqual(["pending", "needs you"]);
+    // Two lines, one word each, to fit the strip.
+    expect(Array.from(one.m.root.querySelectorAll(".rail-cap.two > span"), e => e.textContent)).toEqual(["needs", "you"]);
     one.m.unmount();
     const none = rail(tl(4, 0));
     expect(none.button.getAttribute("aria-label")).toBe("Threads: 4 pending. Show threads");

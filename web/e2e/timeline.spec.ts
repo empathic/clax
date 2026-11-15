@@ -40,6 +40,25 @@ async function fresh(title: string, n: number) {
 }
 
 const box = async (l: Locator) => (await l.boundingBox())!;
+/** Every line of the strip's counts and their words, as drawn, sits at
+ * least 4 px inside the strip's box on both sides. */
+async function airAround(page: Page) {
+  const out = await page.locator("aside.rail").evaluate(aside => {
+    const a = aside.getBoundingClientRect();
+    const texts: Text[] = [];
+    for (const e of aside.querySelectorAll(".rail-n, .rail-cap")) {
+      const w = document.createTreeWalker(e, NodeFilter.SHOW_TEXT);
+      for (let n = w.nextNode(); n; n = w.nextNode()) if (n.textContent!.trim()) texts.push(n as Text);
+    }
+    return texts.flatMap(t => {
+      const r = document.createRange();
+      r.selectNodeContents(t);
+      return [...r.getClientRects()].map(x => ({ text: t.textContent, left: x.left - a.left, right: a.right - x.right }));
+    });
+  });
+  expect(out.length).toBeGreaterThanOrEqual(4);
+  for (const x of out) expect(Math.min(x.left, x.right), `"${x.text}" has ${x.left.toFixed(1)} px left and ${x.right.toFixed(1)} px right`).toBeGreaterThanOrEqual(4);
+}
 const row = (page: Page, id: string) => page.locator(`.tl-row[data-row="${id}"]`);
 const tab = (page: Page, name: "Timeline" | "Threads") => page.getByRole("tab", { name });
 /** The text of the line thread `id`'s row is listed under: the nearest
@@ -235,6 +254,7 @@ const lineOf = (page: Page, id: string) => row(page, id).evaluate(r => {
     expect(r.width).toBe(56);
     expect(r.x + r.width).toBe(width);
     expect((await box(page.locator(".stage"))).width).toBe(width - 56);
+    await airAround(page);
     // From the keyboard: the drawer it opens takes the focus, on its Hide threads.
     await strip.focus();
     await page.keyboard.press("Enter");
@@ -264,6 +284,7 @@ const lineOf = (page: Page, id: string) => row(page, id).evaluate(r => {
     const stage = await box(page.locator(".stage"));
     expect(stage.x).toBe(56);
     expect(stage.width).toBe(page.viewportSize()!.width - 56);
+    await airAround(page);
     await strip.click();
     expect((await box(page.locator("div.drawer"))).x).toBe(0);
     // Narrower than 900 px the threads start hidden: the strip is there
