@@ -612,6 +612,71 @@ describe("Sidebar views", () => {
   });
 });
 
+describe("The timeline's band", () => {
+  // Each band row's heading laid out 40 px below the one before, from 60 px
+  // (centre 70); the list itself at the top.
+  const laidOut = () => {
+    const own = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      const all = [...document.querySelectorAll("[data-band]")];
+      const i = all.indexOf(this);
+      return { top: i < 0 ? 0 : 60 + 40 * i, height: i < 0 ? 0 : 20, left: 0, right: 0, bottom: 0, width: 0, x: 0, y: 0, toJSON() {} } as DOMRect;
+    };
+    return () => { Element.prototype.getBoundingClientRect = own; };
+  };
+  const d = (root: HTMLElement, cls: string) => root.querySelector(`.timeline > svg.tl-band path.${cls}`)!.getAttribute("d");
+
+  it("draws a folded day as one row, at the counts after its newest line", async () => {
+    const restore = laidOut();
+    try {
+      // Yesterday: v1, Mia's comment c (still unsent), d made and resolved.
+      // Today: e (unsent) and v2, so the newest line counts 2 and the folded day 1.
+      const c = thread("c", at(12, 9, 10), "Mention cancelling");
+      const old = resolvedBy(thread("d", at(12, 9, 20), "Old typo"), at(12, 9, 40));
+      const e = thread("e", at(13, 9, 30), "New today", { comments: [comment(`e${made}.1`, "viewer", at(13, 9, 30), "New today", "Alex")] });
+      const { view, root } = setup({ threads: [c, old, e], versions: [version(1, at(12, 9)), version(2, at(13, 10))] });
+      await loaded(root);
+      const { band } = await import("./view/band-model");
+      expect(root.querySelector("button.tl-fold")!.textContent).toBe("Yesterday · 1 version · 2 comments · 1 resolved");
+      // v2 (2 pending, 2 waiting), e's line (2, 2), the folded day (1, 1); above them the counts now.
+      const want = band([{ y: 35, pending: 2, waiting: 2 }, { y: 70, pending: 2, waiting: 2, v: 2 }, { y: 110, pending: 2, waiting: 2 }, { y: 150, pending: 1, waiting: 1 }],
+        { top: 0, x0: 30, dir: 1, unit: 4.5 });
+      expect(d(root, "tl-band-w")).toBe(want.waiting);
+      expect(d(root, "tl-band-a")).toBe(want.agent);
+      // Had it drawn the day's oldest line (v1, nothing pending), its row would be empty.
+      expect(want.waiting).not.toBe(band([{ y: 35, pending: 2, waiting: 2 }, { y: 70, pending: 2, waiting: 2, v: 2 }, { y: 110, pending: 2, waiting: 2 }, { y: 150, pending: 0, waiting: 0 }],
+        { top: 0, x0: 30, dir: 1, unit: 4.5 }).waiting);
+      view.unmount();
+    } finally {
+      restore();
+    }
+  });
+
+  it("docked left, draws the band from the list's left edge, with no labels, and the list's padding on that side", async () => {
+    const restore = laidOut();
+    try {
+      const { view, root } = setup({ view: { now: "timeline", onChange: vi.fn(), side: "left" } });
+      await loaded(root);
+      const list = root.querySelector(".timeline")!;
+      expect([list.classList.contains("left"), list.classList.contains("right")]).toEqual([true, false]);
+      const { band, strokes } = await import("./view/band-model");
+      // The counts now (1 pending, waiting), v2 (1, 1), b's sent line (2, 1), a's line (1, 1), v1 (0, 0).
+      const want = band([{ y: 35, pending: 1, waiting: 1 }, { y: 70, pending: 1, waiting: 1, v: 2 }, { y: 110, pending: 2, waiting: 1 }, { y: 150, pending: 1, waiting: 1 }, { y: 190, pending: 0, waiting: 0, v: 1 }],
+        { top: 0, x0: 0, dir: -1, unit: 4.5 });
+      expect(d(root, "tl-band-a")).toBe(want.agent);
+      expect(d(root, "tl-band-w")).toBe(want.waiting);
+      expect(d(root, "tl-tick")).toBe(strokes(want).ticks);
+      expect(d(root, "tl-spine")).toMatch(/^M0,0 V/);
+      // The expanded form's band carries no labels.
+      expect(root.querySelector(".timeline > svg.tl-band text")).toBeNull();
+      expect(root.querySelectorAll(".timeline > svg.tl-band > *")).toHaveLength(4);
+      view.unmount();
+    } finally {
+      restore();
+    }
+  });
+});
+
 describe("sidebarView", () => {
   const fresh = async () => { vi.resetModules(); return (await import("./ui/sidebar-view.svelte")).sidebarView; };
 

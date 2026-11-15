@@ -181,8 +181,8 @@ describe("the sidebar island with the panel closed", () => {
     anchor: { kind: "element", selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" },
     comments: [{ id: "tr1.1", thread_id: "tr1", author_kind: "viewer", author_name: "Mia", via_harness: null, body: "Shorter", created_at: at }],
   };
-  function island(threads: Thread[] = [thread]) {
-    vi.stubGlobal("matchMedia", (q: string) => ({ matches: q === "(min-width: 701px)", media: q, addEventListener() {}, removeEventListener() {} }));
+  function island(threads: Thread[] = [thread], media: (q: string) => unknown = (q: string) => ({ matches: q === "(min-width: 701px)", media: q, addEventListener() {}, removeEventListener() {} })) {
+    vi.stubGlobal("matchMedia", media);
     const state = writable({ error: null, origin: "", data: { versions: [], artifact: { owner_harness: "claude" } }, panel: false, deleted: false, threads, working: [], me: null,
       resolved: {}, selected: null, file: "index.html", commenting: false, agents: [], attention: null, decided: null, selection: { ids: [], anchor: null }, batchNote: "", batchBusy: false, sendTo: null });
     const ctl = { id: "7q3k9mzx2b4t", state, setNotice: vi.fn(), openCount: () => threads.length, holds: () => true, shown: () => 1,
@@ -227,6 +227,22 @@ describe("the sidebar island with the panel closed", () => {
     await vi.dynamicImportSettled();
     flush();
     expect(document.activeElement).toBe(document.body);
+    m.unmount();
+  });
+
+  it("follows the window across 700 px: the strip goes at phone width and comes back wider", async () => {
+    const heard = new Set<() => void>();
+    let wide = true;
+    // Every query, live: `matches` as the window is now, and its change events.
+    const media = (q: string) => ({ get matches() { return q === "(min-width: 701px)" ? wide : q === "(max-width: 700px)" ? !wide : false; }, media: q,
+      addEventListener: (_: string, f: () => void) => heard.add(f), removeEventListener: (_: string, f: () => void) => heard.delete(f) });
+    const { m } = island([thread], media);
+    await strip(m);
+    const resize = (to: boolean) => { wide = to; flush(() => { for (const f of heard) f(); }); };
+    resize(false);
+    expect(m.root.querySelector(".rail")).toBeNull();
+    resize(true);
+    expect(m.root.querySelector("button.rail")).not.toBeNull();
     m.unmount();
   });
 

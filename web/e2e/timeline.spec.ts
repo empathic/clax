@@ -285,7 +285,51 @@ const lineOf = (page: Page, id: string) => row(page, id).evaluate(r => {
     await expect(page.locator("aside.rail")).toHaveCount(0);
     expect((await box(page.locator(".stage"))).width).toBe(page.viewportSize()!.width);
   });
+
+  test(`at phone width the Timeline is the Threads sheet, and there is no strip`, async ({ page }) => {
+    await prefer(page, TIMELINE);
+    await page.setViewportSize({ width: 390, height: 844 });
+    const { aid, ids: [tid] } = await fresh(`Phone`, 1);
+    await openArtifact(page, d.base, aid, 1);
+    // The threads start hidden on a phone: the page, and no strip.
+    await expect(page.locator(".phone-tabs")).toBeVisible();
+    await expect(page.locator("aside.rail")).toHaveCount(0);
+    await page.locator(".phone-tabs").getByRole("button", { name: /^Threads/ }).click();
+    await expect(tab(page, "Timeline")).toHaveAttribute("aria-selected", "true");
+    await expect(row(page, tid)).toBeVisible();
+    expect((await box(page.locator("aside.sidebar"))).width).toBe(390);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+    await page.locator(".phone-tabs").getByRole("button", { name: "Page" }).click();
+    await expect(page.locator("aside.rail")).toHaveCount(0);
+  });
+
+  for (const layout of ["bottom", "float"] as const) {
+    test(`with the threads ${layout === "bottom" ? "docked at the bottom" : "floating"}, the Timeline shows, and hiding them leaves no strip and no sideways scroll`, async ({ page }) => {
+      await prefer(page, { ...TIMELINE, "clax.drawer": JSON.stringify({ layout }) });
+      const { aid, ids: [tid] } = await fresh(`Layout ${layout}`, 1);
+      await openArtifact(page, d.base, aid, 1);
+      await expect(tab(page, "Timeline")).toHaveAttribute("aria-selected", "true");
+      await expect(row(page, tid)).toBeVisible();
+      const fits = () => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth);
+      expect(await fits()).toBe(true);
+      await page.getByRole("button", { name: "Hide threads" }).click();
+      await expect(page.locator("div.drawer")).toHaveCount(0);
+      await expect(page.locator("aside.rail")).toHaveCount(0);
+      expect(await fits()).toBe(true);
+    });
+  }
 }
+
+test.describe(`with no view stored at all`, () => {
+  test.use({ threadsFirst: false });
+  test(`the sidebar opens on the Timeline`, async ({ page }) => {
+    const { aid, ids: [tid] } = await fresh(`Default`, 1);
+    await openArtifact(page, d.base, aid, 1);
+    expect(await page.evaluate(() => localStorage.getItem("clax.sidebar"))).toBeNull();
+    await expect(tab(page, "Timeline")).toHaveAttribute("aria-selected", "true");
+    await expect(row(page, tid)).toBeVisible();
+  });
+});
 
 /** A port no one listens on now, for a hosted daemon whose public origin names it. */
 function freePort(): Promise<number> {
