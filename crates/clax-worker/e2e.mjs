@@ -90,11 +90,19 @@ async function threads(page) {
   await page.locator(".new-comment-open").waitFor({ timeout: LIMIT });
 }
 
+/** Names `page`'s viewer in the People panel and waits for the name's
+ * `PUT /api/viewers/me` to answer 200, so what follows goes as the named viewer. */
 async function setName(page, name) {
   await page.getByRole("button", { name: "People and agents" }).click();
   const field = page.getByRole("dialog", { name: "People and agents" }).getByLabel("Your name");
   await field.fill(name);
+  const saved = page.waitForResponse(
+    (r) => r.request().method() === "PUT" && new URL(r.url()).pathname === "/api/viewers/me",
+    { timeout: LIMIT },
+  );
   await field.press("Enter");
+  const res = await saved;
+  if (res.status() !== 200) throw new Error(`saving the name ${name}: ${res.status()} ${await res.text()}`);
   await page.keyboard.press("Escape");
 }
 
