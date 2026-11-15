@@ -368,7 +368,10 @@ impl Store {
 
     /// Whether artifact `aid`'s site sets its own content policy
     /// (`artifacts.content_policy` is `own`); false (`locked`) for one that
-    /// does not exist or is deleted.
+    /// does not exist or is deleted. A draft of an app follows its live
+    /// app's setting, as its network grants do (`net_grants::live_app_in`):
+    /// a new app's draft, a draft made offline (a bundle update's check
+    /// draft) and a draft whose app is gone keep their own, `locked`.
     ///
     /// # Errors
     /// The database's.
@@ -376,7 +379,12 @@ impl Store {
         self.with_read(|c| {
             let v: Option<String> = c
                 .query_row(
-                    "SELECT content_policy FROM artifacts WHERE id = ?1 AND deleted_at IS NULL",
+                    "SELECT coalesce(app.content_policy, a.content_policy)
+                       FROM artifacts a
+                       LEFT JOIN artifacts app
+                         ON a.hidden = 1 AND a.draft_inherit_net = 1
+                        AND app.id = a.draft_of AND app.deleted_at IS NULL
+                      WHERE a.id = ?1 AND a.deleted_at IS NULL",
                     params![aid.as_str()],
                     |r| r.get(0),
                 )

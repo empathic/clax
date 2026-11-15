@@ -471,3 +471,379 @@ async fn a_push_to_a_public_clax_starts_locked() {
     assert!(!public.ts.store.content_policy_own(&id(&rid)).unwrap());
     assert!(local.store.content_policy_own(&id(&aid)).unwrap());
 }
+
+/// `GET path` on `aid`'s site with the owner's site session `cookie`,
+/// naming `etag` in `If-None-Match` when given.
+async fn site_get_if(
+    ts: &TestServer,
+    aid: &str,
+    cookie: &str,
+    path: &str,
+    etag: Option<&str>,
+) -> reqwest::Response {
+    let mut r = ts
+        .client
+        .get(format!("{}{path}", ts.base))
+        .header("host", ts.site_host(aid))
+        .header("cookie", cookie);
+    if let Some(e) = etag {
+        r = r.header("if-none-match", e);
+    }
+    r.send().await.unwrap()
+}
+
+/// A response's `Cache-Control` and `ETag`.
+fn caching(res: &reqwest::Response) -> (String, Option<String>) {
+    let h = |n: &str| {
+        res.headers()
+            .get(n)
+            .map(|v| v.to_str().unwrap().to_string())
+    };
+    (h("cache-control").unwrap_or_default(), h("etag"))
+}
+
+#[tokio::test]
+async fn an_own_sites_files_revalidate_and_a_copy_kept_from_then_is_never_not_modified_once_locked()
+{
+    let ts = TestServer::spawn().await;
+    let aid = ts
+        .publish(
+            "Cached",
+            &[
+                ("index.html", "<h1>hi</h1>"),
+                ("x.svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"/>"),
+            ],
+        )
+        .await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let cookie = ts.site_cookie(&aid).await;
+    // A version's page and its SVG (a document served raw), and the
+    // current version's at the root.
+    let paths = ["/_clax/v/1/", "/_clax/v/1/x.svg", "/", "/x.svg"];
+    let mut was_locked = Vec::new();
+    for path in paths {
+        let res = site_get_if(&ts, &aid, &cookie, path, None).await;
+        assert_eq!(res.status(), 200, "{path}");
+        assert!(locked(&policies(&res)[0]), "{path}");
+        was_locked.push(caching(&res));
+    }
+    // Locked, a version's raw file is immutable and has no tag; the rest
+    // revalidate.
+    assert!(was_locked[1].0.contains("immutable"), "{was_locked:?}");
+    assert_eq!(was_locked[1].1, None, "{was_locked:?}");
+    for i in [0, 2, 3] {
+        assert!(was_locked[i].0.contains("no-cache"), "{was_locked:?}");
+    }
+
+    let (s, v) = set(&ts, &aid, "own").await;
+    assert_eq!(s, 200, "{v}");
+    let mut own_tags = Vec::new();
+    for (path, before) in paths.iter().zip(&was_locked) {
+        let res = site_get_if(&ts, &aid, &cookie, path, None).await;
+        assert_eq!(res.status(), 200, "{path}");
+        assert!(framing_alone(&policies(&res)[0]), "{path}");
+        let (cc, tag) = caching(&res);
+        // Revalidated on every use, never kept on its own.
+        assert!(cc.contains("no-cache"), "{path}: {cc}");
+        assert!(
+            !cc.contains("immutable") && !cc.contains("max-age"),
+            "{path}: {cc}"
+        );
+        // Its tag names the policy, so it is never the locked copy's.
+        let tag = tag.unwrap_or_else(|| panic!("{path}: no ETag"));
+        assert_ne!(Some(&tag), before.1.as_ref(), "{path}");
+        // While own, the copy is current.
+        let res = site_get_if(&ts, &aid, &cookie, path, Some(&tag)).await;
+        assert_eq!(res.status(), 304, "{path}");
+        own_tags.push(tag);
+    }
+
+    // Locked again: a copy kept from while own is answered whole, with the
+    // lockdown, and caching is as it was before.
+    let (s, v) = set(&ts, &aid, "locked").await;
+    assert_eq!(s, 200, "{v}");
+    for ((path, tag), before) in paths.iter().zip(&own_tags).zip(&was_locked) {
+        let res = site_get_if(&ts, &aid, &cookie, path, Some(tag)).await;
+        assert_eq!(res.status(), 200, "{path}");
+        assert!(locked(&policies(&res)[0]), "{path}");
+        assert_eq!(&caching(&res), before, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn an_agent_with_no_session_lets_no_site_set_its_own_policy() {
+    let ts = TestServer::spawn().await;
+    let aid = page(&ts, "Sessionless").await;
+    let res = ts
+        .authed(ts.client.patch(format!("{}/api/artifacts/{aid}", ts.base)))
+        .header("x-clax-channel", "agent")
+        .json(&json!({"content_policy": "own"}))
+        .send()
+        .await
+        .unwrap();
+    let s = res.status().as_u16();
+    let v: Value = res.json().await.unwrap();
+    assert_eq!((s, code(&v)), (400, "no_session"), "{v}");
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("publish_public's content_policy"),
+        "{v}"
+    );
+    assert!(!ts.store.content_policy_own(&id(&aid)).unwrap());
+}
+
+#[tokio::test]
+async fn a_persons_agent_lets_only_its_persons_clax_set_its_own_policy_once_they_approve() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    // Sam may update every artifact, so only who administers it decides.
+    let sam = ts.connect_person("Sam", "clax:full").await;
+    let sid = sam.register("claude", "cp-sam").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let call = |path: String, body: Value| {
+        let (sam, sid) = (&sam, sid.clone());
+        async move {
+            let res = sam.agent("PATCH", &path, Some(&sid), Some(body)).await;
+            let s = res.status().as_u16();
+            (s, res.json::<Value>().await.unwrap_or_default())
+        }
+    };
+    // The owner's clax is not Sam's to change.
+    let owners = page(&ts, "The owner's").await;
+    let (s, v) = call(
+        format!("/api/artifacts/{owners}"),
+        json!({"content_policy": "own"}),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (403, "admin_only"), "{v}");
+    // Sam's own clax waits on Sam.
+    let res = sam
+        .agent(
+            "POST",
+            "/api/artifacts",
+            Some(&sid),
+            Some(json!({"title": "Sam's", "files": {"index.html": {"content": "<p>s</p>", "encoding": "utf8"}}})),
+        )
+        .await;
+    assert_eq!(res.status(), 201);
+    let mine = res.json::<Value>().await.unwrap()["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let path = format!("/api/artifacts/{mine}");
+    let (s, v) = call(path.clone(), json!({"content_policy": "own"})).await;
+    assert_eq!(
+        (s, v["status"].as_str()),
+        (202, Some("approval_pending")),
+        "{v}"
+    );
+    let qid = v["question_id"].as_str().unwrap().to_string();
+    assert!(!ts.store.content_policy_own(&id(&mine)).unwrap());
+    // Sam answers in his browser.
+    let viewer = ts.store.viewer_of_grant(&sam.grant_id()).unwrap();
+    let (lan, base) = ts.lan();
+    let res = lan
+        .post(format!("{base}/api/questions/{qid}/answer"))
+        .header(
+            "cookie",
+            format!("clax_viewer={}", ts.browser_cookie(&viewer.id)),
+        )
+        .json(&json!({"answers": [{"selected": ["Let it set its own content policy"]}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "{}", res.text().await.unwrap());
+    let (s, v) = call(path, json!({"content_policy": "own", "question_id": qid})).await;
+    assert_eq!(
+        (s, &v["artifact"]["content_policy"]),
+        (200, &json!("own")),
+        "{v}"
+    );
+}
+
+#[tokio::test]
+async fn an_approval_to_open_a_site_is_not_one_to_set_its_own_policy() {
+    let ts = TestServer::spawn().await;
+    let aid = page(&ts, "Opened").await;
+    let sid = ts.register_session("claude", "cp-world").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let path = format!("/api/artifacts/{aid}");
+    let (s, v) = as_agent(&ts, &sid, &path, json!({"site_access": "world"})).await;
+    assert_eq!(s, 202, "{v}");
+    let qid = v["question_id"].as_str().unwrap().to_string();
+    ts.answer_question(
+        &qid,
+        json!({"answers": [{"selected": ["Open to the world"]}]}),
+    )
+    .await;
+    let (s, v) = as_agent(
+        &ts,
+        &sid,
+        &path,
+        json!({"content_policy": "own", "question_id": qid}),
+    )
+    .await;
+    assert_eq!((s, code(&v)), (404, "unknown_question"), "{v}");
+    assert!(!ts.store.content_policy_own(&id(&aid)).unwrap());
+    // It still opens the site, once.
+    let (s, v) = as_agent(
+        &ts,
+        &sid,
+        &path,
+        json!({"site_access": "world", "question_id": qid}),
+    )
+    .await;
+    assert_eq!(
+        (s, &v["artifact"]["site_access"]),
+        (200, &json!("world")),
+        "{v}"
+    );
+}
+
+#[tokio::test]
+async fn a_page_never_opens_or_closes_its_site() {
+    let ts = TestServer::spawn().await;
+    let aid = page(&ts, "Page").await;
+    let path = format!("/api/artifacts/{aid}");
+    for v in ["world", "private"] {
+        let res = ts
+            .authed(ts.client.patch(format!("{}{path}", ts.base)))
+            .header("x-clax-via", "page")
+            .json(&json!({"site_access": v}))
+            .send()
+            .await
+            .unwrap();
+        let s = res.status().as_u16();
+        let body: Value = res.json().await.unwrap();
+        assert_eq!((s, code(&body)), (403, "not_for_pages"), "{v}: {body}");
+    }
+    assert!(!ts.store.site_open_to_world(&id(&aid)).unwrap());
+}
+
+#[tokio::test]
+async fn a_live_pages_snapshot_keeps_its_snapshot_policy_under_own() {
+    let ts = TestServer::spawn().await;
+    let aid = page(&ts, "Live").await;
+    ts.state.live_ids.insert(&aid, "http://localhost:5173");
+    let host = ts.site_host(&aid);
+    let cookie = ts.site_cookie(&aid).await;
+    let mut was = Vec::new();
+    for setting in ["locked", "own"] {
+        let (s, v) = set(&ts, &aid, setting).await;
+        assert_eq!(s, 200, "{v}");
+        for path in ["/", "/_clax/v/1/"] {
+            let res = site_get_if(&ts, &aid, &cookie, path, None).await;
+            assert_eq!(res.status(), 200, "{setting} {path}");
+            let p = policies(&res);
+            assert_eq!(p.len(), 2, "{setting} {path}: {p:?}");
+            assert!(framing_alone(&p[0]), "{setting} {path}: {p:?}");
+            assert!(
+                p[1].starts_with(&format!("script-src http://{host}/_clax/;"))
+                    && p[1].contains("connect-src 'none'"),
+                "{setting} {path}: {p:?}"
+            );
+            was.push((path, caching(&res)));
+        }
+    }
+    // Its caching does not change with the setting either.
+    assert_eq!(was[..2], was[2..]);
+}
+
+/// `POST /api/drafts` with the token: a draft artifact of `of` (or of a
+/// new app), offline unless `inherit_net`; its ID.
+async fn draft_artifact(ts: &TestServer, of: Option<&str>, inherit_net: bool) -> String {
+    let res = ts
+        .authed(ts.client.post(format!("{}/api/drafts", ts.base)))
+        .json(
+            &json!({"of": of, "title": "Draft", "inherit_net": inherit_net,
+                      "files": {"index.html": "<p>draft</p>"}}),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    res.json::<Value>().await.unwrap()["draft"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[tokio::test]
+async fn a_draft_of_an_app_follows_its_live_app_and_any_other_draft_is_locked() {
+    let ts = TestServer::spawn().await;
+    let app = page(&ts, "App").await;
+    set(&ts, &app, "own").await;
+    let follows = draft_artifact(&ts, Some(&app), true).await;
+    // A new app's draft has no live app; a bundle update's check draft is
+    // made offline.
+    let new_app = draft_artifact(&ts, None, true).await;
+    let offline = draft_artifact(&ts, Some(&app), false).await;
+    let served = |d: String| {
+        let ts = &ts;
+        async move { policies(&ts.site_get(&d, "/").await) }
+    };
+    assert!(ts.store.content_policy_own(&id(&follows)).unwrap());
+    assert!(framing_alone(&served(follows.clone()).await[0]));
+    for d in [&new_app, &offline] {
+        assert!(!ts.store.content_policy_own(&id(d)).unwrap(), "{d}");
+        assert!(locked(&served(d.clone()).await[0]), "{d}");
+    }
+    // Locked again, the app's draft is too.
+    set(&ts, &app, "locked").await;
+    assert!(!ts.store.content_policy_own(&id(&follows)).unwrap());
+    assert!(locked(&served(follows).await[0]));
+}
+
+#[tokio::test]
+async fn an_apps_push_with_its_bundle_starts_locked() {
+    use clax_testkit::remotes::{Public, connect_app, post};
+    let public = Public::new().await;
+    let ada = TestServer::spawn().await;
+    let rid = connect_app(&ada, &public).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let aid = page(&ada, "Tips").await;
+    set(&ada, &aid, "own").await;
+    let (s, v) = post(
+        &ada,
+        &format!("/api/artifacts/{aid}/push"),
+        json!({"mode": "app", "version": 1}),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    let raid = v["link"]["remote_artifact_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let content = ada
+        .store
+        .get_version(&id(&aid), 1)
+        .unwrap()
+        .unwrap()
+        .content_sha256
+        .unwrap();
+    let res = ada
+        .authed(ada.client.put(format!(
+            "{}/api/artifacts/{aid}/remotes/{rid}/bundle?remote_n=1",
+            ada.base
+        )))
+        .header("content-type", "application/vnd.empathic.clax+zip")
+        .header("clax-bundle-lineage", "l_abcdefghijklmnopqrstuvwxyz")
+        .header("clax-bundle-version", "1")
+        .header("clax-bundle-content-sha256", content)
+        .body(b"bundle".to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201, "{}", res.text().await.unwrap());
+    assert!(!public.ts.store.content_policy_own(&id(&raid)).unwrap());
+    assert!(ada.store.content_policy_own(&id(&aid)).unwrap());
+}

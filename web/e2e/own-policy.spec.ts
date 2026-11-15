@@ -7,7 +7,11 @@
 // unregisters itself). Then the shell's switch, in a hosted Clax's Share
 // dialog (web/shell/src/ui/ShareDialog.svelte): turning it on shows its
 // explanation and sends nothing until the owner confirms, after which the
-// daemon holds `own`; turning it off locks it again at once.
+// daemon holds `own`; turning it off locks it again at once. Returning a
+// clax to `locked` holds in a browser that kept its files from while it was
+// `own`: a page framing one of its SVG files fetches nowhere else through it.
+// On a hosted Clax, a private `own` clax's service worker registers from a
+// top-level visit of its site.
 import { createHash } from "node:crypto";
 import { createServer as createHttpServer, type Server } from "node:http";
 import { createServer, type AddressInfo } from "node:net";
@@ -146,6 +150,65 @@ test("a locked clax's page loads no script from elsewhere and opens no WebSocket
   }
 });
 
+/** A server on another port of this host that answers every request 204 and keeps each path it is asked. */
+async function listener(): Promise<{ url: string; paths: string[]; close: () => void }> {
+  const paths: string[] = [];
+  const s: Server = createHttpServer((req, res) => { paths.push(req.url ?? ""); res.writeHead(204).end(); });
+  await new Promise<void>(r => s.listen(0, "127.0.0.1", r));
+  return { url: `http://127.0.0.1:${(s.address() as AddressInfo).port}`, paths, close: () => { s.closeAllConnections(); s.close(); } };
+}
+
+/** A page that frames its version's `x.svg` (a document, served raw) and fetches `${to}/<label>` through the
+ * framed SVG's window: "sent" when the policy let the request go, "refused" when it did not. */
+const svgProbe = `<!doctype html><html><head><title>Relock</title></head><body><p>relock</p>
+<script>
+window.through = label => new Promise(resolve => {
+  const fr = document.createElement("iframe");
+  fr.src = "/_clax/v/1/x.svg";
+  fr.onload = () => fr.contentWindow.fetch(window.to + "/" + label, { mode: "no-cors" })
+    .then(() => resolve("sent"), () => resolve("refused"))
+    .finally(() => fr.remove());
+  document.body.append(fr);
+});
+window.direct = label => fetch(window.to + "/" + label, { mode: "no-cors" }).then(() => "sent", () => "refused");
+</script></body></html>`;
+const SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>`;
+
+type Probe = { to?: string; through: (label: string) => Promise<string>; direct: (label: string) => Promise<string> };
+
+test("a clax returned to locked holds in a browser that kept its files from while it was own", async ({ browser }) => {
+  const away = await listener();
+  try {
+    const { artifact } = await api(d.base, d.token, "/api/artifacts", {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Relock",
+        files: { "index.html": { content: svgProbe, encoding: "utf8" }, "x.svg": { content: SVG, encoding: "utf8" } },
+      }),
+    }) as { artifact: { id: string } };
+    await patchAsOwner(d.base, artifact.id, { content_policy: "own" });
+
+    // One browser context throughout, so whatever it caches while `own` is what it holds after.
+    const ctx = await browser.newContext();
+    const tab = await ctx.newPage();
+    let f = await openArtifact(tab, d.base, artifact.id, 1);
+    await f.evaluate(to => { (window as unknown as Probe).to = to; }, away.url);
+    expect(await f.evaluate(() => (window as unknown as Probe).through("own-svg"))).toBe("sent");
+    await expect.poll(() => away.paths).toContain("/own-svg");
+
+    // Locked again: the shell opened anew in the same context, the page frames the SVG it fetched while `own`.
+    await patchAsOwner(d.base, artifact.id, { content_policy: "locked" });
+    f = await openArtifact(tab, d.base, artifact.id, 1);
+    await f.evaluate(to => { (window as unknown as Probe).to = to; }, away.url);
+    expect(await f.evaluate(() => (window as unknown as Probe).direct("locked-direct"))).toBe("refused");
+    expect(await f.evaluate(() => (window as unknown as Probe).through("locked-svg"))).toBe("refused");
+    expect(away.paths).toEqual(["/own-svg"]);
+    await ctx.close();
+  } finally {
+    away.close();
+  }
+});
+
 const SECRET = "e2e setup secret";
 
 function freePort(): Promise<number> {
@@ -219,6 +282,50 @@ test("the Share dialog's content policy switch explains itself and sends nothing
     await expect(sw).not.toBeChecked();
     await expect(dialog.getByTestId("own-note")).toHaveCount(0);
     expect(patches.map(p => JSON.parse(p))).toEqual([{ content_policy: "own" }, { content_policy: "locked" }]);
+  } finally {
+    await h.stop();
+  }
+});
+
+test("on a hosted Clax, a private own clax's service worker registers from a top-level visit of its site", async ({ browser }) => {
+  const port = await freePort();
+  const origin = `http://localhost:${port}`;
+  const config = `${NO_KEY_CONFIG}[hosted]\npublic_origin = "${origin}"\nsetup_secret_env = "CLAX_E2E_SETUP_SECRET"\n`;
+  const h = await startDaemon({ config, port, env: { CLAX_E2E_SETUP_SECRET: SECRET } });
+  test.skip(h.port !== port, `the daemon took port ${h.port}, not ${port}`);
+  try {
+    const { artifact } = await api(h.base, h.token, "/api/artifacts", {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Worker site",
+        files: { "index.html": { content: "<title>Worker site</title><h1>Worker site</h1>", encoding: "utf8" }, "sw.js": { content: SW, encoding: "utf8" } },
+      }),
+    }) as { artifact: { id: string } };
+    const changed = await api(h.base, h.token, `/api/artifacts/${artifact.id}`, {
+      method: "PATCH", body: JSON.stringify({ content_policy: "own" }),
+    }) as { artifact: { content_policy: string; site_access: string } };
+    expect(changed.artifact).toMatchObject({ content_policy: "own", site_access: "private" });
+    const ctx = await browser.newContext();
+    const owner = await ctx.newPage();
+    await owner.goto(`${origin}/setup?secret=${encodeURIComponent(SECRET)}`);
+    await owner.getByLabel("Your name").fill("Ada");
+    await owner.getByRole("button", { name: "Create the first person" }).click();
+    await owner.waitForURL(`${origin}/`);
+
+    // Top-level, the site signs the owner in with a first-party cookie its worker's script fetch carries.
+    const site = `http://${artifact.id}.localhost:${port}/`;
+    await owner.goto(site);
+    await owner.waitForURL(site);
+    await expect(owner.locator("h1")).toHaveText("Worker site");
+    const scriptURL = await owner.evaluate(async () => {
+      await navigator.serviceWorker.register("sw.js");
+      const reg = await navigator.serviceWorker.ready;
+      return reg.active?.scriptURL ?? "";
+    });
+    expect(scriptURL).toBe(`${site}sw.js`);
+    await owner.goto(`${site}hello.html`);
+    await expect(owner.locator("body")).toHaveText("from the worker");
+    await ctx.close();
   } finally {
     await h.stop();
   }

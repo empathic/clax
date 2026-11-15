@@ -247,6 +247,20 @@ async fn read_bytes(
         .ok_or(CoreError::NotFound)
 }
 
+/// The `ETag` source of a response whose policy is an `own` site's
+/// (`own_policy`): `source` with the policy named after it, so a copy a
+/// browser keeps from while the site was `own` never matches the
+/// lockdown's tag once the site is `locked` again (a `304` would keep the
+/// stored policy: Chromium does not update `Content-Security-Policy` from
+/// one). A `locked` response's source is `source` unchanged.
+fn tagged_by_policy(source: &[u8], own_policy: bool) -> Vec<u8> {
+    let mut v = source.to_vec();
+    if own_policy {
+        v.extend_from_slice(b"\0content_policy=own");
+    }
+    v
+}
+
 /// File `rel` of version `n` of `id`. `index.html`, and any other
 /// `text/html` file in UTF-8, is a page: wrapped with the bridge
 /// (`data-file` naming its path), revalidated by the browser on every
@@ -255,6 +269,15 @@ async fn read_bytes(
 /// whose files change with its next version: then revalidated, with an
 /// `ETag` of its artifact, version, path and size); an HTML file that is
 /// not UTF-8 is revalidated like every page.
+///
+/// While the artifact sets its own content policy (`own`) and the response
+/// carries that policy (not a live page's snapshot), every file is
+/// revalidated, never immutable, and its `ETag` names the policy
+/// ([`tagged_by_policy`]): returning the site to `locked` then holds from
+/// the browser's next use of any file it keeps, which is answered `200`
+/// with the lockdown. A `locked` site's files are cached as above; one a
+/// browser keeps immutable from while `locked` keeps the lockdown until it
+/// expires, after a switch to `own` too.
 pub(crate) async fn serve_version(
     s: &AppState,
     id: ArtifactId,
@@ -268,7 +291,16 @@ pub(crate) async fn serve_version(
     let live = s.live_ids.contains(id.as_str()).then_some(own.as_str());
     let index = rel == INDEX;
     let (served, own) = lookup(s, id, n, rel, index).await?;
+    // Whether the response carries an `own` site's policy, not the lockdown.
+    let own_policy = own && live.is_none();
     let (bytes, meta) = match served {
+        Served::Page(html) if own_policy => {
+            let etag = http_cache::etag_of(&tagged_by_policy(html.as_bytes(), true));
+            let res = http_cache::tagged_as(req, etag, http_cache::REVALIDATE, || {
+                axum::response::Html(html.to_string()).into_response()
+            });
+            return Ok(framed_by_shell(s, res, req, live, own));
+        }
         Served::Page(html) => {
             return Ok(framed_by_shell(
                 s,
@@ -287,10 +319,13 @@ pub(crate) async fn serve_version(
         Served::Raw(bytes, meta) => (bytes, meta),
     };
     let body = Body::from(bytes);
-    if is_html(&meta.content_type) || current {
+    if is_html(&meta.content_type) || current || own_policy {
         // A version's files never change, so its artifact, version, path
         // and size identify its bytes.
-        let etag = http_cache::etag_of(format!("{tag_source}\0{}", meta.size).as_bytes());
+        let etag = http_cache::etag_of(&tagged_by_policy(
+            format!("{tag_source}\0{}", meta.size).as_bytes(),
+            own_policy,
+        ));
         let ct = meta.content_type.clone();
         let res = http_cache::tagged_as(req, etag, http_cache::REVALIDATE, move || {
             (
