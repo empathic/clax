@@ -16,10 +16,10 @@ mod channel;
 mod comments;
 #[cfg(any(not(clax_split), clax_split = "confirmations"))]
 mod confirmations;
-#[cfg(any(not(clax_split), clax_split = "content_policy"))]
-mod content_policy;
 #[cfg(any(not(clax_split), clax_split = "connect_instance"))]
 mod connect_instance;
+#[cfg(any(not(clax_split), clax_split = "content_policy"))]
+mod content_policy;
 #[cfg(any(not(clax_split), clax_split = "db"))]
 mod db;
 #[cfg(any(not(clax_split), clax_split = "live"))]

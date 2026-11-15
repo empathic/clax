@@ -62,10 +62,7 @@ async fn an_agent_letting_a_site_set_its_own_policy_waits_for_approval() {
         "{v}"
     );
     let qid = v["question_id"].as_str().unwrap().to_string();
-    assert!(
-        locked(&ts, &aid).await,
-        "nothing changes before the answer"
-    );
+    assert!(locked(&ts, &aid).await, "nothing changes before the answer");
     let q = ts.store.question(&qid).unwrap().unwrap();
     assert_eq!(q.artifact_id.as_deref(), Some(aid.as_str()));
     // Asking again waits on the same question.
