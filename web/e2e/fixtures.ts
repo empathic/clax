@@ -429,13 +429,23 @@ export async function seenOf(page: Page, aid: string): Promise<number | null> {
   return page.evaluate(async a => (await (await fetch(`/api/viewers/me/seen?artifact=${a}`)).json()).seen as number | null, aid);
 }
 
-/** A JSON API call with the token (and, when given, the session header). */
-export async function api(base: string, token: string, path: string, init: RequestInit & { session?: string } = {}) {
+/** A JSON API call with the token (and, when given, the session header).
+ * Throws on a refusal, and on an answer that is only `{guidance}`: the
+ * daemon's 200 refusal of an agent's write (a reply, resolve, reopen or
+ * delete on a thread not sent to it), which wrote nothing. A caller that
+ * means to get guidance passes `guidance: true`. */
+export async function api(base: string, token: string, path: string, init: RequestInit & { session?: string; guidance?: boolean } = {}) {
+  const { session, guidance, ...rest } = init;
   const headers: Record<string, string> = { "content-type": "application/json", authorization: `Bearer ${token}` };
-  if (init.session) headers["x-clax-session"] = init.session;
-  const res = await fetch(`${base}${path}`, { ...init, headers });
+  if (session) headers["x-clax-session"] = session;
+  const res = await fetch(`${base}${path}`, { ...rest, headers });
   if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`);
-  return res.status === 204 ? {} : res.json();
+  if (res.status === 204) return {};
+  const body = await res.json();
+  if (!guidance && body && typeof body === "object" && Object.keys(body).join() === "guidance") {
+    throw new Error(`${path}: answered guidance, nothing written: ${body.guidance}`);
+  }
+  return body;
 }
 
 /** Approves, as the owner by hand (the token, no session), what artifact
