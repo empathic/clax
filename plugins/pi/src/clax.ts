@@ -1668,9 +1668,9 @@ class Tools {
       for (;;) {
         const res = await this.call(() => c.patch(id, req));
         if (res.status !== "approval_pending") {
-          const now = res.artifact?.[field] ?? null;
-          const status = field === "site_access" ? (now === "world" ? "open" : "private") : now;
-          return { status, [field]: now, site_url: res.site_url ?? null };
+          const setting = res.artifact?.[field] ?? null;
+          const status = field === "site_access" ? (setting === "world" ? "open" : "private") : setting;
+          return { status, [field]: setting, site_url: res.site_url ?? null };
         }
         const qid = String(res.question_id ?? "");
         const pending = {
