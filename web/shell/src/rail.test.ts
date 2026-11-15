@@ -128,7 +128,8 @@ describe("Rail", () => {
     expect(labels("rail-lv")).toEqual(["v3", "v2", "v1"]);
     // One step (18 px) between lines.
     expect(ys("rail-lv")).toEqual([32, 50, 68]);
-    expect(labels("rail-lc")).toEqual(["2"]);
+    // The one run's count would sit on v2's label (its centre 8 px from it): the version wins.
+    expect(labels("rail-lc")).toEqual([]);
     expect(svg.querySelector(".rail-band-a")!.getAttribute("d")).not.toBe("");
     expect(svg.querySelector(".rail-band-w")!.getAttribute("d")).not.toBe("");
     m.unmount();

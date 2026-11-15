@@ -31,6 +31,8 @@ export const MAX_UNITS = 6;
 const TAPER = 4, TAIL = 12;
 /** How far a tick runs past the band, and a label sits past what it labels. */
 const TICK = 5, PAD = 3;
+/** A label's height (the strip's 10 px labels): two closer than this overlap. */
+const LABEL = 10;
 
 const r2 = (n: number) => Math.round(n * 100) / 100 + 0;
 
@@ -88,5 +90,8 @@ export function band(rows: BandRow[], o: BandOpts): Band {
     }
     if (o.labels && r.gap) gaps.push({ y: r2((above + r.y) / 2), text: r.gap });
   });
-  return { agent, waiting, spine: { x: r2(o.x0), y1: r2(o.top), y2: r2(end) }, ticks, versions, counts, gaps, anchor };
+  // A count whose label would overlap a version's is not placed: the
+  // version names its line, and the band's width already says the count.
+  const clear = counts.filter(c => versions.every(v => Math.abs(c.y - v.y) >= LABEL));
+  return { agent, waiting, spine: { x: r2(o.x0), y1: r2(o.top), y2: r2(end) }, ticks, versions, counts: clear, gaps, anchor };
 }

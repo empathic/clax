@@ -36,6 +36,16 @@ describe("band", () => {
     expect(run.counts).toEqual([{ x: 44, y: 20, text: "2" }, { x: 48.5, y: 50, text: "1" }]);
   });
 
+  it("leaves out a count whose label would share a version label's place: the version wins", () => {
+    // The strip's step, 18 px: a run's count, centred between two rows, sits 9 px from each.
+    const b = band([{ y: 8, pending: 3, waiting: 1 }, { y: 32, pending: 3, waiting: 1, v: 3 }, { y: 50, pending: 4, waiting: 1, v: 2 }, { y: 68, pending: 1, waiting: 0 }, { y: 104, pending: 2, waiting: 0 }],
+      { top: 0, x0: 55, dir: 1, unit: 4.5, labels: true });
+    expect(b.versions.map(v => [v.text, v.y])).toEqual([["v3", 32], ["v2", 50]]);
+    // "4" (y 41) and "1" (y 59) are not drawn; "3" (y 16) and "2" (y 86) are.
+    expect(b.counts.map(c => [c.text, c.y])).toEqual([["3", 16], ["2", 86]]);
+    for (const c of b.counts) for (const v of b.versions) expect(Math.abs(c.y - v.y)).toBeGreaterThanOrEqual(10);
+  });
+
   it("draws no area where a run's width is 0, and no path for an area that is 0 throughout", () => {
     const b = band([{ y: 20, pending: 2, waiting: 0 }, { y: 40, pending: 0, waiting: 0 }, { y: 60, pending: 2, waiting: 0 }], { ...right, labels: true });
     // Between y 24 and 36 the outline runs along the edge: no width there.
