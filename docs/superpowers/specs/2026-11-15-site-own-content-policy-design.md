@@ -36,7 +36,7 @@ return it to `locked` at any time.
 - A clax set to `own` can do what an ordinary site can: third-party
   scripts, styles, fonts, images, media and frames; `fetch`,
   `XMLHttpRequest`, `WebSocket` and `EventSource` to any host; form posts;
-  a `<base>`; a service worker of its own.
+  a `<base>`; a service worker of its own (where it may register: below).
 - A clax nobody switched behaves exactly as today.
 - Only the person who answers for the artifact can switch it to `own`,
   through the same gate as opening its site to the world.
@@ -121,12 +121,37 @@ What stays, on every site:
 
 ### Returning to `locked`
 
-Pages loaded from the next request carry the lockdown again. A service
-worker the clax registered while `own` is answered with the kill switch
-at its next update check and unregisters; until then it still controls
-the tabs it already controls, and can answer them with documents that
-carry no policy. This window is accepted, and recorded as a waiver on
+Pages loaded from the next request carry the lockdown again, and so does
+every other file a browser kept from while the clax was `own`: while `own`,
+its content is revalidated on every use (none of it `immutable`, as a
+version's raw files otherwise are), and each `ETag` also names the policy,
+so a browser's next use after relocking is answered `200` with the
+lockdown, never `304` (a `304` would keep the stored policy). Without
+this, a document-capable file (SVG, XHTML, XML) cached for a year without
+the lockdown lets a locked page frame it and fetch anywhere through it. A
+file a browser kept `immutable` from while the clax was `locked` keeps the
+lockdown until it expires, after a switch to `own` too: stricter than the
+setting, so accepted.
+
+A service worker the clax registered while `own` is answered with the
+kill switch at its next update check and unregisters; until then it still
+controls the tabs it already controls, and can answer them with documents
+that carry no policy. This window is accepted, and recorded as a waiver on
 `site_layer`.
+
+### Where its service worker registers
+
+A worker's script request is decided by the site's access like any other
+request, so a private site answers it only with a site session: an `own`
+clax's worker registers on a site open to the world, or on a private site
+visited top-level on a hosted Clax, whose first-party site cookie the
+script request carries. It does not register from inside the shell's frame
+of a private site: a browser sends the frame's partitioned site cookie with
+the frame's own fetches but not with its worker's script fetch, which is
+answered 401 `site_session_required`. Nor on a local Clax's private site,
+whose top-level visit is sent to the shell. Serving a worker's script
+without a session would hand a private site's files to anyone who sends
+`Service-Worker: script`.
 
 ### Where a person sees it
 
@@ -134,8 +159,9 @@ carry no policy. This window is accepted, and recorded as a waiver on
   that today, for a caller who may administer the artifact. Its label:
   "Let this clax set its own content policy". Its explanation, shown
   before the change is sent: "Its pages may then load code from, and send
-  anything they can read to, any site. Turn this on for a clax you trust
-  as a website."
+  anything they can read to, any site. So may every later version,
+  whoever publishes it: you, an editor, or an agent of either. Turn this
+  on for a clax you trust as a website."
 - An artifact that is `own` shows it wherever the shell shows that a site
   is open to the world.
 
@@ -153,8 +179,10 @@ carry no policy. This window is accepted, and recorded as a waiver on
 Recorded as waivers beside the code that implements each:
 
 - A page of the clax can send anything it can read (the clax's database
-  and assets, who the viewer is, the room) to any host. A later version an
-  agent publishes inherits this.
+  and assets, who the viewer is, the room) to any host. Every later
+  version runs unlocked too, whoever publishes it: the maker, an editor
+  (on a hosted Clax, anyone with Can edit), or an agent of either; and so
+  does a draft of it.
 - Viewers' browsers contact whatever hosts the page names.
 - A service worker of the clax's can answer its own site's requests,
   those under `/_clax/` in its scope included.

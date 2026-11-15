@@ -251,7 +251,7 @@ test("the Share dialog's content policy switch explains itself and sends nothing
     owner.on("request", r => { if (r.method() === "PATCH") patches.push(r.postData() ?? ""); });
     await sw.click();
     const ask = dialog.getByTestId("own-confirm");
-    await expect(ask).toContainText("Its pages may then load code from, and send anything they can read to, any site. Turn this on for a clax you trust as a website.");
+    await expect(ask).toContainText("Its pages may then load code from, and send anything they can read to, any site. So may every later version, whoever publishes it: you, an editor, or an agent of either. Turn this on for a clax you trust as a website.");
     await expect(ask.getByRole("button", { name: "Confirm" })).toBeFocused();
     await expect(sw).not.toBeChecked();
     expect(patches).toEqual([]);

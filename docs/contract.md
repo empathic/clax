@@ -11611,7 +11611,8 @@ was made; and a run's end, sent until it is acknowledged.
   anything else answers 401 `site_session_required`. Such a site's
   responses are private to the browser: `Cache-Control` `private,
   no-cache` (the current version), `private, max-age=31536000, immutable`
-  (`/_clax/v/<n>/…` and assets), and never `Access-Control-Allow-Origin`.
+  (`/_clax/v/<n>/…` and assets; on an `own` site its content is `private,
+  no-cache`, below), and never `Access-Control-Allow-Origin`.
 - A site session is made from a one-use code good for 60 s, bound to a
   **state** the browser holds in the site host's state cookie
   (`clax_site_state`, on `https` `__Host-clax_site_state`, so no sibling
@@ -11678,14 +11679,32 @@ was made; and a run's end, sent until it is acknowledged.
   hosted Clax's sharing route say it too. Either change holds from the next
   request, and is recorded as `artifact.update` with
   `fields.content_policy`. It belongs to the artifact, not to a version:
-  later versions keep it. It does not travel: a push to a public Clax, a
-  fork, a clone and a bundle each start `locked`. A draft follows its
-  artifact's. Returning to `locked`, a service worker the site registered
-  while `own` is answered Clax's script at its next update check and
-  removes itself; until then it still controls the tabs it controls. `own`
-  lifts the browser's policy, not what the daemon does for a page: the
-  `net` capability and the other gated capabilities keep their approval
-  and grants.
+  every later version runs unlocked too, whoever publishes it (its maker,
+  an editor of it on a hosted Clax, or an agent of either). It does not
+  travel: a push to a public Clax, a fork, a clone and a bundle each start
+  `locked`. A draft follows its artifact's: an agent's draft of it
+  (`/_clax/draft/…`), and a draft artifact of the app (`POST /api/drafts`
+  with `of`) while the app is live; a new app's draft, and a bundle
+  update's check draft (`inherit_net: false`), are `locked`. While `own`,
+  its content is revalidated on every use, none of it `immutable`, and
+  each `ETag` also names the policy, so after it returns to `locked` a
+  browser's next use of anything it kept is answered whole, with the
+  lockdown, never `304 Not Modified`. A file a browser kept `immutable`
+  from while the site was `locked` keeps the lockdown until it expires,
+  after a switch to `own` too. Returning to `locked`, a service worker the
+  site registered while `own` is answered Clax's script at its next update
+  check and removes itself; until then it still controls the tabs it
+  controls. An `own` clax's service worker registers on a site open to the
+  world, or on a private site visited top-level on a hosted Clax, whose
+  first-party site cookie the worker's script request carries. It does not
+  register from inside the shell's frame of a private site, whose script
+  request carries no site cookie (a browser sends the frame's partitioned
+  cookie with the frame's own fetches, not with its worker's script fetch)
+  and is answered 401 `site_session_required`; nor on a local Clax's
+  private site, whose top-level visit is sent to the shell. `own` lifts
+  the browser's policy, not what the daemon does for a page: the `net`
+  capability and the other gated capabilities keep their approval and
+  grants.
 - On a site open to the world, a request with no site session of a holder
   who may read it is a visitor's: the first navigation or `/_clax/api/`
   response without the visitor cookie sets it (`clax_visitor`, on `https`

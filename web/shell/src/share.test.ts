@@ -372,7 +372,7 @@ describe("Share dialog", () => {
     // Turning it on shows the explanation first, and sends nothing.
     flush(() => box.click());
     await until(() => confirm());
-    expect(confirm()!.textContent).toContain("Its pages may then load code from, and send anything they can read to, any site. Turn this on for a clax you trust as a website.");
+    expect(confirm()!.textContent).toContain("Its pages may then load code from, and send anything they can read to, any site. So may every later version, whoever publishes it: you, an editor, or an agent of either. Turn this on for a clax you trust as a website.");
     expect(box.checked, "not on until confirmed").toBe(false);
     expect(sent).toEqual([]);
     // Cancel sends nothing and leaves it off.

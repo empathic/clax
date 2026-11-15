@@ -24,7 +24,7 @@ export const SITE_NOTE: Record<SiteAccess, string> = {
 /** The content policy switch (spec 2026-11-15-site-own-content-policy), the explanation shown before
  * it is turned on, and the line a clax that sets its own policy shows beside its site. */
 export const OWN_POLICY_LABEL = "Let this clax set its own content policy";
-export const OWN_POLICY_EXPLAIN = "Its pages may then load code from, and send anything they can read to, any site. Turn this on for a clax you trust as a website.";
+export const OWN_POLICY_EXPLAIN = "Its pages may then load code from, and send anything they can read to, any site. So may every later version, whoever publishes it: you, an editor, or an agent of either. Turn this on for a clax you trust as a website.";
 export const OWN_POLICY_NOTE = "Sets its own content policy: its pages load and send where they choose.";
 
 /** The Comments switch (spec 2026-10-21-app-push-pull §5.6), and the line under it, on and off. */

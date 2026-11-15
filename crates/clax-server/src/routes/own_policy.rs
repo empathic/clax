@@ -40,10 +40,10 @@ pub(crate) static GATE: Gate = Gate {
     admin_only: "only the page's maker (on a local Clax, the owner too) sets its site's content policy",
     no_session: "an agent lets a site set its own content policy with publish_public's content_policy, which asks the person first",
     header: "Content policy",
-    question: "Let \"{title}\" set its own content policy? Its pages may then load code from, and send anything they can read to, any site. Turn this on for a clax you trust as a website.",
+    question: "Let \"{title}\" set its own content policy? Its pages may then load code from, and send anything they can read to, any site. So may every later version, whoever publishes it: you, an editor, or an agent of either. Turn this on for a clax you trust as a website.",
     yes: (
         LET_IT,
-        "Its pages load and connect where they choose; lock it again at any time",
+        "Its pages, and every later version's, load and connect where they choose; lock it again at any time",
     ),
     no: (
         KEEP_LOCKED,
