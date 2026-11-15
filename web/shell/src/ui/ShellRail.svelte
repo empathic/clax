@@ -27,6 +27,11 @@
   // strip's button away: when it held focus, focus goes on to the drawer's
   // Hide threads, which closes it again (as Hide threads hands it to the top
   // bar's Threads, DrawerChrome.svelte), once the drawer is in the island.
+  // It stops looking once the drawer is there, or the strip is back without
+  // it, and at the latest once the strip has gone: the drawer takes its
+  // place in the same update, so a last look follows that update, and none
+  // after it.
+  let waiting: MutationObserver | null = null;
   const open = () => {
     const island = box?.parentElement;
     const held = !!box?.contains(document.activeElement);
@@ -34,10 +39,17 @@
     if (!held || !island) return;
     const go = () => { const b = island.querySelector<HTMLElement>('.drawer button[aria-label="Hide threads"]'); b?.focus(); return !!b; };
     if (go()) return;
-    // It stops looking once the drawer is there, or the strip is back without it.
+    waiting?.disconnect();
     const mo = new MutationObserver(() => { if (go() || island.querySelector("button.rail")) mo.disconnect(); });
     mo.observe(island, { childList: true, subtree: true });
+    waiting = mo;
   };
+  $effect(() => () => {
+    const mo = waiting;
+    waiting = null;
+    // Its records of this update reach it first, in their own microtask.
+    if (mo) queueMicrotask(() => mo.disconnect());
+  });
   const plot = (el: HTMLElement) => {
     box = el;
     const at = el.querySelector<HTMLElement>(".rail-plot");

@@ -201,6 +201,23 @@ describe("the sidebar island with the panel closed", () => {
     m.unmount();
   });
 
+  it("stops waiting for the drawer once the strip goes, though the drawer never came", async () => {
+    const { m, ctl } = island();
+    const button = await strip(m);
+    // The panel does not open: no drawer comes, and the strip stays.
+    ctl.togglePanel.mockImplementation(() => {});
+    const made: { disconnect: ReturnType<typeof vi.fn> }[] = [];
+    const Real = MutationObserver;
+    vi.stubGlobal("MutationObserver", class extends Real { constructor(cb: MutationCallback) { super(cb); const d = vi.fn(() => super.disconnect()); this.disconnect = d; made.push({ disconnect: d }); } });
+    button.focus();
+    flush(() => button.click());
+    expect(made).toHaveLength(1);
+    expect(made[0].disconnect).not.toHaveBeenCalled();
+    m.unmount();
+    await Promise.resolve();
+    expect(made[0].disconnect).toHaveBeenCalled();
+  });
+
   it("leaves focus where it was when the strip did not hold it", async () => {
     const { m } = island();
     const button = await strip(m);
