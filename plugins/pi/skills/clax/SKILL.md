@@ -70,11 +70,16 @@ dark mode, and on a phone:
   relative paths, for example `<link rel="stylesheet" href="style.css">`, and
   published under the same relative path in `files`. Do not use absolute
   `/...` paths or hard-coded hosts.
-- A page loads and fetches only its own files, its assets, `data:` and
-  `blob:` URLs: no scripts, styles, fonts or images from CDNs or other
-  sites, and no `fetch`, `XMLHttpRequest`, `WebSocket` or `EventSource` to
-  anywhere else. The daemon's content policy refuses the rest. Data from
-  the web comes through the `net` capability.
+- By default a page loads and fetches only its own files, its assets,
+  `data:` and `blob:` URLs: no scripts, styles, fonts or images from CDNs
+  or other sites, and no `fetch`, `XMLHttpRequest`, `WebSocket` or
+  `EventSource` to anywhere else. The daemon's content policy refuses the
+  rest. Data from the web comes through the `net` capability. A page that
+  needs more bundles those files with it, or its person lets the clax set
+  its own content policy (`content_policy: "own"`, see "Security model";
+  an agent asks with `publish_public`'s `content_policy`): its pages may
+  then load from, connect to and post to any site, and register a service
+  worker of their own.
 - `icon.svg` at the top of the files is the app's icon, a square
   full-bleed design. Every publish refuses one that breaks these rules
   (`invalid_icon`), and a version a git push makes leaves it out, naming
