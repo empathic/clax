@@ -19,7 +19,7 @@
 //!   opening of a site to the world does ([`super::world::Gate`]); `locked`
 //!   never asks.
 
-use clax_core::{ArtifactId, CoreError};
+use clax_core::ArtifactId;
 use clax_http::audit::DeferredAudit;
 use clax_http::auth::Caller;
 use clax_http::error::ApiError;
@@ -32,9 +32,13 @@ use super::world::{Change, Gate};
 pub const LET_IT: &str = "Let it set its own content policy";
 pub const KEEP_LOCKED: &str = "Keep it locked";
 
-/// Letting a site set its own content policy, as an agent asks it.
-static GATE: Gate = Gate {
+/// Letting a site set its own content policy, as [`Gate`] asks it.
+pub(crate) static GATE: Gate = Gate {
     kind: SET_OWN_POLICY,
+    widened: clax_store::Store::content_policy_own,
+    to: OWN_POLICY,
+    admin_only: "only the page's maker (on a local Clax, the owner too) sets its site's content policy",
+    no_session: "an agent lets a site set its own content policy with publish_public's content_policy, which asks the person first",
     header: "Content policy",
     question: "Let \"{title}\" set its own content policy? Its pages may then load code from, and send anything they can read to, any site. Turn this on for a clax you trust as a website.",
     yes: (
@@ -91,40 +95,8 @@ pub async fn change(
     own: bool,
     qid: Option<String>,
 ) -> Result<Change, ApiError> {
-    let (c2, i2, hosted) = (caller.clone(), id.clone(), s.hosted.is_some());
-    let (manages, already) = s
-        .store_call(move |st| {
-            st.get_artifact(&i2)?.ok_or(CoreError::NotFound)?;
-            Ok((
-                clax_http::agent::administers(st, &c2, i2.as_str(), hosted)?,
-                st.content_policy_own(&i2)?,
-            ))
-        })
-        .await?;
-    if !manages {
-        return Err(ApiError::forbidden(
-            "admin_only",
-            "only the page's maker (on a local Clax, the owner too) sets its site's content policy",
-        ));
-    }
-    let agent = match caller {
-        Caller::OwnerAgent { session } => Some(session.clone()),
-        Caller::PersonAgent { session, .. } => Some(session.clone()),
-        _ => None,
-    };
-    if own
-        && !already
-        && let Some(session) = agent
-    {
-        let Some(sid) = session else {
-            return Err(ApiError::bad_request(
-                "no_session",
-                "an agent lets a site set its own content policy with publish_public's content_policy, which asks the person first",
-            ));
-        };
-        if let Some(pending) = GATE.wait(s, audit, id, &sid, qid).await? {
-            return Ok(Change::Pending(pending));
-        }
+    if let Some(pending) = GATE.admit(s, caller, audit, id, own, qid).await? {
+        return Ok(Change::Pending(pending));
     }
     let i2 = id.clone();
     s.store_call(move |st| st.set_content_policy_own(&ctx, &i2, own))

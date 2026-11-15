@@ -1301,31 +1301,16 @@ pub async fn patch(
         b.description.as_deref(),
         b.icon.as_deref(),
     )?;
+    // Widening either switch is a confirmed decision; narrowing never is.
     if world == Some(true) {
-        let i2 = id.clone();
-        let open = s.store_call(move |st| st.site_open_to_world(&i2)).await?;
-        if !open {
-            let decision = clax_http::confirm::Decision::Widen {
-                artifact_id: id.as_str().to_string(),
-                to: "world".into(),
-                remote_id: None,
-                body: None,
-            };
-            clax_http::confirm::require_confirmation(&s, &a.caller, &confirming, decision).await?;
-        }
+        super::world::GATE
+            .confirm(&s, &a.caller, &confirming, &id)
+            .await?;
     }
     if own == Some(true) {
-        let i2 = id.clone();
-        let already = s.store_call(move |st| st.content_policy_own(&i2)).await?;
-        if !already {
-            let decision = clax_http::confirm::Decision::Widen {
-                artifact_id: id.as_str().to_string(),
-                to: "own".into(),
-                remote_id: None,
-                body: None,
-            };
-            clax_http::confirm::require_confirmation(&s, &a.caller, &confirming, decision).await?;
-        }
+        super::own_policy::GATE
+            .confirm(&s, &a.caller, &confirming, &id)
+            .await?;
     }
     if let Some(caps) = b.capabilities.clone() {
         manifest_owned(&s, &id, caps).await?;

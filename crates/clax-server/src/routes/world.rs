@@ -38,7 +38,8 @@ use serde_json::{Value, json};
 pub const OPEN: &str = "Open to the world";
 pub const KEEP_PRIVATE: &str = "Keep it private";
 
-/// What a `site_access` change came to.
+/// What a change of one of a site's switches came to: `site_access`
+/// ([`change`]) or `content_policy` ([`super::own_policy::change`]).
 pub enum Change {
     /// It is set.
     Done,
@@ -76,40 +77,8 @@ pub async fn change(
     world: bool,
     qid: Option<String>,
 ) -> Result<Change, ApiError> {
-    let (c2, i2, hosted) = (caller.clone(), id.clone(), s.hosted.is_some());
-    let (manages, already) = s
-        .store_call(move |st| {
-            st.get_artifact(&i2)?.ok_or(CoreError::NotFound)?;
-            Ok((
-                clax_http::agent::administers(st, &c2, i2.as_str(), hosted)?,
-                st.site_open_to_world(&i2)?,
-            ))
-        })
-        .await?;
-    if !manages {
-        return Err(ApiError::forbidden(
-            "admin_only",
-            "only the page's maker (on a local Clax, the owner too) opens its site to the world or closes it",
-        ));
-    }
-    let agent = match caller {
-        Caller::OwnerAgent { session } => Some(session.clone()),
-        Caller::PersonAgent { session, .. } => Some(session.clone()),
-        _ => None,
-    };
-    if world
-        && !already
-        && let Some(session) = agent
-    {
-        let Some(sid) = session else {
-            return Err(ApiError::bad_request(
-                "no_session",
-                "an agent opens a site to the world with publish_public's site_access, which asks the person first",
-            ));
-        };
-        if let Some(pending) = GATE.wait(s, audit, id, &sid, qid).await? {
-            return Ok(Change::Pending(pending));
-        }
+    if let Some(pending) = GATE.admit(s, caller, audit, id, world, qid).await? {
+        return Ok(Change::Pending(pending));
     }
     let i2 = id.clone();
     s.store_call(move |st| st.set_site_open_to_world(&i2, world))
@@ -123,8 +92,12 @@ pub async fn change(
 }
 
 /// Opening a site to the world, as [`Gate`] asks it.
-static GATE: Gate = Gate {
+pub(crate) static GATE: Gate = Gate {
     kind: OPEN_TO_WORLD,
+    widened: clax_store::Store::site_open_to_world,
+    to: "world",
+    admin_only: "only the page's maker (on a local Clax, the owner too) opens its site to the world or closes it",
+    no_session: "an agent opens a site to the world with publish_public's site_access, which asks the person first",
     header: "Open site",
     question: "Open \"{title}\" to the world? Anyone with its site's address can then load it and use its data as a visitor, as its rules allow, without signing in.",
     yes: (OPEN, "Anyone may load its site; close it again at any time"),
@@ -133,12 +106,25 @@ static GATE: Gate = Gate {
     declined: "they chose to keep it private",
 };
 
-/// A widening of an artifact's site that an agent makes only once its
-/// person approves it: the question this daemon asks them, kept as a
-/// `push_approvals` row of `remote_id` `kind` and spent once used.
+/// A switch that widens what an artifact's site may do or who may open it
+/// (its site to the world, [`GATE`]; its own content policy,
+/// [`super::own_policy`]), and the one gate both go through: the browser
+/// confirmation of the widening ([`Gate::confirm`]), who may turn it
+/// ([`clax_http::agent::administers`]), and an agent's turning it only
+/// once its person approves ([`Gate::admit`]): the question this daemon
+/// asks them, kept as a `push_approvals` row of `remote_id` `kind` and
+/// spent once used. Narrowing it asks no one.
 pub struct Gate {
     /// The approval's `remote_id` (`clax_store::site_sessions`).
     pub kind: &'static str,
+    /// Whether the artifact's switch is widened already.
+    pub widened: fn(&clax_store::Store, &ArtifactId) -> clax_core::Result<bool>,
+    /// The confirmed decision's `to` ([`clax_http::confirm::Decision::Widen`]).
+    pub to: &'static str,
+    /// 403 `admin_only`'s message.
+    pub admin_only: &'static str,
+    /// 400 `no_session`'s message, for an agent without a session.
+    pub no_session: &'static str,
     /// The question's header.
     pub header: &'static str,
     /// The question, `{title}` naming the artifact's title.
@@ -154,6 +140,86 @@ pub struct Gate {
 }
 
 impl Gate {
+    /// Holds the owner's widening of `id` made with the token alone while
+    /// an agent session is live for a click in their browser
+    /// ([`clax_http::confirm::require_confirmation`], decision 4), unless
+    /// it is widened already.
+    ///
+    /// # Errors
+    /// 202 `confirmation_pending` and the confirmation's refusals, and the
+    /// store's.
+    pub async fn confirm(
+        &'static self,
+        s: &AppState,
+        caller: &Caller,
+        confirming: &clax_http::confirm::Confirming,
+        id: &ArtifactId,
+    ) -> Result<(), ApiError> {
+        let (i2, widened) = (id.clone(), self.widened);
+        if s.store_call(move |st| widened(st, &i2)).await? {
+            return Ok(());
+        }
+        let decision = clax_http::confirm::Decision::Widen {
+            artifact_id: id.as_str().to_string(),
+            to: self.to.into(),
+            remote_id: None,
+            body: None,
+        };
+        clax_http::confirm::require_confirmation(s, caller, confirming, decision).await?;
+        Ok(())
+    }
+
+    /// Whether `caller` may turn the switch of `id` (widening it when
+    /// `widen`) now: `None` when it may; the 202 body while an agent's
+    /// widening waits on its person's answer to question `qid`, asking them
+    /// first when `qid` is `None`. Only who administers the artifact turns
+    /// it ([`clax_http::agent::administers`]); an agent widens it only
+    /// with its person's approval, and with a session; narrowing, and
+    /// widening what is widened already, ask no one.
+    ///
+    /// # Errors
+    /// 404 for an artifact that is gone, 403 `admin_only`, 400
+    /// `no_session`, [`Gate::wait`]'s, and the store's.
+    pub async fn admit(
+        &'static self,
+        s: &AppState,
+        caller: &Caller,
+        audit: DeferredAudit,
+        id: &ArtifactId,
+        widen: bool,
+        qid: Option<String>,
+    ) -> Result<Option<Value>, ApiError> {
+        let (c2, i2, hosted, widened) =
+            (caller.clone(), id.clone(), s.hosted.is_some(), self.widened);
+        let (manages, already) = s
+            .store_call(move |st| {
+                st.get_artifact(&i2)?.ok_or(CoreError::NotFound)?;
+                Ok((
+                    clax_http::agent::administers(st, &c2, i2.as_str(), hosted)?,
+                    widened(st, &i2)?,
+                ))
+            })
+            .await?;
+        if !manages {
+            return Err(ApiError::forbidden("admin_only", self.admin_only));
+        }
+        let agent = match caller {
+            Caller::OwnerAgent { session } => Some(session.clone()),
+            Caller::PersonAgent { session, .. } => Some(session.clone()),
+            _ => None,
+        };
+        if widen
+            && !already
+            && let Some(session) = agent
+        {
+            let Some(sid) = session else {
+                return Err(ApiError::bad_request("no_session", self.no_session));
+            };
+            return self.wait(s, audit, id, &sid, qid).await;
+        }
+        Ok(None)
+    }
+
     /// Whether session `sid` may go ahead on `aid` now: `None` once its
     /// person approved question `qid` (now spent); else the 202 body,
     /// asking them first when `qid` is `None`.
