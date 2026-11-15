@@ -209,6 +209,14 @@ describe("Sidebar views", () => {
     view.unmount();
   });
 
+  it("sets a row's state word at 13 px and its number at 12 px", async () => {
+    const { view, root, row, a } = setup();
+    await loaded(root);
+    expect(getComputedStyle(row(a)!.querySelector(".tl-st")!).fontSize).toBe("13px");
+    expect(getComputedStyle(row(a)!.querySelector(".tl-n")!).fontSize).toBe("12px");
+    view.unmount();
+  });
+
   it("heads each day at the level of the thread list's sections, so the outline skips none", async () => {
     const { view, root, props } = setup();
     view.update({ ...props, versions: [version(1, at(12, 9)), ...props.versions.slice(1)] });

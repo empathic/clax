@@ -272,6 +272,9 @@
     .tl-row:not(:disabled):hover { background: none; }
     .tl-row:hover .tl-q, .tl-row[aria-expanded="true"] .tl-q { color: var(--fg); }
     .tl-n, .tl-st { font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    /* The state word as the vignette sets it; its --faint stays --muted here,
+       as for the times and day headings: --faint is under 4.5:1 on --bg and --card in both themes. */
+    .tl-st { font-size: 13px; }
     .tl-q { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .tl-st.act { color: var(--you-ink); }
     .tl-det { color: var(--muted); }
