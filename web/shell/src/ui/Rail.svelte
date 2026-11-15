@@ -64,9 +64,9 @@
   const lines = $derived(strokes(drawn));
   const gaps = $derived(drawn.gaps.map(g => `M0,${g.y} H${W}`).join(" "));
   const labels = $derived([
-    ...drawn.versions.map(v => ({ ...v, kind: "v" })),
-    ...drawn.counts.map(c => ({ ...c, kind: "cnt" })),
-    ...drawn.gaps.map(g => ({ x: x0 - dir * 30, y: g.y - 7, text: g.text, kind: "gap" })),
+    ...drawn.versions.map(v => ({ ...v, kind: "rail-lv" })),
+    ...drawn.counts.map(c => ({ ...c, kind: "rail-lc" })),
+    ...drawn.gaps.map(g => ({ x: x0 - dir * 30, y: g.y - 7, text: g.text, kind: "rail-lg" })),
   ]);
 </script>
 
@@ -106,6 +106,6 @@
     @keyframes rail-pulse { 50% { opacity: .2; } }
     .rail-l { position: absolute; transform: translate(-100%, -50%); font: 10px/1 var(--font); color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
     .rail-labels.start .rail-l { transform: translate(0, -50%); }
-    .rail-l.v { color: var(--fg); font-weight: 600; }
+    .rail-l.rail-lv { color: var(--fg); font-weight: 600; }
   }
 </style>

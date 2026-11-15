@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { writable } from "svelte/store";
 import { flush, mount } from "./test/svelte";
@@ -121,28 +123,37 @@ describe("Rail", () => {
     const { m, svg, labels, ys } = rail(tl(2, 1, versions(3)));
     expect(m.root.querySelector(".rail-plot")!.getAttribute("aria-hidden")).toBe("true");
     expect(svg.closest(".rail-plot")).not.toBeNull();
-    expect(labels("v")).toEqual(["v3", "v2", "v1"]);
+    expect(labels("rail-lv")).toEqual(["v3", "v2", "v1"]);
     // One step (18 px) between lines.
-    expect(ys("v")).toEqual([32, 50, 68]);
-    expect(labels("cnt")).toEqual(["2"]);
+    expect(ys("rail-lv")).toEqual([32, 50, 68]);
+    expect(labels("rail-lc")).toEqual(["2"]);
     expect(svg.querySelector(".rail-band-a")!.getAttribute("d")).not.toBe("");
     expect(svg.querySelector(".rail-band-w")!.getAttribute("d")).not.toBe("");
     m.unmount();
   });
 
+  it("names its labels, and every part of it, with no class the theme's global rules style", () => {
+    const styled = new Set([...readFileSync(join(__dirname, "theme.css"), "utf8").matchAll(/\.(-?[A-Za-z_][\w-]*)/g)].map(m => m[1]));
+    const { m } = rail(tl(2, 1, versions(4, 2)), { working: true });
+    // A version, a count and a day label at least.
+    expect(Array.from(m.root.querySelectorAll(".rail-l"), e => [...e.classList].join(" "))).toEqual(expect.arrayContaining(["rail-l rail-lv", "rail-l rail-lc", "rail-l rail-lg"]));
+    for (const e of m.root.querySelectorAll("*")) for (const c of e.classList) expect(styled.has(c), `.${c} is styled by theme.css`).toBe(false);
+    m.unmount();
+  });
+
   it("breaks the band where the day changes, with the earlier day's short name", () => {
     const { m, svg, labels, ys } = rail(tl(2, 1, versions(4, 2)));
-    expect(labels("gap")).toEqual(["Thu"]);
+    expect(labels("rail-lg")).toEqual(["Thu"]);
     expect(count(svg.querySelector(".rail-gap"))).toBe(1);
     // The break adds 20 px to the step.
-    expect(ys("v")).toEqual([32, 50, 88, 106]);
+    expect(ys("rail-lv")).toEqual([32, 50, 88, 106]);
     m.unmount();
   });
 
   it("draws no line below its height", () => {
     const { m, svg, labels, ys } = rail(tl(2, 1, versions(10)), { height: 100 });
-    expect(labels("v")).toEqual(["v10", "v9", "v8", "v7"]);
-    for (const y of [...ys("v"), ...ys("cnt"), ...ys("gap")]) expect(y).toBeLessThanOrEqual(100);
+    expect(labels("rail-lv")).toEqual(["v10", "v9", "v8", "v7"]);
+    for (const y of [...ys("rail-lv"), ...ys("rail-lc"), ...ys("rail-lg")]) expect(y).toBeLessThanOrEqual(100);
     expect(count(svg.querySelector(".rail-tick"))).toBe(4);
     m.unmount();
   });
