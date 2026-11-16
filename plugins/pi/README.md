@@ -10,6 +10,13 @@ the same arguments and return the same JSON as the Clax MCP tools.
 
 ## Install
 
+```sh
+pi install npm:@empathic/clax-pi
+```
+
+Then start a new session. Each release of the package pins the Clax
+release of the same version.
+
 From a clone of the Clax repository (nothing needs building), run
 `pi install <clone>/plugins/pi`. Or run `just install` in the clone: it
 builds and installs `clax` into `~/.cargo/bin` and runs `clax init`, which
