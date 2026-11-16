@@ -769,9 +769,7 @@ case_31c() {
 }
 case_32() {
     new_case
-    mkdir -p "$T/no-just"
-    for tool in gh bazelisk; do [ -e "$T/no-just/$tool" ] || ln -s "$(readlink "$T/bin/$tool")" "$T/no-just/$tool"; done
-    CASE_PATH="$T/no-just:/usr/bin:/bin" refuse "a missing just" "just is not on PATH"
+    CASE_PATH="$(PATH="$FAKE_PATH" path_without "$T/no-just" just)" refuse "a missing just" "just is not on PATH"
 }
 case_33() {
     new_case

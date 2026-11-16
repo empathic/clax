@@ -298,7 +298,7 @@ if [ -z "$(cat "$T/calls")" ] && grep -q "usage: just dev" "$T/err"; then pass "
 else fail "an unknown harness prints usage ($(cat "$T/err"))"; fi
 
 : > "$T/calls"
-if CLAX_DEV_BIN="$T/clax-build" PATH="/usr/bin:/bin" "$HERE/dev.sh" claude >/dev/null 2>"$T/err"; then fail "a missing harness CLI fails"
+if CLAX_DEV_BIN="$T/clax-build" PATH="$(PATH=/usr/bin:/bin path_without "$T/no-claude" claude)" "$HERE/dev.sh" claude >/dev/null 2>"$T/err"; then fail "a missing harness CLI fails"
 elif grep -q "claude is not on PATH" "$T/err"; then pass "a missing harness CLI fails and says so"
 else fail "a missing harness CLI ($(cat "$T/err"))"; fi
 

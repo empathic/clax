@@ -349,7 +349,7 @@ else fail "a clax without --preflight still runs (out=$OUT log=$(hooks_log))"; f
 # The wrapper execs clax mcp: its parent is the harness. Here the harness is
 # a Python process that starts the wrapper in the plugin's directory, with
 # the system directories on PATH as a harness has them (they hold no clax).
-SYS_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+SYS_PATH="$(PATH=/usr/bin:/bin:/usr/sbin:/sbin path_without "$ROOT/sys-path" clax)"
 new_env
 printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\ncase "$*" in *--preflight*) exit 0 ;; esac\necho "ppid=$PPID"\n' "$V" | fake_exe "$FAKEBIN/clax"
 set_bin "$FAKEBIN/clax"
