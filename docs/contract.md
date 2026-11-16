@@ -11706,7 +11706,12 @@ was made; and a run's end, sent until it is acknowledged.
   `site_session_required`; nor, there, on a local Clax's private site,
   whose top-level visit is sent to the shell. WebKit sends the frame's
   site cookie with the script request too, so there it registers from the
-  shell's frame of a local Clax's private site as well. `own` lifts
+  shell's frame of a local Clax's private site as well. In the Clax app it
+  never registers: a content origin there is `clax://<id>.c` on Apple
+  platforms, a scheme no service worker is registered on, and
+  `https://<id>.c.clax.invalid` on Android, whose worker script fetch the
+  app does not answer (it intercepts its WebViews' requests, not a service
+  worker's), so it never reaches the core. `own` lifts
   the browser's policy, not what the daemon does for a page: the `net`
   capability and the other gated capabilities keep their approval and
   grants.

@@ -151,7 +151,12 @@ partitioned site cookie with the frame's own fetches but not with its
 worker's script fetch, which is answered 401 `site_session_required`. Nor,
 there, on a local Clax's private site, whose top-level visit is sent to the
 shell. WebKit sends the frame's site cookie with the script request too, so
-there it registers from the shell's frame of a local Clax's private site. Serving a worker's script
+there it registers from the shell's frame of a local Clax's private site. In the
+Clax app it never registers: a content origin there is `clax://<id>.c` on
+Apple platforms, a scheme no service worker is registered on, and
+`https://<id>.c.clax.invalid` on Android, whose worker script fetch the app
+does not answer (it intercepts its WebViews' requests, not a service
+worker's). Serving a worker's script
 without a session would hand a private site's files to anyone who sends
 `Service-Worker: script`.
 
