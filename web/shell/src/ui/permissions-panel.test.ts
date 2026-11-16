@@ -19,17 +19,22 @@ const answer = (over: Record<string, unknown> = {}) => ({
 });
 
 const mounted: object[] = [];
-function setup(a: Record<string, unknown>) {
-  const calls: { method: string; url: string }[] = [];
+type Policy = { content_policy?: "locked" | "own"; may_tag?: boolean; patch?: (body: unknown) => Response };
+function setup(a: Record<string, unknown>, policy: Policy = {}) {
+  const calls: { method: string; url: string; body?: unknown }[] = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit = {}) => {
-    calls.push({ method: init.method ?? "GET", url });
+    const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
+    calls.push({ method: init.method ?? "GET", url, body });
+    if (init.method === "PATCH") return policy.patch?.(body) ?? new Response(JSON.stringify({ artifact: { content_policy: (body as { content_policy: string }).content_policy } }), { status: 200 });
     return new Response(JSON.stringify(init.method === "DELETE" ? { withdrawn: true } : a), { status: 200 });
   }));
+  const state = writable({ data: { artifact: { title: "Forecast", may_approve: true, pending_capabilities: a.pending ?? null, content_policy: policy.content_policy, may_tag: policy.may_tag } }, approving: false, policy: null as string | null });
   const ctl = {
     id: ID,
-    state: writable({ data: { artifact: { title: "Forecast", may_approve: true, pending_capabilities: a.pending ?? null } }, approving: false }),
+    state,
     host: { grantState: async () => null, revoke: async () => {} },
     approve: vi.fn(async () => {}), notNow: vi.fn(), showApproval: vi.fn(),
+    policyChanged: vi.fn((p: string) => state.update(s => ({ ...s, policy: p }))),
   };
   const target = document.createElement("div");
   document.body.append(target);
@@ -73,5 +78,63 @@ describe("PermissionsPanel", () => {
     setup(answer());
     await vi.waitFor(() => expect(document.querySelector("[role=dialog]")).not.toBeNull());
     expect(sessionStorage.getItem(`clax.permissions.reopen:${ID}`)).toBeNull();
+  });
+
+  it("gives whoever administers it the content policy switch, which explains itself before it sends own, and locks at once", async () => {
+    const { ctl, calls } = setup(answer(), { content_policy: "locked", may_tag: true });
+    permissionsOpen.current!("policy");
+    const box = await vi.waitFor(() => { const b = document.querySelector<HTMLInputElement>("input[name=own_policy]"); expect(b).not.toBeNull(); return b!; });
+    // Opened from the blocked notice, the switch has focus.
+    await vi.waitFor(() => expect(document.activeElement).toBe(box));
+    expect(box.labels?.[0]?.textContent?.trim()).toBe("Let this clax set its own content policy");
+    expect(document.querySelector(".policy")!.textContent).toContain("Locked: its pages load and connect to its own site only.");
+    const patches = () => calls.filter(c => c.method === "PATCH");
+    flushSync(() => box.click());
+    const ask = await vi.waitFor(() => { const a = document.querySelector("[data-testid=own-confirm]"); expect(a).not.toBeNull(); return a!; });
+    expect(ask.textContent).toContain("Its pages may then load code from, and send anything they can read to, any site.");
+    expect(box.checked).toBe(false);
+    expect(patches()).toEqual([]);
+    flushSync(() => button("Confirm")!.click());
+    await vi.waitFor(() => expect(ctl.policyChanged).toHaveBeenCalledWith("own"));
+    expect(patches()).toEqual([{ method: "PATCH", url: `/api/artifacts/${ID}`, body: { content_policy: "own" } }]);
+    await vi.waitFor(() => expect(document.querySelector("[data-testid=own-note]")?.textContent).toBe("Sets its own content policy: its pages load and send where they choose."));
+    expect(box.checked).toBe(true);
+    flushSync(() => box.click());
+    await vi.waitFor(() => expect(ctl.policyChanged).toHaveBeenCalledWith("locked"));
+    expect(document.querySelector("[data-testid=own-confirm]")).toBeNull();
+    expect(patches()[1]).toEqual({ method: "PATCH", url: `/api/artifacts/${ID}`, body: { content_policy: "locked" } });
+  });
+
+  it("says why a change of the content policy did not take, and leaves the switch as the daemon holds it", async () => {
+    const refused = () => new Response(JSON.stringify({ error: { code: "admin_only", message: "only the page's maker sets its site's content policy" } }), { status: 403 });
+    const { ctl } = setup(answer(), { content_policy: "locked", may_tag: true, patch: refused });
+    permissionsOpen.current!();
+    const box = await vi.waitFor(() => { const b = document.querySelector<HTMLInputElement>("input[name=own_policy]"); expect(b).not.toBeNull(); return b!; });
+    flushSync(() => box.click());
+    await vi.waitFor(() => expect(button("Confirm")).toBeDefined());
+    flushSync(() => button("Confirm")!.click());
+    await vi.waitFor(() => expect(document.querySelector("[role=alert]")?.textContent).toBe("Could not change the content policy: only the page's maker sets its site's content policy"));
+    expect(box.checked).toBe(false);
+    expect(ctl.policyChanged).not.toHaveBeenCalled();
+  });
+
+  it("shows anyone who does not administer it no switch: a line while it sets its own policy, nothing while it is locked", async () => {
+    setup(answer(), { content_policy: "own", may_tag: false });
+    permissionsOpen.current!();
+    await vi.waitFor(() => expect(document.querySelector("[data-testid=own-note]")?.textContent).toBe("Sets its own content policy: its pages load and send where they choose."));
+    expect(document.querySelector("input[name=own_policy]")).toBeNull();
+    for (const m of mounted.splice(0)) unmount(m);
+    document.body.replaceChildren();
+    setup(answer(), { content_policy: "locked", may_tag: false });
+    permissionsOpen.current!();
+    await vi.waitFor(() => expect(document.querySelector("[data-permission=net]")).not.toBeNull());
+    expect(document.querySelector(".policy")).toBeNull();
+    // A daemon that says nothing of it shows nothing of it.
+    for (const m of mounted.splice(0)) unmount(m);
+    document.body.replaceChildren();
+    setup(answer(), { may_tag: true });
+    permissionsOpen.current!();
+    await vi.waitFor(() => expect(document.querySelector("[data-permission=net]")).not.toBeNull());
+    expect(document.querySelector(".policy")).toBeNull();
   });
 });

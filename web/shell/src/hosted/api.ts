@@ -6,6 +6,7 @@
 // cookie, from the public origin. A refusal throws `Refused` with the
 // daemon's own message, which the page shows as it is. Names and titles
 // are people's and agents' text: untrusted, rendered as text.
+import type { ContentSecurityPolicy } from "../api";
 import { browserCall, Refused } from "../held";
 
 export { Refused };
@@ -36,10 +37,7 @@ export type Share = { id: string; access: ShareAccess; github_login: string | nu
 export type ShareCandidate = { person: string; name: string | null; github_login: string | null };
 /** Whether an artifact's site is open to anyone, without signing in, or only to those it is shared with. */
 export type SiteAccess = "private" | "world";
-/** The Content-Security-Policy Clax sends on an artifact's own content: one that holds its pages to their own
- * site (`self`, every artifact's at first), or no source restrictions (`unrestricted`): its pages then load code
- * from, and send what they read to, any site. */
-export type ContentSecurityPolicy = "self" | "unrestricted";
+export type { ContentSecurityPolicy };
 /** `GET /api/hosted/artifacts/<id>/sharing`: everything for whoever may share it, else `can_share: false` alone;
  * `site_access`, `content_security_policy` and its site's address, `site_url`, where the daemon says them. `comments`
  * is its Comments switch: off, nobody comments there, whatever their access. */
@@ -87,7 +85,7 @@ export const setSiteAccess = (aid: string, access: SiteAccess) =>
   call<unknown>(`/api/artifacts/${e(aid)}`, "PATCH", { site_access: access });
 /** Serves `aid`'s site without Clax's Content Security Policy (`unrestricted`), or holds it to its own site again (`self`). */
 export const setContentSecurityPolicy = (aid: string, policy: ContentSecurityPolicy) =>
-  call<unknown>(`/api/artifacts/${e(aid)}`, "PATCH", { content_security_policy: policy });
+  call<{ artifact?: { content_security_policy?: ContentSecurityPolicy } }>(`/api/artifacts/${e(aid)}`, "PATCH", { content_security_policy: policy });
 /** Shares `aid` with a GitHub login or a person (by public ID), or changes their access. */
 export const share = (aid: string, to: { github_login: string } | { person: string }, access: ShareAccess) =>
   call<{ share: Share }>(`/api/hosted/artifacts/${e(aid)}/shares`, "PUT", { ...to, access });

@@ -298,6 +298,41 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(ctl.pageCommenting(false)).toBe(false);
   });
 
+  it("names the other sites the lockdown blocked the greeted page from, checked, once each, at most BLOCKED_MAX, and forgets them with the document", async () => {
+    const { BLOCKED_MAX } = await import("../../../bridge/src/protocol");
+    const { ctl, frame } = await started();
+    frame.contentWindow!.postMessage = (() => {}) as Window["postMessage"];
+    const blocked = (origin: unknown, directive: unknown = "script-src-elem") => fromFrame(frame.contentWindow!, { type: "clax:blocked", directive, origin });
+    // Before the page greeted, nothing is kept.
+    blocked("https://cdn.example.com");
+    expect(ctl.state.get().blocked).toEqual([]);
+    hello(frame.contentWindow!);
+    // Malformed, oversized, or not an origin alone; the page's own site; an unknown directive.
+    for (const o of [7, null, "", "cdn.example.com", "https://cdn.example.com/lib.js", "https://cdn.example.com?x=1", "https://u@cdn.example.com", "javascript:alert(1)", "HTTPS://CDN.EXAMPLE.COM", `https://${"a".repeat(300)}.example`, SITE]) blocked(o);
+    blocked("https://cdn.example.com", "base-uri");
+    blocked("https://cdn.example.com", { toString: () => "script-src" });
+    expect(ctl.state.get().blocked).toEqual([]);
+    // Each origin once, whatever directives name it.
+    blocked("https://cdn.example.com");
+    blocked("https://cdn.example.com");
+    blocked("https://cdn.example.com", "style-src-elem");
+    blocked("wss://relay.example:8443", "connect-src");
+    expect(ctl.state.get().blocked).toEqual(["https://cdn.example.com", "wss://relay.example:8443"]);
+    // A page that floods: at most BLOCKED_MAX reports are kept.
+    for (let i = 0; i < BLOCKED_MAX * 10; i++) blocked(`https://h${i}.example`, "img-src");
+    expect(ctl.state.get().blocked.length).toBeLessThanOrEqual(BLOCKED_MAX);
+    // Dismissed, it stays so for the document; another document forgets both.
+    ctl.dismissBlocked();
+    expect(ctl.state.get().blockedDismissed).toBe(true);
+    hello(frame.contentWindow!);
+    expect(ctl.state.get().blocked).toEqual([]);
+    expect(ctl.state.get().blockedDismissed).toBe(false);
+    blocked("https://cdn.example.com");
+    fromFrame(frame.contentWindow!, { type: "clax:bye" });
+    expect(ctl.state.get().blocked).toEqual([]);
+    ctl.dispose();
+  });
+
   it("forgets a failed part when the frame's document goes without greeting, not at its own load", async () => {
     const { ctl, frame } = await started();
     frame.contentWindow!.postMessage = (() => {}) as Window["postMessage"];

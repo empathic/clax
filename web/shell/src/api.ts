@@ -54,7 +54,13 @@ export type Artifact = {
   may_approve?: boolean;
   /** From the same: what the current version declares that waits for approval, null for nothing. */
   pending_capabilities?: PendingCapabilities | null;
+  /** From `GET /api/artifacts/<id>` and the bootstrap: whether its site is held to its own files
+   * (`locked`) or sets its own content policy (`own`). */
+  content_policy?: ContentPolicy;
 };
+/** Whether an artifact's site is held to its own files (`locked`, every artifact's at first) or sets its own
+ * content policy (`own`): its pages then load code from, and send what they read to, any site. */
+export type ContentPolicy = "locked" | "own";
 /** What a version declares that waits for approval: gated capability names,
  * hosts `net` has not approved, and the digest of the declaration shown,
  * which an approval must name. */
