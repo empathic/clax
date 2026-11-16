@@ -29,7 +29,12 @@
 // - `/site-signin` is served; a private site is refused signed out (302
 //   to `/site-signin` for a page, 401 for a subresource) and served to the
 //   owner's browser through the handshake; a site opened to the world with
-//   `PATCH site_access` is served signed out until it is closed again; an
+//   `PATCH site_access` is served signed out until it is closed again; a
+//   world-open clax set to its own content policy (`PATCH content_policy`)
+//   serves its page and files with their framing alone, revalidated under
+//   a tag naming the policy, and its own service worker script, where
+//   locked it has the lockdown and Clax's kill switch, and locked again a
+//   copy kept from while own is answered whole with the lockdown; an
 //   old keyed asset URL serves no bytes, at most a redirect to its
 //   artifact's site;
 // - a guest with the link of a page shared for comments names themselves
@@ -597,6 +602,62 @@ async function main() {
     check(world.status === 200 && world.text.includes("Harbour log"), "a site opened to the world is served signed out", world.status);
     await api(origin, `/api/artifacts/${harbour.id}`, { method: "PATCH", body: JSON.stringify({ site_access: "private" }) });
     check(!(await raw(`${site}/`, { accept: "text/html" })).text.includes("Harbour log"), "closed again, it refuses the next anonymous request");
+
+    // A clax that sets its own content policy, on a site open to the world: its page and files keep only
+    // their framing and revalidate, tagged by the policy; its service worker's script is its own; locked
+    // again, a copy kept from then is answered whole with the lockdown and the worker gets Clax's script.
+    const OWN_SW = "self.addEventListener('fetch', () => {});";
+    const ownSite = (await api(origin, "/api/artifacts", {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Own site",
+        files: {
+          "index.html": { content: "<title>Own site</title><h1>Own site</h1>", encoding: "utf8" },
+          "app.js": { content: "export const own = 1;", encoding: "utf8" },
+          "sw.js": { content: OWN_SW, encoding: "utf8" },
+        },
+      }),
+    })).artifact;
+    const ownHost = siteOf(ownSite.id);
+    const policyOf = (r) => r.headers.get("content-security-policy") ?? "";
+    const lockdown = (p) => p.startsWith("frame-ancestors 'self' ") && p.includes("connect-src 'self';") && p.includes("form-action 'none'");
+    const framingAlone = (p) => p.startsWith("frame-ancestors 'self' ") && !p.includes(";");
+    const KILL = "self.addEventListener(\"install\",()=>self.skipWaiting());self.addEventListener(\"activate\",e=>e.waitUntil(self.registration.unregister()));";
+    await api(origin, `/api/artifacts/${ownSite.id}`, { method: "PATCH", body: JSON.stringify({ site_access: "world" }) });
+    const ownPaths = ["/", "/app.js", "/_clax/v/1/", "/_clax/v/1/app.js"];
+    const wasLocked = {};
+    for (const path of ownPaths) {
+      const r = await raw(`${ownHost}${path}`);
+      check(r.status === 200 && lockdown(policyOf(r)), `locked, ${path} of a world-open site carries the lockdown`, { status: r.status, csp: policyOf(r) });
+      wasLocked[path] = { cc: r.headers.get("cache-control"), etag: r.headers.get("etag") };
+    }
+    const lockedSw = await raw(`${ownHost}/sw.js`, { "service-worker": "script" });
+    check(lockedSw.status === 200 && lockedSw.text === KILL, "locked, a service worker's script request is answered Clax's kill switch", { status: lockedSw.status, text: lockedSw.text.slice(0, 120) });
+    const toOwn = await api(origin, `/api/artifacts/${ownSite.id}`, { method: "PATCH", body: JSON.stringify({ content_policy: "own" }) });
+    check(toOwn.artifact?.content_policy === "own", "PATCH content_policy lets the clax set its own content policy", toOwn.artifact);
+    const ownTags = {};
+    for (const path of ownPaths) {
+      const r = await raw(`${ownHost}${path}`);
+      const cc = r.headers.get("cache-control") ?? "";
+      const etag = r.headers.get("etag");
+      check(r.status === 200 && framingAlone(policyOf(r)), `own, ${path} carries its framing alone`, { status: r.status, csp: policyOf(r) });
+      check(cc.includes("no-cache") && !cc.includes("immutable") && !cc.includes("max-age") && etag && etag !== wasLocked[path].etag, `own, ${path} revalidates under a tag of its own`, { cc, etag, was: wasLocked[path] });
+      const again = await raw(`${ownHost}${path}`, { "if-none-match": etag });
+      check(again.status === 304, `own, ${path} with its tag is not modified`, again.status);
+      ownTags[path] = etag;
+    }
+    const ownSw = await raw(`${ownHost}/sw.js`, { "service-worker": "script" });
+    check(ownSw.status === 200 && ownSw.text === OWN_SW && framingAlone(policyOf(ownSw)), "own, a service worker's script request is answered the clax's own script", { status: ownSw.status, text: ownSw.text.slice(0, 120), csp: policyOf(ownSw) });
+    const ownMissing = await raw(`${ownHost}/nope.js`, { "service-worker": "script" });
+    check(ownMissing.status === 404 && lockdown(policyOf(ownMissing)), "own, a worker script it has none of is Clax's 404 with the lockdown", { status: ownMissing.status, csp: policyOf(ownMissing) });
+    await api(origin, `/api/artifacts/${ownSite.id}`, { method: "PATCH", body: JSON.stringify({ content_policy: "locked" }) });
+    for (const path of ownPaths) {
+      const r = await raw(`${ownHost}${path}`, { "if-none-match": ownTags[path] });
+      check(r.status === 200 && lockdown(policyOf(r)), `locked again, ${path} kept from while own is answered whole with the lockdown`, { status: r.status, csp: policyOf(r) });
+      check(r.headers.get("cache-control") === wasLocked[path].cc && r.headers.get("etag") === wasLocked[path].etag, `locked again, ${path} caches as before`, { cc: r.headers.get("cache-control"), etag: r.headers.get("etag"), was: wasLocked[path] });
+    }
+    const relockedSw = await raw(`${ownHost}/sw.js`, { "service-worker": "script" });
+    check(relockedSw.status === 200 && relockedSw.text === KILL, "locked again, the worker's update check is answered the kill switch", { status: relockedSw.status, text: relockedSw.text.slice(0, 120) });
 
     // Deleting the artifact erases its object.
     await api(origin, `/api/artifacts/${notes.id}`, { method: "DELETE" });
