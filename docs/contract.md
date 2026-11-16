@@ -11696,12 +11696,15 @@ was made; and a run's end, sent until it is acknowledged.
   check and removes itself; until then it still controls the tabs it
   controls. An `own` clax's service worker registers on a site open to the
   world, or on a private site visited top-level on a hosted Clax, whose
-  first-party site cookie the worker's script request carries. It does not
-  register from inside the shell's frame of a private site, whose script
-  request carries no site cookie (a browser sends the frame's partitioned
-  cookie with the frame's own fetches, not with its worker's script fetch)
-  and is answered 401 `site_session_required`; nor on a local Clax's
-  private site, whose top-level visit is sent to the shell. `own` lifts
+  first-party site cookie the worker's script request carries. In
+  Chromium and Firefox it does not register from inside the shell's frame
+  of a private site, whose script request carries no site cookie (they
+  send the frame's partitioned cookie with the frame's own fetches, not
+  with its worker's script fetch) and is answered 401
+  `site_session_required`; nor, there, on a local Clax's private site,
+  whose top-level visit is sent to the shell. WebKit sends the frame's
+  site cookie with the script request too, so there it registers from the
+  shell's frame of a local Clax's private site as well. `own` lifts
   the browser's policy, not what the daemon does for a page: the `net`
   capability and the other gated capabilities keep their approval and
   grants.

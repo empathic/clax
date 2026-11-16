@@ -13,14 +13,30 @@
 // On a hosted Clax, a private `own` clax's service worker registers from a
 // top-level visit of its site.
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { createServer as createHttpServer, type Server } from "node:http";
 import { createServer, type AddressInfo } from "node:net";
-import type { Frame } from "@playwright/test";
-import { test, expect, type Daemon, NO_KEY_CONFIG, api, openArtifact, publish, startDaemon } from "./fixtures";
+import { type Browser, type BrowserType, type Frame, chromium, firefox, webkit } from "@playwright/test";
+import { test, expect, type Daemon, NO_KEY_CONFIG, api, openArtifact, publish, startDaemon, trustBrowser } from "./fixtures";
 import { ownerCookie } from "./questions-helpers";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
+
+/** The engines the policy's cases run in, each skipped where Playwright has no build of it
+ * (`PLAYWRIGHT_BROWSERS_PATH`): under Bazel, `@chromium//:browsers` holds Chromium alone. */
+const ENGINES: BrowserType[] = [chromium, webkit, firefox];
+
+/** Runs `body` with a browser of `engine`'s own, every context of it a browser of the owner's. */
+async function inEngine(engine: BrowserType, body: (browser: Browser) => Promise<void>) {
+  test.skip(!existsSync(engine.executablePath()), `${engine.name()} is not installed`);
+  const browser = trustBrowser(await engine.launch());
+  try {
+    await body(browser);
+  } finally {
+    await browser.close();
+  }
+}
 
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
@@ -89,66 +105,77 @@ async function patchAsOwner(base: string, id: string, change: { content_policy: 
   expect((JSON.parse(text) as { artifact: Record<string, string> }).artifact).toMatchObject(change);
 }
 
-test("a locked clax's page loads no script from elsewhere and opens no WebSocket there; once it sets its own policy, both work and its own service worker stays", async ({ browser }) => {
-  const away = await elsewhere();
-  try {
-    const { artifact } = await api(d.base, d.token, "/api/artifacts", {
-      method: "POST",
-      body: JSON.stringify({
-        title: "Own policy",
-        files: { "index.html": { content: page(away), encoding: "utf8" }, "sw.js": { content: SW, encoding: "utf8" } },
-      }),
-    }) as { artifact: { id: string; content_policy?: string } };
-    expect(artifact.content_policy ?? "locked").toBe("locked");
+for (const engine of ENGINES) {
+  test(`${engine.name()}: a locked clax's page loads no script from elsewhere and opens no WebSocket there; once it sets its own policy, both work and its own service worker stays`, () => inEngine(engine, async browser => {
+    const away = await elsewhere();
+    try {
+      const { artifact } = await api(d.base, d.token, "/api/artifacts", {
+        method: "POST",
+        body: JSON.stringify({
+          title: "Own policy",
+          files: { "index.html": { content: page(away), encoding: "utf8" }, "sw.js": { content: SW, encoding: "utf8" } },
+        }),
+      }) as { artifact: { id: string; content_policy?: string } };
+      expect(artifact.content_policy ?? "locked").toBe("locked");
 
-    // Locked: both refused by the policy, and the other host never asked.
-    const lockedCtx = await browser.newContext();
-    const f = await openArtifact(await lockedCtx.newPage(), d.base, artifact.id, 1);
-    // Refused as the socket opens, or as it is made (a browser may throw there).
-    expect(await f.evaluate(() => (window as unknown as Win).socket)).toMatch(/^(refused|threw:)/);
-    await expect.poll(async () => (await violations(f)).some(v => v.startsWith("script-src") && v.includes(away.url))).toBe(true);
-    await expect.poll(async () => (await violations(f)).some(v => v.startsWith("connect-src ") && v.includes(away.ws))).toBe(true);
-    expect(await f.evaluate(() => (window as unknown as Win).awayLoaded ?? false)).toBe(false);
-    expect(away.hits()).toBe(0);
-    await lockedCtx.close();
+      // Locked: both refused by the policy, and the other host never asked.
+      const lockedCtx = await browser.newContext();
+      const f = await openArtifact(await lockedCtx.newPage(), d.base, artifact.id, 1);
+      // Refused as the socket opens, or as it is made (a browser may throw there).
+      expect(await f.evaluate(() => (window as unknown as Win).socket)).toMatch(/^(refused|threw:)/);
+      await expect.poll(async () => (await violations(f)).some(v => v.startsWith("script-src") && v.includes(away.url))).toBe(true);
+      await expect.poll(async () => (await violations(f)).some(v => v.startsWith("connect-src ") && v.includes(away.ws))).toBe(true);
+      expect(await f.evaluate(() => (window as unknown as Win).awayLoaded ?? false)).toBe(false);
+      expect(away.hits()).toBe(0);
+      await lockedCtx.close();
 
-    // The owner lets it set its own policy; the daemon says so.
-    await patchAsOwner(d.base, artifact.id, { content_policy: "own" });
-    const got = await api(d.base, d.token, `/api/artifacts/${artifact.id}`) as { artifact: { content_policy: string } };
-    expect(got.artifact.content_policy).toBe("own");
+      // The owner lets it set its own policy; the daemon says so.
+      await patchAsOwner(d.base, artifact.id, { content_policy: "own" });
+      const got = await api(d.base, d.token, `/api/artifacts/${artifact.id}`) as { artifact: { content_policy: string } };
+      expect(got.artifact.content_policy).toBe("own");
 
-    // A fresh browser context, so no response of the locked page is reused.
-    const ownCtx = await browser.newContext();
-    const g = await openArtifact(await ownCtx.newPage(), d.base, artifact.id, 1);
-    expect(await g.evaluate(() => (window as unknown as Win).socket)).toBe("echo:ping");
-    await expect.poll(() => g.evaluate(() => (window as unknown as Win).awayLoaded ?? false)).toBe(true);
-    expect(await violations(g)).toEqual([]);
-    expect(away.hits()).toBeGreaterThanOrEqual(2);
+      // A fresh browser context, so no response of the locked page is reused.
+      const ownCtx = await browser.newContext();
+      const g = await openArtifact(await ownCtx.newPage(), d.base, artifact.id, 1);
+      expect(await g.evaluate(() => (window as unknown as Win).socket)).toBe("echo:ping");
+      await expect.poll(() => g.evaluate(() => (window as unknown as Win).awayLoaded ?? false)).toBe(true);
+      expect(await violations(g)).toEqual([]);
+      expect(away.hits()).toBeGreaterThanOrEqual(2);
 
-    // Its own service worker registers, answers a frame of its scope, and stays. Registered from the
-    // shell's frame, a private site answers the worker's script 401 `site_session_required`, so the site
-    // is opened to the world first.
-    await patchAsOwner(d.base, artifact.id, { site_access: "world" });
-    const scriptURL = await g.evaluate(async () => {
-      await navigator.serviceWorker.register("sw.js");
-      const reg = await navigator.serviceWorker.ready;
-      return reg.active?.scriptURL ?? "";
-    });
-    expect(scriptURL).toMatch(/\/sw\.js$/);
-    await expect.poll(() => g.evaluate(async () => {
-      const fr = document.createElement("iframe");
-      fr.src = "hello.html";
-      await new Promise(r => { fr.onload = r; document.body.append(fr); });
-      const text = fr.contentDocument?.body?.textContent ?? "";
-      fr.remove();
-      return text;
-    })).toBe("from the worker");
-    expect(await g.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).map(r => r.active?.scriptURL ?? ""))).toEqual([scriptURL]);
-    await ownCtx.close();
-  } finally {
-    away.close();
-  }
-});
+      // Registered from the shell's frame of a private site: in Chromium and Firefox the frame's site cookie
+      // does not go with the worker's script fetch, answered 401 `site_session_required`; WebKit sends it,
+      // and the worker registers there.
+      const fromFrame = await g.evaluate(() => navigator.serviceWorker.register("sw.js").then(() => "registered", (e: Error) => `refused:${e.name}`));
+      if (engine === webkit) expect(fromFrame).toBe("registered");
+      else {
+        expect(fromFrame).toMatch(/^refused:/);
+        expect(await g.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).length)).toBe(0);
+      }
+
+      // Its own service worker registers, answers a frame of its scope, and stays, once the site is open
+      // to the world.
+      await patchAsOwner(d.base, artifact.id, { site_access: "world" });
+      const scriptURL = await g.evaluate(async () => {
+        await navigator.serviceWorker.register("sw.js");
+        const reg = await navigator.serviceWorker.ready;
+        return reg.active?.scriptURL ?? "";
+      });
+      expect(scriptURL).toMatch(/\/sw\.js$/);
+      await expect.poll(() => g.evaluate(async () => {
+        const fr = document.createElement("iframe");
+        fr.src = "hello.html";
+        await new Promise(r => { fr.onload = r; document.body.append(fr); });
+        const text = fr.contentDocument?.body?.textContent ?? "";
+        fr.remove();
+        return text;
+      })).toBe("from the worker");
+      expect(await g.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).map(r => r.active?.scriptURL ?? ""))).toEqual([scriptURL]);
+      await ownCtx.close();
+    } finally {
+      away.close();
+    }
+  }));
+}
 
 /** A server on another port of this host that answers every request 204 and keeps each path it is asked. */
 async function listener(): Promise<{ url: string; paths: string[]; close: () => void }> {
@@ -176,38 +203,40 @@ const SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rec
 
 type Probe = { to?: string; through: (label: string) => Promise<string>; direct: (label: string) => Promise<string> };
 
-test("a clax returned to locked holds in a browser that kept its files from while it was own", async ({ browser }) => {
-  const away = await listener();
-  try {
-    const { artifact } = await api(d.base, d.token, "/api/artifacts", {
-      method: "POST",
-      body: JSON.stringify({
-        title: "Relock",
-        files: { "index.html": { content: svgProbe, encoding: "utf8" }, "x.svg": { content: SVG, encoding: "utf8" } },
-      }),
-    }) as { artifact: { id: string } };
-    await patchAsOwner(d.base, artifact.id, { content_policy: "own" });
+for (const engine of ENGINES) {
+  test(`${engine.name()}: a clax returned to locked holds in a browser that kept its files from while it was own`, () => inEngine(engine, async browser => {
+    const away = await listener();
+    try {
+      const { artifact } = await api(d.base, d.token, "/api/artifacts", {
+        method: "POST",
+        body: JSON.stringify({
+          title: "Relock",
+          files: { "index.html": { content: svgProbe, encoding: "utf8" }, "x.svg": { content: SVG, encoding: "utf8" } },
+        }),
+      }) as { artifact: { id: string } };
+      await patchAsOwner(d.base, artifact.id, { content_policy: "own" });
 
-    // One browser context throughout, so whatever it caches while `own` is what it holds after.
-    const ctx = await browser.newContext();
-    const tab = await ctx.newPage();
-    let f = await openArtifact(tab, d.base, artifact.id, 1);
-    await f.evaluate(to => { (window as unknown as Probe).to = to; }, away.url);
-    expect(await f.evaluate(() => (window as unknown as Probe).through("own-svg"))).toBe("sent");
-    await expect.poll(() => away.paths).toContain("/own-svg");
+      // One browser context throughout, so whatever it caches while `own` is what it holds after.
+      const ctx = await browser.newContext();
+      const tab = await ctx.newPage();
+      let f = await openArtifact(tab, d.base, artifact.id, 1);
+      await f.evaluate(to => { (window as unknown as Probe).to = to; }, away.url);
+      expect(await f.evaluate(() => (window as unknown as Probe).through("own-svg"))).toBe("sent");
+      await expect.poll(() => away.paths).toContain("/own-svg");
 
-    // Locked again: the shell opened anew in the same context, the page frames the SVG it fetched while `own`.
-    await patchAsOwner(d.base, artifact.id, { content_policy: "locked" });
-    f = await openArtifact(tab, d.base, artifact.id, 1);
-    await f.evaluate(to => { (window as unknown as Probe).to = to; }, away.url);
-    expect(await f.evaluate(() => (window as unknown as Probe).direct("locked-direct"))).toBe("refused");
-    expect(await f.evaluate(() => (window as unknown as Probe).through("locked-svg"))).toBe("refused");
-    expect(away.paths).toEqual(["/own-svg"]);
-    await ctx.close();
-  } finally {
-    away.close();
-  }
-});
+      // Locked again: the shell opened anew in the same context, the page frames the SVG it fetched while `own`.
+      await patchAsOwner(d.base, artifact.id, { content_policy: "locked" });
+      f = await openArtifact(tab, d.base, artifact.id, 1);
+      await f.evaluate(to => { (window as unknown as Probe).to = to; }, away.url);
+      expect(await f.evaluate(() => (window as unknown as Probe).direct("locked-direct"))).toBe("refused");
+      expect(await f.evaluate(() => (window as unknown as Probe).through("locked-svg"))).toBe("refused");
+      expect(away.paths).toEqual(["/own-svg"]);
+      await ctx.close();
+    } finally {
+      away.close();
+    }
+  }));
+}
 
 const SECRET = "e2e setup secret";
 
@@ -287,46 +316,56 @@ test("the Share dialog's content policy switch explains itself and sends nothing
   }
 });
 
-test("on a hosted Clax, a private own clax's service worker registers from a top-level visit of its site", async ({ browser }) => {
-  const port = await freePort();
-  const origin = `http://localhost:${port}`;
-  const config = `${NO_KEY_CONFIG}[hosted]\npublic_origin = "${origin}"\nsetup_secret_env = "CLAX_E2E_SETUP_SECRET"\n`;
-  const h = await startDaemon({ config, port, env: { CLAX_E2E_SETUP_SECRET: SECRET } });
-  test.skip(h.port !== port, `the daemon took port ${h.port}, not ${port}`);
-  try {
-    const { artifact } = await api(h.base, h.token, "/api/artifacts", {
-      method: "POST",
-      body: JSON.stringify({
-        title: "Worker site",
-        files: { "index.html": { content: "<title>Worker site</title><h1>Worker site</h1>", encoding: "utf8" }, "sw.js": { content: SW, encoding: "utf8" } },
-      }),
-    }) as { artifact: { id: string } };
-    const changed = await api(h.base, h.token, `/api/artifacts/${artifact.id}`, {
-      method: "PATCH", body: JSON.stringify({ content_policy: "own" }),
-    }) as { artifact: { content_policy: string; site_access: string } };
-    expect(changed.artifact).toMatchObject({ content_policy: "own", site_access: "private" });
-    const ctx = await browser.newContext();
-    const owner = await ctx.newPage();
-    await owner.goto(`${origin}/setup?secret=${encodeURIComponent(SECRET)}`);
-    await owner.getByLabel("Your name").fill("Ada");
-    await owner.getByRole("button", { name: "Create the first person" }).click();
-    await owner.waitForURL(`${origin}/`);
+for (const engine of ENGINES) {
+  test(`${engine.name()}: on a hosted Clax, a private own clax's service worker registers from a top-level visit of its site`, () => inEngine(engine, async browser => {
+    const port = await freePort();
+    const origin = `http://localhost:${port}`;
+    const config = `${NO_KEY_CONFIG}[hosted]\npublic_origin = "${origin}"\nsetup_secret_env = "CLAX_E2E_SETUP_SECRET"\n`;
+    const h = await startDaemon({ config, port, env: { CLAX_E2E_SETUP_SECRET: SECRET } });
+    test.skip(h.port !== port, `the daemon took port ${h.port}, not ${port}`);
+    try {
+      const { artifact } = await api(h.base, h.token, "/api/artifacts", {
+        method: "POST",
+        body: JSON.stringify({
+          title: "Worker site",
+          files: { "index.html": { content: "<title>Worker site</title><h1>Worker site</h1>", encoding: "utf8" }, "sw.js": { content: SW, encoding: "utf8" } },
+        }),
+      }) as { artifact: { id: string } };
+      const changed = await api(h.base, h.token, `/api/artifacts/${artifact.id}`, {
+        method: "PATCH", body: JSON.stringify({ content_policy: "own" }),
+      }) as { artifact: { content_policy: string; site_access: string } };
+      expect(changed.artifact).toMatchObject({ content_policy: "own", site_access: "private" });
+      const ctx = await browser.newContext();
+      const owner = await ctx.newPage();
+      await owner.goto(`${origin}/setup?secret=${encodeURIComponent(SECRET)}`);
+      await owner.getByLabel("Your name").fill("Ada");
+      await owner.getByRole("button", { name: "Create the first person" }).click();
+      await owner.waitForURL(`${origin}/`);
 
-    // Top-level, the site signs the owner in with a first-party cookie its worker's script fetch carries.
-    const site = `http://${artifact.id}.localhost:${port}/`;
-    await owner.goto(site);
-    await owner.waitForURL(site);
-    await expect(owner.locator("h1")).toHaveText("Worker site");
-    const scriptURL = await owner.evaluate(async () => {
-      await navigator.serviceWorker.register("sw.js");
-      const reg = await navigator.serviceWorker.ready;
-      return reg.active?.scriptURL ?? "";
-    });
-    expect(scriptURL).toBe(`${site}sw.js`);
-    await owner.goto(`${site}hello.html`);
-    await expect(owner.locator("body")).toHaveText("from the worker");
-    await ctx.close();
-  } finally {
-    await h.stop();
-  }
-});
+      // From the shell's frame, the frame's partitioned site cookie does not go with the worker's script
+      // fetch. Not run in WebKit: there an evaluate in a hosted shell's frame, which arrives through
+      // `/_clax/session/start`, never returns, though the frame shows the page.
+      if (engine !== webkit) {
+        const framed = await openArtifact(owner, origin, artifact.id, 1);
+        expect(await framed.evaluate(() => navigator.serviceWorker.register("sw.js").then(() => "registered", (e: Error) => `refused:${e.name}`))).toMatch(/^refused:/);
+      }
+
+      // Top-level, the site signs the owner in with a first-party cookie its worker's script fetch carries.
+      const site = `http://${artifact.id}.localhost:${port}/`;
+      await owner.goto(site);
+      await owner.waitForURL(site);
+      await expect(owner.locator("h1")).toHaveText("Worker site");
+      const scriptURL = await owner.evaluate(async () => {
+        await navigator.serviceWorker.register("sw.js");
+        const reg = await navigator.serviceWorker.ready;
+        return reg.active?.scriptURL ?? "";
+      });
+      expect(scriptURL).toBe(`${site}sw.js`);
+      await owner.goto(`${site}hello.html`);
+      await expect(owner.locator("body")).toHaveText("from the worker");
+      await ctx.close();
+    } finally {
+      await h.stop();
+    }
+  }));
+}

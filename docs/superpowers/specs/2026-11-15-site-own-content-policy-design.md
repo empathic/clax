@@ -145,11 +145,13 @@ A worker's script request is decided by the site's access like any other
 request, so a private site answers it only with a site session: an `own`
 clax's worker registers on a site open to the world, or on a private site
 visited top-level on a hosted Clax, whose first-party site cookie the
-script request carries. It does not register from inside the shell's frame
-of a private site: a browser sends the frame's partitioned site cookie with
-the frame's own fetches but not with its worker's script fetch, which is
-answered 401 `site_session_required`. Nor on a local Clax's private site,
-whose top-level visit is sent to the shell. Serving a worker's script
+script request carries. In Chromium and Firefox it does not register from
+inside the shell's frame of a private site: they send the frame's
+partitioned site cookie with the frame's own fetches but not with its
+worker's script fetch, which is answered 401 `site_session_required`. Nor,
+there, on a local Clax's private site, whose top-level visit is sent to the
+shell. WebKit sends the frame's site cookie with the script request too, so
+there it registers from the shell's frame of a local Clax's private site. Serving a worker's script
 without a session would hand a private site's files to anyone who sends
 `Service-Worker: script`.
 
