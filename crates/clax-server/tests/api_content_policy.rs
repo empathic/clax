@@ -801,6 +801,51 @@ async fn a_draft_of_an_app_follows_its_live_app_and_any_other_draft_is_locked() 
     assert!(locked(&served(follows).await[0]));
 }
 
+/// A draft follows its app's setting, so it takes none of its own: an
+/// agent's or the owner's `content_policy` on a draft, either way, is
+/// refused 403 `draft`, and its own column stays `locked` for when its app
+/// is gone.
+#[tokio::test]
+async fn a_draft_takes_no_content_policy_of_its_own() {
+    let ts = TestServer::spawn().await;
+    let app = page(&ts, "App").await;
+    set(&ts, &app, "own").await;
+    let draft = draft_artifact(&ts, Some(&app), true).await;
+    let sid = ts.register_session("claude", "cp-draft-own").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let path = format!("/api/artifacts/{draft}");
+    for v in ["own", "locked"] {
+        let (s, body) = as_agent(&ts, &sid, &path, json!({"content_policy": v})).await;
+        assert_eq!(
+            (s, body["error"]["code"].as_str()),
+            (403, Some("draft")),
+            "agent {v}: {body}"
+        );
+        let (s, body) = set(&ts, &draft, v).await;
+        assert_eq!(
+            (s, body["error"]["code"].as_str()),
+            (403, Some("draft")),
+            "owner {v}: {body}"
+        );
+    }
+    assert!(
+        ts.store.content_policy_own(&id(&draft)).unwrap(),
+        "it follows its app"
+    );
+    let res = ts
+        .authed(ts.client.delete(format!("{}/api/artifacts/{app}", ts.base)))
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success(), "{}", res.status());
+    assert!(
+        !ts.store.content_policy_own(&id(&draft)).unwrap(),
+        "with its app gone, its own setting is locked"
+    );
+}
+
 #[tokio::test]
 async fn an_apps_push_with_its_bundle_starts_locked() {
     use clax_testkit::remotes::{Public, connect_app, post};

@@ -11685,7 +11685,9 @@ was made; and a run's end, sent until it is acknowledged.
   `locked`. A draft follows its artifact's: an agent's draft of it
   (`/_clax/draft/…`), and a draft artifact of the app (`POST /api/drafts`
   with `of`) while the app is live; a new app's draft, and a bundle
-  update's check draft (`inherit_net: false`), are `locked`. While `own`,
+  update's check draft (`inherit_net: false`), are `locked`. A draft
+  artifact takes no `content_policy` of its own, either way (403
+  `draft`). While `own`,
   its content is revalidated on every use, none of it `immutable`, and
   each `ETag` also names the policy, so after it returns to `locked` a
   browser's next use of anything it kept is answered whole, with the

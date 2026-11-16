@@ -1292,6 +1292,11 @@ pub async fn patch(
             "who may open a page's site, and its content policy, are set in Clax, never by the page",
         ));
     }
+    if own.is_some() && s.store.is_hidden(id.as_str()) {
+        // A draft follows its live app's setting (`Store::content_policy_own`),
+        // so it takes none of its own, in either direction.
+        return Err(crate::routes::app_drafts::refused("content policy"));
+    }
     if let Some(c) = &b.capabilities {
         clax_core::capabilities::validate(c)?;
     }
