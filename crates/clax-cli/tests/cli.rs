@@ -594,8 +594,11 @@ fn doctor_check(e: &Env, args: &[&str], name: &str) -> serde_json::Value {
         .arg("doctor")
         .args(args)
         .arg("--json")
-        // `--agent` runs every clax on PATH; keep it to the system's.
-        .env("PATH", "/usr/bin:/bin")
+        // `--agent` runs every clax on PATH.
+        .env(
+            "PATH",
+            crate::common::system_path_without(e.dir.path(), &["clax"]),
+        )
         .output()
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -1388,7 +1391,10 @@ fn doctor_agent_checks_each_layer_of_the_integration() {
         .cmd()
         .args(["doctor", "--agent", "codex", "--json"])
         .env("CLAX_BIN", crate::common::clax())
-        .env("PATH", "/usr/bin:/bin")
+        .env(
+            "PATH",
+            crate::common::system_path_without(e.dir.path(), &["clax"]),
+        )
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
@@ -1470,7 +1476,10 @@ fn doctor_agent_checks_each_layer_of_the_integration() {
             .cmd()
             .args(["doctor", "--agent", agent])
             .env_remove("CLAX_BIN")
-            .env("PATH", "/usr/bin:/bin")
+            .env(
+                "PATH",
+                crate::common::system_path_without(e.dir.path(), &["clax"]),
+            )
             .output()
             .unwrap();
         let text = String::from_utf8(out.stdout).unwrap();
@@ -1729,7 +1738,10 @@ fn codex_session_start(e: &Env, codex_args: &[&str]) -> String {
         .env("CLAX_HOME", e.dir.path().join("ax"))
         .env("CLAX_CODEX_BIN", "")
         .env("HOME", e.dir.path())
-        .env("PATH", "/usr/bin:/bin");
+        .env(
+            "PATH",
+            crate::common::system_path_without(e.dir.path(), &["clax"]),
+        );
     for var in [
         "CODEX_HOME",
         "CLAUDE_CONFIG_DIR",

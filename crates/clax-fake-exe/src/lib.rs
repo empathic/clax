@@ -108,6 +108,49 @@ fn store(tmp: &Path, text: &str, to: &Path) {
     std::fs::rename(tmp, to).unwrap_or_else(|e| panic!("renaming {tmp:?} to {to:?}: {e}"));
 }
 
+/// `path` (a `PATH` value) with each program in `hide` absent. Each
+/// directory that holds one of them is replaced by a directory under `out`
+/// with symbolic links to its other entries. A directory that resolves to
+/// one already seen (`/bin` linked to `/usr/bin`) is dropped. A later call
+/// with the same `out`, directory and `hide` reuses the directory it made.
+///
+/// Panics when `out` cannot be written.
+pub fn path_without(path: &str, out: &Path, hide: &[&str]) -> std::ffi::OsString {
+    let mut seen = HashSet::new();
+    let mut dirs = Vec::new();
+    for dir in std::env::split_paths(path) {
+        if !seen.insert(std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone())) {
+            continue;
+        }
+        if !hide.iter().any(|h| dir.join(h).symlink_metadata().is_ok()) {
+            dirs.push(dir);
+            continue;
+        }
+        let key = format!("{}\0{}", dir.display(), hide.join("\0"));
+        let shadow = out.join(format!("{:016x}", fnv1a(key.as_bytes())));
+        if !shadow.is_dir() {
+            let tmp = out.join(format!(".{}", unique()));
+            std::fs::create_dir_all(&tmp).unwrap_or_else(|e| panic!("creating {tmp:?}: {e}"));
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let name = entry.file_name();
+                if hide.iter().any(|h| name == *h) {
+                    continue;
+                }
+                let at = tmp.join(&name);
+                std::os::unix::fs::symlink(entry.path(), &at)
+                    .unwrap_or_else(|e| panic!("linking {at:?}: {e}"));
+            }
+            // Another thread can win the rename; its directory is the same.
+            if std::fs::rename(&tmp, &shadow).is_err() {
+                let _ = std::fs::remove_dir_all(&tmp);
+                assert!(shadow.is_dir(), "renaming {tmp:?} to {shadow:?}");
+            }
+        }
+        dirs.push(shadow);
+    }
+    std::env::join_paths(dirs).expect("PATH entries hold no ':'")
+}
+
 /// The store for shared copies: `CLAX_FAKE_EXE_DIR` when set and not empty
 /// (Bazel's tests set it, so the store outlives one test's temporary
 /// directory), else `<tmp>/clax-fake-exe`.
@@ -196,6 +239,30 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn path_without_hides_only_the_named_programs() {
+        let d = tempfile::tempdir().unwrap();
+        let sys = d.path().join("sys");
+        std::fs::create_dir_all(&sys).unwrap();
+        let alias = d.path().join("alias");
+        std::os::unix::fs::symlink(&sys, &alias).unwrap();
+        let own = d.path().join("own");
+        install(&sys.join("codex"), "#!/bin/sh\nexit 1\n");
+        install(&sys.join("sh2"), "#!/bin/sh\nexit 0\n");
+        install(&own.join("codex"), "#!/bin/sh\nexit 0\n");
+        let base = format!("{}:{}", sys.display(), alias.display());
+        let path = path_without(&base, &d.path().join("out"), &["codex"]);
+        let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        assert_eq!(dirs.len(), 1);
+        assert!(dirs[0].starts_with(d.path().join("out")));
+        assert!(dirs[0].join("sh2").exists());
+        assert!(!dirs[0].join("codex").exists());
+        assert_eq!(path_without(&base, &d.path().join("out"), &["codex"]), path);
+        let mine = format!("{}:{base}", own.display());
+        let path = path_without(&mine, &d.path().join("out2"), &["claude"]);
+        assert_eq!(std::env::split_paths(&path).collect::<Vec<_>>(), [own, sys]);
+    }
 
     #[test]
     fn the_store_is_clax_fake_exe_dir_when_set() {

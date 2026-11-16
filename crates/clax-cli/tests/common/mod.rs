@@ -24,6 +24,17 @@ pub fn as_clax(text: &str) -> String {
     text.replace(&*resolved.to_string_lossy(), &me.to_string_lossy())
 }
 
+/// The harness CLIs `clax init` and `clax doctor` look for on PATH.
+#[allow(dead_code)]
+pub const HARNESSES: [&str; 4] = ["claude", "codex", "grok", "pi"];
+
+/// `/usr/bin:/bin` with each program in `hide` absent. The directories it
+/// makes go under `scratch`.
+#[allow(dead_code)]
+pub fn system_path_without(scratch: &std::path::Path, hide: &[&str]) -> std::ffi::OsString {
+    clax_fake_exe::path_without("/usr/bin:/bin", &scratch.join("system-path"), hide)
+}
+
 /// A scratch HOME and CLAX_HOME; dropping it stops the daemon started there.
 pub struct Env {
     pub dir: tempfile::TempDir,
