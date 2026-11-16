@@ -18,8 +18,11 @@ Everything runs locally, at <http://localhost:7480>. Nothing needs an account.
 
 In Claude Code:
 
-```
+```sh
 /plugin marketplace add empathic/clax
+```
+
+```sh
 /plugin install clax@clax
 ```
 
@@ -37,6 +40,9 @@ lists the read-only tools if you'd rather allow just those.
 
 ```sh
 codex plugin marketplace add empathic/clax
+```
+
+```sh
 codex plugin add clax@clax
 ```
 
