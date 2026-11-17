@@ -9,6 +9,8 @@
 //!   manifest version and launcher match this binary.
 //! - `skill`: the installed skill's stated version and tool count, and whether
 //!   it is the skill this binary was built with.
+//! - Pi only: `double_load`, each settings entry that loads the Clax
+//!   package when there is more than one; Pi does not start with two.
 //! - `mcp`: whether the daemon has a live session of the harness.
 //! - `hooks`: the harness's latest lines in `logs/hooks.log`.
 //! - `feedback`: each live session's watches and push state.
@@ -599,6 +601,56 @@ pub fn pi_found(dirs: &Dirs, probe: &PiProbe) -> PiFound {
     }
 }
 
+/// `double_load` (Pi only): each package Pi loads as the Clax package, when
+/// there is more than one. Pi 1.5.2 then reports each tool of a later copy
+/// as a conflict and exits at startup. Entries Pi counts as one package (a
+/// project entry with the identity of a user entry replaces it) count once.
+/// The detail names each entry and the command that removes it.
+///
+/// Failed when two of the entries are user entries. Not failed when the
+/// second copy is a project entry: Pi loads that one only in a project it
+/// trusts, and doctor does not read Pi's trust decisions.
+pub fn pi_double_load_check(found: &PiFound) -> Value {
+    let mut entries: Vec<(String, &PiPackage)> = Vec::new();
+    for p in &found.packages {
+        let id = pi_identity(&p.source, &p.root);
+        match entries.iter_mut().find(|(e, _)| *e == id) {
+            Some(e) if p.scope == PiScope::Project => e.1 = p,
+            Some(_) => {}
+            None => entries.push((id, p)),
+        }
+    }
+    let entries: Vec<&PiPackage> = entries.into_iter().map(|(_, p)| p).collect();
+    if entries.len() < 2 {
+        return check("double_load", true, "Pi loads one copy of the Clax package");
+    }
+    let lines: Vec<String> = entries
+        .iter()
+        .map(|p| {
+            let (scope, local) = match p.scope {
+                PiScope::User => ("user", ""),
+                PiScope::Project => ("project, loaded when Pi trusts the project", "-l "),
+            };
+            format!("{} ({scope}): `pi remove {local}{}`", p.source, p.source)
+        })
+        .collect();
+    let user = entries.iter().filter(|p| p.scope == PiScope::User).count();
+    check(
+        "double_load",
+        user < 2,
+        format!(
+            "Pi finds {} copies of the Clax package, reports each tool of a later copy as a conflict and does not start{}. Remove all but one:\n{}",
+            entries.len(),
+            if user < 2 {
+                " in a project it trusts"
+            } else {
+                ""
+            },
+            lines.join("\n")
+        ),
+    )
+}
+
 /// `plugin` for Pi: the newest Clax package `found`, checked as
 /// [`plugin_check`] checks a plugin copy. The detail adds how the packages
 /// were found, and each root only one of the two ways found; that
@@ -1157,12 +1209,14 @@ pub fn checks(agent: DoctorAgent, home: &Home, client: Option<&Client>) -> Vec<V
     let version = env!("CARGO_PKG_VERSION");
     let exe = std::env::current_exe().unwrap_or_default();
     let dirs = Dirs::from_env(|k| std::env::var(k).ok());
-    let (plugin, plugin_root) = match &dirs {
-        Some(dirs) if agent == DoctorAgent::Pi => {
-            pi_plugin_check(&pi_found(dirs, &PiProbe::run()), version)
-        }
-        Some(dirs) => plugin_check(agent, dirs, version),
-        None => (check("plugin", false, "HOME is not set"), None),
+    let pi = match &dirs {
+        Some(dirs) if agent == DoctorAgent::Pi => Some(pi_found(dirs, &PiProbe::run())),
+        _ => None,
+    };
+    let (plugin, plugin_root) = match (&dirs, &pi) {
+        (_, Some(found)) => pi_plugin_check(found, version),
+        (Some(dirs), None) => plugin_check(agent, dirs, version),
+        (None, None) => (check("plugin", false, "HOME is not set"), None),
     };
     // The pin of the installed plugin's wrapper, else of the one built in.
     let wrapper = plugin_root
@@ -1175,6 +1229,9 @@ pub fn checks(agent: DoctorAgent, home: &Home, client: Option<&Client>) -> Vec<V
     let mut out = vec![binary_check(&exe, version, &r, pin.as_deref())];
     out.push(upgrade_check(home, client.map(|c| c.info.version.as_str())));
     out.push(plugin);
+    if let Some(found) = &pi {
+        out.push(pi_double_load_check(found));
+    }
     out.push(match &dirs {
         Some(_) => skill_check(agent, plugin_root.as_deref(), ClaxTools::tool_count()),
         None => check("skill", false, "HOME is not set"),
@@ -1743,6 +1800,89 @@ mod tests {
         let (p, _) = pi_plugin_check(&found, V);
         let d = p["detail"].as_str().unwrap();
         assert!(!d.contains("note:"), "{d}");
+    }
+
+    #[test]
+    fn two_pi_entries_loading_the_clax_package_are_named() {
+        let f = Fixture::new();
+        f.pi_package(".pi/agent/npm/node_modules/@empathic/clax-pi");
+        let local = f.pi_package("marketplace/plugins/pi");
+        f.write(
+            ".pi/agent/settings.json",
+            &json!({"packages": [format!("npm:{PI_PACKAGE}"), local]}).to_string(),
+        );
+        let found = pi_found(&f.dirs(), &f.pi_probe(None, Err("no pi".into())));
+        let c = pi_double_load_check(&found);
+        assert_eq!(c["name"], "double_load");
+        assert_eq!(c["ok"], false, "Pi does not start: {c}");
+        let d = c["detail"].as_str().unwrap();
+        assert!(d.contains("does not start. Remove"), "{d}");
+        assert!(
+            d.contains(&format!("npm:{PI_PACKAGE} (user)"))
+                && d.contains(&format!("{} (user)", local.display())),
+            "{d}"
+        );
+        assert!(
+            d.contains(&format!("`pi remove npm:{PI_PACKAGE}`"))
+                && d.contains(&format!("`pi remove {}`", local.display())),
+            "{d}"
+        );
+
+        // The same npm package in user and project settings is one package:
+        // the project entry replaces the user entry.
+        f.write(
+            ".pi/agent/settings.json",
+            &json!({"packages": [format!("npm:{PI_PACKAGE}")]}).to_string(),
+        );
+        f.pi_package("proj/.pi/npm/node_modules/@empathic/clax-pi");
+        f.write(
+            "proj/.pi/settings.json",
+            &json!({"packages": [format!("npm:{PI_PACKAGE}")]}).to_string(),
+        );
+        let found = pi_found(
+            &f.dirs(),
+            &f.pi_probe(Some(f.home().join("proj")), Err("no pi".into())),
+        );
+        let c = pi_double_load_check(&found);
+        assert_eq!(c["detail"], "Pi loads one copy of the Clax package", "{c}");
+
+        // A project entry of another source is a second copy, removed with
+        // `-l`, in the project.
+        f.pi_package("proj/vendor/clax-pi");
+        f.write(
+            "proj/.pi/settings.json",
+            &json!({"packages": ["../vendor/clax-pi"]}).to_string(),
+        );
+        let found = pi_found(
+            &f.dirs(),
+            &f.pi_probe(Some(f.home().join("proj")), Err("no pi".into())),
+        );
+        let c = pi_double_load_check(&found);
+        assert_eq!(c["ok"], true, "Pi may not trust the project: {c}");
+        let d = c["detail"].as_str().unwrap().to_string();
+        assert!(d.contains("does not start in a project it trusts"), "{d}");
+        assert!(
+            d.contains(
+                "../vendor/clax-pi (project, loaded when Pi trusts the project): `pi remove -l ../vendor/clax-pi`"
+            )
+                && d.contains(&format!(
+                    "npm:{PI_PACKAGE} (user): `pi remove npm:{PI_PACKAGE}`"
+                )),
+            "{d}"
+        );
+
+        // One entry: nothing to name.
+        f.write(
+            "proj/.pi/settings.json",
+            &json!({"packages": []}).to_string(),
+        );
+        let found = pi_found(
+            &f.dirs(),
+            &f.pi_probe(Some(f.home().join("proj")), Err("no pi".into())),
+        );
+        let c = pi_double_load_check(&found);
+        assert_eq!(c["ok"], true, "{c}");
+        assert_eq!(c["detail"], "Pi loads one copy of the Clax package", "{c}");
     }
 
     #[test]
