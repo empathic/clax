@@ -3,7 +3,8 @@
 //! [`clax_bot_sandbox::conformance`] and the Worker's own cases, run on the
 //! instance's object against [`LoaderSandbox`] one case per request.
 //!
-//! - `GET /_worker/sandbox`: every case, `[{name, mode, why}]`: `mode`
+//! - `GET /_worker/sandbox`: every case and every sequence of cases
+//!   ([`conformance::sequences`], run as one), `[{name, mode, why}]`: `mode`
 //!   `run` (the case must pass as on every sandbox), `differs` (a
 //!   documented platform difference, [`PLATFORM_DIFFERENCES`]: the run
 //!   must end with the error kind named there) or `platform` (needs a
@@ -115,6 +116,11 @@ pub async fn route(env: &Env, path: &str, method: &str, query: &str) -> Option<R
             })
             .collect();
         all.extend(
+            conformance::sequences()
+                .iter()
+                .map(|s| json!({"name": s.name, "mode": "run", "why": ""})),
+        );
+        all.extend(
             OWN.iter()
                 .map(|(name, why)| json!({"name": name, "mode": "run", "why": why})),
         );
@@ -132,12 +138,7 @@ pub async fn route(env: &Env, path: &str, method: &str, query: &str) -> Option<R
             Some((_, kind, _)) => {
                 let host = conformance::ScriptedHost::new(case.calls.clone());
                 let outcome = sandbox
-                    .run(
-                        &Script::new(case.name, case.code),
-                        &host,
-                        &case.limits,
-                        &CancelToken::new(),
-                    )
+                    .run(&case.script(), &host, &case.limits, &CancelToken::new())
                     .await;
                 let got = outcome.error.as_ref().map(|e| e.kind);
                 if got == Some(*kind) {
@@ -153,7 +154,16 @@ pub async fn route(env: &Env, path: &str, method: &str, query: &str) -> Option<R
                 .await
                 .map_err(|e| (e, None)),
         },
-        None => own(&sandbox, name, port).await,
+        None => match conformance::sequences()
+            .into_iter()
+            .find(|s| s.name == name)
+        {
+            Some(sequence) => conformance::check_sequence(&sandbox, &sequence)
+                .await
+                .map(|()| ScriptOutcome::default())
+                .map_err(|e| (e, None)),
+            None => own(&sandbox, name, port).await,
+        },
     };
     Some(Response::from_json(&match result {
         Ok(outcome) => json!({"name": name, "ok": true, "problems": "", "outcome": outcome}),

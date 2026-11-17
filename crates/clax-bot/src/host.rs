@@ -46,7 +46,7 @@ use clax_core::audit::AuditCtx;
 use clax_core::{ArtifactId, CoreError};
 use clax_store::app_data::JournaledDoc;
 use clax_store::app_data::shim::Docs;
-use clax_store::bot_runs::{CallEntry, RequestKind, Run};
+use clax_store::bot_runs::{CallEntry, RequestKind, Run, RunStatus};
 use clax_store::{Journaled, Store};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -264,13 +264,14 @@ pub trait BotHost: MaybeSendSync {
     /// What the prompt says about run `run`'s request.
     async fn context(&self, run: &Run) -> Result<RequestContext, HostError>;
 
-    /// Performs read `op` ([`api::Access::Read`], performer
-    /// [`api::Performer::Host`]) with `args`, one value per parameter.
+    /// Performs read `op` ([`api::Access::Read`]: `artifact.get`,
+    /// `db.*`'s reads, `threads.list`, `threads.read`) with `args`, one
+    /// value per parameter.
     async fn read(&self, cx: &OpCtx<'_>, op: &str, args: &[Value]) -> Result<Value, HostError>;
 
-    /// Checks write `op` ([`api::Access::Write`], performer
-    /// [`api::Performer::Host`]) with `args` and answers how to perform it
-    /// (see the module documentation).
+    /// Checks write `op` ([`api::Access::Write`]: `artifacts.create`,
+    /// `db.*`'s writes, `threads.reply`, `threads.resolve`) with `args`
+    /// and answers how to perform it (see the module documentation).
     async fn plan_write<'s>(
         &'s self,
         cx: &OpCtx<'_>,
@@ -319,6 +320,19 @@ pub struct FakeWrite {
     pub args: Vec<Value>,
 }
 
+/// One [`BotHost::working`] call a [`FakeBotHost`] received, with what the
+/// store held of the run when it was made.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FakeWorking {
+    /// Whether the call shows ClaxBot as working or stops showing it.
+    pub on: bool,
+    /// The run's status in the store (`None` for a run it does not hold).
+    pub status: Option<RunStatus>,
+    /// The step the run was at ([`Store::next_step_n`]): its open step,
+    /// else the one after its last.
+    pub step: i64,
+}
+
 /// The state of a [`FakeBotHost`].
 #[derive(Debug, Default)]
 pub struct FakeState {
@@ -327,10 +341,19 @@ pub struct FakeState {
     pub writes: Vec<FakeWrite>,
     /// Every call that reached the host (key, op), repeats included.
     pub calls: Vec<(String, String)>,
+    /// The attempt each of those calls was given ([`OpCtx::attempt`]),
+    /// in the same order.
+    pub attempts: Vec<i64>,
     /// Published drafts, in order.
     pub versions: Vec<PublishDraft>,
     /// Working state changes, in order.
     pub working: Vec<bool>,
+    /// The same calls, each with the run's status and step in the store
+    /// when it was made.
+    pub roster: Vec<FakeWorking>,
+    /// How many times the host was asked to start the runs that were
+    /// waiting ([`BotHost::start_waiting`]).
+    pub started_waiting: usize,
     /// People who may read but not write: checked when a write is planned
     /// and again inside its transaction.
     pub readers: Vec<String>,
@@ -450,8 +473,15 @@ impl FakeBotHost {
         Ok(())
     }
 
+    /// Records that the call `cx` is, to `op`, reached the host.
+    fn reached(&self, cx: &OpCtx<'_>, op: &str) {
+        let mut st = self.lock();
+        st.calls.push((cx.key.clone(), op.to_string()));
+        st.attempts.push(cx.attempt);
+    }
+
     fn check_write(&self, cx: &OpCtx<'_>, op: &str) -> Result<(), HostError> {
-        self.lock().calls.push((cx.key.clone(), op.to_string()));
+        self.reached(cx, op);
         self.may_write(&cx.run.person).map_err(|e| host_error(&e))?;
         if op == "artifacts.create" && cx.run.request != RequestKind::Brief {
             return Err(forbidden(
@@ -507,10 +537,11 @@ impl FakeBotHost {
     }
 }
 
-/// Whether `op` is a host operation with access `access`.
+/// Whether `op` is an operation of Clax's surface with access
+/// `access`.
 fn host_op(op: &str, access: api::Access) -> Result<(), HostError> {
     match api::op(op) {
-        Some(o) if o.performer == api::Performer::Host && o.access == access => Ok(()),
+        Some(o) if o.access() == access => Ok(()),
         _ => Err(HostError::new(
             "unknown_op",
             format!("{op} is not a host {access:?} operation"),
@@ -536,6 +567,7 @@ impl BotHost for FakeBotHost {
         {
             let mut st = self.lock();
             st.calls.push((cx.key.clone(), op.to_string()));
+            st.attempts.push(cx.attempt);
             if let Some(e) = st.fail_next.remove(op) {
                 return Err(e);
             }
@@ -754,11 +786,20 @@ impl BotHost for FakeBotHost {
         thread_id: &str,
         markdown: &str,
     ) -> Result<WritePlan<'s>, HostError> {
-        self.lock().calls.push((cx.key.clone(), "reply".into()));
+        self.reached(cx, "reply");
         self.reply_plan(cx, thread_id, markdown)
     }
 
-    async fn working(&self, _run: &Run, on: bool) {
-        self.lock().working.push(on);
+    async fn working(&self, run: &Run, on: bool) {
+        let status = self.store.run(&run.id).ok().flatten().map(|r| r.status);
+        let step = self.store.next_step_n(&run.id).unwrap_or(0);
+        let mut st = self.lock();
+        st.working.push(on);
+        st.roster.push(FakeWorking { on, status, step });
+    }
+
+    async fn start_waiting(&self) -> clax_core::Result<usize> {
+        self.lock().started_waiting += 1;
+        Ok(0)
     }
 }

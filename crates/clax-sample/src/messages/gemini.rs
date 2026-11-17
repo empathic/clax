@@ -8,8 +8,16 @@
 //! The system blocks become `systemInstruction`; turns become `contents`
 //! (`user` and `model`, consecutive turns of one role merged); a
 //! `tool_use` becomes a `functionCall` part and its `tool_result` a
-//! `functionResponse` part naming the same function. Cache breakpoints,
-//! betas and [`MessagesRequest::extra`] are not sent. Thinking asks for
+//! `functionResponse` part naming the same function. The images of a
+//! turn's tool results (the base64 `image` blocks of their content) follow
+//! the turn's other parts, in the same `user` content: for each result
+//! with images a `text` part `Images of the result of <function>, call
+//! <ID>:` (`Images of result <n> of this turn (<function>):` for a call
+//! whose ID was made here, by its place among the turn's results) and
+//! then one `inlineData` part (`mimeType`, `data`) per image, in order.
+//! They are not put inside the `functionResponse` itself. A turn whose results have no image is
+//! sent as it was before results could have any. Cache breakpoints, betas
+//! and [`MessagesRequest::extra`] are not sent. Thinking asks for
 //! thought summaries (`includeThoughts`); `effort` is sent as
 //! `thinkingLevel` (`low`, `medium`, else `high`).
 //!
@@ -30,8 +38,8 @@
 //! `thoughtsTokenCount` billed as output). `finishReason` closes the blocks;
 //! the stream's end, after it, ends the message.
 
+use super::{Answer, classify, images_of, protocol};
 use super::{Block, MessagesError, MessagesRequest, ModelInfo, Role, ToolChoice};
-use super::{classify, protocol};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 
@@ -79,6 +87,9 @@ fn signed(mut part: Value, v: &Value) -> Value {
 /// so far to its function's name, which a `functionResponse` names again.
 fn parts(role: Role, content: &[Block], names: &mut HashMap<String, String>) -> Vec<Value> {
     let mut out = Vec::new();
+    let mut images = Vec::new();
+    // The tool results of the turn so far.
+    let mut results = 0usize;
     for b in content {
         let v = b.to_json();
         match v["type"].as_str() {
@@ -114,23 +125,49 @@ fn parts(role: Role, content: &[Block], names: &mut HashMap<String, String>) -> 
                 } else {
                     json!({"result": text})
                 };
-                let mut r = json!({
-                    "name": names.get(id).map_or("", String::as_str),
-                    "response": response,
-                });
+                let name = names.get(id).map_or("", String::as_str);
+                let mut r = json!({"name": name, "response": response});
                 if !id.starts_with(MADE_ID) {
                     r["id"] = json!(id);
                 }
                 out.push(json!({"functionResponse": r}));
+                results += 1;
+                let shown = images_of(&v["content"]);
+                if !shown.is_empty() {
+                    // Named by the call's ID, which tells two calls of one
+                    // function apart; a call whose ID was made here (and is
+                    // not sent) by its place among the turn's results.
+                    let label = if id.starts_with(MADE_ID) {
+                        format!("Images of result {results} of this turn ({name}):")
+                    } else {
+                        format!("Images of the result of {name}, call {id}:")
+                    };
+                    images.push(json!({"text": label}));
+                }
+                for (media_type, data) in shown {
+                    images.push(json!({"inlineData": {"mimeType": media_type, "data": data}}));
+                }
             }
             _ => {}
         }
     }
+    out.extend(images);
     out
 }
 
 /// The streaming request body of `req`.
+/// The `generateContent` body of `req`, each tool's schema its
+/// [`super::Tool::input_schema`].
+#[cfg(test)]
 pub(super) fn body(req: &MessagesRequest) -> Value {
+    body_marked(req, false)
+}
+
+/// The `generateContent` body of `req`; with `marked`, a tool's schema
+/// that has a text is its mark, for [`super::spliced`]. Gemini takes the
+/// schema as JSON Schema (`parametersJsonSchema`), as it is: nothing of
+/// it is rewritten, so its members keep their order.
+pub(super) fn body_marked(req: &MessagesRequest, marked: bool) -> Value {
     let mut contents: Vec<Value> = Vec::new();
     let mut names = HashMap::new();
     for m in &req.messages {
@@ -162,9 +199,11 @@ pub(super) fn body(req: &MessagesRequest) -> Value {
         let decls: Vec<Value> = req
             .tools
             .iter()
-            .map(|t| {
+            .enumerate()
+            .map(|(n, t)| {
+                let schema = super::schema_of(&req.tools, n, marked);
                 json!({"name": t.name, "description": t.description,
-                       "parametersJsonSchema": t.input_schema})
+                       "parametersJsonSchema": schema})
             })
             .collect();
         b.insert("tools".into(), json!([{"functionDeclarations": decls}]));
@@ -353,11 +392,11 @@ impl Translator {
                 .as_u64()
                 .and_then(|c| u16::try_from(c).ok())
                 .unwrap_or(0);
-            let message = e["message"]
-                .as_str()
-                .unwrap_or("the provider reported an error")
-                .to_string();
-            return Err(classify(status, "", message, None));
+            let said = e["message"].as_str().map(str::to_string);
+            let message = said
+                .clone()
+                .unwrap_or_else(|| "the provider reported an error".into());
+            return Err(classify(Answer::new(status, "", said), message, None));
         }
         if !self.started {
             self.started = true;

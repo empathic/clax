@@ -1,11 +1,18 @@
-//! The `clax.web.*` performer ([`crate::api::Performer::Web`], spec
-//! 2026-11-02-claxbot-web-tools §4.2, §5, §6, §7.2, §8). A web call made by
-//! a script goes through these checks in order, and the first that fails
-//! answers the script:
+//! `web.search` and `web.fetch` in a session of Clax's own surface
+//! (the session's web part, spec 2026-11-02-claxbot-web-tools §4.2,
+//! §5, §6, §7.2, §8). A web call made by a script goes through
+//! these checks in order, and the first that fails answers the script:
 //!
-//! 1. A call journaled at its place answers from the journal.
-//! 2. The run declares the operation ([`crate::web::WebShape`]) and the
-//!    host has a source ([`crate::run::Deps::web`]), or `web_disabled`.
+//! 1. A call journaled at its place answers from the journal
+//!    ([`crate::surface::Call::replay`]), before any other check: what
+//!    it answered, what it charged and what the run shows of it.
+//! 2. The run's binding has the operation
+//!    ([`crate::surface::Binding::has`]) and the host has a source (the
+//!    provider's, [`super::ClaxProvider`]), or `web_disabled`. An
+//!    operation the binding lacks is refused by the run loop before the
+//!    session sees it ([`crate::surface::SurfaceProvider::undeclared`],
+//!    [`disabled`]), and refused the same here by a session handed one
+//!    all the same.
 //! 3. The operation is still granted now ([`WebAccess::now`]: the admin
 //!    or the person may have turned it off since the run started, or the
 //!    source lost what it needs, [`crate::web::WebSource::configured`]),
@@ -49,13 +56,24 @@
 //!
 //! # What is written
 //!
-//! Every call past check 2 is journaled with its `bot.web` record in one
-//! transaction ([`Store::spend_journaled`]): refusals and windows from the
-//! page store too, uncharged, so every URL a script tried is in the audit
-//! trail. A call the source answered is charged there (when it succeeded,
-//! or when [`charged`] says its failure is), at the rate check 8 read,
-//! with the page a fetch received (its text cut at [`STORE_BYTES`]). A
-//! refusal at check 2 is journaled alone.
+//! Every call past check 2 is journaled by the session with its
+//! `bot.web` record in one transaction ([`Store::spend_journaled`]):
+//! refusals and windows from the page store too, uncharged, so every URL
+//! a script tried is in the audit trail. A call the source answered is
+//! charged there (when it succeeded, or when [`charged`] says its failure
+//! is), at the rate check 8 read, with the page a fetch received (its
+//! text cut at [`STORE_BYTES`]). Such a call is answered
+//! [`Answer::written`]. One whose entry could not be made, or whose
+//! transaction failed, has written nothing and is answered the failure
+//! as [`Answer::unwritten`], so that the run loop journals nothing
+//! either: the step run again makes the call again.
+//!
+//! A refusal at check 2 is the run loop's to journal
+//! ([`Answer::refused`]): its row is `{code, message}`, with no `bot.web`
+//! record. It is made without the store, so it is answered `web_disabled`
+//! and shown with a cost of 0 also when its row cannot be written (the
+//! driver lost the run, or the store failed to read it):
+//! [`crate::surface`] says what a person can see of that.
 //!
 //! Each entry keeps, beside the script's value (`value`) or the error
 //! (`code`, `message`, and `retryable` when it is): `cost_milli`, the
@@ -64,7 +82,9 @@
 //! (check 9), which check 7 counts; and, for a fetch whose URL had a
 //! source, `source` (the [`UrlSource`] that allowed it,
 //! [`UrlSource::to_json`]) and `format`. A call answered from the journal
-//! shows the same and is not counted again.
+//! shows the same and is not counted again; an entry that keeps neither
+//! `cost_milli` nor `web` (a refusal at check 2) answers a cost of 0 and
+//! what the call's arguments show.
 //!
 //! Every answer carries `left`: the run's searches and fetches left under
 //! the caps after the call, and the person's credits left this week as a
@@ -76,16 +96,17 @@
 //! [`Store::spend_journaled`]: clax_store::Store::spend_journaled
 //! [`Store::bot_web_counts`]: clax_store::Store::bot_web_counts
 
-use super::{RunHost, recorded};
+use super::session::ClaxSession;
 use crate::api::CODE_BAD_ARGS;
 use crate::host::host_error;
+use crate::surface::{Answer, Call, Fields, err_json, recorded};
 use crate::web::page::{PAGE_CHARS, SNIPPET_CHARS, STORE_BYTES, snippet, window};
 use crate::web::url::{OwnHosts, looks_credentialed};
 use crate::web::{
     CODE_CREDITS_EXHAUSTED, CODE_URL_NOT_ALLOWED, CODE_URL_NOT_IN_PRIOR_CONTEXT, CODE_WEB_CAP,
     CODE_WEB_DISABLED, CODE_WEB_UNAVAILABLE, FetchGrant, Format, OP_FETCH, OP_SEARCH, PublicUrl,
     SearchAnswer, SearchGrant, SearchQuery, UrlRule, UrlSource, WebAccess, WebError, WebGrant,
-    WebOff, WebShape, WebSource, access::sources, charged,
+    WebOff, WebSource, access::sources, charged,
 };
 use clax_bot_sandbox::HostError;
 use clax_core::audit::{AuditKind, AuditRecord};
@@ -100,12 +121,35 @@ use std::sync::Arc;
 /// The longest query, in characters.
 const MAX_QUERY_CHARS: usize = 1_024;
 
-/// What a web call answered, what it charged (`None` when the journal
-/// could not be written) and what the run panel shows of it.
-pub(super) struct WebDone {
-    pub res: Result<Value, HostError>,
-    pub cost_milli: Option<i64>,
-    pub web: Value,
+/// What the run shows of a web call beside its answer: `web`, its
+/// `{query}` or `{url, source}`.
+fn showing(web: Value) -> Fields {
+    Fields::from_iter([("web".to_string(), web)])
+}
+
+/// What the run shows of a call to `op` on `args` before its URL is
+/// read: the query, or the URL as the script gave it. `None` for an
+/// operation that is not the web's.
+fn shown(op: &str, args: &[Value]) -> Option<Value> {
+    match op {
+        OP_SEARCH => Some(json!({"query": args.first()})),
+        OP_FETCH => Some(json!({"url": args.first()})),
+        _ => None,
+    }
+}
+
+/// Check 2: what a script is answered for a web operation its run's
+/// binding does not have, and for one it has on a host with no web
+/// source. Refused, charged nothing, with what the run shows of the
+/// call, for the run loop to journal; `None` for an operation that is
+/// not the web's.
+pub(super) fn disabled(op: &str, args: &[Value]) -> Option<Answer> {
+    let web = shown(op, args)?;
+    let refusal = HostError::new(
+        CODE_WEB_DISABLED,
+        format!("clax.{op} is not available to this run"),
+    );
+    Some(Answer::refused(refusal).uncharged().showing(showing(web)))
 }
 
 /// How a web call ends, before it is written.
@@ -114,8 +158,6 @@ struct Finish {
     /// What to charge, at the rate checked, and its credits.
     usage: Option<(Metered, i64)>,
     page: Option<WebPageRow>,
-    /// Written with a `bot.web` record: every call past check 2.
-    audited: bool,
     /// Fields the `bot.web` record adds (`provider`, `request_id`, …).
     extra: Vec<(&'static str, Value)>,
     source: Option<UrlSource>,
@@ -132,7 +174,6 @@ impl Finish {
             res,
             usage: None,
             page: None,
-            audited: true,
             extra: Vec::new(),
             source: None,
             format: None,
@@ -143,14 +184,6 @@ impl Finish {
     /// A refusal past check 2.
     fn refused(e: HostError) -> Finish {
         Finish::new(Err(e))
-    }
-
-    /// A refusal at check 2: journaled, not audited.
-    fn undeclared(e: HostError) -> Finish {
-        Finish {
-            audited: false,
-            ..Finish::refused(e)
-        }
     }
 
     /// This finish, for a fetch of `format` that `src` allowed.
@@ -276,7 +309,7 @@ fn from_web(e: &WebError) -> HostError {
 fn entry_result(f: &Finish, cost: i64, shown: &Value) -> Value {
     let mut v = match &f.res {
         Ok(v) => json!({"value": v}),
-        Err(e) => super::err_json(e),
+        Err(e) => err_json(e),
     };
     v["cost_milli"] = json!(cost);
     v["web"] = shown.clone();
@@ -292,19 +325,26 @@ fn entry_result(f: &Finish, cost: i64, shown: &Value) -> Value {
     v
 }
 
-/// A web call as its journal entry `e` answers it; `shown` when the entry
-/// keeps no `web`.
-fn from_entry(e: &CallEntry, shown: Value) -> WebDone {
+/// A web call as its journal entry `e` answers it: its value or its
+/// failure, what it charged (0 when the entry keeps no cost) and what
+/// the run shows of it (`shown` when the entry keeps no `web`).
+fn from_entry(e: &CallEntry, shown: Value) -> Answer {
     let r = e.result();
-    WebDone {
-        res: if e.ok() {
-            Ok(r.get("value").cloned().unwrap_or(Value::Null))
-        } else {
-            recorded(e)
-        },
-        cost_milli: Some(r["cost_milli"].as_i64().unwrap_or(0)),
-        web: r.get("web").cloned().unwrap_or(shown),
-    }
+    let result = if e.ok() {
+        Ok(r.get("value").cloned().unwrap_or(Value::Null))
+    } else {
+        recorded(e)
+    };
+    Answer::written(result)
+        .charged(r["cost_milli"].as_i64().unwrap_or(0))
+        .showing(showing(r.get("web").cloned().unwrap_or(shown)))
+}
+
+/// A web call that failed with `e` and wrote nothing: no entry, no
+/// charge, no cost shown. Nothing journals it, and the step run again
+/// makes the call again.
+fn unwritten(e: HostError, shown: Value) -> Answer {
+    Answer::unwritten(e).showing(showing(shown))
 }
 
 /// The credits of one request at `rate` on a `ks` key, as
@@ -332,7 +372,7 @@ fn cap(max: u32, what: &str) -> HostError {
 }
 
 /// The arguments of a call, checked against the grant.
-enum Call {
+enum WebCall {
     Search {
         grant: SearchGrant,
         query: SearchQuery,
@@ -346,7 +386,7 @@ enum Call {
 }
 
 /// The arguments of `op`, checked and bounded by `grant`.
-fn call_of(op: &str, args: &[Value], grant: &WebGrant) -> Result<Call, HostError> {
+fn call_of(op: &str, args: &[Value], grant: &WebGrant) -> Result<WebCall, HostError> {
     let bad = |m: String| HostError::new(CODE_BAD_ARGS, format!("clax.{op}: {m}"));
     let off = || {
         HostError::new(
@@ -375,7 +415,7 @@ fn call_of(op: &str, args: &[Value], grant: &WebGrant) -> Result<Call, HostError
             gateway: g.gateway.clone(),
             byok_alias: g.byok_alias.clone(),
         };
-        return Ok(Call::Search { grant: g, query });
+        return Ok(WebCall::Search { grant: g, query });
     }
     let g = grant.fetch.clone().ok_or_else(off)?;
     let url = PublicUrl::parse(args[0].as_str().unwrap_or("")).map_err(|e| from_web(&e))?;
@@ -389,7 +429,7 @@ fn call_of(op: &str, args: &[Value], grant: &WebGrant) -> Result<Call, HostError
         Some("raw") => Format::Raw,
         _ => Format::Auto,
     };
-    Ok(Call::Fetch {
+    Ok(WebCall::Fetch {
         grant: g,
         url,
         offset,
@@ -429,55 +469,49 @@ struct Priced {
     credits: i64,
 }
 
-impl RunHost<'_> {
-    /// Performs web call `op` (`raw`, its arguments as the script passed
-    /// them, already checked as `args`) at place `seq`; see the module
-    /// documentation.
-    pub(super) async fn web(
-        &self,
-        op: &str,
-        args: &[Value],
-        raw: &Value,
-        seq: i64,
-        replay: Option<&CallEntry>,
-    ) -> WebDone {
-        let mut shown = if op == OP_SEARCH {
-            json!({"query": args[0]})
-        } else {
-            json!({"url": args[0]})
+impl ClaxSession<'_> {
+    /// Performs the web call `call`, or answers it from its entry; see
+    /// the module documentation.
+    pub(super) async fn web(&self, call: &Call<'_>) -> Answer {
+        let Some(mut shown) = shown(call.op, call.args) else {
+            return Answer::refused(HostError::new(
+                crate::api::CODE_UNKNOWN_OP,
+                format!("clax.{} is not a web operation", call.op),
+            ));
         };
-        if let Some(e) = replay {
+        // Check 1, before any other: a call given its entry is answered
+        // from it, whatever the binding and the host have by now.
+        if let Some(e) = call.replay {
             return from_entry(e, shown);
         }
-        let f = self.web_fresh(op, args, seq, &mut shown).await;
-        self.write(op, raw, seq, shown, f)
-    }
-
-    /// Journals `f` at place `seq`, with its `bot.web` record and charge
-    /// when audited, and answers what the journal holds.
-    fn write(&self, op: &str, raw: &Value, seq: i64, shown: Value, f: Finish) -> WebDone {
-        let tick = self.tick;
-        let cost = f.usage.as_ref().map_or(0, |(_, c)| *c);
-        let entry = match tick.entry(self.attempt, seq, op, raw) {
-            Ok(e) => e.answered(f.res.is_ok(), entry_result(&f, cost, &shown)),
-            Err(e) => {
-                return WebDone {
-                    res: Err(e),
-                    cost_milli: None,
-                    web: shown,
-                };
+        // Check 2.
+        let source = match &self.provider.web {
+            Some(s) if self.cx.binding.has(call.op) => s,
+            _ => {
+                return disabled(call.op, call.args)
+                    .expect("a web operation has a refusal for a run without it");
             }
         };
-        if !f.audited {
-            if let Err(e) = tick.store.record_bot_call(&entry) {
-                tracing::warn!(
-                    "clax-bot: journaling call {seq} of run {}: {e}",
-                    tick.run.id
-                );
-            }
-            return from_entry(&entry, shown);
-        }
-        let mut audit = AuditRecord::new(AuditKind::BotWeb, tick.store.now()).with("op", op);
+        let f = self.web_fresh(source, call, &mut shown).await;
+        self.write(call, shown, f)
+    }
+
+    /// The store the session's rows are in.
+    fn store(&self) -> &clax_store::Store {
+        &self.provider.store
+    }
+
+    /// Journals `f` at the call's place, with its `bot.web` record and
+    /// its charge, and answers what the journal holds.
+    fn write(&self, call: &Call<'_>, shown: Value, f: Finish) -> Answer {
+        let op = call.op;
+        let store = self.store();
+        let cost = f.usage.as_ref().map_or(0, |(_, c)| *c);
+        let entry = match self.cx.claim.entry(call.place, op, call.raw) {
+            Ok(e) => e.answered(f.res.is_ok(), entry_result(&f, cost, &shown)),
+            Err(e) => return unwritten(e, shown),
+        };
+        let mut audit = AuditRecord::new(AuditKind::BotWeb, store.now()).with("op", op);
         for (k, v) in shown.as_object().into_iter().flatten() {
             audit = audit.with(k, v.clone());
         }
@@ -494,39 +528,26 @@ impl RunHost<'_> {
             page: f.page,
             audit,
         };
-        match tick.store.spend_journaled(&tick.run, tick.driver, spend) {
+        match store.spend_journaled(&self.run, self.cx.claim.driver(), spend) {
             Ok(spent) => {
                 // Charged at the rate checked, the charge is its price.
                 debug_assert!(spent.replayed || spent.credits_milli == cost);
                 from_entry(&spent.entry, shown)
             }
-            Err(e) => WebDone {
-                res: Err(host_error(&e)),
-                cost_milli: None,
-                web: shown,
-            },
+            Err(e) => unwritten(host_error(&e), shown),
         }
     }
 
-    /// Checks 2 to 9 of a call not in the journal.
-    async fn web_fresh(&self, op: &str, args: &[Value], seq: i64, shown: &mut Value) -> Finish {
-        let tick = self.tick;
-        let run = &tick.run;
-        let shape = WebShape::parse(&run.web);
-        let declared = if op == OP_SEARCH {
-            shape.search
-        } else {
-            shape.fetch
-        };
-        let source = match &tick.deps.web {
-            Some(s) if declared => s,
-            _ => {
-                return Finish::undeclared(HostError::new(
-                    CODE_WEB_DISABLED,
-                    format!("clax.{op} is not available to this run"),
-                ));
-            }
-        };
+    /// Checks 3 to 9 of a call not in the journal, on `source`.
+    async fn web_fresh(
+        &self,
+        source: &Arc<dyn WebSource>,
+        call: &Call<'_>,
+        shown: &mut Value,
+    ) -> Finish {
+        let (op, args, seq) = (call.op, call.args, call.place.seq);
+        let store = self.store();
+        let run = &self.run;
         let configured = source.configured();
         // An operation the source can no longer perform (the daemon's
         // Cloudflare token removed, which search needs) is off as not
@@ -545,7 +566,7 @@ impl RunHost<'_> {
                 ),
             ));
         }
-        let grant = match WebAccess::now(tick.store, &run.person, configured) {
+        let grant = match WebAccess::now(store, &run.person, configured) {
             Ok(WebAccess::On(g)) => g,
             Ok(WebAccess::Off(why)) => {
                 return Finish::refused(HostError::new(
@@ -568,7 +589,7 @@ impl RunHost<'_> {
             Ok(c) => c,
             Err(e) => return Finish::refused(e),
         };
-        let counted = match tick.store.bot_web_counts(&run.id) {
+        let counted = match store.bot_web_counts(&run.id) {
             Ok(c) => c,
             Err(e) => return Finish::refused(host_error(&e)),
         };
@@ -582,8 +603,8 @@ impl RunHost<'_> {
             source,
         };
         match call {
-            Call::Search { grant, query } => self.search(&cx, &grant, query).await,
-            Call::Fetch {
+            WebCall::Search { grant, query } => self.search(&cx, &grant, query).await,
+            WebCall::Fetch {
                 grant,
                 url,
                 offset,
@@ -602,7 +623,7 @@ impl RunHost<'_> {
             Err(e) => return Finish::refused(e),
         };
         let mut extra = vec![("provider", json!(g.provider.as_str()))];
-        match cx.source.search(&query, &self.tick.opts.cancel).await {
+        match cx.source.search(&query, self.cx.cancel).await {
             Ok(a) => {
                 let v = json!({
                     "results": results_of(&a, query.limit),
@@ -642,10 +663,9 @@ impl RunHost<'_> {
         format: Format,
         shown: &mut Value,
     ) -> Finish {
-        let tick = self.tick;
         shown["url"] = json!(url.normalized());
         let own = cx.source.own_hosts();
-        let journal = match tick.store.bot_web_calls(&tick.run.id) {
+        let journal = match self.store().bot_web_calls(&self.run.id) {
             Ok(j) => j,
             Err(e) => return Finish::refused(host_error(&e)),
         };
@@ -702,14 +722,14 @@ impl RunHost<'_> {
         };
         let got = cx
             .source
-            .fetch(url, format, &g.limits, &hop, &tick.opts.cancel)
+            .fetch(url, format, &g.limits, &hop, self.cx.cancel)
             .await;
         match got {
             Ok(page) => {
                 let (text, total_chars) = cut(&page.text, STORE_BYTES);
                 let row = WebPageRow {
                     url: url.normalized().to_string(),
-                    step_n: tick.n,
+                    step_n: self.cx.step,
                     seq: cx.seq,
                     final_url: page.final_url,
                     status: page.status,
@@ -743,8 +763,7 @@ impl RunHost<'_> {
     /// anyway could not be charged), `credits_exhausted` when the person
     /// cannot pay for it.
     fn priced(&self, op: &str, line: &str) -> Result<Priced, HostError> {
-        let tick = self.tick;
-        let store = tick.store;
+        let store = self.store();
         let rate = store
             .rate_of(line)
             .map_err(|e| host_error(&e))?
@@ -757,11 +776,11 @@ impl RunHost<'_> {
                     ),
                 )
             })?;
-        let ks = tick.key_source();
+        let ks = self.key_source();
         let price = one_request(&rate, ks).map_err(|e| host_error(&e))?;
         let credits = self.week_left()?;
         let unenforced = store
-            .flags_of(&tick.run.person)
+            .flags_of(&self.run.person)
             .map_err(|e| host_error(&e))?
             .claxbot_unenforced;
         if !unenforced && price > credits {
@@ -787,12 +806,19 @@ impl RunHost<'_> {
 
     /// The person's credits left this week.
     fn week_left(&self) -> Result<i64, HostError> {
-        let tick = self.tick;
-        Ok(tick
-            .store
-            .week_usage(&tick.run.person, tick.deps.clock.now())
+        Ok(self
+            .store()
+            .week_usage(&self.run.person, self.provider.clock.now())
             .map_err(|e| host_error(&e))?
             .remaining_milli())
+    }
+
+    /// The key the run's person's calls are on now: their own when they
+    /// turned it on, else the one the run was made on.
+    fn key_source(&self) -> KeySource {
+        self.store()
+            .key_source_of(&self.run.person)
+            .unwrap_or(self.run.key_source)
     }
 
     /// Where `url` came from, as `rule` requires (check 5), with the run's
@@ -812,11 +838,10 @@ impl RunHost<'_> {
                 format!("{} is {why}", url.host()),
             ));
         }
-        let tick = self.tick;
-        let cx = tick.deps.host.context(&tick.run).await.map_err(|e| {
+        let cx = self.provider.host.context(&self.run).await.map_err(|e| {
             tracing::warn!(
                 "clax-bot: run {} has no request context for a fetch: {e}",
-                tick.run.id
+                self.run.id
             );
             HostError::new(
                 CODE_WEB_UNAVAILABLE,
@@ -824,9 +849,9 @@ impl RunHost<'_> {
                  against it; do without this page",
             )
         })?;
-        let pages = tick
-            .store
-            .web_pages(&tick.run.id)
+        let pages = self
+            .store()
+            .web_pages(&self.run.id)
             .map_err(|e| host_error(&e))?;
         let found = sources(&cx, journal, &pages).remove(url.normalized());
         if looks_credentialed(url) && !matches!(found, Some(UrlSource::Request { .. })) {

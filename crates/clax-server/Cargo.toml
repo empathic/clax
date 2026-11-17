@@ -30,6 +30,7 @@ clax-http = { path = "../clax-http" }
 clax-rt = { path = "../clax-rt" }
 clax-bot = { path = "../clax-bot" }
 clax-bot-sandbox = { path = "../clax-bot-sandbox" }
+clax-surface = { path = "../clax-surface" }
 anyhow.workspace = true
 axum.workspace = true
 chrono.workspace = true
@@ -103,3 +104,9 @@ rmcp = { workspace = true, features = ["client", "transport-streamable-http-clie
 [[test]]
 name = "integration"
 path = "tests/integration.rs"
+
+# The scan of the daemon's sources (tests/daemon_sources.rs), apart from
+# the integration tests: it reads other crates' sources.
+[[test]]
+name = "daemon_sources"
+path = "tests/daemon_sources.rs"

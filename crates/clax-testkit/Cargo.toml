@@ -17,12 +17,17 @@ clax-realtime = { path = "../clax-realtime" }
 clax-http = { path = "../clax-http" }
 clax-fake-exe = { path = "../clax-fake-exe" }
 clax-mcp = { path = "../clax-mcp" }
+# The hub of the ClaxBot surfaces protocol, which fake_host::MemoryHub
+# runs in process, and the protocol's messages.
+clax-bot = { path = "../clax-bot" }
+clax-surface = { path = "../clax-surface" }
 async-trait = "0.1"
 axum = { workspace = true, features = ["http1", "tokio"] }
 futures = "0.3"
 reqwest = { workspace = true, features = ["stream"] }
 ring.workspace = true
 rusqlite.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11"
 tempfile.workspace = true

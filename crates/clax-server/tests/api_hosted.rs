@@ -9173,6 +9173,7 @@ impl BotWorld {
                     content_type: Some("text/html".into()),
                 }],
                 reason: None,
+                delivered: Vec::new(),
             },
         )
         .unwrap();

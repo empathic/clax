@@ -333,7 +333,13 @@ fn body_class(kind: &str, field: &str) -> Class {
         // ClaxBot (spec 2026-10-21-claxbot-design §9.1): script code is kept
         // by hash, never in the body; a script's title and error are the
         // model's text.
-        ("bot.run_start", "run" | "request" | "thread_ids" | "model" | "key_source") => Safe,
+        // A run's kind is `<surface>.<kind>`, names of a definition; who
+        // started it and from which run are IDs.
+        (
+            "bot.run_start",
+            "run" | "request" | "thread_ids" | "model" | "key_source" | "kind" | "started_by"
+            | "parent_run",
+        ) => Safe,
         (
             "bot.turn",
             "run" | "step" | "model" | "input_tokens" | "cached_tokens" | "output_tokens"
@@ -366,6 +372,12 @@ fn body_class(kind: &str, field: &str) -> Class {
         ("bot.cancel", "run" | "by") => Safe,
         // A refusal before any model call: who, why (a code) and where.
         ("bot.refused", "person" | "reason" | "artifact") => Safe,
+        // A registered surface: its name is one word of the host's, its
+        // definition is named by hash, and the rest are IDs.
+        (
+            "bot.surface.registered",
+            "registration" | "name" | "def_hash" | "registered_by" | "replaces",
+        ) => Safe,
         ("view.run", "run") => Safe,
         ("view.admin", "page" | "subject_person") => Safe,
         // A search's words are the reader's text.

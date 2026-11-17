@@ -1,0 +1,318 @@
+{
+  "content": {
+    "calls": [
+      {
+        "code": null,
+        "ok": true,
+        "op": "web.search"
+      },
+      {
+        "code": null,
+        "ok": true,
+        "op": "web.fetch"
+      },
+      {
+        "code": "url_not_in_prior_context",
+        "ok": false,
+        "op": "web.fetch"
+      },
+      {
+        "code": "url_not_allowed",
+        "ok": false,
+        "op": "web.fetch"
+      },
+      {
+        "code": "invalid_args",
+        "ok": false,
+        "op": "web.fetch"
+      },
+      {
+        "code": "invalid_args",
+        "ok": false,
+        "op": "web.fetch"
+      },
+      {
+        "code": "invalid_args",
+        "ok": false,
+        "op": "web.fetch"
+      },
+      {
+        "code": "invalid_args",
+        "ok": false,
+        "op": "web.search"
+      },
+      {
+        "code": "invalid_args",
+        "ok": false,
+        "op": "web.search"
+      },
+      {
+        "code": "invalid_args",
+        "ok": false,
+        "op": "web.search"
+      },
+      {
+        "code": "web_timeout",
+        "ok": false,
+        "op": "web.search"
+      },
+      {
+        "code": null,
+        "ok": true,
+        "op": "web.fetch"
+      },
+      {
+        "code": "invalid_args",
+        "ok": false,
+        "op": "web.fetch"
+      },
+      {
+        "code": null,
+        "ok": true,
+        "op": "web.fetch"
+      },
+      {
+        "code": "url_not_allowed",
+        "ok": false,
+        "op": "web.fetch"
+      },
+      {
+        "code": "url_not_allowed",
+        "ok": false,
+        "op": "web.fetch"
+      },
+      {
+        "code": "url_not_allowed",
+        "ok": false,
+        "op": "web.fetch"
+      },
+      {
+        "code": "url_not_allowed",
+        "ok": false,
+        "op": "web.fetch"
+      },
+      {
+        "code": "url_not_allowed",
+        "ok": false,
+        "op": "web.fetch"
+      },
+      {
+        "code": "web_timeout",
+        "ok": false,
+        "op": "web.fetch"
+      },
+      {
+        "code": "web_blocked",
+        "ok": false,
+        "op": "web.fetch"
+      },
+      {
+        "code": "url_not_allowed",
+        "ok": false,
+        "op": "web.fetch"
+      },
+      {
+        "code": "url_not_allowed",
+        "ok": false,
+        "op": "web.fetch"
+      },
+      {
+        "code": "url_not_allowed",
+        "ok": false,
+        "op": "web.fetch"
+      }
+    ],
+    "logs": [],
+    "value": {
+      "web.fetch": {
+        "returned": {
+          "contentType": "text/markdown",
+          "finalUrl": "https://example.com/a",
+          "left": {
+            "credits": 1997.919,
+            "fetches": 19,
+            "searches": 9
+          },
+          "nextOffset": null,
+          "offset": 0,
+          "status": 200,
+          "text": "# Doc title\nbody",
+          "totalChars": 16,
+          "url": "https://example.com/a"
+        }
+      },
+      "web.fetch: a URL of 1,020 characters that is 6,020 once encoded": {
+        "code": "url_not_allowed",
+        "message": "the URL is longer than 2000 characters; fetch a public http or https URL instead",
+        "retryable": false,
+        "threw": "HostError: the URL is longer than 2000 characters; fetch a public http or https URL instead"
+      },
+      "web.fetch: a URL of 2,001 characters": {
+        "code": "url_not_allowed",
+        "message": "the URL is longer than 2000 characters; fetch a public http or https URL instead",
+        "retryable": false,
+        "threw": "HostError: the URL is longer than 2000 characters; fetch a public http or https URL instead"
+      },
+      "web.fetch: a URL that holds credentials": {
+        "code": "url_not_allowed",
+        "message": "the URL holds credentials; fetch a public http or https URL instead",
+        "retryable": false,
+        "threw": "HostError: the URL holds credentials; fetch a public http or https URL instead"
+      },
+      "web.fetch: a URL that looks credentialed and is not the sender's": {
+        "code": "url_not_allowed",
+        "message": "the URL looks like it holds a credential; it is fetched only when the person you act for wrote it themselves",
+        "retryable": false,
+        "threw": "HostError: the URL looks like it holds a credential; it is fetched only when the person you act for wrote it themselves"
+      },
+      "web.fetch: a URL the run was not given": {
+        "code": "url_not_in_prior_context",
+        "message": "https://elsewhere.example/x is not in the sender's words, a search result or a page you fetched; fetch only URLs from those",
+        "retryable": false,
+        "threw": "HostError: https://elsewhere.example/x is not in the sender's words, a search result or a page you fetched; fetch only URLs from those"
+      },
+      "web.fetch: a negative offset": {
+        "code": "invalid_args",
+        "message": "clax.web.fetch: offset must be at least 0, got -1",
+        "retryable": false,
+        "threw": "HostError: clax.web.fetch: offset must be at least 0, got -1"
+      },
+      "web.fetch: a page read as auto, asked for raw": {
+        "code": "invalid_args",
+        "message": "this run already read https://example.com/a as auto; fetch it with that format",
+        "retryable": false,
+        "threw": "HostError: this run already read https://example.com/a as auto; fetch it with that format"
+      },
+      "web.fetch: a private host": {
+        "code": "url_not_allowed",
+        "message": "127.0.0.1 is a private or local address; fetch a public http or https URL instead",
+        "retryable": false,
+        "threw": "HostError: 127.0.0.1 is a private or local address; fetch a public http or https URL instead"
+      },
+      "web.fetch: a redirect to a private host": {
+        "code": "url_not_allowed",
+        "message": "10.0.0.1 is a private or local address; fetch a public http or https URL instead",
+        "retryable": false,
+        "threw": "HostError: 10.0.0.1 is a private or local address; fetch a public http or https URL instead"
+      },
+      "web.fetch: a result of the search": {
+        "returned": {
+          "contentType": "text/markdown",
+          "finalUrl": "https://example.org/found",
+          "left": {
+            "credits": 1997.819,
+            "fetches": 18,
+            "searches": 8
+          },
+          "nextOffset": null,
+          "offset": 0,
+          "status": 200,
+          "text": "# Doc title\nbody",
+          "totalChars": 16,
+          "url": "https://example.org/found"
+        }
+      },
+      "web.fetch: a scheme that is not fetched": {
+        "code": "url_not_allowed",
+        "message": "the scheme ftp is not fetched; fetch a public http or https URL instead",
+        "retryable": false,
+        "threw": "HostError: the scheme ftp is not fetched; fetch a public http or https URL instead"
+      },
+      "web.fetch: an IPv6 loopback address": {
+        "code": "url_not_allowed",
+        "message": "[::1] is a private or local address; fetch a public http or https URL instead",
+        "retryable": false,
+        "threw": "HostError: [::1] is a private or local address; fetch a public http or https URL instead"
+      },
+      "web.fetch: an unknown format": {
+        "code": "invalid_args",
+        "message": "clax.web.fetch: argument 2 (opts).format must be one of auto, raw",
+        "retryable": false,
+        "threw": "HostError: clax.web.fetch: argument 2 (opts).format must be one of auto, raw"
+      },
+      "web.fetch: localhost": {
+        "code": "url_not_allowed",
+        "message": "localhost is a private or local address; fetch a public http or https URL instead",
+        "retryable": false,
+        "threw": "HostError: localhost is a private or local address; fetch a public http or https URL instead"
+      },
+      "web.fetch: not a URL": {
+        "code": "invalid_args",
+        "message": "not an absolute URL (relative URL without a base)",
+        "retryable": false,
+        "threw": "HostError: not an absolute URL (relative URL without a base)"
+      },
+      "web.fetch: the same page again, from the run's store": {
+        "returned": {
+          "contentType": "text/markdown",
+          "finalUrl": "https://example.com/a",
+          "left": {
+            "credits": 1997.919,
+            "fetches": 19,
+            "searches": 8
+          },
+          "nextOffset": null,
+          "offset": 5,
+          "status": 200,
+          "text": " title\nbody",
+          "totalChars": 16,
+          "url": "https://example.com/a"
+        }
+      },
+      "web.fetch: the source fails, not retryable": {
+        "code": "web_blocked",
+        "message": "the site answered 403",
+        "retryable": false,
+        "threw": "HostError: the site answered 403"
+      },
+      "web.fetch: the source fails, retryable": {
+        "code": "web_timeout",
+        "message": "the page took longer than 10 seconds (retryable: try again)",
+        "retryable": true,
+        "threw": "HostError: the page took longer than 10 seconds (retryable: try again)"
+      },
+      "web.search": {
+        "returned": {
+          "left": {
+            "credits": 1998.019,
+            "fetches": 20,
+            "searches": 9
+          },
+          "results": [
+            {
+              "snippet": "About blue headings",
+              "title": "Found",
+              "url": "https://example.org/found"
+            }
+          ]
+        }
+      },
+      "web.search: a limit of 0": {
+        "code": "invalid_args",
+        "message": "clax.web.search: limit must be at least 1, got 0",
+        "retryable": false,
+        "threw": "HostError: clax.web.search: limit must be at least 1, got 0"
+      },
+      "web.search: a query of 1,025 characters": {
+        "code": "invalid_args",
+        "message": "clax.web.search: query must be 1 to 1024 characters, got 1025",
+        "retryable": false,
+        "threw": "HostError: clax.web.search: query must be 1 to 1024 characters, got 1025"
+      },
+      "web.search: an empty query": {
+        "code": "invalid_args",
+        "message": "clax.web.search: query must be 1 to 1024 characters, got 0",
+        "retryable": false,
+        "threw": "HostError: clax.web.search: query must be 1 to 1024 characters, got 0"
+      },
+      "web.search: the source fails, retryable": {
+        "code": "web_timeout",
+        "message": "the search took longer than 10 seconds (retryable: try again)",
+        "retryable": true,
+        "threw": "HostError: the search took longer than 10 seconds (retryable: try again)"
+      }
+    }
+  },
+  "content_bytes": 7462,
+  "is_error": null
+}

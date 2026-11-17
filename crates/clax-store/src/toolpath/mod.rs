@@ -780,6 +780,7 @@ impl Event<'_> {
             Some(K::AdminRole | K::AdminFlag | K::AdminCredits | K::BotRefused | K::MeWeb) => {
                 self.str("person").map(Obj::Person)
             }
+            Some(K::BotSurfaceRegistered) => self.str("registered_by").map(Obj::Person),
             Some(K::AdminKey) => Some(self.str("person").map_or(Obj::Install, Obj::Person)),
             Some(K::AdminCostLine) => self.str("line").map(Obj::CostLine),
             Some(K::QueueCreate | K::QueueUpdate) => self.str("queue_id").map(Obj::Queue),
@@ -1481,6 +1482,16 @@ impl Event<'_> {
                 "ClaxBot refused a run for person {}: {}",
                 self.show("person"),
                 self.show("reason")
+            ),
+            Some(K::BotSurfaceRegistered) => format!(
+                "Registered ClaxBot surface {} for person {} (registration {}{})",
+                self.show("name"),
+                self.show("registered_by"),
+                self.show("registration"),
+                match self.str("replaces") {
+                    Some(old) => format!(", in place of {old}"),
+                    None => String::new(),
+                }
             ),
             Some(K::ViewRun) => format!("Viewed ClaxBot run {}", self.show("run")),
             Some(K::ViewAdmin) => match self.str("subject_person") {

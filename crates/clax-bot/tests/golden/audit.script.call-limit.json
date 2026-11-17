@@ -1,0 +1,257 @@
+{
+  "kinds": [
+    "bot.run_start",
+    "bot.turn",
+    "bot.script",
+    "bot.call",
+    "bot.call",
+    "bot.call",
+    "bot.turn",
+    "bot.run_end"
+  ],
+  "records": [
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "key_source": "instance",
+        "model": "claude-sonnet-5-5",
+        "request": "thread",
+        "run": "<run>",
+        "thread_ids": [
+          "<thread-1>"
+        ],
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.run_start"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "cache_write_tokens": 500,
+        "cached_tokens": 2000,
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "credits_milli": 1931,
+        "input_tokens": 1000,
+        "key_source": "instance",
+        "model": "claude-sonnet-5-5",
+        "output_tokens": 300,
+        "run": "<run>",
+        "step": 1,
+        "stop_reason": "tool_use",
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.turn"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "calls": [
+          "files.list",
+          "files.list",
+          "files.list"
+        ],
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "code_sha256": "<sha256 of the code>",
+        "cpu_ms": "<measured>",
+        "credits_milli": "<charged from what the scripts measured>",
+        "error": "the script made more than its 3 host calls",
+        "mem_peak": "<measured>",
+        "run": "<run>",
+        "step": 2,
+        "title": "Script",
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.script"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "ok": true,
+        "op": "files.list",
+        "run": "<run>",
+        "step": 2,
+        "target": null,
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.call"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "ok": true,
+        "op": "files.list",
+        "run": "<run>",
+        "step": 2,
+        "target": null,
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.call"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "ok": true,
+        "op": "files.list",
+        "run": "<run>",
+        "step": 2,
+        "target": null,
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.call"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "cache_write_tokens": 500,
+        "cached_tokens": 2000,
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "credits_milli": 931,
+        "input_tokens": 1000,
+        "key_source": "instance",
+        "model": "claude-sonnet-5-5",
+        "output_tokens": 300,
+        "run": "<run>",
+        "step": 3,
+        "stop_reason": "tool_use",
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.turn"
+    },
+    {
+      "actor": {
+        "on_behalf_of": "*owner",
+        "type": "bot"
+      },
+      "at": "2026-10-21T10:00:00.000Z",
+      "body": {
+        "clax_commit": "<commit>",
+        "clax_version": "<version>",
+        "credits_milli": "<charged from what the scripts measured>",
+        "outcome": "finished",
+        "reason": null,
+        "run": "<run>",
+        "v": 1,
+        "via": "daemon"
+      },
+      "ids": {
+        "artifact": "<artifact>",
+        "artifact2": null,
+        "call": null,
+        "origin": null,
+        "question": null,
+        "session": null,
+        "thread": null
+      },
+      "kind": "bot.run_end"
+    }
+  ]
+}

@@ -1,0 +1,338 @@
+{
+  "content": {
+    "calls": [
+      {
+        "code": null,
+        "ok": true,
+        "op": "files.list"
+      },
+      {
+        "code": null,
+        "ok": true,
+        "op": "files.read"
+      },
+      {
+        "code": "invalid_args",
+        "ok": false,
+        "op": "files.read"
+      },
+      {
+        "code": "invalid_args",
+        "ok": false,
+        "op": "files.read"
+      },
+      {
+        "code": "invalid_args",
+        "ok": false,
+        "op": "files.read"
+      },
+      {
+        "code": "not_found",
+        "ok": false,
+        "op": "files.read"
+      },
+      {
+        "code": null,
+        "ok": true,
+        "op": "files.write"
+      },
+      {
+        "code": "invalid_args",
+        "ok": false,
+        "op": "files.write"
+      },
+      {
+        "code": null,
+        "ok": true,
+        "op": "files.replace"
+      },
+      {
+        "code": "no_match",
+        "ok": false,
+        "op": "files.replace"
+      },
+      {
+        "code": "no_match",
+        "ok": false,
+        "op": "files.replace"
+      },
+      {
+        "code": "no_match",
+        "ok": false,
+        "op": "files.replace"
+      },
+      {
+        "code": "not_found",
+        "ok": false,
+        "op": "files.replace"
+      },
+      {
+        "code": null,
+        "ok": true,
+        "op": "files.delete"
+      },
+      {
+        "code": "not_found",
+        "ok": false,
+        "op": "files.delete"
+      },
+      {
+        "code": "invalid_args",
+        "ok": false,
+        "op": "draft.publish"
+      },
+      {
+        "code": "invalid_args",
+        "ok": false,
+        "op": "draft.publish"
+      },
+      {
+        "code": "invalid_args",
+        "ok": false,
+        "op": "draft.publish"
+      },
+      {
+        "code": "invalid_args",
+        "ok": false,
+        "op": "draft.publish"
+      },
+      {
+        "code": "invalid_args",
+        "ok": false,
+        "op": "draft.publish"
+      },
+      {
+        "code": "forbidden",
+        "ok": false,
+        "op": "threads.read"
+      },
+      {
+        "code": "forbidden",
+        "ok": false,
+        "op": "threads.reply"
+      },
+      {
+        "code": "forbidden",
+        "ok": false,
+        "op": "artifacts.create"
+      },
+      {
+        "code": null,
+        "ok": true,
+        "op": "draft.check"
+      },
+      {
+        "code": null,
+        "ok": true,
+        "op": "files.write"
+      },
+      {
+        "code": null,
+        "ok": true,
+        "op": "draft.check"
+      },
+      {
+        "code": null,
+        "ok": true,
+        "op": "files.delete"
+      },
+      {
+        "code": null,
+        "ok": true,
+        "op": "draft.publish"
+      },
+      {
+        "code": "already_published",
+        "ok": false,
+        "op": "draft.publish"
+      }
+    ],
+    "logs": [],
+    "published": {
+      "version": 2
+    },
+    "value": {
+      "artifacts.create: in a thread request": {
+        "code": "forbidden",
+        "message": "only a new artifact's brief may create artifacts",
+        "retryable": false,
+        "threw": "HostError: only a new artifact's brief may create artifacts"
+      },
+      "draft.check: a draft that passes": {
+        "returned": {
+          "ok": true,
+          "problems": []
+        }
+      },
+      "draft.check: a page that breaks the contract": {
+        "returned": {
+          "ok": false,
+          "problems": [
+            {
+              "line": 1,
+              "message": "\"/abs.css\" is an absolute path; reference supporting files by relative path",
+              "path": "bad.html",
+              "rule": "absolute_path"
+            },
+            {
+              "line": 1,
+              "message": "\"missing.png\" names missing.png, which is not in the draft",
+              "path": "bad.html",
+              "rule": "missing_file"
+            },
+            {
+              "line": 1,
+              "message": "Unexpected token",
+              "path": "bad.html",
+              "rule": "script_syntax"
+            }
+          ]
+        }
+      },
+      "draft.publish": {
+        "returned": {
+          "version": 2
+        }
+      },
+      "draft.publish: addresses not an array": {
+        "code": "invalid_args",
+        "message": "clax.draft.publish: argument 1 (opts).addresses must be an array",
+        "retryable": false,
+        "threw": "HostError: clax.draft.publish: argument 1 (opts).addresses must be an array"
+      },
+      "draft.publish: an address not a string": {
+        "code": "invalid_args",
+        "message": "clax.draft.publish: argument 1 (opts).addresses[1] must be a string",
+        "retryable": false,
+        "threw": "HostError: clax.draft.publish: argument 1 (opts).addresses[1] must be a string"
+      },
+      "draft.publish: an unknown field": {
+        "code": "invalid_args",
+        "message": "clax.draft.publish: argument 1 (opts) has no field \"nope\" (fields: note, addresses)",
+        "retryable": false,
+        "threw": "HostError: clax.draft.publish: argument 1 (opts) has no field \"nope\" (fields: note, addresses)"
+      },
+      "draft.publish: not an object": {
+        "code": "invalid_args",
+        "message": "clax.draft.publish: argument 1 (opts) must be an object",
+        "retryable": false,
+        "threw": "HostError: clax.draft.publish: argument 1 (opts) must be an object"
+      },
+      "draft.publish: note not a string": {
+        "code": "invalid_args",
+        "message": "clax.draft.publish: argument 1 (opts).note must be a string",
+        "retryable": false,
+        "threw": "HostError: clax.draft.publish: argument 1 (opts).note must be a string"
+      },
+      "draft.publish: twice in one script": {
+        "code": "already_published",
+        "message": "this script already published the draft; publish again from a later script",
+        "retryable": false,
+        "threw": "HostError: this script already published the draft; publish again from a later script"
+      },
+      "files.delete": {
+        "returned": null
+      },
+      "files.delete: no such file": {
+        "code": "not_found",
+        "message": "the draft has no file \"nope.css\"",
+        "retryable": false,
+        "threw": "HostError: the draft has no file \"nope.css\""
+      },
+      "files.list": {
+        "returned": [
+          {
+            "bytes": 561,
+            "content_type": "text/html",
+            "path": "index.html"
+          }
+        ]
+      },
+      "files.read (its length)": {
+        "returned": 561
+      },
+      "files.read: no argument": {
+        "code": "invalid_args",
+        "message": "clax.files.read: argument 1 (path) is missing",
+        "retryable": false,
+        "threw": "HostError: clax.files.read: argument 1 (path) is missing"
+      },
+      "files.read: no such file": {
+        "code": "not_found",
+        "message": "the draft has no file \"nope.html\"",
+        "retryable": false,
+        "threw": "HostError: the draft has no file \"nope.html\""
+      },
+      "files.read: not a string": {
+        "code": "invalid_args",
+        "message": "clax.files.read: argument 1 (path) must be a string",
+        "retryable": false,
+        "threw": "HostError: clax.files.read: argument 1 (path) must be a string"
+      },
+      "files.read: too many arguments": {
+        "code": "invalid_args",
+        "message": "clax.files.read: takes at most 1 argument, got 2",
+        "retryable": false,
+        "threw": "HostError: clax.files.read: takes at most 1 argument, got 2"
+      },
+      "files.replace": {
+        "returned": {
+          "bytes": 561,
+          "content_type": "text/html",
+          "path": "index.html"
+        }
+      },
+      "files.replace: empty old text": {
+        "code": "no_match",
+        "message": "old is empty",
+        "retryable": false,
+        "threw": "HostError: old is empty"
+      },
+      "files.replace: no match": {
+        "code": "no_match",
+        "message": "index.html does not contain the text to replace; read it again",
+        "retryable": false,
+        "threw": "HostError: index.html does not contain the text to replace; read it again"
+      },
+      "files.replace: no such file": {
+        "code": "not_found",
+        "message": "the draft has no file \"nope.html\"",
+        "retryable": false,
+        "threw": "HostError: the draft has no file \"nope.html\""
+      },
+      "files.replace: several matches": {
+        "code": "no_match",
+        "message": "the text to replace occurs 15 times in index.html; include more of it so it occurs once",
+        "retryable": false,
+        "threw": "HostError: the text to replace occurs 15 times in index.html; include more of it so it occurs once"
+      },
+      "files.write": {
+        "returned": {
+          "bytes": 19,
+          "content_type": "text/css",
+          "path": "extra.css"
+        }
+      },
+      "files.write: too many arguments": {
+        "code": "invalid_args",
+        "message": "clax.files.write: takes at most 2 arguments, got 3",
+        "retryable": false,
+        "threw": "HostError: clax.files.write: takes at most 2 arguments, got 3"
+      },
+      "threads.read: a thread that is not the run's": {
+        "code": "forbidden",
+        "message": "thread <thread-2> is not part of this request",
+        "retryable": false,
+        "threw": "HostError: thread <thread-2> is not part of this request"
+      },
+      "threads.reply: a thread that is not the run's": {
+        "code": "forbidden",
+        "message": "thread <thread-2> is not part of this request",
+        "retryable": false,
+        "threw": "HostError: thread <thread-2> is not part of this request"
+      }
+    }
+  },
+  "content_bytes": 6561,
+  "is_error": null
+}

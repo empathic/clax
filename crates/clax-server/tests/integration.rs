@@ -31,6 +31,16 @@ mod api_attention;
 mod api_auth;
 #[cfg(any(not(clax_split), clax_split = "api_batch"))]
 mod api_batch;
+#[cfg(any(not(clax_split), clax_split = "api_bot_content"))]
+mod api_bot_content;
+#[cfg(any(not(clax_split), clax_split = "api_bot_joins"))]
+mod api_bot_joins;
+#[cfg(any(not(clax_split), clax_split = "api_bot_messages"))]
+mod api_bot_messages;
+#[cfg(any(not(clax_split), clax_split = "api_bot_surfaces"))]
+mod api_bot_surfaces;
+#[cfg(any(not(clax_split), clax_split = "api_bot_surfaces_bounds"))]
+mod api_bot_surfaces_bounds;
 #[cfg(any(not(clax_split), clax_split = "api_briefs"))]
 mod api_briefs;
 #[cfg(any(not(clax_split), clax_split = "api_caching"))]
@@ -221,7 +231,7 @@ mod shell_entries;
 #[test]
 fn every_test_file_is_a_module() {
     let tests = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
-    let roots = ["integration"];
+    let roots = ["integration", "daemon_sources"];
     let declared: Vec<String> = roots
         .iter()
         .map(|r| std::fs::read_to_string(tests.join(format!("{r}.rs"))).unwrap())

@@ -279,6 +279,13 @@ pub struct SecretMeta {
     /// it was set); `None` for a key set before keys were bound, bound at
     /// its first use ([`Store::open_for_use`]).
     pub host: Option<String>,
+    /// The last failed request made with it, as
+    /// [`Store::note_secret_problem`] kept it: `{at, class, status, type,
+    /// message, request_id}`, `at` the store's time and the rest the
+    /// failure's detail (the provider's words among them: plain text,
+    /// bounded, never the key). `None` when none failed since it was set or
+    /// since a request with it last succeeded.
+    pub last_problem: Option<serde_json::Value>,
 }
 
 impl SecretMeta {
@@ -290,6 +297,38 @@ impl SecretMeta {
         (clax_core::config::key_host(base_url).as_deref() != Some(host))
             .then(|| format!("it was set for {host}; set it again"))
     }
+}
+
+/// The members of a failure's detail [`Store::note_secret_problem`] keeps.
+pub const PROBLEM_KEYS: [&str; 5] = ["class", "status", "type", "message", "request_id"];
+
+/// The longest string [`Store::note_secret_problem`] keeps of a member, in
+/// bytes.
+pub const PROBLEM_FIELD_BYTES: usize = 512;
+
+/// `detail` as a key's last problem at `at`: `at` and the members of
+/// [`PROBLEM_KEYS`], each a string (cut to [`PROBLEM_FIELD_BYTES`] on a
+/// character boundary), a number or null; any other member, and a member
+/// of another type, is left out.
+fn problem_of(detail: &serde_json::Value, at: &str) -> serde_json::Value {
+    use serde_json::Value;
+    let mut out = serde_json::Map::new();
+    out.insert("at".into(), Value::String(at.into()));
+    for k in PROBLEM_KEYS {
+        let v = match detail.get(k) {
+            Some(Value::String(s)) => {
+                let mut end = s.len().min(PROBLEM_FIELD_BYTES);
+                while !s.is_char_boundary(end) {
+                    end -= 1;
+                }
+                Value::String(s[..end].to_string())
+            }
+            Some(n @ Value::Number(_)) => n.clone(),
+            _ => Value::Null,
+        };
+        out.insert(k.into(), v);
+    }
+    Value::Object(out)
 }
 
 /// The longest key accepted, in bytes.
@@ -309,10 +348,11 @@ fn check_key(key: &str) -> Result<&str> {
 
 pub(crate) fn meta_in(c: &Connection, slot: &SecretSlot) -> Result<Option<SecretMeta>> {
     Ok(c.prepare_cached(
-        "SELECT last4, set_at, set_by, last_ok_at, use_own, host FROM sealed_secrets
-              WHERE scope = ?1 AND person = ?2",
+        "SELECT last4, set_at, set_by, last_ok_at, use_own, host, last_problem_json
+              FROM sealed_secrets WHERE scope = ?1 AND person = ?2",
     )?
     .query_row(params![slot.scope(), slot.person()], |r| {
+        let problem: Option<String> = r.get(6)?;
         Ok(SecretMeta {
             last4: r.get(0)?,
             set_at: r.get(1)?,
@@ -320,6 +360,7 @@ pub(crate) fn meta_in(c: &Connection, slot: &SecretSlot) -> Result<Option<Secret
             last_ok_at: r.get(3)?,
             use_own: r.get(4)?,
             host: r.get(5)?,
+            last_problem: problem.and_then(|p| serde_json::from_str(&p).ok()),
         })
     })
     .optional()?)
@@ -382,12 +423,12 @@ impl Store {
         self.with_tx(|tx| {
             let now = self.now();
             tx.execute(
-                "INSERT INTO sealed_secrets (scope, person, nonce, sealed, last4, use_own, set_by, set_at, last_ok_at, host)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, NULL, ?8)
+                "INSERT INTO sealed_secrets (scope, person, nonce, sealed, last4, use_own, set_by, set_at, last_ok_at, host, last_problem_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, NULL, ?8, NULL)
                  ON CONFLICT (scope, person) DO UPDATE SET nonce = excluded.nonce,
                    sealed = excluded.sealed, last4 = excluded.last4, use_own = 1,
                    set_by = excluded.set_by, set_at = excluded.set_at, last_ok_at = NULL,
-                   host = excluded.host",
+                   host = excluded.host, last_problem_json = NULL",
                 params![slot.scope(), slot.person(), &nonce[..], sealed, last4, set_by(ctx), now, host],
             )?;
             self.record_audit(tx, ctx, key_record(now, slot, "set", &last4))?;
@@ -507,15 +548,36 @@ impl Store {
     }
 
     /// Notes that a request with `slot`'s key succeeded now (the store's
-    /// clock).
+    /// clock), which clears its last problem.
     ///
     /// # Errors
     /// The store's.
     pub fn mark_secret_ok(&self, slot: &SecretSlot) -> Result<()> {
         self.with_tx(|tx| {
             tx.execute(
-                "UPDATE sealed_secrets SET last_ok_at = ?3 WHERE scope = ?1 AND person = ?2",
+                "UPDATE sealed_secrets SET last_ok_at = ?3, last_problem_json = NULL
+                   WHERE scope = ?1 AND person = ?2",
                 params![slot.scope(), slot.person(), self.now()],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Notes that a request with `slot`'s key failed now (the store's
+    /// clock), as `detail` says (`{class, status, type, message,
+    /// request_id}`, `clax_sample`'s `ErrorDetail::to_json`): its last
+    /// problem ([`SecretMeta::last_problem`]) becomes `detail` with `at`,
+    /// bounded as [`problem_of`] says. Nothing is noted when `slot` holds
+    /// no key.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn note_secret_problem(&self, slot: &SecretSlot, detail: &serde_json::Value) -> Result<()> {
+        self.with_tx(|tx| {
+            let problem = problem_of(detail, &self.now());
+            tx.execute(
+                "UPDATE sealed_secrets SET last_problem_json = ?3 WHERE scope = ?1 AND person = ?2",
+                params![slot.scope(), slot.person(), problem.to_string()],
             )?;
             Ok(())
         })
@@ -628,6 +690,86 @@ mod tests {
                 .map(|s| s.expose().to_string()),
             None
         );
+    }
+
+    #[test]
+    fn a_failed_request_is_the_keys_last_problem_until_one_succeeds_or_it_is_set_again() {
+        use serde_json::json;
+        let (_d, st) = store();
+        let kek = Kek::from_bytes([7; 32]);
+        let slot = SecretSlot::Own(OWNER.into());
+        let problem = || st.secret_meta(&slot).unwrap().unwrap().last_problem;
+        // No key: nothing is noted, and no row is made.
+        st.note_secret_problem(&slot, &json!({"class": "auth"}))
+            .unwrap();
+        assert_eq!(st.secret_meta(&slot).unwrap(), None);
+
+        st.set_secret(DAEMON, &kek, &slot, KEY).unwrap();
+        assert_eq!(problem(), None);
+        let detail = json!({
+            "class": "invalid_request", "status": 400, "type": "invalid_request_error",
+            "message": "max_tokens: too large", "request_id": "req_011"
+        });
+        st.note_secret_problem(&slot, &detail).unwrap();
+        let p = problem().expect("the failure is kept");
+        assert_eq!(p["class"], "invalid_request");
+        assert_eq!(p["status"], 400);
+        assert_eq!(p["type"], "invalid_request_error");
+        assert_eq!(p["message"], "max_tokens: too large");
+        assert_eq!(p["request_id"], "req_011");
+        assert!(p["at"].as_str().is_some_and(|a| !a.is_empty()), "{p}");
+
+        // A success clears it.
+        st.mark_secret_ok(&slot).unwrap();
+        assert_eq!(problem(), None);
+        // As does setting the key again.
+        st.note_secret_problem(&slot, &detail).unwrap();
+        assert!(problem().is_some());
+        st.set_secret(DAEMON, &kek, &slot, KEY).unwrap();
+        assert_eq!(problem(), None);
+        // The instance's slot is another's.
+        st.note_secret_problem(&SecretSlot::Instance, &detail)
+            .unwrap();
+        assert_eq!(st.secret_meta(&SecretSlot::Instance).unwrap(), None);
+    }
+
+    #[test]
+    fn a_keys_last_problem_keeps_the_known_members_bounded() {
+        use serde_json::json;
+        let (_d, st) = store();
+        let kek = Kek::from_bytes([7; 32]);
+        st.set_secret(DAEMON, &kek, &SecretSlot::Instance, KEY)
+            .unwrap();
+        // 511 ASCII bytes then a 3-byte character: cut before it.
+        let long = format!("{}€tail", "x".repeat(511));
+        st.note_secret_problem(
+            &SecretSlot::Instance,
+            &json!({
+                "class": "api", "status": {"nested": true}, "type": ["a"],
+                "message": long, "request_id": null, "extra": "dropped", "at": "forged"
+            }),
+        )
+        .unwrap();
+        let p = st
+            .secret_meta(&SecretSlot::Instance)
+            .unwrap()
+            .unwrap()
+            .last_problem
+            .unwrap();
+        let keys: Vec<&str> = p.as_object().unwrap().keys().map(String::as_str).collect();
+        let mut want = vec!["at", "class", "status", "type", "message", "request_id"];
+        want.sort_unstable();
+        let mut got = keys.clone();
+        got.sort_unstable();
+        assert_eq!(got, want);
+        assert_ne!(p["at"], "forged");
+        assert_eq!(p["status"], serde_json::Value::Null);
+        assert_eq!(p["type"], serde_json::Value::Null);
+        assert_eq!(p["request_id"], serde_json::Value::Null);
+        assert_eq!(p["message"].as_str().unwrap(), "x".repeat(511));
+        // Not a string: nothing of it is kept.
+        let short = problem_of(&json!("not an object"), "t");
+        assert_eq!(short["class"], serde_json::Value::Null);
     }
 
     #[test]

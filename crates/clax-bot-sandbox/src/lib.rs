@@ -4,9 +4,15 @@
 //! way out is the [`Host`]: the script sees one global, `clax`, whose
 //! methods are generated from a list of dotted operation names
 //! (`files.read` becomes `clax.files.read`; [`validate_ops`] says which
-//! names are allowed). Each method returns a Promise that settles with the
-//! result of [`Host::call`] for that operation. Everything the run did
-//! comes back as a [`ScriptOutcome`]; a [`CancelToken`] stops it.
+//! lists are allowed). The list is the script's own when it carries one
+//! ([`Script::ops`]), else the one the sandbox was built with. Each method
+//! returns a Promise that settles with the result of [`Host::call`] for
+//! that operation. Everything the run did comes back as a
+//! [`ScriptOutcome`]; a [`CancelToken`] stops it.
+//!
+//! Every run has a `clax` of its own: nothing one script did to its
+//! `clax`, its globals or its operations is seen by a later script on the
+//! same sandbox, whatever way the earlier one ended.
 //!
 //! The observable behaviour every implementation shares (the QuickJS
 //! sandbox natively, a Worker Loader isolate on the hosted Worker) is
@@ -54,6 +60,26 @@
 //! What an operation did to which target (for Toolpath) is the host's to
 //! record: the host knows each operation's meaning, the sandbox only its
 //! name and arguments.
+//!
+//! # Parking
+//!
+//! A sandbox asks the host each call through [`Host::ask`], whose
+//! [`HostReply`] is either the call's answer or [`HostReply::Waiting`]:
+//! the answer is not in yet. On `Waiting` the run ends at once, at that
+//! call, with [`ErrorKind::Parked`]. The call's Promise is never settled,
+//! so none of the script's `catch` or `finally` blocks and no later job
+//! runs. The outcome carries what the run did, as a cancelled one does:
+//! its logs, its calls (the waiting call last, recorded with `ok: false`
+//! and the code [`CODE_WAITING`]), [`ScriptOutcome::cpu_us`] and its wall
+//! time. Only the host's reply makes a park: a script cannot, whether by
+//! awaiting a promise that never settles, throwing an error made to look
+//! like one, or returning an object that does.
+//!
+//! Calls reach the host one at a time in the order the script made them,
+//! so a waiting call holds back every call made after it, awaited or not:
+//! none of them reaches the host. A run waits on one call at a time. A run
+//! is resumed by running its script again (the host answering the calls it
+//! answered before), not by the sandbox.
 //!
 //! # Logs
 //!
@@ -120,13 +146,21 @@ impl<T: ?Sized> MaybeSendSync for T {}
 
 /// One script: a title (used as its file name in stack traces), the
 /// body of the async function it runs as, and, when given, what makes its
-/// run repeatable.
+/// run repeatable and the operations its `clax` has.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Script {
     pub title: String,
     pub code: String,
     #[serde(default)]
     pub determinism: Option<Determinism>,
+    /// The dotted names of the operations this script's `clax` has, in
+    /// place of the sandbox's own (those it was built with); `None` for
+    /// the sandbox's own. A sandbox checks the list with [`validate_ops`]
+    /// before any of the script runs, and a list it refuses ends the run
+    /// with [`ErrorKind::InvalidOps`] ([`Script::ops_or`]). Left out of
+    /// the JSON when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ops: Option<Vec<String>>,
 }
 
 /// What a script's clock and random numbers are, so a script run again
@@ -146,6 +180,41 @@ impl Script {
             title: title.into(),
             code: code.into(),
             determinism: None,
+            ops: None,
+        }
+    }
+
+    /// The same script, its `clax` made of `ops` (dotted names) instead
+    /// of the sandbox's own operations ([`Script::ops`]).
+    #[must_use]
+    pub fn with_ops<I, S>(self, ops: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Script {
+            ops: Some(ops.into_iter().map(Into::into).collect()),
+            ..self
+        }
+    }
+
+    /// The operations this script's `clax` has on a sandbox whose own are
+    /// `own` (already checked, when the sandbox was built): the script's
+    /// own list once [`validate_ops`] passes it, else `own`.
+    ///
+    /// # Errors
+    /// The [`ErrorKind::InvalidOps`] error the run ends with, nothing of
+    /// it run, when the script's own list fails [`validate_ops`].
+    pub fn ops_or<'a>(&'a self, own: &'a [String]) -> Result<&'a [String], ScriptError> {
+        match &self.ops {
+            None => Ok(own),
+            Some(ops) => match validate_ops(ops) {
+                Ok(()) => Ok(ops),
+                Err(e) => Err(ScriptError::new(
+                    ErrorKind::InvalidOps,
+                    format!("the script's operations are not usable: {e}"),
+                )),
+            },
         }
     }
 
@@ -260,35 +329,116 @@ impl Limits {
     }
 }
 
-/// Why the operation names a sandbox is built with are not usable, if they
-/// are not: each is one or more segments joined by `.`, each segment an
-/// identifier (`[A-Za-z_$][A-Za-z0-9_$]*`) other than `__proto__`,
-/// `constructor` and `prototype`; no name is listed twice, and none is
-/// also the namespace of another (`files` beside `files.read`).
+/// The most operations one list may name ([`validate_ops`]).
+pub const MAX_OPS: usize = 4096;
+/// The most bytes one operation's dotted name may take.
+pub const MAX_OP_BYTES: usize = 4096;
+/// The most bytes the names of one list may take together.
+pub const MAX_OPS_BYTES: usize = 256 << 10;
+
+/// The segments no operation name may have: the names every object has
+/// already (`__proto__`, `constructor`, `prototype`); `then`, which
+/// would make the namespace that holds it a thenable that `await` calls;
+/// `toJSON`, which `JSON.stringify` calls when a script logs or returns
+/// a namespace; and the other methods of `Object.prototype`, which
+/// JavaScript calls by itself (`toString` and `valueOf` when a namespace
+/// is made a string). A namespace has no prototype, so an operation of
+/// such a name would be called by a script that never wrote the call.
+/// The same list as `clax_surface::RESERVED_CALLABLE`, which a test of
+/// `clax-bot` holds; the prelude (`src/prelude.js`) refuses each too.
+pub const RESERVED_SEGMENTS: &[&str] = &[
+    "__proto__",
+    "constructor",
+    "prototype",
+    "then",
+    "toJSON",
+    "toString",
+    "toLocaleString",
+    "valueOf",
+    "hasOwnProperty",
+    "isPrototypeOf",
+    "propertyIsEnumerable",
+    "__defineGetter__",
+    "__defineSetter__",
+    "__lookupGetter__",
+    "__lookupSetter__",
+];
+
+/// Why a list of operation names is not usable (the list a sandbox is
+/// built with, or a script's own, [`Script::ops`]), if it is not: at most
+/// [`MAX_OPS`] names, each at most [`MAX_OP_BYTES`] bytes and all of them
+/// at most [`MAX_OPS_BYTES`] together; each name one or more segments
+/// joined by `.`, each segment an identifier (`[A-Za-z_$][A-Za-z0-9_$]*`,
+/// so never empty) other than the [`RESERVED_SEGMENTS`]; no name listed
+/// twice, and none also the namespace of another (`files` beside
+/// `files.read`). An empty list is usable: its `clax` has nothing. The
+/// check takes time in the order of `n log n` for `n` names.
 pub fn validate_ops<S: AsRef<str>>(ops: &[S]) -> Result<(), String> {
+    use std::ops::Bound;
+    if ops.len() > MAX_OPS {
+        return Err(format!(
+            "{} operations are listed; at most {MAX_OPS} may be",
+            ops.len()
+        ));
+    }
     let mut seen = std::collections::BTreeSet::new();
+    let mut bytes = 0usize;
     for op in ops {
         let op = op.as_ref();
+        if op.len() > MAX_OP_BYTES {
+            return Err(format!(
+                "{} is {} bytes; an operation name is at most {MAX_OP_BYTES}",
+                shown(op),
+                op.len()
+            ));
+        }
+        bytes += op.len();
+        if bytes > MAX_OPS_BYTES {
+            return Err(format!(
+                "the operation names take more than {MAX_OPS_BYTES} bytes together"
+            ));
+        }
         for segment in op.split('.') {
             let mut chars = segment.chars();
             let first = chars.next();
             let ident = first.is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || c == '$')
                 && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$');
-            if !ident || matches!(segment, "__proto__" | "constructor" | "prototype") {
-                return Err(format!("{op:?} is not a usable operation name"));
+            if !ident || RESERVED_SEGMENTS.contains(&segment) {
+                return Err(format!("{} is not a usable operation name", shown(op)));
             }
         }
-        if !seen.insert(op.to_string()) {
-            return Err(format!("{op:?} is listed twice"));
+        if !seen.insert(op) {
+            return Err(format!("{} is listed twice", shown(op)));
         }
     }
+    // The names under `op.` sort together, from the first at or after it.
     for op in &seen {
         let prefix = format!("{op}.");
-        if seen.iter().any(|other| other.starts_with(&prefix)) {
-            return Err(format!("{op:?} is both an operation and a namespace"));
+        let under = seen
+            .range::<str, _>((Bound::Included(prefix.as_str()), Bound::Unbounded))
+            .next()
+            .is_some_and(|other| other.starts_with(&prefix));
+        if under {
+            return Err(format!(
+                "{} is both an operation and a namespace",
+                shown(op)
+            ));
         }
     }
     Ok(())
+}
+
+/// An operation name as an error shows it: quoted and escaped, and cut
+/// short past 64 characters.
+fn shown(op: &str) -> String {
+    const MAX: usize = 64;
+    let mut cut: String = op.chars().take(MAX).collect();
+    let more = cut.len() < op.len();
+    cut = format!("{cut:?}");
+    if more {
+        cut.push('…');
+    }
+    cut
 }
 
 /// A host call that failed, as the script sees it: a stable machine code
@@ -422,10 +572,31 @@ impl Future for Cancelled<'_> {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait Host: MaybeSendSync {
-    /// Performs `op` (a dotted name the sandbox was built with) on `args`,
-    /// the JSON array of the script's arguments.
+    /// Performs `op` (one of the dotted names of the script's `clax`: its
+    /// own list, or the sandbox's) on `args`, the JSON array of the
+    /// script's arguments.
     async fn call(&self, op: &str, args: Value) -> Result<Value, HostError>;
+
+    /// What every sandbox asks for a call: [`Host::call`]'s answer, or
+    /// [`HostReply::Waiting`] when the answer is not in yet, which ends
+    /// the run with [`ErrorKind::Parked`] (the crate docs, "Parking"). A
+    /// host that never waits leaves it as it is.
+    async fn ask(&self, op: &str, args: Value) -> HostReply {
+        HostReply::Answer(self.call(op, args).await)
+    }
 }
+
+/// What a host answers a call ([`Host::ask`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum HostReply {
+    /// The call's result: the script's Promise settles with it.
+    Answer(Result<Value, HostError>),
+    /// No answer yet: the run ends with [`ErrorKind::Parked`].
+    Waiting,
+}
+
+/// The [`CallRecord::code`] of the call a run parked on.
+pub const CODE_WAITING: &str = "waiting";
 
 /// Runs scripts.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
@@ -453,7 +624,8 @@ pub struct CallRecord {
     pub ok: bool,
     /// The [`HostError::code`] of a failed call: the host's, or the
     /// sandbox's own ([`CODE_INVALID_ARGS`], [`CODE_SCRIPT_FINISHED`],
-    /// [`CODE_CANCELLED`]) for a call the host never answered.
+    /// [`CODE_CANCELLED`], [`CODE_WAITING`]) for a call the host never
+    /// answered.
     pub code: Option<String>,
     /// Bytes of the call's arguments as JSON.
     pub args_bytes: u64,
@@ -483,8 +655,17 @@ pub enum ErrorKind {
     HostError,
     /// The limits fail [`Limits::validate`]; nothing ran.
     InvalidLimits,
+    /// The script's own operations ([`Script::ops`]) fail
+    /// [`validate_ops`]; nothing ran. The host's mistake, not the
+    /// script's.
+    InvalidOps,
     /// The run's [`CancelToken`] was cancelled.
     Cancelled,
+    /// The host answered a call [`HostReply::Waiting`]: the script was
+    /// stopped at that call, neither ended nor failed (the crate docs,
+    /// "Parking"). Only a host's reply makes it; nothing a script does
+    /// can.
+    Parked,
     /// The sandbox could not take the script (out of threads, or too many
     /// earlier runs it had to abandon still running); nothing ran.
     Unavailable,
@@ -561,8 +742,10 @@ pub const LOGS_TRUNCATED: &str = "[logs truncated]";
 /// It is one function expression, called once as
 /// `prelude(ops, call, log, done, options)` with:
 ///
-/// - `ops`: the array of dotted operation names (it throws a `TypeError`
-///   for one [`validate_ops`] refuses);
+/// - `ops`: the array of dotted operation names, which the sandbox has
+///   checked with [`validate_ops`] (the prelude throws a `TypeError` for a
+///   name whose form, or whose place beside another, that refuses; it
+///   does not count or measure the list);
 /// - `call(op, args)`: the implementation's native function that takes one
 ///   host call and returns its call ID (an integer), or throws (a
 ///   `TypeError` for arguments it refuses). `args` is the arguments' JSON
@@ -955,6 +1138,75 @@ mod tests {
         }
         assert!(validate_ops(&["a", "a"]).is_err());
         assert!(validate_ops(&["files", "files.read"]).is_err());
+        assert!(validate_ops(&["files.read", "files"]).is_err());
+        assert!(validate_ops(&["files$", "files.read", "files"]).is_err());
+        assert_eq!(
+            validate_ops(&["files", "files$.read", "filesx.read"]),
+            Ok(())
+        );
+        for segment in RESERVED_SEGMENTS {
+            assert!(
+                validate_ops(&[format!("shell.{segment}")]).is_err(),
+                "{segment}"
+            );
+            assert!(
+                validate_ops(&[format!("{segment}.x")]).is_err(),
+                "{segment}"
+            );
+            // The prelude refuses it too, by name.
+            assert!(
+                PRELUDE.contains(&format!("      case \"{segment}\":\n")),
+                "src/prelude.js does not refuse `{segment}`"
+            );
+        }
+        assert_eq!(validate_ops::<&str>(&[]), Ok(()));
+    }
+
+    #[test]
+    fn op_lists_are_bounded_in_count_and_bytes() {
+        let many: Vec<String> = (0..MAX_OPS).map(|i| format!("o{i}")).collect();
+        assert_eq!(validate_ops(&many), Ok(()));
+        let more: Vec<String> = (0..=MAX_OPS).map(|i| format!("o{i}")).collect();
+        assert!(
+            validate_ops(&more)
+                .unwrap_err()
+                .contains("operations are listed")
+        );
+        let longest = "x".repeat(MAX_OP_BYTES);
+        assert_eq!(validate_ops(&[longest.as_str()]), Ok(()));
+        let err = validate_ops(&[format!("{longest}y")]).unwrap_err();
+        assert!(err.contains("bytes") && err.len() < 200, "{err}");
+        let heavy: Vec<String> = (0..MAX_OPS_BYTES / MAX_OP_BYTES + 1)
+            .map(|i| format!("b{i:03}{}", "x".repeat(MAX_OP_BYTES - 4)))
+            .collect();
+        assert!(validate_ops(&heavy[1..]).is_ok());
+        assert!(validate_ops(&heavy).unwrap_err().contains("together"));
+    }
+
+    #[test]
+    fn a_scripts_own_ops_are_checked_and_otherwise_the_sandboxs_are_used() {
+        let own = vec!["echo".to_string()];
+        let script = Script::new("t", "return 1");
+        assert_eq!(script.ops_or(&own), Ok(own.as_slice()));
+        let script = script.with_ops(["shell.windows"]);
+        assert_eq!(script.ops_or(&own), Ok(&["shell.windows".to_string()][..]));
+        let bad = Script::new("t", "return 1").with_ops(["a", "a.b"]);
+        assert_eq!(bad.ops_or(&own).unwrap_err().kind, ErrorKind::InvalidOps);
+    }
+
+    #[test]
+    fn a_script_without_ops_serialises_as_before() {
+        let script = Script::new("t", "return 1").with_determinism(5, 7);
+        let json = serde_json::to_value(&script).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"title": "t", "code": "return 1", "determinism": {"now_ms": 5, "seed": 7}})
+        );
+        let with = script.clone().with_ops(["echo"]);
+        let back: Script = serde_json::from_value(serde_json::to_value(&with).unwrap()).unwrap();
+        assert_eq!(back, with);
+        let old: Script = serde_json::from_value(json).unwrap();
+        assert_eq!(old, script);
     }
 
     #[test]
@@ -1003,6 +1255,10 @@ mod tests {
         };
         let json = serde_json::to_value(&outcome).unwrap();
         assert_eq!(json["error"]["kind"], "invalid_limits");
+        assert_eq!(
+            serde_json::to_value(ErrorKind::Parked).unwrap(),
+            serde_json::json!("parked")
+        );
         assert_eq!(
             serde_json::from_value::<ScriptOutcome>(json).unwrap(),
             outcome

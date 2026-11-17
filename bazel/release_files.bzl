@@ -28,6 +28,7 @@ RELEASE_FILES = [
     "//crates/clax-sample:Cargo.toml",
     "//crates/clax-server:Cargo.toml",
     "//crates/clax-store:Cargo.toml",
+    "//crates/clax-surface:Cargo.toml",
     "//crates/clax-testkit:Cargo.toml",
     "//crates/clax-worker/vfs:Cargo.toml",
     "//crates/clax-worker:Cargo.toml",

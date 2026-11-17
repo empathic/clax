@@ -1,7 +1,8 @@
 //! Test support for the integration tests of the crates that call the
 //! daemon: an in-process daemon on an ephemeral port ([`TestServer`]), its
 //! clients, the fixtures it loads, the canary world of people
-//! ([`people`]) and the real clients' harness ([`clients`]).
+//! ([`people`]), the real clients' harness ([`clients`]) and a host of
+//! the ClaxBot surfaces protocol ([`fake_host`]).
 //!
 //! Only integration tests (`tests/`) depend on it, never a crate's own
 //! code or unit tests: it sits below every crate it tests. It turns on no
@@ -12,6 +13,7 @@ mod client;
 pub mod clients;
 mod clock;
 mod events;
+pub mod fake_host;
 pub mod fake_messages;
 mod fixture;
 pub mod mcp;

@@ -162,6 +162,8 @@ clax agents                          # list your agents; clax agents rename <age
 clax approvals                       # list whose content reaches your agents, and what waits for you
 clax init                            # register the plugins with each harness (clax uninit removes them)
 clax bin                             # show which clax the plugins run (clax bin set <path> | --this, clax bin clear)
+clax bot surface check shell.d.ts    # check a ClaxBot surface file (.d.ts or a .json manifest); prints what a model would read
+clax bot surface convert shell.d.ts  # write it in the other notation (--to dts|json, -o <file>)
 clax haiku                           # print one of ten haiku about Clax
 ```
 
@@ -205,6 +207,10 @@ allowlist = []                # hosts for allowlist; "*.example.com" matches sub
 The per-run caps count every search and fetch that reached the source, whether or not it was charged: a failed search is free but counts, so a script cannot retry a provider that is down without end; a page read again from the run's page store neither costs nor counts. A failed web call throws a `HostError` whose `code` says why and whose `retryable` is true when the same call may succeed if made again.
 
 The account ID and token are set only in Settings, Web access. For tests, `CLAX_TEST_WEB_FIXTURES=<path>` in the daemon's environment answers every search and fetch from that JSON file (`{searches: {<query>: [hit]}, pages: {<url>: {status, content_type, text, links} | {redirect}}}`) instead of Cloudflare, and web use counts as configured.
+
+A host gives ClaxBot's runs operations of its own as a surface definition (`docs/superpowers/specs/2026-11-10-claxbot-surfaces-design.md`, "The surface file"), written as a `.d.ts` file, for a person, or as a JSON manifest, for a program; both say the same, and `crates/clax-surface`'s documentation gives each notation. `clax bot surface check <file>` reads one, by its name (`<name>.d.ts` or `<name>.json`), as a host's, and prints the declaration a model would read of it; `--dts` prints the definition as a `.d.ts` file again instead, as Clax writes one, and `--ops` its operations as a table (the name a script calls, access, whether it waits, whether it runs once, error codes), so an author sees what was understood. A file that is not a definition is refused on stderr with what is wrong and where, a mistake a line: `error: shell.d.ts:12: …` for a line of a file, `error: shell.json: /operations/2/params/0/schema/minimum: …` for a value of a manifest, by its JSON Pointer; the command exits with 1. A manifest's mistakes are said in its order, the first of each operation, interface and kind (a program gets every entry wrong the same way), 64 at the most, and a last line then says how many entries were not looked at; a `.d.ts` file's first is. A file that reads may get notes on stderr (`note: shell.json: …`, exit 0) for an allow pattern of a kind that matches no operation of the surface or of Clax's own: it will match only another surface's, or was written without the surface's name (`settings.*` for `shell.settings.*`); a pattern of one name with no `.` that names nothing (`windows` for `shell.windows`), and one whose first name is `clax` (Clax's operations are named without it), are refused. `--ops` lists what each kind allows after the operations. With `--json`, stdout has one object, `{"name", "notation", "operations", "kinds": [{"name", "allow"}], "notes", "text"}`, or for a file that is refused `{"file", "errors": [{"line" or "pointer", "message"}]}` and nothing on stderr; the last error has `"stopped": true` and `"unread"` when the reader stopped there. `clax bot surface convert <file>` writes the definition in the other notation (`--to dts` or `--to json` names one), on standard output or to `-o <file>`, which it replaces only with `--force` and never when it is the file being read (a file's `//` comments and layout are not part of its definition, and would be lost); it writes nothing for a file `check` refuses. What it writes is the same text for the same definition whichever notation it read. A printed `.d.ts` file names the core's types (`Int`, `Instruction`, `Content`, `Image`), which no file of Clax's declares yet: to type-check it with `tsc`, declare them beside it (`type Int = number; type Instruction = string;`, and the other two as your host is given them). `--own` reads the file as Clax's own surface (`crates/clax-bot/src/clax.d.ts`), which may be named `clax` and may charge. Both commands read the file and nothing else: no Clax home, no daemon, no network.
+
+A host registers its surface with the local daemon at run time, with the daemon's token (`docs/contract.md`, "ClaxBot surfaces"). `GET /api/bot/surfaces` (with the daemon's token, `Authorization: Bearer <token>`) shows what is registered now, in the order it was first registered: each surface's `name`, its `registration` ID, the `hash` of its definition, whether its host is `connected` (serving it now, or within the last 15 seconds), the operations `withheld` from every run and why, and when it was registered and last served. A registration whose host has not served it for about five minutes after it stopped being connected is dropped from the list, and none is held across a restart of the daemon; its host comes back by registering again with its ID, and the calls that waited for it are still there. A call of a host that is listed and not connected waits for it until the call's deadline (30 seconds, or 24 hours for an operation that waits) and is sent when it serves again; at the deadline the script is thrown `unavailable`.
 
 A new artifact needs a title: `--title`, or else the page's `<title>`. Updates keep the current title unless `--title` is given.
 
@@ -581,11 +587,11 @@ test daemon, for integration tests only) and `clax-fake-exe`. Beside
 Worker's event loop on wasm32) and `clax-git` (git objects, packs and smart
 HTTP, without I/O), with `clax-content-git` (artifact content kept in git)
 over both; `clax-bot-sandbox` (the contract of ClaxBot's code-mode
-sandbox and the conformance suite every sandbox passes, for both targets)
-depends on no workspace crate, and `clax-bot-js` (the native sandbox, over
-embedded QuickJS) on it alone; `clax-bot` (ClaxBot's run loop: the
+sandbox and the conformance suite every sandbox passes, for both targets) and `clax-surface` (ClaxBot surface definitions: their model, the readers of the `.d.ts` and manifest notations, checks and printers, for both targets)
+depend on no workspace crate (`clax-commands` reads surface definitions through `clax-surface`, for `clax bot surface`), and `clax-bot-js` (the native sandbox, over
+embedded QuickJS) on `clax-bot-sandbox` alone; `clax-bot` (ClaxBot's run loop: the
 `clax` script API, prompts, the step state machine and its driver) sits
-over `clax-store`, `clax-sample` and `clax-bot-sandbox`, `clax-http` over
+over `clax-store`, `clax-sample`, `clax-bot-sandbox` and `clax-surface`, `clax-http` over
 it, and `clax-server` over `clax-bot-js` too, an optional dependency
 behind its default `native-sandbox` feature (without it, as in the
 crates.io package, scripts answer `unavailable`); the hosted Worker,
@@ -699,6 +705,11 @@ uninstall` takes it away again.
 - `just perf` runs the perf benchmarks. Performance is measured on demand
   and gates nothing: no check runs them, and they report a measure over its
   budget without failing.
+- `just smoke-bot-surfaces` (`scripts/smoke-bot-surfaces.sh`, about a
+  minute, gating nothing) runs the ClaxBot surfaces protocol between a
+  real `clax serve` and `fake_host` processes, across a restart of the
+  daemon: run it after changing the protocol's routes, its hub or
+  `fake_host`.
 
 Each crate's integration tests are one test binary, `tests/integration.rs`, with
 a module per file in `tests/`; the few that must not share a process with

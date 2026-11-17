@@ -75,6 +75,7 @@ export const SCREENS: Screen[] = [
     items: [
       { title: "Credits this week", at: "#me-w", words: "usage meter limit resets" },
       { title: "Use my own Anthropic key", at: "#me-k", words: "model key api key byok" },
+      { title: "Your key's last failed request", at: "#me-k", words: "model key error failure refused provider said" },
       { title: "Let ClaxBot search and read the web", at: "#me-web", words: "web search fetch" },
       { title: "Your runs", at: "#me-r", words: "history" },
     ],
@@ -117,6 +118,8 @@ export const SCREENS: Screen[] = [
       { title: "Models", at: "#pv-m", words: "default quick complex model id" },
       { title: "Caps", at: "#pv-c", words: "max steps credits minutes tokens per run runs at once concurrency" },
       { title: "Test connection", at: "#pv-ep", words: "check provider key" },
+      { title: "The key's last failed request", at: "#pv-ep", words: "instance key error failure refused provider said" },
+      { title: "Failures", at: "#pv-f", words: "failed requests errors refused instance key provider said by person run log" },
     ],
   },
   {

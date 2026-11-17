@@ -887,6 +887,369 @@ async fn a_reader_of_the_artifact_sees_a_runs_outline_alone_and_loses_it_with_th
 }
 
 #[tokio::test]
+async fn a_run_stopped_by_a_model_error_shows_the_providers_answer_to_its_person_and_admins_alone()
+{
+    // No turn scripted: the first request is answered 400
+    // `invalid_request_error`, "no scripted turn left".
+    let fake = FakeMessages::start(vec![]).await;
+    let ts = daemon(&fake).await;
+    let id_of = |v: &Value| v["id"].as_str().unwrap().to_string();
+    let aid = id_of(&ts.publish("Notes", &[("index.html", "<p>hi</p>")]).await["artifact"]);
+    let tid = id_of(&ts.thread(&aid, 1, "Make it blue").await);
+    let res = ts
+        .client
+        .post(format!("{}/api/bot/runs", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"thread_ids": [tid], "artifact_id": aid}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let rid = res.json::<Value>().await.unwrap()["run"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let evs = events(&ts, &rid, None).await;
+    let stopped = |steps: &Value| -> Value {
+        steps
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["kind"] == "stopped")
+            .cloned()
+            .unwrap_or_else(|| panic!("a stopped step: {steps}"))
+    };
+    let detail = |step: &Value| {
+        let d = &step["error_detail"];
+        assert_eq!(
+            (&d["class"], &d["status"], &d["type"], &d["message"]),
+            (
+                &json!("invalid_request"),
+                &json!(400),
+                &json!("invalid_request_error"),
+                &json!("no scripted turn left")
+            ),
+            "{step}"
+        );
+    };
+    // The run's person: in the run and in its events' `step_done`.
+    let read = |cookie: String| {
+        let ts = &ts;
+        let rid = rid.clone();
+        async move {
+            let res = ts
+                .client
+                .get(format!("{}/api/bot/runs/{rid}", ts.base))
+                .header("cookie", cookie)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(res.status(), 200);
+            res.json::<Value>().await.unwrap()
+        }
+    };
+    let own = read(ts.owner_cookie()).await;
+    assert_eq!(own["status"], "stopped", "{own}");
+    let step = stopped(&own["steps"]);
+    assert_eq!(step["reason"], "model_error", "{own}");
+    detail(&step);
+    let done = evs
+        .iter()
+        .find(|(_, ev, d)| ev == "step_done" && d["step"]["kind"] == "stopped")
+        .unwrap_or_else(|| panic!("the stopped step's step_done: {evs:?}"));
+    detail(&done.2["step"]);
+
+    // An admin.
+    let ana = ts.person("Ana").await;
+    ts.store
+        .set_admin(&AuditCtx::DAEMON, &ana.public_id, true)
+        .unwrap();
+    detail(&stopped(
+        &read(format!("clax_viewer={}", ana.cookie)).await["steps"],
+    ));
+
+    // A reader of the artifact: the stop's reason, never the provider's words.
+    let rae = ts.person("Rae").await;
+    let r = read(format!("clax_viewer={}", rae.cookie)).await;
+    let step = stopped(&r["steps"]);
+    assert_eq!(step["reason"], "model_error", "{r}");
+    assert!(step.get("error_detail").is_none(), "{r}");
+    assert!(!r.to_string().contains("no scripted turn left"), "{r}");
+    let res = ts
+        .client
+        .get(format!("{}/api/bot/runs/{rid}/events", ts.base))
+        .header("cookie", format!("clax_viewer={}", rae.cookie))
+        .send()
+        .await
+        .unwrap();
+    let body = tokio::time::timeout(clax_testkit::HANG, res.text())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(body.contains("event: run_end"), "{body}");
+    assert!(
+        !body.contains("error_detail") && !body.contains("no scripted turn left"),
+        "{body}"
+    );
+
+    // The failure is the instance key's last problem.
+    let p: Value = ts
+        .client
+        .get(format!("{}/api/admin/provider", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(p["key"]["last_problem"]["class"], "invalid_request", "{p}");
+    assert_eq!(
+        p["key"]["problem"],
+        "the instance key: the last request with it failed: the provider refused the request",
+        "{p}"
+    );
+}
+
+/// What the provider says of the instance key's refusal: planted, to be
+/// found nowhere a person who is not an admin reads.
+const PLANTED: &str = "PLANTED-zq7 organization key revoked";
+const PLANTED_ID: &str = "req_PLANTEDzq7";
+/// What the provider says of a person's own key's refusal.
+const OWN_SAID: &str = "OWNKEY-m3 credit balance too low";
+
+/// `GET path` as `cookie`: its status and its body as text.
+async fn get_text(ts: &TestServer, cookie: &str, path: &str) -> (u16, String) {
+    let res = ts
+        .client
+        .get(format!("{}{path}", ts.base))
+        .header("cookie", cookie)
+        .send()
+        .await
+        .unwrap();
+    let status = res.status().as_u16();
+    let body = tokio::time::timeout(clax_testkit::HANG, res.text())
+        .await
+        .unwrap()
+        .unwrap();
+    (status, body)
+}
+
+/// Starts a run of `tid` on `aid` as `cookie` and waits for its end: its ID.
+async fn run_to_end(ts: &TestServer, cookie: &str, aid: &str, tid: &str) -> String {
+    let res = ts
+        .client
+        .post(format!("{}/api/bot/runs", ts.base))
+        .header("cookie", cookie)
+        .json(&json!({"thread_ids": [tid], "artifact_id": aid}))
+        .send()
+        .await
+        .unwrap();
+    let (s, v) = clax_testkit::remotes::json_of(res).await;
+    assert_eq!(s, 201, "{v}");
+    let rid = v["run"]["id"].as_str().unwrap().to_string();
+    events(ts, &rid, None).await;
+    rid
+}
+
+#[tokio::test]
+async fn an_instance_keys_failure_is_the_admins_to_read_and_an_own_keys_its_persons() {
+    use clax_store::flags::Flag;
+    let fake = FakeMessages::start(vec![
+        Turn::refused(401, "authentication_error", PLANTED, PLANTED_ID),
+        Turn::refused(400, "invalid_request_error", OWN_SAID, "req_own1"),
+    ])
+    .await;
+    let ts = daemon(&fake).await;
+    let id_of = |v: &Value| v["id"].as_str().unwrap().to_string();
+    let aid = id_of(&ts.publish("Notes", &[("index.html", "<p>hi</p>")]).await["artifact"]);
+    let t1 = id_of(&ts.thread(&aid, 1, "Make it blue").await);
+    let t2 = id_of(&ts.thread(&aid, 1, "Make it red").await);
+    let sam = ts.person("Sam").await;
+    let st = ts.store.clone();
+    let p = sam.public_id.clone();
+    tokio::task::spawn_blocking(move || {
+        let rights = clax_core::rights::Rights::parse(&json!([
+            {"type": "clax-artifacts", "actions": ["read", "update"], "locations": ["*"]},
+            {"type": "clax-comments", "actions": ["read", "reply", "send"], "locations": ["*"]},
+        ]))
+        .unwrap();
+        st.set_person_rights(&AuditCtx::DAEMON, &p, Some(rights))
+            .unwrap();
+        st.set_flags(&AuditCtx::DAEMON, &p, &[(Flag::Claxbot, true)])
+            .unwrap();
+    })
+    .await
+    .unwrap();
+    let sam_cookie = format!("clax_viewer={}", sam.cookie);
+    let owner = ts.owner_cookie();
+
+    // Sam's run on the instance's key, refused with the key rejected.
+    let rid = run_to_end(&ts, &sam_cookie, &aid, &t1).await;
+    // Nothing of what the provider said reaches Sam, by any route.
+    let (_, events_body) = get_text(&ts, &sam_cookie, &format!("/api/bot/runs/{rid}/events")).await;
+    assert!(events_body.contains("event: run_end"), "{events_body}");
+    let seen = [
+        get_text(&ts, &sam_cookie, &format!("/api/bot/runs/{rid}")).await,
+        get_text(&ts, &sam_cookie, &format!("/api/bot/runs?artifact={aid}")).await,
+        (200, events_body),
+        get_text(
+            &ts,
+            &sam_cookie,
+            &format!("/api/artifacts/{aid}/threads/{t1}"),
+        )
+        .await,
+        get_text(&ts, &sam_cookie, "/api/audit").await,
+        get_text(&ts, &sam_cookie, "/api/me/bot").await,
+    ];
+    for (status, body) in &seen {
+        assert_eq!(*status, 200, "{body}");
+        for hidden in [
+            PLANTED,
+            "PLANTED",
+            PLANTED_ID,
+            "authentication_error",
+            "key_rejected",
+            "error_detail",
+            "refused the key",
+            KEY,
+        ] {
+            assert!(!body.contains(hidden), "{hidden} in {body}");
+        }
+    }
+    let (_, run) = &seen[0];
+    let run: Value = serde_json::from_str(run).unwrap();
+    assert_eq!(run["reason"], "model_error", "{run}");
+    let stop = run["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["kind"] == "stopped")
+        .unwrap();
+    assert_eq!(stop["reason"], "model_error", "{stop}");
+    assert_eq!(stop["instance_problem"], json!({"busy": false}), "{stop}");
+    assert!(
+        seen[3]
+            .1
+            .contains("I could not use this Clax's model provider"),
+        "{}",
+        seen[3].1
+    );
+    // Nor is the log theirs.
+    let (status, body) = get_text(&ts, &sam_cookie, "/api/admin/provider/failures").await;
+    assert_eq!(status, 403, "{body}");
+    assert!(!body.contains(PLANTED), "{body}");
+
+    // An admin (the owner) sees it in the run, and in the log.
+    let (_, body) = get_text(&ts, &owner, &format!("/api/bot/runs/{rid}")).await;
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["reason"], "key_rejected", "{v}");
+    let stop = v["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["kind"] == "stopped")
+        .unwrap();
+    assert_eq!(stop["error_detail"]["message"], PLANTED, "{stop}");
+    assert!(stop.get("instance_problem").is_none(), "{stop}");
+    for q in [
+        String::new(),
+        format!("?person={}", sam.public_id),
+        format!("?run={rid}"),
+        "?class=auth&status=401&model=claude-sonnet-5-5".to_string(),
+        "?since=2000-01-01T00:00:00Z".to_string(),
+    ] {
+        let (status, body) =
+            get_text(&ts, &owner, &format!("/api/admin/provider/failures{q}")).await;
+        assert_eq!(status, 200, "{body}");
+        assert!(!body.contains(KEY), "{body}");
+        let v: Value = serde_json::from_str(&body).unwrap();
+        let f = &v["failures"][0];
+        assert_eq!(v["failures"].as_array().unwrap().len(), 1, "{q}: {v}");
+        assert_eq!(f["run_id"], rid.as_str(), "{f}");
+        assert_eq!(f["person"]["id"], sam.public_id.as_str(), "{f}");
+        assert_eq!(f["person"]["name"], "Sam", "{f}");
+        assert_eq!(
+            (
+                &f["class"],
+                &f["status"],
+                &f["type"],
+                &f["message"],
+                &f["request_id"]
+            ),
+            (
+                &json!("auth"),
+                &json!(401),
+                &json!("authentication_error"),
+                &json!(PLANTED),
+                &json!(PLANTED_ID)
+            ),
+            "{f}"
+        );
+        assert_eq!(f["request"], "clax.thread", "{f}");
+        assert_eq!(f["key_source"], "instance", "{f}");
+        assert_eq!(f["since_key_change"], true, "{f}");
+        assert!(
+            f["host"].as_str().is_some_and(|h| h.contains("127.0.0.1")),
+            "{f}"
+        );
+        assert_eq!(v["next"], Value::Null);
+    }
+    let (_, body) = get_text(&ts, &owner, "/api/admin/provider/failures?person=nobody").await;
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap()["failures"],
+        json!([])
+    );
+    let (status, _) = get_text(&ts, &owner, "/api/admin/provider/failures?since=yesterday").await;
+    assert_eq!(status, 400);
+    // The view is recorded.
+    let viewed = ts
+        .store
+        .events_after(0, 10_000)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.kind == "view.admin" && e.body.contains("\"provider.failures\""))
+        .count();
+    assert!(
+        viewed >= 1,
+        "view.admin {{page: provider.failures}} is recorded"
+    );
+
+    // Sam's own key: the refusal is theirs to read, and not logged.
+    let res = ts
+        .client
+        .put(format!("{}/api/me/bot/key", ts.base))
+        .header("cookie", &sam_cookie)
+        .json(&json!({"key": "sk-ant-api03-SAMSOWNKEY-1234"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let own = run_to_end(&ts, &sam_cookie, &aid, &t2).await;
+    let (_, body) = get_text(&ts, &sam_cookie, &format!("/api/bot/runs/{own}")).await;
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["key_source"], "own", "{v}");
+    let stop = v["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["kind"] == "stopped")
+        .unwrap();
+    assert_eq!(stop["error_detail"]["message"], OWN_SAID, "{stop}");
+    assert_eq!(stop["error_detail"]["request_id"], "req_own1", "{stop}");
+    assert!(stop.get("instance_problem").is_none(), "{stop}");
+    let (_, me) = get_text(&ts, &sam_cookie, "/api/me/bot").await;
+    let me: Value = serde_json::from_str(&me).unwrap();
+    assert_eq!(
+        me["key"]["own"]["last_problem"]["message"], OWN_SAID,
+        "{me}"
+    );
+    let (_, body) = get_text(&ts, &owner, "/api/admin/provider/failures").await;
+    assert!(!body.contains(OWN_SAID), "{body}");
+    assert!(!body.contains("SAMSOWNKEY"), "{body}");
+}
+
+#[tokio::test]
 async fn a_follow_up_is_never_stranded_by_a_run_ending_meanwhile_or_a_crash() {
     use clax_store::flags::Flag;
     let fake = FakeMessages::start(vec![Turn::finish("Answer to Sam.")]).await;
@@ -1471,4 +1834,73 @@ async fn a_token_cleared_between_a_runs_start_and_its_first_web_call_refuses_web
             .all(|r| !r.line.starts_with("web.")),
         "nothing charged"
     );
+}
+
+/// One run whose step, as the store keeps it, does not read fails no page:
+/// the person's usage, the run listing and the run's own view answer
+/// without that step, and every other run reads as before.
+#[tokio::test]
+async fn a_run_whose_step_does_not_read_fails_no_usage_page_and_no_listing() {
+    let fake = FakeMessages::start(vec![Turn::finish("First."), Turn::finish("Second.")]).await;
+    let ts = daemon(&fake).await;
+    let aid = ts.publish("Notes", &[("index.html", "<p>hi</p>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut runs = Vec::new();
+    for text in ["One?", "Two?"] {
+        let tid = ts.thread(&aid, 1, text).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let res = ts
+            .client
+            .post(format!("{}/api/bot/runs", ts.base))
+            .header("cookie", ts.owner_cookie())
+            .json(&json!({"thread_ids": [tid], "artifact_id": aid}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 201);
+        let run: Value = res.json().await.unwrap();
+        let rid = run["run"]["id"].as_str().unwrap().to_string();
+        let all = events(&ts, &rid, None).await;
+        assert_eq!(all.last().unwrap().2["run"]["status"], "finished");
+        runs.push(rid);
+    }
+    let changed = rusqlite::Connection::open(ts.home.db_path())
+        .unwrap()
+        .execute(
+            "UPDATE bot_steps SET payload_json = '{\"te' WHERE run_id = ?1 AND n = 1",
+            rusqlite::params![runs[0]],
+        )
+        .unwrap();
+    assert_eq!(changed, 1);
+    let get = |path: String| {
+        let ts = &ts;
+        async move {
+            let res = ts
+                .client
+                .get(format!("{}{path}", ts.base))
+                .header("cookie", ts.owner_cookie())
+                .send()
+                .await
+                .unwrap();
+            let status = res.status().as_u16();
+            (status, res.json::<Value>().await.unwrap())
+        }
+    };
+    let (s, usage) = get("/api/me/usage".into()).await;
+    assert_eq!(s, 200, "{usage}");
+    let (s, listed) = get(format!("/api/bot/runs?artifact={aid}")).await;
+    assert_eq!(s, 200, "{listed}");
+    let (s, one) = get(format!("/api/bot/runs/{}", runs[0])).await;
+    assert_eq!(s, 200, "{one}");
+    assert!(
+        one["steps"].as_array().unwrap().iter().all(|s| s["n"] != 1),
+        "{one}"
+    );
+    let (s, two) = get(format!("/api/bot/runs/{}", runs[1])).await;
+    assert_eq!(s, 200, "{two}");
+    assert_eq!(two["steps"][0]["n"], 1, "{two}");
 }

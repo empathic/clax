@@ -1,0 +1,44 @@
+[
+  {
+    "content": [
+      {
+        "id": "tu_1",
+        "input": {
+          "code": "return 1;",
+          "title": "Edit"
+        },
+        "name": "run_script",
+        "type": "tool_use"
+      },
+      {
+        "id": "tu_2",
+        "input": {
+          "summary": "done"
+        },
+        "name": "finish",
+        "type": "tool_use"
+      }
+    ],
+    "role": "assistant"
+  },
+  {
+    "content": [
+      {
+        "content": "Make one tool call per reply; none of these ran.",
+        "is_error": true,
+        "tool_use_id": "tu_1",
+        "type": "tool_result"
+      },
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "content": "Make one tool call per reply; none of these ran.",
+        "is_error": true,
+        "tool_use_id": "tu_2",
+        "type": "tool_result"
+      }
+    ],
+    "role": "user"
+  }
+]

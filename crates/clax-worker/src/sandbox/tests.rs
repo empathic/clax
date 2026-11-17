@@ -393,3 +393,34 @@ fn a_host_errors_answer_says_whether_it_is_retryable() {
         json!({"code": "web_cap", "message": "used", "retryable": false})
     );
 }
+
+#[test]
+fn a_call_the_host_has_no_answer_to_parks_the_run_with_what_it_did() {
+    let mut s = state(Limits::default());
+    let Step::Call { op, args_bytes, .. } = s.take(
+        r#"{"records":[],"logs":["before"],"call":{"op":"files.read","args":"[\"a\"]","bytes":5}}"#,
+    ) else {
+        panic!("a call");
+    };
+    s.waiting(op, args_bytes, 7);
+    let outcome = s.outcome(End::Parked, 3, 9);
+    assert_eq!(
+        outcome.error.as_ref().map(|e| e.kind),
+        Some(ErrorKind::Parked)
+    );
+    assert_eq!(outcome.value, None);
+    assert_eq!(outcome.logs, ["before"]);
+    assert_eq!(outcome.calls.len(), 1);
+    assert_eq!(outcome.calls[0].op, "files.read");
+    assert!(!outcome.calls[0].ok);
+    assert_eq!(
+        outcome.calls[0].code.as_deref(),
+        Some(clax_bot_sandbox::CODE_WAITING)
+    );
+    assert_eq!(outcome.calls[0].args_bytes, 5);
+    assert_eq!(
+        (outcome.cpu_us, outcome.busy_us, outcome.wall_us),
+        (3, 3, 9)
+    );
+    assert_eq!(outcome.mem_peak_bytes, ISOLATE_MEMORY_BYTES);
+}

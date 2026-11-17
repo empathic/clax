@@ -1119,6 +1119,11 @@ pub struct BotConfig {
     /// `CLAX_BOT__PRICE_CATALOG_URL=off`). Read from the file and the
     /// environment alone, never from the admin pages ([`BotConfig::catalog_url`]).
     pub price_catalog_url: String,
+    /// The instance's models take images in a tool result (default
+    /// false): ClaxBot shows a model the images a script step returns
+    /// only when this says it takes them. Read from the file and the
+    /// environment alone.
+    pub model_takes_images: bool,
 }
 
 /// tokenulator.dev's price catalog, `[bot] price_catalog_url`'s default.
@@ -1159,6 +1164,7 @@ impl Default for BotConfig {
             script: BotScript::default(),
             web: BotWeb::default(),
             price_catalog_url: PRICE_CATALOG_URL.into(),
+            model_takes_images: false,
         }
     }
 }

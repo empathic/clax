@@ -4,20 +4,27 @@
 
 use crate::common::*;
 use crate::resume::crash_once;
-use clax_bot::Next;
-use clax_bot::host::CommentMeta;
+use clax_bot::events::{Event, EventSink};
+use clax_bot::host::{CommentMeta, args_hash};
 use clax_bot::run::CrashPoint;
 use clax_bot::web::{
-    CODE_WEB_TIMEOUT, CODE_WEB_UNAVAILABLE, FetchedPage, OwnHosts, SearchAnswer, SearchHit,
-    WebError, WithOwnHosts,
+    CODE_WEB_TIMEOUT, CODE_WEB_UNAVAILABLE, FakeWebSource, FetchLimits, FetchedPage, Format,
+    OwnHosts, PublicUrl, SearchAnswer, SearchHit, SearchQuery, WebError, WebShape, WebSource,
+    WithOwnHosts,
 };
-use clax_core::audit::AuditCtx;
+use clax_bot::{Next, TickOpts, Wait};
+use clax_bot_sandbox::{CancelToken, Host, HostError, Limits, Sandbox, Script, ScriptOutcome};
+use clax_core::audit::{AuditCtx, AuditKind, AuditRecord};
+use clax_core::working::ManualClock;
+use clax_store::Store;
 use clax_store::bot_runs::{DriverId, RunStatus, StepKind};
 use clax_store::bot_settings::Setting;
+use clax_store::bot_web::{Spend, WebPageRow};
 use clax_store::credits::{CostLinePatch, KeySource, LINE_WEB_FETCH};
 use clax_store::roles::OWNER;
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 const SEARCH_LINE: &str = "web.search.ceramic";
 
@@ -561,7 +568,7 @@ async fn a_source_that_lost_its_credentials_refuses_web_disabled() {
     env.api.push(finish_turn("done"));
     let run = env.run_with_web("search");
     let mut deps = env.deps();
-    deps.web = Some(std::sync::Arc::new(Unconfigured(
+    deps = deps.with_web(std::sync::Arc::new(Unconfigured(
         env.web(),
         clax_bot::web::WebShape::default(),
     )));
@@ -590,7 +597,7 @@ async fn a_source_that_can_only_fetch_refuses_search_and_fetches() {
     env.api.push(finish_turn("done"));
     let run = env.run_with_web("search,fetch");
     let mut deps = env.deps();
-    deps.web = Some(std::sync::Arc::new(Unconfigured(
+    deps = deps.with_web(std::sync::Arc::new(Unconfigured(
         env.web(),
         clax_bot::web::WebShape {
             search: false,
@@ -675,7 +682,7 @@ async fn a_source_found_unusable_mid_run_refuses_web_unavailable_uncounted() {
         why: std::sync::Mutex::new(Some("Workers AI cannot run here.".into())),
     });
     let mut deps = env.deps();
-    deps.web = Some(source.clone());
+    deps = deps.with_web(source.clone());
     let d = DriverId::mint();
     assert_eq!(env.tick(&deps, &run, &d).await.kind, Some(StepKind::Turn));
     assert_eq!(env.tick(&deps, &run, &d).await.kind, Some(StepKind::Script));
@@ -706,7 +713,7 @@ async fn a_host_without_a_source_refuses_web_disabled() {
     env.api.push(finish_turn("done"));
     let run = env.run_with_web("search");
     let mut deps = env.deps();
-    deps.web = None;
+    deps = deps.without_web();
     env.drive(&deps, &run, &DriverId::mint()).await;
     assert_eq!(script_result(&env, &run, 0)["value"], "web_disabled");
     assert!(env.web().calls().is_empty());
@@ -1319,7 +1326,6 @@ async fn refused_and_stored_fetches_are_in_the_audit_trail() {
 // ---------------------------------------------------------------------------
 
 use clax_bot::web::page::sources_markdown;
-use clax_store::bot_web::WebPageRow;
 
 fn stored(url: &str, final_url: &str, text: &str) -> WebPageRow {
     WebPageRow {
@@ -1545,4 +1551,396 @@ fn a_heading_in_a_code_fence_is_not_a_title() {
     let text = "```sh\n# a comment\n```\n    # indented code\n   # Real title ##  \n";
     let md = sources_markdown(&[stored("https://a.example/", "", text)]).unwrap();
     assert!(md.ends_with("- [Real title](https://a.example/)"), "{md}");
+}
+
+// ---------------------------------------------------------------------------
+// A web call whose journal entry cannot be made
+// ---------------------------------------------------------------------------
+
+/// A sandbox that lets another driver take the run before the script it
+/// is given makes a call: the first driver's claim has lapsed and it
+/// does not know.
+struct LosesTheClaim {
+    sandbox: Arc<dyn Sandbox>,
+    store: Arc<Store>,
+    clock: Arc<ManualClock>,
+    run: String,
+}
+
+#[async_trait::async_trait]
+impl Sandbox for LosesTheClaim {
+    async fn run(
+        &self,
+        script: &Script,
+        host: &dyn Host,
+        limits: &Limits,
+        cancel: &CancelToken,
+    ) -> ScriptOutcome {
+        self.clock.advance(61);
+        self.store
+            .claim_run(&self.run, &DriverId::mint(), 60)
+            .expect("the store")
+            .expect("the lapsed claim is taken");
+        self.sandbox.run(script, host, limits, cancel).await
+    }
+}
+
+/// Keeps every `call` event.
+#[derive(Default)]
+struct CallsSeen(Mutex<Vec<Event>>);
+
+impl EventSink for CallsSeen {
+    fn emit(&self, _run: &str, _step: i64, _attempt: i64, mut event: Event) {
+        // How long a call took is the machine's to say.
+        if let Event::Call { ms, .. } = &mut event {
+            *ms = 0;
+            self.0.lock().unwrap().push(event);
+        }
+    }
+}
+
+/// A web operation the run lacks (one it did not declare; one it
+/// declared, on a host with no source) is refused by the run loop
+/// without the store. So when another driver has taken the run, the
+/// script is still answered `web_disabled`, and the call's live event
+/// shows that code and a cost of 0; the refusal cannot be journaled,
+/// nothing of the attempt is committed, and the tick finds the run is
+/// no longer its own. (Before a script's calls went through the seam
+/// the journal entry was made first, and its failure, `run_not_claimed`
+/// with no cost, was what the script and the event got.)
+#[tokio::test]
+async fn a_web_operation_a_run_lacks_is_refused_as_itself_when_the_claim_is_lost() {
+    for (shape, source) in [("", true), ("fetch", false)] {
+        let env = Env::new().await;
+        env.api.push(env.script_turn(
+            "tu_1",
+            "Web",
+            "try { await clax.web.fetch('https://example.com/a'); return 'fetched'; } \
+             catch (e) { return e.code; }",
+        ));
+        let run = env.run_with_web(shape);
+        let deps = |sandbox: Arc<dyn Sandbox>| {
+            let mut deps = env.deps_with(sandbox);
+            if !source {
+                deps = deps.without_web();
+            }
+            deps
+        };
+        let driver = DriverId::mint();
+        let turn = env.tick(&deps(env.sandbox.clone()), &run, &driver).await;
+        assert_eq!(turn.kind, Some(StepKind::Turn));
+        let losing = deps(Arc::new(LosesTheClaim {
+            sandbox: env.sandbox.clone(),
+            store: env.store.clone(),
+            clock: env.clock.clone(),
+            run: run.clone(),
+        }));
+        let seen = CallsSeen::default();
+        let opts = TickOpts {
+            budget: None,
+            cancel: CancelToken::new(),
+            events: &seen,
+        };
+        let out = clax_bot::tick(&losing, &run, &driver, opts).await.unwrap();
+        assert_eq!(out.next, Next::Waiting(Wait::NotOurs), "{shape:?}");
+        assert_eq!(
+            seen.0.into_inner().unwrap(),
+            [Event::Call {
+                op: "web.fetch".into(),
+                target: None,
+                ok: false,
+                code: Some("web_disabled".into()),
+                ms: 0,
+                cost_milli: Some(0),
+                web: Some(json!({"url": "https://example.com/a"})),
+            }],
+            "{shape:?}"
+        );
+        assert!(
+            env.store.bot_calls(&run, 2).unwrap().is_empty(),
+            "{shape:?}"
+        );
+        let (_, steps) = env.store.run_with_steps(&run).unwrap().unwrap();
+        assert!(steps[1].committed_at.is_none(), "{shape:?}");
+        assert!(env.web().calls().is_empty(), "{shape:?}");
+    }
+}
+
+/// A sandbox whose driver loses the run for the length of the script's
+/// first call and holds it again after: around that call another driver
+/// takes the run (its claim has lapsed), and once the call is answered
+/// the tick's driver takes it back. The call's journal entry cannot be
+/// made, and the step commits all the same.
+struct LosesTheRunForACall {
+    sandbox: Arc<dyn Sandbox>,
+    store: Arc<Store>,
+    clock: Arc<ManualClock>,
+    run: String,
+    driver: DriverId,
+}
+
+/// The host of [`LosesTheRunForACall`].
+struct AwayForTheFirstCall<'a> {
+    host: &'a dyn Host,
+    lost: &'a LosesTheRunForACall,
+    called: AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl Host for AwayForTheFirstCall<'_> {
+    async fn call(&self, op: &str, args: Value) -> Result<Value, HostError> {
+        if self.called.swap(true, Ordering::SeqCst) {
+            return self.host.call(op, args).await;
+        }
+        let take = |driver: &DriverId| {
+            self.lost.clock.advance(61);
+            self.lost
+                .store
+                .claim_run(&self.lost.run, driver, 60)
+                .expect("the store")
+                .expect("the lapsed claim is taken");
+        };
+        take(&DriverId::mint());
+        let answer = self.host.call(op, args).await;
+        take(&self.lost.driver);
+        answer
+    }
+}
+
+#[async_trait::async_trait]
+impl Sandbox for LosesTheRunForACall {
+    async fn run(
+        &self,
+        script: &Script,
+        host: &dyn Host,
+        limits: &Limits,
+        cancel: &CancelToken,
+    ) -> ScriptOutcome {
+        let away = AwayForTheFirstCall {
+            host,
+            lost: self,
+            called: AtomicBool::new(false),
+        };
+        self.sandbox.run(script, &away, limits, cancel).await
+    }
+}
+
+/// The same refusal in a step that commits: the driver has lost the run
+/// only for the length of the call, so the refusal's journal entry
+/// cannot be made and the step is committed all the same. The step's
+/// `calls` and what the model is told hold `web_disabled` and a cost of
+/// 0, in the words of any such refusal, and the call has no journal
+/// row. (Before a script's calls went through the seam, the step
+/// committed the entry's failure: `run_not_claimed`, with the driver's
+/// ID in what the model was told.)
+#[tokio::test]
+async fn a_web_operation_a_run_lacks_is_refused_as_itself_in_a_step_that_commits() {
+    for (shape, source) in [("", true), ("fetch", false)] {
+        let env = Env::new().await;
+        env.api.push(env.script_turn(
+            "tu_1",
+            "Web",
+            "try { await clax.web.fetch('https://example.com/a'); return 'fetched'; } \
+             catch (e) { return [e.code, e.message]; }",
+        ));
+        let run = env.run_with_web(shape);
+        let deps = |sandbox: Arc<dyn Sandbox>| {
+            let mut deps = env.deps_with(sandbox);
+            if !source {
+                deps = deps.without_web();
+            }
+            deps
+        };
+        let driver = DriverId::mint();
+        let turn = env.tick(&deps(env.sandbox.clone()), &run, &driver).await;
+        assert_eq!(turn.kind, Some(StepKind::Turn));
+        let away = deps(Arc::new(LosesTheRunForACall {
+            sandbox: env.sandbox.clone(),
+            store: env.store.clone(),
+            clock: env.clock.clone(),
+            run: run.clone(),
+            driver: driver.clone(),
+        }));
+        let out = env.tick(&away, &run, &driver).await;
+        assert_eq!(
+            (out.kind, out.next),
+            (Some(StepKind::Script), Next::Runnable),
+            "{shape:?}: the step commits"
+        );
+        let mut calls = script_calls(&env, &run, 0);
+        for call in &mut calls {
+            call.as_object_mut().unwrap().remove("ms");
+        }
+        assert_eq!(
+            calls,
+            [
+                json!({"op": "web.fetch", "target": null, "ok": false, "code": "web_disabled",
+                    "cost_milli": 0, "web": {"url": "https://example.com/a"}})
+            ],
+            "{shape:?}"
+        );
+        assert_eq!(
+            script_result(&env, &run, 0)["value"],
+            json!([
+                "web_disabled",
+                "clax.web.fetch is not available to this run"
+            ]),
+            "{shape:?}: what the model is told"
+        );
+        assert!(
+            env.store.bot_calls(&run, 2).unwrap().is_empty(),
+            "{shape:?}"
+        );
+        assert!(env.web().calls().is_empty(), "{shape:?}");
+    }
+}
+
+/// A web source that, once, while it fetches a page, has the run keep a
+/// page of that URL at another journal place (as a second call racing
+/// the first would): the store then refuses the transaction of the
+/// fetch that is under way (`page_exists`).
+struct RacedToThePage {
+    fake: Arc<FakeWebSource>,
+    store: Arc<Store>,
+    run: String,
+    driver: DriverId,
+    raced: AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl WebSource for RacedToThePage {
+    async fn search(
+        &self,
+        q: &SearchQuery,
+        cancel: &CancelToken,
+    ) -> Result<SearchAnswer, WebError> {
+        self.fake.search(q, cancel).await
+    }
+
+    async fn fetch(
+        &self,
+        url: &PublicUrl,
+        format: Format,
+        limits: &FetchLimits,
+        hop: &(dyn for<'u> Fn(&'u PublicUrl) -> Result<(), WebError> + Sync),
+        cancel: &CancelToken,
+    ) -> Result<FetchedPage, WebError> {
+        let page = self.fake.fetch(url, format, limits, hop, cancel).await?;
+        if !self.raced.swap(true, Ordering::SeqCst) {
+            let row = self.store.run(&self.run).unwrap().unwrap();
+            let step = self.store.open_step(&self.run).unwrap().unwrap();
+            let (seq, raw) = (500, json!([url.normalized(), null]));
+            let entry = self
+                .store
+                .call_entry(
+                    &self.run,
+                    &self.driver,
+                    step.n,
+                    step.attempt,
+                    seq,
+                    "web.fetch",
+                    &args_hash(&raw),
+                )
+                .unwrap()
+                .answered(true, json!({"value": null, "cost_milli": 0}));
+            let spend = Spend {
+                entry,
+                usage: None,
+                page: Some(WebPageRow {
+                    url: url.normalized().to_string(),
+                    step_n: step.n,
+                    seq,
+                    final_url: page.final_url.clone(),
+                    status: page.status,
+                    content_type: page.content_type.clone(),
+                    text: page.text.clone(),
+                    total_chars: i64::try_from(page.text.chars().count()).unwrap(),
+                    links: Vec::new(),
+                }),
+                audit: AuditRecord::new(AuditKind::BotWeb, self.store.now())
+                    .with("op", "web.fetch"),
+            };
+            self.store
+                .spend_journaled(&row, &self.driver, spend)
+                .expect("the racing page is kept");
+        }
+        Ok(page)
+    }
+
+    fn configured(&self) -> WebShape {
+        self.fake.configured()
+    }
+}
+
+/// A fetch whose transaction the store refuses (the run came to keep a
+/// page of that URL while the source was fetching it) wrote nothing: no
+/// journal row, no charge, no `bot.web` record. The script is answered
+/// the store's failure, and nothing journals it, so the step run again
+/// after a crash makes the call again, which is then answered from the
+/// page store, and is not answered the failure again from a row.
+#[tokio::test]
+async fn a_web_call_whose_transaction_fails_is_made_again() {
+    const URL: &str = "https://example.com/a";
+    let env = Env::new().await;
+    set(&env, &[(Setting::WebFetchEnabled, json!(true))]);
+    sender_says(&env, &format!("Read {URL}"));
+    env.web().page(URL, page("Page body", &[]));
+    env.api.push(env.script_turn(
+        "tu_1",
+        "Web",
+        &format!(
+            "try {{ const p = await clax.web.fetch('{URL}'); return ['fetched', p.text]; }} \
+             catch (e) {{ return [e.code]; }}"
+        ),
+    ));
+    env.api.push(finish_turn("done"));
+    let run = env.run_with_web("fetch");
+    let dying_driver = DriverId::mint();
+    let raced: Arc<dyn WebSource> = Arc::new(RacedToThePage {
+        fake: env.web(),
+        store: env.store.clone(),
+        run: run.clone(),
+        driver: dying_driver.clone(),
+        raced: AtomicBool::new(false),
+    });
+    let mut dying = env.deps().with_web(raced);
+    crash_once(
+        &mut dying,
+        CrashPoint::BeforeCommit {
+            step: 2,
+            kind: StepKind::Script,
+        },
+    );
+    let out = env.drive(&dying, &run, &dying_driver).await;
+    assert_eq!(out.last().unwrap().next, Next::Waiting(Wait::Crashed));
+    // The first attempt's fetch reached the source and left no row of
+    // its own, no charge and one `bot.web` record (the racing page's).
+    assert_eq!(env.web().calls(), fetches(&[URL]));
+    let rows = |env: &Env| -> Vec<(i64, i64, bool)> {
+        env.store
+            .bot_calls(&run, 2)
+            .unwrap()
+            .iter()
+            .map(|c| (c.seq(), c.attempt(), c.ok()))
+            .collect()
+    };
+    assert_eq!(rows(&env), [(500, 1, true)], "the racing page's row alone");
+    assert!(web_rows(&env).is_empty(), "nothing was charged");
+    env.clock.advance(61);
+    let out = env.drive(&env.deps(), &run, &DriverId::mint()).await;
+    assert_eq!(out.last().unwrap().next, Next::Done(RunStatus::Finished));
+    // Made again, by the second attempt: answered from the page store.
+    let told = script_result(&env, &run, 0);
+    assert_eq!(told["value"], json!(["fetched", "Page body"]), "{told}");
+    assert_eq!(rows(&env), [(0, 2, true), (500, 1, true)]);
+    assert_eq!(
+        env.web().calls(),
+        fetches(&[URL]),
+        "the source was not asked again"
+    );
+    let call = &script_calls(&env, &run, 0)[0];
+    assert_eq!(
+        (&call["ok"], &call["cost_milli"]),
+        (&json!(true), &json!(0))
+    );
 }

@@ -16,6 +16,8 @@ clax-rt = { path = "../clax-rt" }
 clax-store = { path = "../clax-store" }
 clax-sample = { path = "../clax-sample" }
 clax-bot-sandbox = { path = "../clax-bot-sandbox" }
+# The surface file `src/clax.d.ts` is read with (src/api.rs).
+clax-surface = { path = "../clax-surface" }
 async-trait = "0.1"
 chrono.workspace = true
 # Decodes a fetched page by its declared charset (src/web/page.rs).

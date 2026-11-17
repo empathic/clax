@@ -1,0 +1,67 @@
+{
+  "last_step": {
+    "kind": "stopped",
+    "payload": {
+      "notice": "I stopped before finishing: you have used this week's ClaxBot credits. I ran 1 script and edited index.html. I published version 2. My draft is saved, unpublished: open it from the run panel. Your credits reset on Monday 26 October 2026 at 00:00 UTC.",
+      "reason": "credits_exhausted"
+    }
+  },
+  "notices_in_the_journal": [
+    {
+      "ok": true,
+      "op": "reply",
+      "seq": 1000000,
+      "step": 3
+    }
+  ],
+  "reason": "credits_exhausted",
+  "replies": [
+    {
+      "text": "I stopped before finishing: you have used this week's ClaxBot credits. I ran 1 script and edited index.html. I published version 2. My draft is saved, unpublished: open it from the run panel. Your credits reset on Monday 26 October 2026 at 00:00 UTC.",
+      "thread": "<thread-1>"
+    }
+  ],
+  "roster": {
+    "shown_working_at_no_step": 0,
+    "shown_working_before": [
+      {
+        "kind": "turn",
+        "shown": true,
+        "step": 1
+      },
+      {
+        "kind": "script",
+        "shown": true,
+        "step": 2
+      },
+      {
+        "kind": "stopped",
+        "shown": false,
+        "step": 3
+      }
+    ],
+    "stopped_showing": [
+      {
+        "calls_after_it": 0,
+        "run_status": "stopped"
+      }
+    ]
+  },
+  "status": "stopped",
+  "steps": [
+    "turn",
+    "script",
+    "stopped"
+  ],
+  "writes_in_order": [
+    {
+      "key": "<run>:2:1",
+      "op": "draft.publish"
+    },
+    {
+      "key": "<run>:3:1000000",
+      "op": "threads.reply",
+      "thread": "<thread-1>"
+    }
+  ]
+}

@@ -82,6 +82,8 @@ pub enum Reply {
 pub struct Seen {
     pub headers: Vec<(String, String)>,
     pub body: Value,
+    /// The body's bytes as they arrived, before parsing.
+    pub raw: String,
 }
 
 impl Seen {
@@ -133,6 +135,7 @@ async fn read_request(sock: &mut tokio::net::TcpStream) -> Option<Seen> {
     Some(Seen {
         headers,
         body: serde_json::from_slice(&body).unwrap_or(Value::Null),
+        raw: String::from_utf8_lossy(&body).into_owned(),
     })
 }
 
@@ -629,7 +632,7 @@ impl Env {
     }
 
     pub fn run_with(&self, request: RequestKind, model: &str, key_source: KeySource) -> String {
-        self.run_shaped(request, model, key_source, "")
+        self.run_shaped(request, model, key_source, "", vec![self.t1.clone()])
     }
 
     /// The web source runs get from [`Env::deps`].
@@ -637,34 +640,62 @@ impl Env {
         self.web.clone()
     }
 
+    /// Sets the instance's ClaxBot settings `changes`, as its admin
+    /// ([`Env::set`] changes what a run's driver is given instead).
+    pub fn admin_sets(&self, changes: &[(Setting, Value)]) {
+        let changes: Vec<_> = changes.iter().map(|(s, v)| (*s, Some(v.clone()))).collect();
+        self.store
+            .set_bot_settings(&AuditCtx::DAEMON, &changes)
+            .unwrap();
+    }
+
     /// A thread run that declares the web operations of `shape`
     /// (`"search"`, `"fetch"` or `"search,fetch"`), with those operations
     /// turned on by the admin.
     pub fn run_with_web(&self, shape: &str) -> String {
-        let s = WebShape::parse(shape);
-        let mut on = Vec::new();
-        if s.search {
-            on.push((Setting::WebSearchEnabled, Some(json!(true))));
-        }
-        if s.fetch {
-            on.push((Setting::WebFetchEnabled, Some(json!(true))));
-        }
-        self.store.set_bot_settings(&AuditCtx::DAEMON, &on).unwrap();
         self.run_shaped(
             RequestKind::Thread,
             "claude-sonnet-5-5",
             KeySource::Instance,
-            s.as_str(),
+            shape,
+            vec![self.t1.clone()],
         )
     }
 
+    /// [`Env::run_with_web`] (`""` for no web operation) on both of the
+    /// artifact's threads, so that what the run tells its threads is
+    /// posted twice.
+    pub fn run_on_both_threads(&self, shape: &str) -> String {
+        self.run_shaped(
+            RequestKind::Thread,
+            "claude-sonnet-5-5",
+            KeySource::Instance,
+            shape,
+            vec![self.t1.clone(), self.t2.clone()],
+        )
+    }
+
+    /// A run on `threads` that declares the web operations of `web`,
+    /// which the admin turns on.
     fn run_shaped(
         &self,
         request: RequestKind,
         model: &str,
         key_source: KeySource,
         web: &str,
+        threads: Vec<String>,
     ) -> String {
+        let shape = WebShape::parse(web);
+        let mut on = Vec::new();
+        if shape.search {
+            on.push((Setting::WebSearchEnabled, json!(true)));
+        }
+        if shape.fetch {
+            on.push((Setting::WebFetchEnabled, json!(true)));
+        }
+        if !on.is_empty() {
+            self.admin_sets(&on);
+        }
         self.store
             .create_run(
                 &clax_bot::run::bot_ctx(OWNER),
@@ -672,12 +703,12 @@ impl Env {
                     artifact_id: self.aid.clone(),
                     person: OWNER.into(),
                     request,
-                    thread_ids: vec![self.t1.clone()],
+                    thread_ids: threads,
                     model: model.into(),
                     key_source,
                     base_version: 1,
                     agent_grant: None,
-                    web: web.into(),
+                    web: shape.as_str().into(),
                 },
             )
             .unwrap()
@@ -748,6 +779,18 @@ impl Env {
 
     pub fn run_row(&self, id: &str) -> Run {
         self.store.run(id).unwrap().unwrap()
+    }
+
+    /// Run `id`'s row with what the run was made as.
+    pub fn run_as_made(&self, id: &str) -> (Run, clax_store::bot_runs::RunAsMade) {
+        let (row, made, _) = self.store.run_with_steps_as_made(id).unwrap().unwrap();
+        (row, made)
+    }
+
+    /// Run `id` as the run loop knows it, read from its row.
+    pub fn info(&self, id: &str) -> clax_bot::surface::RunInfo {
+        let (row, made) = self.run_as_made(id);
+        self.deps().providers.bind(&row, &made).unwrap().info
     }
 
     pub fn usage(&self) -> Vec<UsageRow> {

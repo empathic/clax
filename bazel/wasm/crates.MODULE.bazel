@@ -200,7 +200,7 @@ crate.spec(default_features = False, features = [], package = "serde-wasm-bindge
 crate.spec(default_features = False, features = ["alloc", "default", "rc", "result", "std"], package = "serde_core", repositories = ["crates_wasm"], version = "=1.0.229")
 crate.spec(default_features = False, features = ["default"], package = "serde_derive", repositories = ["crates_wasm"], version = "=1.0.229")
 crate.spec(default_features = False, features = [], package = "serde_derive_internals", repositories = ["crates_wasm"], version = "=0.30.0")
-crate.spec(default_features = False, features = ["alloc", "default", "float_roundtrip", "raw_value", "std"], package = "serde_json", repositories = ["crates_wasm"], version = "=1.0.151")
+crate.spec(default_features = False, features = ["alloc", "default", "float_roundtrip", "raw_value", "std", "unbounded_depth"], package = "serde_json", repositories = ["crates_wasm"], version = "=1.0.151")
 crate.spec(default_features = False, features = [], package = "serde_path_to_error", repositories = ["crates_wasm"], version = "=0.1.20")
 crate.spec(default_features = False, features = ["alloc", "serde", "std"], package = "serde_spanned", repositories = ["crates_wasm"], version = "=1.1.1")
 crate.spec(default_features = False, features = [], package = "serde_urlencoded", repositories = ["crates_wasm"], version = "=0.7.1")
