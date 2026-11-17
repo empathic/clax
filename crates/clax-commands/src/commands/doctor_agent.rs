@@ -353,6 +353,17 @@ pub(super) fn is_clax_pi_package(root: &Path) -> bool {
     read_json(&root.join("package.json")).is_some_and(|m| m["name"] == PI_PACKAGE)
 }
 
+/// How Pi 1.5.2 identifies the package that `source` names and that
+/// resolves to `root`, when it deduplicates packages: an npm package by
+/// name, a git package by host and path, a local package by its path.
+pub(super) fn pi_identity(source: &str, root: &Path) -> String {
+    match parse_pi_source(source) {
+        PiSource::Npm { name } => format!("npm:{name}"),
+        PiSource::Git { host, path } => format!("git:{host}/{path}"),
+        PiSource::Local(_) => format!("local:{}", root.display()),
+    }
+}
+
 /// One package `pi list` prints: its source as the settings file lists it,
 /// the settings file's scope, and the path Pi resolved it to (none for a
 /// package that is not installed).

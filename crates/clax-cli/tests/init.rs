@@ -199,6 +199,41 @@ fn init_registers_each_harness_on_path_through_its_cli() {
     }
 }
 
+/// A Pi registration of the released package is kept: `init` adds no copy
+/// of its own, records nothing for Pi, and `uninit` leaves it.
+#[test]
+fn an_npm_registration_of_the_pi_package_is_kept_through_init_and_uninit() {
+    let e = Env::new(&["pi"]);
+    std::fs::create_dir_all(e.p("pi")).unwrap();
+    std::fs::write(
+        e.p("pi/settings.json"),
+        r#"{"packages":["npm:@empathic/clax-pi@0.4.1"]}"#,
+    )
+    .unwrap();
+    let (ok, v) = e.json(&["init", "--agent", "pi"]);
+    assert!(ok, "{v}");
+    assert!(e.calls().is_empty(), "{:?}", e.calls());
+    assert_eq!(status(&v, "pi"), "kept", "{v}");
+    assert!(
+        detail(&v, "pi").contains("`pi remove npm:@empathic/clax-pi@0.4.1`"),
+        "{v}"
+    );
+    assert_eq!(v["bin"]["status"], "set", "{v}");
+    let note = v["bin"]["note"].as_str().unwrap_or_default();
+    assert!(
+        note.contains("Pi") && note.contains("runs this clax"),
+        "{v}"
+    );
+    let rec: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(e.p("ax/registrations.json")).unwrap_or_default())
+            .unwrap_or_default();
+    assert!(rec["harnesses"].get("pi").is_none(), "{rec}");
+    let (ok, v) = e.json(&["uninit", "--agent", "pi"]);
+    assert!(ok, "{v}");
+    assert!(e.calls().is_empty(), "{:?}", e.calls());
+    assert!(!e.root().exists(), "{v}");
+}
+
 #[test]
 fn init_only_touches_the_harnesses_asked_for() {
     let e = Env::new(&["claude", "codex", "pi"]);

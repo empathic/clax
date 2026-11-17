@@ -8539,6 +8539,18 @@ harnesses. A harness whose CLI is missing or fails is reported, and the
 others still run. Re-running is safe: it reinstalls the plugin, which
 enables it again where it was disabled.
 
+When `<pi dir>/settings.json` already lists the Clax Pi package from npm
+(`npm:@empathic/clax-pi`, with or without a version) or from git (a git
+source whose installed copy under `<pi dir>/git` has that package name),
+`clax init` keeps that registration and runs no `pi install`: with two
+copies, Pi reports each tool as a conflict and does not start. It reports Pi with the status `"kept"` and a detail that names
+the source and the commands that switch to the binary's copy, and records
+nothing for Pi, so `clax uninit` does not remove that registration. When
+the working directory's `.pi/settings.json` lists a Clax Pi package other
+than the user's (the kept registration, or the copy `init` installs), the
+detail names the two copies in that project and the `pi remove -l` command.
+An entry Pi counts as the same package as the user's adds no note.
+
 `clax uninit` removes the registrations, then deletes `~/.clax/marketplace/`
 unless a harness's registry still refers to it or cannot be read. Both
 commands hold `~/.clax/init.lock` and run each harness CLI in the home
@@ -8581,7 +8593,9 @@ the GitHub repository to be public.
 
 `clax init` also sets the `bin` setting (below) to its own executable, so
 the plugins it registers, which match that binary, run it; it reports
-`"bin": {"status": "set" | "failed", "detail": ...}`. `clax uninit` removes
+`"bin": {"status": "set" | "failed", "detail": ...}`, with a `note` when it
+kept Pi's registration: that package then runs this binary, not the release
+it pins. `clax uninit` removes
 the setting when it names its own executable (`"cleared"`), and otherwise
 leaves it (`"kept"`).
 
