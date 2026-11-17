@@ -1,3 +1,33 @@
+diff --git a/BUILD.ndk_root.tpl b/BUILD.ndk_root.tpl
+--- a/BUILD.ndk_root.tpl
++++ b/BUILD.ndk_root.tpl
+@@ -10,6 +10,25 @@ exports_files(["target_systems.bzl"])
+ alias(
+     name = "toolchain",
+     actual = "//{clang_directory}:cc_toolchain_suite",
+ )
+ 
++# The LLVM of the host that runs the build, named without its per-host
++# directory: only that directory exists in a fetched NDK, so a label naming
++# another host's is one `bazel query` over the depending package cannot load
++# (a patch Clax keeps: bazel/android/rules_android_ndk.patch).
++alias(
++    name = "llvm_clang",
++    actual = "//{clang_directory}:bin/clang",
++)
++
++alias(
++    name = "llvm_ar",
++    actual = "//{clang_directory}:bin/llvm-ar",
++)
++
++alias(
++    name = "llvm_binaries",
++    actual = "//{clang_directory}:all_binaries",
++)
++
+ # Loop over TARGET_SYSTEM_NAMES and define all toolchain targets.
+ [toolchain(
 diff --git a/BUILD.ndk_sysroot.tpl b/BUILD.ndk_sysroot.tpl
 --- a/BUILD.ndk_sysroot.tpl
 +++ b/BUILD.ndk_sysroot.tpl
