@@ -62,6 +62,7 @@
 // on every request (and in a WebSocket's address), and a new proof (a login
 // in another tab) opens the stream again.
 import { after } from "./clock";
+import type { Trouble } from "./trouble";
 import { STUCK_MS, backoff } from "./lifecycle";
 import { PROOF_HEADER, withProof } from "./owner-proof-wire";
 import { parseBlock } from "./sse";
@@ -99,7 +100,7 @@ export type HubMsg =
   | { t: "live"; topics: string[] }
   | { t: "resync"; topic: string }
   | { t: "refused"; topic: string; code: string }
-  | { t: "status"; up: boolean }
+  | { t: "status"; up: boolean; why?: Trouble }
   | { t: "welcome" }
   | { t: "ping" };
 
@@ -130,6 +131,18 @@ type Timer = ReturnType<typeof setTimeout>;
 
 /** The statuses of a stream the app's host refused that asking again cannot change. */
 const FINAL: ReadonlySet<number> = new Set([400, 403, 404]);
+
+/** Why a stream request failed, when that says Clax cannot be reached (the
+ * browser offline, no answer, an answer that is not Clax's: `notClax`);
+ * null when only the stream is down (it ended, went silent, or Clax
+ * refused it). The worker carries no more of the classifier (trouble.ts). */
+function whyDown(e: unknown): Trouble | null {
+  if (e === notClax) return navigator.onLine === false ? "offline" : "not_clax";
+  return e instanceof TypeError ? (navigator.onLine === false ? "offline" : "unreachable") : null;
+}
+/** What a stream request throws for an answer that is not Clax's (no JSON
+ * `error.code`, or a page served with 200). */
+const notClax = new Error("not Clax's answer");
 
 /** The codes of a refused or released live seat (spec
  * 2026-10-11-clax-dev-hosted-design §16.1). */
@@ -209,6 +222,8 @@ export class Hub {
   private up = false;
   /** The tabs were told the connection is down, and not yet that it is up. */
   private toldDown = false;
+  /** Why the tabs were told the stream is down, when the hub could tell. */
+  private downWhy: Trouble | null = null;
   private failures = 0;
   /** The `end` block the open stream closed with (the app's host passes the
    * core's), else null. */
@@ -252,7 +267,7 @@ export class Hub {
       c = { topics: new Set(), live: new Set(), heard: Date.now(), locked: false, focused: false, focusedAt: 0 };
       this.clients.set(id, c);
       // Tells a tab that joins during an outage.
-      if (this.toldDown) this.env.send([id], { t: "status", up: false });
+      if (this.toldDown) this.env.send([id], this.downMsg());
     }
     c.heard = Date.now();
     switch (msg.t) {
@@ -399,7 +414,12 @@ export class Hub {
     const ac = new AbortController();
     this.conn = ac;
     this.arm(ac, CONNECT_MS);
-    void this.run(ac).catch(() => { if (this.conn === ac) this.fail(); });
+    void this.run(ac).catch(e => { if (this.conn === ac) this.fail(whyDown(e)); });
+  }
+
+  /** What the tabs hear while the stream is down, with why when the hub can tell. */
+  private downMsg(): HubMsg {
+    return { t: "status", up: false, ...this.downWhy && { why: this.downWhy } };
   }
 
   private async run(ac: AbortController): Promise<void> {
@@ -414,7 +434,10 @@ export class Hub {
       this.socketMode = true;
       return this.runSocket(ac);
     }
-    if (!res.ok || !res.body) throw new Error(`stream answered ${res.status}`);
+    // A refusal without Clax's JSON, or a page served with 200 (a proxy's), is not Clax's.
+    if (!res.ok) throw typeof (await res.json().catch(() => null))?.error?.code === "string" ? new Error("stream refused") : notClax;
+    if (!res.body) throw new Error("the stream had no body");
+    if (/html/.test(res.headers.get("content-type") ?? "")) throw notClax;
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = "";
@@ -509,6 +532,7 @@ export class Hub {
       this.up = true;
       if (this.toldDown) {
         this.toldDown = false;
+        this.downWhy = null;
         if (this.clients.size) this.env.send([...this.clients.keys()], { t: "status", up: true });
       }
       // Topics the stream resumed with are live again for the tabs that still want them.
@@ -630,17 +654,18 @@ export class Hub {
   }
 
   /** The connection failed or is stuck: retried after a backoff; the tabs
-   * hear it is down. On the host the tabs are told nothing, and a stream
-   * the core refused for good (400, 403, 404) is not retried: a tab's next
-   * topics open it again. */
-  private fail(): void {
+   * hear it is down, and again whenever why (`whyDown`) changes. On the
+   * host the tabs are told nothing, and a stream the core refused for good
+   * (400, 403, 404) is not retried: a tab's next topics open it again. */
+  private fail(why: Trouble | null = null): void {
     this.drop();
     const final = this.env.host && this.ended?.reason === "stream_refused" && FINAL.has(this.ended.status as number);
     this.ended = null;
     if (final) { this.retry?.(); this.retry = undefined; return; }
-    if (!this.toldDown && !this.env.host) {
+    if ((!this.toldDown || why !== this.downWhy) && !this.env.host) {
       this.toldDown = true;
-      if (this.clients.size) this.env.send([...this.clients.keys()], { t: "status", up: false });
+      this.downWhy = why;
+      if (this.clients.size) this.env.send([...this.clients.keys()], this.downMsg());
     }
     if (!this.wanted().size) return;
     this.retry?.();
@@ -660,6 +685,7 @@ export class Hub {
     for (const c of this.clients.values()) c.live.clear();
     if (this.toldDown) {
       this.toldDown = false;
+      this.downWhy = null;
       if (this.clients.size) this.env.send([...this.clients.keys()], { t: "status", up: true });
     }
   }

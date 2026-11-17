@@ -1,7 +1,7 @@
 import type { Working } from "./view/working-model";
-import { readJson as json } from "./failure";
+import { readJson as json } from "./trouble";
 
-export { ApiError } from "./failure";
+export { ApiError } from "./trouble";
 
 export type Artifact = {
   id: string; title: string; description: string | null; icon: string | null;

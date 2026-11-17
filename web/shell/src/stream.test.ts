@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { STREAM_DOWN, connNoticeText } from "./conn-notice";
+import { NOT_CLAX, OFFLINE, STREAM_DOWN, connNoticeText } from "./conn-notice";
 import { DEAD_MS, EventStream, HIDDEN_MS, type Link, type LinkMaker, NOTICE_MS, type StreamEvent, TOKEN_WAIT_MS, leaderLink } from "./stream";
 import { ownerBrowser } from "./owner";
 import { type HubMsg, PING_MS, type TabMsg } from "./stream-hub";
@@ -219,6 +219,20 @@ describe("EventStream", () => {
     expect(connNoticeText()).toBe(STREAM_DOWN);
     links[0].on({ t: "status", up: true });
     expect(seen).toEqual([{ type: "stream_down" }, { type: "stream_up" }]);
+    expect(connNoticeText()).toBeNull();
+  });
+
+  it("says why the stream is down in the words a failed request would, when the hub can tell", async () => {
+    s.watch(["gallery"], () => {});
+    await flush();
+    links[0].on({ t: "status", up: false, why: "not_clax" });
+    await vi.advanceTimersByTimeAsync(NOTICE_MS);
+    expect(connNoticeText()).toBe(NOT_CLAX);
+    links[0].on({ t: "status", up: false, why: "offline" });
+    expect(connNoticeText()).toBe(OFFLINE);
+    links[0].on({ t: "status", up: false });
+    expect(connNoticeText()).toBe(STREAM_DOWN);
+    links[0].on({ t: "status", up: true });
     expect(connNoticeText()).toBeNull();
   });
 

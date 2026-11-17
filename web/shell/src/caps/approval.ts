@@ -2,7 +2,7 @@
 // approving lets the page do, and the PUT that approves the declaration the
 // bar showed (plan 2026-10-26-quickstart-d-permissions, Decisions 8 and 9).
 import { type PendingCapabilities, getToken } from "../api";
-import { readError } from "../failure";
+import { readError } from "../trouble";
 
 type Words = { label: string; detail: string };
 

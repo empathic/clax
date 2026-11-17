@@ -10,6 +10,7 @@
   import { type Draft, composerQuote, isSubmitKey, submitKeysLabel } from "../view/composer-model";
   import { nextFrame } from "../view/after-paint";
   import { guardedAction } from "../view/trail";
+  import { connKept } from "../conn-notice";
 
   type Props = { draft: Draft; onCancel(): void; onSubmit(body: string): Promise<void>; onText?(text: string): void; onFocused?(): void; onDropped?(): void; send?: boolean };
   let { draft, onCancel, onSubmit, onText, onFocused, onDropped, send }: Props = $props();
@@ -30,6 +31,11 @@
   });
   // The composer is keyed by its pick: closing it tells the owner the text is gone.
   onDestroy(() => onText?.(""));
+  // While it holds text, the connection notice says what was written is kept.
+  $effect(() => {
+    connKept(uid, !!body.trim());
+    return () => connKept(uid, false);
+  });
 
   let textarea: HTMLTextAreaElement | undefined;
   // The viewer types at once: focus moves from the page to the textarea as

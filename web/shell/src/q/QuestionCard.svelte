@@ -31,7 +31,7 @@
   // the sidebar's chunk.
   import { tick, untrack } from "svelte";
   import type { AnswerBody, QuestionStatus, QuestionView } from "../api";
-  import { failureText } from "../failure";
+  import { failureText } from "../trouble";
   import { after } from "../clock";
   import { relativeTime } from "../format";
   import { aboutLink, agentLabel, answerLine, answerText, closedLabel, complete, cutHeader, emptyDraft, nextOpen, pick, previewOf, questionLink, shownLabel, toBody, typeOther } from "./model";

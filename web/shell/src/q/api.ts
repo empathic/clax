@@ -7,7 +7,7 @@
 // throws an `ApiError` coded so, saying where to confirm; any other
 // failure throws an `ApiError`.
 import { HELD, heldOf } from "../held";
-import { readJson } from "../failure";
+import { readJson } from "../trouble";
 import { ApiError, type AnswerBody, type InboxFilter, type InboxGroupPage, type InboxItem, type InboxPage, type InboxSummary, type QuestionView, type StripAgent } from "../api";
 
 export type Forbidden = "forbidden";

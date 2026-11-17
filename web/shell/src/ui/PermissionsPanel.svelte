@@ -23,7 +23,7 @@
   import { fromStore } from "svelte/store";
   import { getToken } from "../api";
   import type { ArtifactController } from "../view/artifact-controller";
-  import { failureText, readError, readJson } from "../failure";
+  import { failureText, readError, readJson } from "../trouble";
   import { type ContentSecurityPolicy, setContentSecurityPolicy } from "../hosted/api";
   import { policyOf } from "../view/artifact-controller";
   import ApprovalDialog from "./ApprovalDialog.svelte";

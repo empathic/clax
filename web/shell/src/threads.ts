@@ -1,6 +1,6 @@
 import type { Anchor } from "../../bridge/src/protocol";
 import { getToken } from "./api";
-import { readJson } from "./failure";
+import { readJson } from "./trouble";
 
 export type Tier = "piggyback" | "stop_hook" | "prompt_hook" | "wait" | "queue" | "inject";
 /** `withheld`: held until `approver` (a display name) approves an author

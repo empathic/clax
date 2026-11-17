@@ -59,7 +59,7 @@
   import { ApiError, type Artifact, type AttentionSummary, type TagRef, deleteArtifact, getToken, listArtifacts, patchArtifact, tokenUnsure } from "../api";
   import type { MeBot } from "../bot/api";
   import { banner } from "../bot/meter";
-  import { reasonText } from "../failure";
+  import { reasonText } from "../trouble";
   import { REQUEST_STUCK, connTrouble } from "../conn-notice";
   import { readConfig } from "../feedback/boot";
   import { configOnce } from "../feedback/config";

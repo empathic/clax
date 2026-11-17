@@ -2,7 +2,7 @@
 // "Tokens"; docs/contract.md "Git remotes"). Loaded with the Clone button,
 // after the first paint.
 import { getToken } from "../api";
-import { readJson } from "../failure";
+import { readJson } from "../trouble";
 
 export type CloneScope = "read" | "write";
 

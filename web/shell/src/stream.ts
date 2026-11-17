@@ -37,7 +37,8 @@
 import { getToken } from "./api";
 import { isProofKey, ownerProof } from "./owner-proof";
 import { after } from "./clock";
-import { STREAM_DOWN, connTrouble } from "./conn-notice";
+import { STREAM_DOWN, connTrouble, noticeFor } from "./conn-notice";
+import type { Trouble } from "./trouble";
 import { visibility } from "./visibility";
 import { backoff } from "./lifecycle";
 import { onHost } from "./transport";
@@ -274,6 +275,8 @@ export class EventStream {
   private gone = false;
   /** Watchers were told `stream_down`, and not yet `stream_up`. */
   private down = false;
+  /** Why the stream is down, as the hub said. */
+  private why: Trouble | undefined;
   private heard = Date.now();
   private hiddenTimer: (() => void) | undefined;
   private noticeTimer: Timer | undefined;
@@ -525,14 +528,23 @@ export class EventStream {
     if (Date.now() - this.heard > DEAD_MS) this.lost(this.link);
   }
 
-  private markDown(): void {
-    if (this.down) return;
+  /** The stream is down; `why`, the hub's word on why (`HubMsg` `status`),
+   * words the notice as a failed request would, else as the stream alone. */
+  private markDown(why?: Trouble): void {
+    this.why = why;
+    if (this.down) { if (!this.noticeTimer) this.showDown(); return; }
     this.down = true;
     this.tell(() => true, { type: "stream_down" });
     this.noticeTimer ??= setTimeout(() => {
       this.noticeTimer = undefined;
-      if (this.down && !this.gone) connTrouble("stream", true, STREAM_DOWN, this.win.document);
+      this.showDown();
     }, NOTICE_MS);
+  }
+
+  private showDown(): void {
+    if (!this.down || this.gone) return;
+    const n = this.why ? noticeFor(this.why) : { text: STREAM_DOWN, rank: 0 };
+    connTrouble("stream", true, n.text, this.win.document, n.rank);
   }
 
   private markUp(): void {
@@ -570,7 +582,7 @@ export class EventStream {
       }
       case "resync": this.tell(w => w.topics.has(m.topic), { type: "resync", topic: m.topic }); break;
       case "refused": this.tell(w => w.topics.has(m.topic), { type: "refused", topic: m.topic, code: m.code }); break;
-      case "status": if (m.up) this.markUp(); else this.markDown(); break;
+      case "status": if (m.up) this.markUp(); else this.markDown(m.why); break;
       case "notify": for (const f of [...this.notifyHandlers]) f(m.data); break;
       // Answered, so a hub that cannot watch this tab's Web Lock keeps it.
       case "ping": this.link?.send({ t: "ping" }); break;

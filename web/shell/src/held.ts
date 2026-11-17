@@ -7,7 +7,7 @@
 // so it finishes without a card. Otherwise the call reads it and says where
 // to confirm instead of taking the body for the decision's result.
 
-import { ApiError, readJson } from "./failure";
+import { ApiError, readJson } from "./trouble";
 
 /** A held decision: its confirmation, where to confirm it, and the line that says so. */
 export type Held = { id: string; url: string; message: string };

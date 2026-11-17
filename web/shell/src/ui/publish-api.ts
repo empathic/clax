@@ -2,7 +2,7 @@
 // (docs/contract.md "Publishing to a public Clax"). Loaded with the button,
 // after the first paint. A hosted daemon answers none of them (404).
 import { getToken } from "../api";
-import { ApiError, readJson } from "../failure";
+import { ApiError, readJson } from "../trouble";
 import { HELD, heldFetch, heldOf } from "../held";
 
 /** A public Clax this Clax is signed in to (never its token); while its

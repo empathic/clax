@@ -2,7 +2,7 @@
 // chunk, loaded on the first press, so the artifact entry carries none of it.
 import { getToken } from "../api";
 import { nav } from "../nav";
-import { ApiError, failureText, readJson } from "../failure";
+import { ApiError, failureText, readJson } from "../trouble";
 
 /** The notice of a fork the daemon did not make, before its reason. */
 export const FORK_FAILED = "The fork was not made";

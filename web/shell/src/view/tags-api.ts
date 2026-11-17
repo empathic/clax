@@ -2,7 +2,7 @@
 // editor and the inbox's Tag filter. Only their lazy chunks load it. The
 // owner's shell sends its token; anyone else's request is their browser's.
 import { type TagRef, getToken } from "../api";
-import { readJson, reasonText } from "../failure";
+import { readJson, reasonText } from "../trouble";
 
 /** A tag as `GET /api/tags` lists it: `count` is how many artifacts the caller sees carry it. */
 export type TagView = TagRef & { description: string | null; created_at: string; updated_at: string; count: number };

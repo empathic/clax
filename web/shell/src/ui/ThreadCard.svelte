@@ -11,6 +11,7 @@
   import { plainText } from "../view/md-load.svelte";
   import { SEEN_AFTER_MS, authorLabel, pageLabel } from "../view/sidebar-model";
   import { after } from "../clock";
+  import { connKept } from "../conn-notice";
   import { guardedAction, keyboardTrail } from "../view/trail";
   import { waitingLabel } from "../waiting";
   import { clock, midName, whose } from "../view/working-model";
@@ -105,6 +106,12 @@
   // A reply left unsent goes with the card (the thread resolved, filtered
   // out, or on another page): others stop seeing it as a draft.
   $effect(() => () => { if (reply.trim()) onReplyText?.(t, ""); });
+  // While the box holds text, the connection notice says what was written is kept.
+  const uid = $props.id();
+  $effect(() => {
+    connKept(uid, !!reply.trim());
+    return () => connKept(uid, false);
+  });
   // Enter or the submit shortcut in Reply, and any activation of the Reply button.
   const replyKey = (e: KeyboardEvent) => {
     if (!isSubmitKey(e) && !(e.key === "Enter" && !e.isComposing && !e.shiftKey)) return;

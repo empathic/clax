@@ -5,7 +5,7 @@
 // agent its watch). With no live agent, a prompt to paste into one. Loaded
 // with the dialog, on the first press of New.
 import { getToken } from "../api";
-import { readError, reasonText } from "../failure";
+import { readError, reasonText } from "../trouble";
 
 /** The longest title the daemon takes, in characters. */
 export const MAX_TITLE = 200;
