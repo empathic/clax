@@ -6,7 +6,7 @@ test.beforeEach(({ daemon }) => { d = daemon; });
 
 // Line 161, the one picked below, is green, so a clip shows where it is.
 const LINES = Array.from({ length: 300 }, (_, i) => (i === 160 ? `<span style="color:#0a8f3c">line 161: the quick brown fox</span>` : `line ${i + 1}: the quick brown fox`)).join("\n");
-const LONG = `<!doctype html><html><head><title>Long</title><style>body{margin:0;font:14px/20px monospace}pre{margin:0;padding:8px}</style></head><body><main><pre id="src">${LINES}</pre></main></body></html>`;
+const LONG = `<!doctype html><html><head><title>Long</title><style>body{margin:0;font:14px/20px Menlo,"Liberation Mono","DejaVu Sans Mono",monospace}pre{margin:0;padding:8px;font:inherit}</style></head><body><main><pre id="src">${LINES}</pre></main></body></html>`;
 
 /** Line `n`'s rectangle in the frame's viewport. */
 const lineRect = (frame: Frame, n: number) => frame.evaluate(line => {
@@ -96,8 +96,8 @@ async function hoverLine(page: Page, frame: Frame, n: number) {
 }
 
 const HL_LINES = Array.from({ length: 2000 }, (_, i) => `<span class="k">let</span> <span class="v">v${i + 1}</span> = <span class="s">"line ${i + 1}"</span>;`).join("\n");
-const HIGHLIGHTED = `<!doctype html><html><head><title>Code</title><style>body{margin:0;font:14px/20px monospace;background:#fafafa}pre{margin:0;padding:8px}.k{color:#a626a4;font-weight:bold}.v{color:#4078f2}.s{color:#50a14f}</style></head><body><main><pre id="src"><code>${HL_LINES}</code></pre></main></body></html>`;
-const SHORT = `<!doctype html><html><head><title>Short</title><style>body{margin:0;font:14px/20px monospace}pre{margin:0;padding:8px}</style></head><body><pre id="src">${Array.from({ length: 36 }, (_, i) => `line ${i + 1}: the quick brown fox`).join("\n")}</pre></body></html>`;
+const HIGHLIGHTED = `<!doctype html><html><head><title>Code</title><style>body{margin:0;font:14px/20px Menlo,"Liberation Mono","DejaVu Sans Mono",monospace;background:#fafafa}pre{margin:0;padding:8px;font:inherit}.k{color:#a626a4;font-weight:bold}.v{color:#4078f2}.s{color:#50a14f}</style></head><body><main><pre id="src"><code>${HL_LINES}</code></pre></main></body></html>`;
+const SHORT = `<!doctype html><html><head><title>Short</title><style>body{margin:0;font:14px/20px Menlo,"Liberation Mono","DejaVu Sans Mono",monospace}pre{margin:0;padding:8px;font:inherit}</style></head><body><pre id="src">${Array.from({ length: 36 }, (_, i) => `line ${i + 1}: the quick brown fox`).join("\n")}</pre></body></html>`;
 
 /** The rectangle, in the frame's viewport, of highlighted line `n`'s first token and of its whole line. */
 const hlLine = (frame: Frame, n: number) => frame.evaluate(line => {
@@ -194,7 +194,7 @@ const TALL = `<!doctype html><html><head><title>Tall</title><style>body{margin:0
 const RADIO_LINES = Array.from({ length: 300 }, (_, i) => (i === 149
   ? `line 150: <label><input type="radio" name="g" value="a"> a</label> <label><input type="radio" name="g" value="b"> b</label> <label><input type="radio" name="g" value="c"> c</label>`
   : `line ${i + 1}: the quick brown fox`)).join("\n");
-const RADIOS = `<!doctype html><html><head><title>Radios</title><style>body{margin:0;font:14px/20px monospace}pre{margin:0;padding:8px}</style></head><body><main><pre id="src">${RADIO_LINES}</pre></main></body></html>`;
+const RADIOS = `<!doctype html><html><head><title>Radios</title><style>body{margin:0;font:14px/20px Menlo,"Liberation Mono","DejaVu Sans Mono",monospace}pre{margin:0;padding:8px;font:inherit}</style></head><body><main><pre id="src">${RADIO_LINES}</pre></main></body></html>`;
 
 {
   test(`a region clip leaves the reader's radio choice alone`, async ({ page }) => {
