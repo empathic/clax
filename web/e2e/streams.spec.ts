@@ -1,7 +1,7 @@
 import { type Browser, type BrowserContext, type CDPSession, type Page } from "@playwright/test";
 import { asLocalViewer, test, expect, type Daemon, fence, publish, registerSession, setName, signInTo, startDaemon, until } from "./fixtures";
 import { ask } from "./questions-helpers";
-import { advance } from "./time";
+import { advance, quietEval } from "./time";
 import { backoff } from "../shell/src/lifecycle";
 
 // As in Chrome: the new headless mode, with the back/forward cache on
@@ -557,7 +557,9 @@ test("a daemon restart shows the notice in every tab, which reconnect with backo
     for (const p of tabs) {
       const notice = p.locator(".conn-notice");
       await expect(notice).toBeVisible();
-      await expect(notice).toHaveText("Live updates paused. Reconnecting…");
+      // The stream alone, until a request (the hub's reconnect, the page's
+      // own) finds no daemon on this computer.
+      await expect(notice).toHaveText(/^(Live updates paused\. Reconnecting…|Clax is not answering on this computer\. Retrying…)$/);
       await expect(notice).toHaveAttribute("role", "status");
     }
     // The hub retries with backoff: it is waiting, on its clock, to try
@@ -567,10 +569,12 @@ test("a daemon restart shows the notice in every tab, which reconnect with backo
     expect(wait).toBeGreaterThan(0);
     expect(wait).toBeLessThanOrEqual(BACKOFF_MAX);
     own = await startDaemon({ home, port });
-    // The hub reconnects after its backoff: run each wait it has pending
-    // until the stream is back and every tab's notice is gone.
+    // The hub reconnects after its backoff, and a page that found no daemon
+    // asks again after its own: run each wait pending until the stream is
+    // back and every tab's notice is gone.
     await expect.poll(async () => {
       await hubRetryNow(browser);
+      for (const p of tabs) await quietEval(p, `{ const c = globalThis.claxTestClock, due = c?.dueIn("reach-probe"); if (due != null) c.advance(Math.max(0, due)); }`);
       return (await Promise.all(tabs.map(p => p.locator(".conn-notice").isHidden()))).every(Boolean);
     }).toBe(true);
     await expect.poll(async () => (await streams(own)).open).toBe(1);

@@ -61,6 +61,7 @@
   import { banner } from "../bot/meter";
   import { reasonText, unreached } from "../trouble";
   import { loadWait } from "../reach";
+  import { loadWait } from "../reach";
   import { REQUEST_STUCK, connTrouble } from "../conn-notice";
   import { readConfig } from "../feedback/boot";
   import { configOnce } from "../feedback/config";
@@ -194,68 +195,16 @@
   });
 
   const describe = reasonText;
-<<<<<<< HEAD
   const get = (path: string): Promise<Answer<unknown>> => fetch(path).then(async r => ({ status: r.status, body: r.ok ? await r.json().catch(() => null) : null }), () => ({ status: 0, body: null }));
   const tokenP: Promise<TokenAnswer> = getToken().then(t => (t === null && tokenUnsure() ? "failed" : t));
   const io: Io = {
     get, token: () => tokenP, feedback: configOnce, proof: ownerProof() !== null,
-    list: () => retrying(life, signal => listArtifacts(undefined, { signal }), { retry: unreached, trouble: on => connTrouble("gallery", on, REQUEST_STUCK) }),
+    list: () => retrying(life, signal => listArtifacts(undefined, { signal }), { retry: unreached, wait: loadWait, trouble: on => connTrouble("gallery", on, REQUEST_STUCK) }),
   };
   /** The token for an owner's action: asked at mount, an action waits for it. */
   const withToken = (f: (t: string) => Promise<unknown>) => tokenP.then(t => (typeof t === "string" ? f(t) : Promise.reject(new Error("only the owner may do this"))));
   const reload = () => listArtifacts().then(a => { if (!destroyed) artifacts = a; });
   const act = (id: string, op: () => Promise<unknown>) => op().then(() => (sync ? sync.one(id) : reload()), e => { error = describe(e); });
-||||||| parent of 664df2ce4 (fix(shell): lifecycle.ts stays free of imports, and ClaxBot's, Queues' and sites' refusals name no status)
-  // Each list seeds the working feed; the first one, once rendered, starts its stream.
-  let cancelStart: (() => void) | null = null;
-  let destroyed = false;
-  // A list fetched before a `working` event does not undo it (`WorkingFeed.seed`).
-  // Owns the first load's retries; the stream and timers are `sync`'s.
-  const life = new Lifecycle();
-  const load = (first: boolean) => first
-    ? retrying(life, signal => listArtifacts(undefined, { signal }), { retry: unreached, trouble: on => connTrouble("gallery", on, REQUEST_STUCK) })
-    : listArtifacts();
-  const refresh = (first = false) => { const since = feed?.events; void getAttention().then(t => { if (t && !sync) att = t; }); return load(first).then(a => {
-    error = null; artifacts = a; feed?.seed(a, since);
-    cancelStart ??= afterPaint(() => {
-      void lazy().then(m => {
-        if (destroyed) return;
-        const f = new m.WorkingFeed();
-        f.seed(artifacts ?? []);
-        sync = new m.CardSync({ list: () => artifacts, att: () => att, setList: l => { artifacts = l; }, setAtt: t => { att = t; }, tags: loadAll }, f);
-        sync.start();
-        feed = f; gw = m;
-        void loadQ(m);
-      }, () => {});
-    });
-  }, e => { if (!life.disposed) error = describe(e); }); };
-  const act = (id: string, op: () => Promise<unknown>) => op().then(() => sync ? sync.one(id) : refresh(), e => { error = describe(e); });
-=======
-  // Each list seeds the working feed; the first one, once rendered, starts its stream.
-  let cancelStart: (() => void) | null = null;
-  let destroyed = false;
-  // A list fetched before a `working` event does not undo it (`WorkingFeed.seed`).
-  // Owns the first load's retries; the stream and timers are `sync`'s.
-  const life = new Lifecycle();
-  const load = (first: boolean) => first
-    ? retrying(life, signal => listArtifacts(undefined, { signal }), { retry: unreached, wait: loadWait, trouble: on => connTrouble("gallery", on, REQUEST_STUCK) })
-    : listArtifacts();
-  const refresh = (first = false) => { const since = feed?.events; void getAttention().then(t => { if (t && !sync) att = t; }); return load(first).then(a => {
-    error = null; artifacts = a; feed?.seed(a, since);
-    cancelStart ??= afterPaint(() => {
-      void lazy().then(m => {
-        if (destroyed) return;
-        const f = new m.WorkingFeed();
-        f.seed(artifacts ?? []);
-        sync = new m.CardSync({ list: () => artifacts, att: () => att, setList: l => { artifacts = l; }, setAtt: t => { att = t; }, tags: loadAll }, f);
-        sync.start();
-        feed = f; gw = m;
-        void loadQ(m);
-      }, () => {});
-    });
-  }, e => { if (!life.disposed) error = describe(e); }); };
-  const act = (id: string, op: () => Promise<unknown>) => op().then(() => sync ? sync.one(id) : refresh(), e => { error = describe(e); });
->>>>>>> 664df2ce4 (fix(shell): lifecycle.ts stays free of imports, and ClaxBot's, Queues' and sites' refusals name no status)
   const shown = $derived(artifacts && orderArtifacts(filterArtifacts(artifacts, query).filter(a => carriesAll(a, sel))));
   // Grouped without a query or a tag filter; with either, one list.
   const flat = $derived(!!query.trim() || sel.length > 0);
