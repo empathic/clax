@@ -117,7 +117,10 @@ describe("the owner browser session's proof", () => {
     await w("/a/7q3k9mzx2b4t/index.html");
     next = () => { throw new DOMException("aborted", "AbortError"); };
     await expect(w("/api/artifacts")).rejects.toThrow();
-    expect(heard).toEqual(["not_clax", "unreachable", "not_clax", null, null]);
+    // A local daemon's empty 404 for a route it does not have (/api/hosted/me) is Clax refusing.
+    next = () => new Response(null, { status: 404 });
+    await w("/api/hosted/me");
+    expect(heard).toEqual(["not_clax", "unreachable", "not_clax", null, null, null]);
     // Only the write is watched for hanging.
     expect([pending, settled]).toEqual([1, 1]);
   });

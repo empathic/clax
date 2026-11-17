@@ -3,7 +3,7 @@
 // apart from Clax's own refusal.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, getArtifact, patchArtifact } from "./api";
-import { classify, readError, readJson } from "./failure";
+import { answered, classify, readError, readJson } from "./failure";
 import { Refused, browserCall } from "./held";
 import { createThread } from "./threads";
 import { approveCapabilities } from "./caps/approval";
@@ -38,6 +38,30 @@ describe("readError and classify", () => {
     expect(classify(await readError(clax(404, "not_found")), true)).toBe("gone");
     expect(classify(await readError(clax(429, "rate_limited")), true)).toBe("limited");
     expect(classify(await readError(clax(500, "internal")), true)).toBe("server");
+  });
+});
+
+describe("what an answer says of reaching Clax", () => {
+  const html = (status: number) => new Response("<html><body>Bad gateway</body></html>", { status, headers: { "content-type": "text/html" } });
+  it("takes a CDN's page, a proxy's HTML 502 or 504, and an HTML page where the API answers JSON for no Clax", async () => {
+    expect(await answered(cdn(), "/api/artifacts/a1/threads")).toBe("not_clax");
+    expect(await answered(html(502), "/api/artifacts")).toBe("not_clax");
+    expect(await answered(html(504), "/api/viewers/me")).toBe("not_clax");
+    expect(await answered(page(), "/api/artifacts")).toBe("not_clax");
+  });
+  it("takes an empty refusal (a local daemon's route it does not have) for an ordinary refusal of Clax's, never for Clax gone", async () => {
+    expect(await answered(new Response(null, { status: 404 }), "/api/hosted/me")).toBeNull();
+    expect(await answered(new Response("", { status: 405 }), "/api/artifacts")).toBeNull();
+    const e = await readError(new Response(null, { status: 404 }));
+    expect([e.clax, e.code, classify(e, true)]).toEqual([true, null, "refused"]);
+  });
+  it("judges no file a version serves, which may be an HTML page", async () => {
+    expect(await answered(page(), "/api/artifacts/a1/versions/2/files/index.html")).toBeUndefined();
+    expect(await answered(new Response("<p>x</p>", { headers: { "content-type": "text/html" } }), "/api/artifacts/a1/files/about.html")).toBeUndefined();
+  });
+  it("takes Clax's JSON, and a 204, for Clax answering", async () => {
+    expect(await answered(clax(403, "forbidden"), "/api/token")).toBeNull();
+    expect(await answered(new Response(null, { status: 204 }), "/api/viewers/me/seen")).toBeNull();
   });
 });
 

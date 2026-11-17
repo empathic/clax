@@ -25,12 +25,15 @@ export class ApiError extends Error {
 }
 
 /** `res`, a refusal, as an `ApiError`: Clax's when its body is JSON naming
- * `error.code` (its message the reason), else one that is not Clax's. */
+ * `error.code` (its message the reason), or when it has no body at all (a
+ * local daemon's 404 for a route it does not have: a refusal, never a sign
+ * Clax is gone); else one that is not Clax's (a CDN's or a proxy's page). */
 export async function readError(res: Response): Promise<ApiError> {
   let e: { code?: unknown; message?: unknown } | undefined;
-  try { e = JSON.parse(await res.text())?.error; } catch { /* not JSON: not Clax's */ }
+  const body = await res.text().catch(() => "");
+  try { e = JSON.parse(body)?.error; } catch { /* not JSON: not Clax's */ }
   const code = typeof e?.code === "string" ? e.code : null;
-  return new ApiError(res.status, code !== null && typeof e?.message === "string" ? e.message : "", code);
+  return new ApiError(res.status, code !== null && typeof e?.message === "string" ? e.message : "", code, code !== null || !body.trim());
 }
 
 /** `res`'s JSON body (`{}` for a 204); a refusal throws `readError`'s, and
@@ -43,11 +46,13 @@ export async function readJson<T>(res: Response): Promise<T> {
 }
 
 /** What an answer to `path` says of reaching Clax: null for one of Clax's,
- * `not_clax` for one that is not (a refusal without Clax's JSON, or an HTML
- * page where the API answers), and undefined outside the API, which tells
- * nothing. Reads a clone, so `res` stays unread. */
+ * `not_clax` for one that is not (a refusal with a body that is not Clax's
+ * JSON, or an HTML page where the API answers JSON), and undefined outside
+ * the API and for the files a version serves (which may be HTML pages),
+ * which tell nothing. Reads a clone, so `res` stays unread. */
 export async function answered(res: Response, path: string): Promise<Trouble | null | undefined> {
   if (!path.startsWith("/api/") && path !== "/healthz") return undefined;
+  if (path.includes("/files/")) return undefined;
   if (res.ok) return /html/.test(res.headers.get("content-type") ?? "") ? "not_clax" : null;
   return (await readError(res.clone())).clax ? null : "not_clax";
 }

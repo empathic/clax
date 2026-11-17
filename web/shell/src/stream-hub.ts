@@ -434,8 +434,14 @@ export class Hub {
       this.socketMode = true;
       return this.runSocket(ac);
     }
-    // A refusal without Clax's JSON, or a page served with 200 (a proxy's), is not Clax's.
-    if (!res.ok) throw typeof (await res.json().catch(() => null))?.error?.code === "string" ? new Error("stream refused") : notClax;
+    // A refusal with a body that is not Clax's JSON, or a page served with
+    // 200 (a proxy's), is not Clax's; an empty refusal is Clax's.
+    if (!res.ok) {
+      const body = (await res.text().catch(() => "")).trim();
+      let clax = !body;
+      try { clax ||= typeof JSON.parse(body)?.error?.code === "string"; } catch { /* not JSON */ }
+      throw clax ? new Error("stream refused") : notClax;
+    }
     if (!res.body) throw new Error("the stream had no body");
     if (/html/.test(res.headers.get("content-type") ?? "")) throw notClax;
     const reader = res.body.getReader();

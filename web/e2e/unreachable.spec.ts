@@ -6,8 +6,8 @@
 // their clocks (shell/src/clock.ts), every other step waits for its
 // condition.
 import { type Browser, type Page } from "@playwright/test";
-import { test, expect, type Daemon, commentModeIn, contentFrame, postThread, publish, reach, startDaemon, streamLive } from "./fixtures";
-import { quietEval } from "./time";
+import { test, expect, type Daemon, asLocalViewer, commentModeIn, contentFrame, postThread, publish, reach, startDaemon, streamLive } from "./fixtures";
+import { quietEval, settle } from "./time";
 
 const PAGE = `<main><h2>Quarterly goals</h2><p>Grow revenue and keep costs flat this quarter.</p></main>`;
 const NOT_CLAX = "This Clax is not answering. It may have been taken down or moved.";
@@ -153,6 +153,29 @@ test.describe("on the worker's daemon", () => {
     await expect(notice).toHaveText(`You are offline. Clax will catch up when you are back. ${KEPT}`);
     await context.setOffline(false);
     await expect.poll(async () => { await probeNow(page); return notice.isHidden(); }, untilDone).toBe(true);
+  });
+
+  test("a local daemon's ordinary empty 404 (it has no /api/hosted/me) raises no notice on Settings or a token-less gallery", async ({ page, browser }) => {
+    // Notes in the page whether the notice ever showed, however briefly.
+    const watch = () => {
+      const w = window as unknown as { claxNoticeSeen?: boolean };
+      new MutationObserver(() => { const n = document.querySelector<HTMLElement>(".conn-notice"); if (n && !n.hidden) w.claxNoticeSeen = true; })
+        .observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+    };
+    const seen = (p: Page) => p.evaluate(() => (window as unknown as { claxNoticeSeen?: boolean }).claxNoticeSeen ?? false);
+    const quiet = async (p: Page, url: string) => {
+      await p.addInitScript(watch);
+      const hosted = p.waitForResponse(r => new URL(r.url()).pathname === "/api/hosted/me");
+      await p.goto(url);
+      expect((await hosted).status()).toBe(404);
+      await settle(p);
+      expect(await seen(p)).toBe(false);
+    };
+    await quiet(page, `${d.base}/settings`);
+    const ctx = await browser.newContext();
+    await asLocalViewer(ctx, d);
+    await quiet(await ctx.newPage(), `${d.base}/`);
+    await ctx.close();
   });
 
   test("a page served with 200 where a thread's reply is posted is not taken for Clax's answer", async ({ page }) => {
