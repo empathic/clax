@@ -24,6 +24,7 @@
   // outside closes it and focus goes back.
   import { onMount, tick } from "svelte";
   import * as api from "../hosted/api";
+  import { reasonText } from "../trouble";
   import { inertOutside, trapTab } from "./modal";
   import ContentSecurityPolicySetting from "./ContentSecurityPolicySetting.svelte";
   import {
@@ -63,7 +64,7 @@
       const fresh = await api.sharing(id);
       if (fresh.can_share) data = fresh; else onClose();
       return true;
-    } catch (x) { err = x instanceof Error ? x.message : String(x); return false; } finally { busy = false; }
+    } catch (x) { err = reasonText(x); return false; } finally { busy = false; }
   }
 
   async function add(e: Event) {

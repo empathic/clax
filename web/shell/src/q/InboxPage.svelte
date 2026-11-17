@@ -39,6 +39,7 @@
   import { onMount } from "svelte";
   import { type InboxFilter, type InboxItem, type InboxKind, type StripAgent, type TagRef, getToken, listArtifacts } from "../api";
   import TagPicker from "../ui/TagPicker.svelte";
+  import { failureText } from "../trouble";
   import { filterLabel } from "../view/tag-picker-model";
   import { listTags } from "../view/tags-api";
   import { canonical, holds, refsForUrl, same, toggle as toggleTag } from "../view/tags-model";
@@ -106,7 +107,7 @@
   const KIND_LABEL: Record<InboxKind, string> = { reply: "Replies", version: "Versions", published: "Published", question: "Questions", finished: "Finished", approval: "Approvals", connection: "Connections", ended: "Ended", push: "Pushes", remote_request: "Connect a Clax" };
   const fmt = (n: number | "10000+") => (n === "10000+" ? "10,000+" : n.toLocaleString("en-US"));
   /** Says what failed: `what` ("load the inbox"), and why. */
-  const oops = (what: string) => (e: unknown) => { error = `Could not ${what}: ${e instanceof Error ? e.message : String(e)}`; };
+  const oops = (what: string) => (e: unknown) => { error = failureText(`Could not ${what}`, e); };
   const loadFailed = oops("load the inbox");
 
   /** The list's groups and the cursor of its next page of groups. */

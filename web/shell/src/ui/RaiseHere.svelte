@@ -14,6 +14,7 @@
   // caps it; its person sees who gave it. Loaded in its own chunk, only for
   // a creator; another refusal shows as the daemon words it.
   import type { Rights } from "../api";
+  import { ApiError, reasonText } from "../trouble";
   import { creatorCaps, elevation } from "../people/model";
 
   type Props = { aid: string; handle: string; name: string; holds: Rights; mine: Rights | null; version: string | null; onChanged(): void };
@@ -41,11 +42,11 @@
           onChanged();
           return;
         }
-        throw new Error(b.error?.message ?? `HTTP ${res.status}`);
+        throw new ApiError(res.status, b.error?.message ?? "", b.error?.code ?? null);
       }
       onChanged();
     } catch (x) {
-      err = x instanceof Error ? x.message : String(x);
+      err = reasonText(x);
       el.checked = !el.checked;
     } finally { busy = false; }
   }
