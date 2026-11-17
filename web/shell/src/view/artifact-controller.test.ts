@@ -219,6 +219,24 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     ctl.dispose();
   });
 
+  it("posts nothing to the frame before its hello but the handshake's own messages, and sends at the hello what it held back", async () => {
+    const { ctl, frame } = await started({ threads: [thread("t1")] });
+    const posted: { type: string; mode?: string }[] = [];
+    frame.contentWindow!.postMessage = ((m: { type: string }) => { posted.push(m); }) as Window["postMessage"];
+    ctl.set({ commenting: true });
+    ctl.resolveAll();
+    ctl.send({ type: "clax:focus", id: null });
+    ctl.send({ type: "clax:comment-mode", on: true });
+    ctl.send({ type: "clax:storage-access" });
+    ctl.send({ type: "clax:greet" });
+    expect(posted.map(m => m.type)).toEqual(["clax:storage-access", "clax:greet"]);
+    hello(frame.contentWindow!);
+    expect(posted.map(m => m.type)).toEqual(expect.arrayContaining(["clax:welcome", "clax:resolve-anchors", "clax:focus"]));
+    // Comment mode rides on the welcome.
+    expect(posted.find(m => m.type === "clax:welcome")!.mode).toBe("comment");
+    ctl.dispose();
+  });
+
   it("asks a greeted page to greet again after a load with no hello, and reopens the gate on its hello", async () => {
     const { ctl, frame } = await started();
     const posted: { type: string }[] = [];

@@ -724,9 +724,16 @@ export class ArtifactController {
     return this.frame?.el?.contentWindow ?? null;
   }
 
-  /** Posts `m` to the frame, at the site origin only.
+  /** Posts `m` to the frame, at the site origin only, and only once the
+   * frame's page greeted (the gate is open): before then the frame holds
+   * its first `about:blank` or the site's handshake, and the hello sends
+   * again what was held back (the welcome with comment mode, a pending
+   * fragment, the anchors, the focus, a pending scroll, the live layers).
+   * The handshake's own `clax:storage-access`, and `clax:greet`, which asks
+   * a page to greet again, go at once.
    * @internal */
   send(m: ShellToBridge): void {
+    if (!this.gate.open && m.type !== "clax:storage-access" && m.type !== "clax:greet") return;
     if (this.s.origin) sendToFrame(this.frameWin(), this.s.origin, m);
   }
 
