@@ -9158,6 +9158,13 @@ harness and the daemon, each `ok` or failed with the fix:
   the working directory's `.pi/settings.json` lead to (npm, git or local
   sources) and those `pi list --no-approve` prints; the detail names a
   user package that only one of the two finds.
+- `double_load` (Pi only): each settings entry that loads the Clax package,
+  when there is more than one, with its scope and the `pi remove` command
+  for it (`-l` for a project entry). Pi then reports each tool of a later
+  copy as a conflict and does not start. Entries Pi counts as one package
+  count once. Failed when two of the entries are user entries; not failed
+  when the second copy is a project entry, which Pi loads only in a project
+  it trusts.
 - `skill`: the installed skill's stated version and tool count, and whether
   it is the skill this binary was built with.
 - `mcp`: whether the daemon has a live session of the harness.
