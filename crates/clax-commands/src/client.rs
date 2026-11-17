@@ -1569,6 +1569,12 @@ impl Client {
             .ok()
             .map(|r| r.status().as_u16())
     }
+    /// Status code of a GET with the bearer token, or None if unreachable.
+    pub fn status(&self, path: &str) -> Option<u16> {
+        self.exec(self.request(reqwest::Method::GET, path))
+            .ok()
+            .map(|r| r.status().as_u16())
+    }
     /// GET with the bearer token (the session routes need it; the others ignore it).
     pub fn get(&self, path: &str) -> anyhow::Result<serde_json::Value> {
         self.finish(path, self.exec(self.request(reqwest::Method::GET, path))?)

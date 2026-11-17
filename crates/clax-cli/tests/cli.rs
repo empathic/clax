@@ -446,6 +446,13 @@ fn doctor_runs_all_checks() {
     ] {
         assert!(names.contains(&n), "{n}");
     }
+    let ui = v["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "ui")
+        .unwrap();
+    assert_eq!(ui["ok"], true, "{ui}");
     e.stop();
 }
 
