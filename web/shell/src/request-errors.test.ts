@@ -91,7 +91,11 @@ describe("every request helper", () => {
     expect(e).toBeInstanceOf(Refused);
     expect(e).toBeInstanceOf(ApiError);
     expect([e.status, e.code, e.message]).toEqual([403, "forbidden", "owner only"]);
+    // An answer that is not Clax's says so, never an empty message: the
+    // confirmation card and the passkey screens show `message`.
     stub(cdn);
-    expect(classify(await thrown(browserCall("/api/confirmations")), true)).toBe("not_clax");
+    const gone = await thrown(browserCall("/api/confirmations")) as Refused;
+    expect(classify(gone, true)).toBe("not_clax");
+    expect(gone.message).toBe("this Clax is not answering. It may have been taken down or moved.");
   });
 });

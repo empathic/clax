@@ -7,7 +7,7 @@
 // so it finishes without a card. Otherwise the call reads it and says where
 // to confirm instead of taking the body for the decision's result.
 
-import { ApiError, readJson } from "./trouble";
+import { ApiError, readJson, reasonText } from "./trouble";
 
 /** A held decision: its confirmation, where to confirm it, and the line that says so. */
 export type Held = { id: string; url: string; message: string };
@@ -35,8 +35,8 @@ export class Refused extends ApiError {
     this.message = message;
     this.name = "Refused";
   }
-  /** The same refusal as a `Refused`. */
-  static of(e: ApiError): Refused { return new Refused(e.status, e.reason, e.code, null, e.clax); }
+  /** The same refusal as a `Refused`; one that is not Clax's says so (`reasonText`), never nothing. */
+  static of(e: ApiError): Refused { return new Refused(e.status, e.clax ? e.reason : reasonText(e), e.code, null, e.clax); }
 }
 
 /** The header that presents a confirmation's ID with the call it confirms:
