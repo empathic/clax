@@ -1416,6 +1416,26 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
       });
     }
 
+    it("starts the handshake again at Clax's next answer after a code request that found no Clax", async () => {
+      const { ctl, frame } = await started();
+      let down = true;
+      const calls = codes(() => (down ? new Response("error code: 1016", { status: 530, headers: { "content-type": "text/plain" } }) : sent()));
+      const went = await goes();
+      fromFrame(frame.contentWindow!, STATE);
+      await vi.waitFor(() => expect(calls).toHaveLength(1));
+      await new Promise(r => setTimeout(r, 0));
+      expect(went).toEqual([]);
+      down = false;
+      // Any answer of Clax's (here the probe's, as reach.ts hears it) starts the frame's site over.
+      (await import("../reach")).heard(null);
+      await vi.waitFor(() => expect(went.at(-1)).toBe(START));
+      // The site posts its state again, and this time the code comes.
+      fromFrame(frame.contentWindow!, STATE);
+      await vi.waitFor(() => expect(went.at(-1)).toBe(CODE));
+      expect(ctl.state.get().openInTab).toBeNull();
+      ctl.dispose();
+    });
+
     it("asks a frame without its cookie for storage access, starts once more when refused, then offers the page in a tab", async () => {
       const { ctl, frame } = await started();
       const calls = codes(sent);

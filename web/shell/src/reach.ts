@@ -26,25 +26,30 @@ export const PROBE_LABEL = "reach-probe";
 
 let down: Trouble | null = null;
 let tries = 0;
+/** The pending wait before the next ask, and whether an ask is in flight:
+ * at most one of each. */
 let cancel: (() => void) | undefined;
+let asking = false;
 let watching = false;
 let waits = 0;
+const backs = new Set<() => void>();
 
 const hidden = () => typeof document === "undefined" || visibility.hidden(document);
 
-/** Asks `PROBE_PATH` after the next backoff, unless an ask is pending, the
- * page is hidden, or Clax answers. */
+/** Asks `PROBE_PATH` after the next backoff, unless a wait or an ask is
+ * pending, the page is hidden, or Clax answers. */
 function arm(): void {
-  if (cancel || down === null || hidden()) return;
-  cancel = after(backoff(tries++), () => { void probe(); }, PROBE_LABEL);
+  if (cancel || asking || down === null || hidden()) return;
+  cancel = after(backoff(tries++), () => { cancel = undefined; void probe(); }, PROBE_LABEL);
 }
 
 async function probe(): Promise<void> {
+  asking = true;
   const ac = new AbortController();
   const stop = after(STUCK_MS, () => ac.abort());
   const t = await fetch(PROBE_PATH, { cache: "no-store", signal: ac.signal }).then(r => answered(r, PROBE_PATH), e => classify(e));
   stop();
-  cancel = undefined;
+  asking = false;
   heard(t ?? null);
 }
 
@@ -54,7 +59,14 @@ function watch(): void {
   document.addEventListener("visibilitychange", () => {
     if (hidden()) { cancel?.(); cancel = undefined; } else arm();
   });
-  addEventListener("online", () => { if (down !== null) { cancel?.(); cancel = undefined; tries = 0; arm(); } });
+  addEventListener("online", () => { if (down !== null && !asking) { cancel?.(); cancel = undefined; tries = 0; arm(); } });
+}
+
+/** Calls `f` at each answer of Clax's heard from now on, until the
+ * returned function runs (the stream hub's wait, a frame's handshake). */
+export function onBack(f: () => void): () => void {
+  backs.add(f);
+  return () => { backs.delete(f); };
 }
 
 /** A request to the page's origin found no Clax for reason `t`, or (null)
@@ -63,7 +75,7 @@ function watch(): void {
 export function heard(t: Trouble | null): void {
   if (t !== null && t !== "offline" && t !== "unreachable" && t !== "not_clax") t = null;
   if (t === null) {
-    connTrouble("part", false, "");
+    for (const f of [...backs]) f();
     if (down === null) return;
     down = null;
     tries = 0;

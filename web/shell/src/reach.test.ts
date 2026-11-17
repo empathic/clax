@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { NOT_CLAX, STILL_WAITING, UNREACHABLE_HERE, connNoticeText } from "./conn-notice";
+import { NOT_CLAX, STILL_WAITING, UNREACHABLE_HERE, connNoticeText, connTrouble, partFailed } from "./conn-notice";
 import { STUCK_MS } from "./lifecycle";
-import { PROBE_LABEL, PROBE_PATH, heard, pending } from "./reach";
+import { PROBE_LABEL, PROBE_PATH, heard, onBack, pending } from "./reach";
 
 /** Longer than any backoff wait (lifecycle.ts: 30 s, spread up by 20%). */
 const BACKOFF_CAP = 36_000;
@@ -69,6 +69,49 @@ describe("reaching Clax", () => {
     await vi.advanceTimersByTimeAsync(BACKOFF_CAP);
     expect(f).toHaveBeenCalledTimes(1);
     expect(connNoticeText()).toBeNull();
+  });
+
+  it("holds one wait and one ask at most, however often the page is hidden, shown or back online during an ask", async () => {
+    let settle!: (r: Response) => void;
+    answer = () => new Promise<Response>(r => { settle = r; });
+    heard("not_clax");
+    await vi.advanceTimersByTimeAsync(clock().dueIn(PROBE_LABEL)!);
+    expect(f).toHaveBeenCalledTimes(1);
+    // While the ask is in flight: hidden, shown, online.
+    setVisibility("hidden");
+    setVisibility("visible");
+    dispatchEvent(new Event("online"));
+    expect(clock().dueIn(PROBE_LABEL)).toBeNull();
+    answer = cdn;
+    settle(cdn());
+    await vi.advanceTimersByTimeAsync(0);
+    // One wait after it, and one ask per wait from then on.
+    for (let i = 2; i <= 4; i++) {
+      expect(clock().dueIn(PROBE_LABEL)).toBeGreaterThan(0);
+      await vi.advanceTimersByTimeAsync(clock().dueIn(PROBE_LABEL)!);
+      expect(f).toHaveBeenCalledTimes(i);
+    }
+  });
+
+  it("tells those waiting for Clax each answer of Clax's", () => {
+    const back = vi.fn();
+    const off = onBack(back);
+    heard("unreachable");
+    expect(back).not.toHaveBeenCalled();
+    heard(null);
+    heard(null);
+    expect(back).toHaveBeenCalledTimes(2);
+    off();
+    heard(null);
+    expect(back).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps saying a part could not load, to reload the page, when Clax answers again", () => {
+    partFailed();
+    expect(connNoticeText()).toBe("Part of Clax could not load. Reload the page to try again.");
+    heard(null);
+    expect(connNoticeText()).toBe("Part of Clax could not load. Reload the page to try again.");
+    connTrouble("part", false, "");
   });
 
   it("says Clax is not answering while a write is still waiting after the stuck threshold, without ending it", async () => {

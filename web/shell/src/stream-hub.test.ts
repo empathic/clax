@@ -306,6 +306,25 @@ describe("the stream hub", () => {
     expect(of("t1", "status").at(-1)).toEqual({ t: "status", up: true });
   });
 
+  it("reconnects at once when a tab heard Clax answer, rather than waiting out its backoff", async () => {
+    hub.receive("t1", { t: "topics", topics: ["gallery"] });
+    await tick();
+    net.ready(net.conns[0], S1);
+    await tick();
+    net.conns[0].end();
+    await tick();
+    expect(of("t1", "status")).toEqual([{ t: "status", up: false }]);
+    const before = net.conns.length;
+    hub.receive("t1", { t: "wake" });
+    await tick();
+    expect(net.conns.length).toBe(before + 1);
+    // Nothing waits any more, and a wake with a stream open does nothing.
+    expect((globalThis as unknown as { claxTestClock: { dueIn(l: string): number | null } }).claxTestClock.dueIn(RETRY_LABEL)).toBeNull();
+    hub.receive("t1", { t: "wake" });
+    await tick();
+    expect(net.conns.length).toBe(before + 1);
+  });
+
   it("splits a refused request, so one topic's refusal keeps the others", async () => {
     net.refuse.set(`docs:${A}`, [403, "not_declared"]);
     hub.receive("t1", { t: "topics", topics: [`artifact:${A}`, `docs:${A}`] });

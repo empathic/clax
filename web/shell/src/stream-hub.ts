@@ -75,13 +75,15 @@ import { socketUrl } from "./socket-url";
  * caller having changed to `caller` (a key: see `callerKey`), unless the
  * stream is already opened as that caller; `retry` asks again for topics
  * the daemon refused (the tab joins live after a live seat was refused or
- * released). */
+ * released); `wake` says the tab's own request heard Clax answer, so a
+ * reconnect waiting out its backoff goes at once. */
 export type TabMsg =
   | { t: "hello"; lock?: string; proof?: string }
   | { t: "topics"; topics: string[] }
   | { t: "focus"; focused: boolean }
   | { t: "reconnect"; caller?: string }
   | { t: "retry"; topics: string[] }
+  | { t: "wake" }
   | { t: "ping" }
   | { t: "bye" };
 
@@ -319,6 +321,10 @@ export class Hub {
       case "retry":
         for (const t of msg.topics) this.refused.delete(t);
         this.changed();
+        break;
+      case "wake":
+        // A tab heard Clax answer: a reconnect waiting out its backoff goes now.
+        if (this.retry && !this.conn) { this.retry(); this.retry = undefined; if (this.wanted().size) this.connect(); }
         break;
       case "ping": break;
     }

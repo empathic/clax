@@ -38,6 +38,7 @@ import { getToken } from "./api";
 import { isProofKey, ownerProof } from "./owner-proof";
 import { after } from "./clock";
 import { STREAM_DOWN, connTrouble, noticeFor } from "./conn-notice";
+import { onBack } from "./reach";
 import type { Trouble } from "./trouble";
 import { visibility } from "./visibility";
 import { backoff } from "./lifecycle";
@@ -275,8 +276,10 @@ export class EventStream {
   private gone = false;
   /** Watchers were told `stream_down`, and not yet `stream_up`. */
   private down = false;
-  /** Why the stream is down, as the hub said. */
+  /** Why the stream is down, as the hub said, and the end of the wait for
+   * Clax's next answer while it says Clax cannot be reached. */
   private why: Trouble | undefined;
+  private offBack: (() => void) | undefined;
   private heard = Date.now();
   private hiddenTimer: (() => void) | undefined;
   private noticeTimer: Timer | undefined;
@@ -532,6 +535,7 @@ export class EventStream {
    * words the notice as a failed request would, else as the stream alone. */
   private markDown(why?: Trouble): void {
     this.why = why;
+    if (why) this.offBack ??= onBack(this.back);
     if (this.down) { if (!this.noticeTimer) this.showDown(); return; }
     this.down = true;
     this.tell(() => true, { type: "stream_down" });
@@ -540,6 +544,19 @@ export class EventStream {
       this.showDown();
     }, NOTICE_MS);
   }
+
+  /** A request of the page's heard Clax answer (`reach.ts` `onBack`) while
+   * the hub said Clax could not be reached: that is no longer so, so the
+   * notice words the stream alone, and the hub reconnects now rather than
+   * after its backoff (`wake`). */
+  private readonly back = (): void => {
+    this.offBack?.();
+    this.offBack = undefined;
+    if (!this.down || !this.why) return;
+    this.why = undefined;
+    if (!this.noticeTimer) this.showDown();
+    this.link?.send({ t: "wake" });
+  };
 
   private showDown(): void {
     if (!this.down || this.gone) return;

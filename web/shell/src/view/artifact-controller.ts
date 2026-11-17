@@ -13,7 +13,7 @@ import { CapabilityHost, type CommentsUi, type DbJournal } from "../caps/host";
 import { REQUEST_STUCK, connKept, connTrouble } from "../conn-notice";
 import { Lifecycle, onPageCache, retrying } from "../lifecycle";
 import { readJson, unreached } from "../trouble";
-import { loadWait } from "../reach";
+import { loadWait, onBack } from "../reach";
 import { APPROVE_FAILED, ARTIFACT_FAILED, COPY_FAILED, LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, failureText, report, scopedNotice } from "../failure";
 import { nav } from "../nav";
 import { type SiteHosts, artifactOrigin, pageSrc, startSrc } from "../origin";
@@ -825,7 +825,8 @@ export class ArtifactController {
    * for a code bound to it (`POST /api/artifacts/<id>/site-code`) and sends
    * the frame to it; a code Clax refused offers the page in a tab. When
    * Clax was not reached (no answer, an answer that is not Clax's), the
-   * frame stays as it is and the connection notice says why. */
+   * frame stays as it is and the connection notice says why, and the
+   * handshake starts again at Clax's next answer (`reach.ts` `onBack`). */
   private async redeem(hs: NonNullable<ArtifactController["hs"]>, st: { state: string; next: string }): Promise<void> {
     hs.phase = "asking";
     let src: unknown = null;
@@ -839,7 +840,19 @@ export class ArtifactController {
       });
       src = (await readJson<{ src?: unknown }>(r)).src;
     } catch (e) { away = unreached(e); }
-    if (this.disposed || this.hs !== hs || this.frame?.el !== hs.el || away) return;
+    if (this.disposed || this.hs !== hs || this.frame?.el !== hs.el) return;
+    if (away) {
+      // Clax was not reached: at its next answer the frame's site starts
+      // over, and posts its state again.
+      const off = onBack(() => {
+        off();
+        if (this.disposed || this.hs !== hs || this.frame?.el !== hs.el || hs.phase !== "asking") return;
+        hs.phase = "start";
+        this.frame.again();
+      });
+      this.life.defer(off);
+      return;
+    }
     if (typeof src !== "string" || !src.startsWith(`${this.s.origin}/`)) { this.offerInTab(); return; }
     hs.phase = "code";
     this.frame.go(src);

@@ -18,26 +18,32 @@ const untilDone = { timeout: 0 };
 
 /** Evaluates `expression` in each of the browser's shared workers (the
  * stream hubs, shell/src/stream-worker.ts), through the DevTools protocol. */
-async function inHubs(browser: Browser, expression: string): Promise<void> {
+async function inHubs(browser: Browser, expression: string): Promise<unknown[]> {
   const cdp = await browser.newBrowserCDPSession();
+  const out: unknown[] = [];
   try {
     const { targetInfos } = await cdp.send("Target.getTargets");
     for (const w of targetInfos.filter(t => t.type === "shared_worker")) {
       const { sessionId } = await cdp.send("Target.attachToTarget", { targetId: w.targetId, flatten: false });
-      const answered = new Promise<void>(resolve => {
+      const answered = new Promise<unknown>(resolve => {
         const on = (e: { sessionId?: string; message: string }) => {
-          if (e.sessionId === sessionId && JSON.parse(e.message).id === 1) { cdp.off("Target.receivedMessageFromTarget", on); resolve(); }
+          const m = JSON.parse(e.message);
+          if (e.sessionId === sessionId && m.id === 1) { cdp.off("Target.receivedMessageFromTarget", on); resolve(m.result?.result?.value); }
         };
         cdp.on("Target.receivedMessageFromTarget", on);
       });
       await cdp.send("Target.sendMessageToTarget", { sessionId, message: JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression, returnByValue: true } }) });
-      await answered;
+      out.push(await answered);
       await cdp.send("Target.detachFromTarget", { sessionId });
     }
   } finally {
     await cdp.detach();
   }
+  return out;
 }
+/** The milliseconds left of each stream hub's wait before it reconnects; hubs with none left out. */
+const hubWaits = async (browser: Browser) =>
+  (await inHubs(browser, `globalThis.claxTestClock?.dueIn("stream-retry") ?? null`)).filter((v): v is number => typeof v === "number");
 /** Runs now the wait labelled `label` pending on a clock, by advancing that clock to it. */
 const runNow = (label: string) => `{ const c = globalThis.claxTestClock, due = c?.dueIn(${JSON.stringify(label)}); if (due != null) c.advance(Math.max(0, due)); }`;
 /** Runs each stream hub's pending reconnect now (shell/src/stream-hub.ts `RETRY_LABEL`). */
@@ -112,15 +118,26 @@ test("a Clax taken down: the shell says it is not answering, keeps what was type
     await expect(notice).toHaveAttribute("role", "status");
     await expect(notice).toHaveAttribute("data-warn", "");
 
-    // Clax answers again: the notice clears by itself, once the page's ask
-    // and the hub's reconnect run (on their clocks).
+    // The hub fails its reconnects (run on its clock) until its backoff waits
+    // at least 24 s (30 s spread by a fifth).
+    await expect.poll(async () => {
+      await hubRetryNow(browser);
+      await expect.poll(async () => (await hubWaits(browser)).length, untilDone).toBe(1);
+      return (await hubWaits(browser))[0];
+    }, untilDone).toBeGreaterThan(20_000);
+
+    // Clax answers again: the notice clears by itself once the page's ask
+    // runs (on its clock), well within the bound below, which is under the
+    // hub's own wait: the hub is not driven. (The restarted daemon's
+    // sign-in also hands the hub a new proof, which reopens it; the unit
+    // tests in shell/src/stream.test.ts and stream-hub.test.ts pin the
+    // page's `wake` on its own.)
     await context.unroute(down);
     own = await startDaemon({ home, port: Number(port) });
     await expect.poll(async () => {
       await probeNow(page);
-      await hubRetryNow(browser);
       return notice.isHidden();
-    }, untilDone).toBe(true);
+    }, { timeout: 10_000 }).toBe(true);
 
     // The kept texts post.
     await card.getByRole("button", { name: "Reply", exact: true }).click();

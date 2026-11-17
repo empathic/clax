@@ -5,16 +5,17 @@
 // among equals), and gone once none does. The page keeps retrying
 // meanwhile; the notice only says so, and while a box holds text the person
 // has not sent, that it is kept.
-import type { Trouble } from "./trouble";
+import { REASON, type Trouble } from "./trouble";
 
 export const STREAM_DOWN = "Live updates paused. Reconnecting…";
 export const REQUEST_STUCK = "Clax is not answering. Retrying…";
 export const STILL_WAITING = "Clax is not answering yet. Still waiting…";
-export const NOT_CLAX = "This Clax is not answering. It may have been taken down or moved.";
+/** The reason after a prefix (trouble.ts `REASON.not_clax`), as a sentence of its own. */
+export const NOT_CLAX = `T${REASON.not_clax!.slice(1)}`;
 export const OFFLINE = "You are offline. Clax will catch up when you are back.";
 export const UNREACHABLE = "Cannot reach Clax. Retrying…";
 export const UNREACHABLE_HERE = "Clax is not answering on this computer. Retrying…";
-export const PART_UNLOADED = "Part of Clax could not load. Try again in a moment.";
+export const PART_UNLOADED = "Part of Clax could not load. Reload the page to try again.";
 export const KEPT = "What you wrote is kept.";
 
 /** Whether `host` is this computer's, where a local daemon runs. */
@@ -70,10 +71,12 @@ export function connKept(key: string, on: boolean): void {
   if (el && !el.hidden) render();
 }
 
-/** A part the person asked for could not load: the notice says so unless
- * it already shows something, until Clax next answers (`reach.ts`). */
+/** A part the person asked for could not load: the notice says to reload
+ * the page, until it is reloaded. Its file may be gone (a deploy or an
+ * upgrade replaces them), and a browser may keep a failed import, so
+ * asking again need not help. */
 export function partFailed(): void {
-  if (!held.size) connTrouble("part", true, PART_UNLOADED, document, 1);
+  connTrouble("part", true, PART_UNLOADED, document, 1);
 }
 
 /** Whether the notice is showing (tests). */

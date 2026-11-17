@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NOT_CLAX, OFFLINE, STREAM_DOWN, connNoticeText } from "./conn-notice";
 import { DEAD_MS, EventStream, HIDDEN_MS, type Link, type LinkMaker, NOTICE_MS, type StreamEvent, TOKEN_WAIT_MS, leaderLink } from "./stream";
 import { ownerBrowser } from "./owner";
+import { heard as reached } from "./reach";
 import { type HubMsg, PING_MS, type TabMsg } from "./stream-hub";
 import { Net } from "./test/fake-net";
 
@@ -219,6 +220,22 @@ describe("EventStream", () => {
     expect(connNoticeText()).toBe(STREAM_DOWN);
     links[0].on({ t: "status", up: true });
     expect(seen).toEqual([{ type: "stream_down" }, { type: "stream_up" }]);
+    expect(connNoticeText()).toBeNull();
+  });
+
+  it("once a request hears Clax again, words the stream as the stream alone and asks the hub to reconnect now", async () => {
+    s.watch(["gallery"], () => {});
+    await flush();
+    links[0].on({ t: "status", up: false, why: "unreachable" });
+    await vi.advanceTimersByTimeAsync(NOTICE_MS);
+    expect(connNoticeText()).not.toBe(STREAM_DOWN);
+    reached(null);
+    expect(connNoticeText()).toBe(STREAM_DOWN);
+    expect(links[0].msgs.filter(m => m.t === "wake")).toHaveLength(1);
+    // Asked once: a later answer asks nothing more.
+    reached(null);
+    expect(links[0].msgs.filter(m => m.t === "wake")).toHaveLength(1);
+    links[0].on({ t: "status", up: true });
     expect(connNoticeText()).toBeNull();
   });
 
