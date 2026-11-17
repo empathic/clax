@@ -59,6 +59,7 @@
   import { ApiError, type Artifact, type AttentionSummary, type TagRef, deleteArtifact, getToken, listArtifacts, patchArtifact, tokenUnsure } from "../api";
   import type { MeBot } from "../bot/api";
   import { banner } from "../bot/meter";
+  import { reasonText } from "../failure";
   import { REQUEST_STUCK, connTrouble } from "../conn-notice";
   import { readConfig } from "../feedback/boot";
   import { configOnce } from "../feedback/config";
@@ -191,7 +192,7 @@
     if (u !== `${location.pathname}${location.search}${location.hash}`) history.replaceState(history.state, "", u);
   });
 
-  const describe = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  const describe = reasonText;
   const get = (path: string): Promise<Answer<unknown>> => fetch(path).then(async r => ({ status: r.status, body: r.ok ? await r.json().catch(() => null) : null }), () => ({ status: 0, body: null }));
   const tokenP: Promise<TokenAnswer> = getToken().then(t => (t === null && tokenUnsure() ? "failed" : t));
   const io: Io = {

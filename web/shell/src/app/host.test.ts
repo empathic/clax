@@ -1128,7 +1128,7 @@ describe("app mode's host channel", { timeout: MOUNT_TIMEOUT_MS }, () => {
     host.setDraftText("make it blue");
     host.submitDraft();
     await waitFor(() => toHost.some(x => x.type === "sendFailed"), "sendFailed");
-    expect(toHost.find(x => x.type === "sendFailed")).toEqual({ type: "sendFailed", thread: "t9", text: "Could not send to the agent: 500 down" });
+    expect(toHost.find(x => x.type === "sendFailed")).toEqual({ type: "sendFailed", thread: "t9", text: "Could not send to the agent: down" });
     // Not a thread, or one already sent: nothing.
     host.resend("nope");
     sendOk = true;

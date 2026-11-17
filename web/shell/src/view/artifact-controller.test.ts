@@ -1195,7 +1195,7 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     expect(new Headers(reopens[0].headers).get("authorization")).toBe("Bearer tk");
     refuse = true;
     ctl.resolveThread(done);
-    await vi.waitFor(() => expect(ctl.state.get().notice).toBe("Could not reopen: 403 set a name first"));
+    await vi.waitFor(() => expect(ctl.state.get().notice).toBe("Could not reopen: set a name first"));
     ctl.dispose();
   });
 

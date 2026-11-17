@@ -766,8 +766,8 @@ describe("Gallery tags", { timeout: MOUNT_TIMEOUT_MS }, () => {
         vi.stubGlobal("confirm", () => true);
         const loads = calls.filter(c => c.url === "/api/tags").length;
         rows[0].querySelector<HTMLButtonElement>("button.tdel")!.click();
-        await waitFor(() => calls.filter(c => c.url === "/api/tags").length > loads && m.root.querySelector(".terr")?.textContent === "Could not delete Q4: no such tag", "the refusal after the reload");
-        expect(m.root.querySelector(".terr")!.textContent).toBe("Could not delete Q4: no such tag");
+        await waitFor(() => calls.filter(c => c.url === "/api/tags").length > loads && m.root.querySelector(".terr")?.textContent === "Could not delete Q4: it was deleted.", "the refusal after the reload");
+        expect(m.root.querySelector(".terr")!.textContent).toBe("Could not delete Q4: it was deleted.");
       }
       unmountGallery(); unmountGallery = null; await freshModules(); vi.unstubAllGlobals();
     }

@@ -63,6 +63,7 @@ export const POST_FAILED = "Could not post";
 export const NAME_FAILED = "Could not save your name";
 export const NAME_LOAD_FAILED = "Could not load your name";
 export const LOAD_FAILED = "Could not load comments";
+export const ARTIFACT_FAILED = "Could not load this artifact";
 export const OPEN_FAILED = "Could not open";
 export const APPROVE_FAILED = "Could not approve";
 export const SHEET_FAILED = "Could not open the keyboard shortcuts";
@@ -83,12 +84,31 @@ export const PART_FAILED: Record<"comment" | "clip" | "caps" | "origin" | "room"
  * refused write (`comments_off`, [`failureText`]). */
 export const COMMENTS_OFF = "Comments are off for this page";
 
-/** `<prefix>: <message>` for an API error, a network failure, or anything
- * thrown; a `comments_off` refusal says comments are off ([`COMMENTS_OFF`]). */
+/** What the person is told after a failure's prefix, by kind; `server` and
+ * `refused` say the daemon's own message instead. */
+export const REASON: Partial<Record<Trouble, string>> = {
+  not_clax: "this Clax is not answering. It may have been taken down or moved.",
+  offline: "you are offline.",
+  unreachable: "Clax did not answer.",
+  signed_out: "you are signed out.",
+  gone: "it was deleted.",
+  limited: "too many requests. Try again in a moment.",
+};
+
+/** Why `e` failed, in the person's words: by its kind, else the daemon's
+ * message (or the error's own, for one that is no request's); never a
+ * status number or a browser's error string. A `comments_off` refusal says
+ * comments are off ([`COMMENTS_OFF`]). */
+export function reasonText(e: unknown): string {
+  if (e instanceof ApiError && e.code === "comments_off") return `${COMMENTS_OFF[0].toLowerCase()}${COMMENTS_OFF.slice(1)}`;
+  const said = REASON[classify(e)];
+  if (said) return said;
+  return (e instanceof ApiError ? e.reason : e instanceof Error ? e.message : String(e)) || "Clax could not do it.";
+}
+
+/** `<prefix>: <reason>` for anything a request threw (`reasonText`). */
 export function failureText(prefix: string, e: unknown): string {
-  if (e instanceof ApiError && e.code === "comments_off") return `${prefix}: ${COMMENTS_OFF[0].toLowerCase()}${COMMENTS_OFF.slice(1)}`;
-  const message = e instanceof ApiError || e instanceof Error ? e.message : String(e);
-  return `${prefix}: ${message}`;
+  return `${prefix}: ${reasonText(e)}`;
 }
 
 /** Awaits `p`. On success clears the notice and returns the value; on failure

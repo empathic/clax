@@ -30,7 +30,8 @@
   // hear one that does not bubble; a binding's helper would be split out of
   // the sidebar's chunk.
   import { tick, untrack } from "svelte";
-  import { ApiError, type AnswerBody, type QuestionStatus, type QuestionView } from "../api";
+  import type { AnswerBody, QuestionStatus, QuestionView } from "../api";
+  import { failureText } from "../failure";
   import { after } from "../clock";
   import { relativeTime } from "../format";
   import { aboutLink, agentLabel, answerLine, answerText, closedLabel, complete, cutHeader, emptyDraft, nextOpen, pick, previewOf, questionLink, shownLabel, toBody, typeOther } from "./model";
@@ -135,9 +136,8 @@
     queueMicrotask(() => { inside = !from.isConnected || (from as HTMLButtonElement).disabled === true; });
   };
 
-  /** The hint for a failed action: the daemon's message for a refusal, else the connection. */
-  const failed = (err: unknown): string =>
-    err instanceof ApiError && err.status ? `Not sent: ${err.message.replace(/^\d+ /, "")}` : "Not sent: Clax did not answer. Try again.";
+  /** The hint for a failed action: why it failed (`failureText`). */
+  const failed = (err: unknown): string => failureText("Not sent", err);
   // Runs `f` for activation `e` of a consequential action unless the trail says to click.
   const run = (e: Event, verb: string, closes: QuestionStatus, f: () => Promise<void>) => {
     if (busy) return;

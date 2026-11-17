@@ -2,7 +2,7 @@
 // editor and the inbox's Tag filter. Only their lazy chunks load it. The
 // owner's shell sends its token; anyone else's request is their browser's.
 import { type TagRef, getToken } from "../api";
-import { ApiError, readJson } from "../failure";
+import { readJson, reasonText } from "../failure";
 
 /** A tag as `GET /api/tags` lists it: `count` is how many artifacts the caller sees carry it. */
 export type TagView = TagRef & { description: string | null; created_at: string; updated_at: string; count: number };
@@ -30,5 +30,5 @@ export const deleteTag = (id: string) => call<{ deleted: boolean; artifacts: num
 export const changeArtifactTags = (aid: string, add: string[], remove: string[]) =>
   call<{ artifact_id: string; tags: TagRef[]; changed: boolean }>(`/api/artifacts/${encodeURIComponent(aid)}/tags`, "PATCH", { add, remove });
 
-/** A failed call's message, as the daemon gave it. */
-export const failure = (e: unknown): string => (e instanceof ApiError ? e.message.replace(/^\d+ /, "") : e instanceof Error ? e.message : String(e));
+/** A failed call's reason: the daemon's message, or why Clax did not answer (`reasonText`). */
+export const failure = reasonText;

@@ -153,6 +153,9 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const view = await mountView(async () => new Response(JSON.stringify({ error: { code: "internal", message: "port 4040 or 404 busy" } }), { status: 500 }));
     const root = view.root;
     await waitFor(() => root.textContent?.includes("port 4040"), "error message");
+    // The daemon's own words, never the error's class name or the status.
+    expect(root.textContent).not.toContain("ApiError");
+    expect(root.textContent).not.toContain("500");
     expect(root.textContent).not.toContain("Artifact not found");
   });
 
@@ -244,7 +247,8 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     const root = view.root;
     const banner = await waitFor(() => root.querySelector(".banner.notice"), "notice banner");
     expect(banner.getAttribute("role")).toBe("alert");
-    expect(banner.textContent).toContain("Could not load comments: 500 db locked");
+    expect(banner.textContent).toContain("Could not load comments: db locked");
+    expect(banner.textContent).not.toContain("500");
   });
 
   it("says a failed name lookup could not load the name", async () => {
@@ -257,7 +261,7 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
     await waitFor(() => !root.querySelector(".more-slot"), "more menu");
     (await waitFor(() => root.querySelector<HTMLButtonElement>("button.who"), "roster")).click();
     const banner = await waitFor(() => root.querySelector(".banner.notice"), "notice banner");
-    expect(banner.textContent).toContain("Could not load your name: 403 nope");
+    expect(banner.textContent).toContain("Could not load your name: nope");
   });
 
   for (const narrow of [false, true]) {

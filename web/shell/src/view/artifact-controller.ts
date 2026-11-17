@@ -12,7 +12,7 @@ import { HINT_MS, PICK_ATTEST_WAIT_MS, afterHostAttestation, frameGesture, hostA
 import { CapabilityHost, type CommentsUi, type DbJournal } from "../caps/host";
 import { REQUEST_STUCK, connTrouble } from "../conn-notice";
 import { Lifecycle, onPageCache, retrying } from "../lifecycle";
-import { APPROVE_FAILED, LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, failureText, report, scopedNotice } from "../failure";
+import { APPROVE_FAILED, ARTIFACT_FAILED, LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, failureText, report, scopedNotice } from "../failure";
 import { nav } from "../nav";
 import { type SiteHosts, artifactOrigin, pageSrc, startSrc } from "../origin";
 import { appQuery, inspectQuery, parseShellPath, shellPath } from "../route";
@@ -970,7 +970,7 @@ export class ArtifactController {
     } else {
       // A daemon that does not answer is retried (with a notice); an answer, even an error, is shown.
       retrying(this.life, signal => getArtifact(this.id, { signal }), { retry: e => !(e instanceof ApiError), trouble: on => connTrouble("artifact", on, REQUEST_STUCK) })
-        .then(d => this.loaded(d), e => { if (!this.disposed) this.set({ error: e instanceof ApiError && e.status === 404 ? "Artifact not found" : String(e) }); });
+        .then(d => this.loaded(d), e => { if (!this.disposed) this.set({ error: e instanceof ApiError && e.status === 404 ? "Artifact not found" : failureText(ARTIFACT_FAILED, e) }); });
     }
     // Leaving the page ends the view: nothing it started outlives it, also
     // into the back/forward cache (`artifact-main` reloads a restored page).
