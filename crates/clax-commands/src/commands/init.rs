@@ -208,7 +208,7 @@ fn lexical(p: &Path) -> PathBuf {
 
 /// A stored path as an absolute path: `file://…`, `~` or `~/…` (against
 /// `home`), absolute, or relative to `base`; resolved lexically.
-fn stored_path(s: &str, base: &Path, home: &Path) -> PathBuf {
+pub(super) fn stored_path(s: &str, base: &Path, home: &Path) -> PathBuf {
     let s = s.trim();
     let s = s.strip_prefix("file://").unwrap_or(s);
     let p = if s == "~" {

@@ -66,7 +66,9 @@ impl DoctorAgent {
             }
             DoctorAgent::Codex => "reinstall with `codex plugin add clax@clax`",
             DoctorAgent::Grok => "reinstall with `clax init --agent grok`",
-            DoctorAgent::Pi => "reinstall with `pi install <checkout>/plugins/pi`",
+            DoctorAgent::Pi => {
+                "reinstall with `pi install npm:@empathic/clax-pi`, or `clax init` for the copy built into this clax"
+            }
         }
     }
 
@@ -89,6 +91,8 @@ impl DoctorAgent {
 
 /// Where each harness keeps its configuration.
 pub struct Dirs {
+    /// `$HOME`.
+    pub home: PathBuf,
     /// `$CODEX_HOME`, else `~/.codex`.
     pub codex_home: PathBuf,
     /// `$CLAUDE_CONFIG_DIR`, else `~/.claude`.
@@ -125,6 +129,7 @@ impl Dirs {
             claude_dir: var("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home.join(".claude")),
             pi_dir: var("PI_CODING_AGENT_DIR").unwrap_or_else(|| home.join(".pi/agent")),
             grok_home: var("GROK_HOME").unwrap_or_else(|| home.join(".grok")),
+            home,
         })
     }
 }
@@ -180,8 +185,9 @@ fn read_json(path: &Path) -> Option<Value> {
 /// - Claude Code: the `installPath`s of `clax@*` entries in
 ///   `<claude dir>/plugins/installed_plugins.json`, then
 ///   `<claude dir>/plugins/cache/*/clax/<version>/`.
-/// - Pi: local-path packages in `<pi dir>/settings.json` whose `package.json`
-///   names the Clax Pi package.
+/// - Pi: the packages in `<pi dir>/settings.json` whose `package.json` names
+///   the Clax Pi package ([`pi_found`] adds the project's settings and
+///   `pi list`).
 /// - Grok Build: directories under `<grok home>` holding a
 ///   `.grok-plugin/plugin.json` that names clax-grok ([`grok_plugin_copies`]).
 pub fn plugin_roots(agent: DoctorAgent, dirs: &Dirs) -> Vec<PathBuf> {
@@ -214,24 +220,443 @@ pub fn plugin_roots(agent: DoctorAgent, dirs: &Dirs) -> Vec<PathBuf> {
             out
         }
         DoctorAgent::Pi => {
-            let settings = read_json(&dirs.pi_dir.join("settings.json")).unwrap_or_default();
-            let packages = settings["packages"].as_array().cloned().unwrap_or_default();
-            packages
-                .iter()
-                .filter_map(|p| p.as_str().or_else(|| p["source"].as_str()))
-                .filter(|s| s.starts_with('/') || s.starts_with('.'))
-                .map(|s| dirs.pi_dir.join(s))
-                .filter(|root| {
-                    read_json(&root.join("package.json")).is_some_and(|m| m["name"] == PI_PACKAGE)
-                })
-                .collect()
+            let probe = PiProbe {
+                project: None,
+                list: Err("not run".into()),
+            };
+            pi_found(dirs, &probe).roots()
         }
         DoctorAgent::Grok => grok_plugin_copies(&dirs.grok_home),
     };
+    sort_newest_first(&mut roots);
+    roots
+}
+
+/// `roots` ordered by manifest version, newest first.
+fn sort_newest_first(roots: &mut [PathBuf]) {
     let version =
         |p: &PathBuf| plugin::manifest_version(p).and_then(|v| semver::Version::parse(&v).ok());
     roots.sort_by_key(|p| std::cmp::Reverse(version(p)));
-    roots
+}
+
+/// Which Pi settings file lists a package: `<pi dir>/settings.json` (user)
+/// or `<project>/.pi/settings.json` (project).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PiScope {
+    User,
+    Project,
+}
+
+impl PiScope {
+    fn name(self) -> &'static str {
+        match self {
+            PiScope::User => "user",
+            PiScope::Project => "project",
+        }
+    }
+}
+
+/// A package source as Pi parses it.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum PiSource {
+    Npm { name: String },
+    Git { host: String, path: String },
+    Local(String),
+}
+
+/// `source` as Pi parses a package source: `npm:<name>[@<version>]`; a git
+/// source, keeping only the host and the path without `.git`; anything else
+/// is a local path. A git source is `git:` followed by any form below, or
+/// an `http(s)://`, `ssh://` or `git://` URL. The forms are a URL,
+/// `git@<host>:<path>`, `<host>/<path>`, a `github:`, `gitlab:` or
+/// `bitbucket:` shorthand, and GitHub's `<user>/<repo>`, each with an
+/// optional `@<ref>` or `#<ref>`.
+pub(super) fn parse_pi_source(source: &str) -> PiSource {
+    let s = source.trim();
+    if let Some(spec) = s.strip_prefix("npm:") {
+        let spec = spec.trim();
+        let name = match spec.strip_prefix('@') {
+            Some(rest) => rest.find('@').map_or(spec, |i| &spec[..i + 1]),
+            None => spec.split('@').next().unwrap_or(spec),
+        };
+        return PiSource::Npm { name: name.into() };
+    }
+    let local = || PiSource::Local(s.to_string());
+    let url = match s.strip_prefix("git:") {
+        Some(rest) => rest.trim(),
+        None => {
+            let scheme = s.split_once("://").map(|(p, _)| p.to_ascii_lowercase());
+            if !matches!(scheme.as_deref(), Some("http" | "https" | "ssh" | "git")) {
+                return local();
+            }
+            s
+        }
+    };
+    let url = url.split('#').next().unwrap_or(url);
+    let hosted = [
+        ("github:", "github.com"),
+        ("gitlab:", "gitlab.com"),
+        ("bitbucket:", "bitbucket.org"),
+    ];
+    let (host, path) = if let Some(rest) = url.strip_prefix("git@")
+        && let Some((host, path)) = rest.split_once(':')
+        && !url.contains("://")
+    {
+        (host.to_string(), path)
+    } else if let Some((host, path)) = hosted
+        .iter()
+        .find_map(|(p, h)| url.strip_prefix(p).map(|rest| (*h, rest)))
+    {
+        (host.to_string(), path)
+    } else if let Some((_, rest)) = url.split_once("://") {
+        let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+        let host = authority.rsplit('@').next().unwrap_or(authority);
+        let host = host.split(':').next().unwrap_or(host);
+        (host.to_ascii_lowercase(), path)
+    } else {
+        match url.split_once('/') {
+            Some((host, path)) if host.contains('.') || host == "localhost" => {
+                (host.to_string(), path)
+            }
+            // `git:<user>/<repo>` is GitHub shorthand.
+            _ => ("github.com".to_string(), url),
+        }
+    };
+    let path = path.split('@').next().unwrap_or(path);
+    let path = path.trim_start_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let parts: Vec<&str> = path.split('/').collect();
+    if host.is_empty() || parts.len() < 2 || parts.iter().any(|p| p.is_empty() || *p == "..") {
+        return local();
+    }
+    PiSource::Git {
+        host,
+        path: path.to_string(),
+    }
+}
+
+/// Where Pi installs or finds `source` listed in the settings file of
+/// `scope`, whose directory is `base` (the Pi directory, or
+/// `<project>/.pi`). These are the paths of Pi 1.5.2's package manager
+/// (`dist/core/package-manager.js`). An npm package in user scope that is
+/// missing here may sit in the global npm root, which only `pi list`
+/// reports.
+pub(super) fn pi_source_root(source: &str, base: &Path, home: &Path) -> PathBuf {
+    match parse_pi_source(source) {
+        PiSource::Npm { name } => base.join("npm/node_modules").join(name),
+        PiSource::Git { host, path } => base.join("git").join(host).join(path),
+        PiSource::Local(p) => super::init::stored_path(&p, base, home),
+    }
+}
+
+pub(super) fn is_clax_pi_package(root: &Path) -> bool {
+    read_json(&root.join("package.json")).is_some_and(|m| m["name"] == PI_PACKAGE)
+}
+
+/// One package `pi list` prints: its source as the settings file lists it,
+/// the settings file's scope, and the path Pi resolved it to (none for a
+/// package that is not installed).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PiListed {
+    pub source: String,
+    pub scope: PiScope,
+    pub path: Option<PathBuf>,
+}
+
+/// `text` without ANSI escape sequences.
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        if chars.peek() == Some(&'[') {
+            chars.next();
+            for c in chars.by_ref() {
+                if ('@'..='~').contains(&c) {
+                    break;
+                }
+            }
+        } else {
+            chars.next();
+        }
+    }
+    out
+}
+
+/// The packages in the output of `pi list`: under a `User packages:` or
+/// `Project packages:` heading, each source on a line indented two spaces
+/// (with ` (filtered)` after it when its entry is an object), and the path
+/// it is installed at on the next line, indented four spaces.
+pub fn parse_pi_list(text: &str) -> Vec<PiListed> {
+    let mut out: Vec<PiListed> = Vec::new();
+    let mut scope = None;
+    for line in strip_ansi(text).lines() {
+        match line.trim_end() {
+            "User packages:" => scope = Some(PiScope::User),
+            "Project packages:" => scope = Some(PiScope::Project),
+            l => {
+                let Some(scope) = scope else { continue };
+                if let Some(path) = l.strip_prefix("    ")
+                    && !path.starts_with(' ')
+                    && !path.is_empty()
+                {
+                    if let Some(last) = out.last_mut()
+                        && last.path.is_none()
+                    {
+                        last.path = Some(PathBuf::from(path));
+                    }
+                } else if let Some(source) = l.strip_prefix("  ")
+                    && !source.starts_with(' ')
+                    && !source.is_empty()
+                {
+                    out.push(PiListed {
+                        source: source.strip_suffix(" (filtered)").unwrap_or(source).into(),
+                        scope,
+                        path: None,
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// What doctor learns about Pi outside its settings files: the project
+/// directory Pi would run in (its `.pi/settings.json` lists project
+/// packages), and the output of `pi list`, or why it did not run.
+pub struct PiProbe {
+    pub project: Option<PathBuf>,
+    pub list: Result<String, String>,
+}
+
+/// How long `pi list` may run before doctor kills it.
+const PI_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+impl PiProbe {
+    /// The current directory, and `pi list --no-approve` run there.
+    /// `--no-approve` keeps Pi from applying the project's
+    /// `.pi/settings.json`, which can set the command Pi runs for npm
+    /// lookups (`npmCommand`). Doctor reads that file itself instead.
+    pub fn run() -> PiProbe {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        PiProbe {
+            project: std::env::current_dir().ok(),
+            list: match on_path(&path, "pi") {
+                None => Err("pi is not on PATH".into()),
+                Some(pi) => run_pi_list(&pi),
+            },
+        }
+    }
+}
+
+fn run_pi_list(pi: &Path) -> Result<String, String> {
+    use std::process::{Command, Stdio};
+    let child = Command::new(pi)
+        .args(["list", "--no-approve"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("{} could not start: {e}", pi.display()))?;
+    let pid = nix::unistd::Pid::from_raw(child.id() as i32);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    match rx.recv_timeout(PI_LIST_TIMEOUT) {
+        Ok(Ok(out)) if out.status.success() => Ok(String::from_utf8_lossy(&out.stdout).into()),
+        Ok(Ok(out)) => Err(format!("it exited with {}", out.status)),
+        Ok(Err(e)) => Err(format!("it failed: {e}")),
+        Err(_) => {
+            let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGKILL);
+            Err(format!(
+                "it ran longer than {}s and was stopped",
+                PI_LIST_TIMEOUT.as_secs()
+            ))
+        }
+    }
+}
+
+/// An installed copy of the Clax Pi package: the settings entry that leads
+/// to it, and which of the two ways found it.
+#[derive(Clone, Debug)]
+pub struct PiPackage {
+    pub source: String,
+    pub scope: PiScope,
+    pub root: PathBuf,
+    pub by_settings: bool,
+    pub by_list: bool,
+}
+
+/// The Clax Pi packages doctor found, and how it looked.
+pub struct PiFound {
+    pub packages: Vec<PiPackage>,
+    /// The settings files read, user first.
+    pub settings: Vec<PathBuf>,
+    /// Why `pi list` did not run, when it did not.
+    pub list_error: Option<String>,
+}
+
+impl PiFound {
+    /// Each package root once, in the order found.
+    pub fn roots(&self) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = Vec::new();
+        for p in &self.packages {
+            if !out.contains(&p.root) {
+                out.push(p.root.clone());
+            }
+        }
+        out
+    }
+}
+
+/// The package sources the Pi settings file `settings` lists, as written:
+/// a string entry, or an object entry's `source`. Empty when the file is
+/// missing or unreadable.
+pub(super) fn pi_sources(settings: &Path) -> Vec<String> {
+    read_json(settings).unwrap_or_default()["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.as_str().or_else(|| p["source"].as_str()))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The Clax Pi packages the settings files lead to: `<pi dir>/settings.json`
+/// and, with a `project`, `<project>/.pi/settings.json`, each source
+/// resolved by [`pi_source_root`].
+fn pi_settings_packages(dirs: &Dirs, project: Option<&Path>) -> (Vec<PiPackage>, Vec<PathBuf>) {
+    let mut files = vec![(PiScope::User, dirs.pi_dir.clone())];
+    if let Some(p) = project {
+        files.push((PiScope::Project, p.join(".pi")));
+    }
+    let mut out = Vec::new();
+    for (scope, base) in &files {
+        for source in pi_sources(&base.join("settings.json")) {
+            let root = pi_source_root(&source, base, &dirs.home);
+            if is_clax_pi_package(&root) {
+                out.push(PiPackage {
+                    source,
+                    scope: *scope,
+                    root,
+                    by_settings: true,
+                    by_list: false,
+                });
+            }
+        }
+    }
+    let files = files
+        .into_iter()
+        .map(|(_, b)| b.join("settings.json"))
+        .collect();
+    (out, files)
+}
+
+/// The Clax Pi packages found both ways: by the settings files, and in the
+/// output of `pi list` when it ran. A root both find is listed once.
+pub fn pi_found(dirs: &Dirs, probe: &PiProbe) -> PiFound {
+    let (mut packages, settings) = pi_settings_packages(dirs, probe.project.as_deref());
+    let list_error = match &probe.list {
+        Err(e) => Some(e.clone()),
+        Ok(text) => {
+            for l in parse_pi_list(text) {
+                let Some(root) = l.path.filter(|p| is_clax_pi_package(p)) else {
+                    continue;
+                };
+                match packages.iter_mut().find(|p| p.root == root) {
+                    Some(p) => p.by_list = true,
+                    None => packages.push(PiPackage {
+                        source: l.source,
+                        scope: l.scope,
+                        root,
+                        by_settings: false,
+                        by_list: true,
+                    }),
+                }
+            }
+            None
+        }
+    };
+    PiFound {
+        packages,
+        settings,
+        list_error,
+    }
+}
+
+/// `plugin` for Pi: the newest Clax package `found`, checked as
+/// [`plugin_check`] checks a plugin copy. The detail adds how the packages
+/// were found, and each root only one of the two ways found; that
+/// disagreement alone does not fail the check. A project package that
+/// `pi list` does not show is no disagreement: `pi list --no-approve`
+/// shows user packages only.
+pub fn pi_plugin_check(found: &PiFound, binary_version: &str) -> (Value, Option<PathBuf>) {
+    let mut lines = Vec::new();
+    if let Some(e) = &found.list_error {
+        lines.push(format!(
+            "`pi list` did not run ({e}); the packages were found from the settings files alone"
+        ));
+    } else {
+        for p in &found.packages {
+            if !p.by_settings {
+                lines.push(format!(
+                    "note: `pi list` shows {}, which the settings files do not lead to",
+                    p.root.display()
+                ));
+            } else if !p.by_list && p.scope == PiScope::User {
+                lines.push(format!(
+                    "note: the settings files lead to {}, which `pi list` does not show",
+                    p.root.display()
+                ));
+            }
+        }
+    }
+    let mut roots = found.roots();
+    sort_newest_first(&mut roots);
+    let (mut c, root) = match roots.into_iter().next() {
+        None => (
+            check(
+                "plugin",
+                false,
+                format!(
+                    "no installed Pi plugin found in {}; install it with {}",
+                    found
+                        .settings
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(" or "),
+                    install_hint(DoctorAgent::Pi)
+                ),
+            ),
+            None,
+        ),
+        Some(root) => {
+            for p in found.packages.iter().filter(|p| p.root == root) {
+                lines.insert(
+                    0,
+                    format!("listed as {} in the {} settings", p.source, p.scope.name()),
+                );
+            }
+            (
+                root_check(DoctorAgent::Pi, &root, binary_version),
+                Some(root),
+            )
+        }
+    };
+    if !lines.is_empty() {
+        let detail = format!(
+            "{}\n{}",
+            c["detail"].as_str().unwrap_or_default(),
+            lines.join("\n")
+        );
+        c["detail"] = Value::String(detail);
+    }
+    (c, root)
 }
 
 /// Directories under `grok_home`, at most five levels down and never inside
@@ -324,31 +749,44 @@ pub fn plugin_check(
     binary_version: &str,
 ) -> (Value, Option<PathBuf>) {
     let Some(root) = plugin_roots(agent, dirs).into_iter().next() else {
-        let install = match agent {
-            DoctorAgent::Codex => {
-                "`codex plugin marketplace add <checkout>`, then `codex plugin add clax@clax`"
-            }
-            DoctorAgent::Claude => {
-                "`/plugin marketplace add <checkout>`, then `/plugin install clax@clax`"
-            }
-            DoctorAgent::Grok => "`clax init --agent grok`",
-            DoctorAgent::Pi => "`pi install <checkout>/plugins/pi`",
-        };
         return (
             check(
                 "plugin",
                 false,
                 format!(
-                    "no installed {} plugin found in {}; install it with {install}",
+                    "no installed {} plugin found in {}; install it with {}",
                     agent.display(),
-                    where_installed(agent, dirs)
+                    where_installed(agent, dirs),
+                    install_hint(agent)
                 ),
             ),
             None,
         );
     };
+    (root_check(agent, &root, binary_version), Some(root))
+}
+
+/// How to install the harness's plugin.
+fn install_hint(agent: DoctorAgent) -> &'static str {
+    match agent {
+        DoctorAgent::Codex => {
+            "`codex plugin marketplace add <checkout>`, then `codex plugin add clax@clax`"
+        }
+        DoctorAgent::Claude => {
+            "`/plugin marketplace add <checkout>`, then `/plugin install clax@clax`"
+        }
+        DoctorAgent::Grok => "`clax init --agent grok`",
+        DoctorAgent::Pi => {
+            "`pi install npm:@empathic/clax-pi`, or `clax init` for the copy built into this clax"
+        }
+    }
+}
+
+/// `plugin` for the installed copy at `root`: failed when its manifest
+/// version or its launcher differs from this binary's (a stale copy).
+fn root_check(agent: DoctorAgent, root: &Path, binary_version: &str) -> Value {
     let shown = root.display();
-    let c = match plugin::manifest_version(&root) {
+    match plugin::manifest_version(root) {
         None => check(
             "plugin",
             false,
@@ -373,8 +811,7 @@ pub fn plugin_check(
             ),
             _ => check("plugin", true, format!("{shown} (version {v})")),
         },
-    };
-    (c, Some(root))
+    }
 }
 
 /// `skill`: the installed skill states this binary's tool count and is the
@@ -609,10 +1046,10 @@ pub fn claude_copy_check(home: &Home) -> Value {
     }
 }
 
-/// The first `grok` on the `PATH` value `path`.
-fn grok_on_path(path: &std::ffi::OsStr) -> Option<PathBuf> {
+/// The first `name` on the `PATH` value `path`.
+fn on_path(path: &std::ffi::OsStr, name: &str) -> Option<PathBuf> {
     std::env::split_paths(path)
-        .map(|d| d.join("grok"))
+        .map(|d| d.join(name))
         .find(|p| p.is_file())
 }
 
@@ -710,6 +1147,9 @@ pub fn checks(agent: DoctorAgent, home: &Home, client: Option<&Client>) -> Vec<V
     let exe = std::env::current_exe().unwrap_or_default();
     let dirs = Dirs::from_env(|k| std::env::var(k).ok());
     let (plugin, plugin_root) = match &dirs {
+        Some(dirs) if agent == DoctorAgent::Pi => {
+            pi_plugin_check(&pi_found(dirs, &PiProbe::run()), version)
+        }
         Some(dirs) => plugin_check(agent, dirs, version),
         None => (check("plugin", false, "HOME is not set"), None),
     };
@@ -733,7 +1173,7 @@ pub fn checks(agent: DoctorAgent, home: &Home, client: Option<&Client>) -> Vec<V
     out.push(hooks_check(agent, home));
     if agent == DoctorAgent::Grok {
         let path = std::env::var_os("PATH").unwrap_or_default();
-        let line = grok_on_path(&path).and_then(|g| version_line(&g));
+        let line = on_path(&path, "grok").and_then(|g| version_line(&g));
         out.push(grok_version_check(line.as_deref()));
         out.push(claude_copy_check(home));
     }
@@ -798,6 +1238,24 @@ mod tests {
             self.write(&format!("{rel}/scripts/ensure-clax.sh"), launcher());
             self.write(&format!("{rel}/skills/clax/SKILL.md"), agent.built_skill());
             self.home().join(rel)
+        }
+        /// A Pi package root at `rel` naming the Clax package at this
+        /// binary's version, with the launcher and the skill as this binary
+        /// has them.
+        fn pi_package(&self, rel: &str) -> PathBuf {
+            self.write(
+                &format!("{rel}/package.json"),
+                &json!({"name": PI_PACKAGE, "version": V}).to_string(),
+            );
+            self.write(&format!("{rel}/scripts/ensure-clax.sh"), launcher());
+            self.write(
+                &format!("{rel}/skills/clax/SKILL.md"),
+                DoctorAgent::Pi.built_skill(),
+            );
+            self.home().join(rel)
+        }
+        fn pi_probe(&self, project: Option<PathBuf>, list: Result<String, String>) -> PiProbe {
+            PiProbe { project, list }
         }
         /// The Clax home under this HOME.
         fn clax_home(&self) -> Home {
@@ -1029,18 +1487,15 @@ mod tests {
     }
 
     #[test]
-    fn pi_packages_are_local_paths_in_settings_naming_the_clax_package() {
+    fn pi_packages_are_settings_entries_naming_the_clax_package() {
         let f = Fixture::new();
-        f.write(
-            "checkout/plugins/pi/package.json",
-            &json!({"name": PI_PACKAGE, "version": V}).to_string(),
-        );
-        f.write(
-            "checkout/plugins/pi/skills/clax/SKILL.md",
-            DoctorAgent::Pi.built_skill(),
-        );
+        let pi = f.pi_package("checkout/plugins/pi");
         f.write("other/package.json", &json!({"name": "other"}).to_string());
-        let pi = f.home().join("checkout/plugins/pi");
+        // An npm package that is installed but is not Clax's.
+        f.write(
+            ".pi/agent/npm/node_modules/x/package.json",
+            &json!({"name": "x"}).to_string(),
+        );
         f.write(
             ".pi/agent/settings.json",
             &json!({"packages": ["npm:x", f.home().join("other"), {"source": pi}]}).to_string(),
@@ -1048,6 +1503,276 @@ mod tests {
         assert_eq!(plugin_roots(DoctorAgent::Pi, &f.dirs()), vec![pi.clone()]);
         let s = skill_check(DoctorAgent::Pi, Some(&pi), ClaxTools::tool_count());
         assert_eq!(s["ok"], true, "{s}");
+    }
+
+    #[test]
+    fn a_pi_npm_install_in_user_scope_is_found_under_the_agent_dir() {
+        let f = Fixture::new();
+        let root = f.pi_package(".pi/agent/npm/node_modules/@empathic/clax-pi");
+        f.write(
+            ".pi/agent/settings.json",
+            &json!({"packages": [format!("npm:{PI_PACKAGE}@{V}")]}).to_string(),
+        );
+        assert_eq!(plugin_roots(DoctorAgent::Pi, &f.dirs()), vec![root.clone()]);
+        let found = pi_found(
+            &f.dirs(),
+            &f.pi_probe(None, Err("pi is not on PATH".into())),
+        );
+        let (p, got) = pi_plugin_check(&found, V);
+        assert_eq!(p["ok"], true, "{p}");
+        assert_eq!(got.as_deref(), Some(root.as_path()));
+        let d = p["detail"].as_str().unwrap();
+        assert!(
+            d.contains("`pi list` did not run (pi is not on PATH)")
+                && d.contains("from the settings files alone"),
+            "{d}"
+        );
+    }
+
+    #[test]
+    fn pi_git_installs_are_found_by_host_and_path_without_the_ref() {
+        let f = Fixture::new();
+        let a = f.pi_package(".pi/agent/git/github.com/someone/clax-pi");
+        let b = f.pi_package(".pi/agent/git/git.example.com/team/pi/clax");
+        let c = f.pi_package(".pi/agent/git/example.org/x/y");
+        f.write(
+            ".pi/agent/settings.json",
+            &json!({"packages": [
+                "git:github.com/someone/clax-pi@v1",
+                "https://git.example.com/team/pi/clax.git",
+                {"source": "git:git@example.org:x/y"},
+                "git:github.com/someone/missing"
+            ]})
+            .to_string(),
+        );
+        let mut got = plugin_roots(DoctorAgent::Pi, &f.dirs());
+        got.sort();
+        let mut want = vec![a, b, c];
+        want.sort();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn pi_git_sources_parse_in_each_form_pi_accepts() {
+        let git = |host: &str, path: &str| PiSource::Git {
+            host: host.into(),
+            path: path.into(),
+        };
+        for (source, want) in [
+            (
+                "git:github.com/empathic/clax@v0.4.1",
+                git("github.com", "empathic/clax"),
+            ),
+            (
+                "https://git.example.com/tools/clax-pi.git",
+                git("git.example.com", "tools/clax-pi"),
+            ),
+            (
+                "git:git@github.com:empathic/clax-fork@main",
+                git("github.com", "empathic/clax-fork"),
+            ),
+            (
+                "git:github:empathic/clax#v0.4.1",
+                git("github.com", "empathic/clax"),
+            ),
+            ("git:gitlab:team/clax", git("gitlab.com", "team/clax")),
+            (
+                "ssh://git@Example.org:2222/x/y.git#main",
+                git("example.org", "x/y"),
+            ),
+            ("git:empathic/clax", git("github.com", "empathic/clax")),
+            (
+                "git:github.com/../x",
+                PiSource::Local("git:github.com/../x".into()),
+            ),
+            ("github.com/x/y", PiSource::Local("github.com/x/y".into())),
+            (
+                "npm:@empathic/clax-pi@0.4.1",
+                PiSource::Npm {
+                    name: "@empathic/clax-pi".into(),
+                },
+            ),
+            (
+                "npm:tool@1",
+                PiSource::Npm {
+                    name: "tool".into(),
+                },
+            ),
+        ] {
+            assert_eq!(parse_pi_source(source), want, "{source}");
+        }
+    }
+
+    #[test]
+    fn pi_project_settings_resolve_against_the_projects_pi_dir() {
+        let f = Fixture::new();
+        let npm = f.pi_package("proj/.pi/npm/node_modules/@empathic/clax-pi");
+        let local = f.pi_package("proj/vendor/clax-pi");
+        let git = f.pi_package("proj/.pi/git/github.com/someone/clax-pi");
+        f.write(
+            "proj/.pi/settings.json",
+            &json!({"packages": [
+                format!("npm:{PI_PACKAGE}"),
+                "../vendor/clax-pi",
+                "git:github.com/someone/clax-pi"
+            ]})
+            .to_string(),
+        );
+        // Without a project, only the user settings count.
+        assert_eq!(
+            plugin_roots(DoctorAgent::Pi, &f.dirs()),
+            Vec::<PathBuf>::new()
+        );
+        let found = pi_found(
+            &f.dirs(),
+            &f.pi_probe(Some(f.home().join("proj")), Err("no pi".into())),
+        );
+        let mut got = found.roots();
+        got.sort();
+        let mut want = vec![npm, local, git];
+        want.sort();
+        assert_eq!(got, want);
+        assert!(
+            found.packages.iter().all(|p| p.scope == PiScope::Project),
+            "{:?}",
+            found.packages
+        );
+        let (p, _) = pi_plugin_check(&found, V);
+        assert_eq!(p["ok"], true, "{p}");
+
+        // `pi list --no-approve` shows no project package.
+        let found = pi_found(
+            &f.dirs(),
+            &f.pi_probe(
+                Some(f.home().join("proj")),
+                Ok("No packages installed.\n".into()),
+            ),
+        );
+        let (p, _) = pi_plugin_check(&found, V);
+        assert_eq!(p["ok"], true, "{p}");
+        let d = p["detail"].as_str().unwrap();
+        assert!(!d.contains("note:"), "{d}");
+    }
+
+    #[test]
+    fn pi_list_output_parses_into_sources_scopes_and_paths() {
+        let text = "\x1b[1mUser packages:\x1b[22m\n  npm:@empathic/clax-pi\n\x1b[2m    /a/npm/node_modules/@empathic/clax-pi\x1b[22m\n  https://github.com/x/y\n    /a/git/github.com/x/y\n  ./missing (filtered)\n\n\x1b[1mProject packages:\x1b[22m\n  ../vendor/clax-pi\n    /p/vendor/clax-pi\n";
+        assert_eq!(
+            parse_pi_list(text),
+            vec![
+                PiListed {
+                    source: "npm:@empathic/clax-pi".into(),
+                    scope: PiScope::User,
+                    path: Some(PathBuf::from("/a/npm/node_modules/@empathic/clax-pi")),
+                },
+                PiListed {
+                    source: "https://github.com/x/y".into(),
+                    scope: PiScope::User,
+                    path: Some(PathBuf::from("/a/git/github.com/x/y")),
+                },
+                PiListed {
+                    source: "./missing".into(),
+                    scope: PiScope::User,
+                    path: None,
+                },
+                PiListed {
+                    source: "../vendor/clax-pi".into(),
+                    scope: PiScope::Project,
+                    path: Some(PathBuf::from("/p/vendor/clax-pi")),
+                },
+            ]
+        );
+        assert_eq!(parse_pi_list("No packages installed.\n"), vec![]);
+    }
+
+    #[test]
+    fn pi_list_and_the_settings_files_are_merged_and_disagreements_named() {
+        let f = Fixture::new();
+        let from_settings = f.pi_package(".pi/agent/npm/node_modules/@empathic/clax-pi");
+        let from_list = f.pi_package("global/lib/node_modules/@empathic/clax-pi");
+        f.write(
+            ".pi/agent/settings.json",
+            &json!({"packages": [format!("npm:{PI_PACKAGE}")]}).to_string(),
+        );
+        let list = format!(
+            "User packages:\n  npm:{PI_PACKAGE}\n    {}\n",
+            from_list.display()
+        );
+        let found = pi_found(&f.dirs(), &f.pi_probe(None, Ok(list)));
+        let mut got = found.roots();
+        got.sort();
+        let mut want = vec![from_settings.clone(), from_list.clone()];
+        want.sort();
+        assert_eq!(got, want);
+        let (p, _) = pi_plugin_check(&found, V);
+        assert_eq!(p["ok"], true, "a disagreement alone does not fail: {p}");
+        let d = p["detail"].as_str().unwrap();
+        assert!(
+            d.contains(&format!(
+                "`pi list` shows {}, which the settings files do not lead to",
+                from_list.display()
+            )),
+            "{d}"
+        );
+        assert!(
+            d.contains(&format!(
+                "the settings files lead to {}, which `pi list` does not show",
+                from_settings.display()
+            )),
+            "{d}"
+        );
+
+        // When both agree, the detail names no disagreement.
+        let list = format!(
+            "User packages:\n  npm:{PI_PACKAGE}\n    {}\n",
+            from_settings.display()
+        );
+        let found = pi_found(&f.dirs(), &f.pi_probe(None, Ok(list)));
+        assert_eq!(found.roots(), vec![from_settings]);
+        let (p, _) = pi_plugin_check(&found, V);
+        let d = p["detail"].as_str().unwrap();
+        assert!(!d.contains("note:"), "{d}");
+    }
+
+    #[test]
+    fn pi_list_runs_without_trusting_the_project() {
+        let f = Fixture::new();
+        let args = f.home().join("args");
+        let pi = clax_fake_exe::install(
+            &f.home().join("pi"),
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\necho 'No packages installed.'\n",
+                args.display()
+            ),
+        );
+        assert_eq!(run_pi_list(&pi).as_deref(), Ok("No packages installed.\n"));
+        assert_eq!(
+            std::fs::read_to_string(&args).unwrap(),
+            "list\n--no-approve\n"
+        );
+    }
+
+    #[test]
+    fn no_pi_package_suggests_the_npm_install_then_clax_init() {
+        let f = Fixture::new();
+        let found = pi_found(
+            &f.dirs(),
+            &f.pi_probe(Some(f.home().join("proj")), Ok(String::new())),
+        );
+        let (p, root) = pi_plugin_check(&found, V);
+        assert_eq!(p["ok"], false);
+        assert!(root.is_none());
+        let d = p["detail"].as_str().unwrap();
+        assert!(
+            d.contains("install it with `pi install npm:@empathic/clax-pi`, or `clax init`"),
+            "{d}"
+        );
+        assert!(d.contains("proj/.pi/settings.json"), "{d}");
+        assert!(
+            DoctorAgent::Pi
+                .reinstall()
+                .starts_with("reinstall with `pi install npm:@empathic/clax-pi`"),
+        );
     }
 
     #[test]

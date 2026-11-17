@@ -9118,6 +9118,10 @@ harness and the daemon, each `ok` or failed with the fix:
   version, with the build, the reason, when the hold ends, and what to do.
 - `plugin`: the harness's installed copy of the plugin; failed when none is
   found, or its manifest version or its wrapper differs from this binary's.
+  For Pi, the copies are the Clax packages that `<pi dir>/settings.json` and
+  the working directory's `.pi/settings.json` lead to (npm, git or local
+  sources) and those `pi list --no-approve` prints; the detail names a
+  user package that only one of the two finds.
 - `skill`: the installed skill's stated version and tool count, and whether
   it is the skill this binary was built with.
 - `mcp`: whether the daemon has a live session of the harness.
