@@ -13,7 +13,7 @@ import { CapabilityHost, type CommentsUi, type DbJournal } from "../caps/host";
 import { REQUEST_STUCK, connKept, connTrouble } from "../conn-notice";
 import { Lifecycle, onPageCache, retrying } from "../lifecycle";
 import { readJson, unreached } from "../trouble";
-import { APPROVE_FAILED, ARTIFACT_FAILED, LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, failureText, report, scopedNotice } from "../failure";
+import { APPROVE_FAILED, ARTIFACT_FAILED, COPY_FAILED, LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, failureText, report, scopedNotice } from "../failure";
 import { nav } from "../nav";
 import { type SiteHosts, artifactOrigin, pageSrc, startSrc } from "../origin";
 import { appQuery, inspectQuery, parseShellPath, shellPath } from "../route";
@@ -1831,7 +1831,11 @@ export class ArtifactController {
       this.lookTimer = undefined;
       const ids = [...this.pendingLook];
       this.pendingLook.clear();
-      void putLooked(this.id, ids).then(m => { if (m && !this.disposed) this.set(s => ({ looked: { ...s.looked, ...m } })); });
+      // A batch that failed goes back, for the next look's batch to carry.
+      void putLooked(this.id, ids).then(m => {
+        if (!m) for (const id of ids) this.pendingLook.add(id);
+        else if (!this.disposed) this.set(s => ({ looked: { ...s.looked, ...m } }));
+      });
     });
   }
 
@@ -1843,7 +1847,8 @@ export class ArtifactController {
 
   /** The version menu: the latest is the unpinned URL. */
   chooseVersion(n: number): void { nav.assign(this.here(n === this.latest() ? null : n)); }
-  copyLink(): void { navigator.clipboard.writeText(location.origin + this.here(this.pinnedVersion) + location.hash).catch(() => {}); }
+  /** Copies the view's link; a copy the browser refused says so. */
+  copyLink(): void { navigator.clipboard.writeText(location.origin + this.here(this.pinnedVersion) + location.hash).catch(() => this.noticeFor(COPY_FAILED)(`${COPY_FAILED}.`)); }
   reloadLatest(): void { nav.assign(this.here(null)); }
   dismissNotice(): void { this.set({ notice: null }); }
   /** Hides the blocked notice until another document greets. */

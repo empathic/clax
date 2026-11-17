@@ -5,7 +5,8 @@
 // stream (re)connect. Each report says whether the tab has focus and how
 // long ago the viewer last gave input in it (never a time, so the browser's
 // clock does not matter); the daemon keeps both for the viewer's own agents
-// and shows them to no one. Input there is the viewer's own act: a pointer
+// and shows them to no one. While reports fail, the 30 s heartbeat backs
+// off, and beats on time again once one goes through. Input there is the viewer's own act: a pointer
 // moving over a window without focus (on its way to another app) is not,
 // and a page opened in the background has none until the viewer acts, so
 // its reports leave `idle_ms` out until then. Gaining or losing focus reports at once; while
@@ -13,6 +14,7 @@
 // or focus as the viewer leaves the browser or comes back, focus is read
 // again every second.
 import { after, wall } from "../clock";
+import { backoff } from "../lifecycle";
 import { visibility } from "../stream";
 import type { ViewState } from "./artifact-controller";
 import { type PresenceView, stateFor, whereLabel } from "./presence-model";
@@ -20,6 +22,9 @@ import { type PresenceView, stateFor, whereLabel } from "./presence-model";
 const INPUTS = ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"] as const;
 /** How often focus is read again while it sits in a frame. */
 const FRAME_FOCUS_MS = 1000;
+/** How often the heartbeat reports, and the longest it waits while reports fail. */
+const BEAT_MS = 30_000;
+const BEAT_CAP_MS = 600_000;
 
 export class PresenceReporter {
   /** This page's name in its reports: one viewer (the owner's browsers are
@@ -52,6 +57,9 @@ export class PresenceReporter {
     void putPresence(this.id, "away", null, this.tab, true, { focused: false, ...this.idle() });
   };
   private done = false;
+  /** Reports failed in a row, and until when the heartbeat waits for them. */
+  private failures = 0;
+  private quietUntil = 0;
 
   /** `may(s)`: whether `s` may be reported (a viewer cookie exists and the
    * artifact is loaded and not deleted); `take` receives the artifact's
@@ -63,9 +71,22 @@ export class PresenceReporter {
     addEventListener("blur", this.onFocus);
     addEventListener("pagehide", this.leave);
     for (const t of INPUTS) addEventListener(t, this.onInput, { passive: true, capture: true });
-    this.beat = setInterval(() => this.report(true), 30_000);
+    this.beat = setInterval(() => this.heartbeat(), BEAT_MS);
     // Focus may already sit in a frame, where no blur will say so.
     if (document.activeElement?.tagName === "IFRAME") this.watchFrame();
+  }
+
+  /** The every-30 s report; while reports fail it waits `backoff` from
+   * `BEAT_MS` up (to `BEAT_CAP_MS`) between them, and beats on time again
+   * once one goes through. */
+  heartbeat(): void {
+    if (wall() >= this.quietUntil) this.report(true);
+  }
+
+  /** A report's answer, `p` (null when it failed): backs the heartbeat off, or lets it beat on time. */
+  private answered(p: Presence | null): void {
+    this.quietUntil = p ? 0 : wall() + backoff(this.failures++, Math.random, BEAT_MS, BEAT_CAP_MS);
+    if (p) this.failures = 0;
   }
 
   fetch(): void {
@@ -96,7 +117,7 @@ export class PresenceReporter {
     this.timer = undefined;
     this.reported = { state, where, focused, at: wall() };
     const t = this.ticket();
-    void putPresence(this.id, state, where, this.tab, false, { focused, ...this.idle() }).then(p => { if (p && !this.done) this.take(p, t); });
+    void putPresence(this.id, state, where, this.tab, false, { focused, ...this.idle() }).then(p => { this.answered(p); if (p && !this.done) this.take(p, t); });
   }
 
   /** Re-reads focus every second while the tab is visible and focus is in a

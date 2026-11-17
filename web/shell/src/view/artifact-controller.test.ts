@@ -95,6 +95,34 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     vi.useRealTimers();
   });
 
+  it("puts looked-at marks back when their request fails, so the next batch carries them", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let down = true;
+    const { ctl } = await started({ threads: [thread("t1"), thread("t2")], routes: url => (url === "/api/viewers/me/looked" ? (down ? new Response("error code: 1016", { status: 530 }) : { looked: { t1: "x", t2: "y" } }) : undefined) });
+    await vi.waitFor(() => expect(ctl.state.get().threads).toHaveLength(2));
+    const looks = () => (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(([u]) => String(u) === "/api/viewers/me/looked").map(([, i]) => JSON.parse((i as RequestInit).body as string).thread_ids);
+    const [t1, t2] = ctl.state.get().threads;
+    ctl.look(t1);
+    await vi.advanceTimersByTimeAsync(1100);
+    await vi.waitFor(() => expect(looks()).toEqual([["t1"]]));
+    down = false;
+    ctl.look(t2);
+    await vi.advanceTimersByTimeAsync(1100);
+    await vi.waitFor(() => expect(looks()).toHaveLength(2));
+    expect(looks()[1].sort()).toEqual(["t1", "t2"]);
+    await vi.waitFor(() => expect(ctl.state.get().looked).toMatchObject({ t1: "x", t2: "y" }));
+    ctl.dispose();
+    vi.useRealTimers();
+  });
+
+  it("says when Copy link could not copy", async () => {
+    const { ctl } = await started();
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText: async () => { throw new DOMException("denied", "NotAllowedError"); } } });
+    ctl.copyLink();
+    await vi.waitFor(() => expect(ctl.state.get().notice).toBe("Could not copy the link."));
+    ctl.dispose();
+  });
+
   it("inserts the frame on its site's handshake only once the artifact and its site are known, with the gate already reset", async () => {
     const { ctl, frame } = await started();
     expect(ctl.state.get().data?.artifact.title).toBe("T");

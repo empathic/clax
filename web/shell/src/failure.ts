@@ -16,6 +16,7 @@ export const ARTIFACT_FAILED = "Could not load this artifact";
 export const OPEN_FAILED = "Could not open";
 export const APPROVE_FAILED = "Could not approve";
 export const SHEET_FAILED = "Could not open the keyboard shortcuts";
+export const COPY_FAILED = "Could not copy the link";
 /** What the shell says when a lazy part of the bridge could not load in the page. */
 export const PART_FAILED: Record<"comment" | "clip" | "caps" | "origin" | "room" | "sample" | "test", string> = {
   comment: "Comment mode could not load in this page",
