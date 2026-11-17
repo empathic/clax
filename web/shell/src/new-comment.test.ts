@@ -47,8 +47,11 @@ describe("whole-artifact anchors", () => {
     expect(h.threads.map(x => x.id)).toEqual(["new"]);
     expect(h.selected).toBe("new");
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: { code: "invalid_anchor", message: "no" } }), { status: 400 })));
+    // The box says why beside it (NewComment), not the stage.
     await expect(postWhole(host, 2, "x")).rejects.toThrow();
-    expect(h.notice).toMatch(/^Could not post: .*no$/);
+    expect(h.notice).toBeNull();
+    // A post clears a failed post's banner.
+    h.notice = "Could not post: no";
     vi.stubGlobal("fetch", created());
     await postWhole(host, 2, "again");
     expect(h.notice).toBeNull();
@@ -94,18 +97,22 @@ describe("NewComment", () => {
     v.unmount();
   });
 
-  it("keeps the composer and its text when the post fails", async () => {
-    const fetch = vi.fn(async () => { throw new Error("offline"); });
-    vi.stubGlobal("fetch", fetch);
+  it("keeps the composer and its text when the post fails, and says why beside the box rather than on the stage", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("error code: 1016", { status: 530, headers: { "content-type": "text/plain" } })));
     const { h, host } = fakeHost();
     const v = mount(NewComment, { version: 1, host });
     flush(() => v.root.querySelector<HTMLButtonElement>(".new-comment-open")!.click());
     const ta = v.root.querySelector("textarea")!;
     flush(() => { ta.value = "Warmer"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
     flush(() => v.root.querySelector<HTMLButtonElement>("button[type=submit]")!.click());
-    await vi.waitFor(() => expect(h.notice).toBe("Could not post: offline"));
-    flush();
+    const status = () => v.root.querySelector(".composer .act-hint")!;
+    await vi.waitFor(() => { flush(); expect(status().textContent).toBe("Could not post: this Clax is not answering. It may have been taken down or moved."); });
+    expect(h.notice).toBeNull();
     expect(v.root.querySelector("textarea")!.value).toBe("Warmer");
+    // A post that goes through closes the box.
+    vi.stubGlobal("fetch", created());
+    flush(() => v.root.querySelector<HTMLButtonElement>("button[type=submit]")!.click());
+    await vi.waitFor(() => expect(v.root.querySelector(".composer")).toBeNull());
     v.unmount();
   });
 

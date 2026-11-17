@@ -1199,6 +1199,27 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     ctl.dispose();
   });
 
+  it("answers a reply's post with a promise that rejects on failure, for the reply box to say why, and shows no stage banner for it", async () => {
+    const open = thread("t9");
+    const { ctl } = await started({ threads: [open] });
+    await vi.waitFor(() => expect(ctl.state.get().threads).toHaveLength(1));
+    const base = fetch as unknown as ReturnType<typeof vi.fn>;
+    let down = true;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (!url.endsWith("/threads/t9/comments")) return base(url, init);
+      return down ? new Response("error code: 1016", { status: 530, headers: { "content-type": "text/plain" } })
+        : new Response(JSON.stringify({ thread: { ...open, comments: [...open.comments, { ...open.comments[0], id: "c2", body: "yes" }] } }));
+    }));
+    const e = await ctl.reply(open, "yes").then(() => null, (x: unknown) => x);
+    expect(e).toMatchObject({ status: 530, clax: false });
+    expect(ctl.state.get().notice).toBeNull();
+    expect(ctl.state.get().busy).toBe(0);
+    down = false;
+    await ctl.reply(open, "yes");
+    expect(ctl.state.get().threads[0].comments.map(c => c.body)).toContain("yes");
+    ctl.dispose();
+  });
+
   it("asks a viewer with no name and no token for its name before a reopen, and reopens once it has one", async () => {
     const done = thread("t9", { status: "resolved", resolved_by: "viewer:u_1", resolved_at: "2026-09-30T11:00:00.000Z" });
     const reopened: string[] = [];

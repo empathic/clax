@@ -10,7 +10,7 @@ import type { Declared } from "../caps/availability";
 import { pageAnchor } from "../caps/comments";
 import { HINT_MS, PICK_ATTEST_WAIT_MS, afterHostAttestation, frameGesture, hostArrival, onShieldPress, pickHintAllowed, setForwardedKeys } from "../caps/gesture";
 import { CapabilityHost, type CommentsUi, type DbJournal } from "../caps/host";
-import { REQUEST_STUCK, connTrouble } from "../conn-notice";
+import { REQUEST_STUCK, connKept, connTrouble } from "../conn-notice";
 import { Lifecycle, onPageCache, retrying } from "../lifecycle";
 import { APPROVE_FAILED, ARTIFACT_FAILED, LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, REOPEN_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, failureText, report, scopedNotice } from "../failure";
 import { nav } from "../nav";
@@ -1719,13 +1719,15 @@ export class ArtifactController {
   }
 
   private saveThread(p: Promise<Thread>, prefix: string): void {
-    void report(this.whileBusy(p.catch(e => this.refused(e))), prefix, this.noticeFor(prefix)).then(t => {
-      if (!t) return;
-      this.changeThreads(ts => upsert(ts, t));
-      // A linked thread's write is queued to go up beside this answer; the
-      // event saying so may have come first, so the thread is read again.
-      if (t.linked && !t.linked.unlinked) void fetchThread(this.id, t.id).then(now => this.changeThreads(ts => upsert(ts, now)), () => {});
-    });
+    void report(this.whileBusy(p.catch(e => this.refused(e))), prefix, this.noticeFor(prefix)).then(t => { if (t) this.saved(t); });
+  }
+
+  /** A write's answer, `t`, joins the view. */
+  private saved(t: Thread): void {
+    this.changeThreads(ts => upsert(ts, t));
+    // A linked thread's write is queued to go up beside this answer; the
+    // event saying so may have come first, so the thread is read again.
+    if (t.linked && !t.linked.unlinked) void fetchThread(this.id, t.id).then(now => this.changeThreads(ts => upsert(ts, now)), () => {});
   }
 
   // ---- intents ----
@@ -2003,8 +2005,18 @@ export class ArtifactController {
       this.set({ menu: "people", askName: t.id });
     });
   }
-  reply(t: Thread, body: string): void { this.saveThread(addComment(this.id, t.id, body), POST_FAILED); }
-  composerInput(text: string): void { this.composerText = text; this.liveView?.text(null, text); }
+  /** Posts `body` as a reply on `t`. A failure rejects, for the reply box
+   * to say why beside it and keep the text; the stage says nothing, but
+   * for a `comments_off` refusal, which takes the reply box away. */
+  async reply(t: Thread, body: string): Promise<void> {
+    this.saved(await this.whileBusy(addComment(this.id, t.id, body).catch(e => {
+      if (e instanceof ApiError && e.code === "comments_off") this.noticeFor(POST_FAILED)(failureText(POST_FAILED, e));
+      return this.refused(e);
+    })));
+  }
+  /** The open composer's text: told to the live layers, and while it holds
+   * any, the connection notice says what was written is kept. */
+  composerInput(text: string): void { this.composerText = text; this.liveView?.text(null, text); connKept("composer", !!text.trim()); }
   /** The composer for `pickId` has focus: the bridge may render its clip now. */
   composerFocused(pickId: string): void { if (this.pendingPick?.pickId === pickId) this.send({ type: "clax:composer-ready", pickId }); }
   cancelDraft(): void { this.set({ draft: null }); }
